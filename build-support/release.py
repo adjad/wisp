@@ -102,6 +102,17 @@ def ad_hoc_preflight(args, env=None):
         raise BuildError("Ad-hoc release requires candidate output and GitHub credentials")
 
 
+def require_release_features(meta):
+    """A published build must carry what testers need: the built-in Google
+    OAuth client (a missing WISP_GOOGLE_OAUTH_CLIENT secret fails here, not on
+    testers' Macs) and the bundled uv. PR previews may lack either."""
+    if meta.get("google_oauth_client") is not True:
+        raise BuildError("Release candidate has no built-in Google OAuth client; "
+                         "set the WISP_GOOGLE_OAUTH_CLIENT secret for the build")
+    if not meta.get("uv"):
+        raise BuildError("Release candidate has no bundled uv; rebuild without --no-uv")
+
+
 def public_release_archive(assets, meta):
     """Select the app download from the complete, separately verified evidence."""
     assets.assert_paths_unchanged()
@@ -118,9 +129,13 @@ def public_release_archive(assets, meta):
 
 
 # Shown directly under the download link: the public ZIP is ad-hoc signed, not notarized.
+# On macOS 15 and later Control-click > Open no longer unblocks it; Open Anyway does.
 FIRST_LAUNCH_NOTE = (
-    "First launch: Control-click Wisp.app and choose Open (or System Settings > Privacy & Security > Open Anyway).\n"
-    "If macOS still blocks it, run `xattr -dr com.apple.quarantine /Applications/Wisp.app` in Terminal.\n\n")
+    "First launch: open Wisp once (macOS will block it), then go to System Settings > Privacy & Security, "
+    "scroll down, click Open Anyway next to the Wisp message, and confirm. "
+    "On macOS 14 and earlier, Control-click Wisp.app and choose Open instead.\n"
+    "If macOS still blocks it, run `xattr -dr com.apple.quarantine <path to Wisp.app>` in Terminal "
+    "(for example /Applications/Wisp.app).\n\n")
 
 
 def create_public_draft(runner, assets, env, tag, meta):
@@ -159,6 +174,7 @@ def release_ad_hoc(runner, args):
                 or meta["dirty"] or meta["commit"] != git("rev-parse", "HEAD")
                 or meta["version"] != CONFIG["version"] or git("status", "--porcelain")):
             raise BuildError("Ad-hoc candidate must match this clean tagged checkout exactly")
+        require_release_features(meta)
         if (not provenance.get("toolchain", {}).get("strict_toolchain")
                 or not provenance.get("tests")
                 or any(row["exit_code"] and not row.get("optional") for row in provenance["tests"])):
@@ -585,6 +601,7 @@ def release(runner, args):
                 raise BuildError("Candidate provenance is invalid") from None
             if provenance.get("signature") != "ad-hoc" or provenance.get("notarized") is not False:
                 raise BuildError("Protected release requires a verified local ad-hoc candidate")
+            require_release_features(meta)
             if meta["dirty"] or meta["commit"] != git("rev-parse", "HEAD") or git("status", "--porcelain"):
                 raise BuildError("Release candidate must match this clean checkout exactly")
             if not provenance["toolchain"]["strict_toolchain"]:

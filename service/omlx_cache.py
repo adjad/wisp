@@ -28,10 +28,12 @@ from pathlib import Path
 
 from service.config import _OMLX_STATE, OMLX_SETTINGS
 
-CAP_BYTES = 4 * 1024**3
-CAP_TEXT = "4GB"
+# One cold Wisp prompt writes 0.5-0.8 GB of blocks, so 2 GB still holds the
+# Ask, Brief and digest prefixes; 4 GB only cost users disk.
+CAP_BYTES = 2 * 1024**3
+CAP_TEXT = "2GB"
 MAX_AGE_DAYS = 7
-VISION_CAP_BYTES = 1024**3
+VISION_CAP_BYTES = 256 * 1024**2
 INTERVAL_S = 6 * 3600
 # Unfinished writes are `.tmp`; oMLX keeps recent ones for another manager.
 _TMP_GRACE_S = 24 * 3600

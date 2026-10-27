@@ -218,9 +218,15 @@ def remote_only_profile() -> RemoteOnlyProfile | None:
     # Only the launcher's WISP_REMOTE_ONLY=1 opts in. A profile left in
     # ~/.moe/config.yaml must never move a normal Mac's inference (and its
     # native reads) to a remote server on its own.
-    if _FORCED_MODE is None:
-        return None
     from service.config import models_config
+    if _FORCED_MODE is None:
+        # Settings ▸ Cloud inference ▸ "Everything" is the other explicit opt-in:
+        # it writes the profile AND remote_parity, then restarts the backend.
+        cfg = models_config()
+        profile = (cfg.get("inference") or {}).get("remote_only")
+        if not (cfg.get("remote_parity") is True and isinstance(profile, dict)
+                and profile.get("enabled", True) is True):
+            return None
     inference = models_config().get("inference", {})
     if not isinstance(inference, dict):
         _refuse("Invalid inference configuration")
@@ -264,6 +270,25 @@ def require_local_models_disabled(operation: str) -> None:
         _refuse(f"{operation} is unavailable in remote-only inference")
 
 
+def remote_parity() -> bool:
+    """User opt-in: remote inference behaves exactly like local models.
+
+    Set ``remote_parity: true`` in ~/.moe/config.yaml (or WISP_REMOTE_PARITY=1).
+    It lifts the data-minimizing limits of remote mode: skills and MCP tools,
+    model-led routing, the history cap, the behavior phraser and Gmail sync all
+    run as they do locally, so their content reaches the remote server. The
+    pinned origin/model/credential, payload validation and the normal safety
+    policy (sends always confirm) are unchanged."""
+    raw = os.environ.get("WISP_REMOTE_PARITY")
+    if raw is not None:
+        return raw == "1"
+    try:
+        from service.config import models_config
+        return models_config().get("remote_parity") is True
+    except Exception:  # noqa: BLE001 — unreadable config: keep the limits
+        return False
+
+
 def remote_tool_allowed(tool_name: str | None) -> bool:
     """Whether a remote-only build may offer/run this tool at all.
 
@@ -271,6 +296,9 @@ def remote_tool_allowed(tool_name: str | None) -> bool:
     decides allow/confirm/deny for each call."""
     if not isinstance(tool_name, str) or not tool_name:
         return False
+    if remote_parity():
+        from service.tools.registry import REGISTRY
+        return REGISTRY.get(tool_name) is not None
     if tool_name in _REMOTE_EXCLUDED:
         return False
     # Only tools registered by Wisp itself; skill and MCP runtimes never start

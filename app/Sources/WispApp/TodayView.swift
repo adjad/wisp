@@ -98,11 +98,17 @@ struct TodayPreferences: Decodable {
     let start_minute: Int
     let end_minute: Int
     let not_before: Double?
+    /// The person chose to plan this day although an all-day event reads like time away.
+    var plan_all_day: Bool? = nil
 }
 struct TodaySource: Decodable {
     let ready: Bool
     let last_sync: Double?
     let reason: String
+    /// "ready", "syncing" or "unavailable" (service/assistant/today.py with_access).
+    var state: String? = nil
+    /// What the person must grant, e.g. "calendar_access"; absent when unknown.
+    var blocked: String? = nil
 }
 struct TodayPlan: Decodable {
     let day: String
@@ -124,6 +130,94 @@ struct TodayPlan: Decodable {
     var displayBlocks: [TodayBlock] { workspace?.proposed_plan.blocks ?? blocks }
     var displayUnscheduled: [TodayUnscheduled] { workspace?.proposed_plan.unscheduled ?? unscheduled }
     var displayWarnings: [String] { workspace?.proposed_plan.warnings ?? warnings }
+
+    /// Whether Wisp could read a source and what fixes it when it couldn't:
+    /// Calendar and Reminders from the plan's own source health, the rest from
+    /// the workspace's coverage. Mail and texts are known only through the
+    /// workspace, so without one (it failed to build or to decode) they count
+    /// as unread: the Brief never gives an all-clear for them. Nil when the
+    /// service said nothing about any other source.
+    func access(_ source: String) -> SourceAccess? {
+        if let health = sources[source] {
+            return SourceAccess(source: source, ready: health.ready, state: health.state, blocked: health.blocked,
+                                reason: health.reason)
+        }
+        if let row = workspace?.source_coverage.first(where: { $0.source == source }) {
+            // Mail by the one rule the proactive section uses too
+            // (SourceAccess.mail), so the top line, the tile and it agree.
+            return source == "email" ? SourceAccess.mail(row.access, readBy: mailReadBy, unchecked: uncheckedMail)
+                : row.access
+        }
+        if Self.workspaceOnly.contains(source) { return SourceAccess(source: source, ready: false, state: "unavailable") }
+        return nil
+    }
+
+    /// The mail tile's state, from the same rule as access("email"): when a
+    /// connected Google account read the mail, the tile reads as ready with no
+    /// Mail.app access problem, as the top line says. Nil when the workspace
+    /// says nothing about mail.
+    /// `ready` means there is read mail to show; with an account unchecked the
+    /// access is not readable, and the tile names it over what was read.
+    var mailTile: (ready: Bool, access: SourceAccess?)? {
+        guard let row = workspace?.source_coverage.first(where: { $0.source == "email" }) else { return nil }
+        return (ready: row.ready || !mailReadBy.isEmpty, access: access("email"))
+    }
+
+    /// Google accounts whose mail Wisp read, and ones it couldn't check.
+    var mailReadBy: [String] { workspace?.proactive?.mailReadBy ?? [] }
+    var mailUnreadBy: [String] { workspace?.proactive?.mailUnreadBy ?? [] }
+    var uncheckedMail: UncheckedMail { workspace?.proactive?.uncheckedMail ?? UncheckedMail() }
+
+    /// Sources the plan's own health never reports.
+    static let workspaceOnly: Set<String> = ["email", "messages"]
+
+    /// The sources behind the Brief Wisp couldn't read, in reading order.
+    var unreadSources: [String] {
+        ["calendar", "reminders", "email", "messages"].filter { access($0).map { !$0.readable } ?? false }
+    }
+}
+
+extension TodayPlan {
+    private enum CodingKeys: String, CodingKey {
+        case day, timezone, generated_at, trace_id, revision, provisional, warnings, preferences, sources,
+             tasks, blocks, deadlines, all_day, unscheduled, workspace, workspace_error
+    }
+
+    /// What the Brief shows when the service's workspace was there but couldn't be read.
+    static let unreadableWorkspace = "Some of today's details couldn't be read; your saved day plan is shown."
+
+    /// Tolerant: only the day and time zone it is for are required. A row that
+    /// doesn't decode is dropped, a missing list is empty, and a workspace this
+    /// build can't read (a field changed shape) is left out with a note, so one
+    /// new or changed field never blanks the whole Brief and Day.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        day = try c.decode(String.self, forKey: .day)
+        timezone = try c.decode(String.self, forKey: .timezone)
+        generated_at = c.lenient(.generated_at, Double.self) ?? 0
+        trace_id = c.lenient(.trace_id, String.self)
+        revision = c.lenient(.revision, Int.self) ?? 0
+        provisional = c.lenient(.provisional, Bool.self) ?? false
+        warnings = c.lenient(.warnings, LossyList<String>.self)?.items ?? []
+        preferences = c.lenient(.preferences, TodayPreferences.self)
+            ?? TodayPreferences(start_minute: 540, end_minute: 1080, not_before: nil)
+        var sources: [String: TodaySource] = [:]
+        if let nested = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: .sources) {
+            for key in nested.allKeys {
+                if let source = nested.lenient(key, TodaySource.self) { sources[key.stringValue] = source }
+            }
+        }
+        self.sources = sources
+        tasks = c.lenient(.tasks, LossyList<TodayTask>.self)?.items ?? []
+        blocks = c.lenient(.blocks, LossyList<TodayBlock>.self)?.items ?? []
+        deadlines = c.lenient(.deadlines, LossyList<TodayDeadline>.self)?.items ?? []
+        all_day = c.lenient(.all_day, LossyList<TodayBlock>.self)?.items ?? []
+        unscheduled = c.lenient(.unscheduled, LossyList<TodayUnscheduled>.self)?.items ?? []
+        workspace = c.lenient(.workspace, DailyWorkspace.self)
+        let present = (try? c.decodeNil(forKey: .workspace)) == false
+        workspace_error = c.lenient(.workspace_error, String.self)
+            ?? (present && workspace == nil ? Self.unreadableWorkspace : nil)
+    }
 }
 
 /// A composed Daily Summary the service kept (`/assistant/daily_summary/latest`),
@@ -176,6 +270,15 @@ final class TodayModel: ObservableObject {
     @Published private(set) var storedBriefChecked = false
     @Published var error = ""
     @Published var busy = false
+    /// Reads in a row that failed for a passing reason: the service starting,
+    /// restarting or busy (a timeout, no connection, a 5xx). These never show
+    /// as an error and never clear what is on screen; the read retries itself.
+    @Published private(set) var transientFailures = 0
+    /// When the current run of quiet failures began; nil while reads succeed.
+    @Published private(set) var failingSince: Date?
+    /// How a retry waits; checks drive it by hand.
+    var retrySleep: (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    private var retryTask: Task<Void, Never>?
     /// When the plan last loaded, so Brief and Day can skip a refresh right after one.
     private(set) var lastRefreshed: Date?
     /// The person's locale decides 12- or 24-hour clocks; checks pin a fixed one.
@@ -237,7 +340,11 @@ final class TodayModel: ObservableObject {
                 guard self != nil else { return }
                 await self?.refreshBackgroundSnapshot()
                 guard !Task.isCancelled else { break }
-                do { try await sleep(interval) } catch { break }
+                // Nothing on screen yet (the service was still starting, or a read
+                // failed): try again soon rather than leave Brief empty for the
+                // full interval.
+                let empty = self?.plan == nil
+                do { try await sleep(empty ? .seconds(3) : interval) } catch { break }
             }
             if self?.backgroundID == id {
                 self?.backgroundRefresh = nil
@@ -393,7 +500,7 @@ final class TodayModel: ObservableObject {
             let next = try JSONDecoder().decode(TodayPlan.self, from: data)
             guard ticket == generation, selected == currentKey, !Task.isCancelled else { return }
             plan = next
-            lastRefreshed = Date()
+            lastRefreshed = nowProvider()
             reportMetadata = ["surface": "today", "client_outcome": "completed", "revision": next.revision,
                               "task_count": next.tasks.count, "block_count": next.blocks.count,
                               "unscheduled_count": next.unscheduled.count, "provisional": next.provisional,
@@ -407,16 +514,88 @@ final class TodayModel: ObservableObject {
             }
             reportDetails = capturing && capturePlannerDetails ? ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any]) : nil
             error = ""
+            transientFailures = 0
+            failingSince = nil
+            retryTask?.cancel()
+            retryTask = nil
         } catch {
             guard ticket == generation, selected == currentKey else { return }
             // View/task cancellation is normal navigation, not a failed day.
             if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled { return }
-            self.error = error.localizedDescription
+            if Self.isTransient(error) {
+                // The service is starting, restarting or busy. Keep the last good
+                // plan on screen (or the loading row), say nothing, and try again.
+                transientFailures += 1
+                if failingSince == nil { failingSince = nowProvider() }
+                reportMetadata["client_outcome"] = "refresh_retrying"
+                reportMetadata["client_error_code"] = (error as NSError).code
+                scheduleRetry()
+                return
+            }
+            self.error = error is DecodingError
+                ? "Wisp couldn't read today's plan from its service." : error.localizedDescription
             reportMetadata = ["surface": "today", "client_outcome": "refresh_failed", "journal_available": false,
                               "client_error_code": (error as NSError).code]
             reportDetails = nil
-            // A failed refresh must not leave stale slots looking actionable.
+            transientFailures = 0
+            failingSince = nil
+            // A refused or unreadable plan must not leave stale slots looking actionable.
             plan = nil
+        }
+    }
+
+    /// Whether a failed read is a passing condition worth retrying quietly: no
+    /// connection yet, a timeout, a dropped connection, or the service saying it
+    /// is busy or failing (429, 5xx). A refusal (4xx) or an unreadable reply is real.
+    nonisolated static func isTransient(_ error: Error) -> Bool {
+        let failure = error as NSError
+        if failure.domain == NSURLErrorDomain {
+            return [NSURLErrorCannotConnectToHost, NSURLErrorTimedOut, NSURLErrorNetworkConnectionLost,
+                    NSURLErrorNotConnectedToInternet, NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed,
+                    NSURLErrorBadServerResponse, NSURLErrorResourceUnavailable,
+                    NSURLErrorZeroByteResource].contains(failure.code)
+        }
+        if failure.domain == "Today" {
+            return failure.code == 0 || failure.code == 429 || (500...599).contains(failure.code)
+        }
+        return false
+    }
+
+    /// Seconds before the next quiet retry after `failures` failed reads in a row.
+    nonisolated static func retryDelay(after failures: Int) -> Duration {
+        .seconds(min(15, 1 << min(max(failures - 1, 0), 4)))
+    }
+
+    /// Wisp still can't reach its service after several quiet retries, with
+    /// nothing to show yet: said once, in the loading row, while it keeps trying.
+    var outageNotice: String? {
+        plan == nil && transientFailures >= 4 ? "Wisp is taking a while to start. Still trying…" : nil
+    }
+
+    /// How long a plan may stay on screen while reads keep failing before the
+    /// Day says it is out of date and holds back its changing buttons.
+    nonisolated static let staleAfter: TimeInterval = 90
+
+    /// The plan on screen is from before a run of failed reads that has lasted
+    /// `staleAfter`: "Wisp isn't answering right now. Showing your day as of 3:42 PM."
+    var staleNotice: String? {
+        guard plan != nil, let since = failingSince, nowProvider().timeIntervalSince(since) >= Self.staleAfter else { return nil }
+        let asOf = lastRefreshed.map { " Showing your day as of " + clock($0.timeIntervalSince1970) + "." } ?? ""
+        return "Wisp isn't answering right now." + asOf
+    }
+
+    /// Changes are held back while the plan on screen may be out of date.
+    var planIsStale: Bool { staleNotice != nil }
+
+    private func scheduleRetry() {
+        guard retryTask == nil else { return }
+        let delay = Self.retryDelay(after: transientFailures)
+        let sleep = retrySleep
+        retryTask = Task { [weak self] in
+            do { try await sleep(delay) } catch { return }
+            guard let self, !Task.isCancelled else { return }
+            self.retryTask = nil
+            await self.refresh()
         }
     }
 
@@ -522,10 +701,12 @@ final class TodayModel: ObservableObject {
         return await mutate("/assistant/today/tasks/\(task.id)", method: "PATCH", body: body)
     }
 
-    func replan(start: Int, end: Int, delayMinutes: Int? = nil) async {
+    func replan(start: Int, end: Int, delayMinutes: Int? = nil, planAllDay: Bool? = nil) async {
         guard let plan, plan.day == day else { return }
         var body: [String: Any] = ["day": day, "timezone": timezone.identifier,
                                   "revision": plan.revision, "start_minute": start, "end_minute": end]
+        // A replan keeps the person's "Plan my day anyway" unless it changes it.
+        if planAllDay ?? (plan.preferences.plan_all_day == true) { body["plan_all_day"] = true }
         if let delayMinutes {
             body["not_before"] = Date().addingTimeInterval(Double(delayMinutes * 60)).timeIntervalSince1970
         } else {

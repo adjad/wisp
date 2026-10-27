@@ -14,6 +14,15 @@ load/swap) that has no other visible signal — see OMLXClient.ensure_only.
 """
 from __future__ import annotations
 
+# /resetwisp's restart pass, before any other import opens a store or database.
+# Only in the backend the app launched (it passes WISP_LAUNCH_NONCE): a script or
+# tool importing the service with the real HOME never erases anything. While a
+# reset is unrecorded or unfinished this exits instead of starting the service.
+import os as _reset_os
+if _reset_os.environ.get("WISP_LAUNCH_NONCE"):
+    from service.wisp_reset import resume_or_exit as _resume_or_exit
+    _resume_or_exit()
+
 from service.assistant.verified_reminders import expected_date_fields
 
 import asyncio
@@ -92,6 +101,7 @@ from service.agent.planner import enabled_from_env as planner_enabled_from_env
 # Imported here, not lazily in _model_led_preload: reranker binds the tool
 # registry at import time, so it must load with the real registry.
 from service.router import reranker as _reranker
+from service.model_only import model_only_enabled
 from service.router.model_led import (continuation_requires_baseline,
                                       model_led_enabled, needs_effect_owner,
                                       fresh_personal_obligation, memory_excluded, opaque_effect, personal_communication_request,
@@ -355,11 +365,19 @@ async def lifespan(app: FastAPI):
     # contribute tools to the registry, so they load before the first request
     # can arrive. Neither is required — a fresh install has zero of each — and
     # a failure in either must not stop the backend from serving.
-    if profile is None:
+    from service.inference.remote_policy import remote_parity
+    parity = profile is not None and remote_parity()
+    if profile is None or parity:
         try:
             skills.load()
         except Exception:  # noqa: BLE001
             pass
+        try:
+            from service import google_workspace, gmail_source
+            google_workspace.ensure_env()
+            google_workspace.sync_credentials(gmail_source.connected_accounts())
+        except Exception as exc:  # noqa: BLE001 — the tools are optional
+            print(f"[google_workspace] startup sync failed: {type(exc).__name__}", flush=True)
         started_tasks.append(asyncio.create_task(mcp_manager.start()))
 
     # Retention: unpinned research jobs keep their evidence/quotes/report
@@ -410,6 +428,13 @@ async def lifespan(app: FastAPI):
         # capture (local model only; it would idle anyway since the fast role
         # is unmanaged).
         started_tasks.append(asyncio.create_task(assistant_scheduler.run()))
+        if parity:
+            from service import gmail_source
+            started_tasks.append(asyncio.create_task(gmail_source.run()))
+            from service.memory.api import worker as memory_worker
+            started_tasks.append(asyncio.create_task(memory_worker.run(client)))
+    # /resetwisp stops these before it deletes anything (service/wisp_reset.py).
+    app.state.wisp_background_tasks = started_tasks
     recovery_task = asyncio.create_task(quarantine.watch(tuple(started_tasks), client.aclose))
     # A10 WP3: serves the app's private bridge socket only when the app launched
     # this process with one (a browser enabled by the user). Otherwise this is a no-op.
@@ -419,6 +444,7 @@ async def lifespan(app: FastAPI):
         bridge_link = browser_bridge_host.start_from_environment(assistant_store)
     except Exception:  # noqa: BLE001 — an optional bridge never blocks startup
         pass
+    app.state.wisp_bridge_link = bridge_link    # /resetwisp stops it too
     try:
         yield
     finally:
@@ -429,17 +455,24 @@ async def lifespan(app: FastAPI):
         for task in started_tasks:
             task.cancel()
         await asyncio.gather(*started_tasks, return_exceptions=True)
-        if profile is None:
+        if profile is None or parity:
             await mcp_manager.stop()
         await client.aclose()
         if is_bundled():
+            # Normally /shutdown_omlx already stopped it. Short here: the app kills this
+            # backend soon after SIGTERM, and an engine still running then outlives Wisp.
             from service.engine.runtime import stop_if_running
-            await asyncio.to_thread(stop_if_running, final=True)
+            await asyncio.to_thread(stop_if_running, final=True, grace=2.0)
 
 
 app = FastAPI(title="Wisp", lifespan=lifespan)
 from service.config.quarantine import RecoveryMiddleware
 app.add_middleware(RecoveryMiddleware)
+from service.wisp_reset import ResetGate, router as wisp_reset_router
+app.add_middleware(ResetGate)           # /resetwisp: refuse everything else once deleting starts
+app.include_router(wisp_reset_router)
+from service.local_http import LocalOriginGuard
+app.add_middleware(LocalOriginGuard)    # web pages: loopback Host, same-origin changes only
 from service.memory.api import router as memory_router
 app.include_router(memory_router)
 from service.memory.profile_api import router as profile_router
@@ -452,6 +485,8 @@ from service.assistant.attention_api import router as attention_router
 app.include_router(attention_router)
 from service.assistant.stale_reminders_api import router as stale_reminders_router
 app.include_router(stale_reminders_router)
+from service.assistant.needs_you_api import router as needs_you_router
+app.include_router(needs_you_router)
 from service.mail_memory.api import router as mail_memory_router
 app.include_router(mail_memory_router)
 from service.corpus import router as corpus_router
@@ -460,6 +495,10 @@ from service.corpus_prompts import router as corpus_prompts_router
 app.include_router(corpus_prompts_router)
 from service.assistant.checkin_api import router as checkin_router
 app.include_router(checkin_router)
+from service.assistant.email_reply_api import router as email_reply_router
+app.include_router(email_reply_router)
+from service.proactive.api import router as proactive_router
+app.include_router(proactive_router)
 app.include_router(__import__("service.engine.api", fromlist=["router"]).router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
@@ -472,6 +511,21 @@ async def _omlx_cli(*args: str) -> bool:
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
     except FileNotFoundError:
+        return False
+
+
+async def _omlx_cli_wait(*args: str, seconds: float) -> bool:
+    """Run an omlx-cli subcommand and wait up to `seconds` for it. True when it exited 0 in time.
+
+    It runs in its own session: if Wisp exits before it finishes, it still finishes."""
+    try:
+        proc = subprocess.Popen([OMLX_CLI, *args], stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        return False
+    try:
+        return await asyncio.to_thread(proc.wait, seconds) == 0
+    except subprocess.TimeoutExpired:
         return False
 
 
@@ -518,6 +572,9 @@ async def ensure_omlx() -> None:
         return
     if await _await_omlx(2):
         return
+    if _quitting:
+        # A model call still in flight at quit must not start the oMLX.app it just stopped.
+        raise ModelLoadError("Wisp is quitting; the local AI engine stays stopped")
     client.invalidate_connections()
     if not await _omlx_cli("start", "--no-wait"):
         raise ModelLoadError("The local oMLX CLI is unavailable")
@@ -572,20 +629,54 @@ async def health() -> dict[str, Any]:
         raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
+# Quitting must finish inside the app's wait for /shutdown_omlx (WispClient.shutdownOMLX).
+# Past it the app stops this backend, and an engine still running then keeps its models
+# loaded after Wisp has gone.
+_QUIT_UNLOAD_SECONDS = 3.0
+_QUIT_STOP_SECONDS = 5.0
+# Set once quitting starts: a user's oMLX.app is not started again after it was stopped.
+_quitting = False
+
+
+async def _unload_resident(seconds: float) -> list[str]:
+    """Unload every model the local engine holds, within `seconds`. The models unloaded;
+    [] when the engine is down or does not answer in time."""
+    unloaded: list[str] = []
+    try:
+        async with asyncio.timeout(seconds):
+            for model in await client.loaded_models():
+                try:
+                    await client.unload(model)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 — one refusal must not keep the rest loaded
+                    continue
+                unloaded.append(model)
+    except Exception:  # noqa: BLE001 — quitting goes on to stop the engine either way
+        pass
+    return unloaded
+
+
 @app.post("/shutdown_omlx")
 async def shutdown_omlx() -> dict[str, Any]:
-    """Stop the oMLX engine entirely (frees its ~2GB baseline). Called on app quit."""
+    """Stop the oMLX engine entirely: its models and its ~2GB baseline. Called on app quit.
+
+    Waits for `omlx-cli stop` to deliver its request, within the app's wait, instead of
+    firing it off: a stop still starting up when Wisp exits never ran. The CLI does not
+    wait for the server to exit, so a user's oMLX.app has its models unloaded first: that
+    frees their memory even if the stop is slow or fails."""
+    global _quitting
     if not getattr(client, "managed", True):
         return {"stopped": False}
+    _quitting = True
     if is_bundled():
         from service.engine.runtime import stop_if_running
-        return {"stopped": await asyncio.to_thread(stop_if_running, final=True)}
-    try:
-        subprocess.Popen([OMLX_CLI, "stop"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return {"stopped": True}
-    except FileNotFoundError:
-        return {"stopped": False}
+        return {"stopped": await asyncio.to_thread(
+            stop_if_running, final=True, grace=_QUIT_STOP_SECONDS)}
+    unloaded = await _unload_resident(_QUIT_UNLOAD_SECONDS)
+    stopped = await _omlx_cli_wait("stop", "--timeout", f"{_QUIT_STOP_SECONDS:g}",
+                                   seconds=_QUIT_STOP_SECONDS + 1)
+    return {"stopped": stopped, "unloaded": unloaded}
 
 
 # Remote inference: history the agent sees per turn. The remote fit
@@ -599,7 +690,8 @@ _REMOTE_HISTORY_SHARE = 20
 
 def _history_budget(target: Target) -> int:
     budget = max(1500, target.context_window - 11500)
-    if remote_only_profile() is not None:
+    from service.inference.remote_policy import remote_parity
+    if remote_only_profile() is not None and not remote_parity():
         cap = max(1500, remote_only_profile().aggregate_bytes // _REMOTE_HISTORY_SHARE)
         budget = min(budget, cap)
     return budget
@@ -633,6 +725,19 @@ async def get_cloud_inference() -> dict[str, Any]:
     return settings
 
 
+async def _cloud_model_answers(probe, model_id: str, available: list[str]) -> bool:
+    """Whether the provider serves model_id. Gemini's OpenAI-compatible list
+    names models "models/<id>" and can leave some out (Gemma), so an unlisted
+    id gets one tiny completion before it is called missing."""
+    if model_id in available or f"models/{model_id}" in available:
+        return True
+    try:
+        response = await probe.chat(model_id, [{"role": "user", "content": "Reply with OK."}], max_tokens=16)
+    except Exception:  # noqa: BLE001 — any failure means "not served"
+        return False
+    return bool((response or {}).get("choices"))
+
+
 @app.post("/inference/cloud")
 async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
     provider_name = body.get("provider")
@@ -662,6 +767,31 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
         "readiness_timeout": 10,
     }
     probe = None
+    from service.config import CLOUD_EVERYTHING, set_cloud_everything
+    if CLOUD_EVERYTHING in roles:
+        try:
+            endpoint_from_config("cloud", endpoint_cfg)
+            if remote_only_profile() is None:
+                # Test the key and model before moving all of Wisp onto them.
+                probe = OMLXClient(target=Target("connection-test", endpoint_from_config("cloud", endpoint_cfg),
+                                                 model_id.strip(), context_window=context_window), timeout=30)
+                available = await probe.models()
+                if not await _cloud_model_answers(probe, model_id.strip(), available):
+                    raise HTTPException(status_code=400,
+                        detail="The provider connected, but did not return that exact model ID.")
+            with _local_provider_operation_lock:
+                set_cloud_everything(endpoint_cfg, model_id.strip(), context_window)
+        except HTTPException:
+            raise
+        except (EndpointConfigurationError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from None
+        except Exception:
+            raise HTTPException(status_code=400,
+                detail="The provider could not be reached or rejected the credential.") from None
+        finally:
+            if probe is not None:
+                await probe.aclose()
+        return await get_cloud_inference()
     try:
         cloud_endpoint = endpoint_from_config("cloud", endpoint_cfg)
         target = Target("connection-test", cloud_endpoint, model_id.strip(),
@@ -669,7 +799,7 @@ async def connect_cloud_inference(body: dict[str, Any]) -> dict[str, Any]:
         generation = _supersede_local_provider_probe()
         probe = OMLXClient(target=target, timeout=30)
         available = await probe.models()
-        if model_id.strip() not in available:
+        if not await _cloud_model_answers(probe, model_id.strip(), available):
             raise HTTPException(status_code=400,
                 detail="The provider connected, but did not return that exact model ID.")
         with _local_provider_operation_lock:
@@ -1002,6 +1132,27 @@ def _omlx_model_dir() -> str | None:
     return str(Path.home() / ".omlx" / "models")     # oMLX's documented default
 
 
+# A status poll waits at most this long for the disk check below.
+_DISK_SCAN_SECONDS = 1.0
+
+
+def _models_on_disk() -> list[str]:
+    """Wisp's catalogue models already in its own engine folder (no engine needed).
+
+    Built-in engine only. External mode never looks: an oMLX.app model folder can sit
+    on the Desktop or in Documents, where listing it from Wisp makes macOS ask for
+    permission, and the first-run step doesn't need it (it connects, then asks oMLX).
+    """
+    if not is_bundled():
+        return []
+    from service.engine.mode import engine_data_dir
+    from service.setup.local_models import catalogue_models_on_disk
+    try:
+        return catalogue_models_on_disk([engine_data_dir() / "models"])
+    except Exception:  # noqa: BLE001 — a folder Wisp can't read just isn't evidence
+        return []
+
+
 def _omlx_admin_url() -> str:
     """oMLX's admin page (its Model Downloader lives there), on its configured port."""
     from service.config import omlx_base_url
@@ -1034,6 +1185,15 @@ async def setup_status() -> dict[str, Any]:
     except Exception:  # noqa: BLE001 — not running/unreachable is an answer, not an error
         saved = models_config().get("installed_models") or []
         installed = [m for m in saved if isinstance(m, str)]
+        # The built-in engine can't be asked yet, but a model folder already in Wisp's
+        # engine folder is installed all the same: never offer to download it again.
+        try:
+            on_disk = await asyncio.wait_for(asyncio.to_thread(_models_on_disk), _DISK_SCAN_SECONDS)
+        except TimeoutError:
+            on_disk = []
+        on_disk = [m for m in on_disk if m not in installed]
+        if on_disk:
+            installed, source = installed + on_disk, "disk"
     from service.config import tool_capable_models
     status = setup_guide.build_status(
         hardware=current_hardware(),
@@ -1045,10 +1205,35 @@ async def setup_status() -> dict[str, Any]:
     return status
 
 
+async def _start_existing_omlx() -> None:
+    """Setup's automatic start of the person's own oMLX.app server: `start` only.
+
+    The person clicked nothing, so this never restarts, stops or reconfigures their
+    app (ensure_omlx's `restart` fallback is for a click or a model call)."""
+    require_local_models_disabled("Local oMLX lifecycle")
+    if not getattr(client, "managed", True):
+        raise ModelLoadError("Remote inference cannot invoke local lifecycle commands")
+    if await _await_omlx(2):
+        return
+    if _quitting:
+        raise ModelLoadError("Wisp is quitting; the local AI engine stays stopped")
+    client.invalidate_connections()
+    if not await _omlx_cli("start", "--no-wait"):
+        raise ModelLoadError("The local oMLX CLI is unavailable")
+    if not await _await_omlx(45):
+        raise ModelLoadError("oMLX did not start")
+
+
 @app.post("/setup/start-engine")
-async def setup_start_engine() -> dict[str, Any]:
+async def setup_start_engine(body: dict[str, Any] | None = None) -> dict[str, Any]:
+    automatic = (body or {}).get("automatic", False)
+    if not isinstance(automatic, bool):
+        raise HTTPException(status_code=400, detail="automatic must be a boolean")
     try:
-        await ensure_omlx()
+        if automatic and not is_bundled():
+            await _start_existing_omlx()
+        else:
+            await ensure_omlx()
     except ModelLoadError:
         raise HTTPException(status_code=503,
                             detail="oMLX could not be started. Open the oMLX app, then try again.") from None
@@ -1112,6 +1297,27 @@ async def set_mode(body: dict[str, Any]) -> dict[str, Any]:
     if "full_access" in body:
         set_full_access(bool(body["full_access"]))
     return {"read_only": read_only(), "full_access": full_access()}
+
+
+@app.post("/voice/transcribe")
+async def voice_transcribe(body: dict[str, Any]) -> dict[str, Any]:
+    """The words in a short spoken clip from the notch's voice input.
+
+    `audio` is a base64 16-bit PCM WAV of at most 30 s. The Ask model hears it on
+    this Mac, or nothing does (service/voice.py). 409 says, for the person, why
+    voice can't run with the current model; 503 means the model stayed busy.
+    """
+    from service import voice
+    try:
+        return {"text": await voice.transcribe(body.get("audio"))}
+    except voice.VoiceUnavailable as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=f"Wisp couldn't read that recording ({error}).") from None
+    except (TimeoutError, asyncio.TimeoutError):
+        raise HTTPException(status_code=503, detail="Wisp is busy finishing something else. Try again in a moment.") from None
+    except Exception:  # noqa: BLE001 — an engine failure is a failed transcript, never a crash
+        raise HTTPException(status_code=502, detail="Wisp couldn't make out that recording. Try again, or type your question.") from None
 
 
 @app.post("/unload_all")
@@ -1249,11 +1455,16 @@ async def chat(body: dict[str, Any]):
             await owned.aclose()
 
 
-def _profile_block() -> str:
-    """The user's own description of themselves, for a LOCAL managed-model
-    prompt. Best-effort: a missing or unreadable profile never breaks a turn."""
+def _profile_block(endpoint) -> str:
+    """The user's own description of themselves (About you), for a prompt to
+    `endpoint`, only where profile.may_send_to allows: Wisp's own on-Mac model,
+    the user's own verified Mac on their tailnet, or any model while Cloud
+    "Everything" is answering. Never an optional cloud model.
+    Best-effort: a missing or unreadable profile never breaks a turn."""
     try:
-        from service.memory.profile import profile_block
+        from service.memory.profile import may_send_to, profile_block
+        if not may_send_to(endpoint):
+            return ""
         return profile_block()
     except Exception:  # noqa: BLE001
         return ""
@@ -1352,6 +1563,53 @@ def _model_led_preload(prompt: str) -> list[str]:
         return _reranker.ranked_lexical_candidates(text, writing=has_write_intent(text), k=MAX_PRELOAD)
     except Exception:  # noqa: BLE001 — a missing head start must never fail the turn
         return []
+
+def _ask_tool_rank(prompt: str) -> tuple[list[str], list[str]]:
+    """Model-only Ask head start: (preload, stub rank). The preload is
+    _model_led_preload's shortlist cut to ASK_PRELOAD real schemas; the stub
+    rank is the next ASK_STUBS lexical candidates, offered by name only
+    (service/model_only.py). Reads rank ahead of writes when the request has
+    no write intent, so "what's on my calendar" does not spend its few real
+    schemas on cancel/update.
+
+    Lexical on purpose, like _model_led_preload: the embedding route would load
+    an embedding model into the one shared oMLX process, raising the resident
+    memory its prefill guard measures every prompt against. Any failure means
+    no head start (every tool stays reachable through discovery)."""
+    try:
+        from service.model_only import ASK_PRELOAD, ASK_STUBS
+        from service.router.model_led import READ_CATEGORIES
+        from service.router.router import has_write_intent, mask_quoted
+        from service.tools.registry import REGISTRY
+        text = mask_quoted(prompt)
+        writing = has_write_intent(text)
+
+        def reads_first(names: list[str]) -> list[str]:
+            if writing:
+                return list(names)
+            reads = [n for n in names if (t := REGISTRY.get(n)) is not None
+                     and t.category in READ_CATEGORIES]
+            return reads + [n for n in names if n not in reads]
+        head = reads_first(_model_led_preload(prompt))
+        from service.model_only import DAY_PLAN_TOOL, day_plan_question
+        if day_plan_question(prompt) and DAY_PLAN_TOOL in REGISTRY:
+            # The Brief already ranked the day: one read instead of four.
+            head = [DAY_PLAN_TOOL, *(n for n in head if n != DAY_PLAN_TOOL)]
+        from service.model_only import mail_first
+        if not writing and mail_first(prompt) and "view_emails" in REGISTRY:
+            # "When is the W-9 due?" went to web_search; the answer was in mail.
+            head = ["view_emails", *(n for n in head if n != "view_emails")]
+        preload = head[:ASK_PRELOAD]
+        try:
+            ranked = _reranker.ranked_lexical_candidates(text, writing=writing,
+                                                         k=ASK_PRELOAD + ASK_STUBS)
+        except Exception:  # noqa: BLE001
+            ranked = []
+        stubs = [n for n in dict.fromkeys([*head[ASK_PRELOAD:], *ranked]) if n not in preload]
+        return preload, stubs[:ASK_STUBS]
+    except Exception:  # noqa: BLE001 — a missing head start must never fail the turn
+        return [], []
+
 
 @app.post("/agent")
 async def agent(body: dict[str, Any]):
@@ -1470,7 +1728,25 @@ async def agent(body: dict[str, Any]):
         fact_store.bind_source(req_id, sid, persisted_user_idx)
         return persisted_user_idx
 
+    from service.answer_text import AnswerEdgeTrimmer
+    from service.tools.registry import DisplayOnlyToolResult as _DisplayOnly
+    answer_edges = AnswerEdgeTrimmer()
+
     async def emit(ev: dict):
+        # No blank lines above or below the answer, however it is produced
+        # (streamed deltas, a final text event, or any path in between).
+        # Whitespace inside the answer is left exactly as written.
+        t = ev.get("type")
+        if t == "delta" and isinstance(ev.get("text"), str):
+            piece = answer_edges.delta(ev["text"])
+            if not piece:
+                return
+            ev = {**ev, "text": piece}
+        elif t == "text" and isinstance(ev.get("text"), str) and not isinstance(
+                ev["text"], _DisplayOnly):
+            ev = {**ev, "text": AnswerEdgeTrimmer.whole(ev["text"])}
+        elif t == "clear_answer":
+            answer_edges.reset()
         if trace is not None:
             diagnostic_event = ({**ev, "name": tool_names_by_id.get(str(ev.get("id", "")), "")}
                                 if ev.get("type") == "tool_result" else ev)
@@ -1637,9 +1913,12 @@ async def agent(body: dict[str, Any]):
             # A completed multi-reminder task does not identify which item an
             # "it" correction means. End the turn before any inference or
             # planner/shadow adaptation can reopen an implicit last-item write.
+            # Test switch (service/router/model_led.model_only_enabled): the
+            # model answers every turn; no deterministic layer answers first.
+            model_only = model_only_enabled()
             from service.tasks.engine import prepare_batch_correction_guard
             batch_guard = (prepare_batch_correction_guard(store, sid, prompt)
-                           if sess and not literal_envelope else None)
+                           if sess and not literal_envelope and not model_only else None)
             if batch_guard:
                 await emit({"type": "task_plan", "event": batch_guard.event,
                             "task": batch_guard.plan.to_dict(), "trace": batch_guard.trace})
@@ -1661,11 +1940,18 @@ async def agent(body: dict[str, Any]):
             # queued-send review) is data, and a behavior question is answered
             # only by its exact behavior tool. Those turns use the legacy route.
             from service.router.router import behavior_route_claim
-            deterministic_claim = literal_envelope or behavior_route_claim(prompt, last_tools)
-            if (remote_only_profile() is None and not deterministic_claim
-                    and model_led_enabled(os.environ.get("WISP_MODEL_LED_ROUTING"))):
+            deterministic_claim = (not model_only
+                                   and (literal_envelope or behavior_route_claim(prompt, last_tools)))
+            from service.inference.remote_policy import remote_parity
+            remote_led = remote_only_profile() is not None and remote_parity()
+            if ((remote_only_profile() is None or remote_led) and not deterministic_claim
+                    and (model_only or model_led_enabled(os.environ.get("WISP_MODEL_LED_ROUTING")))):
                 proposed_target = role_target("agent")
-                if (proposed_target.endpoint.managed
+                if remote_led:
+                    # The pinned remote target stands in for the local agent model.
+                    model_led_turn = True
+                    model_led_target = proposed_target
+                elif (proposed_target.endpoint.managed
                         and proposed_target.endpoint.name == "local"
                         and getattr(client, "managed", False)
                         and getattr(client, "base_url", "").rstrip("/")
@@ -1724,7 +2010,8 @@ async def agent(body: dict[str, Any]):
             # their first question. Keep one active skill on the session until
             # the user stops it, switches explicitly, or the skill emits its
             # completion marker.
-            if test_mode or remote_only_profile() is not None:
+            from service.inference.remote_policy import remote_parity
+            if test_mode or (remote_only_profile() is not None and not remote_parity()):
                 active_skill = ""
                 skill_turn = ""
             else:
@@ -1796,7 +2083,7 @@ async def agent(body: dict[str, Any]):
             task_owner_admission = None
             task_owner_verdict = "none"
             if (model_led_turn and existing_task and not pending_model_effects
-                    and not recovery_excluded):
+                    and not recovery_excluded and not model_only):
                 from service.tasks.engine import owner_only_new_request
                 from service.tasks.models import TaskPlan
                 from service.tasks.reply_engine import interpret_owner_continuation
@@ -1812,7 +2099,7 @@ async def agent(body: dict[str, Any]):
                     task_owner_admission, task_owner_verdict = await interpret_owner_continuation(
                         turn_client, model_led_target.model, existing_task, prompt,
                         last_assistant or "", **no_thinking_kwargs(model_led_target.model))
-            task_turn = None if literal_envelope else (await prepare_task_turn_async(
+            task_turn = None if (literal_envelope or model_only) else (await prepare_task_turn_async(
                 store, sid, prompt, assistant_store=assistant_store,
                 persist=not test_mode and not typed_shadow_only,
                 allow_native=not test_mode and not typed_shadow_only,
@@ -1884,7 +2171,7 @@ async def agent(body: dict[str, Any]):
             # task's source, channel and recipient through clarifications, so a
             # reply like "Messages" or "yes" advances the existing plan
             # instead of being classified as a new isolated request.
-            workflow_turn = None if literal_envelope else (prepare_turn(
+            workflow_turn = None if (literal_envelope or model_only) else (prepare_turn(
                 store, sid, prompt, persist=not test_mode, owner_only=model_led_turn)
                 if not model_led_turn or (latest_workflow and not pending_model_effects and not recovery_excluded) else None)
             # Only a turn that starts execution owns its revision; a response-only
@@ -2256,6 +2543,41 @@ async def agent(body: dict[str, Any]):
                         "drivers or invent sources, dates, comparisons, or links for a quote. "
                         "When web evidence is also available, cite sources for that evidence "
                         "separately.")
+                # Model-only Ask: no router sets light_read on a model-led
+                # turn, so the answer-style hint is restored here instead.
+                ask_quality = model_only and model_led_turn
+                ask_preload, ask_stub_rank = _ask_tool_rank(prompt) if ask_quality else ([], [])
+                if ask_quality:
+                    from service.model_only import (ASK_CAPABILITY_HINT, ASK_STYLE_HINT,
+                                                    capability_question)
+                    synthesis_guidance.insert(0, ASK_STYLE_HINT)
+                    if capability_question(prompt):
+                        synthesis_guidance.insert(1, ASK_CAPABILITY_HINT)
+                    from service.model_only import ASK_DAY_PLAN_HINT, day_plan_question
+                    if day_plan_question(prompt):
+                        synthesis_guidance.insert(1, ASK_DAY_PLAN_HINT)
+                ask_forbidden: frozenset[str] = frozenset()
+                ask_direct = False
+                if ask_quality:
+                    from service.model_only import ASK_COMPOSE_HINT, ask_forbidden_tools, pure_writing
+                    from service.tools.registry import REGISTRY
+                    # "Write a thank-you note to my professor" searched notes
+                    # three times (~28s) before writing: a pure writing request
+                    # gets no reads (a [Name] placeholder covers what it lacks),
+                    # and one with no destination gets no write/draft/send.
+                    ask_forbidden = ask_forbidden_tools(prompt, REGISTRY)
+                    if pure_writing(prompt):
+                        synthesis_guidance.insert(1, ASK_COMPOSE_HINT)
+                    from service.model_only import (ASK_KNOWLEDGE_HINT, capability_question,
+                                                    compose_only, knowledge_question)
+                    knowledge = knowledge_question(prompt)
+                    if knowledge:
+                        synthesis_guidance.insert(1, ASK_KNOWLEDGE_HINT)
+                    # One tool-free step: writing with no destination, general
+                    # knowledge, and questions about what Wisp can do (their
+                    # tool paths failed, refused or named internal tools).
+                    ask_direct = ((pure_writing(prompt) and compose_only(prompt)) or knowledge
+                                  or capability_question(prompt))
                 style_hint = ((_LIGHT_READ_STYLE if is_light_read else "")
                              + ("\n" + _CLARIFY_CHANNEL_HINT if decision.clarify_channel else "")
                              + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else "")
@@ -2269,12 +2591,18 @@ async def agent(body: dict[str, Any]):
                                         include_identity_context=not test_mode,
                                         force_first_tool=force_tool,
                                         expect_tool_first=decision.expect_tool_first,
-                                        short_circuit_tools=_PRESYNTHESIZED_TOOLS,
+                                        short_circuit_tools=(frozenset() if model_only
+                                                             else _PRESYNTHESIZED_TOOLS),
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
                                         model_led_discovery=model_led_turn,
-                                        model_led_preload=(_model_led_preload(prompt)
+                                        model_led_preload=(ask_preload if ask_quality
+                                                           else _model_led_preload(prompt)
                                                            if model_led_turn else ()),
+                                        ask_quality=ask_quality,
+                                        ask_direct=ask_direct,
+                                        model_led_stub_rank=(ask_stub_rank
+                                                             if ask_quality else None),
                                         private_shell_history=turn_private_shell_history if model_led_turn else None,
                                         fresh_personal_scope=(fresh_personal_obligation(prompt, last_tools or "")
                                                               if model_led_turn else None),
@@ -2290,7 +2618,7 @@ async def agent(body: dict[str, Any]):
                                         narration_after=decision.narration_after,
                                         direct_calls=decision.direct_calls,
                                         required_tool_groups=decision.required_tool_groups,
-                                        forbidden_tools=decision.forbidden_tools,
+                                        forbidden_tools=decision.forbidden_tools | ask_forbidden,
                                         conditional_tools=decision.conditional_tools,
                                         tool_argument_bindings=decision.tool_argument_bindings,
                                         strict_read_limits=decision.strict_read_limits,
@@ -2351,9 +2679,10 @@ async def agent(body: dict[str, Any]):
                 else:
                     from service.skills import always_skills_block, selected_skill_block
                     # Who the user is, in their own words (service/memory/profile.py):
-                    # local managed model only, like the memory block beside it.
+                    # Wisp's on-Mac model, or any model under Cloud "Everything";
+                    # never a role bound to an optional cloud model.
                     sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
-                            + _profile_block()
+                            + _profile_block(target.endpoint)
                             + memory_block(query=prompt)
                             + ("" if literal_envelope else selected_skill_block(prompt, active_skill))
                             + (always_skills_block() if not literal_envelope and decision.role != "coding" else "")
@@ -2485,7 +2814,11 @@ async def agent(body: dict[str, Any]):
             message, detail = translate_error(e, retry_omlx=ensure_omlx if remote_only_profile() is None and owned_inference_client is None else None,
                                               endpoint_name=(remote_only_profile().endpoint_name if remote_only_profile() is not None
                                                              else owned_inference_client.endpoint_name if owned_inference_client else "local"))
-            await emit({"type": "error", "message": message, "detail": detail})
+            error_event = {"type": "error", "message": message, "detail": detail}
+            if getattr(e, "reason", "") == "setup_needed":
+                # The model isn't downloaded: the app can point at setup.
+                error_event["code"] = "setup_needed"
+            await emit(error_event)
             await emit({"type": "done"})
             # Persist the user's prompt even though the turn failed — it was
             # NEVER saved, because the only add_turn call sat past everything
@@ -2800,6 +3133,9 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
     from service.assistant.store import parse_undated_snapshot
     undated = (parse_undated_snapshot(body.get("undated"), body.get("undated_total"))
                if source == "reminders" else None)
+    if source == "calendar":
+        from service import google_calendar_source
+        items = google_calendar_source.merge_native_items(items)
     try:
         # One call, one transaction: the dated rows, the receipt and the undated list
         # commit together or not at all.
@@ -3010,7 +3346,8 @@ async def assistant_sync_emails(body: dict[str, Any]) -> dict[str, Any]:
         set_email_availability(bool(diag.get("available")),
                                str(diag.get("reason") or ""),
                                bool(diag.get("syncing", False)),
-                               str(diag.get("read_source") or ""))
+                               str(diag.get("read_source") or ""),
+                               reason_kind=str(diag.get("reason_kind") or ""))
     return {"ok": True}
 
 
@@ -3022,18 +3359,23 @@ async def gmail_status() -> dict[str, Any]:
 
 @app.post("/assistant/gmail/connect")
 async def gmail_connect(body: dict[str, Any]) -> dict[str, Any]:
-    """Begin read-only Gmail consent. `client_id`/`client_secret` come from the
-    user's own Google Cloud Desktop OAuth client; open the returned `auth_url`
-    in a browser."""
+    """Begin read-only Gmail consent and return the `auth_url` to open.
+
+    The client is the user's own Desktop OAuth client (given here, saved in
+    gmail.json, or the Workspace setup's), else the build's built-in client
+    (gmail_source.resolve_client). `reconnect` names a connected account to
+    sign in again (e.g. after its sign-in expired): it keeps that account's
+    client and passes the account to Google as login_hint."""
     from service import gmail_source
-    from service import google_workspace
-    saved_id, saved_secret = google_workspace.saved_credentials()
-    cfg = gmail_source.load_config()
-    client_id = str(body.get("client_id") or cfg.get("client_id") or saved_id or "")
-    secret = str(body.get("client_secret") or
-                 (cfg.get("client_secret") if client_id == cfg.get("client_id") else "") or "")
-    if not secret and client_id == (saved_id or client_id) and saved_id:
-        secret = saved_secret      # same client as the Workspace setup: reuse its secret
+    reconnect = str(body.get("reconnect") or "").strip().lower()
+    if reconnect:
+        resolved = gmail_source.reconnect_client(reconnect)
+        if resolved is None:
+            return {"ok": False, "error": "That Google account isn't connected"}
+        client_id, secret, source = resolved
+    else:
+        client_id, secret, source = gmail_source.resolve_client(
+            client_id=str(body.get("client_id") or ""), client_secret=str(body.get("client_secret") or ""))
     if not client_id:
         return {"ok": False, "error": "client_id is required"}
     native_id = str(body.get("mail_account_id") or "")
@@ -3043,18 +3385,35 @@ async def gmail_connect(body: dict[str, Any]) -> dict[str, Any]:
             return {"ok": False, "error": "That Mail account is no longer available; refresh Settings and select it again"}
     try:
         receipt = await gmail_source.begin_authorization(
-            client_id, secret, mail_account_id=native_id, include_receipt=True)
+            client_id, secret, mail_account_id=native_id, include_receipt=True,
+            client_source=source, login_hint=reconnect)
     except gmail_source.GmailError as exc:
         return {"ok": False, "error": str(exc)}
-    return {"ok": True, **receipt}
+    return {"ok": True, **receipt, "client_source": source,
+            "consent_notice": gmail_source.UNVERIFIED_NOTICE if source == "builtin" else ""}
+
+
+@app.post("/assistant/gmail/workspace")
+async def gmail_workspace(body: dict[str, Any]) -> dict[str, Any]:
+    """Switch the Workspace tools on or off for one connected Google account."""
+    from service import gmail_source
+    return gmail_source.set_workspace(str(body.get("account") or ""), bool(body.get("enabled")))
 
 
 @app.post("/assistant/gmail/disconnect")
 async def gmail_disconnect(request: Request, body: dict[str, Any]) -> dict[str, Any]:
     _require_native_google_removal(request)
     from service import gmail_source
-    await gmail_source.disconnect(str(body.get("account") or ""))
-    return {"ok": True}
+    result = await gmail_source.disconnect(str(body.get("account") or ""))
+    if not isinstance(result, dict):
+        return {"ok": True}
+    # Disconnect & erase reports exactly what was erased per account
+    # (mail, calendar, mail_overviews, proactive): "erased", "erased <n>",
+    # "unavailable" (that part isn't in this build) or "failed: ...". The
+    # account itself is always removed; `partial` means something remains.
+    erased = result.get("erased") or {}
+    return {"ok": bool(result.get("complete")), "partial": not result.get("complete"),
+            "removed": result.get("removed") or [], "erased": erased}
 
 
 def _require_native_google_removal(request: Request) -> None:
@@ -3079,7 +3438,8 @@ async def assistant_sync_notes(body: dict[str, Any]) -> dict[str, Any]:
     diag = body.get("diagnostics") or {}
     cache_notes(str(body.get("raw") or ""), available=bool(diag.get("available", True)),
                 reason=str(diag.get("reason") or ""),
-                snapshot_started_at=diag.get("snapshot_started_at"))
+                snapshot_started_at=diag.get("snapshot_started_at"),
+                reason_kind=str(diag.get("reason_kind") or ""))
     return {"ok": True}
 
 
@@ -3400,10 +3760,16 @@ async def google_workspace_status() -> dict[str, Any]:
 
 @app.post("/assistant/google/workspace/enable")
 async def google_workspace_enable(body: dict[str, Any]) -> dict[str, Any]:
-    from service import google_workspace
+    """Set up the Workspace server. Without a client in the body it uses the
+    same client Connect would (the user's own, else the built-in one)."""
+    from service import gmail_source, google_workspace
+    client_id, secret = str(body.get("client_id") or ""), str(body.get("client_secret") or "")
+    source = "user"
+    if not client_id.strip():
+        client_id, secret, source = gmail_source.resolve_client()
     return await google_workspace.enable(
-        str(body.get("client_id") or ""), str(body.get("client_secret") or ""),
-        str(body.get("email") or ""), str(body.get("tier") or "core"))
+        client_id, secret, str(body.get("email") or ""), str(body.get("tier") or "core"),
+        client_source="builtin" if source == "builtin" else "user")
 
 
 @app.post("/assistant/google/workspace/disable")

@@ -21,7 +21,8 @@ from typing import Awaitable, Callable, Sequence
 from service import debug_capture, diagnostics
 from service.user_text import user_facing_failure as _user_facing_failure
 from service.config import (narration_mode, no_thinking_kwargs, role_to_model,
-                            thinking_kwargs, thinks_explicitly)
+                            thinking_after_tool_required, thinking_kwargs,
+                            thinks_explicitly)
 from service.inference.omlx_client import OMLXClient
 from service.memory import prompt_blocks
 from service.safety import Tier, audit, decide
@@ -105,7 +106,10 @@ SYSTEM = (
     "here), no asking the user to confirm first.\n"
     "- To do something, CALL THE TOOL directly. Do NOT ask the user for "
     "permission in text and do NOT just describe what you would do — the system "
-    "automatically asks the user to confirm any risky action before it runs.\n"
+    "shows the user a confirmation before the action runs when one is needed.\n"
+    "- Sends, calendar changes, AppleScript, and shell commands that reach the "
+    "network or delete folders or many files are always confirmed. In Full access, "
+    "other actions may run immediately without a confirmation.\n"
     "- Read-only actions run automatically. If an action is blocked or the user "
     "denies it, acknowledge briefly and continue.\n"
     "- After a tool runs, report the actual result; never claim you still need "
@@ -469,8 +473,8 @@ SYSTEM = (
     "`python3 -c \"import secrets; print(secrets.token_urlsafe(24))\"`) and "
     "report what it actually printed. If it's something they'll want AGAIN, "
     "call `create_tool` to build a real tool for it instead.\n"
-    "- `create_tool` writes and installs a new tool using the on-device model "
-    "— fully local, nothing leaves the machine. Use it when a request needs a "
+    "- `create_tool` writes and installs a new tool using Wisp's coding model; "
+    "the tool then runs on this Mac. Use it when a request needs a "
     "capability no existing tool covers and the user would plausibly want it "
     "again. It is ONE call: the user reviews the actual generated code on a "
     "confirmation card and approves or rejects it there, so do not ask "
@@ -641,6 +645,27 @@ _EMPTY_MESSAGE = (
     "I couldn't produce a reliable answer for this request."
 )
 
+# Model-only Ask fallbacks (see run_agent's ask_quality). The guard message is
+# the second prefill-guard refusal of one turn with nothing gathered yet.
+_ASK_WEB_TOOLS = frozenset({"web_search", "web_fetch", "wikipedia_summary"})
+# A direct writing answer that dodged: a refusal, or only a question back.
+_ASK_WRITE_DODGE = re.compile(
+    r"^\s*(?:sorry|i\s+(?:can(?:'|’)?t|cannot|am unable|'m unable|’m unable|don(?:'|’)t have))\b"
+    r"|\?\s*$"
+    # An announcement with no text after it: "Got it. I'll write a brief note…"
+    r"|^\s*(?:(?:got it|sure|okay|ok|alright)[.,!]?\s*)?(?:i(?:'|’)ll|i will|let me)\s+"
+    r"(?:write|draft|compose|check|look|put)\b[^\n]{0,160}$", re.I)
+# Offered on a web-only personal re-prompt when the head start held none.
+_ASK_OWN_SOURCE_READS = ("view_emails", "search_reminders", "search_notes", "view_messages")
+_ASK_GUARD_MESSAGE = (
+    "My local model is short on memory for that request right now. Give it a "
+    "moment and ask again, or narrow it down (one source or a shorter time range)."
+)
+_ASK_NOTHING_MESSAGE = (
+    "I looked, but the lookup didn't return anything usable. Want me to try it "
+    "a different way?"
+)
+
 # Appended to the system prompt only when run_agent(test_mode=True). Tells
 # the model directly, rather than relying on it inferring anything from the
 # stubbed-out results below — otherwise a model that gets back a placeholder
@@ -698,7 +723,8 @@ def _is_looping(reasoning_text: str, min_count: int = 4, min_len: int = 20) -> b
     return Counter(paragraphs).most_common(1)[0][1] >= min_count
 
 
-def _template_kwargs(model: str, *, no_thinking: bool, think_on: bool = False) -> dict:
+def _template_kwargs(model: str, *, no_thinking: bool, think_on: bool = False,
+                     think_off: bool = False) -> dict:
     """chat_template_kwargs for one step.
 
     An `explicit_thinking` model (config.thinking_kwargs) gets `think_on`
@@ -714,8 +740,28 @@ def _template_kwargs(model: str, *, no_thinking: bool, think_on: bool = False) -
     merging again rather than clobbering (each returns a whole
     `{"chat_template_kwargs": {...}}` dict).
     """
+    from service.inference.remote_policy import remote_only_profile
+    from service.model_only import model_only_enabled
+    if remote_only_profile() is not None:
+        return {}                        # a remote server has no local chat template to steer
+    if model_only_enabled():
+        # Model-only test: thinking is stated ON for every step of every model,
+        # except a model-only Ask narration step whose caller asked for it OFF
+        # (`think_off`, see service/model_only.narration_thinking_enabled).
+        return {"chat_template_kwargs": {"enable_thinking": not think_off}}
+    if think_off:
+        return (thinking_kwargs(model, on=False) if thinks_explicitly(model)
+                else no_thinking_kwargs(model))
     if thinks_explicitly(model):
         return thinking_kwargs(model, on=think_on)
+    if no_thinking and thinking_after_tool_required(model):
+        # `no_thinking` is only ever set on a narration step, i.e. after a
+        # tool result. Gemma 4 E4B writes nothing there with thinking off
+        # (models.yaml thinking_required_after_tool), so state it ON — the
+        # same answer model-only narration reaches through its config flag.
+        # Explicit, not {}: the template default and the oMLX profile toggle
+        # are both invisible to Wisp.
+        return {"chat_template_kwargs": {"enable_thinking": True}}
     return no_thinking_kwargs(model) if no_thinking else {}
 
 
@@ -727,6 +773,14 @@ def _template_kwargs(model: str, *, no_thinking: bool, think_on: bool = False) -
 # concurrent requests never compare against each other.
 _PREFIX_KEY: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "wisp_model_prefix_key", default=None)
+
+# Model-only test: every step's reasoning in this turn, shown together before
+# `done`. Otherwise only the final step's reasoning reached the UI, and only on
+# two exit paths — a turn that thought before calling a tool, or ended through
+# a fallback, showed no trace at all. None outside a model-only turn.
+_TURN_REASONING: contextvars.ContextVar[list[str] | None] = contextvars.ContextVar(
+    "wisp_turn_reasoning", default=None)
+_MAX_STEP_REASONING_CHARS = 8000
 
 
 def _trace_model_step(msgs, schemas, final, started, first_event_at) -> None:
@@ -764,6 +818,7 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
                     temperature: float | None = None,
                     no_thinking: bool = False,
                     think_on: bool = False,
+                    think_off: bool = False,
                     debug: bool = True,
                     extra: dict | None = None) -> tuple[dict, str, bool]:
     """One model turn, streamed. Emits live answer tokens (as `delta` events) and
@@ -796,7 +851,8 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
     events = client.stream_events(
             model, msgs, tools=schemas, tool_choice=choice, max_tokens=max_tokens,
             temperature=temperature,
-            **_template_kwargs(model, no_thinking=no_thinking, think_on=think_on),
+            **_template_kwargs(model, no_thinking=no_thinking, think_on=think_on,
+                               think_off=think_off),
             **(extra or {}))
     async for ev in events:
         kind = ev["kind"]
@@ -849,6 +905,11 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
         elif kind == "final":
             final = ev["message"]
     _trace_model_step(msgs, schemas, final, started, first_event_at)
+    collected = _TURN_REASONING.get()
+    if collected is not None:
+        step_reasoning = "".join(reasoning_parts).strip()
+        if step_reasoning:
+            collected.append(step_reasoning[:_MAX_STEP_REASONING_CHARS])
     # Raw request/response for debug export (see OverlayModel.exportDebugLog
     # on the Swift side). Gated on `debug` — this serializes the full message
     # list AND every offered tool schema, on every attempt of every step, and
@@ -865,6 +926,8 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
         # Wisp didn't send.
         if temperature is not None:
             request["temperature"] = temperature
+        request.update(_template_kwargs(model, no_thinking=no_thinking, think_on=think_on,
+                                        think_off=think_off))
         if extra:
             request.update(extra)
         await emit({
@@ -1150,7 +1213,7 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
 # instance cannot serve two generations in parallel), not this loop.
 
 
-def _fit_tool_result(result: str, name: str) -> str:
+def _fit_tool_result(result: str, name: str, limit: int = _MAX_TOOL_RESULT_CHARS) -> str:
     """Bound what a single tool result contributes to the context.
 
     Truncation is ANNOUNCED rather than silent, and names the tool's own
@@ -1160,9 +1223,9 @@ def _fit_tool_result(result: str, name: str) -> str:
     """
     if isinstance(result, DisplayOnlyToolResult):
         return DisplayOnlyToolResult.model_text
-    if len(result) <= _MAX_TOOL_RESULT_CHARS:
+    if len(result) <= limit:
         return result
-    kept = result[:_MAX_TOOL_RESULT_CHARS].rsplit("\n", 1)[0]
+    kept = result[:limit].rsplit("\n", 1)[0]
     return (f"{kept}\n\n[... {len(result) - len(kept):,} more characters were cut "
             f"to fit. This is NOT all of it — do not describe what you have as "
             f"complete. If you need what's missing, call {name} again with "
@@ -1415,6 +1478,21 @@ async def run_agent(
     # Planner turns only: tools the first plan must try before answering or
     # clarifying with no call (service/router/menu.act_first_tools).
     act_first: frozenset[str] = frozenset(),
+    # Model-only Ask answer quality (service/model_only.py): a per-step prompt
+    # budget, bounded stubs/results/repeat calls, one trimmed retry on a
+    # prefill-guard 400, thinking-leak salvage, a summarization retry instead
+    # of a raw dump, a one-time tool re-prompt for unanswered personal-data
+    # questions, and a narrower fresh-personal guard. main sets it for
+    # model-led turns in model-only mode; every other caller keeps the loop
+    # exactly as it was.
+    ask_quality: bool = False,
+    # ask_quality only: a pure writing request with no destination ("Write a
+    # haiku", "a thank-you note to my professor"). Every step is tool-free, so
+    # the answer is the text itself, never a lookup, skill load or question.
+    ask_direct: bool = False,
+    # ask_quality only: lexical rank beyond the preload. Name-only stubs are
+    # limited to these plus model_only.ASK_CORE_STUBS (None = every tool).
+    model_led_stub_rank: Sequence[str] | None = None,
 ) -> str:
     """Run the loop. Returns the final assistant text. Streams events via `emit`.
 
@@ -1472,6 +1550,34 @@ async def run_agent(
     # main.py persists our safe return value separately from emitted text.
     # Dry runs describe tool plans over supplied fixtures. Enforce isolation
     # here as well as at /agent so another caller cannot reopen saved context.
+    from service.model_only import model_only_enabled
+    if model_only_enabled():
+        turn_reasoning: list[str] = []
+        _TURN_REASONING.set(turn_reasoning)
+        _emit_outer = emit
+        reasoning_shown = False
+        shown_answer = [""]
+
+        async def emit(ev: dict) -> None:
+            """Show every step's reasoning once, just before the turn ends."""
+            nonlocal reasoning_shown
+            if ev.get("type") == "reasoning":
+                return  # the per-path final-step emits are folded in below
+            if ev.get("type") == "text":
+                shown_answer[0] = str(ev.get("text") or "")
+            if ev.get("type") == "done" and not reasoning_shown and turn_reasoning:
+                reasoning_shown = True
+                steps = list(turn_reasoning)
+                if ask_quality:
+                    # The answer is already on screen; a verbatim second copy
+                    # inside the reasoning is noise (27% of corpus turns).
+                    from service.model_only import dedupe_reasoning
+                    steps = dedupe_reasoning(steps, shown_answer[0])
+                if steps:
+                    text = (steps[0] if len(steps) == 1 else "\n\n".join(
+                        f"Step {i}:\n{r}" for i, r in enumerate(steps, 1)))
+                    await _emit_outer({"type": "reasoning", "text": text})
+            await _emit_outer(ev)
     if test_mode:
         include_identity_context = False
         include_memory_context = False
@@ -1689,21 +1795,41 @@ async def run_agent(
                                 f"{_web_detail(args)}, which is not a host you typed. "
                                 "Confirm the exact destination.")
         dec = decide(tool.category, args, tool=tool.name)
-        if model_led_discovery and dec.tier is Tier.ALLOW:
-            from service.router.model_led import OPAQUE_OUTBOUND_TOOLS
-            if tool.name in OPAQUE_OUTBOUND_TOOLS and not _validated_shell_read(tool, args):
-                # Full access and standing grants do not cover actions whose
-                # real-world effect the host cannot inspect.
-                from service.safety.policy import Decision
-                return Decision(Tier.CONFIRM, "opaque outbound action chosen by the model: "
-                                "confirmation is always required in model-led routing")
+        # Full access and standing grants do not cover actions whose real-world
+        # effect the host cannot inspect: always in model-led routing, and in
+        # legacy routing once this turn has read a file, page, mail or other
+        # text that could carry planted instructions.
+        if dec.tier is Tier.ALLOW and (model_led_discovery or untrusted_read_in_turn[0]):
+            from service.safety.policy import (
+                OPAQUE_ACTION_CATEGORIES, opaque_outbound_decision)
+            if model_led_discovery:
+                dec = opaque_outbound_decision(
+                    tool.name, tool.category, args, dec,
+                    reason="opaque outbound action chosen by the model: "
+                           "confirmation is always required in model-led routing")
+            else:
+                dec = opaque_outbound_decision(
+                    tool.name, tool.category, args, dec, categories=OPAQUE_ACTION_CATEGORIES,
+                    reason="this turn read a file, page or message Wisp did not write, so "
+                           "this action is confirmed even with full access")
+                if dec.tier is Tier.ALLOW and (target := _egress_target(tool, args)) is not None:
+                    # A fetch, or a link or page handed to an app, can carry what
+                    # was just read to any host: show where it goes.
+                    from service.safety.policy import Decision
+                    return Decision(Tier.CONFIRM, "this turn read a file, page or message Wisp "
+                                    f"did not write, and this would contact {target[:300]}. "
+                                    "Confirm the exact destination.")
+        if (dec.tier is Tier.CONFIRM and tool.category == "shell"
+                and untrusted_read_in_turn[0]):
+            # After an untrusted read, a script file the card cannot show whole
+            # (missing, unreadable, binary or too long) is refused.
+            from service.safety.policy import script_file_problem
+            if (problem := script_file_problem(args)) is not None:
+                return problem
         return dec
 
-    def _validated_shell_read(tool, args):
-        if tool.name != "run_shell":
-            return False
-        from service.safety.policy import read_only_shell_argv
-        return set(args) == {"cmd"} and read_only_shell_argv(args.get("cmd")) is not None
+    # Set once a tool runs whose result carries outside text (a file, page, mail...).
+    untrusted_read_in_turn = [False]
 
     # update_event: the exact occurrence each confirmation card showed, by the call's
     # fingerprint (see bind_event_move). Execution moves only that occurrence.
@@ -1778,6 +1904,9 @@ async def run_agent(
                         and (private_at_start or private_read_in_turn))
         try:
             _exec_state["ran"] = True
+            from service.safety.policy import turn_reads_untrusted
+            if turn_reads_untrusted(tool.name, tool.category, args):
+                untrusted_read_in_turn[0] = True
             from service.research.web import strict_host_fetch
             with strict_host_fetch(strict_fetch):
                 if private_shell_read_only:
@@ -1879,6 +2008,12 @@ async def run_agent(
     # unscoped route (the whole registry, messages included).
     offers_messages = model_led_discovery or tools is None or bool(set(tools) & {"view_messages", "summarize_messages"})
     identity_hint = ""
+    try:
+        from service.memory.profile import may_send_to
+        _profile_rides = may_send_to(getattr(getattr(client, "target", None), "endpoint", None),
+                                     managed=bool(getattr(client, "managed", False)))
+    except Exception:  # noqa: BLE001
+        _profile_rides = False
     if not public_web_synthesis and include_identity_context:
         try:
             from service.memory.identity import identity_prompt_block
@@ -1887,15 +2022,19 @@ async def run_agent(
             # why the verbatim path is deliberately left un-annotated).
             identity_hint = identity_prompt_block(
                 with_date=False, shape="verbatim", messages=offers_messages,
-                preferred_name=getattr(client, "endpoint_name", "") != "local_provider")
+                preferred_name=_profile_rides)
         except Exception:  # noqa: BLE001
             identity_hint = ""
         # Who the user is in THEIR words — goals, struggles, people, how they
         # like to be spoken to (service/memory/profile.py). Rides with the
-        # identity block, so it is also absent from cloud synthesis above, and
-        # it stays off the external loopback provider for the same reason the
-        # memory block does: that process has no peer identity to disclose to.
-        if getattr(client, "endpoint_name", "") != "local_provider":
+        # identity block, so it is also absent from cloud synthesis above.
+        # profile.may_send_to decides where (the same predicate behind the
+        # app's "Stays on this Mac"): Wisp's own on-Mac model, the user's own
+        # verified Mac on their tailnet, or any model while Cloud "Everything"
+        # is answering; never an optional cloud model or the external loopback
+        # provider. The chosen name ("call me …")
+        # comes from the same profile, so it follows the same rule.
+        if _profile_rides:
             try:
                 from service.memory.profile import profile_block
                 identity_hint += profile_block()
@@ -1934,6 +2073,17 @@ async def run_agent(
     # calls supplied by the router, rather than trusting the proposed list.
     from service.workflows.reads import excluded_stock_symbols, permitted_stock_symbols
     excluded_stocks = excluded_stock_symbols(memory_query)
+    _ask_capability_prompt = False
+    if ask_quality:
+        from service.model_only import capability_question
+        _ask_capability_prompt = capability_question(memory_query)
+
+    def _ask_short_question(text: str) -> bool:
+        """A one-line clarifying question back to the user, not an answer."""
+        text = (text or "").strip()
+        return bool(ask_quality and text.endswith("?") and len(text) <= 160
+                    and re.match(r"(?i)(?:which|what|who|when|where|how|do|did|should|would|can|could|is|are)\b", text)
+                    and not re.search(r"[.!]\s", text))
 
     def permitted_stock_args(name: str, args: dict) -> dict:
         if name != "get_stock_price" or not excluded_stocks:
@@ -2009,7 +2159,9 @@ async def run_agent(
     capability_catalog = None
     if model_led_discovery:
         # Capability metadata does not authorize execution or new disclosure.
-        if not getattr(client, "managed", True) or public_web_synthesis:
+        from service.inference.remote_policy import remote_only_profile, remote_parity
+        remote_led = remote_only_profile() is not None and remote_parity()
+        if (not getattr(client, "managed", True) and not remote_led) or public_web_synthesis:
             raise ValueError("Model-led discovery requires managed local inference")
         if force_first_tool or direct_calls or required_tool_groups:
             raise ValueError("An owned execution plan must retain its controlled route")
@@ -2030,6 +2182,14 @@ async def run_agent(
                 registry_specs(REGISTRY),
                 blocked=frozenset(forbidden_tools) | _skill_boundary_names() | shell_blocked)
 
+        stub_allow = None
+        if ask_quality and model_led_stub_rank is not None:
+            # Every stub costs prompt on every step; the oMLX prefill guard is
+            # what emptied 40% of model-only turns. Keep the ranked ones and
+            # the everyday core; the rest stay one get_tool_schemas away.
+            from service.model_only import ASK_CORE_STUBS
+            stub_allow = frozenset(model_led_stub_rank) | ASK_CORE_STUBS
+
         def model_led_offer(catalog, loaded):
             """Real schemas for loaded tools, then, while discovery budget
             remains, a name-only stub for every other admitted tool and the
@@ -2041,7 +2201,8 @@ async def run_agent(
                 real = {sch["function"]["name"] for sch in offer}
                 admitted = {sch["function"]["name"] for sch in _admit(tool_schemas(list(catalog.tools)))}
                 stubs = {n for n in catalog.tools
-                         if n in admitted and n not in real and n not in forbidden_tools}
+                         if n in admitted and n not in real and n not in forbidden_tools
+                         and (stub_allow is None or n in stub_allow)}
                 offer += [stub_schema(n) for n in sorted(stubs)]
                 offer.append(discovery_schema(catalog))
             return offer, stubs
@@ -2071,7 +2232,9 @@ async def run_agent(
     # discovery keeps the catalog: its toolset is chosen mid-turn and may grow
     # to include use_skill. Measured: the catalog alone was ~180 tokens on
     # EVERY step while any skill was installed.
-    if skills_allowed:
+    # ask_direct: a one-step written answer; a skill's interview script
+    # ("I'll use the idea-refine skill…") would replace the text asked for.
+    if skills_allowed and not (ask_quality and ask_direct):
         try:
             from service.skills import skills_context_block
             last_user = next((m["content"] for m in reversed(messages)
@@ -2127,7 +2290,8 @@ async def run_agent(
     # Ling's serialized schemas; style still overrides the base concision rule.
     sys_content = sys_text + identity_hint + memory_hint + skills_hint
     runtime_content = (now_line
-                       + (("\n" + capability_catalog.prompt()) if capability_catalog else "")
+                       + (("\n" + capability_catalog.prompt(compact=ask_quality))
+                          if capability_catalog else "")
                        + (("\n" + style_hint) if style_hint else "")
                        + (_TEST_MODE_SUFFIX if test_mode else ""))
     if reminder_action:
@@ -2400,7 +2564,16 @@ async def run_agent(
         if (require_fresh_personal or fresh_personal_scope) and not fresh_personal_evidence and not test_mode:
             # Preserve reference history, but refuse to promote an old answer,
             # memory or unrelated public search into a current personal fact.
-            if not re.fullmatch(r"(?:Which (?:source|channel|person|conversation) (?:should I check|do you mean)|Who do you mean|Do you mean Messages or email)\?", text.strip(), re.I):
+            if ask_quality and (_ask_capability_prompt or _ask_personal_source_ran()
+                                or _ask_short_question(text)):
+                # Model-only Ask: the guard fired after get_upcoming had run
+                # (its arguments did not name the day the obligation parsed)
+                # and on capability questions ("What can you do with my
+                # calendar?"). It now fires only when NO personal source ran
+                # this turn, the prompt asks for personal data, and the
+                # answer is not a clarifying question.
+                pass
+            elif not re.fullmatch(r"(?:Which (?:source|channel|person|conversation) (?:should I check|do you mean)|Who do you mean|Do you mean Messages or email)\?", text.strip(), re.I):
                 return "I haven't checked a current personal source for that yet. Which source should I check?"
         actions = [(name, outcome) for name, outcome in tool_outcomes
                    if outcome.effect != "read"]
@@ -2475,6 +2648,23 @@ async def run_agent(
         if coverage and coverage[-1] and coverage[-1] not in text:
             text = text.rstrip() + '\n\n' + coverage[-1]
         return text
+
+    def _ask_personal_source_ran() -> bool:
+        from service.model_only import PERSONAL_SOURCE_CATEGORIES, PERSONAL_SOURCE_TOOLS
+        return any(outcome.status != "denied"
+                   and (name in PERSONAL_SOURCE_TOOLS
+                        or ((registered := get_tool(name)) is not None
+                            and registered.category in PERSONAL_SOURCE_CATEGORIES))
+                   for name, outcome in tool_outcomes)
+
+    def _ask_grounding_tool_ran() -> bool:
+        """A tool that could hold a fact ran and was not denied (weather and
+        web count; a calculator or Mac status read does not)."""
+        from service.model_only import UNGROUNDING_CATEGORIES
+        return any(outcome.status != "denied"
+                   and (registered := get_tool(name)) is not None
+                   and registered.category not in UNGROUNDING_CATEGORIES
+                   for name, outcome in tool_outcomes)
 
     def _prior_requirements_met(tool_name: str) -> bool:
         """Effect tools may not run before earlier source obligations."""
@@ -3051,6 +3241,70 @@ async def run_agent(
         return answer, plan.thought or reasoning_text, streamed
 
     evidence_narration_retried = False
+    # Model-only Ask state (all inert unless ask_quality).
+    ask_expect_tool = False
+    ask_reprompt_step = False
+    ask_reprompted = False
+    ask_reprompt_no_web = False
+    ask_write_nudged = False
+    ask_guard_retried = False
+    ask_scale = 1.0
+    ask_tool_calls: Counter = Counter()
+    ask_blocked: set[str] = set()
+    ask_read_cache: dict = {}
+    from service.model_only import narration_thinking_enabled as _ask_nt
+    _ask_narration_thinking = _ask_nt() if ask_quality else True
+
+    def _ask_window(offered, stubs, scale: float) -> int:
+        """This step's fit window: the Ask prompt budget (scaled down after a
+        guard refusal), never below what the protected prefix and the real
+        schemas need, never above the model's own window."""
+        from service.config import model_context_window
+        from service.model_only import ASK_PROMPT_BUDGET
+        real = [sch for sch in offered if sch["function"]["name"] not in stubs]
+        floor = _est_tokens(msgs[:len(system_prefix)]) + _est_tokens(real) + 2500
+        window = (getattr(getattr(client, "target", None), "context_window", None)
+                  or model_context_window(model))
+        return min(window, max(int(ASK_PROMPT_BUDGET * scale), floor) + max_tokens)
+
+    def _ask_results_text() -> str:
+        from service.model_only import compact_results
+        return compact_results(_readable_results(clean_results), _SOURCE_LABELS)
+
+    async def _ask_finish(text: str) -> str:
+        text = _verified_final(text)
+        await emit({"type": "text", "text": text})
+        await emit({"type": "done"})
+        return text
+
+    async def _ask_summarize(direct: bool = False) -> str:
+        """One short, tool-free narration over the results already in context:
+        the step that replaces a raw tool dump. With `direct`, the same step
+        for a turn with no tool result (its steps came back empty, e.g. a call
+        to a tool that was not offered, which oMLX drops). "" when it fails."""
+        from service.model_only import ASK_PROMPT_BUDGET, salvage_answer, strip_think
+        nudge = {"role": "user", "content": (
+            "Answer my last question directly now, briefly and helpfully, from what you "
+            "know. Do not call any tool. If it needs my personal data you have not "
+            "looked up, say so instead of guessing." if direct else
+            "Answer my last question now in at most 4 sentences (a short bullet list "
+            "only if there are several items), using only the tool results above. "
+            "Do not call any tool and do not paste raw tool output.")}
+        try:
+            fitted, _, out_tokens = _fit_window(
+                msgs + [nudge], [], 700, model, None,
+                protected_prefix_count=len(system_prefix),
+                context_window=int(ASK_PROMPT_BUDGET * ask_scale) + 700, min_output_tokens=400)
+            answer, thought, _ = await _run_step(
+                client, model, fitted, [], "auto", min(out_tokens, 700), emit,
+                stream_content=False, temperature=temperature, no_thinking=True,
+                think_off=True, debug=debug)
+        except Exception:  # noqa: BLE001 - the compact fallback follows
+            return ""
+        if answer.get("tool_calls"):
+            return ""
+        return strip_think(answer.get("content") or "") or salvage_answer(thought)
+
     for _step in range(max_steps):
         if restricted[0] is not None and restricted_ran[0]:
             restricted[0] = None  # the forced lookup ran; the turn is free again
@@ -3076,6 +3330,14 @@ async def run_agent(
         # Unmet groups still force their own tool; failed reads do not count.
         expecting_tool = (expect_tool_first and _step == 0 and not forcing_first_step
                           and not tools_answered)
+        if ask_expect_tool and not forcing_first_step:
+            # Model-only Ask: a personal-data answer came back with no tool
+            # call at all (an invented "your backpack is 1.2 kg"). One step
+            # with a tool required, then the ordinary flow resumes.
+            expecting_tool = True
+            ask_expect_tool = False
+            ask_reprompt_step = True
+        ask_promoted: frozenset[str] = frozenset()
         if forcing_first_step:
             # An obligation group contains alternatives, not an arbitrary
             # mandatory first member (e.g. list_dir vs find_files).
@@ -3084,8 +3346,23 @@ async def run_agent(
             step_schemas = [s for s in schemas if s['function']['name'] in alternatives]
         else:
             step_schemas = schemas
+            if ask_reprompt_step and ask_reprompt_no_web:
+                # A personal question first answered from the web: the
+                # re-prompt step must read the user's own sources.
+                step_schemas = [s for s in schemas
+                                if s['function']['name'] not in _ASK_WEB_TOOLS]
+                real_now = {s['function']['name'] for s in step_schemas} - set(stub_names)
+                promoted = [s for s in _admit(tool_schemas(list(_ASK_OWN_SOURCE_READS)))
+                            if s['function']['name'] not in real_now
+                            and s['function']['name'] not in forbidden_tools]
+                ask_promoted = frozenset(s['function']['name'] for s in promoted)
+                step_schemas = promoted + [s for s in step_schemas
+                                           if s['function']['name'] not in ask_promoted]
         choice = "required" if (forcing_first_step or expecting_tool) else "auto"
         if evidence_narration_retried and _unmet_group() is None:
+            choice = 'none'
+            step_schemas = []
+        if ask_quality and ask_direct and not forcing_first_step:
             choice = 'none'
             step_schemas = []
         # STALLED ON REFUSED REPEATS: last step the model only asked for what it
@@ -3197,7 +3474,11 @@ async def run_agent(
         # Deliberately narrow: only the selection step. Narration steps
         # (choice="auto", after a tool has run) and every non-agent caller keep
         # the user's configured sampling untouched, so prose stays warm.
-        step_temperature = 0.0 if choice == "required" else temperature
+        from service.model_only import model_only_enabled
+        # Model-only test: never pin sampling; oMLX's per-model profile decides
+        # every step (and the empty-retry +0.7 below only applies to a pinned one).
+        step_temperature = (temperature if model_only_enabled()
+                            else 0.0 if choice == "required" else temperature)
         # The names actually OFFERED to the model this step. Restricting the
         # schema alone ("a function absent from the schema can't be called")
         # turned out not to be a real guarantee — verified live: the summarizer, given
@@ -3217,8 +3498,25 @@ async def run_agent(
         offered_schemas = step_schemas
         # Stubs are offered by name only so the server keeps the call; they are
         # never executable. A stub call is converted into discovery below.
-        step_stubs = frozenset(stub_names)
+        step_stubs = frozenset(stub_names) - ask_promoted
+        if ask_guard_retried and step_stubs:
+            # After one prefill-guard refusal the turn stays lean: real
+            # schemas only (get_tool_schemas still reaches everything else).
+            offered_schemas = [sch for sch in offered_schemas
+                               if sch["function"]["name"] not in step_stubs]
+            step_stubs = frozenset()
         allowed_names = {s["function"]["name"] for s in step_schemas} - step_stubs
+        # Model-only Ask narration step: every tool called so far answered
+        # cleanly and nothing is forced. Thinking off unless the config flag
+        # says otherwise (service/model_only.narration_thinking_enabled).
+        ask_narrating = bool(
+            ask_quality and tools_answered and not (failed_tools - tools_answered)
+            and not hard_failed and not forcing_first_step and not expecting_tool
+            and choice != "required" and not _ask_narration_thinking)
+        # A direct (tool-free) step is a written answer too: with thinking on,
+        # writing turns drifted into "Let me check…" and refusals.
+        if ask_quality and ask_direct and not forcing_first_step and not _ask_narration_thinking:
+            ask_narrating = True
         step_msgs: list[dict] = []
         step_max_tokens = max_tokens
 
@@ -3241,6 +3539,11 @@ async def run_agent(
         # retry below has a budget to spend. It costs nothing when the model
         # answers normally: a non-empty response breaks out on the first pass.
         attempts = 3 if (forcing_first_step or expecting_tool) else 2
+        if ask_reprompt_step:
+            # The one-time personal-data re-prompt gets one required attempt,
+            # not the three-attempt nudge ladder: its answer is then accepted.
+            attempts = 1
+            ask_reprompt_step = False
         for _attempt in range(attempts):
             # BUILD THE REQUEST INSIDE THE ATTEMPT LOOP, NOT ABOVE IT.
             #
@@ -3272,10 +3575,16 @@ async def run_agent(
             # message. Four list_dir results later the prompt crossed 16,000 and
             # the turn died. The tools were the bulk of it, so trimming history
             # alone could never have saved it.
+            # Model-only Ask turns fit a much smaller per-step budget than the
+            # model's window: the window is not what refuses them, oMLX's
+            # prefill memory guard is (see service/model_only.py).
+            step_context_window = (
+                _ask_window(offered_schemas, step_stubs, ask_scale) if ask_quality
+                else getattr(getattr(client, "target", None), "context_window", None))
             step_msgs, step_schemas, step_max_tokens = _fit_window(
                 msgs, offered_schemas, max_tokens, model, forced_tool,
                 protected_prefix_count=len(system_prefix),
-                context_window=getattr(getattr(client, "target", None), "context_window", None))
+                context_window=step_context_window)
             # Keep enforcement in sync with what was actually offered — a tool
             # dropped to fit must be rejected if the model calls it anyway,
             # exactly like one that was never offered.
@@ -3288,7 +3597,7 @@ async def run_agent(
                 step_msgs, step_schemas, step_max_tokens = _fit_window(
                     msgs, offered_schemas, max_tokens, model, forced_tool,
                     protected_prefix_count=len(system_prefix),
-                    context_window=getattr(getattr(client, "target", None), "context_window", None))
+                    context_window=step_context_window)
             allowed_names = {s["function"]["name"] for s in step_schemas} - step_stubs
             if model_led_discovery and step_schemas != offered_schemas:
                 raise ValueError("Model-led schemas cannot fit intact; narrow the requested tools")
@@ -3312,17 +3621,67 @@ async def run_agent(
             attempt_temperature = step_temperature
             if retry_for_empty and step_temperature is not None:
                 attempt_temperature = step_temperature + 0.7
+            # A narration step that came back empty retries with the think
+            # block left to the template: a model that writes nothing after a
+            # tool result with thinking off (Gemma 4 E4B, measured 2026-10-24)
+            # would otherwise spend its retry reproducing the same nothing.
+            attempt_no_thinking = narrating and not retry_for_empty
             if planner and choice != "none" and step_schemas:
                 msg, reasoning, content_streamed = await _plan_step(
                     step_msgs, step_schemas, allowed_names, choice == "required",
                     step_max_tokens, attempt_temperature, step_think_on,
                     last_attempt=_attempt == attempts - 1)
             else:
-                msg, reasoning, content_streamed = await _run_step(
-                    client, model, step_msgs, step_schemas, choice, step_max_tokens, emit,
-                    stream_content=stream, temperature=attempt_temperature,
-                    no_thinking=narrating, think_on=step_think_on, debug=debug)
+                try:
+                    msg, reasoning, content_streamed = await _run_step(
+                        client, model, step_msgs, step_schemas, choice, step_max_tokens, emit,
+                        stream_content=stream, temperature=attempt_temperature,
+                        no_thinking=attempt_no_thinking, think_on=step_think_on,
+                        think_off=ask_narrating, debug=debug)
+                except Exception as exc:  # noqa: BLE001 - re-raised unless it is the guard
+                    from service.model_only import guard_rejection
+                    if not (ask_quality and guard_rejection(exc)):
+                        raise
+                    # oMLX's prefill guard refused this prompt's size. Retry
+                    # ONCE with half the budget and no name-only stubs; a
+                    # second refusal ends the turn with what is in hand
+                    # instead of an empty answer.
+                    audit("ask_guard_retry", step=_step, retried=ask_guard_retried)
+                    if ask_guard_retried:
+                        return await _ask_finish(_ask_results_text() or _ASK_GUARD_MESSAGE)
+                    ask_guard_retried = True
+                    ask_scale = 0.5
+                    offered_schemas = [sch for sch in offered_schemas
+                                       if sch["function"]["name"] not in step_stubs]
+                    step_stubs = frozenset()
+                    step_msgs, step_schemas, step_max_tokens = _fit_window(
+                        msgs, offered_schemas, max_tokens, model, forced_tool,
+                        protected_prefix_count=len(system_prefix),
+                        context_window=_ask_window(offered_schemas, step_stubs, ask_scale))
+                    allowed_names = {s["function"]["name"] for s in step_schemas}
+                    if step_schemas != offered_schemas:
+                        return await _ask_finish(_ask_results_text() or _ASK_GUARD_MESSAGE)
+                    try:
+                        msg, reasoning, content_streamed = await _run_step(
+                            client, model, step_msgs, step_schemas, choice, step_max_tokens, emit,
+                            stream_content=stream, temperature=attempt_temperature,
+                            no_thinking=attempt_no_thinking, think_on=step_think_on,
+                            think_off=ask_narrating, debug=debug)
+                    except Exception as again:  # noqa: BLE001
+                        if not guard_rejection(again):
+                            raise
+                        audit("ask_guard_retry_failed", step=_step)
+                        return await _ask_finish(_ask_results_text() or _ASK_GUARD_MESSAGE)
 
+            if (ask_quality and not msg.get("tool_calls") and reasoning
+                    and not (msg.get("content") or "").strip() and not msg.get("_degenerate")):
+                # Model-only Ask: thinking on, the answer sometimes lands only
+                # in the think block. Keep its final-answer paragraphs (never
+                # the monologue) instead of re-sampling the whole step.
+                from service.model_only import salvage_answer
+                if salvaged := salvage_answer(reasoning):
+                    audit("ask_salvaged_reasoning", step=_step)
+                    msg = {**msg, "content": salvaged}
             # A completely empty response — no content, no reasoning, no tool
             # calls — is not the model deciding to say nothing. It means oMLX's
             # parser failed to PARSE what the model emitted and dropped it.
@@ -3439,6 +3798,51 @@ async def run_agent(
 
         if not tool_calls:
             text = msg.get("content") or ""
+            if ask_quality:
+                from service.model_only import (asks_personal_data, pure_writing, salvage_answer,
+                                                strip_think)
+                text = strip_think(text)
+                if not text and reasoning and not msg.get("_degenerate"):
+                    # Content empty but the think block holds an answer: keep
+                    # only its final-answer paragraphs, never the monologue.
+                    text = salvage_answer(reasoning)
+                    if text:
+                        audit("ask_salvaged_reasoning", step=_step)
+                if (ask_direct and not ask_write_nudged and _step < max_steps - 1
+                        and pure_writing(memory_query) and _ASK_WRITE_DODGE.search(text or "")):
+                    # "I can't write a LinkedIn post… what's the job title?":
+                    # one nudge to write it with placeholders instead.
+                    ask_write_nudged = True
+                    audit("ask_write_nudge", step=_step)
+                    msgs.append({"role": "assistant", "content": text})
+                    msgs.append({"role": "user", "content": (
+                        "Please just write it now, complete and ready to copy. Use short "
+                        "[placeholders] for any detail I didn't give. No questions.")})
+                    continue
+                web_only = bool(attempted_tools) and attempted_tools <= _ASK_WEB_TOOLS
+                if (not ask_reprompted and (not attempted_tools or web_only)
+                        and _step < max_steps - 1
+                        and not _ask_capability_prompt and not test_mode
+                        and not pure_writing(memory_query)
+                        and (asks_personal_data(memory_query) or fresh_personal_scope)
+                        and not _ask_personal_source_ran()
+                        and (web_only or not _ask_short_question(text))):
+                    # Personal data answered with no tool at all, or from a
+                    # web search ("When is the W-9 due?" is in the user's
+                    # mail, not on the web): re-prompt once with a tool
+                    # required instead of trusting it.
+                    ask_reprompted = True
+                    ask_expect_tool = True
+                    ask_reprompt_no_web = web_only
+                    audit("ask_personal_reprompt", step=_step, web_only=web_only)
+                    msgs.append({"role": "assistant", "content": text})
+                    msgs.append({"role": "user", "content": (
+                        ("That asks about my own items, and only the web was searched. "
+                         if web_only else
+                         "That asks for my own current data, and no tool has been called yet. ")
+                        + "Call the tool that holds it now (calendar, email, messages, reminders, "
+                        "notes or memory); if nothing holds it, say you don't know. Do not guess.")})
+                    continue
             unmet = _unmet_group()
             candidates = _unmet_candidates(unmet)
             if unmet is not None and candidates and _step < max_steps - 1:
@@ -3487,6 +3891,12 @@ async def run_agent(
             # the MODEL to read and retry from, not a real answer for the user;
             # showing it verbatim reads as Wisp reporting a Python traceback as
             # its response. Fall through to the plain-text branch below instead.
+            if ask_quality and not text.strip() and last_tool_result:
+                # Model-only Ask: one short tool-free summarization, then a
+                # compact readable view; never the raw results themselves.
+                text = ((await _ask_summarize()) if clean_results else "") or _ask_results_text()
+                if not text:
+                    text = _ASK_NOTHING_MESSAGE
             if not text.strip() and last_tool_result:
                 # Every clean source, not just the last one — see clean_results.
                 text = (_merge_results(_readable_results(clean_results)) if clean_results
@@ -3498,6 +3908,8 @@ async def run_agent(
                 # ending the turn blank — the request is answerable, the model
                 # just spent its whole token budget thinking about it.
                 text = _TRUNCATED_MESSAGE
+            elif not text.strip() and ask_quality and (direct := await _ask_summarize(direct=True)):
+                text = direct
             elif not text.strip():
                 # Empty for none of the reasons above — see _EMPTY_MESSAGE.
                 # This is the floor: past here nothing else can fire, so the
@@ -3522,6 +3934,13 @@ async def run_agent(
                     'has no requests. Keep useful facts and exact source dates from the results already returned. '
                     'Qualify coverage and any missing sources. Do not call tools again.')})
                 continue
+            if ask_quality and ask_reprompted and not _ask_grounding_tool_ran():
+                # The forced re-prompt ran nothing that could hold the fact (a
+                # calculation, a Mac status read) or nothing at all: say so
+                # plainly instead of publishing an invented number.
+                audit("ask_unknown_personal_fact", step=_step)
+                from service.model_only import ASK_UNKNOWN_MESSAGE
+                text = ASK_UNKNOWN_MESSAGE
             # Publish once, after checking receipts and obligations.
             verified = _verified_final(text)
             if verified != text:
@@ -3795,10 +4214,44 @@ async def run_agent(
                 continue
 
             read_key = _read_call_key(name, args)
+            if ask_quality and name in ask_blocked:
+                # A policy block does not change within a turn; the corpus
+                # showed web_search re-tried after BLOCKED until the step limit.
+                result = (f"({name} was blocked by policy earlier this turn and was NOT run "
+                          "again. Answer without it, and say plainly what you could not check.)")
+                audit("ask_reject_blocked_repeat", tool=name, args=args)
+                prev_step_refusals += 1
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
+            if (ask_quality and name not in _EFFECT_TOOLS
+                    and (_ask_tool := get_tool(name)) is not None
+                    and _ask_tool.category in _read_categories()):
+                from service.model_only import ASK_MAX_SAME_TOOL_CALLS
+                if ask_tool_calls[name] >= ASK_MAX_SAME_TOOL_CALLS:
+                    # Raw dumps came from turns that re-read one source eight
+                    # times with shuffled arguments and hit the step limit.
+                    result = (f"({name} already ran {ask_tool_calls[name]} times this turn and was "
+                              "NOT run again. Answer now from the results you already have, and "
+                              "say what is missing if they do not cover the question.)")
+                    audit("ask_reject_tool_budget", tool=name, args=args)
+                    prev_step_refusals += 1
+                    await emit({"type": "tool_result", "id": cid, "result": result})
+                    msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                    continue
+                ask_tool_calls[name] += 1
             if read_key is not None and read_key in completed_reads:
                 result = (f"({name} already ran with these exact arguments this turn and its "
                           "result was returned earlier. It was NOT run again. Answer from that "
                           "result, or call it with different arguments if you need different data.)")
+                if ask_quality and read_key in ask_read_cache:
+                    # The Ask step budget may have trimmed the earlier result
+                    # out of context; "returned earlier" would then point at
+                    # nothing. Hand the same result back, bounded.
+                    from service.model_only import ASK_TOOL_RESULT_CHARS
+                    result = (f"({name} already ran with these exact arguments; it was NOT run "
+                              "again. Same result as before, answer from it now:)\n"
+                              + _fit_tool_result(ask_read_cache[read_key], name, ASK_TOOL_RESULT_CHARS))
                 audit("reject_repeated_read", tool=name, args=args)
                 prev_step_refusals += 1
                 await emit({"type": "tool_result", "id": cid, "result": result})
@@ -3996,6 +4449,7 @@ async def run_agent(
                 if dec.tier is Tier.DENY:
                     result = f"BLOCKED by safety policy: {dec.reason}"
                     audit("deny", tool=name, args=args, reason=dec.reason)
+                    ask_blocked.add(name)
                 # A draft with an unfilled "[Your Name]" slot, or a body cut off
                 # mid-sentence, must never REACH the confirmation card: the card
                 # is where the user's judgement is asked for, and these checks
@@ -4184,8 +4638,19 @@ async def run_agent(
                          or (dec.tier is Tier.CONFIRM
                              and result != "The user denied this action."))):
                 executed_strict_reads[name] = executed_strict_reads.get(name, 0) + 1
-            msgs.append({"role": "tool", "tool_call_id": cid,
-                         "content": _fit_tool_result(result, name)})
+            if ask_quality:
+                from service.model_only import (ASK_TOOL_RESULT_CHARS, argument_fix_hint,
+                                                web_degradation_hint)
+                # Smaller results (each one is re-sent on every later step),
+                # and a rejected argument comes back with a repair hint so the
+                # model fixes its own call instead of asking the user.
+                msgs.append({"role": "tool", "tool_call_id": cid,
+                             "content": _fit_tool_result(result, name, ASK_TOOL_RESULT_CHARS)
+                             + argument_fix_hint(name, args, result)
+                             + web_degradation_hint(name, result)})
+            else:
+                msgs.append({"role": "tool", "tool_call_id": cid,
+                             "content": _fit_tool_result(result, name)})
             if result.strip():
                 last_tool_result = result
                 last_tier = dec.tier
@@ -4240,6 +4705,8 @@ async def run_agent(
                     # A parenthesized notice ("(no public web results found ...)")
                     # is not a usable answer; leave an identical retry allowed.
                     completed_reads.add(read_key)
+                    if ask_quality:
+                        ask_read_cache[read_key] = str(result)
             if restricted[0] is not None and tool_executed:
                 # Only a lookup that actually RAN satisfies the restriction; a
                 # denied or declined one leaves writes refused for the turn
@@ -4357,8 +4824,12 @@ async def run_agent(
     if (unmet := _unmet_group()) is not None:
         fallback = ("I couldn't complete every requested step. Still missing one of: "
                     + ", ".join(sorted(unmet)) + ".")
+    elif ask_quality and clean_results:
+        fallback = (await _ask_summarize()) or _ask_results_text() or _ASK_NOTHING_MESSAGE
     elif clean_results:
         fallback = _merge_results(_readable_results(clean_results))
+    elif ask_quality and last_tool_result:
+        fallback = _ASK_NOTHING_MESSAGE
     elif is_tool_error(last_tool_result):
         fallback = _STUCK_MESSAGE
     else:

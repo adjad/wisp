@@ -27,7 +27,39 @@ class SanitizedHTTPStatusError(httpx.HTTPStatusError):
     """Remote status failure with no provider-controlled request or response data."""
 
 
-from .inference_errors import EngineGuardUnavailableError, ModelLoadError, ModelMemoryLimitError
+from .inference_errors import (EngineGuardUnavailableError, ModelLoadError, ModelMemoryLimitError,
+                               ModelNotDownloadedError)
+
+
+def _model_label(model: str) -> str:
+    """The catalog's display name for a model id ("Gemma 4 E4B"), else the id.
+    Optional import: the mini bundle ships this module without service.setup."""
+    try:
+        from service.setup.catalog import by_id
+        entry = by_id(model)
+    except Exception:  # noqa: BLE001 - a label is cosmetic
+        return model
+    return entry.label if entry else model
+
+
+async def _download_progress(model: str) -> float | None:
+    """Percent done of an active built-in download of `model`, else None.
+
+    Best effort and bounded: only the bundled engine has a download inventory,
+    and a missing-model error must never wait long on it."""
+    import asyncio
+    try:
+        from service.engine import downloads, mode
+        if not mode.is_bundled():
+            return None
+        async with asyncio.timeout(3):
+            tasks = await downloads._inventory()
+        for _created, _task_id, task in tasks:
+            if task.get("model") == model and task.get("state") in ("pending", "downloading"):
+                return float(task.get("progress") or 0)
+    except Exception:  # noqa: BLE001 - the plain "not downloaded" message still applies
+        return None
+    return None
 
 
 # Remote output is untrusted and must stay bounded independently of timeouts.
@@ -134,6 +166,75 @@ def _ensure_choices(data: dict[str, Any]) -> dict[str, Any]:
     }]}
 
 
+
+
+class _RateLimitRetry(httpx.AsyncBaseTransport):
+    """Remote providers only: a 429 (Gemini's per-minute limit) waits and
+    re-sends the same request a few times instead of failing the turn."""
+    DELAYS = (3.0, 6.0, 12.0)
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    async def handle_async_request(self, request):
+        import asyncio
+        for delay in (*self.DELAYS, None):
+            response = await self._inner.handle_async_request(request)
+            if response.status_code != 429 or delay is None:
+                return response
+            await response.aclose()
+            await asyncio.sleep(delay)
+        return response
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+class _ThoughtSplitter:
+    """Moves a remote model's inline <thought>…</thought> text (Gemma on the
+    Gemini API) out of the answer and into reasoning, even when a tag is split
+    across stream chunks."""
+    OPEN, CLOSE = "<thought>", "</thought>"
+
+    def __init__(self) -> None:
+        self.inside = False
+        self.buffer = ""
+
+    def feed(self, text: str) -> list[tuple[str, str]]:
+        self.buffer += text
+        out: list[tuple[str, str]] = []
+        while self.buffer:
+            tag = self.CLOSE if self.inside else self.OPEN
+            at = self.buffer.find(tag)
+            if at >= 0:
+                if at:
+                    out.append(("reasoning" if self.inside else "content", self.buffer[:at]))
+                self.buffer = self.buffer[at + len(tag):]
+                self.inside = not self.inside
+                continue
+            # Keep a possible partial tag for the next chunk.
+            keep = next((n for n in range(len(tag) - 1, 0, -1) if self.buffer.endswith(tag[:n])), 0)
+            ready = self.buffer[:len(self.buffer) - keep]
+            if ready:
+                out.append(("reasoning" if self.inside else "content", ready))
+            self.buffer = self.buffer[len(ready):]
+            break
+        return out
+
+    def flush(self) -> list[tuple[str, str]]:
+        rest, self.buffer = self.buffer, ""
+        return [("reasoning" if self.inside else "content", rest)] if rest else []
+
+
+def _split_inline_thought(message: dict) -> None:
+    content = message.get("content")
+    if not isinstance(content, str) or _ThoughtSplitter.OPEN not in content:
+        return
+    splitter = _ThoughtSplitter()
+    parts = splitter.feed(content) + splitter.flush()
+    message["content"] = "".join(t for k, t in parts if k == "content").strip()
+    thought = "".join(t for k, t in parts if k == "reasoning")
+    message["reasoning_content"] = ((message.get("reasoning_content") or "") + thought).strip()
+
 class OMLXClient:
     def __init__(self, base_url: str | None = None, api_key: str | None = None,
                  timeout: float = 600.0, *, target: Target | None = None) -> None:
@@ -168,7 +269,8 @@ class OMLXClient:
             managed=self.managed, key_loader=key_loader)
         self._client = guard_client(httpx.AsyncClient(
             base_url=self.base_url,
-            transport=self._credential_transport,
+            transport=(self._credential_transport if self.managed
+                       else _RateLimitRetry(self._credential_transport)),
             timeout=httpx.Timeout(timeout, connect=5.0),
             trust_env=False, follow_redirects=False,
         ))
@@ -286,8 +388,17 @@ class OMLXClient:
             raise IncompleteStreamError("Invalid inference response") from None
         if not isinstance(data, dict) or "error" in data:
             # A provider's HTTP-200 error object is still an error. Reject it
-            # before choice normalization or debug capture and retain no body.
-            raise IncompleteStreamError("Inference provider returned an error") from None
+            # before choice normalization or debug capture and retain no body,
+            # only its short machine-readable code/status for diagnosis.
+            err = (data[0] if isinstance(data, list) and data and isinstance(data[0], dict) else data)
+            err = err.get("error") if isinstance(err, dict) else None
+            tag = ""
+            if isinstance(err, dict):
+                code, status = err.get("code"), err.get("status")
+                tag = " ".join(str(v)[:40] for v in (code, status)
+                               if isinstance(v, (int, str)) and str(v).replace("_", "").isalnum())
+            raise IncompleteStreamError("Inference provider returned an error"
+                                        + (f" ({tag})" if tag else "")) from None
         return data
 
     @staticmethod
@@ -516,7 +627,18 @@ class OMLXClient:
             # The managed engine refused admission. Do not echo its diagnostics
             # or convert a refusal into a successful residency/automatic retry.
             raise ModelMemoryLimitError() from None
+        if r.status_code == 404 and await self._not_installed(model):
+            # The bundled engine (oMLX 0.7.0+) answers an unknown id with 404
+            # at once. Confirmed against the inventory, so an engine without
+            # the load route still reports its plain HTTP error instead.
+            raise ModelNotDownloadedError(await _download_progress(model)) from None
         self._check_response(r)
+
+    async def _not_installed(self, model: str) -> bool:
+        try:
+            return model not in await self.models()
+        except Exception:  # noqa: BLE001 - unknown: keep the original failure
+            return False
 
     async def ensure_only(self, model: str, *, settle_timeout: float = 60.0,
                           exclusive: bool = False, emit=None) -> None:
@@ -531,12 +653,26 @@ class OMLXClient:
                     # remote model admission, eviction, or administrative APIs.
                     if self.provider.omlx_health:
                         await self.health()
-                    if model not in await self.models():
-                        raise ModelLoadError(f"Model {model!r} is unavailable on {self.endpoint_name}")
+                    # The inventory read proves the endpoint and key answer. A model
+                    # missing from it is not refused: Gemini's OpenAI-compatible
+                    # list leaves Gemma out though it serves it, and a model the
+                    # provider truly lacks fails on the request itself.
+                    await self.models()
                     return
                 await self._ensure_managed(model, settle_timeout=settle_timeout,
                                            exclusive=exclusive, emit=emit)
         except TimeoutError as exc:
+            # An engine that accepts a load for an id it doesn't have (desktop
+            # oMLX) never reports it; the wait just runs out. Say what is wrong.
+            if self.managed:
+                import asyncio
+                try:
+                    async with asyncio.timeout(3):
+                        missing = await self._not_installed(model)
+                except TimeoutError:
+                    missing = False
+                if missing:
+                    raise ModelNotDownloadedError(await _download_progress(model)) from exc
             raise ModelLoadError(f"Inference readiness timed out on {self.endpoint_name}") from exc
 
     async def _ensure_managed(self, model: str, *, settle_timeout: float = 60.0,
@@ -570,7 +706,7 @@ class OMLXClient:
         sits BETWEEN the `routed` event and the first token/tool-call — a gap
         with no client-visible signal otherwise, which reads as a hung
         request. When given, this sends `status` events naming what's
-        actually happening ("Loading <model>… (Ns)") so the UI can show real
+        actually happening ("Loading <catalog label>… (Ns)") so the UI can show real
         progress instead of a static "Thinking…"/"Working…" the whole time.
         A no-op when nothing needs evicting/loading (the common case).
 
@@ -601,7 +737,8 @@ class OMLXClient:
                     break
                 if emit:
                     await emit({"type": "status",
-                                "text": f"Freeing memory… ({int(loop.time() - start)}s)"})
+                                "text": (f"Making room for {_model_label(model)}… "
+                                         f"({int(loop.time() - start)}s)")})
                 await asyncio.sleep(1.0)
 
         # 2. Load the TARGET if it isn't already resident (it always wins).
@@ -615,9 +752,15 @@ class OMLXClient:
         # burned 60s and returned "OK" with loaded == []. Failing loudly here
         # is what turns that from "Wisp is mysteriously broken" into one clear
         # message naming the model that couldn't load.
+        #
+        # The bundled engine (oMLX 0.7.0+) now refuses an unknown id with 404
+        # straight away; load() turns that into the "finish setup" message.
+        # The polling fallback below still covers an engine that accepts it.
         if model not in loaded:
+            label = _model_label(model)
             if emit:
-                await emit({"type": "status", "text": f"Loading {model}…"})
+                await emit({"type": "status", "text": (
+                    f"Loading {label}… The first answer after a rest takes a little longer.")})
             await self.load(model)
             start = loop.time()
             deadline = start + settle_timeout
@@ -626,15 +769,15 @@ class OMLXClient:
                 if model in loaded:
                     break
                 if emit:
-                    await emit({"type": "status",
-                                "text": f"Loading {model}… ({int(loop.time() - start)}s)"})
+                    await emit({"type": "status", "text": (
+                        f"Loading {label}… ({int(loop.time() - start)}s) "
+                        "The first answer after a rest takes a little longer.")})
                 await asyncio.sleep(1.0)
             else:
-                installed = await self.models()
-                why = ("it is not installed in oMLX"
-                       if model not in installed
-                       else f"it did not become resident within {settle_timeout:.0f}s")
-                raise ModelLoadError(f"could not load {model!r}: {why}.")
+                if model not in await self.models():
+                    raise ModelNotDownloadedError(await _download_progress(model))
+                raise ModelLoadError(f"Wisp's model ({label}) didn't finish loading within "
+                                     f"{settle_timeout:.0f} seconds. Try again in a moment.")
 
         # 3. Best-effort: reload any keep-warm model missing from the status we
         #    already have — no extra fetch needed to check this. Skipped when
@@ -656,9 +799,14 @@ class OMLXClient:
         tool_choice: str | dict | None = None,
         temperature: float | None = None,
         max_tokens: int = 2048,
+        engine_headers: dict[str, str] | None = None,
         **extra: Any,
     ) -> dict[str, Any]:
-        """Non-streaming chat completion. Returns the raw oMLX response dict."""
+        """Non-streaming chat completion. Returns the raw oMLX response dict.
+
+        `engine_headers` go only to the local managed engine (for example
+        oMLX's `X-oMLX-Cache-Store: off`); a remote provider never sees them.
+        """
         model, messages, tools, max_tokens = self._fit_request(model, messages, tools, max_tokens)
         payload = self._payload(model, messages, tools, tool_choice,
                                 temperature, max_tokens, stream=False, **extra)
@@ -668,7 +816,11 @@ class OMLXClient:
         idle.begin(self.activity_key(model))
         try:
             if self.managed:
-                r = await self._client.post(self.api_prefix + "/chat/completions", json=payload)
+                if engine_headers:
+                    r = await self._client.post(self.api_prefix + "/chat/completions", json=payload,
+                                                headers=engine_headers)
+                else:
+                    r = await self._client.post(self.api_prefix + "/chat/completions", json=payload)
                 self._check_response(r)
                 data = self._completion_data(r)
             else:
@@ -691,6 +843,11 @@ class OMLXClient:
                     if self.provider.name != "omlx":
                         if message.get("reasoning") and not message.get("reasoning_content"):
                             message["reasoning_content"] = message["reasoning"]
+                    if not self.managed:
+                        _split_inline_thought(message)
+                    if (not self.managed and choice["message"].get("tool_calls")
+                            and choice.get("finish_reason") == "stop"):
+                        choice["finish_reason"] = "tool_calls"   # Gemini's OpenAI-compatible API
                     if choice["message"].get("tool_calls") and choice.get("finish_reason") != "tool_calls":
                         raise IncompleteStreamError("Tool generation did not finish successfully")
                     if self.managed:
@@ -740,6 +897,7 @@ class OMLXClient:
                                 temperature, max_tokens, stream=True, **extra)
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
+        thought_splitter = _ThoughtSplitter()
         calls: dict[int, dict[str, str]] = {}
         finish_reason: str | None = None
         done = False
@@ -795,11 +953,22 @@ class OMLXClient:
                         if not self.managed:
                             output_size = self._bounded_remote_value(
                                 output_size, t, output_limit)
-                        content_parts.append(t)
-                        yield {"kind": "content", "text": t}
+                            for kind, piece in thought_splitter.feed(t):
+                                (reasoning_parts if kind == "reasoning" else content_parts).append(piece)
+                                yield {"kind": kind, "text": piece}
+                        else:
+                            content_parts.append(t)
+                            yield {"kind": "content", "text": t}
                     for tc in (delta.get("tool_calls") or []):
-                        slot = calls.setdefault(tc.get("index", 0),
-                                                {"id": "", "name": "", "arguments": ""})
+                        index = tc.get("index")
+                        if index is None:
+                            # Gemini sends each call whole, without an index: a
+                            # new named call is a new slot, never appended.
+                            index = max(calls) if calls else 0
+                            if ((tc.get("function") or {}).get("name") and calls
+                                    and calls[index]["name"]):
+                                index += 1
+                        slot = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
                         if tc.get("id"):
                             slot["id"] = tc["id"]
                         fn = tc.get("function") or {}
@@ -813,6 +982,14 @@ class OMLXClient:
         finally:
             idle.end(self.activity_key(model))
             engine_epoch.end()
+        for kind, piece in thought_splitter.flush():
+            (reasoning_parts if kind == "reasoning" else content_parts).append(piece)
+            yield {"kind": kind, "text": piece}
+        if not self.managed and done and finish_reason is None:
+            # Gemini can close a complete stream ([DONE]) without a finish reason.
+            finish_reason = "tool_calls" if calls else "stop"
+        if calls and not self.managed and finish_reason == "stop":
+            finish_reason = "tool_calls"   # Gemini's OpenAI-compatible API ends tool calls with "stop"
         if finish_reason not in {"stop", "length", "tool_calls"}:
             raise IncompleteStreamError("Inference stream ended before completion; no actions were executed from it")
         if not calls and finish_reason not in {"stop", "length"}:
@@ -823,7 +1000,9 @@ class OMLXClient:
             if finish_reason != "tool_calls":
                 raise IncompleteStreamError("Tool generation did not finish successfully")
             seen_ids = set()
-            for call in calls.values():
+            for index, call in calls.items():
+                if not call["id"] and not self.managed:
+                    call["id"] = f"call_{index}"      # Gemini may omit call ids
                 try:
                     args = json.loads(call["arguments"])
                 except ValueError as exc:

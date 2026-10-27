@@ -1129,6 +1129,11 @@ _PUBLIC_PLANNING_SOURCES = (
     'service/assistant/store.py',
     'service/assistant/verified_reminders.py',
     'service/assistant/today.py',
+    # daily_workspace reads sent mail through the proactive helpers to retire handled rows.
+    'service/proactive/__init__.py',
+    'service/proactive/guard.py',
+    'service/proactive/sources.py',
+    'service/assistant/sync_status.py',
     'service/behavior/__init__.py',
     'service/behavior/activity.py',
     'service/behavior/associations.py',

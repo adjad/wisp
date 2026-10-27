@@ -149,6 +149,8 @@ struct BriefDetail: Equatable {
         var muted = false
         /// A paragraph, shown whole rather than cut to two lines.
         var paragraph = false
+        /// The Needs you row this line shows, for its Clear and Mark done.
+        var need: NeedsYouRow? = nil
     }
     let lines: [Line]
     let source: DayTimeline.BriefSource
@@ -162,18 +164,40 @@ struct BriefDetail: Equatable {
     /// System Settings > Privacy & Security > Full Disk Access.
     static let fullDiskAccess = Action(label: "Open Full Disk Access settings ↗",
                                        url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles")
+    /// System Settings > Privacy & Security > Calendars.
+    static let calendarsAccess = Action(label: "Open Calendar settings ↗",
+                                        url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Calendars")
+    /// System Settings > Privacy & Security > Reminders.
+    static let remindersAccess = Action(label: "Open Reminders settings ↗",
+                                        url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Reminders")
+    /// System Settings > Privacy & Security > Automation.
+    static let automationAccess = Action(label: "Open Automation settings ↗",
+                                         url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Automation")
+    /// System Settings > Internet Accounts.
+    static let internetAccounts = Action(label: "Open Internet Accounts ↗",
+                                         url: "x-apple.systempreferences:com.apple.Internet-Accounts-Settings.extension")
+
+    /// What a list shows for a source Wisp couldn't read: why, and the setting
+    /// that fixes it in place of "Open <app>".
+    static func unread(_ access: SourceAccess, source: DayTimeline.BriefSource) -> BriefDetail {
+        var lines = [Line(id: "access", leading: "", text: access.headline, muted: true)]
+        let detail = access.detail
+        if !detail.isEmpty { lines.append(Line(id: "access-detail", leading: "", text: detail, muted: true)) }
+        return BriefDetail(lines: lines, source: source, action: access.fix)
+    }
 
     static func calendar(allDay: [String], events: [(title: String, start: Double, end: Double?)],
                          unsynced: Bool, clock: (Double) -> String) -> BriefDetail {
-        var lines: [Line] = allDay.filter { !DayTimeline.isJunk($0) }.enumerated().map {
-            Line(id: "allday-\($0.offset)", leading: "All day", text: $0.element)
+        // Calendar entries are never dropped for their title ("1:1", an emoji).
+        var lines: [Line] = allDay.filter { !DayTimeline.isPlaceholderEvent($0) }.enumerated().map {
+            Line(id: "allday-\($0.offset)", leading: "All day", text: DayTimeline.eventTitle($0.element))
         }
-        lines += events.filter { !DayTimeline.isJunk($0.title) }.enumerated().map { index, event in
+        lines += events.filter { !DayTimeline.isPlaceholderEvent($0.title) }.enumerated().map { index, event in
             let span = event.end.map { "\(clock(event.start))–\(clock($0))" } ?? clock(event.start)
-            return Line(id: "event-\(index)", leading: span, text: event.title)
+            return Line(id: "event-\(index)", leading: span, text: DayTimeline.eventTitle(event.title))
         }
         if lines.isEmpty {
-            lines = [Line(id: "empty", leading: "", text: unsynced ? "Calendar hasn't synced yet" : "Nothing on your calendar today",
+            lines = [Line(id: "empty", leading: "", text: unsynced ? "Reading your calendar…" : "Nothing on your calendar today",
                           muted: true)]
         }
         return BriefDetail(lines: lines, source: .calendar)
@@ -192,13 +216,21 @@ struct BriefDetail: Equatable {
     /// `prose` is the service's written inbox summary (mail_gists.py). When it
     /// is there it replaces the summary's section, which lists senders and
     /// subjects: the user asked for "an actual email summary not email headers".
-    static func mail(needing: [BriefNeed], ready: Bool, summary: [String]? = [], prose: String? = nil) -> BriefDetail {
+    static func mail(needing: [BriefNeed], ready: Bool, summary: [String]? = [], prose: String? = nil,
+                     access: SourceAccess? = nil) -> BriefDetail {
         guard ready else {
+            if let access, !access.readable { return unread(access, source: .mail) }
             return BriefDetail(lines: [Line(id: "empty", leading: "", text: "Mail hasn't been checked yet", muted: true)], source: .mail)
         }
         let written = prose?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let section = written.isEmpty ? summary ?? [] : [written]
-        var lines = written.isEmpty
+        // Partly read (one Google account unchecked): what was read, under a
+        // line naming what wasn't, so the list never reads as all the mail.
+        var lines: [Line] = []
+        if let access, !access.readable {
+            lines.append(Line(id: "access", leading: "", text: access.headline, muted: true))
+        }
+        lines += written.isEmpty
             ? section.prefix(8).enumerated().map { Line(id: "summary-\($0.offset)", leading: "", text: $0.element) }
             : [Line(id: "prose", leading: "", text: written, paragraph: true)]
         let said = BriefMail.words(section.joined(separator: " "))
@@ -229,13 +261,14 @@ struct BriefDetail: Equatable {
     /// for how long. Never the texts themselves. `summary` is nil when today
     /// has no composed summary, as for mail.
     static func texts(needing: [BriefNeed], ready: Bool, needsAccess: Bool = false, summary: [String]? = [],
-                      age: (Double) -> String) -> BriefDetail {
+                      access: SourceAccess? = nil, age: (Double) -> String) -> BriefDetail {
         if needsAccess {
             return BriefDetail(lines: [Line(id: "access", leading: "",
                                             text: "Wisp can't read your texts until it has Full Disk Access.", muted: true)],
                                source: .messages, action: fullDiskAccess)
         }
         guard ready else {
+            if let access, !access.readable { return unread(access, source: .messages) }
             return BriefDetail(lines: [Line(id: "empty", leading: "", text: "Messages haven't been checked yet", muted: true)],
                                source: .messages)
         }
@@ -594,8 +627,13 @@ enum BriefTiles {
 
     /// The Today tile's list: the label column says overdue, when it's due, or
     /// when a task is planned.
-    static func todayDetail(_ todos: [BriefTodo], now: Double, dayStart: Double, clock: (Double) -> String) -> BriefDetail {
+    static func todayDetail(_ todos: [BriefTodo], now: Double, dayStart: Double, clock: (Double) -> String,
+                            reminders: SourceAccess? = nil) -> BriefDetail {
+        // Unread Reminders: what's listed may not be everything, so say so
+        // (and how to fix it) instead of "Nothing to do today".
+        let unread = reminders.flatMap { $0.readable ? nil : $0 }
         guard !todos.isEmpty else {
+            if let unread { return BriefDetail.unread(unread, source: .reminders) }
             return BriefDetail(lines: [BriefDetail.Line(id: "empty", leading: "", text: "Nothing to do today", muted: true)],
                                source: .reminders)
         }
@@ -610,15 +648,23 @@ enum BriefTiles {
         if todos.count > shown {
             lines.append(BriefDetail.Line(id: "more", leading: "", text: "+\(todos.count - shown) more", muted: true))
         }
+        if let unread {
+            lines.append(BriefDetail.Line(id: "access", leading: "", text: unread.headline, muted: true))
+            return BriefDetail(lines: lines, source: .reminders, action: unread.fix)
+        }
         return BriefDetail(lines: lines, source: .reminders)
     }
 
     /// The Events tile's list: today's calendar, then what's coming up this week.
     /// Today's part says so when it's empty, so the tile opens on a zero count.
     static func eventsDetail(today: [BriefDetail.Line], unsynced: Bool, soon: [UpcomingItem]?,
-                             when: (UpcomingItem) -> String) -> BriefDetail {
+                             when: (UpcomingItem) -> String, access: SourceAccess? = nil) -> BriefDetail {
+        let unread = access.flatMap { $0.readable ? nil : $0 }
+        if today.isEmpty, let unread {
+            return BriefDetail.unread(unread, source: .calendar)
+        }
         var lines = today.isEmpty
-            ? [BriefDetail.Line(id: "empty", leading: "", text: unsynced ? "Calendar hasn't synced yet" : "Nothing scheduled today",
+            ? [BriefDetail.Line(id: "empty", leading: "", text: unsynced ? "Reading your calendar…" : "Nothing scheduled today",
                                 muted: true)]
             : today
         if let soon, !soon.isEmpty {
@@ -645,10 +691,16 @@ enum BriefTiles {
         }
     }
 
+    /// The Top 3's line when it lists nothing: an all-clear only once every
+    /// source behind it has been read, else which ones Wisp can't see.
+    static func emptyTop(unread: [String], uncheckedMail: UncheckedMail = UncheckedMail()) -> String {
+        unread.isEmpty ? "Nothing needs you right now" : SourceAccess.cantSee(unread, uncheckedMail: uncheckedMail)
+    }
+
     static func top(picked: [NeedsYouRow], todos: [BriefDetail.Line], next: BriefDetail.Line?, limit: Int = 3) -> [BriefDetail.Line] {
         var seen = Set<String>()
         var out: [BriefDetail.Line] = []
-        let candidates = picked.map { BriefDetail.Line(id: "top-" + $0.id, leading: $0.label ?? "", text: $0.text) }
+        let candidates = picked.map { BriefDetail.Line(id: "top-" + $0.id, leading: $0.label ?? "", text: $0.text, need: $0) }
             + todos.filter { !$0.muted } + [next].compactMap { $0 }
         for line in candidates where out.count < limit && seen.insert(key(line.text)).inserted {
             out.append(line)

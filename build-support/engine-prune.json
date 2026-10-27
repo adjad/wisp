@@ -43,15 +43,22 @@
     "sklearn": "49 MB; needed by audio libraries",
     "transformers": "107 MB; required by tokenizers and chat templates, cannot be dropped"
   },
+  "removal_reasons": {
+    "tailwindcss-macos-*": "46 MB; the Tailwind CLI only oMLX's build_css.py runs to rebuild the admin CSS, never the server",
+    ".a": "62 MB; static archives (61 MB is libxgrammar.a) are link-time inputs a running engine never loads"
+  },
   "always_remove": [
     "__pycache__",
     ".DS_Store",
     "pyvenv.cfg",
-    ".git"
+    ".git",
+    "tailwindcss-macos-arm64",
+    "tailwindcss-macos-x64"
   ],
   "always_remove_suffixes": [
     ".pyc",
     ".pyo",
+    ".a",
     ".db",
     ".p12",
     ".p8"

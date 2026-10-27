@@ -452,31 +452,43 @@ async def complete_reminder(title: str, expected_id: str = "") -> str:
         listed = "\n".join(f"  - {r['title']} ({_fmt_time(r['when_ts'])})" for r in hits[:8])
         return f"Several match {title!r} — which one?\n{listed}"
 
-    row = hits[0]
+    _, message = await complete_commitment(hits[0])
+    return message
+
+
+async def complete_commitment(row: dict, store=None) -> tuple[bool, str]:
+    """Mark one exact commitment done: the verified path every completion takes
+    (this tool, and the Brief's Mark done, service/assistant/needs_you_api.py).
+
+    A native reminder is completed in Reminders.app first, through the app's
+    exact-identity write that reads the completion back; only a verified result
+    marks it done here. ``row`` carries ``duplicate_ids`` (a collapsed read).
+    Returns ``(done, message)``."""
+    store = store if store is not None else _store
     group = [row] + [member for member in
-                     (_store.get(cid) for cid in row.get("duplicate_ids") or []) if member]
+                     (store.get(cid) for cid in row.get("duplicate_ids") or []) if member]
     native = [member for member in group if member.get("source") == "reminders"]
     if len(native) > 1:
-        return "(error: several native reminders share this item; select one exact reminder before completing.)"
+        return False, "(error: several native reminders share this item; select one exact reminder before completing.)"
     if native:
         from service.assistant.outbox import request as app_request
         for member in native:
             if not member.get("source_id") or member.get("when_ts") is None:
-                return "(error: exact Reminders identity is unavailable; nothing was marked done.)"
+                return False, "(error: exact Reminders identity is unavailable; nothing was marked done.)"
             result = await app_request("complete_reminder", {
                 "source_id": member["source_id"], "expected_title": member["title"],
                 "expected_due_ts": member["when_ts"], **expected_date_fields(member)})
             if result.get("ok") is not True:
-                return f"(error: {result.get('error') or 'Native completion was not verified'}.)"
-    ok = _store.set_status(row["id"], "done")
+                return False, f"(error: {result.get('error') or 'Native completion was not verified'}.)"
+    ok = store.set_status(row["id"], "done")
     # Duplicates are one commitment seen through several sources (a calendar
     # event that is also a reminder). Leaving the siblings active would make the
     # item reappear on the next read, looking like the completion didn't stick.
     for dup in row.get("duplicate_ids") or []:
-        _store.set_status(dup, "done")
+        store.set_status(dup, "done")
     if not ok:
-        return f"(couldn't update {row['title']!r} — it may already be gone.)"
-    return f"Marked “{row['title']}” done."
+        return False, f"(couldn't update {row['title']!r} — it may already be gone.)"
+    return True, f"Marked “{row['title']}” done."
 
 
 @register(

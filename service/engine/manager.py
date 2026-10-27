@@ -76,6 +76,11 @@ class EngineLayout:
         return self.base_path / "settings.json"
 
     @property
+    def memory_guard_record(self) -> Path:
+        """Written once Wisp has set the memory guard; later choices are the user's."""
+        return self.data_dir / "memory_guard.json"
+
+    @property
     def pid_path(self) -> Path:
         return self.data_dir / "engine.pid"
 
@@ -125,6 +130,30 @@ def engine_settings(port: int, api_key: str, model_dirs: Sequence[Path],
                  "allow_unauthenticated_inference": False},
         "huggingface": {"hf_cache_enabled": False},
     }
+
+
+# oMLX's memory guard tiers (process_memory_enforcer.py). oMLX starts on "balanced",
+# which keeps up to 8 GB free and refuses Gemma loads on a 24 GB Mac with other apps
+# open; Wisp's engine starts on "aggressive" instead.
+MEMORY_GUARD_TIERS = frozenset({"safe", "balanced", "aggressive", "custom"})
+MEMORY_GUARD_TIER = "aggressive"
+_ENGINE_DEFAULT_TIER = "balanced"
+
+
+def memory_guard(existing: dict, already_set: bool) -> dict | None:
+    """The memory section Wisp writes, or None to leave the existing one alone. Pure.
+
+    No tier (or one oMLX can't read) gets Wisp's. oMLX's own first-start "balanced" is
+    moved to Wisp's once; after that "balanced" is the user's choice. "safe", "custom"
+    (with its ceiling) and "aggressive" are always kept, with every other memory key.
+    """
+    memory = existing.get("memory")
+    memory = memory if isinstance(memory, dict) else {}
+    tier = memory.get("memory_guard_tier")
+    tier = tier.lower() if isinstance(tier, str) else None
+    if tier in MEMORY_GUARD_TIERS and (tier != _ENGINE_DEFAULT_TIER or already_set):
+        return None
+    return {**memory, "memory_guard_tier": MEMORY_GUARD_TIER}
 
 
 def read_settings(path: Path) -> dict:
@@ -269,7 +298,17 @@ class EngineManager:
         existing = read_settings(self.layout.settings_path)
         merged = merge_owned(existing, engine_settings(
             self.port, self.api_key, self.model_dirs(), user_dirs=_saved_model_dirs(existing)))
+        record = self.layout.memory_guard_record
+        memory = memory_guard(existing, already_set=record.exists())
+        if memory is not None:
+            merged["memory"] = memory
         _write_private(self.layout.settings_path, json.dumps(merged, indent=2))
+        if not record.exists():
+            _write_private(record, json.dumps({"memory_guard_tier": MEMORY_GUARD_TIER}))
+        # Before the engine starts: it reads model_settings.json once, at startup.
+        from . import profiles
+        profiles.seed(self.layout.base_path / "model_settings.json",
+                      self.layout.data_dir / "seeded_profiles.json")
 
     def _reap_stale(self) -> None:
         reap_orphan(self.layout)

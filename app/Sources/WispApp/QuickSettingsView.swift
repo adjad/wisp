@@ -5,6 +5,8 @@ import SwiftUI
 /// Everything that needs a form, a key, OAuth or widens what Wisp reads (models,
 /// Google, cloud keys, privacy sources such as browser history and contacts,
 /// the source controls under Memory › Routines) stays in the full Settings window.
+/// One deliberate exception: a new user with no Google account connected gets a
+/// single "Connect Google" row for the first connect (NotchGoogleVisibility).
 ///
 /// It binds to the app's one SettingsLoader, the same object the Settings window
 /// uses, so "waiting for confirmation" and "not confirmed" read the same in both
@@ -17,21 +19,26 @@ struct QuickSettingsView: View {
     var refreshes = true
     /// The brief time whose inline hour list is open.
     @State var picking: BriefSlot?
+    /// Decides whether the Google row shows at all (new users only).
+    @StateObject private var google = NotchGoogleModel()
+    @AppStorage(VoiceReplyMode.defaultsKey) private var voiceRepliesRaw = VoiceReplyMode.afterVoice.rawValue
+    /// The panel's Text size scale (Theme.textScale reads the same key).
+    @AppStorage(Theme.textSizeKey) private var textSize: Double = 1.0
 
     enum BriefSlot { case morning, evening }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Settings").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                Text("Settings").font(.wisp(size: 15, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                 Spacer()
                 Button("Done") { model.showingQuickSettings = false }
-                    .buttonStyle(.plain).font(.system(size: 13)).foregroundStyle(Palette.sub)
+                    .buttonStyle(.plain).font(.wisp(size: 13)).foregroundStyle(Palette.sub)
                     .keyboardShortcut(.cancelAction)
                     .help("Close settings and go back to \(model.tab.stripTab.title)")
             }
             if let notice = model.transientNotice {
-                Text(notice).font(.system(size: 11.5)).foregroundStyle(Theme.bad)
+                Text(notice).font(.wisp(size: 11.5)).foregroundStyle(Theme.bad)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             group("Permissions") {
@@ -40,6 +47,20 @@ struct QuickSettingsView: View {
                 learningRow
             }
             group("Daily brief") { briefRow }
+            if google.showsRow {
+                // The user's deliberate exception for the very first connect
+                // only: a new user with no Google account (and an OAuth client
+                // to use) gets one Connect button. Once any account is
+                // connected there is no Google row here at all; accounts and
+                // Disconnect & erase live in Settings ▸ Google
+                // (NotchGoogleVisibility).
+                group("Google") { NotchConnectGoogle(model: google) }
+            }
+            group("Voice & accessibility") {
+                voiceRepliesRow
+                hairline
+                textSizeRow
+            }
             group("Advanced") {
                 row("Reply details", help: "Open each reply's model, route, timing and tool calls by default (Debug Mode).") {
                     Text("Model, timing and tools under each reply")
@@ -50,7 +71,7 @@ struct QuickSettingsView: View {
                 memoryRow
             }
             HStack {
-                Text("Models, Google, privacy, activity").font(.system(size: 13)).foregroundStyle(Palette.sub)
+                Text("Models, Google, privacy, activity").font(.wisp(size: 13)).foregroundStyle(Palette.sub)
                 Spacer()
                 pillButton("All settings  ⌘,", primary: true) { WispRouter.shared.open(.settings) }
             }
@@ -69,9 +90,52 @@ struct QuickSettingsView: View {
             if !composing, refreshes { Task { await model.refreshModelMemory() } }
         }
         .onChange(of: settings.briefTimesPending) { _, pending in if pending { picking = nil } }
+        .task {
+            guard refreshes else { return }
+            await google.keepCurrent()
+        }
     }
 
     // MARK: Rows
+
+    /// When Wisp says its answer out loud (VoiceReplyMode). Three chips, not a
+    /// menu: the panel is non-activating, so no popup.
+    private var voiceRepliesRow: some View {
+        row("Read answers aloud",
+            help: "Wisp speaks its answer with your Mac's voice (System Settings › Accessibility › Spoken Content). Ask by voice with the mic or ⌥⇧Space.") {
+            Text(voiceReplies == .afterVoice ? "When you ask by voice (⌥⇧Space)" : voiceReplies == .always ? "Every answer" : "Never")
+        } control: {
+            HStack(spacing: 6) {
+                ForEach([VoiceReplyMode.afterVoice, .always, .off], id: \.self) { mode in
+                    pillButton(mode == .afterVoice ? "Voice" : mode.title, primary: voiceReplies == mode) {
+                        voiceRepliesRaw = mode.rawValue
+                        if mode == .off { model.speaker.stop() }
+                    }
+                    .accessibilityLabel(mode.title)
+                    .accessibilityAddTraits(voiceReplies == mode ? [.isButton, .isSelected] : .isButton)
+                }
+            }
+        }
+    }
+
+    /// Text size for the whole panel: three chips, same pattern as the voice
+    /// row. Changing it rebuilds the panel (OverlayView watches the key).
+    private var textSizeRow: some View {
+        row("Text size", help: "Makes the text in Wisp's panel larger. Settings and the Wisp window are unchanged.") {
+            Text(Theme.textSizeChoices.first { abs($0.scale - textSize) < 0.01 }?.label ?? "Default")
+        } control: {
+            HStack(spacing: 6) {
+                ForEach(Theme.textSizeChoices, id: \.label) { choice in
+                    let chosen = abs(choice.scale - textSize) < 0.01
+                    pillButton(choice.label, primary: chosen) { textSize = choice.scale }
+                        .accessibilityLabel(choice.label)
+                        .accessibilityAddTraits(chosen ? [.isButton, .isSelected] : .isButton)
+                }
+            }
+        }
+    }
+
+    private var voiceReplies: VoiceReplyMode { VoiceReplyMode(rawValue: voiceRepliesRaw) ?? .afterVoice }
 
     private var fullAccessRow: some View {
         let line = QuickSettingsText.fullAccess(on: settings.fullAccess, pending: settings.fullAccessPending)
@@ -182,7 +246,7 @@ struct QuickSettingsView: View {
                 Text(slot == .morning ? "Morning" : "Evening").foregroundStyle(Palette.sub)
                 Text("\(label.time) \(label.period)").foregroundStyle(Theme.textPrimary).monospacedDigit()
             }
-            .font(.system(size: 12.5))
+            .font(.wisp(size: 12.5))
             .padding(.horizontal, 9).padding(.vertical, 4)
             .background(RoundedRectangle(cornerRadius: 8).fill(open ? Palette.chipOpen : Palette.chip))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(open ? Palette.sub : Palette.chipStroke, lineWidth: 1))
@@ -204,7 +268,7 @@ struct QuickSettingsView: View {
                     if slot == .morning { settings.setBriefTimes(morning: hour) } else { settings.setBriefTimes(evening: hour) }
                 } label: {
                     Text(QuickSettingsText.pill(hour).time).monospacedDigit()
-                        .font(.system(size: 12.5, weight: chosen ? .semibold : .regular))
+                        .font(.wisp(size: 12.5, weight: chosen ? .semibold : .regular))
                         .foregroundStyle(chosen ? Color.black : Theme.textPrimary)
                         .frame(maxWidth: .infinity).padding(.vertical, 4)
                         .background(RoundedRectangle(cornerRadius: 7).fill(chosen ? Theme.textPrimary : Palette.chip))
@@ -226,11 +290,19 @@ struct QuickSettingsView: View {
     private enum Palette {
         static let card = Color(white: 0.043)
         static let line = Color(red: 0.11, green: 0.114, blue: 0.13)
-        static let sub = Color(red: 0.557, green: 0.565, blue: 0.592)
-        static let label = Color(red: 0.365, green: 0.373, blue: 0.4)
+        // sub and label follow Increase Contrast. label was a 3.2:1 grey; the
+        // default is now about 4.6:1 on the card, and Increase Contrast goes brighter.
+        static var sub: Color {
+            Theme.increaseContrast ? Color(white: 0.78) : Color(red: 0.557, green: 0.565, blue: 0.592)
+        }
+        static var label: Color {
+            Theme.increaseContrast ? Color(white: 0.7) : Color(red: 0.47, green: 0.48, blue: 0.51)
+        }
         static let chip = Color(red: 0.078, green: 0.082, blue: 0.094)
         static let chipOpen = Color(white: 0.16)
-        static let chipStroke = Color(red: 0.165, green: 0.169, blue: 0.188)
+        static var chipStroke: Color {
+            Theme.increaseContrast ? Color(white: 0.45) : Color(red: 0.165, green: 0.169, blue: 0.188)
+        }
         static let track = Color(red: 0.122, green: 0.125, blue: 0.141)
         /// Full access is the one risky switch, so it alone is warm.
         static let amber = NotchSwitch.amber
@@ -239,7 +311,7 @@ struct QuickSettingsView: View {
     /// A labelled card: rows separated by hairlines.
     private func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title.uppercased()).font(.system(size: 11, weight: .semibold)).kerning(1)
+            Text(title.uppercased()).font(.wisp(size: 11, weight: .semibold)).kerning(1)
                 .foregroundStyle(Palette.label).padding(.leading, 4)
                 .accessibilityAddTraits(.isHeader)
             VStack(spacing: 0) { content() }
@@ -256,8 +328,8 @@ struct QuickSettingsView: View {
                                                   @ViewBuilder control: () -> Control) -> some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.system(size: 14.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                detail().font(.system(size: 12.5)).foregroundStyle(Palette.sub).lineLimit(1).truncationMode(.middle)
+                Text(title).font(.wisp(size: 14.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                detail().font(.wisp(size: 12.5)).foregroundStyle(Palette.sub).lineLimit(2).truncationMode(.middle)
             }
             .help(help)
             Spacer(minLength: 12)
@@ -269,7 +341,7 @@ struct QuickSettingsView: View {
 
     private func pillButton(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(.system(size: 12.5)).foregroundStyle(primary ? Theme.textPrimary : Theme.textSecondary)
+            Text(title).font(.wisp(size: 12.5)).foregroundStyle(primary ? Theme.textPrimary : Theme.textSecondary)
                 .padding(.horizontal, 12).padding(.vertical, 5)
                 .background(Capsule().fill(Palette.chip))
                 .overlay(Capsule().strokeBorder(Palette.chipStroke, lineWidth: 1))

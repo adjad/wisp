@@ -49,6 +49,7 @@ CONFIG_PATH = MOE_DIR / "mcp.json"
 # A server that hasn't answered `initialize` in this long is treated as broken
 # rather than retried forever — a wrong command in mcp.json shouldn't leave a
 # zombie subprocess and a hanging startup task.
+_LINE_LIMIT_BYTES = 16 * 1024 * 1024
 _HANDSHAKE_TIMEOUT_S = 20.0
 _CALL_TIMEOUT_S = 90.0
 _MAX_RESULT_CHARS = 8000
@@ -85,8 +86,9 @@ class MCPServer:
             return False
 
         args = [str(a) for a in (self.config.get("args") or [])]
-        env = {**os.environ, **{str(k): str(v)
-                                for k, v in (self.config.get("env") or {}).items()}}
+        env = {**_inherited_env(self.config), **{str(k): str(v)
+                                                 for k, v in (self.config.get("env") or {}).items()
+                                                 if str(k) not in _NEVER_INHERITED}}
         try:
             self.proc = await asyncio.create_subprocess_exec(
                 resolved, *args,
@@ -94,6 +96,10 @@ class MCPServer:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL,
                 env=env,
+                # One JSON-RPC message per line, and tools/list is one message:
+                # Google Workspace's is ~87 KB, past asyncio's 64 KB default,
+                # which killed the read loop mid-handshake.
+                limit=_LINE_LIMIT_BYTES,
             )
         except Exception as e:  # noqa: BLE001
             self.error = f"couldn't start: {e}"
@@ -229,6 +235,17 @@ def _render_content(result: dict) -> str:
     return text
 
 
+# Registered local name -> the tool's own part of it (after mcp_<server>_), in
+# the same lowercased, sanitized form. The policy judges MCP actions by this
+# part alone, never the server's name (a server called "brave-search" must not
+# make its tools look like searches).
+TOOL_PARTS: dict[str, str] = {}
+
+
+def _local_name(raw: str) -> str:
+    return "".join(c if c.isalnum() or c == "_" else "_" for c in raw.lower())
+
+
 class MCPManager:
     def __init__(self) -> None:
         self.servers: dict[str, MCPServer] = {}
@@ -263,8 +280,9 @@ class MCPManager:
 
     def _register(self, server: MCPServer) -> None:
         for spec in server.tools:
-            local = f"mcp_{server.name}_{spec['name']}".lower()
-            local = "".join(c if c.isalnum() or c == "_" else "_" for c in local)[:64]
+            prefix = _local_name(f"mcp_{server.name}_")
+            full = _local_name(f"mcp_{server.name}_{spec['name']}")
+            local = full[:64]
             if local in REGISTRY and local not in self._registered:
                 continue                # never shadow a built-in
             schema = spec.get("inputSchema") or {"type": "object", "properties": {}}
@@ -273,13 +291,16 @@ class MCPManager:
             REGISTRY[local] = Tool(
                 name=local, description=description, parameters=schema,
                 category=_category_for(spec, server.config),
-                func=_make_caller(server, spec["name"]),
+                func=_make_caller(server, spec["name"], schema),
             )
             self._registered.add(local)
+            # From the untruncated name, so an effect word past the cut still counts.
+            TOOL_PARTS[local] = full[len(prefix):]
 
     async def stop(self) -> None:
         for name in self._registered:
             REGISTRY.pop(name, None)
+            TOOL_PARTS.pop(name, None)
         self._registered.clear()
         for server in self.servers.values():
             await server.stop()
@@ -298,6 +319,24 @@ class MCPManager:
                 for s in self.servers.values()
             ],
         }
+
+
+_NEVER_INHERITED = frozenset({"WISP_LAUNCH_NONCE"})
+
+
+def _inherited_env(config: dict | None) -> dict[str, str]:
+    """This process's environment for a server, without the variables whose
+    names start with one of the server's `env_clear_prefixes` (a list of
+    non-empty strings; anything else clears nothing). The server's own `env`
+    is applied after this, so it can set what it needs. Wisp's Google
+    Workspace entry clears UV_* so the user's uv settings never steer it.
+    WISP_LAUNCH_NONCE never reaches a server: it marks only the backend the app
+    launched (it gates /resetwisp's restart pass in service/main.py)."""
+    prefixes = (config or {}).get("env_clear_prefixes")
+    if not isinstance(prefixes, list) or not all(isinstance(p, str) and p for p in prefixes):
+        prefixes = []
+    return {k: v for k, v in os.environ.items()
+            if k not in _NEVER_INHERITED and not any(k.startswith(p) for p in prefixes)}
 
 
 def _trusted_read_only(config: dict | None) -> frozenset[str]:
@@ -339,11 +378,18 @@ def _category_for(spec: dict, config: dict | None = None) -> str:
     return "mcp_action"
 
 
-def _make_caller(server: MCPServer, remote_name: str):
+def _make_caller(server: MCPServer, remote_name: str, schema: dict | None = None):
     async def call(**args) -> str:
         if not server.running:
             return (f"(the '{server.name}' MCP server isn't running"
                     + (f": {server.error}" if server.error else "") + ")")
+        if server.name == "google_workspace":
+            # Only the Google accounts the user switched on in Settings.
+            from service import google_workspace
+            routed = google_workspace.route_arguments(schema or {}, args)
+            if isinstance(routed, str):
+                return routed
+            args = routed
         try:
             return await server.call_tool(remote_name, args)
         except asyncio.TimeoutError:

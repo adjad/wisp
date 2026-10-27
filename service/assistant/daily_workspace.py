@@ -106,7 +106,7 @@ _QUOTED_HISTORY = re.compile(r"(?im)^\s*(?:On .+wrote:|[- ]*Original Message[- ]
 # item so the notch can name the sender and order by recency; `replied` marks a
 # conversation the user has texted since. An email's model-written gist is
 # attached by the Today endpoint (mail_gists.attach), so this module stays pure.
-_COMMUNICATION_FIELDS = ("sender", "person", "received_ts", "replied")
+_COMMUNICATION_FIELDS = ("sender", "person", "received_ts", "replied", "critical")
 
 
 _BULK_BODY = re.compile(r"\bunsubscribe\b|manage (?:your )?(?:email )?preferences|view (?:this email )?in (?:your )?browser",
@@ -173,12 +173,15 @@ def important_email_rows(snapshot):
     sender that is none of those (a clinic, a landlord's office) still counts
     by a request line.
     """
-    from service.tools.email_tools import _MARKETING_SUBJECT, _NEWSLETTER_RE, digest_category
+    from service.tools.email_tools import _MARKETING_SUBJECT, _NEWSLETTER_RE, critical_account_mail, digest_category
     from service.tools.imessage_tools import important_message_reason
     out = []
     rows = sorted(snapshot.rows, key=lambda r: r["ts"], reverse=True)[:200]
     skip = mass_mail_filter(rows)
     for row in rows:
+        if critical_account_mail(row):
+            out.append((row, []))        # a critical account alert counts whoever sent it
+            continue
         if skip(row):
             continue
         body = _QUOTED_HISTORY.split(row.get("body", "") or "")[0]
@@ -236,11 +239,32 @@ def display_name(sender, address=""):
     return clean(inner.group(1) if inner else address, 80)
 
 
+# Event-marketing, hackathon-platform and job-alert senders write under a
+# friendly name from an ordinary-looking address ("Major League Hacking
+# <hi@mlh.io>"), so is_machine_sender misses them; they are never a person.
+_PROMO_SENDER = re.compile(
+    r"\b(?:major league hacking|mlh|devpost|hackathons?|handshake|wellfound|angellist|hackerrank|"
+    r"leetcode|unstop|job alerts?)\b|\b(?:jobs?|careers?|talent|recruiting|events?|community)@|"
+    r"@(?:[\w-]+\.)*(?:mlh\.io|devpost\.com|joinhandshake\.com|wellfound\.com|hackerrank\.com|"
+    r"leetcode\.com|unstop\.com|substack\.com|beehiiv\.com)\b", re.I)
+_PROMO_SUBJECT = re.compile(r"\bjob alert\b|\bjobs? (?:for you|near you|matching)\b|\bnew jobs?\b|"
+                            r"\bis (?:starting|live|here)\b|\bregistration (?:is )?open\b|\bregister now\b", re.I)
+
+
 def _sender_fields(row):
-    from service.tools.email_tools import is_machine_sender
+    from service.tools.email_tools import (_NEWSLETTER_RE, critical_account_mail, critical_mail_title,
+                                           is_broadcast, is_machine_sender)
     sender = display_name(row.get("sender"), row.get("sender_address", ""))
-    return dict(sender=sender, received_ts=row["ts"] if finite(row.get("ts")) else None,
-                person=bool(sender) and not is_machine_sender(f"{sender} {row.get('sender_address', '')}"))
+    identity = f"{row.get('sender', '') or ''} {row.get('sender_address', '') or ''}"
+    promo = (bool(_PROMO_SENDER.search(identity) or _NEWSLETTER_RE.search(identity)
+                  or _PROMO_SUBJECT.search(str(row.get("subject") or ""))) or is_broadcast(row))
+    fields = dict(sender=sender, received_ts=row["ts"] if finite(row.get("ts")) else None,
+                  person=bool(sender) and not promo and not is_machine_sender(f"{sender} {row.get('sender_address', '')}"))
+    kind = critical_account_mail(row)
+    if kind:
+        # The fixed, safe phrase for a critical account alert (never the subject's words).
+        fields["critical"] = critical_mail_title(row, kind).removesuffix(" — review")
+    return fields
 
 
 def _item(source, identity, title, reason, *, quote="", due=None, priority=2, reference=""):
@@ -470,10 +494,20 @@ def _junk(title):
             or text in _JUNK_TITLES)
 
 
-def needs_you(attention, *, now, day_end):
+def needs_you_fingerprint(text, due_ts):
+    """What a Needs you row said when the user cleared it: its text and due
+    time (to the minute). A reminder given a new due date, or a person who
+    texts again ("2 texts from Mom"), reads differently, so it comes back."""
+    due = "" if not finite(due_ts) else str(int(due_ts // 60))
+    return hashlib.sha256((clean(text, 200) + "\x1f" + due).encode()).hexdigest()[:24]
+
+
+def needs_you(attention, *, now, day_end, dismissed=None):
     """The Brief's "Needs you today" line: the day's attention items that are
     work for the user today, as short grounded phrases, in this order:
 
+    - critical account alerts from email ("alert": an exposed secret, a new
+      sign-in, a failed payment), as Wisp's fixed phrase, never the subject;
     - reminders past due ("overdue"), then reminders due today by their time
       ("due"), then active tasks on the day plan with no due time ("plan");
     - email from a person ("mail"): its subject, or for a subject the privacy
@@ -485,12 +519,26 @@ def needs_you(attention, *, now, day_end):
     the tabs can't disagree; collection already left out mass mail
     (mass_mail_filter). Undated reminders, notes, calendar events, mail from
     automated senders and withheld-credential mail are never listed.
+    ``dismissed`` maps item ids the user cleared from the list to the
+    fingerprint (needs_you_fingerprint) each had then; an item whose id and
+    fingerprint both still match is left out before the cut, so the next item
+    takes its place and ``more`` counts only what is still listed. Clearing
+    never changes the source: the reminder stays in Reminders.
+    Each item carries its ``fingerprint``; a dated reminder (not a Day task)
+    carries ``can_complete`` for the row's Mark done.
     Returns ``dict(items=[...], more=N)``: at most NEEDS_YOU_SHOWN items, and
     how many more were selected."""
-    overdue, due, plan, mail, texts = [], [], [], [], {}
+    overdue, due, plan, mail, texts, alerts = [], [], [], [], {}, {}
     seen = set()
     for item in attention:
         source, title = item.get("source"), clean(item.get("title"))
+        if source == "email" and isinstance(item.get("critical"), str) and clean(item["critical"]):
+            # Its subject may be withheld ("sign-in" reads as a credential); the
+            # phrase is Wisp's own. Copies of one alert are listed once.
+            text = clean(item["critical"], 120)
+            alerts.setdefault(text.casefold(), dict(id=item["id"], kind="alert", text=text, due_ts=None,
+                                                    all_day=False, received_ts=item.get("received_ts")))
+            continue
         if _junk(title) or _WITHHELD_AUTH_SUBJECT.search(title):
             continue
         stamp = item.get("due_ts")
@@ -503,8 +551,12 @@ def needs_you(attention, *, now, day_end):
             seen.add(name)
             entry = dict(id=item["id"], kind="overdue" if dated and stamp < now else "due" if dated else "plan",
                          text=title, due_ts=stamp if dated else None, all_day=item.get("all_day") is True)
+            if dated and str(item["id"]).startswith("reminders:"):
+                # A Reminders (or Wisp-only) reminder, never a Day task: Mark done
+                # completes it through the verified path (needs_you_api.done).
+                entry["can_complete"] = True
             (overdue if entry["kind"] == "overdue" else due if dated else plan).append(entry)
-        elif source == "email" and item.get("person") is True:
+        elif source == "email" and item.get("person") is True and item.get("replied") is not True:
             sender = clean(item.get("sender"), 80)
             named = review_title(title, sender)
             if named.startswith("Review: "):
@@ -517,14 +569,16 @@ def needs_you(attention, *, now, day_end):
             # A review the user already kept on the day plan is listed there, once.
             planned = {title.casefold(), named.casefold().removeprefix("review: ")}
             mail.append(dict(id=item["id"], kind="mail", text=text, due_ts=None, all_day=False,
-                             received_ts=item.get("received_ts"), planned=planned))
+                             received_ts=item.get("received_ts"), planned=planned,
+                             vip=bool(item.get("profile_people"))))
         elif source == "messages" and item.get("replied") is not True:
             sender = clean(item.get("sender"), 80)
             if not sender or sender == "Me":
                 continue
             entry = texts.setdefault(sender, dict(id=item["id"], kind="text", count=0, due_ts=None,
-                                                  all_day=False, received_ts=item.get("received_ts")))
+                                                  all_day=False, received_ts=item.get("received_ts"), vip=False))
             entry["count"] += 1
+            entry["vip"] = entry["vip"] or bool(item.get("profile_people"))
             if finite(item.get("received_ts")) and (not finite(entry["received_ts"])
                                                      or item["received_ts"] > entry["received_ts"]):
                 entry["received_ts"] = item["received_ts"]
@@ -536,19 +590,29 @@ def needs_you(attention, *, now, day_end):
     overdue.sort(key=lambda e: e["due_ts"])
     due.sort(key=lambda e: e["due_ts"])
     mail = [e for e in sorted(mail, key=newest) if not e.pop("planned") & seen]
-    picked = overdue + due + plan + mail + people
+    # Mail and texts from the people the user said matter to them (assess's
+    # profile prioritization) rise to the top, after critical alerts.
+    vip = [e for e in mail + people if e.get("vip")]
+    picked = (sorted(alerts.values(), key=newest) + sorted(vip, key=newest) + overdue + due + plan
+              + [e for e in mail if not e.get("vip")] + [e for e in people if not e.get("vip")])
     for entry in picked:
         entry.pop("received_ts", None)
+        entry.pop("vip", None)
+        entry["fingerprint"] = needs_you_fingerprint(entry["text"], entry["due_ts"])
+    if dismissed:
+        picked = [e for e in picked if dismissed.get(e["id"]) != e["fingerprint"]]
     return dict(items=picked[:NEEDS_YOU_SHOWN], more=max(0, len(picked) - NEEDS_YOU_SHOWN))
 
 
-def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_windows=(), profile=None):
+def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_windows=(), profile=None,
+           dismissed=None):
     """Return explainable attention items and a proposed itinerary, all transient.
 
     ``evidence`` contains source-labelled records and explicit readiness/coverage.
     ``behavior`` is an optional public availability result, never raw activity.
     ``profile`` is the user's own profile (service/memory/profile.py) or None;
     an item naming one of its people is raised to the top with the reason said.
+    ``dismissed`` is the user's cleared Needs you rows (store.needs_you_dismissals).
     Its windows need current evidence, increasing bounds, >=0.65 recurrence strength,
     a named timezone, and a human-readable explanation. No percentage is shown:
     these scores are evidence strength, not calibrated forecast probabilities.
@@ -572,9 +636,14 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
                              detail=clean(info.get("detail") or "Source evidence is unavailable", 500),
                              inspected=info.get("inspected", len(records)),
                              omitted=info.get("omitted", 0)))
-        # What the user must grant before this source can be read, when known.
-        if info.get("blocked") == "full_disk_access":
-            coverage[-1]["blocked"] = "full_disk_access"
+        # What the user must grant before this source can be read, when known,
+        # and why it isn't ready, so the Brief never reads "can't read" as "nothing".
+        if isinstance(info.get("blocked"), str) and info["blocked"]:
+            coverage[-1]["blocked"] = info["blocked"]
+        if info.get("ready") is not True:
+            coverage[-1]["state"] = info.get("state") if info.get("state") in ("syncing", "unavailable") else "unavailable"
+            if isinstance(info.get("reason"), str) and info["reason"].strip():
+                coverage[-1]["reason"] = clean(info["reason"], 300)
         if info.get("ready") is not True:
             records = [r for r in records if r.get("wisp_only") is True]
         for record in records:
@@ -763,7 +832,7 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
             block["warnings"].append("Suggested time · duration is an estimate")
     proposal["tasks"] = state["tasks"]
     return dict(day=day, timezone=timezone, generated_at=now, attention=items[:MAX_ITEMS],
-                needs_you=needs_you(items[:MAX_ITEMS], now=now, day_end=hi),
+                needs_you=needs_you(items[:MAX_ITEMS], now=now, day_end=hi, dismissed=dismissed),
                 attention_omitted=max(0, len(items) - MAX_ITEMS), source_coverage=coverage,
                 behavior_detail=behavior_detail,
                 behavior_context=(dict(ready=True, generated_at=behavior["generated_at"],
@@ -869,11 +938,23 @@ def collect_evidence(store, state, day, timezone, *, now):
         result["reminders"] = dict(ready=False, records=[], detail="Reminders could not be read.")
     try:
         from service.tools import email_tools as mail
-        from service.tools.email_tools import raw_email_snapshot, digest_category
+        from service.tools.email_tools import raw_email_snapshot, digest_category, critical_account_mail
         from service.tools.imessage_tools import redact_summary_codes, important_message_reason
+        from service.proactive.sources import answered_by_sent, sent_rows
         snapshot = raw_email_snapshot()
         records = []
         header_count, header_eligible = 0, False
+        sent = sent_rows()
+
+        def answered(row) -> dict:
+            # Answered from Gmail, Mail or a phone since it arrived (the user's
+            # own sent mail): no longer something that needs them.
+            stamp = row.get("ts")
+            if not sent or type(stamp) not in (int, float):
+                return {}
+            return {"replied": True} if answered_by_sent(
+                sent, account=str(row.get("account") or ""), subject=str(row.get("subject") or ""),
+                message_id=str(row.get("message_id") or ""), after=float(stamp)) else {}
         if snapshot is not None:
             # Ranking is a reason to inspect the source, never proof a reply
             # or payment is owed. Bodies cannot control destinations/actions.
@@ -885,7 +966,7 @@ def collect_evidence(store, state, day, timezone, *, now):
                 records.append(dict(id=email_record_id(row),
                     title=subject, quote=redact_summary_codes(current_lines[0]) if current_lines else subject, reference="email:" + row["account_id"] + ":" + row["message_id"],
                     review_reason="Review this source for requests or changes; ownership, reply status and deadlines are unverified.",
-                    **_sender_fields(row)))
+                    **_sender_fields(row), **answered(row)))
         elif callable(getattr(mail, "email_source_details", None)):
             # The independently owned direct-mail integration exports this
             # per-account freshness contract. Older builds without it withhold
@@ -894,13 +975,13 @@ def collect_evidence(store, state, day, timezone, *, now):
             header_count = len(selected)
             skip = mass_mail_filter(selected[:200])
             for row in selected[:200]:
-                if digest_category(row) not in {"attention", "school"} or skip(row):
+                if digest_category(row) not in {"attention", "school"} or (skip(row) and not critical_account_mail(row)):
                     continue
                 subject = redact_summary_codes(row["subject"])
                 records.append(dict(id=header_record_id(row, subject), title=subject, quote=subject,
                     reference="email-header-cache:" + key("item", _header_identity(row, subject)),
                     review_reason="Header-only review suggestion; read the original email. Body, ownership, reply status and deadlines are unverified.",
-                    **_sender_fields(row)))
+                    **_sender_fields(row), **answered(row)))
         result["email"] = dict(ready=snapshot is not None or header_eligible, records=records,
             inspected=min(200, len(snapshot.rows)) if snapshot else min(200, header_count),
             omitted=max(0, len(snapshot.rows) - 200) if snapshot else max(0, header_count - 200),
@@ -997,7 +1078,69 @@ def collect_evidence(store, state, day, timezone, *, now):
                    "Notes unavailable, stale or not verified in this launch; note tasks withheld.")
     except Exception:
         result["notes"] = dict(ready=False, records=[], detail="Notes could not be assessed.")
+    _annotate_access(result, now)
     return result
+
+
+def _no_mail_account() -> bool:
+    """The MailReader says this Mac has no Mail account (reason_kind
+    mail_not_configured, which arrives with a ready state) and no Google
+    account supplies mail either. Reads two flags: no second header pass, no
+    publication barrier. If they can't be read, mail counts as unread."""
+    try:
+        from service.tools import email_tools
+        return email_tools.email_reason_kind() == "mail_not_configured" and not email_tools._external_accounts
+    except Exception:  # noqa: BLE001 — unknown is not an all-clear: mail counts as unread
+        return True
+
+
+def _annotate_access(result, now):
+    """For each source Wisp couldn't read: ``state`` ("syncing" or
+    "unavailable"), ``blocked`` (what the person must grant, when known) and a
+    plain ``reason``, so the Brief says "Calendar access is off" with the setting
+    that fixes it instead of "nothing" or "hasn't synced yet". From this launch's
+    reader reports; never fatal. A ready source is left as it is, except mail
+    from a Mac with no Mail account and no Google account (_no_mail_account)."""
+    try:
+        from service.assistant import scheduler
+        from service.assistant.today import ACCESS_KINDS, source_access
+        live = scheduler.connectors_status()
+        started = scheduler.STARTED_AT
+    except Exception:  # noqa: BLE001
+        return
+    for source in ("calendar", "reminders"):
+        info = result.get(source)
+        if not isinstance(info, dict) or info.get("ready") is True:
+            continue
+        access = source_access(source, live.get(source), now=now, started_at=started)
+        # A ready reader with a stale or partial receipt is still being read.
+        info.update(state="syncing" if access["state"] == "ready" else access["state"],
+                    reason=access["reason"] if access["state"] != "ready" else "Reading…")
+        if access["blocked"] in ACCESS_KINDS:
+            info["blocked"] = access["blocked"]
+    for source in ("email", "notes", "messages"):
+        info = result.get(source)
+        if not isinstance(info, dict):
+            continue
+        if info.get("ready") is True:
+            if source != "email" or not _no_mail_account():
+                continue
+            # The MailReader ran and found no account to read: an empty inbox
+            # here is not an all-clear. (A linked Google account is a mailbox.)
+            info["ready"] = False
+        try:
+            from service.assistant.sync_status import source_status
+            status = source_status(source)
+        except Exception:  # noqa: BLE001
+            continue
+        state = status.get("state")
+        info["state"] = "syncing" if state == "syncing" else "unavailable"
+        kind = status.get("reason_kind")
+        if kind in ACCESS_KINDS and not info.get("blocked"):
+            info["blocked"] = kind
+        reason = str(status.get("reason") or "").strip()
+        if reason:
+            info["reason"] = clean(reason, 300)
 
 
 def workspace(store, day, timezone, *, now, behavior=None, ignored_windows=(), profile=None):
@@ -1009,5 +1152,7 @@ def workspace(store, day, timezone, *, now, behavior=None, ignored_windows=(), p
     if hide is not None:  # a Day task twin of a hidden reminder (today_api.snapshot does the same)
         state = {**state, "tasks": hide(state["tasks"], now)}
     evidence = collect_evidence(store, state, day, timezone, now=now)
+    cleared = getattr(store, "needs_you_dismissals", None)
     return assess(day, timezone, state, evidence, now=now, behavior=behavior,
-                  ignored_windows=ignored_windows, profile=profile)
+                  ignored_windows=ignored_windows, profile=profile,
+                  dismissed=cleared() if cleared is not None else None)

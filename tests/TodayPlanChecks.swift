@@ -7,8 +7,8 @@ enum WispClient { static let baseURL = URL(string: "http://127.0.0.1:1")! }
 @main
 struct TodayPlanChecks {
     @MainActor static var count = 0
-    @MainActor static func check(_ condition: Bool, _ message: String = "Today contract failed") {
-        precondition(condition, message)
+    @MainActor static func check(_ condition: Bool, _ message: String = "Today contract failed", line: Int = #line) {
+        precondition(condition, message + " (TodayPlanChecks.swift:\(line))")
         count += 1
     }
     static func instant(_ value: String) -> Date {
@@ -300,9 +300,74 @@ struct TodayPlanChecks {
         pending!.resume(returning: (try planData(day: model.day, zone: zone.identifier, blocks: ["After edit"]), response(request)))
         pending = nil
         check(await mutation.value && !model.busy && model.plan?.blocks.first?.title == "After edit")
+        var retryNaps: [Duration] = []
+        var retryWakes: [CheckedContinuation<Void, Error>] = []
+        model.retrySleep = { nap in
+            retryNaps.append(nap)
+            try await withCheckedThrowingContinuation { retryWakes.append($0) }
+        }
         model.transport = { _ in throw URLError(.timedOut) }
         await model.refresh()
-        check(model.plan == nil && !model.error.isEmpty, "Real failures must still clear unsafe planner actions")
+        check(model.plan?.blocks.first?.title == "After edit" && model.error.isEmpty,
+              "A timeout keeps the last good plan on screen and shows no error")
+        check(model.transientFailures == 1 && model.outageNotice == nil)
+        check(model.staleNotice == nil && !model.planIsStale, "a short outage keeps the plan without a notice")
+        now = now.addingTimeInterval(TodayModel.staleAfter)
+        check(model.staleNotice?.hasPrefix("Wisp isn't answering right now. Showing your day as of ") == true && model.planIsStale,
+              "a long outage says how old the day on screen is: \(model.staleNotice ?? "nil")")
+        await waitFor("A transient failure schedules a quiet retry") { retryWakes.count == 1 }
+        check(retryNaps == [.seconds(1)], "The first retry comes after a second")
+        model.transport = { req in
+            (try planData(day: model.day, zone: zone.identifier, blocks: ["Recovered"]), response(req))
+        }
+        retryWakes.removeFirst().resume()
+        await waitFor("The retry reloads the day by itself") { model.plan?.blocks.first?.title == "Recovered" }
+        check(model.transientFailures == 0 && model.error.isEmpty && retryWakes.isEmpty)
+        check(model.staleNotice == nil && !model.planIsStale, "a good read clears the stale notice")
+        model.transport = { _ in throw URLError(.cannotConnectToHost, userInfo: [NSLocalizedDescriptionKey: "Wisp's service isn't running yet."]) }
+        await model.refresh()
+        check(model.plan?.blocks.first?.title == "Recovered" && model.error.isEmpty,
+              "The identity check's 'not running yet' never reaches the Brief")
+        await waitFor("A second failure retries again") { retryWakes.count == 1 }
+        model.transport = { req in
+            (Data("{\"detail\":\"Today is unavailable\"}".utf8),
+             HTTPURLResponse(url: req.url!, statusCode: 503, httpVersion: nil, headerFields: nil)!)
+        }
+        retryWakes.removeFirst().resume()
+        await waitFor("A 503 is also retried quietly") { retryWakes.count == 1 && model.transientFailures == 2 }
+        check(retryNaps.last == .seconds(2) && model.error.isEmpty, "Retries back off")
+        check(TodayModel.retryDelay(after: 3) == .seconds(4) && TodayModel.retryDelay(after: 9) == .seconds(15))
+        model.transport = { req in
+            (Data("{\"detail\":\"Refresh before editing\"}".utf8),
+             HTTPURLResponse(url: req.url!, statusCode: 409, httpVersion: nil, headerFields: nil)!)
+        }
+        retryWakes.removeFirst().resume()
+        await waitFor("A refusal is a real error") { model.error == "Refresh before editing" }
+        check(model.plan == nil && model.transientFailures == 0 && retryWakes.isEmpty,
+              "Real failures still clear unsafe planner actions, once, without retrying")
+        model.transport = { req in (Data("{\"day\": 3}".utf8), response(req)) }
+        await model.refresh()
+        check(model.error == "Wisp couldn't read today's plan from its service.",
+              "An unreadable reply is said plainly")
+        // Nothing on screen and the service still not answering: the loading row says so.
+        let starting = TodayModel(now: { now }, timeZoneProvider: { currentZone })
+        var startingWakes: [CheckedContinuation<Void, Error>] = []
+        starting.retrySleep = { _ in try await withCheckedThrowingContinuation { startingWakes.append($0) } }
+        starting.transport = { _ in throw URLError(.cannotConnectToHost) }
+        await starting.refresh()
+        for attempt in 2...4 {
+            await waitFor("Each failed start retries") { startingWakes.count == 1 }
+            startingWakes.removeFirst().resume()
+            await waitFor("The retry ran") { starting.transientFailures == attempt }
+        }
+        check(starting.plan == nil && starting.error.isEmpty
+              && starting.outageNotice == "Wisp is taking a while to start. Still trying…")
+        await waitFor("It keeps trying") { startingWakes.count == 1 }
+        starting.transport = good
+        startingWakes.removeFirst().resume()
+        await waitFor("The day loads once the service answers") { starting.plan != nil }
+        check(starting.outageNotice == nil && starting.transientFailures == 0)
+        model.retrySleep = { try await Task.sleep(for: $0) }
 
         // Drive the model's app-owned loop without a view or wall-clock waits.
         var todayReads = 0, upcomingReads = 0, briefReads = 0
@@ -321,11 +386,14 @@ struct TodayPlanChecks {
                 return (Data("{}".utf8), HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
             }
         }
-        model.startBackgroundRefresh(sleep: { _ in
+        var naps: [Duration] = []
+        model.startBackgroundRefresh(sleep: { nap in
+            naps.append(nap)
             try await withCheckedThrowingContinuation { sleeps.append($0) }
         }, afterRefresh: { cycles += 1 })
         await waitFor("Background refresh must load without a mounted tab") { cycles == 1 && sleeps.count == 1 }
         check(todayReads == 1 && upcomingReads == 1 && briefReads == 1)
+        check(naps == [.seconds(30)], "A loaded Brief waits the full interval")
         model.startBackgroundRefresh()
         await Task.yield()
         check(todayReads == 1 && sleeps.count == 1, "Reopening must not restart the loop or refetch")
@@ -381,8 +449,246 @@ struct TodayPlanChecks {
         }
     }
 
+    /// The live /assistant/today shape (2026-10-24, proactive engine on), every
+    /// value replaced with a synthetic one.
+    static let liveShape = #"""
+    {"day":"2026-10-24","timezone":"America/Los_Angeles","generated_at":1792905200.27,
+     "preferences":{"start_minute":540,"end_minute":1080,"not_before":null},
+     "sources":{"calendar":{"ready":true,"last_sync":1792905168.6,"reason":"Up to date"},
+                "reminders":{"ready":true,"last_sync":1792905168.7,"reason":"Up to date"}},
+     "provisional":false,"warnings":[],
+     "tasks":[{"kind":"task","priority":2,"status":"active","title":"Fixture task","day":"2026-10-24",
+               "timezone":"America/Los_Angeles","duration_minutes":30,"due_ts":1792950000.0,"id":"task-1",
+               "revision":4,"pinned_start":null}],
+     "blocks":[{"id":"b1","title":"Fixture block","start":1792940000.0,"end":1792941800.0,"kind":"task",
+                "task_id":"task-1","warnings":["Estimated"]}],
+     "deadlines":[],
+     "all_day":[{"id":"a1","title":"Fixture holiday","start":1792911600.0,"end":1792998000.0,"kind":"calendar",
+                 "task_id":null,"warnings":[]}],
+     "unscheduled":[],"revision":4,"trace_id":"0123456789abcdef0123456789abcdef",
+     "workspace":{
+       "day":"2026-10-24","timezone":"America/Los_Angeles","generated_at":1792905200.3,
+       "attention":[{"id":"att-1","source":"email","title":"Fixture mail","reason":"Due soon","quote":"Fixture quote",
+                     "due_ts":1792950000.0,"priority":1,"reference":"ref-1","suggested_minutes":15,"needs_review":false}],
+       "attention_omitted":0,
+       "source_coverage":[{"source":"email","ready":true,"detail":"Read 50","inspected":50,"omitted":0}],
+       "behavior_detail":"","behavior_context":{"any":"new field"},"explanation":"Fixture explanation",
+       "suggested_count":0,"tentative_count":0,
+       "proposed_plan":{"day":"2026-10-24","timezone":"America/Los_Angeles","blocks":[
+           {"id":"b1","title":"Fixture block","start":1792940000.0,"end":1792941800.0,"kind":"task",
+            "task_id":"task-1","warnings":[]}],"unscheduled":[],"warnings":[]},
+       "mail_overview":{"text":"Two fixture emails.","source":"model"},
+       "texts_overview":{"text":"One fixture text.","source":"summary"},
+       "mail_summary":{"text":"Fixture inbox summary.","source":"summary"},
+       "needs_you":{"items":[{"id":"n1","kind":"alert","text":"Fixture security alert","due_ts":null,"all_day":false},
+                             {"id":"n2","kind":"overdue","text":"Fixture overdue","due_ts":null,"all_day":false},
+                             {"id":"n3","kind":"plan","text":"Fixture plan","due_ts":null,"all_day":false}],"more":0},
+       "proactive":{"state":"ready","as_of":1792905000.0,"progress":{"done":0,"total":0},
+         "accounts":["owner@example.com"],"owner":{"id":"owner@example.com","label":"You"},"summary":"Fixture summary",
+         "cards":[{"id":"card:1","meta":"Mail","title":"Fixture alert card","body":"Fixture body","why":"Fixture why",
+                   "account":"owner@example.com","critical":true,"todo_id":"todo:1","due_ts":null,
+                   "sources":[{"kind":"mail","ref":"m1","who":"Fixture Sender","quote":"Fixture quote"}],
+                   "action":{"method":"read","button":"Open","draft":"","recipient":"","event":null,
+                             "envelope":{"kind":"none"},"to":[],"cc":[],"subject":"","reply_all":false,
+                             "reply_ref":{"message_id":"m1","account":"owner@example.com","account_id":"acct"},
+                             "open_url":"message://fixture","open_label":"Open in Mail"}},
+                  {"id":"card:2","meta":"Added","title":"Fixture auto-added event","body":"Fixture body","why":"",
+                   "account":"owner@example.com","todo_id":null,"due_ts":1792950000.0,"sources":[],
+                   "action":{"method":"undo_add","button":"Undo","undo":{"kind":"calendar","id":"evt-1"}}}],
+         "todos":[{"id":"todo:1","title":"Fixture to-do","source":"mail","account":"owner@example.com","who":"Fixture",
+                   "quote":"Fixture","due_ts":1792950000.0,"due_label":"Today","kind":"reply","done":false,
+                   "card_id":null,"timed":true,"added_to_day":false}],
+         "threads":[{"id":"t1","source":"mail","account":"owner@example.com","who":"Fixture","title":"Fixture thread",
+                     "summary":"Fixture summary","user_wrote":false,"needs_reply":true,"replied":false,
+                     "received_ts":1792900000.0,"reply_ref":"m1","attention":"high","attention_reason":"Fixture"}],
+         "lede":"Fixture lede",
+         "stats":{"read":10,"found":3,"drafted":1,"filtered":2,"read_breakdown":{"mail":5,"texts":4,"notes":1},
+                  "as_of":1792905000.0},
+         "debug":{"waiting":[{"who":"Fixture","waiting":false,"reason":"read, under a day"}]}}}}
+    """#
+
+    /// Decoding stays whole when the service adds, drops or reshapes a field.
+    static func tolerantDecodeChecks() throws {
+        func decode(_ text: String) throws -> TodayPlan { try JSONDecoder().decode(TodayPlan.self, from: Data(text.utf8)) }
+        func edited(_ edit: (inout [String: Any]) -> Void) throws -> TodayPlan {
+            var object = try JSONSerialization.jsonObject(with: Data(liveShape.utf8)) as! [String: Any]
+            edit(&object)
+            return try JSONDecoder().decode(TodayPlan.self, from: JSONSerialization.data(withJSONObject: object))
+        }
+        let live = try decode(liveShape)
+        precondition(live.workspace?.proactive?.cards.count == 2, "The live shape decodes with every card")
+        precondition(live.workspace?.needs_you?.items.map(\.kind) == ["alert", "overdue", "plan"])
+        precondition(live.workspace?.mail_overview?.text == "Two fixture emails." && live.workspace_error == nil)
+        precondition(live.tasks.count == 1 && live.displayBlocks.count == 1 && live.all_day.count == 1)
+
+        // A needs-you item, a block and a task this build can't read are dropped, not the plan.
+        let rows = try edited { plan in
+            var workspace = plan["workspace"] as! [String: Any]
+            var needs = workspace["needs_you"] as! [String: Any]
+            needs["items"] = (needs["items"] as! [[String: Any]]) + [["id": "n4", "kind": "brand_new"]]
+            workspace["needs_you"] = needs
+            workspace["mail_overview"] = "a string where an object was"
+            workspace["attention"] = (workspace["attention"] as! [[String: Any]]) + [["id": "broken"]]
+            plan["workspace"] = workspace
+            plan["blocks"] = (plan["blocks"] as! [[String: Any]]) + [["id": "no-start", "title": "x", "kind": "task"]]
+            plan["tasks"] = (plan["tasks"] as! [[String: Any]]) + [["id": "half"]]
+            plan["brand_new_top_level"] = ["anything": true]
+        }
+        precondition(rows.workspace?.needs_you?.items.count == 3 && rows.workspace?.mail_overview == nil
+                     && rows.workspace?.attention.count == 1 && rows.blocks.count == 1 && rows.tasks.count == 1
+                     && rows.workspace?.proactive?.cards.count == 2 && rows.workspace_error == nil,
+                     "Unreadable rows are skipped and the rest of the Brief stays")
+
+        // Missing optional parts: a minimal service reply still decodes.
+        let minimal = try decode(#"{"day":"2026-10-24","timezone":"America/Los_Angeles"}"#)
+        precondition(minimal.blocks.isEmpty && minimal.workspace == nil && minimal.revision == 0
+                     && minimal.preferences.start_minute == 540 && minimal.workspace_error == nil)
+
+        // A workspace whose plan can't be read is left out with a note; the saved plan shows.
+        let reshaped = try edited { plan in
+            var workspace = plan["workspace"] as! [String: Any]
+            workspace["proposed_plan"] = ["blocks": "not a list"]
+            plan["workspace"] = workspace
+        }
+        precondition(reshaped.workspace == nil && reshaped.workspace_error == TodayPlan.unreadableWorkspace
+                     && reshaped.displayBlocks.count == 1, "An unreadable workspace never blanks the Day")
+        // Only the day and zone it is for are required.
+        precondition((try? decode(#"{"timezone":"America/Los_Angeles"}"#)) == nil)
+    }
+
     @MainActor
+    /// What the Brief and Day know about sources Wisp couldn't read.
+    static func sourceAccessChecks() throws {
+        let payload: [String: Any] = [
+            "day": "2026-10-22", "timezone": "UTC",
+            "sources": ["calendar": ["ready": false, "last_sync": 1000, "reason": "Calendar access is off for Wisp.",
+                                     "state": "unavailable", "blocked": "calendar_access"],
+                        "reminders": ["ready": true, "last_sync": 1000, "reason": "Up to date"]],
+            "preferences": ["start_minute": 540, "end_minute": 1080, "not_before": NSNull(), "plan_all_day": true],
+            "workspace": ["attention": [], "attention_omitted": 0,
+                          "source_coverage": [["source": "email", "ready": false, "detail": "", "inspected": 0, "omitted": 0,
+                                               "state": "syncing"],
+                                              ["source": "messages", "ready": false, "detail": "", "inspected": 0, "omitted": 0,
+                                               "blocked": "full_disk_access"]],
+                          "proposed_plan": ["blocks": [], "unscheduled": [], "warnings": []]],
+        ]
+        let plan = try JSONDecoder().decode(TodayPlan.self, from: try JSONSerialization.data(withJSONObject: payload))
+        check(plan.access("calendar")?.blocked == "calendar_access" && plan.access("calendar")?.state == .unavailable
+              && plan.access("calendar")?.detail == "Calendar access is off for Wisp.", "a blocked calendar decodes with its reason")
+        check(plan.access("reminders")?.readable == true, "ready reminders")
+        check(plan.access("email")?.state == .syncing && plan.access("messages")?.fix == BriefDetail.fullDiskAccess,
+              "coverage carries the rest")
+        check(plan.access("notes") == nil, "a source the service didn't mention is unknown, not unread")
+        check(plan.unreadSources == ["calendar", "email", "messages"], "unread sources in reading order: \(plan.unreadSources)")
+        check(plan.preferences.plan_all_day == true, "the plan-anyway preference decodes")
+        // An older service: no state, no blocked; a missing preference flag is false.
+        let older = try JSONDecoder().decode(TodayPlan.self, from: try planData(day: "2026-10-22", zone: "UTC"))
+        check(older.access("calendar")?.readable == true && older.preferences.plan_all_day == nil, "an older service still decodes")
+        // Mail read through a connected, fresh Google account counts as read here
+        // too (workspace.proactive.mail_read_by), as in the proactive section.
+        var viaGoogle = payload
+        var googleWorkspace = payload["workspace"] as! [String: Any]
+        googleWorkspace["proactive"] = ["state": "ready", "accounts": ["me", "ada@gmail.com"],
+                                        "mail_read_by": ["ada@gmail.com"]]
+        viaGoogle["workspace"] = googleWorkspace
+        let google = try JSONDecoder().decode(TodayPlan.self, from: try JSONSerialization.data(withJSONObject: viaGoogle))
+        check(google.unreadSources == ["calendar", "messages"], "Google-read mail isn't unread: \(google.unreadSources)")
+        // What the proactive section is given (NotchBriefView.coverage), and the
+        // raw workspace coverage: both agree with the top line.
+        let wired = ["calendar", "reminders", "email", "messages"].compactMap { google.access($0) }
+        let proactiveUnread = google.workspace?.proactive?.unreadSources(wired).map(\.source) ?? []
+        let rawCoverage = google.workspace?.source_coverage.map(\.access) ?? []
+        check(google.workspace?.proactive?.unreadSources(rawCoverage).map(\.source) == ["messages"],
+              "the proactive rule alone also reads Google mail as read")
+        check(proactiveUnread == google.unreadSources, "the top line and the proactive section agree: \(proactiveUnread)")
+        // The mail tile agrees with the top line: ready, and no Mail.app problem shown.
+        let rawMail = google.workspace?.source_coverage.first { $0.source == "email" }?.access
+        let tileLines = BriefDetail.mail(needing: [], ready: google.mailTile?.ready == true,
+                                         access: google.mailTile?.access).lines.map(\.text)
+        check(google.mailTile?.ready == true && google.mailTile?.access?.readable == true
+              && rawMail?.readable == false && !tileLines.contains(rawMail?.headline ?? "?"),
+              "Google-read mail: the tile shows mail, not the Mail.app problem: \(tileLines)")
+        check(plan.mailTile?.ready == false && plan.mailTile?.access?.state == .syncing,
+              "without Google the tile keeps the coverage row's state")
+        // Two Google accounts, one stale: mail is only partly read. No all-clear
+        // anywhere, and the stale account is named.
+        func mailPlan(emailReady: Bool, readBy: [String], unreadBy: [String],
+                      reasons: [String: String] = [:]) throws -> TodayPlan {
+            var body = payload
+            var ws = payload["workspace"] as! [String: Any]
+            ws["source_coverage"] = [["source": "email", "ready": emailReady, "detail": "", "inspected": 0, "omitted": 0],
+                                     ["source": "messages", "ready": true, "detail": "", "inspected": 0, "omitted": 0]]
+            ws["proactive"] = ["state": "ready", "accounts": ["me"] + readBy + unreadBy,
+                               "mail_read_by": readBy, "mail_unread_by": unreadBy, "mail_unread_reasons": reasons]
+            body["workspace"] = ws
+            return try JSONDecoder().decode(TodayPlan.self, from: try JSONSerialization.data(withJSONObject: body))
+        }
+        let partly = try mailPlan(emailReady: false, readBy: ["home@gmail.com"], unreadBy: ["work@gmail.com"],
+                                  reasons: ["work@gmail.com": "reconnect"])
+        check(partly.unreadSources == ["calendar", "email"] && partly.access("email")?.headline == "Couldn't check work@gmail.com",
+              "one stale account of two: mail partly read and named: \(partly.unreadSources)")
+        check(partly.mailTile?.ready == true && partly.mailTile?.access?.readable == false, "the tile shows what was read")
+        let partlyLines = BriefDetail.mail(needing: [], ready: true, access: partly.mailTile?.access).lines.map(\.text)
+        check(partlyLines.first == "Couldn't check work@gmail.com" && !partlyLines.contains("Nothing needs a reply"),
+              "the tile names the unchecked account, never an all-clear: \(partlyLines)")
+        let partlyLede = DayTimeline.lede(weekday: "Thursday", isToday: true, load: nil, dueToday: [], overdue: [], next: nil,
+                                          unread: ["email"], uncheckedMail: partly.uncheckedMail)
+        check(partlyLede.contains("Wisp couldn't check work@gmail.com") && !partlyLede.contains("Nothing needs you"),
+              "the top line names it: \(partlyLede)")
+        check(BriefTiles.emptyTop(unread: partly.unreadSources, uncheckedMail: partly.uncheckedMail)
+                == "Wisp can't see your calendar yet. Wisp couldn't check work@gmail.com. Reconnect in Settings.",
+              "the empty Top 3 names it too")
+        let partlyProactive = partly.workspace?.proactive?.unreadSources(
+            partly.workspace?.source_coverage.map(\.access) ?? []).map(\.source)
+        check(partlyProactive == ["email"], "the proactive rule agrees: \(partlyProactive ?? [])")
+        // Only stale (a restored receipt, a slow sync): never "reconnect", still no all-clear.
+        let restored = try mailPlan(emailReady: true, readBy: ["home@gmail.com"], unreadBy: ["work@gmail.com"],
+                                    reasons: ["work@gmail.com": "syncing"])
+        let restoredAccess = restored.access("email")
+        check(restored.unreadSources == ["calendar", "email"]
+              && restoredAccess?.headline == "Wisp hasn't finished checking work@gmail.com yet"
+              && !(restoredAccess?.detail.contains("Reconnect") ?? true),
+              "a stale account says Wisp is still checking, not reconnect: \(restoredAccess?.headline ?? "")")
+        let restoredLede = DayTimeline.lede(weekday: "Thursday", isToday: true, load: nil, dueToday: [], overdue: [], next: nil,
+                                            unread: ["email"], uncheckedMail: restored.uncheckedMail)
+        check(restoredLede.hasSuffix("Wisp hasn't finished checking work@gmail.com yet."), "top line: \(restoredLede)")
+        // A missing or odd reason reads as still checking, never as reconnect or all-clear.
+        let noReason = try mailPlan(emailReady: true, readBy: [], unreadBy: ["work@gmail.com"])
+        check(noReason.uncheckedMail == UncheckedMail(syncing: ["work@gmail.com"]) && noReason.unreadSources.contains("email"),
+              "no reason: still checking")
+        // Mail.app read fine but a Google account it doesn't hold is stale: still partly read.
+        let appPlusStale = try mailPlan(emailReady: true, readBy: [], unreadBy: ["work@gmail.com"])
+        check(appPlusStale.unreadSources.contains("email"), "Mail.app ready doesn't cover an unchecked Google account")
+        // Both fresh: fully read, even with Mail.app unreadable.
+        let bothFresh = try mailPlan(emailReady: false, readBy: ["home@gmail.com", "work@gmail.com"], unreadBy: [])
+        check(!bothFresh.unreadSources.contains("email") && bothFresh.mailTile?.access?.readable == true, "both fresh: read")
+        // One account plus Mail.app readable (the service found Mail.app covers it): fully read.
+        let oneAndApp = try mailPlan(emailReady: true, readBy: [], unreadBy: [])
+        check(!oneAndApp.unreadSources.contains("email") && oneAndApp.mailTile?.ready == true, "Mail.app read it all: read")
+        var linkedOnly = googleWorkspace
+        linkedOnly["proactive"] = ["state": "ready", "accounts": ["me", "ada@gmail.com"]]
+        viaGoogle["workspace"] = linkedOnly
+        let notRead = try JSONDecoder().decode(TodayPlan.self, from: try JSONSerialization.data(withJSONObject: viaGoogle))
+        check(notRead.unreadSources == ["calendar", "email", "messages"], "a linked account alone isn't a read")
+        // No workspace (assess failed, or it didn't decode): mail and texts were
+        // never read, so they are unread, never an all-clear.
+        check(older.workspace == nil && older.unreadSources == ["email", "messages"],
+              "a missing workspace leaves mail and texts unread: \(older.unreadSources)")
+        check(older.access("email")?.state == .unavailable && older.access("notes") == nil,
+              "mail without a workspace is unavailable; notes stay unknown")
+        var broken = payload
+        broken["workspace"] = ["attention": "not a list"]
+        let undecodable = try JSONDecoder().decode(TodayPlan.self, from: try JSONSerialization.data(withJSONObject: broken))
+        check(undecodable.workspace == nil && undecodable.unreadSources == ["calendar", "email", "messages"],
+              "an undecodable workspace leaves mail and texts unread: \(undecodable.unreadSources)")
+        let lede = DayTimeline.lede(weekday: "Thursday", isToday: true, load: nil, dueToday: [], overdue: [], next: nil,
+                                   unread: older.unreadSources)
+        check(!lede.contains("Nothing needs you"), "no all-clear without a workspace: \(lede)")
+    }
+
     static func main() async throws {
+        try tolerantDecodeChecks()
+        try sourceAccessChecks()
         try evidenceLabelChecks()
         await storedBriefChecks()
         try await refreshLifecycleChecks()

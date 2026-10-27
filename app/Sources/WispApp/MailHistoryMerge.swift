@@ -9,10 +9,16 @@ enum MailHistoryTransport {
         post(["history": history], to: endpoint, session: session, completion: completion)
     }
 
+    /// `reason`/`reasonKind` say what the person can do about zero accounts
+    /// (MailReader sends "mail_not_configured"); they ride in this one compound
+    /// update so no second request can arrive out of order.
     static func postEmptyAccounts(to endpoint: URL, readSource: String,
+                                  reason: String = "", reasonKind: String = "",
                                   session: URLSession = .shared, completion: @escaping () -> Void = {}) {
-        post(["headers": "", "history": "",
-              "diagnostics": ["available": true, "reason": "", "syncing": false, "read_source": readSource]],
+        var diagnostics: [String: Any] = ["available": true, "reason": reason, "syncing": false,
+                                          "read_source": readSource]
+        if !reasonKind.isEmpty { diagnostics["reason_kind"] = reasonKind }
+        post(["headers": "", "history": "", "diagnostics": diagnostics],
              to: endpoint, session: session, completion: completion)
     }
 

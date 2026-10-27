@@ -282,11 +282,7 @@ struct SearchView: View {
                 .foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Button("Open Accessibility Settings…") {
-                PageReader.requestAccessibility()
-                if let url = URL(string: "x-apple.systempreferences:com.apple.preference"
-                                 + ".security?Privacy_Accessibility") {
-                    NSWorkspace.shared.open(url)
-                }
+                Permissions.requestAccessibility()
             }
             .buttonStyle(.plain)
             .font(.system(size: 11, weight: .medium))

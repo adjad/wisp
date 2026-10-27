@@ -56,3 +56,83 @@ enum AgentSend {
         return text
     }
 }
+
+/// A turn that failed only because Wisp's model isn't ready yet: nothing ran
+/// (no tool, no text), so the question is put back, never shown as an error.
+/// The service says so with an error `code` (`setup_needed`, `model_loading`,
+/// `engine_starting`); older services only with their message, which is read
+/// as a fallback.
+enum AskNotReady: Equatable {
+    /// No model is downloaded or set up yet: the setup card is the way forward.
+    case setup
+    /// The engine or model is still coming up: try again in a moment.
+    case starting
+
+    static func classify(code: String, message: String) -> AskNotReady? {
+        switch code {
+        case "setup_needed": return .setup
+        case "model_loading", "engine_starting": return .starting
+        default: break
+        }
+        let text = message.lowercased()
+        if text.contains("isn't downloaded") || text.contains("finish setup") { return .setup }
+        if text.contains("trying to restart it") || text.contains("did not become ready")
+            || text.contains("still loading") || text.contains("still starting") { return .starting }
+        return nil
+    }
+
+    /// One wait before the single automatic retry of a `.starting` question.
+    static let retryDelay: UInt64 = 8_000_000_000
+
+    /// What Ask says, plainly, instead of a red error.
+    func notice(willRetry: Bool) -> String {
+        switch self {
+        case .setup:
+            return "Wisp's AI model isn't set up yet. Finish setup above, then press Return: your question is waiting in the box."
+        case .starting:
+            return willRetry
+                ? "Wisp's AI is still starting up. Your question is in the box, and I'll send it again in a few seconds."
+                : "Wisp's AI is still starting up. Your question is back in the box; press Return in a moment."
+        }
+    }
+}
+
+/// The tappable questions under an empty Ask: ones a fresh install can answer
+/// even before any source is allowed. A question about a source Wisp can't
+/// read (Calendar or Mail denied or turned off) is left out, so a first tap
+/// never ends in "I can't read that".
+enum AskStarters {
+    static let limit = 4
+
+    /// `unreadable`: source ids ("calendar", "email") Wisp can't read now.
+    static func prompts(unreadable: Set<String>) -> [String] {
+        var out = ["What can you do?"]
+        if !unreadable.contains("calendar") { out.append("What's on my calendar today?") }
+        if !unreadable.contains("email") { out.append("Any emails I need to reply to?") }
+        out.append("Is my data private?")
+        if out.count < limit { out.append("How do I use Wisp?") }
+        return Array(out.prefix(limit))
+    }
+
+    /// The starters not yet asked in this chat, in their original order. A starter
+    /// counts as asked when a user turn says it (ignoring case and surrounding
+    /// whitespace), so the set resets with a new chat and survives reopening the panel.
+    static func remaining(_ all: [String], askedTexts: [String]) -> [String] {
+        let asked = Set(askedTexts.map(normalized))
+        return all.filter { !asked.contains(normalized($0)) }
+    }
+
+    private static func normalized(_ s: String) -> String {
+        s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    /// The chat window's own starters, shown on an empty chat and, once it has
+    /// begun, as "Try another" for the ones not yet asked.
+    static let chatWindow = ["What can you do?", "What's on my calendar this week?", "Any emails I need to reply to?",
+                             "Draft a reply to my last email", "Is my data private?"]
+
+    /// Source states that mean Wisp can't read the source on this Mac.
+    static func unreadable(states: [String: String]) -> Set<String> {
+        Set(states.filter { $0.value == "unavailable" || $0.value == "disabled" }.keys)
+    }
+}

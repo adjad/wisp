@@ -104,6 +104,19 @@ func setupSnapshot(_ model: String = "A", ready: Bool = true, bundled: Bool = tr
      "engines": [], "checks": [], "disclosure": "Synthetic fixture"]
 }
 
+/// The pure hold checks below run on a Mac that never sleeps: uptime keeps
+/// pace with wall time. The sleep checks pass uptime themselves.
+extension SetupDownloadHold {
+    mutating func observe(_ downloads: [SetupGuideModel.DownloadTask],
+                          previous: [SetupGuideModel.DownloadTask], now: Date) {
+        observe(downloads, previous: previous, now: now, uptime: now.timeIntervalSince1970)
+    }
+    mutating func failed(now: Date) { failed(now: now, uptime: now.timeIntervalSince1970) }
+    mutating func decide(_ downloads: [SetupGuideModel.DownloadTask], ready: Bool, now: Date) -> Level {
+        decide(downloads, ready: ready, now: now, uptime: now.timeIntervalSince1970)
+    }
+}
+
 @main
 struct SetupGuideChecks {
     @MainActor static func main() async throws {
@@ -540,6 +553,494 @@ struct SetupGuideChecks {
                       "Actual managed completion/route/native pipeline: \(item["name"]!)")
             }
         }
+        // A transfer keeps setup's poll alive after the notch card or a window
+        // goes away, until the model has arrived; it never starts one by itself.
+        do {
+            func tasks(_ state: String) -> [String: Any] {
+                ["tasks": [["model": "G", "state": state, "progress": 40,
+                            "downloaded_bytes": 40, "total_bytes": 100, "bytes_per_second": 5]]]
+            }
+            var transferState = "downloading"
+            var readyNow = false
+            // Wisp's own engine, running, no model yet; then ready once readyNow.
+            SetupHTTP.configure { request in
+                if request.url!.path == "/engine/downloads" { return (200, tasks(transferState), 0) }
+                var snapshot = setupSnapshot("G", ready: false)
+                snapshot["omlx"] = ["installed": true, "running": true, "bundled": true, "min_macos": 15,
+                                    "url": "https://example.invalid", "admin_url": "http://127.0.0.1:8791/admin"]
+                if readyNow { snapshot = setupSnapshot("G", ready: true) }
+                return (200, snapshot, 0)
+            }
+            let watcher = SetupGuideModel(session: session)
+            watcher.show(in: "notch")
+            // The poll show() starts runs alongside these calls and may supersede
+            // them, so each check waits (bounded) for the state to settle.
+            await watcher.refresh()
+            await watcher.refreshDownloads()
+            let settled1 = try await waitForSetupRequest { watcher.hosts[SetupGuideModel.downloadHost] == 1 }
+            check(settled1, "An active transfer seen from a shown setup holds the download host")
+            watcher.hide(from: "notch")
+            check(watcher.isShown, "Collapsing the notch card leaves the poll running while the transfer does")
+            transferState = "completed"
+            await watcher.refreshDownloads()
+            let settled2 = try await waitForSetupRequest { watcher.downloads.first?.state == "completed" }
+            check(settled2 && watcher.hosts[SetupGuideModel.downloadHost] == 1, "A just-finished download keeps the poll until the model arrives")
+            readyNow = true
+            await watcher.refresh()
+            let settled3 = try await waitForSetupRequest { watcher.hosts[SetupGuideModel.downloadHost] == nil && !watcher.isShown }
+            check(settled3, "Once Wisp can answer, the download host lets go and the poll stops")
+
+            // Seen with nothing on screen (a direct call), a transfer never starts a poll.
+            transferState = "downloading"
+            readyNow = false
+            let unseen = SetupGuideModel(session: session)
+            await unseen.refresh()
+            await unseen.refreshDownloads()
+            check(unseen.hosts.isEmpty, "No host is taken while setup isn't on screen")
+
+            // Cancelled or failed: nothing is transferring, so the host goes.
+            let stopper = SetupGuideModel(session: session)
+            stopper.show(in: "window")
+            await stopper.refresh()
+            await stopper.refreshDownloads()
+            let settled4 = try await waitForSetupRequest { stopper.hosts[SetupGuideModel.downloadHost] == 1 }
+            check(settled4, "Held while downloading")
+            transferState = "cancelled"
+            await stopper.refreshDownloads()
+            let settled5 = try await waitForSetupRequest { stopper.hosts[SetupGuideModel.downloadHost] == nil }
+            check(settled5 && stopper.hosts["window"] == 1,
+                  "A paused transfer lets the download host go; the window keeps its own")
+            stopper.hide(from: "window")
+
+            func task(_ state: String, bytes: Double = 40) -> SetupGuideModel.DownloadTask {
+                let decoder = JSONDecoder()
+                decoder.keyDecodingStrategy = .convertFromSnakeCase
+                var row = (tasks(state)["tasks"] as! [[String: Any]])[0]
+                row["downloaded_bytes"] = bytes
+                return try! decoder.decode(SetupGuideModel.DownloadTask.self,
+                                           from: JSONSerialization.data(withJSONObject: row))
+            }
+            let t0 = Date(timeIntervalSince1970: 1000)
+            func at(_ seconds: TimeInterval) -> Date { t0.addingTimeInterval(seconds) }
+            /// Reads every 3 s, as the poll does, from `from` to `to` seconds.
+            func read(_ hold: inout SetupDownloadHold, _ rows: [SetupGuideModel.DownloadTask],
+                      from: TimeInterval, to: TimeInterval) {
+                var second = from
+                while second <= to {
+                    hold.observe(rows, previous: rows, now: at(second))
+                    _ = hold.decide(rows, ready: false, now: at(second))
+                    second += SetupDownloadHold.fastPoll
+                }
+            }
+            // Running, starting, finishing, stopped.
+            var hold = SetupDownloadHold()
+            hold.observe([task("pending")], previous: [], now: t0)
+            check(hold.decide([task("pending")], ready: false, now: t0) == .hold, "Pending holds")
+            hold = SetupDownloadHold()
+            hold.observe([task("failed")], previous: [], now: t0)
+            check(hold.decide([task("failed")], ready: false, now: t0) == .none, "Failed lets go")
+            hold = SetupDownloadHold()
+            hold.starting = true
+            check(hold.decide([], ready: false, now: t0) == .hold, "Download pressed holds before the engine answers")
+            hold = SetupDownloadHold()
+            hold.observe([task("completed")], previous: [task("downloading")], now: t0)
+            check(hold.decide([task("completed")], ready: false, now: at(20)) == .hold, "Finishing holds a while")
+            check(hold.decide([task("completed")], ready: true, now: at(21)) == .none, "Ready lets go at once")
+            hold = SetupDownloadHold()
+            hold.observe([task("completed")], previous: [task("downloading")], now: t0)
+            read(&hold, [task("completed")], from: 3, to: SetupDownloadHold.finishingGrace + 3)
+            check(hold.level == .none, "A model that never arrives doesn't poll forever")
+
+            // An engine that leaves a transfer "downloading" at 0 B/s: watched, not held.
+            hold = SetupDownloadHold()
+            read(&hold, [task("downloading", bytes: 40)], from: 0, to: 9 * 60)
+            check(hold.level == .hold, "Under 10 minutes without progress: still held")
+            read(&hold, [task("downloading", bytes: 40)], from: 9 * 60 + 3, to: 10 * 60 + 3)
+            check(hold.level == .watch, "No progress for 10 minutes: watched slowly, no longer held")
+            hold.observe([task("downloading", bytes: 41)], previous: [task("downloading", bytes: 40)], now: at(11 * 60))
+            check(hold.decide([task("downloading", bytes: 41)], ready: false, now: at(11 * 60)) == .hold,
+                  "Progress again: held again")
+
+            // Failed reads: a short outage (a restart) is not a reason to let go.
+            hold = SetupDownloadHold()
+            hold.observe([task("downloading")], previous: [], now: t0)
+            for second in [3.0, 6, 9] { hold.failed(now: at(second)) }
+            check(hold.decide([task("downloading")], ready: false, now: at(9)) == .hold,
+                  "Three failed reads within 9 s: still held")
+            var second = 12.0
+            // The first failure was at 3 s, so 90 s of failing ends at 93 s.
+            while second < 3 + SetupDownloadHold.failureSpan { hold.failed(now: at(second)); second += 3 }
+            check(hold.decide([task("downloading")], ready: false, now: at(second - 3)) == .hold,
+                  "Still failing, under 90 s since the first failure: held")
+            hold.failed(now: at(second))
+            check(hold.decide([task("downloading")], ready: false, now: at(second)) == .watch,
+                  "Failing for 90 s: watched slowly")
+            hold.observe([task("downloading", bytes: 60)], previous: [task("downloading")], now: at(second + 60))
+            check(hold.decide([task("downloading", bytes: 60)], ready: false, now: at(second + 60)) == .hold,
+                  "A good read with progress holds it again")
+
+            // A Mac that sleeps for 20 minutes: wall time runs on, uptime pauses.
+            hold = SetupDownloadHold()
+            read(&hold, [task("downloading")], from: 0, to: 60)
+            let woke = 60.0 + 20 * 60, upAtWake = t0.timeIntervalSince1970 + 61
+            check(hold.slept(now: at(woke), uptime: upAtWake), "Wall time ran 20 minutes ahead of uptime: slept")
+            check(hold.decide([task("downloading")], ready: false, now: at(woke), uptime: upAtWake) == .hold,
+                  "Waking, before any read: no stall is judged on the old snapshot")
+            hold.failed(now: at(woke + 1), uptime: upAtWake + 1)
+            check(hold.decide([task("downloading")], ready: false, now: at(woke + 1), uptime: upAtWake + 1) == .hold,
+                  "A failed first read after waking: still no stall")
+            var awake = woke + 3
+            while awake <= woke + 9 * 60 {
+                let up = upAtWake + (awake - woke)
+                hold.observe([task("downloading")], previous: [task("downloading")], now: at(awake), uptime: up)
+                _ = hold.decide([task("downloading")], ready: false, now: at(awake), uptime: up)
+                awake += 3
+            }
+            check(hold.level == .hold, "The stall clock restarted at the wake")
+
+            // Slow reads are not sleep: 33 s between reads, both clocks in step.
+            hold = SetupDownloadHold()
+            var slow = 0.0
+            while slow <= 10 * 60 + 33 {
+                hold.observe([task("downloading")], previous: [task("downloading")], now: at(slow))
+                _ = hold.decide([task("downloading")], ready: false, now: at(slow))
+                slow += 33
+            }
+            check(hold.level == .watch, "Reads 33 s apart with no progress: the stall still fires at 10 minutes")
+
+            // The six-hour cap, like the backend's own watch; never retaken by the same transfer.
+            hold = SetupDownloadHold()
+            hold.observe([task("downloading", bytes: 1)], previous: [], now: t0)
+            hold.since = t0
+            hold.observe([task("downloading", bytes: 2)], previous: [task("downloading", bytes: 1)], now: at(10))
+            check(hold.decide([task("downloading", bytes: 2)], ready: false, now: at(10)) == .hold, "Within the cap: held")
+            hold.observe([task("downloading", bytes: 3)], previous: [task("downloading", bytes: 2)], now: at(SetupDownloadHold.cap))
+            check(hold.decide([task("downloading", bytes: 3)], ready: false, now: at(SetupDownloadHold.cap)) == .none,
+                  "Six hours lets go even while moving")
+            hold.released()
+            hold.observe([task("downloading", bytes: 4)], previous: [task("downloading", bytes: 3)], now: at(SetupDownloadHold.cap + 3))
+            check(hold.decide([task("downloading", bytes: 4)], ready: false, now: at(SetupDownloadHold.cap + 3)) == .none,
+                  "The capped transfer doesn't take it again")
+            hold.observe([], previous: [task("downloading", bytes: 4)], now: at(SetupDownloadHold.cap + 6))
+            hold.observe([task("pending", bytes: 0)], previous: [], now: at(SetupDownloadHold.cap + 9))
+            check(hold.decide([task("pending", bytes: 0)], ready: false, now: at(SetupDownloadHold.cap + 9)) == .hold,
+                  "A new transfer after the cap is held")
+
+            // The same rules in the model, with both clocks injected and no background
+            // poll: every read below is one the check makes, at the time it sets.
+            final class Clock {
+                var now = Date(timeIntervalSince1970: 1000)
+                var uptime: TimeInterval = 500
+                /// Awake: both clocks move together.
+                func advance(_ seconds: TimeInterval) { now += seconds; uptime += seconds }
+                /// Asleep: only wall time moves.
+                func sleep(_ seconds: TimeInterval) { now += seconds }
+            }
+            var bytes = 40.0
+            var engineDown = false
+            func moving(_ state: String) -> [String: Any] {
+                ["tasks": [["model": "G", "state": state, "progress": 40,
+                            "downloaded_bytes": bytes, "total_bytes": 100, "bytes_per_second": 0]]]
+            }
+            transferState = "downloading"
+            readyNow = false
+            SetupHTTP.configure { request in
+                if engineDown { return (503, ["detail": "Engine restarting"], 0) }
+                if request.url!.path == "/engine/downloads" { return (200, moving(transferState), 0) }
+                var snapshot = setupSnapshot("G", ready: false)
+                snapshot["omlx"] = ["installed": true, "running": true, "bundled": true, "min_macos": 15,
+                                    "url": "https://example.invalid", "admin_url": "http://127.0.0.1:8791/admin"]
+                if readyNow { snapshot = setupSnapshot("G", ready: true) }
+                return (200, snapshot, 0)
+            }
+            func heldModel(_ clock: Clock) async -> SetupGuideModel {
+                let model = SetupGuideModel(session: session, clock: { clock.now }, uptime: { clock.uptime },
+                                            pollsByItself: false)
+                model.show(in: "notch")
+                await model.refresh()
+                await model.refreshDownloads()
+                model.hide(from: "notch")
+                return model
+            }
+
+            // 1. A backend restart (failures for under 90 s) keeps the hold.
+            let restartClock = Clock()
+            let restart = await heldModel(restartClock)
+            check(restart.downloadHold.level == .hold && restart.keepsMacAwake
+                  && restart.hosts[SetupGuideModel.downloadHost] == 1, "Held while downloading")
+            engineDown = true
+            for _ in 1...3 {
+                restartClock.advance(3)
+                await restart.refreshDownloads()
+            }
+            check(restart.downloadHold.level == .hold && restart.keepsMacAwake,
+                  "Three failed reads in 9 s, as a restart takes: still held and awake")
+            while restartClock.uptime < 500 + 3 + SetupDownloadHold.failureSpan {
+                restartClock.advance(3)
+                await restart.refreshDownloads()
+            }
+            check(restart.downloadHold.level == .watch && !restart.keepsMacAwake
+                  && restart.hosts[SetupGuideModel.downloadHost] == 1 && restart.pollsSlowly
+                  && restart.downloads.first?.state == "downloading",
+                  "Down for 90 s: the sleep assertion goes, a slow poll keeps watching the stale transfer")
+            engineDown = false
+            bytes = 70
+            restartClock.advance(60)
+            await restart.refreshDownloads()
+            check(restart.downloadHold.level == .hold && restart.keepsMacAwake && !restart.pollsSlowly,
+                  "Back and moving: held and awake again")
+
+            // 2. A failure run split by an hour of sleep: no watch on the first read after waking.
+            bytes = 40
+            let splitClock = Clock()
+            let split = await heldModel(splitClock)
+            engineDown = true
+            for _ in 1...3 {
+                splitClock.advance(3)
+                await split.refreshDownloads()
+            }
+            splitClock.sleep(3600)
+            await split.refreshDownloads()
+            check(split.downloadHold.level == .hold && split.keepsMacAwake,
+                  "Failing before and after an hour asleep: the run starts over at the wake, still held")
+            engineDown = false
+
+            // 3. The Mac sleeps 20 minutes mid-download: no stall on waking.
+            let sleepClock = Clock()
+            let sleeper = await heldModel(sleepClock)
+            sleepClock.sleep(20 * 60)
+            await sleeper.refresh()
+            check(sleeper.downloadHold.level == .hold && sleeper.keepsMacAwake,
+                  "Waking: a status read on the old snapshot doesn't call it a stall")
+            await sleeper.refreshDownloads()
+            check(sleeper.downloadHold.level == .hold, "The first read after waking restarts the stall clock")
+            // Then a real stall: 10 minutes of reads with no bytes moving.
+            for _ in 0...Int(SetupDownloadHold.stallLimit / SetupDownloadHold.fastPoll) {
+                sleepClock.advance(SetupDownloadHold.fastPoll)
+                await sleeper.refreshDownloads()
+            }
+            check(sleeper.downloadHold.level == .watch && !sleeper.keepsMacAwake
+                  && sleeper.hosts[SetupGuideModel.downloadHost] == 1 && sleeper.pollsSlowly,
+                  "Stalled 10 minutes: no sleep assertion, still watched slowly")
+
+            // 4. Slow reads (a status and a downloads call of ~15 s each): the stall still fires.
+            let slowClock = Clock()
+            let slowReads = await heldModel(slowClock)
+            var waited = 0.0
+            while waited < SetupDownloadHold.stallLimit + 33 && slowReads.downloadHold.level == .hold {
+                slowClock.advance(15)
+                await slowReads.refresh()
+                slowClock.advance(18)
+                await slowReads.refreshDownloads()
+                waited += 33
+            }
+            check(slowReads.downloadHold.level == .watch && waited >= SetupDownloadHold.stallLimit
+                  && waited < SetupDownloadHold.stallLimit + 33,
+                  "33 s between reads with no progress: watched at 10 minutes, not held until the cap")
+
+            // 5. The slow poll still sees the download finish, and Wisp switches over.
+            transferState = "completed"
+            sleepClock.advance(60)
+            await sleeper.refreshDownloads()
+            check(sleeper.downloads.first?.state == "completed" && sleeper.hosts[SetupGuideModel.downloadHost] == 1,
+                  "Finished while watched: kept until the model arrives")
+            readyNow = true
+            sleepClock.advance(3)
+            await sleeper.refresh()
+            check(!sleeper.isShown && !sleeper.keepsMacAwake, "Wisp can answer: the host and the poll go")
+
+            // 6. ...and stops at the six-hour cap.
+            transferState = "downloading"
+            readyNow = false
+            let capClock = Clock()
+            let capped = await heldModel(capClock)
+            capClock.advance(SetupDownloadHold.cap + 1)
+            await capped.refresh()
+            check(!capped.isShown && !capped.keepsMacAwake, "Six hours: the host, the poll and the assertion all go")
+
+            // Pressing Download in the card holds the poll before the engine answers.
+            // The start request answers after a second, as an engine that is busy would.
+            SetupHTTP.configure { request in
+                if request.url!.path == "/engine/downloads" {
+                    return request.httpMethod == "POST" ? (200, [:], 1.0) : (200, tasks("downloading"), 0)
+                }
+                var snapshot = setupSnapshot("G", ready: false)
+                snapshot["omlx"] = ["installed": true, "running": true, "bundled": true, "min_macos": 15,
+                                    "url": "https://example.invalid", "admin_url": "http://127.0.0.1:8791/admin"]
+                return (200, snapshot, 0)
+            }
+            let presser = SetupGuideModel(session: session)
+            presser.show(in: "notch")
+            await presser.refresh()
+            let pressed = Task { await presser.download("G") }
+            let inFlight = try await waitForSetupRequest { presser.busy == "Starting download…" }
+            check(inFlight && presser.hosts[SetupGuideModel.downloadHost] == 1,
+                  "Download pressed: the host is held while the start request is in flight")
+            presser.hide(from: "notch")
+            check(presser.isShown, "Collapsing the card mid-request keeps the poll")
+            await pressed.value
+            check(presser.hosts[SetupGuideModel.downloadHost] == 1, "The started transfer keeps the host")
+            transferState = "cancelled"
+            SetupHTTP.configure { request in
+                if request.url!.path == "/engine/downloads" { return (200, tasks("cancelled"), 0) }
+                return (200, setupSnapshot("G", ready: false), 0)
+            }
+            await presser.refreshDownloads()
+            let presserDone = try await waitForSetupRequest { presser.hosts.isEmpty }
+            check(presserDone, "Stopped: the host goes")
+            check(task("downloading").progressText == "40% · 40 bytes of 100 bytes · 5 bytes/s"
+                  && task("downloading").speedText == "5 bytes/s", "Shared progress text: percent, size and speed")
+        }
+
+        // The person's own oMLX (a fresh install with oMLX.app): when to connect, when to
+        // switch by itself, and when to ask with one click.
+        do {
+            func existing(running: Bool, ready: Bool = false, bundled: Bool = false, use: String? = "G",
+                          recommended: String = "G", download: Bool = false, tested: Bool = false,
+                          roles: [(String, String)] = [("MISSING", "local")]) -> SetupStatus {
+                var snapshot = setupSnapshot("G", ready: ready, bundled: bundled)
+                snapshot["omlx"] = ["installed": true, "running": running, "bundled": bundled, "min_macos": 26,
+                                    "url": "https://example.invalid", "admin_url": "http://127.0.0.1:8000/admin"]
+                var models = snapshot["models"] as! [String: Any]
+                models["use"] = use
+                models["recommended"] = recommended
+                models["installed"] = [["id": "G", "label": "G", "fit": "good", "tested": tested, "note": ""]]
+                if download {
+                    models["download"] = ["model": recommended, "label": recommended, "size_gb": 5.5, "repo": "r",
+                                          "url": "u", "command": "c", "install_hf": "h"]
+                }
+                snapshot["models"] = models
+                let names = ["fast", "general", "coding", "reasoning"]
+                snapshot["roles"] = names.enumerated().map { index, role in
+                    let binding = roles[min(index, roles.count - 1)]
+                    return ["role": role, "label": role, "model": binding.0, "endpoint": binding.1]
+                }
+                snapshot["checks"] = running ? [] : [["id": "engine", "state": "warn", "title": "oMLX isn't running",
+                                                      "detail": "Synthetic", "action": "start_engine"]]
+                let decoder = JSONDecoder()
+                decoder.keyDecodingStrategy = .convertFromSnakeCase
+                return try! decoder.decode(SetupStatus.self, from: JSONSerialization.data(withJSONObject: snapshot))
+            }
+            check(existing(running: false).existingOmlx == .connecting,
+                  "An oMLX whose server hasn't answered yet is connecting, not a failure")
+            check(existing(running: false, use: nil).existingOmlx == .connecting,
+                  "Connecting does not wait on knowing its models")
+            check(existing(running: true).existingOmlx == .serving(model: "G", label: "G"),
+                  "The recommended model, every role local, none installed: switch by itself")
+            check(existing(running: true, recommended: "OTHER").existingOmlx == .offering(model: "G", label: "G"),
+                  "An untested model that isn't the recommended one is offered, never switched to")
+            check(existing(running: true, recommended: "OTHER", tested: true).existingOmlx
+                    == .serving(model: "G", label: "G"),
+                  "With nothing to download, a tested catalogue model may be switched to")
+            check(existing(running: true, recommended: "OTHER", download: true, tested: true).existingOmlx
+                    == .offering(model: "G", label: "G"),
+                  "With a download on offer, another tested model is only offered")
+            check(existing(running: true, roles: [("MISSING", "local"), ("x", "local_provider")]).existingOmlx
+                    == .offering(model: "G", label: "G"),
+                  "A role on another app is never repointed silently")
+            check(existing(running: true, roles: [("G", "local"), ("MISSING", "local")]).existingOmlx
+                    == .offering(model: "G", label: "G"),
+                  "A role already naming an installed model is the person's choice: ask")
+            check(existing(running: false, roles: [("x", "local_provider")]).existingOmlx == nil,
+                  "No role runs on oMLX: it is never started or used")
+            check(existing(running: true, ready: true).existingOmlx == nil, "Already set up: nothing to do")
+            check(existing(running: false, bundled: true).existingOmlx == nil, "The built-in engine is not the person's oMLX")
+            check(existing(running: true, use: nil).existingOmlx == nil,
+                  "An oMLX without any of Wisp's models goes to the detailed setup")
+
+            final class Bodies: @unchecked Sendable {
+                private let lock = NSLock()
+                private var seen: [[String: Any]] = []
+                func add(_ request: URLRequest) {
+                    var data = request.httpBody ?? Data()
+                    if data.isEmpty, let stream = request.httpBodyStream {
+                        stream.open()
+                        defer { stream.close() }
+                        var buffer = [UInt8](repeating: 0, count: 1024)
+                        while stream.hasBytesAvailable {
+                            let count = stream.read(&buffer, maxLength: buffer.count)
+                            if count <= 0 { break }
+                            data.append(buffer, count: count)
+                        }
+                    }
+                    lock.lock(); defer { lock.unlock() }
+                    seen.append((try? JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:])
+                }
+                var all: [[String: Any]] { lock.lock(); defer { lock.unlock() }; return seen }
+            }
+            let bodies = Bodies()
+            final class Flag: @unchecked Sendable {
+                private let lock = NSLock()
+                private var value = false
+                var on: Bool { get { lock.lock(); defer { lock.unlock() }; return value }
+                               set { lock.lock(); value = newValue; lock.unlock() } }
+            }
+            let started = Flag()
+            let viaOtherApp = Flag()
+            func snapshot(running: Bool) -> [String: Any] {
+                var s = setupSnapshot("G", ready: running, bundled: false)
+                s["omlx"] = ["installed": true, "running": running, "bundled": false, "min_macos": 26,
+                             "url": "https://example.invalid", "admin_url": "http://127.0.0.1:8000/admin"]
+                s["checks"] = running ? [] : [["id": "engine", "state": "warn", "title": "oMLX isn't running",
+                                               "detail": "Synthetic", "action": "start_engine"]]
+                if viaOtherApp.on {
+                    s["roles"] = ["fast", "general", "coding", "reasoning"].map {
+                        ["role": $0, "label": $0, "model": "G", "endpoint": "local_provider"] }
+                }
+                return s
+            }
+            SetupHTTP.configure { request in
+                if request.url!.path == "/setup/start-engine" {
+                    bodies.add(request)
+                    started.on = true
+                    return (200, snapshot(running: true), 0)
+                }
+                return (200, snapshot(running: started.on), 0)
+            }
+            // Showing setup (the notch card, a reopened window) never starts it by itself:
+            // only first-run setup's own step does.
+            let shown = SetupGuideModel(session: session)
+            shown.show(in: "notch")
+            let polled = try await waitForSetupRequest { shown.statusIsCurrent }
+            check(polled && SetupHTTP.count("/setup/start-engine") == 0 && !shown.autoStartedEngine,
+                  "Outside first-run setup, the person's oMLX is never started by itself")
+            shown.hide(from: "notch")
+            // Every role on another app (LM Studio, Ollama): never started, even in first run.
+            viaOtherApp.on = true
+            let elsewhere = SetupGuideModel(session: session)
+            await elsewhere.refresh()
+            elsewhere.startExistingOmlxOnce()
+            await Task.yield()
+            check(SetupHTTP.count("/setup/start-engine") == 0 && !elsewhere.autoStartedEngine,
+                  "No role uses oMLX: first-run setup never starts it")
+            viaOtherApp.on = false
+            // First-run setup's step: one plain start, once a session.
+            let owner = SetupGuideModel(session: session)
+            await owner.refresh()
+            // A skipped start is not spent: it runs once the request or stale status clears.
+            owner.busy = "Synthetic request in flight"
+            owner.startExistingOmlxOnce()
+            owner.busy = nil
+            owner.statusIsCurrent = false
+            owner.startExistingOmlxOnce()
+            await Task.yield()
+            check(SetupHTTP.count("/setup/start-engine") == 0 && !owner.autoStartedEngine,
+                  "A start skipped while busy or stale does not count as the one start")
+            owner.statusIsCurrent = true
+            owner.startExistingOmlxOnce()
+            let startedByItself = try await waitForSetupRequest { owner.status?.ready == true }
+            check(startedByItself && owner.autoStartedEngine, "First-run setup starts the person's oMLX by itself")
+            check(SetupHTTP.count("/setup/start-engine") == 1 && !SetupHTTP.saw("/engine/start"),
+                  "The person's oMLX starts through setup, never the built-in engine's endpoint")
+            check(bodies.all.first?["automatic"] as? Bool == true,
+                  "An automatic start asks for a plain start (the service never restarts their app for it)")
+            started.on = false
+            await owner.refresh()
+            owner.startExistingOmlxOnce()
+            await Task.yield()
+            check(SetupHTTP.count("/setup/start-engine") == 1, "An automatic start happens at most once a session")
+        }
+
         if failures > 0 {
             FileHandle.standardError.write(Data("\(failures) of \(checks) setup checks failed\n".utf8))
             exit(1)

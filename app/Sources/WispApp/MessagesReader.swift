@@ -24,6 +24,9 @@ final class MessagesReader {
     private struct DecodedBody {
         let text: String
         let links: [String]
+        /// False when the body came from the typedstream scan, which recovers
+        /// the text but not its NSLink attributes.
+        var linksKnown = true
     }
 
     private struct LinkExtraction {
@@ -49,6 +52,7 @@ final class MessagesReader {
     private let dbPath: String
     /// Why the last `readRecentMessages` returned nil, from the error itself.
     private(set) var lastFailure: MessagesReadFailure?
+    private let backendRetry = NativeBackendRetry()
 
     init(dbPath: String = (NSHomeDirectory() as NSString)
         .appendingPathComponent("Library/Messages/chat.db")) {
@@ -101,8 +105,11 @@ final class MessagesReader {
             let structured = [Self.wire(coverage)] + scan.structured
             // V3 occupies the leading, reader-controlled block. Message text
             // can never precede it or append a trusted record to that block.
+            // `skipped` counts rows with no readable text at all, so a decoding
+            // gap shows up in diagnostics instead of as quietly missing messages.
             self.post(lines: (structured + scan.lines).joined(separator: "\n"),
-                      diagnostics: ["available": true, "count": scan.lines.count])
+                      diagnostics: ["available": true, "count": scan.lines.count,
+                                    "attempted": scan.attempted, "skipped": scan.skipped])
         }
     }
 
@@ -189,7 +196,10 @@ final class MessagesReader {
             let epochSecs = Double(dateNs) / 1_000_000_000 + Self.appleEpochOffset
 
             let attributed = decodeAttributedBody(stmt, 2)
-            let attributedUnreadable = sqlite3_column_type(stmt, 2) != SQLITE_NULL && attributed == nil
+            // A typedstream body gives the text but not its link attributes, so
+            // its links are as unknown as an unreadable body's.
+            let attributedUnreadable = sqlite3_column_type(stmt, 2) != SQLITE_NULL
+                && (attributed == nil || attributed?.linksKnown == false)
             let wasEdited = sqlite3_column_int64(stmt, 13) > 0
             let text = wasEdited ? (attributed?.text ?? columnText(stmt, 1))
                                  : (columnText(stmt, 1) ?? attributed?.text)
@@ -538,11 +548,12 @@ final class MessagesReader {
         return String(cString: c)
     }
 
-    // Modern Messages.app often stores rich/edited text as an NSKeyedArchiver-
-    // encoded NSAttributedString blob (`attributedBody`) instead of plain
-    // `text`. Two decode attempts: the direct secure-coding path, then a
-    // manual unarchiver reading the well-known "NSString" key, since some
-    // real-world archives don't round-trip through the class-based API.
+    // Modern Messages.app often stores rich/edited text as an archived
+    // NSAttributedString blob (`attributedBody`) instead of plain `text`.
+    // Three decode attempts: the direct secure-coding path, then a manual
+    // unarchiver reading the well-known "NSString" key, then the typedstream
+    // scan (TypedStreamText), since most real rows use the older typedstream
+    // format that neither keyed path reads; those rows used to be skipped.
     private func decodeAttributedBody(_ stmt: OpaquePointer?, _ idx: Int32) -> DecodedBody? {
         guard let blob = sqlite3_column_blob(stmt, idx) else { return nil }
         let len = Int(sqlite3_column_bytes(stmt, idx))
@@ -567,6 +578,9 @@ final class MessagesReader {
             }
             unarchiver.finishDecoding()
         }
+        if let text = TypedStreamText.decode(data) {
+            return DecodedBody(text: text, links: [], linksKnown: false)
+        }
         return nil
     }
 
@@ -577,8 +591,126 @@ final class MessagesReader {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["lines": lines,
                                                                     "diagnostics": diagnostics])
-        URLSession.shared.dataTask(with: req).resume()
+        // A backend that isn't listening yet gets a fresh read soon, not the
+        // next 5-minute tick.
+        URLSession.shared.dataTask(with: req) { [weak self] _, _, error in
+            self?.backendRetry.handle(error: error) { self?.sync() }
+        }.resume()
     }
+}
+
+/// The text of a Messages `attributedBody` stored as a typedstream (the format
+/// of NSArchiver, which Messages still writes), without unarchiving it.
+///
+/// Rules:
+/// - IMPORTANT: never hand the blob to NSUnarchiver. It instantiates whatever
+///   classes the stream names, and part of this blob comes from other people.
+///   The scan below only reads bytes.
+/// - The text is the first string after the "NSString" class name: the class
+///   header, then a "+" type tag, then a length (one byte below 0x80; 0x81 and a
+///   2-byte little-endian length; 0x82 and a 4-byte one), then that many UTF-8
+///   bytes. This is the layout imessage-exporter reads.
+/// - Anything that doesn't fit that layout, or isn't valid UTF-8, is nil, never
+///   a guess.
+enum TypedStreamText {
+    static let header = Data([0x04, 0x0B]) + Data("streamtyped".utf8)
+    private static let marker = Data("NSString".utf8)
+
+    /// A mutable body names NSMutableString first, then NSString as its
+    /// superclass, and the string follows that NSString entry, so the first
+    /// "NSString" serves both. The class names precede the text, so message
+    /// text that itself says "NSString" can't be mistaken for one.
+    static func decode(_ data: Data) -> String? {
+        guard data.starts(with: header), let found = data.range(of: marker) else { return nil }
+        return string(in: [UInt8](data), after: found.upperBound - data.startIndex)
+    }
+
+    private static func string(in bytes: [UInt8], after start: Int) -> String? {
+        // The class header between the name and the "+" tag is a few bytes
+        // (version, class reference, object start). Look no further than that.
+        let window = bytes[start..<min(bytes.count, start + 8)]
+        guard let tag = window.firstIndex(of: 0x2B) else { return nil }
+        var cursor = tag + 1
+        guard cursor < bytes.count else { return nil }
+        let length: Int
+        switch bytes[cursor] {
+        case 0x00..<0x80:
+            length = Int(bytes[cursor]); cursor += 1
+        case 0x81:
+            guard cursor + 2 < bytes.count else { return nil }
+            length = Int(bytes[cursor + 1]) | Int(bytes[cursor + 2]) << 8
+            cursor += 3
+        case 0x82:
+            guard cursor + 4 < bytes.count else { return nil }
+            length = (0..<4).reduce(0) { $0 | Int(bytes[cursor + 1 + $1]) << (8 * $1) }
+            cursor += 5
+        default:
+            return nil
+        }
+        guard length > 0, length <= bytes.count - cursor else { return nil }
+        return String(bytes: bytes[cursor..<cursor + length], encoding: .utf8)
+    }
+}
+
+/// Re-runs a native read whose post found the backend not listening yet, as
+/// on a cold launch or a backend restart.
+///
+/// Rules:
+/// - IMPORTANT: only "nothing is listening" failures are retried (connection
+///   refused or lost, no route). An HTTP error, a cancelled request or a
+///   timeout means something answered, so it is not the backend's absence.
+/// - The retry re-reads the source. It never re-sends an old snapshot, which a
+///   newer read may already have replaced.
+/// - One retry is pending at a time. The delays grow 3, 8, 20, then 60 seconds,
+///   about five minutes in all; after that the reader's own timer takes over.
+///   The next completed request (any HTTP status) starts the schedule over, so
+///   a later backend restart gets the full schedule again.
+/// MailReader keeps its own copy of this schedule, so its spliced flow checks
+/// compile without this file.
+final class NativeBackendRetry {
+    static let delays: [TimeInterval] = [3, 8, 20, 60, 60, 60, 60]
+    private let delays: [TimeInterval]
+    private let lock = NSLock()
+    private var attempt = 0
+    private var pending = false
+
+    /// `delays` is the production schedule; checks pass a short one.
+    init(delays: [TimeInterval] = NativeBackendRetry.delays) { self.delays = delays }
+
+    static func isBackendUnreachable(_ error: Error?) -> Bool {
+        guard let error = error as? URLError else { return false }
+        // A timeout is not on the list: something accepted the connection
+        // and was slow, which a re-read can't help and could pile onto.
+        return [.cannotConnectToHost, .networkConnectionLost,
+                .cannotFindHost, .notConnectedToInternet, .dnsLookupFailed].contains(error.code)
+    }
+
+    /// After a post: reset on any completed request; schedule `retry` on the
+    /// main queue after an unreachable backend, unless one is already pending
+    /// or the schedule is spent.
+    func handle(error: Error?, retry: @escaping () -> Void) {
+        guard error != nil else { reached(); return }
+        guard Self.isBackendUnreachable(error), let delay = nextDelay() else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [self] in
+            fired()
+            retry()
+        }
+    }
+
+    /// The delay before the next retry, marking it pending, or nil.
+    func nextDelay() -> TimeInterval? {
+        lock.lock(); defer { lock.unlock() }
+        guard !pending, attempt < delays.count else { return nil }
+        pending = true
+        attempt += 1
+        return delays[attempt - 1]
+    }
+
+    /// The pending retry is running now.
+    func fired() { lock.lock(); pending = false; lock.unlock() }
+
+    /// The backend answered, so the next outage starts the schedule over.
+    func reached() { lock.lock(); attempt = 0; lock.unlock() }
 }
 
 /// Why chat.db couldn't be read, taken from the error itself, and what the user

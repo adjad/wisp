@@ -88,6 +88,9 @@ _next_call_at = 0.0
 # never holds up the MAIL and TEXTS lines.
 _retry_at: dict[str, float] = {}
 _task: asyncio.Task | None = None
+# Bumped by `invalidate` (a Google account's Disconnect & erase). A refresh that
+# began before the bump drops its result: it may describe the erased account's mail.
+_generation = 0
 _last_standdown = ""
 
 MAIL_RULES = (
@@ -512,6 +515,30 @@ def _thinking_off(model: str) -> bool:
     return thinks_explicitly(model) or model in no_thinking_capable()
 
 
+def _unreachable_errors() -> tuple[type[BaseException], ...]:
+    """Errors that mean the engine couldn't answer at all (not running,
+    restarting, hung, refusing to load the model): a background call stands
+    down. Wisp's own reply deadline (_TIMEOUT_S) is not one: a reply that
+    started and ran too long is judged a failed attempt for that input."""
+    errors: list[type[BaseException]] = []
+    try:
+        import httpx
+        # TimeoutException covers connect, read, write and pool timeouts: a hung
+        # engine stands down rather than spending one of the job's attempts.
+        errors += [httpx.ConnectError, httpx.ReadError, httpx.RemoteProtocolError, httpx.TimeoutException]
+    except ImportError:  # pragma: no cover
+        pass
+    try:
+        from service.inference.inference_errors import ModelLoadError
+        errors.append(ModelLoadError)   # EngineGuardUnavailableError is one too
+    except ImportError:  # pragma: no cover
+        pass
+    return tuple(errors) or (ConnectionError,)
+
+
+_UNREACHABLE = _unreachable_errors()
+
+
 async def _resident_reply(system: str, material: str, abort, *,
                           tokens: tuple[int, int] = (_TOKENS, _THINKING_TOKENS)) -> str | None:
     """The model's reply, or None to stand down without spending anything.
@@ -522,13 +549,23 @@ async def _resident_reply(system: str, material: str, abort, *,
     """
     from service.assistant.brief import _c
     from service.config import role_to_model, thinking_kwargs
+    from service.inference.remote_policy import remote_only_profile
     model = role_to_model("fast")
     client = _c()
-    loaded = set(await client.loaded_models())
-    try:
-        warm = set(client.keep_warm())
-    except Exception:  # noqa: BLE001 — unknown keep-warm set: assume nothing extra is allowed
-        warm = set()
+    if remote_only_profile() is not None:
+        # Remote inference: there is no local residency to protect, so the only
+        # stand-down is a user's turn.
+        loaded, warm = {model}, set()
+    else:
+        try:
+            loaded = set(await client.loaded_models())
+        except _UNREACHABLE as exc:
+            _stood_down(f"the engine isn't reachable ({type(exc).__name__})")
+            return None
+        try:
+            warm = set(client.keep_warm())
+        except Exception:  # noqa: BLE001 — unknown keep-warm set: assume nothing extra is allowed
+            warm = set()
     if model not in loaded:
         _stood_down(f"the fast model ({model}) isn't loaded; loaded: {sorted(loaded) or 'nothing'}")
         return None
@@ -553,7 +590,13 @@ async def _resident_reply(system: str, material: str, abort, *,
                 request.cancel()
                 raise TimeoutError(f"gist reply took over {_TIMEOUT_S:.0f}s")
             await asyncio.wait({request}, timeout=0.5)
-        response = request.result()
+        try:
+            response = request.result()
+        except _UNREACHABLE as exc:
+            # The engine went away or refused the load: no answer was judged, so
+            # this is a stand-down, never a failed attempt (cycle/triage retry).
+            _stood_down(f"the engine isn't reachable ({type(exc).__name__})")
+            return None
     finally:
         if not request.done():
             request.cancel()
@@ -569,9 +612,10 @@ async def _resident_reply(system: str, material: str, abort, *,
 # --- the tick ---------------------------------------------------------------------
 
 
-def _jobs(now: float) -> list[dict]:
+def _jobs(now: float, *, force: bool = False) -> list[dict]:
     """The overviews whose inputs changed and are due a rewrite: the inbox
-    summary first, then the MAIL and TEXTS lines."""
+    summary first, then the MAIL and TEXTS lines. ``force`` (the hourly idle
+    refresh) rewrites a fresh one too; a failing kind still waits its turn."""
     cache = _load()
     jobs = []
     rows = recent_mail(now)
@@ -594,19 +638,21 @@ def _jobs(now: float) -> list[dict]:
         entry = cache.get(job["kind"])
         if _attempts.get(job["kind"] + ":" + job["key"], 0) >= _MAX_ATTEMPTS or now < _retry_at.get(job["kind"], 0):
             continue
-        if entry and (entry["key"] == job["key"] or now - entry["at"] < _REWRITE_S):
+        if not force and entry and (entry["key"] == job["key"] or now - entry["at"] < _REWRITE_S):
             continue
         due.append(job)
     return due
 
 
-async def refresh(now: float | None = None, *, synth=None, abort=None) -> bool:
-    """Write the first overview that is due. True when one was written."""
+async def refresh(now: float | None = None, *, synth=None, abort=None, force: bool = False,
+                  kind: str | None = None) -> bool:
+    """Write the first overview that is due (only ``kind``'s, when given). True
+    when one was written."""
     global _next_call_at
     from service import idle
     now = time.time() if now is None else now
     abort = abort or idle.foreground_busy
-    jobs = _jobs(now)
+    jobs = [j for j in (_jobs(now, force=True) if force else _jobs(now)) if kind is None or j["kind"] == kind]
     if not jobs:
         _stood_down("no new mail or texts to describe")
         _next_call_at = now + _IDLE_GAP_S
@@ -616,6 +662,7 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> bool:
         _next_call_at = now + _IDLE_GAP_S
         return False
     job = jobs[0]
+    generation = _generation
     from service.memory.identity import identity_prompt_block
     system = (identity_prompt_block(messages=False).strip() + "\n\n" + job["rules"]).strip()
     material = "\n".join(job["lines"])
@@ -629,6 +676,9 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> bool:
         _retry_at[job["kind"]] = now + _FAILURE_GAP_S
         _attempts[attempt_key] = _attempts.get(attempt_key, 0) + 1
         traceback.print_exc()
+        return False
+    if generation != _generation:
+        print(f"[mail_gists] dropped a {job['kind']} gist written before an account was erased", flush=True)
         return False
     if text is None:
         _next_call_at = now + _IDLE_GAP_S
@@ -648,12 +698,71 @@ async def refresh(now: float | None = None, *, synth=None, abort=None) -> bool:
     return True
 
 
+async def refresh_all(now: float | None = None, *, synth=None, abort=None) -> int:
+    """The hourly idle refresh (service/proactive/cycle.py): rewrite every
+    overview, fresh or not, one call after another. Holds this module's own
+    tick off meanwhile (one resident model, one request at a time) and stops
+    when a turn starts. Returns how many were written."""
+    global _task
+    from service import idle
+    abort = abort or idle.foreground_busy
+    if _remote_background_paused():
+        return 0
+    if _task is not None and not _task.done():
+        return 0                     # a gist call is already running: no second one
+    _task = asyncio.current_task()
+    written = 0
+    try:
+        for kind in KINDS:
+            if abort():
+                break
+            written += bool(await refresh(now, synth=synth, abort=abort, force=True, kind=kind))
+    finally:
+        if _task is asyncio.current_task():
+            _task = None
+    return written
+
+
+def invalidate(kinds: tuple[str, ...] = ("summary", "inbox")) -> list[str]:
+    """Forget the mail overviews and any in-flight rewrite of them.
+
+    For Disconnect & erase: the overviews were written from the combined inbox,
+    so they may describe the erased account's mail. Bumps the generation (a
+    refresh already awaiting the model drops its result), cancels the running
+    tick, and removes the cached kinds from memory and disk."""
+    global _generation, _task
+    _generation += 1
+    if _task is not None and not _task.done():
+        _task.cancel()
+    _task = None
+    _attempts.clear()
+    cache = _load()
+    dropped = [kind for kind in kinds if cache.pop(kind, None) is not None]
+    if dropped:
+        _save()
+    return dropped
+
+
+def _remote_background_paused() -> bool:
+    """On a remote model (Gemini), automatic background calls would spend the
+    provider's rate limit that live questions need: only an explicit Analyze
+    runs. WISP_REMOTE_BACKGROUND=1 turns the automatic cycle back on."""
+    import os
+    from service.inference.remote_policy import remote_only_profile
+    try:
+        return remote_only_profile() is not None and os.environ.get("WISP_REMOTE_BACKGROUND") != "1"
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def schedule_tick() -> asyncio.Task | None:
     """Single-flight background tick for the scheduler loop; never awaited there."""
     global _task
     from service import idle
     from service.assistant.hub import hub
     if (_task is not None and not _task.done()) or time.time() < _next_call_at:
+        return None
+    if _remote_background_paused():
         return None
     if idle.foreground_busy():
         _stood_down("a turn is in progress")
