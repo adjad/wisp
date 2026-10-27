@@ -143,8 +143,8 @@ export instead of the headline. Debug Mode captures tool-internal model calls
 Fresh installs use **Gemma 4 E4B** (4-bit with multi-token prediction, `Jundot/gemma-4-E4B-it-oQ4e-mtp`,
 about 5.5 GB). It is the model the first-run window downloads, and the engine's per-model
 settings for it (sampling, thinking, a 16k context window) are written by Wisp itself. The
-Ling 3.0 tiny builds below remain available in the detailed setup guide (menu-bar icon,
-**Finish Setup...** or **Model & Engine...**, or **Settings → Models → Setup guide...**).
+Ling 3.0 tiny builds below remain available in the detailed setup guide
+(**Settings → Models → Setup guide...**).
 Existing role overrides and working models are preserved. Mellum remains an optional choice,
 marked validation pending. The guide ranks memory fit separately from test status:
 

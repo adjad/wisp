@@ -122,7 +122,7 @@ final class RemindersWriter {
 
         /// What a reader reports. Readers never ask macOS for access: the person
         /// allows each permission by clicking its row in Wisp's setup window
-        /// (also reached from the menu bar icon's Permissions…), so a prompt only
+        /// (also reached from Settings › Privacy's Permissions…), so a prompt only
         /// ever follows that click. Until then the source is unavailable, with a
         /// reason that says where to allow it; never "syncing", never a request.
         static func passive(status: Status, source: Source = .reminders) -> Report {
@@ -134,8 +134,8 @@ final class RemindersWriter {
         }
 
         static func notAskedReason(_ source: Source) -> String {
-            "Wisp hasn't been allowed to see your \(source.name) yet. Right-click Wisp's menu bar icon, "
-                + "choose Permissions…, and click Allow next to \(source.name)."
+            "Wisp hasn't been allowed to see your \(source.name) yet. Open Wisp's Settings, "
+                + "choose Permissions… under Privacy, and click Allow next to \(source.name)."
         }
 
         /// The diagnostics object the backend reads (`record_sync`, sync_status).

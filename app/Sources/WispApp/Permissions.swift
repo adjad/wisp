@@ -11,14 +11,14 @@ import ApplicationServices
 //   - Calendar, Reminders, Mail and Notes (Automation), Contacts and
 //     Notifications: their rows in the setup window's Permissions step
 //     (FirstRunPermissions.request), one click per row. The same step opens
-//     again from the menu bar icon's Permissions…, and from a Brief or Day row
+//     again from Settings › Privacy's Permissions…, and from a Brief or Day row
 //     that says a source isn't allowed yet (`openFix`).
 //   - The readers never ask: Calendar and Reminders report "not allowed yet"
 //     (RemindersWriter.Access.passive), Contacts is started with mayAsk false,
 //     and Mail and Notes skip their scripted reads until Automation has an
 //     answer (they read the on-disk copy instead, with Full Disk Access).
-//   - Screen Recording and Accessibility: Grant More Access… or Smart Search's
-//     own button, one surface per click.
+//   - Screen Recording and Accessibility: Settings › Privacy's More Access… or
+//     Smart Search's own button, one surface per click.
 //   - Full Disk Access has no prompt: its Settings page opens instead.
 //
 // Wisp never asks for what it doesn't use: Camera, Photos, Location, Input
@@ -26,6 +26,8 @@ import ApplicationServices
 extension Notification.Name {
     /// Opens the setup window on its Permissions step.
     static let wispOpenPermissions = Notification.Name("WispOpenPermissions")
+    /// Asks for the next extra that is still off (Settings › Privacy's More Access…).
+    static let wispGrantMoreAccess = Notification.Name("WispGrantMoreAccess")
 }
 
 enum Permissions {
@@ -77,8 +79,8 @@ enum Permissions {
     static func unaskedAutomation(app: String, appRunning: Bool, automationDecided: Bool,
                                   failure: (kind: String, reason: String)) -> (kind: String, reason: String) {
         guard appRunning, !automationDecided else { return failure }
-        return ("mail_automation", "\(app) is open, but Wisp hasn't been allowed to read it yet. Right-click Wisp's "
-                + "menu bar icon, choose Permissions…, and click Allow next to Mail & Notes.")
+        return ("mail_automation", "\(app) is open, but Wisp hasn't been allowed to read it yet. Open Wisp's "
+                + "Settings, choose Permissions… under Privacy, and click Allow next to Mail & Notes.")
     }
 
     // MARK: Grant More Access
@@ -104,7 +106,7 @@ enum Permissions {
         }
     }
 
-    /// What is still off, in the order Grant More Access offers it. Pure.
+    /// What is still off, in the order More Access… offers it. Pure.
     static func missing(screenRecording: Bool, accessibility: Bool, fullDiskAccess: Bool) -> [Extra] {
         Extra.allCases.filter {
             switch $0 {

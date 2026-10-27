@@ -672,8 +672,8 @@ _HOWTO = (
      "**Brief and Day**: the tabs next to Ask. Brief is your day at a glance; Day is today's "
      "timeline of events and reminders."),
     (r"about me|know me|my name|profile|getting to know|tone|goals?|call me",
-     "**Tell Wisp about you**: type **/about**, or choose **Tell Wisp About You…** from the "
-     "menu bar icon. Change or erase it any time in the Wisp window's Memory → About you."),
+     "**Tell Wisp about you**: type **/about**. Change or erase it any time in the Wisp "
+     "window's Memory → About you."),
     (r"mail suggestion|suggestions? from (?:my )?(?:mail|email)|found in your mail|old(?:er)? (?:mail|email)|mail memory",
      "**Mail suggestions**: when nobody is asking me anything, I read your Sent mail and Mail's "
      "Primary, Transactions and Updates from the last 90 days, on this Mac, and find dates you "
@@ -688,9 +688,9 @@ _HOWTO = (
      "**Connect Google**: open **Settings → Google**, then sign in. I'll read that account's "
      "Gmail and Calendar too."),
     (r"permission|access|allow|grant|privacy|calendar access|full disk",
-     "**Let Wisp read more**: right-click the menu bar icon, choose **Permissions…**, and "
-     "click **Allow** next to what you want. Screen Recording and Accessibility are under "
-     "**Grant More Access…**."),
+     "**Let Wisp read more**: open **Settings → Privacy & Access**, choose **Permissions…**, "
+     "and click **Allow** next to what you want. Screen Recording and Accessibility are under "
+     "**More Access…** next to it."),
     (r"research|report",
      "**Research**: type **/research**, then your topic. I draft a plan you can edit, read "
      "the web and write a cited report."),
