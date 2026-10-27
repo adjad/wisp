@@ -89,6 +89,9 @@ enum MailMemoryChecks {
         check(MailSuggestion.readError(["health": ["last_error": "unsupported_schema"]])?.contains("can't read yet") == true,
               "an unknown Mail format says so")
         check(MailSuggestion.readError(["health": ["last_error": "index_timeout"]])?.contains("too long") == true, "timeout")
+        check(MailSuggestion.readError(["health": ["last_error": "body_timeout"]])
+              == "Couldn't read one email in time; Wisp moves on and tries it again later.",
+              "one slow email never claims a 15-minute retry")
         check(MailSuggestion.readError(["health": ["last_error": "weird"]]) == "Couldn't read Mail (weird). Wisp tries again in 15 minutes.",
               "an unknown code is shown as is")
         check(MailSuggestion.readError(["health": ["last_error": ""]]) == nil && MailSuggestion.readError(nil) == nil, "empty is no error")

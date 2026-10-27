@@ -47,8 +47,11 @@ struct MailSuggestion: Identifiable, Equatable {
             return "Couldn't read Mail: this version of Mail stores mail in a way Wisp can't read yet."
         case "app_not_connected":
             return "Couldn't read Mail: the Wisp app wasn't connected to its service. \(retry)"
-        case "index_timeout", "body_timeout":
+        case "index_timeout":
             return "Couldn't read Mail: it took too long to answer. \(retry)"
+        case "body_timeout":
+            // One slow email is retried an hour later while the queue moves on.
+            return "Couldn't read one email in time; Wisp moves on and tries it again later."
         default:
             if code.hasPrefix("unexpected:") {
                 return "Couldn't read Mail: something went wrong (\(code.dropFirst(11))). \(retry)"
