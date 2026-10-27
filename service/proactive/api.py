@@ -106,6 +106,19 @@ async def dismiss(card_id: str, request: Request):
     return {"ok": True, "card_id": card_id}
 
 
+def _stored_ask(kind: str, record_id: str) -> str | None:
+    """The stable ask (stable.ask_key) behind a stored to-do or thread: the
+    conversation and its latest incoming message. Clearing a row records it, so
+    the row stays cleared when the next cycle words it differently, and the same
+    ask never returns as a card; a new message is a new ask."""
+    from service.proactive.store import store
+    for record in store().state().get(kind) or []:
+        if isinstance(record, dict) and record.get("id") == record_id:
+            asks = record.get("asks") or []
+            return asks[0] if asks and isinstance(asks[0], str) else None
+    return None
+
+
 def _find_todo(todo_id: str) -> dict | None:
     from service.proactive.cycle import snapshot
     from service.proactive.store import store
@@ -114,7 +127,8 @@ def _find_todo(todo_id: str) -> dict | None:
             # The snapshot strips internal fields; the stored copy keeps them.
             for stored in store().state().get("todos") or []:
                 if stored.get("id") == todo_id:
-                    return {**todo, "fingerprints": stored.get("fingerprints") or []}
+                    return {**todo, "fingerprints": stored.get("fingerprints") or [],
+                            "asks": stored.get("asks") or []}
             return todo
     return None
 
@@ -125,7 +139,7 @@ async def clear_todo(todo_id: str, request: Request):
     Reminders, Mail or Messages; it comes back if it changes."""
     body = await _body(request, Cleared)
     from service.proactive.store import store
-    store().clear_item(_item_id(todo_id), body.fingerprint)
+    store().clear_item(_item_id(todo_id), body.fingerprint, ask=_stored_ask("todos", todo_id))
     return {"ok": True, "todo_id": todo_id, "decision": "cleared"}
 
 
@@ -134,7 +148,7 @@ async def clear_thread(thread_id: str, request: Request):
     """Hide a mail or text thread from Needs attention. Nothing is marked read."""
     body = await _body(request, Cleared)
     from service.proactive.store import store
-    store().clear_item(_item_id(thread_id), body.fingerprint)
+    store().clear_item(_item_id(thread_id), body.fingerprint, ask=_stored_ask("threads", thread_id))
     return {"ok": True, "thread_id": thread_id, "decision": "cleared"}
 
 

@@ -259,6 +259,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_reminder_expiry.py",
     "tests/test_behavior_auto_trial.py",
     "tests/test_brief_day_one.py",
+    # rc2: Brief cards stay put across cycles, and a dismissed or cleared ask stays gone (fake model, scratch store).
+    "tests/test_brief_card_stability.py",
     # rc2: the first Brief once onboarding is answered (scheduler slots with a stubbed store
     # and clock, and the marker endpoint through TestClient); nothing is composed or sent.
     "tests/test_brief_onboarding.py",

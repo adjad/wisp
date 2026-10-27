@@ -86,10 +86,11 @@ def test_a_new_text_from_the_same_person_comes_back():
     def text(received):
         return dict(id="messages:mom", source="messages", title="Mom: hi", due_ts=None, sender="Mom",
                     person=True, received_ts=received, reason="Important conversation context")
-    one = pick([text(NOW - 60)])["items"][0]
+    one = pick([text(NOW - 600)])["items"][0]
     cleared = {one["id"]: one["fingerprint"]}
-    assert pick([text(NOW - 60)], cleared)["items"] == []
-    two = pick([text(NOW - 60), dict(text(NOW - 30), id="messages:mom")], cleared)
+    assert pick([text(NOW - 600)], cleared)["items"] == []
+    # A different text has a different id, as in the service; the row is named by the newest.
+    two = pick([text(NOW - 600), dict(text(NOW - 60), id="messages:mom2")], cleared)
     assert two["items"] and two["items"][0]["text"] == "2 texts from Mom"
 
 

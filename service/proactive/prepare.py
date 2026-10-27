@@ -335,9 +335,13 @@ def body(item: dict, method: str, plan: dict, sched: dict, now: float, tz: str) 
 
 async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float, tz: str,
                   linked: set[str] | None = None, resolve_handle=None, allowed: set[str] | None = None,
-                  limit: int = MAX_CARDS, freeze=None, debug: list | None = None) -> tuple[str, list[dict]]:
+                  limit: int = MAX_CARDS, freeze=None, debug: list | None = None,
+                  drafts: dict | None = None) -> tuple[str, list[dict]]:
     """("ok"|"standdown", cards). `resolve_handle(item)` returns a literal phone
-    or address for a one-to-one conversation's contact, or None."""
+    or address for a one-to-one conversation's contact, or None. `drafts` maps
+    (item id, ask, method) to a reply already written for that same ask: it is
+    reused, so the model is not asked for the words twice."""
+    drafts = drafts or {}
     linked = linked or set()
     allowed = allowed or set()
     cards = []
@@ -373,6 +377,7 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
                            "open_url": plan.get("open_url", ""), "open_label": plan.get("open_label", "")},
                 "todo_id": todo_id(item["primary"]),
                 "fingerprints": list(item.get("fingerprints") or []),
+                "asks": list(item.get("asks") or []),
                 "due_ts": None,
                 "critical": True,
             })
@@ -402,7 +407,9 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
             continue                     # a reply Wisp can't send: a to-do, not a card
         words = ""
         if method in ("email_reply", "text_reply"):
-            words = await draft(item, method, reply_fn, abort, allowed=allowed)
+            asked = (item.get("asks") or [None])[0]
+            words = drafts.get((item["primary"], asked, method)) or await draft(item, method, reply_fn, abort,
+                                                                                   allowed=allowed)
             if words is None:
                 return "standdown", cards
         fingerprint = (item.get("fingerprints") or [item["primary"]])[0]
@@ -425,6 +432,7 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
                        "open_label": plan.get("open_label", "")},
             "todo_id": todo_id(item["primary"]),
             "fingerprints": list(item.get("fingerprints") or []),
+            "asks": list(item.get("asks") or []),
             "due_ts": item.get("due_ts"),
             **({"_sealed": plan["sealed"]} if plan.get("sealed") else {}),
         })
