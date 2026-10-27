@@ -17,6 +17,7 @@ from unittest.mock import patch
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[2]
+GOOGLE_CLIENT_SECRET_LINE = "WISP_GOOGLE_OAUTH_CLIENT: ${{ secrets.WISP_GOOGLE_OAUTH_CLIENT }}"
 sys.path.insert(0, str(ROOT / "build-support"))
 import pipeline as p
 import engine_licenses
@@ -189,6 +190,206 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(p.BuildError, "Info.plist mismatch"):
             p.validate_structure(bundle, dict(self.meta, version="999.0.0"))
 
+    # --- built-in Google OAuth client (synthetic values only) ---------------
+
+    FAKE_GOOGLE_CLIENT = {"client_id": "fake-id.apps.googleusercontent.com",
+                          "client_secret": "FAKE-not-a-real-secret"}
+
+    def test_google_client_is_absent_without_env_or_file(self):
+        self.assertIsNone(p.google_oauth_client(environ={}))
+        # A fork pull request sees the secret as an empty string.
+        self.assertIsNone(p.google_oauth_client(environ={p.GOOGLE_OAUTH_CLIENT_ENV: ""}))
+
+    def test_google_client_env_is_canonical_consumed_and_never_printed(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        environ = {p.GOOGLE_OAUTH_CLIENT_ENV: json.dumps(self.FAKE_GOOGLE_CLIENT, indent=2), "PATH": "/usr/bin"}
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            value = p.google_oauth_client(environ=environ)
+        self.assertEqual(json.loads(value), self.FAKE_GOOGLE_CLIENT)
+        self.assertEqual(value, json.dumps(self.FAKE_GOOGLE_CLIENT, separators=(",", ":"), sort_keys=True).encode())
+        self.assertNotIn(p.GOOGLE_OAUTH_CLIENT_ENV, environ)   # no later step can inherit it
+        self.assertEqual(out.getvalue() + err.getvalue(), "")
+        with patch.dict(os.environ, {p.GOOGLE_OAUTH_CLIENT_ENV: "x"}):
+            self.assertNotIn(p.GOOGLE_OAUTH_CLIENT_ENV, p.clean_env())
+
+    def test_google_client_accepts_the_console_download_shape(self):
+        environ = {p.GOOGLE_OAUTH_CLIENT_ENV: json.dumps({"installed": self.FAKE_GOOGLE_CLIENT})}
+        self.assertEqual(json.loads(p.google_oauth_client(environ=environ)), self.FAKE_GOOGLE_CLIENT)
+
+    def test_google_client_errors_never_echo_the_value(self):
+        for raw in ('{"client_id": "fake-id", "client_secret": FAKE-not-a-real-secret',
+                    json.dumps({"client_id": "fake-id"}), json.dumps({"client_secret": "FAKE-not-a-real-secret"}),
+                    json.dumps(["FAKE-not-a-real-secret"])):
+            with self.subTest(raw=raw), self.assertRaises(p.BuildError) as caught:
+                p.google_oauth_client(environ={p.GOOGLE_OAUTH_CLIENT_ENV: raw})
+            self.assertNotIn("FAKE-not-a-real-secret", str(caught.exception))
+            self.assertNotIn("fake-id", str(caught.exception))
+
+    def test_google_client_local_file_wins_and_must_be_readable(self):
+        path = self.root / "client.json"
+        path.write_text(json.dumps(self.FAKE_GOOGLE_CLIENT))
+        other = json.dumps({"client_id": "other.apps.googleusercontent.com", "client_secret": "FAKE-other"})
+        value = p.google_oauth_client(path, environ={p.GOOGLE_OAUTH_CLIENT_ENV: other})
+        self.assertEqual(json.loads(value), self.FAKE_GOOGLE_CLIENT)
+        with self.assertRaisesRegex(p.BuildError, "Could not read"):
+            p.google_oauth_client(self.root / "missing.json", environ={})
+        (self.root / "empty.json").write_text("  ")
+        with self.assertRaisesRegex(p.BuildError, "empty"):
+            p.google_oauth_client(self.root / "empty.json", environ={})
+
+    def test_bundle_ships_the_google_client_only_when_given(self):
+        bundle = self.fixture()
+        meta = dict(self.meta)
+        p.write_google_oauth_client(bundle, meta, None)
+        self.assertIs(meta["google_oauth_client"], False)
+        self.assertFalse((bundle / p.GOOGLE_OAUTH_CLIENT_BUNDLE).exists())
+        p.validate_structure(bundle, meta)
+        value = p.google_oauth_client(environ={p.GOOGLE_OAUTH_CLIENT_ENV: json.dumps(self.FAKE_GOOGLE_CLIENT)})
+        meta = dict(self.meta)
+        p.write_google_oauth_client(bundle, meta, value)
+        self.assertIs(meta["google_oauth_client"], True)
+        self.assertEqual((bundle / p.GOOGLE_OAUTH_CLIENT_BUNDLE).read_bytes(), value)
+        p.validate_structure(bundle, meta)
+        # The file and build-info must agree, both ways.
+        with self.assertRaisesRegex(p.BuildError, "does not declare"):
+            p.validate_structure(bundle, dict(meta, google_oauth_client=False))
+        (bundle / p.GOOGLE_OAUTH_CLIENT_BUNDLE).unlink()
+        with self.assertRaisesRegex(p.BuildError, "Missing bundled Google OAuth client"):
+            p.validate_structure(bundle, meta)
+        # Tracked source can never smuggle one in.
+        (bundle / p.GOOGLE_OAUTH_CLIENT_BUNDLE).write_bytes(value)
+        with self.assertRaisesRegex(p.BuildError, "Tracked source"):
+            p.write_google_oauth_client(bundle, dict(self.meta), None)
+
+    def test_google_client_path_matches_the_backend_lookup(self):
+        self.assertEqual(p.GOOGLE_OAUTH_CLIENT_BUNDLE,
+                         "Contents/Resources/backend/service/google_oauth_client.json")
+        source = (ROOT / "service/gmail_source.py").read_text()
+        self.assertIn('BUILTIN_CLIENT_PATH = Path(__file__).with_name("google_oauth_client.json")', source)
+        self.assertIn("service/google_oauth_client.json", (ROOT / ".gitignore").read_text().splitlines())
+
+    # --- bundled uv (fake tarballs only; nothing is downloaded) -------------
+
+    @staticmethod
+    def fake_uv_tarball(files=None, extra=None, link=False):
+        import io, tarfile
+        files = files if files is not None else {"uv": b"\xcf\xfa\xed\xfe fake uv", "uvx": b"\xcf\xfa\xed\xfe fake uvx"}
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
+            info = tarfile.TarInfo("uv-aarch64-apple-darwin")
+            info.type, info.mode = tarfile.DIRTYPE, 0o755
+            tar.addfile(info)
+            for name, data in {**files, **(extra or {})}.items():
+                info = tarfile.TarInfo("uv-aarch64-apple-darwin/" + name)
+                info.size, info.mode = len(data), 0o755
+                tar.addfile(info, io.BytesIO(data))
+            if link:
+                info = tarfile.TarInfo("uv-aarch64-apple-darwin/uvx")
+                info.type, info.linkname = tarfile.SYMTYPE, "/usr/bin/true"
+                tar.addfile(info)
+        return buffer.getvalue()
+
+    def fake_uv_fetch(self, payload, calls):
+        def fetch(url, destination, limit):
+            calls.append((url, limit))
+            Path(destination).write_bytes(payload)
+        return fetch
+
+    def test_uv_pin_is_a_real_release_digest(self):
+        uv = p.uv_tool
+        self.assertRegex(uv.UV_VERSION, r"^\d+\.\d+\.\d+$")
+        self.assertRegex(uv.UV_SHA256, r"^[0-9a-f]{64}$")
+        self.assertEqual(uv.UV_URL, f"https://github.com/astral-sh/uv/releases/download/{uv.UV_VERSION}/"
+                                    "uv-aarch64-apple-darwin.tar.gz")
+        self.assertGreater(uv.UV_SIZE, 1_000_000)
+
+    def test_uv_download_is_verified_cached_and_reverified(self):
+        uv = p.uv_tool
+        payload, calls = self.fake_uv_tarball(), []
+        pin = dict(size=len(payload), sha256=hashlib.sha256(payload).hexdigest())
+        cache = self.root / "uv-cache"
+        archive = uv.verified_archive(cache, fetch=self.fake_uv_fetch(payload, calls), **pin)
+        self.assertEqual(archive.read_bytes(), payload)
+        self.assertEqual([url for url, _ in calls], [uv.UV_URL])
+        # A cached, matching archive is reused without a download, offline too.
+        self.assertEqual(uv.verified_archive(cache, offline=True, **pin), archive)
+        self.assertEqual(len(calls), 1)
+        # A tampered cache entry is discarded, never reused.
+        archive.write_bytes(payload[:-1] + b"x")
+        with self.assertRaisesRegex(uv.UVToolError, "offline"):
+            uv.verified_archive(cache, offline=True, **pin)
+        self.assertFalse(archive.exists())
+
+    def test_uv_download_that_differs_from_the_pin_fails_the_build(self):
+        uv = p.uv_tool
+        payload, calls = self.fake_uv_tarball(), []
+        cache = self.root / "uv-cache"
+        with self.assertRaisesRegex(uv.UVToolError, "does not match the pinned size and SHA-256"):
+            uv.verified_archive(cache, fetch=self.fake_uv_fetch(payload, calls),
+                                size=len(payload), sha256="0" * 64)
+        with self.assertRaisesRegex(uv.UVToolError, "does not match"):
+            uv.verified_archive(cache, fetch=self.fake_uv_fetch(payload, calls),
+                                size=len(payload) + 1, sha256=hashlib.sha256(payload).hexdigest())
+        self.assertEqual(list(cache.iterdir()), [])      # nothing partial is left to reuse
+        # The real pin refuses the fake outright.
+        with self.assertRaises(uv.UVToolError):
+            uv.verified_archive(cache, fetch=self.fake_uv_fetch(payload, calls))
+
+    def test_uv_archive_contents_are_exact(self):
+        uv = p.uv_tool
+        good = self.root / "good.tar.gz"
+        good.write_bytes(self.fake_uv_tarball())
+        self.assertEqual(set(uv.binaries(good)), {"uv", "uvx"})
+        for name, payload in (("extra", self.fake_uv_tarball(extra={"install.sh": b"#!/bin/sh"})),
+                              ("missing", self.fake_uv_tarball(files={"uv": b"\xcf\xfa\xed\xfe uv"})),
+                              ("link", self.fake_uv_tarball(files={"uv": b"\xcf\xfa\xed\xfe uv"}, link=True)),
+                              ("not macho", self.fake_uv_tarball(files={"uv": b"#!/bin/sh", "uvx": b"#!/bin/sh"})),
+                              ("garbage", b"not a tarball")):
+            with self.subTest(name=name):
+                bad = self.root / (name.replace(" ", "-") + ".tar.gz")
+                bad.write_bytes(payload)
+                with self.assertRaises(uv.UVToolError):
+                    uv.binaries(bad)
+
+    def test_bundle_ships_executable_uv_only_when_built_with_it(self):
+        uv = p.uv_tool
+        archive = self.root / "uv.tar.gz"
+        archive.write_bytes(self.fake_uv_tarball())
+        bundle = self.fixture()
+        meta = dict(self.meta, uv=uv.stage(bundle, archive))
+        self.assertEqual(meta["uv"]["version"], uv.UV_VERSION)
+        self.assertEqual(meta["uv"]["sha256"], uv.UV_SHA256)
+        for name in ("uv", "uvx"):
+            path = bundle / "Contents/Resources/bin" / name
+            self.assertTrue(os.access(path, os.X_OK), name)
+        p.validate_structure(bundle, meta)
+        self.assertIn("Contents/Resources/bin/uvx", p.inventory(bundle))
+        with self.assertRaisesRegex(p.BuildError, "does not declare"):
+            p.validate_structure(bundle, dict(meta, uv=None))
+        with self.assertRaisesRegex(p.BuildError, "pinned release"):
+            p.validate_structure(bundle, dict(meta, uv=dict(meta["uv"], sha256="0" * 64)))
+        (bundle / "Contents/Resources/bin/uvx").chmod(0o644)
+        with self.assertRaisesRegex(p.BuildError, "non-executable"):
+            p.validate_structure(bundle, meta)
+        # A --no-uv build declares none and ships none; old metadata is not judged.
+        clean = self.root / "clean"
+        clean.mkdir()
+        self.root, saved = clean, self.root
+        try:
+            bare = self.fixture()
+            p.validate_structure(bare, dict(self.meta, uv=None))
+            p.validate_structure(bare, dict(self.meta))
+        finally:
+            self.root = saved
+
+    def test_no_uv_flag_and_loud_failure_are_wired(self):
+        source = (ROOT / "build-support/pipeline.py").read_text()
+        self.assertIn('p.add_argument("--no-uv", action="store_true"', source)
+        self.assertIn('uv_tool.verified_archive(STATE / "uv-tool-cache", offline=args.offline)', source)
+        self.assertIn("Pass --no-uv to build without the bundled uv.", source)
+
     def test_mode_validation(self):
         bundle = self.fixture()
         (bundle / "Contents/MacOS/Wisp").chmod(0o644)
@@ -207,8 +408,25 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue(stat.S_ISLNK(info.external_attr >> 16))
             self.assertEqual(z.read(info), b"python3")
 
+    RELEASE_FEATURES = {"google_oauth_client": True,
+                        "uv": {"version": p.uv_tool.UV_VERSION, "asset": p.uv_tool.UV_ASSET,
+                               "sha256": p.uv_tool.UV_SHA256, "path": p.uv_tool.BUNDLE_DIR}}
+
+    def ship_release_features(self, bundle):
+        """Fake the built-in client and uv files a release build ships, as self.meta declares."""
+        if self.meta.get("google_oauth_client"):
+            (bundle / p.GOOGLE_OAUTH_CLIENT_BUNDLE).write_bytes(p._google_oauth_client_json(
+                json.dumps(self.FAKE_GOOGLE_CLIENT)))
+        if self.meta.get("uv"):
+            for name in p.uv_tool.BINARIES:
+                path = bundle / p.uv_tool.BUNDLE_DIR / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("fake")
+                path.chmod(0o755)
+
     def artifact(self):
         bundle = self.fixture()
+        self.ship_release_features(bundle)
         p.json_write(self.root / "simulation-qa.json", self.qa_report())
         p.json_write(self.root / "provenance.json", {"source": self.meta, "signature": "ad-hoc", "notarized": False,
             "simulation_sha256": p.digest(self.root / "simulation-qa.json")})
@@ -1862,7 +2080,8 @@ print('external venv readable; private home and writes denied')
         self.assertTrue(p.plist(dict(meta, dirty=False))["WispPreviewBuild"])
         self.assertFalse(p.plist(dict(meta, dirty=False, preview=False))["WispPreviewBuild"])
 
-    def test_preview_skips_qa_stages_and_never_verifies_as_release(self):
+    def run_preview(self, *flags, uv=None):
+        """main() for a preview build with every stage faked; returns (exit code, stages, uv fetch mock)."""
         meta = dict(self.meta, preview=True, tracked_source_sha256="0" * 64)
         output = p.ROOT / "dist" / "unit-test-preview-output"
         stages = []
@@ -1874,7 +2093,7 @@ print('external venv readable; private home and writes denied')
                 pass
             def run(inner, *a, **k):
                 return 0, self.root / "x.log"
-        with patch.object(sys, "argv", ["pipeline.py", "preview"]), \
+        with patch.object(sys, "argv", ["pipeline.py", "preview", *flags]), \
                 patch.object(p, "Runner", FakeRunner), \
                 patch.object(p, "check_locks"), patch.object(p, "doctor", return_value={}), \
                 patch.object(p, "metadata", return_value=meta) as metadata, \
@@ -1884,7 +2103,10 @@ print('external venv readable; private home and writes denied')
                 patch.object(p, "simulation_tests", side_effect=lambda *a, **k: stages.append("simulation")), \
                 patch.object(p, "verify_artifacts", side_effect=lambda *a, **k: stages.append("verify")), \
                 patch.object(p, "build_swift", side_effect=lambda *a, **k: stages.append("swift") or Path("bin")), \
-                patch.object(p, "assemble", side_effect=lambda *a, **k: stages.append("assemble") or self.root / "Wisp.app"), \
+                patch.object(p, "assemble", side_effect=lambda *a, **k: stages.append(("assemble", k.get("uv_archive")))
+                             or self.root / "Wisp.app"), \
+                patch.object(p.uv_tool, "verified_archive",
+                             **(uv or {"return_value": Path("pinned-uv.tar.gz")})) as uv_fetch, \
                 patch.object(p, "validate_structure", side_effect=lambda *a, **k: stages.append("structure")), \
                 patch.object(p, "prepare_native_for_signing"), \
                 patch.object(p, "validate_native", side_effect=lambda *a, **k: stages.append("native")), \
@@ -1892,9 +2114,32 @@ print('external venv readable; private home and writes denied')
                 patch.object(p, "relocation_smoke", side_effect=lambda *a, **k: stages.append("smoke")), \
                 patch.object(p, "finalize", side_effect=lambda *a, **k: stages.append("finalize")), \
                 patch.object(Path, "mkdir"):
-            self.assertEqual(p.main(), 0)
+            code = p.main()
+        return code, stages, uv_fetch, metadata
+
+    def test_preview_skips_qa_stages_and_never_verifies_as_release(self):
+        code, stages, uv_fetch, metadata = self.run_preview()
+        self.assertEqual(code, 0)
+        uv_fetch.assert_called_once_with(p.STATE / "uv-tool-cache", offline=False)
         metadata.assert_called_once_with(False, None, True)
-        self.assertEqual(stages, ["swift", "assemble", "structure", "native", "sign", "smoke", "finalize"])
+        self.assertEqual(stages, ["swift", ("assemble", Path("pinned-uv.tar.gz")), "structure", "native", "sign",
+                                  "smoke", "finalize"])
+
+    def test_uv_fetch_failure_stops_the_build_unless_no_uv(self):
+        import io
+        from contextlib import redirect_stderr
+        err = io.StringIO()
+        with redirect_stderr(err):
+            code, stages, _, _ = self.run_preview(uv={"side_effect": p.uv_tool.UVToolError("uv release download failed")})
+        self.assertEqual(code, 1)
+        self.assertEqual(stages, [])                       # before Swift, tests or assembly
+        self.assertIn("Pass --no-uv", err.getvalue())
+        code, stages, uv_fetch, _ = self.run_preview("--no-uv")
+        self.assertEqual(code, 0)
+        uv_fetch.assert_not_called()
+        self.assertIn(("assemble", None), stages)
+
+
 
     def test_preview_artifact_is_refused_by_release_verification(self):
         self.artifact()
@@ -2020,10 +2265,11 @@ print('external venv readable; private home and writes denied')
         self.assertEqual(workflow.count("environment: release"), 1)
         self.assertNotIn("environment:", adhoc)
 
-    def adhoc_fixture(self):
+    def adhoc_fixture(self, features=None):
         checkout = self.root
         self.root = checkout / "dist/candidate"
         self.root.mkdir(parents=True)
+        self.meta = dict(self.meta, **(self.RELEASE_FEATURES if features is None else features))
         self.artifact()
         (self.root / "release-notes.md").write_text("Ad-hoc fixture notes")
         provenance = json.loads((self.root / "provenance.json").read_text())
@@ -2089,6 +2335,44 @@ print('external venv readable; private home and writes denied')
             finally:
                 self.adhoc_events, self.adhoc_uploaded, self.adhoc_api_calls = events, uploaded, api.call_count
         return events, uploaded
+
+    def test_ad_hoc_release_refuses_a_candidate_without_the_built_in_client_or_uv(self):
+        for features, message in (({"google_oauth_client": False, "uv": self.RELEASE_FEATURES["uv"]},
+                                   "no built-in Google OAuth client"),
+                                  ({"google_oauth_client": True, "uv": None}, "no bundled uv")):
+            with self.subTest(message=message):
+                saved_root, saved_meta = self.root, self.meta
+                scratch = Path(tempfile.mkdtemp(dir=self.temp.name))
+                self.root = scratch
+                try:
+                    checkout = self.adhoc_fixture(features)
+                    with self.assertRaisesRegex(p.BuildError, message):
+                        self.run_adhoc_fixture(checkout)
+                    self.assertNotIn("create-draft-release", self.adhoc_events)
+                    self.assertEqual(self.adhoc_uploaded, {})
+                finally:
+                    self.root, self.meta = saved_root, saved_meta
+
+    def test_release_features_gate_is_shared_by_both_publication_paths(self):
+        for meta, ok in (({"google_oauth_client": True, "uv": {"version": "x"}}, True),
+                         ({"google_oauth_client": False, "uv": {"version": "x"}}, False),
+                         ({"uv": {"version": "x"}}, False),                     # older build-info
+                         ({"google_oauth_client": "yes", "uv": {"version": "x"}}, False),
+                         ({"google_oauth_client": True, "uv": None}, False)):
+            with self.subTest(meta=meta):
+                if ok:
+                    release.require_release_features(meta)
+                else:
+                    with self.assertRaises(p.BuildError):
+                        release.require_release_features(meta)
+        source = (ROOT / "build-support/release.py").read_text()
+        for function in ("def release_ad_hoc(", "def release("):
+            body = source[source.index(function):]
+            end = body.find("\ndef ", 1)
+            body = body[:end if end > 0 else len(body)]
+            self.assertIn("require_release_features(meta)", body, function)
+        # PR previews and the full candidate build stay possible without the secret.
+        self.assertIsNone(p.google_oauth_client(environ={}))
 
     def test_ad_hoc_app_only_publishes_after_upload_with_app_first_notes(self):
         checkout = self.adhoc_fixture()
@@ -2235,7 +2519,9 @@ print('external venv readable; private home and writes denied')
             self.assertIn('echo "sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"', job)
             self.assertIn("sha: ${{ steps.candidate.outputs.sha }}", job)
             self.assertIn("pipeline.check_locks()", job)
-            self.assertNotIn("secrets.", job)
+            # The preview build step may read the built-in Google OAuth client;
+            # no other secret reaches either PR job.
+            self.assertNotIn("secrets.", job.replace(GOOGLE_CLIENT_SECRET_LINE, ""))
             self.assertNotIn("download-artifact", job)
             self.assertNotIn("wisp-build all", job)
         self.assertIn("./scripts/wisp-build preview --strict-toolchain --fetch-engine --output dist/preview", preview)
@@ -2245,6 +2531,22 @@ print('external venv readable; private home and writes denied')
         self.assertIn("tests/test_primary_runtime_completion.py", preview)
         self.assertIn("./scripts/wisp-build test --strict-toolchain\n", qa)
         self.assertNotIn("wisp-build preview", qa)
+        self.assertNotIn("WISP_GOOGLE_OAUTH_CLIENT", qa)
+        build = self.workflow_step(preview, "Build, sign and smoke-test preview from source")
+        self.assertEqual(preview.count(GOOGLE_CLIENT_SECRET_LINE), 1)
+        self.assertIn(GOOGLE_CLIENT_SECRET_LINE, build)
+
+    def test_every_ci_build_receives_only_the_google_client_secret_on_its_build_step(self):
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        self.assertEqual(workflow.count(GOOGLE_CLIENT_SECRET_LINE), 4)
+        steps = {"preview": "Build, sign and smoke-test preview from source",
+                 "full": "Build and verify from source",
+                 "release": "Rebuild approved source with strict validation",
+                 "publish-ad-hoc-release": "Rebuild ad-hoc source with strict validation"}
+        for job, name in steps.items():
+            step = self.workflow_step(self.workflow_job(workflow, job), name)
+            self.assertIn(GOOGLE_CLIENT_SECRET_LINE, step)
+            self.assertEqual(step.count("secrets."), 1, job)
 
     def test_every_ci_build_stages_the_pinned_engine(self):
         """A release made by CI must carry the engine: every build command passes --fetch-engine."""

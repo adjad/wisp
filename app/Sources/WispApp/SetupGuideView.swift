@@ -37,6 +37,10 @@ struct SetupStatus: Decodable {
         let source: String; let installed: [ModelEntry]; let recommended: String
         let use: String?; let warning: String?
         let recommendedLabel: String?
+        /// False when no model Wisp can download fits this Mac's memory (or the
+        /// memory couldn't be read): setup offers another route, not a download.
+        /// Absent from an older service, which never said.
+        let fits: Bool?
         let download: Download?; let embeddingDownload: Download?
     }
     struct RoleRow: Decodable, Identifiable {
@@ -62,6 +66,168 @@ struct SetupStatus: Decodable {
     let checks: [Check]
     let disclosure: String
     let configurationToken: String?
+    /// Every role on a remote provider: nothing to download (service/setup/guide.py).
+    var remoteOnly: Bool? = nil
+    var canAnswer: Bool { Self.canAnswer(ready: ready, remoteOnly: remoteOnly == true) }
+    /// Wisp can answer: a ready local model, or nothing to download. The one rule
+    /// for finishing setup, the menu, the setup cue and the readers.
+    static func canAnswer(ready: Bool, remoteOnly: Bool) -> Bool { ready || remoteOnly }
+
+    /// Wisp is set to use the oMLX app this Mac already has (a fresh install picks it
+    /// when oMLX.app is installed), at least one role runs on it, and it isn't ready
+    /// yet. `nil`: not that case (the built-in engine, no oMLX app, every role on another
+    /// app, or a running oMLX without any of Wisp's models — the detailed setup).
+    enum ExistingOmlx: Equatable {
+        /// Its server hasn't answered yet: it is starting (Wisp's last quit stops it),
+        /// or busy loading a model. A connection in progress, never a failure.
+        case connecting
+        /// Running and serving `model`, safe to switch to without asking: the model Wisp
+        /// recommends (or, with nothing to download, a tested one), every role is local
+        /// and none already names an installed model, so no choice is overwritten.
+        case serving(model: String, label: String)
+        /// Running and serving `model`, but switching would replace a choice (or the
+        /// model isn't Wisp's recommended one): the person decides with one click.
+        case offering(model: String, label: String)
+    }
+
+    var existingOmlx: ExistingOmlx? {
+        let local = roles.filter { $0.endpoint == "local" }
+        guard omlx.bundled != true, omlx.installed, !ready, !local.isEmpty else { return nil }
+        guard omlx.running else { return .connecting }
+        guard let model = models.use,
+              let entry = models.installed.first(where: { $0.id == model }) else { return nil }
+        let installed = Set(models.installed.map(\.id))
+        let wisps = model == models.recommended || (models.download == nil && entry.tested)
+        let nothingOverwritten = local.count == roles.count && !local.contains { installed.contains($0.model) }
+        return wisps && nothingOverwritten ? .serving(model: model, label: entry.label)
+                                           : .offering(model: model, label: entry.label)
+    }
+}
+
+// MARK: - Download hold
+
+/// How setup keeps watching a transfer while no setup is on screen, through its
+/// "download" host. Pure, so each rule can be checked with a clock.
+///
+/// - `hold`: the host, the normal 3 s poll, and an idle-sleep assertion. While a
+///   transfer is starting or moving, and for `finishingGrace` after one finishes
+///   until Wisp can answer.
+/// - `watch`: the host with a slow poll (`slowPoll`), and no sleep assertion. When
+///   a transfer last seen running has not moved for `stallLimit` (an engine left
+///   "downloading" at 0 B/s), or reads have failed `failureLimit` times in a row
+///   over at least `failureSpan` (the service or engine is down, not restarting).
+///   The slow poll still sees the download finish, so Wisp switches to the model,
+///   and goes back to `hold` when the bytes move.
+/// - `none`: nothing is transferring, or the hold has lasted `cap`, the backend's
+///   own watch (_WATCH_FOR_S). The cap lasts until nothing is transferring, so the
+///   same transfer never retakes it.
+///
+/// Sleep is not a stall or an outage. It is told apart from slow reads by the
+/// two clocks: wall time keeps running while the Mac sleeps and uptime pauses,
+/// so a gap where wall time ran more than `sleepThreshold` ahead of uptime was
+/// sleep. After one, the stall clock and any run of failures start over at the
+/// next read, and nothing is judged until a read has happened since. Reads that
+/// are merely slow leave both clocks in step, so the stall rule still applies.
+struct SetupDownloadHold: Equatable {
+    enum Level: Equatable { case none, watch, hold }
+
+    static let finishingGrace: TimeInterval = 120
+    static let stallLimit: TimeInterval = 10 * 60
+    static let failureLimit = 3
+    static let failureSpan: TimeInterval = 90
+    static let cap: TimeInterval = 6 * 3600
+    static let fastPoll: TimeInterval = 3
+    static let slowPoll: TimeInterval = 60
+    static let sleepThreshold: TimeInterval = 30
+
+    /// When the host was taken.
+    var since: Date?
+    /// Download pressed; the request to start it hasn't answered yet.
+    var starting = false
+    private(set) var level = Level.none
+    private(set) var movedAt: Date?
+    private(set) var lastReadAt: Date?
+    private(set) var lastReadUptime: TimeInterval?
+    private(set) var signature: [String] = []
+    private(set) var failures = 0
+    private(set) var firstFailureAt: Date?
+    private(set) var capped = false
+    private(set) var finishedAt: Date?
+
+    /// Whether the Mac slept since the last read: wall time ran ahead of uptime.
+    func slept(now: Date, uptime: TimeInterval) -> Bool {
+        guard let lastReadAt, let lastReadUptime else { return false }
+        return now.timeIntervalSince(lastReadAt) - (uptime - lastReadUptime) > Self.sleepThreshold
+    }
+
+    /// A read happened, good or not. After sleep, the stall clock and the run of
+    /// failures start over.
+    private mutating func noteRead(_ now: Date, uptime: TimeInterval) {
+        if slept(now: now, uptime: uptime) {
+            movedAt = now
+            failures = 0
+            firstFailureAt = nil
+        }
+        lastReadAt = now
+        lastReadUptime = uptime
+    }
+
+    /// A fresh read of the transfers.
+    mutating func observe(_ downloads: [SetupGuideModel.DownloadTask],
+                          previous: [SetupGuideModel.DownloadTask], now: Date, uptime: TimeInterval) {
+        noteRead(now, uptime: uptime)
+        failures = 0
+        firstFailureAt = nil
+        let active = downloads.filter(\.active)
+        let next = active.map { "\($0.model):\($0.state):\(Int64($0.downloadedBytes))" }.sorted()
+        if next != signature || movedAt == nil {
+            signature = next
+            movedAt = now
+        }
+        let wasActive = Set(previous.filter(\.active).map(\.model))
+        if downloads.contains(where: { $0.state == "completed" && wasActive.contains($0.model) }) {
+            finishedAt = now
+        }
+        if active.isEmpty { capped = false }
+    }
+
+    /// A read that failed: what is on screen is the last snapshot.
+    mutating func failed(now: Date, uptime: TimeInterval) {
+        noteRead(now, uptime: uptime)
+        if failures == 0 { firstFailureAt = now }
+        failures += 1
+    }
+
+    /// The level now, from the last snapshot. Notes the cap when it is reached.
+    mutating func decide(_ downloads: [SetupGuideModel.DownloadTask], ready: Bool,
+                         now: Date, uptime: TimeInterval) -> Level {
+        level = next(downloads, ready: ready, now: now, uptime: uptime)
+        return level
+    }
+
+    private mutating func next(_ downloads: [SetupGuideModel.DownloadTask], ready: Bool,
+                               now: Date, uptime: TimeInterval) -> Level {
+        if let since, now.timeIntervalSince(since) >= Self.cap { capped = true }
+        if capped { return .none }
+        if starting { return .hold }
+        if downloads.contains(where: \.active) {
+            // Slept since the last read: nothing to judge by until the next one.
+            if slept(now: now, uptime: uptime) { return level == .none ? .hold : level }
+            if failures >= Self.failureLimit, let firstFailureAt,
+               now.timeIntervalSince(firstFailureAt) >= Self.failureSpan { return .watch }
+            guard let movedAt else { return .hold }
+            return now.timeIntervalSince(movedAt) < Self.stallLimit ? .hold : .watch
+        }
+        guard let finishedAt, !ready else { return .none }
+        return now.timeIntervalSince(finishedAt) < Self.finishingGrace ? .hold : .none
+    }
+
+    /// The host was let go.
+    mutating func released() {
+        since = nil
+        finishedAt = nil
+        level = .none
+    }
 }
 
 // MARK: - Model
@@ -74,6 +240,21 @@ final class SetupGuideModel: ObservableObject {
         let message: String?
         var id: String { model }
         var active: Bool { state == "pending" || state == "downloading" }
+
+        /// "45% · 2.5 GB of 5.5 GB · 10 MB/s", or "Preparing download…" before the
+        /// engine knows the size. Shared by the setup window and the notch card.
+        var progressText: String {
+            guard totalBytes > 0 else { return "Preparing download…" }
+            let received = ByteCountFormatter.string(fromByteCount: Int64(downloadedBytes), countStyle: .file)
+            let total = ByteCountFormatter.string(fromByteCount: Int64(totalBytes), countStyle: .file)
+            return "\(Int(progress))% · \(received) of \(total)" + (speedText.map { " · \($0)" } ?? "")
+        }
+
+        /// "10 MB/s" while bytes are arriving; nil when nothing is moving.
+        var speedText: String? {
+            guard bytesPerSecond > 0 else { return nil }
+            return ByteCountFormatter.string(fromByteCount: Int64(bytesPerSecond), countStyle: .file) + "/s"
+        }
     }
     private struct Downloads: Decodable { let tasks: [DownloadTask] }
 
@@ -94,7 +275,9 @@ final class SetupGuideModel: ObservableObject {
     private var testGeneration = 0
     // Automatic first-setup steps run at most once per app session each; the
     // visible buttons stay for retries.
-    private var autoStartedEngine = false
+    /// Read by the first-run window: a start Wisp made by itself that left nothing
+    /// running offers Try again there.
+    private(set) var autoStartedEngine = false
     private var autoAppliedModels = Set<String>()
     private var statusGeneration = 0
     private var downloadGeneration = 0
@@ -107,11 +290,36 @@ final class SetupGuideModel: ObservableObject {
     // Counted, so a view that appears before its predecessor disappears (SwiftUI
     // doesn't order the two) never stops the poll it still needs.
     @Published private(set) var hosts: [String: Int] = [:]
+    /// The host a transfer holds while it runs, so collapsing the notch panel
+    /// or closing a window doesn't stop the poll (and with it the automatic
+    /// switch to the new model). It is taken only while setup is on screen;
+    /// SetupDownloadHold says when it is let go.
+    static let downloadHost = "download"
+    private(set) var downloadHold = SetupDownloadHold()
+    private var keepAwake: NSObjectProtocol?
+    /// Whether the idle-sleep assertion is held (only at the `hold` level).
+    var keepsMacAwake: Bool { keepAwake != nil }
+    /// Only a transfer being watched keeps setup polling, so the poll slows down.
+    var pollsSlowly: Bool {
+        hosts.keys.allSatisfy { $0 == Self.downloadHost } && downloadHold.level == .watch
+    }
     private var monitorTask: Task<Void, Never>?
     private var configurationObserver: AnyCancellable?
+    /// Wall time and uptime (which pauses while the Mac sleeps), injectable so
+    /// the hold's rules can be checked without waiting.
+    private let clock: () -> Date
+    private let uptime: () -> TimeInterval
+    /// False only in checks that drive every read themselves: showing setup then
+    /// starts no background poll.
+    private let pollsByItself: Bool
 
-    init(session: URLSession = .shared) {
+    init(session: URLSession = .shared, clock: @escaping () -> Date = Date.init,
+         uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
+         pollsByItself: Bool = true) {
         self.session = session
+        self.clock = clock
+        self.uptime = uptime
+        self.pollsByItself = pollsByItself
         configurationObserver = NotificationCenter.default
             .publisher(for: .wispInferenceConfigurationChanged)
             .receive(on: DispatchQueue.main)
@@ -126,6 +334,7 @@ final class SetupGuideModel: ObservableObject {
         hosts[host, default: 0] += 1
         guard !wasShown else { return }
         monitorTask?.cancel()
+        guard pollsByItself else { monitoringStopped = false; return }
         monitorTask = Task { [weak self] in await self?.monitor() }
     }
 
@@ -138,6 +347,33 @@ final class SetupGuideModel: ObservableObject {
         monitorTask?.cancel()
         monitorTask = nil
         stopMonitoring()
+    }
+
+    /// Take, slow down or let go of the download host after each look at the
+    /// transfers, successful or not. `previous`: the transfers before a fresh read.
+    private func updateDownloadHost(previous: [DownloadTask]? = nil) {
+        let now = clock(), up = uptime()
+        if let previous { downloadHold.observe(downloads, previous: previous, now: now, uptime: up) }
+        let level = downloadHold.decide(downloads, ready: statusIsCurrent && status?.ready == true,
+                                        now: now, uptime: up)
+        if level != .none, hosts[Self.downloadHost] == nil {
+            // Taken only while setup is on screen; otherwise there is nothing to hold.
+            guard isShown else { downloadHold.released(); return }
+            downloadHold.since = now
+            show(in: Self.downloadHost)
+        }
+        if level == .hold, keepAwake == nil {
+            // Idle sleep would pause the transfer; a closed lid still sleeps.
+            keepAwake = ProcessInfo.processInfo.beginActivity(
+                options: [.idleSystemSleepDisabled], reason: "Downloading Wisp's model")
+        } else if level != .hold, let keepAwake {
+            ProcessInfo.processInfo.endActivity(keepAwake)
+            self.keepAwake = nil
+        }
+        if level == .none, hosts[Self.downloadHost] != nil {
+            downloadHold.released()
+            hide(from: Self.downloadHost)
+        }
     }
 
     /// Something outside setup changed which models or engine Wisp uses. What is
@@ -187,6 +423,7 @@ final class SetupGuideModel: ObservableObject {
             selectedModel = next.models.use ?? next.models.installed.first?.id
         }
         autoAdvanceFirstSetup(next)
+        updateDownloadHost()
     }
 
     #if WISP_NOTCH_QA
@@ -305,7 +542,21 @@ final class SetupGuideModel: ObservableObject {
         }
     }
 
-    func startEngine() async {
+    /// First-run setup only (FirstRunSetupView drives it while setup is unfinished):
+    /// the person's own oMLX app hasn't answered (Wisp's last quit stops its server),
+    /// so start it once a session. A plain start — the service never restarts or
+    /// reconfigures their app for a start nobody clicked. Never when no role uses it.
+    func startExistingOmlxOnce() {
+        guard busy == nil, !autoStartedEngine, statusIsCurrent, let status,
+              status.existingOmlx == .connecting,
+              status.checks.contains(where: { $0.id == "engine" && $0.action == "start_engine" }) else { return }
+        autoStartedEngine = true
+        Task { await startEngine(automatic: true) }
+    }
+
+    /// `automatic`: Wisp started it by itself, so the person's own oMLX gets a plain
+    /// start and never the restart a click may fall back to.
+    func startEngine(automatic: Bool = false) async {
         guard busy == nil else { return }
         beginMutation()
         busy = "Starting engine…"
@@ -315,7 +566,8 @@ final class SetupGuideModel: ObservableObject {
                 _ = try await call("POST", "engine/start", body: [:], timeout: 160)
                 await refresh()
             } else {
-                accept(try decode(try await call("POST", "setup/start-engine", body: [:], timeout: 100)))
+                accept(try decode(try await call("POST", "setup/start-engine",
+                                                 body: automatic ? ["automatic": true] : [:], timeout: 100)))
                 message = nil
             }
         } catch { fail(error) }
@@ -328,11 +580,17 @@ final class SetupGuideModel: ObservableObject {
         guard !Task.isCancelled else { return }
         monitoringStopped = false
         await refresh()
+        var lastRead = clock()
         while !Task.isCancelled && !monitoringStopped {
             if status?.omlx.bundled == true && busy == nil { await refreshDownloads() }
-            do { try await Task.sleep(nanoseconds: 3_000_000_000) }
-            catch { return }
-            guard !monitoringStopped else { return }
+            // Wake every 3 s either way, so a setup shown again polls at once; a
+            // transfer only being watched is read once a minute.
+            repeat {
+                do { try await Task.sleep(nanoseconds: 3_000_000_000) }
+                catch { return }
+                guard !monitoringStopped else { return }
+            } while pollsSlowly && clock().timeIntervalSince(lastRead) < SetupDownloadHold.slowPoll
+            lastRead = clock()
             if busy == nil { await refresh(quiet: true) }
         }
     }
@@ -358,11 +616,17 @@ final class SetupGuideModel: ObservableObject {
             decoder.keyDecodingStrategy = .convertFromSnakeCase
             let next = try decoder.decode(Downloads.self, from: await call("GET", "engine/downloads")).tasks
             guard generation == downloadGeneration, !monitoringStopped, !Task.isCancelled else { return }
+            let previous = downloads
             downloads = next
             downloadError = nil
+            updateDownloadHost(previous: previous)
         } catch {
             guard generation == downloadGeneration, !monitoringStopped, !Task.isCancelled else { return }
             downloadError = "Wisp couldn't check the download. Choose Check again to retry."
+            // The last snapshot is stale now: a service that stays down must not
+            // keep the poll and the sleep assertion forever.
+            downloadHold.failed(now: clock(), uptime: uptime())
+            updateDownloadHost()
         }
     }
 
@@ -371,6 +635,19 @@ final class SetupGuideModel: ObservableObject {
         downloadGeneration += 1
         busy = cancel ? "Cancelling download…" : "Starting download…"
         defer { busy = nil }
+        // Pressing Download holds the poll at once, so collapsing the panel while
+        // the request is in flight (minutes, if the engine is starting too) can't
+        // leave the transfer unwatched.
+        if !cancel {
+            downloadHold.starting = true
+            updateDownloadHost()
+        }
+        defer {
+            if !cancel {
+                downloadHold.starting = false
+                updateDownloadHost()
+            }
+        }
         do {
             _ = try await call("POST", cancel ? "engine/downloads/cancel" : "engine/downloads",
                                body: ["model": model], timeout: 180)
@@ -651,7 +928,8 @@ struct SetupGuideView: View {
         let check = s.checks.first { $0.id == "model" }
         return card(step: "2", title: "Model", state: check?.state ?? "todo") {
             recommendationText(s)
-            if let check, check.state != "ok" {
+            // The no-fit check repeats the memory warning just below; say it once.
+            if let check, check.state != "ok", check.detail != s.models.warning {
                 Text(check.detail).font(.callout).foregroundStyle(Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -660,10 +938,10 @@ struct SetupGuideView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if s.models.installed.isEmpty {
-                Text(s.omlx.running ? (s.models.download == nil
-                                      ? "Add a local model to the engine's model folder to get started."
-                                      : "Download a model below to get started.")
-                                    : "Start the engine above to see your models.")
+                Text(!s.omlx.running ? "Start the engine above to see your models."
+                     : s.models.fits == false ? "Connect a model you run in another app under Other local apps below."
+                     : s.models.download == nil ? "Add a local model to the engine's model folder to get started."
+                     : "Download a model below to get started.")
                     .font(.callout).foregroundStyle(Theme.textSecondary)
             } else {
                 VStack(spacing: 6) {
@@ -701,6 +979,10 @@ struct SetupGuideView: View {
 
     private func recommendationText(_ s: SetupStatus) -> some View {
         let name = recommendedName(s)
+        if s.models.fits == false {
+            return Text("None of the models Wisp can download fits this Mac.").font(.callout)
+                .foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
+        }
         let text = s.models.installed.contains(where: { $0.id == s.models.recommended })
             ? "\(name) is the best fit for this Mac, and it is installed."
             : "Recommended for this Mac (\(s.hardware.ramGb > 0 ? "\(s.hardware.ramGb) GB" : "memory unknown")): \(name). Wisp also works with the models you already have."
@@ -784,7 +1066,7 @@ struct SetupGuideView: View {
                     if task.active {
                         ProgressView(value: task.progress, total: 100)
                         HStack {
-                            Text(downloadProgress(task)).font(.caption).foregroundStyle(Theme.textSecondary)
+                            Text(task.progressText).font(.caption).foregroundStyle(Theme.textSecondary)
                             Spacer()
                             action("Cancel") { Task { await model.download(d.model, cancel: true) } }
                                 .disabled(model.busy != nil)
@@ -898,14 +1180,6 @@ struct SetupGuideView: View {
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 10).fill(Theme.chipFill))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.chipStroke, lineWidth: 1))
-    }
-
-    private func downloadProgress(_ task: SetupGuideModel.DownloadTask) -> String {
-        let received = ByteCountFormatter.string(fromByteCount: Int64(task.downloadedBytes), countStyle: .file)
-        let total = ByteCountFormatter.string(fromByteCount: Int64(task.totalBytes), countStyle: .file)
-        let speed = ByteCountFormatter.string(fromByteCount: Int64(task.bytesPerSecond), countStyle: .file)
-        return task.totalBytes > 0 ? "\(Int(task.progress))% · \(received) of \(total) · \(speed)/s"
-                                  : "Preparing download…"
     }
 
     private func connectRow(key: String, port: Int, models: [String]) -> some View {

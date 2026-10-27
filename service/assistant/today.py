@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 import math
+import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
@@ -45,8 +46,26 @@ def wall_time(day, timezone, minute):
     return candidates.pop()
 
 
-def validate_preferences(day, timezone, start_minute=540, end_minute=1080, not_before=None):
+# Every key validate_preferences knows. A stored payload is read through this
+# set (stored_preferences): a key written by a newer build (as plan_all_day was
+# to builds before it) is ignored on read, so rolling back never breaks the
+# plan. Writes stay strict: the API model forbids unknown fields.
+PREFERENCE_KEYS = frozenset({"start_minute", "end_minute", "not_before", "plan_all_day"})
+
+
+def stored_preferences(day, timezone, stored) -> dict:
+    """Validate preferences read back from the store, ignoring unknown keys."""
+    stored = stored if isinstance(stored, dict) else {}
+    return validate_preferences(day, timezone, **{k: v for k, v in stored.items() if k in PREFERENCE_KEYS})
+
+
+def validate_preferences(day, timezone, start_minute=540, end_minute=1080, not_before=None,
+                         plan_all_day=False):
+    """``plan_all_day``: the person chose to plan this day although an all-day
+    event reads like time away (the Day tab's "Plan my day anyway")."""
     day_bounds(day, timezone)
+    if type(plan_all_day) is not bool:
+        raise ValueError("plan_all_day must be true or false")
     if any(type(v) is not int for v in (start_minute, end_minute)) or not 0 <= start_minute < end_minute <= 1440:
         raise ValueError("Working hours must be whole minutes, start before end, within one day")
     wall_time(day, timezone, start_minute)
@@ -56,7 +75,10 @@ def validate_preferences(day, timezone, start_minute=540, end_minute=1080, not_b
         lo, hi = day_bounds(day, timezone)
         if not lo <= not_before <= hi:
             raise ValueError("Running-late time must be within the selected day")
-    return dict(start_minute=start_minute, end_minute=end_minute, not_before=not_before)
+    result = dict(start_minute=start_minute, end_minute=end_minute, not_before=not_before)
+    if plan_all_day:   # stored only when chosen, so every older payload reads the same
+        result["plan_all_day"] = True
+    return result
 
 
 def validate_task(value):
@@ -130,9 +152,126 @@ def source_health(status, now, bounds):
     return result
 
 
+# An all-day event only reserves the day when it reads like time away. Course
+# readings, assignment windows, birthdays and holidays you still work through are
+# all-day markers, not occupancy, and must not stop the day from being planned.
+_RESERVES_DAY = re.compile(
+    r"\b(out of (the )?office|ooo|pto|vacation|day off|off work|sick|leave|away|"
+    r"trip|travel|flight|fly(ing)?|retreat|offsite|off-site|conference|summit|"
+    r"camp|wedding|moving|busy|blocked|unavailable|no meetings)\b", re.I)
+
+
+def reserves_day(title: str) -> bool:
+    return bool(_RESERVES_DAY.search(title or ""))
+
+
+# A calendar of holidays or birthdays never holds the person's own time away,
+# whatever its entries are called ("Moving Day" in a holiday feed, a contact's
+# "Vacation" birthday note). Named by the calendar, like
+# service/tools/assistant_tools._is_holiday_calendar_item.
+_MARKER_CALENDAR = re.compile(r"\b(holidays?|birthdays?|feiertage|jours? f[eé]ri[eé]s)\b", re.I)
+
+
+def marker_calendar(commitment: dict) -> bool:
+    return any(_MARKER_CALENDAR.search(str(commitment.get(key) or ""))
+               for key in ("context", "calendar", "calendar_name"))
+
+
+# --- Can Wisp read the planner's sources? -------------------------------------
+#
+# The stored receipt says only whether the last read was usable. What the person
+# can do about an unusable one comes from this launch's report by the app
+# (scheduler.connectors_status): access turned off, a permission prompt nobody
+# answered, or an app that hasn't reported at all. The Brief and Day say that,
+# with the one setting that fixes it, instead of "hasn't synced yet" forever.
+
+# How long a source may stay "syncing" (or unreported) after launch before the
+# wait is reported as a problem: a real first read takes seconds. Matches
+# sync_status.SYNC_STALL_S, and outlasts the readers' 120 s prompt wait so the
+# reader's own reason (with its reason_kind) wins over this guess.
+ACCESS_STALL_S = 125.0
+
+# What the readers can name as the reason a source can't be read
+# (WS2 reason_kind). Anything else reads as a generic "unavailable".
+ACCESS_KINDS = frozenset({"calendar_access", "reminders_access", "full_disk_access", "mail_automation",
+                          "mail_not_configured", "mail_closed", "notes_closed", "no_accounts"})
+
+_ACCESS_LABEL = {"calendar": "Calendar", "reminders": "Reminders"}
+_ACCESS_PANE = {"calendar": "Calendars", "reminders": "Reminders"}
+
+# EKAuthorizationStatus raw values the Calendar reader sends as "status".
+_EK_NOT_DETERMINED, _EK_RESTRICTED, _EK_DENIED, _EK_WRITE_ONLY = 0, 1, 2, 4
+
+
+def source_access(source: str, live: dict | None, *, now: float, started_at: float,
+                  stall: float = ACCESS_STALL_S) -> dict:
+    """``state`` ("ready", "syncing" or "unavailable"), ``blocked`` (what the
+    person must grant, e.g. "calendar_access", or None) and ``reason`` (one
+    plain sentence) for Calendar or Reminders, from this launch's reader report.
+
+    ``live`` is scheduler.connectors_status()[source] or None when the app has
+    not reported this source since the service started at ``started_at``."""
+    label = _ACCESS_LABEL.get(source, source.title())
+    pane = _ACCESS_PANE.get(source, label)
+    settings = f"System Settings > Privacy & Security > {pane}"
+    kind = f"{source}_access"
+    if not live or not live.get("last_sync"):
+        if now - started_at <= stall:
+            return dict(state="syncing", blocked=None, reason=f"Reading your {label}…")
+        return dict(state="unavailable", blocked="app_not_reporting",
+                    reason=f"Wisp hasn't been able to read {label} yet. Quit and reopen Wisp if this doesn't clear.")
+    diagnostics = live.get("diagnostics") or {}
+    named = diagnostics.get("reason_kind")
+    reported = str(diagnostics.get("reason") or "").strip()
+    status = diagnostics.get("status")
+    syncing = bool(live.get("syncing"))
+    since = live.get("syncing_since") or live.get("last_sync")
+    stalled = syncing and isinstance(since, (int, float)) and now - since > stall
+    if live.get("available") and not syncing:
+        return dict(state="ready", blocked=None, reason="Up to date")
+    if named in ACCESS_KINDS:
+        return dict(state="unavailable", blocked=named,
+                    reason=reported or f"Wisp can't read your {label}. Turn on {label} for Wisp in {settings}.")
+    if diagnostics.get("authorized") is False:
+        if status in (_EK_RESTRICTED, _EK_DENIED, _EK_WRITE_ONLY):
+            why = ("Wisp can only add to your Calendar, not read it." if status == _EK_WRITE_ONLY
+                   else f"{label} access is off for Wisp.")
+            return dict(state="unavailable", blocked=kind,
+                        reason=f"{why} Turn on {label} for Wisp in {settings}.")
+        if syncing and not stalled:
+            return dict(state="syncing", blocked=None, reason=f"Waiting for you to allow {label}…")
+        # Unanswered (status 0), or a reader that sent its own sentence.
+        return dict(state="unavailable", blocked=kind,
+                    reason=reported or (f"macOS hasn't recorded an answer about {label} for Wisp. "
+                                        f"Allow it in {settings}; if Wisp isn't listed there, quit and reopen Wisp."))
+    if syncing and not stalled:
+        return dict(state="syncing", blocked=None, reason=f"Reading your {label}…")
+    return dict(state="unavailable", blocked=None,
+                reason=reported if reported and reported not in ("ok", "waiting for the app to sync")
+                else f"Wisp couldn't read your {label} just now. It will try again in a minute.")
+
+
+def with_access(sources: dict, live: dict, *, now: float, started_at: float) -> dict:
+    """The planner's source health with ``state``, ``blocked`` and a plain
+    ``reason`` for each source that isn't ready. A ready source is left as is."""
+    out = {}
+    for source, health in sources.items():
+        health = dict(health)
+        if not health.get("ready"):
+            access = source_access(source, live.get(source), now=now, started_at=started_at)
+            health["state"] = "syncing" if access["state"] == "ready" else access["state"]
+            health["blocked"] = access["blocked"]
+            if access["state"] != "ready":
+                health["reason"] = access["reason"]
+        else:
+            health.update(state="ready", blocked=None)
+        out[source] = health
+    return out
+
+
 def build_plan(day, timezone, tasks, commitments, preferences, status, *, now):
     lo, hi = day_bounds(day, timezone)
-    preferences = validate_preferences(day, timezone, **preferences)
+    preferences = stored_preferences(day, timezone, preferences)
     start = wall_time(day, timezone, preferences["start_minute"])
     end = wall_time(day, timezone, preferences["end_minute"])
     earliest = max(start, math.ceil(now / 60) * 60, preferences.get("not_before") or start)
@@ -160,7 +299,11 @@ def build_plan(day, timezone, tasks, commitments, preferences, status, *, now):
                         kind=c["source"], task_id=None, warnings=[])
             if c.get("all_day"):
                 all_day.append(item)
-                all_day_constraint = all_day_constraint or not valid_end or until > when
+                # Only time away reserves the day, never a holiday or birthday
+                # feed's entry, and not once the person chose to plan it anyway.
+                all_day_constraint = all_day_constraint or (
+                    not preferences.get("plan_all_day") and not marker_calendar(c)
+                    and reserves_day(c.get("title") or "") and (not valid_end or until > when))
             elif valid_end:
                 blocks.append(item)
             else:
@@ -177,7 +320,7 @@ def build_plan(day, timezone, tasks, commitments, preferences, status, *, now):
     if unknown_duration:
         warnings.append("Some fixed events have no end time. Flexible tasks are waiting for complete event times.")
     if all_day_constraint:
-        warnings.append("All-day calendar events may reserve this day. Flexible tasks stay unscheduled; pin a task to explicitly choose time.")
+        warnings.append("All-day calendar events may reserve this day. Flexible tasks stay unscheduled; choose to plan the day anyway or pin a task.")
     if not sources["reminders"]["ready"]:
         warnings.append("Reminders are not current; some deadlines may be missing.")
     active = [t for t in tasks if t["status"] == "active" and
@@ -214,7 +357,12 @@ def build_plan(day, timezone, tasks, commitments, preferences, status, *, now):
                       key=lambda t: (t["priority"], t.get("due_ts") or float("inf"), t["id"]))
     for t in flexible:
         reason, code, largest_gap, cursor = None, None, None, earliest
-        if not sources["calendar"]["ready"] or unknown_duration or all_day_constraint:
+        if earliest >= end and start < now:
+            # The working day is over: there is no gap to measure, and "the
+            # longest free stretch is 0 minutes" would read as a full calendar.
+            code = "after_hours"
+            reason = "It's after your working hours"
+        elif not sources["calendar"]["ready"] or unknown_duration or all_day_constraint:
             code = "all_day" if all_day_constraint else "source_incomplete"
             reason = ("All-day event needs an explicit time choice" if all_day_constraint else
                       "Waiting for a current calendar with complete event times")

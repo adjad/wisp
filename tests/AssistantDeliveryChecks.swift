@@ -503,6 +503,36 @@ struct AssistantDeliveryChecks {
                 kind: "cancel_calendar_event", native: true) == nil)
             scenarios += 1
         }
+        // A reminder past its expiry is acknowledged without a banner or a
+        // receipt; a current one, or one without an expiry, still notifies.
+        do {
+            let now = Date().timeIntervalSince1970
+            let stale = WispClient.Event(type: "reminder", payload: ["type": "reminder", "event_id": "r-stale",
+                "title": "Fixture standup", "when_label": "in 9 min", "expires_at": now - 1])
+            precondition(AssistantDelivery.expiredReminder(stale))
+            precondition(!AssistantDelivery.expiredReminder(stale, now: now - 2))
+            precondition(!AssistantDelivery.expiredReminder(WispClient.Event(type: "reminder",
+                payload: ["type": "reminder", "event_id": "r-legacy"])))
+            precondition(!AssistantDelivery.expiredReminder(WispClient.Event(type: "reminder",
+                payload: ["type": "reminder", "event_id": "r-bool", "expires_at": true])))
+            precondition(!AssistantDelivery.expiredReminder(WispClient.Event(type: "nudge",
+                payload: ["type": "nudge", "event_id": "n-1", "expires_at": now - 1])))
+            let server = ReceiptServer(stale), file = path()
+            DeliveryMock.handler = server.respond
+            let skipped = await AssistantDelivery(path: file).handle(stale, client: client,
+                perform: { _ in fatalError("an expired reminder must not notify") }, calendar: { _ in fatalError() })
+            precondition(skipped && server.ackPosts == 1)
+            precondition(!FileManager.default.fileExists(atPath: file.path))
+            let current = WispClient.Event(type: "reminder", payload: ["type": "reminder", "event_id": "r-current",
+                "title": "Fixture standup", "when_label": "in 9 min", "expires_at": now + 600])
+            let currentServer = ReceiptServer(current)
+            DeliveryMock.handler = currentServer.respond
+            var shown = 0
+            let delivered = await AssistantDelivery(path: path()).handle(current, client: client,
+                perform: { _ in shown += 1; return true }, calendar: { _ in fatalError() })
+            precondition(delivered && shown == 1 && currentServer.ackPosts == 1)
+            scenarios += 1
+        }
         print("AssistantDelivery: \(scenarios) offline audit/receipt/transport scenarios passed")
     }
 }

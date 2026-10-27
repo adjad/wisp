@@ -692,7 +692,10 @@ def _install_authoring_stub(registry, monkeypatch):
     registry.register("create_tool", "Create a reusable tool (synthetic stand-in).",
                       {"type": "object", "properties": {"name": {"type": "string"}},
                        "required": ["name"]},
-                      category="assistant_read")(create_tool)
+                      # assistant_write runs without a card, like the stand-in needs, and
+                      # does not count as reading outside text (an assistant_read would
+                      # make the legacy loop confirm the fresh skill tool that follows).
+                      category="assistant_write")(create_tool)
 
     def restore():
         if original is not None:

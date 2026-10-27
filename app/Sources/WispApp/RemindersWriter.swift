@@ -29,39 +29,80 @@ final class RemindersWriter {
         }
     }
 
-    /// What to tell the backend while Reminders permission is not yet granted.
+    /// What to tell the backend while Reminders (or Calendar) permission is not yet granted.
     ///
     /// Live failure this exists for: macOS never recorded an answer
     /// (EKAuthorizationStatus.notDetermined) yet the app reported
     /// `syncing: true` every minute, so Reminders read "syncing" forever and
     /// nothing told the person to grant access. "Not decided" is only a wait
     /// while a prompt is plausibly on screen; after that it is a state with a
-    /// next step, reported as such.
+    /// next step, reported as such. CalendarReader uses the same rules, so a
+    /// Calendar nobody answered for stops reading "syncing" too.
     enum Access {
         enum Status: Equatable { case notDetermined, authorized, deniedOrRestricted }
+
+        /// Which permission a report is about: its name in the copy, its page in
+        /// System Settings, and the `reason_kind` the Brief and Day key their
+        /// "open Settings" button on (never the wording).
+        struct Source: Equatable {
+            let name: String
+            let settingsPane: String
+            let reasonKind: String
+
+            static let reminders = Source(name: "Reminders", settingsPane: "Reminders",
+                                          reasonKind: "reminders_access")
+            static let calendar = Source(name: "Calendar", settingsPane: "Calendars",
+                                         reasonKind: "calendar_access")
+
+            var settingsPath: String { "System Settings > Privacy & Security > \(settingsPane)" }
+        }
 
         struct Report: Equatable {
             var authorized: Bool
             var syncing: Bool
             var needsRequest: Bool
             var reason: String?
+            /// Set whenever `reason` is: the person has a step to take in Settings.
+            var reasonKind: String? = nil
         }
 
         /// A prompt that has been outstanding this long is not "syncing".
         static let promptGrace: TimeInterval = 120
-        /// A finished request that left the status undecided is retried this often, no faster.
-        static let retryInterval: TimeInterval = 300
+        /// A finished request that left the status undecided is asked again at
+        /// most this many times per launch, after these growing waits. After
+        /// that the reason stays up and Wisp stops asking until it relaunches.
+        static let reaskDelays: [TimeInterval] = [300, 900, 2700]
+        /// The first re-ask's wait, no faster.
+        static var retryInterval: TimeInterval { reaskDelays[0] }
 
-        static let settingsPath = "System Settings > Privacy & Security > Reminders"
+        /// Only the first request this launch brings Wisp forward, so the
+        /// prompt isn't hidden behind other windows. A re-ask never takes focus
+        /// from whatever the person is doing.
+        static func shouldActivate(requestsMade: Int) -> Bool { requestsMade == 0 }
+
+        /// Whether the next re-ask is due: `requestsMade` counts finished and
+        /// outstanding requests this launch, the first one included.
+        static func reaskDue(requestsMade: Int, lastRequestAt: TimeInterval, now: TimeInterval) -> Bool {
+            let reasks = requestsMade - 1
+            guard reasks >= 0, reasks < reaskDelays.count else { return false }
+            return now - lastRequestAt >= reaskDelays[reasks]
+        }
+
+        static let settingsPath = Source.reminders.settingsPath
 
         static func report(status: Status, requestOutstanding: Bool,
-                           lastRequestAt: TimeInterval?, now: TimeInterval) -> Report {
+                           lastRequestAt: TimeInterval?, now: TimeInterval,
+                           source: Source = .reminders, requestsMade: Int = 1) -> Report {
+            let name = source.name, path = source.settingsPath
+            func blocked(_ reason: String, needsRequest: Bool = false) -> Report {
+                Report(authorized: false, syncing: false, needsRequest: needsRequest,
+                       reason: reason, reasonKind: source.reasonKind)
+            }
             switch status {
             case .authorized:
                 return Report(authorized: true, syncing: false, needsRequest: false, reason: nil)
             case .deniedOrRestricted:
-                return Report(authorized: false, syncing: false, needsRequest: false,
-                              reason: "Reminders access is turned off for Wisp. Turn it on in \(settingsPath).")
+                return blocked("\(name) access is turned off for Wisp. Turn it on in \(path).")
             case .notDetermined:
                 guard let last = lastRequestAt else {
                     return Report(authorized: false, syncing: true, needsRequest: true, reason: nil)
@@ -70,15 +111,31 @@ final class RemindersWriter {
                     if now - last < promptGrace {
                         return Report(authorized: false, syncing: true, needsRequest: false, reason: nil)
                     }
-                    return Report(authorized: false, syncing: false, needsRequest: false,
-                                  reason: "The Reminders permission prompt is still waiting for an answer. "
-                                      + "Look for it, or allow Wisp in \(settingsPath).")
+                    return blocked("The \(name) permission prompt is still waiting for an answer. "
+                                   + "Look for it, or allow Wisp in \(path).")
                 }
-                return Report(authorized: false, syncing: false,
-                              needsRequest: now - last >= retryInterval,
-                              reason: "macOS hasn't recorded an answer about Reminders for Wisp. "
-                                  + "Allow it in \(settingsPath); if Wisp isn't listed there, quit and reopen Wisp.")
+                return blocked("macOS hasn't recorded an answer about \(name) for Wisp. "
+                               + "Allow it in \(path); if Wisp isn't listed there, quit and reopen Wisp.",
+                               needsRequest: reaskDue(requestsMade: requestsMade, lastRequestAt: last, now: now))
             }
+        }
+
+        /// What a reader reports. Readers never ask macOS for access: the person
+        /// allows each permission by clicking its row in Wisp's setup window
+        /// (also reached from the menu bar icon's Permissions…), so a prompt only
+        /// ever follows that click. Until then the source is unavailable, with a
+        /// reason that says where to allow it; never "syncing", never a request.
+        static func passive(status: Status, source: Source = .reminders) -> Report {
+            guard status == .notDetermined else {
+                return report(status: status, requestOutstanding: false, lastRequestAt: nil, now: 0, source: source)
+            }
+            return Report(authorized: false, syncing: false, needsRequest: false,
+                          reason: notAskedReason(source), reasonKind: source.reasonKind)
+        }
+
+        static func notAskedReason(_ source: Source) -> String {
+            "Wisp hasn't been allowed to see your \(source.name) yet. Right-click Wisp's menu bar icon, "
+                + "choose Permissions…, and click Allow next to \(source.name)."
         }
 
         /// The diagnostics object the backend reads (`record_sync`, sync_status).
@@ -86,6 +143,7 @@ final class RemindersWriter {
             var out: [String: Any] = ["authorized": report.authorized, "syncing": report.syncing,
                                       "snapshot_started_at": snapshotStartedAt]
             if let reason = report.reason { out["reason"] = reason }
+            if let kind = report.reasonKind { out["reason_kind"] = kind }
             return out
         }
 
@@ -104,10 +162,6 @@ final class RemindersWriter {
             }
         }
     }
-
-    // Main-thread state for the permission request (see Access).
-    private var accessRequestOutstanding = false
-    private var lastAccessRequestAt: TimeInterval?
 
     private var snapshotState = SnapshotState()
     private var consecutiveTransientReports = 0
@@ -471,38 +525,13 @@ final class RemindersWriter {
                 "title": title, "due_ts": Double(Int(dueTs / 60) * 60)]
     }
 
-    func requestAccess(_ done: @escaping (Bool) -> Void) {
-        if #available(macOS 14.0, *) {
-            store.requestFullAccessToReminders { granted, _ in done(granted) }
-        } else {
-            store.requestAccess(to: .reminder) { granted, _ in done(granted) }
-        }
-    }
-
-    /// Ask for access and remember that we did, so a request that finishes without
-    /// a decision is reported as such instead of as an endless sync. A menu-bar app
-    /// is not frontmost, and macOS can leave its prompt hidden behind other
-    /// windows, so it is brought forward first. Main thread only.
-    private func requestAccessTracked() {
-        guard !accessRequestOutstanding else { return }
-        accessRequestOutstanding = true
-        lastAccessRequestAt = Date().timeIntervalSince1970
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        requestAccess { [weak self] _ in
-            DispatchQueue.main.async {
-                self?.accessRequestOutstanding = false
-                self?.sync()
-            }
-        }
-    }
-
     var isAuthorized: Bool {
         let s = EKEventStore.authorizationStatus(for: .reminder)
         if #available(macOS 14.0, *) { return s == .fullAccess }
         return s == .authorized
     }
 
-    // Request access, then start reading incomplete reminders back into the
+    // Start reading incomplete reminders back into the
     // commitment store (source="reminders" — kept separate from Calendar's
     // "calendar" source since sync_source REPLACES a source's whole active
     // set on each post; mixing the two would let one wipe the other).
@@ -510,7 +539,8 @@ final class RemindersWriter {
         changeObserver = NotificationCenter.default.addObserver(
             forName: .EKEventStoreChanged, object: store, queue: .main
         ) { [weak self] _ in self?.scheduleChangeSync() }
-        DispatchQueue.main.async { [weak self] in self?.requestAccessTracked() }
+        // Reads only what macOS already allows: it never asks (Access.passive).
+        DispatchQueue.main.async { [weak self] in self?.sync() }
         for delay in [1.0, 3.0, 6.0, 12.0, 25.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 self?.sync()
@@ -533,11 +563,8 @@ final class RemindersWriter {
         // Capture before the asynchronous fetch: receipt order is not snapshot order.
         let snapshotStartedAt = Date().timeIntervalSince1970
         guard isAuthorized else {
-            let report = Access.report(
-                status: Access.status(of: EKEventStore.authorizationStatus(for: .reminder)),
-                requestOutstanding: accessRequestOutstanding,
-                lastRequestAt: lastAccessRequestAt, now: snapshotStartedAt)
-            if report.needsRequest { requestAccessTracked() }
+            // Never asks: see Access.passive.
+            let report = Access.passive(status: Access.status(of: EKEventStore.authorizationStatus(for: .reminder)))
             post(reminders: [], diagnostics: Access.diagnostics(for: report, snapshotStartedAt: snapshotStartedAt),
                  startedAt: snapshotStartedAt, authoritative: false)
             return

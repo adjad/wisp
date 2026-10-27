@@ -4,6 +4,9 @@ import Carbon.HIToolbox
 // System-wide hotkey via Carbon (works without Accessibility permission).
 final class GlobalHotKey {
     private var ref: EventHotKeyRef?
+    /// False when another app (Raycast, Alfred, Spotlight…) already owns the
+    /// combination: pressing it then does nothing in Wisp, so don't teach it.
+    let registered: Bool
     private static var handlerInstalled = false
     private static var callbacks: [UInt32: () -> Void] = [:]
     private static var nextID: UInt32 = 1
@@ -15,8 +18,8 @@ final class GlobalHotKey {
         GlobalHotKey.installHandlerIfNeeded()
 
         let hotKeyID = EventHotKeyID(signature: OSType(0x57495350), id: id) // 'WISP'
-        RegisterEventHotKey(keyCode, modifiers, hotKeyID,
-                            GetApplicationEventTarget(), 0, &ref)
+        registered = RegisterEventHotKey(keyCode, modifiers, hotKeyID,
+                                         GetApplicationEventTarget(), 0, &ref) == noErr
     }
 
     private static func installHandlerIfNeeded() {

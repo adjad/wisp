@@ -207,7 +207,8 @@ def _event_rows(store, day: str, timezone: str) -> list[dict]:
             continue
         row = {"id": event.get("id"), "title": event.get("title") or "Untitled event",
                "when_ts": event.get("when_ts"), "end_ts": event.get("end_ts"),
-               "all_day": bool(event.get("all_day")), "source_id": event.get("source_id")}
+               "all_day": bool(event.get("all_day")), "source_id": event.get("source_id"),
+               "calendar": str(event.get("context") or event.get("calendar") or event.get("calendar_name") or "")}
         row.update(occurrence_fields(store, row["source_id"], row["when_ts"]))
         rows.append(row)
     rows.sort(key=lambda r: (r["when_ts"] is None, r["when_ts"] or 0))
@@ -226,7 +227,7 @@ def build(store, day: str, timezone: str, *, now: float, profile: dict | None = 
     record = day_record(day)
     tomorrow = next_day(day)
     try:
-        events = _event_rows(store, tomorrow, timezone)
+        events = [e for e in _event_rows(store, tomorrow, timezone) if askable_event(e)]
     except Exception:  # noqa: BLE001 — tomorrow's events are a courtesy, never a failure
         events = []
     return {
@@ -237,8 +238,32 @@ def build(store, day: str, timezone: str, *, now: float, profile: dict | None = 
         "tasks": active,
         "tomorrow": {"day": tomorrow, "events": events},
         "carried": list(record.get("carried") or []),
+        # No evening check-in has ever been answered or sent: the card says once
+        # what it is for.
+        "first": first_checkin(day),
         "goal_pulse": goal_pulse(profile, now=now) if profile is not None else None,
     }
+
+
+def askable_event(event: dict) -> bool:
+    """Whether the check-in asks about one of tomorrow's events. A read-only
+    calendar's event can't be changed from this Mac, so it is never asked
+    about, nor counted in the evening notification. An all-day event is asked
+    about only on a calendar the person can write to and that isn't a holiday
+    or birthday calendar: their own "Day off" can still be cancelled, a
+    contact's birthday or a public holiday has nothing to answer."""
+    from service.assistant.today import marker_calendar
+    if event.get("calendar_writable") is False:
+        return False
+    return not (event.get("all_day") and marker_calendar(event))
+
+
+def first_checkin(day: str) -> bool:
+    """No earlier day's check-in was ever sent or answered."""
+    with _lock:
+        days = _read_state()["days"]
+    return not any(isinstance(record, dict) and (record.get("completed_at") or record.get("notified_at"))
+                   for other, record in days.items() if other != day)
 
 
 def decide_task(store, task_id: str, decision: str, *, day: str, timezone: str, now: float) -> dict:

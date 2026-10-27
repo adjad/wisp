@@ -34,7 +34,6 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from service.agent import loop  # noqa: E402
-from service.tools import registry  # noqa: E402
 from service.tools.registry import REGISTRY, Tool  # noqa: E402
 
 PASS, FAIL = 0, 0
@@ -181,7 +180,6 @@ def test_strict_private_partial_success_narrates_verified_results_only(monkeypat
 def test_strict_private_budget_blocks_repeated_widened_email_read(monkeypatch) -> None:
     dispatched: list[dict] = []
     exact = {"query": "financial", "count": 10, "strict_match": True}
-    monkeypatch.delitem(registry.UNAVAILABLE_TOOL_REASONS, "view_emails", raising=False)
     monkeypatch.setitem(REGISTRY, "view_emails", Tool(
         "view_emails", "synthetic mail", {"type": "object", "properties": {
             "query": {"type": "string"}, "count": {"type": "integer"},
@@ -209,8 +207,6 @@ def test_strict_private_budget_blocks_repeated_two_source_reads(monkeypatch) -> 
     dispatched: list[tuple[str, dict]] = []
     email = {"query": "ucsc orientation", "count": 10, "strict_match": True}
     calendar = {"period": "this week", "calendar_only": True, "query": "ucsc orientation"}
-    monkeypatch.delitem(registry.UNAVAILABLE_TOOL_REASONS, "view_emails", raising=False)
-    monkeypatch.delitem(registry.UNAVAILABLE_TOOL_REASONS, "get_upcoming", raising=False)
     monkeypatch.setitem(REGISTRY, "view_emails", Tool(
         "view_emails", "synthetic mail", {"type": "object", "properties": {
             "query": {"type": "string"}, "count": {"type": "integer"},

@@ -1,4 +1,5 @@
 import AppKit
+import Carbon
 import Foundation
 
 // Reads Notes.app content via AppleScript and pushes it to the backend for
@@ -16,6 +17,7 @@ final class NotesReader {
     private var rerunRequested = false
     private let stateLock = NSLock()
     private let dbReader = NotesDBReader()
+    private let backendRetry = NativeBackendRetry()
 
     // Same FS/RS control-character delimiters as MailReader's raw script — a
     // note body routinely contains "|" and newlines, which would corrupt a
@@ -70,8 +72,29 @@ final class NotesReader {
     // on its own. Bundle ID, not app name, since Notes' display name can be
     // localized.
     private func isNotesRunning() -> Bool {
+        notesAppOpen() && Self.automationDecided("com.apple.Notes")
+    }
+
+    private func notesAppOpen() -> Bool {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.Notes" }
     }
+
+    /// Whether macOS has an answer about Wisp scripting this app. A scripted
+    /// read while it has none makes macOS ask, and Wisp never asks on its own
+    /// (Permissions.swift): until the person clicks Allow in setup, the read
+    /// goes to the on-disk copy as if the app were closed. Never asks (`false`).
+    static func automationDecided(_ bundleID: String) -> Bool {
+        var target = AEAddressDesc()
+        let created = bundleID.withCString { pointer in
+            AECreateDesc(DescType(typeApplicationBundleID), pointer, strlen(pointer), &target)
+        }
+        guard created == noErr else { return false }
+        defer { AEDisposeDesc(&target) }
+        let status = AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard),
+                                                           AEEventID(typeWildCard), false)
+        return status != OSStatus(errAEEventWouldRequireUserConsent)
+    }
+
 
     /// Warm-up and daily reads: duplicates are dropped while a read is running.
     func syncIfIdle() {
@@ -117,36 +140,65 @@ final class NotesReader {
             if let raw = self.dbReader.readNotes() {
                 self.post(snapshotStartedAt: snapshotStartedAt, raw: raw)
             } else {
+                // The reader says why, from the error: only macOS's privacy
+                // denial points at Full Disk Access.
+                let failure = Permissions.unaskedAutomation(
+                    app: "Notes", appRunning: self.notesAppOpen(),
+                    automationDecided: Self.automationDecided("com.apple.Notes"),
+                    failure: self.dbReader.lastFailure ?? NotesDBReader.failure(openErrno: 0))
                 self.post(snapshotStartedAt: snapshotStartedAt, raw: "", available: false,
-                          reason: "Notes is closed and its local store is not readable. Open Notes or check Full Disk Access.")
+                          reason: failure.reason, kind: failure.kind)
             }
             return
         }
         guard let s = NSAppleScript(source: self.script) else {
-            self.post(snapshotStartedAt: snapshotStartedAt, raw: "", available: false, reason: "The Notes reader could not start.")
+            self.post(snapshotStartedAt: snapshotStartedAt, raw: "", available: false,
+                      reason: "Wisp couldn't start reading Notes. Try again in a moment.")
             return
         }
         var err: NSDictionary?
         let result = s.executeAndReturnError(&err)
-        if err != nil {
-            self.post(snapshotStartedAt: snapshotStartedAt, raw: "", available: false, reason: "Notes did not respond. Check Wisp’s Notes Automation access.")
+        if let err {
+            let code = (err[NSAppleScript.errorNumber] as? Int) ?? 0
+            self.post(snapshotStartedAt: snapshotStartedAt, raw: "", available: false,
+                      reason: Self.scriptFailureReason(code: code))
             return
         }
         self.post(snapshotStartedAt: snapshotStartedAt, raw: result.stringValue ?? "")
     }
 
-    private func post(snapshotStartedAt: Double, raw: String, available: Bool = true, reason: String = "") {
+    /// Why the AppleScript read failed, from its error number: -1743 is macOS
+    /// refusing Automation, -1712 is Notes not answering in time. Notes
+    /// Automation has no reason_kind of its own, so the reason names the setting.
+    static func scriptFailureReason(code: Int) -> String {
+        switch code {
+        case -1743:
+            return "Wisp isn't allowed to read Notes yet. Turn on Notes for Wisp in System Settings > "
+                + "Privacy & Security > Automation."
+        case -1712:
+            return "Notes was too slow to answer. Wisp will try again later."
+        default:
+            return "Notes didn't answer. Wisp will try again later."
+        }
+    }
+
+    // `kind` is the reason_kind the Brief keys its button on, or "" for none.
+    private func post(snapshotStartedAt: Double, raw: String, available: Bool = true, reason: String = "",
+                      kind: String = "") {
         let url = WispClient.baseURL.appendingPathComponent("assistant/sync/notes")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "raw": raw,
-            // When the native read began: the backend accepts a post as proof of
-            // freshness only if this is later than its refresh request.
-            "diagnostics": ["available": available, "reason": reason,
-                            "snapshot_started_at": snapshotStartedAt],
-        ])
-        URLSession.shared.dataTask(with: req).resume()
+        // When the native read began: the backend accepts a post as proof of
+        // freshness only if this is later than its refresh request.
+        var diagnostics: [String: Any] = ["available": available, "reason": reason,
+                                          "snapshot_started_at": snapshotStartedAt]
+        if !kind.isEmpty { diagnostics["reason_kind"] = kind }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["raw": raw, "diagnostics": diagnostics])
+        // A backend that isn't listening yet gets a fresh read soon, instead of
+        // waiting for the daily tick.
+        URLSession.shared.dataTask(with: req) { [weak self] _, _, error in
+            self?.backendRetry.handle(error: error) { self?.syncIfIdle() }
+        }.resume()
     }
 }

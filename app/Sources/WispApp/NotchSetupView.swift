@@ -1,9 +1,11 @@
 import SwiftUI
 
 /// First-run setup in the notch: the two required steps (an engine and a model)
-/// and the test, in short form. Smart Search, other local apps and model
-/// downloads stay in the setup window, which shares this card's SetupGuideModel,
-/// so readiness, "Not validated" pills and the test result read the same in both.
+/// and the test, in short form. The model download runs here too, for Wisp's own
+/// engine (NotchSetupDownload.swift). Smart Search, other local apps, an external
+/// oMLX's downloads and models with no public download stay in the setup window,
+/// which shares this card's SetupGuideModel, so readiness, "Not validated" pills,
+/// the download and the test result read the same in both.
 ///
 /// No sheets or alerts: the notch is a non-activating panel.
 struct NotchSetupView: View {
@@ -31,16 +33,29 @@ struct NotchSetupView: View {
             Image(systemName: "exclamationmark.circle").foregroundStyle(Color.orange)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Wisp isn't set up yet").font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                Text("It needs an engine and a model before it can answer.")
-                    .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                Text(laterDetail).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
             }
             Spacer(minLength: 8)
-            chip("Continue setup") { model.setupCard = .open }
+            chip("Continue setup") {
+                // A first-run setup left part-way goes on where it was, in its window.
+                if FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }) {
+                    NotificationCenter.default.post(name: .wispContinueFirstRun, object: nil)
+                } else {
+                    model.setupCard = .open
+                }
+            }
         }
         .padding(10)
         .background(RoundedRectangle(cornerRadius: 12).fill(Theme.chipFill))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.chipStroke, lineWidth: 1))
         .padding(.top, 8)
+    }
+
+    /// Set aside mid-download, the line says how the model is coming along.
+    private var laterDetail: String {
+        let brain = FirstRunBrain.from(status: setup.status, downloads: setup.downloads)
+        if brain.isArriving, case .working(let text) = brain.footer(stalled: false) { return text }
+        return "It needs an engine and a model before it can answer."
     }
 
     // MARK: The card
@@ -89,7 +104,7 @@ struct NotchSetupView: View {
                 ProgressView().controlSize(.small)
                 Text(busy).font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
             }
-            chip("Check again") { Task { await setup.refresh() } }
+            chip("Check again") { Task { await setup.refresh(); await setup.refreshDownloads() } }
                 .disabled(setup.busy != nil)
             if ready {
                 chip("Done", primary: true) { model.setupCard = .hidden }
@@ -130,15 +145,29 @@ struct NotchSetupView: View {
         let hardware = "\(s.hardware.chip) · \(s.hardware.ramGb > 0 ? "\(s.hardware.ramGb) GB" : "memory unknown")"
         return step("2", "Model", state: check?.state ?? "todo") {
             detail("Sets chat, tools, coding and reasoning. \(hardware)")
-            if let check, check.state != "ok" { note(check.detail, warning: true) }
+            let offer = s.models.installed.isEmpty ? NotchModelOffer.from(status: s, downloads: setup.downloads) : nil
+            // The no-fit check repeats the memory warning, and the download row says
+            // what "no model yet" would: say each thing once.
+            if let check, check.state != "ok", check.detail != s.models.warning {
+                if case .download? = offer {} else { note(check.detail, warning: true) }
+            }
             if let warning = s.models.warning { note(warning, warning: true) }
-            if s.models.installed.isEmpty {
-                detail(s.omlx.running ? "No model is installed yet." : "Start the engine to see your models.")
-                if s.omlx.running {
-                    // Downloads are large and show progress, so they run in the window.
-                    chip("Download a model  ⤢") {
+            if let offer {
+                switch offer {
+                case .startEngineFirst:
+                    detail("Start the engine to see your models.")
+                case .download(let brain):
+                    NotchDownloadRow(setup: setup, brain: brain)
+                case .elsewhere(let title):
+                    // The model check above already says no model is installed.
+                    chip(title) { NotificationCenter.default.post(name: .wispOpenSetupGuide, object: nil) }
+                case .noFit:
+                    // The warning above says why; the window can connect another app.
+                    chip("Connect another app  ⤢") {
                         NotificationCenter.default.post(name: .wispOpenSetupGuide, object: nil)
                     }
+                case .none:
+                    detail("No model is installed yet.")
                 }
             } else {
                 VStack(spacing: 4) {
@@ -243,14 +272,6 @@ struct NotchSetupView: View {
     }
 
     private func chip(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title).font(.system(size: 11.5, weight: primary ? .semibold : .medium))
-                .foregroundStyle(primary ? Color.black : Theme.textSecondary)
-                .padding(.horizontal, 9).padding(.vertical, 4)
-                .background(Capsule().fill(primary ? Color.white : Theme.chipFill))
-                .overlay(Capsule().stroke(primary ? Color.clear : Theme.chipStroke, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .fixedSize()
+        NotchChip(title, primary: primary, action: action)
     }
 }

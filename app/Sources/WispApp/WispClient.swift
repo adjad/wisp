@@ -676,11 +676,13 @@ final class WispClient {
         _ = try? await URLSession.shared.data(for: req)
     }
 
-    // Stop the oMLX engine entirely (frees its ~2GB baseline). Used on quit.
+    // Stop the oMLX engine entirely: its models and its ~2GB baseline. Used on quit.
+    // The wait is longer than the backend's own bound on the stop, so the engine is
+    // gone before the backend is; an engine left running would keep its models loaded.
     func shutdownOMLX() async {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("shutdown_omlx"))
         req.httpMethod = "POST"
-        req.timeoutInterval = 5
+        req.timeoutInterval = 10
         _ = try? await URLSession.shared.data(for: req)
     }
 

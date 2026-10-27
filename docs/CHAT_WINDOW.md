@@ -44,9 +44,15 @@ asked for. Both talk to the same service and the same saved chats.
   and no number or bar when it measured nothing. Everything that needs a form, a
   key, OAuth or widens what Wisp reads stays in Settings (⌘,).
 - **First-run setup**: on a Mac that can't answer yet, the first launch opens Ask
-  on a setup card (engine, model, Use & test). Later shrinks it to a line until
-  Wisp is ready. Smart Search, other local apps and downloads continue in the
-  setup window.
+  on a setup card (engine, model, Use & test). The card downloads the model for
+  Wisp's own engine in place (Download, progress with size and speed, Cancel,
+  Resume, Try again), and the transfer keeps setup's poll running while the panel
+  is closed, so Wisp switches to the model by itself when it arrives. Later
+  shrinks the card to a line, which shows the download's progress, until Wisp is
+  ready. Smart Search, other local apps, an external oMLX's downloads and models
+  with no public download continue in the setup window. On a Mac whose memory no
+  downloadable model fits, the card says so and offers the setup window's other
+  routes instead of a download.
 - **Report a problem** unfolds under the reply (or under the Day tab), with a
   preview of exactly what is saved. Nothing is uploaded.
 - The panel is a borderless, non-activating `NSPanel` at status-bar level, so
@@ -173,8 +179,9 @@ swift build -Xswiftc -DWISP_CHAT_QA
 WISP_CHAT_QA_OUT=/some/dir .build/debug/WispApp
 ```
 
-Render the notch's Brief and Day tabs from a fixture day the same way (it
-prints each tab's size, to check it fits the 640 pt panel):
+Render the notch's Brief and Day tabs from a fixture day, and the setup card in
+each state of its model download (`notch-setup-*`), the same way (it prints each
+one's size, to check it fits the 640 pt panel):
 
 ```bash
 cd app
