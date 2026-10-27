@@ -235,3 +235,20 @@ def test_no_engine_client_keeps_the_rules_path(monkeypatch):
     monkeypatch.setattr(main, "remote_only_profile", lambda: None)
     monkeypatch.setattr(main, "role_target", lambda role: _Target(_Endpoint("local", True)))
     assert contextvars.copy_context().run(main._model_only_turn, lambda: None) is False
+
+
+@pytest.mark.parametrize("super_model,eligible", [(False, True), (True, False)])
+def test_super_model_on_keeps_the_rules_path(monkeypatch, super_model, eligible):
+    # 0.5.0-rc3 audit M1: Super Model only routes on the rules path, and a
+    # model-led turn always runs the local agent model. With the toggle on the
+    # turn keeps the rules path, so the setting the user sees is honoured.
+    import contextvars
+    from service import main
+    monkeypatch.setenv("WISP_MODEL_ONLY", "1")
+    monkeypatch.setattr(main, "remote_only_profile", lambda: None)
+    monkeypatch.setattr(main, "role_target", lambda role: _Target(_Endpoint("local", True)))
+    monkeypatch.setattr(main, "cloud_super_model_enabled", lambda: super_model)
+
+    def turn():
+        return main._model_only_turn(_Client), model_led.model_only_enabled()
+    assert contextvars.copy_context().run(turn) == (eligible, eligible)

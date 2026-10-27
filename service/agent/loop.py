@@ -1805,6 +1805,13 @@ async def run_agent(
                                 f"{_web_detail(args)}, which is not a host you typed. "
                                 "Confirm the exact destination.")
         dec = decide(tool.category, args, tool=tool.name)
+        if model_led_discovery and dec.tier is Tier.ALLOW:
+            from service.router.model_led import MODEL_LED_ALWAYS_CONFIRM_TOOLS
+            if tool.name in MODEL_LED_ALWAYS_CONFIRM_TOOLS:
+                from service.safety.policy import Decision
+                return Decision(Tier.CONFIRM, "the model chose which item this changes — "
+                                "always confirmed on this path, even with full access. "
+                                "Check that it is the right one.")
         # Full access and standing grants do not cover actions whose real-world
         # effect the host cannot inspect: always in model-led routing, and in
         # legacy routing once this turn has read a file, page, mail or other
@@ -4584,6 +4591,12 @@ async def run_agent(
                         from service.tools.assistant_tools import reminders_matching
                         _scope = str(args.get("scope", "all"))
                         _items = reminders_matching(_scope, args.get("query", ""), include_stale=True)
+                        if args.get("expected_ids") is None:
+                            # Bind the deletion to exactly the items this card
+                            # shows: a reminder that syncs in while the card is
+                            # open makes the set differ and nothing is deleted.
+                            args = {**args, "expected_ids": [str(c.get("id") or "") for c in _items]}
+                            action["args"] = json.loads(json.dumps(args))
                         _rows = [
                             f"{datetime.fromtimestamp(c['when_ts']):%a %b %-d, %Y}"
                             f"  {c['title']}" for c in _items]

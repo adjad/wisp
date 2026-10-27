@@ -161,3 +161,102 @@ def test_model_led_send_still_requires_confirmation(monkeypatch, full_access):
         claim_effect=lambda tool, args: {"admitted": True}, finish_effect=lambda claim, ok: True)
     assert approval.calls, "send_email ran without asking for confirmation"
     assert not any(name == "send_email" for name, _ in effects)
+
+
+class _QueuedRow(dict):
+    """sqlite3.Row stand-in for one scheduled_sends row."""
+
+
+def _queued_row():
+    return _QueuedRow(id="abcdefabcdef", channel="email", display="Maya",
+                      recipient="maya@synthetic.invalid", when_ts=1_900_000_000,
+                      status="pending", subject="Friday plans", body="See you at six.",
+                      fired_at=None, error=None)
+
+
+@pytest.mark.parametrize("full_access", [False, True])
+def test_model_led_cancel_scheduled_send_always_confirms(monkeypatch, full_access):
+    """0.5.0-rc3 audit B1: the legacy router ran cancel_scheduled_send only for
+    an exact ID the user typed. On a model-led turn the model picks the ID, so
+    the cancel is always confirmed, even with full access, and the card shows
+    the queued send's recipient, subject, text and scheduled time. A declined
+    card never reaches the cancel."""
+    from tests.test_model_led_integration import Approval, call, discover, run
+    from tests.test_model_led_integration import synthetic as _synthetic
+    from service.assistant import outbound_queue as queue_module
+    effects, register = _synthetic.__wrapped__(monkeypatch)
+    monkeypatch.setattr("service.safety.policy._FULL_ACCESS", full_access)
+    monkeypatch.setattr(queue_module.outbound_queue, "get",
+                        lambda sid: _queued_row() if sid == "abcdefabcdef" else None)
+    register("list_scheduled_sends", "action_tools", "assistant_read",
+             parameters={"type": "object", "properties": {}})
+    register("cancel_scheduled_send", "action_tools", "assistant_write",
+             parameters={"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]})
+    approval = Approval(allowed=False)
+    run([[discover("messages_contacts", "cancel_scheduled_send")],
+         [call("cancel_scheduled_send", id="abcdefabcdef")],
+         "Not cancelled."], prompt="what's queued to send?", approval=approval,
+        claim_effect=lambda tool, args: {"admitted": True}, finish_effect=lambda claim, ok: True)
+    assert approval.calls, "cancel_scheduled_send ran without asking for confirmation"
+    assert not any(name == "cancel_scheduled_send" for name, _ in effects)
+    preview = approval.calls[0].get("preview", "")
+    for shown in ("abcdefabcdef", "Maya", "maya@synthetic.invalid", "Friday plans",
+                  "See you at six.", "Scheduled:"):
+        assert shown in preview, (shown, preview)
+
+
+def test_clear_reminders_runs_bound_to_the_items_its_card_showed(monkeypatch):
+    """0.5.0-rc3 audit L1: the model-path clear_reminders card lists the
+    matched reminders; the approved call now carries their ids, so a reminder
+    that syncs in while the card is open is not deleted with them."""
+    from tests.test_model_led_integration import Approval, call, discover, run
+    from tests.test_model_led_integration import synthetic as _synthetic
+    from service.router.model_led import family_for, registry_specs
+    from service.tools import assistant_tools
+    from service.tools.registry import REGISTRY
+    effects, register = _synthetic.__wrapped__(monkeypatch)
+    shown = [{"id": "r-1", "title": "Laundry", "when_ts": 1_900_000_000},
+             {"id": "r-2", "title": "Laundry pickup", "when_ts": 1_900_003_600}]
+    monkeypatch.setattr(assistant_tools, "reminders_matching", lambda *a, **k: list(shown))
+    register("clear_reminders", "assistant_tools", "calendar_write", parameters={
+        "type": "object", "properties": {"scope": {"type": "string"}, "query": {"type": "string"},
+                                         "expected_ids": {"type": "array", "items": {"type": "string"}}}})
+    family = family_for(next(t for t in registry_specs(REGISTRY) if t.name == "clear_reminders"))
+    approval = Approval(allowed=True)
+    run([[discover(family, "clear_reminders")], [call("clear_reminders", scope="all", query="Laundry")],
+         "Cleared."], prompt="delete my laundry reminders", approval=approval,
+        claim_effect=lambda tool, a: {"admitted": True}, finish_effect=lambda claim, ok: True)
+    assert approval.calls and approval.calls[0]["args"]["expected_ids"] == ["r-1", "r-2"]
+    assert "Laundry pickup" in approval.calls[0]["preview"]
+    assert effects == [("clear_reminders", {"scope": "all", "query": "Laundry",
+                                            "expected_ids": ["r-1", "r-2"]})]
+
+
+@pytest.mark.parametrize("name,category,args", [
+    ("cancel_scheduled_send", "assistant_write", {"id": "abcdefabcdef"}),
+    ("delete_knowledge", "fs_delete", {"record_id": "0" * 32}),
+    ("edit_knowledge", "fs_write", {"record_id": "0" * 32, "title": "t", "text": "x"}),
+])
+def test_model_picked_exact_item_effects_confirm_despite_grant_and_full_access(
+        monkeypatch, name, category, args):
+    """The legacy router ran these only for an ID the user typed. On a
+    model-led turn neither full access nor a stored grant lifts the card, and
+    none of them can be stored as an "always allow"."""
+    from tests.test_model_led_integration import Approval, call, discover, run
+    from tests.test_model_led_integration import synthetic as _synthetic
+    from service.safety import grants
+    effects, register = _synthetic.__wrapped__(monkeypatch)
+    monkeypatch.setattr("service.safety.policy._FULL_ACCESS", True)
+    monkeypatch.setattr(grants, "check", lambda tool, a: "allow")
+    register(name, "action_tools", category, parameters={"type": "object", "properties": {
+        key: {"type": "string"} for key in args}})
+    from service.router.model_led import family_for, registry_specs
+    from service.tools.registry import REGISTRY
+    family = family_for(next(t for t in registry_specs(REGISTRY) if t.name == name))
+    approval = Approval(allowed=False)
+    run([[discover(family, name)], [call(name, **args)], "Not changed."],
+        prompt="tidy that up", approval=approval,
+        claim_effect=lambda tool, a: {"admitted": True}, finish_effect=lambda claim, ok: True)
+    assert [c.get("tool") for c in approval.calls] == [name]
+    assert not any(n == name for n, _ in effects)
+    assert not grants.is_grantable(name, args)

@@ -371,6 +371,8 @@ def test_default_model_only_runs_no_tool_before_the_model(endpoint, monkeypatch)
     assert call["model_led_discovery"] is True and call["ask_quality"] is True
     assert not call["direct_calls"] and call["force_first_tool"] is None
     assert call["short_circuit_tools"] == frozenset()
+    # The rules path's web hint carried the untrusted-content line (audit M3).
+    assert main.MODEL_LED_UNTRUSTED_WEB_HINT in call["style_hint"]
     assert call["messages"][-1] == {"role": "user", "content": "what is on my calendar this week"}
     assert next(e for e in events if e["type"] == "routed")["route_source"] == "model_led_discovery"
 

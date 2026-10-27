@@ -658,3 +658,28 @@ def test_private_read_with_pending_owner_keeps_shell_unavailable_at_actual_execu
     assert not any(e.get("type") == "tool_call" and e.get("name") == "run_shell" for e in events)
     assert not any(json.loads(r[0]).get("kind") == "model_led_effect" for r in
                    endpoint.store._db.execute("SELECT state_json FROM workflows WHERE session_id=?", (sid,)))
+
+
+def test_withheld_actions_are_explained_and_lifted_by_resolution(endpoint, monkeypatch):
+    """0.5.0-rc3 audit M2: a legacy task with a consumed claim withholds every
+    action tool on a model-led turn. The user is told why in one sentence, and
+    the existing resolve endpoint lifts it."""
+    from service.workflows.models import WorkflowPlan
+    monkeypatch.delenv("WISP_MODEL_ONLY", raising=False)
+    sid = endpoint.store.create_session()
+    plan = WorkflowPlan(status="running", channel="email", recipient="Fixture", revision=1)
+    endpoint.store.save_workflow(sid, plan.to_dict())
+    assert endpoint.store.claim_effect_call(plan.id, "legacy-call", revision=1)
+    async def no_mutation(**args):
+        raise AssertionError("withheld action ran")
+    no_mutation.__module__ = "service.tools.assistant_tools"
+    registry.REGISTRY["add_reminder"] = registry.Tool("add_reminder", "Synthetic mutation", {"type": "object"},
+                                                   "assistant_write", no_mutation)
+    events = endpoint.request("remind me to call Sam at 5", sid)
+    texts = [e["text"] for e in events if e["type"] == "text"]
+    assert texts[0] == main.UNRESOLVED_ACTION_NOTICE + "\n\nSynthetic answer."
+    assert "add_reminder" in endpoint.agent_calls[0]["forbidden_tools"]
+    assert endpoint.store.resolve_model_effects(sid) == 1
+    events = endpoint.request("remind me to call Sam at 5", sid)
+    assert not any(main.UNRESOLVED_ACTION_NOTICE in e.get("text", "") for e in events)
+    assert "add_reminder" not in endpoint.agent_calls[-1]["forbidden_tools"]

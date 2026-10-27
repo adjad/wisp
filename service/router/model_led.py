@@ -36,6 +36,13 @@ PRIVATE_EGRESS_TOOLS = frozenset({
 PRIVATE_WEB_TOOLS = frozenset({"web_search", "web_fetch", "http_request"})
 OPAQUE_OUTBOUND_TOOLS = frozenset({"run_shortcut", "run_shell", "run_applescript",
                                     "create_tool", "http_request", "place_call"})
+# Effects the legacy router admitted only for an exact ID the user typed (a
+# 12-character scheduled-send ID, a 32-hex knowledge ID with its read revision).
+# On a model-led turn the model picks that ID itself, so the user sees and
+# approves the exact item every time: neither full access nor a standing grant
+# lifts this (0.5.0-rc3 audit B1). The legacy exact-ID path is unchanged.
+MODEL_LED_ALWAYS_CONFIRM_TOOLS = frozenset({
+    "cancel_scheduled_send", "delete_knowledge", "edit_knowledge"})
 BUILTIN_COMPLETION_MODULES = {
     "run_shell": "service.tools.builtin", "run_applescript": "service.tools.automation_tools",
     "manage_contacts": "service.tools.contacts_tools",
