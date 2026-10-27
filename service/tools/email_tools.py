@@ -1254,6 +1254,9 @@ def _purge_raw_if_expired(*, persist: bool = True) -> None:
         stamps.extend(receipt(item.get("raw_at")) for item in _external_accounts.values()
                       if item.get("raw") is not None)
         _raw_emails_at = max(stamps, default=0.0)
+        if changed:
+            from service.tools.email_digest import clear_cache
+            clear_cache()  # digests of mail that expired or was unlinked
         if changed and persist:
             _persist_composed_sources(purge=False)
 
@@ -1937,7 +1940,8 @@ def _raw_account_scope(rows: list[dict], account: str | None) -> tuple[list[dict
 
 
 def _email_body_block(row: dict) -> str:
-    """Render verbatim evidence with its account and message identities."""
+    """Render a body (verbatim, or a labelled digest of a long one) with its
+    account and message identities."""
     when = datetime.fromtimestamp(row["ts"]).strftime("%a %b %-d, %Y %-I:%M %p")
     account = f"Account: {row['account']}\n" if row.get("account") else ""
     native_id = f"Account-ID: {row['account_id']}\n" if row.get("account_id") else ""
@@ -3170,6 +3174,11 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
             f"{omitted} older {'email was' if omitted == 1 else 'emails were'} omitted "
             f"by count={limit}.\n\n"
         )
+    # A long body is digested in full rather than cut at the head by the
+    # tool-result cap (service/tools/email_digest.py).
+    from service.tools.email_digest import digest_rows
+    if corpus_identifier is None:
+        rows = await digest_rows(rows, query=query)
     blocks = [_email_body_block(r) for r in rows]
     return note + coverage + "\n\n---\n\n".join(blocks)
 
@@ -3181,7 +3190,9 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
     "summary. Use this instead of summarize_emails when the user needs a "
     "specific detail FROM an email: an order number, a confirmation code, an "
     "address, a pickup/delivery time, party details, exact wording to quote "
-    "back, etc. Pass `query` to search sender/recipient/subject/body for a "
+    "back, etc. A very long email comes back as a labelled, non-verbatim digest "
+    "that lists its details and repeats the numbers, codes, dates and times it "
+    "finds word for word. Pass `query` to search sender/recipient/subject/body for a "
     "keyword (e.g. a person's name, 'order', 'birthday'); pass `period` for a "
     "date RANGE ('this month', 'last week') or `day` for one specific day; "
     "pass `account` if the user asks about a SPECIFIC linked email account and "
