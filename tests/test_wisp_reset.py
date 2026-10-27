@@ -1068,3 +1068,79 @@ def test_the_shell_tool_child_does_not_see_the_nonce(monkeypatch):
 def test_the_app_knows_the_refusal_status():
     source = (Path(__file__).resolve().parents[1] / "app" / "Sources" / "WispApp" / "BackendManager.swift").read_text()
     assert f"static let resetUnfinishedStatus: Int32 = {R.REFUSED_EXIT}" in source
+
+
+def test_engine_trash_from_a_killed_cache_only_pass_is_collected(world):
+    """A cache-only pass (the engine ran during the first pass) killed after moving
+    base/cache to the trash: the next pass deletes that trash too."""
+    home, user = world["home"], world["user"]
+    doc = _marker(home, phase="first-pass", attempts=1, full_pass=True, engine_cache=False, in_progress=True)
+    trash = home / "engine" / "base" / (R.TRASH_PREFIX + doc["id"] + "-cache")
+    (home / "engine" / "base" / "cache").rename(trash)       # moved, then the pass was killed
+    _write(home / "assistant.db", "a chat after the first pass")
+    doc = R.resume_pending(home, user)
+    assert not trash.exists()
+    assert doc["phase"] == "erased" and doc["pending"] == [] and doc["engine_cache"]
+    assert (home / "assistant.db").read_text() == "a chat after the first pass"
+
+
+def test_engine_trash_is_collected_even_while_the_engine_runs(world, monkeypatch):
+    home, user = world["home"], world["user"]
+    doc = _marker(home, phase="first-pass", attempts=1, full_pass=True, engine_cache=False)
+    trash = home / "engine" / "base" / (R.TRASH_PREFIX + doc["id"] + "-cache")
+    _write(trash / "kv.safetensors", "prompt-derived state")
+    monkeypatch.setattr(R, "_engine_running", lambda home: True)
+    R.resume_pending(home, user)
+    assert not trash.exists() and (home / "engine" / "base" / "cache").exists()
+
+
+def test_run_applescript_does_not_pass_the_nonce():
+    source = (Path(__file__).resolve().parents[1] / "service" / "tools" / "automation_tools.py").read_text()
+    assert 'timeout=_TIMEOUT, env=child_environment())' in source
+
+
+def test_the_marker_json_rules_match_the_app():
+    with pytest.raises(ValueError):
+        R.parse_marker_json(b'{"a": 1, "a": 1}')
+    with pytest.raises(ValueError):
+        R.parse_marker_json(b'["\\udfff"]')
+    assert R.parse_marker_json(b'["\\ud83d\\ude00"]') == ["\U0001F600"]
+    with pytest.raises(ValueError):
+        R.parse_marker_json(b'\xef\xbb\xbf{"version": 1, "id": "a", "phase": "erased"}')
+    source = (Path(__file__).resolve().parents[1] / "app" / "Sources" / "WispApp" / "ResetWisp.swift").read_text()
+    assert f"static let maxAttempts = {R.MAX_ATTEMPTS}" in source
+
+
+@pytest.mark.parametrize("depth", [600, 1_000, 10_000, 32_000])
+def test_a_deeply_nested_marker_file_is_ignored_not_a_crash(world, depth):
+    """The service reads it at every start: refused cleanly, never RecursionError."""
+    home, user = world["home"], world["user"]
+    text = '{"version": 1, "id": "c0ffee12", "phase": "first-pass", "later": ' + "[" * depth + "]" * depth + "}"
+    (home / R.MARKER).write_text(text)
+    assert isinstance(R.read_marker(home), R.InvalidMarker)
+    assert R.resume_pending(home, user) is None and (home / "sessions.db").exists()
+
+
+def test_a_deep_document_never_recurses_in_the_surrogate_walk():
+    deep = []
+    for _ in range(50_000):
+        deep = [deep]
+    assert R._has_lone_surrogate(deep) is False
+    assert R._has_lone_surrogate([[["ok", "\ud800"]]]) is True
+
+
+def test_the_depth_and_number_limits_match_the_app():
+    source = (Path(__file__).resolve().parents[1] / "app" / "Sources" / "WispApp" / "ResetWisp.swift").read_text()
+    assert f"static let maxDepth = {R.MAX_JSON_DEPTH}" in source
+    assert f"static let maxIntegerDigits = {R.MAX_INTEGER_DIGITS}" in source
+
+
+def test_unrecorded_engine_trash_is_reported_at_the_attempt_limit(world):
+    home, user = world["home"], world["user"]
+    doc = _marker(home, phase="first-pass", attempts=R.MAX_ATTEMPTS, full_pass=True, engine_cache=True,
+                  in_progress=True)
+    _write(home / "engine" / "base" / (R.TRASH_PREFIX + doc["id"] + "-cache") / "kv", "prompt-derived")
+    doc = R.resume_pending(home, user)
+    assert doc["phase"] == "erased"
+    assert doc["pending"] == ["engine/base/" + R.TRASH_PREFIX + doc["id"] + "-cache"]
+    assert "Couldn't delete: engine/base/cache" in doc["problems"]
