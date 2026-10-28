@@ -554,7 +554,8 @@ final class WispClient {
     // first `session` event. `testMode` asks the service to run a stateless dry
     // run where tool calls are reported but never executed.
     func runAgent(prompt: String, image: String?, imageSource: String? = nil,
-                  video: [String: Any]? = nil, sessionId: String = "",
+                  video: [String: Any]? = nil, document: [String: Any]? = nil,
+                  sessionId: String = "",
                   debug: Bool = false,
                   testMode: Bool = false,
                   corpusCaseID: String? = nil, corpusToken: String? = nil, corpusNormal: Bool = false,
@@ -576,6 +577,7 @@ final class WispClient {
         if let image { body["image"] = image }
         if image != nil, let imageSource { body["image_source"] = imageSource }
         if let video { body["video"] = video }
+        if let document { body["document"] = document }
         if let corpusCaseID {
             body = ["case_id": corpusCaseID, "token": corpusToken ?? "", "mode": corpusNormal ? "normal" : "bounded"]
         }
