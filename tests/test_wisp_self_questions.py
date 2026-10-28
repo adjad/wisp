@@ -113,7 +113,8 @@ def test_answers_are_current_and_plain(topic):
     assert "_" not in text  # no internal tool names
 
 
-def test_overview_names_the_real_surfaces():
+def test_overview_names_the_real_surfaces(monkeypatch):
+    monkeypatch.setattr(wisp_about, "_google_sign_in", lambda: True)
     text = wisp_capabilities("what can you do", "overview")
     for needle in ("Ask", "Brief and Day", "⌥ Space", "/about", "Settings → Google",
                    "wait for your OK", "**Right now**"):
@@ -150,6 +151,34 @@ def test_overview_reports_live_source_state(monkeypatch):
 def test_overview_says_when_google_is_connected(monkeypatch):
     monkeypatch.setattr(wisp_about, "_google_connected", lambda: True)
     assert "your account is connected" in wisp_about.overview()
+
+
+def test_overview_offers_google_only_when_this_build_can_sign_in(monkeypatch):
+    monkeypatch.setattr(wisp_about, "_google_connected", lambda: False)
+    monkeypatch.setattr(wisp_about, "_google_sign_in", lambda: False)
+    assert "Settings → Google" not in wisp_about.overview()
+    monkeypatch.setattr(wisp_about, "_google_sign_in", lambda: True)
+    assert "connect a Google account in **Settings → Google**" in wisp_about.overview()
+
+
+def test_google_sign_in_follows_the_oauth_client(monkeypatch):
+    from service import gmail_source
+    monkeypatch.setattr(gmail_source, "resolve_client", lambda cfg=None: ("", "", "none"))
+    assert not wisp_about._google_sign_in()
+    monkeypatch.setattr(gmail_source, "resolve_client", lambda cfg=None: ("id", "secret", "builtin"))
+    assert wisp_about._google_sign_in()
+
+
+def test_overview_teaches_voice_and_when_wisp_acts_never_retired_features(monkeypatch):
+    monkeypatch.setattr(wisp_about, "_rhythm", lambda: "I send a summary at 8 AM and 8 PM.")
+    text = wisp_about.overview()
+    assert "⌥⇧Space to ask out loud" in text
+    assert "- I send a summary at 8 AM and 8 PM." in text
+    for retired in ("Smart Search", "⌘⇧F", "/research", "Research"):
+        assert retired not in text, retired
+        assert retired not in wisp_about.howto("How do I use Wisp?"), retired
+    monkeypatch.setattr(wisp_about, "_rhythm", lambda: "")
+    assert "I send a summary" not in wisp_about.overview()
 
 
 def test_privacy_is_local_by_default(monkeypatch):
@@ -230,11 +259,47 @@ def test_identity_uses_the_name_the_user_gave(monkeypatch):
     assert "I don't know your name yet" in wisp_about.identity()
 
 
-def test_specific_howto_answers_only_that_step():
+def test_specific_howto_answers_only_that_step(monkeypatch):
+    monkeypatch.setattr(wisp_about, "_google_sign_in", lambda: True)
     text = wisp_about.howto("How do I connect Google?")
     assert "Settings → Google" in text and "Research" not in text
     full = wisp_about.howto("How do I use Wisp?")
     assert full.startswith("**Getting started with Wisp**") and "⌥Space" in full
+
+
+def test_howto_points_at_settings_google_only_when_it_can_be_used(monkeypatch):
+    # A build with no Google sign-in and no account: the guide never sends
+    # anyone to Settings → Google, and a direct question gets a plain answer.
+    monkeypatch.setattr(wisp_about, "_google_connected", lambda: False)
+    monkeypatch.setattr(wisp_about, "_google_sign_in", lambda: False)
+    for query in ("How do I use Wisp?", "How do I connect Google?", "how do I sign in to Wisp?",
+                  "how do I sign out of wisp"):
+        assert "Settings → Google" not in wisp_about.howto(query), query
+    full = wisp_about.howto("How do I use Wisp?")
+    assert "Connect Google" not in full and "can't sign in to Google" not in full
+    assert "**Signing in**" in full and "**Signing out**" in full
+    assert "can't sign in to Google" in wisp_about.howto("How do I connect Google?")
+    assert "If you connect Google" not in wisp_about.privacy()
+    # An account connected on an earlier build can still be disconnected.
+    monkeypatch.setattr(wisp_about, "_google_connected", lambda: True)
+    assert "Disconnect & erase" in wisp_about.howto("how do I sign out of wisp")
+    assert "I fetch your Google account's mail" in wisp_about.privacy()
+    monkeypatch.setattr(wisp_about, "_google_connected", lambda: False)
+    monkeypatch.setattr(wisp_about, "_google_sign_in", lambda: True)
+    assert "**Connect Google**" in wisp_about.howto("How do I use Wisp?")
+    assert "If you connect Google" in wisp_about.privacy()
+
+
+def test_privacy_names_research_only_when_a_cloud_model_answers_it(monkeypatch):
+    # Research is retired for now: it is no longer listed among what goes
+    # online, and only a cloud model set for it is said to get its pages.
+    _patch_cloud(monkeypatch, "", "")
+    assert "research" not in wisp_about.privacy().lower()
+    _patch_cloud(monkeypatch, "super", "openrouter.ai", roles=("coding",))
+    text = wisp_about.privacy()
+    assert "research" not in text.lower() and "A document search you upgrade" in text
+    _patch_cloud(monkeypatch, "super", "openrouter.ai", roles=("research",))
+    assert "Research also sends the web pages it read" in wisp_about.privacy()
 
 
 def test_howto_permissions_points_at_the_settings_permissions_buttons():
@@ -495,14 +560,16 @@ def test_pending_everything_names_roles_still_bound_to_the_cloud(monkeypatch):
     assert profile.may_send_to(managed=False) is False and profile.sent_to() == ""
 
 
-def test_signing_in_and_feedback_have_their_own_steps():
+def test_signing_in_and_feedback_have_their_own_steps(monkeypatch):
+    monkeypatch.setattr(wisp_about, "_google_sign_in", lambda: True)
     signin = wisp_about.howto("how do I log in to wisp")
     assert "no account of its own" in signin and "Settings → Google" in signin
     assert "/report" in wisp_about.howto("how do I give feedback on wisp")
 
 
 @pytest.mark.parametrize("prompt", ["how do I sign out of wisp", "how do I log out of Wisp?"])
-def test_signing_out_has_its_own_step(prompt):
+def test_signing_out_has_its_own_step(prompt, monkeypatch):
+    monkeypatch.setattr(wisp_about, "_google_sign_in", lambda: True)
     assert routed(prompt).direct_calls[0][1].get("topic") == "howto"
     text = wisp_about.howto(prompt)
     assert "no account to sign out of" in text and "Disconnect & erase" in text

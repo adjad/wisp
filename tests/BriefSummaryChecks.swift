@@ -33,8 +33,9 @@ func briefSummaryChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: 
     let brief = ComposedBrief.parse(text)
     check(brief.sections.map(\.kind) == [.keeping, .calendar, .reminders, .mail, .messages],
           "sections by header, greeting and closing dropped: \(brief.sections.map(\.kind))")
-    check(brief.cutDown == ["PA 2 is due tonight, and you said you want to finish CSE 20 strong.", "Priya is in today's messages."],
-          "the cut-down summary has no mail, messages or calendar prose: \(brief.cutDown)")
+    check(brief.keeping == ["PA 2 is due tonight, and you said you want to finish CSE 20 strong.", "Priya is in today's messages."],
+          "the summary has no mail, messages or calendar prose: \(brief.keeping)")
+    check(brief.intro.isEmpty, "no How Wisp works section after the first day")
     check(brief.lines(.mail) == ["Worth a look", "Advisor: Thesis meeting moved", "Tech Week: starts today"],
           "sub-headers stay in their section: \(brief.lines(.mail))")
     check(brief.lines(.messages) == ["👤 Priya", "Asked about dinner at 7."], "a # header opens Messages: \(brief.lines(.messages))")
@@ -343,4 +344,68 @@ func briefTileChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Dou
                             age: { _ in "" }).lines.first?.text == "Reading your texts…", "texts being read say so")
     check(BriefDetail.calendar(allDay: ["🎂"], events: [(title: "1:1", start: now, end: nil)], unsynced: false, clock: { _ in "9" })
             .lines.map(\.text) == ["🎂", "1:1"], "calendar details keep letterless titles")
+    firstDayChecks(check)
+}
+
+/// The first launch day: what Wisp does and when, the summary times when none
+/// came yet, and the fix links for a Google sign-in and Contacts.
+func firstDayChecks(_ check: (Bool, String) -> Void) {
+    let first = ComposedBrief.parse("""
+    Good morning — Friday, October 16. ☀️
+
+    **🌱 How Wisp works**
+    - I send a summary at 8 AM and 8 PM, ask how your day went after 5 PM, and learn a routine once I've seen it in three different weeks.
+
+    **🧭 Keeping in mind**
+    - One
+    - Two
+    - Three
+    - Four
+    - Five
+    - Six
+
+    **📅 Today**
+    - Nothing on your calendar.
+    """)
+    check(first.intro == ["I send a summary at 8 AM and 8 PM, ask how your day went after 5 PM, and learn a routine once I've seen it in three different weeks."]
+          && first.keeping.count == 6, "the first day's How Wisp works section is its own: \(first.sections.map(\.kind))")
+    let short = ComposedBrief.inMind(first.keeping, showAll: false)
+    check(short.shown == ["One", "Two", "Three", "Four"] && short.more == 2, "Keeping in mind shows four, then Show all")
+    check(ComposedBrief.inMind(first.keeping, showAll: true) == (first.keeping, 0)
+          && ComposedBrief.inMind(["One"], showAll: false) == (["One"], 0), "Show all shows every line; a short list has no Show all")
+
+    let schedule = BriefSchedule.parse(["times": ["morning": 8, "evening": 20], "first_brief_building": true])
+    check(schedule == BriefSchedule(morning: 8, evening: 20, buildingFirst: true), "schedule parses: \(String(describing: schedule))")
+    check(BriefSchedule.parse(["times": ["morning": 8, "evening": 20]])?.buildingFirst == false
+          && BriefSchedule.parse(["times": ["morning": 14, "evening": 20]]) == nil && BriefSchedule.parse(nil) == nil,
+          "an older service says nothing about the first Brief; an hour outside its half is refused")
+    let times = BriefSchedule(morning: 7, evening: 18)
+    check(times.noSummaryLine(hour: 5) == "Today's summary arrives at 7 AM · or press Refresh"
+          && times.noSummaryLine(hour: 12) == "Summaries arrive at 7 AM and 6 PM · or press Refresh"
+          && times.noSummaryLine(hour: 5, locale: Locale(identifier: "en_GB")) == "Today's summary arrives at 07:00 · or press Refresh",
+          "no summary yet: the real times, never a guess")
+    check(BriefDetail.texts(needing: [], ready: true, summary: nil, noSummary: times.noSummaryLine(hour: 5), age: { _ in "" })
+            .lines.first?.text == "Today's summary arrives at 7 AM · or press Refresh", "the TEXTS list names the time")
+
+    // A Google account whose sign-in must be redone: the mail list links to Settings > Google.
+    let row = SourceAccess(source: "email", ready: true)
+    let reconnect = SourceAccess.mail(row, readBy: ["me@gmail.com"], unchecked: UncheckedMail(reconnect: ["work@gmail.com"]))
+    let syncing = SourceAccess.mail(row, readBy: ["me@gmail.com"], unchecked: UncheckedMail(syncing: ["work@gmail.com"]))
+    check(reconnect.fixLink == BriefDetail.googleSettings && syncing.fixLink == nil
+          && SourceAccess(source: "calendar", ready: false, blocked: "calendar_access").fixLink == BriefDetail.calendarsAccess,
+          "only a sign-in to redo links to Settings > Google; System Settings links stay as they were")
+    let partly = BriefDetail.mail(needing: [BriefNeed(title: "Lunch?", sender: "Sam", person: true)], ready: true,
+                                  summary: [], access: reconnect)
+    check(partly.lines.first?.text == "Couldn't check work@gmail.com" && partly.action == BriefDetail.googleSettings
+          && partly.lines.contains { $0.text == "Sam · Lunch?" }, "partly read mail: what was read, and the way to reconnect")
+    check(BriefDetail.mail(needing: [], ready: true, summary: [], access: syncing).action == nil,
+          "a check still running has nothing to fix")
+
+    // Contacts turned down: one row like the other sources, with its setting.
+    check(SourceAccess.contacts(denied: false, enabled: true) == nil && SourceAccess.contacts(denied: true, enabled: false) == nil,
+          "no Contacts row before macOS said no, or with Contacts off in Wisp")
+    let contacts = SourceAccess.contacts(denied: true, enabled: true)
+    check(contacts?.headline == "Wisp can't see your contacts yet" && contacts?.fixLink == BriefDetail.contactsAccess
+          && contacts?.detail.contains("names, not numbers") == true && contacts?.symbol == "person.crop.circle",
+          "Contacts denied: why, and the Contacts setting")
 }

@@ -268,6 +268,11 @@ final class TodayModel: ObservableObject {
     @Published private(set) var storedBrief: StoredBrief?
     /// The kept summary has been asked for at least once, so its absence is known.
     @Published private(set) var storedBriefChecked = false
+    /// When the Daily Summary is composed and whether the first one is being
+    /// built (`/assistant/summary_schedule`), for the Brief's "no summary yet"
+    /// line and its "Building your first Brief…" row. The Brief reads it only
+    /// while today has no summary; nil until read.
+    @Published private(set) var briefSchedule: BriefSchedule?
     @Published var error = ""
     @Published var busy = false
     /// Reads in a row that failed for a passing reason: the service starting,
@@ -607,6 +612,14 @@ final class TodayModel: ObservableObject {
               reply["commitments"] is [[String: Any]], !Task.isCancelled,
               key == DayKey(day: Self.dayString(now, in: timezone), zone: timezone.identifier) else { return }
         upcomingReply = reply
+    }
+
+    /// A failed read keeps what was read before.
+    func refreshBriefSchedule() async {
+        guard let data = try? await request("/assistant/summary_schedule"),
+              let schedule = BriefSchedule.parse((try? JSONSerialization.jsonObject(with: data)) as? [String: Any]),
+              !Task.isCancelled else { return }
+        if schedule != briefSchedule { briefSchedule = schedule }
     }
 
     /// Reads today's latest composed brief. A 404 means none was composed today;
