@@ -42,6 +42,16 @@ _LINKISH = re.compile(r"https?://|www\.|\b[\w-]+\.(?:com|net|org|io|co|ly|me|app
 # over a run of blank lines; audit of bc5db6d8), and runs of whitespace are
 # collapsed before the splits.
 _QUOTED = re.compile(r"(?im)^[ \t]*(?:On [^\n]{1,300}wrote:|[- ]*Original Message[- ]*|Begin forwarded message:|>[^\n]*)$")
+# Outlook quotes the original under a rule of underscores or a "From: / Sent:" block. In a
+# reply that original is the superseded version ("no meeting tomorrow" above the invite);
+# in a forward it is the content, so forwards keep it.
+_OUTLOOK_QUOTED = re.compile(r"(?im)^[ \t]*_{8,}[ \t]*\n(?:[ \t]*\n)?[ \t]*From:[^\n]{0,300}$"
+                             r"|^[ \t]*From:[^\n]{1,300}\n[ \t]*Sent:[^\n]{0,300}$")
+_FORWARD = re.compile(r"^\s*(?:fw|fwd)\s*:", re.I)
+# Calendar cancellation notices: Google's "Canceled event: ...", Outlook's "Canceled: ...".
+_CANCEL_NOTICE = re.compile(r"^\s*(?:(?:re|fw|fwd)\s*:\s*)*cancell?ed(?:\s+event)?(?:\s+with\s+note)?\s*:", re.I)
+# The model's own title saying the thing is off: "Send-Off (Friday) event was canceled".
+_CANCELLED_WHAT = re.compile(r"\b(?:was|is|has been|been|got)\s+cancell?ed\b", re.I)
 _FOOTER = re.compile(r"(?im)^[ \t]*(?:unsubscribe|manage (?:your )?(?:email )?(?:preferences|notifications)|"
                      r"you(?:'re| are) receiving this)\b")
 _SPACES = re.compile(r"[ \t\f\v\u00a0\u200b]+")
@@ -165,12 +175,14 @@ def _html_text(markup: str) -> str:
     return parser.text()
 
 
-def _clean(body: str) -> str:
+def _clean(body: str, *, forward: bool = False) -> str:
     """Collapse whitespace, then cut quoted history and footers. Linear time."""
     body = body.replace("\r\n", "\n").replace("\r", "\n")[:TEXT_CAP * 2]
     body = _SPACES.sub(" ", body)
     body = _BLANKS.sub("\n\n", body)[:TEXT_CAP]
     body = _QUOTED.split(body, maxsplit=1)[0]
+    if not forward:
+        body = _OUTLOOK_QUOTED.split(body, maxsplit=1)[0]
     body = _FOOTER.split(body, maxsplit=1)[0]
     return body.strip()[:BODY_CAP]
 
@@ -195,7 +207,11 @@ def parse_raw(raw: bytes, fallback_ts: float) -> Email:
             plain.append(_text(part))
         elif kind == "text/html":
             markup.append(_text(part))
-    body = _clean("\n".join(plain) if plain else _html_text("\n".join(markup)))
+    # Many receipts carry an EMPTY text/plain part beside the real HTML one: blank
+    # plain text is no text, or the model is handed an empty email.
+    text = "\n".join(plain)
+    forward = bool(_FORWARD.match(str(msg.get("Subject", ""))))
+    body = _clean(text if text.strip() else _html_text("\n".join(markup)), forward=forward)
     try:
         sent = parsedate_to_datetime(str(msg.get("Date", "")))
         if sent.tzinfo is None:
@@ -250,8 +266,14 @@ def parse_reply(text: str) -> list[dict] | None:
     return [i for i in items if isinstance(i, dict)]
 
 
+# Look-alike punctuation the model swaps when it copies: Google Calendar's "9am ⋅ Tue"
+# came back with "•". Both sides of the quote check fold to one glyph each.
+_GLYPHS = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"', "•": "·", "⋅": "·", "∙": "·",
+                         "–": "-", "—": "-", "‒": "-", "−": "-"})
+
+
 def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").replace("’", "'").replace("“", '"').replace("”", '"')).strip().lower()
+    return re.sub(r"\s+", " ", (s or "").translate(_GLYPHS)).strip().lower()
 
 
 def validate(items: list[dict], email: Email, *, tz: str, today: date,
@@ -264,12 +286,20 @@ def validate(items: list[dict], email: Email, *, tz: str, today: date,
     def drop(reason: str) -> None:
         dropped[reason] = dropped.get(reason, 0) + 1
 
+    if _CANCEL_NOTICE.match(email.subject or ""):
+        # A cancelled event is nothing to do; the model still lists it, marked "(canceled)".
+        for _ in items[:MAX_ITEMS * 2]:
+            drop("cancelled")
+        return kept, dropped
     for it in items[:MAX_ITEMS * 2]:
         what = " ".join(str(it.get("what") or "").split())[:WHAT_MAX]
         phrase = " ".join(str(it.get("date_phrase") or "").split())
         evidence = " ".join(str(it.get("evidence") or "").split())
         if not what or not evidence:
             drop("empty")
+            continue
+        if _CANCELLED_WHAT.search(what):
+            drop("cancelled")
             continue
         if _LINKISH.search(what):
             # The title becomes a Reminder the user (and later Wisp) reads: no links or addresses.
