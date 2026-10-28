@@ -550,12 +550,10 @@ class ResearchManager:
             # that block and reserve tokens for the schema the host validates.
             if (json_task or disable_thinking) and "ornith" in model.lower():
                 extra = {"chat_template_kwargs": {"enable_thinking": False}}
-            from service.inference.power_tier import INTENSIVE, power_tier
-            with power_tier(INTENSIVE):
-                response = await client.chat(
-                    model, [{"role": "system", "content": system},
-                            {"role": "user", "content": user}],
-                    max_tokens=max_tokens, **extra)
+            response = await client.chat(
+                model, [{"role": "system", "content": system},
+                        {"role": "user", "content": user}],
+                max_tokens=max_tokens, **extra)
             if job_id:
                 self.store.increment_model_calls(job_id)
             return str(response["choices"][0]["message"].get("content") or "").strip()

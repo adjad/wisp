@@ -1,36 +1,41 @@
-"""Per-request GPU power caps on Wisp's own model calls.
+"""A GPU power cap on Wisp's background model calls while the user is away.
 
 oMLX (0.7.3+) takes a per-request ``gpu_power_limit_w`` and holds a firmware
 GPU power cap while that request generates. The cap is a limit on the whole
-Mac's GPU, not just Wisp's, and oMLX holds the LOWEST cap among the requests
-in flight. So Wisp only ever asks per request, never as a model-level setting
-(which would cap every request on the engine, intensive work included).
+Mac's GPU, not just Wisp's, and oMLX holds the LOWEST cap among the capped
+requests in flight; an uncapped request does not register with it at all, so it
+runs under whatever cap another request holds. So Wisp only ever asks per
+request, never as a model-level setting (which would cap every request).
 
 Measured on the M5 Pro with the Gemma E4B roster (2026-10-27, real capped
 requests; the admin benchmark never applies the cap):
 
     cap    first token   decode   GPU J/token
     none   1.16 s        84 t/s   0.270
-    20 W   +8%           -2%      -21%
     10 W   +35%          -16%     -52%
 
-The tiers:
+Only ``BACKGROUND`` work is ever capped (10 W): work nobody is waiting on
+(gists and the inbox summary, proactive triage/judge/prepare, the mail memory
+walk, the behavior tick's interpreter and phraser, memory capture). And only
+while the "Save power when away" switch is on (the notch; on by default) AND
+the user is away: no keyboard or mouse input for AWAY_AFTER_S and no turn
+running. With someone at the Mac it runs uncapped.
 
-- ``CHAT`` (20 W, always): every call made outside a tier: Ask turns, voice,
-  briefs the user opens. Nearly free in latency.
-- ``BACKGROUND`` (10 W): work nobody is waiting on (gists, proactive
-  triage/judge/prepare, the mail memory walk, behavior phrasing, memory
-  capture). Capped only while the "Save power when away" switch is on (the
-  notch; on by default) AND the user is away: no keyboard or mouse input for
-  AWAY_AFTER_S and no turn running. With someone at the Mac it runs uncapped.
-- ``INTENSIVE`` (never capped): heavier work that needs the GPU (the scheduled
-  Daily Summary, research). While one runs, background calls go uncapped too,
-  because oMLX would otherwise hold the intensive call to their 10 W. A
-  background call already in flight keeps its cap until it ends.
+Everything else is never capped: Ask turns, voice, phone turns, research, a
+brief the user opens, setup probes. While any of those is in flight,
+background calls go uncapped too, so they can't drag it down to 10 W. A
+background call already in flight keeps its cap until it ends; most of them
+are cancelled when a turn starts (mail_gists, the mail memory walk), and the
+rest are short (the phraser, memory capture).
+
+The scheduled Daily Summary makes no model call (service/assistant/brief.py
+renders it from caches), so it has no tier; the model-written parts of the
+Brief come from the background gists and proactive cards.
 
 Releasing the cap the moment a request ends DEPENDS on the engine patch
 ``GpuPowerLimiter(release_delay_s=0.0)`` in server.py (branch
-claude/engine-gpu-cap-no-linger); upstream oMLX holds it 15 s longer.
+claude/engine-gpu-cap-no-linger); upstream oMLX holds it 15 s longer, so a
+reply started within 15 s of a capped call still runs capped until then.
 
 A tier is set with ``with power_tier(BACKGROUND):`` around the call (it is a
 ContextVar, so tasks created inside inherit it). OMLXClient adds the field only
@@ -49,14 +54,11 @@ from typing import Iterator
 
 from service.paths import MOE_DIR
 
-CHAT = "chat"
 BACKGROUND = "background"
-INTENSIVE = "intensive"
 
-_DEFAULT_WATTS = {CHAT: 20, BACKGROUND: 10, INTENSIVE: None}
-# 0 turns a tier's cap off; anything outside oMLX's 2-1000 W range is ignored.
-# INTENSIVE has no override: it is never capped.
-_ENV = {CHAT: "WISP_CHAT_GPU_W", BACKGROUND: "WISP_BACKGROUND_GPU_W"}
+_DEFAULT_WATTS = {BACKGROUND: 10}
+# 0 turns the cap off; anything outside oMLX's 2-1000 W range is ignored.
+_ENV = {BACKGROUND: "WISP_BACKGROUND_GPU_W"}
 _MIN_W, _MAX_W = 2, 1000
 
 SETTINGS_PATH = MOE_DIR / "power" / "settings.json"
@@ -126,29 +128,29 @@ def away() -> bool:
     return value and time.monotonic() - read_at < _AWAY_STALE_S
 
 
-# --- intensive work in flight -----------------------------------------------------
+# --- uncapped calls in flight -----------------------------------------------------
 
-_intensive_calls = 0
+_uncapped_calls = 0
 
 
 def call_started() -> bool:
-    """OMLXClient, as a managed call starts. True when it is intensive work;
-    pass that to call_ended."""
-    global _intensive_calls
-    if current_tier() != INTENSIVE:
+    """OMLXClient, as a managed call starts. True when it is an uncapped
+    (non-background) call; pass that to call_ended."""
+    global _uncapped_calls
+    if current_tier() == BACKGROUND:
         return False
-    _intensive_calls += 1
+    _uncapped_calls += 1
     return True
 
 
-def call_ended(intensive: bool) -> None:
-    global _intensive_calls
-    if intensive:
-        _intensive_calls = max(0, _intensive_calls - 1)
+def call_ended(uncapped: bool) -> None:
+    global _uncapped_calls
+    if uncapped:
+        _uncapped_calls = max(0, _uncapped_calls - 1)
 
 
-def intensive_running() -> bool:
-    return _intensive_calls > 0
+def uncapped_running() -> bool:
+    return _uncapped_calls > 0
 
 
 # --- tiers ------------------------------------------------------------------------
@@ -171,7 +173,7 @@ def current_tier() -> str | None:
 
 def watts(tier: str | None) -> int | None:
     """The cap for ``tier`` in watts, or None for no cap."""
-    if tier not in _DEFAULT_WATTS or _DEFAULT_WATTS[tier] is None:
+    if tier not in _DEFAULT_WATTS:
         return None
     raw = os.environ.get(_ENV[tier], "").strip()
     if raw:
@@ -187,10 +189,10 @@ def watts(tier: str | None) -> int | None:
 
 
 def payload_fields() -> dict[str, int]:
-    """Request-body fields for this call. A call outside any tier is a live
-    call, so it gets the chat cap."""
-    tier = current_tier() or CHAT
-    if tier == BACKGROUND and not (save_when_away() and away() and not intensive_running()):
+    """Request-body fields for this call: a cap only for background work while
+    the user is away, the switch is on, and nothing uncapped is running."""
+    tier = current_tier()
+    if tier != BACKGROUND or not (save_when_away() and away() and not uncapped_running()):
         return {}
     value = watts(tier)
     return {} if value is None else {"gpu_power_limit_w": value}

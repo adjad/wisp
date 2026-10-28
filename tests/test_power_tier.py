@@ -16,10 +16,10 @@ def clean_env(monkeypatch, tmp_path):
     for name in P._ENV.values():
         monkeypatch.delenv(name, raising=False)
     # Every test starts with the switch at its default, in a private settings
-    # file, the user present (no away reading yet), no turn and no intensive call.
+    # file, the user present (no away reading yet), no turn and no uncapped call.
     monkeypatch.setattr(P, "SETTINGS_PATH", tmp_path / "power" / "settings.json")
     monkeypatch.setattr(P, "_away", None)
-    monkeypatch.setattr(P, "_intensive_calls", 0)
+    monkeypatch.setattr(P, "_uncapped_calls", 0)
     from service import idle
     monkeypatch.setattr(idle, "_foreground_turns", 0)
 
@@ -98,11 +98,14 @@ def test_the_scheduler_refreshes_away_off_the_event_loop():
 
 # --- tiers ------------------------------------------------------------------------
 
-def test_defaults_are_20_w_chat_10_w_background_and_intensive_uncapped():
-    assert P.watts(P.CHAT) == 20
+def test_only_background_has_a_cap_and_it_is_10_w():
     assert P.watts(P.BACKGROUND) == 10
-    assert P.watts(P.INTENSIVE) is None
     assert P.watts(None) is None
+    assert P.watts("chat") is None and P.watts("intensive") is None
+    for gone in ("chat", "intensive"):
+        with pytest.raises(ValueError):
+            with P.power_tier(gone):
+                pass
 
 
 def test_env_overrides_zero_turns_off_and_out_of_range_is_ignored(monkeypatch):
@@ -113,16 +116,14 @@ def test_env_overrides_zero_turns_off_and_out_of_range_is_ignored(monkeypatch):
     for bad in ("1", "5000", "ten"):
         monkeypatch.setenv("WISP_BACKGROUND_GPU_W", bad)
         assert P.watts(P.BACKGROUND) == 10
-    monkeypatch.setenv("WISP_CHAT_GPU_W", "0")
-    assert P.payload_fields() == {}
 
 
-def test_chat_is_always_20_w_whatever_the_switch_or_away():
+def test_chat_and_everything_untiered_is_never_capped():
     for on in (True, False):
         P.set_save_when_away(on)
         for hid in (0, P.AWAY_AFTER_S + 1):
             P.refresh_away(hid)
-            assert P.payload_fields() == {"gpu_power_limit_w": 20}
+            assert P.payload_fields() == {}
 
 
 def test_background_is_capped_only_when_the_switch_is_on_and_the_user_away(away):
@@ -135,22 +136,16 @@ def test_background_is_capped_only_when_the_switch_is_on_and_the_user_away(away)
         assert P.payload_fields() == {}
 
 
-def test_intensive_work_is_never_capped(away):
-    with P.power_tier(P.INTENSIVE):
-        assert P.payload_fields() == {}
-
-
-def test_background_goes_uncapped_while_intensive_work_runs(away):
-    with P.power_tier(P.INTENSIVE):
-        started = P.call_started()
-    assert started is True and P.intensive_running()
+def test_background_goes_uncapped_while_any_uncapped_call_runs(away):
+    started = P.call_started()                                 # a reply, research, a phone turn
+    assert started is True and P.uncapped_running()
     with P.power_tier(P.BACKGROUND):
         assert P.payload_fields() == {}
     P.call_ended(started)
-    assert not P.intensive_running()
+    assert not P.uncapped_running()
     with P.power_tier(P.BACKGROUND):
         assert P.payload_fields() == {"gpu_power_limit_w": 10}
-    assert P.call_started() is False                           # a chat call isn't counted
+        assert P.call_started() is False                       # a background call isn't counted
 
 
 def test_tier_is_scoped_to_the_block_and_inherited_by_tasks(away):
@@ -191,42 +186,41 @@ def _client(managed, reply_hook=None):
     return client, bodies
 
 
-def test_the_client_sends_each_tier_its_per_request_cap():
+def test_the_client_caps_only_background_calls_while_away():
     client, bodies = _client(managed=True)
     hi = [{"role": "user", "content": "hi"}]
 
     async def run():
         try:
-            await client.chat("m", hi)                        # 0: chat
+            await client.chat("m", hi)                        # 0: chat, present
             with P.power_tier(P.BACKGROUND):
                 await client.chat("m", hi)                    # 1: background, present
                 P.refresh_away(P.AWAY_AFTER_S + 1)
                 await client.chat("m", hi)                    # 2: background, away
                 await client.chat("m", hi, gpu_power_limit_w=12)  # 3: explicit wins
-            with P.power_tier(P.INTENSIVE):
-                await client.chat("m", hi)                    # 4: intensive
-            await client.chat("m", hi)                        # 5: chat again
+            await client.chat("m", hi)                        # 4: chat, away
         finally:
             await client._client.aclose()
 
     asyncio.run(run())
     caps = [body.get("gpu_power_limit_w") for body in bodies]
-    assert caps == [20, None, 10, 12, None, 20]
+    assert caps == [None, None, 10, 12, None]
 
 
-def test_the_client_counts_an_intensive_call_only_while_it_runs(away):
+def test_the_client_counts_an_uncapped_call_only_while_it_runs(away):
     during = []
-    client, _ = _client(managed=True, reply_hook=lambda: during.append(P.intensive_running()))
+    client, _ = _client(managed=True, reply_hook=lambda: during.append(P.uncapped_running()))
 
     async def run():
         try:
-            with P.power_tier(P.INTENSIVE):
-                await client.chat("m", [{"role": "user", "content": "hi"}])
+            await client.chat("m", [{"role": "user", "content": "hi"}])
+            with P.power_tier(P.BACKGROUND):
+                await client.chat("m", [{"role": "user", "content": "bg"}])
         finally:
             await client._client.aclose()
 
     asyncio.run(run())
-    assert during == [True] and not P.intensive_running()
+    assert during == [True, False] and not P.uncapped_running()
 
 
 def test_a_remote_provider_never_gets_the_field(away):
@@ -275,7 +269,8 @@ def test_the_gist_call_runs_at_the_background_tier(monkeypatch, away):
     assert seen == [(P.BACKGROUND, {"gpu_power_limit_w": 10})]
 
 
-def test_the_scheduled_daily_summary_runs_at_the_intensive_tier(monkeypatch, away):
+def test_the_scheduled_daily_summary_has_no_tier_because_it_calls_no_model(monkeypatch, away):
+    import inspect
     from datetime import date
 
     from service.assistant import brief, scheduler
@@ -289,7 +284,30 @@ def test_the_scheduled_daily_summary_runs_at_the_intensive_tier(monkeypatch, awa
     monkeypatch.setattr(brief, "run_scheduled_brief", fake_brief)
     monkeypatch.setattr(scheduler.idle, "foreground_busy", lambda: False)
     asyncio.run(scheduler._run_daily_brief(date(2026, 10, 28), "morning"))
-    assert seen == [(P.INTENSIVE, {})]
+    assert seen == [(None, {})]
+    # The brief renders from caches; its model-written parts are the gists.
+    assert "NO MODEL" in inspect.getsource(brief).split('"""')[1]
+
+
+def test_the_behavior_tick_runs_at_the_background_tier(monkeypatch, away):
+    import service.behavior_switch as switch
+    from service.assistant import behavior_runtime, scheduler
+
+    seen = []
+
+    async def fake_tick(store, hub, **kwargs):
+        seen.append(_seen())
+        return []
+
+    monkeypatch.setattr(switch, "enabled", lambda: True)
+    monkeypatch.setattr(behavior_runtime, "tick", fake_tick)
+    monkeypatch.setattr(scheduler, "_behavior_task", None)
+
+    async def run():
+        await scheduler._start_behavior_tick()
+
+    asyncio.run(run())
+    assert seen == [(P.BACKGROUND, {"gpu_power_limit_w": 10})]
 
 
 class _Recorder:
@@ -353,7 +371,7 @@ def test_the_behavior_phraser_runs_at_the_background_tier(monkeypatch, away):
     assert client.seen == [(P.BACKGROUND, {"gpu_power_limit_w": 10})]
 
 
-def test_research_calls_run_at_the_intensive_tier(monkeypatch, away):
+def test_research_the_user_started_is_never_capped(monkeypatch, away):
     from service import idle
     from service.research import orchestrator as O
 
@@ -370,7 +388,7 @@ def test_research_calls_run_at_the_intensive_tier(monkeypatch, away):
         return await manager._call_on_endpoint(client, "s", "u")
 
     assert asyncio.run(run()) == "ok"
-    assert client.seen == [(P.INTENSIVE, {})]
+    assert client.seen == [(None, {})]
 
 
 def test_memory_capture_wraps_its_extraction_call_in_the_background_tier():

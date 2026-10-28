@@ -18,9 +18,9 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(QuickSettingsText.saveWhenAway(on: nil, pending: false) == "Not confirmed", "unconfirmed Save power is never off")
     check(QuickSettingsText.saveWhenAway(on: true, pending: true).hasPrefix("Updating"), "a pending Save power change waits")
     let saveHelp = QuickSettingsText.saveWhenAwayHelp
-    check(saveHelp.contains("10 minutes") && saveHelp.contains("10 W") && saveHelp.contains("20 W"),
-          "Save power help names when and how much")
-    check(saveHelp.contains("full power"), "Save power help says heavy work is never capped")
+    check(saveHelp.contains("10 minutes") && saveHelp.contains("10 W"), "Save power help names when and how much")
+    check(saveHelp.contains("Replies") && saveHelp.contains("full power") && !saveHelp.contains("20 W"),
+          "Save power help says replies are never capped")
 
     // Learn my routines: "stays on this Mac" only when nothing learned leaves it.
     let local = QuickSettingsText.learning(enabled: true, changing: false, status: nil, remote: false, phraser: true)

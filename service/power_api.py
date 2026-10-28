@@ -3,8 +3,8 @@
 IMPORTANT rules:
 - The write is the app's own JSON request, never a browser page's: a cap
   throttles the whole Mac's GPU, so a web page must not be able to change it.
-- The switch only decides background work's cap while the user is away. Chat's
-  20 W cap and intensive work's lack of one never depend on it.
+- The switch only decides background work's cap while the user is away.
+  Replies and everything else the user starts are never capped.
 """
 from __future__ import annotations
 

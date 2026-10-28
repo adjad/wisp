@@ -53,8 +53,8 @@ enum QuickSettingsText {
 
     static let saveWhenAwayHelp = "When you haven't touched the keyboard or mouse for 10 minutes, "
         + "Wisp's background work (email summaries, proactive checks) caps its GPU power at 10 W. "
-        + "Replies are always capped at 20 W. Heavy work like the Daily Summary and research "
-        + "always runs at full power, and background work goes uncapped while it does."
+        + "Replies, research and anything else you start always run at full power, "
+        + "and background work goes uncapped while they do."
 
     static func learning(enabled: Bool?, changing: Bool, status: String?,
                          remote: Bool, phraser: Bool) -> (text: String, local: String?) {
