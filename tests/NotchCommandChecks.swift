@@ -50,6 +50,13 @@ struct NotchCommandChecks {
         check(NotchCommand.match("/corpus", includeCorpus: false) == nil, "/corpus does not run")
         check(NotchCommand.match("/c", includeCorpus: false) == nil, "no other command starts with c")
         check(NotchCommand.match("/about", includeCorpus: false) == .about, "other commands still run")
+
+        // /screen only exists once Screen Recording is already granted, and only when typed in full.
+        check(!NotchCommand.suggestions(for: "/", includeScreen: false).contains(.screen), "/screen is not listed without the grant")
+        check(NotchCommand.match("/screen", includeScreen: false) == nil, "/screen does not run without the grant")
+        check(NotchCommand.match("/screen") == .screen, "/screen runs with the grant")
+        check(NotchCommand.match("/sc") == nil, "a prefix never captures the screen")
+        check(NotchCommand.match("/s") == .settings, "/s stays settings")
         check(NotchCommand.suggestions(for: "/", includeCorpus: true).contains(.corpus), "Debug Mode lists /corpus")
 
         // Suggestions appear only while typing a command.

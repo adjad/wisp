@@ -95,6 +95,8 @@ PROFILE_TESTS = {
         "tests/test_long_email_digest.py",
         # Voice input: the clip reaches only a local model with an audio encoder (stub client).
         "tests/test_voice_transcribe.py",
+        # Image/video input: one dedicated vision call (stub client, synthetic media).
+        "tests/test_vision.py",
         "tests/test_corpus_prompts.py",
         "tests/test_corpus_reasoning_export.py",
         "tests/test_gmail_source.py",
