@@ -1,5 +1,7 @@
 """The hourly idle refresh: the whole Brief regenerates about once an hour,
-only while the machine sits idle, and never on a failed idle probe.
+only while the machine sits idle, only when something it reads changed (or
+the day rolled over), only when someone has been back since the last one, and
+never on a failed idle probe.
 
 No live model, no native sources, no writes outside a scratch WISP_HOME.
 """
@@ -61,10 +63,86 @@ def test_due_and_idle_forces_a_full_cycle_then_the_gists(store):
 def test_due_but_in_use_waits_for_the_first_idle_tick(store):
     rec = Recorder()
     assert run(rec, store, IN_USE) == "active"
-    assert run(rec, store, IN_USE, now=NOW + 30) == "active"
+    # Three seconds of quiet: the user can't be away for another 597 s, so the
+    # probe doesn't run before then (it used to run every scheduler tick).
+    assert run(rec, store, _broken_probe, now=NOW + 30) == "not_due"
     assert rec.cycles == [] and rec.gists == 0
-    assert run(rec, store, AWAY, now=NOW + 60) == "ran"
+    assert run(rec, store, AWAY, now=NOW + cycle.IDLE_AFTER_S - 3) == "ran"
     assert rec.cycles == [{"force": True}] and rec.gists == 1
+
+
+def test_away_means_ten_minutes_the_same_as_the_background_gpu_cap(store):
+    from service.inference import power_tier
+    assert cycle.IDLE_AFTER_S == power_tier.AWAY_AFTER_S == 600
+    rec = Recorder()
+    assert run(rec, store, lambda: 5 * 60.0) == "active"               # the old 5-minute threshold
+    assert rec.cycles == []
+    assert run(rec, store, AWAY, now=NOW + 5 * 60) == "ran"
+
+
+def test_a_failed_probe_backs_off_one_tick_gap(store):
+    rec = Recorder()
+    assert run(rec, store, lambda: None) == "active"
+    assert run(rec, store, AWAY, now=NOW + cycle.TICK_GAP_S - 1) == "not_due"
+    assert run(rec, store, AWAY, now=NOW + cycle.TICK_GAP_S) == "ran"
+
+
+def _never_probed():
+    raise AssertionError("the idle probe ran")
+
+
+def test_unchanged_inputs_on_the_same_day_skip_it_without_a_probe(store):
+    store.save_state(timezone="UTC", judged={"me@example.test": {"key": "k1"}})
+    rec = Recorder()
+    assert run(rec, store, AWAY) == "ran"
+    later = NOW + cycle.IDLE_REFRESH_S
+    assert run(rec, store, _never_probed, now=later) == "unchanged"
+    assert len(rec.cycles) == 1 and rec.gists == 1
+    # Counted as a refresh: nothing more until the next hour.
+    assert store.state()["idle_refresh_at"] == later
+    assert run(rec, store, _never_probed, now=later + 60) == "not_due"
+
+
+@pytest.mark.parametrize("change", ["judged", "gists"])
+def test_changed_inputs_force_it(store, monkeypatch, change):
+    monkeypatch.setattr(mail_gists, "_cache", {"inbox": {"gist": "g", "at": NOW, "key": "old"}})
+    store.save_state(timezone="UTC", judged={"me@example.test": {"key": "k1"}})
+    rec = Recorder()
+    assert run(rec, store, AWAY) == "ran"
+    if change == "judged":
+        store.save_state(judged={"me@example.test": {"key": "k2"}})      # a new email survived triage
+    else:
+        mail_gists._cache["inbox"]["key"] = "new"                        # the inbox overview's mail changed
+    later = NOW + cycle.IDLE_REFRESH_S
+    assert run(rec, store, AWAY, now=later) == "ran"
+    assert rec.cycles == [{"force": True}, {"force": True}] and rec.gists == 2
+
+
+def test_the_day_rolling_over_forces_it(store):
+    store.save_state(timezone="UTC", judged={"me@example.test": {"key": "k1"}})
+    midnight = (NOW // 86400 + 1) * 86400
+    rec = Recorder()
+    first = midnight - 10 * 60 - cycle.IDLE_REFRESH_S
+    assert run(rec, store, AWAY, now=first) == "ran"
+    assert run(rec, store, _never_probed, now=midnight - 10 * 60) == "unchanged"
+    assert run(rec, store, AWAY, now=midnight - 10 * 60 + cycle.IDLE_REFRESH_S) == "ran"   # a new day, nothing else new
+    assert len(rec.cycles) == 2
+
+
+def test_nobody_back_since_the_last_refresh_skips_it(store):
+    store.save_state(timezone="UTC", judged={"me@example.test": {"key": "k1"}})
+    rec = Recorder()
+    assert run(rec, store, AWAY) == "ran"
+    store.save_state(judged={"me@example.test": {"key": "k2"}})
+    later = NOW + cycle.IDLE_REFRESH_S
+    untouched = lambda: cycle.IDLE_REFRESH_S + 60.0                      # noqa: E731 — no input since
+    assert run(rec, store, untouched, now=later) == "unseen"
+    assert len(rec.cycles) == 1 and rec.gists == 1
+    assert store.state()["idle_refresh_at"] == NOW                       # not counted as a refresh
+    # Coming back and leaving again takes at least IDLE_AFTER_S: no probe before then.
+    assert run(rec, store, _broken_probe, now=later + 60) == "not_due"
+    back_and_away = lambda: float(cycle.IDLE_AFTER_S)                    # noqa: E731
+    assert run(rec, store, back_and_away, now=later + cycle.IDLE_AFTER_S) == "ran"
 
 
 def test_not_due_runs_nothing_even_when_idle(store):

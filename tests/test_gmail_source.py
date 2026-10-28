@@ -56,7 +56,7 @@ class GmailSource(unittest.TestCase):
             _swift_history="", _swift_raw="", _external_accounts={}, _headers_sync_generation=0,
             _email_available=None, _email_read_source="", _email_reason="", _email_sync_pending=False,
             _native_headers_at=0.0, _native_raw_at=0.0, _native_source="", _swift_identity=[], _identity_emails=[]))
-        self.enterContext(patch.multiple(G, _last={}, _errors={}, _access={}, _epochs={}, _locks={},
+        self.enterContext(patch.multiple(G, _last={}, _errors={}, _access={}, _epochs={}, _locks={}, _raw={},
                                         _meta={}, _pending_flow=None, _flow_generation=0,
                                         _authorization={"state": "idle", "generation": 0, "error": ""}))
         # Never set up (download, start) a real Workspace server from a test.
@@ -2486,7 +2486,7 @@ class GoogleConnectAndErase(unittest.TestCase):
             _swift_history="", _swift_raw="", _external_accounts={}, _headers_sync_generation=0,
             _email_available=None, _email_read_source="", _email_reason="", _email_sync_pending=False,
             _native_headers_at=0.0, _native_raw_at=0.0, _native_source="", _swift_identity=[], _identity_emails=[]))
-        self.enterContext(patch.multiple(G, _last={}, _errors={}, _access={}, _epochs={}, _locks={},
+        self.enterContext(patch.multiple(G, _last={}, _errors={}, _access={}, _epochs={}, _locks={}, _raw={},
                                         _meta={}, _pending_flow=None, _flow_generation=0,
                                         _authorization={"state": "idle", "generation": 0, "error": ""}))
         self.store = AssistantStore(root / "assistant.db")
@@ -2725,6 +2725,57 @@ class GoogleConnectAndErase(unittest.TestCase):
         self.assertTrue(any(not any(k == "q" for k, _ in c) for c in calls))
         self.assertEqual(sorted(fetched), ["a", "b", "c", "d"])
         self.assertEqual(len(cached), 1)
+
+    def test_raw_sync_fetches_each_body_once_and_rereads_only_the_read_state(self):
+        newest, week, unread_now = ["a", "b"], ["b"], {"a"}
+        fetched, lists, cached = [], [], []
+
+        async def fake_get(http, path, params=()):
+            params = list(params)
+            if path == "messages":
+                lists.append(params)
+                if ("labelIds", "UNREAD") in params:
+                    return {"messages": [{"id": i} for i in sorted(unread_now)]}
+                if ("q", f"newer_than:{G.WEEK_RAW_DAYS}d") in params:
+                    return {"messages": [{"id": i} for i in week]}
+                return {"messages": [{"id": i} for i in newest]}
+            mid = path.split("/")[-1]
+            fetched.append(mid)
+            return msg(mid, unread=mid in unread_now)
+
+        def states():
+            rows = [r.split("\x01") for r in cached[-1].split("\x02")]
+            return [(r[7], r[1]) for r in rows]
+
+        with patch.object(G, "_get", fake_get), patch.object(G, "_still_connected", lambda: True), \
+             patch.object(E, "cache_external_emails", lambda **kw: cached.append(kw["raw"])):
+            asyncio.run(G._sync_raw(None, ME))
+            self.assertEqual(sorted(fetched), ["a", "b"])
+            self.assertFalse(any(("labelIds", "UNREAD") in c for c in lists), "nothing cached: no read-state list")
+            self.assertEqual(states(), [("<a@example.test>", "U"), ("<b@example.test>", "R")])
+            # Fifteen minutes on: one new message, and "a" was read in Gmail meanwhile.
+            newest[:], unread_now = ["c", "a", "b"], {"c"}
+            fetched.clear()
+            asyncio.run(G._sync_raw(None, ME))
+            self.assertEqual(fetched, ["c"], "only the new message's body is fetched")
+            self.assertEqual(states(), [("<c@example.test>", "U"), ("<a@example.test>", "R"),
+                                        ("<b@example.test>", "R")])
+            # A message no longer listed leaves the cache: it never grows past one listing.
+            newest[:], week[:] = ["c"], []
+            fetched.clear()
+            asyncio.run(G._sync_raw(None, ME))
+            self.assertEqual(fetched, [])
+            self.assertEqual(set(G._raw[ME]), {"c"})
+            G.erase_account_data(ME)
+            self.assertNotIn(ME, G._raw, "erase drops the cached bodies")
+
+    def test_raw_sync_stores_nothing_for_an_account_disconnected_meanwhile(self):
+        async def fake_get(http, path, params=()):
+            return {"messages": [{"id": "a"}]} if path == "messages" else msg("a")
+        with patch.object(G, "_get", fake_get), patch.object(G, "_still_connected", lambda: False), \
+             patch.object(E, "cache_external_emails", lambda **kw: self.fail("published after a disconnect")):
+            asyncio.run(G._sync_raw(None, ME))
+        self.assertNotIn(ME, G._raw)
 
     def test_sent_sync_lists_only_the_sent_label_and_erase_drops_it(self):
         calls = []

@@ -103,9 +103,10 @@ def set_save_when_away(on: bool, path: Path | None = None) -> bool:
 # --- away -------------------------------------------------------------------------
 #
 # Away is read from the keyboard/mouse idle time (IOHIDSystem, the same probe
-# the mail memory walk uses). Reading it runs ioreg, so it is never read on a
-# request: the scheduler refreshes it off the event loop every tick, and a
-# reading older than _AWAY_STALE_S counts as present (uncapped).
+# the mail memory walk uses, which reuses this reading). Reading it runs ioreg,
+# so it is never read on a request: the scheduler refreshes it off the event
+# loop every tick, and a reading older than _AWAY_STALE_S counts as present
+# (uncapped). With the switch off nothing is ever capped, so nothing is read.
 #
 # Age is checked on both clocks. time.monotonic() stops while the Mac sleeps, so
 # a reading taken just before sleep would look fresh at wake and cap the wake
@@ -119,11 +120,16 @@ _away: tuple[float, float, bool] | None = None   # (monotonic, wall time read, a
 
 def refresh_away(hid_idle_s: float | None = None, *, probe: bool = True) -> bool:
     """Read the input idle time and store whether the user is away. Blocking:
-    call it from a worker thread."""
-    global _away
+    call it from a worker thread. With "Save power when away" off it runs no
+    ioreg at all and stores "present"."""
+    global _away, _gpu_sample
     if probe and hid_idle_s is None:
-        from service.mail_memory.runner import _hid_idle_s
-        hid_idle_s = _hid_idle_s()
+        if not save_when_away():
+            _gpu_sample = None                   # a later baseline starts fresh
+            _away = (time.monotonic(), time.time(), False)
+            return False
+        from service.mail_memory.runner import fresh_hid_idle_s
+        hid_idle_s = fresh_hid_idle_s()
     idle_enough = hid_idle_s is not None and hid_idle_s >= AWAY_AFTER_S
     value = _gpu_quiet(sample=idle_enough) and idle_enough
     _away = (time.monotonic(), time.time(), value)

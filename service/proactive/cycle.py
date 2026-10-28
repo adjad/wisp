@@ -17,9 +17,12 @@ Rules:
 - With no model available the cycle still works by rule: calendar, reminders
   and Notes to-dos are deterministic, and each item's own verbatim ask stands
   in for its triage, so a model outage never hides a to-do.
-- About hourly, while the user is away from the keyboard (HID idle ≥ 5 min),
-  the whole Brief regenerates: a forced cycle, then every mail/texts overview
-  (idle_refresh). Never during a turn; a failed idle probe counts as "in use".
+- About hourly, while the user is away from the keyboard (HID idle ≥ 10 min,
+  the same "away" the background GPU cap uses), the whole Brief regenerates:
+  a forced cycle, then every mail/texts overview (idle_refresh). Only when its
+  inputs changed or the day rolled over, and only when the user has been back
+  since the last one (nobody has seen it otherwise). Never during a turn; a
+  failed idle probe counts as "in use".
 - Auto-add (autoadd.py) runs last, in this background cycle only and never
   once a turn has started. Off by default, a missed, time-sensitive event or
   deadline becomes a tap-to-add card; with `proactive_auto_add: true` it goes
@@ -47,9 +50,13 @@ MAX_THREADS = 30
 _MAIL_GIST_HOLD_S = 90
 _PATIENT_WAIT_S = 600
 # The hourly idle refresh: at most once per IDLE_REFRESH_S, at the first tick
-# the machine has seen no keyboard/mouse input for IDLE_AFTER_S.
+# the machine has seen no keyboard/mouse input for IDLE_AFTER_S. Ten minutes,
+# the same "away" as the background GPU cap (power_tier.AWAY_AFTER_S), so the
+# refresh never runs uncapped in the minutes before the cap applies.
 IDLE_REFRESH_S = 55 * 60
-IDLE_AFTER_S = 5 * 60
+IDLE_AFTER_S = 10 * 60
+# The shortest wait before the idle probe runs again after a refresh was not run.
+_IDLE_RETRY_MIN_S = 30
 _IDLE_PROBE_TIMEOUT_S = 2.0
 
 _status = {"state": "idle", "phase": "", "progress": {"done": 0, "total": 0}, "account": None,
@@ -841,19 +848,44 @@ def hid_idle_seconds() -> float | None:
 idle_probe = hid_idle_seconds      # injectable: tests swap in a fake
 
 
-def user_away(probe=None) -> bool:
-    """True only when the probe says the machine has sat idle long enough.
-    Any failure counts as "in use": the refresh never runs during use."""
+def _idle_seconds(probe=None) -> float | None:
+    """The probe's reading, or None on any failure ("in use")."""
     try:
         seconds = (probe or idle_probe)()
     except Exception:  # noqa: BLE001
-        return False
-    return isinstance(seconds, (int, float)) and seconds >= IDLE_AFTER_S
+        return None
+    return float(seconds) if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) else None
+
+
+def user_away(probe=None) -> bool:
+    """True only when the probe says the machine has sat idle long enough.
+    Any failure counts as "in use": the refresh never runs during use."""
+    seconds = _idle_seconds(probe)
+    return seconds is not None and seconds >= IDLE_AFTER_S
 
 
 def idle_refresh_due(now: float, store) -> bool:
     last = float(store.state().get("idle_refresh_at") or 0)
     return now - last >= IDLE_REFRESH_S and now >= _idle_retry_at
+
+
+def refresh_inputs(store, now: float) -> str:
+    """What the idle refresh regenerates from: each account's judge key (the
+    ordinary cycle keeps it current), the mail/texts overviews' input keys, and
+    the local day. Unchanged means a refresh would rewrite the same Brief."""
+    state = store.state()
+    tz = state.get("timezone") or _zone()
+    judged = {acct: (entry or {}).get("key") for acct, entry in (state.get("judged") or {}).items()}
+    try:
+        from service.assistant import mail_gists
+        gists = {kind: (entry or {}).get("key") for kind, entry in mail_gists._load().items()}
+    except Exception:  # noqa: BLE001 — unreadable overviews: the cards alone decide
+        gists = {}
+    try:
+        day = datetime.fromtimestamp(now, ZoneInfo(tz)).date().isoformat()
+    except Exception:  # noqa: BLE001
+        day = datetime.fromtimestamp(now, ZoneInfo("UTC")).date().isoformat()
+    return _digest({"judged": judged, "gists": gists, "day": day})
 
 
 async def _refresh_gists() -> None:
@@ -863,18 +895,40 @@ async def _refresh_gists() -> None:
 
 async def idle_refresh(*, now: float | None = None, probe=None, store=None, cycle=None, gists=None) -> str:
     """Regenerate the whole Brief while the user is away: a forced cycle
-    (re-judge and re-prepare even when nothing changed), then every mail and
-    texts overview, one after another. "not_due", "active", "yielded" or "ran".
-    The last run's time lives in the store's state, so a restart doesn't
-    rerun it."""
+    (re-judge and re-prepare), then every mail and texts overview, one after
+    another. The last run's time and inputs live in the store's state, so a
+    restart doesn't rerun it. Returns one of:
+
+    - "not_due": under IDLE_REFRESH_S since the last one, or backing off;
+    - "unchanged": nothing it reads from changed and it is the same day, so it
+      would rewrite the same Brief: counted as a refresh, no probe, no model;
+    - "active": someone is at the Mac (or the probe failed); the probe waits
+      until the user could first be away again;
+    - "unseen": nobody has touched the Mac since the last refresh, so nobody
+      has seen it; the next one waits until they come back and leave again;
+    - "yielded": a turn started; retried after a short backoff;
+    - "ran"."""
     global _idle_retry_at
     from service.proactive.store import store as default_store
     store = store or default_store()
     now = time.time() if now is None else now
     if not idle_refresh_due(now, store):
         return "not_due"
-    if not await asyncio.to_thread(user_away, probe) or _foreground():
-        return "active"            # checked again on the next scheduler tick
+    state = store.state()
+    last = float(state.get("idle_refresh_at") or 0)
+    inputs = refresh_inputs(store, now)
+    if last and state.get("idle_refresh_inputs") == inputs:
+        store.save_state(idle_refresh_at=now)
+        return "unchanged"
+    seconds = await asyncio.to_thread(_idle_seconds, probe)
+    if seconds is None or seconds < IDLE_AFTER_S or _foreground():
+        # The user can't be away before IDLE_AFTER_S of quiet: no probe until then.
+        wait = TICK_GAP_S if seconds is None else IDLE_AFTER_S - min(seconds, IDLE_AFTER_S)
+        _idle_retry_at = now + max(_IDLE_RETRY_MIN_S, wait)
+        return "active"
+    if last and seconds >= now - last:
+        _idle_retry_at = now + IDLE_AFTER_S
+        return "unseen"
     _log("idle refresh: regenerating the Brief")
     result = await (cycle or run_cycle)(force=True)
     if not isinstance(result, dict) or result.get("status") != "done":
@@ -885,6 +939,9 @@ async def idle_refresh(*, now: float | None = None, probe=None, store=None, cycl
         await (gists or _refresh_gists)()
     except Exception:  # noqa: BLE001 — the cards are fresh; the overviews keep their last text
         traceback.print_exc()
+    # What this refresh wrote from, read after it: the cycle and the overviews
+    # just brought their keys up to date.
+    store.save_state(idle_refresh_inputs=refresh_inputs(store, now))
     return "ran"
 
 

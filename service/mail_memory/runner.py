@@ -12,7 +12,8 @@ index and files costs nothing. Three levels (docs/plans/2026-10-26-email-digest-
            or battery under 30% skips that too.
 - between: otherwise. One call per tick, at least 90 s apart.
 - away:    no keyboard or mouse for 10+ minutes, on power or battery over 50%.
-           Calls run back to back, 5 s apart.
+           Calls run back to back, 5 s apart on power; on battery at least
+           AWAY_BATTERY_GAP_S apart, so an unplugged night doesn't drain it.
 
 IMPORTANT rules:
 - Never loads or evicts a model. The fast role must stay local
@@ -60,6 +61,7 @@ WINDOW_DAYS = 90
 INDEX_EVERY_S = 6 * 3600
 BETWEEN_GAP_S = 90
 AWAY_GAP_S = 5
+AWAY_BATTERY_GAP_S = 60
 BUSY_GAP_S = 60
 IDLE_DONE_GAP_S = 1800
 FAILURE_GAP_S = 900
@@ -120,14 +122,24 @@ def _cached(name: str, fn):
 
 
 def _hid_idle_s() -> float | None:
-    """Seconds since the last keyboard or mouse input (IOHIDSystem; needs no permission)."""
+    """Seconds since the last keyboard or mouse input (IOHIDSystem; needs no permission).
+    Only the one key, one level deep: the whole IOHIDSystem subtree is ~5x the output
+    for the same number, and this runs every scheduler tick (power_tier.refresh_away)."""
     try:
-        out = subprocess.run(["ioreg", "-c", "IOHIDSystem", "-d", "4"], capture_output=True,
-                             text=True, timeout=3).stdout
+        out = subprocess.run(["/usr/sbin/ioreg", "-c", "IOHIDSystem", "-r", "-k", "HIDIdleTime", "-d", "1"],
+                             capture_output=True, text=True, timeout=3).stdout
     except (OSError, subprocess.SubprocessError):
         return None
-    m = re.search(r'"HIDIdleTime"\s*=\s*(\d+)', out)
+    m = re.search(r'"HIDIdleTime"\s*=\s*(\d+)', out or "")
     return int(m.group(1)) / 1e9 if m else None
+
+
+def fresh_hid_idle_s() -> float | None:
+    """A new reading (power_tier.refresh_away, every scheduler tick), kept as the
+    walk's own cached one so the two don't each run ioreg."""
+    value = _hid_idle_s()
+    _probe["hid"] = (time.monotonic(), value)
+    return value
 
 
 def _power() -> tuple[bool, int | None, bool]:
@@ -161,6 +173,14 @@ def level(model_key: str, *, hid_idle_s=_UNSET, power=_UNSET, now: float | None 
     if seconds is not None and seconds >= AWAY_AFTER_S and (on_ac or (pct or 0) > 50):
         return "away"
     return "between"
+
+
+def step_gap(lvl: str, power: tuple[bool, int | None, bool]) -> float:
+    """Seconds until the next walk step at ``lvl``. Away runs back to back only
+    on power: on battery it waits AWAY_BATTERY_GAP_S."""
+    if lvl == "away":
+        return AWAY_GAP_S if power[0] else AWAY_BATTERY_GAP_S
+    return BUSY_GAP_S if lvl == "busy" else BETWEEN_GAP_S
 
 
 # --- the model call -----------------------------------------------------------------
@@ -316,7 +336,7 @@ async def tick(*, now: float | None = None) -> float:
     power = await asyncio.to_thread(_cached, "power", _power)
     hid = await asyncio.to_thread(_cached, "hid", _hid_idle_s)
     lvl = level(_model_key(), hid_idle_s=hid, power=power)
-    gap = {"busy": BUSY_GAP_S, "away": AWAY_GAP_S}.get(lvl, BETWEEN_GAP_S)
+    gap = step_gap(lvl, power)
     from service.inference.remote_policy import remote_only_profile
     if remote_only_profile() is not None:
         return FAILURE_GAP_S                      # the walk stands down entirely

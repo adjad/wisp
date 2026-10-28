@@ -248,8 +248,9 @@ async def run() -> None:
         # The proactive engine (service/proactive/cycle.py): triage, judge and
         # prepare "Before you ask" cards on the resident model, single-flight,
         # only while nobody is waiting, never alongside a gist call. About
-        # hourly, at the first tick the Mac has sat idle 5 min, it regenerates
-        # the whole Brief (cards, then every gist): cycle.idle_refresh.
+        # hourly, at the first tick the Mac has sat idle 10 min, it regenerates
+        # the whole Brief (cards, then every gist) when something changed:
+        # cycle.idle_refresh.
         try:
             from service.proactive import cycle as proactive_cycle
             proactive_cycle.schedule_tick()

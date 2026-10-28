@@ -627,6 +627,32 @@ def test_levels(quiet, monkeypatch):
     assert runner.level("m", hid_idle_s=900, power=ac) == "busy"
 
 
+def test_away_walks_back_to_back_only_on_power():
+    ac, battery = (True, 80, False), (False, 70, False)
+    assert runner.step_gap("away", ac) == runner.AWAY_GAP_S == 5
+    assert runner.step_gap("away", battery) == runner.AWAY_BATTERY_GAP_S >= 60
+    assert runner.step_gap("between", battery) == runner.BETWEEN_GAP_S
+    assert runner.step_gap("busy", ac) == runner.BUSY_GAP_S
+    import inspect
+    assert "gap = step_gap(lvl, power)" in inspect.getsource(runner.tick)
+
+
+def test_the_idle_probe_reads_one_key_one_level_deep(monkeypatch):
+    import subprocess
+    seen = []
+
+    class Done:
+        stdout = '    | |   "HIDIdleTime" = 700000000000\n'
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: seen.append(argv) or Done())
+    assert runner._hid_idle_s() == pytest.approx(700.0)
+    assert seen == [["/usr/sbin/ioreg", "-c", "IOHIDSystem", "-r", "-k", "HIDIdleTime", "-d", "1"]]
+
+    def boom(*a, **kw):
+        raise subprocess.TimeoutExpired("ioreg", 3)
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert runner._hid_idle_s() is None
+
+
 def test_mode_defaults_to_live_and_corrupt_means_off(tmp_path):
     path = tmp_path / "s" / "settings.json"
     assert runner.mode(path) == "live"                         # the user's choice for rc2
