@@ -209,6 +209,9 @@ enum ChatCloudUse {
         // stops, only after a restart, so the running launch is the opposite
         // of the saved flag while a restart is pending.
         if everything != restartRequired { return true }
+        // Saved but not yet running: the reply lists only "everything", which
+        // hides any role this launch still sends to the cloud. Unknown.
+        if everything { return nil }
         let roles = (object["roles"] as? [String] ?? []).filter { $0 != "everything" }
         let superModel = object["super_model_enabled"] as? Bool ?? false
         return enabled && (!roles.isEmpty || superModel)

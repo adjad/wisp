@@ -194,7 +194,8 @@ struct ChatChecks {
         var everything = local; everything["everything"] = true; everything["roles"] = ["everything"]
         check(ChatCloudUse.active(from: everything) == true, "everything in the cloud, running")
         var pendingOn = everything; pendingOn["restart_required"] = true
-        check(ChatCloudUse.active(from: pendingOn) == false, "everything saved but not yet restarted is still local")
+        check(ChatCloudUse.active(from: pendingOn) == nil,
+              "everything saved but not yet running is unknown: the reply hides roles still bound to the cloud")
         var pendingOff = local; pendingOff["restart_required"] = true
         check(ChatCloudUse.active(from: pendingOff) == true, "a remote launch waiting to restart is still cloud")
 

@@ -276,6 +276,8 @@ final class ChatStore: ObservableObject {
 
     /// Interprets the Ask composer command and otherwise sends a normal prompt.
     func submit(_ text: String, attachmentName: String? = nil, image: String? = nil) {
+        // Cloud settings can change in another window; re-read them as the turn starts.
+        Task { await refreshCloudUse() }
         do {
             guard let selection = try AssistantTaskCorpusCommand.resolve(text) else {
                 send(text, attachmentName: attachmentName, image: image)
@@ -718,6 +720,11 @@ final class ChatStore: ObservableObject {
     }
 
     // MARK: - Access
+
+    /// Re-read whether answers may go to a cloud provider.
+    func refreshCloudUse() async {
+        cloudInUse = await backend.cloudInUse()
+    }
 
     func setFullAccess(_ on: Bool) {
         Task { applyFullAccess(await backend.setFullAccess(on)) }

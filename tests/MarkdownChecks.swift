@@ -137,12 +137,19 @@ struct MarkdownChecks {
 
         // The render path remembers a reply's blocks; it must match a fresh parse,
         // including for a reply that keeps growing.
+        func same(_ a: [MarkdownView.Block], _ b: [MarkdownView.Block]) -> Bool {
+            kindNames(a) == kindNames(b) && a.map(\.body) == b.map(\.body) && a.map(\.tableRows) == b.map(\.tableRows)
+                && a.map { $0.listItems.map(\.marker) } == b.map { $0.listItems.map(\.marker) }
+                && a.map { $0.listItems.map(\.text) } == b.map { $0.listItems.map(\.text) }
+        }
         let reply = "Intro\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n- item"
         let view = MarkdownView(text: reply)
-        check(kindNames(view.cachedBlocks()) == kindNames(view.blocks()), "cached blocks match a fresh parse")
-        check(kindNames(view.cachedBlocks()) == kindNames(view.blocks()), "a cache hit matches a fresh parse")
+        // First ask parses; the second is served from the short-lived tier; the third from the cache.
+        for pass in 1...3 {
+            check(same(view.cachedBlocks(), view.blocks()), "cached blocks match a fresh parse on pass \(pass)")
+        }
         let grown = MarkdownView(text: reply + "\n\n```\ncode\n```")
-        check(kindNames(grown.cachedBlocks()) == kindNames(grown.blocks()), "grown text is parsed, not served stale")
+        check(same(grown.cachedBlocks(), grown.blocks()), "grown text is parsed, not served stale")
     }
 
     static func main() {

@@ -61,6 +61,11 @@ struct ChatRootView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: store.showInspector)
         .background(shortcuts)
         .task { await store.refreshWhenReady() }
+        // Coming back from Settings (or any window) re-reads whether answers may
+        // go to the cloud, so the Local label is never older than the last switch.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            Task { await store.refreshCloudUse() }
+        }
     }
 
     /// Window-wide shortcuts, as invisible buttons so they work wherever focus is.
@@ -1056,9 +1061,11 @@ struct ChatComposer: View {
     private static let maxImageBytes = 10_000_000
 
     private var disclaimer: String {
-        store.cloudInUse == true
-            ? "Wisp can use your cloud provider and can be wrong. Check anything important."
-            : "Wisp runs on this Mac and can be wrong. Check anything important."
+        switch store.cloudInUse {
+        case .some(true): return "Wisp can use your cloud provider and can be wrong. Check anything important."
+        case .some(false): return "Wisp runs on this Mac and can be wrong. Check anything important."
+        case .none: return "Wisp can be wrong. Check anything important."
+        }
     }
 
     private func send() {

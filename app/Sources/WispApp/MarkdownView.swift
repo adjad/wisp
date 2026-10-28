@@ -205,8 +205,10 @@ struct MarkdownView: View {
 
     /// Parsed blocks, remembered by text. A surface re-renders every reply
     /// it shows whenever any of its state changes (each streamed token, for
-    /// one), and parsing is the expensive part; finished replies never change,
-    /// so only the reply still streaming is parsed again.
+    /// one), and parsing is the expensive part. A text is kept only once it is
+    /// asked for a second time unchanged: a finished reply is, while a reply
+    /// still streaming is new on every token and never enters (or evicts from)
+    /// the long-lived cache.
     private final class ParsedBlocks {
         let blocks: [Block]
         init(_ blocks: [Block]) { self.blocks = blocks }
@@ -214,14 +216,25 @@ struct MarkdownView: View {
     private static let parsed: NSCache<NSString, ParsedBlocks> = {
         let cache = NSCache<NSString, ParsedBlocks>()
         cache.countLimit = 256
+        cache.totalCostLimit = 8_000_000   // characters of source text
+        return cache
+    }()
+    private static let seenOnce: NSCache<NSString, ParsedBlocks> = {
+        let cache = NSCache<NSString, ParsedBlocks>()
+        cache.countLimit = 32
         return cache
     }()
 
     func cachedBlocks() -> [Block] {
         let key = text as NSString
         if let hit = Self.parsed.object(forKey: key) { return hit.blocks }
+        if let second = Self.seenOnce.object(forKey: key) {
+            Self.seenOnce.removeObject(forKey: key)
+            Self.parsed.setObject(second, forKey: key, cost: key.length)
+            return second.blocks
+        }
         let fresh = blocks()
-        Self.parsed.setObject(ParsedBlocks(fresh), forKey: key)
+        Self.seenOnce.setObject(ParsedBlocks(fresh), forKey: key)
         return fresh
     }
 

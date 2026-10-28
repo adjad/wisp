@@ -38,7 +38,6 @@ enum WispInk {
     // Aurora hues: the window's accents and the Day's suggestion blue.
     static let teal: (light: UInt32, dark: UInt32) = (0x16857c, 0x5ad0c6)
     static let blue: (light: UInt32, dark: UInt32) = (0x2f6fd0, 0x7db4ff)
-    static let violet: (light: UInt32, dark: UInt32) = (0xbeaaff, 0x8c6ee6)
 }
 
 /// Text roles. Each surface maps a role to its own point size (the notch is a
