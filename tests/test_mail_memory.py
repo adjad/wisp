@@ -639,6 +639,7 @@ def test_away_walks_back_to_back_only_on_power():
 
 def test_the_idle_probe_reads_one_key_one_level_deep(monkeypatch):
     import subprocess
+    monkeypatch.setattr(runner, "_probe", {})
     seen = []
 
     class Done:
@@ -651,6 +652,29 @@ def test_the_idle_probe_reads_one_key_one_level_deep(monkeypatch):
         raise subprocess.TimeoutExpired("ioreg", 3)
     monkeypatch.setattr(subprocess, "run", boom)
     assert runner._hid_idle_s() is None
+
+
+def test_the_away_reading_serves_the_walk_without_a_second_ioreg(monkeypatch):
+    from service.inference import power_tier
+    monkeypatch.setattr(runner, "_probe", {})
+    monkeypatch.setattr(power_tier, "_away", None)
+    reads = []
+    monkeypatch.setattr(runner, "_read_hid_idle_s", lambda: reads.append(1) or 42.0)
+    power_tier.refresh_away()                      # the scheduler's tick (present: no GPU sample)
+    assert runner._cached("hid", runner._hid_idle_s) == 42.0
+    assert reads == [1]
+
+
+def test_the_scheduler_reads_nothing_with_save_power_when_away_off(monkeypatch):
+    from service.assistant import scheduler
+    from service.inference import power_tier
+    calls = []
+    monkeypatch.setattr(power_tier, "refresh_away", lambda: calls.append(1))
+    for on, expected in ((False, []), (True, [1])):
+        monkeypatch.setattr(power_tier, "save_when_away", lambda on=on: on)
+        calls.clear()
+        asyncio.run(scheduler._refresh_away())
+        assert calls == expected
 
 
 def test_mode_defaults_to_live_and_corrupt_means_off(tmp_path):

@@ -204,34 +204,6 @@ def test_a_reading_from_before_sleep_is_stale_at_wake(away):
     assert P.away() is False
 
 
-def _ioreg_ran(*args, **kwargs):
-    raise AssertionError("ioreg ran")
-
-
-def test_with_the_switch_off_the_away_refresh_runs_no_ioreg(monkeypatch):
-    from service.mail_memory import runner
-    monkeypatch.setattr(runner, "_hid_idle_s", _ioreg_ran)
-    monkeypatch.setattr(P, "_gpu_quiet", _ioreg_ran)
-    monkeypatch.setattr(P, "_other_gpu_times", _ioreg_ran)
-    P.set_save_when_away(False)
-    for _ in range(3):                                         # three scheduler ticks
-        assert P.refresh_away() is False
-    assert P.away() is False
-    with P.power_tier(P.BACKGROUND):
-        assert P.payload_fields() == {}
-
-
-def test_the_away_reading_is_shared_with_the_mail_memory_walk(monkeypatch):
-    from service.mail_memory import runner
-    reads = []
-    monkeypatch.setattr(runner, "_hid_idle_s", lambda: reads.append(1) or P.AWAY_AFTER_S + 1)
-    monkeypatch.setattr(runner, "_probe", {})
-    assert P.refresh_away() is True and P.away() is True
-    # The walk's own probe, within its 30 s cache, takes this reading: one ioreg, not two.
-    assert runner._cached("hid", runner._hid_idle_s) == P.AWAY_AFTER_S + 1
-    assert reads == [1]
-
-
 def test_the_scheduler_refreshes_away_off_the_event_loop():
     import inspect
 

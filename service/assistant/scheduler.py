@@ -271,14 +271,20 @@ async def run() -> None:
             await _checkin_tick()
         except Exception:  # noqa: BLE001 — never break the scheduler loop
             pass
-        # Whether the user is away, for background calls' GPU cap: read off
-        # the loop here so no request ever runs ioreg.
         try:
-            from service.inference.power_tier import refresh_away
-            await asyncio.to_thread(refresh_away)
+            await _refresh_away()
         except Exception:  # noqa: BLE001 — never break the scheduler loop
             pass
         await asyncio.sleep(TICK_S)
+
+
+async def _refresh_away() -> None:
+    """Whether the user is away, for background calls' GPU cap: read off the
+    loop here so no request ever runs ioreg. With "Save power when away" off
+    nothing is ever capped, so nothing is read: no ioreg every tick."""
+    from service.inference.power_tier import refresh_away, save_when_away
+    if save_when_away():
+        await asyncio.to_thread(refresh_away)
 
 
 async def _checkin_tick(now: float | None = None) -> None:

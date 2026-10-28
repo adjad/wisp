@@ -121,10 +121,11 @@ def _cached(name: str, fn):
     return value
 
 
-def _hid_idle_s() -> float | None:
+def _read_hid_idle_s() -> float | None:
     """Seconds since the last keyboard or mouse input (IOHIDSystem; needs no permission).
     Only the one key, one level deep: the whole IOHIDSystem subtree is ~5x the output
-    for the same number, and this runs every scheduler tick (power_tier.refresh_away)."""
+    for the same number, and power_tier.refresh_away runs it every scheduler tick
+    while "Save power when away" is on."""
     try:
         out = subprocess.run(["/usr/sbin/ioreg", "-c", "IOHIDSystem", "-r", "-k", "HIDIdleTime", "-d", "1"],
                              capture_output=True, text=True, timeout=3).stdout
@@ -134,10 +135,10 @@ def _hid_idle_s() -> float | None:
     return int(m.group(1)) / 1e9 if m else None
 
 
-def fresh_hid_idle_s() -> float | None:
-    """A new reading (power_tier.refresh_away, every scheduler tick), kept as the
-    walk's own cached one so the two don't each run ioreg."""
-    value = _hid_idle_s()
+def _hid_idle_s() -> float | None:
+    """A new idle reading, kept as the walk's cached one: power_tier.refresh_away
+    reads it every scheduler tick, so the walk rarely runs ioreg itself."""
+    value = _read_hid_idle_s()
     _probe["hid"] = (time.monotonic(), value)
     return value
 
