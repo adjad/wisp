@@ -179,13 +179,17 @@ enum AgentSendChecks {
               == "What should I prep for \(String(repeating: "x", count: 27))…?", "a long title is clipped")
 
         let now = 1_000_000.0
-        check(AskStarters.nextEvent([(title: "Later", start: now + 7200, allDay: false),
-                                     (title: "Holiday", start: now + 60, allDay: true),
-                                     (title: "  ", start: now + 120, allDay: false),
-                                     (title: "Started", start: now - 60, allDay: false),
-                                     (title: "Standup", start: now + 1800, allDay: false),
-                                     (title: "Next week", start: now + 90_000, allDay: false)], now: now) == "Standup",
+        check(AskStarters.nextEvent([(title: "Later", start: now + 7200, allDay: false, own: true),
+                                     (title: "Holiday", start: now + 60, allDay: true, own: true),
+                                     (title: "  ", start: now + 120, allDay: false, own: true),
+                                     (title: "Started", start: now - 60, allDay: false, own: true),
+                                     (title: "Standup", start: now + 1800, allDay: false, own: true),
+                                     (title: "Next week", start: now + 90_000, allDay: false, own: true)], now: now) == "Standup",
               "the soonest timed, titled event that hasn't started, within a day")
+        check(AskStarters.nextEvent([(title: "Team offsite", start: now + 600, allDay: false, own: false),
+                                     (title: "Standup", start: now + 1800, allDay: false, own: true)], now: now) == "Standup"
+              && AskStarters.nextEvent([(title: "Team offsite", start: now + 600, allDay: false, own: false)], now: now).isEmpty,
+              "an event on a subscribed or shared read-only calendar never makes a prep starter")
         check(AskStarters.nextEvent([], now: now).isEmpty, "no events: no prep starter")
 
         // The goal starter's cloud answer is per open: a new open forgets the

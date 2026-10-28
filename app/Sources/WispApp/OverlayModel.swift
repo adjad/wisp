@@ -2417,7 +2417,7 @@ extension AskStarters.Personal {
         self.init()
         let events = (UpcomingItem.parseList(today.upcomingReply) ?? [])
             .filter { $0.source == "calendar" && !$0.isReminder && !DayTimeline.isPlaceholderEvent($0.title) }
-            .map { (title: $0.title, start: $0.when, allDay: $0.allDay) }
+            .map { (title: $0.title, start: $0.when, allDay: $0.allDay, own: !$0.readOnlyCalendar) }
         nextEvent = AskStarters.nextEvent(events, now: today.now.timeIntervalSince1970)
         let attention = today.isShowingCurrentDay ? today.plan?.workspace?.attention ?? [] : []
         let needs = attention

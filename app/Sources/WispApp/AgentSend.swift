@@ -149,10 +149,12 @@ enum AskStarters {
     }
 
     /// The soonest timed event that hasn't started, within `window` seconds, by
-    /// its title. All-day entries and blank titles never make a "prep for" starter.
-    static func nextEvent(_ events: [(title: String, start: Double, allDay: Bool)], now: Double,
+    /// its title. All-day entries, blank titles and events on someone else's
+    /// calendar (`own` false: subscribed, or shared read-only) never make a
+    /// "prep for" starter.
+    static func nextEvent(_ events: [(title: String, start: Double, allDay: Bool, own: Bool)], now: Double,
                           window: Double = 86_400) -> String {
-        events.filter { !$0.allDay && $0.start > now && $0.start <= now + window
+        events.filter { $0.own && !$0.allDay && $0.start > now && $0.start <= now + window
                         && !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .min { $0.start < $1.start }?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }

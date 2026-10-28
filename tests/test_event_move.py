@@ -617,6 +617,22 @@ def test_card_rows_block_a_read_only_calendar(store):
     assert store.calendar_occurrence("ek-odd", start + 120)["calendar_writable"] is None
 
 
+def test_upcoming_marks_only_eventkit_read_only_calendars(store):
+    """/assistant/upcoming's calendar_read_only, for Ask's "What should I prep for …"
+    starter: set on an EventKit row from a subscribed or read-only shared calendar, never
+    on a writable or unknown one, and never on a Google row (its False only means Wisp
+    can't move it through EventKit)."""
+    start = _top_of_hour(3)
+    _calendar(store, _event("ek-ro", "Holiday feed", start, calendar_writable=False),
+              _event("ek-rw", "Dentist", start + HOUR, calendar_writable=True),
+              _event("ek-unknown", "Gym", start + 2 * HOUR),
+              _event("gcal:me@example.com:1", "Design review", start + 3 * HOUR, calendar_writable=False))
+    rows = {r["source_id"]: r for r in store.mark_read_only_calendars(store.upcoming(days=1))}
+    assert rows["ek-ro"]["calendar_read_only"] is True
+    assert all("calendar_read_only" not in rows[sid] for sid in ("ek-rw", "ek-unknown", "gcal:me@example.com:1"))
+    assert store.mark_read_only_calendars([]) == []
+
+
 def test_store_from_before_the_flag_opens_and_an_older_build_still_syncs(tmp_path):
     """The flag lives in its own table: an existing store gets it created on open and reads
     unknown until the app says; and a build from before it (which inserts into

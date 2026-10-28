@@ -3138,7 +3138,8 @@ async def assistant_next() -> dict[str, Any]:
 
 @app.get("/assistant/upcoming")
 async def assistant_upcoming(days: int = 7) -> dict[str, Any]:
-    return {"commitments": assistant_store.upcoming(days=max(1, min(days, 60)))}
+    rows = assistant_store.upcoming(days=max(1, min(days, 60)))
+    return {"commitments": assistant_store.mark_read_only_calendars(rows)}
 
 
 @app.get("/assistant/status")

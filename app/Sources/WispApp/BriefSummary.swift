@@ -124,6 +124,9 @@ struct UpcomingItem: Equatable, Identifiable {
     /// "calendar", "reminders", "manual" or "mail".
     let source: String
     let kind: String
+    /// An event on a calendar this Mac can't change (subscribed, or shared
+    /// read-only): not the person's own (`calendar_read_only`).
+    var readOnlyCalendar = false
 
     var isReminder: Bool { source == "reminders" || kind == "reminder" || kind == "assignment" }
 
@@ -132,7 +135,8 @@ struct UpcomingItem: Equatable, Identifiable {
               let when = (obj["when_ts"] as? NSNumber)?.doubleValue, when.isFinite else { return nil }
         let allDay = (obj["all_day"] as? NSNumber)?.boolValue ?? false
         return UpcomingItem(id: id, title: title, when: when, allDay: allDay,
-                            source: obj["source"] as? String ?? "", kind: obj["kind"] as? String ?? "event")
+                            source: obj["source"] as? String ?? "", kind: obj["kind"] as? String ?? "event",
+                            readOnlyCalendar: (obj["calendar_read_only"] as? NSNumber)?.boolValue ?? false)
     }
 
     static func parseList(_ obj: [String: Any]?) -> [UpcomingItem]? {
