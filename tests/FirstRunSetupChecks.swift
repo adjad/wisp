@@ -531,10 +531,10 @@ struct FirstRunSetupChecks {
                 == "2.5 of 5.5 GB · 10 MB/s · about 5 minutes left", "Notch: size, speed and time left")
         check(NotchModelOffer.progressLine(doneGb: 2.5, totalGb: 5.5, speed: "10 MB/s", secondsLeft: 300, stalled: true)
                 == "2.5 of 5.5 GB · No progress — check your connection", "Notch: stalled after 30 s")
-        check(NotchModelOffer.stoppedDetail(paused: true, engineMessage: "x") == "Resume picks up where it left off."
-              && NotchModelOffer.stoppedDetail(paused: false, engineMessage: nil) == "Try again picks up where it left off."
+        check(NotchModelOffer.stoppedDetail(paused: true, engineMessage: "x") == "Resume starts it again."
+              && NotchModelOffer.stoppedDetail(paused: false, engineMessage: nil) == "Try again starts it again."
               && NotchModelOffer.stoppedDetail(paused: false, engineMessage: "Disk full.")
-                 == "Disk full. Try again picks up where it left off.", "Notch: a stop says what its button does")
+                 == "Disk full. Try again starts it again.", "Notch: a stop says what its button does")
         check(NotchModelOffer.listingWait == 30, "Notch: Download again after the same 30 s as the window")
 
         // Paused and failed downloads are told apart.
@@ -637,7 +637,8 @@ struct FirstRunSetupChecks {
         // Messages: its own Automation row, so the first send from Ask isn't the
         // moment macOS asks. Mail & Notes keeps its own targets and its own answer.
         check(FirstRunPermissions.Item.allCases == [.calendar, .reminders, .mail, .messages, .fullDiskAccess,
-                                                    .contacts, .notifications], "Messages sits after Mail & Notes")
+                                                    .contacts, .notifications, .screenRecording, .accessibility],
+              "Messages sits after Mail & Notes; Screen Recording and Accessibility come last")
         check(FirstRunPermissions.messagesAutomationTargets == ["com.apple.MobileSMS"], "Messages asks about Messages only")
         check(FirstRunPermissions.automationTargets == ["com.apple.mail", "com.apple.Notes"]
               && Set(FirstRunPermissions.automationTargets).isDisjoint(with: FirstRunPermissions.messagesAutomationTargets),
@@ -720,7 +721,8 @@ struct FirstRunSetupChecks {
               "Nothing left")
         // Contacts and Full Disk Access: no dead end on a Mac with nothing for Full Disk Access to read.
         let everyOther: [FirstRunPermissions.Item: FirstRunPermissions.State] = [
-            .calendar: .allowed, .reminders: .allowed, .mail: .allowed, .messages: .allowed, .notifications: .allowed]
+            .calendar: .allowed, .reminders: .allowed, .mail: .allowed, .messages: .allowed, .notifications: .allowed,
+            .screenRecording: .allowed, .accessibility: .allowed]
         var noData = everyOther
         noData[.fullDiskAccess] = .notOnThisMac
         noData[.contacts] = .notAsked
@@ -751,6 +753,51 @@ struct FirstRunSetupChecks {
               "Contacts already answered never waits")
         check(FirstRunSetupView.settingsPane(.fullDiskAccess) == Permissions.fullDiskAccessPane
               && Permissions.fullDiskAccessPane.hasSuffix("Privacy_AllFiles"), "Full Disk Access opens its own page")
+
+        // Screen Recording and Accessibility: rows of their own, asked once, then System Settings.
+        check(FirstRunPermissions.promptOnceState(granted: true, promptedBefore: false) == .allowed
+              && FirstRunPermissions.promptOnceState(granted: true, promptedBefore: true) == .allowed,
+              "Trusted by macOS: Allowed, asked here or not")
+        check(FirstRunPermissions.promptOnceState(granted: false, promptedBefore: false) == .notAsked,
+              "Never asked: Not set, with Allow")
+        check(FirstRunPermissions.promptOnceState(granted: false, promptedBefore: true) == .notAllowed
+              && FirstRunPermissions.label(.screenRecording, .notAllowed) == "Needs System Settings"
+              && FirstRunPermissions.label(.accessibility, .notAllowed) == "Needs System Settings",
+              "Asked and still off: Needs System Settings (macOS asks only once)")
+        check(FirstRunPermissions.label(.screenRecording, .notAsked) == "Not set"
+              && FirstRunPermissions.label(.accessibility, .allowed) == "Allowed", "Not set and Allowed as elsewhere")
+        check([.fullDiskAccess, .screenRecording, .accessibility].allSatisfy(FirstRunPermissions.settingsThroughRequest)
+              && ![.calendar, .reminders, .mail, .messages, .contacts, .notifications]
+                    .contains(where: FirstRunPermissions.settingsThroughRequest),
+              "Open System Settings goes through the row's request only where macOS can't ask again")
+        check(FirstRunSetupView.settingsPane(.screenRecording).hasSuffix("Privacy_ScreenCapture")
+              && FirstRunSetupView.settingsPane(.accessibility).hasSuffix("Privacy_Accessibility"),
+              "Each opens its own page")
+        let screenBase = "So Wisp can look at your screen when you ask about it."
+        let screenRelaunch = FirstRunPermissions.screenRecordingRelaunchNote
+        let screenDenied = FirstRunPermissions.screenRecordingDetail(.notAllowed)
+        check(FirstRunPermissions.screenRecordingDetail(.notAsked) == screenBase + " " + screenRelaunch
+              && screenDenied.hasSuffix(screenRelaunch) && screenDenied.contains("switch on Wisp")
+              && FirstRunPermissions.screenRecordingDetail(.allowed) == screenBase,
+              "Screen Recording says it works once Wisp quits and reopens, until it's on")
+        check(FirstRunPermissions.screenRecordingRelaunchNote.contains("quits and reopens")
+              && FirstRunPermissions.screenRecordingRelaunchNote.contains("picks up right here"),
+              "...and that setup picks up here")
+        check(FirstRunPermissions.accessibilityDetail(.notAsked) == "So Wisp can read the window you're asking about."
+              && FirstRunPermissions.accessibilityDetail(.notAllowed).contains("switch on Wisp")
+              && !FirstRunPermissions.accessibilityDetail(.notAllowed).contains("Smart Search"),
+              "Accessibility: what it's for, and where to switch it on")
+        var extrasOff = everyOther
+        extrasOff[.fullDiskAccess] = .allowed
+        extrasOff[.contacts] = .allowed
+        extrasOff[.screenRecording] = .notAsked
+        extrasOff[.accessibility] = .notAllowed
+        check(FirstRunPermissions.summary(extrasOff, messagesReadable: true) == "All optional · 2 still off"
+              && !FirstRunPermissions.allAnswered(extrasOff, messagesReadable: true),
+              "Screen Recording and Accessibility count toward still off; an unasked one keeps the step open")
+        extrasOff[.screenRecording] = .notAllowed
+        check(FirstRunPermissions.allAnswered(extrasOff, messagesReadable: true),
+              "Asked and still off is an answer, so the step can tick")
 
         // Full Disk Access: a row of its own, on whether Messages, Mail or Notes data
         // really reads (Automation alone only helps while those apps are open).

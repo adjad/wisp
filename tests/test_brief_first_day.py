@@ -159,3 +159,14 @@ class TestFirstBriefBuilding:
         # Once onboarding is answered the hold lifts and the Brief is on its way.
         _isolated.record_completion(scheduler.ONBOARDING_ANSWERED_KEY, repr(now.timestamp()))
         assert scheduler.first_brief_building(now)
+
+
+def test_the_schedule_endpoint_says_whether_the_first_brief_is_building(monkeypatch):
+    from service import main
+    monkeypatch.setattr(main.assistant_scheduler, "first_brief_building", lambda: True)
+    assert main._summary_schedule()["first_brief_building"] is True
+    def broken():
+        raise RuntimeError("store unavailable")
+    monkeypatch.setattr(main.assistant_scheduler, "first_brief_building", broken)
+    schedule = main._summary_schedule()
+    assert schedule["first_brief_building"] is False and "times" in schedule

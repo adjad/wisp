@@ -337,13 +337,15 @@ final class WispClient {
     }
 
     // POST /assistant/onboarding/brief_ready. First-run onboarding reached its last
-    // step, so the service may compose the first Brief now. Fire-and-forget: the
-    // service records it once, and a failure only means the Brief waits for its hour.
-    func onboardingBriefReady() async {
+    // step, so the service may compose the first Brief now. The service records it
+    // once; false when it didn't answer 200, so the caller can ask again later.
+    @discardableResult
+    func onboardingBriefReady() async -> Bool {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("assistant/onboarding/brief_ready"))
         req.httpMethod = "POST"
         req.timeoutInterval = 10
-        _ = try? await URLSession.shared.data(for: req)
+        guard let (_, response) = try? await URLSession.shared.data(for: req) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
     }
 
     // --- behavior engine (service/behavior) ---------------------------------

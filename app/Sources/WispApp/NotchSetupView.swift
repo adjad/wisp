@@ -64,15 +64,7 @@ struct NotchSetupView: View {
     /// The line a wake mid-download leaves, until the download moves again,
     /// finishes, or half an hour has passed (SleepPause.line).
     private func sleepLine(_ brain: FirstRunBrain) -> String? {
-        let transfer: SleepPause.Transfer
-        switch brain {
-        case .downloading(let model, _, _, _, _, _):
-            transfer = .downloading(model: model,
-                                    bytes: setup.downloads.first { $0.model == model }?.downloadedBytes ?? 0)
-        case .failed: transfer = .stopped
-        default: transfer = .other
-        }
-        return SleepPause.line(notices.wake, now: transfer, at: Date())
+        notices.sleepLine(brain, downloads: setup.downloads)
     }
 
     // MARK: The card
@@ -309,4 +301,18 @@ struct NotchSetupView: View {
 final class NotchSetupNotices: ObservableObject {
     static let shared = NotchSetupNotices()
     @Published var wake: SleepPause.Wake?
+
+    /// The line a wake mid-download leaves, for the notch card and the setup
+    /// window's step 1 alike.
+    func sleepLine(_ brain: FirstRunBrain, downloads: [DownloadTask]) -> String? {
+        let transfer: SleepPause.Transfer
+        switch brain {
+        case .downloading(let model, _, _, _, _, _):
+            transfer = .downloading(model: model,
+                                    bytes: downloads.first { $0.model == model }?.downloadedBytes ?? 0)
+        case .failed: transfer = .stopped
+        default: transfer = .other
+        }
+        return SleepPause.line(wake, now: transfer, at: Date())
+    }
 }

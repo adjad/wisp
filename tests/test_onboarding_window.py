@@ -9,11 +9,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app/Sources/WispApp"
 
-# Every API that makes macOS show a privacy prompt.
+# Every API that makes macOS show a privacy prompt. Screen Recording's request and
+# Accessibility's prompt option count too: either one shows macOS's question.
 PROMPTING = re.compile(
     r"requestFullAccessToEvents|requestFullAccessToReminders|requestWriteOnlyAccessToEvents"
     r"|requestAccess\(to:|requestAccess\(for:|requestAuthorization\("
+    r"|CGRequestScreenCaptureAccess\(|AXIsProcessTrustedWithOptions\(|kAXTrustedCheckOptionPrompt"
 )
+
+# Permissions' click-time requests for Screen Recording and Accessibility.
+EXTRA_REQUESTS = re.compile(r"(?<![\w.])(?<!func )(?:Permissions\.)?request(?:ScreenRecording|Accessibility)\(\)")
 
 
 def _sources() -> dict[str, str]:
@@ -40,7 +45,8 @@ def test_prompts_only_follow_a_click():
     for name, text in _sources().items():
         for match in PROMPTING.finditer(text):
             hits.setdefault(name, []).append(text.count("\n", 0, match.start()) + 1)
-    assert set(hits) == {"FirstRunSetupView.swift", "ContactsReader.swift", "VoiceInput.swift"}, hits
+    assert set(hits) == {"FirstRunSetupView.swift", "ContactsReader.swift", "VoiceInput.swift",
+                         "Permissions.swift", "PageReader.swift"}, hits
     # The microphone is asked for only by pressing the mic (or ⌥⇧Space): the one
     # prompt is inside start(), reached only through toggle(), which only the
     # mic button and the voice hotkey call (OverlayModel.toggleVoice).
@@ -61,6 +67,54 @@ def test_prompts_only_follow_a_click():
     for name, text in _sources().items():
         if name != "FirstRunSetupView.swift":
             assert "ask: true)" not in text or "AEDeterminePermissionToAutomateTarget" not in text, name
+
+
+def test_screen_recording_and_accessibility_prompt_only_from_a_click():
+    """Screen Recording and Accessibility show macOS's question only inside
+    Permissions' request functions, once (then the Settings page), and those are
+    called only from a click: the setup window's row, More Access…'s button, and
+    the search panel's button. PageReader's own prompt is never called."""
+    sources = _sources()
+    perms = sources["Permissions.swift"]
+    screen = _body(perms, "static func requestScreenRecording()")
+    access = _body(perms, "static func requestAccessibility()")
+    assert len(PROMPTING.findall(screen)) + len(PROMPTING.findall(access)) == len(PROMPTING.findall(perms)), \
+        "every prompt in Permissions.swift is inside its two request functions"
+    for body, key in ((screen, "screenRecordingPromptedKey"), (access, "accessibilityPromptedKey")):
+        prompt = body[body.index("case .prompt:"):body.index("case .settings:")]
+        assert PROMPTING.search(prompt) and f"defaults.set(true, forKey: {key})" in prompt
+        assert not PROMPTING.search(body[:body.index("case .prompt:")] + body[body.index("case .settings:"):])
+    reader = sources["PageReader.swift"]
+    assert len(PROMPTING.findall(reader)) == len(PROMPTING.findall(_body(reader, "static func requestAccessibility()")))
+    for name, text in sources.items():
+        assert "PageReader.requestAccessibility(" not in text, name
+    # Who may call Permissions' two requests (or request(_ extra), which wraps them).
+    callers = {name: len(EXTRA_REQUESTS.findall(text)) for name, text in sources.items() if EXTRA_REQUESTS.search(text)}
+    assert set(callers) == {"Permissions.swift", "FirstRunSetupView.swift", "SearchPanel.swift"}, callers
+    assert len(EXTRA_REQUESTS.findall(_body(perms, "static func request(_ extra: Extra)"))) == callers["Permissions.swift"] == 2
+    setup = sources["FirstRunSetupView.swift"]
+    request = _body(setup, "func request(_ item: Item) async")
+    assert len(EXTRA_REQUESTS.findall(request)) == callers["FirstRunSetupView.swift"] == 2
+    panel = sources["SearchPanel.swift"]
+    assert callers["SearchPanel.swift"] == 1
+    assert len(EXTRA_REQUESTS.findall(_body(panel, 'Button("Open Accessibility Settings…")'))) == 1
+    wraps = {name for name, text in sources.items() if "Permissions.request(" in text}
+    assert wraps == {"AppDelegate.swift"}, wraps
+    more = _body(sources["AppDelegate.swift"], "private func grantMoreAccess()")
+    assert "if alert.runModal() == .alertFirstButtonReturn, let next = missing.first { Permissions.request(next) }" in more
+    # The setup window only reads them: CGPreflight and AXIsProcessTrusted never ask.
+    refresh = _body(setup, "func refresh() async")
+    assert "CGPreflightScreenCaptureAccess()" in refresh and "AXIsProcessTrusted()" in refresh
+    assert not PROMPTING.search(refresh) and not EXTRA_REQUESTS.search(refresh)
+
+
+def test_screen_recording_says_it_needs_a_reopen_and_marks_resume_first():
+    setup = _sources()["FirstRunSetupView.swift"]
+    request = _body(setup, "func request(_ item: Item) async")
+    screen = request[request.index("case .screenRecording:"):request.index("case .accessibility:")]
+    assert screen.index("FirstRunSetup.expectRelaunch(") < screen.index("Permissions.requestScreenRecording()")
+    detail = _body(setup, "static func screenRecordingDetail(_ state: State) -> String")
+    assert detail.count("screenRecordingRelaunchNote") == 2 and "NSAlert" not in detail
 
 
 def test_nothing_asks_at_launch():
@@ -189,8 +243,12 @@ def test_setup_resumes_at_its_step_after_a_quit():
     hook = hook[:hook.index("askKeyRegistered:")]
     assert "if step == .tour, FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) })," in hook
     assert "self?.setupModel.status?.canAnswer == true {" in hook
-    assert "client.onboardingBriefReady()" in hook
-    assert hook.index("FirstRunSetup.stepKey") < hook.index("onboardingBriefReady")
+    assert "self?.requestFirstBrief()" in hook
+    assert hook.index("FirstRunSetup.stepKey") < hook.index("requestFirstBrief")
+    # The request un-claims the Brief when the service didn't take it, so it's asked again.
+    request = _body(app, "private func requestFirstBrief()")
+    assert "client.onboardingBriefReady() == false" in request
+    assert "removeObject(forKey: FirstBrief.requestedKey)" in request
     assert "initialStep: OnboardingStep.restored(defaults.object(forKey: FirstRunSetup.stepKey) as? Int)" in app
     on_step = setup[setup.index(".onChange(of: step)"):]
     assert "stepChanged(next)" in _body(on_step, ".onChange(of: step)")
@@ -224,7 +282,8 @@ def test_messages_has_its_own_permission_row():
     rows = re.findall(r'permissionRow\(\.(\w+), icon: "[^"]+", title: "([^"]+)"', step)
     assert rows == [("calendar", "Calendar"), ("reminders", "Reminders"), ("mail", "Mail & Notes"),
                     ("messages", "Messages"), ("fullDiskAccess", "Full Disk Access"),
-                    ("notifications", "Notifications")], rows
+                    ("notifications", "Notifications"), ("screenRecording", "Screen Recording"),
+                    ("accessibility", "Accessibility")], rows
     assert ('detail: "Sends the texts you approve in Ask. Opens Messages for a moment to ask, then closes it.")' in step)
     mail = step[step.index("permissionRow(.mail"):step.index("permissionRow(.messages")]
     assert "Opens Mail and Notes for a moment to ask, then closes them." in mail
@@ -248,9 +307,12 @@ def test_messages_has_its_own_permission_row():
     assert "runningApplications.contains" in launch and "config.addsToRecentItems = false" in launch
     quit = _body(setup, "private static func quitAfterAsking(_ launched: [NSRunningApplication])")
     assert "app.terminate()" in quit and "forceTerminate" not in setup
-    # No System Events or Accessibility in setup: those stay asked at use.
+    # No System Events in setup: it stays asked at use. Accessibility is a row, but
+    # asked through Permissions.requestAccessibility, never prompted here directly.
     assert "com.apple.systemevents" not in setup.lower()
-    assert "AXIsProcessTrustedWithOptions" not in setup
+    assert "AXIsProcessTrustedWithOptions" not in setup and "CGRequestScreenCaptureAccess" not in setup
+    footnote = step[step.index('Text("Skipped one?'):]
+    assert "microphone" in footnote and "asked for later" not in footnote
 
 
 def test_relaunch_waits_for_a_quitting_copy_instead_of_yielding_to_it():

@@ -324,9 +324,12 @@ struct ProactiveBriefSection: View {
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                         .help(access.detail)
                     Spacer(minLength: 6)
-                    if let fix = access.fix, let url = URL(string: fix.url) {
-                        NotchChrome.small(Permissions.fixLabel(fix)) { Permissions.openFix(url) }
-                            .help(access.detail)
+                    // fixLink: a Google account to reconnect opens Wisp's own Settings.
+                    if let fix = access.fixLink, let url = URL(string: fix.url) {
+                        NotchChrome.small(Permissions.fixLabel(fix)) {
+                            if fix == BriefDetail.googleSettings { BriefFix.open(fix) } else { Permissions.openFix(url) }
+                        }
+                        .help(access.detail)
                     }
                 }
                 .accessibilityElement(children: .combine)

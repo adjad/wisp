@@ -545,7 +545,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // model answers: a Brief made without it would stand as the day's.
                 if step == .tour, FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }),
                    self?.setupModel.status?.canAnswer == true {
-                    if self?.claimFirstBrief() == true { Task { await self?.client.onboardingBriefReady() } }
+                    if self?.claimFirstBrief() == true { self?.requestFirstBrief() }
                 } else if step == .tour, FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }) {
                     // Reached before the model: the Brief is owed, and asked for once
                     // the model answers (finishing setup or the readiness watch).
@@ -553,7 +553,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             },
             askKeyRegistered: hotKey?.registered ?? false,
-            searchKeyRegistered: searchHotKey?.registered ?? false,
+            voiceKeyRegistered: voiceHotKey?.registered ?? false,
             // "Setup still unfinished" (started, not done), not "doneKey unset": someone
             // who upgraded from a build without this window never had doneKey written,
             // and opening Permissions… must not switch or test their model.
@@ -742,7 +742,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                  requested: defaults.bool(forKey: FirstBrief.requestedKey),
                                  canAnswer: canAnswer),
               claimFirstBrief() else { return }
-        Task { [client] in await client.onboardingBriefReady() }
+        requestFirstBrief()
+    }
+
+    /// Sends the claimed first Brief's request. A failed POST (the service was
+    /// restarting, say) un-claims it, so finishing setup or the next readiness
+    /// check asks again; the service ignores a repeat.
+    private func requestFirstBrief() {
+        Task { [client] in
+            if await client.onboardingBriefReady() == false {
+                UserDefaults.standard.removeObject(forKey: FirstBrief.requestedKey)
+                OnboardingTimeline.record("first brief request failed")
+            }
+        }
     }
 
     private var sleepObservers: [NSObjectProtocol] = []
@@ -1685,7 +1697,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             notesReader?.sync()
         case .contacts:
             contactsReader?.sync()
-        case .messages, .notifications:
+        case .messages, .notifications, .screenRecording, .accessibility:
             // Sending only: nothing here reads with them.
             break
         }

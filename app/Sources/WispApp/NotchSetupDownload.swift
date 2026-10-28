@@ -56,9 +56,9 @@ enum NotchModelOffer: Equatable {
     /// Under a stopped download: the engine's own reason when it gave one, and
     /// what the button does, in the button's words. Pure.
     static func stoppedDetail(paused: Bool, engineMessage: String?) -> String {
-        if paused { return "Resume picks up where it left off." }
+        if paused { return "Resume starts it again." }
         let reason = engineMessage?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return (reason.isEmpty ? "" : reason + " ") + "Try again picks up where it left off."
+        return (reason.isEmpty ? "" : reason + " ") + "Try again starts it again."
     }
 
     /// How long a finished download may wait for the engine to list it before
@@ -139,7 +139,7 @@ struct NotchDownloadRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 1) {
-                        title((paused ? "Download paused" : "Download didn't finish") + " · " + label)
+                        title((paused ? "Download stopped" : "Download didn't finish") + " · " + label)
                         Text(NotchModelOffer.stoppedDetail(paused: paused,
                                                            engineMessage: setup.downloads.first { $0.model == model }?.message))
                             .font(.system(size: 11)).foregroundStyle(paused ? Theme.textMuted : Color.orange)
@@ -204,7 +204,7 @@ struct NotchDownloadRow: View {
     private func announce(_ state: FirstRunBrain) {
         let text: String
         switch state {
-        case .failed(_, _, _, let paused): text = paused ? "Download paused" : "Download didn't finish"
+        case .failed(_, _, _, let paused): text = paused ? "Download stopped" : "Download didn't finish"
         case .waitingForEngine: text = "Model downloaded"
         default: return
         }

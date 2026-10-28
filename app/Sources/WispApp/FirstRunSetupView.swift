@@ -1,6 +1,8 @@
 import AppKit
+import ApplicationServices
 import Carbon
 import Contacts
+import CoreGraphics
 import EventKit
 import ServiceManagement
 import SwiftUI
@@ -173,8 +175,9 @@ enum FirstRunSetup {
 /// When Wisp offers Getting to know you on its own. The service decides whether
 /// it is due (GET /profile status.offer: never finished, no recent Later, at most
 /// twice); this decides whether now is a moment to show it. Someone set up by
-/// the onboarding window answered (or skipped) it there, so the notch never
-/// offers it to them; /about and Memory › About you remain.
+/// the onboarding window answered (or skipped) it there, so the notch holds it
+/// back, apart from one later offer a few days after a skip (KnowYouSecondOffer,
+/// still only while the service says it's due); /about and Memory › About you remain.
 enum KnowYouOffer {
     struct Moment: Equatable {
         var firstRunWindowUp = false
@@ -521,9 +524,11 @@ final class FirstRunPermissions: ObservableObject {
     /// are open; `messages` is Automation for Messages, which sends the texts the
     /// person approves in Ask (OutboundSender.sendMessage), asked here so the
     /// first send doesn't stop on a macOS prompt; `fullDiskAccess` is what reads
-    /// Messages, and Mail and Notes when they are closed.
+    /// Messages, and Mail and Notes when they are closed. `screenRecording` and
+    /// `accessibility` are asked through Permissions' own click-time requests, so
+    /// only the microphone and per-app Automation wait until first use.
     enum Item: String, CaseIterable, Identifiable {
-        case calendar, reminders, mail, messages, fullDiskAccess, contacts, notifications
+        case calendar, reminders, mail, messages, fullDiskAccess, contacts, notifications, screenRecording, accessibility
         var id: String { rawValue }
     }
     enum State: Equatable { case checking, notAsked, allowed, notAllowed, notOnThisMac }
@@ -578,7 +583,7 @@ final class FirstRunPermissions: ObservableObject {
         case .checking: return ""
         case .notAsked: return "Not set"
         case .allowed: return "Allowed"
-        case .notAllowed: return item == .fullDiskAccess ? "Needs System Settings" : "Denied"
+        case .notAllowed: return settingsThroughRequest(item) ? "Needs System Settings" : "Denied"
         case .notOnThisMac: return "Not needed"
         }
     }
@@ -586,6 +591,42 @@ final class FirstRunPermissions: ObservableObject {
     /// The Full Disk Access row's promise, before System Settings opens.
     static let fullDiskAccessRelaunchNote =
         "macOS may ask Wisp to quit and reopen. That's expected: setup picks up right here."
+
+    /// Screen Recording only takes effect once Wisp quits and reopens.
+    static let screenRecordingRelaunchNote =
+        "It starts working once Wisp quits and reopens. That's expected: setup picks up right here."
+
+    /// Rows whose turned-down state is fixed in System Settings, through the row's
+    /// own request(): Full Disk Access can't be asked for, and Screen Recording and
+    /// Accessibility show macOS's question only once (Permissions.surface).
+    static func settingsThroughRequest(_ item: Item) -> Bool {
+        item == .fullDiskAccess || item == .screenRecording || item == .accessibility
+    }
+
+    /// Screen Recording and Accessibility, from whether macOS trusts Wisp and whether
+    /// Wisp already showed its one question (Permissions' prompted keys). macOS can't
+    /// tell "not yet switched on" from "turned down", so once asked, a grant that
+    /// isn't there needs System Settings. Pure.
+    static func promptOnceState(granted: Bool, promptedBefore: Bool) -> State {
+        granted ? .allowed : (promptedBefore ? .notAllowed : .notAsked)
+    }
+
+    /// The Screen Recording row's sentence: what it is for, and that it needs Wisp
+    /// to quit and reopen before it works.
+    static func screenRecordingDetail(_ state: State) -> String {
+        let base = "So Wisp can look at your screen when you ask about it."
+        switch state {
+        case .notAsked: return base + " " + screenRecordingRelaunchNote
+        case .notAllowed: return base + " In the page that opens, switch on Wisp. " + screenRecordingRelaunchNote
+        default: return base
+        }
+    }
+
+    /// The Accessibility row's sentence.
+    static func accessibilityDetail(_ state: State) -> String {
+        let base = "So Wisp can read the window you're asking about."
+        return state == .notAllowed ? base + " In the page that opens, switch on Wisp." : base
+    }
 
     /// Contacts puts names on Messages, so it is asked for only once Messages can
     /// be read (the rule ContactsReader kept at launch, now the row's).
@@ -635,6 +676,14 @@ final class FirstRunPermissions: ObservableObject {
         next[.contacts] = Self.contactsState()
         next[.fullDiskAccess] = Self.fullDiskAccessState()
         next[.notifications] = await Self.notificationsState()
+        // Read only (never a prompt): CGPreflight and AXIsProcessTrusted just report.
+        let defaults = UserDefaults.standard
+        next[.screenRecording] = Self.promptOnceState(
+            granted: CGPreflightScreenCaptureAccess(),
+            promptedBefore: defaults.bool(forKey: Permissions.screenRecordingPromptedKey))
+        next[.accessibility] = Self.promptOnceState(
+            granted: AXIsProcessTrusted(),
+            promptedBefore: defaults.bool(forKey: Permissions.accessibilityPromptedKey))
         // Remembered across closes and relaunches (see resolveAutomation): a closed
         // Mail or Notes can't be asked about, and that is not a removed grant.
         next[.mail] = await Self.automationState(ask: false)
@@ -703,6 +752,17 @@ final class FirstRunPermissions: ObservableObject {
             let defaults = UserDefaults.standard
             FirstRunSetup.expectRelaunch({ defaults.bool(forKey: $0) }, { defaults.set(true, forKey: $0) })
             Permissions.openFullDiskAccessPane()
+        case .screenRecording:
+            // macOS's question the first time, its Settings page after that
+            // (Permissions.requestScreenRecording). It works only after Wisp quits
+            // and reopens, which macOS offers once it's switched on, so setup is
+            // marked to come back here first, as for Full Disk Access.
+            let defaults = UserDefaults.standard
+            FirstRunSetup.expectRelaunch({ defaults.bool(forKey: $0) }, { defaults.set(true, forKey: $0) })
+            Permissions.requestScreenRecording()
+        case .accessibility:
+            // The same once-then-Settings rule (Permissions.requestAccessibility).
+            Permissions.requestAccessibility()
         }
         await refresh()
     }
@@ -1007,6 +1067,7 @@ struct FirstRunSetupView: View {
     @ObservedObject var google: GoogleAccountModel
     @StateObject private var permissions = FirstRunPermissions()
     @StateObject private var launchAtLogin = LaunchAtLogin()
+    @ObservedObject private var notices = NotchSetupNotices.shared
     @ObservedObject private var display = DisplayGeometry.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var step: Step
@@ -1581,6 +1642,9 @@ struct FirstRunSetupView: View {
                                detail: "Fast and private. It runs inside Wisp, so there's nothing else to install.") {
                     EmptyView()
                 }
+                if let slept = notices.sleepLine(brain, downloads: setup.downloads) {
+                    Text(slept).font(.system(size: 11)).foregroundStyle(.secondary).padding(.bottom, 2)
+                }
                 ProgressView(value: fraction).tint(OnboardingPalette.lilac).padding(.top, 2)
                     .accessibilityLabel("Model download")
                     .accessibilityValue("\(Int(fraction * 100)) percent")
@@ -1693,8 +1757,13 @@ struct FirstRunSetupView: View {
             contactsRow
             permissionRow(.notifications, icon: "bell", title: "Notifications",
                           detail: "Alerts for reminders you set, and when Wisp is ready.")
-            Text("Skipped one? Open Wisp's Settings and choose Permissions… under Privacy, any time. Screen reading and "
-                 + "Accessibility are asked for later, from the feature that needs them.")
+            permissionRow(.screenRecording, icon: "rectangle.dashed.badge.record", title: "Screen Recording",
+                          detail: FirstRunPermissions.screenRecordingDetail(permissions.state(.screenRecording)))
+            permissionRow(.accessibility, icon: "accessibility", title: "Accessibility",
+                          detail: FirstRunPermissions.accessibilityDetail(permissions.state(.accessibility)))
+            Text("Skipped one? Open Wisp's Settings and choose Permissions… under Privacy, any time. Only the "
+                 + "microphone, asked the first time you use voice, and macOS's questions about Wisp controlling "
+                 + "another app wait until first use.")
                 .font(.system(size: 12)).foregroundStyle(Theme.textMuted).padding(.top, 8)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1744,7 +1813,7 @@ struct FirstRunSetupView: View {
                 case .notAllowed:
                     Text(label).font(.system(size: 11.5)).foregroundStyle(Color.orange.opacity(0.9))
                     Button("Open System Settings") {
-                        if item == .fullDiskAccess { Task { await permissions.request(.fullDiskAccess) } }
+                        if FirstRunPermissions.settingsThroughRequest(item) { Task { await permissions.request(item) } }
                         else { Permissions.openSettingsPane(Self.settingsPane(item)) }
                     }
                     .buttonStyle(FirstRunButtonStyle())
@@ -1799,6 +1868,8 @@ struct FirstRunSetupView: View {
         case .fullDiskAccess: return Permissions.fullDiskAccessPane
         case .contacts: return base + "Privacy_Contacts"
         case .notifications: return "com.apple.preference.notifications"
+        case .screenRecording: return base + "Privacy_ScreenCapture"
+        case .accessibility: return base + "Privacy_Accessibility"
         }
     }
 

@@ -163,7 +163,7 @@ enum Permissions {
         var reason: String {
             switch self {
             case .screenRecording: return "so Wisp can look at your screen when you ask about it"
-            case .accessibility: return "so Wisp can read the text of other apps' windows, like Smart Search does"
+            case .accessibility: return "so Wisp can read the window you're asking about"
             case .fullDiskAccess: return "so Wisp can read Messages, Mail and Notes when those apps are closed, and your files"
             }
         }
