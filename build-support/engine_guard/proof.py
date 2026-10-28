@@ -306,7 +306,7 @@ async def wait_initial(enforcer):
 def loaded_state(engine):
     """Residency conventions of the pinned pool constructors, without loading."""
     name = type(engine).__name__
-    if name in {"BatchedEngine", "VLMBatchedEngine", "DFlashEngine", "DistributedBatchedEngine"}:
+    if name in {"BatchedEngine", "VLMBatchedEngine", "DistributedBatchedEngine"}:
         value = getattr(engine, "_loaded", None)
         if type(value) is bool:
             return value
@@ -340,13 +340,15 @@ async def accept_loaded(engine, check, cleanup):
         raise
 
 
-async def unload_bound(pool, model_id, busy_error, expected=None):
+async def unload_bound(pool, model_id, busy_error, expected=None, *, local_only=False):
     """Retain the selected owner through deferred stop and cancellation.
 
     Normal duplicate unloads retain the vendor's busy result. Refusal cleanup
     joins a teardown of the same instance, even after a registry reset. A
     different instance gets its own task, serialized through the existing
     process-wide settlement policy rather than measuring two unloads at once.
+    local_only is the vendor's distributed-teardown flag; a joined teardown
+    keeps the flag of the task that started it.
     """
     if expected is None:
         if model_id in pool._unloading_models:
@@ -377,7 +379,9 @@ async def unload_bound(pool, model_id, busy_error, expected=None):
 
         async def teardown():
             async with state["lock"]:
-                await pool._stop_and_unload_engine(model_id, _wisp_expected=(entry, engine))
+                await pool._stop_and_unload_engine(
+                    model_id, _wisp_expected=(entry, engine),
+                    **({"local_only": True} if local_only else {}))
 
         task = asyncio.create_task(teardown())
         record = {"entry": entry, "engine": engine, "model_id": model_id, "task": task}
@@ -435,14 +439,6 @@ def bind_start(engine, check):
     engine.start = start
     engine._wisp_guard_bound = True
     engine._wisp_guard_check = check
-
-
-def bind_child(parent, child):
-    if getattr(parent, "_wisp_guard_bound", None) is not True:
-        raise GuardEvidenceUnavailable()
-    def check(which):
-        parent._wisp_guard_check(parent, force_allocation=not loaded_state(which))
-    bind_start(child, check)
 
 
 async def start_bound(engine):
