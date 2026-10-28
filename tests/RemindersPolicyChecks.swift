@@ -129,6 +129,12 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
         precondition(!RemindersWriter.reminderListsLookTransientlyMissing(
             calendarCount: 2, previousRowCount: 3))
         accessChecks()
+        // No 60 s poll: Reminders re-reads on EventKit's change notice and on a
+        // heartbeat that stays inside the planner's 180 s freshness window.
+        precondition(NativeSyncPace.heartbeat == 150 && NativeSyncPace.heartbeat + 30 <= 180
+                     && NativeSyncPace.heartbeat < 1200)
+        precondition(NativeSyncPace.heartbeatInterval(authorized: true) == 150)
+        precondition(NativeSyncPace.heartbeatInterval(authorized: false) == 60)
         print("synthetic native policy checks passed")
     }
 

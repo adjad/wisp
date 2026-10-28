@@ -107,6 +107,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // The menu-bar icon carries the bar's status where no bar is drawn
     // (SurfaceLayout.statusInMenuBar). See observeMenuBarStatus.
     private var menuBarStatusObservers: [AnyCancellable] = []
+    // What reads the day at once instead of at the next tick. See observeDayRefreshTriggers.
+    private var dayRefreshObservers: [AnyCancellable] = []
+    private var dayChangeObserver: NSObjectProtocol?
     private var menuBarStatusQueued = false
     private var shownMenuBarStatus: MenuBarStatus?
     private var workingPulse: Timer?
@@ -321,7 +324,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // listing missed is still caught by BackendManager before it launches anything.
             await self.backend.startIfNeeded()
             guard !self.shutdownStarted else { return }
-            self.todayModel.startBackgroundRefresh(afterRefresh: { [weak self] in
+            self.todayModel.startBackgroundRefresh(cadence: { [weak self] in
+                DayRefreshPace.interval(notchOpen: self?.model.collapsed == false,
+                                        secondsSinceInput: DayRefreshPace.secondsSinceInput())
+            }, afterRefresh: { [weak self] in
                 guard let self else { return }
                 if self.todayModel.isShowingCurrentDay {
                     await CheckInModel.shared.load(day: self.todayModel.day, timezone: self.todayModel.timezone.identifier)
@@ -330,6 +336,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 await DayCards.refresh()
                 self.model.onResize()
             })
+            self.observeDayRefreshTriggers()
         }
         WispRouter.shared.handler = { [weak self] route in self?.open(route) }
         // Report a Problem carries how setup went (event names and times only).
@@ -1534,6 +1541,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forName: NSWindow.didBecomeKeyNotification, object: panel, queue: .main
         ) { [weak self] _ in
             DispatchQueue.main.async { self?.cancelScheduledCollapse() }
+        }
+    }
+
+    /// The day's background refresh slows down while nobody is looking
+    /// (DayRefreshPace). These make it read at once when someone starts to.
+    private func observeDayRefreshTriggers() {
+        guard dayRefreshObservers.isEmpty else { return }
+        // The notch opening shows the Brief and Day, so they are read now unless
+        // a read began a moment ago.
+        dayRefreshObservers = [
+            model.$collapsed.dropFirst().removeDuplicates().sink { [weak self] collapsed in
+                guard !collapsed else { return }
+                MainActor.assumeIsolated { self?.todayModel.refreshSoon(ifOlderThan: DayRefreshPace.wakeFloor) }
+            },
+        ]
+        // The service says "changed" after every source sync, even when nothing did,
+        // so with the notch closed that must not wake the slow pace; opening it reads.
+        dayChangeObserver = NotificationCenter.default.addObserver(
+            forName: .wispAssistantChanged, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.model.collapsed else { return }
+                self.todayModel.refreshSoon()
+            }
         }
     }
 

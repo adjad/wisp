@@ -694,7 +694,8 @@ async def refresh(now: float | None = None, *, synth=None, abort=None, force: bo
         return False
     _load()[job["kind"]] = {"gist": gist, "at": now, "key": job["key"]}
     _attempts.pop(attempt_key, None)
-    # The open Brief re-reads the day every 30 s (NotchDayView.DayRefreshLoop).
+    # The app re-reads the day every 30 s while the notch is open or the user is
+    # active, every 5 minutes otherwise (TodayView.swift, DayRefreshPace).
     _save()
     print(f"[mail_gists] wrote the {job['kind']} gist in {time.monotonic() - started:.1f}s", flush=True)
     return True
