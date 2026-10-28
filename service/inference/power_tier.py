@@ -132,15 +132,29 @@ OTHER_APP_EVENTS = {"launched": "another app was opened while Wisp was idle",
                     "activated": "you switched to another app while Wisp was idle"}
 
 
+# An app event that arrived during a turn, applied when the turn ends.
+_pending_other_app: str | None = None
+
+
 def other_app(event: str, path: Path | None = None) -> bool:
-    """Another app was launched or brought to the front: off, unless the user
-    is in a turn right now."""
+    """Another app was launched or brought to the front: off, or once the
+    current turn ends if the user is in one."""
+    global _pending_other_app
     if event not in OTHER_APP_EVENTS:
         raise ValueError(f"unknown app event: {event!r}")
     from service import idle
     if idle.foreground_busy():
+        _pending_other_app = event
         return False
+    _pending_other_app = None
     return auto_off(OTHER_APP_EVENTS[event], path)
+
+
+def turn_ended(path: Path | None = None) -> bool:
+    """The last turn ended (service/idle.py): apply an app event held during it."""
+    global _pending_other_app
+    event, _pending_other_app = _pending_other_app, None
+    return event is not None and auto_off(OTHER_APP_EVENTS[event], path)
 
 
 def set_low_power(on: bool, path: Path | None = None) -> bool:

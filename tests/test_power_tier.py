@@ -19,11 +19,12 @@ def clean_env(monkeypatch, tmp_path):
     # with the user's idle clock fresh (a long suite would otherwise age it
     # past the 10-minute auto-off).
     monkeypatch.setattr(P, "SETTINGS_PATH", tmp_path / "power" / "settings.json")
+    monkeypatch.setattr(P, "_pending_other_app", None)
     import time
 
     from service import idle
     monkeypatch.setattr(idle, "_foreground_turns", 0)
-    monkeypatch.setattr(idle, "_last_user_activity", idle._awake_or_asleep_now())
+    monkeypatch.setattr(idle, "_last_user_activity", idle._stamp())
 
 
 @pytest.fixture
@@ -353,12 +354,13 @@ def fresh_user(monkeypatch):
 
     from service import idle
     monkeypatch.setattr(idle, "_foreground_turns", 0)
-    monkeypatch.setattr(idle, "_last_user_activity", idle._awake_or_asleep_now())
+    monkeypatch.setattr(idle, "_last_user_activity", idle._stamp())
     return idle
 
 
 def _age(idle, seconds):
-    idle._last_user_activity -= seconds
+    mono, wall = idle._last_user_activity
+    idle._last_user_activity = (mono - seconds, wall - seconds)
 
 
 def test_ten_idle_minutes_turn_it_off_and_store_off(fresh_user, caplog):
@@ -373,22 +375,25 @@ def test_ten_idle_minutes_turn_it_off_and_store_off(fresh_user, caplog):
     assert P.payload_fields() == {}
 
 
-def test_a_night_asleep_counts_as_idle(fresh_user, monkeypatch):
-    # The clock keeps counting through sleep, so waking after a night with the
-    # lid closed finds Low Power Mode off before the backfill runs.
-    P.set_low_power(True)
-    asleep_at = fresh_user._awake_or_asleep_now()
-    monkeypatch.setattr(fresh_user, "_awake_or_asleep_now", lambda: asleep_at + 8 * 3600)
-    assert P.low_power() is False
+def test_a_night_asleep_counts_even_if_the_monotonic_clock_stood_still(fresh_user, monkeypatch):
+    # The worst case for the monotonic clock: it did not count the night at all.
+    # The wall clock did, so waking after a night with the lid closed still
+    # finds Low Power Mode off before the backfill runs.
     import time
-    assert fresh_user._awake_or_asleep_now is not time.monotonic
+    P.set_low_power(True)
+    mono, wall = fresh_user._last_user_activity
+    monkeypatch.setattr(fresh_user, "_awake_or_asleep_now", lambda: mono + 1)
+    monkeypatch.setattr(time, "time", lambda: wall + 8 * 3600)
+    assert P.low_power() is False
 
 
-def test_the_idle_clock_is_one_that_counts_sleep():
-    import inspect
-
-    from service import idle
-    assert "CLOCK_MONOTONIC)" in inspect.getsource(idle._awake_or_asleep_now)
+def test_a_wall_clock_set_back_is_outvoted_by_the_monotonic_clock(fresh_user, monkeypatch):
+    import time
+    P.set_low_power(True)
+    mono, wall = fresh_user._last_user_activity
+    monkeypatch.setattr(fresh_user, "_awake_or_asleep_now", lambda: mono + P.IDLE_OFF_S + 1)
+    monkeypatch.setattr(time, "time", lambda: wall - 3600)
+    assert P.low_power() is False
 
 
 def test_a_turn_resets_the_idle_clock_and_holds_it_while_running(fresh_user):
@@ -423,13 +428,8 @@ def test_background_model_work_does_not_count_as_use(fresh_user):
 
 @pytest.mark.parametrize("event,why", [("launched", "another app was opened"),
                                        ("activated", "you switched to another app")])
-def test_another_app_launch_or_switch_turns_it_off_unless_a_turn_is_running(fresh_user, caplog, event, why):
+def test_another_app_launch_or_switch_turns_it_off(fresh_user, caplog, event, why):
     P.set_low_power(True)
-    fresh_user.begin_foreground()
-    try:
-        assert P.other_app(event) is False and P.low_power() is True
-    finally:
-        fresh_user.end_foreground()
     with caplog.at_level("INFO", logger="wisp.power"):
         assert P.other_app(event) is True
     assert P.low_power() is False
@@ -437,6 +437,25 @@ def test_another_app_launch_or_switch_turns_it_off_unless_a_turn_is_running(fres
     assert P.other_app(event) is False         # already off: no second log line
     with pytest.raises(ValueError):
         P.other_app("focused")
+
+
+@pytest.mark.parametrize("event", ["launched", "activated"])
+def test_an_app_event_during_a_turn_waits_for_the_turn_to_end(fresh_user, caplog, event):
+    P.set_low_power(True)
+    fresh_user.begin_foreground()
+    fresh_user.begin_foreground()              # two overlapping turns
+    assert P.other_app(event) is False and P.low_power() is True
+    fresh_user.end_foreground()
+    assert P.low_power() is True               # one turn still running
+    with caplog.at_level("INFO", logger="wisp.power"):
+        fresh_user.end_foreground()
+    assert P.low_power() is False
+    assert "another app" in caplog.records[-1].getMessage()
+    # Nothing is held over to the next turn.
+    P.set_low_power(True)
+    fresh_user.begin_foreground()
+    fresh_user.end_foreground()
+    assert P.low_power() is True
 
 
 def test_off_at_launch_even_when_the_file_said_on(caplog):

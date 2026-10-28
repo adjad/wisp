@@ -88,40 +88,55 @@ _foreground_turns = 0
 # app reporting the notch or a window opened (note_user_activity). Background
 # work never moves it. Starts at import, so a fresh launch counts as use.
 #
-# It runs on a clock that keeps counting while the Mac sleeps: on macOS
-# time.monotonic() stops during sleep, so a night with the lid closed would
-# count as no idle time at all and Low Power Mode would still be on at wake.
+# Sleep has to count: on macOS time.monotonic() stops while the Mac sleeps, so
+# a night with the lid closed would count as no idle time and Low Power Mode
+# would still be on at wake. Two clocks are kept and the larger gap wins:
+# CLOCK_MONOTONIC (counts sleep on Darwin) and the wall clock (counts sleep by
+# definition). A wall-clock jump forward only turns the mode off early, the
+# safe direction; a jump backward is outvoted by the monotonic clock.
 def _awake_or_asleep_now() -> float:
     return time.clock_gettime(time.CLOCK_MONOTONIC)
 
 
-_last_user_activity = _awake_or_asleep_now()
+def _stamp() -> tuple[float, float]:
+    return _awake_or_asleep_now(), time.time()
+
+
+_last_user_activity = _stamp()
 
 
 def begin_foreground() -> None:
     """A user-facing turn has started — background model work should stand down."""
     global _foreground_turns, _last_user_activity
     _foreground_turns += 1
-    _last_user_activity = _awake_or_asleep_now()
+    _last_user_activity = _stamp()
 
 
 def end_foreground() -> None:
     global _foreground_turns, _last_user_activity
     _foreground_turns = max(0, _foreground_turns - 1)
-    _last_user_activity = _awake_or_asleep_now()
+    _last_user_activity = _stamp()
+    if _foreground_turns == 0:
+        # An app event that arrived during the turn is applied now.
+        try:
+            from service.inference.power_tier import turn_ended
+            turn_ended()
+        except Exception:  # noqa: BLE001 — power upkeep never breaks a turn
+            pass
 
 
 def note_user_activity() -> None:
     """The user opened the notch or a Wisp window without starting a turn."""
     global _last_user_activity
-    _last_user_activity = _awake_or_asleep_now()
+    _last_user_activity = _stamp()
 
 
 def user_idle_seconds() -> float:
     """Seconds since the user last used Wisp, sleep included; 0 while a turn is in flight."""
     if _foreground_turns > 0:
         return 0.0
-    return max(0.0, _awake_or_asleep_now() - _last_user_activity)
+    mono, wall = _stamp()
+    return max(0.0, mono - _last_user_activity[0], wall - _last_user_activity[1])
 
 
 def foreground_busy() -> bool:

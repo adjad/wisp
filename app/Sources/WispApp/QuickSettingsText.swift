@@ -44,10 +44,19 @@ enum LowPowerTrigger {
         "com.apple.CoreServicesUIAgent",
     ]
 
+    /// Closing a Wisp window (or hiding Wisp) makes macOS bring the previous app
+    /// forward on its own. An activation this soon after one is not a switch.
+    static let dismissalGrace: TimeInterval = 1.0
+
     /// `regular` is NSRunningApplication.activationPolicy == .regular.
-    static func counts(bundleID: String?, regular: Bool, ownBundleID: String?) -> Bool {
+    /// `sinceWispDismissed` is the time since a Wisp window last closed or Wisp
+    /// hid (nil when never); it only matters for an activation.
+    static func counts(bundleID: String?, regular: Bool, ownBundleID: String?,
+                       activated: Bool = false, sinceWispDismissed: TimeInterval? = nil) -> Bool {
         guard regular, let bundleID, !bundleID.isEmpty else { return false }
-        return bundleID != ownBundleID && !ignored.contains(bundleID)
+        guard bundleID != ownBundleID && !ignored.contains(bundleID) else { return false }
+        if activated, let since = sinceWispDismissed, since >= 0, since < dismissalGrace { return false }
+        return true
     }
 }
 

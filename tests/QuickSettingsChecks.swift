@@ -36,6 +36,19 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
           "a menu-bar agent or background app never counts")
     check(!LowPowerTrigger.counts(bundleID: nil, regular: true, ownBundleID: own), "an app with no bundle id never counts")
 
+    // Closing a Wisp window hands focus back to the previous app: that
+    // activation, within the grace, is not a switch. A launch still counts, and
+    // so does a switch after the grace or with no recent close.
+    let safari = "com.apple.Safari"
+    check(!LowPowerTrigger.counts(bundleID: safari, regular: true, ownBundleID: own, activated: true,
+                                  sinceWispDismissed: 0.2), "re-activation after a Wisp window closes is not a switch")
+    check(LowPowerTrigger.counts(bundleID: safari, regular: true, ownBundleID: own, activated: true,
+                                 sinceWispDismissed: 1.5), "a switch after the grace counts")
+    check(LowPowerTrigger.counts(bundleID: safari, regular: true, ownBundleID: own, activated: true,
+                                 sinceWispDismissed: nil), "a switch with no recent close counts")
+    check(LowPowerTrigger.counts(bundleID: safari, regular: true, ownBundleID: own, activated: false,
+                                 sinceWispDismissed: 0.2), "a launch right after a close still counts")
+
     // Learn my routines: "stays on this Mac" only when nothing learned leaves it.
     let local = QuickSettingsText.learning(enabled: true, changing: false, status: nil, remote: false, phraser: true)
     check(local == ("From calendar, reminders and how you use Wisp", "stays on this Mac"), "local learning stays on this Mac")

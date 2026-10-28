@@ -810,17 +810,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             (NSWorkspace.didActivateApplicationNotification, true),
         ].map { name, activated in
             center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
-                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-                      LowPowerTrigger.counts(bundleID: app.bundleIdentifier,
-                                             regular: app.activationPolicy == .regular,
-                                             ownBundleID: own) else { return }
+                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+                else { return }
                 MainActor.assumeIsolated {
                     guard let self else { return }
+                    let since = self.wispDismissedAt.map { Date().timeIntervalSince($0) }
+                    guard LowPowerTrigger.counts(bundleID: app.bundleIdentifier,
+                                                 regular: app.activationPolicy == .regular,
+                                                 ownBundleID: own, activated: activated,
+                                                 sinceWispDismissed: since) else { return }
                     Task { await self.client.reportOtherApp(activated: activated) }
                 }
             }
         }
+        // A Wisp window closing or Wisp hiding hands focus back to the previous
+        // app; that activation is macOS's, not the user switching.
+        let local = NotificationCenter.default
+        otherAppObservers += [NSWindow.willCloseNotification, NSApplication.didHideNotification].map { name in
+            local.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.wispDismissedAt = Date() }
+            }
+        }
     }
+
+    private var wispDismissedAt: Date?
     /// What each running download had received when the Mac went to sleep; nil
     /// when nothing was downloading.
     private var downloadBytesAtSleep: [String: Double]?
