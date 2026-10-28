@@ -149,6 +149,12 @@ struct VideoSamplerChecks {
         check(le32(wav, 40) == wav.count - 44, "WAV data size matches")
         let wavSeconds = Double(wav.count - 44) / 32_000
         check(abs(wavSeconds - 2) < 0.3, "WAV about 2 s, got \(wavSeconds)")
+        check(wavSeconds <= 2.1, "WAV is cut at the clip length, got \(wavSeconds)")
+        check(Double(wav.count - 44) <= Double(VideoSampler.audioByteCap(clipSeconds: clip.seconds)), "WAV within the byte cap")
+        check(VideoSampler.maxAudioBytes == 976_000, "hard cap is 30.5 s of PCM")
+        check(VideoSampler.audioByteCap(clipSeconds: 2) == Int(2.5 * 32_000), "cap follows the clip length plus slack")
+        check(VideoSampler.audioByteCap(clipSeconds: 500) == VideoSampler.maxAudioBytes, "cap never exceeds the hard limit")
+        check(VideoSampler.audioByteCap(clipSeconds: 0) == 0 && VideoSampler.audioByteCap(clipSeconds: .nan) == 0, "no length, no audio")
 
         let silent = dir.appendingPathComponent("silent.mov")
         guard try await makeClip(at: silent, seconds: 1, fps: 10, audio: false) else {

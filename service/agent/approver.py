@@ -120,7 +120,12 @@ class InteractiveApprover:
     def resolve(self, action_id: str, approved: bool, scope: str = "once") -> bool:
         fut = self._pending.get(action_id)
         if fut and not fut.done():
-            _apply_scope(self._actions.get(action_id, {}), approved, scope)
+            action = self._actions.get(action_id, {})
+            if action.get("grantable") is False and scope == "always":
+                # The card offered no "Always allow" (a picture proposed this
+                # write); a client sending one anyway gets a one-time answer.
+                scope = "once"
+            _apply_scope(action, approved, scope)
             fut.set_result(approved)
             return True
         return False

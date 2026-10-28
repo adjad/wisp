@@ -139,7 +139,7 @@ def model_led_enabled(value: str | None) -> bool:
     this variable says; WISP_MODEL_ONLY=0 (or `model_only: false` in
     ~/.moe/config.yaml) restores the legacy router. How each Workflow20 entry
     is covered on the model-led path is listed in the rc3 PR and
-    docs/releases/0.5.0-rc3.md.
+    docs/releases/0.5.0-dev4.md.
     """
     if value is None:
         return False

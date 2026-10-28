@@ -1154,8 +1154,14 @@ final class OverlayModel: ObservableObject {
             let reader = Task.detached(priority: .userInitiated) { () -> MediaAttachment.Pending? in
                 guard !Task.isCancelled else { return nil }
                 if kind == .image {
-                    guard let data = try? Data(contentsOf: url), !Task.isCancelled,
-                          let jpeg = MediaAttachment.downscaleJPEG(data) else {
+                    // Size first, then let ImageIO stream the file: it is never read whole.
+                    if let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
+                       MediaAttachment.tooLarge(bytes: bytes) {
+                        await self?.showTransientNotice(MediaAttachment.tooLargeMessage)
+                        return nil
+                    }
+                    guard !Task.isCancelled,
+                          let jpeg = MediaAttachment.downscaleJPEG(contentsOf: url) else {
                         await self?.showTransientNotice("Wisp couldn't read that image.")
                         return nil
                     }
@@ -1198,6 +1204,9 @@ final class OverlayModel: ObservableObject {
         cancelAttachmentRead()
         clearAttachmentState()
     }
+
+    /// True while the pending attachment is a `/screen` capture (shown large to check).
+    var attachmentIsScreen: Bool { attachedImage != nil && attachedSource == "screen" }
 
     var hasAttachment: Bool { attachedImage != nil || attachedVideo != nil }
 

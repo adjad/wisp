@@ -123,6 +123,16 @@ def test_a_day_then_a_start_time_is_not_a_clock_range(phrase, sent, want):
     assert resolve_due(phrase, _sent(sent), TZ, month_first_order=True).day.isoformat() == want
 
 
+def test_the_month_check_before_a_range_is_linear():
+    # Audit of 2b1e3127: the look-back for a month scanned the whole phrase once per range.
+    import time
+    from service.mail_memory import dates
+    phrase = "Oct 22 " + "1 - 2pm " * 20_000
+    start = time.perf_counter()
+    dates._CLOCK_RANGE.sub(dates._drop_clock_range, phrase)
+    assert time.perf_counter() - start < 1.0
+
+
 # --- extraction -------------------------------------------------------------------
 
 RAW = (b"From: Harbor Property <leasing@harbor.example>\r\nTo: Sam <sam@example.com>\r\n"
@@ -283,6 +293,33 @@ def test_a_bare_canceled_subject_without_an_invite_is_not_a_cancellation():
     item = {"what": "Renew the subscription", "date_phrase": "Oct 30, 2026", "evidence": "Renew by Oct 30, 2026"}
     kept, _ = extract.validate([item], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
     assert [k["due"] for k in kept] == ["2026-10-30"]
+
+
+def test_an_invite_inside_a_forwarded_message_is_not_this_emails_calendar():
+    # Audit of 2b1e3127: an attached .eml carrying its own .ics made the outer email "calendar".
+    inner = (b"From: Team <team@club.example>\r\nSubject: Practice\r\nMIME-Version: 1.0\r\n"
+             b'Content-Type: multipart/mixed; boundary="i"\r\n\r\n--i\r\nContent-Type: text/plain\r\n\r\nSee you\r\n'
+             b"--i\r\nContent-Type: text/calendar\r\n\r\nBEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n--i--\r\n")
+    body = b"Your subscription was canceled. Renew by Oct 30, 2026 to keep your files.\r\n"
+    raw = (b"From: Store <orders@shop.example>\r\nTo: Sam <sam@example.com>\r\n"
+           b"Subject: Canceled: Your subscription - renew by Oct 30\r\nDate: Wed, 16 Sep 2026 09:00:00 -0700\r\n"
+           b'MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary="o"\r\n\r\n'
+           b"--o\r\nContent-Type: text/plain\r\n\r\n" + body
+           + b'--o\r\nContent-Type: message/rfc822\r\nContent-Disposition: attachment; filename="fwd.eml"\r\n\r\n'
+           + inner + b"--o--\r\n")
+    email = extract.parse_raw(raw, 0)
+    assert email.calendar is False
+    item = {"what": "Renew the subscription", "date_phrase": "Oct 30, 2026", "evidence": "Renew by Oct 30, 2026"}
+    kept, _ = extract.validate([item], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
+    assert [k["due"] for k in kept] == ["2026-10-30"]
+
+
+def test_an_attached_ics_file_marks_the_email_as_calendar():
+    raw = (b"From: a@x.example\r\nSubject: Cancelled: Standup\r\nMIME-Version: 1.0\r\n"
+           b'Content-Type: multipart/mixed; boundary="o"\r\n\r\n--o\r\nContent-Type: text/plain\r\n\r\nStandup is off\r\n'
+           b'--o\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename="invite.ICS"\r\n\r\n'
+           b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n--o--\r\n")
+    assert extract.parse_raw(raw, 0).calendar is True
 
 
 @pytest.mark.parametrize("what", ["Rebook flight that was cancelled", "Request refund for order that was canceled",

@@ -152,8 +152,8 @@ def test_proposal_maps_to_real_tool_arguments():
 
 def test_media_validation():
     assert V.validate_media([url()]) 
-    assert V.validate_media([url(b"\xff\xd8\xff\xe0jpegbytes", "jpeg")])
-    for bad in ("", None, "data:text/plain;base64,AAAA", "data:image/png;base64,!!!notb64",
+    assert V.validate_media([url(jpeg_header(800, 600), "jpeg")])
+    for bad in ("", None, url(b"\xff\xd8\xff\xe0jpegbytes", "jpeg"), "data:text/plain;base64,AAAA", "data:image/png;base64,!!!notb64",
                 "data:image/gif;base64,R0lGOD", url(b"not a png"), "https://x/y.png"):
         with pytest.raises(ValueError):
             V.validate_media([bad])
@@ -265,11 +265,21 @@ def test_video_frames_audio_transcript_and_one_foreground_gate(checkpoint):
 def test_video_limits():
     ok = {"frames": [url()], "seconds": 5, "audio": None}
     for bad in ({**ok, "seconds": 31}, {**ok, "frames": [url()] * 9}, {**ok, "frames": []},
-                {**ok, "seconds": None}, {**ok, "audio": "!!!"}):
+                {**ok, "seconds": None}):
         with pytest.raises(ValueError):
             run(V.answer_request("?", video=bad, client=object(), model=MODEL))
     with pytest.raises(ValueError, match="Wisp can read clips up to 30 seconds"):
         run(V.answer_request("?", video={**ok, "seconds": 45}, client=object(), model=MODEL))
+
+
+def test_a_bad_audio_track_falls_back_to_frames(checkpoint):
+    for audio in ("!!!", base64.b64encode(wav(0.05)).decode(), base64.b64encode(wav(40.0)).decode()):
+        client = StubClient(checkpoint(), reply="A slide.")
+        with patch("service.voice._transcribe", AsyncMock(side_effect=AssertionError("no transcript"))):
+            result = run(V.answer_request("?", video={"frames": [url()], "seconds": 5, "audio": audio},
+                                          client=client, model=MODEL))
+        assert result.answer == "A slide." + V.SOUND_DROPPED
+        assert "Transcript" not in client.calls[0]["messages"][1]["content"][-1]["text"]
 
 
 # ------------------------------------------------------------ token estimator
@@ -421,3 +431,140 @@ def test_test_mode_persists_nothing_and_runs_nothing(agent_env):
     assert next(e for e in events if e["type"] == "tool_result")["status"] == "planned"
     ran.assert_not_called()
     assert agent_env.store.list_sessions() == []
+
+
+# ------------------------------------------------- auditor follow-ups (2026-10-28)
+
+def jpeg_header(w: int, h: int) -> bytes:
+    """A JPEG's leading markers up to its frame header; enough for image_size."""
+    app0 = b"\xff\xe0" + struct.pack(">H", 16) + b"JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+    sof = b"\xff\xc0" + struct.pack(">HBHHB", 17, 8, h, w, 3) + b"\x01\x22\x00\x02\x11\x01\x03\x11\x01"
+    return b"\xff\xd8" + app0 + sof + b"\xff\xd9"
+
+
+def webp_vp8x(w: int, h: int) -> bytes:
+    body = b"VP8X" + struct.pack("<I", 10) + b"\x00\x00\x00\x00" + (w - 1).to_bytes(3, "little") \
+        + (h - 1).to_bytes(3, "little")
+    return b"RIFF" + struct.pack("<I", 4 + len(body)) + b"WEBP" + body
+
+
+def test_image_size_reads_png_jpeg_and_webp_headers():
+    assert V.image_size("png", png(7, 3)) == (7, 3)
+    assert V.image_size("jpeg", jpeg_header(1568, 1024)) == (1568, 1024)
+    assert V.image_size("webp", webp_vp8x(640, 480)) == (640, 480)
+    assert V.image_size("jpeg", b"\xff\xd8\x00\x00garbage") is None
+    assert V.image_size("png", b"\x89PNG\r\n\x1a\nshort") is None
+
+
+@pytest.mark.parametrize("data,kind", [
+    (b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">IIBBBBB", 30_000, 30_000, 8, 2, 0, 0, 0)
+     + b"\x00" * 4, "png"),
+    (jpeg_header(5000, 100), "jpeg"),
+    (webp_vp8x(4097, 10), "webp"),
+])
+def test_a_small_file_that_decodes_huge_is_refused(data, kind):
+    with pytest.raises(ValueError, match="too large"):
+        V.decode_image(url(data, kind))
+    assert V.decode_image(url(jpeg_header(4096, 4096), "jpeg"))   # the ceiling itself is fine
+
+
+def test_display_changing_invisibles_never_reach_a_card():
+    hidden = "Rent\u202edue\u200f\ufeff"
+    _, proposal = V.parse_proposal('{"proposal": {"kind": "reminder", "title": "' + hidden + '", '
+                                   '"date": "2099-01-01", "location": "Hall\u2066 B\u2069"}}')
+    assert proposal["title"] == "Rentdue" and proposal["location"] == "Hall B"
+    assert V._plain("a\u202egnp.exe") == "agnp.exe"
+
+
+@pytest.mark.parametrize("text", [
+    "Family \U0001F468\u200d\U0001F469\u200d\U0001F467 picnic",   # ZWJ emoji sequence
+    "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",          # Persian "می‌خواهم" keeps its ZWNJ
+    "co\u00adoperate",                                              # soft hyphen
+])
+def test_real_text_keeps_its_joiners(text):
+    assert V._plain(text) == text
+
+
+def test_a_pictures_card_offers_no_standing_grant_and_ignores_one(agent_env):
+    from service.agent.approver import InteractiveApprover
+    granted = []
+    with patch("service.safety.grants.grant", lambda *a, **k: granted.append((a, k))), \
+            patch("service.tools.registry.run_tool", AsyncMock(return_value="ok")):
+        events = []
+
+        async def go():
+            async def emit(ev):
+                events.append(ev)
+                if ev["type"] == "confirm":
+                    approver.resolve(ev["id"], True, "always")   # a client sending it anyway
+            approver = InteractiveApprover(emit)
+            await V.run_proposal(V.parse_proposal(FLYER)[1], emit, approver)
+        run(go())
+    card = next(e for e in events if e["type"] == "confirm")
+    assert card["grantable"] is False
+    assert granted == []
+
+
+def test_a_never_grant_suppresses_the_card(agent_env):
+    with patch("service.safety.grants.check", lambda tool, args: "deny"):
+        events = run(drive({"prompt": "?", "image": url()}, decide=lambda e: True))
+    assert not any(e["type"] == "confirm" for e in events)
+    assert next(e for e in events if e["type"] == "tool_result")["status"] == "denied"
+
+
+def test_agent_body_limit_refuses_before_parsing():
+    from starlette.applications import Starlette
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+    from starlette.testclient import TestClient
+    from service import local_http
+
+    seen = []
+
+    async def agent(request: Request):
+        seen.append(len(await request.body()))
+        return JSONResponse({"ok": True})
+
+    app = Starlette(routes=[Route("/agent", agent, methods=["POST"]), Route("/other", agent, methods=["POST"])])
+    app.add_middleware(local_http.BodyLimit)
+    with patch.object(local_http, "_LIMITED_PATHS", {"/agent": 1000}):
+        client = TestClient(app)
+        assert client.post("/agent", content=b"x" * 999).status_code == 200
+        assert client.post("/agent", content=b"x" * 1001).status_code == 413
+        chunked = client.post("/agent", content=iter([b"x" * 600, b"x" * 600]))   # no Content-Length
+        assert chunked.status_code == 413
+        assert client.post("/other", content=b"x" * 5000).status_code == 200
+    assert seen == [999, 5000]
+    assert local_http.AGENT_BODY_LIMIT >= 16 * 1024 * 1024
+
+
+def test_a_second_huge_frame_header_is_not_hidden_behind_a_small_one():
+    small = jpeg_header(16, 16)
+    huge_sof = b"\xff\xc0" + struct.pack(">HBHHB", 17, 8, 12000, 12000, 3) + b"\x01\x22\x00\x02\x11\x01\x03\x11\x01"
+    sos = b"\xff\xda" + struct.pack(">H", 8) + b"\x01\x01\x00\x00\x3f\x00"
+    two = small[:-2] + huge_sof + sos + b"\x00" * 8 + b"\xff\xd9"
+    assert V.image_size("jpeg", two) == (12000, 12000)
+    with pytest.raises(ValueError, match="too large"):
+        V.decode_image(url(two, "jpeg"))
+    # A frame header after the start of scan is image data, not a header.
+    after_scan = small[:-2] + sos + huge_sof + b"\xff\xd9"
+    assert V.image_size("jpeg", after_scan) == (16, 16)
+
+
+def test_truncated_and_zero_sized_headers_are_unreadable_not_too_large():
+    assert V.image_size("webp", webp_vp8x(640, 480)[:26]) is None
+    assert V.image_size("png", png(4, 4)[:20]) is None
+    with pytest.raises(ValueError, match="couldn't be read"):
+        V.decode_image(url(jpeg_header(0, 100), "jpeg"))
+
+
+def test_an_answer_says_when_the_clips_sound_was_dropped(checkpoint):
+    bad = {"frames": [url()], "seconds": 5, "audio": "!!!"}
+    result = run(V.answer_request("?", video=bad, client=StubClient(checkpoint(), reply="A slide."), model=MODEL))
+    assert result.answer == "A slide." + V.SOUND_DROPPED
+    silent = {"frames": [url()], "seconds": 5, "audio": base64.b64encode(wav(1.0)).decode()}
+    with patch("service.voice._transcribe", AsyncMock(return_value="")):
+        result = run(V.answer_request("?", video=silent, client=StubClient(checkpoint(), reply="A slide."),
+                                      model=MODEL))
+    assert result.answer == "A slide."       # a silent clip is not a dropped one

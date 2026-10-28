@@ -114,6 +114,15 @@ class Email:
     calendar: bool = False      # carries a text/calendar part or an .ics file
 
 
+def _own_parts(part):
+    """This email's parts, not those of a message forwarded inside it: a forwarded
+    invite's .ics says nothing about the outer email (audit of 2b1e3127)."""
+    yield part
+    if part.is_multipart() and part.get_content_type() != "message/rfc822":
+        for child in part.get_payload():
+            yield from _own_parts(child)
+
+
 def _text(part) -> str:
     try:
         return part.get_content()
@@ -203,10 +212,10 @@ def parse_raw(raw: bytes, fallback_ts: float) -> Email:
     if end > HEADER_CAP:
         raise ValueError("header block too large")
     msg = BytesParser(policy=policy.default).parsebytes(raw)
-    plain, markup, calendar = [], [], False
+    plain, markup = [], []
+    calendar = any(p.get_content_type() == "text/calendar" or str(p.get_filename() or "").lower().endswith(".ics")
+                   for p in _own_parts(msg))
     for part in msg.walk():
-        calendar = calendar or part.get_content_type() == "text/calendar" or (
-            str(part.get_filename() or "").lower().endswith(".ics"))
         if part.is_multipart() or part.get_content_disposition() == "attachment":
             continue
         kind = part.get_content_type()

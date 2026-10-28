@@ -304,6 +304,9 @@ struct OverlayView: View {
 
     // The Ask field (Research's prompt on that tab), its command list and the rule under it.
     @ViewBuilder private var promptArea: some View {
+        if model.attachmentIsScreen, let thumb = model.attachedThumbnail {
+            screenPreview(thumb).padding(.top, 10)
+        }
         inputRow.padding(.top, 10)
         VoiceStatusLine(voice: model.voice)
         if !model.commandSuggestions.isEmpty {
@@ -517,6 +520,27 @@ struct OverlayView: View {
         !model.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.hasAttachment
     }
 
+    /// A `/screen` capture, large enough to read before it is sent: 240 pt wide,
+    /// at most 150 pt tall (aspect-fit), so the notch does not grow past one row of it.
+    private func screenPreview(_ thumb: NSImage) -> some View {
+        ZStack(alignment: .topTrailing) {
+            Image(nsImage: thumb)
+                .resizable().scaledToFit()
+                .frame(width: 240, height: 150)
+                .background(RoundedRectangle(cornerRadius: 12).fill(Theme.chipFill))
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.chipStroke, lineWidth: 1))
+                .accessibilityLabel("Screen capture, not sent yet")
+            Button(action: model.removeAttachment) {
+                Image(systemName: "xmark.circle.fill").font(.wisp(size: 16))
+                    .foregroundStyle(Theme.textSecondary)
+                    .padding(6)
+            }
+            .buttonStyle(.plain).help("Remove attachment").accessibilityLabel("Remove attachment")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     /// The pending image or clip: a small preview, what it is, and a one-tap remove.
     /// Nothing is sent until the person presses send.
     private var attachmentChip: some View {
@@ -585,7 +609,7 @@ struct OverlayView: View {
                 .onPasteCommand(of: [.fileURL, .image]) { providers in
                     _ = attach(from: providers, source: .paste)
                 }
-            if model.attachedImageName != nil || !model.attachedLabel.isEmpty {
+            if !model.attachmentIsScreen, model.attachedImageName != nil || !model.attachedLabel.isEmpty {
                 attachmentChip
             }
             if !model.queueLabel.isEmpty {
