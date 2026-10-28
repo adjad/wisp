@@ -50,6 +50,7 @@ for the managed local engine, never for a remote provider.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -74,16 +75,64 @@ _tier: ContextVar[str | None] = ContextVar("wisp_power_tier", default=None)
 
 
 # --- the setting ------------------------------------------------------------------
+#
+# The switch turns itself off (and the stored value becomes off) when:
+# - Wisp starts: reset_at_launch() runs in the backend's startup and the app
+#   asks again at launch, so a crash or force-quit also ends it;
+# - the user hasn't used Wisp for IDLE_OFF_S: no turn, no notch or window
+#   opened (service/idle.py's user clock; background work never counts);
+# - another app is launched while no turn is running (app_launched(), from the
+#   app's NSWorkspace.didLaunchApplicationNotification observer).
+# A call already sent keeps the cap it was sent with until it ends, exactly as
+# after a manual off; every later call goes uncapped.
 
-def low_power(path: Path | None = None) -> bool:
-    """Whether Low Power Mode is on. Off when unset or unreadable: a cap
-    throttles the whole Mac, so it is never applied without a clear yes."""
-    path = SETTINGS_PATH if path is None else path
+IDLE_OFF_S = 600.0
+
+log = logging.getLogger("wisp.power")
+
+
+def _stored(path: Path) -> bool:
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 — missing or unreadable means off
         return False
     return isinstance(data, dict) and data.get("low_power") is True
+
+
+def low_power(path: Path | None = None) -> bool:
+    """Whether Low Power Mode is on. Off when unset or unreadable: a cap
+    throttles the whole Mac, so it is never applied without a clear yes.
+    Reading it also applies the idle auto-off."""
+    path = SETTINGS_PATH if path is None else path
+    if not _stored(path):
+        return False
+    from service import idle
+    if idle.user_idle_seconds() >= IDLE_OFF_S:
+        auto_off(f"Wisp unused for {IDLE_OFF_S / 60:.0f} minutes", path)
+        return False
+    return True
+
+
+def auto_off(reason: str, path: Path | None = None) -> bool:
+    """Turn Low Power Mode off if it is on, logging why. True when it changed."""
+    path = SETTINGS_PATH if path is None else path
+    if not _stored(path):
+        return False
+    set_low_power(False, path)
+    log.info("Low Power Mode turned off: %s", reason)
+    return True
+
+
+def reset_at_launch(path: Path | None = None) -> bool:
+    return auto_off("Wisp started", path)
+
+
+def app_launched(path: Path | None = None) -> bool:
+    """Another app was launched: off, unless the user is in a turn right now."""
+    from service import idle
+    if idle.foreground_busy():
+        return False
+    return auto_off("another app was opened while Wisp was idle", path)
 
 
 def set_low_power(on: bool, path: Path | None = None) -> bool:

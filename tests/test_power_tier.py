@@ -15,8 +15,15 @@ from service.inference.omlx_client import OMLXClient, _power_fields
 def clean_env(monkeypatch, tmp_path):
     for name in P._ENV.values():
         monkeypatch.delenv(name, raising=False)
-    # Every test starts with Low Power Mode off, in a private settings file.
+    # Every test starts with Low Power Mode off, in a private settings file, and
+    # with the user's idle clock fresh (a long suite would otherwise age it
+    # past the 10-minute auto-off).
     monkeypatch.setattr(P, "SETTINGS_PATH", tmp_path / "power" / "settings.json")
+    import time
+
+    from service import idle
+    monkeypatch.setattr(idle, "_foreground_turns", 0)
+    monkeypatch.setattr(idle, "_last_user_activity", time.monotonic())
 
 
 @pytest.fixture
@@ -333,3 +340,106 @@ def test_memory_capture_wraps_its_extraction_call_in_the_background_tier():
     source = inspect.getsource(MemoryWorker.process)
     tier = source.index("with power_tier(BACKGROUND):")
     assert tier < source.index("await client.chat(") < tier + 200
+
+
+# --- auto-off -----------------------------------------------------------------
+
+@pytest.fixture
+def fresh_user(monkeypatch):
+    """The user just used Wisp; no turn is running."""
+    import time
+
+    from service import idle
+    monkeypatch.setattr(idle, "_foreground_turns", 0)
+    monkeypatch.setattr(idle, "_last_user_activity", time.monotonic())
+    return idle
+
+
+def _age(idle, seconds):
+    idle._last_user_activity -= seconds
+
+
+def test_ten_idle_minutes_turn_it_off_and_store_off(fresh_user, caplog):
+    P.set_low_power(True)
+    _age(fresh_user, P.IDLE_OFF_S - 5)
+    assert P.low_power() is True
+    _age(fresh_user, 10)
+    with caplog.at_level("INFO", logger="wisp.power"):
+        assert P.low_power() is False
+    assert json.loads(P.SETTINGS_PATH.read_text()) == {"low_power": False}
+    assert [r.getMessage() for r in caplog.records] == ["Low Power Mode turned off: Wisp unused for 10 minutes"]
+    assert P.payload_fields() == {}
+
+
+def test_a_turn_resets_the_idle_clock_and_holds_it_while_running(fresh_user):
+    P.set_low_power(True)
+    _age(fresh_user, P.IDLE_OFF_S - 5)
+    fresh_user.begin_foreground()
+    try:
+        _age(fresh_user, 3600)                 # a long turn is never idle
+        assert P.low_power() is True
+    finally:
+        fresh_user.end_foreground()            # ending the turn is use, too
+    assert fresh_user.user_idle_seconds() < 1
+    assert P.low_power() is True
+
+
+def test_opening_the_notch_or_a_window_counts_as_use(fresh_user):
+    P.set_low_power(True)
+    _age(fresh_user, P.IDLE_OFF_S - 5)
+    fresh_user.note_user_activity()
+    _age(fresh_user, 10)
+    assert P.low_power() is True
+
+
+def test_background_model_work_does_not_count_as_use(fresh_user):
+    P.set_low_power(True)
+    _age(fresh_user, P.IDLE_OFF_S + 1)
+    fresh_user.begin("gemma")                  # a background generation
+    fresh_user.end("gemma")
+    fresh_user.touch("gemma")
+    assert P.low_power() is False
+
+
+def test_another_app_launch_turns_it_off_unless_a_turn_is_running(fresh_user, caplog):
+    P.set_low_power(True)
+    fresh_user.begin_foreground()
+    try:
+        assert P.app_launched() is False and P.low_power() is True
+    finally:
+        fresh_user.end_foreground()
+    with caplog.at_level("INFO", logger="wisp.power"):
+        assert P.app_launched() is True
+    assert P.low_power() is False
+    assert "another app was opened" in caplog.records[-1].getMessage()
+    assert P.app_launched() is False           # already off: no second log line
+
+
+def test_off_at_launch_even_when_the_file_said_on(caplog):
+    P.SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    P.SETTINGS_PATH.write_text('{"low_power": true}')
+    with caplog.at_level("INFO", logger="wisp.power"):
+        assert P.reset_at_launch() is True
+    assert json.loads(P.SETTINGS_PATH.read_text()) == {"low_power": False}
+    assert caplog.records[-1].getMessage() == "Low Power Mode turned off: Wisp started"
+    assert P.reset_at_launch() is False
+
+
+def test_the_app_endpoints_report_activity_and_launches(fresh_user):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from service.power_api import router
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    assert client.post("/power", json={"low_power": True}).json() == {"low_power": True}
+    # Coming back after 10 idle minutes: the switch is already off.
+    _age(fresh_user, P.IDLE_OFF_S + 1)
+    assert client.post("/power/activity", json={}).json() == {"low_power": False}
+    assert fresh_user.user_idle_seconds() < 1
+    client.post("/power", json={"low_power": True})
+    assert client.post("/power/app_launched", json={}).json() == {"low_power": False}
+    for path in ("/power/activity", "/power/app_launched"):
+        assert client.post(path, json={}, headers={"Origin": "https://example.com"}).status_code == 403

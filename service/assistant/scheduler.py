@@ -267,6 +267,13 @@ async def run() -> None:
             await _checkin_tick()
         except Exception:  # noqa: BLE001 — never break the scheduler loop
             pass
+        # Low Power Mode's idle auto-off: reading the switch applies it, so it
+        # flips (and is logged) within a tick of the 10 idle minutes.
+        try:
+            from service.inference.power_tier import low_power
+            low_power()
+        except Exception:  # noqa: BLE001 — never break the scheduler loop
+            pass
         await asyncio.sleep(TICK_S)
 
 

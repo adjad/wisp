@@ -305,6 +305,10 @@ async def lifespan(app: FastAPI):
     refuse_sandbox_on_production_port()
     from service.config import quarantine
     quarantine.check()
+    # Low Power Mode is off at every launch, so a crash or force-quit can't
+    # leave it on (service/inference/power_tier.py).
+    from service.inference.power_tier import reset_at_launch
+    reset_at_launch()
     global client
     if remote_only_profile() is None:
         # Make the first-launch engine choice sticky now, not when Settings is first opened.

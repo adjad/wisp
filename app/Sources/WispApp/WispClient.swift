@@ -799,6 +799,26 @@ final class WispClient {
         return Self.lowPowerFlag(data)
     }
 
+    // POST /power/activity -> the user opened the notch or a Wisp window. Keeps
+    // Low Power Mode's 10-minute idle clock fresh; returns whether it is on.
+    @discardableResult
+    func notePowerActivity() async -> Bool? { await postPower("power/activity") }
+
+    // POST /power/app_launched -> another app was launched. The service turns
+    // Low Power Mode off unless a turn is running.
+    @discardableResult
+    func reportAppLaunched() async -> Bool? { await postPower("power/app_launched") }
+
+    private func postPower(_ path: String) async -> Bool? {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent(path))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data("{}".utf8)
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.lowPowerFlag(data)
+    }
+
     private static func lowPowerFlag(_ data: Data) -> Bool? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let flag = obj["low_power"] as? NSNumber,

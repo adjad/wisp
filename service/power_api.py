@@ -40,5 +40,24 @@ async def get_power() -> dict:
 
 @router.post("/power", dependencies=[Depends(_native_only)])
 async def set_power(body: LowPower) -> dict:
+    from service import idle
+    idle.note_user_activity()      # flipping the switch is using Wisp
     power_tier.set_low_power(body.low_power)
+    return _state()
+
+
+@router.post("/power/activity", dependencies=[Depends(_native_only)])
+async def note_activity() -> dict:
+    """The app opened the notch or a Wisp window. The idle auto-off is applied
+    first, so a return after 10 idle minutes finds the switch already off."""
+    from service import idle
+    state = _state()
+    idle.note_user_activity()
+    return state
+
+
+@router.post("/power/app_launched", dependencies=[Depends(_native_only)])
+async def app_launched() -> dict:
+    """Another app was launched (NSWorkspace.didLaunchApplicationNotification)."""
+    power_tier.app_launched()
     return _state()
