@@ -530,7 +530,8 @@ def proposal_call(proposal: dict) -> tuple[str, dict]:
                             "kind": "reminder", "all_day": True}
 
 
-async def run_proposal(proposal: dict, emit, approver, *, test_mode: bool = False) -> str:
+async def run_proposal(proposal: dict, emit, approver, *, test_mode: bool = False,
+                       source: str = "the picture") -> str:
     """Offer a proposal through the same confirmation card a model's tool call gets.
 
     Both tools are confirmed here every time, whatever the access mode or a
@@ -554,7 +555,7 @@ async def run_proposal(proposal: dict, emit, approver, *, test_mode: bool = Fals
         policy = Decision(Tier.DENY, f"you blocked {name} for this target")
     await emit({"type": "tool_call", "id": cid, "name": name, "args": dict(args),
                 "decision": "confirm" if policy.tier is not Tier.DENY else policy.tier.value,
-                "reason": policy.reason or "Suggested from the picture; needs your OK."})
+                "reason": policy.reason or f"Suggested from {source}; needs your OK."})
     needs: list = []
     problem = _validate_args(tool, args)
     if problem:
@@ -566,7 +567,7 @@ async def run_proposal(proposal: dict, emit, approver, *, test_mode: bool = Fals
     else:
         approved = await approver.confirm({
             "id": cid, "tool": name, "args": dict(args),
-            "reason": "Suggested from the picture; nothing is added until you approve.",
+            "reason": f"Suggested from {source}; nothing is added until you approve.",
             "preview": confirm_preview(name, args) or str(args),
             # A picture chose this write, so its card can't leave a standing
             # "Always allow" that later turns would honour without asking.
