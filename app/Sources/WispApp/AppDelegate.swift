@@ -2046,11 +2046,13 @@ extension AppDelegate {
         let addingTask = opened()
         addingTask.model.tab = .day
         addingTask.model.todayTaskTitle = "Lab report draft"
-        for delegate in [idle, pinned, typing, editing, addingTask] { delegate.scheduleCollapse() }
+        let picking = opened()
+        picking.model.pickingFile = true
+        for delegate in [idle, pinned, typing, editing, addingTask, picking] { delegate.scheduleCollapse() }
         try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
         precondition(idle.presentation.desired == .bar, "Control: an idle panel must auto-collapse")
         for (delegate, what) in [(pinned, "a pin"), (typing, "typed input"), (editing, "a draft being edited"),
-                                 (addingTask, "a Day task being typed")] {
+                                 (addingTask, "a Day task being typed"), (picking, "an open file dialog")] {
             precondition(delegate.presentation.desired == .chat, "\(what) must hold the panel open")
         }
         pinned.collapse()
@@ -2077,7 +2079,7 @@ extension AppDelegate {
         addingTask.model.tab = .research
         addingTask.model.prepareTab(byHover: false)
         precondition(addingTask.model.tab == .ask, "⌥Space opens Ask")
-        print("PASS: AppDelegate collapse holds (pin, typing, draft, Day task), unpins on collapse and dismiss; tabs reopen as designed")
+        print("PASS: AppDelegate collapse holds (pin, typing, draft, Day task, file dialog), unpins on collapse and dismiss; tabs reopen as designed")
     }
 
     static func checkResearchReleasesQueueOffTab() async {

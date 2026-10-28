@@ -1011,15 +1011,32 @@ struct OverlayView: View {
         .padding(.top, 8)
     }
 
+    /// The dialog runs beside the notch rather than app-modal: runModal blocked
+    /// every Wisp window until it closed, and, since the notch never activates
+    /// Wisp, macOS bounced the Dock icon for it and could open it behind other
+    /// apps. Wisp is brought forward first, and the dialog sits above the notch.
     private func pickImage() {
+        if let open = model.filePicker {
+            NSApp.activate(ignoringOtherApps: true)
+            open.makeKeyAndOrderFront(nil)
+            return
+        }
         model.cancelAttachmentRead()
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
+        panel.level = NSWindow.Level(DisplayGeometry.shared.layout.windowLevel.rawValue + 1)
+        model.filePicker = panel
         model.pickingFile = true
-        defer { model.pickingFile = false }
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        model.loadAttachment(url: url)
+        NSApp.activate(ignoringOtherApps: true)
+        panel.begin { [model] response in
+            MainActor.assumeIsolated {
+                model.filePicker = nil
+                model.pickingFile = false
+                guard response == .OK, let url = panel.url else { return }
+                model.loadAttachment(url: url)
+            }
+        }
     }
 }
 

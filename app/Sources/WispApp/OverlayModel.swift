@@ -392,13 +392,17 @@ final class OverlayModel: ObservableObject {
     // True while the attach-file dialog is up — it takes key focus from the
     // panel, which must not be mistaken for "the user switched apps".
     var pickingFile = false
+    /// The attach dialog while it is open. It runs beside the notch, not as an
+    /// app-modal dialog, so a second click on the paperclip brings it forward.
+    var filePicker: NSOpenPanel?
 
-    // True while auto-collapse must hold off: the panel is pinned, there is
-    // an edit the person hasn't finished (typed input, a message draft being
-    // edited), or the setup card is open. A mid-task generation does not count;
-    // the notch bar's dot shows it is still working.
+    // True while auto-collapse must hold off: the panel is pinned, a file
+    // dialog it opened is up, there is an edit the person hasn't finished
+    // (typed input, a message draft being edited), or the setup card is open.
+    // A mid-task generation does not count; the notch bar's dot shows it is
+    // still working.
     var holdsOpen: Bool {
-        pinned || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
+        pinned || pickingFile || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
             || voice.isActive || speaker.speaking
             || (tab == .day && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             || knowYou != nil
