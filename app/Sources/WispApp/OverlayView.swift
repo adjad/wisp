@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 struct OverlayView: View {
     @StateObject var model: OverlayModel
@@ -513,7 +514,52 @@ struct OverlayView: View {
     }
 
     private var canSend: Bool {
-        !model.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !model.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.hasAttachment
+    }
+
+    /// The pending image or clip: a small preview, what it is, and a one-tap remove.
+    /// Nothing is sent until the person presses send.
+    private var attachmentChip: some View {
+        HStack(spacing: 6) {
+            if let thumb = model.attachedThumbnail {
+                Image(nsImage: thumb)
+                    .resizable().scaledToFill()
+                    .frame(width: 32, height: 32)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .accessibilityHidden(true)
+            } else {
+                Image(systemName: "paperclip").foregroundStyle(Theme.textMuted)
+            }
+            Text(model.attachedLabel.isEmpty ? (model.attachedImageName ?? "") : model.attachedLabel)
+                .font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
+                .lineLimit(2).frame(maxWidth: 150, alignment: .leading)
+            Button(action: model.removeAttachment) {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.textMuted)
+            }
+            .buttonStyle(.plain).help("Remove attachment").accessibilityLabel("Remove attachment")
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    /// Files and pictures dropped or pasted into Ask become the pending attachment.
+    private func attach(from providers: [NSItemProvider], source: MediaAttachment.Source) -> Bool {
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                _ = provider.loadObject(ofClass: URL.self) { [model] url, _ in
+                    guard let url, url.isFileURL else { return }
+                    Task { @MainActor in model.loadAttachment(url: url, source: source) }
+                }
+                return true
+            }
+            if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { [model] data, _ in
+                    guard let data else { return }
+                    Task { @MainActor in model.attachPasted(imageData: data, source: source) }
+                }
+                return true
+            }
+        }
+        return false
     }
 
     private var inputRow: some View {
@@ -536,27 +582,22 @@ struct OverlayView: View {
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.chipStroke, lineWidth: 1))
                 .contentShape(RoundedRectangle(cornerRadius: 12))
                 .onTapGesture { focused = true }
-            if let name = model.attachedImageName {
-                Label(name, systemImage: "paperclip")
-                    .font(.wisp(.footnote)).foregroundStyle(Theme.textMuted).lineLimit(1).frame(maxWidth: 84)
-                Button(action: model.removeAttachment) {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.textMuted)
-                }.buttonStyle(.plain).help("Remove image").accessibilityLabel("Remove image")
+                .onPasteCommand(of: [.fileURL, .image]) { providers in
+                    _ = attach(from: providers, source: .paste)
+                }
+            if model.attachedImageName != nil || !model.attachedLabel.isEmpty {
+                attachmentChip
             }
             if !model.queueLabel.isEmpty {
                 Text(model.queueLabel)
                     .font(.wisp(.footnote, weight: .medium))
                     .foregroundStyle(Theme.textMuted)
             }
-            // Wisp has no vision model in this release, so an attached image
-            // can't be looked at; the paperclip is a Debug Mode tool only.
-            if model.debugMode {
-                Button(action: pickImage) {
-                    Image(systemName: "paperclip").font(.wisp(size: 16)).foregroundStyle(Theme.textSecondary)
-                }
-                .buttonStyle(.plain).help("Attach an image (Debug Mode: Wisp can't look at images yet)")
-                .accessibilityLabel("Attach an image")
+            Button(action: pickImage) {
+                Image(systemName: "paperclip").font(.wisp(size: 16)).foregroundStyle(Theme.textSecondary)
             }
+            .buttonStyle(.plain).help("Attach an image or a short video clip")
+            .accessibilityLabel("Attach an image or video clip")
             if !model.researchMode {
                 VoiceMicButton(voice: model.voice, speaker: model.speaker, action: model.toggleVoice)
             }
@@ -567,6 +608,9 @@ struct OverlayView: View {
             }
             .buttonStyle(.plain).help(model.willQueuePrompt ? "Queue prompt" : "Send")
             .accessibilityLabel(model.willQueuePrompt ? "Queue prompt" : "Send").disabled(!canSend)
+        }
+        .onDrop(of: [.fileURL, .image], isTargeted: nil) { providers in
+            attach(from: providers, source: .drop)
         }
     }
 
@@ -1066,7 +1110,7 @@ struct OverlayView: View {
         }
         model.cancelAttachmentRead()
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.image]
+        panel.allowedContentTypes = MediaAttachment.acceptedTypes
         panel.allowsMultipleSelection = false
         panel.level = NSWindow.Level(DisplayGeometry.shared.layout.windowLevel.rawValue + 1)
         model.filePicker = panel

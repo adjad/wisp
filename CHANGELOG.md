@@ -4,6 +4,11 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+### Added
+- **Pictures and short clips in Ask.** The notch's paperclip is no longer Debug Mode only, and an image can also be dragged onto Ask or pasted with ⌘V. Swift downscales a picture to a JPEG of at most 1568 px before sending. A clip of 30 s or less is read as up to 8 evenly spaced frames (AVAssetImageGenerator) plus its sound (AVAssetReader → 16 kHz WAV, transcribed by the voice path), not as motion; longer clips are refused in the app and the service. `/agent` now uses `image`, `image_source` and `video {frames, seconds, audio}` (it used to drop `image`) and answers them with one dedicated call in `service/vision.py`: local managed model only, a vision capability check that caches only a yes per checkpoint fingerprint, the foreground gate, thinking off, no tools, `X-oMLX-Cache-Store: off`, and image parts omitted from debug capture. Text in a picture or a clip's transcript is treated as untrusted data. When a picture shows a dated event or to-do, the reply may offer it through the existing `add_calendar_event` / `add_reminder` card; that card is always shown, even with full access, and only the proposal's own fields (title, date, times, location) reach the tool. The media is kept for the request only: chat history stores the question plus a marker such as `[image attached]`. The context estimator counts an image as a flat 280 tokens. Measured on Gemma 4 E4B: about 1 s for a warm picture, about 2.2k prompt tokens and 1–4 s for a clip's 8 frames plus transcript.
+- **`/screen` (Explain my screen).** Listed and run only when Screen Recording is already granted (`CGPreflightScreenCaptureAccess()`); Wisp never asks for it. It captures the main display without Wisp's own windows and shows the capture as a preview with a one-tap discard; nothing is sent until you press send.
+
+
 ### Changed
 - **Versions renumbered down by 1.0.** Wisp is not yet a finished product, so every release is now 0.x (1.4.0 became 0.4.0, 1.3.3 became 0.3.3, and so on). Release tags and GitHub releases were renamed to match, and the old v0.1.0 is now v0.0.0-initial. The next release is 0.5.0.
 

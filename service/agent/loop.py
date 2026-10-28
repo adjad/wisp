@@ -1073,12 +1073,33 @@ _MIN_OUTPUT_TOKENS = 2000
 _MIN_TOOLS = 4
 
 
+_IMAGE_TOKENS = 280   # a picture costs a flat 280 tokens whatever its size
+
+
 def _est_tokens(obj) -> int:
     """Cheap tokenizer-free estimate, same ~4-chars-per-token rule the context
     budgeter uses. Deliberately approximate: it only has to be right enough to
     keep us off the window boundary, and it errs high on JSON (punctuation-
-    dense), which is the safe direction."""
-    return len(obj if isinstance(obj, str) else json.dumps(obj)) // 4
+    dense), which is the safe direction. An image part counts a flat
+    _IMAGE_TOKENS and its base64 is left out of the character count."""
+    if isinstance(obj, str):
+        return len(obj) // 4
+    text = json.dumps(obj)
+    if "image_url" not in text and "input_image" not in text:
+        return len(text) // 4
+    images = 0
+
+    def strip(node):
+        nonlocal images
+        if isinstance(node, dict):
+            if node.get("type") in ("image_url", "input_image"):
+                images += 1
+                return {"type": node["type"]}
+            return {k: strip(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [strip(v) for v in node]
+        return node
+    return len(json.dumps(strip(obj))) // 4 + images * _IMAGE_TOKENS
 
 
 def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
