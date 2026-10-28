@@ -85,6 +85,44 @@ def test_day_first_locale():
     assert resolve_due("3/10", _sent("2026-08-20"), TZ, month_first_order=False).day == date(2026, 10, 3)
 
 
+# Phrases a real-mail check on 2026-10-27 lost (shapes only; no real mail here).
+@pytest.mark.parametrize("phrase, want", [
+    ("Monday, August 31, 2026 6:00 PM-7:30 PM.", "2026-08-31"),   # "PM-7" read as UTC-7
+    ("August 31 6:00 PM - 7:30 PM", "2026-08-31"),                 # read as two dates
+    ("August 31 6-7:30pm", "2026-08-31"),
+    ("Sep 22 9am to 10am", "2026-09-22"),
+    ("Tuesday Sep 22, 2026 ⋅ 11:30am – 3:30pm", "2026-09-22"),     # Google Calendar's own line
+    ("Friday, October 23, from 4:00 - 9:00 PM", "2026-10-23"),
+    ("Fri, Oct 23", "2026-10-23"),
+    ("Wednesday, September 2", "2026-09-02"),
+    ("10 days remaining", "2026-09-09"),
+    ("ten days left", "2026-09-09"),
+    ("2 weeks to go", "2026-09-13"),
+])
+def test_event_lines_from_real_mail_resolve(phrase, want):
+    got = resolve_due(phrase, _sent("2026-08-30"), TZ, month_first_order=True)
+    assert got.day is not None and got.day.isoformat() == want
+
+
+@pytest.mark.parametrize("phrase", ["Friday, October 22", "Nov 3-5", "6:00 PM-7:30 PM"])
+def test_a_wrong_weekday_a_day_range_or_a_bare_clock_still_refuse(phrase):
+    # Oct 22 2026 is a Thursday: one of the two is a typo, so neither is trusted.
+    assert resolve_due(phrase, _sent("2026-08-30"), TZ, month_first_order=True).day is None
+
+
+@pytest.mark.parametrize("phrase, sent, want", [
+    ("Oct 22 - 6:00 PM", "2026-10-20", "2026-10-22"), ("Oct 22 — 6pm", "2026-10-20", "2026-10-22"),
+    ("Oct 22 — 6pm", "2026-12-28", "2027-10-22"), ("Nov 3 - 5pm", "2026-10-20", "2026-11-03"),
+    ("Oct 22 to 5pm", "2026-10-20", "2026-10-22"), ("Sep 22 - 3:00 PM", "2026-10-20", "2027-09-22"),
+    ("Wed, Oct 22 – 6:00 PM", "2026-09-18", "2026-10-22"),
+    ("Oct 22 6:00 PM - 7:30 PM", "2026-10-20", "2026-10-22"), ("Oct 22 from 6 to 7:30pm", "2026-10-20", "2026-10-22"),
+])
+def test_a_day_then_a_start_time_is_not_a_clock_range(phrase, sent, want):
+    # Audit of 2020ee5f: "22 - 6:00 PM" was dropped as a range, leaving "Oct", due Oct 31.
+    # Every expected value here is what origin/main 91e1de60 already gave.
+    assert resolve_due(phrase, _sent(sent), TZ, month_first_order=True).day.isoformat() == want
+
+
 # --- extraction -------------------------------------------------------------------
 
 RAW = (b"From: Harbor Property <leasing@harbor.example>\r\nTo: Sam <sam@example.com>\r\n"
@@ -163,6 +201,106 @@ def test_validate_drops_long_past():
         [{"what": "Notice", "date_phrase": "by June 1", "evidence": "Written notice must reach us by June 1"}],
         email, tz=TZ, today=date(2026, 10, 26), month_first=True)
     assert kept == [] and dropped == {"past": 1}
+
+
+def _mime(subject: bytes, parts: list[tuple[bytes, bytes]]) -> bytes:
+    head = (b"From: Store <orders@shop.example>\r\nTo: Sam <sam@example.com>\r\nSubject: " + subject
+            + b"\r\nDate: Wed, 16 Sep 2026 09:00:00 -0700\r\nMessage-ID: <m@shop.example>\r\n")
+    if len(parts) == 1:
+        kind, body = parts[0]
+        return head + b"Content-Type: " + kind + b"; charset=utf-8\r\n\r\n" + body
+    out = head + b'MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary="b"\r\n\r\n'
+    for kind, body in parts:
+        out += b"--b\r\nContent-Type: " + kind + b"; charset=utf-8\r\n\r\n" + body + b"\r\n"
+    return out + b"--b--\r\n"
+
+
+def test_a_blank_plain_part_does_not_hide_the_html():
+    raw = _mime(b"Order confirmation", [(b"text/plain", b"\r\n  \r\n"),
+                                        (b"text/html", b"<p>Ebook license: redeem by <b>03/16/2027</b></p>")])
+    assert "redeem by 03/16/2027" in extract.parse_raw(raw, 0).body
+    both = _mime(b"x", [(b"text/plain", b"Plain says Friday"), (b"text/html", b"<p>HTML says Monday</p>")])
+    assert extract.parse_raw(both, 0).body == "Plain says Friday"
+
+
+_OUTLOOK_REPLY = (b"Good day everyone. We do not have a meeting tomorrow.\r\n\r\nPat\r\n\r\n"
+                  b"________________________________\r\nFrom: Pat Lee\r\nSent: Saturday, 01 August 2026 12:29\r\n"
+                  b"Subject: Office Hours\r\nWhen: Monday, August 3, 2026 6:00 PM-7:30 PM.\r\n")
+
+
+def test_an_outlook_reply_drops_the_superseded_original():
+    body = extract.parse_raw(_mime(b"Re: Office Hours", [(b"text/plain", _OUTLOOK_REPLY)]), 0).body
+    assert "We do not have a meeting tomorrow." in body and "When:" not in body
+    bare = _OUTLOOK_REPLY.replace(b"________________________________\r\n", b"")
+    assert "When:" not in extract.parse_raw(_mime(b"RE: Office Hours", [(b"text/plain", bare)]), 0).body
+
+
+def test_an_outlook_forward_keeps_its_content():
+    body = extract.parse_raw(_mime(b"FW: Office Hours", [(b"text/plain", _OUTLOOK_REPLY)]), 0).body
+    assert "When: Monday, August 3, 2026" in body
+
+
+@pytest.mark.parametrize("subject", [b"RE: FW: Office Hours", b"Fwd: Office Hours"])
+def test_a_reply_to_a_forward_keeps_the_forwarded_content(subject):
+    assert "When: Monday" in extract.parse_raw(_mime(subject, [(b"text/plain", _OUTLOOK_REPLY)]), 0).body
+
+
+def test_a_body_that_starts_with_a_from_sent_block_keeps_it():
+    # A web form's notification: cutting at the block would leave nothing at all.
+    form = b"From: Website contact form\r\nSent: Mon\r\nMessage: please call back by Friday\r\n"
+    assert "call back by Friday" in extract.parse_raw(_mime(b"New message", [(b"text/plain", form)]), 0).body
+
+
+def test_a_rule_of_underscores_alone_is_not_quoted_history():
+    raw = _mime(b"Form", [(b"text/plain", b"Sign here\r\n__________\r\nReturn it by Friday.\r\n")])
+    assert "Return it by Friday." in extract.parse_raw(raw, 0).body
+
+
+_CALENDAR = (b"This event has been canceled and removed from your calendar.\r\n\r\nFamily Send-Off\r\n"
+             b"Friday Oct 30, 2026 \xe2\x8b\x85 4pm \xe2\x80\x93 6pm\r\n")
+
+
+_ICS = (b"text/calendar", b"BEGIN:VCALENDAR\r\nMETHOD:CANCEL\r\nEND:VCALENDAR")
+_SEND_OFF = {"what": "Family Send-Off", "date_phrase": "Friday Oct 30, 2026",
+             "evidence": "Family Send-Off Friday Oct 30, 2026"}
+
+
+@pytest.mark.parametrize("subject, parts", [
+    (b"Canceled event: Family Send-Off @ Fri Oct 30, 2026 4pm - 6pm (Sam)", [(b"text/plain", _CALENDAR)]),
+    (b"Canceled event with note: Family Send-Off", [(b"text/plain", _CALENDAR)]),
+    (b"Cancelled: Family Send-Off", [(b"text/plain", _CALENDAR), _ICS]),     # Outlook: needs the invite part
+])
+def test_a_cancellation_notice_gives_no_reminder(subject, parts):
+    email = extract.parse_raw(_mime(subject, parts), 0)
+    kept, dropped = extract.validate([_SEND_OFF], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
+    assert kept == [] and dropped == {"cancelled": 1}
+
+
+def test_a_bare_canceled_subject_without_an_invite_is_not_a_cancellation():
+    # Audit of 2020ee5f: "Canceled:" alone also heads subscription and order mail with real dates.
+    body = b"Your subscription was canceled. Renew by Oct 30, 2026 to keep your files.\r\n"
+    email = extract.parse_raw(_mime(b"Canceled: Your subscription - renew by Oct 30", [(b"text/plain", body)]), 0)
+    item = {"what": "Renew the subscription", "date_phrase": "Oct 30, 2026", "evidence": "Renew by Oct 30, 2026"}
+    kept, _ = extract.validate([item], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
+    assert [k["due"] for k in kept] == ["2026-10-30"]
+
+
+@pytest.mark.parametrize("what", ["Rebook flight that was cancelled", "Request refund for order that was canceled",
+                                  "Confirm whether practice is cancelled"])
+def test_a_follow_up_about_a_cancellation_stays(what):
+    # Audit of 2020ee5f: matching titles on "was cancelled" dropped real follow-ups.
+    email = extract.parse_raw(_mime(b"Updated invitation: Family Send-Off", [(b"text/plain", _CALENDAR)]), 0)
+    kept, _ = extract.validate([{**_SEND_OFF, "what": what}], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
+    assert [k["what"] for k in kept] == [what]
+
+
+def test_a_quote_with_a_swapped_dot_or_dash_still_matches():
+    email = extract.parse_raw(_mime(b"Invitation: Orientation", [(b"text/plain",
+        b"Orientation\r\nTuesday Nov 3, 2026 \xe2\x8b\x85 11:30am \xe2\x80\x93 3:30pm\r\n")]), 0)
+    item = {"what": "Orientation", "date_phrase": "Tuesday Nov 3, 2026",
+            "evidence": "Orientation Tuesday Nov 3, 2026 • 11:30am - 3:30pm"}
+    kept, _ = extract.validate([item], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
+    assert [k["due"] for k in kept] == ["2026-11-03"]
 
 
 def test_parse_reply():
@@ -949,7 +1087,8 @@ def test_about_explains_mail_suggestions():
 
 
 @pytest.mark.parametrize("filler", [b"\n" * 250_000, b" \n" * 125_000, b"<td> </td>\n" * 20_000,
-                                    b"<script>x" * 25_000, b"> \n" * 80_000])
+                                    b"<script>x" * 25_000, b"> \n" * 80_000, b"From: a\n" * 80_000,
+                                    b"_" * 200_000 + b"\n", b"__________\n\n" * 40_000])
 def test_parsing_is_linear_on_whitespace_heavy_mail(filler):
     # Audit of bc5db6d8: ^\s* backtracked over blank-line runs; 60k newlines froze the loop ~59 s.
     import time

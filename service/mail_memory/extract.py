@@ -42,6 +42,19 @@ _LINKISH = re.compile(r"https?://|www\.|\b[\w-]+\.(?:com|net|org|io|co|ly|me|app
 # over a run of blank lines; audit of bc5db6d8), and runs of whitespace are
 # collapsed before the splits.
 _QUOTED = re.compile(r"(?im)^[ \t]*(?:On [^\n]{1,300}wrote:|[- ]*Original Message[- ]*|Begin forwarded message:|>[^\n]*)$")
+# Outlook quotes the original under a rule of underscores or a "From: / Sent:" block. In a
+# reply that original is the superseded version ("no meeting tomorrow" above the invite);
+# in a forward it is the content, so forwards keep it, and so does a body that STARTS with
+# the block (a web form's "From: / Sent: / Message:"), where nothing would be left.
+_OUTLOOK_QUOTED = re.compile(r"(?im)^[ \t]*_{8,}[ \t]*\n(?:[ \t]*\n)?[ \t]*From:[^\n]{0,300}$"
+                             r"|^[ \t]*From:[^\n]{1,300}\n[ \t]*Sent:[^\n]{0,300}$")
+_FORWARD = re.compile(r"^\s*(?:(?:re|aw)\s*:\s*)*(?:fw|fwd)\s*:", re.I)
+# Calendar cancellation notices. Google's subject says so itself ("Canceled event: ...");
+# Outlook's bare "Canceled: ..." counts only with a calendar part, since "Canceled: your
+# subscription - renew by Oct 30" is a reminder. An item merely MENTIONING a cancellation
+# ("Rebook the flight that was cancelled") is a follow-up and stays.
+_CANCEL_EVENT = re.compile(r"^\s*(?:(?:re|fw|fwd)\s*:\s*)*cancell?ed\s+event(?:\s+with\s+note)?\s*:", re.I)
+_CANCEL_BARE = re.compile(r"^\s*(?:(?:re|fw|fwd)\s*:\s*)*cancell?ed\s*:", re.I)
 _FOOTER = re.compile(r"(?im)^[ \t]*(?:unsubscribe|manage (?:your )?(?:email )?(?:preferences|notifications)|"
                      r"you(?:'re| are) receiving this)\b")
 _SPACES = re.compile(r"[ \t\f\v\u00a0\u200b]+")
@@ -98,6 +111,7 @@ class Email:
     sent: datetime
     message_id: str
     body: str
+    calendar: bool = False      # carries a text/calendar part or an .ics file
 
 
 def _text(part) -> str:
@@ -165,12 +179,15 @@ def _html_text(markup: str) -> str:
     return parser.text()
 
 
-def _clean(body: str) -> str:
+def _clean(body: str, *, forward: bool = False) -> str:
     """Collapse whitespace, then cut quoted history and footers. Linear time."""
     body = body.replace("\r\n", "\n").replace("\r", "\n")[:TEXT_CAP * 2]
     body = _SPACES.sub(" ", body)
     body = _BLANKS.sub("\n\n", body)[:TEXT_CAP]
     body = _QUOTED.split(body, maxsplit=1)[0]
+    if not forward:
+        above = _OUTLOOK_QUOTED.split(body, maxsplit=1)[0]
+        body = above if above.strip() else body
     body = _FOOTER.split(body, maxsplit=1)[0]
     return body.strip()[:BODY_CAP]
 
@@ -186,8 +203,10 @@ def parse_raw(raw: bytes, fallback_ts: float) -> Email:
     if end > HEADER_CAP:
         raise ValueError("header block too large")
     msg = BytesParser(policy=policy.default).parsebytes(raw)
-    plain, markup = [], []
+    plain, markup, calendar = [], [], False
     for part in msg.walk():
+        calendar = calendar or part.get_content_type() == "text/calendar" or (
+            str(part.get_filename() or "").lower().endswith(".ics"))
         if part.is_multipart() or part.get_content_disposition() == "attachment":
             continue
         kind = part.get_content_type()
@@ -195,7 +214,11 @@ def parse_raw(raw: bytes, fallback_ts: float) -> Email:
             plain.append(_text(part))
         elif kind == "text/html":
             markup.append(_text(part))
-    body = _clean("\n".join(plain) if plain else _html_text("\n".join(markup)))
+    # Many receipts carry an EMPTY text/plain part beside the real HTML one: blank
+    # plain text is no text, or the model is handed an empty email.
+    text = "\n".join(plain)
+    forward = bool(_FORWARD.match(str(msg.get("Subject", ""))))
+    body = _clean(text if text.strip() else _html_text("\n".join(markup)), forward=forward)
     try:
         sent = parsedate_to_datetime(str(msg.get("Date", "")))
         if sent.tzinfo is None:
@@ -203,7 +226,8 @@ def parse_raw(raw: bytes, fallback_ts: float) -> Email:
     except Exception:  # noqa: BLE001 — a missing or bad Date header falls back to Mail's received time
         sent = datetime.fromtimestamp(fallback_ts, timezone.utc)
     return Email(sender=str(msg.get("From", "")), to=str(msg.get("To", "")), subject=str(msg.get("Subject", "")),
-                 sent=sent, message_id=str(msg.get("Message-ID", "")).strip(), body=body)
+                 sent=sent, message_id=str(msg.get("Message-ID", "")).strip(), body=body,
+                 calendar=calendar)
 
 
 _RULES = """You find long-term reminders in ONE email for the user named above. Today is {today}.
@@ -250,8 +274,14 @@ def parse_reply(text: str) -> list[dict] | None:
     return [i for i in items if isinstance(i, dict)]
 
 
+# Look-alike punctuation the model swaps when it copies: Google Calendar's "9am ⋅ Tue"
+# came back with "•". Both sides of the quote check fold to one glyph each.
+_GLYPHS = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"', "•": "·", "⋅": "·", "∙": "·",
+                         "–": "-", "—": "-", "‒": "-", "−": "-"})
+
+
 def _norm(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").replace("’", "'").replace("“", '"').replace("”", '"')).strip().lower()
+    return re.sub(r"\s+", " ", (s or "").translate(_GLYPHS)).strip().lower()
 
 
 def validate(items: list[dict], email: Email, *, tz: str, today: date,
@@ -264,6 +294,12 @@ def validate(items: list[dict], email: Email, *, tz: str, today: date,
     def drop(reason: str) -> None:
         dropped[reason] = dropped.get(reason, 0) + 1
 
+    subject = email.subject or ""
+    if _CANCEL_EVENT.match(subject) or (email.calendar and _CANCEL_BARE.match(subject)):
+        # A cancelled event is nothing to do; the model still lists it, marked "(canceled)".
+        for _ in items[:MAX_ITEMS * 2]:
+            drop("cancelled")
+        return kept, dropped
     for it in items[:MAX_ITEMS * 2]:
         what = " ".join(str(it.get("what") or "").split())[:WHAT_MAX]
         phrase = " ".join(str(it.get("date_phrase") or "").split())
