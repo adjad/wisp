@@ -6,12 +6,13 @@ import Foundation
 /// the MAIL and TEXTS rows' details. Reads the text the service already sent;
 /// never a model call.
 ///
-/// The brief is a greeting line, then bold or `#` section headers ("**🧭 Keeping
-/// in mind**", "**📅 Today**", "**✅ Reminders due today**", "**📧 Inbox — …**",
-/// "**💬 Messages**"), then a closing offer. A header that isn't one of those
-/// ("**Worth a look**", a conversation's name) belongs to the section above it.
+/// The brief is a greeting line, then bold or `#` section headers ("**🌱 How
+/// Wisp works**" on the first launch day only, "**🧭 Keeping in mind**", "**📅
+/// Today**", "**✅ Reminders due today**", "**📧 Inbox — …**", "**💬
+/// Messages**"), then a closing offer. A header that isn't one of those ("**Worth
+/// a look**", a conversation's name) belongs to the section above it.
 struct ComposedBrief: Equatable {
-    enum Kind: Equatable { case keeping, calendar, reminders, mail, messages }
+    enum Kind: Equatable { case intro, keeping, calendar, reminders, mail, messages }
 
     struct Section: Equatable {
         let kind: Kind
@@ -26,12 +27,23 @@ struct ComposedBrief: Equatable {
         sections.filter { $0.kind == kind }.flatMap(\.lines)
     }
 
-    /// The short summary under the Brief's lede: what Wisp is keeping in mind.
+    /// The summary under the Brief's lede: what Wisp is keeping in mind.
     /// Calendar shows as a clean event list instead, from the day's plan, and an
     /// unknown header stays inside the section above it, so mail and messages
     /// content can never reach the summary.
-    var cutDown: [String] {
-        Array(lines(.keeping).prefix(4))
+    var keeping: [String] { lines(.keeping) }
+
+    /// What Wisp does on its own and when, said in the first launch day's brief
+    /// (brief.py rhythm_line); empty on any other day.
+    var intro: [String] { lines(.intro) }
+
+    /// Lines of "Keeping in mind" the Brief shows before "Show all".
+    static let keepingShown = 4
+
+    /// The "Keeping in mind" lines on screen, and how many more "Show all" opens.
+    static func inMind(_ lines: [String], showAll: Bool) -> (shown: [String], more: Int) {
+        guard !showAll, lines.count > keepingShown else { return (lines, 0) }
+        return (Array(lines.prefix(keepingShown)), lines.count - keepingShown)
     }
 
     static func parse(_ text: String) -> ComposedBrief {
@@ -78,6 +90,7 @@ struct ComposedBrief: Equatable {
     static func kind(_ header: String) -> Kind? {
         let name = String(header.unicodeScalars.drop { !CharacterSet.alphanumerics.contains($0) })
             .lowercased()
+        if name.hasPrefix("how wisp works") { return .intro }
         if name.hasPrefix("keeping in mind") { return .keeping }
         if name.hasPrefix("today") { return .calendar }
         if name.hasPrefix("reminders") { return .reminders }
@@ -176,6 +189,12 @@ struct BriefDetail: Equatable {
     /// System Settings > Internet Accounts.
     static let internetAccounts = Action(label: "Open Internet Accounts ↗",
                                          url: "x-apple.systempreferences:com.apple.Internet-Accounts-Settings.extension")
+    /// System Settings > Privacy & Security > Contacts.
+    static let contactsAccess = Action(label: "Open Contacts settings ↗",
+                                       url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Contacts")
+    /// Wisp's own Settings > Google, where a Google account is reconnected. Not a
+    /// System Settings page, so the Brief opens it itself (BriefFix.open).
+    static let googleSettings = Action(label: "Reconnect in Settings ▸ Google", url: "wisp-settings:google")
 
     /// What a list shows for a source Wisp couldn't read: why, and the setting
     /// that fixes it in place of "Open <app>".
@@ -183,7 +202,7 @@ struct BriefDetail: Equatable {
         var lines = [Line(id: "access", leading: "", text: access.headline, muted: true)]
         let detail = access.detail
         if !detail.isEmpty { lines.append(Line(id: "access-detail", leading: "", text: detail, muted: true)) }
-        return BriefDetail(lines: lines, source: source, action: access.fix)
+        return BriefDetail(lines: lines, source: source, action: access.fixLink)
     }
 
     static func calendar(allDay: [String], events: [(title: String, start: Double, end: Double?)],
@@ -203,8 +222,9 @@ struct BriefDetail: Equatable {
         return BriefDetail(lines: lines, source: .calendar)
     }
 
-    /// Said in place of the summary's section when today has none yet.
-    static let noSummaryYet = "Today's summary arrives with your morning brief · or press Refresh"
+    /// Said in place of the summary's section when today has none yet and the
+    /// summary times couldn't be read (BriefSchedule.noSummaryLine says them).
+    static let noSummaryYet = "Today's summary isn't ready yet · or press Refresh"
 
     /// The mail section of the composed Daily Summary, then the emails that
     /// need you as "Sender · subject" (repeats collapsed ×N, people first, none
@@ -217,7 +237,7 @@ struct BriefDetail: Equatable {
     /// is there it replaces the summary's section, which lists senders and
     /// subjects: the user asked for "an actual email summary not email headers".
     static func mail(needing: [BriefNeed], ready: Bool, summary: [String]? = [], prose: String? = nil,
-                     access: SourceAccess? = nil) -> BriefDetail {
+                     access: SourceAccess? = nil, noSummary: String = noSummaryYet) -> BriefDetail {
         guard ready else {
             if let access, !access.readable { return unread(access, source: .mail) }
             return BriefDetail(lines: [Line(id: "empty", leading: "", text: "Mail hasn't been checked yet", muted: true)], source: .mail)
@@ -225,10 +245,13 @@ struct BriefDetail: Equatable {
         let written = prose?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let section = written.isEmpty ? summary ?? [] : [written]
         // Partly read (one Google account unchecked): what was read, under a
-        // line naming what wasn't, so the list never reads as all the mail.
+        // line naming what wasn't, so the list never reads as all the mail. A
+        // sign-in to redo links to Settings > Google in place of "Open Mail".
         var lines: [Line] = []
+        var fix: Action? = nil
         if let access, !access.readable {
             lines.append(Line(id: "access", leading: "", text: access.headline, muted: true))
+            fix = access.fixLink
         }
         lines += written.isEmpty
             ? section.prefix(8).enumerated().map { Line(id: "summary-\($0.offset)", leading: "", text: $0.element) }
@@ -253,7 +276,8 @@ struct BriefDetail: Equatable {
                               muted: true))
         }
         if lines.isEmpty { lines = [Line(id: "empty", leading: "", text: "Nothing needs a reply", muted: true)] }
-        return BriefDetail(lines: noted(lines, missing: summary == nil && written.isEmpty), source: .mail)
+        return BriefDetail(lines: noted(lines, missing: summary == nil && written.isEmpty, note: noSummary), source: .mail,
+                           action: fix)
     }
 
     /// The messages section of the composed Daily Summary without its quotes
@@ -261,7 +285,8 @@ struct BriefDetail: Equatable {
     /// for how long. Never the texts themselves. `summary` is nil when today
     /// has no composed summary, as for mail.
     static func texts(needing: [BriefNeed], ready: Bool, needsAccess: Bool = false, summary: [String]? = [],
-                      access: SourceAccess? = nil, age: (Double) -> String) -> BriefDetail {
+                      access: SourceAccess? = nil, noSummary: String = noSummaryYet,
+                      age: (Double) -> String) -> BriefDetail {
         if needsAccess {
             return BriefDetail(lines: [Line(id: "access", leading: "",
                                             text: "Wisp can't read your texts until it has Full Disk Access.", muted: true)],
@@ -284,11 +309,11 @@ struct BriefDetail: Equatable {
         }
         if waiting.count > 6 { lines.append(Line(id: "more", leading: "", text: "+\(waiting.count - 6) more", muted: true)) }
         if lines.isEmpty { lines = [Line(id: "empty", leading: "", text: "No texts need you", muted: true)] }
-        return BriefDetail(lines: noted(lines, missing: summary == nil), source: .messages)
+        return BriefDetail(lines: noted(lines, missing: summary == nil, note: noSummary), source: .messages)
     }
 
-    private static func noted(_ lines: [Line], missing: Bool) -> [Line] {
-        missing ? [Line(id: "no-summary", leading: "", text: noSummaryYet, muted: true)] + lines : lines
+    private static func noted(_ lines: [Line], missing: Bool, note: String) -> [Line] {
+        missing ? [Line(id: "no-summary", leading: "", text: note, muted: true)] + lines : lines
     }
 
     static func soon(_ items: [UpcomingItem]?, when: (UpcomingItem) -> String) -> BriefDetail {
@@ -301,6 +326,57 @@ struct BriefDetail: Equatable {
         let source = items.first.map { DayTimeline.briefSource($0.isReminder ? "reminders" : $0.source) } ?? .reminders
         return BriefDetail(lines: lines, source: source)
     }
+}
+
+/// When the Daily Summary is composed (`/assistant/summary_schedule`, the
+/// service's config.get_daily_summary_times) and, on the first launch day,
+/// whether the first one is being built now (scheduler.first_brief_building).
+struct BriefSchedule: Equatable {
+    let morning: Int
+    let evening: Int
+    var buildingFirst = false
+
+    /// Nil unless both hours are in their half of the day, as the service keeps them.
+    static func parse(_ obj: [String: Any]?) -> BriefSchedule? {
+        guard let times = obj?["times"] as? [String: Any],
+              let morning = (times["morning"] as? NSNumber)?.intValue, (0..<12).contains(morning),
+              let evening = (times["evening"] as? NSNumber)?.intValue, (12..<24).contains(evening) else { return nil }
+        return BriefSchedule(morning: morning, evening: evening,
+                             buildingFirst: (obj?["first_brief_building"] as? NSNumber)?.boolValue ?? false)
+    }
+
+    /// The "no summary yet" line with the real times: the morning one until
+    /// its hour, then both (a missed run catches up on its own, so no promise
+    /// of the very next one).
+    func noSummaryLine(hour: Int, locale: Locale = WispClock.fixedLocale) -> String {
+        let when = hour < morning ? "Today's summary arrives at \(WispClock.hour(morning, locale: locale))"
+            : "Summaries arrive at \(WispClock.hour(morning, locale: locale)) and \(WispClock.hour(evening, locale: locale))"
+        return when + " · or press Refresh"
+    }
+}
+
+extension SourceAccess {
+    /// The link that fixes it: the System Settings page (`fix`), else Wisp's own
+    /// Settings > Google for a Google account to reconnect, else Contacts.
+    var fixLink: BriefDetail.Action? {
+        if let fix { return fix }
+        guard state == .unavailable else { return nil }
+        if blocked == "google_mail", !unchecked.reconnect.isEmpty { return BriefDetail.googleSettings }
+        if blocked == "contacts_access" { return BriefDetail.contactsAccess }
+        return nil
+    }
+
+    /// Contacts, which only the app reads (ContactsReader), so texts show names:
+    /// a row only once macOS said no and Contacts is on in Wisp's Settings.
+    /// Never before macOS was asked, so a new install isn't told off for it.
+    static func contacts(denied: Bool, enabled: Bool) -> SourceAccess? {
+        guard denied, enabled else { return nil }
+        return SourceAccess(source: "contacts", ready: false, state: "unavailable", blocked: "contacts_access",
+                            reason: "Turn on Contacts for Wisp in System Settings > Privacy & Security, so texts show names, not numbers.")
+    }
+
+    /// The row's icon; Contacts has none among the Day's sources.
+    var symbol: String { source == "contacts" ? "person.crop.circle" : DayTimeline.sourceSymbol(source) }
 }
 
 /// One email or text the Brief describes, from a workspace attention item
@@ -650,7 +726,7 @@ enum BriefTiles {
         }
         if let unread {
             lines.append(BriefDetail.Line(id: "access", leading: "", text: unread.headline, muted: true))
-            return BriefDetail(lines: lines, source: .reminders, action: unread.fix)
+            return BriefDetail(lines: lines, source: .reminders, action: unread.fixLink)
         }
         return BriefDetail(lines: lines, source: .reminders)
     }
