@@ -13,7 +13,7 @@ through the agent loop: no tools are offered, and the context estimator never
 sees the base64.
 
 Rules:
-- IMPORTANT: the image never leaves your Mac. It runs only when the Ask role is
+- IMPORTANT: the picture itself never leaves your Mac. It runs only when the Ask role is
   bound to the local managed engine and no remote-only profile is active; any
   other binding answers `unavailable` and sends nothing.
 - IMPORTANT: only a model that provably has a vision tower gets the image.
@@ -29,8 +29,11 @@ Rules:
   beyond those fields.
 - IMPORTANT: a foreground turn, never concurrent with another call on the same
   model, bounded by a deadline, thinking OFF, temperature 0.
-- Wisp keeps no copy and it never leaves your Mac: the image, frames, audio and
-  transcript live in this request only. Best effort at the engine, the request
+- Wisp keeps no copy of the picture and the picture itself never leaves your
+  Mac: the image, frames, audio and transcript live in this request only. The
+  ANSWER is an ordinary assistant turn, saved in the chat like any other, so a
+  description of the picture can reach later turns (and a cloud model, if one
+  is on); never claim more than "the picture itself". Best effort at the engine, the request
   carries `X-oMLX-Cache-Store: off` (the bundled oMLX's SSD prefix cache may
   otherwise hold the prompt's KV, so never claim more than that).
   Debug capture records image parts as `omitted`.
@@ -54,7 +57,12 @@ from service import idle
 IMAGE_TOKENS = 280               # flat cost of one image, whatever its size
 MAX_FRAMES = 8
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
+# A small file can still decode to a huge bitmap (a 8 MB PNG of one colour can
+# be 30,000 px a side), and the engine decodes every frame of a clip. The app
+# sends at most 1568 px; anything past this is refused before the engine sees it.
+MAX_IMAGE_SIDE = 4096
 MAX_VIDEO_SECONDS = 30.5
+SOUND_DROPPED = "\n\n(I couldn't use this clip's sound, so this is from its frames only.)"
 CLIP_TOO_LONG = "That clip is longer than 30 seconds. Wisp can read clips up to 30 seconds."
 _TIMEOUT_S = 45.0
 _IDLE_POLL_S = 0.1
@@ -63,7 +71,7 @@ _NO_CACHE_STORE = {"X-oMLX-Cache-Store": "off"}
 
 _DATA_URL = re.compile(r"^data:image/(jpeg|png|webp);base64,", re.IGNORECASE)
 _TIME = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
-_CTRL = re.compile(r"[\x00-\x1f\x7f]")
+_CTRL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _PROPOSAL_KEYS = ("kind", "title", "date", "start_time", "end_time", "location", "notes")
 
 # Checkpoint fingerprint -> it has a vision tower. Only a yes is kept (see voice.py).
@@ -116,7 +124,63 @@ def decode_image(url: str) -> bytes:
                 or (kind == "webp" and data[:4] == b"RIFF" and data[8:12] == b"WEBP"))
     if not magic_ok:
         raise ValueError("That picture couldn't be read.")
+    size = image_size(kind, data)
+    if size is None or min(size) < 1:
+        raise ValueError("That picture couldn't be read.")
+    if max(size) > MAX_IMAGE_SIDE:
+        raise ValueError("That picture is too large. Try a smaller one.")
     return data
+
+
+def image_size(kind: str, data: bytes) -> tuple[int, int] | None:
+    """(width, height) from the file's own header, without decoding pixels; None if unreadable."""
+    try:
+        if kind == "png":
+            if len(data) < 24 or data[12:16] != b"IHDR":
+                return None
+            return struct.unpack(">II", data[16:24])
+        if kind == "webp":
+            chunk = data[12:16]
+            if chunk == b"VP8X" and len(data) >= 30:
+                return (1 + int.from_bytes(data[24:27], "little"), 1 + int.from_bytes(data[27:30], "little"))
+            if chunk == b"VP8L" and len(data) >= 25 and data[20:21] == b"\x2f":
+                bits = int.from_bytes(data[21:25], "little")
+                return (1 + (bits & 0x3FFF), 1 + ((bits >> 14) & 0x3FFF))
+            if chunk == b"VP8 " and len(data) >= 30 and data[23:26] == b"\x9d\x01\x2a":
+                w, h = struct.unpack("<HH", data[26:30])
+                return (w & 0x3FFF, h & 0x3FFF)
+            return None
+        # JPEG: walk every marker up to the first start-of-scan, as a decoder
+        # does, and keep the LARGEST frame header. A file can carry a small SOF
+        # followed by a huge one; the decoder believes the last, so checking only
+        # the first would let the huge one through.
+        largest: tuple[int, int] | None = None
+        i = 2
+        while i + 3 < len(data):
+            if data[i] != 0xFF:
+                return None
+            marker = data[i + 1]
+            if marker == 0xFF:
+                i += 1
+                continue
+            if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                i += 2
+                continue
+            if marker in (0xDA, 0xD9):          # start of scan / end of image: no more headers
+                break
+            length = struct.unpack(">H", data[i + 2:i + 4])[0]
+            if length < 2:
+                return None
+            if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                if i + 9 > len(data):
+                    return None
+                h, w = struct.unpack(">HH", data[i + 5:i + 9])
+                if largest is None or max(w, h) > max(largest):
+                    largest = (w, h)
+            i += 2 + length
+        return largest
+    except (struct.error, IndexError):
+        return None
 
 
 def validate_media(images, video_seconds: float | None = None) -> list[str]:
@@ -218,10 +282,23 @@ async def _require_vision(client, model: str) -> None:
 
 # --- proposal -----------------------------------------------------------------
 
+# Characters that change how text LOOKS without being part of it: bidi
+# embeddings/overrides/isolates and marks, plus the BOM. "a\u202egnp.exe"
+# displays as "aexe.png". Zero-width joiners (emoji sequences) and non-joiners
+# (Persian, Hindi) and soft hyphens are real text and are kept.
+_INVISIBLE = re.compile("[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c\ufeff]")
+
+
+def _plain(value: str) -> str:
+    """Control characters become spaces and display-changing invisibles are
+    dropped, so a card shows exactly what it saves."""
+    return _INVISIBLE.sub("", _CTRL.sub(" ", value))
+
+
 def _clean_line(value, limit: int) -> str | None:
     if not isinstance(value, str):
         return None
-    text = " ".join(_CTRL.sub(" ", value).split())
+    text = " ".join(_plain(value).split())
     return text[:limit] or None
 
 
@@ -231,7 +308,7 @@ def _validate_proposal(raw) -> dict | None:
     title = raw.get("title")
     if not isinstance(title, str):
         return None
-    title = " ".join(_CTRL.sub(" ", title).split())
+    title = " ".join(_plain(title).split())
     if not title or len(title) > 120:
         return None
     day = raw.get("date")
@@ -397,9 +474,15 @@ async def answer_request(prompt: str, *, image: str | None = None, video: dict |
         validate_media(frames, seconds)
         audio = video.get("audio")
         data = None
+        # True when the clip HAD sound Wisp couldn't use (not when it was silent),
+        # so the answer can say it came from the frames alone.
+        sound_dropped = False
         if audio:
             from service import voice
-            data = voice.decode_clip(audio)       # ValueError for a bad or over-long track
+            try:
+                data = voice.decode_clip(audio)
+            except ValueError:
+                sound_dropped = True              # a bad, tiny or over-long track: frames alone answer
         if client is None or model is None:
             client, model = _resolve()
         idle.begin_foreground()
@@ -410,10 +493,13 @@ async def answer_request(prompt: str, *, image: str | None = None, video: dict |
                 try:
                     transcript = (await voice._transcribe(data, client, model)) or None
                 except (voice.VoiceUnavailable, TimeoutError, asyncio.TimeoutError):
-                    transcript = None             # frames alone still answer
-            return await _answer(prompt, list(frames), transcript, float(seconds), client, model)
+                    sound_dropped = True          # frames alone still answer
+            result = await _answer(prompt, list(frames), transcript, float(seconds), client, model)
         finally:
             idle.end_foreground()
+        if sound_dropped:
+            result.answer += SOUND_DROPPED
+        return result
     return await answer(prompt, [image], client=client, model=model)
 
 
@@ -451,7 +537,7 @@ async def run_proposal(proposal: dict, emit, approver, *, test_mode: bool = Fals
     standing grant says: the person did not ask for this write, a picture did.
     Returns the outcome status.
     """
-    from service.safety.policy import Tier, decide
+    from service.safety.policy import Decision, Tier, decide
     from service.tools import access_needed
     from service.tools.action_tools import confirm_preview
     from service.tools.registry import _validate_args, classify_tool_outcome, get_tool, run_tool
@@ -462,6 +548,10 @@ async def run_proposal(proposal: dict, emit, approver, *, test_mode: bool = Fals
     if tool is None:
         return "failed"
     policy = decide(tool.category, args, tool=name)
+    from service.safety import grants
+    if grants.check(name, args) == "deny":
+        # "Never" already answered for this tool: no card at all.
+        policy = Decision(Tier.DENY, f"you blocked {name} for this target")
     await emit({"type": "tool_call", "id": cid, "name": name, "args": dict(args),
                 "decision": "confirm" if policy.tier is not Tier.DENY else policy.tier.value,
                 "reason": policy.reason or "Suggested from the picture; needs your OK."})
@@ -477,7 +567,10 @@ async def run_proposal(proposal: dict, emit, approver, *, test_mode: bool = Fals
         approved = await approver.confirm({
             "id": cid, "tool": name, "args": dict(args),
             "reason": "Suggested from the picture; nothing is added until you approve.",
-            "preview": confirm_preview(name, args) or str(args)})
+            "preview": confirm_preview(name, args) or str(args),
+            # A picture chose this write, so its card can't leave a standing
+            # "Always allow" that later turns would honour without asking.
+            "grantable": False})
         if approved:
             with access_needed.noting() as needs:
                 raw = await run_tool(tool, args)

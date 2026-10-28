@@ -29,6 +29,17 @@ enum VideoSampler {
     static let maxFrameSide: CGFloat = 1568
     static let sampleRate = 16_000
 
+    /// The most PCM bytes the audio read may collect: (maxSeconds + 0.5) s of 16 kHz mono 16-bit.
+    static var maxAudioBytes: Int { Int((maxSeconds + 0.5) * Double(sampleRate) * 2) }
+
+    /// How many PCM bytes to read for a clip of `clipSeconds`: the clip's own length
+    /// (plus a little slack), never more than `maxAudioBytes`.
+    static func audioByteCap(clipSeconds: Double) -> Int {
+        guard clipSeconds.isFinite, clipSeconds > 0 else { return 0 }
+        let bytes = Int((min(clipSeconds, maxSeconds) + 0.5) * Double(sampleRate) * 2)
+        return min(bytes, maxAudioBytes)
+    }
+
     static var tooLongMessage: String {
         "That clip is longer than 30 seconds. Wisp can read clips up to 30 seconds."
     }
@@ -68,7 +79,7 @@ enum VideoSampler {
 
         let frames = try await sampleFrames(asset: asset, seconds: seconds)
         guard !frames.isEmpty else { throw VideoSampleError.noFrames }
-        let wav = await sampleAudio(asset: asset)
+        let wav = await sampleAudio(asset: asset, clipSeconds: seconds)
         return SampledClip(frames: frames, seconds: seconds, wav: wav)
     }
 
@@ -97,9 +108,13 @@ enum VideoSampler {
     }
 
     /// nil when there is no audio track or it can't be decoded.
-    private static func sampleAudio(asset: AVURLAsset) async -> Data? {
+    private static func sampleAudio(asset: AVURLAsset, clipSeconds: Double) async -> Data? {
         guard let track = try? await asset.loadTracks(withMediaType: .audio).first,
               let reader = try? AVAssetReader(asset: asset) else { return nil }
+        // An audio track longer than the clip is cut at the clip's length.
+        reader.timeRange = CMTimeRange(start: .zero,
+                                       duration: CMTime(seconds: min(clipSeconds, maxSeconds + 0.5), preferredTimescale: 600))
+        let byteCap = audioByteCap(clipSeconds: clipSeconds)
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: sampleRate,
@@ -114,7 +129,7 @@ enum VideoSampler {
         reader.add(output)
         guard reader.startReading() else { return nil }
         var pcm = Data()
-        while let buffer = output.copyNextSampleBuffer() {
+        while pcm.count < byteCap, let buffer = output.copyNextSampleBuffer() {
             if let block = CMSampleBufferGetDataBuffer(buffer) {
                 let length = CMBlockBufferGetDataLength(block)
                 var chunk = Data(count: length)
@@ -125,7 +140,11 @@ enum VideoSampler {
             }
             CMSampleBufferInvalidate(buffer)
         }
-        guard reader.status == .completed, !pcm.isEmpty else { return nil }
+        // Stopping at the cap leaves the reader mid-read; that is fine, the PCM is kept.
+        if pcm.count >= byteCap { reader.cancelReading() }
+        else { guard reader.status == .completed else { return nil } }
+        guard !pcm.isEmpty else { return nil }
+        if pcm.count > byteCap { pcm = pcm.prefix(byteCap) }
         return wavHeader(sampleRate: sampleRate, channels: 1, bitsPerSample: 16, dataBytes: pcm.count) + pcm
     }
 }
