@@ -20,9 +20,9 @@
     {
       "path": "omlx/server.py",
       "input_sha256": "76d160aadace9f22d1a5a3ba589f3a72f93e7f3e1d1cb9fe1d6e2b4a7b626183",
-      "output_sha256": "c63352c57bd19e22e735f11d5897c07153bc7b6d6591faf132016574edba0e8b",
+      "output_sha256": "13787fbe00b0ac01f742a931ad5427ba755951e470ff2fc5cf17de346f0f2eb7",
       "patch": "server.py.patch.json",
-      "patch_sha256": "001e27e22349a884a92d0b89a55aae371e7010a10057b2bf374ce5859af6cdac"
+      "patch_sha256": "ec4afd97280c11aa5435a7dc62438ff4210b8ddd8dff237f3f144719b88c731b"
     }
   ],
   "addition": {

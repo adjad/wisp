@@ -101,6 +101,9 @@ enum MediaAttachment {
     enum Pending {
         case image(jpeg: Data, source: Source)
         case video(SampledClip)
+        /// A document: raw bytes when it has text (`data`), rendered pages when it
+        /// is a scan with no text layer (`pages`, JPEG, 1-4).
+        case document(name: String, data: Data?, pages: [Data])
 
         var isScreen: Bool {
             if case .image(_, .screen) = self { return true }
@@ -113,6 +116,7 @@ enum MediaAttachment {
             case .image(_, .screen): return "Explain what's on my screen."
             case .image: return "What's in this image?"
             case .video: return "What happens in this clip?"
+            case .document: return "Summarize this document."
             }
         }
 
@@ -122,6 +126,7 @@ enum MediaAttachment {
             case .image(_, .screen): return "[screen]"
             case .image: return "[image]"
             case .video: return "[clip]"
+            case .document: return "[document]"
             }
         }
 
@@ -136,6 +141,11 @@ enum MediaAttachment {
                 let frames = clip.frames.prefix(VideoSampler.maxFrames).map { MediaAttachment.dataURL(jpeg: $0) }
                 let audio: Any = clip.wav.map { $0.base64EncodedString() as Any } ?? NSNull()
                 return ["video": ["frames": Array(frames), "seconds": clip.seconds, "audio": audio] as [String: Any]]
+            case .document(let name, let data, let pages):
+                var doc: [String: Any] = ["name": name]
+                if pages.isEmpty { doc["data"] = (data ?? Data()).base64EncodedString() }
+                else { doc["pages"] = pages.prefix(DocumentAttachment.maxScanPages).map { MediaAttachment.dataURL(jpeg: $0) } }
+                return ["document": doc]
             }
         }
     }
@@ -154,6 +164,8 @@ enum MediaAttachment {
         case .image: return "Image"
         case .video(let clip):
             return "Clip · \(Int(clip.seconds.rounded())) s — reads sampled frames + audio, not motion"
+        case .document(let name, _, let pages):
+            return DocumentAttachment.chipLabel(name: name, scannedPages: pages.count)
         }
     }
 }

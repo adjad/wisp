@@ -191,6 +191,16 @@ class PinnedEnforcerLoopTests(unittest.TestCase):
         body = ttl[0]
         self.assertLess(body.index("lock.locked()"), body.index("check_ttl_expirations("))
 
+    def test_gpu_power_cap_is_released_without_upstream_linger(self):
+        # Low Power Mode caps the whole Mac's GPU only while Wisp generates;
+        # upstream holds the cap 15 s after the last capped request ends.
+        root = Path(__file__).resolve().parents[1] / "build-support" / "engine_guard"
+        patch = json.loads((root / "server.py.patch.json").read_text())
+        limiter = [e for e in patch["edits"] if "GpuPowerLimiter(" in e["old"]]
+        self.assertEqual(len(limiter), 1)
+        self.assertEqual(limiter[0]["count"], 1)
+        self.assertIn("GpuPowerLimiter(base_path, release_delay_s=0.0)", limiter[0]["new"])
+
 
 if __name__ == "__main__":
     unittest.main()

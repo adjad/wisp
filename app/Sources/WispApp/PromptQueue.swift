@@ -10,12 +10,15 @@ struct QueuedPrompt: Equatable {
     /// nothing so a plain prompt builds as before.
     var video: QueuedVideo? = nil
     var imageSource: String? = nil
+    /// A document for this prompt (memory only, never persisted).
+    var document: QueuedDocument? = nil
 }
 
 extension QueuedPrompt {
     /// The marker shown in the transcript instead of the attachment.
     var historyMarker: String? {
         if video != nil { return "[clip]" }
+        if document != nil { return "[document]" }
         guard image != nil else { return nil }
         return imageSource == "screen" ? "[screen]" : "[image]"
     }
@@ -29,6 +32,18 @@ struct QueuedVideo: Equatable {
 
     var wire: [String: Any] {
         ["frames": frames, "seconds": seconds, "audio": audio.map { $0 as Any } ?? NSNull()]
+    }
+}
+
+/// The `/agent` `document` field: the file name plus either its raw bytes
+/// (base64) or, for a PDF with no text layer, 1-4 page data URLs.
+struct QueuedDocument: Equatable {
+    let name: String
+    let data: String?
+    let pages: [String]
+
+    var wire: [String: Any] {
+        pages.isEmpty ? ["name": name, "data": data ?? ""] : ["name": name, "pages": pages]
     }
 }
 

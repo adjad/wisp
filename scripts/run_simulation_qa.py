@@ -97,6 +97,8 @@ PROFILE_TESTS = {
         "tests/test_voice_transcribe.py",
         # Image/video input: one dedicated vision call (stub client, synthetic media).
         "tests/test_vision.py",
+        # Document input: text extracted in memory, one no-tools call (stub client, synthetic files).
+        "tests/test_documents.py",
         "tests/test_corpus_prompts.py",
         "tests/test_corpus_reasoning_export.py",
         "tests/test_gmail_source.py",
@@ -402,6 +404,8 @@ ADDITIONAL_FULL_TESTS = {
     # No engine/model/native launch, real provider or host memory probes.
     "tests/test_engine_guard_proof.py",
     "tests/test_engine_guard_overlay.py",
+    # Background GPU power tier: settings in tmp_path, idle state and clients stubbed.
+    "tests/test_power_tier.py",
     "tests/test_engine_guard_client.py",
     "tests/test_engine_guard_admission.py",
     "tests/test_bundled_engine_startup.py",

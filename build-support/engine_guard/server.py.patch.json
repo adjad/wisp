@@ -1,7 +1,7 @@
 {
   "path": "omlx/server.py",
   "input_sha256": "76d160aadace9f22d1a5a3ba589f3a72f93e7f3e1d1cb9fe1d6e2b4a7b626183",
-  "output_sha256": "c63352c57bd19e22e735f11d5897c07153bc7b6d6591faf132016574edba0e8b",
+  "output_sha256": "13787fbe00b0ac01f742a931ad5427ba755951e470ff2fc5cf17de346f0f2eb7",
   "edits": [
     {
       "old": "logger = logging.getLogger(__name__)",
@@ -52,6 +52,11 @@
       "old": "    except EnginePoolError as e:\n        raise HTTPException(status_code=500, detail=str(e))",
       "new": "    except _wisp_guard.GuardEvidenceUnavailable:\n        raise\n    except EnginePoolError as e:\n        raise HTTPException(status_code=500, detail=str(e))",
       "count": 2
+    },
+    {
+      "old": "    _server_state.gpu_power_limiter = gpu_power.GpuPowerLimiter(base_path)",
+      "new": "    # Modified by Wisp: release the GPU power cap as soon as the last capped\n    # request ends (upstream holds it 15 s), so Low Power Mode never throttles\n    # the Mac while Wisp is idle.\n    _server_state.gpu_power_limiter = gpu_power.GpuPowerLimiter(base_path, release_delay_s=0.0)",
+      "count": 1
     }
   ]
 }
