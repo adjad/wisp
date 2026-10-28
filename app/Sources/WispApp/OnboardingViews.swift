@@ -149,9 +149,7 @@ struct OnboardingGoogleStep: View {
             let first = model.status.accounts.isEmpty
             OnboardingCard(icon: first ? "person.crop.circle.badge.plus" : "plus.circle",
                            title: first ? "Google account" : "Add another account",
-                           detail: GoogleConsentCopy.notice(model.status).isEmpty
-                               ? "Opens Google's sign-in page in your browser."
-                               : "Opens Google's sign-in page in your browser. " + GoogleConsentCopy.notice(model.status)) {
+                           detail: OnboardingGoogleCopy.connectDetail(model.status)) {
                 Button(first ? "Connect Google" : "Add account") { model.connect() }
                     .buttonStyle(FirstRunButtonStyle(primary: first))
                     .disabled(!model.loaded || model.authorizing)
@@ -219,7 +217,22 @@ struct OnboardingGoogleStep: View {
 
 /// What the Google step says under its rows. Pure.
 enum OnboardingGoogleCopy {
-    static let serviceDown = "Wisp's service didn't answer just now, so this can't show your accounts yet."
+    static let serviceDown = "Wisp didn't answer just now, so this can't show your accounts yet."
+
+    /// Wisp's built-in Google sign-in is still in Google's testing stage (README,
+    /// Connect Google): only accounts on its tester list get in, and a sign-in lasts
+    /// 7 days. Said before the click, not after. The unverified-app warning between
+    /// them is GoogleConsentCopy's, so the service's own notice still wins.
+    static let testerList = "For now, your Google account has to be on Wisp's tester list."
+    static let sevenDays = "Sign-in lasts 7 days, then Wisp asks you to reconnect."
+
+    /// The connect row's line: where the click goes, and what to expect there.
+    static func connectDetail(_ status: GoogleStatus) -> String {
+        let opens = "Opens Google's sign-in page in your browser."
+        let notice = GoogleConsentCopy.notice(status)
+        let parts = status.clientSource == "builtin" ? [opens, testerList, notice, sevenDays] : [opens, notice]
+        return parts.filter { !$0.isEmpty }.joined(separator: " ")
+    }
 
     /// A sign-in's outcome worth showing as a problem, in plain words; nil for
     /// none (success, the "finish in your browser" hint, or a service outage,

@@ -16,12 +16,13 @@ struct FirstRunSetupChecks {
     static func status(ready: Bool = false, bundled: Bool = true, running: Bool = true,
                        available: Bool = true, installed: [String] = [], roles: String = "Ling-3.0-tiny-oQ4e",
                        fits: Bool? = nil, download: Bool = true, warning: String? = nil,
-                       modelAction: String? = nil) -> SetupStatus {
+                       modelAction: String? = nil, remoteOnly: Bool = false,
+                       roleEndpoint: String = "local") -> SetupStatus {
         let installedJSON = installed.map {
             #"{"id":"\#($0)","label":"\#($0 == gemma ? realLabel : $0)","size_gb":5.5,"fit":"recommended","tested":true,"note":""}"#
         }.joined(separator: ",")
         let json = """
-        {"ready":\(ready),
+        {"ready":\(ready),"remote_only":\(remoteOnly),
          "hardware":{"chip":"Apple M5 Pro","ram_gb":24,"tier":"comfortable"},
          "omlx":{"installed":true,"running":\(running),"model_dir":null,"min_macos":26,"url":"","admin_url":"","bundled":\(bundled)},
          "bundled_engine":{"available":\(available),"minimum_macos":"26.0","unavailable_reason":\(available ? "null" : "\"Wisp's engine needs macOS 26.\"")},
@@ -31,7 +32,7 @@ struct FirstRunSetupChecks {
                    "recommended_label":"Gemma 4 E4B · 4-bit (oQ4e) + MTP",
                    "download":\(download ? #"{"model":"\#(gemma)","label":"\#(realLabel)","size_gb":5.5,"repo":"Jundot/\#(gemma)","url":"","command":"","install_hf":""}"# : "null"),
                    "embedding_download":null},
-         "roles":[{"role":"general","label":"General","model":"\(roles)","endpoint":"local"}],
+         "roles":[{"role":"general","label":"General","model":"\(roles)","endpoint":"\(roleEndpoint)"}],
          "engines":[],
          "checks":[\(modelAction.map { #"{"id":"model","state":"todo","title":"","detail":"\#(warning ?? "")","action":"\#($0)","url":null}"# } ?? "")],
          "disclosure":"","configuration_token":null}
@@ -46,6 +47,10 @@ struct FirstRunSetupChecks {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try! decoder.decode(SetupGuideModel.DownloadTask.self, from: Data(json.utf8))
+    }
+
+    static func footerOf(_ s: SetupStatus, _ tasks: [SetupGuideModel.DownloadTask], stalled: Bool = false) -> FirstRunBrain.Footer {
+        FirstRunBrain.from(status: s, downloads: tasks).footer(stalled: stalled)
     }
 
     static func main() {
@@ -240,6 +245,20 @@ struct FirstRunSetupChecks {
         check(OnboardingGoogleCopy.signInProblem(GoogleAccountModel.serviceDown) == nil
               && OnboardingGoogleCopy.signInProblem("Account connected.") == nil
               && OnboardingGoogleCopy.signInProblem("") == nil, "Outage, success, nothing: no sign-in problem")
+        let builtIn = OnboardingGoogleCopy.connectDetail(GoogleStatus(clientSource: "builtin",
+                                                                      consentNotice: GoogleConsentCopy.unverified))
+        check(builtIn.contains("tester list") && builtIn.contains("isn't verified") && builtIn.contains("7 days")
+              && builtIn.contains("reconnect") && builtIn.components(separatedBy: "verified").count == 2,
+              "Built-in Google sign-in: tester list, the unverified warning once, and 7 days")
+        check(OnboardingGoogleCopy.connectDetail(GoogleStatus(clientSource: "user"))
+                == "Opens Google's sign-in page in your browser.", "The person's own Google client: no testing notes")
+        let noNotice = OnboardingGoogleCopy.connectDetail(GoogleStatus(clientSource: "builtin"))
+        check(noNotice.contains("tester list") && noNotice.contains(GoogleConsentCopy.unverified) && noNotice.contains("7 days"),
+              "Built-in, no notice from the service: Wisp's own unverified warning")
+        let ownNotice = OnboardingGoogleCopy.connectDetail(GoogleStatus(clientSource: "builtin", consentNotice: "Google says X."))
+        check(ownNotice.contains("Google says X.") && !ownNotice.contains(GoogleConsentCopy.unverified)
+              && ownNotice.contains("tester list") && ownNotice.contains("7 days"),
+              "Built-in with the service's own notice: its words, plus the tester list and 7 days")
         check(OnboardingGoogleCopy.signInProblem("Wisp could not connect Gmail: Gmail read access wasn't granted — on "
                   + "Google's consent screen, tick the box to view your email messages, then try again")
               == GoogleGrantNames.gmailNotGrantedMessage, "Gmail unticked: the tick-box message")
@@ -281,7 +300,7 @@ struct FirstRunSetupChecks {
         // never the "can't set this up" card, however long the first answer takes.
         let connecting = FirstRunBrain.from(status: status(bundled: false, running: false), downloads: [])
         check(connecting == .startingEngine, "External mode, not ready yet, is not unavailable")
-        check(connecting.footer(stalled: false) == .working("Starting the engine…"), "Connecting shows a spinner, not a failure")
+        check(connecting.footer(stalled: false) == .working("Getting Wisp ready…"), "Connecting shows a spinner, not a failure")
         check(FirstRunBrain.from(status: status(bundled: false, running: false, available: false), downloads: [])
                 == .startingEngine, "A Mac that can't run the built-in engine still connects to its own oMLX")
         if case .unavailable(let why) = FirstRunBrain.from(status: status(bundled: false), downloads: []) {
@@ -295,7 +314,7 @@ struct FirstRunSetupChecks {
         check(FirstRunBrain.from(status: running, downloads: [], stillLooking: true) == .startingEngine,
               "Inside the search window a running oMLX without the model is still being looked for")
         check(FirstRunBrain.from(status: running, downloads: [], stillLooking: true).footer(stalled: false)
-                == .working("Starting the engine…"), "...with a spinner, no failure copy and no Try again")
+                == .working("Getting Wisp ready…"), "...with a spinner, no failure copy and no Try again")
         check(FirstRunBrain.from(status: status(bundled: false, available: false), downloads: [], stillLooking: true)
                 == .startingEngine, "...even on a Mac that can't run the built-in engine")
         if case .unavailable = FirstRunBrain.from(status: running, downloads: [], stillLooking: false) {} else {
@@ -315,7 +334,7 @@ struct FirstRunSetupChecks {
               "The search lasts exactly connectGrace, and starts when it is first seen")
         check(FirstRunBrain.connectGrace >= 30, "A cold oMLX gets a long search before anything is called wrong")
         check(FirstRunBrain.startingTitle(ownOmlx: true) == "Looking for your oMLX…"
-              && FirstRunBrain.startingTitle(ownOmlx: false) == "Starting Wisp's engine…",
+              && FirstRunBrain.startingTitle(ownOmlx: false) == "Getting Wisp ready…",
               "Their oMLX is looked for, the built-in engine is started")
         // A model the person's oMLX serves that would replace a choice: one click, never automatic.
         let offered = FirstRunBrain.offered(model: gemma, label: "Gemma 4 E4B")
@@ -368,6 +387,71 @@ struct FirstRunSetupChecks {
               "Ready names the model in use")
         check(FirstRunBrain.from(status: status(ready: true), downloads: []).isReady, "Ready wins over everything")
 
+        // Every role on a remote provider (Cloud Everything): Wisp already answers, no download.
+        let remote = FirstRunBrain.from(status: status(roles: "claude-sonnet", remoteOnly: true, roleEndpoint: "anthropic"),
+                                        downloads: [])
+        check(remote == .ready(label: "claude-sonnet") && remote.footer(stalled: false) == .ready
+              && remote.modelToFetch == nil, "Remote-only skips the model download")
+        check(FirstRunBrain.from(status: status(running: false, remoteOnly: true), downloads: []).isReady,
+              "Remote-only answers even with no local engine running")
+        check(NotchModelOffer.from(status: status(remoteOnly: true), downloads: []) == .none,
+              "Remote-only: the notch offers no download either")
+
+        // Wisp's service that never comes up: after the notch's 3 minutes, Check again.
+        check(FirstRunBrain.serviceStartLimit == 180, "The same 3 minutes AppDelegate allows a cold first launch")
+        check(!FirstRunBrain.serviceSlow(waited: 179) && FirstRunBrain.serviceSlow(waited: 180), "Slow from 3 minutes")
+        check(FirstRunBrain.checking.footer(stalled: false) == .working("Starting Wisp…")
+              && FirstRunBrain.checking.footer(stalled: true) == .checkAgain, "The last step's footer offers Check again too")
+
+        // A stop is a stop: its words name the card's own button.
+        if case .failed(_, _, let message, true) = FirstRunBrain.from(status: status(), downloads: [task("cancelled")]) {
+            check(message == FirstRunBrain.stoppedMessage && message.contains("Resume") && !message.contains("Retry"),
+                  "Stopped: the message names Resume, the button it sits beside")
+        } else { check(false, "Cancelled reads as stopped") }
+        if case .failed(_, _, let message, false) = FirstRunBrain.from(status: status(), downloads: [task("failed")]) {
+            check(message.contains("Retry") && !message.contains("Resume"), "Failed: the message names Retry")
+        } else { check(false, "Failed reads as failed") }
+
+        // The disk warning goes with every click that starts a download.
+        check(FirstRunBrain.Footer.download.fetches && FirstRunBrain.Footer.retry.fetches
+              && !FirstRunBrain.Footer.tryAgain.fetches && !FirstRunBrain.Footer.ready.fetches
+              && !FirstRunBrain.Footer.working("Downloading · 45%").fetches, "Download, Retry, Resume, Download again")
+        check(footerOf(status(), [task("cancelled")]).fetches && footerOf(status(), [task("completed")], stalled: true).fetches
+              && !footerOf(status(), [task("completed")]).fetches && !footerOf(status(), [task("downloading")]).fetches,
+              "Resume and a stuck Download again warn; a download under way or finishing doesn't")
+
+        // Exactly one default action per state: the card's when it waits on a click.
+        let returnCases: [(SetupStatus, [SetupGuideModel.DownloadTask], Bool, Bool)] = [
+            (status(), [], false, true),
+            (status(), [task("failed")], false, true),
+            (status(), [task("cancelled")], false, true),
+            (status(), [task("completed")], false, false),
+            (status(), [task("completed")], true, true),
+            (status(installed: [gemma]), [], false, false),
+            (status(installed: [gemma]), [], true, true),
+            (status(), [task("downloading")], false, false),
+            (status(ready: true), [], false, false),
+            (status(available: false), [], false, false),
+        ]
+        for (s, tasks, stalled, card) in returnCases {
+            check(FirstRunBrain.from(status: s, downloads: tasks).cardTakesReturn(stalled: stalled) == card,
+                  "Return goes to \(card ? "the card" : "Continue") for \(FirstRunBrain.from(status: s, downloads: tasks))")
+        }
+        check(FirstRunBrain.offered(model: gemma, label: "Gemma 4 E4B").cardTakesReturn(stalled: false),
+              "An offered model: Return is its Use button, not Continue")
+        check(!FirstRunBrain.checking.cardTakesReturn(stalled: false) && FirstRunBrain.checking.cardTakesReturn(stalled: true),
+              "A slow service: Return is Check again, never a skip past the step")
+        check(!FirstRunBrain.startingEngine.cardTakesReturn(stalled: false)
+              && FirstRunBrain.startingEngine.cardTakesReturn(stalled: true),
+              "A start that stalled: Return is the card's Try again, never a skip past the step")
+
+        // Remote-only: step 1 says there is nothing to download, and nothing about a local model.
+        let remoteHeading = FirstRunBrain.welcomeSubtitle(remoteOnly: true)
+        check(remoteHeading.contains("nothing to download") && !remoteHeading.contains("runs on this Mac")
+              && !remoteHeading.contains("download that model"), "Remote-only: no download, no local-model claim")
+        check(FirstRunBrain.welcomeSubtitle(remoteOnly: false).contains("download that model once"),
+              "A local setup still hears about its one download")
+
         // Return on step 1 belongs to Download/Retry only while one is waiting.
         check(FirstRunBrain.from(status: status(), downloads: []).waitsForDownloadClick, "Download waits for its click")
         check(FirstRunBrain.from(status: status(), downloads: [task("failed")]).waitsForDownloadClick, "Retry waits for its click")
@@ -382,7 +466,7 @@ struct FirstRunSetupChecks {
             FirstRunBrain.from(status: s, downloads: tasks).footer(stalled: failed)
         }
         check(footer(nil) == .working("Starting Wisp…"), "Service still starting")
-        check(footer(status(running: false)) == .working("Starting the engine…"), "Engine starting")
+        check(footer(status(running: false)) == .working("Getting Wisp ready…"), "Engine starting")
         check(footer(status(running: false), failed: true) == .tryAgain, "Engine start failed: Try again")
         check(footer(status()) == .download, "Never downloaded: Download")
         check(footer(status(), [task("failed")]) == .retry && footer(status(), [task("cancelled")]) == .retry, "Stopped: Retry")
@@ -455,7 +539,7 @@ struct FirstRunSetupChecks {
 
         // Paused and failed downloads are told apart.
         if case .failed(_, _, _, let paused) = FirstRunBrain.from(status: status(), downloads: [task("cancelled")]) {
-            check(paused, "Cancelled: Download paused")
+            check(paused, "Cancelled: Download stopped")
         }
         if case .failed(_, _, _, let paused) = FirstRunBrain.from(status: status(), downloads: [task("failed")]) {
             check(!paused, "Failed: Download failed")
@@ -482,11 +566,30 @@ struct FirstRunSetupChecks {
               "Plain model name")
 
         // The tour teaches only shortcuts Wisp really holds, and examples that can work.
-        check(FirstRunSetupView.shortcutsLine(ask: true, search: true).hasPrefix("⌥ Space to ask"), "Both keys")
-        check(!FirstRunSetupView.shortcutsLine(ask: false, search: true).hasPrefix("⌥ Space to ask")
-              && FirstRunSetupView.shortcutsLine(ask: false, search: true).contains("top of the screen"),
+        check(FirstRunSetupView.shortcutsLine(ask: true, voice: true) == "⌥ Space to ask  ·  ⌥ ⇧ Space to ask by voice",
+              "Both keys: ask, and ask by voice")
+        check(!FirstRunSetupView.shortcutsLine(ask: false, voice: true).hasPrefix("⌥ Space to ask")
+              && FirstRunSetupView.shortcutsLine(ask: false, voice: true).contains("top of the screen"),
               "Another app owns ⌥Space: point at the top of the screen instead")
-        check(!FirstRunSetupView.shortcutsLine(ask: true, search: false).contains("⌘ ⇧ F"), "No ⌘⇧F when it isn't Wisp's")
+        check(!FirstRunSetupView.shortcutsLine(ask: true, voice: false).contains("voice"), "No voice line when it isn't Wisp's")
+        for (ask, voice) in [(true, true), (true, false), (false, true), (false, false)] {
+            let line = FirstRunSetupView.shortcutsLine(ask: ask, voice: voice)
+            check(!line.contains("⌘ ⇧ F") && !line.lowercased().contains("search"), "Smart Search is retired: never taught")
+        }
+        // The live check on the last step: invite, then confirm once ⌥Space really opened Ask.
+        check(FirstRunSetupView.shortcutTry(registered: true, pressed: false) == "Try it now: press ⌥ Space."
+              && FirstRunSetupView.shortcutTry(registered: true, pressed: true) == "That's it — ⌥ Space works."
+              && FirstRunSetupView.shortcutTry(registered: false, pressed: false) == nil
+              && FirstRunSetupView.shortcutTry(registered: false, pressed: true) == nil,
+              "Try it now, then That's it; nothing when another app owns ⌥Space")
+        // Open Wisp when you log in: on only once macOS holds the request; approval explained.
+        check(!LaunchAtLogin.isOn(.notRegistered) && !LaunchAtLogin.isOn(.notFound)
+              && LaunchAtLogin.isOn(.enabled) && LaunchAtLogin.isOn(.requiresApproval), "The switch follows macOS's status")
+        check(LaunchAtLogin.note(.requiresApproval)?.contains("System Settings › General › Login Items") == true
+              && LaunchAtLogin.note(.enabled) == nil && LaunchAtLogin.note(.notRegistered) == nil,
+              "Waiting for approval says where; otherwise nothing")
+        check(LaunchAtLogin.problem(turningOn: true).contains("Login Items")
+              && LaunchAtLogin.problem(turningOn: false).contains("Login Items"), "A failure says where to do it by hand")
         check(FirstRunSetupView.tabLines.map(\.tab) == ["Ask", "Brief", "Day"], "The tabs in the notch's order")
         for style in [SurfaceLayout.Style.notch, .menuBar, .floating] {
             check(FirstRunSetupView.findLine(style).contains("menu bar"), "Every display names the menu bar icon")
@@ -615,6 +718,37 @@ struct FirstRunSetupChecks {
               == "All optional · 2 still off", "Counts only what could still be switched on")
         check(FirstRunPermissions.summary([.calendar: .allowed, .fullDiskAccess: .notOnThisMac]) == "All optional · nothing left off",
               "Nothing left")
+        // Contacts and Full Disk Access: no dead end on a Mac with nothing for Full Disk Access to read.
+        let everyOther: [FirstRunPermissions.Item: FirstRunPermissions.State] = [
+            .calendar: .allowed, .reminders: .allowed, .mail: .allowed, .messages: .allowed, .notifications: .allowed]
+        var noData = everyOther
+        noData[.fullDiskAccess] = .notOnThisMac
+        noData[.contacts] = .notAsked
+        check(!FirstRunPermissions.contactsWaits(noData, messagesReadable: false),
+              "Full Disk Access not needed here: Contacts has its own Allow, never After Full Disk Access")
+        check(FirstRunPermissions.summary(noData, messagesReadable: false) == "All optional · 1 still off"
+              && !FirstRunPermissions.allAnswered(noData, messagesReadable: false),
+              "...and until it is answered it is the one still off")
+        noData[.contacts] = .allowed
+        check(FirstRunPermissions.allAnswered(noData, messagesReadable: false)
+              && FirstRunPermissions.summary(noData, messagesReadable: false) == "All optional · nothing left off",
+              "Contacts allowed on its own: the step ticks and nothing is left off")
+        var fdaOff = everyOther
+        fdaOff[.fullDiskAccess] = .notAllowed
+        fdaOff[.contacts] = .notAsked
+        check(FirstRunPermissions.contactsWaits(fdaOff, messagesReadable: false),
+              "Full Disk Access still off with Messages unread: Contacts waits for it")
+        check(FirstRunPermissions.summary(fdaOff, messagesReadable: false) == "All optional · 1 still off",
+              "A waiting Contacts isn't counted on top of Full Disk Access")
+        check(FirstRunPermissions.allAnswered(fdaOff, messagesReadable: false),
+              "A waiting Contacts follows Full Disk Access's answer, so the step can still tick")
+        var fdaOn = fdaOff
+        fdaOn[.fullDiskAccess] = .allowed
+        check(!FirstRunPermissions.contactsWaits(fdaOn, messagesReadable: false)
+              && !FirstRunPermissions.contactsWaits(fdaOff, messagesReadable: true),
+              "Full Disk Access on (even with no Messages), or Messages readable: Contacts is asked on its own")
+        check(!FirstRunPermissions.contactsWaits([.contacts: .allowed, .fullDiskAccess: .notAllowed], messagesReadable: false),
+              "Contacts already answered never waits")
         check(FirstRunSetupView.settingsPane(.fullDiskAccess) == Permissions.fullDiskAccessPane
               && Permissions.fullDiskAccessPane.hasSuffix("Privacy_AllFiles"), "Full Disk Access opens its own page")
 
@@ -636,6 +770,6 @@ struct FirstRunSetupChecks {
 
         // /resetwisp brings all of the above back to a fresh Mac (tests/WispResetChecks.swift).
         WispResetChecks.run()
-        print("PASS: first-run setup — show and resume rules, 11 step-1 states, download click, time left, tour hints, readers never ask, ready notification, remote-only, reopen cap, Full Disk Access")
+        print("PASS: first-run setup — show and resume rules, 11 step-1 states, download click, time left, tour hints, readers never ask, ready notification, remote-only, reopen cap, Full Disk Access, Contacts on its own, slow service, one Return per state, open at login")
     }
 }

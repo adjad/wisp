@@ -296,3 +296,76 @@ def test_a_pending_question_disables_only_its_own_row():
     assert "guard !asking.contains(item)" in setup
     assert ".disabled(permissions.asking.contains(item))" in setup
     assert "asking != nil" not in setup and "asking == nil" not in setup
+
+
+def test_open_at_login_is_opt_in_and_only_the_switch_changes_it():
+    """Wisp never adds itself to Login Items: register()/unregister() live in
+    LaunchAtLogin.set, and only the last step's switch calls that."""
+    sources = _sources()
+    setup = sources["FirstRunSetupView.swift"]
+    set_body = _body(setup, "    func set(_ on: Bool) {")
+    for call in ("SMAppService.mainApp.register()", "SMAppService.mainApp.unregister()"):
+        assert setup.count(call) == 1 and call in set_body, call
+        for name, text in sources.items():
+            if name != "FirstRunSetupView.swift":
+                assert call not in text, name
+    assert setup.count("launchAtLogin.set(") == 1
+    assert "set: { launchAtLogin.set($0) }" in _body(setup, "private var launchAtLoginRow: some View")
+    # Read, never assumed: the switch's value is macOS's status.
+    assert "get: { LaunchAtLogin.isOn(status) }" in setup
+    assert "SMAppService.openSystemSettingsLoginItems()" in setup
+
+
+def test_try_asking_waits_for_a_model_that_can_answer():
+    """A prompt clicked before Wisp can answer used to finish setup and leave an
+    unsendable question in Ask."""
+    setup = _sources()["FirstRunSetupView.swift"]
+    tour = _body(setup, "private var tourStep: some View")
+    assert "let canAnswer = setup.status?.canAnswer == true" in tour
+    assert tour.index("guard canAnswer else { return }") < tour.index("finish(prompt)")
+    assert ".disabled(!canAnswer)" in tour and "These work once the model is ready." in tour
+
+
+def test_last_step_listens_for_the_ask_shortcut():
+    setup = _sources()["FirstRunSetupView.swift"]
+    assert "NotificationCenter.default.publisher(for: .wispAskHotkeyPressed)" in setup
+    assert "Self.shortcutTry(registered: askKeyRegistered, pressed: askKeyPressed)" in setup
+
+
+def test_onboarding_copy_never_teaches_retired_features_or_jargon():
+    """Smart Search (⌘⇧F) and Research are retired; the window speaks plainly."""
+    for name in ("FirstRunSetupView.swift", "OnboardingViews.swift", "Onboarding.swift"):
+        text = _sources()[name]
+        literals = re.findall(r'"((?:[^"\\\n]|\\.)*)"', text)
+        for literal in literals:
+            assert "⌘ ⇧ F" not in literal and "⌘⇧F" not in literal, (name, literal)
+            assert "Smart Search" not in literal and "Research" not in literal, (name, literal)
+            low = literal.lower()
+            assert "engine" not in low and "backend" not in low and "bundled" not in low, (name, literal)
+            assert "service" not in low and "server" not in low, (name, literal)
+            # oMLX only as the name of the person's own app, never as Wisp's machinery.
+            if "omlx" in low:
+                assert "your omlx" in low or "omlx app" in low, (name, literal)
+
+
+def test_window_progress_and_return_follow_the_card():
+    setup = _sources()["FirstRunSetupView.swift"]
+    # The step bar tells a stop from a failure, as the card and VoiceOver do.
+    progress = _body(setup, "private var compactProgress: String?")
+    assert 'paused ? "Download stopped" : "Download failed"' in progress
+    # A slow service and a stalled start give Return to the card's own button.
+    assert "checkAgainButton(takesReturn: true)" in setup
+    assert _body(setup, "private func checkAgainButton(takesReturn: Bool = false)").count(".keyboardShortcut(.defaultAction)") == 1
+    # A window that opens on a model already ready still records it.
+    assert "record(brain)" in _body(setup, ".onAppear {")
+
+
+def test_download_paths_share_one_start_and_one_disk_warning():
+    setup = _sources()["FirstRunSetupView.swift"]
+    # Every Download, Retry, Resume and Download again goes through startDownload.
+    assert setup.count("await setup.download(model)") == 1
+    assert "await setup.download(model)" in _body(setup, "private func startDownload(_ model: String)")
+    assert "OnboardingTimeline.record(\"download started\")" in _body(setup, "private func startDownload(_ model: String)")
+    # The disk warning is drawn under step 1's card and on the last step, never only before the first Download.
+    assert setup.count("diskWarningLine") == 3
+    assert "brain.footer(stalled: stalled).fetches" in _body(setup, "private var diskWarning: String?")
