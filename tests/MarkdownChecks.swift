@@ -139,8 +139,8 @@ struct MarkdownChecks {
         // including for a reply that keeps growing.
         func same(_ a: [MarkdownView.Block], _ b: [MarkdownView.Block]) -> Bool {
             kindNames(a) == kindNames(b) && a.map(\.body) == b.map(\.body) && a.map(\.tableRows) == b.map(\.tableRows)
-                && a.map { $0.listItems.map(\.marker) } == b.map { $0.listItems.map(\.marker) }
-                && a.map { $0.listItems.map(\.text) } == b.map { $0.listItems.map(\.text) }
+                && a.map { $0.listItems.map { $0.marker } } == b.map { $0.listItems.map { $0.marker } }
+                && a.map { $0.listItems.map { $0.text } } == b.map { $0.listItems.map { $0.text } }
         }
         let reply = "Intro\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n- item"
         let view = MarkdownView(text: reply)

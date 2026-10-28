@@ -207,8 +207,8 @@ struct MarkdownView: View {
     /// it shows whenever any of its state changes (each streamed token, for
     /// one), and parsing is the expensive part. A text is kept only once it is
     /// asked for a second time unchanged: a finished reply is, while a reply
-    /// still streaming is new on every token and never enters (or evicts from)
-    /// the long-lived cache.
+    /// still streaming is new on nearly every token, so it rarely reaches the
+    /// long-lived cache and can't churn finished replies out of it.
     private final class ParsedBlocks {
         let blocks: [Block]
         init(_ blocks: [Block]) { self.blocks = blocks }

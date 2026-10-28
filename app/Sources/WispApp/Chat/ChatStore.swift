@@ -171,15 +171,15 @@ final class ChatStore: ObservableObject {
         loadingList = true
         defer { loadingList = false }
         async let access = backend.fullAccess()
-        async let cloud = backend.cloudInUse()
+        async let cloud: Void = refreshCloudUse()
         guard let rows = await backend.listChats() else {
             reachable = false
-            cloudInUse = nil
+            await cloud
             return
         }
         reachable = true
         applyFullAccess(await access)
-        cloudInUse = await cloud
+        await cloud
         var byId = Dictionary(conversations.compactMap { c in c.sessionId.isEmpty ? nil : (c.sessionId, c) },
                               uniquingKeysWith: { first, _ in first })
         for row in rows where !deletedSessionIds.contains(row.id) {
@@ -721,10 +721,17 @@ final class ChatStore: ObservableObject {
 
     // MARK: - Access
 
-    /// Re-read whether answers may go to a cloud provider.
+    /// Re-read whether answers may go to a cloud provider. The only writer of
+    /// cloudInUse: a reply that arrives after a newer request's is dropped, so a
+    /// slow read from before a Settings change can't put "Local" back.
     func refreshCloudUse() async {
-        cloudInUse = await backend.cloudInUse()
+        cloudGeneration &+= 1
+        let ticket = cloudGeneration
+        let value = await backend.cloudInUse()
+        guard ticket == cloudGeneration else { return }
+        cloudInUse = value
     }
+    private var cloudGeneration = 0
 
     func setFullAccess(_ on: Bool) {
         Task { applyFullAccess(await backend.setFullAccess(on)) }
