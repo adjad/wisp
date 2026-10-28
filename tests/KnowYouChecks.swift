@@ -167,7 +167,7 @@ struct KnowYouChecks {
               == "Stays on this Mac and your mini on your tailnet", "the user's own node is named, not cloud")
 
         // The notices after the flow.
-        check(KnowYouNotice.notNow.contains("/about") && KnowYouNotice.notNow.contains("Tell Wisp About You…"),
+        check(KnowYouNotice.notNow.contains("/about") && KnowYouNotice.notNow.contains("About you"),
               "Not now says where the questions are")
         check(KnowYouNotice.thanks(name: "Sam") == "Thank you, Sam. I'll put this to work.", "Done thanks by name")
 

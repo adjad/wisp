@@ -337,13 +337,15 @@ final class WispClient {
     }
 
     // POST /assistant/onboarding/brief_ready. First-run onboarding reached its last
-    // step, so the service may compose the first Brief now. Fire-and-forget: the
-    // service records it once, and a failure only means the Brief waits for its hour.
-    func onboardingBriefReady() async {
+    // step, so the service may compose the first Brief now. The service records it
+    // once; false when it didn't answer 200, so the caller can ask again later.
+    @discardableResult
+    func onboardingBriefReady() async -> Bool {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("assistant/onboarding/brief_ready"))
         req.httpMethod = "POST"
         req.timeoutInterval = 10
-        _ = try? await URLSession.shared.data(for: req)
+        guard let (_, response) = try? await URLSession.shared.data(for: req) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
     }
 
     // --- behavior engine (service/behavior) ---------------------------------
@@ -551,7 +553,8 @@ final class WispClient {
     // history. Omit it (empty) to start a fresh chat — the new id arrives in the
     // first `session` event. `testMode` asks the service to run a stateless dry
     // run where tool calls are reported but never executed.
-    func runAgent(prompt: String, image: String?, sessionId: String = "",
+    func runAgent(prompt: String, image: String?, imageSource: String? = nil,
+                  video: [String: Any]? = nil, sessionId: String = "",
                   debug: Bool = false,
                   testMode: Bool = false,
                   corpusCaseID: String? = nil, corpusToken: String? = nil, corpusNormal: Bool = false,
@@ -571,6 +574,8 @@ final class WispClient {
         if testMode { body["test_mode"] = true }
         if !testMode && !sessionId.isEmpty { body["session_id"] = sessionId }
         if let image { body["image"] = image }
+        if image != nil, let imageSource { body["image_source"] = imageSource }
+        if let video { body["video"] = video }
         if let corpusCaseID {
             body = ["case_id": corpusCaseID, "token": corpusToken ?? "", "mode": corpusNormal ? "normal" : "bounded"]
         }
@@ -750,6 +755,14 @@ final class WispClient {
         guard let (data, response) = try? await URLSession.shared.data(from: url),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
         return Self.fullAccessFlag(data)
+    }
+
+    // GET /inference/cloud -> the display-safe cloud settings (never credentials).
+    func cloudInference() async -> [String: Any]? {
+        let url = Self.baseURL.appendingPathComponent("inference/cloud")
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
     // POST /mode -> set full-access (no-confirmation) mode. Returns the flag the

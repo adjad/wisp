@@ -87,7 +87,11 @@ def main():
                                  "CalendarMove.swift", "RemindersWriter.swift"], "CalendarReaderChecks.swift"),
             ("notes-db", ["NotesDBReader.swift"], "NotesDBReaderChecks.swift"),
             ("onboarding", ["Onboarding.swift"], "OnboardingChecks.swift"),
+            ("onboarding-follow-ups", ["OnboardingFollowUps.swift", "DiagnosticReport.swift"],
+             "OnboardingFollowUpsChecks.swift"),
             ("voice-capture", ["VoiceCapture.swift"], "VoiceCaptureChecks.swift"),
+            ("video-sampler", ["VideoSampler.swift"], "VideoSamplerChecks.swift"),
+            ("media-attachment", ["MediaAttachment.swift", "VideoSampler.swift"], "MediaAttachmentChecks.swift"),
         ):
             binary = str(build / (os.environ["WISP_BUILD_FIXTURE_PREFIX"] + "-" + name))
             result.extend([

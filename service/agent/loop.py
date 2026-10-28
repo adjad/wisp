@@ -1073,12 +1073,33 @@ _MIN_OUTPUT_TOKENS = 2000
 _MIN_TOOLS = 4
 
 
+_IMAGE_TOKENS = 280   # a picture costs a flat 280 tokens whatever its size
+
+
 def _est_tokens(obj) -> int:
     """Cheap tokenizer-free estimate, same ~4-chars-per-token rule the context
     budgeter uses. Deliberately approximate: it only has to be right enough to
     keep us off the window boundary, and it errs high on JSON (punctuation-
-    dense), which is the safe direction."""
-    return len(obj if isinstance(obj, str) else json.dumps(obj)) // 4
+    dense), which is the safe direction. An image part counts a flat
+    _IMAGE_TOKENS and its base64 is left out of the character count."""
+    if isinstance(obj, str):
+        return len(obj) // 4
+    text = json.dumps(obj)
+    if "image_url" not in text and "input_image" not in text:
+        return len(text) // 4
+    images = 0
+
+    def strip(node):
+        nonlocal images
+        if isinstance(node, dict):
+            if node.get("type") in ("image_url", "input_image"):
+                images += 1
+                return {"type": node["type"]}
+            return {k: strip(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [strip(v) for v in node]
+        return node
+    return len(json.dumps(strip(obj))) // 4 + images * _IMAGE_TOKENS
 
 
 def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
@@ -1377,11 +1398,28 @@ def _meeting_redacted_return(function):
     return wrapped
 
 
+def _access_notes_scoped(function):
+    """One turn's access notes (access_needed.start) end with the turn: the
+    ContextVar is reset however run_agent returns or raises, so a later read in
+    the caller's context (a nested turn's caller, the scheduler) never notes into
+    a finished turn's list."""
+    @wraps(function)
+    async def wrapped(*args, **kwargs):
+        from service.tools import access_needed
+        noted, token = access_needed.start()
+        try:
+            return await function(*args, _access_noted=noted, **kwargs)
+        finally:
+            access_needed.finish(token)
+    return wrapped
+
+
 # Reads whose result is model-facing evidence, never a user-facing answer.
 _NARRATED_EVIDENCE_READS = frozenset({"daily_brief"})
 
 
 @_meeting_redacted_return
+@_access_notes_scoped
 async def run_agent(
     client: OMLXClient,
     model: str,
@@ -1503,6 +1541,8 @@ async def run_agent(
     # ask_quality only: lexical rank beyond the preload. Name-only stubs are
     # limited to these plus model_only.ASK_CORE_STUBS (None = every tool).
     model_led_stub_rank: Sequence[str] | None = None,
+    # This turn's access notes, from _access_notes_scoped; never passed by callers.
+    _access_noted: list[dict] | None = None,
 ) -> str:
     """Run the loop. Returns the final assistant text. Streams events via `emit`.
 
@@ -1598,10 +1638,16 @@ async def run_agent(
     # grant. Only this turn's local planner may put one in ephemeral context.
     messages = _meeting_safe(messages)
     downstream_emit = emit
+    # Sources a tool couldn't read for lack of access ride on its tool_result,
+    # so Ask shows the fix button whatever the model's reply says.
+    from service.tools import access_needed
+    access_noted = _access_noted if _access_noted is not None else []
     def audit(event, **fields):
         _meeting_audit(event, **fields)
 
     async def emit(event: dict):
+        if event.get("type") == "tool_result" and access_noted:
+            event = access_needed.merged(event, access_noted)
         if event.get("type") == "text" and news_displays:
             display = "\n\n".join(news_displays.values())
             text = event.get("text", "")
@@ -1805,6 +1851,13 @@ async def run_agent(
                                 f"{_web_detail(args)}, which is not a host you typed. "
                                 "Confirm the exact destination.")
         dec = decide(tool.category, args, tool=tool.name)
+        if model_led_discovery and dec.tier is Tier.ALLOW:
+            from service.router.model_led import MODEL_LED_ALWAYS_CONFIRM_TOOLS
+            if tool.name in MODEL_LED_ALWAYS_CONFIRM_TOOLS:
+                from service.safety.policy import Decision
+                return Decision(Tier.CONFIRM, "the model chose which item this changes — "
+                                "always confirmed on this path, even with full access. "
+                                "Check that it is the right one.")
         # Full access and standing grants do not cover actions whose real-world
         # effect the host cannot inspect: always in model-led routing, and in
         # legacy routing once this turn has read a file, page, mail or other
@@ -1918,6 +1971,9 @@ async def run_agent(
             if turn_reads_untrusted(tool.name, tool.category, args):
                 untrusted_read_in_turn[0] = True
             from service.research.web import strict_host_fetch
+            # Tools run one at a time; a note left by a prefetch or a call
+            # that emitted no result must not ride on this call's result.
+            access_needed.drain(access_noted)
             with strict_host_fetch(strict_fetch):
                 if private_shell_read_only:
                     result = await run_tool(tool, args, private_shell_read_only=True)
@@ -3264,6 +3320,11 @@ async def run_agent(
     ask_read_cache: dict = {}
     from service.model_only import narration_thinking_enabled as _ask_nt
     _ask_narration_thinking = _ask_nt() if ask_quality else True
+    # A model that writes nothing after a tool result with thinking off
+    # (models.yaml thinking_required_after_tool, Gemma 4 E4B) keeps it on for
+    # that step even if a user overlay turns model_only_narration_thinking off;
+    # a tool-free direct step does not follow a tool result and may still drop it.
+    _ask_after_tool_thinks = ask_quality and thinking_after_tool_required(model)
 
     def _ask_window(offered, stubs, scale: float) -> int:
         """This step's fit window: the Ask prompt budget (scaled down after a
@@ -3522,7 +3583,8 @@ async def run_agent(
         ask_narrating = bool(
             ask_quality and tools_answered and not (failed_tools - tools_answered)
             and not hard_failed and not forcing_first_step and not expecting_tool
-            and choice != "required" and not _ask_narration_thinking)
+            and choice != "required" and not _ask_narration_thinking
+            and not _ask_after_tool_thinks)
         # A direct (tool-free) step is a written answer too: with thinking on,
         # writing turns drifted into "Let me check…" and refusals.
         if ask_quality and ask_direct and not forcing_first_step and not _ask_narration_thinking:
@@ -4578,6 +4640,12 @@ async def run_agent(
                         from service.tools.assistant_tools import reminders_matching
                         _scope = str(args.get("scope", "all"))
                         _items = reminders_matching(_scope, args.get("query", ""), include_stale=True)
+                        if args.get("expected_ids") is None:
+                            # Bind the deletion to exactly the items this card
+                            # shows: a reminder that syncs in while the card is
+                            # open makes the set differ and nothing is deleted.
+                            args = {**args, "expected_ids": [str(c.get("id") or "") for c in _items]}
+                            action["args"] = json.loads(json.dumps(args))
                         _rows = [
                             f"{datetime.fromtimestamp(c['when_ts']):%a %b %-d, %Y}"
                             f"  {c['title']}" for c in _items]

@@ -475,6 +475,26 @@ def _pending_slot(now: datetime) -> tuple[date, str] | None:
     return now.date(), part
 
 
+def first_brief_building(now: datetime | None = None) -> bool:
+    """Whether the first launch day's first Daily Summary is on its way: it is
+    being composed, or it is due and not delivered with retries left. The app's
+    Brief says "Building your first Brief…" instead of nothing while this holds.
+    False on any later day, once a run was delivered, and once its retries ran
+    out (the Brief then names the summary times instead). Also False while the
+    run is held for first-launch permissions, since nothing is being built
+    then. A run that stood down for the user's own turn still counts: it
+    starts again as soon as that turn ends."""
+    now = now or datetime.now()
+    first = assistant_store.first_launch_at()
+    if first is None or datetime.fromtimestamp(first).date() != now.date():
+        return False
+    if any(_slot_delivered(now.date(), part) for part in ("morning", "evening")):
+        return False
+    if _brief_task is not None and not _brief_task.done():
+        return True
+    return _pending_slot(now) is not None and not _awaiting_first_permission(now.timestamp())
+
+
 _brief_task: asyncio.Task | None = None
 # How often a running brief checks whether the user started a turn. Short,
 # because the brief's longest step is a source wait of up to 20 seconds.

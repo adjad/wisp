@@ -4,12 +4,12 @@ import SwiftUI
 /// three groups (Permissions, Daily brief, Advanced) with one line each.
 /// Everything that needs a form, a key, OAuth or widens what Wisp reads (models,
 /// Google, cloud keys, privacy sources such as browser history and contacts,
-/// the source controls under Memory › Routines) stays in the full Settings window.
+/// the source controls under Memory › Routines) stays in Settings, in the Wisp window.
 /// One deliberate exception: a new user with no Google account connected gets a
 /// single "Connect Google" row for the first connect (NotchGoogleVisibility).
 ///
-/// It binds to the app's one SettingsLoader, the same object the Settings window
-/// uses, so "waiting for confirmation" and "not confirmed" read the same in both
+/// It binds to the app's one SettingsLoader, the same object the Wisp window's
+/// Settings uses, so "waiting for confirmation" and "not confirmed" read the same in both
 /// places and a change in flight survives the notch collapsing. The panel is
 /// non-activating, so nothing here opens a sheet, an alert or a popup menu.
 struct QuickSettingsView: View {
@@ -30,15 +30,15 @@ struct QuickSettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Settings").font(.wisp(size: 15, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                Text("Settings").font(.wisp(.headline, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                 Spacer()
                 Button("Done") { model.showingQuickSettings = false }
-                    .buttonStyle(.plain).font(.wisp(size: 13)).foregroundStyle(Palette.sub)
+                    .buttonStyle(.plain).font(.wisp(.callout)).foregroundStyle(Theme.textSecondary)
                     .keyboardShortcut(.cancelAction)
                     .help("Close settings and go back to \(model.tab.stripTab.title)")
             }
             if let notice = model.transientNotice {
-                Text(notice).font(.wisp(size: 11.5)).foregroundStyle(Theme.bad)
+                Text(notice).font(.wisp(.footnote)).foregroundStyle(Theme.bad)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             group("Permissions") {
@@ -71,7 +71,7 @@ struct QuickSettingsView: View {
                 memoryRow
             }
             HStack {
-                Text("Models, Google, privacy, activity").font(.wisp(size: 13)).foregroundStyle(Palette.sub)
+                Text("Models, Google, privacy, activity").font(.wisp(.callout)).foregroundStyle(Theme.textSecondary)
                 Spacer()
                 pillButton("All settings  ⌘,", primary: true) { WispRouter.shared.open(.settings) }
             }
@@ -141,7 +141,7 @@ struct QuickSettingsView: View {
         let line = QuickSettingsText.fullAccess(on: settings.fullAccess, pending: settings.fullAccessPending)
         return row("Full access", help: settings.fullAccessExplanation) {
             if let status = line.status {
-                Text(status).foregroundColor(settings.fullAccess == true ? Palette.amber : Palette.sub)
+                Text(status).foregroundColor(settings.fullAccess == true ? Theme.warn : Theme.textSecondary)
                     + Text(" · " + line.rest)
             } else {
                 Text(line.rest)
@@ -220,7 +220,7 @@ struct QuickSettingsView: View {
         } control: {
             HStack(spacing: 10) {
                 if let fraction = line.fraction {
-                    Capsule().fill(Palette.track).frame(width: 110, height: 5)
+                    Capsule().fill(Theme.controlFill).frame(width: 110, height: 5)
                         .overlay(alignment: .leading) {
                             Capsule().fill(Theme.textPrimary).frame(width: max(5, 110 * fraction), height: 5)
                         }
@@ -243,13 +243,13 @@ struct QuickSettingsView: View {
         let open = picking == slot
         return Button { picking = open ? nil : slot } label: {
             HStack(spacing: 5) {
-                Text(slot == .morning ? "Morning" : "Evening").foregroundStyle(Palette.sub)
+                Text(slot == .morning ? "Morning" : "Evening").foregroundStyle(Theme.textSecondary)
                 Text("\(label.time) \(label.period)").foregroundStyle(Theme.textPrimary).monospacedDigit()
             }
-            .font(.wisp(size: 12.5))
+            .font(.wisp(.body))
             .padding(.horizontal, 9).padding(.vertical, 4)
-            .background(RoundedRectangle(cornerRadius: 8).fill(open ? Palette.chipOpen : Palette.chip))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(open ? Palette.sub : Palette.chipStroke, lineWidth: 1))
+            .background(RoundedRectangle(cornerRadius: 8).fill(open ? Theme.controlFill : Theme.chipFill))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(open ? Theme.textSecondary : Theme.chipStroke, lineWidth: 1))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -268,10 +268,10 @@ struct QuickSettingsView: View {
                     if slot == .morning { settings.setBriefTimes(morning: hour) } else { settings.setBriefTimes(evening: hour) }
                 } label: {
                     Text(QuickSettingsText.pill(hour).time).monospacedDigit()
-                        .font(.wisp(size: 12.5, weight: chosen ? .semibold : .regular))
+                        .font(.wisp(.body, weight: chosen ? .semibold : .regular))
                         .foregroundStyle(chosen ? Color.black : Theme.textPrimary)
                         .frame(maxWidth: .infinity).padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 7).fill(chosen ? Theme.textPrimary : Palette.chip))
+                        .background(RoundedRectangle(cornerRadius: 7).fill(chosen ? Theme.textPrimary : Theme.chipFill))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -287,49 +287,28 @@ struct QuickSettingsView: View {
 
     // MARK: Pieces
 
-    private enum Palette {
-        static let card = Color(white: 0.043)
-        static let line = Color(red: 0.11, green: 0.114, blue: 0.13)
-        // sub and label follow Increase Contrast. label was a 3.2:1 grey; the
-        // default is now about 4.6:1 on the card, and Increase Contrast goes brighter.
-        static var sub: Color {
-            Theme.increaseContrast ? Color(white: 0.78) : Color(red: 0.557, green: 0.565, blue: 0.592)
-        }
-        static var label: Color {
-            Theme.increaseContrast ? Color(white: 0.7) : Color(red: 0.47, green: 0.48, blue: 0.51)
-        }
-        static let chip = Color(red: 0.078, green: 0.082, blue: 0.094)
-        static let chipOpen = Color(white: 0.16)
-        static var chipStroke: Color {
-            Theme.increaseContrast ? Color(white: 0.45) : Color(red: 0.165, green: 0.169, blue: 0.188)
-        }
-        static let track = Color(red: 0.122, green: 0.125, blue: 0.141)
-        /// Full access is the one risky switch, so it alone is warm.
-        static let amber = NotchSwitch.amber
-    }
-
     /// A labelled card: rows separated by hairlines.
     private func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(title.uppercased()).font(.wisp(size: 11, weight: .semibold)).kerning(1)
-                .foregroundStyle(Palette.label).padding(.leading, 4)
+            Text(title.uppercased()).font(.wisp(.footnote, weight: .semibold)).kerning(1)
+                .foregroundStyle(Theme.textMuted).padding(.leading, 4)
                 .accessibilityAddTraits(.isHeader)
             VStack(spacing: 0) { content() }
-                .background(RoundedRectangle(cornerRadius: 14).fill(Palette.card))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Palette.line, lineWidth: 1))
+                .background(RoundedRectangle(cornerRadius: 14).fill(Theme.raised))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.hairline, lineWidth: 1))
                 .clipShape(RoundedRectangle(cornerRadius: 14))
         }
     }
 
-    private var hairline: some View { Rectangle().fill(Palette.line).frame(height: 1) }
+    private var hairline: some View { Rectangle().fill(Theme.hairline).frame(height: 1) }
 
     private func row<Detail: View, Control: View>(_ title: String, help: String,
                                                   @ViewBuilder detail: () -> Detail,
                                                   @ViewBuilder control: () -> Control) -> some View {
         HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.wisp(size: 14.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                detail().font(.wisp(size: 12.5)).foregroundStyle(Palette.sub).lineLimit(2).truncationMode(.middle)
+                Text(title).font(.wisp(.reading, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                detail().font(.wisp(.body)).foregroundStyle(Theme.textSecondary).lineLimit(2).truncationMode(.middle)
             }
             .help(help)
             Spacer(minLength: 12)
@@ -341,10 +320,10 @@ struct QuickSettingsView: View {
 
     private func pillButton(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(.wisp(size: 12.5)).foregroundStyle(primary ? Theme.textPrimary : Theme.textSecondary)
+            Text(title).font(.wisp(.body)).foregroundStyle(primary ? Theme.textPrimary : Theme.textSecondary)
                 .padding(.horizontal, 12).padding(.vertical, 5)
-                .background(Capsule().fill(Palette.chip))
-                .overlay(Capsule().strokeBorder(Palette.chipStroke, lineWidth: 1))
+                .background(Capsule().fill(Theme.chipFill))
+                .overlay(Capsule().strokeBorder(Theme.chipStroke, lineWidth: 1))
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -355,21 +334,21 @@ struct QuickSettingsView: View {
 /// Quick settings' switch: a bright track with a dark knob when on, grey when off.
 /// The amber variant is for Full access.
 struct NotchSwitch: ToggleStyle {
-    static let amber = Color(red: 1, green: 0.702, blue: 0.42)
     var amber = false
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func makeBody(configuration: Configuration) -> some View {
         let on = configuration.isOn
         return Button { configuration.isOn.toggle() } label: {
             Capsule()
-                .fill(on ? (amber ? Self.amber : Color(white: 0.95)) : Color(red: 0.169, green: 0.173, blue: 0.192))
+                .fill(on ? (amber ? Theme.warn : Color(white: 0.95)) : Theme.controlFill)
                 .frame(width: 38, height: 22)
                 .overlay(alignment: on ? .trailing : .leading) {
-                    Circle().fill(on ? Color.black : Color(red: 0.557, green: 0.565, blue: 0.592))
+                    Circle().fill(on ? Color.black : Theme.textMuted)
                         .frame(width: 18, height: 18).padding(2)
                 }
-                .animation(.easeOut(duration: 0.15), value: on)
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: on)
                 .opacity(isEnabled ? 1 : 0.45)
                 .contentShape(Capsule())
         }

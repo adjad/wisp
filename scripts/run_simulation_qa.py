@@ -95,6 +95,8 @@ PROFILE_TESTS = {
         "tests/test_long_email_digest.py",
         # Voice input: the clip reaches only a local model with an audio encoder (stub client).
         "tests/test_voice_transcribe.py",
+        # Image/video input: one dedicated vision call (stub client, synthetic media).
+        "tests/test_vision.py",
         "tests/test_corpus_prompts.py",
         "tests/test_corpus_reasoning_export.py",
         "tests/test_gmail_source.py",
@@ -168,6 +170,8 @@ PROFILE_TESTS = {
     # Fresh-install model detection over fake model folders and fake /v1/models answers.
     "tests/test_setup_existing_omlx.py",
     "tests/test_onboarding_window.py",
+    # Settings and Setup as sections of the Wisp window, read from the Swift sources.
+    "tests/test_settings_in_window.py",
     "tests/test_super_model_routing.py",
         "tests/test_inference_endpoints.py",
         "tests/test_inference_providers.py",
@@ -259,6 +263,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_reminder_expiry.py",
     "tests/test_behavior_auto_trial.py",
     "tests/test_brief_day_one.py",
+    # rc2: Brief cards stay put across cycles, and a dismissed or cleared ask stays gone (fake model, scratch store).
+    "tests/test_brief_card_stability.py",
     # rc2: the first Brief once onboarding is answered (scheduler slots with a stubbed store
     # and clock, and the marker endpoint through TestClient); nothing is composed or sent.
     "tests/test_brief_onboarding.py",
@@ -268,7 +274,14 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_router_reply_needed_reads.py",
     "tests/test_capability_welcome.py",
     "tests/test_wisp_self_questions.py",
+    # Onboarding Ask access fix: needs_access from scripted tool results through the
+    # agent loop, reads, workflows and tasks; no live source or model.
+    "tests/test_ask_access_fix.py",
+    # The first launch day's rhythm line and first-Brief progress over a scratch store.
+    "tests/test_brief_first_day.py",
     "tests/test_email_gmail_only_and_dedup.py",
+    # rc2 duplicated email summaries: synthetic Gmail + Mail rows, two linked accounts; no live source.
+    "tests/test_email_summary_dedupe.py",
     # Needs you Clear / Mark done over synthetic stores and a stubbed native outbox.
     "tests/test_needs_you_clear.py",
     # Messages read-failure reasons over module state and an inert ASGI app; no native reader.
@@ -1056,6 +1069,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
                 TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
                 "-module-cache-path", module_cache,
                 "app/Sources/WispApp/WispClient.swift", "app/Sources/WispApp/AgentSend.swift",
+                "app/Sources/WispApp/AskAccess.swift",
                 "tests/AgentSendChecks.swift", "-o", agent_send,
             ],
         ),
@@ -1117,6 +1131,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
                 "app/Sources/WispApp/Chat/AssistantTaskCorpus.swift",
                 "app/Sources/WispApp/Chat/ChatStore.swift",
                 "app/Sources/WispApp/Chat/NotchCorpusController.swift",
+                "app/Sources/WispApp/AskAccess.swift",
                 "tests/ChatStoreChecks.swift", "-o", chat_store,
             ],
         ),

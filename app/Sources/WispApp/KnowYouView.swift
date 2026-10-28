@@ -446,7 +446,7 @@ struct KnowYouView: View {
                 if !inWindow {
                     Button("Not now") { Task { await model.notNow() } }
                         .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
-                        .help("Close the questions; what you answered is kept. Type /about, or use the menu bar's Tell Wisp About You…, any time.")
+                        .help("Close the questions; what you answered is kept. Type /about any time.")
                 }
                 Spacer()
                 Button("Skip") { model.skip() }

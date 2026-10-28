@@ -12,6 +12,7 @@ from datetime import datetime
 from service.user_text import user_facing_failure
 from service.safety.policy import Tier, decide
 from service.tasks.models import TaskExecution
+from service.tools import access_needed
 from service.tools.registry import (
     DisplayOnlyToolResult, get_tool, run_tool, classify_tool_outcome, _validate_args,
 )
@@ -89,6 +90,7 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
                 "decision": policy.tier.value, "reason": policy.reason}
         calls.append(call)
         await emit({"type": "tool_call", **call})
+        needs: list[dict] = []
         if test_mode:
             raw, status = "Dry run only — tool not executed.", "planned"
         elif policy.tier is Tier.DENY:
@@ -118,7 +120,8 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
                         return "failed", ("Nothing sent by this attempt: durable delivery "
                                           "claim unavailable or already used. Check the destination "
                                           "before starting another delivery.")
-                raw = await run_tool(tool, args)
+                with access_needed.noting() as needs:
+                    raw = await run_tool(tool, args)
                 if isinstance(raw, DisplayOnlyToolResult):
                     news_used = True
                 status = classify_tool_outcome(
@@ -151,7 +154,7 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
                 "result": raw.model_text if isinstance(raw, DisplayOnlyToolResult) else raw,
                 "status": status}
         results.append(item)
-        await emit({"type": "tool_result", **item})
+        await emit({"type": "tool_result", **item, **access_needed.payload(needs)})
         return status, raw
 
     if plan.news_clarification_provenance:

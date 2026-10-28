@@ -249,7 +249,7 @@ final class SetupGuideModel: ObservableObject {
         var active: Bool { state == "pending" || state == "downloading" }
 
         /// "45% · 2.5 GB of 5.5 GB · 10 MB/s", or "Preparing download…" before the
-        /// engine knows the size. Shared by the setup window and the notch card.
+        /// engine knows the size. Shared by the full guide and the notch card.
         var progressText: String {
             guard totalBytes > 0 else { return "Preparing download…" }
             let received = ByteCountFormatter.string(fromByteCount: Int64(downloadedBytes), countStyle: .file)
@@ -290,7 +290,8 @@ final class SetupGuideModel: ObservableObject {
     private var downloadGeneration = 0
     private var monitoringStopped = false
     private let session: URLSession
-    // Where setup is on screen right now: the notch card, the setup window.
+    // Where setup is on screen right now: the notch card, the first-run window,
+    // Settings › Models › Setup.
     // Polling runs while at least one shows it, and the last to leave stops it
     // and drops the test evidence. Each host says when it shows and hides setup,
     // so nothing depends on a window's title or on SwiftUI tearing a view down.
@@ -346,7 +347,7 @@ final class SetupGuideModel: ObservableObject {
     }
 
     /// A host stopped showing setup. The last one stops the poll and clears the
-    /// test, exactly as closing the setup window always has.
+    /// test, exactly as closing the old setup window always did.
     func hide(from host: String) {
         guard let count = hosts[host] else { return }
         hosts[host] = count > 1 ? count - 1 : nil
@@ -433,7 +434,7 @@ final class SetupGuideModel: ObservableObject {
         updateDownloadHost()
     }
 
-    #if WISP_NOTCH_QA
+    #if WISP_NOTCH_QA || WISP_CHAT_QA || WISP_SETTINGS_QA
     /// Inject a supplied status into the actual accept/queue path without a
     /// polling host or an app delegate. Production cannot call this seam.
     func qaAcceptAutomaticStatus(_ next: SetupStatus) {
@@ -799,19 +800,32 @@ final class SetupGuideModel: ObservableObject {
 
 // MARK: - View
 
-/// The full guide, shown in the setup window. It shares the app's one
-/// SetupGuideModel with the notch's setup card. Its host (AppDelegate) calls
-/// `show(in:)` and `hide(from:)` as the window opens and closes.
+/// The full guide. Settings › Models › Setup in the Wisp window shows its
+/// `header` and `pageContent` (SettingsSetupPane); `body` is the standalone
+/// form. It shares the app's one SetupGuideModel with the notch's setup card,
+/// and its host (AppDelegate) calls `show(in:)` and `hide(from:)` as it comes
+/// and goes. Its colours come from `\.themePalette`: black and white unless
+/// the host supplies another.
 struct SetupGuideView: View {
     @ObservedObject private var model: SetupGuideModel
+    @Environment(\.themePalette) private var environmentPalette
+    /// Set by a host that draws `header` and `pageContent` itself (SettingsSetupPane):
+    /// those are read off a value SwiftUI never installs, so its environment can't reach them.
+    private let paletteOverride: ThemePalette?
+    private var palette: ThemePalette { paletteOverride ?? environmentPalette }
     var onDone: () -> Void
     var openSettings: () -> Void
     private let height: CGFloat
+    /// The margin around the header and the page: 24 in the standalone form,
+    /// 0 where the host already pads its column.
+    private let inset: CGFloat
 
-    init(model: SetupGuideModel, height: CGFloat = 700,
+    init(model: SetupGuideModel, height: CGFloat = 700, inset: CGFloat = 24, palette: ThemePalette? = nil,
          onDone: @escaping () -> Void = {}, openSettings: @escaping () -> Void = {}) {
         self.model = model
         self.height = height
+        self.inset = inset
+        self.paletteOverride = palette
         self.onDone = onDone
         self.openSettings = openSettings
     }
@@ -819,14 +833,14 @@ struct SetupGuideView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            Divider().overlay(Theme.hairline)
+            Divider().overlay(palette.hairline)
             ScrollView { pageContent }
-            Divider().overlay(Theme.hairline)
+            Divider().overlay(palette.hairline)
             footer
         }
         .frame(width: 640, height: height)
-        .background(Theme.surface)
-        .foregroundStyle(Theme.textPrimary)
+        .background(palette.surface)
+        .foregroundStyle(palette.textPrimary)
         .preferredColorScheme(.dark)
     }
 
@@ -842,11 +856,11 @@ struct SetupGuideView: View {
                 testSection(status)
             } else if model.loading {
                 HStack(spacing: 8) { ProgressView().controlSize(.small)
-                    Text("Checking this Mac…").foregroundStyle(Theme.textSecondary) }
+                    Text("Checking this Mac…").foregroundStyle(palette.textSecondary) }
             }
             if let text = model.message {
                 Text(text).font(.callout)
-                    .foregroundStyle(model.messageIsError ? Color.orange : Theme.textSecondary)
+                    .foregroundStyle(model.messageIsError ? Color.orange : palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let error = model.refreshError {
@@ -854,7 +868,7 @@ struct SetupGuideView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(24)
+        .padding(inset)
     }
 
     // MARK: Header / footer
@@ -865,9 +879,9 @@ struct SetupGuideView: View {
                 Text("Set up Wisp's AI engine").font(.system(size: 19, weight: .semibold))
                 if let s = model.status {
                     Text("\(s.hardware.chip) · \(s.hardware.ramGb > 0 ? "\(s.hardware.ramGb) GB memory" : "memory unknown")")
-                        .font(.callout).foregroundStyle(Theme.textSecondary)
+                        .font(.callout).foregroundStyle(palette.textSecondary)
                 } else {
-                    Text("Everything runs on this Mac.").font(.callout).foregroundStyle(Theme.textSecondary)
+                    Text("Everything runs on this Mac.").font(.callout).foregroundStyle(palette.textSecondary)
                 }
             }
             Spacer()
@@ -876,14 +890,14 @@ struct SetupGuideView: View {
                      on: s.ready && model.statusIsCurrent)
             }
         }
-        .padding(.horizontal, 24).padding(.vertical, 18)
+        .padding(.horizontal, inset).padding(.vertical, inset * 0.75)
     }
 
     var footer: some View {
         HStack {
             if let busy = model.busy {
                 ProgressView().controlSize(.small)
-                Text(busy).font(.caption).foregroundStyle(Theme.textSecondary)
+                Text(busy).font(.caption).foregroundStyle(palette.textSecondary)
             }
             Spacer()
             Button("Check again") { Task { await model.refresh(); await model.refreshDownloads() } }
@@ -901,23 +915,23 @@ struct SetupGuideView: View {
         return card(step: "1", title: "Engine", state: check?.state ?? "todo") {
             if let bundled = s.bundledEngine, !bundled.available,
                let reason = bundled.unavailableReason {
-                Text(reason).font(.callout).foregroundStyle(Theme.textSecondary)
+                Text(reason).font(.callout).foregroundStyle(palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 Text("You can use a compatible external engine. Macs that cannot run local models can use Wisp's separately configured remote-only mode.")
-                    .font(.caption).foregroundStyle(Theme.textMuted)
+                    .font(.caption).foregroundStyle(palette.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let check {
-                Text(check.detail).font(.callout).foregroundStyle(Theme.textSecondary)
+                Text(check.detail).font(.callout).foregroundStyle(palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     if check.action == "unsupported_macos" {
                         Text("Connect another app under Other engines below, or use remote-only mode in Settings.")
-                            .font(.caption).foregroundStyle(Theme.textMuted)
+                            .font(.caption).foregroundStyle(palette.textMuted)
                     } else if check.action == "install_omlx" {
                         action("Get oMLX") { model.open(check.url) }
                         Text("Then open it once and choose Check again.")
-                            .font(.caption).foregroundStyle(Theme.textMuted)
+                            .font(.caption).foregroundStyle(palette.textMuted)
                     } else if check.action == "start_engine" {
                         action(s.omlx.bundled == true ? "Start engine" : "Start oMLX") {
                             Task { await model.startEngine() }
@@ -949,7 +963,7 @@ struct SetupGuideView: View {
                      : s.models.fits == false ? "Connect a model you run in another app under Other local apps below."
                      : s.models.download == nil ? "Add a local model to the engine's model folder to get started."
                      : "Download a model below to get started.")
-                    .font(.callout).foregroundStyle(Theme.textSecondary)
+                    .font(.callout).foregroundStyle(palette.textSecondary)
             } else {
                 VStack(spacing: 6) {
                     ForEach(s.models.installed) { entry in modelRow(entry, current: currentModels(s)) }
@@ -960,7 +974,7 @@ struct SetupGuideView: View {
                     }
                     .disabled(model.selectedModel == nil || model.busy != nil || model.testing || !s.omlx.running || !model.statusIsCurrent)
                     Text("Sets chat, tools, coding, and reasoning.")
-                        .font(.caption).foregroundStyle(Theme.textMuted)
+                        .font(.caption).foregroundStyle(palette.textMuted)
                 }
             }
             if let download = s.models.download {
@@ -970,7 +984,7 @@ struct SetupGuideView: View {
             }
             if check?.action == "add_local_model" {
                 Text("This recommended model has no public download. Add its folder (\(recommendedName(s))) to your engine's model directory, then choose Check again and Use this model.")
-                    .font(.caption).foregroundStyle(Theme.textSecondary)
+                    .font(.caption).foregroundStyle(palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let folder = s.omlx.modelDir {
                     Text(folder).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
@@ -988,12 +1002,12 @@ struct SetupGuideView: View {
         let name = recommendedName(s)
         if s.models.fits == false {
             return Text("None of the models Wisp can download fits this Mac.").font(.callout)
-                .foregroundStyle(Theme.textSecondary).fixedSize(horizontal: false, vertical: true)
+                .foregroundStyle(palette.textSecondary).fixedSize(horizontal: false, vertical: true)
         }
         let text = s.models.installed.contains(where: { $0.id == s.models.recommended })
             ? "\(name) is the best fit for this Mac, and it is installed."
             : "Recommended for this Mac (\(s.hardware.ramGb > 0 ? "\(s.hardware.ramGb) GB" : "memory unknown")): \(name). Wisp also works with the models you already have."
-        return Text(text).font(.callout).foregroundStyle(Theme.textSecondary)
+        return Text(text).font(.callout).foregroundStyle(palette.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -1006,27 +1020,27 @@ struct SetupGuideView: View {
         return Button { model.selectedModel = entry.id } label: {
             HStack(alignment: .top, spacing: 10) {
                 Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(selected ? Theme.textPrimary : Theme.textMuted)
+                    .foregroundStyle(selected ? palette.textPrimary : palette.textMuted)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 6) {
                         Text(entry.label).font(.system(size: 13, weight: .medium))
                         if let gb = entry.sizeGb {
-                            Text(String(format: "%.1f GB", gb)).font(.caption).foregroundStyle(Theme.textMuted)
+                            Text(String(format: "%.1f GB", gb)).font(.caption).foregroundStyle(palette.textMuted)
                         }
                         if current.contains(entry.id) { pill("In use", on: true) }
                         fitBadge(entry.fit)
                         if !entry.tested && entry.fit != "unknown" { pill("Not validated", on: false) }
                     }
-                    Text(entry.note).font(.caption).foregroundStyle(Theme.textSecondary)
+                    Text(entry.note).font(.caption).foregroundStyle(palette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
             }
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 10)
-                .fill(selected ? Color.white.opacity(0.10) : Theme.chipFill))
+                .fill(selected ? palette.selectedFill : palette.chipFill))
             .overlay(RoundedRectangle(cornerRadius: 10)
-                .stroke(selected ? Color.white.opacity(0.35) : Theme.chipStroke, lineWidth: 1))
+                .stroke(selected ? palette.selectedStroke : palette.chipStroke, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }
@@ -1046,7 +1060,7 @@ struct SetupGuideView: View {
     private func searchSection(_ s: SetupStatus) -> some View {
         let check = s.checks.first { $0.id == "search" }
         return card(step: "3", title: "Smart Search (optional)", state: check?.state ?? "warn") {
-            Text(check?.detail ?? "").font(.callout).foregroundStyle(Theme.textSecondary)
+            Text(check?.detail ?? "").font(.callout).foregroundStyle(palette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let download = s.models.embeddingDownload {
                 downloadCard(download, headline: "Adds semantic search to ⌘⇧F", tag: "embed", omlx: s.omlx)
@@ -1063,17 +1077,17 @@ struct SetupGuideView: View {
                 Text(headline).font(.system(size: 12, weight: .semibold))
                 Spacer()
                 Text("\(d.label)\(d.sizeGb.map { String(format: " · %.1f GB", $0) } ?? "")")
-                    .font(.caption).foregroundStyle(Theme.textSecondary)
+                    .font(.caption).foregroundStyle(palette.textSecondary)
             }
             if omlx.bundled == true {
                 Text("Download from Hugging Face directly into Wisp. The engine handles progress and resumes interrupted transfers.")
-                    .font(.caption).foregroundStyle(Theme.textSecondary)
+                    .font(.caption).foregroundStyle(palette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let task = model.downloads.first(where: { $0.model == d.model }) {
                     if task.active {
                         ProgressView(value: task.progress, total: 100)
                         HStack {
-                            Text(task.progressText).font(.caption).foregroundStyle(Theme.textSecondary)
+                            Text(task.progressText).font(.caption).foregroundStyle(palette.textSecondary)
                             Spacer()
                             action("Cancel") { Task { await model.download(d.model, cancel: true) } }
                                 .disabled(model.busy != nil)
@@ -1085,10 +1099,10 @@ struct SetupGuideView: View {
                             .disabled(model.busy != nil)
                     } else {
                         Text("Download finished. Choose the installed model above, then Use this model.")
-                            .font(.caption).foregroundStyle(Theme.textSecondary)
+                            .font(.caption).foregroundStyle(palette.textSecondary)
                         if model.shouldOfferRedownload(d.model) {
                             Text("The model hasn't appeared yet. If its files are missing, download it again.")
-                                .font(.caption).foregroundStyle(Theme.textSecondary)
+                                .font(.caption).foregroundStyle(palette.textSecondary)
                             action("Download again") { Task { await model.download(d.model) } }
                                 .disabled(model.busy != nil)
                         }
@@ -1103,7 +1117,7 @@ struct SetupGuideView: View {
             } else if omlx.running {
                 Text("Wisp doesn't download models for you. The easiest way is oMLX's Model Downloader: "
                      + "open it, search for the name below, and download it.")
-                    .font(.caption).foregroundStyle(Theme.textMuted)
+                    .font(.caption).foregroundStyle(palette.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     action("Open oMLX downloader") { model.open(omlx.adminUrl) }
@@ -1112,31 +1126,31 @@ struct SetupGuideView: View {
                     }
                     Spacer()
                 }
-                Text("Or run this in Terminal:").font(.caption).foregroundStyle(Theme.textMuted)
+                Text("Or run this in Terminal:").font(.caption).foregroundStyle(palette.textMuted)
             } else {
                 Text("Wisp doesn't download models for you. Once oMLX is running you can use its Model Downloader, "
                      + "or run this in Terminal:")
-                    .font(.caption).foregroundStyle(Theme.textMuted)
+                    .font(.caption).foregroundStyle(palette.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if omlx.bundled != true {
                 Text(d.command)
                     .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
                     .padding(8).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
+                    .background(RoundedRectangle(cornerRadius: 8).fill(palette.codeFill))
                 HStack {
                     action(model.copied == tag ? "Copied" : "Copy command") { model.copy(d.command, tag: tag) }
                     action("Open on Hugging Face") { model.open(d.url) }
                     Spacer()
                 }
                 Text("The Terminal route needs the `hf` tool: \(d.installHf). Then choose Check again.")
-                    .font(.caption2).foregroundStyle(Theme.textMuted)
+                    .font(.caption2).foregroundStyle(palette.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.chipFill))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.chipStroke, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 10).fill(palette.chipFill))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.chipStroke, lineWidth: 1))
     }
 
     // MARK: 4 · Other engines
@@ -1146,7 +1160,7 @@ struct SetupGuideView: View {
             Text("Ollama, LM Studio, llama.cpp, MTPLX and similar apps on this Mac can answer chat and reasoning. "
                  + "Choose “Connect with tools” and Wisp tests whether the app can run its tools reliably, "
                  + "including the context window it really uses, before turning tool use on.")
-                .font(.callout).foregroundStyle(Theme.textSecondary)
+                .font(.callout).foregroundStyle(palette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Text(s.disclosure).font(.caption).foregroundStyle(Color.orange)
                 .fixedSize(horizontal: false, vertical: true)
@@ -1158,12 +1172,12 @@ struct SetupGuideView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text(e.label).font(.system(size: 13, weight: .medium))
-                if let port = e.port { Text(":" + String(port)).font(.caption).foregroundStyle(Theme.textMuted) }
+                if let port = e.port { Text(":" + String(port)).font(.caption).foregroundStyle(palette.textMuted) }
                 pill(e.running ? "Running" : "Not detected", on: e.running)
                 Spacer()
                 if let url = e.url, !e.running { action("Website") { model.open(url) } }
             }
-            Text(e.summary).font(.caption).foregroundStyle(Theme.textSecondary)
+            Text(e.summary).font(.caption).foregroundStyle(palette.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             if e.running, let port = e.port, let ids = e.modelIds, !ids.isEmpty {
                 connectRow(key: e.id, port: port, models: ids)
@@ -1177,16 +1191,16 @@ struct SetupGuideView: View {
                 if !model.customModels.isEmpty, let port = Int(model.customPort) {
                     connectRow(key: "custom", port: port, models: model.customModels)
                 }
-                Text(e.howToStart).font(.caption2).foregroundStyle(Theme.textMuted)
+                Text(e.howToStart).font(.caption2).foregroundStyle(palette.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             } else if !e.running {
-                Text(e.howToStart).font(.caption2).foregroundStyle(Theme.textMuted)
+                Text(e.howToStart).font(.caption2).foregroundStyle(palette.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.chipFill))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.chipStroke, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 10).fill(palette.chipFill))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(palette.chipStroke, lineWidth: 1))
     }
 
     private func connectRow(key: String, port: Int, models: [String]) -> some View {
@@ -1216,10 +1230,10 @@ struct SetupGuideView: View {
                 action(model.testing ? "Testing…" : "Send a test message") { Task { await model.test() } }
                     .disabled(model.testing || model.busy != nil || !s.ready || !model.statusIsCurrent)
                 if let result = model.testResult {
-                    Text(result).font(.callout).foregroundStyle(Theme.textSecondary)
+                    Text(result).font(.callout).foregroundStyle(palette.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else if !s.ready {
-                    Text("Finish steps 1 and 2 first.").font(.caption).foregroundStyle(Theme.textMuted)
+                    Text("Finish steps 1 and 2 first.").font(.caption).foregroundStyle(palette.textMuted)
                 }
             }
         }
@@ -1239,38 +1253,38 @@ struct SetupGuideView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.04)))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.hairline, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 14).fill(palette.cardFill))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(palette.hairline, lineWidth: 1))
     }
 
     @ViewBuilder
     private func stateGlyph(_ state: String, step: String) -> some View {
         switch state {
         case "ok":
-            Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.textPrimary)
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(palette.textPrimary)
         case "warn":
             Image(systemName: "exclamationmark.circle").foregroundStyle(Color.orange)
         case "todo":
-            Image(systemName: "\(step).circle").foregroundStyle(Theme.textPrimary)
+            Image(systemName: "\(step).circle").foregroundStyle(palette.textPrimary)
         default:
-            Image(systemName: "\(step).circle").foregroundStyle(Theme.textMuted)
+            Image(systemName: "\(step).circle").foregroundStyle(palette.textMuted)
         }
     }
 
     private func pill(_ text: String, on: Bool) -> some View {
         Text(text).font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(on ? Color.black : Theme.textSecondary)
+            .foregroundStyle(on ? palette.onAccent : palette.textSecondary)
             .padding(.horizontal, 7).padding(.vertical, 2)
-            .background(Capsule().fill(on ? Color.white : Theme.chipFill))
-            .overlay(Capsule().stroke(on ? Color.clear : Theme.chipStroke, lineWidth: 1))
+            .background(Capsule().fill(on ? palette.accent : palette.chipFill))
+            .overlay(Capsule().stroke(on ? Color.clear : palette.chipStroke, lineWidth: 1))
     }
 
     private func action(_ title: String, perform: @escaping () -> Void) -> some View {
         Button(action: perform) {
             Text(title).font(.system(size: 12, weight: .medium))
                 .padding(.horizontal, 10).padding(.vertical, 5)
-                .background(Capsule().fill(Color.white.opacity(0.12)))
-                .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+                .background(Capsule().fill(palette.actionFill))
+                .overlay(Capsule().stroke(palette.chipStroke, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }

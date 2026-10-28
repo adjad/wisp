@@ -90,3 +90,59 @@ class LocalOriginGuard:
                 await WebSocketClose(code=1008)(scope, receive, send)
                 return
         await self.app(scope, receive, send)
+
+
+# The largest body /agent takes. The app sends a clip as at most 8 JPEG frames
+# of at most 1568 px (typically under 1 MB each) plus 30 s of 16 kHz WAV, so a
+# real clip is about 13 MB as base64. The service's own per-image ceiling is
+# 8 MB, so 8 frames at that ceiling would be about 85 MB of base64. This cap
+# sits between the two: everything the app sends fits, and the worst case
+# the per-field checks allow is refused here. It is checked before the JSON is
+# parsed, so an oversized body is never held as objects.
+AGENT_BODY_LIMIT = 32 * 1024 * 1024
+_LIMITED_PATHS = {"/agent": AGENT_BODY_LIMIT}
+
+
+class BodyLimit:
+    """Pure ASGI middleware: refuse an over-large body on the media-carrying
+    routes with 413 before any handler (or JSON parser) sees it."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        limit = _LIMITED_PATHS.get(scope.get("path", "")) if scope.get("type") == "http" else None
+        if limit is None:
+            await self.app(scope, receive, send)
+            return
+        too_large = JSONResponse({"detail": "That's too large for Wisp to read. Try a smaller picture or a shorter clip."},
+                                 status_code=413)
+        declared = Headers(scope=scope).get("content-length")
+        if declared is not None and declared.isdigit() and int(declared) > limit:
+            await too_large(scope, receive, send)
+            return
+        # Chunked or undeclared: read up to the limit, then replay what was read.
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                break
+            chunk = message.get("body", b"")
+            size += len(chunk)
+            if size > limit:
+                await too_large(scope, receive, send)
+                return
+            chunks.append(chunk)
+            if not message.get("more_body", False):
+                break
+        body, replayed = b"".join(chunks), False
+
+        async def replay():
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return await receive()
+
+        await self.app(scope, replay, send)

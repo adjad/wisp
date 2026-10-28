@@ -4,7 +4,7 @@ import SwiftUI
 /// "Connect Google" in the notch's Quick Settings, for a new user only.
 ///
 /// This is the user's deliberate exception to the rule that controls which
-/// widen what Wisp reads stay in the Settings window: the very first connect
+/// widen what Wisp reads stay in Settings (in the Wisp window): the very first connect
 /// may start here. QuickSettingsView shows the row only while no Google
 /// account is connected and an OAuth client exists
 /// (NotchGoogleVisibility.showsConnect); once an account is connected the row

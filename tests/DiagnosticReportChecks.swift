@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Darwin
 
@@ -450,6 +451,11 @@ struct DiagnosticReportChecks {
         check(DiagnosticReport.journal(traceID: keepers) != nil)
 
         try MainActor.assumeIsolated { try draftChecks(root: root) }
+        // Asked from the notch (menu-bar level), the save dialog opens above it, not behind.
+        check(ReportDraft.saveLevel(above: .statusBar)!.rawValue > NSWindow.Level.statusBar.rawValue
+              && ReportDraft.saveLevel(above: .floating)!.rawValue > NSWindow.Level.floating.rawValue
+              && ReportDraft.saveLevel(above: nil) == nil,
+              "a save dialog from the notch sits above it; from a window it keeps its own level")
 
         print("\(count) diagnostic checks passed")
     }

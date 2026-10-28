@@ -93,6 +93,9 @@ final class OverlayModel: ObservableObject {
         var traceID: String? = nil
         var errorDetail: String? = nil
         var nodeResultID: String? = nil
+        /// What a tool in this reply needed and wasn't allowed ("calendar_access", …),
+        /// from its own result (AskAccess), for the fix button under the reply.
+        var needsAccess: [String] = []
 
         // Debug metadata — populated on assistant turns only (see handle()'s
         // "done"/"error" cases). Everything a debug-mode export needs to
@@ -152,6 +155,9 @@ final class OverlayModel: ObservableObject {
     @Published var pending: Pending?
     @Published var messageDraft: MessageDraft?
     @Published private(set) var attachedImageName: String?
+    // The pending attachment's preview and kind, for the chip. Memory only.
+    @Published private(set) var attachedThumbnail: NSImage?
+    @Published private(set) var attachedLabel = ""
     // The panel's tab. App-scoped, so it survives collapse.
     @Published var tab: NotchTab = .ask {
         didSet {
@@ -192,7 +198,7 @@ final class OverlayModel: ObservableObject {
     /// Quick settings' Model memory row: what the engine has resident, nil when unknown.
     @Published private(set) var modelMemory: ModelMemory?
     // First-run setup at the top of Ask. Its readiness lives on the app's one
-    // SetupGuideModel, which the setup window shares.
+    // SetupGuideModel, which Settings › Models › Setup shares.
     @Published var setupCard: NotchSetupCard = .hidden { didSet { if setupCard != oldValue { onResize() } } }
     // Whether Wisp's own service answers (BackendManager's reachability watch).
     // False shows "Wisp service isn't running" with Retry instead of a green dot.
@@ -392,13 +398,17 @@ final class OverlayModel: ObservableObject {
     // True while the attach-file dialog is up — it takes key focus from the
     // panel, which must not be mistaken for "the user switched apps".
     var pickingFile = false
+    /// The attach dialog while it is open. It runs beside the notch, not as an
+    /// app-modal dialog, so a second click on the paperclip brings it forward.
+    var filePicker: NSOpenPanel?
 
-    // True while auto-collapse must hold off: the panel is pinned, there is
-    // an edit the person hasn't finished (typed input, a message draft being
-    // edited), or the setup card is open. A mid-task generation does not count;
-    // the notch bar's dot shows it is still working.
+    // True while auto-collapse must hold off: the panel is pinned, a file
+    // dialog it opened is up, there is an edit the person hasn't finished
+    // (typed input, a message draft being edited), or the setup card is open.
+    // A mid-task generation does not count; the notch bar's dot shows it is
+    // still working.
     var holdsOpen: Bool {
-        pinned || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
+        pinned || pickingFile || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
             || voice.isActive || speaker.speaking
             || (tab == .day && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             || knowYou != nil
@@ -410,11 +420,11 @@ final class OverlayModel: ObservableObject {
     weak var todayReport: ReportDraft?
 
     /// Saves a report from the notch. The save panel takes focus from the
-    /// panel, which must not read as the person leaving.
+    /// panel, which must not read as the person leaving, and opens above it.
     func saveReport(_ draft: ReportDraft) {
         pickingFile = true
         defer { pickingFile = false }
-        draft.chooseLocationAndSave()
+        draft.chooseLocationAndSave(above: DisplayGeometry.shared.layout.windowLevel)
     }
 
     /// Which report a reply's "Report a problem" opens: its trace (or, for a
@@ -487,15 +497,26 @@ final class OverlayModel: ObservableObject {
     }
 
     /// Slash commands the Ask field's text could still become. /corpus only in Debug Mode.
-    var commandSuggestions: [NotchCommand] { NotchCommand.suggestions(for: input, includeCorpus: debugMode) }
+    var commandSuggestions: [NotchCommand] { NotchCommand.suggestions(for: input, includeCorpus: debugMode, includeScreen: screenCommandAvailable) }
 
     /// Sources Wisp can't read right now ("calendar", "email"), refreshed each
-    /// time the panel opens, so a starter never asks about a denied source.
-    @Published private(set) var unreadableSources: Set<String> = []
+    /// time the panel opens, so a starter never asks about a denied source. Nil
+    /// until the service has said, so the first open shows no source starter.
+    @Published private(set) var unreadableSources: Set<String>?
+    /// What makes a starter the person's own, from what the app already holds.
+    @Published private(set) var starterPersonal = AskStarters.Personal()
+    /// The name from Getting to know you, for the greeting over the starters.
+    @Published private(set) var starterName = ""
+    /// The profile's first goal, kept between opens so a reopened panel shows
+    /// its starter at once while the profile is read again.
+    private var profileGoal = ""
+    /// Whether a cloud model may get Ask's prompt (Super Model or a cloud role),
+    /// asked again on every open. The goal starter waits for a false.
+    private var cloudUse = StarterCloudUse()
 
     // The tappable questions under an empty Ask: ones a fresh install can
     // answer, even before any source is allowed (AgentSend.swift's AskStarters).
-    var suggestions: [String] { AskStarters.prompts(unreadable: unreadableSources) }
+    var suggestions: [String] { AskStarters.prompts(unreadable: unreadableSources, personal: starterPersonal) }
 
     /// Starters not yet asked in this chat (derived from its user turns, so New chat resets them).
     var remainingSuggestions: [String] {
@@ -514,17 +535,56 @@ final class OverlayModel: ObservableObject {
         return !remainingSuggestions.isEmpty
     }
 
-    func refreshStarters() {
+    /// Reads which sources the starters may use, and makes some of them the
+    /// person's own from what the app already holds: the Brief's upcoming
+    /// calendar and waiting mail and texts (`today`), and the profile's name and
+    /// first goal. No model is asked; each read lands on its own, so a slow one
+    /// never holds the starters back.
+    func refreshStarters(today: TodayModel) {
+        // Cloud may have been turned on since the last open: no goal starter
+        // on the old answer while /inference/cloud is read again.
+        let cloudRequest = cloudUse.opened()
+        updatePersonalStarters(today: today)
         Task { [weak self] in
-            guard let self, let status = await self.client.assistantSyncStatus(sources: ["calendar", "email"]) else { return }
-            self.unreadableSources = AskStarters.unreadable(
-                states: Dictionary(status.sources.map { ($0.id, $0.state) }, uniquingKeysWith: { first, _ in first }))
+            await StarterAccess.shared.refresh()
+            guard let self, let unreadable = StarterAccess.shared.unreadable else { return }
+            if self.unreadableSources != unreadable { self.unreadableSources = unreadable }
         }
+        Task { [weak self] in
+            guard let self, let envelope = await self.client.profile() else { return }
+            self.profileGoal = envelope.profile.goals.first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? ""
+            self.starterName = envelope.profile.name
+            let personal = Self.withGoal(self.starterPersonal, self.profileGoal, cloudInUse: self.cloudUse.inUse)
+            if personal != self.starterPersonal { self.starterPersonal = personal }
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            let inUse = ChatCloudUse.active(from: await self.client.cloudInference())
+            self.cloudUse.answered(inUse, for: cloudRequest)
+            let personal = Self.withGoal(self.starterPersonal, self.profileGoal, cloudInUse: self.cloudUse.inUse)
+            if personal != self.starterPersonal { self.starterPersonal = personal }
+        }
+    }
+
+    /// The Brief's calendar and mail can land after the panel opened; the
+    /// starters pick them up then instead of waiting for the next open.
+    func updatePersonalStarters(today: TodayModel) {
+        let personal = Self.withGoal(AskStarters.Personal(today: today), profileGoal, cloudInUse: cloudUse.inUse)
+        if personal != starterPersonal { starterPersonal = personal }
+    }
+
+    private static func withGoal(_ personal: AskStarters.Personal, _ goal: String,
+                                 cloudInUse: Bool?) -> AskStarters.Personal {
+        var personal = personal
+        personal.goal = AskStarters.goalStarterAllowed(cloudInUse: cloudInUse) ? goal : ""
+        return personal
     }
 
     private let client = WispClient()
     private var sessionId = ""
     private var attachedImage: String?
+    private var attachedVideo: QueuedVideo?
+    private var attachedSource: String?
     private var attachmentReadTask: Task<Void, Never>?
     private var attachmentReadID = UUID()
     private var streamStart: Date?
@@ -555,6 +615,7 @@ final class OverlayModel: ObservableObject {
     private var turnNeededTools: Bool?
     private var turnToolCalls: [ToolCallRecord] = []
     private var turnRawIO: [RawModelIO] = []
+    private var turnNeedsAccess: [String] = []
 
     var healthy: Bool { phase != .error }
     var willQueuePrompt: Bool { submissionState.isActive }
@@ -656,15 +717,15 @@ final class OverlayModel: ObservableObject {
     }
 
     func submit() {
-        let prompt = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        var prompt = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        if prompt.isEmpty, let defaultPrompt = attachmentDefaultPrompt { prompt = defaultPrompt }
         guard !prompt.isEmpty else {
             // Return on an empty box first brings back a prompt set aside after
             // a drop (to read, not to send), then sends on prompts held behind it.
             if let back = setAside.restore() {
                 cancelAttachmentRead()
                 input = back.text
-                attachedImage = back.image
-                attachedImageName = back.imageName
+                restoreAttachment(from: back)
                 researchMode = back.researchMode
             } else if !corpusBusy, let next = submissionState.resume() { syncQueue(); start(next) }
             return
@@ -674,20 +735,21 @@ final class OverlayModel: ObservableObject {
             startCorpusCommand(prompt)
             return
         }
-        if let command = NotchCommand.match(prompt, includeCorpus: debugMode) {
+        if let command = NotchCommand.match(prompt, includeCorpus: debugMode, includeScreen: screenCommandAvailable) {
             input = ""
             run(command)
             return
         }
         // Part of a command that could still be one of several ("/re"): keep the
         // list showing rather than sending a fragment to the model.
-        if !NotchCommand.suggestions(for: prompt, includeCorpus: debugMode).isEmpty { return }
+        if !NotchCommand.suggestions(for: prompt, includeCorpus: debugMode, includeScreen: screenCommandAvailable).isEmpty { return }
         guard !corpusBusy else {
             showTransientNotice("Stop the corpus run before asking another question.")
             return
         }
         let submission = QueuedPrompt(text: prompt, image: attachedImage,
-                                      imageName: attachedImageName, researchMode: researchMode)
+                                      imageName: attachedImageName, researchMode: researchMode,
+                                      video: attachedVideo, imageSource: attachedSource)
         input = ""
         removeAttachment()
         if serviceStarting && !submission.researchMode {
@@ -733,7 +795,7 @@ final class OverlayModel: ObservableObject {
             showTransientNotice("Wait for the current request to finish before opening the corpus.")
             return false
         }
-        guard attachedImage == nil, attachedImageName == nil else {
+        guard !hasAttachment else {
             showTransientNotice("Remove the attachment before starting the corpus runner.")
             return false
         }
@@ -769,7 +831,8 @@ final class OverlayModel: ObservableObject {
         }
         let prompt = submission.text
         speaker.stop()
-        turns.append(Turn(role: "user", text: prompt))
+        // Only a marker of the attachment is kept in the visible/saved turn.
+        turns.append(Turn(role: "user", text: submission.historyMarker.map { prompt + " " + $0 } ?? prompt))
         answer = ""; reasoning = ""; showReasoning = false; activity = []
         role = ""; modelAbbrev = ""; routeSource = ""; statusText = ""
         tokPerSec = 0; pending = nil; messageDraft = nil
@@ -782,13 +845,17 @@ final class OverlayModel: ObservableObject {
         turnModel = nil; turnRouteRole = nil; turnRouteReason = nil; turnNeededTools = nil
         turnToolCalls = []
         turnRawIO = []
+        turnNeedsAccess = []
         phase = .routing
         let image = submission.image
+        let imageSource = submission.imageSource
+        let video = submission.video?.wire
         let sid = sessionId   // continue the same conversation (empty -> server starts one)
         let wantsDebug = debugMode
         streamTask?.cancel()
         streamTask = Task { [weak self] in
-            await self?.client.runAgent(prompt: prompt, image: image, sessionId: sid,
+            await self?.client.runAgent(prompt: prompt, image: image, imageSource: imageSource,
+                                        video: video, sessionId: sid,
                                         debug: wantsDebug) { ev in
                 Task { @MainActor in self?.handle(ev, dispatchID: dispatch.id) }
             }
@@ -841,6 +908,7 @@ final class OverlayModel: ObservableObject {
         case .new: newChat()
         case .about: startKnowYou()
         case .resetwisp: openResetCard()
+        case .screen: captureScreenForPreview()
         case .demo:
             if let problem = DemoMode.toggle() { showTransientNotice(problem, duration: 8) }
         }
@@ -1060,28 +1128,55 @@ final class OverlayModel: ObservableObject {
     /// A read belongs to this composer generation. Cancellation is advisory for
     /// file I/O; the identity check also rejects a reader that finishes late.
     @discardableResult
-    func loadAttachment(name: String, read: @escaping @Sendable () async -> String?) -> Task<Void, Never> {
+    func loadAttachment(name: String, read: @escaping @Sendable () async -> MediaAttachment.Pending?) -> Task<Void, Never> {
         cancelAttachmentRead()
         let id = attachmentReadID
         let task = Task { [weak self] in
-            let dataURL = await read()
+            let media = await read()
             guard let self, self.attachmentReadID == id, !Task.isCancelled else { return }
             self.attachmentReadTask = nil
-            guard let dataURL else { return }
-            self.attachedImageName = name
-            self.attachedImage = dataURL
+            guard let media else { return }
+            self.setAttachment(media, name: name)
         }
         attachmentReadTask = task
         return task
     }
 
-    func loadAttachment(url: URL) {
-        let ext = url.pathExtension.lowercased()
-        let mime = (ext == "jpg" || ext == "jpeg") ? "jpeg" : ext
-        loadAttachment(name: url.lastPathComponent) {
-            let reader = Task.detached(priority: .userInitiated) { () -> String? in
-                guard !Task.isCancelled, let data = try? Data(contentsOf: url), !Task.isCancelled else { return nil }
-                return "data:image/\(mime);base64,\(data.base64EncodedString())"
+    /// A picked or dropped file: an image is downscaled to JPEG, a movie is
+    /// sampled into frames + audio. Everything stays in memory.
+    func loadAttachment(url: URL, source: MediaAttachment.Source = .file) {
+        let kind = MediaAttachment.kind(of: url)
+        guard kind != .other else {
+            showTransientNotice("Wisp can read images and short video clips.")
+            return
+        }
+        let loading = kind == .movie
+        if loading { attachedLabel = "Reading clip…" }
+        loadAttachment(name: url.lastPathComponent) { [weak self] in
+            let reader = Task.detached(priority: .userInitiated) { () -> MediaAttachment.Pending? in
+                guard !Task.isCancelled else { return nil }
+                if kind == .image {
+                    // Size first, then let ImageIO stream the file: it is never read whole.
+                    if let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize,
+                       MediaAttachment.tooLarge(bytes: bytes) {
+                        await self?.showTransientNotice(MediaAttachment.tooLargeMessage)
+                        return nil
+                    }
+                    guard !Task.isCancelled,
+                          let jpeg = MediaAttachment.downscaleJPEG(contentsOf: url) else {
+                        await self?.showTransientNotice("Wisp couldn't read that image.")
+                        return nil
+                    }
+                    return .image(jpeg: jpeg, source: source)
+                }
+                do {
+                    return .video(try await VideoSampler.sample(url: url))
+                } catch let error as VideoSampleError {
+                    await self?.showTransientNotice(error.message)
+                    return nil
+                } catch {
+                    return nil
+                }
             }
             return await withTaskCancellationHandler {
                 await reader.value
@@ -1089,6 +1184,16 @@ final class OverlayModel: ObservableObject {
                 reader.cancel()
             }
         }
+    }
+
+    /// An image pasted or dragged in as pixels (no file).
+    func attachPasted(imageData: Data, source: MediaAttachment.Source) {
+        cancelAttachmentRead()
+        guard let jpeg = MediaAttachment.downscaleJPEG(imageData) else {
+            showTransientNotice("Wisp couldn't read that image.")
+            return
+        }
+        setAttachment(.image(jpeg: jpeg, source: source), name: "Image")
     }
 
     func cancelAttachmentRead() {
@@ -1099,14 +1204,89 @@ final class OverlayModel: ObservableObject {
 
     func removeAttachment() {
         cancelAttachmentRead()
-        attachedImage = nil
-        attachedImageName = nil
+        clearAttachmentState()
+    }
+
+    /// True while the pending attachment is a `/screen` capture (shown large to check).
+    var attachmentIsScreen: Bool { attachedImage != nil && attachedSource == "screen" }
+
+    var hasAttachment: Bool { attachedImage != nil || attachedVideo != nil }
+
+    /// The question to send when the person typed nothing.
+    private var attachmentDefaultPrompt: String? {
+        if attachedVideo != nil { return "What happens in this clip?" }
+        guard attachedImage != nil else { return nil }
+        return attachedSource == "screen" ? "Explain what's on my screen." : "What's in this image?"
+    }
+
+    private func clearAttachmentState() {
+        attachedImage = nil; attachedVideo = nil; attachedSource = nil
+        attachedImageName = nil; attachedThumbnail = nil; attachedLabel = ""
+    }
+
+    private func setAttachment(_ media: MediaAttachment.Pending, name: String) {
+        clearAttachmentState()
+        attachedImageName = name
+        attachedLabel = MediaAttachment.chipLabel(for: media)
+        switch media {
+        case .image(let jpeg, let source):
+            attachedImage = MediaAttachment.dataURL(jpeg: jpeg)
+            attachedSource = source == .screen ? "screen" : nil
+            attachedThumbnail = NSImage(data: jpeg)
+        case .video(let clip):
+            let fields = media.bodyFields()["video"] as? [String: Any]
+            attachedVideo = QueuedVideo(
+                frames: fields?["frames"] as? [String] ?? [],
+                seconds: clip.seconds,
+                audio: clip.wav?.base64EncodedString())
+            attachedThumbnail = clip.frames.first.flatMap { NSImage(data: $0) }
+        }
+        onResize()
+    }
+
+    private func restoreAttachment(from prompt: QueuedPrompt) {
+        clearAttachmentState()
+        attachedImage = prompt.image
+        attachedVideo = prompt.video
+        attachedSource = prompt.imageSource
+        attachedImageName = prompt.imageName
+        attachedLabel = prompt.video.map { "Clip · \(Int($0.seconds.rounded())) s — reads sampled frames + audio, not motion" }
+            ?? (prompt.imageSource == "screen" ? "Screen" : "Image")
+        let thumb = prompt.image ?? prompt.video?.frames.first
+        if let thumb, let comma = thumb.firstIndex(of: ","),
+           let data = Data(base64Encoded: String(thumb[thumb.index(after: comma)...])) {
+            attachedThumbnail = NSImage(data: data)
+        }
+    }
+
+    /// "Explain my screen": only with Screen Recording already granted (never
+    /// requested here). The capture becomes a pending preview; nothing is sent
+    /// until the person presses send.
+    var screenCommandAvailable: Bool { CGPreflightScreenCaptureAccess() }
+
+    func captureScreenForPreview() {
+        guard CGPreflightScreenCaptureAccess() else {
+            showTransientNotice("Screen Recording isn't on for Wisp. Turn it on in Settings › Privacy to use this.")
+            return
+        }
+        cancelAttachmentRead()
+        Task { [weak self] in
+            let jpeg = await Task.detached(priority: .userInitiated) { ScreenSnapshot.captureMainDisplayJPEG() }.value
+            guard let self else { return }
+            guard let jpeg else {
+                self.showTransientNotice("Wisp couldn't capture the screen.")
+                return
+            }
+            self.setAttachment(.image(jpeg: jpeg, source: .screen), name: "Screen")
+        }
     }
 
     func attach(name: String, dataURL: String) {
         cancelAttachmentRead()
+        clearAttachmentState()
         attachedImageName = name
         attachedImage = dataURL
+        attachedLabel = "Image"
     }
 
     func reset() {
@@ -1129,7 +1309,7 @@ final class OverlayModel: ObservableObject {
         stopSyncProgress()
         input = ""; answer = ""; reasoning = ""; activity = []
         routeSource = ""; statusText = ""
-        attachedImage = nil; attachedImageName = nil; messageDraft = nil; phase = .idle
+        clearAttachmentState(); messageDraft = nil; phase = .idle
         collapsed = false; turns = []
         reopenedChatTitle = nil
     }
@@ -1406,6 +1586,9 @@ final class OverlayModel: ObservableObject {
             }
         case "tool_result":
             activity.append("→ \(ev.str("result").prefix(60))")
+            for kind in AskAccess.kinds(ev.payload["needs_access"]) where !turnNeedsAccess.contains(kind) {
+                turnNeedsAccess.append(kind)
+            }
             let cid = ev.str("id")
             if let idx = turnToolCalls.lastIndex(where: { $0.callId == cid }) {
                 turnToolCalls[idx].result = ev.str("result")
@@ -1468,8 +1651,7 @@ final class OverlayModel: ObservableObject {
                 // what happens next. A still-starting engine gets one automatic retry.
                 cancelAttachmentRead()
                 input = back.text
-                attachedImage = back.image
-                attachedImageName = back.imageName
+                restoreAttachment(from: back)
                 researchMode = back.researchMode
                 if turns.last?.role == "user" { turns.removeLast() }
                 phase = .idle
@@ -1498,8 +1680,7 @@ final class OverlayModel: ObservableObject {
                 } else if let retry = submissionState.dropForRetry(dispatchID) {
                     cancelAttachmentRead()
                     input = retry.text
-                    attachedImage = retry.image
-                    attachedImageName = retry.imageName
+                    restoreAttachment(from: retry)
                     researchMode = retry.researchMode
                 }
                 syncQueue()
@@ -1608,6 +1789,8 @@ final class OverlayModel: ObservableObject {
         turn.reasoningText = reasoning
         turn.toolCalls = turnToolCalls
         turn.rawIO = turnRawIO
+        // Not debug-only: the reply's fix button (OverlayView.accessFixes).
+        turn.needsAccess = turnNeedsAccess
     }
 
     // Pretty-prints a tool call's `args` payload (an arbitrary JSON-ish `Any`
@@ -2328,5 +2511,46 @@ final class OverlayModel: ObservableObject {
             "LFM2.5-2.6B-MLX-6bit": "LFM-2.6B",
         ]
         return map[model] ?? model
+    }
+}
+
+/// Which sources the starters may ask about, shared by the notch's Ask and the
+/// chat window. Nil until the service has said, so no starter offers a source
+/// Wisp may not be allowed to read; a failed read keeps what was known.
+@MainActor
+final class StarterAccess: ObservableObject {
+    static let shared = StarterAccess()
+    @Published private(set) var unreadable: Set<String>?
+    private let client = WispClient()
+
+    func refresh() async {
+        guard let status = await client.assistantSyncStatus(sources: AskStarters.sources) else { return }
+        let value = AskStarters.unreadable(
+            states: Dictionary(status.sources.map { ($0.id, $0.state) }, uniquingKeysWith: { first, _ in first }))
+        if unreadable != value { unreadable = value }
+    }
+}
+
+extension AskStarters.Personal {
+    /// The next calendar event and the first person waiting on mail or texts,
+    /// from what the Brief already read: its upcoming list and today's plan.
+    /// Nothing from a plan for another day, and nothing a Brief would hide
+    /// (placeholders, newsletters, withheld subjects).
+    @MainActor init(today: TodayModel) {
+        self.init()
+        let events = (UpcomingItem.parseList(today.upcomingReply) ?? [])
+            .filter { $0.source == "calendar" && !$0.isReminder && !DayTimeline.isPlaceholderEvent($0.title) }
+            .map { (title: $0.title, start: $0.when, allDay: $0.allDay, own: !$0.readOnlyCalendar) }
+        nextEvent = AskStarters.nextEvent(events, now: today.now.timeIntervalSince1970)
+        let attention = today.isShowingCurrentDay ? today.plan?.workspace?.attention ?? [] : []
+        let needs = attention
+            .filter { ($0.source == "email" || $0.source == "messages")
+                      && !DayTimeline.isBulkMail($0.title) && !BriefMail.isPrivate($0.title) }
+            .map { (sender: BriefMail.displayName($0.sender ?? ""), source: $0.source,
+                    person: $0.person ?? false, replied: $0.replied ?? false) }
+        if let waiting = AskStarters.waitingSender(needs) {
+            sender = waiting.name
+            senderSource = waiting.source
+        }
     }
 }

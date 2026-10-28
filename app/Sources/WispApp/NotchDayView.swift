@@ -212,15 +212,17 @@ struct NotchDayView: View {
         .accessibilityLabel("\(ask.title), \(ask.detail)")
     }
 
-    /// Calendar and Reminders when Wisp can't read them: why, and the setting
-    /// that fixes it. Nothing for a source that is fine.
+    /// Calendar and Reminders when Wisp can't read them, and Contacts when macOS
+    /// turned it down (on today): why, and the setting that fixes it. Nothing
+    /// for a source that is fine.
     private func unreadAccess(_ plan: TodayPlan) -> [SourceAccess] {
         ["calendar", "reminders"].compactMap { plan.access($0) }.filter { !$0.readable }
+            + [today.isShowingCurrentDay ? BriefFix.contactsAccess() : nil].compactMap { $0 }
     }
 
     private func accessRow(_ access: SourceAccess) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Image(systemName: DayTimeline.sourceSymbol(access.source)).font(.wisp(size: 10.5))
+            Image(systemName: access.symbol).font(.wisp(size: 10.5))
                 .foregroundStyle(Theme.textMuted).frame(width: 15)
             VStack(alignment: .leading, spacing: 1) {
                 Text(access.headline).font(.wisp(size: 12.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
@@ -228,7 +230,8 @@ struct NotchDayView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 6)
-            if let fix = access.fix, let url = URL(string: fix.url) {
+            // Day's rows are System Settings pages (Calendars, Reminders, Contacts).
+            if let fix = access.fixLink, let url = URL(string: fix.url) {
                 NotchChrome.small(Permissions.fixLabel(fix)) { Permissions.openFix(url) }
             }
         }
@@ -404,7 +407,7 @@ struct NotchDayView: View {
     /// read already has its own row; its "not current" warning isn't repeated.
     /// Placement warnings only matter while there are tasks to place.
     private func warningLine(_ plan: TodayPlan, unread: [SourceAccess] = []) -> String? {
-        let hidden = unread.map { $0.source == "calendar" ? "Calendar is not current" : "Reminders are not current" }
+        let hidden = unread.compactMap { ["calendar": "Calendar is not current", "reminders": "Reminders are not current"][$0.source] }
         let placing = !plan.displayUnscheduled.isEmpty
         return plan.displayWarnings.lazy
             .filter { w in !hidden.contains { w.hasPrefix($0) } }
@@ -1045,13 +1048,13 @@ enum IgnoredCaught {
     }
 }
 
-/// The Day's few colors. Everything else is the notch's monochrome Theme.
+/// The Day's few colors, taken from WispInk. Everything else is the notch's monochrome Theme.
 enum DayInk {
     static let calendarFill = Color(white: 0.11)
     static let calendarStroke = Color(white: 0.24)
-    static let suggested = Color(red: 0.56, green: 0.72, blue: 1.0)
-    static let caught = Color(red: 0.91, green: 0.76, blue: 0.48)
-    static let now = Color(red: 1.0, green: 0.42, blue: 0.37)
+    static let suggested = Color(nsColor: WispInk.rgb(WispInk.blue.dark))
+    static let caught = Theme.warn
+    static let now = Theme.bad
 
     @ViewBuilder static func fill(_ style: DayStyle) -> some View {
         switch style {

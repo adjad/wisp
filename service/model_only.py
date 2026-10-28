@@ -1,4 +1,4 @@
-"""Test switch that sends every /agent turn to the model (see model_only_enabled),
+"""model_only: sends every /agent turn to the model (see model_only_enabled),
 plus the answer-quality guards a model-only Ask turn runs with.
 
 The guards are pure helpers: they never import tools, read user stores or call
@@ -22,11 +22,24 @@ from __future__ import annotations
 import math
 import os
 import re
+from contextvars import ContextVar
 from datetime import date, timedelta
 
 
+# Set by service/main.py for one /agent turn that cannot be model-led (an agent
+# role bound to a cloud or local-provider endpoint): that turn takes the rules
+# path, and the agent loop must follow it rather than the global setting.
+_TURN_OFF: ContextVar[bool] = ContextVar("wisp_model_only_turn_off", default=False)
+
+
+def disable_for_turn() -> None:
+    """Turn model_only off for the rest of the current task's context only."""
+    _TURN_OFF.set(True)
+
+
 def model_only_enabled() -> bool:
-    """TEST SWITCH: every /agent turn goes to the model, nothing answers first.
+    """Every /agent turn goes to the model, nothing answers first. ON by
+    default since 0.5.0-rc3 (service/config/models.yaml `model_only`).
 
     On, it forces model-led discovery for every turn and skips the
     deterministic layers that otherwise answer before the model: the batch
@@ -41,6 +54,8 @@ def model_only_enabled() -> bool:
     (~/.moe/config.yaml overrides the packaged default). Invalid values fail
     closed to OFF rather than raising, so a typo never breaks a turn.
     """
+    if _TURN_OFF.get():
+        return False
     value = os.environ.get("WISP_MODEL_ONLY")
     if value is None:
         from service.config import models_config
@@ -493,7 +508,20 @@ def knowledge_question(prompt: str) -> bool:
         return False
     rest = text[head.end():]  # "How do I" itself is not first-person data
     return (not _LIVE.search(rest) and not _ABOUT_WISP.search(text)
+            and not _SOURCE_RECORD.search(rest) and not _SECOND_CLAUSE.search(rest)
             and not asks_personal_data(text))
+
+
+# A knowledge question that names one of the user's records ("Explain the
+# email from Alex", "What is the reminder about rent about?") needs that
+# record read, and one with a further clause ("Define X; delete the Laundry
+# reminder") carries a request the tool-free step would drop. Both keep tools.
+_SOURCE_RECORD = re.compile(
+    r"\b(?:e-?mails?|mail|inbox|messages?|texts?|imessages?|reminders?|notes?|events?|"
+    r"meetings?|appointments?|contacts?|files?|documents?|attachments?|threads?|chats?)\b", re.I)
+_SECOND_CLAUSE = re.compile(r"[;]|\b(?:and|then|also)\s+(?:please\s+)?(?:delete|remove|clear|send|"
+                            r"text|e-?mail|add|create|set|remind|cancel|move|mark|reply|forward|save|"
+                            r"schedule|open|show|read|summari[sz]e|check)\b", re.I)
 
 
 def capability_question(prompt: str) -> bool:

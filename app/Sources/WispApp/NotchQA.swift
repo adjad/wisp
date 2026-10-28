@@ -132,7 +132,7 @@ enum NotchQADriver {
             ("brief-blocked-proactive", .brief, { AnyView(NotchBriefView(model: model, today: blockedProactive, actions: state())) }),
             ("day-blocked", .day, { AnyView(NotchDayView(model: model, today: blocked)) }),
             ("day-starting", .day, { AnyView(NotchDayView(model: startingModel, today: starting)) }),
-        ] + NotchQASetup.scenes()
+        ] + NotchQASetup.scenes() + panelScenes(model: model, today: today, state: state)
         for scene in scenes {
             let name = scene.name
             let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: width, height: 760),
@@ -183,6 +183,31 @@ enum NotchQADriver {
                 window.setContentSize(view.fittingSize)
                 view.layoutSubtreeIfNeeded()
                 try? await Task.sleep(nanoseconds: 400_000_000)
+                if let actions = panelReplies[name] {
+                    actions.replying = "t-ed"
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    window.setContentSize(view.fittingSize)
+                    view.layoutSubtreeIfNeeded()
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                }
+                if let limit = panelLimits[name] {
+                    // The panel never passes the display's room, and what it holds
+                    // past the cap is reachable by scrolling to the end.
+                    precondition(view.bounds.height <= limit + 0.5,
+                                 "\(name): \(view.bounds.height) pt passes the panel's \(limit) pt")
+                    let scroll = tabScrollView(in: view)
+                    precondition(scroll != nil, "\(name): Brief must sit in a scroll view")
+                    if let scroll, let document = scroll.documentView {
+                        let overflow = document.frame.height - scroll.contentView.bounds.height
+                        precondition(overflow > 0, "\(name): the fixture must overflow the cap")
+                        if name.hasSuffix("-end") {
+                            scroll.contentView.scroll(to: NSPoint(x: 0, y: document.isFlipped ? overflow : 0))
+                            scroll.reflectScrolledClipView(scroll.contentView)
+                            try? await Task.sleep(nanoseconds: 300_000_000)
+                        }
+                        print("\(name): cap \(Int(scroll.frame.height)) pt, content \(Int(document.frame.height)) pt")
+                    }
+                }
                 guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { continue }
                 view.cacheDisplay(in: view.bounds, to: rep)
                 try? rep.representation(using: .png, properties: [:])?.write(to: outDir.appendingPathComponent("notch-\(name).png"))
@@ -195,6 +220,64 @@ enum NotchQADriver {
     }
 
     private static var windows: [String: NSWindow] = [:]
+    /// The panel scenes' tallest allowed render, by scene name.
+    private static var panelLimits: [String: CGFloat] = [:]
+    /// Panel scenes whose reply composer opens just before capture.
+    private static var panelReplies: [String: ProactiveActions] = [:]
+
+    /// The Brief as the panel holds it on a 14" MacBook Pro's default (982 pt)
+    /// and larger-text (878 pt) screens: a header-sized band, then the tab's
+    /// capped scroll (OverlayView.tabScroll), with a reply composer and a draft
+    /// open and every thread shown, so it overflows. "-end" is scrolled to the end;
+    /// "-reveal" opens the composer after layout, which scrolls it into sight.
+    static func panelScenes(model: OverlayModel, today: TodayModel,
+                            state: @escaping ((ProactiveActions) -> Void) -> ProactiveActions)
+        -> [(name: String, tab: NotchTab, view: () -> AnyView)] {
+        let header: CGFloat = 30
+        var scenes: [(name: String, tab: NotchTab, view: () -> AnyView)] = []
+        for (w, h) in [(1512, 982), (1352, 878)] as [(CGFloat, CGFloat)] {
+            let side = (w - 185) / 2
+            let layout = SurfaceLayout.make(for: DisplayMetrics(
+                frame: CGRect(x: 0, y: 0, width: w, height: h),
+                visibleFrame: CGRect(x: 0, y: 0, width: w, height: h - 32),
+                safeAreaTop: 32, auxLeftWidth: side, auxRightWidth: side, isBuiltIn: true))
+            for suffix in ["", "-end", "-reveal"] {
+                let name = "brief-panel-\(Int(h))\(suffix)"
+                panelLimits[name] = layout.maxPanelHeight
+                scenes.append((name, .brief, {
+                    // "-reveal" opens the composer only once the panel is laid out,
+                    // as a Reply tap does, and must scroll it fully into sight.
+                    let reveal = suffix == "-reveal"
+                    let actions = state {
+                        $0.qaReset(openDraft: "card-ed", expanded: ["t-ed"], replying: reveal ? nil : "t-ed",
+                                   hero: "card-ed")
+                        $0.showAllThreads = true
+                    }
+                    if reveal { panelReplies[name] = actions }
+                    return AnyView(VStack(alignment: .leading, spacing: 0) {
+                        Text("HEADER (fixed) · \(Int(w))×\(Int(h)) pt · panel ≤ \(Int(layout.maxPanelHeight))")
+                            .font(.wisp(size: 11, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                            .frame(maxWidth: .infinity, minHeight: header, maxHeight: header, alignment: .leading)
+                        CappedScroll(cap: layout.tabScrollCap(headerHeight: header), reveals: true) {
+                            NotchBriefView(model: model, today: today, actions: actions)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.top, SurfaceLayout.tabTopPadding)
+                    }
+                    // The driver pads every scene 18 pt; the panel's top inset is the notch's.
+                    .padding(.top, layout.contentTopInset - 18))
+                }))
+            }
+        }
+        return scenes
+    }
+
+    /// The outermost vertical scroll view: the tab's, not an opened row's.
+    private static func tabScrollView(in view: NSView) -> NSScrollView? {
+        if let scroll = view as? NSScrollView { return scroll }
+        for sub in view.subviews { if let found = tabScrollView(in: sub) { return found } }
+        return nil
+    }
 
     /// Quick settings in its two tallest states: every switch known, and Full access
     /// unconfirmed with the morning time list open. Also measured with the notch header.

@@ -533,3 +533,40 @@ def test_malformed_legacy_row_does_not_break_legacy_claims_or_the_model_barrier(
     plan2 = WorkflowPlan(status="running", channel="email", recipient="Two", revision=1)
     store.save_workflow(sid, plan2.to_dict())
     assert not store.claim_effect_call(plan2.id, "call2", revision=1)
+
+
+@pytest.mark.parametrize("status", ["failed", "running"])
+def test_user_resolution_lifts_a_legacy_typed_task_with_a_consumed_claim(owned_store, status):
+    """0.5.0-rc3 audit M2: an rc2 typed task that consumed its effect claim and
+    never reached a verified result blocked every model-proposed action in the
+    chat, forever, and resolve only cleared model-led rows. The user's
+    attestation now lifts it too, by status only: the legacy state is not
+    rewritten and the claim stays consumed."""
+    from service.workflows.models import WorkflowPlan
+    store, sid = owned_store
+    plan = WorkflowPlan(status="running", channel="email", recipient="Fixture", revision=1)
+    store.save_workflow(sid, plan.to_dict())
+    assert store.claim_effect_call(plan.id, "legacy-call", revision=1)
+    store._db.execute("UPDATE workflows SET status=? WHERE id=?", (status, plan.id))
+    store._db.commit()
+    before = store._db.execute("SELECT state_json FROM workflows WHERE id=?", (plan.id,)).fetchone()[0]
+    assert store.unresolved_action(sid) == {"id": plan.id, "status": status}
+    assert not store.claim_model_effect(sid, "new", "send_message", {"to": "A"}, outbound=True)["admitted"]
+    # Another session's legacy row is untouched by this session's resolution.
+    other = store.create_session()
+    other_plan = WorkflowPlan(status="running", channel="email", recipient="Fixture", revision=1)
+    store.save_workflow(other, other_plan.to_dict())
+    assert store.claim_effect_call(other_plan.id, "other-call", revision=1)
+    assert store.resolve_model_effects(sid, "unknown-id") == 0
+    assert store.resolve_model_effects(sid) == 1
+    assert store.unresolved_action(sid) is None and store.unresolved_action(other)
+    row = store._db.execute("SELECT status, state_json FROM workflows WHERE id=?", (plan.id,)).fetchone()
+    assert row[0] == "completed" and row[1] == before
+    assert store._db.execute("SELECT count(*) FROM task_effect_claims WHERE plan_id=?",
+                             (plan.id,)).fetchone()[0] == 1
+    # A legacy row with no consumed claim is not anyone's barrier and is left alone.
+    idle = WorkflowPlan(status="running", channel="email", recipient="Fixture", revision=1)
+    store.save_workflow(sid, idle.to_dict())
+    assert store.resolve_model_effects(sid) == 0
+    assert store._db.execute("SELECT status FROM workflows WHERE id=?", (idle.id,)).fetchone()[0] != "completed"
+    assert store.claim_model_effect(sid, "new", "send_message", {"to": "A"}, outbound=True)["admitted"]

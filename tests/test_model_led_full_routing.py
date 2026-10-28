@@ -52,6 +52,45 @@ def interpreted_continuation(endpoint, plan, prompt):
     return admission
 
 
+@pytest.fixture
+def owner_recovery_path(monkeypatch):
+    """Model-led owner recovery (a free-form reply interpreted against a typed
+    task still waiting for input) runs only while model_only is off. Since
+    0.5.0-rc3 model_only is on by default, so these tests pin it off; the
+    model_only behaviour with a pending owner is pinned in
+    test_model_only_never_advances_or_executes_a_pending_owner."""
+    monkeypatch.setenv("WISP_MODEL_ONLY", "0")
+
+
+@pytest.mark.parametrize("prompt", ["Pick up groceries", "Let me see tomorrow's events"])
+def test_model_only_never_advances_or_executes_a_pending_owner(endpoint, monkeypatch, prompt):
+    # model_only (the rc3 default) never runs a typed task or interprets a reply
+    # against one: a task left waiting from rc2 stays exactly as it was, nothing
+    # executes it or touches its native capability, and the model gets the turn.
+    from service.tasks import engine
+    monkeypatch.delenv("WISP_MODEL_ONLY", raising=False)
+    monkeypatch.setattr("service.tasks.reply_engine.prepare_task_turn_async", real_task_recovery)
+    monkeypatch.setattr(main, "prepare_turn", real_workflow_recovery)
+    def no_native(*args, **kwargs):
+        raise AssertionError("model_only touched an old owner's native capability")
+    async def no_execution(*args, **kwargs):
+        no_native()
+    async def no_interpretation(*args, **kwargs):
+        raise AssertionError("model_only interpreted a reply against an old owner")
+    monkeypatch.setattr(engine, "_default_contacts_resolver", no_native)
+    monkeypatch.setattr(main, "execute_task", no_execution)
+    monkeypatch.setattr("service.tasks.reply_engine.interpret_owner_continuation", no_interpretation)
+    sid, plan = waiting_title(endpoint)
+    before = endpoint.store.active_task(sid)
+    events = endpoint.request(prompt, sid)
+    assert endpoint.store.active_task(sid) == before
+    assert not any(e["type"] in {"task_plan", "workflow"} for e in events)
+    assert not endpoint.effects and not endpoint.baseline_calls
+    call = endpoint.agent_calls[0]
+    assert call["model_led_discovery"] is True and call["claim_effect"] is not None
+    assert call["messages"][-1]["content"] == prompt
+
+
 @pytest.mark.parametrize("mode", [None, "1"])
 @pytest.mark.parametrize("prompt,recovery_admitted", [
     ("summarize my messages", False), ("read my messages", False), ("list my calendar", False),
@@ -61,6 +100,7 @@ def interpreted_continuation(endpoint, plan, prompt):
     ("I'd like to know what's on this weej", False), ("My calendar needs a quick overview", False),
     ("Let me see tomorrow's events", True),
 ])
+@pytest.mark.usefixtures("owner_recovery_path")
 def test_new_reads_do_not_fill_or_execute_waiting_reminder(endpoint, monkeypatch, mode, prompt, recovery_admitted):
     from service.tasks import engine
     if mode is None:
@@ -143,6 +183,7 @@ def test_allowed_literal_reply_body_preserves_bound_source_without_native_effect
 
 
 @pytest.mark.parametrize("mode", [None, "1"])
+@pytest.mark.usefixtures("owner_recovery_path")
 def test_literal_title_is_model_interpreted_before_exact_owner_execution(endpoint, monkeypatch, mode):
     from types import SimpleNamespace
     if mode is None:
@@ -191,6 +232,7 @@ def test_stale_or_retargeted_continuation_binding_does_not_advance_owner(endpoin
 
 
 @pytest.mark.parametrize("reply", ["not JSON", "{}", '```json\n{}\n```', "tool_call", "wrong_owner", "boolean_revision", "ambiguous"])
+@pytest.mark.usefixtures("owner_recovery_path")
 def test_unclear_model_continuation_keeps_owner_and_mutations_closed(endpoint, monkeypatch, reply):
     from service.tasks import engine
     monkeypatch.setattr("service.tasks.reply_engine.prepare_task_turn_async", real_task_recovery)
@@ -225,6 +267,7 @@ def test_unclear_model_continuation_keeps_owner_and_mutations_closed(endpoint, m
     ("revision", "invalid_first"), ("revision", "invalid_last"),
     ("decision", "same_value"), ("owner_id", "same_value"), ("revision", "same_value"),
 ])
+@pytest.mark.usefixtures("owner_recovery_path")
 def test_duplicate_continuation_json_never_advances_owner(endpoint, monkeypatch, mode, member, order):
     from service.tasks import engine
     if mode is None:
@@ -299,6 +342,7 @@ def test_exact_existing_owner_controls_need_no_model_guess(endpoint, control):
 
 
 @pytest.mark.parametrize("mode", [None, "1"])
+@pytest.mark.usefixtures("owner_recovery_path")
 def test_revision_changed_during_interpretation_keeps_fallback_mutations_closed(endpoint, monkeypatch, mode):
     from service.tasks import reply_engine
     if mode is None:
@@ -474,7 +518,10 @@ def test_rollback_cannot_bypass_uncertain_model_action(endpoint, monkeypatch):
     sid = endpoint.store.create_session()
     claim = endpoint.store.claim_model_effect(sid, "prior", "send_message", {"to": "fixture"}, outbound=True)
     endpoint.store.finish_model_effect(sid, claim, verified=False)
+    # The rc3 rollback needs WISP_MODEL_ONLY=false too: the packaged
+    # model_only would otherwise keep this turn model-led.
     monkeypatch.setenv("WISP_MODEL_LED_ROUTING", "0")
+    monkeypatch.setenv("WISP_MODEL_ONLY", "false")
     events = endpoint.request("send that to another person", sid)
     assert not endpoint.baseline_calls and not endpoint.agent_calls and not endpoint.effects
     assert any("unverified outcome" in e.get("text", "") for e in events)
@@ -611,3 +658,28 @@ def test_private_read_with_pending_owner_keeps_shell_unavailable_at_actual_execu
     assert not any(e.get("type") == "tool_call" and e.get("name") == "run_shell" for e in events)
     assert not any(json.loads(r[0]).get("kind") == "model_led_effect" for r in
                    endpoint.store._db.execute("SELECT state_json FROM workflows WHERE session_id=?", (sid,)))
+
+
+def test_withheld_actions_are_explained_and_lifted_by_resolution(endpoint, monkeypatch):
+    """0.5.0-rc3 audit M2: a legacy task with a consumed claim withholds every
+    action tool on a model-led turn. The user is told why in one sentence, and
+    the existing resolve endpoint lifts it."""
+    from service.workflows.models import WorkflowPlan
+    monkeypatch.delenv("WISP_MODEL_ONLY", raising=False)
+    sid = endpoint.store.create_session()
+    plan = WorkflowPlan(status="running", channel="email", recipient="Fixture", revision=1)
+    endpoint.store.save_workflow(sid, plan.to_dict())
+    assert endpoint.store.claim_effect_call(plan.id, "legacy-call", revision=1)
+    async def no_mutation(**args):
+        raise AssertionError("withheld action ran")
+    no_mutation.__module__ = "service.tools.assistant_tools"
+    registry.REGISTRY["add_reminder"] = registry.Tool("add_reminder", "Synthetic mutation", {"type": "object"},
+                                                   "assistant_write", no_mutation)
+    events = endpoint.request("remind me to call Sam at 5", sid)
+    texts = [e["text"] for e in events if e["type"] == "text"]
+    assert texts[0] == main.UNRESOLVED_ACTION_NOTICE + "\n\nSynthetic answer."
+    assert "add_reminder" in endpoint.agent_calls[0]["forbidden_tools"]
+    assert endpoint.store.resolve_model_effects(sid) == 1
+    events = endpoint.request("remind me to call Sam at 5", sid)
+    assert not any(main.UNRESOLVED_ACTION_NOTICE in e.get("text", "") for e in events)
+    assert "add_reminder" not in endpoint.agent_calls[-1]["forbidden_tools"]

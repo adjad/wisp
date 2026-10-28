@@ -7,6 +7,7 @@ import asyncio
 import base64
 import os
 import stat
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -16,6 +17,8 @@ from service.mail_memory import api, bridge, extract, runner
 from service.mail_memory import store as store_mod
 from service.mail_memory.dates import resolve_due
 from service.mail_memory.store import Store
+
+_REAL_STAND_DOWN = runner._stand_down
 
 ROOT = Path(__file__).resolve().parents[1]
 TZ = "America/Los_Angeles"
@@ -38,6 +41,9 @@ def _sent(d: str) -> datetime:
     ("2026-12-15", "Jan 5", "2027-01-05"),
     ("2026-05-20", "no later than July 2, 2027", "2027-07-02"),
     ("2026-09-01", "in December", "2026-12-31"),
+    ("2026-09-01", "Sept 28", "2026-09-28"),             # the resolver alone reads no "Sept"
+    ("2026-09-01", "by Sept. 28th", "2026-09-28"),
+    ("2026-08-01", "Sept 2026", "2026-09-30"),
 ])
 def test_resolve_due(sent, phrase, want):
     assert resolve_due(phrase, _sent(sent), TZ, month_first_order=True).day.isoformat() == want
@@ -49,8 +55,82 @@ def test_two_dates_or_none_never_resolve(phrase):
     assert resolve_due(phrase, _sent("2026-09-01"), TZ, month_first_order=True).day is None
 
 
+@pytest.mark.parametrize("phrase", ["Pick up at 28", "Doors open 28:00", "at 25:30"])
+def test_an_impossible_clock_is_no_due_date_not_a_crash(phrase):
+    # A real model reply on real mail (2026-10-27) crashed tick() here and left that
+    # email at the head of the queue for good.
+    got = resolve_due(phrase, _sent("2026-09-01"), TZ, month_first_order=True)
+    assert got.day is None and got.reason == "invalid_time"
+
+
+@pytest.mark.parametrize("phrase, want", [
+    ("Friday at 28", "2026-09-04"), ("by Friday at 28:00", "2026-09-04"), ("25:30 on Friday", "2026-09-04"),
+    ("Friday 13pm", "2026-09-04"), ("Friday 0pm", "2026-09-04"), ("Friday 0 p.m.", "2026-09-04"),
+    ("Friday at 24:00", "2026-09-04"), ("November 19 at 25:30", "2026-11-19"),
+    ("October 30 at 9:75", "2026-10-30"), ("10/28 at 28", "2026-10-28"), ("September 28 @ 99", "2026-09-28"),
+])
+def test_an_impossible_clock_keeps_its_day(phrase, want):
+    # The day is due whatever the clock says: "Friday at 28" is still Friday.
+    got = resolve_due(phrase, _sent("2026-09-01"), TZ, month_first_order=True)
+    assert got.day is not None and got.day.isoformat() == want and got.precision == "day"
+
+
+@pytest.mark.parametrize("phrase", ["Friday 12am", "Friday at 12pm", "Friday at 23:59", "Friday at 00:00"])
+def test_a_boundary_clock_that_exists_reads_directly(phrase):
+    got = resolve_due(phrase, _sent("2026-09-01"), TZ, month_first_order=True)
+    assert got.day == date(2026, 9, 4)
+
+
 def test_day_first_locale():
     assert resolve_due("3/10", _sent("2026-08-20"), TZ, month_first_order=False).day == date(2026, 10, 3)
+
+
+# Phrases a real-mail check on 2026-10-27 lost (shapes only; no real mail here).
+@pytest.mark.parametrize("phrase, want", [
+    ("Monday, August 31, 2026 6:00 PM-7:30 PM.", "2026-08-31"),   # "PM-7" read as UTC-7
+    ("August 31 6:00 PM - 7:30 PM", "2026-08-31"),                 # read as two dates
+    ("August 31 6-7:30pm", "2026-08-31"),
+    ("Sep 22 9am to 10am", "2026-09-22"),
+    ("Tuesday Sep 22, 2026 ⋅ 11:30am – 3:30pm", "2026-09-22"),     # Google Calendar's own line
+    ("Friday, October 23, from 4:00 - 9:00 PM", "2026-10-23"),
+    ("Fri, Oct 23", "2026-10-23"),
+    ("Wednesday, September 2", "2026-09-02"),
+    ("10 days remaining", "2026-09-09"),
+    ("ten days left", "2026-09-09"),
+    ("2 weeks to go", "2026-09-13"),
+])
+def test_event_lines_from_real_mail_resolve(phrase, want):
+    got = resolve_due(phrase, _sent("2026-08-30"), TZ, month_first_order=True)
+    assert got.day is not None and got.day.isoformat() == want
+
+
+@pytest.mark.parametrize("phrase", ["Friday, October 22", "Nov 3-5", "6:00 PM-7:30 PM"])
+def test_a_wrong_weekday_a_day_range_or_a_bare_clock_still_refuse(phrase):
+    # Oct 22 2026 is a Thursday: one of the two is a typo, so neither is trusted.
+    assert resolve_due(phrase, _sent("2026-08-30"), TZ, month_first_order=True).day is None
+
+
+@pytest.mark.parametrize("phrase, sent, want", [
+    ("Oct 22 - 6:00 PM", "2026-10-20", "2026-10-22"), ("Oct 22 — 6pm", "2026-10-20", "2026-10-22"),
+    ("Oct 22 — 6pm", "2026-12-28", "2027-10-22"), ("Nov 3 - 5pm", "2026-10-20", "2026-11-03"),
+    ("Oct 22 to 5pm", "2026-10-20", "2026-10-22"), ("Sep 22 - 3:00 PM", "2026-10-20", "2027-09-22"),
+    ("Wed, Oct 22 – 6:00 PM", "2026-09-18", "2026-10-22"),
+    ("Oct 22 6:00 PM - 7:30 PM", "2026-10-20", "2026-10-22"), ("Oct 22 from 6 to 7:30pm", "2026-10-20", "2026-10-22"),
+])
+def test_a_day_then_a_start_time_is_not_a_clock_range(phrase, sent, want):
+    # Audit of 2020ee5f: "22 - 6:00 PM" was dropped as a range, leaving "Oct", due Oct 31.
+    # Every expected value here is what origin/main 91e1de60 already gave.
+    assert resolve_due(phrase, _sent(sent), TZ, month_first_order=True).day.isoformat() == want
+
+
+def test_the_month_check_before_a_range_is_linear():
+    # Audit of 2b1e3127: the look-back for a month scanned the whole phrase once per range.
+    import time
+    from service.mail_memory import dates
+    phrase = "Oct 22 " + "1 - 2pm " * 20_000
+    start = time.perf_counter()
+    dates._CLOCK_RANGE.sub(dates._drop_clock_range, phrase)
+    assert time.perf_counter() - start < 1.0
 
 
 # --- extraction -------------------------------------------------------------------
@@ -131,6 +211,133 @@ def test_validate_drops_long_past():
         [{"what": "Notice", "date_phrase": "by June 1", "evidence": "Written notice must reach us by June 1"}],
         email, tz=TZ, today=date(2026, 10, 26), month_first=True)
     assert kept == [] and dropped == {"past": 1}
+
+
+def _mime(subject: bytes, parts: list[tuple[bytes, bytes]]) -> bytes:
+    head = (b"From: Store <orders@shop.example>\r\nTo: Sam <sam@example.com>\r\nSubject: " + subject
+            + b"\r\nDate: Wed, 16 Sep 2026 09:00:00 -0700\r\nMessage-ID: <m@shop.example>\r\n")
+    if len(parts) == 1:
+        kind, body = parts[0]
+        return head + b"Content-Type: " + kind + b"; charset=utf-8\r\n\r\n" + body
+    out = head + b'MIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary="b"\r\n\r\n'
+    for kind, body in parts:
+        out += b"--b\r\nContent-Type: " + kind + b"; charset=utf-8\r\n\r\n" + body + b"\r\n"
+    return out + b"--b--\r\n"
+
+
+def test_a_blank_plain_part_does_not_hide_the_html():
+    raw = _mime(b"Order confirmation", [(b"text/plain", b"\r\n  \r\n"),
+                                        (b"text/html", b"<p>Ebook license: redeem by <b>03/16/2027</b></p>")])
+    assert "redeem by 03/16/2027" in extract.parse_raw(raw, 0).body
+    both = _mime(b"x", [(b"text/plain", b"Plain says Friday"), (b"text/html", b"<p>HTML says Monday</p>")])
+    assert extract.parse_raw(both, 0).body == "Plain says Friday"
+
+
+_OUTLOOK_REPLY = (b"Good day everyone. We do not have a meeting tomorrow.\r\n\r\nPat\r\n\r\n"
+                  b"________________________________\r\nFrom: Pat Lee\r\nSent: Saturday, 01 August 2026 12:29\r\n"
+                  b"Subject: Office Hours\r\nWhen: Monday, August 3, 2026 6:00 PM-7:30 PM.\r\n")
+
+
+def test_an_outlook_reply_drops_the_superseded_original():
+    body = extract.parse_raw(_mime(b"Re: Office Hours", [(b"text/plain", _OUTLOOK_REPLY)]), 0).body
+    assert "We do not have a meeting tomorrow." in body and "When:" not in body
+    bare = _OUTLOOK_REPLY.replace(b"________________________________\r\n", b"")
+    assert "When:" not in extract.parse_raw(_mime(b"RE: Office Hours", [(b"text/plain", bare)]), 0).body
+
+
+def test_an_outlook_forward_keeps_its_content():
+    body = extract.parse_raw(_mime(b"FW: Office Hours", [(b"text/plain", _OUTLOOK_REPLY)]), 0).body
+    assert "When: Monday, August 3, 2026" in body
+
+
+@pytest.mark.parametrize("subject", [b"RE: FW: Office Hours", b"Fwd: Office Hours"])
+def test_a_reply_to_a_forward_keeps_the_forwarded_content(subject):
+    assert "When: Monday" in extract.parse_raw(_mime(subject, [(b"text/plain", _OUTLOOK_REPLY)]), 0).body
+
+
+def test_a_body_that_starts_with_a_from_sent_block_keeps_it():
+    # A web form's notification: cutting at the block would leave nothing at all.
+    form = b"From: Website contact form\r\nSent: Mon\r\nMessage: please call back by Friday\r\n"
+    assert "call back by Friday" in extract.parse_raw(_mime(b"New message", [(b"text/plain", form)]), 0).body
+
+
+def test_a_rule_of_underscores_alone_is_not_quoted_history():
+    raw = _mime(b"Form", [(b"text/plain", b"Sign here\r\n__________\r\nReturn it by Friday.\r\n")])
+    assert "Return it by Friday." in extract.parse_raw(raw, 0).body
+
+
+_CALENDAR = (b"This event has been canceled and removed from your calendar.\r\n\r\nFamily Send-Off\r\n"
+             b"Friday Oct 30, 2026 \xe2\x8b\x85 4pm \xe2\x80\x93 6pm\r\n")
+
+
+_ICS = (b"text/calendar", b"BEGIN:VCALENDAR\r\nMETHOD:CANCEL\r\nEND:VCALENDAR")
+_SEND_OFF = {"what": "Family Send-Off", "date_phrase": "Friday Oct 30, 2026",
+             "evidence": "Family Send-Off Friday Oct 30, 2026"}
+
+
+@pytest.mark.parametrize("subject, parts", [
+    (b"Canceled event: Family Send-Off @ Fri Oct 30, 2026 4pm - 6pm (Sam)", [(b"text/plain", _CALENDAR)]),
+    (b"Canceled event with note: Family Send-Off", [(b"text/plain", _CALENDAR)]),
+    (b"Cancelled: Family Send-Off", [(b"text/plain", _CALENDAR), _ICS]),     # Outlook: needs the invite part
+])
+def test_a_cancellation_notice_gives_no_reminder(subject, parts):
+    email = extract.parse_raw(_mime(subject, parts), 0)
+    kept, dropped = extract.validate([_SEND_OFF], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
+    assert kept == [] and dropped == {"cancelled": 1}
+
+
+def test_a_bare_canceled_subject_without_an_invite_is_not_a_cancellation():
+    # Audit of 2020ee5f: "Canceled:" alone also heads subscription and order mail with real dates.
+    body = b"Your subscription was canceled. Renew by Oct 30, 2026 to keep your files.\r\n"
+    email = extract.parse_raw(_mime(b"Canceled: Your subscription - renew by Oct 30", [(b"text/plain", body)]), 0)
+    item = {"what": "Renew the subscription", "date_phrase": "Oct 30, 2026", "evidence": "Renew by Oct 30, 2026"}
+    kept, _ = extract.validate([item], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
+    assert [k["due"] for k in kept] == ["2026-10-30"]
+
+
+def test_an_invite_inside_a_forwarded_message_is_not_this_emails_calendar():
+    # Audit of 2b1e3127: an attached .eml carrying its own .ics made the outer email "calendar".
+    inner = (b"From: Team <team@club.example>\r\nSubject: Practice\r\nMIME-Version: 1.0\r\n"
+             b'Content-Type: multipart/mixed; boundary="i"\r\n\r\n--i\r\nContent-Type: text/plain\r\n\r\nSee you\r\n'
+             b"--i\r\nContent-Type: text/calendar\r\n\r\nBEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n--i--\r\n")
+    body = b"Your subscription was canceled. Renew by Oct 30, 2026 to keep your files.\r\n"
+    raw = (b"From: Store <orders@shop.example>\r\nTo: Sam <sam@example.com>\r\n"
+           b"Subject: Canceled: Your subscription - renew by Oct 30\r\nDate: Wed, 16 Sep 2026 09:00:00 -0700\r\n"
+           b'MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary="o"\r\n\r\n'
+           b"--o\r\nContent-Type: text/plain\r\n\r\n" + body
+           + b'--o\r\nContent-Type: message/rfc822\r\nContent-Disposition: attachment; filename="fwd.eml"\r\n\r\n'
+           + inner + b"--o--\r\n")
+    email = extract.parse_raw(raw, 0)
+    assert email.calendar is False
+    item = {"what": "Renew the subscription", "date_phrase": "Oct 30, 2026", "evidence": "Renew by Oct 30, 2026"}
+    kept, _ = extract.validate([item], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
+    assert [k["due"] for k in kept] == ["2026-10-30"]
+
+
+def test_an_attached_ics_file_marks_the_email_as_calendar():
+    raw = (b"From: a@x.example\r\nSubject: Cancelled: Standup\r\nMIME-Version: 1.0\r\n"
+           b'Content-Type: multipart/mixed; boundary="o"\r\n\r\n--o\r\nContent-Type: text/plain\r\n\r\nStandup is off\r\n'
+           b'--o\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename="invite.ICS"\r\n\r\n'
+           b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n--o--\r\n")
+    assert extract.parse_raw(raw, 0).calendar is True
+
+
+@pytest.mark.parametrize("what", ["Rebook flight that was cancelled", "Request refund for order that was canceled",
+                                  "Confirm whether practice is cancelled"])
+def test_a_follow_up_about_a_cancellation_stays(what):
+    # Audit of 2020ee5f: matching titles on "was cancelled" dropped real follow-ups.
+    email = extract.parse_raw(_mime(b"Updated invitation: Family Send-Off", [(b"text/plain", _CALENDAR)]), 0)
+    kept, _ = extract.validate([{**_SEND_OFF, "what": what}], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
+    assert [k["what"] for k in kept] == [what]
+
+
+def test_a_quote_with_a_swapped_dot_or_dash_still_matches():
+    email = extract.parse_raw(_mime(b"Invitation: Orientation", [(b"text/plain",
+        b"Orientation\r\nTuesday Nov 3, 2026 \xe2\x8b\x85 11:30am \xe2\x80\x93 3:30pm\r\n")]), 0)
+    item = {"what": "Orientation", "date_phrase": "Tuesday Nov 3, 2026",
+            "evidence": "Orientation Tuesday Nov 3, 2026 • 11:30am - 3:30pm"}
+    kept, _ = extract.validate([item], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
+    assert [k["due"] for k in kept] == ["2026-11-03"]
 
 
 def test_parse_reply():
@@ -445,6 +652,12 @@ def ticking(tmp_path, monkeypatch, quiet):
     monkeypatch.setattr(runner, "_power", lambda: (True, 90, False))
     monkeypatch.setattr(runner, "_probe", {})
 
+    async def ready():
+        return None
+    monkeypatch.setattr(runner, "_stand_down", ready)
+    from service.inference import remote_policy
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: None)   # never the live config
+
     async def no_gmail():
         return frozenset()
     monkeypatch.setattr(runner, "_gmail_excluded", no_gmail)
@@ -577,6 +790,41 @@ async def test_reply_stands_down_for_remote_only_and_a_busy_model(monkeypatch, q
     assert await runner._reply([{"role": "user", "content": "x"}]) is None
 
 
+@pytest.mark.parametrize("where", ["validate", "judge"])
+async def test_an_email_whose_dates_cannot_be_resolved_is_retired(ticking, monkeypatch, where):
+    """A model date phrase like "Pick up at 28" made the resolver raise ValueError,
+    which escaped tick() and left the email pending forever. Now it fails like any
+    other email: retried once, then retired, and the queue moves on."""
+    st = ticking
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5, mid="<lease-1@harbor.example>", ts=2.0), _row(6, ts=1.0)], extract.tier, now=1)
+
+    async def body(rowid):
+        return RAW, ""
+
+    async def reply(msgs):
+        return '{"items": [{"what": "Pick up", "date_phrase": "at 28", "evidence": "Pick up at 28", "suspicious": false}]}'
+
+    def boom(*a, **k):
+        raise ValueError("hour must be in 0..23")
+
+    monkeypatch.setattr(runner, "read_body", body)
+    monkeypatch.setattr(runner, "_reply", reply)
+    monkeypatch.setattr(extract if where == "validate" else runner.importance,
+                        "validate" if where == "validate" else "judge", boom)
+    if where == "judge":
+        monkeypatch.setattr(extract, "validate", lambda items, email, **k: ([dict(items[0])], {}))
+    key = st.message("<lease-1@harbor.example>")["key"]
+    now = NOW + 1
+    for _ in range(store_mod.MAX_ATTEMPTS):
+        assert await runner.tick(now=now) == runner.BETWEEN_GAP_S
+        now += store_mod.RETRY_S + 1
+    row = st.message("<lease-1@harbor.example>")
+    assert row["key"] == key and row["state"] == "failed" and row["note"] == "validate:ValueError"
+    nxt = st.next_pending(now)
+    assert nxt is not None and nxt["key"] == st.message("<m6@x>")["key"]   # the queue moves on
+
+
 async def test_tick_skips_mail_not_on_disk_and_waits_when_busy(ticking, monkeypatch, quiet):
     st = ticking
     st.set_meta("last_index", str(NOW))
@@ -591,6 +839,133 @@ async def test_tick_skips_mail_not_on_disk_and_waits_when_busy(ticking, monkeypa
     monkeypatch.setattr(quiet, "foreground_busy", lambda: True)
     assert await runner.tick(now=NOW + 2) == runner.BUSY_GAP_S
 
+
+@pytest.mark.parametrize("remote, loaded, gap", [(True, ["fast-model"], "FAILURE_GAP_S"),
+                                                 (False, [], "BUSY_GAP_S"),
+                                                 (False, ["fast-model", "other"], "BUSY_GAP_S")])
+async def test_tick_reads_no_mail_the_model_cannot_take(ticking, monkeypatch, remote, loaded, gap):
+    """A remote-only profile: no index read, no body read. A model that isn't resident:
+    the index is still read (it costs no model time), but no email."""
+    st = ticking
+    monkeypatch.setattr(runner, "_stand_down", _REAL_STAND_DOWN)
+    monkeypatch.setattr(runner, "_model_key", lambda: "fast-model")
+    from service.inference import remote_policy
+    monkeypatch.setattr(remote_policy, "remote_only_profile", (lambda: object()) if remote else (lambda: None))
+
+    class Client:
+        async def loaded_models(self):
+            return loaded
+
+        def keep_warm(self):
+            return []
+
+        def activity_key(self, model):
+            return model
+
+    from service.assistant import brief
+    from service import config
+    monkeypatch.setattr(brief, "_c", lambda: Client())
+    monkeypatch.setattr(config, "role_to_model", lambda role: "fast-model")
+
+    async def never(*a):
+        raise AssertionError("read mail the model can't take")
+
+    indexed = []
+
+    async def index(days):
+        indexed.append(days)
+        return [], False
+
+    monkeypatch.setattr(runner, "read_index", never if remote else index)
+    monkeypatch.setattr(runner, "read_body", never)
+    first = await runner.tick(now=NOW + 1)
+    if remote:
+        assert first == runner.FAILURE_GAP_S
+    else:
+        assert indexed == [runner.WINDOW_DAYS] and st.meta("last_index")
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5)], extract.tier, now=1)
+    assert await runner.tick(now=NOW + 2) == getattr(runner, gap)
+    assert st.message("<m5@x>")["attempts"] == 0
+
+
+@pytest.mark.parametrize("busy_by", ["turn", "recent_use"])
+async def test_a_busy_model_never_holds_up_the_index(ticking, monkeypatch, quiet, busy_by):
+    """2026-10-27: Brief and proactive work kept the model in use all morning, and the
+    index waited with it, so nothing queued. The index now goes first; email waits."""
+    st = ticking
+    if busy_by == "turn":
+        monkeypatch.setattr(quiet, "foreground_busy", lambda: True)
+    elif busy_by == "recent_use":
+        monkeypatch.setattr(quiet, "last_used", lambda key: time.monotonic())
+    assert runner.level("m") == "busy"
+
+    async def index(days):
+        return [_row(5)], False
+
+    async def never(*a):
+        raise AssertionError("read an email while the model was busy")
+
+    monkeypatch.setattr(runner, "read_index", index)
+    monkeypatch.setattr(runner, "read_body", never)
+    monkeypatch.setattr(runner, "_reply", never)
+    assert await runner.tick(now=NOW + 1) == runner.BUSY_GAP_S
+    assert st.stats()["queue"] == {"pending": 1} and st.meta("last_index")
+    assert await runner.tick(now=NOW + 2) == runner.BUSY_GAP_S          # due no more: email waits
+    assert st.message("<m5@x>")["attempts"] == 0
+
+
+@pytest.mark.parametrize("power", [(False, 20, False), (True, None, True)])
+async def test_low_power_skips_even_the_index(ticking, monkeypatch, power):
+    """Low Power Mode or battery under 30%: nothing runs, the index (and its Gmail
+    tab lookup) included."""
+    monkeypatch.setattr(runner, "_power", lambda: power)
+
+    async def never(*a):
+        raise AssertionError("ran while saving power")
+
+    monkeypatch.setattr(runner, "read_index", never)
+    monkeypatch.setattr(runner, "_gmail_excluded", never)
+    monkeypatch.setattr(runner, "read_body", never)
+    assert await runner.tick(now=NOW + 1) == runner.BUSY_GAP_S
+    assert not ticking.meta("last_index")
+
+
+async def test_stand_down_says_why(monkeypatch, quiet):
+    from service.inference import remote_policy
+    from service.assistant import brief
+    from service import config
+
+    class Client:
+        async def loaded_models(self):
+            return ["fast-model"]
+
+        def keep_warm(self):
+            return []
+
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: None)
+    monkeypatch.setattr(brief, "_c", lambda: Client())
+    monkeypatch.setattr(config, "role_to_model", lambda role: "fast-model")
+    monkeypatch.setattr(runner, "_model_key", lambda: "fast-model")
+    assert await runner._stand_down() is None
+    monkeypatch.setattr(quiet, "in_flight", lambda key: 1)              # another call is on the model
+    assert await runner._stand_down() == "busy"
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: object())
+    assert await runner._stand_down() == "remote_only"
+
+
+def test_schedule_waits_for_a_running_brief(monkeypatch, quiet):
+    from service.assistant import mail_gists, scheduler
+
+    class Running:
+        def done(self):
+            return False
+
+    monkeypatch.setattr(mail_gists, "_task", None)
+    monkeypatch.setattr(scheduler, "_brief_task", Running())
+    assert runner._other_background_work()
+    monkeypatch.setattr(scheduler, "_brief_task", None)
+    assert not runner._other_background_work()
 
 
 def test_schedule_waits_for_other_background_model_work(monkeypatch, quiet):
@@ -749,7 +1124,8 @@ def test_about_explains_mail_suggestions():
 
 
 @pytest.mark.parametrize("filler", [b"\n" * 250_000, b" \n" * 125_000, b"<td> </td>\n" * 20_000,
-                                    b"<script>x" * 25_000, b"> \n" * 80_000])
+                                    b"<script>x" * 25_000, b"> \n" * 80_000, b"From: a\n" * 80_000,
+                                    b"_" * 200_000 + b"\n", b"__________\n\n" * 40_000])
 def test_parsing_is_linear_on_whitespace_heavy_mail(filler):
     # Audit of bc5db6d8: ^\s* backtracked over blank-line runs; 60k newlines froze the loop ~59 s.
     import time
@@ -834,3 +1210,140 @@ def test_rescued_html_keeps_breaks_and_drops_closed_inner_tags():
     assert extract.parse_raw(head + b"<head><style>.a{}</style>Pay by Friday", 0).body == "Pay by Friday"
     # A normally closed <script> is still dropped.
     assert extract.parse_raw(head + b"<p>Pay</p><script>evil()</script>", 0).body == "Pay"
+
+
+# --- failures are visible: meta, one WARNING per reason, the endpoint --------------------
+
+@pytest.fixture
+def failing(ticking, monkeypatch, caplog):
+    monkeypatch.setattr(runner, "_warned", None)
+    monkeypatch.setattr(runner, "_next_at", 0.0)
+    caplog.set_level("DEBUG", logger="wisp.mail_memory")
+    return ticking
+
+
+def _warnings(caplog):
+    return [r for r in caplog.records if r.name == "wisp.mail_memory" and r.levelname == "WARNING"]
+
+
+def _index_fails(monkeypatch, reason):
+    async def index(days):
+        raise bridge.BridgeError(reason)
+    monkeypatch.setattr(runner, "read_index", index)
+
+
+async def test_a_failed_index_read_is_recorded_and_warned_once(failing, monkeypatch, caplog):
+    st = failing
+    _index_fails(monkeypatch, "no_mail_index")
+    await runner._run()
+    health = st.health()
+    assert health["last_error"] == "no_mail_index" and health["last_error_at"] and health["last_ok_at"] is None
+    warned = _warnings(caplog)
+    assert len(warned) == 1 and "no_mail_index" in warned[0].getMessage()
+    assert runner._next_at - time.time() > runner.FAILURE_GAP_S - 5      # still backs off
+    await runner._run()                                                  # the same reason again
+    assert len(_warnings(caplog)) == 1                                   # no repeat warning
+    assert [r for r in caplog.records if r.levelname == "INFO" and "no_mail_index" in r.getMessage()]
+
+
+async def test_a_different_reason_warns_again(failing, monkeypatch, caplog):
+    _index_fails(monkeypatch, "no_mail_index")
+    await runner._run()
+    _index_fails(monkeypatch, "index_unreadable")
+    await runner._run()
+    assert [r.getMessage() for r in _warnings(caplog)] == [
+        "mail memory: read failed (no_mail_index)", "mail memory: read failed (index_unreadable)"]
+    assert failing.health()["last_error"] == "index_unreadable"
+
+
+def test_the_same_reason_warns_again_after_an_hour(failing, caplog):
+    runner.note_failure("index_timeout", now=1000.0)
+    runner.note_failure("index_timeout", now=1000.0 + runner.WARN_REPEAT_S - 1)
+    assert len(_warnings(caplog)) == 1
+    runner.note_failure("index_timeout", now=1000.0 + runner.WARN_REPEAT_S)
+    assert len(_warnings(caplog)) == 2
+
+
+async def test_a_good_index_read_clears_the_error(failing, monkeypatch, caplog):
+    st = failing
+    _index_fails(monkeypatch, "no_mail_index")
+    await runner._run()
+    assert st.health()["last_error"] == "no_mail_index"
+
+    async def index(days):
+        return [_row(5)], False
+    monkeypatch.setattr(runner, "read_index", index)
+    await runner._run()
+    health = st.health()
+    assert health["last_error"] is None and health["last_error_at"] is None and health["last_ok_at"]
+    _index_fails(monkeypatch, "no_mail_index")
+    st.set_meta("last_index", "0")
+    await runner._run()
+    assert len(_warnings(caplog)) == 1           # the same reason within the hour: INFO, even after a recovery
+    assert st.health()["last_error"] == "no_mail_index"
+
+
+async def test_an_email_that_keeps_timing_out_between_good_reads_warns_once_an_hour(failing, monkeypatch, caplog):
+    st = failing
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5, ts=3.0), _row(6, ts=2.0), _row(7, ts=1.0)], extract.tier, now=1)
+    answers = iter([bridge.BridgeError("body_timeout"), (None, "not_on_disk"), bridge.BridgeError("body_timeout")])
+
+    async def body(rowid):
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    monkeypatch.setattr(runner, "read_body", body)
+    for i in range(3):
+        await runner.tick(now=NOW + 1 + i)
+    assert len(_warnings(caplog)) == 1
+
+
+async def test_an_unreadable_index_on_a_body_read_is_recorded(failing, monkeypatch, caplog):
+    st = failing
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5)], extract.tier, now=1)
+
+    async def body(rowid):
+        return None, "index_unreadable"
+    monkeypatch.setattr(runner, "read_body", body)
+    assert await runner.tick(now=NOW + 1) == runner.FAILURE_GAP_S
+    assert st.health()["last_error"] == "index_unreadable"
+    assert len(_warnings(caplog)) == 1
+
+    async def good(rowid):
+        return None, "not_on_disk"                # the app answered; only this email is gone
+    monkeypatch.setattr(runner, "read_body", good)
+    await runner.tick(now=NOW + 2)
+    assert st.health()["last_error"] is None
+
+
+async def test_an_unexpected_error_is_recorded_by_type_only(failing, monkeypatch, caplog):
+    async def index(days):
+        raise KeyError("Invoice from dana@example.com")
+    monkeypatch.setattr(runner, "read_index", index)
+    await runner._run()
+    assert failing.health()["last_error"] == "unexpected:KeyError"
+    assert "dana@example.com" not in str(failing.health())
+    logged = [r for r in caplog.records if r.name == "wisp.mail_memory"]
+    assert any("KeyError at test_mail_memory.py:" in r.getMessage() for r in logged)
+    assert not any("dana@example.com" in r.getMessage() or r.exc_info for r in logged)
+
+
+async def test_failure_records_carry_a_reason_code_never_mail_text(failing, monkeypatch, caplog):
+    secret = "Re: Invoice for dana@example.com"
+    _index_fails(monkeypatch, secret)               # a reason string from the app is untrusted
+    await runner._run()
+    assert failing.health()["last_error"] == "other"
+    assert secret not in str(failing.health())
+    assert all(secret not in r.getMessage() and "dana@" not in r.getMessage() for r in caplog.records)
+
+
+def test_the_endpoint_shows_the_last_error(client):
+    assert client.get("/assistant/mail_memory").json()["health"] == {
+        "last_error": None, "last_error_at": None, "last_ok_at": None}
+    runner.note_failure("no_mail_index", now=1234.0)
+    got = client.get("/assistant/mail_memory").json()
+    assert got["health"]["last_error"] == "no_mail_index" and got["health"]["last_error_at"] == 1234.0
+    assert got["mode"] == "live" and "queue" in got["stats"] and "last_index" in got["stats"]

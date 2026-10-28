@@ -23,6 +23,19 @@ _KIND_LABEL = {"exam": "EXAM", "assignment": "due", "meeting": "meeting",
                "event": "event", "reminder": "reminder"}
 
 
+def _access_fixes(unavailable: list[dict]) -> str:
+    """Where to allow each unreadable source, named exactly, as sentences that
+    end in a space. Each one is also noted for the Ask reply's fix button
+    (access_needed), so the button never depends on the model's wording. A
+    source that failed for another reason gets the general pointer."""
+    from service.tools import access_needed
+    fixes = [access_needed.need(row["id"], row.get("reason_kind") or "") for row in unavailable]
+    named = list(dict.fromkeys(fix for fix in fixes if fix))
+    if len(named) < len(fixes):
+        named.append("Check its access in Settings.")
+    return " ".join(named) + " " if named else ""
+
+
 def _calendar_local_start(when_iso: str) -> tuple[datetime, datetime]:
     """Validate a proposed local wall time against what EventKit will show."""
     start = datetime.fromisoformat(when_iso)
@@ -593,8 +606,8 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     unavailable_ids = {s["id"] for s in unavailable}
     withheld = unavailable_ids | ({"reminders"} if reminders_pending else set())
     items = _without_withheld_sources(items, withheld)
-    notice = ("Wisp could not check " + " and ".join(s["label"] for s in unavailable)
-              + ". Check its access in Settings; this schedule may be incomplete.\n") if unavailable else ""
+    notice = ("Wisp could not check " + " and ".join(s["label"] for s in unavailable) + ". "
+              + _access_fixes(unavailable) + "This schedule may be incomplete.\n") if unavailable else ""
     # A pending Reminders sync is secondary to a calendar question, so it trails
     # the answer instead of leading it. A source Wisp could NOT check stays first:
     # that can make the whole schedule incomplete.
@@ -651,8 +664,9 @@ async def get_past_events(days: int = 30, query: str | None = None,
         return ("Wisp is still syncing your calendar after launch, so I’m "
                 "holding off rather than showing incomplete history. Try "
                 "again in a moment.")
-    if any(s["state"] == "unavailable" for s in readiness["sources"]):
-        return "Wisp could not check Calendar. Check Calendar access in Settings, then try again."
+    unavailable = [s for s in readiness["sources"] if s["state"] == "unavailable"]
+    if unavailable:
+        return "Wisp could not check Calendar. " + _access_fixes(unavailable) + "Then try again."
     days = max(1, min(int(days or 30), 365))
     now = time.time()
     today_str = datetime.fromtimestamp(now).strftime("%A, %B %-d, %Y")
@@ -1467,8 +1481,9 @@ async def search_reminders(query: str, scope: str = "all") -> str:
     state = next((source["state"] for source in readiness["sources"]
                   if source["id"] == "reminders"), "unavailable")
     if state == "unavailable":
-        notice = ("Wisp could not check Apple Reminders; check its access in "
-                  "Settings. No Apple Reminders item is listed or verified.")
+        rows = [source for source in readiness["sources"] if source["id"] == "reminders"]
+        notice = ("Wisp could not check Apple Reminders. " + _access_fixes(rows)
+                  + "No Apple Reminders item is listed or verified.")
     elif not readiness.get("reminders_fresh", True):
         notice = ("I haven't received a current Reminders read yet, so no Apple "
                   "Reminders item is listed or verified. Try again in a moment.")

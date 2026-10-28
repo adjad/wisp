@@ -67,8 +67,8 @@ details such as names, addresses or message text. Text that is redacted is
 rewritten without invisible characters and with compatibility normalization.
 A saved report is created private to your user (mode 600) from its first byte
 and replaced atomically; if that cannot be done, saving fails and no file is
-left behind. The existing **Export Chat Debug Log…** is a separate detailed
-conversation export.
+left behind. The existing **Export Chat Debug Log…** (Settings → General) is a
+separate detailed conversation export.
 
 To diagnose planning, enable **Capture planner details for a problem report**
 in Today before refreshing. Wisp requests the exact planner inputs, source

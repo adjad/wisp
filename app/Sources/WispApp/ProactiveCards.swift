@@ -324,9 +324,12 @@ struct ProactiveBriefSection: View {
                         .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                         .help(access.detail)
                     Spacer(minLength: 6)
-                    if let fix = access.fix, let url = URL(string: fix.url) {
-                        NotchChrome.small(Permissions.fixLabel(fix)) { Permissions.openFix(url) }
-                            .help(access.detail)
+                    // fixLink: a Google account to reconnect opens Wisp's own Settings.
+                    if let fix = access.fixLink, let url = URL(string: fix.url) {
+                        NotchChrome.small(Permissions.fixLabel(fix)) {
+                            if fix == BriefDetail.googleSettings { BriefFix.open(fix) } else { Permissions.openFix(url) }
+                        }
+                        .help(access.detail)
                     }
                 }
                 .accessibilityElement(children: .combine)
@@ -508,7 +511,9 @@ struct ProactiveBriefSection: View {
             // A reply's Send sits inside its shown draft; the card's own button
             // only opens the draft (ProactiveCard.Action.primaryStep).
             let sendInDraft = draftOpen && action?.sendsDraft == true
-            if draftOpen, let action { draftEditor(card, action, fire: fire, withSend: sendInDraft) }
+            if draftOpen, let action {
+                draftEditor(card, action, fire: fire, withSend: sendInDraft).revealInPanel("draft-\(card.id)")
+            }
             HStack(alignment: .center, spacing: 12) {
                 if let action, !sendInDraft { fireButton(card, action, fire) }
                 if action?.method == "block_time" {
@@ -925,7 +930,7 @@ struct ProactiveBriefSection: View {
                 .disabled(!model.conversationSettled)
                 NotchChrome.small("Open \(appName(thread)) ↗") { openSource(thread) }
             }
-            if actions.replying == thread.id { replyArea(thread) }
+            if actions.replying == thread.id { replyArea(thread).revealInPanel("reply-\(thread.id)") }
         }
         .padding(.leading, 32).padding(.bottom, 6)
     }
@@ -981,26 +986,86 @@ struct ProactiveBriefSection: View {
 
 // MARK: - A scroll area as tall as its content, up to a cap
 
+/// As tall as its content until the content passes `cap`, then that tall and
+/// scrolling. While the content fits it looks like no scroll view at all: no
+/// indicator and no bounce. Used for an opened Brief row, and for the whole
+/// Brief and Day tabs under the panel's header (OverlayView.tabScroll), where
+/// `reveals` lets a view inside ask to be scrolled into sight (`revealInPanel`).
 struct CappedScroll<Content: View>: View {
     let cap: CGFloat?
+    var reveals = false
     @ViewBuilder var content: Content
     @State private var height: CGFloat = 0
 
     var body: some View {
         if let cap {
-            ScrollView(.vertical) {
-                content
-                    .background(GeometryReader { geo in
-                        Color.clear.preference(key: CappedScrollHeight.self, value: geo.size.height)
-                    })
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    content
+                        .background(GeometryReader { geo in
+                            Color.clear.preference(key: CappedScrollHeight.self, value: geo.size.height)
+                        })
+                }
+                .scrollIndicators(height > cap ? .automatic : .never)
+                .scrollBounceBehavior(.basedOnSize)
+                .environment(\.panelReveal, reveals ? PanelReveal { id in
+                    // After the panel has grown to fit what just opened. Never
+                    // animated, so Reduce Motion needs no special case.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { proxy.scrollTo(id) }
+                } : nil)
             }
-            .scrollIndicators(.automatic)
             .frame(height: min(max(height, 1), cap))
             .onPreferenceChange(CappedScrollHeight.self) { height = $0 }
+            // A CappedScroll inside this one reports its own content; keep it
+            // from reaching (and inflating) an outer one.
+            .transformPreference(CappedScrollHeight.self) { $0 = CappedScrollHeight.defaultValue }
         } else {
             content
         }
     }
+}
+
+/// Scrolls the enclosing tab scroll the least it takes to show one view.
+struct PanelReveal {
+    let scroll: (String) -> Void
+}
+
+private struct PanelRevealKey: EnvironmentKey {
+    static let defaultValue: PanelReveal? = nil
+}
+
+extension EnvironmentValues {
+    var panelReveal: PanelReveal? {
+        get { self[PanelRevealKey.self] }
+        set { self[PanelRevealKey.self] = newValue }
+    }
+}
+
+private struct RevealInPanel: ViewModifier {
+    let id: String
+    @Environment(\.panelReveal) private var reveal
+    @State private var appeared = Date.distantPast
+    /// A reply composer grows when its draft arrives; follow it that long.
+    static var settle: TimeInterval { 10 }
+
+    func body(content: Content) -> some View {
+        content.id(id)
+            .background(GeometryReader { geo in
+                Color.clear.onChange(of: geo.size.height) { old, new in
+                    if new > old, Date().timeIntervalSince(appeared) < Self.settle { reveal?.scroll(id) }
+                }
+            })
+            .onAppear {
+                appeared = Date()
+                reveal?.scroll(id)
+            }
+    }
+}
+
+extension View {
+    /// When this appears inside a scrolling tab (a reply composer, an opened
+    /// draft), scroll it into sight; elsewhere it does nothing.
+    func revealInPanel(_ id: String) -> some View { modifier(RevealInPanel(id: id)) }
 }
 
 private struct CappedScrollHeight: PreferenceKey {

@@ -476,6 +476,28 @@ struct ChatStoreChecks {
             check(reply.tools.reduce(0) { $0 + ($1.corpusSourceEvidence?.retainedByteCount ?? 0) } <= ChatCorpusSourceEvidence.perCaseByteLimit,
                   "replacing results preserves the case budget")
         }
+        // A tool that couldn't read a source for lack of access: the reply keeps
+        // the kinds from its tool_result (needs_access) for the Allow button, each once.
+        do {
+            let backend = ScriptedBackend()
+            backend.script = { _ in [
+                ev("session", ["id": "s-access"]),
+                ev("tool_call", ["id": "c1", "name": "get_upcoming", "decision": "allow"]),
+                ev("tool_result", ["id": "c1", "result": "Wisp could not check Calendar.",
+                                   "needs_access": [["source": "calendar", "kind": "calendar_access"]]]),
+                ev("tool_call", ["id": "c2", "name": "view_emails", "decision": "allow"]),
+                ev("tool_result", ["id": "c2", "result": "Mail is closed.",
+                                   "needs_access": [["source": "calendar", "kind": "calendar_access"],
+                                                    ["source": "email", "kind": "mail_closed"], ["kind": 3]]]),
+                ev("delta", ["text": "I couldn't look just now."]), ev("done"),
+            ] }
+            let store = ChatStore(backend: backend)
+            store.newChat()
+            store.send("What's on today?")
+            await settle()
+            check(store.selected?.messages.last?.needsAccess == ["calendar_access", "mail_closed"],
+                  "the reply carries each needs_access kind once, in order, skipping malformed ones")
+        }
         // A full reply: session, route, tools, streamed text, done.
         do {
             let backend = ScriptedBackend()
@@ -501,6 +523,7 @@ struct ChatStoreChecks {
             check(reply.tools.count == 1 && reply.tools[0].finished && reply.tools[0].result == "4 messages", "tool row finished")
             check(reply.meta?.shortModel == "Ling-3.0-tiny" && reply.meta?.duration != nil, "metadata is recorded")
             check(chat.preview == "You have 4 messages.", "preview follows the reply")
+            check(reply.needsAccess.isEmpty, "a read that was allowed offers no fix")
             check(backend.runs.count == 1 && backend.runs[0].session == "", "first send starts a new session")
             // A follow-up continues the same session.
             store.send("and my calendar?")

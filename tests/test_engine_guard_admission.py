@@ -39,12 +39,12 @@ class AdmissionTests(unittest.TestCase):
         self.guard._propagate_memory_limit()
         self.proof.complete_iteration(self.guard)
 
-        class DFlashEngine:
+        class BatchedEngine:
             _loaded = True
             async def start(self):
                 return None
 
-        self.parent = DFlashEngine()
+        self.parent = BatchedEngine()
         self.entry = SimpleNamespace(engine=self.parent, is_loading=False, _wisp_active_engine=self.parent)
         self.pool = SimpleNamespace(_entries={"model": self.entry}, _current_model_memory=10,
                                     _process_memory_enforcer=self.guard, _unloading_models=set())
@@ -67,6 +67,7 @@ class AdmissionTests(unittest.TestCase):
         self.proof.bind_start(self.parent, self.check)
 
     def child(self, loaded=False):
+        """A fresh engine mid-_load_engine: bound to the pool check, registered active, not yet resident."""
         class BatchedEngine:
             def __init__(self):
                 self._loaded = loaded
@@ -76,7 +77,8 @@ class AdmissionTests(unittest.TestCase):
                     self.allocations += 1
                     self._loaded = True
         child = BatchedEngine()
-        self.proof.bind_child(self.parent, child)
+        self.entry.engine, self.entry.is_loading, self.entry._wisp_active_engine = None, True, child
+        self.proof.bind_start(child, self.check)
         return child
 
     def assert_refused_before_allocation(self, child, error=None):
@@ -84,35 +86,34 @@ class AdmissionTests(unittest.TestCase):
             asyncio.run(child.start())
         self.assertEqual(child.allocations, 0)
 
-    def test_detached_parent_cannot_admit_child(self):
+    def test_detached_entry_cannot_admit_load(self):
         child = self.child()
         self.pool._entries["model"] = SimpleNamespace()
         self.assert_refused_before_allocation(child)
 
-    def test_replaced_active_parent_cannot_admit_child(self):
+    def test_replaced_active_engine_cannot_admit_load(self):
         child = self.child()
         self.entry._wisp_active_engine = object()
         self.assert_refused_before_allocation(child)
 
-    def test_removed_resident_parent_cannot_admit_child(self):
+    def test_finished_load_that_did_not_register_engine_cannot_start_it(self):
         child = self.child()
-        self.entry.engine = None
+        self.entry.is_loading = False
         self.assert_refused_before_allocation(child)
 
-    def test_cold_child_checks_full_budget_even_while_parent_loaded(self):
+    def test_cold_load_checks_full_budget(self):
         child = self.child()
         self.guard.next_breakdown = fixtures.breakdown(dynamic=40)
         self.assert_refused_before_allocation(child, self.proof.GuardCapacityChanged)
-        self.assertIs(self.parent._loaded, True)
 
-    def test_warm_child_does_not_charge_resident_weights_again(self):
+    def test_warm_engine_does_not_charge_resident_weights_again(self):
         child = self.child(loaded=True)
         self.guard.next_breakdown = fixtures.breakdown(dynamic=40)
         asyncio.run(child.start())
         self.assertEqual(child.allocations, 0)
         self.assertTrue(self.proof.snapshot(self.guard)["qualified"])
 
-    def test_cold_child_has_one_admitted_fake_allocation(self):
+    def test_cold_load_has_one_admitted_fake_allocation(self):
         child = self.child()
         asyncio.run(child.start())
         self.assertEqual(child.allocations, 1)
@@ -156,9 +157,9 @@ class AdmissionTests(unittest.TestCase):
         context = {"_wisp_guard": self.proof, "BaseNonStreamingEngine": type("BaseNonStreamingEngine", (), {}),
                    "soft_limit": 20, "logger": SimpleNamespace(warning=lambda *a, **kw: None)}
         exec(compile(parsed, "<pinned-scheduler-decision-branch-with-fakes>", "exec"), context)
-        class DFlashEngine:
-            _fallback_engine = None
-        engine = DFlashEngine()
+        class BatchedEngine:
+            pass
+        engine = BatchedEngine()
         engine._loaded = loaded
         engine._prefill_guard = target
         self.guard._engine_pool = SimpleNamespace(_entries={"model": SimpleNamespace(engine=engine)})
@@ -176,20 +177,20 @@ class AdmissionTests(unittest.TestCase):
         self.proof.complete_iteration(self.guard)
         return self.proof.snapshot(self.guard)
 
-    def test_loaded_primary_dflash_without_guard_cannot_qualify(self):
+    def test_loaded_engine_without_guard_cannot_qualify(self):
         row = self.source_propagation(True, None)
         self.assertFalse(row["qualified"])
         self.assertEqual(row["reason"], "unpropagated")
         with self.assertRaises(self.proof.GuardEvidenceUnavailable):
             self.proof.require_admission(self.guard)
 
-    def test_genuinely_unloaded_dflash_is_not_a_missing_loaded_target(self):
+    def test_genuinely_unloaded_engine_is_not_a_missing_loaded_target(self):
         self.assertTrue(self.source_propagation(False, None)["qualified"])
 
-    def test_loaded_dflash_with_resolved_guard_remains_eligible(self):
+    def test_loaded_engine_with_resolved_guard_remains_eligible(self):
         self.assertTrue(self.source_propagation(True, object())["qualified"])
 
-    def test_disabled_profile_never_claims_healthy_missing_dflash_guard(self):
+    def test_disabled_profile_never_claims_healthy_missing_guard(self):
         row = self.source_propagation(True, None, prefill=False)
         self.assertFalse(row["qualified"])
         self.assertEqual(row["reason"], "disabled")
@@ -274,14 +275,14 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(self.cleanup, ["model"], "Cleanup still owns the original engine")
         self.assertIs(self.pool._entries["model"], replacement)
 
-    def test_unloading_model_refuses_cold_child_before_allocation(self):
+    def test_unloading_model_refuses_cold_load_before_allocation(self):
         child = self.child()
         self.pool._unloading_models.add("model")
         self.assert_refused_before_allocation(child)
 
-    def test_tearing_down_parent_cannot_restart_through_child(self):
+    def test_engine_under_teardown_cannot_restart(self):
         child = self.child()
-        self.parent._wisp_guard_unloading = True
+        child._wisp_guard_unloading = True
         self.assert_refused_before_allocation(child)
 
     def test_post_settlement_budget_guards_preserve_replacement_and_reset_counters(self):

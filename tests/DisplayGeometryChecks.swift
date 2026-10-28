@@ -80,6 +80,7 @@ struct DisplayGeometryChecks {
         checkLayout("Air 13.6 larger text", notched(1280, 832), style: .notch)
 
         let real = SurfaceLayout.make(for: notched(1512, 982))
+        tabScrollCapChecks()
 
         // Built-in displays without a notch (M1 Air, 13"/M2 13" Pro, iMac 24"): nothing
         // drawn; the menu-bar icon and an invisible top-edge zone stand in. Default
@@ -150,7 +151,68 @@ struct DisplayGeometryChecks {
 
         hoverChecks()
         statusChecks()
-        print("PASS: display geometry — 8 notched MacBooks, 7 notchless built-in displays, 7 monitor placements, overrides, target selection, hover intent, menu-bar status")
+        tabScrollSourceChecks()
+        print("PASS: display geometry — 8 notched MacBooks, 7 notchless built-in displays, 7 monitor placements, overrides, target selection, hover intent, menu-bar status, Brief/Day scroll cap")
+    }
+
+    /// 2026-10-27, 14" MacBook Pro: the Brief clipped at the bottom with no way to
+    /// scroll. The panel stops 12 pt above the screen's bottom, so Brief and Day
+    /// scroll inside what is left under the header and padding.
+    static func tabScrollCapChecks() {
+        let header: CGFloat = 30
+        let insets = SurfaceLayout.tabTopPadding + SurfaceLayout.panelBottomPadding
+        for (name, d, room) in [("MBP 14", notched(1512, 982), 970), ("MBP 14 larger text", notched(1352, 878), 866),
+                                ("MBP 16", notched(1728, 1117), 1105)] as [(String, DisplayMetrics, CGFloat)] {
+            let l = SurfaceLayout.make(for: d)
+            check(l.maxPanelHeight == room, "\(name): panel room \(l.maxPanelHeight)")
+            check(l.expandedFrame(contentHeight: 4000).height == l.maxPanelHeight, "\(name): the window stops at the room")
+            let cap = l.tabScrollCap(headerHeight: header)
+            // 970 − (32 + 8) inset − 30 header − 12 − 16 = 872 on the 14".
+            check(cap == room - l.contentTopInset - header - insets, "\(name): cap \(cap)")
+            // A panel holding a full cap fits on screen exactly: nothing is cut off.
+            check(l.contentTopInset + header + insets + cap <= l.maxPanelHeight, "\(name): capped panel fits")
+            // A taller header (larger Text size) shortens the scroll, never the header.
+            check(l.tabScrollCap(headerHeight: header + 10) == cap - 10, "\(name): header grows, scroll shrinks")
+            check(l.tabScrollCap(headerHeight: 30.4) == l.tabScrollCap(headerHeight: 31), "\(name): header rounds up")
+        }
+        check(SurfaceLayout.make(for: notched(1512, 982)).tabScrollCap(headerHeight: 30) == 872, "14in cap is 872 pt")
+        check(SurfaceLayout.make(for: notched(1352, 878)).tabScrollCap(headerHeight: 30) == 768, "14in larger-text cap is 768 pt")
+        // Cards hang under the menu bar and a gap.
+        let air = SurfaceLayout.make(for: notchless(1440, 900))
+        check(air.maxPanelHeight == 900 - 24 - SurfaceLayout.floatingGap - SurfaceLayout.screenMargin, "Menu-bar card room")
+        let screen = SurfaceLayout.make(for: monitor(1920, 1080))
+        check(screen.maxPanelHeight == 1080 - 24 - SurfaceLayout.floatingGap - SurfaceLayout.screenMargin, "Monitor card room")
+        // A tiny display still gets a usable scroll rather than none.
+        check(SurfaceLayout.make(for: monitor(800, 200)).tabScrollCap(headerHeight: header) == SurfaceLayout.minTabScroll,
+              "Floor on a tiny display")
+    }
+
+    /// The overlay wraps Brief and Day, and only them, in the capped scroll.
+    static func tabScrollSourceChecks() {
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("app/Sources/WispApp")
+        guard let overlay = try? String(contentsOf: app.appendingPathComponent("OverlayView.swift"), encoding: .utf8),
+              let cards = try? String(contentsOf: app.appendingPathComponent("ProactiveCards.swift"), encoding: .utf8)
+        else { preconditionFailure("tab scroll: read the overlay's source") }
+        check(overlay.contains("case .brief:\n                tabScroll { NotchBriefView(model: model, today: todayModel) }"),
+              "Brief sits in the tab scroll")
+        check(overlay.contains("case .day:\n                tabScroll { NotchDayView(model: model, today: todayModel) }"),
+              "Day sits in the tab scroll")
+        check(overlay.components(separatedBy: "tabScroll {").count - 1 == 2, "only Brief and Day scroll as a tab")
+        check(overlay.contains("CappedScroll(cap: layout.tabScrollCap(headerHeight: headerHeight), reveals: true)"),
+              "the tab scroll is capped from the display's geometry")
+        check(overlay.contains("bottom: SurfaceLayout.panelBottomPadding"), "the cap and the panel share one bottom padding")
+        // The header is outside the scroll, so it stays put.
+        let panel = overlay.components(separatedBy: "private var expandedPanel: some View {")[1]
+        check(panel.hasPrefix("\n        VStack(alignment: .leading, spacing: 0) {\n            header\n"), "header stays fixed")
+        // Fits: no indicator, no bounce. Composer and draft scroll into sight, unanimated.
+        check(cards.contains(".scrollIndicators(height > cap ? .automatic : .never)"), "no indicator while it fits")
+        check(cards.contains(".scrollBounceBehavior(.basedOnSize)"), "no bounce while it fits")
+        check(cards.contains("replyArea(thread).revealInPanel("), "the reply composer scrolls into sight")
+        check(cards.contains("draftEditor(card, action, fire: fire, withSend: sendInDraft).revealInPanel("),
+              "an opened draft scrolls into sight")
+        check(!cards.contains("withAnimation { proxy.scrollTo") && cards.contains("{ proxy.scrollTo(id) }"),
+              "revealing never animates")
     }
 
     /// The notch's hover zone: most of the notch, never its bottom strip, and the top edge.
