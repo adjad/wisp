@@ -110,6 +110,19 @@ def test_a_wrong_weekday_a_day_range_or_a_bare_clock_still_refuse(phrase):
     assert resolve_due(phrase, _sent("2026-08-30"), TZ, month_first_order=True).day is None
 
 
+@pytest.mark.parametrize("phrase, sent, want", [
+    ("Oct 22 - 6:00 PM", "2026-10-20", "2026-10-22"), ("Oct 22 — 6pm", "2026-10-20", "2026-10-22"),
+    ("Oct 22 — 6pm", "2026-12-28", "2027-10-22"), ("Nov 3 - 5pm", "2026-10-20", "2026-11-03"),
+    ("Oct 22 to 5pm", "2026-10-20", "2026-10-22"), ("Sep 22 - 3:00 PM", "2026-10-20", "2027-09-22"),
+    ("Wed, Oct 22 – 6:00 PM", "2026-09-18", "2026-10-22"),
+    ("Oct 22 6:00 PM - 7:30 PM", "2026-10-20", "2026-10-22"), ("Oct 22 from 6 to 7:30pm", "2026-10-20", "2026-10-22"),
+])
+def test_a_day_then_a_start_time_is_not_a_clock_range(phrase, sent, want):
+    # Audit of 2020ee5f: "22 - 6:00 PM" was dropped as a range, leaving "Oct", due Oct 31.
+    # Every expected value here is what origin/main 91e1de60 already gave.
+    assert resolve_due(phrase, _sent(sent), TZ, month_first_order=True).day.isoformat() == want
+
+
 # --- extraction -------------------------------------------------------------------
 
 RAW = (b"From: Harbor Property <leasing@harbor.example>\r\nTo: Sam <sam@example.com>\r\n"
@@ -227,6 +240,17 @@ def test_an_outlook_forward_keeps_its_content():
     assert "When: Monday, August 3, 2026" in body
 
 
+@pytest.mark.parametrize("subject", [b"RE: FW: Office Hours", b"Fwd: Office Hours"])
+def test_a_reply_to_a_forward_keeps_the_forwarded_content(subject):
+    assert "When: Monday" in extract.parse_raw(_mime(subject, [(b"text/plain", _OUTLOOK_REPLY)]), 0).body
+
+
+def test_a_body_that_starts_with_a_from_sent_block_keeps_it():
+    # A web form's notification: cutting at the block would leave nothing at all.
+    form = b"From: Website contact form\r\nSent: Mon\r\nMessage: please call back by Friday\r\n"
+    assert "call back by Friday" in extract.parse_raw(_mime(b"New message", [(b"text/plain", form)]), 0).body
+
+
 def test_a_rule_of_underscores_alone_is_not_quoted_history():
     raw = _mime(b"Form", [(b"text/plain", b"Sign here\r\n__________\r\nReturn it by Friday.\r\n")])
     assert "Return it by Friday." in extract.parse_raw(raw, 0).body
@@ -236,23 +260,38 @@ _CALENDAR = (b"This event has been canceled and removed from your calendar.\r\n\
              b"Friday Oct 30, 2026 \xe2\x8b\x85 4pm \xe2\x80\x93 6pm\r\n")
 
 
-@pytest.mark.parametrize("subject", [b"Canceled event: Family Send-Off @ Fri Oct 30, 2026 4pm - 6pm (Sam)",
-                                     b"Cancelled: Family Send-Off", b"Canceled event with note: Family Send-Off"])
-def test_a_cancellation_notice_gives_no_reminder(subject):
-    email = extract.parse_raw(_mime(subject, [(b"text/plain", _CALENDAR)]), 0)
-    item = {"what": "Family Send-Off", "date_phrase": "Friday Oct 30, 2026",
-            "evidence": "Family Send-Off Friday Oct 30, 2026"}
-    kept, dropped = extract.validate([item], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
+_ICS = (b"text/calendar", b"BEGIN:VCALENDAR\r\nMETHOD:CANCEL\r\nEND:VCALENDAR")
+_SEND_OFF = {"what": "Family Send-Off", "date_phrase": "Friday Oct 30, 2026",
+             "evidence": "Family Send-Off Friday Oct 30, 2026"}
+
+
+@pytest.mark.parametrize("subject, parts", [
+    (b"Canceled event: Family Send-Off @ Fri Oct 30, 2026 4pm - 6pm (Sam)", [(b"text/plain", _CALENDAR)]),
+    (b"Canceled event with note: Family Send-Off", [(b"text/plain", _CALENDAR)]),
+    (b"Cancelled: Family Send-Off", [(b"text/plain", _CALENDAR), _ICS]),     # Outlook: needs the invite part
+])
+def test_a_cancellation_notice_gives_no_reminder(subject, parts):
+    email = extract.parse_raw(_mime(subject, parts), 0)
+    kept, dropped = extract.validate([_SEND_OFF], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
     assert kept == [] and dropped == {"cancelled": 1}
 
 
-def test_an_item_the_model_marks_cancelled_is_dropped():
+def test_a_bare_canceled_subject_without_an_invite_is_not_a_cancellation():
+    # Audit of 2020ee5f: "Canceled:" alone also heads subscription and order mail with real dates.
+    body = b"Your subscription was canceled. Renew by Oct 30, 2026 to keep your files.\r\n"
+    email = extract.parse_raw(_mime(b"Canceled: Your subscription - renew by Oct 30", [(b"text/plain", body)]), 0)
+    item = {"what": "Renew the subscription", "date_phrase": "Oct 30, 2026", "evidence": "Renew by Oct 30, 2026"}
+    kept, _ = extract.validate([item], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
+    assert [k["due"] for k in kept] == ["2026-10-30"]
+
+
+@pytest.mark.parametrize("what", ["Rebook flight that was cancelled", "Request refund for order that was canceled",
+                                  "Confirm whether practice is cancelled"])
+def test_a_follow_up_about_a_cancellation_stays(what):
+    # Audit of 2020ee5f: matching titles on "was cancelled" dropped real follow-ups.
     email = extract.parse_raw(_mime(b"Updated invitation: Family Send-Off", [(b"text/plain", _CALENDAR)]), 0)
-    base = {"date_phrase": "Friday Oct 30, 2026", "evidence": "Family Send-Off Friday Oct 30, 2026"}
-    kept, dropped = extract.validate([{**base, "what": "Family Send-Off (Note: This event was canceled)"},
-                                      {**base, "what": "Rebook the cancelled flight"}],
-                                     email, tz=TZ, today=date(2026, 10, 26), month_first=True)
-    assert [k["what"] for k in kept] == ["Rebook the cancelled flight"] and dropped == {"cancelled": 1}
+    kept, _ = extract.validate([{**_SEND_OFF, "what": what}], email, tz=TZ, today=date(2026, 10, 26), month_first=True)
+    assert [k["what"] for k in kept] == [what]
 
 
 def test_a_quote_with_a_swapped_dot_or_dash_still_matches():

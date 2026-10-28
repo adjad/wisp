@@ -58,11 +58,14 @@ _CLOCK = re.compile(r"(?:(?<!\w)(?:at|@)\s*)?(?<![\w/:.-])\d{1,2}(?::\d{2})?\s*(
                     r"|(?<!\w)(?:at|@)\s*\d{1,2}(?![\w/:.-])", re.I)
 # A clock RANGE: "6:00 PM-7:30 PM", "from 4:00 - 9:00 PM", "11:30am – 3:30pm". The resolver
 # reads "PM-7" as a UTC offset and the spaced form as two dates, so the event's day was lost.
-# One side must look like a clock (":mm" or am/pm), so a day range ("Nov 3-5") is untouched.
+# One side must look like a clock (":mm" or am/pm), so a day range ("Nov 3-5") is untouched,
+# and a bare left number right after a month is the DAY: "Oct 22 - 6:00 PM" is a date and a
+# start time, not a range, and dropping it left "Oct", due at the month's end (audit of 2020ee5f).
 _CLOCK_RANGE = re.compile(r"(?:(?<!\w)(?:from|between)\s+)?(?<![\w/:.-])(\d{1,2}(?::\d{2})?(?:\s*[ap]\.?m\b\.?)?)"
                           r"\s*(?:-|–|—|\bto\b|\buntil\b|\btill\b)\s*"
                           r"(\d{1,2}(?::\d{2})?(?:\s*[ap]\.?m\b\.?)?)(?![\w/:-])", re.I)
 _CLOCKISH = re.compile(r":\d{2}|[ap]\.?m", re.I)
+_AFTER_MONTH = re.compile(rf"\b{_MONTH}\s*$", re.I)
 # "Tuesday Sep 22, 2026": the resolver reads "Tuesday" as the NEXT Tuesday after the email
 # was sent and refuses the pair as conflicting. When the weekday is the date's own, the
 # weekday is only decoration; when it is not ("Friday, October 22"), the refusal stands.
@@ -90,7 +93,11 @@ def month_first() -> bool:
 
 
 def _drop_clock_range(m: re.Match) -> str:
-    return " " if _CLOCKISH.search(m.group(1)) or _CLOCKISH.search(m.group(2)) else m.group(0)
+    if _CLOCKISH.search(m.group(1)):
+        return " "
+    if _CLOCKISH.search(m.group(2)) and not _AFTER_MONTH.search(m.string, 0, m.start(1)):
+        return " "
+    return m.group(0)
 
 
 def _month_end(year: int, month: int) -> date:

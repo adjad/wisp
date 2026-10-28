@@ -44,14 +44,17 @@ _LINKISH = re.compile(r"https?://|www\.|\b[\w-]+\.(?:com|net|org|io|co|ly|me|app
 _QUOTED = re.compile(r"(?im)^[ \t]*(?:On [^\n]{1,300}wrote:|[- ]*Original Message[- ]*|Begin forwarded message:|>[^\n]*)$")
 # Outlook quotes the original under a rule of underscores or a "From: / Sent:" block. In a
 # reply that original is the superseded version ("no meeting tomorrow" above the invite);
-# in a forward it is the content, so forwards keep it.
+# in a forward it is the content, so forwards keep it, and so does a body that STARTS with
+# the block (a web form's "From: / Sent: / Message:"), where nothing would be left.
 _OUTLOOK_QUOTED = re.compile(r"(?im)^[ \t]*_{8,}[ \t]*\n(?:[ \t]*\n)?[ \t]*From:[^\n]{0,300}$"
                              r"|^[ \t]*From:[^\n]{1,300}\n[ \t]*Sent:[^\n]{0,300}$")
-_FORWARD = re.compile(r"^\s*(?:fw|fwd)\s*:", re.I)
-# Calendar cancellation notices: Google's "Canceled event: ...", Outlook's "Canceled: ...".
-_CANCEL_NOTICE = re.compile(r"^\s*(?:(?:re|fw|fwd)\s*:\s*)*cancell?ed(?:\s+event)?(?:\s+with\s+note)?\s*:", re.I)
-# The model's own title saying the thing is off: "Send-Off (Friday) event was canceled".
-_CANCELLED_WHAT = re.compile(r"\b(?:was|is|has been|been|got)\s+cancell?ed\b", re.I)
+_FORWARD = re.compile(r"^\s*(?:(?:re|aw)\s*:\s*)*(?:fw|fwd)\s*:", re.I)
+# Calendar cancellation notices. Google's subject says so itself ("Canceled event: ...");
+# Outlook's bare "Canceled: ..." counts only with a calendar part, since "Canceled: your
+# subscription - renew by Oct 30" is a reminder. An item merely MENTIONING a cancellation
+# ("Rebook the flight that was cancelled") is a follow-up and stays.
+_CANCEL_EVENT = re.compile(r"^\s*(?:(?:re|fw|fwd)\s*:\s*)*cancell?ed\s+event(?:\s+with\s+note)?\s*:", re.I)
+_CANCEL_BARE = re.compile(r"^\s*(?:(?:re|fw|fwd)\s*:\s*)*cancell?ed\s*:", re.I)
 _FOOTER = re.compile(r"(?im)^[ \t]*(?:unsubscribe|manage (?:your )?(?:email )?(?:preferences|notifications)|"
                      r"you(?:'re| are) receiving this)\b")
 _SPACES = re.compile(r"[ \t\f\v\u00a0\u200b]+")
@@ -108,6 +111,7 @@ class Email:
     sent: datetime
     message_id: str
     body: str
+    calendar: bool = False      # carries a text/calendar part or an .ics file
 
 
 def _text(part) -> str:
@@ -182,7 +186,8 @@ def _clean(body: str, *, forward: bool = False) -> str:
     body = _BLANKS.sub("\n\n", body)[:TEXT_CAP]
     body = _QUOTED.split(body, maxsplit=1)[0]
     if not forward:
-        body = _OUTLOOK_QUOTED.split(body, maxsplit=1)[0]
+        above = _OUTLOOK_QUOTED.split(body, maxsplit=1)[0]
+        body = above if above.strip() else body
     body = _FOOTER.split(body, maxsplit=1)[0]
     return body.strip()[:BODY_CAP]
 
@@ -198,8 +203,10 @@ def parse_raw(raw: bytes, fallback_ts: float) -> Email:
     if end > HEADER_CAP:
         raise ValueError("header block too large")
     msg = BytesParser(policy=policy.default).parsebytes(raw)
-    plain, markup = [], []
+    plain, markup, calendar = [], [], False
     for part in msg.walk():
+        calendar = calendar or part.get_content_type() == "text/calendar" or (
+            str(part.get_filename() or "").lower().endswith(".ics"))
         if part.is_multipart() or part.get_content_disposition() == "attachment":
             continue
         kind = part.get_content_type()
@@ -219,7 +226,8 @@ def parse_raw(raw: bytes, fallback_ts: float) -> Email:
     except Exception:  # noqa: BLE001 — a missing or bad Date header falls back to Mail's received time
         sent = datetime.fromtimestamp(fallback_ts, timezone.utc)
     return Email(sender=str(msg.get("From", "")), to=str(msg.get("To", "")), subject=str(msg.get("Subject", "")),
-                 sent=sent, message_id=str(msg.get("Message-ID", "")).strip(), body=body)
+                 sent=sent, message_id=str(msg.get("Message-ID", "")).strip(), body=body,
+                 calendar=calendar)
 
 
 _RULES = """You find long-term reminders in ONE email for the user named above. Today is {today}.
@@ -286,7 +294,8 @@ def validate(items: list[dict], email: Email, *, tz: str, today: date,
     def drop(reason: str) -> None:
         dropped[reason] = dropped.get(reason, 0) + 1
 
-    if _CANCEL_NOTICE.match(email.subject or ""):
+    subject = email.subject or ""
+    if _CANCEL_EVENT.match(subject) or (email.calendar and _CANCEL_BARE.match(subject)):
         # A cancelled event is nothing to do; the model still lists it, marked "(canceled)".
         for _ in items[:MAX_ITEMS * 2]:
             drop("cancelled")
@@ -297,9 +306,6 @@ def validate(items: list[dict], email: Email, *, tz: str, today: date,
         evidence = " ".join(str(it.get("evidence") or "").split())
         if not what or not evidence:
             drop("empty")
-            continue
-        if _CANCELLED_WHAT.search(what):
-            drop("cancelled")
             continue
         if _LINKISH.search(what):
             # The title becomes a Reminder the user (and later Wisp) reads: no links or addresses.
