@@ -539,6 +539,13 @@ final class FirstRunPermissions: ObservableObject {
     /// to ask), so a single lock left every other Allow button, Reminders included,
     /// doing nothing until then.
     @Published private(set) var asking: Set<Item> = []
+    /// Mail & Notes or Messages whose question macOS still has up after
+    /// `automationPatience`: the row is let go, says where the question is, and can
+    /// ask again, while the first ask finishes whenever the person answers.
+    @Published private(set) var waiting: Set<Item> = []
+    /// Which click owns a row's "Asking…", so an ask that was let go can't clear
+    /// the next one's when it finally returns.
+    private var askTokens: [Item: UUID] = [:]
     /// Calendar or Reminders asked, and macOS recorded no answer (see eventKitUnanswered).
     @Published private(set) var unanswered: [Item: Bool] = [:]
     /// Mail & Notes or Messages whose grant macOS has dropped since it was last
@@ -690,13 +697,16 @@ final class FirstRunPermissions: ObservableObject {
         next[.messages] = await Self.messagesAutomationState(ask: false)
         resetItems = Set([Item.mail, .messages].filter { Self.storedAutomation($0) == .reset })
         messagesReadable = Self.messagesReadable()
+        waiting = waiting.filter { !Self.isDecided(next[$0] ?? .checking) }
         states = next
     }
 
     func request(_ item: Item) async {
         guard !asking.contains(item) else { return }
+        let token = UUID()
         asking.insert(item)
-        defer { asking.remove(item) }
+        askTokens[item] = token
+        defer { if askTokens[item] == token { asking.remove(item); askTokens[item] = nil } }
         // A prompt for an app that isn't frontmost can open behind whatever the
         // person clicked into during the download (the RemindersWriter pattern).
         NSApp.activate(ignoringOtherApps: true)
@@ -733,7 +743,10 @@ final class FirstRunPermissions: ObservableObject {
             // Only an app Wisp just started needs a moment to come up before it can be asked.
             if !launched.isEmpty { try? await Task.sleep(nanoseconds: 1_500_000_000) }
             NSApp.activate(ignoringOtherApps: true)
+            let patience = letGoIfUnanswered(item, token: token)
             _ = await Self.automationState(ask: true)
+            patience.cancel()
+            waiting.remove(item)
             Self.quitAfterAsking(launched)
         case .messages:
             // The same for Messages, on its own target list: its answer never
@@ -742,7 +755,10 @@ final class FirstRunPermissions: ObservableObject {
             for id in Self.messagesAutomationTargets { if let app = await Self.launchHidden(id) { launched.append(app) } }
             if !launched.isEmpty { try? await Task.sleep(nanoseconds: 1_500_000_000) }
             NSApp.activate(ignoringOtherApps: true)
+            let patience = letGoIfUnanswered(item, token: token)
             _ = await Self.messagesAutomationState(ask: true)
+            patience.cancel()
+            waiting.remove(item)
             Self.quitAfterAsking(launched)
         case .fullDiskAccess:
             // Full Disk Access can't be asked for: open its page and let the person
@@ -981,6 +997,36 @@ final class FirstRunPermissions: ObservableObject {
         }
         return resolved.state
     }
+
+    /// How long an Automation question may stay up before its row is let go.
+    /// macOS waits for the answer with no time limit, and its dialog can end up
+    /// behind other windows, which left the row on "Asking…" with no way out.
+    nonisolated static let automationPatience: Duration = .seconds(15)
+
+    /// After `automationPatience`, the row that `token`'s click still holds moves
+    /// from "Asking…" to waiting. The ask itself carries on.
+    private func letGoIfUnanswered(_ item: Item, token: UUID) -> Task<Void, Never> {
+        Task { [weak self] in
+            try? await Task.sleep(for: Self.automationPatience)
+            guard !Task.isCancelled, let self, self.askTokens[item] == token else { return }
+            self.asking.remove(item)
+            self.askTokens[item] = nil
+            self.waiting.insert(item)
+        }
+    }
+
+    /// The row's button while macOS has no answer: Allow, Asking… while the
+    /// question is new, Ask again once it has been up a while.
+    static func allowTitle(_ item: Item, asking: Bool, waiting: Bool) -> String {
+        if asking { return "Asking…" }
+        if item == .fullDiskAccess { return "Open System Settings" }
+        return waiting ? "Ask again" : "Allow"
+    }
+
+    /// The row's words while its question is still waiting for an answer.
+    static let automationWaitingNote =
+        "macOS is still waiting for your answer, and its question may be behind another window. "
+            + "Answer it there, or click Ask again."
 
     /// The row's words when macOS has dropped a grant it once gave.
     static let automationResetNote =
@@ -1800,7 +1846,8 @@ struct FirstRunSetupView: View {
     private func permissionRow(_ item: FirstRunPermissions.Item, icon: String, title: String, detail: String) -> some View {
         let state = permissions.state(item)
         let label = FirstRunPermissions.label(item, state)
-        let detail = permissions.resetItems.contains(item) ? detail + " " + FirstRunPermissions.automationResetNote : detail
+        let detail = permissions.waiting.contains(item) ? detail + " " + FirstRunPermissions.automationWaitingNote
+            : permissions.resetItems.contains(item) ? detail + " " + FirstRunPermissions.automationResetNote : detail
         return OnboardingCard(icon: icon, title: title, detail: detail) {
             HStack(spacing: 8) {
                 switch state {
@@ -1820,13 +1867,14 @@ struct FirstRunSetupView: View {
                     .accessibilityLabel("Open System Settings for \(title)")
                 case .notAsked:
                     Text(label).font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
-                    Button(permissions.asking.contains(item) ? "Asking…"
-                           : item == .fullDiskAccess ? "Open System Settings" : "Allow") {
+                    Button(FirstRunPermissions.allowTitle(item, asking: permissions.asking.contains(item),
+                                                          waiting: permissions.waiting.contains(item))) {
                         Task { await permissions.request(item) }
                     }
                     .buttonStyle(FirstRunButtonStyle(primary: true))
                     .disabled(permissions.asking.contains(item))
-                    .accessibilityLabel(item == .fullDiskAccess ? "Open System Settings for \(title)" : "Allow \(title)")
+                    .accessibilityLabel(item == .fullDiskAccess ? "Open System Settings for \(title)"
+                                        : permissions.waiting.contains(item) ? "Ask again for \(title)" : "Allow \(title)")
                 }
             }
         }

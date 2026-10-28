@@ -198,6 +198,17 @@ struct FirstRunSetupChecks {
               && !FirstRunPermissions.eventKitUnanswered(before: .notDetermined, after: .denied)
               && !FirstRunPermissions.eventKitUnanswered(before: .denied, after: .denied),
               "An ask that leaves macOS with no answer is reported; a Don't Allow is an answer")
+        // An Automation question nobody answers: "Asking…" while it is new, then Ask again.
+        check(FirstRunPermissions.allowTitle(.mail, asking: true, waiting: false) == "Asking…"
+              && FirstRunPermissions.allowTitle(.mail, asking: true, waiting: true) == "Asking…"
+              && FirstRunPermissions.allowTitle(.mail, asking: false, waiting: true) == "Ask again"
+              && FirstRunPermissions.allowTitle(.messages, asking: false, waiting: true) == "Ask again"
+              && FirstRunPermissions.allowTitle(.mail, asking: false, waiting: false) == "Allow"
+              && FirstRunPermissions.allowTitle(.fullDiskAccess, asking: false, waiting: false) == "Open System Settings",
+              "A question still up after the wait reads Ask again; a new one reads Asking…")
+        check(FirstRunPermissions.automationPatience >= .seconds(5) && FirstRunPermissions.automationPatience <= .seconds(30)
+              && FirstRunPermissions.automationWaitingNote.contains("Ask again"),
+              "The row is let go after a short wait and says how to get the question back")
         let remindersBase = "What's due."
         let denied = FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .notAllowed, unanswered: false)
         let silent = FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .notAsked, unanswered: true)

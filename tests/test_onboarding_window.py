@@ -431,3 +431,29 @@ def test_download_paths_share_one_start_and_one_disk_warning():
     # The disk warning is drawn under step 1's card and on the last step, never only before the first Download.
     assert setup.count("diskWarningLine") == 3
     assert "brain.footer(stalled: stalled).fetches" in _body(setup, "private var diskWarning: String?")
+
+
+def test_an_unanswered_automation_question_lets_its_row_go():
+    """2026-10-27: an Automation question nobody answers left Mail & Notes on "Asking…"
+    for good, since macOS waits for the answer with no time limit. After a short wait the
+    row says where the question is and can ask again, and the first ask finishes
+    (closing what it opened) whenever the person answers."""
+    setup = _sources()["FirstRunSetupView.swift"]
+    request = _body(setup, "func request(_ item: Item) async")
+    for case, ask in (("case .mail:", "Self.automationState(ask: true)"),
+                      ("case .messages:", "Self.messagesAutomationState(ask: true)")):
+        end = "case .messages:" if case == "case .mail:" else "case .fullDiskAccess:"
+        body = request[request.index(case):request.index(end)]
+        order = ["let patience = letGoIfUnanswered(item, token: token)", ask, "patience.cancel()",
+                 "waiting.remove(item)", "Self.quitAfterAsking(launched)"]
+        at = [body.index(part) for part in order]
+        assert at == sorted(at), case
+    # Only the click that still owns the row clears it: an ask that was let go
+    # returns later and must not end a newer click's "Asking…".
+    assert "defer { if askTokens[item] == token { asking.remove(item); askTokens[item] = nil } }" in request
+    let_go = _body(setup, "private func letGoIfUnanswered(_ item: Item, token: UUID) -> Task<Void, Never>")
+    assert "self.askTokens[item] == token" in let_go and "self.waiting.insert(item)" in let_go
+    refresh = _body(setup, "func refresh() async")
+    assert "waiting = waiting.filter { !Self.isDecided(next[$0] ?? .checking) }" in refresh
+    row = _body(setup, "private func permissionRow(")
+    assert "permissions.waiting.contains(item)" in row and "FirstRunPermissions.automationWaitingNote" in row
