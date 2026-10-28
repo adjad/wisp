@@ -66,6 +66,7 @@ _CLOCK_RANGE = re.compile(r"(?:(?<!\w)(?:from|between)\s+)?(?<![\w/:.-])(\d{1,2}
                           r"(\d{1,2}(?::\d{2})?(?:\s*[ap]\.?m\b\.?)?)(?![\w/:-])", re.I)
 _CLOCKISH = re.compile(r":\d{2}|[ap]\.?m", re.I)
 _AFTER_MONTH = re.compile(rf"\b{_MONTH}\s*$", re.I)
+MONTH_WINDOW = 16       # "September." plus spacing: a month further back is not "right before"
 # "Tuesday Sep 22, 2026": the resolver reads "Tuesday" as the NEXT Tuesday after the email
 # was sent and refuses the pair as conflicting. When the weekday is the date's own, the
 # weekday is only decoration; when it is not ("Friday, October 22"), the refusal stands.
@@ -95,7 +96,8 @@ def month_first() -> bool:
 def _drop_clock_range(m: re.Match) -> str:
     if _CLOCKISH.search(m.group(1)):
         return " "
-    if _CLOCKISH.search(m.group(2)) and not _AFTER_MONTH.search(m.string, 0, m.start(1)):
+    if _CLOCKISH.search(m.group(2)) and not _AFTER_MONTH.search(
+            m.string, max(0, m.start(1) - MONTH_WINDOW), m.start(1)):
         return " "
     return m.group(0)
 
