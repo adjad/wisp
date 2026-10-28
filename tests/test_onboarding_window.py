@@ -313,6 +313,14 @@ def test_messages_has_its_own_permission_row():
     assert "AXIsProcessTrustedWithOptions" not in setup and "CGRequestScreenCaptureAccess" not in setup
     footnote = step[step.index('Text("Skipped one?'):]
     assert "microphone" in footnote and "asked for later" not in footnote
+    # Screen Recording and Accessibility aren't needed to set up: they sit in an
+    # optional disclosure after the core rows and don't count toward "still off".
+    more = step[step.index("DisclosureGroup(isExpanded: $showMoreAccess)"):]
+    assert step.index("permissionRow(.notifications") < step.index("DisclosureGroup(isExpanded: $showMoreAccess)")
+    assert "permissionRow(.screenRecording" in more and "permissionRow(.accessibility" in more
+    assert 'Text("More access (optional)")' in more
+    for name in ("static func summary(", "static func allAnswered("):
+        assert "Item.core." in _body(setup, name) and "Item.allCases" not in _body(setup, name), name
 
 
 def test_relaunch_waits_for_a_quitting_copy_instead_of_yielding_to_it():

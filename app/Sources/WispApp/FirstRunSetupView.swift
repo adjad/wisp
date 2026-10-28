@@ -529,6 +529,12 @@ final class FirstRunPermissions: ObservableObject {
     /// only the microphone and per-app Automation wait until first use.
     enum Item: String, CaseIterable, Identifiable {
         case calendar, reminders, mail, messages, fullDiskAccess, contacts, notifications, screenRecording, accessibility
+
+        /// Under the step's "More access" disclosure: nothing in setup or a first
+        /// answer needs them, so they never count toward "still off" or hold the
+        /// step open.
+        var isExtra: Bool { self == .screenRecording || self == .accessibility }
+        static let core = allCases.filter { !$0.isExtra }
         var id: String { rawValue }
     }
     enum State: Equatable { case checking, notAsked, allowed, notAllowed, notOnThisMac }
@@ -564,7 +570,7 @@ final class FirstRunPermissions: ObservableObject {
     /// Full Disk Access carries it and it isn't counted twice.
     static func summary(_ states: [Item: State], messagesReadable: Bool = true) -> String {
         let waiting = contactsWaits(states, messagesReadable: messagesReadable)
-        let off = Item.allCases.filter {
+        let off = Item.core.filter {
             !(waiting && $0 == .contacts) && (states[$0] == .notAsked || states[$0] == .notAllowed)
         }.count
         return off == 0 ? "All optional · nothing left off" : "All optional · \(off) still off"
@@ -574,7 +580,7 @@ final class FirstRunPermissions: ObservableObject {
     /// on Full Disk Access follows that answer instead of needing its own.
     static func allAnswered(_ states: [Item: State], messagesReadable: Bool) -> Bool {
         let waiting = contactsWaits(states, messagesReadable: messagesReadable)
-        return Item.allCases.allSatisfy { (waiting && $0 == .contacts) || isDecided(states[$0] ?? .checking) }
+        return Item.core.allSatisfy { (waiting && $0 == .contacts) || isDecided(states[$0] ?? .checking) }
     }
 
     var allAnswered: Bool { Self.allAnswered(states, messagesReadable: messagesReadable) }
@@ -1133,6 +1139,11 @@ struct FirstRunSetupView: View {
     /// The one automatic test once Wisp is ready (it also loads the model).
     @State private var testedOnce = false
     @State private var showAdvanced = false
+    /// The Permissions step's optional Screen Recording and Accessibility rows.
+    /// Open again after one was asked for (Screen Recording's quit and reopen
+    /// comes back here), so the row's answer is in view.
+    @State private var showMoreAccess = UserDefaults.standard.bool(forKey: Permissions.screenRecordingPromptedKey)
+        || UserDefaults.standard.bool(forKey: Permissions.accessibilityPromptedKey)
     var openDetailedSetup: () -> Void
     /// Closes the window and opens the notch on Ask; with a prompt, Ask's box
     /// holds it, unsent.
@@ -1803,13 +1814,24 @@ struct FirstRunSetupView: View {
             contactsRow
             permissionRow(.notifications, icon: "bell", title: "Notifications",
                           detail: "Alerts for reminders you set, and when Wisp is ready.")
-            permissionRow(.screenRecording, icon: "rectangle.dashed.badge.record", title: "Screen Recording",
-                          detail: FirstRunPermissions.screenRecordingDetail(permissions.state(.screenRecording)))
-            permissionRow(.accessibility, icon: "accessibility", title: "Accessibility",
-                          detail: FirstRunPermissions.accessibilityDetail(permissions.state(.accessibility)))
-            Text("Skipped one? Open Wisp's Settings and choose Permissions… under Privacy, any time. Only the "
-                 + "microphone, asked the first time you use voice, and macOS's questions about Wisp controlling "
-                 + "another app wait until first use.")
+            // Not needed to set up or for a first answer, so out of the way and
+            // out of the count; still asked only from the row's own click.
+            DisclosureGroup(isExpanded: $showMoreAccess) {
+                VStack(alignment: .leading, spacing: 0) {
+                    permissionRow(.screenRecording, icon: "rectangle.dashed.badge.record", title: "Screen Recording",
+                                  detail: FirstRunPermissions.screenRecordingDetail(permissions.state(.screenRecording)))
+                    permissionRow(.accessibility, icon: "accessibility", title: "Accessibility",
+                                  detail: FirstRunPermissions.accessibilityDetail(permissions.state(.accessibility)))
+                }
+            } label: {
+                Text("More access (optional)").font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            .padding(.top, 8)
+            Text("Skipped one? Open Wisp's Settings and choose Permissions… under Privacy, any time. Screen "
+                 + "Recording and Accessibility, under More access, let Wisp look at your screen when you ask "
+                 + "about it. Only the microphone, asked the first time you use voice, and macOS's questions "
+                 + "about Wisp controlling another app wait until first use.")
                 .font(.system(size: 12)).foregroundStyle(Theme.textMuted).padding(.top, 8)
                 .fixedSize(horizontal: false, vertical: true)
         }

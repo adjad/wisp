@@ -803,12 +803,12 @@ struct FirstRunSetupChecks {
         extrasOff[.contacts] = .allowed
         extrasOff[.screenRecording] = .notAsked
         extrasOff[.accessibility] = .notAllowed
-        check(FirstRunPermissions.summary(extrasOff, messagesReadable: true) == "All optional · 2 still off"
-              && !FirstRunPermissions.allAnswered(extrasOff, messagesReadable: true),
-              "Screen Recording and Accessibility count toward still off; an unasked one keeps the step open")
-        extrasOff[.screenRecording] = .notAllowed
-        check(FirstRunPermissions.allAnswered(extrasOff, messagesReadable: true),
-              "Asked and still off is an answer, so the step can tick")
+        check(FirstRunPermissions.summary(extrasOff, messagesReadable: true) == "All optional · nothing left off"
+              && FirstRunPermissions.allAnswered(extrasOff, messagesReadable: true),
+              "Screen Recording and Accessibility sit under More access: never counted, never hold the step open")
+        check(FirstRunPermissions.Item.core.allSatisfy { !$0.isExtra }
+              && FirstRunPermissions.Item.allCases.filter(\.isExtra) == [.screenRecording, .accessibility],
+              "Only Screen Recording and Accessibility are extras")
 
         // Full Disk Access: a row of its own, on whether Messages, Mail or Notes data
         // really reads (Automation alone only helps while those apps are open).
