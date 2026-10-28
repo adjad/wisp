@@ -498,6 +498,17 @@ def test_a_bin_named_xml_part_gets_the_text_limit_not_the_media_one():
         E.zip_guard(bin_parts_docx([9 * MB]))
 
 
+def test_an_upper_case_override_still_types_the_part():
+    # casebypass.py: /WORD/H0.PNG typed as XML must not get the media allowance.
+    parts = {"[Content_Types].xml": b'<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/'
+             b'package/2006/content-types"><Default Extension="png" ContentType="image/png"/><Override '
+             b'PartName="/WORD/H0.PNG" ContentType="application/vnd.openxmlformats-officedocument.'
+             b'wordprocessingml.header+xml"/></Types>',
+             "word/h0.png": dense_xml(b"<w:hdr " + W_NS + b">", b"</w:hdr>", b"<a/>", 9 * MB)}
+    with pytest.raises(ValueError, match="too large or complex"):
+        E.zip_guard(ooxml(parts))
+
+
 def test_text_parts_together_are_capped():
     with pytest.raises(ValueError, match="too large or complex"):
         E.zip_guard(bin_parts_docx([7 * MB] * 4))          # 28 MB of XML, each part under 8 MB

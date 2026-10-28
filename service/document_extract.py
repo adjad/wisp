@@ -101,7 +101,7 @@ def _kind(name: str) -> str:
 # --- ZIP preflight ----------------------------------------------------------------
 
 def _content_types(archive: ZipFile, names: set[str]) -> tuple[dict[str, str], dict[str, str]]:
-    """(overrides by part name, defaults by extension) from [Content_Types].xml, if any."""
+    """(overrides by lower-cased part name, defaults by extension) from [Content_Types].xml, if any."""
     overrides: dict[str, str] = {}
     defaults: dict[str, str] = {}
     if "[Content_Types].xml" not in names:
@@ -115,7 +115,7 @@ def _content_types(archive: ZipFile, names: set[str]) -> tuple[dict[str, str], d
     def start(tag, attrs):
         local = tag.rpartition("}")[2]
         if local == "Override" and "PartName" in attrs:
-            overrides[attrs["PartName"].lstrip("/")] = attrs.get("ContentType", "").lower()
+            overrides[attrs["PartName"].lstrip("/").lower()] = attrs.get("ContentType", "").lower()
         elif local == "Default" and "Extension" in attrs:
             defaults[attrs["Extension"].lower()] = attrs.get("ContentType", "").lower()
     parser = expat.ParserCreate(namespace_separator="}")
@@ -132,7 +132,7 @@ def _is_media(name: str, overrides: dict[str, str], defaults: dict[str, str]) ->
     ext = PurePath(name).suffix.lower().lstrip(".")
     if ext not in _MEDIA_EXTENSIONS:
         return False
-    declared = overrides.get(name) or defaults.get(ext)
+    declared = overrides.get(name.lower()) or defaults.get(ext)  # OPC part names ignore case
     return declared is None or declared.startswith(_MEDIA_TYPES)
 
 
