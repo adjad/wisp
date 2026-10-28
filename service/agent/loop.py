@@ -1377,11 +1377,28 @@ def _meeting_redacted_return(function):
     return wrapped
 
 
+def _access_notes_scoped(function):
+    """One turn's access notes (access_needed.start) end with the turn: the
+    ContextVar is reset however run_agent returns or raises, so a later read in
+    the caller's context (a nested turn's caller, the scheduler) never notes into
+    a finished turn's list."""
+    @wraps(function)
+    async def wrapped(*args, **kwargs):
+        from service.tools import access_needed
+        noted, token = access_needed.start()
+        try:
+            return await function(*args, _access_noted=noted, **kwargs)
+        finally:
+            access_needed.finish(token)
+    return wrapped
+
+
 # Reads whose result is model-facing evidence, never a user-facing answer.
 _NARRATED_EVIDENCE_READS = frozenset({"daily_brief"})
 
 
 @_meeting_redacted_return
+@_access_notes_scoped
 async def run_agent(
     client: OMLXClient,
     model: str,
@@ -1503,6 +1520,8 @@ async def run_agent(
     # ask_quality only: lexical rank beyond the preload. Name-only stubs are
     # limited to these plus model_only.ASK_CORE_STUBS (None = every tool).
     model_led_stub_rank: Sequence[str] | None = None,
+    # This turn's access notes, from _access_notes_scoped; never passed by callers.
+    _access_noted: list[dict] | None = None,
 ) -> str:
     """Run the loop. Returns the final assistant text. Streams events via `emit`.
 
@@ -1601,7 +1620,7 @@ async def run_agent(
     # Sources a tool couldn't read for lack of access ride on its tool_result,
     # so Ask shows the fix button whatever the model's reply says.
     from service.tools import access_needed
-    access_noted = access_needed.start()
+    access_noted = _access_noted if _access_noted is not None else []
     def audit(event, **fields):
         _meeting_audit(event, **fields)
 
