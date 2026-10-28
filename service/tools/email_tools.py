@@ -537,12 +537,16 @@ def _no_inbox_message() -> str:
     if _email_available is False:
         # The readers' reasons are whole sentences: no doubled period inside ours.
         reason = (_email_reason or "Mail Automation access isn't granted").strip().rstrip(".")
-        guidance = ("Grant Wisp access in System Settings ▸ Privacy & Security ▸ Automation ▸ Wisp ▸ Mail, then try again."
-                    if "automation" in reason.casefold() or _email_reason_kind == "mail_automation"
-                    else "Open Mail and let it refresh, then try again.")
+        from service.tools import access_needed
+        kind = ("mail_automation" if "automation" in reason.casefold() or _email_reason_kind == "mail_automation"
+                else _email_reason_kind)
+        fix = access_needed.need("email", kind)
+        guidance = (fix + " Then try again.") if fix else "Open Mail and let it refresh, then try again."
         return (f"I couldn’t refresh Mail: {reason}. No usable cached emails are available, "
                 f"so I couldn’t verify your inbox. {guidance}")
     if _email_available is True and _email_reason_kind == "mail_not_configured" and not _external_accounts:
+        from service.tools import access_needed
+        access_needed.need("email", "mail_not_configured")
         return ((_email_reason.strip() or "There are no Mail accounts on this Mac.")
                 + ("" if _email_reason.strip().endswith((".", "!", "?")) or not _email_reason.strip() else ".")
                 + " Add one in System Settings ▸ Internet Accounts, or connect Google in Wisp's Settings.")

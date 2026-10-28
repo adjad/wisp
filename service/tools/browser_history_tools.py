@@ -256,7 +256,10 @@ async def search_browser_history_impl(query: str | None = None, count: int | Non
     if state == "disabled":
         return "Browser History is turned off in Wisp Settings."
     if state == "unavailable":
-        return "Wisp could not read browser history. Check Browser History and Full Disk Access in Settings."
+        # The reader can't tell a missing browser from Full Disk Access being
+        # off, so this names the place without offering a fix button for it.
+        return ("Wisp could not read browser history. If Safari or Chrome is on this Mac, turn Wisp on in "
+                "System Settings > Privacy & Security > Full Disk Access.")
     rows = _all_rows()
     if not rows:
         return "No browsing history found in the completed sync of browsers Wisp could read."
