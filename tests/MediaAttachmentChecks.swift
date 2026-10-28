@@ -91,6 +91,37 @@ struct MediaAttachmentChecks {
         check(MediaAttachment.kind(of: URL(fileURLWithPath: "/a/b.mp4")) == .movie, "mp4")
         check(MediaAttachment.kind(of: URL(fileURLWithPath: "/a/b.mp3")) == .other, "audio is not a clip")
         check(MediaAttachment.kind(of: URL(fileURLWithPath: "/a/b.txt")) == .other, "text")
+        // Size refusal and the URL-based downscale.
+        check(!MediaAttachment.tooLarge(bytes: 50 * 1024 * 1024), "exactly 50 MB is accepted")
+        check(MediaAttachment.tooLarge(bytes: 50 * 1024 * 1024 + 1), "over 50 MB is refused")
+        check(MediaAttachment.tooLargeMessage == "That picture is too large for Wisp to read.", "refusal wording")
+        if let png = bigPNGForURLCheck() {
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("wisp-url-\(UUID().uuidString)")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            let file = dir.appendingPathComponent("big.png")
+            try? png.write(to: file)
+            let out = MediaAttachment.downscaleJPEG(contentsOf: file, maxSide: 100)
+            let src = out.flatMap { CGImageSourceCreateWithData($0 as CFData, nil) }
+            let props = src.flatMap { CGImageSourceCopyPropertiesAtIndex($0, 0, nil) as? [CFString: Any] }
+            check((props?[kCGImagePropertyPixelWidth] as? Int) == 100, "URL downscale caps the longest side")
+            check(MediaAttachment.downscaleJPEG(contentsOf: dir.appendingPathComponent("missing.png")) == nil, "missing file is nil")
+            try? Data("nope".utf8).write(to: file)
+            check(MediaAttachment.downscaleJPEG(contentsOf: file) == nil, "non-image file is nil")
+        } else {
+            check(false, "could not build the URL check image")
+        }
         print("MediaAttachmentChecks passed")
     }
+}
+
+private func bigPNGForURLCheck() -> Data? {
+    guard let ctx = CGContext(data: nil, width: 400, height: 200, bitsPerComponent: 8, bytesPerRow: 0,
+                              space: CGColorSpaceCreateDeviceRGB(),
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+          let image = ctx.makeImage() else { return nil }
+    let out = NSMutableData()
+    guard let dest = CGImageDestinationCreateWithData(out, UTType.png.identifier as CFString, 1, nil) else { return nil }
+    CGImageDestinationAddImage(dest, image, nil)
+    return CGImageDestinationFinalize(dest) ? out as Data : nil
 }

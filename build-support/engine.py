@@ -318,6 +318,10 @@ def third_party_inventory(app: Path, *, check_signature: bool = True) -> list[di
 
 
 # ---------------------------------------------------------------- fetching the pinned release --
+# A numeric release with an optional PEP 440 pre-release suffix: 0.7.0, 0.7.3rc1, 0.7.3.dev2.
+_RELEASE_VERSION = r"\d+(\.\d+){1,3}((a|b|rc)\d+|\.dev\d+)?"
+
+
 def load_source(path: Path = SOURCE, lock: dict | None = None) -> dict:
     """The one oMLX release asset the engine may be built from, pinned by size and SHA-256.
 
@@ -326,8 +330,8 @@ def load_source(path: Path = SOURCE, lock: dict | None = None) -> dict:
     doc = json.loads(path.read_text())
     ok = (isinstance(doc, dict) and doc.get("schema") == 1
           and re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9_.-]+", str(doc.get("repo", "")))
-          and re.fullmatch(r"v\d+(\.\d+){1,3}", str(doc.get("tag", "")))
-          and re.fullmatch(r"\d+(\.\d+){1,3}", str(doc.get("omlx_version", "")))
+          and re.fullmatch(r"v" + _RELEASE_VERSION, str(doc.get("tag", "")))
+          and re.fullmatch(_RELEASE_VERSION, str(doc.get("omlx_version", "")))
           and re.fullmatch(r"[A-Za-z0-9_.-]+\.dmg", str(doc.get("asset", "")))
           and isinstance(doc.get("size"), int) and 0 < doc["size"] <= 2 * 1024 ** 3
           and re.fullmatch(r"[0-9a-f]{64}", str(doc.get("sha256", ""))))

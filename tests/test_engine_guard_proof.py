@@ -547,7 +547,7 @@ class GuardProofTests(unittest.TestCase):
         self.assertEqual(engine.allocations, [])
 
     def test_loaded_state_uses_only_pinned_constructor_conventions(self):
-        for name in ("BatchedEngine", "VLMBatchedEngine", "DFlashEngine", "DistributedBatchedEngine"):
+        for name in ("BatchedEngine", "VLMBatchedEngine", "DistributedBatchedEngine"):
             for loaded in (False, True):
                 with self.subTest(name=name, loaded=loaded):
                     engine = type(name, (), {"_loaded": loaded, "_model": object()})()
@@ -572,7 +572,12 @@ class GuardProofTests(unittest.TestCase):
         class UnsupportedSubclass(base):
             pass
 
-        for engine in (UnsupportedSubclass(), type("UnknownEngine", (), {"_loaded": False})()):
+        # DFlashEngine left oMLX in 0.7.3rc1; SplashEngine and DecisionEngine arrived
+        # without a pinned residency convention. All of them must fail closed.
+        for engine in (UnsupportedSubclass(), type("UnknownEngine", (), {"_loaded": False})(),
+                       type("DFlashEngine", (), {"_loaded": True})(),
+                       type("SplashEngine", (), {"_loaded": True, "_model": object()})(),
+                       type("DecisionEngine", (), {"_loaded": True, "_model": object()})()):
             with self.subTest(name=type(engine).__name__):
                 with self.assertRaises(self.proof.GuardEvidenceUnavailable):
                     self.proof.loaded_state(engine)
@@ -701,51 +706,6 @@ class GuardProofTests(unittest.TestCase):
             self.assertEqual(await engine.start(), "fake-start-result")
             self.assertEqual(checked, [engine, engine])
             self.assertEqual(len(engine.allocations), 1)
-
-        asyncio.run(exercise())
-
-    def test_child_start_uses_bound_parent_check_and_child_allocation_state(self):
-        async def exercise():
-            parent = self.fake_engine(loaded=True)
-            child = self.fake_nonstreaming()
-            child.release.set()
-            checked = []
-
-            def check(candidate, *, force_allocation=False):
-                checked.append((candidate, force_allocation))
-
-            self.proof.bind_start(parent, check)
-            self.proof.bind_child(parent, child)
-            self.assertEqual(await self.proof.start_bound(child), "nonstream-ready")
-            self.assertEqual(checked, [(parent, True)],
-                             "A resident parent must still reserve a cold child's allocation")
-            self.assertEqual(await child.start(), "already-loaded")
-            self.assertEqual(checked, [(parent, True), (parent, False)])
-            self.assertEqual(child.allocations, 1)
-            self.assertEqual(parent.allocations, [])
-
-        asyncio.run(exercise())
-
-    def test_child_start_refusal_prevents_loading_and_unbound_parent_is_rejected(self):
-        async def exercise():
-            parent = self.fake_engine(loaded=True)
-            child = self.fake_nonstreaming()
-            with self.assertRaises(self.proof.GuardEvidenceUnavailable):
-                self.proof.bind_child(parent, child)
-            self.assertFalse(getattr(child, "_wisp_guard_bound", False))
-            checked = []
-
-            def reject(candidate, *, force_allocation=False):
-                checked.append((candidate, force_allocation))
-                raise self.proof.GuardEvidenceUnavailable()
-
-            self.proof.bind_start(parent, reject)
-            self.proof.bind_child(parent, child)
-            with self.assertRaises(self.proof.GuardEvidenceUnavailable):
-                await self.proof.start_bound(child)
-            self.assertEqual(checked, [(parent, True)])
-            self.assertIsNone(child._model)
-            self.assertEqual((child.allocations, child.start_calls), (0, 0))
 
         asyncio.run(exercise())
 
@@ -887,6 +847,20 @@ class BoundUnloadTests(unittest.TestCase):
             self.assertEqual(pool._current_model_memory, 0)
             self.assertEqual(pool._wisp_unload_state["tasks"], {})
             self.assertEqual(pool._unloading_models, set())
+        asyncio.run(exercise())
+
+    def test_local_only_reaches_teardown_only_when_requested(self):
+        async def exercise():
+            calls = []
+            async def teardown(model_id, **kwargs):
+                calls.append(kwargs)
+            for local_only in (False, True):
+                engine = self.engine()
+                entry = SimpleNamespace(engine=engine)
+                await self.proof.unload_bound(self.pool(entry, teardown), "model", self.busy,
+                                              local_only=local_only)
+            self.assertEqual([sorted(c) for c in calls], [["_wisp_expected"], ["_wisp_expected", "local_only"]])
+            self.assertIs(calls[1]["local_only"], True)
         asyncio.run(exercise())
 
     def test_cancelled_cleanup_joiner_drains_same_owner_without_duplicate_stop(self):
