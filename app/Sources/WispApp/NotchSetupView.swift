@@ -304,7 +304,7 @@ final class NotchSetupNotices: ObservableObject {
 
     /// The line a wake mid-download leaves, for the notch card and the setup
     /// window's step 1 alike.
-    func sleepLine(_ brain: FirstRunBrain, downloads: [DownloadTask]) -> String? {
+    func sleepLine(_ brain: FirstRunBrain, downloads: [SetupGuideModel.DownloadTask]) -> String? {
         let transfer: SleepPause.Transfer
         switch brain {
         case .downloading(let model, _, _, _, _, _):
