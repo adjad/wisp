@@ -248,6 +248,22 @@ def _power_fields(client) -> dict[str, int]:
     return payload_fields()
 
 
+
+def _power_call_started(client) -> bool:
+    """Counts intensive work in flight, so background calls drop their cap
+    while it runs (oMLX holds the lowest cap among active requests)."""
+    if not getattr(client, "managed", False):
+        return False
+    from service.inference.power_tier import call_started
+    return call_started()
+
+
+def _power_call_ended(intensive: bool) -> None:
+    if intensive:
+        from service.inference.power_tier import call_ended
+        call_ended(intensive)
+
+
 class OMLXClient:
     def __init__(self, base_url: str | None = None, api_key: str | None = None,
                  timeout: float = 600.0, *, target: Target | None = None) -> None:
@@ -828,6 +844,7 @@ class OMLXClient:
         # engine activity for every readiness proof (see engine_epoch).
         engine_epoch.begin()
         idle.begin(self.activity_key(model))
+        heavy = _power_call_started(self)
         try:
             if self.managed:
                 if engine_headers:
@@ -868,6 +885,7 @@ class OMLXClient:
                         _demote_unclosed_think(choice["message"], choice.get("finish_reason"))
             return data
         finally:
+            _power_call_ended(heavy)
             idle.end(self.activity_key(model))
             engine_epoch.end()
 
@@ -922,6 +940,7 @@ class OMLXClient:
         output_limit, wire_limit = self._remote_limits(max_tokens)
         engine_epoch.begin()
         idle.begin(self.activity_key(model))
+        heavy = _power_call_started(self)
         try:
             headers = None if self.managed else {"Accept-Encoding": "identity"}
             async with self._client.stream("POST", self.api_prefix + "/chat/completions",
@@ -995,6 +1014,7 @@ class OMLXClient:
                                     output_size, fn["arguments"], output_limit)
                             slot["arguments"] += fn["arguments"]
         finally:
+            _power_call_ended(heavy)
             idle.end(self.activity_key(model))
             engine_epoch.end()
         for kind, piece in thought_splitter.flush():

@@ -267,11 +267,11 @@ async def run() -> None:
             await _checkin_tick()
         except Exception:  # noqa: BLE001 — never break the scheduler loop
             pass
-        # Low Power Mode's idle auto-off: reading the switch applies it, so it
-        # flips (and is logged) within a tick of the 10 idle minutes.
+        # Whether the user is away, for background calls' GPU cap: read off
+        # the loop here so no request ever runs ioreg.
         try:
-            from service.inference.power_tier import low_power
-            low_power()
+            from service.inference.power_tier import refresh_away
+            await asyncio.to_thread(refresh_away)
         except Exception:  # noqa: BLE001 — never break the scheduler loop
             pass
         await asyncio.sleep(TICK_S)

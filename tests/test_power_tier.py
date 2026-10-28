@@ -1,4 +1,4 @@
-"""Low Power Mode and GPU power tiers; no engine is contacted."""
+"""GPU power tiers and the "Save power when away" switch; no engine is contacted."""
 import asyncio
 import json
 import stat
@@ -15,40 +15,38 @@ from service.inference.omlx_client import OMLXClient, _power_fields
 def clean_env(monkeypatch, tmp_path):
     for name in P._ENV.values():
         monkeypatch.delenv(name, raising=False)
-    # Every test starts with Low Power Mode off, in a private settings file, and
-    # with the user's idle clock fresh (a long suite would otherwise age it
-    # past the 10-minute auto-off).
+    # Every test starts with the switch at its default, in a private settings
+    # file, the user present (no away reading yet), no turn and no intensive call.
     monkeypatch.setattr(P, "SETTINGS_PATH", tmp_path / "power" / "settings.json")
-    monkeypatch.setattr(P, "_pending_other_app", None)
-    import time
-
+    monkeypatch.setattr(P, "_away", None)
+    monkeypatch.setattr(P, "_intensive_calls", 0)
     from service import idle
     monkeypatch.setattr(idle, "_foreground_turns", 0)
-    monkeypatch.setattr(idle, "_last_user_activity", idle._stamp())
 
 
 @pytest.fixture
-def on():
-    P.set_low_power(True)
+def away():
+    """Nobody has touched the keyboard or mouse for longer than AWAY_AFTER_S."""
+    P.refresh_away(P.AWAY_AFTER_S + 1)
 
 
-# --- the setting ------------------------------------------------------------------
+# --- the switch -------------------------------------------------------------------
 
-def test_low_power_is_off_by_default_persists_and_reads_unreadable_as_off():
-    assert P.low_power() is False
-    assert P.set_low_power(True) is True and P.low_power() is True
-    assert json.loads(P.SETTINGS_PATH.read_text()) == {"low_power": True}
+def test_the_switch_is_on_by_default_persists_and_reads_unreadable_as_the_default():
+    assert P.save_when_away() is True
+    assert P.set_save_when_away(False) is False and P.save_when_away() is False
+    assert json.loads(P.SETTINGS_PATH.read_text()) == {"save_when_away": False}
     assert stat.S_IMODE(P.SETTINGS_PATH.stat().st_mode) == 0o600
-    assert P.set_low_power(False) is False and P.low_power() is False
+    assert P.set_save_when_away(True) is True and P.save_when_away() is True
     P.SETTINGS_PATH.write_text("{not json")
-    assert P.low_power() is False
-    P.SETTINGS_PATH.write_text('{"low_power": "yes"}')
-    assert P.low_power() is False
+    assert P.save_when_away() is True
+    P.SETTINGS_PATH.write_text('{"save_when_away": "no"}')
+    assert P.save_when_away() is True
     with pytest.raises(ValueError):
-        P.set_low_power("true")
+        P.set_save_when_away("false")
 
 
-def test_the_endpoint_reads_and_writes_the_setting_from_the_app_only():
+def test_the_endpoint_reads_and_writes_the_switch_from_the_app_only():
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -57,25 +55,53 @@ def test_the_endpoint_reads_and_writes_the_setting_from_the_app_only():
     app = FastAPI()
     app.include_router(router)
     client = TestClient(app)
-    assert client.get("/power").json() == {"low_power": False}
-    assert client.post("/power", json={"low_power": True}).json() == {"low_power": True}
-    assert P.low_power() is True
+    assert client.get("/power").json() == {"save_when_away": True}
+    assert client.post("/power", json={"save_when_away": False}).json() == {"save_when_away": False}
+    assert P.save_when_away() is False
     # A web page (Origin header), a non-JSON body or a non-bool value can't change it.
-    assert client.post("/power", json={"low_power": False},
+    assert client.post("/power", json={"save_when_away": True},
                        headers={"Origin": "https://example.com"}).status_code == 403
-    assert client.post("/power", content="low_power=false",
+    assert client.post("/power", content="save_when_away=true",
                        headers={"Content-Type": "application/x-www-form-urlencoded"}).status_code == 415
-    assert client.post("/power", json={"low_power": "false"}).status_code == 422
-    assert client.post("/power", json={"low_power": False, "watts": 5}).status_code == 422
-    assert P.low_power() is True
+    assert client.post("/power", json={"save_when_away": "true"}).status_code == 422
+    assert client.post("/power", json={"save_when_away": True, "watts": 5}).status_code == 422
+    assert P.save_when_away() is False
+    # The old Low Power Mode endpoints are gone.
+    assert client.post("/power/other_app", json={"event": "launched"}).status_code in (404, 405)
+    assert client.post("/power/activity", json={}).status_code in (404, 405)
+
+
+# --- away -------------------------------------------------------------------------
+
+def test_away_needs_ten_idle_input_minutes_a_fresh_reading_and_no_turn(monkeypatch):
+    from service import idle
+    assert P.away() is False                                   # never read: present
+    assert P.refresh_away(P.AWAY_AFTER_S - 5) is False and P.away() is False
+    assert P.refresh_away(P.AWAY_AFTER_S) is True and P.away() is True
+    assert P.refresh_away(None, probe=False) is False and P.away() is False  # unreadable: present
+    P.refresh_away(P.AWAY_AFTER_S + 1)
+    monkeypatch.setattr(idle, "_foreground_turns", 1)
+    assert P.away() is False                                   # a turn is running
+    monkeypatch.setattr(idle, "_foreground_turns", 0)
+    read_at, value = P._away
+    P._away = (read_at - P._AWAY_STALE_S - 1, value)
+    assert P.away() is False                                   # a stale reading
+
+
+def test_the_scheduler_refreshes_away_off_the_event_loop():
+    import inspect
+
+    from service.assistant import scheduler
+    source = inspect.getsource(scheduler)
+    assert "await asyncio.to_thread(refresh_away)" in source
 
 
 # --- tiers ------------------------------------------------------------------------
 
-def test_defaults_are_10_w_background_15_w_intensive_20_w_chat():
-    assert P.watts(P.BACKGROUND) == 10
-    assert P.watts(P.INTENSIVE) == 15
+def test_defaults_are_20_w_chat_10_w_background_and_intensive_uncapped():
     assert P.watts(P.CHAT) == 20
+    assert P.watts(P.BACKGROUND) == 10
+    assert P.watts(P.INTENSIVE) is None
     assert P.watts(None) is None
 
 
@@ -87,25 +113,47 @@ def test_env_overrides_zero_turns_off_and_out_of_range_is_ignored(monkeypatch):
     for bad in ("1", "5000", "ten"):
         monkeypatch.setenv("WISP_BACKGROUND_GPU_W", bad)
         assert P.watts(P.BACKGROUND) == 10
-
-
-def test_off_sends_nothing_from_any_tier():
+    monkeypatch.setenv("WISP_CHAT_GPU_W", "0")
     assert P.payload_fields() == {}
-    for tier in (P.BACKGROUND, P.INTENSIVE, P.CHAT):
-        with P.power_tier(tier):
-            assert P.payload_fields() == {}
 
 
-def test_on_caps_each_tier_and_untiered_calls_get_the_chat_cap(on):
-    assert P.payload_fields() == {"gpu_power_limit_w": 20}
+def test_chat_is_always_20_w_whatever_the_switch_or_away():
+    for on in (True, False):
+        P.set_save_when_away(on)
+        for hid in (0, P.AWAY_AFTER_S + 1):
+            P.refresh_away(hid)
+            assert P.payload_fields() == {"gpu_power_limit_w": 20}
+
+
+def test_background_is_capped_only_when_the_switch_is_on_and_the_user_away(away):
     with P.power_tier(P.BACKGROUND):
         assert P.payload_fields() == {"gpu_power_limit_w": 10}
+        P.set_save_when_away(False)
+        assert P.payload_fields() == {}
+        P.set_save_when_away(True)
+        P.refresh_away(30)                                     # someone is at the Mac
+        assert P.payload_fields() == {}
+
+
+def test_intensive_work_is_never_capped(away):
     with P.power_tier(P.INTENSIVE):
-        assert P.payload_fields() == {"gpu_power_limit_w": 15}
-    assert P.payload_fields() == {"gpu_power_limit_w": 20}
+        assert P.payload_fields() == {}
 
 
-def test_tier_is_scoped_to_the_block_and_inherited_by_tasks(on):
+def test_background_goes_uncapped_while_intensive_work_runs(away):
+    with P.power_tier(P.INTENSIVE):
+        started = P.call_started()
+    assert started is True and P.intensive_running()
+    with P.power_tier(P.BACKGROUND):
+        assert P.payload_fields() == {}
+    P.call_ended(started)
+    assert not P.intensive_running()
+    with P.power_tier(P.BACKGROUND):
+        assert P.payload_fields() == {"gpu_power_limit_w": 10}
+    assert P.call_started() is False                           # a chat call isn't counted
+
+
+def test_tier_is_scoped_to_the_block_and_inherited_by_tasks(away):
     async def seen():
         return P.payload_fields()
 
@@ -123,11 +171,13 @@ def test_tier_is_scoped_to_the_block_and_inherited_by_tasks(on):
 
 # --- the client -------------------------------------------------------------------
 
-def _client(managed):
+def _client(managed, reply_hook=None):
     bodies = []
 
     def reply(request):
         bodies.append(json.loads(request.content))
+        if reply_hook:
+            reply_hook()
         return httpx.Response(200, json={"choices": [{"finish_reason": "stop",
                                                       "message": {"content": "ok"}}]})
 
@@ -141,66 +191,50 @@ def _client(managed):
     return client, bodies
 
 
-def test_off_sends_no_field_and_on_sends_a_per_request_cap_that_ends_with_the_call():
+def test_the_client_sends_each_tier_its_per_request_cap():
     client, bodies = _client(managed=True)
     hi = [{"role": "user", "content": "hi"}]
 
     async def run():
         try:
-            await client.chat("m", hi)                        # 0: off
+            await client.chat("m", hi)                        # 0: chat
             with P.power_tier(P.BACKGROUND):
-                await client.chat("m", hi)                    # 1: off, tiered
-            P.set_low_power(True)
-            await client.chat("m", hi)                        # 2: on, chat
+                await client.chat("m", hi)                    # 1: background, present
+                P.refresh_away(P.AWAY_AFTER_S + 1)
+                await client.chat("m", hi)                    # 2: background, away
+                await client.chat("m", hi, gpu_power_limit_w=12)  # 3: explicit wins
             with P.power_tier(P.INTENSIVE):
-                await client.chat("m", hi)                    # 3: on, intensive
-                await client.chat("m", hi, gpu_power_limit_w=12)  # 4: explicit wins
-            await client.chat("m", hi)                        # 5: tier ended -> chat cap
-            P.set_low_power(False)
-            await client.chat("m", hi)                        # 6: switched off -> nothing
+                await client.chat("m", hi)                    # 4: intensive
+            await client.chat("m", hi)                        # 5: chat again
         finally:
             await client._client.aclose()
 
     asyncio.run(run())
     caps = [body.get("gpu_power_limit_w") for body in bodies]
-    assert caps == [None, None, 20, 15, 12, 20, None]
+    assert caps == [20, None, 10, 12, None, 20]
 
 
-def test_a_remote_provider_never_gets_the_field(on):
+def test_the_client_counts_an_intensive_call_only_while_it_runs(away):
+    during = []
+    client, _ = _client(managed=True, reply_hook=lambda: during.append(P.intensive_running()))
+
+    async def run():
+        try:
+            with P.power_tier(P.INTENSIVE):
+                await client.chat("m", [{"role": "user", "content": "hi"}])
+        finally:
+            await client._client.aclose()
+
+    asyncio.run(run())
+    assert during == [True] and not P.intensive_running()
+
+
+def test_a_remote_provider_never_gets_the_field(away):
     client = OMLXClient.__new__(OMLXClient)
     client.managed = False
     with P.power_tier(P.BACKGROUND):
         assert _power_fields(client) == {}
     assert _power_fields(client) == {}
-
-
-def test_a_chat_beside_a_running_background_tier_requests_the_chat_cap(on):
-    # Request bodies only: the cap actually in force is the engine's
-    # min(active requests), so the chat runs at 10 W until the background call ends.
-    client, bodies = _client(managed=True)
-    background_started, foreground_done = asyncio.Event(), asyncio.Event()
-
-    async def background():
-        with P.power_tier(P.BACKGROUND):
-            background_started.set()
-            await foreground_done.wait()       # still inside the tier while the turn runs
-            await client.chat("m", [{"role": "user", "content": "bg"}])
-
-    async def foreground():
-        await background_started.wait()
-        await client.chat("m", [{"role": "user", "content": "fg"}])
-        foreground_done.set()
-
-    async def run():
-        try:
-            await asyncio.gather(background(), foreground())
-        finally:
-            await client._client.aclose()
-
-    asyncio.run(run())
-    by_text = {body["messages"][0]["content"]: body for body in bodies}
-    assert by_text["fg"]["gpu_power_limit_w"] == 20
-    assert by_text["bg"]["gpu_power_limit_w"] == 10
 
 
 def test_no_model_level_cap_is_ever_seeded():
@@ -210,9 +244,13 @@ def test_no_model_level_cap_is_ever_seeded():
         assert "gpu_power_limit_w" not in model.engine_profile, model.id
 
 
-# --- each background path carries its tier (Low Power Mode on) --------------------
+# --- each path carries its tier ---------------------------------------------------
 
-def test_the_gist_call_runs_at_the_background_tier(monkeypatch, on):
+def _seen():
+    return (P.current_tier(), P.payload_fields())
+
+
+def test_the_gist_call_runs_at_the_background_tier(monkeypatch, away):
     import service.config as config
     from service.assistant import brief, mail_gists
 
@@ -226,7 +264,7 @@ def test_the_gist_call_runs_at_the_background_tier(monkeypatch, on):
             return set()
 
         async def chat(self, model, messages, **kwargs):
-            seen.append(P.payload_fields())
+            seen.append(_seen())
             return {"choices": [{"finish_reason": "stop", "message": {"content": "gist"}}]}
 
     monkeypatch.setattr(config, "role_to_model", lambda role: "fast")
@@ -234,10 +272,10 @@ def test_the_gist_call_runs_at_the_background_tier(monkeypatch, on):
     monkeypatch.setattr(config, "thinks_explicitly", lambda name: False)
     monkeypatch.setattr(brief, "_c", lambda: Client())
     assert asyncio.run(mail_gists._resident_reply("s", "m", lambda: False)) == "gist"
-    assert seen == [{"gpu_power_limit_w": 10}]
+    assert seen == [(P.BACKGROUND, {"gpu_power_limit_w": 10})]
 
 
-def test_the_scheduled_daily_summary_runs_at_the_intensive_tier(monkeypatch, on):
+def test_the_scheduled_daily_summary_runs_at_the_intensive_tier(monkeypatch, away):
     from datetime import date
 
     from service.assistant import brief, scheduler
@@ -245,17 +283,17 @@ def test_the_scheduled_daily_summary_runs_at_the_intensive_tier(monkeypatch, on)
     seen = []
 
     async def fake_brief(part, **kwargs):
-        seen.append(P.payload_fields())
+        seen.append(_seen())
         return None
 
     monkeypatch.setattr(brief, "run_scheduled_brief", fake_brief)
     monkeypatch.setattr(scheduler.idle, "foreground_busy", lambda: False)
     asyncio.run(scheduler._run_daily_brief(date(2026, 10, 28), "morning"))
-    assert seen == [{"gpu_power_limit_w": 15}]
+    assert seen == [(P.INTENSIVE, {})]
 
 
 class _Recorder:
-    """A fake client that records the cap active when chat() runs."""
+    """A fake client that records the tier and cap active when chat() runs."""
 
     managed = True
     base_url = "local"
@@ -273,11 +311,11 @@ class _Recorder:
         return None
 
     async def chat(self, model, messages, **kwargs):
-        self.seen.append(P.payload_fields())
+        self.seen.append(_seen())
         return {"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}
 
 
-def test_the_mail_memory_walk_runs_at_the_background_tier(monkeypatch, on):
+def test_the_mail_memory_walk_runs_at_the_background_tier(monkeypatch, away):
     import service.config as config
     from service import idle
     from service.assistant import brief
@@ -294,10 +332,10 @@ def test_the_mail_memory_walk_runs_at_the_background_tier(monkeypatch, on):
     monkeypatch.setattr(idle, "foreground_busy", lambda: False)
     monkeypatch.setattr(idle, "in_flight", lambda key: 1)
     assert asyncio.run(runner._reply([{"role": "user", "content": "mail"}])) == "ok"
-    assert client.seen == [{"gpu_power_limit_w": 10}]
+    assert client.seen == [(P.BACKGROUND, {"gpu_power_limit_w": 10})]
 
 
-def test_the_behavior_phraser_runs_at_the_background_tier(monkeypatch, on):
+def test_the_behavior_phraser_runs_at_the_background_tier(monkeypatch, away):
     from service import idle
     from service.assistant.behavior_phraser import WispPhraser
     from service.config.endpoints import role_target
@@ -312,10 +350,10 @@ def test_the_behavior_phraser_runs_at_the_background_tier(monkeypatch, on):
     monkeypatch.setattr(idle, "foreground_busy", lambda: False)
     phraser = WispPhraser(client_factory=lambda target: client)
     asyncio.run(phraser._complete_async("s", "u", max_tokens=20, temperature=0))
-    assert client.seen == [{"gpu_power_limit_w": 10}]
+    assert client.seen == [(P.BACKGROUND, {"gpu_power_limit_w": 10})]
 
 
-def test_research_calls_run_at_the_intensive_tier(monkeypatch, on):
+def test_research_calls_run_at_the_intensive_tier(monkeypatch, away):
     from service import idle
     from service.research import orchestrator as O
 
@@ -332,7 +370,7 @@ def test_research_calls_run_at_the_intensive_tier(monkeypatch, on):
         return await manager._call_on_endpoint(client, "s", "u")
 
     assert asyncio.run(run()) == "ok"
-    assert client.seen == [{"gpu_power_limit_w": 15}]
+    assert client.seen == [(P.INTENSIVE, {})]
 
 
 def test_memory_capture_wraps_its_extraction_call_in_the_background_tier():
@@ -343,150 +381,3 @@ def test_memory_capture_wraps_its_extraction_call_in_the_background_tier():
     source = inspect.getsource(MemoryWorker.process)
     tier = source.index("with power_tier(BACKGROUND):")
     assert tier < source.index("await client.chat(") < tier + 200
-
-
-# --- auto-off -----------------------------------------------------------------
-
-@pytest.fixture
-def fresh_user(monkeypatch):
-    """The user just used Wisp; no turn is running."""
-    import time
-
-    from service import idle
-    monkeypatch.setattr(idle, "_foreground_turns", 0)
-    monkeypatch.setattr(idle, "_last_user_activity", idle._stamp())
-    return idle
-
-
-def _age(idle, seconds):
-    mono, wall = idle._last_user_activity
-    idle._last_user_activity = (mono - seconds, wall - seconds)
-
-
-def test_ten_idle_minutes_turn_it_off_and_store_off(fresh_user, caplog):
-    P.set_low_power(True)
-    _age(fresh_user, P.IDLE_OFF_S - 5)
-    assert P.low_power() is True
-    _age(fresh_user, 10)
-    with caplog.at_level("INFO", logger="wisp.power"):
-        assert P.low_power() is False
-    assert json.loads(P.SETTINGS_PATH.read_text()) == {"low_power": False}
-    assert [r.getMessage() for r in caplog.records] == ["Low Power Mode turned off: Wisp unused for 10 minutes"]
-    assert P.payload_fields() == {}
-
-
-def test_a_night_asleep_counts_even_if_the_monotonic_clock_stood_still(fresh_user, monkeypatch):
-    # The worst case for the monotonic clock: it did not count the night at all.
-    # The wall clock did, so waking after a night with the lid closed still
-    # finds Low Power Mode off before the backfill runs.
-    import time
-    P.set_low_power(True)
-    mono, wall = fresh_user._last_user_activity
-    monkeypatch.setattr(fresh_user, "_awake_or_asleep_now", lambda: mono + 1)
-    monkeypatch.setattr(time, "time", lambda: wall + 8 * 3600)
-    assert P.low_power() is False
-
-
-def test_a_wall_clock_set_back_is_outvoted_by_the_monotonic_clock(fresh_user, monkeypatch):
-    import time
-    P.set_low_power(True)
-    mono, wall = fresh_user._last_user_activity
-    monkeypatch.setattr(fresh_user, "_awake_or_asleep_now", lambda: mono + P.IDLE_OFF_S + 1)
-    monkeypatch.setattr(time, "time", lambda: wall - 3600)
-    assert P.low_power() is False
-
-
-def test_a_turn_resets_the_idle_clock_and_holds_it_while_running(fresh_user):
-    P.set_low_power(True)
-    _age(fresh_user, P.IDLE_OFF_S - 5)
-    fresh_user.begin_foreground()
-    try:
-        _age(fresh_user, 3600)                 # a long turn is never idle
-        assert P.low_power() is True
-    finally:
-        fresh_user.end_foreground()            # ending the turn is use, too
-    assert fresh_user.user_idle_seconds() < 1
-    assert P.low_power() is True
-
-
-def test_opening_the_notch_or_a_window_counts_as_use(fresh_user):
-    P.set_low_power(True)
-    _age(fresh_user, P.IDLE_OFF_S - 5)
-    fresh_user.note_user_activity()
-    _age(fresh_user, 10)
-    assert P.low_power() is True
-
-
-def test_background_model_work_does_not_count_as_use(fresh_user):
-    P.set_low_power(True)
-    _age(fresh_user, P.IDLE_OFF_S + 1)
-    fresh_user.begin("gemma")                  # a background generation
-    fresh_user.end("gemma")
-    fresh_user.touch("gemma")
-    assert P.low_power() is False
-
-
-@pytest.mark.parametrize("event,why", [("launched", "another app was opened"),
-                                       ("activated", "you switched to another app")])
-def test_another_app_launch_or_switch_turns_it_off(fresh_user, caplog, event, why):
-    P.set_low_power(True)
-    with caplog.at_level("INFO", logger="wisp.power"):
-        assert P.other_app(event) is True
-    assert P.low_power() is False
-    assert why in caplog.records[-1].getMessage()
-    assert P.other_app(event) is False         # already off: no second log line
-    with pytest.raises(ValueError):
-        P.other_app("focused")
-
-
-@pytest.mark.parametrize("event", ["launched", "activated"])
-def test_an_app_event_during_a_turn_waits_for_the_turn_to_end(fresh_user, caplog, event):
-    P.set_low_power(True)
-    fresh_user.begin_foreground()
-    fresh_user.begin_foreground()              # two overlapping turns
-    assert P.other_app(event) is False and P.low_power() is True
-    fresh_user.end_foreground()
-    assert P.low_power() is True               # one turn still running
-    with caplog.at_level("INFO", logger="wisp.power"):
-        fresh_user.end_foreground()
-    assert P.low_power() is False
-    assert "another app" in caplog.records[-1].getMessage()
-    # Nothing is held over to the next turn.
-    P.set_low_power(True)
-    fresh_user.begin_foreground()
-    fresh_user.end_foreground()
-    assert P.low_power() is True
-
-
-def test_off_at_launch_even_when_the_file_said_on(caplog):
-    P.SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    P.SETTINGS_PATH.write_text('{"low_power": true}')
-    with caplog.at_level("INFO", logger="wisp.power"):
-        assert P.reset_at_launch() is True
-    assert json.loads(P.SETTINGS_PATH.read_text()) == {"low_power": False}
-    assert caplog.records[-1].getMessage() == "Low Power Mode turned off: Wisp started"
-    assert P.reset_at_launch() is False
-
-
-def test_the_app_endpoints_report_activity_and_launches(fresh_user):
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    from service.power_api import router
-
-    app = FastAPI()
-    app.include_router(router)
-    client = TestClient(app)
-    assert client.post("/power", json={"low_power": True}).json() == {"low_power": True}
-    # Coming back after 10 idle minutes: the switch is already off.
-    _age(fresh_user, P.IDLE_OFF_S + 1)
-    assert client.post("/power/activity", json={}).json() == {"low_power": False}
-    assert fresh_user.user_idle_seconds() < 1
-    for event in ("launched", "activated"):
-        client.post("/power", json={"low_power": True})
-        assert client.post("/power/other_app", json={"event": event}).json() == {"low_power": False}
-    assert client.post("/power/other_app", json={"event": "focused"}).status_code == 422
-    assert client.post("/power/other_app", json={}).status_code == 422
-    for path in ("/power/activity", "/power/other_app"):
-        assert client.post(path, json={"event": "launched"},
-                           headers={"Origin": "https://example.com"}).status_code == 403

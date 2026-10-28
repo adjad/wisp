@@ -50,7 +50,7 @@ GEMMA_E4B_MTP = CatalogModel(
         "max_context_window": 16384,
         "trust_remote_code": True,
         # No gpu_power_limit_w here, ever: a model-level cap throttles the
-        # whole Mac's GPU on every request. Low Power Mode sends per-request
+        # whole Mac's GPU on every request, intensive work included. Wisp sends per-request
         # caps instead (service/inference/power_tier.py).
     })
 

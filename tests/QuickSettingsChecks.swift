@@ -11,43 +11,16 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(unconfirmed.status == nil && unconfirmed.rest.hasPrefix("Not confirmed"), "unconfirmed Full access is never off")
     check(QuickSettingsText.fullAccess(on: true, pending: true).status == nil, "a pending change shows no status word")
 
-    // Low Power Mode: says it only caps while Wisp works; unconfirmed is never "off";
-    // the help names the caps and that idle Wisp limits nothing.
-    check(QuickSettingsText.lowPower(on: true, pending: false).contains("only while Wisp is working"), "Low Power on")
-    check(QuickSettingsText.lowPower(on: false, pending: false) == "Wisp runs at full speed", "Low Power off")
-    check(QuickSettingsText.lowPower(on: nil, pending: false) == "Not confirmed", "unconfirmed Low Power is never off")
-    check(QuickSettingsText.lowPower(on: true, pending: true).hasPrefix("Updating"), "a pending Low Power change waits")
-    let lowPowerHelp = QuickSettingsText.lowPowerHelp
-    check(lowPowerHelp.contains("20 W") && lowPowerHelp.contains("10–15 W")
-          && lowPowerHelp.contains("Nothing is limited while Wisp is idle"), "Low Power help names its caps")
-    check(lowPowerHelp.contains("10 minutes") && lowPowerHelp.contains("Wisp restarts")
-          && lowPowerHelp.contains("open or switch to another app"), "Low Power help names its auto-off triggers")
-
-    // Which other apps turn it off: regular apps the user brings up, never Wisp,
-    // its engine, or system UI that comes forward on its own.
-    let own = "com.wisp.app"
-    check(LowPowerTrigger.counts(bundleID: "com.apple.Safari", regular: true, ownBundleID: own), "a regular app counts")
-    check(!LowPowerTrigger.counts(bundleID: own, regular: true, ownBundleID: own), "Wisp itself never counts")
-    for system in ["app.omlx", "com.apple.loginwindow", "com.apple.dock", "com.apple.Spotlight",
-                   "com.apple.controlcenter", "com.apple.notificationcenterui"] {
-        check(!LowPowerTrigger.counts(bundleID: system, regular: true, ownBundleID: own), "\(system) never counts")
-    }
-    check(!LowPowerTrigger.counts(bundleID: "com.example.agent", regular: false, ownBundleID: own),
-          "a menu-bar agent or background app never counts")
-    check(!LowPowerTrigger.counts(bundleID: nil, regular: true, ownBundleID: own), "an app with no bundle id never counts")
-
-    // Closing a Wisp window hands focus back to the previous app: that
-    // activation, within the grace, is not a switch. A launch still counts, and
-    // so does a switch after the grace or with no recent close.
-    let safari = "com.apple.Safari"
-    check(!LowPowerTrigger.counts(bundleID: safari, regular: true, ownBundleID: own, activated: true,
-                                  sinceWispDismissed: 0.2), "re-activation after a Wisp window closes is not a switch")
-    check(LowPowerTrigger.counts(bundleID: safari, regular: true, ownBundleID: own, activated: true,
-                                 sinceWispDismissed: 1.5), "a switch after the grace counts")
-    check(LowPowerTrigger.counts(bundleID: safari, regular: true, ownBundleID: own, activated: true,
-                                 sinceWispDismissed: nil), "a switch with no recent close counts")
-    check(LowPowerTrigger.counts(bundleID: safari, regular: true, ownBundleID: own, activated: false,
-                                 sinceWispDismissed: 0.2), "a launch right after a close still counts")
+    // Save power when away: says it caps background work only while away;
+    // unconfirmed is never "off"; the help names every cap and the 10 minutes.
+    check(QuickSettingsText.saveWhenAway(on: true, pending: false).contains("while you're away"), "Save power on")
+    check(QuickSettingsText.saveWhenAway(on: false, pending: false) == "Background work runs at full speed", "Save power off")
+    check(QuickSettingsText.saveWhenAway(on: nil, pending: false) == "Not confirmed", "unconfirmed Save power is never off")
+    check(QuickSettingsText.saveWhenAway(on: true, pending: true).hasPrefix("Updating"), "a pending Save power change waits")
+    let saveHelp = QuickSettingsText.saveWhenAwayHelp
+    check(saveHelp.contains("10 minutes") && saveHelp.contains("10 W") && saveHelp.contains("20 W"),
+          "Save power help names when and how much")
+    check(saveHelp.contains("full power"), "Save power help says heavy work is never capped")
 
     // Learn my routines: "stays on this Mac" only when nothing learned leaves it.
     let local = QuickSettingsText.learning(enabled: true, changing: false, status: nil, remote: false, phraser: true)

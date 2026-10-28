@@ -807,7 +807,8 @@ def _chat_pipeline(raw):
           "engine_epoch": SimpleNamespace(begin=lambda: events.append("epoch"), end=lambda: None),
           "idle": SimpleNamespace(begin=lambda *a: None, end=lambda *a: None)}
     path = root / "service/inference/omlx_client.py"
-    _functions(path, {"_ensure_choices", "_demote_unclosed_think", "_power_fields"}, ns)
+    _functions(path, {"_ensure_choices", "_demote_unclosed_think", "_power_fields",
+                         "_power_call_started", "_power_call_ended"}, ns)
     _functions(path, {"chat", "_completion_data", "_check_response"}, ns, methods=True)
 
     class Managed:

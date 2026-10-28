@@ -778,52 +778,30 @@ final class WispClient {
         return Self.fullAccessFlag(data)
     }
 
-    /// Wisp's Low Power Mode (GET /power), or nil when it can't be read.
-    func lowPowerState() async -> Bool? {
+    /// The "Save power when away" switch (GET /power), or nil when it can't be read.
+    func saveWhenAwayState() async -> Bool? {
         let url = Self.baseURL.appendingPathComponent("power")
         guard let (data, response) = try? await URLSession.shared.data(from: url),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        return Self.lowPowerFlag(data)
+        return Self.saveWhenAwayFlag(data)
     }
 
-    // POST /power -> turn Low Power Mode on or off. Returns the flag the service
-    // confirmed, or nil when the reply was lost or unreadable (the write may
-    // still have happened).
-    func setLowPower(_ on: Bool) async -> Bool? {
+    // POST /power -> turn "Save power when away" on or off. Returns the flag the
+    // service confirmed, or nil when the reply was lost or unreadable (the write
+    // may still have happened).
+    func setSaveWhenAway(_ on: Bool) async -> Bool? {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("power"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["low_power": on])
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["save_when_away": on])
         guard let (data, response) = try? await URLSession.shared.data(for: req),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        return Self.lowPowerFlag(data)
+        return Self.saveWhenAwayFlag(data)
     }
 
-    // POST /power/activity -> the user opened the notch or a Wisp window. Keeps
-    // Low Power Mode's 10-minute idle clock fresh; returns whether it is on.
-    @discardableResult
-    func notePowerActivity() async -> Bool? { await postPower("power/activity", [:]) }
-
-    // POST /power/other_app -> another app was launched or brought to the front.
-    // The service turns Low Power Mode off unless a turn is running.
-    @discardableResult
-    func reportOtherApp(activated: Bool) async -> Bool? {
-        await postPower("power/other_app", ["event": activated ? "activated" : "launched"])
-    }
-
-    private func postPower(_ path: String, _ body: [String: String]) async -> Bool? {
-        var req = URLRequest(url: Self.baseURL.appendingPathComponent(path))
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        guard let (data, response) = try? await URLSession.shared.data(for: req),
-              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        return Self.lowPowerFlag(data)
-    }
-
-    private static func lowPowerFlag(_ data: Data) -> Bool? {
+    private static func saveWhenAwayFlag(_ data: Data) -> Bool? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let flag = obj["low_power"] as? NSNumber,
+              let flag = obj["save_when_away"] as? NSNumber,
               CFGetTypeID(flag) == CFBooleanGetTypeID() else { return nil }
         return flag.boolValue
     }

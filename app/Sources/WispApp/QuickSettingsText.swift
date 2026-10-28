@@ -25,41 +25,6 @@ struct ModelMemory: Equatable {
     }
 }
 
-/// Which other-app launches and activations turn Low Power Mode off. Only
-/// regular apps (the ones with a Dock icon) the user brings up count: Wisp,
-/// its engine, and system UI that comes forward on its own never do.
-enum LowPowerTrigger {
-    static let ignored: Set<String> = [
-        "app.omlx",                              // Wisp's engine
-        "com.apple.loginwindow",
-        "com.apple.dock",
-        "com.apple.Spotlight",
-        "com.apple.controlcenter",
-        "com.apple.notificationcenterui",
-        "com.apple.systemuiserver",
-        "com.apple.WindowManager",
-        "com.apple.SecurityAgent",
-        "com.apple.UserNotificationCenter",
-        "com.apple.screencaptureui",
-        "com.apple.CoreServicesUIAgent",
-    ]
-
-    /// Closing a Wisp window (or hiding Wisp) makes macOS bring the previous app
-    /// forward on its own. An activation this soon after one is not a switch.
-    static let dismissalGrace: TimeInterval = 1.0
-
-    /// `regular` is NSRunningApplication.activationPolicy == .regular.
-    /// `sinceWispDismissed` is the time since a Wisp window last closed or Wisp
-    /// hid (nil when never); it only matters for an activation.
-    static func counts(bundleID: String?, regular: Bool, ownBundleID: String?,
-                       activated: Bool = false, sinceWispDismissed: TimeInterval? = nil) -> Bool {
-        guard regular, let bundleID, !bundleID.isEmpty else { return false }
-        guard bundleID != ownBundleID && !ignored.contains(bundleID) else { return false }
-        if activated, let since = sinceWispDismissed, since >= 0, since < dismissalGrace { return false }
-        return true
-    }
-}
-
 /// Quick settings' one-line descriptions. Each keeps the states the service can
 /// be in (waiting for confirmation, not confirmed) instead of guessing "off".
 enum QuickSettingsText {
@@ -75,21 +40,21 @@ enum QuickSettingsText {
 
     /// Learn my routines' line, and the trailing "stays on this Mac" when
     /// nothing learned is sent anywhere.
-    /// Low Power Mode's line. Neutral wording in every state: it is a
+    /// "Save power when away"'s line. Neutral wording in every state: it is a
     /// preference, not a warning (red/amber stays for status).
-    static func lowPower(on: Bool?, pending: Bool) -> String {
+    static func saveWhenAway(on: Bool?, pending: Bool) -> String {
         if pending { return "Updating · waiting for confirmation…" }
         switch on {
-        case true?: return "Caps GPU power only while Wisp is working"
-        case false?: return "Wisp runs at full speed"
+        case true?: return "Background work runs at 10 W while you're away"
+        case false?: return "Background work runs at full speed"
         case nil: return "Not confirmed"
         }
     }
 
-    static let lowPowerHelp = "Limits the GPU power Wisp's model can draw, only while it is generating: "
-        + "replies about 20 W, background work 10–15 W. Nothing is limited while Wisp is idle. "
-        + "Replies start slightly slower. Turns itself off after 10 minutes without using Wisp, "
-        + "when Wisp restarts, or when you open or switch to another app."
+    static let saveWhenAwayHelp = "When you haven't touched the keyboard or mouse for 10 minutes, "
+        + "Wisp's background work (email summaries, proactive checks) caps its GPU power at 10 W. "
+        + "Replies are always capped at 20 W. Heavy work like the Daily Summary and research "
+        + "always runs at full power, and background work goes uncapped while it does."
 
     static func learning(enabled: Bool?, changing: Bool, status: String?,
                          remote: Bool, phraser: Bool) -> (text: String, local: String?) {

@@ -181,7 +181,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func launch() {
         launched = true
-        startLowPowerAutoOff()
         // A committed /resetwisp (its marker is on disk): this app's part runs once
         // per marker, before any setting is read, so this launch is a first run.
         var resetPending = false
@@ -783,57 +782,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var sleepObservers: [NSObjectProtocol] = []
-    private var otherAppObservers: [NSObjectProtocol] = []
-
-    /// Low Power Mode turns itself off (service/inference/power_tier.py):
-    /// - at launch: the service resets it when it starts, and this asks again
-    ///   once the service answers, so a crash or force-quit can't leave it on;
-    /// - when another app is launched or brought to the front
-    ///   (NSWorkspace didLaunchApplication / didActivateApplication), counted
-    ///   only for regular apps outside LowPowerTrigger.ignored: the service
-    ///   decides, and keeps it on while a turn is running;
-    /// - after 10 minutes without Wisp use, in the service; notePowerActivity()
-    ///   from the notch and windows keeps that clock fresh.
-    private func startLowPowerAutoOff() {
-        Task { @MainActor [weak self] in
-            for _ in 0..<60 {
-                guard let self else { return }
-                if await self.client.setLowPower(false) != nil { return }
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-        }
-        guard otherAppObservers.isEmpty else { return }
-        let own = Bundle.main.bundleIdentifier
-        let center = NSWorkspace.shared.notificationCenter
-        otherAppObservers = [
-            (NSWorkspace.didLaunchApplicationNotification, false),
-            (NSWorkspace.didActivateApplicationNotification, true),
-        ].map { name, activated in
-            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
-                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-                else { return }
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    let since = self.wispDismissedAt.map { Date().timeIntervalSince($0) }
-                    guard LowPowerTrigger.counts(bundleID: app.bundleIdentifier,
-                                                 regular: app.activationPolicy == .regular,
-                                                 ownBundleID: own, activated: activated,
-                                                 sinceWispDismissed: since) else { return }
-                    Task { await self.client.reportOtherApp(activated: activated) }
-                }
-            }
-        }
-        // A Wisp window closing or Wisp hiding hands focus back to the previous
-        // app; that activation is macOS's, not the user switching.
-        let local = NotificationCenter.default
-        otherAppObservers += [NSWindow.willCloseNotification, NSApplication.didHideNotification].map { name in
-            local.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.wispDismissedAt = Date() }
-            }
-        }
-    }
-
-    private var wispDismissedAt: Date?
     /// What each running download had received when the Mac went to sleep; nil
     /// when nothing was downloading.
     private var downloadBytesAtSleep: [String: Double]?
@@ -964,7 +912,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// unfinished is the first-run window or the notch's card. Moving a part changes
     /// this switch, never its callers.
     private func open(_ route: WispRoute) {
-        Task { await client.notePowerActivity() }   // Low Power Mode's idle clock
         switch route {
         case .chat(let sessionId):
             if let sessionId { wispWindow.show(sessionId: sessionId) } else { wispWindow.show() }
@@ -1157,7 +1104,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Re-dock if the X button previously dismissed the notch bar — the
         // menu-bar icon (or ⌥Space) is the way back in.
         notchDocked = true
-        Task { await client.notePowerActivity() }   // Low Power Mode's idle clock
         if presentation.desired == .chat {
             // An explicit close, like the chevron and Esc: an open Getting to
             // know you counts as Later.
