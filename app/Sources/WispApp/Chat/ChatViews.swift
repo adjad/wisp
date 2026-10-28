@@ -68,8 +68,16 @@ struct ChatRootView: View {
         .task { await store.refreshWhenReady() }
         // Coming back from Settings (or any window) re-reads whether answers may
         // go to the cloud, so the Local label is never older than the last switch.
+        // Settings is a section of this same window, so a model change there and
+        // the switch back to Chats re-read it too: no window becomes key for those.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             Task { await store.refreshCloudUse() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .wispInferenceConfigurationChanged)) { _ in
+            Task { await store.refreshCloudUse() }
+        }
+        .onChange(of: navigation.section) { _, section in
+            if section == .chats { Task { await store.refreshCloudUse() } }
         }
     }
 
