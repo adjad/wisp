@@ -97,8 +97,6 @@ PROFILE_TESTS = {
         "tests/test_voice_transcribe.py",
         # Image/video input: one dedicated vision call (stub client, synthetic media).
         "tests/test_vision.py",
-        # Document input: text extracted in memory, one no-tools call (stub client, synthetic files).
-        "tests/test_documents.py",
         "tests/test_corpus_prompts.py",
         "tests/test_corpus_reasoning_export.py",
         "tests/test_gmail_source.py",

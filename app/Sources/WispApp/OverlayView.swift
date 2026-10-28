@@ -576,12 +576,7 @@ struct OverlayView: View {
                 return true
             }
             if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
-                // Ask for the concrete image type on offer (TIFF, PNG, JPEG, HEIC…); the
-                // abstract public.image is not always loadable as data.
-                let concrete = provider.registeredTypeIdentifiers.first {
-                    UTType($0)?.conforms(to: .image) ?? false
-                } ?? UTType.image.identifier
-                provider.loadDataRepresentation(forTypeIdentifier: concrete) { [model] data, _ in
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { [model] data, _ in
                     guard let data else { return }
                     Task { @MainActor in model.attachPasted(imageData: data, source: source) }
                 }
@@ -625,8 +620,8 @@ struct OverlayView: View {
             Button(action: pickImage) {
                 Image(systemName: "paperclip").font(.wisp(size: 16)).foregroundStyle(Theme.textSecondary)
             }
-            .buttonStyle(.plain).help("Attach a picture, a short clip, a PDF or a document")
-            .accessibilityLabel("Attach a picture, clip or document")
+            .buttonStyle(.plain).help("Attach an image or a short video clip")
+            .accessibilityLabel("Attach an image or video clip")
             if !model.researchMode {
                 VoiceMicButton(voice: model.voice, speaker: model.speaker, action: model.toggleVoice)
             }
@@ -1139,7 +1134,7 @@ struct OverlayView: View {
         }
         model.cancelAttachmentRead()
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = MediaAttachment.acceptedTypes + DocumentAttachment.acceptedTypes
+        panel.allowedContentTypes = MediaAttachment.acceptedTypes
         panel.allowsMultipleSelection = false
         panel.level = NSWindow.Level(DisplayGeometry.shared.layout.windowLevel.rawValue + 1)
         model.filePicker = panel

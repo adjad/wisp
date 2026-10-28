@@ -584,7 +584,6 @@ final class OverlayModel: ObservableObject {
     private var sessionId = ""
     private var attachedImage: String?
     private var attachedVideo: QueuedVideo?
-    private var attachedDocument: QueuedDocument?
     private var attachedSource: String?
     private var attachmentReadTask: Task<Void, Never>?
     private var attachmentReadID = UUID()
@@ -750,8 +749,7 @@ final class OverlayModel: ObservableObject {
         }
         let submission = QueuedPrompt(text: prompt, image: attachedImage,
                                       imageName: attachedImageName, researchMode: researchMode,
-                                      video: attachedVideo, imageSource: attachedSource,
-                                      document: attachedDocument)
+                                      video: attachedVideo, imageSource: attachedSource)
         input = ""
         removeAttachment()
         if serviceStarting && !submission.researchMode {
@@ -852,13 +850,12 @@ final class OverlayModel: ObservableObject {
         let image = submission.image
         let imageSource = submission.imageSource
         let video = submission.video?.wire
-        let document = submission.document?.wire
         let sid = sessionId   // continue the same conversation (empty -> server starts one)
         let wantsDebug = debugMode
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             await self?.client.runAgent(prompt: prompt, image: image, imageSource: imageSource,
-                                        video: video, document: document, sessionId: sid,
+                                        video: video, sessionId: sid,
                                         debug: wantsDebug) { ev in
                 Task { @MainActor in self?.handle(ev, dispatchID: dispatch.id) }
             }
@@ -1136,10 +1133,7 @@ final class OverlayModel: ObservableObject {
             let media = await read()
             guard let self, self.attachmentReadID == id, !Task.isCancelled else { return }
             self.attachmentReadTask = nil
-            guard let media else {
-                if !self.hasAttachment { self.attachedLabel = ""; self.attachedImageName = nil }
-                return
-            }
+            guard let media else { return }
             self.setAttachment(media, name: name)
         }
         attachmentReadTask = task
@@ -1151,14 +1145,7 @@ final class OverlayModel: ObservableObject {
     func loadAttachment(url: URL, source: MediaAttachment.Source = .file) {
         let kind = MediaAttachment.kind(of: url)
         guard kind != .other else {
-            switch DocumentAttachment.kind(of: url) {
-            case .legacyOffice:
-                showTransientNotice(DocumentAttachment.legacyMessage)
-            case .other:
-                showTransientNotice(DocumentAttachment.otherFileMessage)
-            case .document:
-                loadDocument(url: url)
-            }
+            showTransientNotice("Wisp can read images and short video clips.")
             return
         }
         let loading = kind == .movie
@@ -1197,28 +1184,6 @@ final class OverlayModel: ObservableObject {
         }
     }
 
-    /// A picked, dropped or pasted document: size-checked, then read in memory.
-    private func loadDocument(url: URL) {
-        attachedLabel = "Reading document…"
-        loadAttachment(name: url.lastPathComponent) { [weak self] in
-            let reader = Task.detached(priority: .userInitiated) { () -> MediaAttachment.Pending? in
-                guard !Task.isCancelled else { return nil }
-                switch DocumentAttachment.load(url: url) {
-                case .attached(let pending):
-                    return pending
-                case .refused(let message):
-                    await self?.showTransientNotice(message)
-                    return nil
-                }
-            }
-            return await withTaskCancellationHandler {
-                await reader.value
-            } onCancel: {
-                reader.cancel()
-            }
-        }
-    }
-
     /// An image pasted or dragged in as pixels (no file).
     func attachPasted(imageData: Data, source: MediaAttachment.Source) {
         cancelAttachmentRead()
@@ -1243,18 +1208,17 @@ final class OverlayModel: ObservableObject {
     /// True while the pending attachment is a `/screen` capture (shown large to check).
     var attachmentIsScreen: Bool { attachedImage != nil && attachedSource == "screen" }
 
-    var hasAttachment: Bool { attachedImage != nil || attachedVideo != nil || attachedDocument != nil }
+    var hasAttachment: Bool { attachedImage != nil || attachedVideo != nil }
 
     /// The question to send when the person typed nothing.
     private var attachmentDefaultPrompt: String? {
         if attachedVideo != nil { return "What happens in this clip?" }
-        if attachedDocument != nil { return "Summarize this document." }
         guard attachedImage != nil else { return nil }
         return attachedSource == "screen" ? "Explain what's on my screen." : "What's in this image?"
     }
 
     private func clearAttachmentState() {
-        attachedImage = nil; attachedVideo = nil; attachedDocument = nil; attachedSource = nil
+        attachedImage = nil; attachedVideo = nil; attachedSource = nil
         attachedImageName = nil; attachedThumbnail = nil; attachedLabel = ""
     }
 
@@ -1274,13 +1238,6 @@ final class OverlayModel: ObservableObject {
                 seconds: clip.seconds,
                 audio: clip.wav?.base64EncodedString())
             attachedThumbnail = clip.frames.first.flatMap { NSImage(data: $0) }
-        case .document(let docName, _, let pages):
-            let fields = media.bodyFields()["document"] as? [String: Any]
-            attachedDocument = QueuedDocument(
-                name: docName,
-                data: fields?["data"] as? String,
-                pages: fields?["pages"] as? [String] ?? [])
-            attachedThumbnail = pages.first.flatMap { NSImage(data: $0) }
         }
         onResize()
     }
@@ -1289,13 +1246,11 @@ final class OverlayModel: ObservableObject {
         clearAttachmentState()
         attachedImage = prompt.image
         attachedVideo = prompt.video
-        attachedDocument = prompt.document
         attachedSource = prompt.imageSource
         attachedImageName = prompt.imageName
         attachedLabel = prompt.video.map { "Clip · \(Int($0.seconds.rounded())) s — reads sampled frames + audio, not motion" }
-            ?? prompt.document.map { DocumentAttachment.chipLabel(name: $0.name, scannedPages: $0.pages.count) }
             ?? (prompt.imageSource == "screen" ? "Screen" : "Image")
-        let thumb = prompt.image ?? prompt.video?.frames.first ?? prompt.document?.pages.first
+        let thumb = prompt.image ?? prompt.video?.frames.first
         if let thumb, let comma = thumb.firstIndex(of: ","),
            let data = Data(base64Encoded: String(thumb[thumb.index(after: comma)...])) {
             attachedThumbnail = NSImage(data: data)
