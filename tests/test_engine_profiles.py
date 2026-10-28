@@ -221,6 +221,41 @@ def test_turboquant_the_person_chose_themselves_is_kept(tmp_path):
     assert entry["turboquant_kv_enabled"] is True and entry["turboquant_kv_bits"] == 4
 
 
+def _seeded_with_power_cap(tmp_path, watts=20, *, turboquant_done=False):
+    """An install that seeded 8bff39bc's profile, which carried a model-level 20 W cap."""
+    settings, record = tmp_path / "model_settings.json", tmp_path / "seeded.json"
+    withdrawn = {**GEMMA.engine_profile, "gpu_power_limit_w": 20}
+    marks = {GEMMA.id: profiles.fingerprint(withdrawn)}
+    if turboquant_done:   # an older record: one string mark for the TurboQuant cleanup
+        marks[profiles.RETIRED_KEY] = {GEMMA.id: profiles.fingerprint(
+            {"turboquant_kv_enabled": True, "turboquant_kv_bits": 6})}
+    record.write_text(json.dumps(marks))
+    entry = {**withdrawn, "gpu_power_limit_w": watts}
+    settings.write_text(json.dumps({"version": 1, "models": {GEMMA.id: entry}}))
+    return settings, record
+
+
+def test_an_install_that_got_the_20_w_model_cap_has_it_removed_once(tmp_path):
+    settings, record = _seeded_with_power_cap(tmp_path)
+    assert profiles.seed(settings, record) == [GEMMA.id]
+    assert "gpu_power_limit_w" not in _entries(settings)[GEMMA.id]
+    assert profiles.seed(settings, record) == []
+
+
+def test_a_power_cap_the_person_chose_themselves_is_kept(tmp_path):
+    settings, record = _seeded_with_power_cap(tmp_path, watts=15)
+    profiles.seed(settings, record)
+    assert _entries(settings)[GEMMA.id]["gpu_power_limit_w"] == 15
+
+
+def test_the_power_cap_cleanup_runs_on_a_record_from_before_groups(tmp_path):
+    settings, record = _seeded_with_power_cap(tmp_path, turboquant_done=True)
+    assert profiles.seed(settings, record) == [GEMMA.id]
+    assert "gpu_power_limit_w" not in _entries(settings)[GEMMA.id]
+    marks = json.loads(record.read_text())[profiles.RETIRED_KEY][GEMMA.id]
+    assert isinstance(marks, list) and len(marks) == 2
+
+
 def test_a_never_turboquant_install_is_left_alone(tmp_path):
     settings, record = tmp_path / "model_settings.json", tmp_path / "seeded.json"
     profiles.seed(settings, record)

@@ -11,6 +11,17 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(unconfirmed.status == nil && unconfirmed.rest.hasPrefix("Not confirmed"), "unconfirmed Full access is never off")
     check(QuickSettingsText.fullAccess(on: true, pending: true).status == nil, "a pending change shows no status word")
 
+    // Save power when away: says it caps background work only while away;
+    // unconfirmed is never "off"; the help names every cap and the 10 minutes.
+    check(QuickSettingsText.saveWhenAway(on: true, pending: false).contains("while you're away"), "Save power on")
+    check(QuickSettingsText.saveWhenAway(on: false, pending: false) == "Background work runs at full speed", "Save power off")
+    check(QuickSettingsText.saveWhenAway(on: nil, pending: false) == "Not confirmed", "unconfirmed Save power is never off")
+    check(QuickSettingsText.saveWhenAway(on: true, pending: true).hasPrefix("Updating"), "a pending Save power change waits")
+    let saveHelp = QuickSettingsText.saveWhenAwayHelp
+    check(saveHelp.contains("10 minutes") && saveHelp.contains("10 W"), "Save power help names when and how much")
+    check(saveHelp.contains("Replies") && saveHelp.contains("full power") && !saveHelp.contains("20 W"),
+          "Save power help says replies are never capped")
+
     // Learn my routines: "stays on this Mac" only when nothing learned leaves it.
     let local = QuickSettingsText.learning(enabled: true, changing: false, status: nil, remote: false, phraser: true)
     check(local == ("From calendar, reminders and how you use Wisp", "stays on this Mac"), "local learning stays on this Mac")

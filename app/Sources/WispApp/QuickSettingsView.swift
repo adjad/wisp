@@ -61,6 +61,7 @@ struct QuickSettingsView: View {
                 hairline
                 textSizeRow
             }
+            group("Power") { saveWhenAwayRow }
             group("Advanced") {
                 row("Reply details", help: "Open each reply's model, route, timing and tool calls by default (Debug Mode).") {
                     Text("Model, timing and tools under each reply")
@@ -136,6 +137,22 @@ struct QuickSettingsView: View {
     }
 
     private var voiceReplies: VoiceReplyMode { VoiceReplyMode(rawValue: voiceRepliesRaw) ?? .afterVoice }
+
+    private var saveWhenAwayRow: some View {
+        row("Save power when away", help: QuickSettingsText.saveWhenAwayHelp) {
+            Text(QuickSettingsText.saveWhenAway(on: settings.saveWhenAway, pending: settings.saveWhenAwayPending))
+        } control: {
+            if settings.saveWhenAway != nil {
+                Toggle("Save power when away", isOn: Binding(get: { settings.saveWhenAway == true },
+                                                       set: { settings.setSaveWhenAway($0) }))
+                    .toggleStyle(NotchSwitch())
+                    .disabled(settings.saveWhenAwayPending)
+            } else {
+                pillButton("Check") { Task { await settings.refreshSaveWhenAway() } }
+                    .disabled(settings.saveWhenAwayPending)
+            }
+        }
+    }
 
     private var fullAccessRow: some View {
         let line = QuickSettingsText.fullAccess(on: settings.fullAccess, pending: settings.fullAccessPending)

@@ -38,9 +38,16 @@ FILE_VERSION = 1
 # stays. Each cleanup runs once per install: the record notes it under
 # RETIRED_KEY, so a forced reseed never takes back a value the person turned on
 # again themselves. TurboQuant 6-bit KV was briefly Gemma's default and was withdrawn.
+# A model-level 20 W GPU cap was briefly in Gemma's profile (8bff39bc) and was
+# withdrawn: oMLX applies min(request, model), so it would cap every request,
+# intensive work too (which must run uncapped).
+# Each group is retired on its own: all of its keys must still hold Wisp's values.
 RETIRED_KEY = "_retired"
 RETIRED = {
-    "gemma-4-E4B-it-oQ4e-mtp": {"turboquant_kv_enabled": True, "turboquant_kv_bits": 6},
+    "gemma-4-E4B-it-oQ4e-mtp": (
+        {"turboquant_kv_enabled": True, "turboquant_kv_bits": 6},
+        {"gpu_power_limit_w": 20},
+    ),
 }
 
 
@@ -108,17 +115,23 @@ def seed(settings_path: Path, record_path: Path,
 
 
 def _retire_once(model: catalog.CatalogModel, entry: dict, record: dict) -> dict:
-    """The entry without the values RETIRED lists for it, the first time only."""
-    retired = {k: v for k, v in RETIRED.get(model.id, {}).items() if k not in model.engine_profile}
-    if not retired:
-        return entry
+    """The entry without the values RETIRED lists for it, each group the first time only."""
     done = record.get(RETIRED_KEY) if isinstance(record.get(RETIRED_KEY), dict) else {}
-    mark = fingerprint(retired)
-    if done.get(model.id) == mark:
-        return entry
-    record[RETIRED_KEY] = {**done, model.id: mark}
-    if all(entry.get(k) == v for k, v in retired.items()):
-        return {k: v for k, v in entry.items() if k not in retired}
+    marks = done.get(model.id)
+    # Records from before groups held one mark as a string.
+    marks = [marks] if isinstance(marks, str) else list(marks) if isinstance(marks, list) else []
+    for group in RETIRED.get(model.id, ()):
+        retired = {k: v for k, v in group.items() if k not in model.engine_profile}
+        if not retired:
+            continue
+        mark = fingerprint(retired)
+        if mark in marks:
+            continue
+        marks.append(mark)
+        if all(entry.get(k) == v for k, v in retired.items()):
+            entry = {k: v for k, v in entry.items() if k not in retired}
+    if marks:
+        record[RETIRED_KEY] = {**done, model.id: marks}
     return entry
 
 
