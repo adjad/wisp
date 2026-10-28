@@ -607,6 +607,13 @@ final class ChatStore: ObservableObject {
         guard let i = conversation.messages.firstIndex(where: { $0.id == replyID }) else { return }
         var message = conversation.messages[i]
         let outcome = ChatTurnReducer.apply(event, to: &message)
+        // The fix button under the reply comes from the tool's own result, never
+        // the model's wording (the notch's OverlayModel reads it the same way).
+        if event.type == "tool_result", message.corpusEvaluation == nil {
+            for kind in AskAccess.kinds(event.payload["needs_access"]) where !message.needsAccess.contains(kind) {
+                message.needsAccess.append(kind)
+            }
+        }
         // Corpus replies are text and read evidence, never actionable drafts.
         if message.corpusEvaluation != nil { message.draft = nil }
         if let start = conversation.streamStart, message.meta != nil {

@@ -9,6 +9,6 @@ swiftc -parse-as-library -swift-version 5 -module-cache-path "$scratch/module-ca
     "$chat/ChatTypes.swift" "$project_root/tests/ChatChecks.swift" -o "$scratch/chat-checks"
 swiftc -parse-as-library -swift-version 5 -module-cache-path "$scratch/module-cache" \
     "$chat/ChatTypes.swift" "$chat/AssistantTaskCorpus.swift" "$chat/ChatStore.swift" "$chat/NotchCorpusController.swift" \
-    "$project_root/tests/ChatStoreChecks.swift" -o "$scratch/chat-store-checks"
+    "$project_root/app/Sources/WispApp/AskAccess.swift" "$project_root/tests/ChatStoreChecks.swift" -o "$scratch/chat-store-checks"
 "$scratch/chat-checks"
 "$scratch/chat-store-checks"

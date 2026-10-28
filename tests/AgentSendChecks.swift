@@ -1,4 +1,4 @@
-// Compile with app/Sources/WispApp/WispClient.swift and AgentSend.swift.
+// Compile with app/Sources/WispApp/WispClient.swift, AgentSend.swift and AskAccess.swift.
 // Drives WispClient.runAgent through a stub URLProtocol that answers every
 // request in-process: nothing reaches a socket, least of all the live backend.
 import Foundation
