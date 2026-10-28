@@ -2,7 +2,7 @@
 
 How Wisp is built: the agent loop and its tools, the assistant layer, memory, safety, models and
 engines, running from source, and where state lives. This was the second half of the README until
-0.5.0-rc2; the README now covers the product. For the long-form system reference see
+0.5.0-dev3; the README now covers the product. For the long-form system reference see
 [WISP_OVERVIEW.md](WISP_OVERVIEW.md), and for the index of every document see [README.md](README.md).
 
 ## What it does

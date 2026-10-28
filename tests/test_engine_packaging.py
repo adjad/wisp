@@ -437,9 +437,20 @@ def test_pinned_download() -> None:
     source = engine.load_source()
     check("source pin is for the locked oMLX release", source["omlx_version"] == engine.load_lock()["omlx_version"])
     check("asset URL is the official release path",
-          engine.asset_url(source) == "https://github.com/jundot/omlx/releases/download/v0.7.0/oMLX-0.7.0-macos26-27.dmg")
+          engine.asset_url(source) == "https://github.com/jundot/omlx/releases/download/v0.7.3rc1/oMLX-0.7.3rc1-macos26-27.dmg")
+    for version in ("0.7.0", "0.7.3rc1", "0.7.3.dev2"):
+        with tempfile.TemporaryDirectory() as t:
+            good = Path(t) / "src.json"
+            good.write_text(json.dumps({**source, "tag": f"v{version}", "omlx_version": version,
+                                        "asset": f"oMLX-{version}-macos26-27.dmg"}))
+            try:
+                check(f"release version {version} is accepted",
+                      engine.load_source(good, lock={"omlx_version": version})["omlx_version"] == version)
+            except engine.EngineBuildError as exc:
+                check(f"release version {version} is accepted", False, str(exc))
     for field, value in (("repo", "evil.example/x"), ("tag", "latest"), ("asset", "../x.dmg"), ("sha256", "00"),
-                         ("size", -1), ("omlx_version", "9.9")):
+                         ("size", -1), ("omlx_version", "9.9"), ("omlx_version", "0.7.3rc1;x"),
+                         ("tag", "v0.7.3-rc1")):
         with tempfile.TemporaryDirectory() as t:
             bad = Path(t) / "src.json"
             bad.write_text(json.dumps({**source, field: value}))
