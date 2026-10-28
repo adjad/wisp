@@ -81,8 +81,9 @@ _tier: ContextVar[str | None] = ContextVar("wisp_power_tier", default=None)
 #   asks again at launch, so a crash or force-quit also ends it;
 # - the user hasn't used Wisp for IDLE_OFF_S: no turn, no notch or window
 #   opened (service/idle.py's user clock; background work never counts);
-# - another app is launched while no turn is running (app_launched(), from the
-#   app's NSWorkspace.didLaunchApplicationNotification observer).
+# - another app is launched or brought to the front while no turn is running
+#   (other_app(), from the app's NSWorkspace didLaunchApplication and
+#   didActivateApplication observers; the app ignores Wisp, oMLX and system UI).
 # A call already sent keeps the cap it was sent with until it ends, exactly as
 # after a manual off; every later call goes uncapped.
 
@@ -127,12 +128,19 @@ def reset_at_launch(path: Path | None = None) -> bool:
     return auto_off("Wisp started", path)
 
 
-def app_launched(path: Path | None = None) -> bool:
-    """Another app was launched: off, unless the user is in a turn right now."""
+OTHER_APP_EVENTS = {"launched": "another app was opened while Wisp was idle",
+                    "activated": "you switched to another app while Wisp was idle"}
+
+
+def other_app(event: str, path: Path | None = None) -> bool:
+    """Another app was launched or brought to the front: off, unless the user
+    is in a turn right now."""
+    if event not in OTHER_APP_EVENTS:
+        raise ValueError(f"unknown app event: {event!r}")
     from service import idle
     if idle.foreground_busy():
         return False
-    return auto_off("another app was opened while Wisp was idle", path)
+    return auto_off(OTHER_APP_EVENTS[event], path)
 
 
 def set_low_power(on: bool, path: Path | None = None) -> bool:

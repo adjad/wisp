@@ -20,6 +20,21 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     let lowPowerHelp = QuickSettingsText.lowPowerHelp
     check(lowPowerHelp.contains("20 W") && lowPowerHelp.contains("10–15 W")
           && lowPowerHelp.contains("Nothing is limited while Wisp is idle"), "Low Power help names its caps")
+    check(lowPowerHelp.contains("10 minutes") && lowPowerHelp.contains("Wisp restarts")
+          && lowPowerHelp.contains("open or switch to another app"), "Low Power help names its auto-off triggers")
+
+    // Which other apps turn it off: regular apps the user brings up, never Wisp,
+    // its engine, or system UI that comes forward on its own.
+    let own = "com.wisp.app"
+    check(LowPowerTrigger.counts(bundleID: "com.apple.Safari", regular: true, ownBundleID: own), "a regular app counts")
+    check(!LowPowerTrigger.counts(bundleID: own, regular: true, ownBundleID: own), "Wisp itself never counts")
+    for system in ["app.omlx", "com.apple.loginwindow", "com.apple.dock", "com.apple.Spotlight",
+                   "com.apple.controlcenter", "com.apple.notificationcenterui"] {
+        check(!LowPowerTrigger.counts(bundleID: system, regular: true, ownBundleID: own), "\(system) never counts")
+    }
+    check(!LowPowerTrigger.counts(bundleID: "com.example.agent", regular: false, ownBundleID: own),
+          "a menu-bar agent or background app never counts")
+    check(!LowPowerTrigger.counts(bundleID: nil, regular: true, ownBundleID: own), "an app with no bundle id never counts")
 
     // Learn my routines: "stays on this Mac" only when nothing learned leaves it.
     let local = QuickSettingsText.learning(enabled: true, changing: false, status: nil, remote: false, phraser: true)

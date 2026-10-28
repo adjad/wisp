@@ -7,6 +7,8 @@ IMPORTANT rules:
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, StrictBool
 
@@ -56,8 +58,14 @@ async def note_activity() -> dict:
     return state
 
 
-@router.post("/power/app_launched", dependencies=[Depends(_native_only)])
-async def app_launched() -> dict:
-    """Another app was launched (NSWorkspace.didLaunchApplicationNotification)."""
-    power_tier.app_launched()
+class OtherApp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    event: Literal["launched", "activated"]
+
+
+@router.post("/power/other_app", dependencies=[Depends(_native_only)])
+async def other_app(body: OtherApp) -> dict:
+    """Another app was launched or activated (NSWorkspace didLaunchApplication /
+    didActivateApplication); the app has already dropped Wisp, oMLX and system UI."""
+    power_tier.other_app(body.event)
     return _state()

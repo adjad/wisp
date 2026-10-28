@@ -401,18 +401,22 @@ def test_background_model_work_does_not_count_as_use(fresh_user):
     assert P.low_power() is False
 
 
-def test_another_app_launch_turns_it_off_unless_a_turn_is_running(fresh_user, caplog):
+@pytest.mark.parametrize("event,why", [("launched", "another app was opened"),
+                                       ("activated", "you switched to another app")])
+def test_another_app_launch_or_switch_turns_it_off_unless_a_turn_is_running(fresh_user, caplog, event, why):
     P.set_low_power(True)
     fresh_user.begin_foreground()
     try:
-        assert P.app_launched() is False and P.low_power() is True
+        assert P.other_app(event) is False and P.low_power() is True
     finally:
         fresh_user.end_foreground()
     with caplog.at_level("INFO", logger="wisp.power"):
-        assert P.app_launched() is True
+        assert P.other_app(event) is True
     assert P.low_power() is False
-    assert "another app was opened" in caplog.records[-1].getMessage()
-    assert P.app_launched() is False           # already off: no second log line
+    assert why in caplog.records[-1].getMessage()
+    assert P.other_app(event) is False         # already off: no second log line
+    with pytest.raises(ValueError):
+        P.other_app("focused")
 
 
 def test_off_at_launch_even_when_the_file_said_on(caplog):
@@ -439,7 +443,11 @@ def test_the_app_endpoints_report_activity_and_launches(fresh_user):
     _age(fresh_user, P.IDLE_OFF_S + 1)
     assert client.post("/power/activity", json={}).json() == {"low_power": False}
     assert fresh_user.user_idle_seconds() < 1
-    client.post("/power", json={"low_power": True})
-    assert client.post("/power/app_launched", json={}).json() == {"low_power": False}
-    for path in ("/power/activity", "/power/app_launched"):
-        assert client.post(path, json={}, headers={"Origin": "https://example.com"}).status_code == 403
+    for event in ("launched", "activated"):
+        client.post("/power", json={"low_power": True})
+        assert client.post("/power/other_app", json={"event": event}).json() == {"low_power": False}
+    assert client.post("/power/other_app", json={"event": "focused"}).status_code == 422
+    assert client.post("/power/other_app", json={}).status_code == 422
+    for path in ("/power/activity", "/power/other_app"):
+        assert client.post(path, json={"event": "launched"},
+                           headers={"Origin": "https://example.com"}).status_code == 403

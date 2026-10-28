@@ -783,14 +783,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var sleepObservers: [NSObjectProtocol] = []
-    private var appLaunchObserver: NSObjectProtocol?
+    private var otherAppObservers: [NSObjectProtocol] = []
 
     /// Low Power Mode turns itself off (service/inference/power_tier.py):
     /// - at launch: the service resets it when it starts, and this asks again
     ///   once the service answers, so a crash or force-quit can't leave it on;
-    /// - when another app is launched (NSWorkspace.didLaunchApplicationNotification,
-    ///   a new launch, not switching to an app already open): the service decides,
-    ///   and keeps it on while a turn is running;
+    /// - when another app is launched or brought to the front
+    ///   (NSWorkspace didLaunchApplication / didActivateApplication), counted
+    ///   only for regular apps outside LowPowerTrigger.ignored: the service
+    ///   decides, and keeps it on while a turn is running;
     /// - after 10 minutes without Wisp use, in the service; notePowerActivity()
     ///   from the notch and windows keeps that clock fresh.
     private func startLowPowerAutoOff() {
@@ -801,16 +802,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
         }
-        guard appLaunchObserver == nil else { return }
-        let own: Set<String> = [Bundle.main.bundleIdentifier ?? "", "app.omlx"]
-        appLaunchObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main
-        ) { [weak self] note in
-            let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            guard !own.contains(app?.bundleIdentifier ?? "") else { return }
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                Task { await self.client.reportAppLaunched() }
+        guard otherAppObservers.isEmpty else { return }
+        let own = Bundle.main.bundleIdentifier
+        let center = NSWorkspace.shared.notificationCenter
+        otherAppObservers = [
+            (NSWorkspace.didLaunchApplicationNotification, false),
+            (NSWorkspace.didActivateApplicationNotification, true),
+        ].map { name, activated in
+            center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                      LowPowerTrigger.counts(bundleID: app.bundleIdentifier,
+                                             regular: app.activationPolicy == .regular,
+                                             ownBundleID: own) else { return }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    Task { await self.client.reportOtherApp(activated: activated) }
+                }
             }
         }
     }

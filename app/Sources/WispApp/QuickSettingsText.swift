@@ -25,6 +25,32 @@ struct ModelMemory: Equatable {
     }
 }
 
+/// Which other-app launches and activations turn Low Power Mode off. Only
+/// regular apps (the ones with a Dock icon) the user brings up count: Wisp,
+/// its engine, and system UI that comes forward on its own never do.
+enum LowPowerTrigger {
+    static let ignored: Set<String> = [
+        "app.omlx",                              // Wisp's engine
+        "com.apple.loginwindow",
+        "com.apple.dock",
+        "com.apple.Spotlight",
+        "com.apple.controlcenter",
+        "com.apple.notificationcenterui",
+        "com.apple.systemuiserver",
+        "com.apple.WindowManager",
+        "com.apple.SecurityAgent",
+        "com.apple.UserNotificationCenter",
+        "com.apple.screencaptureui",
+        "com.apple.CoreServicesUIAgent",
+    ]
+
+    /// `regular` is NSRunningApplication.activationPolicy == .regular.
+    static func counts(bundleID: String?, regular: Bool, ownBundleID: String?) -> Bool {
+        guard regular, let bundleID, !bundleID.isEmpty else { return false }
+        return bundleID != ownBundleID && !ignored.contains(bundleID)
+    }
+}
+
 /// Quick settings' one-line descriptions. Each keeps the states the service can
 /// be in (waiting for confirmation, not confirmed) instead of guessing "off".
 enum QuickSettingsText {
@@ -53,7 +79,8 @@ enum QuickSettingsText {
 
     static let lowPowerHelp = "Limits the GPU power Wisp's model can draw, only while it is generating: "
         + "replies about 20 W, background work 10–15 W. Nothing is limited while Wisp is idle. "
-        + "Replies start slightly slower."
+        + "Replies start slightly slower. Turns itself off after 10 minutes without using Wisp, "
+        + "when Wisp restarts, or when you open or switch to another app."
 
     static func learning(enabled: Bool?, changing: Bool, status: String?,
                          remote: Bool, phraser: Bool) -> (text: String, local: String?) {
