@@ -32,7 +32,7 @@ enum DocumentAttachment {
     enum Kind: Equatable { case document, legacyOffice, other }
 
     private static let documentExtensions: Set<String> = [
-        "pdf", "docx", "doc", "xlsx", "pptx", "odt", "rtf", "rtfd", "html", "htm",
+        "pdf", "docx", "doc", "xlsx", "pptx", "odt", "rtf", "html", "htm",
         "txt", "text", "md", "markdown", "csv", "tsv", "json", "log",
     ]
     private static let legacyExtensions: Set<String> = ["xls", "ppt"]
