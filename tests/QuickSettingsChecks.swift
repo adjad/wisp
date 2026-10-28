@@ -19,6 +19,7 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(QuickSettingsText.saveWhenAway(on: true, pending: true).hasPrefix("Updating"), "a pending Save power change waits")
     let saveHelp = QuickSettingsText.saveWhenAwayHelp
     check(saveHelp.contains("10 minutes") && saveHelp.contains("10 W"), "Save power help names when and how much")
+    check(saveHelp.contains("another app") && saveHelp.contains("GPU"), "Save power help says a busy GPU lifts the cap")
     check(saveHelp.contains("Replies") && saveHelp.contains("full power") && !saveHelp.contains("20 W"),
           "Save power help says replies are never capped")
 

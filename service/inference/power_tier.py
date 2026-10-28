@@ -18,11 +18,14 @@ Only ``BACKGROUND`` work is ever capped (10 W): work nobody is waiting on
 (gists and the inbox summary, proactive triage/judge/prepare, the mail memory
 walk, the behavior tick's interpreter and phraser, memory capture). And only
 while the "Save power when away" switch is on (the notch; on by default) AND
-the user is away: no keyboard or mouse input for AWAY_AFTER_S and no turn
-running. With someone at the Mac it runs uncapped.
+the user is away: no keyboard or mouse input for AWAY_AFTER_S, no turn
+running, and no other app busy on the GPU (a game, an export, a render: the
+cap would throttle it too). With someone at the Mac it runs uncapped.
 
-Everything else is never capped: Ask turns, voice, phone turns, research, a
-brief the user opens, setup probes. While any of those is in flight,
+Everything else is never capped: Ask turns (and the history folding at the
+end of a turn, memory/context.maybe_summarize), voice, phone turns, research,
+connection investigations the user asks for (memory/connections.py), a brief
+the user opens, setup probes. While any of those is in flight,
 background calls go uncapped too, so they can't drag it down to 10 W. A
 background call already in flight keeps its cap until it ends; most of them
 are cancelled when a turn starts (mail_gists, the mail memory walk), and the
@@ -46,6 +49,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -101,10 +106,15 @@ def set_save_when_away(on: bool, path: Path | None = None) -> bool:
 # the mail memory walk uses). Reading it runs ioreg, so it is never read on a
 # request: the scheduler refreshes it off the event loop every tick, and a
 # reading older than _AWAY_STALE_S counts as present (uncapped).
+#
+# Age is checked on both clocks. time.monotonic() stops while the Mac sleeps, so
+# a reading taken just before sleep would look fresh at wake and cap the wake
+# backfill while the user is back; the wall clock counts the sleep. A wall
+# clock set back (a reading "from the future") also counts as stale.
 
 AWAY_AFTER_S = 600.0
 _AWAY_STALE_S = 120.0
-_away: tuple[float, bool] | None = None      # (monotonic time read, away)
+_away: tuple[float, float, bool] | None = None   # (monotonic, wall time read, away)
 
 
 def refresh_away(hid_idle_s: float | None = None, *, probe: bool = True) -> bool:
@@ -114,9 +124,74 @@ def refresh_away(hid_idle_s: float | None = None, *, probe: bool = True) -> bool
     if probe and hid_idle_s is None:
         from service.mail_memory.runner import _hid_idle_s
         hid_idle_s = _hid_idle_s()
-    value = hid_idle_s is not None and hid_idle_s >= AWAY_AFTER_S
-    _away = (time.monotonic(), value)
+    idle_enough = hid_idle_s is not None and hid_idle_s >= AWAY_AFTER_S
+    value = _gpu_quiet(sample=idle_enough) and idle_enough
+    _away = (time.monotonic(), time.time(), value)
     return value
+
+
+# --- other apps on the GPU --------------------------------------------------------
+#
+# The cap limits the whole Mac's GPU, so a game, video export or 3D render left
+# running while the user is away would be throttled to 10 W too. While the input
+# is idle, each refresh reads every process's accumulated GPU time (ioreg
+# AGXDeviceUserClient AppUsage, readable without privileges) and compares it with
+# the previous refresh: if other apps used at least OTHER_GPU_BUSY of the GPU in
+# between, background work stays uncapped. Wisp, its engine (the user's oMLX.app
+# or the engine bundled in Wisp.app) and WindowServer's compositing don't count.
+# No baseline yet, a failed read, or a too-short gap counts as busy (uncapped).
+
+OTHER_GPU_BUSY = 0.10
+_OWN_PATH_PARTS = ("/oMLX.app/", "/Wisp.app/")
+_gpu_sample: tuple[float, dict[int, int]] | None = None   # (monotonic, {pid: GPU ns})
+_BLOCK = re.compile(r"\+-o AGXDeviceUserClient")
+_CREATOR = re.compile(r'"IOUserClientCreator" = "pid (\d+),')
+_GPU_NS = re.compile(r'"accumulatedGPUTime"=(\d+)')
+
+
+def _parse_gpu_times(raw: str) -> dict[int, int]:
+    """{pid: total accumulated GPU ns} from `ioreg -r -c AGXDeviceUserClient -l`."""
+    totals: dict[int, int] = {}
+    for block in _BLOCK.split(raw)[1:]:
+        creator = _CREATOR.search(block)
+        if creator:
+            pid = int(creator.group(1))
+            totals[pid] = totals.get(pid, 0) + sum(int(ns) for ns in _GPU_NS.findall(block))
+    return totals
+
+
+def _own(pid: int) -> bool:
+    """Wisp, its engine, or WindowServer. An unreadable path counts as another app."""
+    from service.inference.local_peer import process_path
+    try:
+        path = process_path(pid)
+    except Exception:  # noqa: BLE001 — a process that exited or can't be read
+        return False
+    return any(part in path for part in _OWN_PATH_PARTS) or path.endswith("/WindowServer")
+
+
+def _other_gpu_times() -> dict[int, int] | None:
+    try:
+        raw = subprocess.run(["/usr/sbin/ioreg", "-r", "-c", "AGXDeviceUserClient", "-l", "-w0"],
+                             capture_output=True, text=True, errors="replace", timeout=5).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return {pid: ns for pid, ns in _parse_gpu_times(raw).items() if not _own(pid)}
+
+
+def _gpu_quiet(sample: bool) -> bool:
+    """Whether other apps left the GPU quiet since the previous refresh."""
+    global _gpu_sample
+    if not sample:
+        _gpu_sample = None                       # sampled only while the input is idle
+        return False
+    times, now = _other_gpu_times(), time.monotonic()
+    previous, _gpu_sample = _gpu_sample, (None if times is None else (now, times))
+    if times is None or previous is None or now - previous[0] < 5:
+        return False
+    then, before = previous
+    used_ns = sum(max(0, ns - before.get(pid, 0)) for pid, ns in times.items())
+    return used_ns / ((now - then) * 1e9) < OTHER_GPU_BUSY
 
 
 def away() -> bool:
@@ -124,8 +199,9 @@ def away() -> bool:
     from service import idle
     if idle.foreground_busy() or _away is None:
         return False
-    read_at, value = _away
-    return value and time.monotonic() - read_at < _AWAY_STALE_S
+    mono, wall, value = _away
+    return (value and time.monotonic() - mono < _AWAY_STALE_S
+            and 0 <= time.time() - wall < _AWAY_STALE_S)
 
 
 # --- uncapped calls in flight -----------------------------------------------------
