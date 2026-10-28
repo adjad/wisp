@@ -173,8 +173,8 @@ def _own(pid: int) -> bool:
 def _other_gpu_times() -> dict[int, int] | None:
     try:
         raw = subprocess.run(["/usr/sbin/ioreg", "-r", "-c", "AGXDeviceUserClient", "-l", "-w0"],
-                             capture_output=True, text=True, timeout=5).stdout
-    except (OSError, subprocess.SubprocessError):
+                             capture_output=True, text=True, errors="replace", timeout=5).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None
     return {pid: ns for pid, ns in _parse_gpu_times(raw).items() if not _own(pid)}
 

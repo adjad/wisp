@@ -80,6 +80,45 @@ def test_another_app_on_the_gpu_keeps_background_uncapped(monkeypatch):
     assert P.refresh_away(P.AWAY_AFTER_S + 1) is False
 
 
+def test_a_refresh_under_five_seconds_after_the_last_counts_as_busy(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(P, "_gpu_quiet", _REAL_GPU_QUIET)
+    monkeypatch.setattr(P.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(P, "_other_gpu_times", lambda: {200: 0})
+    assert P.refresh_away(P.AWAY_AFTER_S + 1) is False          # baseline
+    clock[0] += 4
+    assert P.refresh_away(P.AWAY_AFTER_S + 1) is False          # too soon to tell
+    clock[0] += 30
+    assert P.refresh_away(P.AWAY_AFTER_S + 1) is True
+
+
+@pytest.mark.parametrize("failure", [OSError("no ioreg"),
+                                     __import__("subprocess").TimeoutExpired("ioreg", 5),
+                                     UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad byte")])
+def test_a_failed_ioreg_read_is_none(monkeypatch, failure):
+    import subprocess
+
+    def run(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert P._other_gpu_times() is None
+
+
+def test_ioreg_output_that_isnt_utf8_is_still_read(monkeypatch):
+    import subprocess
+    seen = {}
+
+    def run(args, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(args, 0, stdout=_IOREG % 7, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(P, "_own", lambda pid: False)
+    assert P._other_gpu_times() == {200: 12, 300: 0}
+    assert seen.get("errors") == "replace"
+
+
 def test_wisp_its_engine_and_windowserver_dont_count(monkeypatch):
     from service.inference import local_peer
     paths = {1: "/Applications/oMLX.app/Contents/Resources/Python/cpython-3.11/bin/python3.11",
