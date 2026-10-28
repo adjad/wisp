@@ -17,8 +17,20 @@ Summary, research jobs) runs at ``INTENSIVE`` (15 W). Live chat turns carry no
 tier, so they run at whatever the engine's own model setting allows.
 
 The cap is system-wide and oMLX holds the lowest cap among active requests,
-then keeps it for 15 s after the last capped request ends. Every tiered caller
-already stands down when a turn starts, which keeps the overlap short.
+then keeps it for 15 s after the last capped request ends, so a chat that
+overlaps a tiered call runs at that call's cap until the call ends. How long
+that lasts depends on the caller:
+
+- cancelled in flight when a turn starts: mail_gists (gists, inbox summary,
+  proactive triage/judge/prepare), the mail memory walk, the scheduled Daily
+  Summary;
+- checked only before the call, which then runs to completion: the behavior
+  phraser (6 s timeout), memory capture (at most 650 tokens);
+- research waits for a turn to end at each call boundary but does not cancel
+  the call already running.
+
+A model-level cap above both tiers (Gemma's engine profile sets 20 W)
+replaces a lingering tier cap as soon as the chat's own request starts.
 
 A tier is set with ``with power_tier(BACKGROUND):`` around the call (it is a
 ContextVar, so tasks created inside inherit it). OMLXClient adds the field only

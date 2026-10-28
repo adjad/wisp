@@ -240,6 +240,33 @@ def test_gemma_profile_seeds_a_20_w_chat_cap_above_both_tiers(tmp_path):
     assert entry["gpu_power_limit_w"] == 20
 
 
+def test_a_foreground_call_beside_a_running_background_tier_sends_no_cap():
+    client, bodies = _client(managed=True)
+    background_started, foreground_done = asyncio.Event(), asyncio.Event()
+
+    async def background():
+        with P.power_tier(P.BACKGROUND):
+            background_started.set()
+            await foreground_done.wait()       # still inside the tier while the turn runs
+            await client.chat("m", [{"role": "user", "content": "bg"}])
+
+    async def foreground():
+        await background_started.wait()
+        await client.chat("m", [{"role": "user", "content": "fg"}])
+        foreground_done.set()
+
+    async def run():
+        try:
+            await asyncio.gather(background(), foreground())
+        finally:
+            await client._client.aclose()
+
+    asyncio.run(run())
+    by_text = {body["messages"][0]["content"]: body for body in bodies}
+    assert "gpu_power_limit_w" not in by_text["fg"]
+    assert by_text["bg"]["gpu_power_limit_w"] == 10
+
+
 def test_a_live_turn_carries_no_tier():
     # Ask/chat turns never enter power_tier, so they fall back to the
     # engine's model-level cap (20 W for Gemma on the user's Mac).
