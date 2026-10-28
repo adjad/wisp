@@ -809,8 +809,7 @@ class OMLXClient:
         """
         model, messages, tools, max_tokens = self._fit_request(model, messages, tools, max_tokens)
         payload = self._payload(model, messages, tools, tool_choice,
-                                temperature, max_tokens, stream=False,
-                                **{**self._power_fields(), **extra})
+                                temperature, max_tokens, stream=False, **extra)
         # A generation can make the engine load its model, so it counts as
         # engine activity for every readiness proof (see engine_epoch).
         engine_epoch.begin()
@@ -895,8 +894,7 @@ class OMLXClient:
             model, messages, tools, max_tokens,
             use_remaining_context=use_remaining_context)
         payload = self._payload(model, messages, tools, tool_choice,
-                                temperature, max_tokens, stream=True,
-                                **{**self._power_fields(), **extra})
+                                temperature, max_tokens, stream=True, **extra)
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         thought_splitter = _ThoughtSplitter()
@@ -1079,17 +1077,6 @@ class OMLXClient:
         if cost + max_tokens > self.target.context_window:
             raise EndpointConfigurationError("Request cannot fit the target context window")
         return model, messages, tools, max_tokens
-
-    def _power_fields(self) -> dict[str, int]:
-        """The current power tier's GPU cap (service/inference/power_tier.py).
-
-        Only the managed local engine gets it: a remote provider has no use
-        for it and a remote-only profile refuses unknown payload keys.
-        """
-        if not self.managed:
-            return {}
-        from service.inference.power_tier import payload_fields
-        return payload_fields()
 
     @staticmethod
     def _payload(model, messages, tools, tool_choice, temperature, max_tokens,

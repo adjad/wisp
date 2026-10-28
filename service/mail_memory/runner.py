@@ -206,10 +206,8 @@ async def _reply(msgs: list[dict]) -> str | None:
     key = _model_key()
     # Sampling is left to the engine's profile for this model: the 2026-10-26 bench
     # measured these prompts at the production profile, not at temperature 0.
-    from service.inference.power_tier import BACKGROUND, power_tier
-    with power_tier(BACKGROUND):
-        request = asyncio.ensure_future(client.chat(model, msgs, max_tokens=MAX_TOKENS,
-                                                    **thinking_kwargs(model, on=False)))
+    request = asyncio.ensure_future(client.chat(model, msgs, max_tokens=MAX_TOKENS,
+                                                **thinking_kwargs(model, on=False)))
     deadline = time.monotonic() + CALL_TIMEOUT_S
     try:
         while not request.done():

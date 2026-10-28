@@ -576,11 +576,9 @@ async def _resident_reply(system: str, material: str, abort, *,
         _stood_down("a turn is in progress")
         return None
     budget = tokens[0] if _thinking_off(model) else tokens[1]
-    from service.inference.power_tier import BACKGROUND, power_tier
-    with power_tier(BACKGROUND):
-        request = asyncio.ensure_future(client.chat(
-            model, [{"role": "system", "content": system}, {"role": "user", "content": material}],
-            max_tokens=budget, temperature=0, **thinking_kwargs(model, on=False)))
+    request = asyncio.ensure_future(client.chat(
+        model, [{"role": "system", "content": system}, {"role": "user", "content": material}],
+        max_tokens=budget, temperature=0, **thinking_kwargs(model, on=False)))
     deadline = time.monotonic() + _TIMEOUT_S
     try:
         while not request.done():
