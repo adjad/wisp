@@ -1086,11 +1086,27 @@ struct ChatComposer: View {
         store.submit(prompt, attachmentName: attached?.name, image: attached?.dataURL)
     }
 
+    /// A sheet on the chat window, not an app-modal dialog: runModal also
+    /// locked the notch until the dialog closed.
     private func pickImage() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let finish: (NSApplication.ModalResponse) -> Void = { response in
+            MainActor.assumeIsolated {
+                guard response == .OK, let url = panel.url else { return }
+                attachImage(url)
+            }
+        }
+        if let window = NSApp.keyWindow, !(window is NSPanel) {
+            panel.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+            panel.begin(completionHandler: finish)
+        }
+    }
+
+    private func attachImage(_ url: URL) {
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         guard size <= Self.maxImageBytes else {
             attachNote = "That image is over 10 MB. Choose a smaller one."
