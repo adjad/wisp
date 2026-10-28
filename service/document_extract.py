@@ -10,10 +10,14 @@ can't be killed). Pure: no service imports, no network, nothing written to disk.
 Rules:
 - IMPORTANT: a ZIP-based document (docx/xlsx/pptx/odt) is checked BEFORE any
   parser opens it: the central directory is walked by hand
-  (linked_documents._zip_preflight), then every entry's declared size, the
-  total, the compression ratio, encryption and method are bounded. A 179 KB
-  docx holding 60 MB of XML took 46 s and 1.45 GB in python-docx before this
-  (Release Auditor, 2026-10-28).
+  (linked_documents._zip_preflight), a zip64 record (which would make zipfile
+  read a different, hidden directory) is refused, and every part is INFLATED
+  to measure its real size, since declared sizes can lie. Parts that aren't
+  media by both extension and declared content type (an XML part named ".bin"
+  included) get 8 MB each and 24 MB together. A 179 KB docx holding 60 MB of
+  XML took 46 s and 1.45 GB in python-docx before this (Release Auditor,
+  2026-10-28).
+- pypdf's decompression ceilings drop from 75 MB to PDF_STREAM_BYTES.
 - Extraction stops once MAX_TEXT_CHARS is reached (pages, paragraphs, slides
   and rows alike) and walks at most MAX_PDF_PAGES PDF pages.
 - Every failure is a ValueError with a plain sentence for the person.
@@ -22,8 +26,10 @@ from __future__ import annotations
 
 import io
 import json
+import struct
 import subprocess
 import sys
+import zlib
 from html.parser import HTMLParser
 from pathlib import PurePath
 from types import SimpleNamespace
@@ -32,18 +38,27 @@ from zipfile import BadZipFile, ZIP_DEFLATED, ZIP_STORED, ZipFile
 MAX_DOCUMENT_BYTES = 20 * 1024 * 1024
 MAX_TEXT_CHARS = 24_000
 MAX_PDF_PAGES = 60
-# ZIP bounds. Entry count and total are looser than linked_documents' because a
-# real deck or report carries many parts and images; the ratio and per-XML-part
-# limits are what stop a decompression bomb, and they are as strict.
+# ZIP bounds. The entry count and total are looser than linked_documents'
+# because a real deck carries many parts and images. What a parser builds a
+# tree from is every NON-media part (XML, whatever its extension: a ".bin" part
+# can carry an XML content type), and those are held tight: 8 MB each and
+# 24 MB together, measured by actually inflating them, never by the sizes the
+# archive declares (a header can lie about them).
 ZIP_ENTRIES = 2_000
 ZIP_TOTAL_BYTES = 64 * 1024 * 1024
-ZIP_XML_PART_BYTES = 8 * 1024 * 1024
-ZIP_PART_BYTES = 24 * 1024 * 1024
+ZIP_TEXT_PART_BYTES = 8 * 1024 * 1024
+ZIP_TEXT_TOTAL_BYTES = 24 * 1024 * 1024
+ZIP_MEDIA_PART_BYTES = 24 * 1024 * 1024
 ZIP_RATIO = 100
+_MEDIA_EXTENSIONS = {"png", "jpg", "jpeg", "jfif", "gif", "bmp", "tif", "tiff", "emf", "wmf", "wdp", "svg",
+                     "heic", "webp", "mp4", "mov", "m4v", "mp3", "m4a", "wav", "wma", "wmv", "avi"}
+_MEDIA_TYPES = ("image/", "audio/", "video/")
+# pypdf's own decompression ceilings are 75 MB per stream; a page's text needs far less.
+PDF_STREAM_BYTES = 8 * 1024 * 1024
 _TEXTUTIL_TIMEOUT_S = 20.0
-# Child-process ceilings (best effort: macOS enforces CPU time, not address space).
+# Child CPU ceiling (macOS enforces it). Memory is watched by the PARENT, which
+# kills the child above documents.CHILD_FOOTPRINT_BYTES: macOS ignores RLIMIT_AS.
 CHILD_CPU_SECONDS = 40
-CHILD_MEMORY_BYTES = 2 * 1024 * 1024 * 1024
 
 _TEXTUTIL = {"doc": "doc", "rtf": "rtf", "odt": "odt", "wordml": "wordml"}
 _HTML = {"html", "htm"}
@@ -85,6 +100,53 @@ def _kind(name: str) -> str:
 
 # --- ZIP preflight ----------------------------------------------------------------
 
+def _content_types(archive: ZipFile, names: set[str]) -> tuple[dict[str, str], dict[str, str]]:
+    """(overrides by part name, defaults by extension) from [Content_Types].xml, if any."""
+    overrides: dict[str, str] = {}
+    defaults: dict[str, str] = {}
+    if "[Content_Types].xml" not in names:
+        return overrides, defaults
+    with archive.open("[Content_Types].xml") as source:
+        raw = source.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
+        raise ValueError(TOO_COMPLEX)
+    from xml.parsers import expat
+
+    def start(tag, attrs):
+        local = tag.rpartition("}")[2]
+        if local == "Override" and "PartName" in attrs:
+            overrides[attrs["PartName"].lstrip("/")] = attrs.get("ContentType", "").lower()
+        elif local == "Default" and "Extension" in attrs:
+            defaults[attrs["Extension"].lower()] = attrs.get("ContentType", "").lower()
+    parser = expat.ParserCreate(namespace_separator="}")
+    parser.StartElementHandler = start
+    try:
+        parser.Parse(raw, True)
+    except expat.ExpatError:
+        raise ValueError(DAMAGED) from None
+    return overrides, defaults
+
+
+def _is_media(name: str, overrides: dict[str, str], defaults: dict[str, str]) -> bool:
+    """Media only when BOTH the extension and any declared type say so."""
+    ext = PurePath(name).suffix.lower().lstrip(".")
+    if ext not in _MEDIA_EXTENSIONS:
+        return False
+    declared = overrides.get(name) or defaults.get(ext)
+    return declared is None or declared.startswith(_MEDIA_TYPES)
+
+
+def _inflated_size(archive: ZipFile, info, limit: int) -> int:
+    """The entry's REAL size, inflating at most limit+1 bytes."""
+    size = 0
+    with archive.open(info) as source:
+        while chunk := source.read(min(1024 * 1024, limit + 1 - size)):
+            size += len(chunk)
+            if size > limit:
+                break
+    return size
+
+
 def zip_guard(data: bytes) -> None:
     """Refuse a ZIP whose expansion isn't bounded, before any parser sees it."""
     from service import linked_documents
@@ -92,33 +154,50 @@ def zip_guard(data: bytes) -> None:
         linked_documents._zip_preflight(data, SimpleNamespace(zip_entries=ZIP_ENTRIES))
     except linked_documents._Stop as stop:
         raise ValueError(TOO_COMPLEX if stop.status == "limit_exceeded" else DAMAGED) from None
+    end = data.rfind(b"PK\x05\x06", max(0, len(data) - 65557))
+    # A zip64 locator in front of the end record makes zipfile read a DIFFERENT,
+    # larger directory than the one checked above. Office files never need zip64.
+    if b"PK\x06\x06" in data[max(0, end - 65557):end] or b"PK\x06\x07" in data[max(0, end - 65557):end]:
+        raise ValueError(DAMAGED)
+    count = struct.unpack_from("<H", data, end + 10)[0]
     try:
         with ZipFile(io.BytesIO(data)) as archive:
-            names, total = set(), 0
-            for info in archive.infolist():
-                if info.filename in names:
-                    raise ValueError(DAMAGED)
-                names.add(info.filename)
+            infos = archive.infolist()
+            if len(infos) != count:
+                raise ValueError(DAMAGED)
+            names = {info.filename for info in infos}
+            if len(names) != len(infos):
+                raise ValueError(DAMAGED)
+            overrides, defaults = _content_types(archive, names)
+            total = text_total = 0
+            for info in infos:
                 if info.flag_bits & 1:
                     raise ValueError("That document is password-protected.")
                 if info.compress_type not in (ZIP_STORED, ZIP_DEFLATED):
                     raise ValueError(DAMAGED)
-                xml = info.filename.lower().endswith((".xml", ".rels"))
-                if info.file_size > (ZIP_XML_PART_BYTES if xml else ZIP_PART_BYTES):
+                media = _is_media(info.filename, overrides, defaults)
+                limit = ZIP_MEDIA_PART_BYTES if media else ZIP_TEXT_PART_BYTES
+                if info.file_size > limit or info.file_size > max(1, info.compress_size) * ZIP_RATIO:
                     raise ValueError(TOO_COMPLEX)
-                total += info.file_size
-                if total > ZIP_TOTAL_BYTES:
+                real = _inflated_size(archive, info, limit)
+                if real != info.file_size:
+                    raise ValueError(TOO_COMPLEX if real > info.file_size else DAMAGED)
+                total += real
+                text_total += 0 if media else real
+                if total > ZIP_TOTAL_BYTES or text_total > ZIP_TEXT_TOTAL_BYTES:
                     raise ValueError(TOO_COMPLEX)
-                if info.file_size > max(1, info.compress_size) * ZIP_RATIO:
-                    raise ValueError(TOO_COMPLEX)
-    except BadZipFile:
+    except (BadZipFile, EOFError, zlib.error, NotImplementedError):
         raise ValueError(DAMAGED) from None
 
 
 # --- the formats ------------------------------------------------------------------
 
 def _pdf(data: bytes) -> tuple[str, bool]:
-    from pypdf import PdfReader
+    from pypdf import PdfReader, filters
+    for name in ("ZLIB_MAX_OUTPUT_LENGTH", "LZW_MAX_OUTPUT_LENGTH", "RUN_LENGTH_MAX_OUTPUT_LENGTH",
+                 "JBIG2_MAX_OUTPUT_LENGTH", "MAX_DECLARED_STREAM_LENGTH", "MAX_ARRAY_BASED_STREAM_OUTPUT_LENGTH"):
+        if hasattr(filters, name):
+            setattr(filters, name, PDF_STREAM_BYTES)
     try:
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted:
@@ -299,7 +378,6 @@ def _limit_self() -> None:
     try:
         import resource
         resource.setrlimit(resource.RLIMIT_CPU, (CHILD_CPU_SECONDS, CHILD_CPU_SECONDS))
-        resource.setrlimit(resource.RLIMIT_AS, (CHILD_MEMORY_BYTES, CHILD_MEMORY_BYTES))
     except (ImportError, ValueError, OSError):
         pass
 

@@ -15,10 +15,13 @@ Rules:
   same typed event/reminder proposal a picture can make, offered through the
   person's own confirmation card (vision.run_proposal).
 - IMPORTANT: extraction never runs on the service's event loop. It runs in a
-  child process (service/document_extract.py) under one deadline that covers
-  extraction AND the model call, and the child is killed at that deadline;
-  ZIP-based files are bounded before any parser opens them. A 30 KB docx used
-  to stall every request for 8 s (Release Auditor, 2026-10-28).
+  child process (service/document_extract.py, `python -I -B`: it must never
+  write .pyc files into the signed Wisp.app) in its own process group, under
+  one deadline that counts queueing, extraction AND the model call. The group
+  is killed at that deadline, on cancel, or when the child's memory footprint
+  passes CHILD_FOOTPRINT_BYTES (macOS ignores RLIMIT_AS, so the parent
+  watches). Only plain text and HTML may fall back to a worker thread where a
+  sandbox forbids starting a child, because a thread can't be killed.
 - Wisp keeps no copy of the document: its bytes and text live in this request
   only and never touch the disk (the child reads stdin; `textutil` reads stdin).
   The ANSWER is a normal chat reply, saved like any other.
@@ -54,11 +57,22 @@ TRUNCATED = "\n\n(This document is long, so I read only its first part.)"
 TOO_SLOW = "That document took too long to read. Try a shorter one."
 
 _ROOT = str(Path(__file__).resolve().parents[1])
-# The child: isolated mode (no user site, no PYTHONPATH), only this repo added.
+# The child: isolated (-I: no user site, no PYTHONPATH) and -B: it must never
+# write .pyc files, because inside Wisp.app that would change the signed bundle
+# (service/__pycache__, bundled site-packages) and break codesign checks.
 _CHILD = ("import sys; sys.path.insert(0, %r); "
           "from service.document_extract import main; main()") % _ROOT
-# One extraction at a time: each can use a core and a few hundred MB.
+_CHILD_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "PYTHONDONTWRITEBYTECODE": "1"}
+# The child is killed above this memory footprint (macOS ignores RLIMIT_AS, so
+# the parent watches the kernel's own phys_footprint figure for the child).
+CHILD_FOOTPRINT_BYTES = 1536 * 1024 * 1024
+_WATCH_S = 0.05
+# One extraction at a time: each can use a core and hundreds of MB.
 _ONE_AT_A_TIME = asyncio.Semaphore(1)
+# Formats cheap and linear enough to read on a worker thread where a child
+# can't be started (a sandbox that forbids exec). Everything else is refused
+# there, because a thread can't be killed at the deadline.
+_THREAD_SAFE_KINDS = extract._PLAIN | extract._HTML | {""}
 
 _SYSTEM = (
     "You are reading a document the person attached and you answer their question about it plainly.\n"
@@ -94,39 +108,101 @@ def _decode(data_b64) -> bytes:
 # --- extraction, off the event loop ------------------------------------------------
 
 def extract_text(name: str, data: bytes) -> tuple[str, bool]:
-    """In-process extraction (tests, and the fallback below). Blocks: never call it on the loop."""
+    """In-process extraction (tests, and the narrow fallback below). Blocks: never call it on the loop."""
     return extract.extract_text(name, data)
+
+
+_proc_rusage = None
+
+
+def child_footprint(pid: int) -> int | None:
+    """The process's physical footprint in bytes (what Activity Monitor shows), or None."""
+    global _proc_rusage
+    try:
+        import ctypes
+        if _proc_rusage is None:
+            class _RUsage(ctypes.Structure):     # rusage_info_v2: 16-byte uuid, then 64-bit counters
+                _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(f"f{i}", ctypes.c_uint64) for i in range(26)]
+            lib = ctypes.CDLL("/usr/lib/libproc.dylib")
+            _proc_rusage = (lib.proc_pid_rusage, _RUsage)
+        call, kind = _proc_rusage
+        usage = kind()
+        if call(pid, 2, ctypes.byref(usage)) != 0:
+            return None
+        return usage.f7                          # ri_phys_footprint
+    except (OSError, AttributeError):
+        return None
+
+
+def _kill_group(child) -> None:
+    """Kill the child and anything it started (textutil), never leaving an orphan."""
+    import os
+    import signal
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        try:
+            child.kill()
+        except ProcessLookupError:
+            pass
 
 
 async def extract_async(name: str, data: bytes, *, timeout: float = _EXTRACT_TIMEOUT_S) -> tuple[str, bool]:
     """(text, cut short), extracted in a child process killed at `timeout`.
 
-    Where a child can't be started (a sandbox that forbids exec), it falls back
-    to a worker thread: still off the loop and still bounded by the ZIP
-    preflight and the text cap, though a thread can't be killed at the deadline.
+    `timeout` counts from the call, so time spent queued behind another
+    document is part of it. The child runs in its own process group, which is
+    killed whole at the deadline, above CHILD_FOOTPRINT_BYTES, or on cancel.
     """
-    async with _ONE_AT_A_TIME:
+    deadline = time.monotonic() + timeout
+    try:
+        await asyncio.wait_for(_ONE_AT_A_TIME.acquire(), timeout)
+    except (TimeoutError, asyncio.TimeoutError):
+        raise ValueError(TOO_SLOW) from None
+    try:
         try:
             child = await asyncio.create_subprocess_exec(
-                sys.executable, "-I", "-c", _CHILD, PurePath(name or "").name[:200],
+                sys.executable, "-I", "-B", "-c", _CHILD, PurePath(name or "").name[:200],
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL)
+                stderr=asyncio.subprocess.DEVNULL, env=_CHILD_ENV, start_new_session=True)
         except OSError:
-            return await asyncio.wait_for(asyncio.to_thread(extract_text, name, data), timeout)
+            if extract._kind(name) not in _THREAD_SAFE_KINDS:
+                raise ValueError("Wisp couldn't start its document reader. Try again in a moment.") from None
+            return await asyncio.wait_for(asyncio.to_thread(extract_text, name, data),
+                                          max(0.1, deadline - time.monotonic()))
+        too_big = False
+
+        async def watch():
+            nonlocal too_big
+            while child.returncode is None:
+                size = child_footprint(child.pid)
+                if size is not None and size > CHILD_FOOTPRINT_BYTES:
+                    too_big = True
+                    _kill_group(child)
+                    return
+                await asyncio.sleep(_WATCH_S)
+        watcher = asyncio.create_task(watch())
         try:
-            out, _ = await asyncio.wait_for(child.communicate(data), timeout)
+            out, _ = await asyncio.wait_for(child.communicate(data), max(0.1, deadline - time.monotonic()))
         except (TimeoutError, asyncio.TimeoutError):
-            child.kill()
+            _kill_group(child)
             await child.wait()
             raise ValueError(TOO_SLOW) from None
-        except asyncio.CancelledError:
-            child.kill()
+        except BaseException:
+            _kill_group(child)
             await child.wait()
             raise
+        finally:
+            watcher.cancel()
+            _kill_group(child)       # a grandchild left behind by a child that exited
+    finally:
+        _ONE_AT_A_TIME.release()
+    if too_big:
+        raise ValueError(extract.TOO_COMPLEX)
     try:
         result = json.loads(out.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):
-        # Killed by its own CPU or memory ceiling, or crashed inside a parser.
+        # Killed by its own CPU ceiling, or crashed inside a parser.
         raise ValueError(extract.TOO_COMPLEX) from None
     if not isinstance(result, dict):
         raise ValueError(extract.DAMAGED)
