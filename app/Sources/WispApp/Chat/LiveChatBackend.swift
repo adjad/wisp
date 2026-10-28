@@ -120,4 +120,8 @@ final class LiveChatBackend: ChatBackend {
         guard let access else { return await client.requestFullAccess(on) }
         return await access.requestFullAccess(on)
     }
+
+    func cloudInUse() async -> Bool? {
+        ChatCloudUse.active(from: await client.cloudInference())
+    }
 }

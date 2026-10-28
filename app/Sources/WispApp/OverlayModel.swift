@@ -195,7 +195,7 @@ final class OverlayModel: ObservableObject {
     /// Quick settings' Model memory row: what the engine has resident, nil when unknown.
     @Published private(set) var modelMemory: ModelMemory?
     // First-run setup at the top of Ask. Its readiness lives on the app's one
-    // SetupGuideModel, which the setup window shares.
+    // SetupGuideModel, which Settings › Models › Setup shares.
     @Published var setupCard: NotchSetupCard = .hidden { didSet { if setupCard != oldValue { onResize() } } }
     // Whether Wisp's own service answers (BackendManager's reachability watch).
     // False shows "Wisp service isn't running" with Retry instead of a green dot.
@@ -395,13 +395,17 @@ final class OverlayModel: ObservableObject {
     // True while the attach-file dialog is up — it takes key focus from the
     // panel, which must not be mistaken for "the user switched apps".
     var pickingFile = false
+    /// The attach dialog while it is open. It runs beside the notch, not as an
+    /// app-modal dialog, so a second click on the paperclip brings it forward.
+    var filePicker: NSOpenPanel?
 
-    // True while auto-collapse must hold off: the panel is pinned, there is
-    // an edit the person hasn't finished (typed input, a message draft being
-    // edited), or the setup card is open. A mid-task generation does not count;
-    // the notch bar's dot shows it is still working.
+    // True while auto-collapse must hold off: the panel is pinned, a file
+    // dialog it opened is up, there is an edit the person hasn't finished
+    // (typed input, a message draft being edited), or the setup card is open.
+    // A mid-task generation does not count; the notch bar's dot shows it is
+    // still working.
     var holdsOpen: Bool {
-        pinned || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
+        pinned || pickingFile || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
             || voice.isActive || speaker.speaking
             || (tab == .day && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             || knowYou != nil

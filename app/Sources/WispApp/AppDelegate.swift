@@ -20,18 +20,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var researchModel = ResearchModel(client: client)
     // One day plan for the notch's Brief and Day tabs and the window's planner.
     private lazy var todayModel = TodayModel()
-    // One settings loader for the notch's quick settings, the Settings window and
-    // the Wisp window's Full access pill: one source for confirmed and pending state.
+    // One settings loader for the notch's quick settings, the Wisp window's Settings
+    // and its Full access pill: one source for confirmed and pending state.
     private lazy var settingsLoader = SettingsLoader()
     private var fullAccessObserver: AnyCancellable?
-    // One setup model for the notch's setup card and the setup window, so a
-    // test result, a running action and readiness are the same in both.
+    // One setup model for the notch's setup card, the first-run window and
+    // Settings › Models › Setup, so a test result, a running action and readiness
+    // are the same in all of them.
     private lazy var setupModel = SetupGuideModel()
-    private var setupCloseObserver: NSObjectProtocol?
-    // The Wisp window: long conversations, saved chats, and the same approvals
-    // as the notch, in a real window. It opens only when asked for; Wisp starts
-    // in the notch. Its sidebar opens the other parts of the app through
-    // WispRouter, like every other control (see open(_:)).
+    // The Wisp window: long conversations, saved chats, the same approvals as the
+    // notch, Today, Research, Memory and Settings, in a real window. It opens only
+    // when asked for; Wisp starts in the notch. Its sidebar opens the other parts
+    // of the app through WispRouter, like every other control (see open(_:)).
     private lazy var wispWindow: WispWindowController = {
         let window = WispWindowController(
             backend: LiveChatBackend(client: client, access: settingsLoader),
@@ -41,13 +41,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 openResearchJob: { [weak self] id in self?.openSavedResearch(id) },
                 newResearch: { [weak self] in self?.startResearchInNotch() },
                 memory: { WispRouter.shared.open(.memory(.facts)) },
-                settings: { WispRouter.shared.open(.settings) },
-                searchEverything: { [weak self] in self?.toggleSearch() }),
+                settings: { WispRouter.shared.open(.settings) }),
             debug: { UserDefaults.standard.bool(forKey: "wisp.debugMode") })
         window.navigation.researchLibrary = ResearchLibraryModel(client: client)
         window.navigation.today = todayModel
+        window.navigation.settings = settingsLoader
+        window.navigation.setup = setupModel
+        window.onClose = { [weak self] in self?.updateSettingsSetupHost() }
+        settingsSetupObservers = [
+            window.navigation.$section.dropFirst().sink { [weak self] _ in
+                // @Published sends before the change lands: read it on the next turn.
+                DispatchQueue.main.async { self?.updateSettingsSetupHost() }
+            },
+            // Settings keeps its pane and subpane in UserDefaults (@AppStorage).
+            NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
+                .receive(on: DispatchQueue.main)
+                .sink { [weak self] _ in MainActor.assumeIsolated { self?.updateSettingsSetupHost() } },
+        ]
         return window
     }()
+    /// Settings › Models › Setup is on screen: the Wisp window is open on Settings,
+    /// pane Models, subpane Setup. It is the setup guide's "settings" host while it is.
+    private var settingsSetupShown = false
+    private var settingsSetupObservers: [AnyCancellable] = []
     private var searchKeyMonitor: Any?
     private var presentation = OverlayTransition()
     private var searchCaptureID: UUID?
@@ -57,8 +73,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let model = OverlayModel()
     private let client = WispClient()
     private let backend = BackendManager()
-    private var settingsWindow: NSWindow?
-    private var setupWindow: NSWindow?
     // The onboarding window: model, permissions, Google, Getting to know you, how
     // to use. Opens by itself only on a Mac that has never run Wisp
     // (FirstRunSetup.shouldShow); Settings › Privacy's Permissions… opens it at that step.
@@ -796,7 +810,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // chat while unfinished setup sat in the notch, was the "two windows" bug.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         guard launched else { return false }
-        let guideStandsIn = firstRunHiddenForGuide && (setupWindow?.isVisible == true || setupWindow?.isMiniaturized == true)
+        let guideStandsIn = firstRunHiddenForGuide && settingsSetupShown
         let unfinished = firstRunWindow != nil || guideStandsIn
             || FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) })
         let windows = reopenCandidates()
@@ -835,10 +849,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// stands in for the first-run window, else the first-run window (reopened at
     /// its step when setup is unfinished), else the notch's setup card.
     private func bringSetupForward() {
-        if firstRunHiddenForGuide, let guide = setupWindow, guide.isVisible || guide.isMiniaturized {
-            NSApp.activate(ignoringOtherApps: true)
-            if guide.isMiniaturized { guide.deminiaturize(nil) }
-            guide.makeKeyAndOrderFront(nil)
+        if firstRunHiddenForGuide, settingsSetupShown {
+            wispWindow.showSettings()
         } else if firstRunWindow != nil || FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }) {
             openFirstRunSetup()
         } else {
@@ -885,13 +897,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Where every route lands. Memory is a section of the Wisp window. Today,
-    /// Research, Settings and Setup still open their own windows; later changes
-    /// move them into the notch or the Wisp window here, without touching their callers.
+    /// Where every route lands. Today, Research, Memory and Settings (with Setup as
+    /// Settings › Models › Setup) are sections of the Wisp window; setup while it is
+    /// unfinished is the first-run window or the notch's card. Moving a part changes
+    /// this switch, never its callers.
     private func open(_ route: WispRoute) {
         switch route {
         case .chat(let sessionId):
             if let sessionId { wispWindow.show(sessionId: sessionId) } else { wispWindow.show() }
+        case .chatList:
+            wispWindow.showChats()
         case .today(let focus):
             wispWindow.showToday(tab: focus.tab)
         case .research:
@@ -1370,7 +1385,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.onOpenCorpus = { [weak self] in
             guard let self else { return }
             self.notchCorpus.selectInWindow()
-            self.wispWindow.show()
+            // Chats even if the window is open on Settings or Today: the run was just selected there.
+            self.wispWindow.showChats()
         }
         model.onResetWisp = { [weak self] in
             guard let self else { return "Wisp is quitting." }
@@ -1868,21 +1884,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return .terminateLater
     }
 
+    /// Settings is a section of the Wisp window (⌘,, the menus, the window's
+    /// sidebar and footer gear, and the notch's All settings all land here).
     @objc private func openSettings() {
-        if settingsWindow == nil {
-            // SettingsView has a fixed 760×620 layout: the sidebar, form labels,
-            // and 300-point fields all fit without clipping at this content size.
-            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 620),
-                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-            win.title = "Wisp Settings"
-            win.contentView = NSHostingView(rootView: SettingsView(loader: settingsLoader))
-            win.center()
-            win.isReleasedWhenClosed = false
-            settingsWindow = win
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        if settingsWindow?.isMiniaturized == true { settingsWindow?.deminiaturize(nil) }
-        settingsWindow?.makeKeyAndOrderFront(nil)
+        wispWindow.showSettings()
     }
 
     private var lastRefusalShown = ""
@@ -1913,13 +1918,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if alert.runModal() == .alertFirstButtonReturn { terminateWithoutShutdown() }
     }
 
-    /// The full setup guide in its own window: every step, including Smart
-    /// Search, other local apps and model downloads. Settings opens it, and so
-    /// does the notch card's ⤢.
+    /// The full setup guide, Settings › Models › Setup in the Wisp window: every
+    /// step, including Smart Search, other local apps and model downloads. Settings'
+    /// Setup guide…, the engine settings and the notch card's ⤢ open it, and so do
+    /// the first-run window's detailed-setup links.
     // The first-run window steps aside while the detailed guide is up (both
     // centred, the guide covering it, read as two Wisp windows at once) and
-    // comes back, at its step, when the guide closes.
-    private var firstRunHiddenForGuide = false
+    // comes back, at its step, when the guide is left: the Wisp window closes,
+    // or Settings moves off Models › Setup (updateSettingsSetupHost).
+    private var firstRunHiddenForGuide = false {
+        didSet { wispWindow.navigation.setupStandsInForWelcome = firstRunHiddenForGuide }
+    }
 
     @objc private func openSetupGuide() {
         // Minimized counts too: otherwise a Dock click brought it back out of the
@@ -1928,45 +1937,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             welcome.orderOut(nil)
             firstRunHiddenForGuide = true
         }
-        // Already open: just bring it forward, so an in-flight action isn't discarded.
-        if let open = setupWindow, open.isVisible || open.isMiniaturized {
-            NSApp.activate(ignoringOtherApps: true)
-            if open.isMiniaturized { open.deminiaturize(nil) }
-            open.makeKeyAndOrderFront(nil)
+        let defaults = UserDefaults.standard
+        defaults.set("models", forKey: SettingsView.paneKey)
+        defaults.set("setup", forKey: SettingsView.modelsPaneKey)
+        defaults.set(true, forKey: Self.setupGuideShownKey)
+        // An open Settings follows the two keys (@AppStorage); showing the section
+        // starts the guide's poll through updateSettingsSetupHost.
+        openSettings()
+    }
+
+    /// Settings › Models › Setup is the setup guide's "settings" host exactly while
+    /// it is on screen. Counted from the window and the stored panes, not from
+    /// SwiftUI's onAppear: the window is built once and kept. Leaving it brings
+    /// back a first-run window it was standing in for.
+    private func updateSettingsSetupHost() {
+        let defaults = UserDefaults.standard
+        let shown = wispWindow.isOpen && wispWindow.navigation.section == .settings
+            && (defaults.string(forKey: SettingsView.paneKey) ?? "models") == "models"
+            && defaults.string(forKey: SettingsView.modelsPaneKey) == "setup"
+        guard shown != settingsSetupShown else { return }
+        settingsSetupShown = shown
+        if shown {
+            // Showing it starts the poll (the first host), which re-reads the machine.
+            setupModel.show(in: "settings")
             return
         }
-        let win = setupWindow ?? {
-            let win = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 700),
-                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
-            win.title = "Wisp Setup"
-            win.isReleasedWhenClosed = false
-            win.center()
-            setupWindow = win
-            // This window object is the host, not its title: closing it is the
-            // window's last word on setup, however SwiftUI keeps its view.
-            setupCloseObserver = NotificationCenter.default.addObserver(
-                forName: NSWindow.willCloseNotification, object: win, queue: .main
-            ) { [weak self] _ in
-                MainActor.assumeIsolated {
-                    guard let self else { return }
-                    self.setupModel.hide(from: "window")
-                    if self.firstRunHiddenForGuide {
-                        self.firstRunHiddenForGuide = false
-                        DispatchQueue.main.async { self.openFirstRunSetup() }
-                    }
-                }
-            }
-            return win
-        }()
-        win.contentView = NSHostingView(rootView: SetupGuideView(
-            model: setupModel,
-            onDone: { [weak win] in win?.close() },
-            openSettings: { [weak self, weak win] in win?.close(); self?.openSettings() }))
-        // Showing it starts the poll (the first host), which re-reads the machine.
-        setupModel.show(in: "window")
-        UserDefaults.standard.set(true, forKey: Self.setupGuideShownKey)
-        NSApp.activate(ignoringOtherApps: true)
-        win.makeKeyAndOrderFront(nil)
+        setupModel.hide(from: "settings")
+        if firstRunHiddenForGuide {
+            firstRunHiddenForGuide = false
+            DispatchQueue.main.async { self.openFirstRunSetup() }
+        }
     }
 
     /// Setup in the notch: the panel opens on Ask with the setup card, which
@@ -2084,7 +2084,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var knowYouMoment: KnowYouOffer.Moment {
         KnowYouOffer.Moment(
-            firstRunWindowUp: firstRunWindow != nil, setupWindowUp: setupWindow?.isVisible == true,
+            firstRunWindowUp: firstRunWindow != nil, setupWindowUp: settingsSetupShown,
             setupCardOpen: model.setupCard == .open, replying: model.isProcessing,
             flowOpen: model.knowYou != nil,
             panelInUse: presentation.desired == .chat || presentation.desired == .search
@@ -2206,11 +2206,13 @@ extension AppDelegate {
         let addingTask = opened()
         addingTask.model.tab = .day
         addingTask.model.todayTaskTitle = "Lab report draft"
-        for delegate in [idle, pinned, typing, editing, addingTask] { delegate.scheduleCollapse() }
+        let picking = opened()
+        picking.model.pickingFile = true
+        for delegate in [idle, pinned, typing, editing, addingTask, picking] { delegate.scheduleCollapse() }
         try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
         precondition(idle.presentation.desired == .bar, "Control: an idle panel must auto-collapse")
         for (delegate, what) in [(pinned, "a pin"), (typing, "typed input"), (editing, "a draft being edited"),
-                                 (addingTask, "a Day task being typed")] {
+                                 (addingTask, "a Day task being typed"), (picking, "an open file dialog")] {
             precondition(delegate.presentation.desired == .chat, "\(what) must hold the panel open")
         }
         pinned.collapse()
@@ -2237,7 +2239,7 @@ extension AppDelegate {
         addingTask.model.tab = .research
         addingTask.model.prepareTab(byHover: false)
         precondition(addingTask.model.tab == .ask, "⌥Space opens Ask")
-        print("PASS: AppDelegate collapse holds (pin, typing, draft, Day task), unpins on collapse and dismiss; tabs reopen as designed")
+        print("PASS: AppDelegate collapse holds (pin, typing, draft, Day task, file dialog), unpins on collapse and dismiss; tabs reopen as designed")
     }
 
     static func checkResearchReleasesQueueOffTab() async {

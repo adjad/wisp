@@ -7,14 +7,19 @@ busywork. Its AI runs on your Mac, so your mail, texts and calendar never go to 
 
 ## The problem
 
-Your day is spread across Mail, Messages, Calendar, Reminders and Notes, and none of them talk to
-each other. The text you meant to answer, the deadline buried in the third paragraph of an email,
-the lease that renews in three weeks, the meeting that moved: keeping track of all of it is your
-job, and things slip.
+Your day is spread across Mail, Messages, Calendar, Reminders and Notes, and none of them talk to each other. Each app holds one piece of the picture, and you are the only thing connecting them. The plan someone made in a group chat at 9pm only becomes real if you remember to put it on your calendar. The form the school needs signed by Friday is in an email you opened once on your phone. You jotted the contractor’s quote in Notes, and the follow-up you promised sits in a thread you haven’t opened since. Your grocery list is in Reminders, but the dinner it was for moved to Thursday in a message you read on the train.
 
-The assistants that could help either can't see that information (Siri can set a timer, but it
-can't tell you who's waiting on you) or want it uploaded to a cloud model. Your inbox and your
-texts are some of the most private things you have.
+Nothing here is hard. The trouble is that it’s scattered. A reply you owe, a time that changed, a payment that’s due and a promise you made all look the same: one line in an app you may not open today. Each app only knows about itself, so nothing can tell you that the dentist appointment now collides with the pickup someone asked you about, or that the person waiting on a yes has been waiting for four days. Keeping all of that straight is unpaid work, and when it fails, things slip. You miss a reply, a return window or a renewal, and you feel like you weren’t paying attention. You were paying attention. There were just five places to look.
+
+The assistants that could help either can’t see that information or want it uploaded. Siri can set a timer, but it can’t tell you who’s waiting on you. Cloud assistants can reason across your life, but only after your inbox and your texts have been sent to someone else’s servers.
+
+## Why privacy is the whole point
+
+Your mail, your messages, your calendar and your notes are among the most private things you have. They hold your family’s group chat, your health appointments, your finances, your work, and the things you told one person and no one else. Even when a cloud provider promises not to keep any of it, you are still trusting a company, a retention policy and a security team you will never see. An assistant that has to read everything to be useful is only worth using if that reading never leaves your hands.
+
+That’s why Wisp runs entirely on your Mac. The models run locally, the indexes and caches stay on your disk, and nothing is uploaded, so no account, server or third party is involved. Because it’s local, it can safely be given what a cloud assistant never should be: the full text of your mail, your whole message history and every note.
+
+It also works with the Apple apps you already use rather than asking you to move into a new one. It reads from Mail, Messages, Calendar, Reminders and Notes through the system’s own interfaces and respects the permissions macOS already gives you. When it acts, for example by adding an event, creating a reminder or drafting a reply, the result lands in the same apps, where it syncs through iCloud to your iPhone and iPad like anything else you made yourself. Nothing is stored in a silo that only Wisp can open.
 
 ## What Wisp does
 
@@ -47,9 +52,6 @@ by default), and your Brief and answers fit you.
 - **The AI runs on your Mac.** Wisp downloads its model once (Gemma 4 E4B, about 5.5 GB) and runs it
   with an engine built into the app. Your mail, calendar, messages and notes are read on the Mac
   and stored there, in `~/.moe`.
-- **Very little leaves.** The search terms of a question that needs the web, requests to Google if
-  you connect it, and the one-time model download. Nothing goes to a cloud model unless you set one
-  up yourself.
 - **It asks before it acts.** Nothing is sent, and no event changes, until you approve it. Every
   action Wisp takes is logged in `~/.moe/audit.jsonl`.
 - **You can start over.** `/resetwisp` deletes everything Wisp has stored and revokes the access

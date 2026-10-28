@@ -1048,13 +1048,13 @@ enum IgnoredCaught {
     }
 }
 
-/// The Day's few colors. Everything else is the notch's monochrome Theme.
+/// The Day's few colors, taken from WispInk. Everything else is the notch's monochrome Theme.
 enum DayInk {
     static let calendarFill = Color(white: 0.11)
     static let calendarStroke = Color(white: 0.24)
-    static let suggested = Color(red: 0.56, green: 0.72, blue: 1.0)
-    static let caught = Color(red: 0.91, green: 0.76, blue: 0.48)
-    static let now = Color(red: 1.0, green: 0.42, blue: 0.37)
+    static let suggested = Color(nsColor: WispInk.rgb(WispInk.blue.dark))
+    static let caught = Theme.warn
+    static let now = Theme.bad
 
     @ViewBuilder static func fill(_ style: DayStyle) -> some View {
         switch style {

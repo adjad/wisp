@@ -13,7 +13,7 @@ enum NotchModelOffer: Equatable {
     case startEngineFirst
     /// Wisp's own engine fetches the model here, in one of these states.
     case download(FirstRunBrain)
-    /// Only the setup window can do this (an external oMLX engine, or a model with
+    /// Only the full guide can do this (an external oMLX engine, or a model with
     /// no public download): a ⤢ chip that opens it, with this title.
     case elsewhere(String)
     /// Nothing Wisp can download fits this Mac: say why, and offer another route.

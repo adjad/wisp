@@ -27,6 +27,8 @@ protocol ChatBackend: AnyObject {
     func fullAccess() async -> Bool?
     /// The flag the service confirmed after the change; nil when it can't be confirmed.
     func setFullAccess(_ on: Bool) async -> Bool?
+    /// True when this launch may send turns to a cloud provider; nil when unknown.
+    func cloudInUse() async -> Bool?
 }
 
 extension ChatBackend {
@@ -43,6 +45,7 @@ extension ChatBackend {
     }
     func corpusPromptsResults(limit: Int) async throws -> [CorpusPromptsResult] { [] }
     func corpusPromptsExport() async throws -> (markdown: String, csv: String)? { nil }
+    func cloudInUse() async -> Bool? { nil }
 }
 
 /// Where an export landed.
@@ -112,6 +115,9 @@ final class ChatStore: ObservableObject {
     // False while Full access can't be confirmed: the composer then says so
     // rather than showing the last value, or "off", as if it were current.
     @Published private(set) var fullAccessKnown = false
+    /// Whether answers may go to a cloud provider: nil until the service says,
+    /// and the window claims "all local" only on a confirmed false.
+    @Published private(set) var cloudInUse: Bool?
     @Published private(set) var loadingList = false
 
     let backend: ChatBackend
@@ -123,6 +129,9 @@ final class ChatStore: ObservableObject {
         self.backend = backend
         self.debug = debug
     }
+
+    /// Debug Mode, read when a view is built (it gates debug-only tools such as image attach).
+    var debugMode: Bool { debug() }
 
     // MARK: - List
 
@@ -162,12 +171,15 @@ final class ChatStore: ObservableObject {
         loadingList = true
         defer { loadingList = false }
         async let access = backend.fullAccess()
+        async let cloud: Void = refreshCloudUse()
         guard let rows = await backend.listChats() else {
             reachable = false
+            await cloud
             return
         }
         reachable = true
         applyFullAccess(await access)
+        await cloud
         var byId = Dictionary(conversations.compactMap { c in c.sessionId.isEmpty ? nil : (c.sessionId, c) },
                               uniquingKeysWith: { first, _ in first })
         for row in rows where !deletedSessionIds.contains(row.id) {
@@ -264,6 +276,8 @@ final class ChatStore: ObservableObject {
 
     /// Interprets the Ask composer command and otherwise sends a normal prompt.
     func submit(_ text: String, attachmentName: String? = nil, image: String? = nil) {
+        // Cloud settings can change in another window; re-read them as the turn starts.
+        Task { await refreshCloudUse() }
         do {
             guard let selection = try AssistantTaskCorpusCommand.resolve(text) else {
                 send(text, attachmentName: attachmentName, image: image)
@@ -706,6 +720,18 @@ final class ChatStore: ObservableObject {
     }
 
     // MARK: - Access
+
+    /// Re-read whether answers may go to a cloud provider. The only writer of
+    /// cloudInUse: a reply that arrives after a newer request's is dropped, so a
+    /// slow read from before a Settings change can't put "Local" back.
+    func refreshCloudUse() async {
+        cloudGeneration &+= 1
+        let ticket = cloudGeneration
+        let value = await backend.cloudInUse()
+        guard ticket == cloudGeneration else { return }
+        cloudInUse = value
+    }
+    private var cloudGeneration = 0
 
     func setFullAccess(_ on: Bool) {
         Task { applyFullAccess(await backend.setFullAccess(on)) }
