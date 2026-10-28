@@ -706,15 +706,15 @@ struct BriefContent {
 }
 
 /// Opens a Brief or Day fix link. Wisp's own Settings > Google (a Google
-/// account to reconnect) opens on its Google pane, by the same action the
-/// menu's Settings… item sends; everything else is a System Settings page
+/// account to reconnect) opens on its Google pane, through the notification
+/// AppDelegate observes (.wispOpenSettings); everything else is a System Settings page
 /// (Permissions.openFix, which asks in Wisp first when macOS never has).
 enum BriefFix {
     @MainActor static func open(_ action: BriefDetail.Action) {
         if action == BriefDetail.googleSettings {
             // SettingsView's @AppStorage pane, so an open Settings window switches too.
             UserDefaults.standard.set("google", forKey: "WispSettingsPane")
-            _ = NSApp.sendAction(Selector(("openSettings")), to: nil, from: nil)
+            NotificationCenter.default.post(name: .wispOpenSettings, object: nil)
             return
         }
         if let url = URL(string: action.url) { Permissions.openFix(url) }

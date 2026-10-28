@@ -118,7 +118,7 @@ struct OverlayView: View {
                 // set aside, then shrinks to a line. One view in one place for both.
                 if model.setupCard != .open { chatSwitcherRow.padding(.top, 8) }
                 transientNotice
-                if model.setupCard != .hidden { NotchSetupView(model: model, setup: setup) }
+                if model.setupCard.showsOnAsk { NotchSetupView(model: model, setup: setup) }
                 if model.setupCard != .open {
                     if model.reportIsUnattached {
                         ReportDraftCard(draft: model.report,
@@ -213,6 +213,15 @@ struct OverlayView: View {
                     .opacity(!reduceMotion && breathe ? 0.3 : 1)
                     .animation(reduceMotion ? nil : .easeInOut(duration: 1).repeatForever(autoreverses: true), value: breathe)
                     .accessibilityHidden(true)
+            } else if model.setupCard == .ready {
+                // Ready while notifications are off: a still, quiet dot until the
+                // panel is opened (AppDelegate.tellReady, readyLineSeen).
+                HStack(spacing: 6) {
+                    if !isNotch { orb.scaleEffect(0.7) }
+                    Circle().fill(Theme.good.opacity(0.75)).frame(width: 5, height: 5)
+                }
+                .padding(.bottom, isNotch ? 5 : 8)
+                .accessibilityLabel("Wisp is ready")
             } else if model.setupCard != .later, todayModel.isShowingCurrentDay, todayCount > 0 {
                 // What's due today or overdue, from the day's last load (it loads only
                 // while Brief or Day is open, so the bar never triggers a load).
@@ -263,6 +272,7 @@ struct OverlayView: View {
     /// its dot and badge cannot be read as separate elements.
     private var notchBarStatus: String {
         if model.isProcessing || model.phase == .streaming { return "Working" }
+        if model.setupCard == .ready { return "Wisp is ready" }
         if model.setupCard != .later, todayModel.isShowingCurrentDay, todayCount > 0 {
             return todayCount == 1 ? "1 thing is due today" : "\(todayCount) things are due today"
         }

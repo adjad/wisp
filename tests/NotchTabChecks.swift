@@ -47,6 +47,11 @@ struct NotchTabChecks {
         check(NotchSetupCard.later.afterReadiness(true) == .hidden, "a card set aside leaves once Wisp is ready")
         check(NotchSetupCard.later.afterReadiness(false) == .later, "a card set aside stays while Wisp can't answer")
         check(NotchSetupCard.hidden.afterReadiness(false) == .hidden, "losing readiness never reopens setup by itself")
+        check(NotchSetupCard.ready.afterReadiness(true) == .ready, "the ready dot waits for the panel to open")
+        check(NotchSetupCard.ready.afterReadiness(false) == .hidden, "the ready dot never outlives readiness")
+        check(NotchSetupCard.open.showsOnAsk && NotchSetupCard.later.showsOnAsk
+              && !NotchSetupCard.ready.showsOnAsk && !NotchSetupCard.hidden.showsOnAsk,
+              "the ready dot is on the closed bar only, never a setup card on Ask")
         check(NotchSetupCard.open.tabForOpening(.day) == .ask, "an open setup card opens the panel on Ask")
         check(NotchSetupCard.later.tabForOpening(.day) == .day, "a card set aside keeps hover's last tab")
         check(NotchSetupCard.hidden.tabForOpening(.research) == .research, "no card, no change to the tab")

@@ -187,6 +187,21 @@ enum AgentSendChecks {
                                      (title: "Next week", start: now + 90_000, allDay: false)], now: now) == "Standup",
               "the soonest timed, titled event that hasn't started, within a day")
         check(AskStarters.nextEvent([], now: now).isEmpty, "no events: no prep starter")
+
+        // The goal starter's cloud answer is per open: a new open forgets the
+        // last "no", and an answer to an older open is dropped.
+        var cloud = StarterCloudUse()
+        let first = cloud.opened()
+        cloud.answered(false, for: first)
+        check(cloud.inUse == false, "the open's own answer lands")
+        let second = cloud.opened()
+        check(cloud.inUse == nil && !AskStarters.goalStarterAllowed(cloudInUse: cloud.inUse),
+              "a reopened panel shows no goal starter until cloud use is read again")
+        cloud.answered(false, for: first)
+        check(cloud.inUse == nil, "a late answer to the previous open is dropped")
+        cloud.answered(true, for: second)
+        check(cloud.inUse == true && !AskStarters.goalStarterAllowed(cloudInUse: cloud.inUse),
+              "cloud turned on since: no goal starter")
         check(AskStarters.waitingSender([(sender: "Newsletter", source: "email", person: false, replied: false),
                                          (sender: "Sam", source: "messages", person: true, replied: true),
                                          (sender: "a@b.com", source: "email", person: true, replied: false),

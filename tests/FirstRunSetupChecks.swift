@@ -165,6 +165,11 @@ struct FirstRunSetupChecks {
         check(FirstRunSetup.setupCue(.later, canAnswer: true, firstRunWindowUp: false) == .hidden, "Ready: the cue goes")
         check(FirstRunSetup.setupCue(.open, canAnswer: true, firstRunWindowUp: false) == .open, "Ready: an open card waits for Done")
         check(FirstRunSetup.setupCue(.hidden, canAnswer: true, firstRunWindowUp: false) == .hidden, "Ready: nothing to show")
+        check(FirstRunSetup.setupCue(.ready, canAnswer: true, firstRunWindowUp: false) == .ready,
+              "Ready: the ready dot stays until the panel opens")
+        check(FirstRunSetup.setupCue(.ready, canAnswer: false, firstRunWindowUp: false) == .later
+              && FirstRunSetup.setupCue(.ready, canAnswer: false, firstRunWindowUp: true) == .hidden,
+              "Can't answer again: the ready dot gives way to the ! cue (none over the window)")
 
         // The menu bar icon's Finish Setup…: only while setup is under way.
         func menuSetup(_ canAnswer: Bool?, _ card: NotchSetupCard, window: Bool = false, unfinished: Bool = false) -> Bool {
@@ -175,6 +180,7 @@ struct FirstRunSetupChecks {
         check(menuSetup(nil, .hidden, window: true) && menuSetup(true, .hidden, unfinished: true),
               "The first-run window is up, or was left unfinished: it shows")
         check(!menuSetup(true, .hidden), "Set up: it hides (Settings › Models changes the model)")
+        check(!menuSetup(true, .ready), "The ready dot is not setup under way")
         check(!menuSetup(nil, .hidden), "Before the service first answers: nothing shown by itself")
 
         // Permission rows: their state in a word, and Contacts only once it helps.

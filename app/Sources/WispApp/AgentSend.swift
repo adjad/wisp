@@ -224,6 +224,26 @@ enum AskStarters {
     }
 }
 
+/// Ask's view of /inference/cloud for the goal starter (goalStarterAllowed).
+/// Each panel open forgets the last answer, so a cloud model turned on since
+/// never lets the goal starter show on a stale "no"; an answer to an older
+/// open's request is dropped.
+struct StarterCloudUse: Equatable {
+    private(set) var inUse: Bool?
+    private var asked = 0
+
+    /// A panel opened: unknown again until this request's answer lands.
+    mutating func opened() -> Int {
+        inUse = nil
+        asked += 1
+        return asked
+    }
+
+    mutating func answered(_ value: Bool?, for request: Int) {
+        if request == asked { inUse = value }
+    }
+}
+
 /// A source a tool in an Ask reply couldn't read for lack of access. The
 /// service attaches these to the tool's own result (`needs_access`, see
 /// service/tools/access_needed.py), so the reply's fix button never depends on

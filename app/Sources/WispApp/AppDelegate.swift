@@ -389,6 +389,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.openFirstRunSetup(at: .permissions) }
         }
+        // The Brief's Gmail reconnect link (BriefFix.open), on its Google pane.
+        NotificationCenter.default.addObserver(
+            forName: .wispOpenSettings, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.openSettings() }
+        }
         // Settings › Privacy's More Access… and Settings › General's chat debug log.
         NotificationCenter.default.addObserver(
             forName: .wispGrantMoreAccess, object: nil, queue: .main
@@ -593,7 +599,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Not ready yet: the quiet cue (a line on Ask) carries the download in the
         // notch, and a notification says when Wisp can answer.
         if !ready {
-            if model.setupCard == .hidden { model.setupCard = .later }
+            if model.setupCard == .hidden || model.setupCard == .ready { model.setupCard = .later }
             notifyWhenReady()
         }
         model.showingQuickSettings = false
@@ -640,7 +646,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // cue, the Dock or Continue setup brings the window back at this step, and
         // "Wisp is ready" follows once the model has arrived.
         if !canAnswer {
-            if model.setupCard == .hidden { model.setupCard = .later }
+            if model.setupCard == .hidden || model.setupCard == .ready { model.setupCard = .later }
             notifyWhenReady()
         }
     }
@@ -702,7 +708,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// "Wisp is ready" as a notification when they are allowed. Wisp never asks
     /// for them here, so when they are off (the setup row was skipped) the notch
-    /// says it instead, in the open panel, until the person has opened it.
+    /// says it instead: a dot on the closed bar and a line in the open panel,
+    /// until the person has opened it.
     private func tellReady() {
         Task { @MainActor [weak self] in
             let shown = await Notifications.postIfAllowed(id: Notifications.readyId, title: ReadyNotice.title,
@@ -710,6 +717,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             OnboardingTimeline.record(shown ? "ready notice delivered" : "ready notice fell back to notch")
             guard !shown, let self else { return }
             self.readyLineUnseen = true
+            // An open setup card is left to its Done.
+            if self.model.setupCard == .hidden { self.model.setupCard = .ready }
             self.model.showTransientNotice(ReadyNotice.notchLine, duration: ReadyNotice.unseenFor, info: true)
             if self.presentation.desired == .chat { self.readyLineSeen() }
         }
@@ -725,6 +734,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func readyLineSeen() {
         guard readyLineUnseen, model.knowYou == nil, model.resetCard == nil else { return }
         readyLineUnseen = false
+        if model.setupCard == .ready { model.setupCard = .hidden }
         guard model.transientNotice == ReadyNotice.notchLine else { return }
         model.showTransientNotice(ReadyNotice.notchLine, duration: ReadyNotice.seenFor, info: true)
     }

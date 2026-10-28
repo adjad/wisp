@@ -145,6 +145,7 @@ enum FirstRunSetup {
     /// An open card is left to the person (it waits for Done or Later).
     static func setupCue(_ current: NotchSetupCard, canAnswer: Bool, firstRunWindowUp: Bool) -> NotchSetupCard {
         if canAnswer { return current.afterReadiness(true) }
+        let current = current.afterReadiness(false)
         return !firstRunWindowUp && current == .hidden ? .later : current
     }
 
@@ -155,7 +156,7 @@ enum FirstRunSetup {
     /// is nil until the service has answered once, which shows nothing by itself.
     static func menuOffersSetup(canAnswer: Bool?, card: NotchSetupCard, firstRunWindowUp: Bool,
                                 unfinished: Bool) -> Bool {
-        firstRunWindowUp || unfinished || card != .hidden || canAnswer == false
+        firstRunWindowUp || unfinished || card.showsOnAsk || canAnswer == false
     }
 
     /// No Wisp notification while the setup window is on screen, even with
