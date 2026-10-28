@@ -278,7 +278,7 @@ def test_a_bad_audio_track_falls_back_to_frames(checkpoint):
         with patch("service.voice._transcribe", AsyncMock(side_effect=AssertionError("no transcript"))):
             result = run(V.answer_request("?", video={"frames": [url()], "seconds": 5, "audio": audio},
                                           client=client, model=MODEL))
-        assert result.answer == "A slide."
+        assert result.answer == "A slide." + V.SOUND_DROPPED
         assert "Transcript" not in client.calls[0]["messages"][1]["content"][-1]["text"]
 
 
@@ -468,11 +468,21 @@ def test_a_small_file_that_decodes_huge_is_refused(data, kind):
     assert V.decode_image(url(jpeg_header(4096, 4096), "jpeg"))   # the ceiling itself is fine
 
 
-def test_invisible_format_characters_never_reach_a_card():
-    hidden = "Rent‮due​﻿"
+def test_display_changing_invisibles_never_reach_a_card():
+    hidden = "Rent\u202edue\u200f\ufeff"
     _, proposal = V.parse_proposal('{"proposal": {"kind": "reminder", "title": "' + hidden + '", '
-                                   '"date": "2099-01-01", "location": "Hall⁦ B⁩"}}')
+                                   '"date": "2099-01-01", "location": "Hall\u2066 B\u2069"}}')
     assert proposal["title"] == "Rentdue" and proposal["location"] == "Hall B"
+    assert V._plain("a\u202egnp.exe") == "agnp.exe"
+
+
+@pytest.mark.parametrize("text", [
+    "Family \U0001F468\u200d\U0001F469\u200d\U0001F467 picnic",   # ZWJ emoji sequence
+    "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645",          # Persian "می‌خواهم" keeps its ZWNJ
+    "co\u00adoperate",                                              # soft hyphen
+])
+def test_real_text_keeps_its_joiners(text):
+    assert V._plain(text) == text
 
 
 def test_a_pictures_card_offers_no_standing_grant_and_ignores_one(agent_env):
@@ -527,3 +537,34 @@ def test_agent_body_limit_refuses_before_parsing():
         assert client.post("/other", content=b"x" * 5000).status_code == 200
     assert seen == [999, 5000]
     assert local_http.AGENT_BODY_LIMIT >= 16 * 1024 * 1024
+
+
+def test_a_second_huge_frame_header_is_not_hidden_behind_a_small_one():
+    small = jpeg_header(16, 16)
+    huge_sof = b"\xff\xc0" + struct.pack(">HBHHB", 17, 8, 12000, 12000, 3) + b"\x01\x22\x00\x02\x11\x01\x03\x11\x01"
+    sos = b"\xff\xda" + struct.pack(">H", 8) + b"\x01\x01\x00\x00\x3f\x00"
+    two = small[:-2] + huge_sof + sos + b"\x00" * 8 + b"\xff\xd9"
+    assert V.image_size("jpeg", two) == (12000, 12000)
+    with pytest.raises(ValueError, match="too large"):
+        V.decode_image(url(two, "jpeg"))
+    # A frame header after the start of scan is image data, not a header.
+    after_scan = small[:-2] + sos + huge_sof + b"\xff\xd9"
+    assert V.image_size("jpeg", after_scan) == (16, 16)
+
+
+def test_truncated_and_zero_sized_headers_are_unreadable_not_too_large():
+    assert V.image_size("webp", webp_vp8x(640, 480)[:26]) is None
+    assert V.image_size("png", png(4, 4)[:20]) is None
+    with pytest.raises(ValueError, match="couldn't be read"):
+        V.decode_image(url(jpeg_header(0, 100), "jpeg"))
+
+
+def test_an_answer_says_when_the_clips_sound_was_dropped(checkpoint):
+    bad = {"frames": [url()], "seconds": 5, "audio": "!!!"}
+    result = run(V.answer_request("?", video=bad, client=StubClient(checkpoint(), reply="A slide."), model=MODEL))
+    assert result.answer == "A slide." + V.SOUND_DROPPED
+    silent = {"frames": [url()], "seconds": 5, "audio": base64.b64encode(wav(1.0)).decode()}
+    with patch("service.voice._transcribe", AsyncMock(return_value="")):
+        result = run(V.answer_request("?", video=silent, client=StubClient(checkpoint(), reply="A slide."),
+                                      model=MODEL))
+    assert result.answer == "A slide."       # a silent clip is not a dropped one

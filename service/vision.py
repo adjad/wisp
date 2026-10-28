@@ -47,7 +47,6 @@ import json
 import re
 import struct
 import time
-import unicodedata
 import uuid
 from dataclasses import dataclass
 from datetime import date
@@ -63,6 +62,7 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 # sends at most 1568 px; anything past this is refused before the engine sees it.
 MAX_IMAGE_SIDE = 4096
 MAX_VIDEO_SECONDS = 30.5
+SOUND_DROPPED = "\n\n(I couldn't use this clip's sound, so this is from its frames only.)"
 CLIP_TOO_LONG = "That clip is longer than 30 seconds. Wisp can read clips up to 30 seconds."
 _TIMEOUT_S = 45.0
 _IDLE_POLL_S = 0.1
@@ -125,9 +125,9 @@ def decode_image(url: str) -> bytes:
     if not magic_ok:
         raise ValueError("That picture couldn't be read.")
     size = image_size(kind, data)
-    if size is None:
+    if size is None or min(size) < 1:
         raise ValueError("That picture couldn't be read.")
-    if max(size) > MAX_IMAGE_SIDE or min(size) < 1:
+    if max(size) > MAX_IMAGE_SIDE:
         raise ValueError("That picture is too large. Try a smaller one.")
     return data
 
@@ -136,23 +136,27 @@ def image_size(kind: str, data: bytes) -> tuple[int, int] | None:
     """(width, height) from the file's own header, without decoding pixels; None if unreadable."""
     try:
         if kind == "png":
-            if data[12:16] != b"IHDR":
+            if len(data) < 24 or data[12:16] != b"IHDR":
                 return None
             return struct.unpack(">II", data[16:24])
         if kind == "webp":
             chunk = data[12:16]
-            if chunk == b"VP8X":
+            if chunk == b"VP8X" and len(data) >= 30:
                 return (1 + int.from_bytes(data[24:27], "little"), 1 + int.from_bytes(data[27:30], "little"))
-            if chunk == b"VP8L" and data[20:21] == b"\x2f":
+            if chunk == b"VP8L" and len(data) >= 25 and data[20:21] == b"\x2f":
                 bits = int.from_bytes(data[21:25], "little")
                 return (1 + (bits & 0x3FFF), 1 + ((bits >> 14) & 0x3FFF))
-            if chunk == b"VP8 " and data[23:26] == b"\x9d\x01\x2a":
+            if chunk == b"VP8 " and len(data) >= 30 and data[23:26] == b"\x9d\x01\x2a":
                 w, h = struct.unpack("<HH", data[26:30])
                 return (w & 0x3FFF, h & 0x3FFF)
             return None
-        # JPEG: walk the markers to the first start-of-frame.
+        # JPEG: walk every marker up to the first start-of-scan, as a decoder
+        # does, and keep the LARGEST frame header. A file can carry a small SOF
+        # followed by a huge one; the decoder believes the last, so checking only
+        # the first would let the huge one through.
+        largest: tuple[int, int] | None = None
         i = 2
-        while i + 9 < len(data):
+        while i + 3 < len(data):
             if data[i] != 0xFF:
                 return None
             marker = data[i + 1]
@@ -162,14 +166,19 @@ def image_size(kind: str, data: bytes) -> tuple[int, int] | None:
             if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
                 i += 2
                 continue
+            if marker in (0xDA, 0xD9):          # start of scan / end of image: no more headers
+                break
             length = struct.unpack(">H", data[i + 2:i + 4])[0]
-            if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
-                h, w = struct.unpack(">HH", data[i + 5:i + 9])
-                return (w, h)
             if length < 2:
                 return None
+            if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):
+                if i + 9 > len(data):
+                    return None
+                h, w = struct.unpack(">HH", data[i + 5:i + 9])
+                if largest is None or max(w, h) > max(largest):
+                    largest = (w, h)
             i += 2 + length
-        return None
+        return largest
     except (struct.error, IndexError):
         return None
 
@@ -273,11 +282,17 @@ async def _require_vision(client, model: str) -> None:
 
 # --- proposal -----------------------------------------------------------------
 
+# Characters that change how text LOOKS without being part of it: bidi
+# embeddings/overrides/isolates and marks, plus the BOM. "a\u202egnp.exe"
+# displays as "aexe.png". Zero-width joiners (emoji sequences) and non-joiners
+# (Persian, Hindi) and soft hyphens are real text and are kept.
+_INVISIBLE = re.compile("[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c\ufeff]")
+
+
 def _plain(value: str) -> str:
-    """Control characters become spaces; invisible format characters (bidi
-    overrides, zero-width joiners, BOMs) are dropped, so a card shows what it saves."""
-    value = _CTRL.sub(" ", value)
-    return "".join(ch for ch in value if unicodedata.category(ch) != "Cf")
+    """Control characters become spaces and display-changing invisibles are
+    dropped, so a card shows exactly what it saves."""
+    return _INVISIBLE.sub("", _CTRL.sub(" ", value))
 
 
 def _clean_line(value, limit: int) -> str | None:
@@ -459,12 +474,15 @@ async def answer_request(prompt: str, *, image: str | None = None, video: dict |
         validate_media(frames, seconds)
         audio = video.get("audio")
         data = None
+        # True when the clip HAD sound Wisp couldn't use (not when it was silent),
+        # so the answer can say it came from the frames alone.
+        sound_dropped = False
         if audio:
             from service import voice
             try:
                 data = voice.decode_clip(audio)
             except ValueError:
-                data = None                       # a bad, tiny or over-long track: frames alone answer
+                sound_dropped = True              # a bad, tiny or over-long track: frames alone answer
         if client is None or model is None:
             client, model = _resolve()
         idle.begin_foreground()
@@ -475,10 +493,13 @@ async def answer_request(prompt: str, *, image: str | None = None, video: dict |
                 try:
                     transcript = (await voice._transcribe(data, client, model)) or None
                 except (voice.VoiceUnavailable, TimeoutError, asyncio.TimeoutError):
-                    transcript = None             # frames alone still answer
-            return await _answer(prompt, list(frames), transcript, float(seconds), client, model)
+                    sound_dropped = True          # frames alone still answer
+            result = await _answer(prompt, list(frames), transcript, float(seconds), client, model)
         finally:
             idle.end_foreground()
+        if sound_dropped:
+            result.answer += SOUND_DROPPED
+        return result
     return await answer(prompt, [image], client=client, model=model)
 
 

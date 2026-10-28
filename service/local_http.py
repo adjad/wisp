@@ -92,10 +92,13 @@ class LocalOriginGuard:
         await self.app(scope, receive, send)
 
 
-# The largest body /agent takes. A clip is at most 8 downscaled JPEG frames plus
-# 30 s of 16 kHz WAV, about 13 MB as base64 even at the per-image ceiling the
-# service allows; nothing else /agent takes comes close. The limit is checked
-# before the JSON is parsed, so an oversized body is never held as objects.
+# The largest body /agent takes. The app sends a clip as at most 8 JPEG frames
+# of at most 1568 px (typically under 1 MB each) plus 30 s of 16 kHz WAV, so a
+# real clip is about 13 MB as base64. The service's own per-image ceiling is
+# 8 MB, so 8 frames at that ceiling would be about 85 MB of base64. This cap
+# sits between the two: everything the app sends fits, and the worst case
+# the per-field checks allow is refused here. It is checked before the JSON is
+# parsed, so an oversized body is never held as objects.
 AGENT_BODY_LIMIT = 32 * 1024 * 1024
 _LIMITED_PATHS = {"/agent": AGENT_BODY_LIMIT}
 
