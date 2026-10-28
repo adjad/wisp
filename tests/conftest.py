@@ -20,6 +20,10 @@ LEGACY_ROUTER_SUITES = frozenset({
 def explicit_legacy_router_for_rollback_suites(request, monkeypatch):
     if request.path.name in LEGACY_ROUTER_SUITES:
         monkeypatch.setenv("WISP_MODEL_LED_ROUTING", "0")
+        # Since 0.5.0-rc3 the packaged model_only is on, and it forces
+        # model-led discovery whatever WISP_MODEL_LED_ROUTING says. The
+        # rollback these suites cover is the documented WISP_MODEL_ONLY=false.
+        monkeypatch.setenv("WISP_MODEL_ONLY", "0")
 
 
 @pytest.fixture(autouse=True)

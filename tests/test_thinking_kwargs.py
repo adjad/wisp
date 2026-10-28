@@ -67,7 +67,12 @@ def test_summary_budget_grows_only_with_an_explicit_think_block():
     assert config.user_facing_summary_budget(A1, 600) == 600
 
 
-def test_loop_step_kwargs_follow_the_policy():
+def test_loop_step_kwargs_follow_the_policy(monkeypatch):
+    # This is the rules-path policy. Since 0.5.0-rc3 model_only is on by
+    # default and states thinking ON for every agent step instead
+    # (tests/test_model_only_switch.py); the policy below still applies with
+    # WISP_MODEL_ONLY=false and on turns that cannot be model-led.
+    monkeypatch.setenv("WISP_MODEL_ONLY", "0")
     # Explicit model: narration/selection distinction is irrelevant, think_on decides.
     assert loop._template_kwargs(V3, no_thinking=True, think_on=False) == OFF
     assert loop._template_kwargs(V3, no_thinking=False, think_on=False) == OFF
