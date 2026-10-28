@@ -1,8 +1,8 @@
 {
   "license": "Apache-2.0",
   "source": "Pinned oMLX _propagate_memory_limit missing-scheduler branch after Wisp overlay; no native, model or vendor imports.",
-  "input_sha256": "afc72e5875c844536166b09f2e8d55aec0580024109cddbfb858be119172641f",
-  "output_sha256": "fb56af6dc22ae7a0ac6706bd3a47a3a35db1ffe9f8ac6efc11b04057cfa048bc",
+  "input_sha256": "242834641aeb16450d57e062449221a066206a62d066d57c312be073d656ba19",
+  "output_sha256": "c8025c08bb264bd5a3cfb428eb9a7ea73089b6147255efeb67d06f8acc868bdb",
   "source_sha256": "6d70b3f932dc7e7404e9e241fce4598cbc65277bb9924d34217219c562073f07",
   "branch_ast_sha256": "772c75979846f8e1986e2c94a0c09f9070c27bb6964085ed8732ab89345fdd89",
   "python": "def source_scheduler_branch(self):\n    for entry in self._engine_pool._entries.values():\n        scheduler = self._resolve_scheduler(entry)\n        if scheduler is None:\n            engine = getattr(entry, 'engine', None)\n            if engine is None:\n                continue\n            if getattr(engine, '_loaded', True) is False:\n                continue\n            if getattr(engine, '_prefill_memory_guard_managed_externally', False):\n                continue\n            if getattr(engine, 'is_diffusion_model', False):\n                continue\n            if isinstance(engine, BaseNonStreamingEngine):\n                engine.set_memory_soft_limit(soft_limit)\n                continue\n            _wisp_guard.unresolved(self)\n            engine_type = type(engine).__name__\n            if engine_type not in self._scheduler_resolve_warned:\n                self._scheduler_resolve_warned.add(engine_type)\n                logger.warning('ProcessMemoryEnforcer: could not resolve scheduler for engine type %s \u2014 prefill memory guard will not propagate to this engine. Verify the wrapper chain (engine._engine.engine.scheduler) still holds.', engine_type)\n            continue\n"
