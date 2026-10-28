@@ -368,7 +368,21 @@ async def _answer(prompt, images, transcript, video_seconds, client, model) -> V
     content = (choice.get("message") or {}).get("content")
     text = _THINK.sub("", content) if isinstance(content, str) else ""
     visible, proposal = parse_proposal(text)
+    if not visible and proposal:
+        # Asked to add it, the model sometimes answers with the JSON alone.
+        visible = describe_proposal(proposal)
     return VisionResult(visible or "I couldn't make out anything I can describe in that.", proposal)
+
+
+def describe_proposal(proposal: dict) -> str:
+    """One plain line for a proposal, for a reply that was only its JSON."""
+    when = date.fromisoformat(proposal["date"]).strftime("%A, %B %-d, %Y")
+    if proposal.get("start_time"):
+        when += f", {proposal['start_time']}"
+        if proposal.get("end_time"):
+            when += f"–{proposal['end_time']}"
+    where = f" at {proposal['location']}" if proposal.get("location") else ""
+    return f"{proposal['title']}: {when}{where}."
 
 
 async def answer_request(prompt: str, *, image: str | None = None, video: dict | None = None,

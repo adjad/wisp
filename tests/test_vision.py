@@ -184,6 +184,18 @@ def test_vision_request_shape(checkpoint):
     assert "untrusted" in call["messages"][0]["content"]
 
 
+def test_a_reply_that_is_only_the_json_still_reads_as_an_answer(checkpoint):
+    # Measured live on Gemma 4 E4B: "Add this to my calendar" came back as the JSON alone.
+    only_json = ('{"proposal": {"kind": "event", "title": "Neighborhood Potluck", "date": "2026-11-14", '
+                 '"start_time": "18:30", "end_time": "21:00", "location": "Maple Street Community Hall", '
+                 '"notes": null}}')
+    result = run(V.answer("Add this to my calendar", [url()], client=StubClient(checkpoint(), reply=only_json),
+                          model=MODEL))
+    assert result.proposal and result.proposal["title"] == "Neighborhood Potluck"
+    assert result.answer == ("Neighborhood Potluck: Saturday, November 14, 2026, 18:30–21:00 "
+                             "at Maple Street Community Hall.")
+
+
 @pytest.mark.parametrize("vision,weights,model_type", [
     (False, False, "vlm"), (True, False, "vlm"), (True, True, "llm")])
 def test_a_model_without_eyes_never_gets_the_image(checkpoint, vision, weights, model_type):
