@@ -87,33 +87,41 @@ _foreground_turns = 0
 # When the user last used Wisp: a foreground turn starting or ending, or the
 # app reporting the notch or a window opened (note_user_activity). Background
 # work never moves it. Starts at import, so a fresh launch counts as use.
-_last_user_activity = time.monotonic()
+#
+# It runs on a clock that keeps counting while the Mac sleeps: on macOS
+# time.monotonic() stops during sleep, so a night with the lid closed would
+# count as no idle time at all and Low Power Mode would still be on at wake.
+def _awake_or_asleep_now() -> float:
+    return time.clock_gettime(time.CLOCK_MONOTONIC)
+
+
+_last_user_activity = _awake_or_asleep_now()
 
 
 def begin_foreground() -> None:
     """A user-facing turn has started — background model work should stand down."""
     global _foreground_turns, _last_user_activity
     _foreground_turns += 1
-    _last_user_activity = time.monotonic()
+    _last_user_activity = _awake_or_asleep_now()
 
 
 def end_foreground() -> None:
     global _foreground_turns, _last_user_activity
     _foreground_turns = max(0, _foreground_turns - 1)
-    _last_user_activity = time.monotonic()
+    _last_user_activity = _awake_or_asleep_now()
 
 
 def note_user_activity() -> None:
     """The user opened the notch or a Wisp window without starting a turn."""
     global _last_user_activity
-    _last_user_activity = time.monotonic()
+    _last_user_activity = _awake_or_asleep_now()
 
 
 def user_idle_seconds() -> float:
-    """Seconds since the user last used Wisp; 0 while a turn is in flight."""
+    """Seconds since the user last used Wisp, sleep included; 0 while a turn is in flight."""
     if _foreground_turns > 0:
         return 0.0
-    return max(0.0, time.monotonic() - _last_user_activity)
+    return max(0.0, _awake_or_asleep_now() - _last_user_activity)
 
 
 def foreground_busy() -> bool:

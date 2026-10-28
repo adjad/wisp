@@ -25,11 +25,11 @@ With Low Power Mode on:
 - ``INTENSIVE`` (15 W): heavier background work whose result the user reads
   later (the scheduled Daily Summary, research).
 
-The cap is in force only while one of these requests generates. Upstream
-oMLX holds it 15 s past the last capped request; Wisp's bundled engine patches
-that to release at once (build-support/engine_guard, server.py
-``GpuPowerLimiter(release_delay_s=0.0)``). An unpatched engine still caps,
-just with that 15 s tail.
+The cap is meant to be in force only while one of these requests generates.
+Upstream oMLX holds it 15 s past the last capped request. Releasing it at once
+DEPENDS on the engine patch ``GpuPowerLimiter(release_delay_s=0.0)`` in
+server.py (branch claude/engine-gpu-cap-no-linger, shipping in the same batch);
+without that patch every capped call still trails a 15 s cap.
 
 oMLX holds the lowest cap among active requests, so a chat that overlaps a
 background call runs at the background cap until that call ends:

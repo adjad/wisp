@@ -23,7 +23,7 @@ def clean_env(monkeypatch, tmp_path):
 
     from service import idle
     monkeypatch.setattr(idle, "_foreground_turns", 0)
-    monkeypatch.setattr(idle, "_last_user_activity", time.monotonic())
+    monkeypatch.setattr(idle, "_last_user_activity", idle._awake_or_asleep_now())
 
 
 @pytest.fixture
@@ -173,7 +173,9 @@ def test_a_remote_provider_never_gets_the_field(on):
     assert _power_fields(client) == {}
 
 
-def test_a_chat_beside_a_running_background_tier_gets_the_chat_cap(on):
+def test_a_chat_beside_a_running_background_tier_requests_the_chat_cap(on):
+    # Request bodies only: the cap actually in force is the engine's
+    # min(active requests), so the chat runs at 10 W until the background call ends.
     client, bodies = _client(managed=True)
     background_started, foreground_done = asyncio.Event(), asyncio.Event()
 
@@ -351,7 +353,7 @@ def fresh_user(monkeypatch):
 
     from service import idle
     monkeypatch.setattr(idle, "_foreground_turns", 0)
-    monkeypatch.setattr(idle, "_last_user_activity", time.monotonic())
+    monkeypatch.setattr(idle, "_last_user_activity", idle._awake_or_asleep_now())
     return idle
 
 
@@ -369,6 +371,24 @@ def test_ten_idle_minutes_turn_it_off_and_store_off(fresh_user, caplog):
     assert json.loads(P.SETTINGS_PATH.read_text()) == {"low_power": False}
     assert [r.getMessage() for r in caplog.records] == ["Low Power Mode turned off: Wisp unused for 10 minutes"]
     assert P.payload_fields() == {}
+
+
+def test_a_night_asleep_counts_as_idle(fresh_user, monkeypatch):
+    # The clock keeps counting through sleep, so waking after a night with the
+    # lid closed finds Low Power Mode off before the backfill runs.
+    P.set_low_power(True)
+    asleep_at = fresh_user._awake_or_asleep_now()
+    monkeypatch.setattr(fresh_user, "_awake_or_asleep_now", lambda: asleep_at + 8 * 3600)
+    assert P.low_power() is False
+    import time
+    assert fresh_user._awake_or_asleep_now is not time.monotonic
+
+
+def test_the_idle_clock_is_one_that_counts_sleep():
+    import inspect
+
+    from service import idle
+    assert "CLOCK_MONOTONIC)" in inspect.getsource(idle._awake_or_asleep_now)
 
 
 def test_a_turn_resets_the_idle_clock_and_holds_it_while_running(fresh_user):
