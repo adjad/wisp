@@ -3,8 +3,8 @@ import SwiftUI
 /// First-run setup in the notch: the two required steps (an engine and a model)
 /// and the test, in short form. The model download runs here too, for Wisp's own
 /// engine (NotchSetupDownload.swift). Smart Search, other local apps, an external
-/// oMLX's downloads and models with no public download stay in the setup window,
-/// which shares this card's SetupGuideModel, so readiness, "Not validated" pills,
+/// oMLX's downloads and models with no public download stay in the full guide,
+/// Settings › Models › Setup in the Wisp window, which shares this card's SetupGuideModel, so readiness, "Not validated" pills,
 /// the download and the test result read the same in both.
 ///
 /// No sheets or alerts: the notch is a non-activating panel.
@@ -174,7 +174,7 @@ struct NotchSetupView: View {
                     ForEach(s.models.installed.prefix(3)) { entry in modelRow(entry) }
                 }
                 if s.models.installed.count > 3 {
-                    detail("\(s.models.installed.count - 3) more in the setup window.")
+                    detail("\(s.models.installed.count - 3) more in Settings › Models › Setup.")
                 }
             }
         }

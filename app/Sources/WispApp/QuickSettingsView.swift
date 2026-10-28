@@ -4,12 +4,12 @@ import SwiftUI
 /// three groups (Permissions, Daily brief, Advanced) with one line each.
 /// Everything that needs a form, a key, OAuth or widens what Wisp reads (models,
 /// Google, cloud keys, privacy sources such as browser history and contacts,
-/// the source controls under Memory › Routines) stays in the full Settings window.
+/// the source controls under Memory › Routines) stays in Settings, in the Wisp window.
 /// One deliberate exception: a new user with no Google account connected gets a
 /// single "Connect Google" row for the first connect (NotchGoogleVisibility).
 ///
-/// It binds to the app's one SettingsLoader, the same object the Settings window
-/// uses, so "waiting for confirmation" and "not confirmed" read the same in both
+/// It binds to the app's one SettingsLoader, the same object the Wisp window's
+/// Settings uses, so "waiting for confirmation" and "not confirmed" read the same in both
 /// places and a change in flight survives the notch collapsing. The panel is
 /// non-activating, so nothing here opens a sheet, an alert or a popup menu.
 struct QuickSettingsView: View {

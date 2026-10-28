@@ -1,4 +1,4 @@
-#if WISP_NOTCH_QA
+#if WISP_NOTCH_QA || WISP_CHAT_QA || WISP_SETTINGS_QA
 import SwiftUI
 
 // The notch's setup card in each state of its model download, for NotchQA's

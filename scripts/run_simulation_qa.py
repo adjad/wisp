@@ -168,6 +168,8 @@ PROFILE_TESTS = {
     # Fresh-install model detection over fake model folders and fake /v1/models answers.
     "tests/test_setup_existing_omlx.py",
     "tests/test_onboarding_window.py",
+    # Settings and Setup as sections of the Wisp window, read from the Swift sources.
+    "tests/test_settings_in_window.py",
     "tests/test_super_model_routing.py",
         "tests/test_inference_endpoints.py",
         "tests/test_inference_providers.py",

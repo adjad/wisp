@@ -7,9 +7,9 @@ struct OverlayView: View {
     @ObservedObject var researchModel: ResearchModel
     // Shared with the Wisp window's planner, so both show the same day.
     @ObservedObject var todayModel: TodayModel
-    // The app's one SettingsLoader, shared with the Settings window.
+    // The app's one SettingsLoader, shared with the Wisp window's Settings.
     @ObservedObject var settings: SettingsLoader
-    // The app's one setup model, shared with the setup window.
+    // The app's one setup model, shared with Settings › Models › Setup.
     @ObservedObject var setup: SetupGuideModel
     var onClose: () -> Void
     // X button: dismiss from the notch (frees the resident model) but Wisp keeps running
@@ -416,7 +416,7 @@ struct OverlayView: View {
                 }
                 Divider()
                 Button("New chat") { model.newChat() }
-                Button("All chats in the Wisp window") { WispRouter.shared.open(.chat(sessionId: nil)) }
+                Button("All chats in the Wisp window") { WispRouter.shared.open(.chatList) }
             } label: {
                 HStack(spacing: 4) {
                     Text(model.chatTitle).lineLimit(1).truncationMode(.tail)

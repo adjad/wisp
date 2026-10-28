@@ -146,6 +146,66 @@ enum Theme {
         center: .center, startRadius: 0, endRadius: 15)
 }
 
+/// The colours of a view drawn with Theme's tokens. The notch, its windows and
+/// the setup guide default to `notch`, black and white; a host whose surface
+/// follows the Mac's appearance (the Wisp window's Settings section) supplies
+/// its own palette through `\.themePalette`, so the same views stay readable
+/// on a light window. Theme.swift alone defines it: the files compiled with
+/// only Theme.swift (SetupGuideView among them) can read it.
+struct ThemePalette {
+    var surface: Color
+    var textPrimary: Color
+    var textSecondary: Color
+    var textMuted: Color
+    var hairline: Color
+    var chipFill: Color
+    var chipStroke: Color
+    var accent: Color
+    /// Text on an `accent` fill (an "on" pill).
+    var onAccent: Color
+    /// A selected row or chip.
+    var selectedFill: Color
+    var selectedStroke: Color
+    /// A step's card, a block of code, and a small action button.
+    var cardFill: Color
+    var codeFill: Color
+    var actionFill: Color
+
+    /// Theme itself. Computed, so Increase Contrast applies as Theme's own tokens do.
+    static var notch: ThemePalette {
+        ThemePalette(surface: Theme.surface, textPrimary: Theme.textPrimary,
+                     textSecondary: Theme.textSecondary, textMuted: Theme.textMuted,
+                     hairline: Theme.hairline, chipFill: Theme.chipFill, chipStroke: Theme.chipStroke,
+                     accent: Theme.accent, onAccent: .black,
+                     selectedFill: .white.opacity(0.10), selectedStroke: .white.opacity(0.35),
+                     cardFill: .white.opacity(0.04), codeFill: .white.opacity(0.06),
+                     actionFill: .white.opacity(0.12))
+    }
+}
+
+private struct ThemePaletteKey: EnvironmentKey {
+    static var defaultValue: ThemePalette { .notch }
+}
+
+extension EnvironmentValues {
+    var themePalette: ThemePalette {
+        get { self[ThemePaletteKey.self] }
+        set { self[ThemePaletteKey.self] = newValue }
+    }
+}
+
+/// A pop-up Picker keeps the title colour of the appearance it was built in, so
+/// switching the Mac from dark to light left white titles on light buttons.
+/// Rebuilding it when the colour scheme changes redraws the title.
+private struct RedrawsOnAppearanceChange: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    func body(content: Content) -> some View { content.id(colorScheme) }
+}
+
+extension View {
+    func redrawsOnAppearanceChange() -> some View { modifier(RedrawsOnAppearanceChange()) }
+}
+
 extension Font {
     /// `.system(size:weight:design:)` multiplied by the user's Text size scale.
     /// For SF Symbol glyphs and the few fixed sizes outside the text roles.
