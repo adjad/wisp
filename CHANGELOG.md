@@ -7,7 +7,7 @@ All notable changes to Wisp are documented here.
 ### Changed
 - **Versions renumbered down by 1.0.** Wisp is not yet a finished product, so every release is now 0.x (1.4.0 became 0.4.0, 1.3.3 became 0.3.3, and so on). Release tags and GitHub releases were renamed to match, and the old v0.1.0 is now v0.0.0-initial. The next release is 0.5.0.
 
-## [0.5.0-rc3] - Unreleased
+## [0.5.0-rc3] - 2026-10-28
 
 Third release candidate for testers; it builds on rc2. See [docs/releases/0.5.0-rc3.md](docs/releases/0.5.0-rc3.md) for the release notes.
 
