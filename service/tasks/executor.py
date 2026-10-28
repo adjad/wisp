@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 
 from service.safety.policy import Tier, decide
 from service.tasks.models import OUTBOUND_INTENTS, TaskExecution, TaskPlan
+from service.tools import access_needed
 from service.tools.registry import classify_tool_outcome, get_tool, run_tool
 
 
@@ -239,6 +240,7 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
         calls.append(call)
         await emit({"type": "tool_call", **call,
                     **({"test_mode": True} if test_mode else {})})
+        needs: list[dict] = []
         if test_mode:
             raw = "Dry run only — the tool was planned but not executed."
             outcome = classify_tool_outcome(step.tool, raw, planned=True)
@@ -291,7 +293,8 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
                     return TaskExecution("failed", response("duplicate"),
                                          calls, results, finalize=False)
                 from service.tools.action_tools import human_reviewed_content
-                with human_reviewed_content(bool(action.get("preview"))):
+                with human_reviewed_content(bool(action.get("preview"))), \
+                        access_needed.noting() as needs:
                     raw = await run_tool(tool, step.args)
                 outcome = classify_tool_outcome(step.tool, raw)
             else:
@@ -301,7 +304,8 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
             if not claim():
                 return TaskExecution("failed", response("duplicate"),
                                      calls, results, finalize=False)
-            raw = await run_tool(tool, step.args)
+            with access_needed.noting() as needs:
+                raw = await run_tool(tool, step.args)
             outcome = classify_tool_outcome(step.tool, raw)
         if (not test_mode and outcome.status == "succeeded"
                 and not (_verified_send(plan, raw)
@@ -318,7 +322,7 @@ async def execute_task(plan: TaskPlan, emit, approver, *, test_mode: bool = Fals
         item = {"id": call_id, "name": step.tool, "result": raw,
                 "status": outcome.status}
         results.append(item)
-        await emit({"type": "tool_result", **item})
+        await emit({"type": "tool_result", **item, **access_needed.payload(needs)})
 
         if outcome.status == "planned":
             if batch:

@@ -3,6 +3,7 @@ import EventKit
 import UserNotifications
 import CoreGraphics
 import ApplicationServices
+import Contacts
 
 // Every macOS privacy prompt Wisp can cause, and when. The rule: Wisp never
 // asks on its own. A prompt only ever follows the person's click on a button
@@ -12,7 +13,8 @@ import ApplicationServices
 //     Notifications: their rows in the setup window's Permissions step
 //     (FirstRunPermissions.request), one click per row. The same step opens
 //     again from Settings › Privacy's Permissions…, and from a Brief or Day row
-//     that says a source isn't allowed yet (`openFix`).
+//     that says a source isn't allowed yet (`openFix`), and from the button
+//     under an Ask reply whose tool wasn't allowed to read one (`openAskFix`).
 //   - The readers never ask: Calendar and Reminders report "not allowed yet"
 //     (RemindersWriter.Access.passive), Contacts is started with mayAsk false,
 //     and Mail and Notes skip their scripted reads until Automation has an
@@ -50,6 +52,67 @@ enum Permissions {
     }
 
     static let allowInWispLabel = "Allow in Wisp…"
+
+    // MARK: Ask's fix buttons
+
+    /// System Settings > Privacy & Security > Contacts.
+    static let contactsAccess = BriefDetail.Action(
+        label: "Open Contacts settings ↗",
+        url: "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Contacts")
+
+    /// The buttons under an Ask reply whose tools weren't allowed to read a
+    /// source (`needs_access` kinds, AskAccess), as things stand now: a fix
+    /// macOS already reports done is dropped, and Contacts points at Full Disk
+    /// Access while the setup window still waits on it (its contactsRow).
+    /// Status reads only: it never asks.
+    @MainActor static func askFixes(_ kinds: [String]) -> [BriefDetail.Action] {
+        let contactsWait = kinds.contains("contacts_access")
+            && CNContactStore.authorizationStatus(for: .contacts) == .notDetermined
+            && !FirstRunPermissions.contactsUseful(messagesReadable: FirstRunPermissions.messagesReadable())
+        return askFixes(kinds.filter { !askFixDone($0) }, contactsWaitForFullDiskAccess: contactsWait)
+    }
+
+    /// The Brief and Day's own link for each kind, plus Contacts, each link once. Pure.
+    static func askFixes(_ kinds: [String], contactsWaitForFullDiskAccess: Bool) -> [BriefDetail.Action] {
+        var out: [BriefDetail.Action] = []
+        for kind in kinds {
+            let kind = kind == "contacts_access" && contactsWaitForFullDiskAccess ? "full_disk_access" : kind
+            guard let fix = kind == "contacts_access" ? contactsAccess : SourceAccess.fix(for: kind),
+                  !out.contains(where: { $0.url == fix.url }) else { continue }
+            out.append(fix)
+        }
+        return out
+    }
+
+    /// macOS now says yes, so the reply's old button would do nothing.
+    private static func askFixDone(_ kind: String) -> Bool {
+        switch kind {
+        case "calendar_access": return EKEventStore.authorizationStatus(for: .event) == .fullAccess
+        case "reminders_access": return EKEventStore.authorizationStatus(for: .reminder) == .fullAccess
+        case "contacts_access": return CNContactStore.authorizationStatus(for: .contacts) == .authorized
+        default: return false
+        }
+    }
+
+    /// Like fixLabel, and Contacts that macOS hasn't asked about yet says
+    /// "Allow in Wisp…" too: System Settings doesn't list Wisp there until it has.
+    static func askFixLabel(_ action: BriefDetail.Action) -> String {
+        contactsUndecided(action.url) ? allowInWispLabel : fixLabel(action)
+    }
+
+    /// Like openFix, with undecided Contacts opening Wisp's own Permissions step.
+    static func openAskFix(_ url: URL) {
+        if contactsUndecided(url.absoluteString) {
+            NotificationCenter.default.post(name: .wispOpenPermissions, object: nil)
+        } else {
+            openFix(url)
+        }
+    }
+
+    /// A status read only: it never asks.
+    private static func contactsUndecided(_ url: String) -> Bool {
+        url.hasSuffix("Privacy_Contacts") && CNContactStore.authorizationStatus(for: .contacts) == .notDetermined
+    }
 
     /// Live state for needsAskingInWisp, reading only what this link is about:
     /// Automation's check (an Apple Event query) runs only for an Automation link.

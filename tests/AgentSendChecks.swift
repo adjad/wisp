@@ -142,6 +142,67 @@ enum AgentSendChecks {
               && AskStarters.remaining(AskStarters.chatWindow, askedTexts: ["Is my data private?"]).count
                   == AskStarters.chatWindow.count - 1, "the chat window's starters shrink the same way")
 
+        // Before the service has said what it can read, no starter is about a source.
+        check(AskStarters.prompts(unreadable: nil) == ["What can you do?", "Is my data private?", "How do I use Wisp?"],
+              "access not known yet: no source starters")
+        check(AskStarters.chatStarters(unreadable: nil) == ["What can you do?", "Is my data private?"],
+              "the chat window waits too")
+        check(AskStarters.chatStarters(unreadable: []) == AskStarters.chatWindow, "everything readable: every chat starter")
+        check(AskStarters.chatStarters(unreadable: ["email"])
+              == ["What can you do?", "What's on my calendar this week?", "Is my data private?"],
+              "a denied Mail drops both mail starters from the chat window")
+
+        // Personal starters, from what Wisp already holds.
+        let me = AskStarters.Personal(nextEvent: "Design review", sender: "Maya Chen", senderSource: "email",
+                                      goal: "Run a half marathon")
+        check(AskStarters.prompts(unreadable: [], personal: me)
+              == ["What can you do?", "What should I prep for Design review?",
+                  "Anything from Maya Chen I need to answer?", "Help me with my goal: Run a half marathon"],
+              "event, sender and goal make the starters personal")
+        check(AskStarters.prompts(unreadable: ["calendar", "email"], personal: me)
+              == ["What can you do?", "Help me with my goal: Run a half marathon", "Is my data private?",
+                  "How do I use Wisp?"],
+              "a denied source hides its personal starter too")
+        check(AskStarters.prompts(unreadable: nil, personal: me).count == 4
+              && !AskStarters.prompts(unreadable: nil, personal: me).contains { $0.contains("Maya") || $0.contains("Design") },
+              "nothing personal about a source before access is known")
+        var texted = me
+        texted.senderSource = "messages"
+        check(AskStarters.prompts(unreadable: ["email"], personal: texted).contains("Anything from Maya Chen I need to answer?"),
+              "a waiting text still counts while Mail is denied")
+        check(AskStarters.prompts(unreadable: ["messages"], personal: texted)
+              .contains("Any emails I need to reply to?"), "texts denied: the general mail starter instead")
+        check(AskStarters.prompts(unreadable: [], personal: AskStarters.Personal(nextEvent: String(repeating: "x", count: 60)))[1]
+              == "What should I prep for \(String(repeating: "x", count: 27))…?", "a long title is clipped")
+
+        let now = 1_000_000.0
+        check(AskStarters.nextEvent([(title: "Later", start: now + 7200, allDay: false),
+                                     (title: "Holiday", start: now + 60, allDay: true),
+                                     (title: "  ", start: now + 120, allDay: false),
+                                     (title: "Started", start: now - 60, allDay: false),
+                                     (title: "Standup", start: now + 1800, allDay: false),
+                                     (title: "Next week", start: now + 90_000, allDay: false)], now: now) == "Standup",
+              "the soonest timed, titled event that hasn't started, within a day")
+        check(AskStarters.nextEvent([], now: now).isEmpty, "no events: no prep starter")
+        check(AskStarters.waitingSender([(sender: "Newsletter", source: "email", person: false, replied: false),
+                                         (sender: "Sam", source: "messages", person: true, replied: true),
+                                         (sender: "a@b.com", source: "email", person: true, replied: false),
+                                         (sender: " Priya ", source: "email", person: true, replied: false)])?.name
+              == "Priya", "only a person still waiting, by name, never a bare address")
+        check(AskStarters.waitingSender([(sender: "+1 (555) 010-2030", source: "messages", person: true, replied: false),
+                                         (sender: "Sam 2", source: "messages", person: true, replied: false)])?.name
+              == "Sam 2", "a bare phone number is not a name; a name with a digit still is")
+        check(AskStarters.waitingSender([]) == nil, "nobody waiting")
+        check(AskStarters.greeting(name: "Adi Jain") == "Hi, Adi." && AskStarters.greeting(name: "  ") == nil,
+              "the greeting uses the first name, and only when there is one")
+
+        // The fix button's signal comes from the tool result, never the reply text.
+        check(AskAccess.kinds([["source": "calendar", "kind": "calendar_access"],
+                               ["source": "calendar", "kind": "calendar_access"],
+                               ["source": "messages", "kind": "full_disk_access"], ["kind": ""], ["source": "x"]])
+              == ["calendar_access", "full_disk_access"], "kinds in order, each once, malformed skipped")
+        check(AskAccess.kinds(nil).isEmpty && AskAccess.kinds("calendar_access").isEmpty, "no payload: no button")
+
         print("AgentSend: \(passed) checks passed")
     }
 }
