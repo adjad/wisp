@@ -97,10 +97,12 @@ class WispPhraser:
                 extra = no_thinking_kwargs(target.model)
             if idle.foreground_busy():
                 return None
-            response = await client.chat(
-                target.model,
-                [{"role": "system", "content": system}, {"role": "user", "content": user}],
-                temperature=temperature, max_tokens=max_tokens, **extra)
+            from service.inference.power_tier import BACKGROUND, power_tier
+            with power_tier(BACKGROUND):
+                response = await client.chat(
+                    target.model,
+                    [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                    temperature=temperature, max_tokens=max_tokens, **extra)
             choice = (response.get("choices") or [{}])[0]
             content = (choice.get("message") or {}).get("content")
             if not isinstance(content, str):

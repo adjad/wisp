@@ -92,9 +92,11 @@ class MemoryWorker:
         think = experiment('capture_think')
         # Explicit both ways: `{}` would hand an explicit_thinking model's
         # decision back to the oMLX profile toggle (see config.thinking_kwargs).
-        response = await client.chat(model, [{'role': 'system', 'content': EXTRACTION_SYSTEM},
-            {'role': 'user', 'content': source}], max_tokens=1500 if think else 650,
-            **(thinking_kwargs(model, on=True) if think else no_thinking_kwargs(model)))
+        from service.inference.power_tier import BACKGROUND, power_tier
+        with power_tier(BACKGROUND):
+            response = await client.chat(model, [{'role': 'system', 'content': EXTRACTION_SYSTEM},
+                {'role': 'user', 'content': source}], max_tokens=1500 if think else 650,
+                **(thinking_kwargs(model, on=True) if think else no_thinking_kwargs(model)))
         choice = response['choices'][0]
         if choice.get('finish_reason') in ('length', 'error'):
             raise ValueError('Extraction output incomplete')

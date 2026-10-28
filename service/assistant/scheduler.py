@@ -655,10 +655,14 @@ async def _run_daily_brief(day: date, part: str, revision: str | None = None) ->
     names a day-one rebuild, which has its own key and retries."""
     from service import diagnostics
     from service.assistant.brief import run_scheduled_brief
+    from service.inference.power_tier import INTENSIVE, power_tier
     with diagnostics.span("daily_brief"):
-        run = asyncio.ensure_future(
-            run_scheduled_brief(part, day=day.isoformat(), abort=idle.foreground_busy,
-                                **({"revision": revision} if revision else {})))
+        # Only the scheduled run is capped; a brief the user opens on demand
+        # runs uncapped.
+        with power_tier(INTENSIVE):
+            run = asyncio.ensure_future(
+                run_scheduled_brief(part, day=day.isoformat(), abort=idle.foreground_busy,
+                                    **({"revision": revision} if revision else {})))
         yielded = False
         try:
             while not run.done():
