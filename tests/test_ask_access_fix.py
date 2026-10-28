@@ -302,3 +302,103 @@ def test_unreadable_browser_history_names_the_place_without_a_button(monkeypatch
     assert "Privacy & Security > Full Disk Access" in answer
     # A missing browser looks the same to the reader, so no fix is offered.
     assert noted == []
+
+
+# --- The Allow button survives a reopened chat ----------------------------------
+
+def test_a_turns_kinds_are_its_tool_results_fixable_notes_in_order():
+    results = [
+        {"type": "tool_result", "needs_access": [{"source": "calendar", "kind": "calendar_access"}]},
+        {"type": "tool_result"},
+        {"type": "tool_result", "needs_access": [{"source": "mail", "kind": "mail_closed"},
+                                                 {"source": "calendar", "kind": "calendar_access"},
+                                                 {"source": "web", "kind": "made_up"}, "junk"]},
+    ]
+    assert access_needed.kinds(results) == ["calendar_access", "mail_closed"]
+    assert access_needed.kinds([]) == []
+
+
+def test_a_stored_reply_keeps_its_kinds_for_the_chat_window_only(tmp_path):
+    from service.memory.store import SessionStore
+    store = SessionStore(tmp_path / "chats.db")
+    sid = store.create_session()
+    store.add_turn(sid, "user", "What's on today?", access_kinds=["calendar_access"])
+    store.add_turn(sid, "assistant", "I can't read your calendar yet.",
+                   access_kinds=["calendar_access", "made_up", "calendar_access", "full_disk_access"])
+    store.add_turn(sid, "assistant", "Nothing blocked here.")
+    shown = store.display_turns_from(sid, 0)
+    assert "access_kinds" not in shown[0] and "access_kinds" not in shown[2]
+    assert shown[1]["access_kinds"] == ["calendar_access", "full_disk_access"]
+    # What the model sees again is unchanged: the kinds are for the window only.
+    assert all("access_kinds" not in turn for turn in store.turns_from(sid, 0))
+
+
+def test_an_older_chat_database_gains_the_column_and_keeps_its_turns(tmp_path):
+    import sqlite3
+    from service.memory.store import SessionStore
+    path = tmp_path / "older.db"
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE turns (session_id TEXT, idx INTEGER, role TEXT, content TEXT, "
+               "tool_digest TEXT, created_at REAL, display_content TEXT, display_kind TEXT, "
+               "PRIMARY KEY (session_id, idx))")
+    db.execute("INSERT INTO turns VALUES ('old', 0, 'assistant', 'Earlier reply', NULL, 1, NULL, NULL)")
+    db.commit()
+    db.close()
+    for _ in range(2):
+        store = SessionStore(path)
+        assert store.display_turns_from("old", 0) == [
+            {"session_id": "old", "idx": 0, "role": "assistant", "content": "Earlier reply",
+             "tool_digest": None, "created_at": 1.0}]
+        assert [r[1] for r in store._db.execute("PRAGMA table_info(turns)")].count("access_kinds") == 1
+        store._db.close()
+    # A malformed saved value draws no button rather than failing the reload.
+    db = sqlite3.connect(path)
+    db.execute("UPDATE turns SET access_kinds='not json' WHERE session_id='old'")
+    db.commit()
+    db.close()
+    store = SessionStore(path)
+    assert "access_kinds" not in store.display_turns_from("old", 0)[0]
+    store._db.close()
+
+
+def test_a_reopened_chat_shows_the_reply_s_allow_button(monkeypatch, tmp_path):
+    """A calendar read that macOS refused, answered over /agent, comes back from
+    /sessions/{id} with the kind the live reply's button was drawn from."""
+    import json
+    import types
+    from fastapi.testclient import TestClient
+    from service import main
+    from service.memory import context
+    from service.memory.store import SessionStore
+    from service.router import router as R
+    from service.safety.policy import Decision, Tier
+    from service.tools.registry import REGISTRY
+    from service.workflows import reads
+
+    async def calendar_denied(**kwargs):
+        return ("Wisp could not check Calendar. " + access_needed.need("calendar", "calendar_access")
+                + " Then try again.")
+
+    async def no_engine():
+        pass
+    store = SessionStore(tmp_path / "agent.db")
+    monkeypatch.setitem(REGISTRY, "get_upcoming", replace(REGISTRY["get_upcoming"], func=calendar_denied))
+    monkeypatch.setattr(main, "store", store)
+    monkeypatch.setattr(context, "store", store)
+    monkeypatch.setattr(main, "client", types.SimpleNamespace(), raising=False)
+    monkeypatch.setattr(main, "ensure_omlx", no_engine)
+    config = lambda: {"tool_retrieval": {"provider": "lexical"}}
+    monkeypatch.setattr(main, "models_config", config)
+    monkeypatch.setattr(R, "models_config", config)
+    monkeypatch.setattr(reads, "decide", lambda *_a, **_k: Decision(Tier.ALLOW, "test"))
+    http = TestClient(main.app)
+    with http.stream("POST", "/agent", json={"prompt": "What's on my calendar today?"}) as response:
+        events = [json.loads(line[6:]) for line in response.iter_lines() if line.startswith("data: ")]
+    assert not [e for e in events if e["type"] == "error"], events
+    live = [e for e in events if e["type"] == "tool_result" and e.get("needs_access")]
+    assert live and live[0]["needs_access"] == [{"source": "calendar", "kind": "calendar_access"}]
+    sid = events[0]["id"]
+    turns = http.get(f"/sessions/{sid}").json()["turns"]
+    assert [t["role"] for t in turns] == ["user", "assistant"]
+    assert "access_kinds" not in turns[0]
+    assert turns[1]["access_kinds"] == ["calendar_access"]

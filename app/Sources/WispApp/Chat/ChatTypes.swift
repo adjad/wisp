@@ -283,7 +283,8 @@ struct ChatMessage: Identifiable, Equatable {
     var corpusEvaluation: ChatCorpusEvaluation?
     /// Sources a tool in this reply couldn't read for lack of access, as the
     /// kinds on its tool_result's `needs_access` (AskAccess), for the reply's
-    /// Allow button. Never set on a corpus reply.
+    /// Allow button. A reloaded reply takes them from its turn's `access_kinds`
+    /// (ChatHistory). Never set on a corpus reply.
     var needsAccess: [String] = []
 
     init(id: UUID = UUID(), role: Role, text: String = "", phase: Phase = .done) {
@@ -467,6 +468,13 @@ enum ChatHistory {
                 message.tools = digest.split(separator: ",").map { part in
                     ChatToolRow(id: UUID().uuidString, name: part.trimmingCharacters(in: .whitespaces),
                                 decision: "allow", finished: true)
+                }
+            }
+            // The kinds the service stored with the reply, so its Allow button
+            // comes back when the chat is reopened.
+            if role == "assistant" {
+                for kind in turn["access_kinds"] as? [String] ?? [] where !kind.isEmpty && !message.needsAccess.contains(kind) {
+                    message.needsAccess.append(kind)
                 }
             }
             out.append(message)

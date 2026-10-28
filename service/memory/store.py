@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS turns (
     tool_digest  TEXT,
     display_content TEXT,
     display_kind TEXT,
+    access_kinds TEXT,
     created_at   REAL,
     PRIMARY KEY (session_id, idx)
 );
@@ -106,6 +107,15 @@ CREATE TABLE IF NOT EXISTS workflow_events (
 # The corpus runner's chats are titled "Corpus · <case> · <request>".
 CORPUS_TITLE = "Corpus · "
 _CORPUS_TITLE_SQL = f"title LIKE '{CORPUS_TITLE}%'"
+
+
+def _stored_kinds(raw) -> list[str]:
+    """A turn's saved access_kinds, or none if it's missing or malformed."""
+    try:
+        kinds = json.loads(raw) if raw else []
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return [k for k in kinds if isinstance(k, str) and k] if isinstance(kinds, list) else []
 
 
 class SessionStore:
@@ -149,6 +159,16 @@ class SessionStore:
             self._db.execute("ALTER TABLE turns ADD COLUMN display_content TEXT")
         if "display_kind" not in turn_columns:
             self._db.execute("ALTER TABLE turns ADD COLUMN display_kind TEXT")
+        if "access_kinds" not in turn_columns:
+            # Additive and nullable, no backfill: an older reply just has no
+            # Allow button to draw again, and an older Wisp ignores the column.
+            try:
+                self._db.execute("ALTER TABLE turns ADD COLUMN access_kinds TEXT")
+            except sqlite3.OperationalError as e:
+                if not any(k in str(e).lower() for k in ("readonly", "duplicate column")):
+                    raise
+        self._has_access_kinds = "access_kinds" in {
+            row[1] for row in self._db.execute("PRAGMA table_info(turns)")}
         self._db.commit()
         self._lock = threading.Lock()
 
@@ -740,8 +760,18 @@ class SessionStore:
         return int(row["n"])
 
     def add_turn(self, sid: str, role: str, content: str,
-                 tool_digest: str | None = None, *, display_content=None) -> int:
+                 tool_digest: str | None = None, *, display_content=None,
+                 access_kinds: list[str] | None = None) -> int:
+        """``access_kinds``: the permission fixes an assistant reply's tools asked
+        for (access_needed.kinds), so a reopened chat draws its Allow button again.
+        Only kinds the app has a fix for are kept; a user turn keeps none."""
+        from service.tools.access_needed import FIXABLE
         from service.tools.registry import DisplayOnlyToolResult
+        kinds = list(dict.fromkeys(k for k in access_kinds or () if k in FIXABLE)) \
+            if role == "assistant" else []
+        access_column, access_value = (
+            (", access_kinds", (json.dumps(kinds) if kinds else None,))
+            if self._has_access_kinds else ("", ()))
         if isinstance(content, DisplayOnlyToolResult):
             display_content, content = content, content.model_text
         display_kind = None
@@ -767,8 +797,10 @@ class SessionStore:
             idx = int(row["n"])
             self._db.execute(
                 "INSERT INTO turns (session_id, idx, role, content, tool_digest, "
-                "created_at, display_content, display_kind) VALUES (?,?,?,?,?,?,?,?)",
-                (sid, idx, role, content, tool_digest, time.time(), display_content, display_kind))
+                f"created_at, display_content, display_kind{access_column}) "
+                f"VALUES (?,?,?,?,?,?,?,?{',?' * len(access_value)})",
+                (sid, idx, role, content, tool_digest, time.time(), display_content, display_kind,
+                 *access_value))
             self._db.execute("UPDATE sessions SET last_used=? WHERE id=?",
                              (time.time(), sid))
             self._db.commit()
@@ -787,7 +819,8 @@ class SessionStore:
         with self._lock:
             rows = self._db.execute(
                 "SELECT session_id, idx, role, content, tool_digest, created_at, "
-                "display_content FROM turns WHERE session_id=? AND idx>=? ORDER BY idx",
+                "display_content" + (", access_kinds" if self._has_access_kinds else "")
+                + " FROM turns WHERE session_id=? AND idx>=? ORDER BY idx",
                 (sid, start_idx)).fetchall()
         turns = []
         for row in rows:
@@ -796,6 +829,10 @@ class SessionStore:
             if display is not None:
                 turn["content"] = display
                 turn["content_provenance"] = "display_only_publisher_metadata"
+            # Present only on a reply that had a fix to offer, as a list of kinds.
+            kinds = _stored_kinds(turn.pop("access_kinds", None))
+            if kinds:
+                turn["access_kinds"] = kinds
             turns.append(turn)
         return turns
 

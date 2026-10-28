@@ -12,6 +12,8 @@ Every path that answers Ask collects this way: ``run_agent`` for the whole
 turn (``start``/``drain``/``finish``), and the deterministic read, workflow and task
 executors per call (``noting``/``payload``). Inert anywhere else: the scheduler
 and the Brief read the same sources and have no reply to attach a button to.
+The /agent endpoint stores the turn's ``kinds`` with the assistant reply, so a
+chat reopened from history shows the same button.
 """
 from __future__ import annotations
 
@@ -90,6 +92,19 @@ def noting():
 def payload(collected: list[dict]) -> dict:
     """The ``needs_access`` field for a tool_result event, or nothing."""
     return {"needs_access": list(collected)} if collected else {}
+
+
+def kinds(tool_results: list[dict]) -> list[str]:
+    """The fixable kinds on a turn's ``tool_result`` events, in order, each once:
+    what the app drew the reply's Allow button from, kept with the stored reply
+    so a reopened chat draws it again."""
+    out: list[str] = []
+    for result in tool_results:
+        for note in result.get("needs_access") or ():
+            kind = note.get("kind") if isinstance(note, dict) else None
+            if kind in FIXABLE and kind not in out:
+                out.append(kind)
+    return out
 
 
 def merged(event: dict, collected: list[dict]) -> dict:

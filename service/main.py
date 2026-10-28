@@ -1818,6 +1818,13 @@ async def agent(body: dict[str, Any]):
         fact_store.bind_source(req_id, sid, persisted_user_idx)
         return persisted_user_idx
 
+    def store_reply(content, tool_digest: str | None = None) -> int:
+        """The assistant turn, with the Allow-button kinds its tool results carried
+        (``needs_access``), so the chat window draws the button again on reopen."""
+        from service.tools import access_needed
+        return store.add_turn(sid, "assistant", content, tool_digest=tool_digest,
+                              access_kinds=access_needed.kinds(captured["tool_results"]))
+
     from service.answer_text import AnswerEdgeTrimmer
     from service.tools.registry import DisplayOnlyToolResult as _DisplayOnly
     answer_edges = AnswerEdgeTrimmer()
@@ -1977,11 +1984,11 @@ async def agent(body: dict[str, Any]):
             if assistant_reply_stored:
                 return   # the real reply is already stored; never follow it with a failure note
             try:
-                store.add_turn(sid, "assistant",
-                               f"(This request could not be completed — {message} "
-                               + ("Sending was already attempted; its outcome is unknown. "
-                                  "Check before requesting another send.)" if uncertain_send else
-                                  "Check any actions already reported before retrying.)"))
+                store_reply(
+                    f"(This request could not be completed — {message} "
+                    + ("Sending was already attempted; its outcome is unknown. "
+                       "Check before requesting another send.)" if uncertain_send else
+                       "Check any actions already reported before retrying.)"))
             except Exception:  # noqa: BLE001
                 pass
 
@@ -1994,7 +2001,7 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "done"})
                 if not test_mode:
                     persist_user_turn()
-                    store.add_turn(sid, "assistant", vision_answer)
+                    store_reply(vision_answer)
                     assistant_reply_stored = True
                 return
             # Knowledge fields and bounded queue targets are literal
@@ -2031,7 +2038,7 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "text", "text": batch_guard.response})
                 await emit({"type": "done"})
                 persist_user_turn()
-                store.add_turn(sid, "assistant", batch_guard.response)
+                store_reply(batch_guard.response)
                 return
 
             # Decide ownership BEFORE any positive rule/typed compiler runs.
@@ -2103,7 +2110,7 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "done"})
                 if not test_mode:
                     persist_user_turn()
-                    store.add_turn(sid, "assistant", "An earlier action has an unverified outcome; check its destination.")
+                    store_reply("An earlier action has an unverified outcome; check its destination.")
                 return
 
             # Conversational workflows span turns. A reply like "it's for my
@@ -2162,7 +2169,7 @@ async def agent(body: dict[str, Any]):
                     await emit({"type": "done"})
                     if not test_mode:
                         persist_user_turn()
-                        store.add_turn(sid, "assistant", news_turn.response)
+                        store_reply(news_turn.response)
                     return
                 if news_turn.decision:
                     from service.workflows.executor import execute_workflow
@@ -2176,8 +2183,8 @@ async def agent(body: dict[str, Any]):
                             "tool_results": execution.tool_results,
                             "denied": execution.status == "denied"})
                         persist_user_turn()
-                        store.add_turn(sid, "assistant", execution.response,
-                                       tool_digest=", ".join(c["name"] for c in execution.tool_calls) or None)
+                        store_reply(execution.response,
+                                    tool_digest=", ".join(c["name"] for c in execution.tool_calls) or None)
                     await emit({"type": "text", "text": execution.response})
                     await emit({"type": "done"})
                     return
@@ -2221,7 +2228,7 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "done"})
                 if not test_mode:
                     persist_user_turn()
-                    store.add_turn(sid, "assistant", task_turn.response)
+                    store_reply(task_turn.response)
                 return
             if task_turn and not typed_shadow_only and task_turn.executable:
                 execution = await execute_task(
@@ -2263,8 +2270,8 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "done"})
                 if not test_mode:
                     persist_user_turn()
-                    store.add_turn(
-                        sid, "assistant", execution.response,
+                    store_reply(
+                        execution.response,
                         tool_digest=", ".join(call["name"] for call in execution.tool_calls)
                         or None)
                 return
@@ -2287,7 +2294,7 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "done"})
                 if not test_mode:
                     persist_user_turn()
-                    store.add_turn(sid, "assistant", workflow_turn.response)
+                    store_reply(workflow_turn.response)
                 return
 
             if workflow_turn and workflow_turn.decision:
@@ -2303,8 +2310,8 @@ async def agent(body: dict[str, Any]):
                         "tool_results": execution.tool_results,
                         "denied": execution.status == "denied"})
                     persist_user_turn()
-                    store.add_turn(sid, "assistant", execution.response,
-                                   tool_digest=", ".join(c["name"] for c in execution.tool_calls) or None)
+                    store_reply(execution.response,
+                                tool_digest=", ".join(c["name"] for c in execution.tool_calls) or None)
                 await emit({"type": "text", "text": execution.response})
                 await emit({"type": "done"})
                 return
@@ -2322,8 +2329,8 @@ async def agent(body: dict[str, Any]):
                 read_result = await execute_read(read_plan, emit, test_mode=test_mode)
                 if not test_mode:
                     persist_user_turn()
-                    store.add_turn(sid, "assistant", read_result.response,
-                                   tool_digest=", ".join(c["name"] for c in read_result.tool_calls) or None)
+                    store_reply(read_result.response,
+                                tool_digest=", ".join(c["name"] for c in read_result.tool_calls) or None)
                 await emit({"type": "text", "text": read_result.response})
                 await emit({"type": "done"})
                 return
@@ -2905,7 +2912,7 @@ async def agent(body: dict[str, Any]):
                 persisted_reply = reply if isinstance(reply, DisplayOnlyToolResult) else reply.strip()
                 digest = ", ".join(dict.fromkeys(captured["tools"])) or None
                 persist_user_turn()
-                store.add_turn(sid, "assistant", persisted_reply, tool_digest=digest)
+                store_reply(persisted_reply, tool_digest=digest)
                 assistant_reply_stored = True
                 # Rolling conversation summaries contain prior user turns and
                 # are a local memory operation even when this turn used cloud

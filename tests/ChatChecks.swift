@@ -178,6 +178,18 @@ struct ChatChecks {
         check(history[1].tools.map(\.name) == ["summarize_emails", "get_upcoming"], "tool digest becomes rows")
         check(history[1].tools.allSatisfy { $0.finished }, "reloaded tool rows are not running")
         check(history[1].tools[1].kind == .calendar, "get_upcoming is calendar")
+        check(history[1].needsAccess.isEmpty, "a reply saved without access kinds has no Allow button")
+        let blocked = ChatHistory.messages(from: [
+            ["role": "user", "content": "What's on today?", "access_kinds": ["calendar_access"]],
+            ["role": "assistant", "content": "I can't read your calendar yet.", "tool_digest": "get_upcoming",
+             "access_kinds": ["calendar_access", "", "full_disk_access", "calendar_access"]],
+            ["role": "assistant", "content": "Odd row.", "access_kinds": "calendar_access"],
+        ])
+        check(blocked[0].needsAccess.isEmpty, "a user turn never carries an Allow button")
+        check(blocked[1].needsAccess == ["calendar_access", "full_disk_access"],
+              "a reopened reply keeps its saved kinds, in order, each once")
+        check(!blocked[1].isLive, "a reopened reply is finished, so the view draws its button")
+        check(blocked[2].needsAccess.isEmpty, "malformed access_kinds is ignored")
 
         // Where answers run: "all local" only on a confirmed local launch.
         let local: [String: Any] = ["enabled": false, "roles": [String](), "super_model_enabled": false,
