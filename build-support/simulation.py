@@ -87,6 +87,8 @@ def main():
                                  "CalendarMove.swift", "RemindersWriter.swift"], "CalendarReaderChecks.swift"),
             ("notes-db", ["NotesDBReader.swift"], "NotesDBReaderChecks.swift"),
             ("onboarding", ["Onboarding.swift"], "OnboardingChecks.swift"),
+            ("onboarding-follow-ups", ["OnboardingFollowUps.swift", "DiagnosticReport.swift"],
+             "OnboardingFollowUpsChecks.swift"),
             ("voice-capture", ["VoiceCapture.swift"], "VoiceCaptureChecks.swift"),
         ):
             binary = str(build / (os.environ["WISP_BUILD_FIXTURE_PREFIX"] + "-" + name))
