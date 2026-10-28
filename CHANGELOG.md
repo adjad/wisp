@@ -46,7 +46,8 @@ Third release candidate for testers; it builds on rc2. See [docs/releases/0.5.0-
   - A cleared to-do or thread also removes that conversation's card.
   - A "texts from X" Needs-you row keeps its id as texts age out.
   - Items cleared in an earlier build stay cleared.
-- **Impossible clock times are refused.** "at 28", "25:30" or "13pm" no longer crash the date resolver (used by mail suggestions, reminders from messages, proactive suggestions and event capture), and "13pm" is no longer read as 1 pm.
+- **Impossible clock times are refused.** "at 28", "25:30" or "13pm" no longer crash the date resolver (used by mail suggestions, reminders from messages, proactive suggestions and event capture), and "13pm" is no longer read as 1 pm. A refused time keeps its day ("Friday at 28" is still Friday), and "Sept" is read as September.
+- **The notch Brief and Day tabs scroll instead of clipping.** The panel is capped to the screen's usable height, so on a shorter display (14-inch MacBook Pro) a long Brief or Day scrolls.
 - **One bad email can't stall mail suggestions.** An email whose processing fails is retried once, then set aside, and the queue moves on.
 - **A failed Mail read is no longer silent.** It is logged as a warning, at most once an hour while the same reason repeats, and shown as `health` in the mail-suggestions status. **Settings → Privacy & Access → Mail suggestions** shows the reason in plain words ("Couldn't read Mail: … Turn on Full Disk Access …") until a read works again. Logs and Settings carry only short reason codes and exception type names, never email text.
 - **Email summaries list each email once.** A combined digest no longer repeats the per-account ones, and an email present in both Gmail and Mail is shown once.

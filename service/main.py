@@ -1565,7 +1565,7 @@ MODEL_LED_UNTRUSTED_WEB_HINT = (
 # unconfirmed outcome and new actions are withheld (store.unresolved_action).
 UNRESOLVED_ACTION_NOTICE = (
     "An earlier action in this chat may not have finished, so I can't take new "
-    "actions here until it's checked: check it, then mark it resolved or start a new chat.")
+    "actions here until it's checked. Check that it did what you wanted, then start a new chat.")
 
 
 def _answer_prefixed(emit, prefix: str):
