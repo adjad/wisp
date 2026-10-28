@@ -156,7 +156,7 @@ struct NotchDownloadRow: View {
                 HStack(spacing: 8) {
                     VStack(alignment: .leading, spacing: 1) {
                         title(label)
-                        line(stuck ? "Downloaded, but Wisp's engine can't find its files. Download it again to fix that."
+                        line(stuck ? "Downloaded, but Wisp can't find its files. Download it again to fix that."
                                    : "Downloaded. Getting it ready…")
                     }
                     Spacer(minLength: 8)

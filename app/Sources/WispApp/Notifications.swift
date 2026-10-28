@@ -10,9 +10,8 @@ enum Notifications {
     // (actionable notifications); every other caller keeps the defaults.
     static func deliver(id: String, title: String, body: String, subtitle: String = "",
                         category: String = "", userInfo: [String: String] = [:]) async -> Bool {
+        guard await allowed() else { return false }
         let center = UNUserNotificationCenter.current()
-        let settings = await center.notificationSettings()
-        guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return false }
         if !id.isEmpty {
             let delivered = await center.deliveredNotifications()
             if let old = delivered.first(where: { $0.request.identifier == id }) {
@@ -43,13 +42,28 @@ enum Notifications {
     }
 
     static func post(id: String = "", title: String, body: String) {
+        Task { _ = await postIfAllowed(id: id, title: title, body: body) }
+    }
+
+    /// Whether notifications reach the person: allowed (or allowed quietly).
+    /// Reads the setting only; asking is the setup window's Notifications row.
+    static func allowed() async -> Bool {
+        let status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+        return status == .authorized || status == .provisional
+    }
+
+    /// Posts and says whether it was shown, so a caller with a promise to keep
+    /// ("Wisp is ready") can say it another way when notifications are off.
+    static func postIfAllowed(id: String = "", title: String, body: String) async -> Bool {
+        guard await allowed() else { return false }
         let content = UNMutableNotificationContent()
         content.title = title
         if !body.isEmpty { content.body = body }
         content.sound = .default
         let req = UNNotificationRequest(identifier: id.isEmpty ? UUID().uuidString : id,
                                         content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req)
+        do { try await UNUserNotificationCenter.current().add(req); return true }
+        catch { return false }
     }
 
     /// "Wisp is ready" after first-run setup; clicking it opens Ask, not Day.
