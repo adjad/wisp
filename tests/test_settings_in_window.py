@@ -131,3 +131,13 @@ def test_search_everything_left_the_window_sidebar():
     views = _read("Chat/ChatViews.swift")
     assert "Search everything" not in views and "searchEverything" not in views
     assert "searchEverything" not in _read("AppDelegate.swift")
+
+
+def test_local_label_rereads_cloud_use_after_in_window_settings():
+    # Settings is a section of the Wisp window, so no window becomes key when a
+    # model changes there; the Local / Local + cloud label must re-read anyway.
+    body = _body(_read("Chat/ChatViews.swift"), "var body: some View")
+    assert re.search(r"publisher\(for: \.wispInferenceConfigurationChanged\)\)\s*\{[^}]*refreshCloudUse", body)
+    assert re.search(r"onChange\(of: navigation\.section\)[^}]*\.chats[^}]*refreshCloudUse", body)
+    for poster in ("SettingsView.swift", "EngineSettingsView.swift"):
+        assert "post(name: .wispInferenceConfigurationChanged" in _read(poster), poster
