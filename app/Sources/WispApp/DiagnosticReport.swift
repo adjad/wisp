@@ -6,6 +6,18 @@ import Darwin
 /// A local, reviewable report. No upload, agent call, or native action occurs.
 enum DiagnosticReport {
     static let maximumBytes = 2 * 1024 * 1024
+    /// How first-run setup went (OnboardingTimeline: event names and times only),
+    /// for the report's "onboarding" section. The app points this at the
+    /// timeline at launch; left alone (this file's own checks), it is empty.
+    nonisolated(unsafe) static var onboardingTimeline: () -> [String] = { [] }
+
+    /// The report's metadata with the onboarding section, when setup left one.
+    static func withOnboarding(_ metadata: [String: Any], timeline: [String]) -> [String: Any] {
+        guard !timeline.isEmpty, metadata["onboarding"] == nil else { return metadata }
+        var result = metadata
+        result["onboarding"] = timeline
+        return result
+    }
 
     static func journal(traceID: String?, expectedUID: uid_t = getuid(), expectedDirectoryUID: uid_t? = nil) -> [String: Any]? {
         guard let traceID, traceID.range(of: "^[a-f0-9]{32}$", options: .regularExpression) != nil else { return nil }
@@ -296,7 +308,8 @@ struct ReportSnapshot {
 
     init(key: String, metadata: [String: Any], details: [String: Any]?) {
         self.key = key
-        self.metadata = metadata
+        // Read once, with the rest: a later setup event doesn't change this report.
+        self.metadata = DiagnosticReport.withOnboarding(metadata, timeline: DiagnosticReport.onboardingTimeline())
         self.scrubbedDetails = details.flatMap { DiagnosticReport.scrub($0) as? [String: Any] }
     }
 

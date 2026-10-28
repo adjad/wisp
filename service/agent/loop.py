@@ -1598,10 +1598,16 @@ async def run_agent(
     # grant. Only this turn's local planner may put one in ephemeral context.
     messages = _meeting_safe(messages)
     downstream_emit = emit
+    # Sources a tool couldn't read for lack of access ride on its tool_result,
+    # so Ask shows the fix button whatever the model's reply says.
+    from service.tools import access_needed
+    access_noted = access_needed.start()
     def audit(event, **fields):
         _meeting_audit(event, **fields)
 
     async def emit(event: dict):
+        if event.get("type") == "tool_result" and access_noted:
+            event = access_needed.merged(event, access_noted)
         if event.get("type") == "text" and news_displays:
             display = "\n\n".join(news_displays.values())
             text = event.get("text", "")
@@ -1925,6 +1931,9 @@ async def run_agent(
             if turn_reads_untrusted(tool.name, tool.category, args):
                 untrusted_read_in_turn[0] = True
             from service.research.web import strict_host_fetch
+            # Tools run one at a time; a note left by a prefetch or a call
+            # that emitted no result must not ride on this call's result.
+            access_needed.drain(access_noted)
             with strict_host_fetch(strict_fetch):
                 if private_shell_read_only:
                     result = await run_tool(tool, args, private_shell_read_only=True)

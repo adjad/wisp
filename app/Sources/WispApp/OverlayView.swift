@@ -47,7 +47,11 @@ struct OverlayView: View {
             }
         }
         .id(renderKey)
-        .onAppear { breathe = true }
+        .onAppear {
+            breathe = true
+            // A panel that opens expanded never sees `collapsed` change.
+            if !model.collapsed { model.refreshStarters(today: todayModel) }
+        }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(
             for: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification)) { _ in
             guard Theme.increaseContrast != increasedContrast else { return }
@@ -59,11 +63,17 @@ struct OverlayView: View {
         .onChange(of: renderKey) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { model.onResize() }
         }
+        // @Published sends before the value is stored, so read it on the next turn.
+        .onReceive(todayModel.$upcomingReply.map { _ in () }
+            .merge(with: todayModel.$plan.map { _ in () })
+            .receive(on: DispatchQueue.main)) { _ in
+            if !model.collapsed { model.updatePersonalStarters(today: todayModel) }
+        }
         .onChange(of: model.collapsed) { _, isCollapsed in
             if !isCollapsed {
                 if !model.tab.showsDay { focused = true }
                 model.refreshRecentChats()
-                model.refreshStarters()
+                model.refreshStarters(today: todayModel)
             }
         }
         // Switching to Ask or Research (including Ask Wisp from Brief or Day) puts the cursor in the field.
@@ -622,6 +632,7 @@ struct OverlayView: View {
                 } else {
                     MarkdownView(text: turn.text)
                 }
+                if !turn.needsAccess.isEmpty { accessFixes(turn.needsAccess) }
                 if turn.isError && turn.activity.isEmpty && model.conversationSettled
                     && turn.id == model.turns.last?.id {
                     // Nothing ran, so sending the same question again is safe.
@@ -761,23 +772,45 @@ struct OverlayView: View {
         }
     }
 
-    // Starter questions a fresh install can answer, two to a row so four fit
-    // the panel's width.
-    private var suggestionsRow: some View {
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
-                  alignment: .leading, spacing: 8) {
-            ForEach(model.suggestions, id: \.self) { s in
-                Button { model.pick(s) } label: {
-                    Text(s).lineLimit(1).truncationMode(.tail)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(Capsule().fill(Theme.chipFill))
-                        .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
-                        .contentShape(Capsule())
+    /// The fix for each source a tool in this reply wasn't allowed to read: the
+    /// same button the Brief and Day show, so allowing it is one click from Ask.
+    /// Gone once macOS says it's allowed.
+    @ViewBuilder private func accessFixes(_ kinds: [String]) -> some View {
+        let fixes = Permissions.askFixes(kinds)
+        if !fixes.isEmpty {
+            HStack(spacing: 8) {
+                ForEach(fixes, id: \.url) { fix in
+                    if let url = URL(string: fix.url) {
+                        NotchChrome.small(Permissions.askFixLabel(fix)) { Permissions.openAskFix(url) }
+                    }
                 }
-                .buttonStyle(.plain)
-                .font(.wisp(.body)).foregroundStyle(Theme.textSecondary)
-                .help("Ask \u{201C}\(s)\u{201D}")
+            }
+            .padding(.top, 2)
+        }
+    }
+
+    // Starter questions a fresh install can answer, two to a row so four fit
+    // the panel's width, under a greeting once the person has told Wisp their name.
+    private var suggestionsRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let greeting = AskStarters.greeting(name: model.starterName) {
+                Text(greeting).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
+            }
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                      alignment: .leading, spacing: 8) {
+                ForEach(model.suggestions, id: \.self) { s in
+                    Button { model.pick(s) } label: {
+                        Text(s).lineLimit(1).truncationMode(.tail)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(Capsule().fill(Theme.chipFill))
+                            .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .font(.wisp(.body)).foregroundStyle(Theme.textSecondary)
+                    .help("Ask \u{201C}\(s)\u{201D}")
+                }
             }
         }
     }
@@ -1011,15 +1044,32 @@ struct OverlayView: View {
         .padding(.top, 8)
     }
 
+    /// The dialog runs beside the notch rather than app-modal: runModal blocked
+    /// every Wisp window until it closed, and, since the notch never activates
+    /// Wisp, macOS bounced the Dock icon for it and could open it behind other
+    /// apps. Wisp is brought forward first, and the dialog sits above the notch.
     private func pickImage() {
+        if let open = model.filePicker {
+            NSApp.activate(ignoringOtherApps: true)
+            open.makeKeyAndOrderFront(nil)
+            return
+        }
         model.cancelAttachmentRead()
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
+        panel.level = NSWindow.Level(DisplayGeometry.shared.layout.windowLevel.rawValue + 1)
+        model.filePicker = panel
         model.pickingFile = true
-        defer { model.pickingFile = false }
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        model.loadAttachment(url: url)
+        NSApp.activate(ignoringOtherApps: true)
+        panel.begin { [model] response in
+            MainActor.assumeIsolated {
+                model.filePicker = nil
+                model.pickingFile = false
+                guard response == .OK, let url = panel.url else { return }
+                model.loadAttachment(url: url)
+            }
+        }
     }
 }
 

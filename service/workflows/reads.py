@@ -8,6 +8,7 @@ from service.router.router import calendar_is_excluded
 from service.utterance_shape import deliberate, quoted_spans
 from service.safety.policy import Tier, decide
 from service.tools.registry import DisplayOnlyToolResult, get_tool, run_tool, classify_tool_outcome
+from service.tools import access_needed
 from service.tasks.models import TaskExecution
 from service.workflows.compiler import (
     _normalize, _date_range, _source_args, _OUTBOUND, _INLINE_EMAIL_SUMMARY,
@@ -540,12 +541,16 @@ async def execute_read(compiled, emit, *, test_mode=False):
                 "decision": policy.tier.value, "reason": policy.reason}
         calls.append(call)
         await emit({"type": "tool_call", **call})
+        needs: list[dict] = []
         if test_mode:
             raw = "Dry run only — no data read and no tool executed."
         elif policy.tier is not Tier.ALLOW:
             raw = f"Read blocked by policy: {policy.reason}"
         else:
-            raw = await run_tool(tool, args)
+            # A source macOS hasn't allowed rides on the result, so Ask shows
+            # its fix button; this path has no model to name it.
+            with access_needed.noting() as needs:
+                raw = await run_tool(tool, args)
         displays.append(str(raw))
         if isinstance(raw, DisplayOnlyToolResult):
             raw = raw.model_text
@@ -554,7 +559,7 @@ async def execute_read(compiled, emit, *, test_mode=False):
                   else classify_tool_outcome(name, raw).status)
         item = {"id": call["id"], "name": name, "result": raw, "status": status}
         results.append(item)
-        await emit({"type": "tool_result", **item})
+        await emit({"type": "tool_result", **item, **access_needed.payload(needs)})
     failed = any(r["status"] not in {"succeeded", "no_match", "planned"} for r in results)
     # A tool's "(error: ...)" text is written for a model, not a person. This
     # path has no model pass, so 1.4.0 showed it verbatim ("(error: no

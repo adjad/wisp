@@ -66,6 +66,26 @@ def _google_connected() -> bool:
         return False
 
 
+def _google_sign_in() -> bool:
+    """Whether this build can sign in to Google at all (gmail_source.can_connect),
+    so "connect a Google account" is offered only where Settings → Google can do it."""
+    try:
+        from service.gmail_source import can_connect
+        return can_connect()
+    except Exception:  # noqa: BLE001 - offer nothing rather than a dead end
+        return False
+
+
+def _rhythm() -> str:
+    """What Wisp does on its own and when (brief.rhythm_line), or nothing when
+    the settings behind it can't be read."""
+    try:
+        from service.assistant.brief import rhythm_line
+        return rhythm_line()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _host(url: object) -> str:
     from urllib.parse import urlsplit
     try:
@@ -514,15 +534,19 @@ def overview() -> str:
     sources = _sources()
     out = [_greeting(), "", "**What I can do**"]
     out += ["- " + line for line in _can_lines(tools)]
-    out.append("- Google: your account is connected, so I read its Gmail and Calendar too."
-               if _google_connected() else
-               "- Google: connect a Google account in **Settings → Google** and I'll read its "
-               "Gmail and Calendar too.")
+    if _google_connected():
+        out.append("- Google: your account is connected, so I read its Gmail and Calendar too.")
+    elif _google_sign_in():
+        out.append("- Google: connect a Google account in **Settings → Google** and I'll read its "
+                   "Gmail and Calendar too.")
+    rhythm = _rhythm()
+    if rhythm:
+        out.append("- " + rhythm)
     out += ["", "**Right now**"] + _status_lines(sources)
     out += ["", "**Try asking**"] + [f"- \"{prompt}\"" for prompt in _try_its(sources, tools)]
     out += ["",
             "**Where things are**",
-            "- Press ⌥ Space to ask me from anywhere.",
+            "- Press ⌥ Space to ask me from anywhere, or ⌥⇧Space to ask out loud.",
             "- Type / in Ask to see shortcuts, like /today and /report.",
             "- Brief and Day are the tabs next to Ask: a summary of what's new, and your plan for today.",
             "- Getting to know you (type /about) tells me your name and what matters to you, "
@@ -644,8 +668,14 @@ def privacy() -> str:
         out.append(f"- Some questions are answered by {nodes_phrase(nodes)}, your own Mac. What a "
                    "reply needs, including what you told me in Getting to know you, goes there "
                    "over your tailnet and nowhere else.")
-    out += ["- Some things have to go online: web searches, weather, stocks and research. "
-            "If you connect Google, I fetch that account's mail and calendar from Google.",
+    # Research stays listed while it exists (/research still reads the web),
+    # though setup and "What can you do?" no longer teach it.
+    online = "- Some things have to go online: web searches, weather, stocks and research."
+    if _google_connected():
+        online += " I fetch your Google account's mail and calendar from Google."
+    elif _google_sign_in():
+        online += " If you connect Google, I fetch that account's mail and calendar from Google."
+    out += [online,
             "- " + _confirm_line(),
             "- You decide what I can read, in System Settings → Privacy & Security.",
             "- To see or erase what I know about you: **/about** for Getting to know you, and "
@@ -691,9 +721,6 @@ _HOWTO = (
      "**Let Wisp read more**: open **Settings → Privacy & Access**, choose **Permissions…**, "
      "and click **Allow** next to what you want. Screen Recording and Accessibility are under "
      "**More Access…** next to it."),
-    (r"research|report",
-     "**Research**: type **/research**, then your topic. I draft a plan you can edit, read "
-     "the web and write a cited report."),
     (r"problem|bug|broken|wrong|report|feedback",
      "**Something wrong?** Type **/report**, or choose **Report a Problem…** from the menu "
      "bar icon."),
@@ -716,15 +743,45 @@ _GENERIC_HOWTO = re.compile(
     r"\b(?:use|get(?:ting)? started|work|works|set ?up|begin|help)\b", re.I)
 
 
+# The steps that point at Settings → Google, for a build that can't sign in
+# to Google and has no account connected: (answer to a direct question, step
+# in the whole guide, or None to leave it out).
+_HOWTO_WITHOUT_GOOGLE = {
+    r"google|gmail|workspace|drive":
+        ("**Google**: this version of Wisp can't sign in to Google. If your Gmail is in Apple's "
+         "Mail app, or your Google calendar is in Calendar, I read it from there.", None),
+    r"log ?in|sign ?in|login|signin|password":
+        ("**Signing in**: Wisp has no account of its own, so there's nothing to sign in to.",
+         "**Signing in**: Wisp has no account of its own, so there's nothing to sign in to."),
+    r"log ?out|sign ?out|logout|signout":
+        ("**Signing out**: Wisp has no account to sign out of.",
+         "**Signing out**: Wisp has no account to sign out of."),
+}
+
+
+def _howto_steps(guide: bool) -> list[tuple[str, str]]:
+    """The how-to entries this build can follow: without Google sign-in or a
+    connected account, the Google steps change (or drop out of the guide)."""
+    if _google_connected() or _google_sign_in():
+        return list(_HOWTO)
+    steps = []
+    for keys, step in _HOWTO:
+        if keys in _HOWTO_WITHOUT_GOOGLE:
+            step = _HOWTO_WITHOUT_GOOGLE[keys][1 if guide else 0]
+        if step:
+            steps.append((keys, step))
+    return steps
+
+
 def howto(query: str = "") -> str:
     text = (query or "").lower()
-    specific = [step for keys, step in _HOWTO
+    specific = [step for keys, step in _howto_steps(guide=False)
                 if re.search(rf"\b(?:{keys})", text) and not _GENERIC_HOWTO.search(text)]
     if specific:
         return "\n".join(["- " + step for step in specific]
                          + ["", "Ask \"how do I use Wisp?\" for the whole guide."])
     return "\n".join(["**Getting started with Wisp**", ""]
-                     + ["- " + step for _, step in _HOWTO])
+                     + ["- " + step for _, step in _howto_steps(guide=True)])
 
 
 def answer(topic: str = "overview", query: str = "") -> str:

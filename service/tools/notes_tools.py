@@ -539,7 +539,12 @@ async def search_notes_impl(query: str | None = None, count: int | None = None,
         if notes_sync_state() == "syncing":
             return "Wisp is still syncing your notes. Try again once the sync finishes."
         if notes_sync_state() == "unavailable":
-            return f"Wisp could not read Notes right now. {_reason}".strip()
+            from service.tools import access_needed
+            fix = access_needed.need("notes", _reason_kind)
+            # The reader's reason may already name the setting; say it once.
+            if "System Settings" in _reason:
+                fix = ""
+            return " ".join(part for part in ("Wisp could not read Notes right now.", _reason.strip(), fix) if part)
     if not have_data and not strict:
         return "No notes found in the completed Notes sync."
     rows = _parse()

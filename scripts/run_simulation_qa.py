@@ -272,6 +272,11 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_router_reply_needed_reads.py",
     "tests/test_capability_welcome.py",
     "tests/test_wisp_self_questions.py",
+    # Onboarding Ask access fix: needs_access from scripted tool results through the
+    # agent loop, reads, workflows and tasks; no live source or model.
+    "tests/test_ask_access_fix.py",
+    # The first launch day's rhythm line and first-Brief progress over a scratch store.
+    "tests/test_brief_first_day.py",
     "tests/test_email_gmail_only_and_dedup.py",
     # rc2 duplicated email summaries: synthetic Gmail + Mail rows, two linked accounts; no live source.
     "tests/test_email_summary_dedupe.py",

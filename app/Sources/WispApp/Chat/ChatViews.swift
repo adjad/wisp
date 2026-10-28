@@ -68,8 +68,16 @@ struct ChatRootView: View {
         .task { await store.refreshWhenReady() }
         // Coming back from Settings (or any window) re-reads whether answers may
         // go to the cloud, so the Local label is never older than the last switch.
+        // Settings is a section of this same window, so a model change there and
+        // the switch back to Chats re-read it too: no window becomes key for those.
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             Task { await store.refreshCloudUse() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .wispInferenceConfigurationChanged)) { _ in
+            Task { await store.refreshCloudUse() }
+        }
+        .onChange(of: navigation.section) { _, section in
+            if section == .chats { Task { await store.refreshCloudUse() } }
         }
     }
 
@@ -375,7 +383,9 @@ struct ChatWelcome: View {
 
 struct ChatEmptyState: View {
     let ask: (String) -> Void
-    private let suggestions = AskStarters.chatWindow
+    /// Starters about a source only once Wisp knows it may read it (StarterAccess).
+    @ObservedObject private var access = StarterAccess.shared
+    private var suggestions: [String] { AskStarters.chatStarters(unreadable: access.unreadable) }
     var body: some View {
         VStack(spacing: 18) {
             Spacer(minLength: 24)
@@ -399,6 +409,7 @@ struct ChatEmptyState: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 24)
+        .task { await access.refresh() }
     }
 }
 
@@ -478,6 +489,8 @@ struct ChatThread: View {
     /// Until this time a settling scroll is our own (the animated jump to the bottom),
     /// so the reader has not moved away and following must not be switched off.
     @State private var ownScrollUntil = Date.distantPast
+    /// Which sources "Try another" may ask about (StarterAccess).
+    @ObservedObject private var access = StarterAccess.shared
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -507,11 +520,13 @@ struct ChatThread: View {
             .onChange(of: conversation.messages.last?.approval) { _, _ in follow(proxy) }
             .onChange(of: conversation.messages.last?.draft) { _, _ in follow(proxy) }
         }
+        .task { await access.refresh() }
     }
 
-    /// Starters not yet asked in this chat, from its user messages.
+    /// Starters not yet asked in this chat, from its user messages, none about a
+    /// source Wisp can't read.
     private var remainingStarters: [String] {
-        AskStarters.remaining(AskStarters.chatWindow,
+        AskStarters.remaining(AskStarters.chatStarters(unreadable: access.unreadable),
                               askedTexts: conversation.messages.filter { $0.role == .user }.map(\.text))
     }
 
@@ -1086,11 +1101,27 @@ struct ChatComposer: View {
         store.submit(prompt, attachmentName: attached?.name, image: attached?.dataURL)
     }
 
+    /// A sheet on the chat window, not an app-modal dialog: runModal also
+    /// locked the notch until the dialog closed.
     private func pickImage() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let finish: (NSApplication.ModalResponse) -> Void = { response in
+            MainActor.assumeIsolated {
+                guard response == .OK, let url = panel.url else { return }
+                attachImage(url)
+            }
+        }
+        if let window = NSApp.keyWindow, !(window is NSPanel) {
+            panel.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+            panel.begin(completionHandler: finish)
+        }
+    }
+
+    private func attachImage(_ url: URL) {
         let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
         guard size <= Self.maxImageBytes else {
             attachNote = "That image is over 10 MB. Choose a smaller one."

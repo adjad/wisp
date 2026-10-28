@@ -100,18 +100,93 @@ enum AskNotReady: Equatable {
 /// The tappable questions under an empty Ask: ones a fresh install can answer
 /// even before any source is allowed. A question about a source Wisp can't
 /// read (Calendar or Mail denied or turned off) is left out, so a first tap
-/// never ends in "I can't read that".
+/// never ends in "I can't read that", and so is every source question until
+/// the service has said what it can read.
 enum AskStarters {
     static let limit = 4
 
-    /// `unreadable`: source ids ("calendar", "email") Wisp can't read now.
-    static func prompts(unreadable: Set<String>) -> [String] {
+    /// The sources a starter can be about, asked of the service as the panel opens.
+    static let sources = ["calendar", "email", "messages"]
+
+    /// What Wisp already holds on this Mac that makes a starter the person's
+    /// own. Nothing is read for the starters alone; an empty field keeps the
+    /// general starter in its place.
+    struct Personal: Equatable {
+        /// The next timed calendar event's title (nextEvent).
+        var nextEvent = ""
+        /// A person whose email or text waits for an answer (waitingSender), and
+        /// where it came: "email" or "messages".
+        var sender = ""
+        var senderSource = ""
+        /// The first goal from Getting to know you.
+        var goal = ""
+    }
+
+    /// The goal starter puts what the person said in Getting to know you into
+    /// the prompt, and Wisp promises that never goes to a cloud model. So it is
+    /// offered only once the service said no cloud model gets Ask's prompts
+    /// (Super Model or a cloud role); unknown keeps it back.
+    static func goalStarterAllowed(cloudInUse: Bool?) -> Bool { cloudInUse == false }
+
+    /// `unreadable`: source ids ("calendar", "email") Wisp can't read now; nil
+    /// while that isn't known yet, which leaves out every source starter.
+    static func prompts(unreadable: Set<String>?, personal: Personal = Personal()) -> [String] {
+        let blocked = unreadable ?? Set(sources)
         var out = ["What can you do?"]
-        if !unreadable.contains("calendar") { out.append("What's on my calendar today?") }
-        if !unreadable.contains("email") { out.append("Any emails I need to reply to?") }
+        if !blocked.contains("calendar") {
+            out.append(personal.nextEvent.isEmpty ? "What's on my calendar today?"
+                       : "What should I prep for \(clipped(personal.nextEvent))?")
+        }
+        if !personal.sender.isEmpty && !blocked.contains(personal.senderSource) {
+            out.append("Anything from \(clipped(personal.sender)) I need to answer?")
+        } else if !blocked.contains("email") {
+            out.append("Any emails I need to reply to?")
+        }
+        if !personal.goal.isEmpty { out.append("Help me with my goal: \(clipped(personal.goal))") }
         out.append("Is my data private?")
         if out.count < limit { out.append("How do I use Wisp?") }
         return Array(out.prefix(limit))
+    }
+
+    /// The soonest timed event that hasn't started, within `window` seconds, by
+    /// its title. All-day entries and blank titles never make a "prep for" starter.
+    static func nextEvent(_ events: [(title: String, start: Double, allDay: Bool)], now: Double,
+                          window: Double = 86_400) -> String {
+        events.filter { !$0.allDay && $0.start > now && $0.start <= now + window
+                        && !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .min { $0.start < $1.start }?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    /// The first real person still waiting: not an automated sender, not a
+    /// conversation already answered, and known by a name, not an address or
+    /// number ("Anything from +1 555…" reads oddly). In the order given (the Brief's own).
+    static func waitingSender(_ needs: [(sender: String, source: String, person: Bool, replied: Bool)])
+        -> (name: String, source: String)? {
+        guard let first = needs.first(where: {
+            $0.person && !$0.replied && !$0.sender.trimmingCharacters(in: .whitespaces).isEmpty
+                && !isHandle($0.sender)
+        }) else { return nil }
+        return (first.sender.trimmingCharacters(in: .whitespaces), first.source)
+    }
+
+    /// An email address or a phone number rather than a name.
+    private static func isHandle(_ sender: String) -> Bool {
+        let text = sender.trimmingCharacters(in: .whitespaces)
+        return text.contains("@")
+            || (text.contains(where: \.isNumber) && text.allSatisfy { $0.isNumber || "+-(). ".contains($0) })
+    }
+
+    /// The greeting over the starters when the person told Wisp their name.
+    static func greeting(name: String) -> String? {
+        guard let first = name.split(whereSeparator: \.isWhitespace).first else { return nil }
+        return "Hi, \(first)."
+    }
+
+    /// A name or title short enough for a starter chip.
+    static func clipped(_ text: String, max: Int = 28) -> String {
+        let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count > max else { return text }
+        return text.prefix(max - 1).trimmingCharacters(in: .whitespaces) + "…"
     }
 
     /// The starters not yet asked in this chat, in their original order. A starter
@@ -131,8 +206,36 @@ enum AskStarters {
     static let chatWindow = ["What can you do?", "What's on my calendar this week?", "Any emails I need to reply to?",
                              "Draft a reply to my last email", "Is my data private?"]
 
+    /// The source each chat-window starter reads.
+    private static let chatWindowSource = ["What's on my calendar this week?": "calendar",
+                                           "Any emails I need to reply to?": "email",
+                                           "Draft a reply to my last email": "email"]
+
+    /// The chat window's starters Wisp can answer now, by the same rule as Ask:
+    /// none about a source it can't read, or before that is known (nil).
+    static func chatStarters(unreadable: Set<String>?) -> [String] {
+        let blocked = unreadable ?? Set(sources)
+        return chatWindow.filter { chatWindowSource[$0].map { !blocked.contains($0) } ?? true }
+    }
+
     /// Source states that mean Wisp can't read the source on this Mac.
     static func unreadable(states: [String: String]) -> Set<String> {
         Set(states.filter { $0.value == "unavailable" || $0.value == "disabled" }.keys)
+    }
+}
+
+/// A source a tool in an Ask reply couldn't read for lack of access. The
+/// service attaches these to the tool's own result (`needs_access`, see
+/// service/tools/access_needed.py), so the reply's fix button never depends on
+/// the model's wording.
+enum AskAccess {
+    /// The kinds ("calendar_access", "full_disk_access", …) in a tool_result's
+    /// `needs_access`, in order, each once. Anything malformed is skipped.
+    static func kinds(_ payload: Any?) -> [String] {
+        var out: [String] = []
+        for item in payload as? [[String: Any]] ?? [] {
+            if let kind = item["kind"] as? String, !kind.isEmpty, !out.contains(kind) { out.append(kind) }
+        }
+        return out
     }
 }
