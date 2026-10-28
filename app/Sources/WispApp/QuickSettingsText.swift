@@ -40,6 +40,21 @@ enum QuickSettingsText {
 
     /// Learn my routines' line, and the trailing "stays on this Mac" when
     /// nothing learned is sent anywhere.
+    /// Low Power Mode's line. Neutral wording in every state: it is a
+    /// preference, not a warning (red/amber stays for status).
+    static func lowPower(on: Bool?, pending: Bool) -> String {
+        if pending { return "Updating · waiting for confirmation…" }
+        switch on {
+        case true?: return "Caps GPU power only while Wisp is working"
+        case false?: return "Wisp runs at full speed"
+        case nil: return "Not confirmed"
+        }
+    }
+
+    static let lowPowerHelp = "Limits the GPU power Wisp's model can draw, only while it is generating: "
+        + "replies about 20 W, background work 10–15 W. Nothing is limited while Wisp is idle. "
+        + "Replies start slightly slower."
+
     static func learning(enabled: Bool?, changing: Bool, status: String?,
                          remote: Bool, phraser: Bool) -> (text: String, local: String?) {
         if changing { return (status ?? "Updating · waiting for confirmation…", nil) }

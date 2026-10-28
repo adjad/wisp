@@ -778,6 +778,34 @@ final class WispClient {
         return Self.fullAccessFlag(data)
     }
 
+    /// Wisp's Low Power Mode (GET /power), or nil when it can't be read.
+    func lowPowerState() async -> Bool? {
+        let url = Self.baseURL.appendingPathComponent("power")
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.lowPowerFlag(data)
+    }
+
+    // POST /power -> turn Low Power Mode on or off. Returns the flag the service
+    // confirmed, or nil when the reply was lost or unreadable (the write may
+    // still have happened).
+    func setLowPower(_ on: Bool) async -> Bool? {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("power"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["low_power": on])
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.lowPowerFlag(data)
+    }
+
+    private static func lowPowerFlag(_ data: Data) -> Bool? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let flag = obj["low_power"] as? NSNumber,
+              CFGetTypeID(flag) == CFBooleanGetTypeID() else { return nil }
+        return flag.boolValue
+    }
+
     private static func fullAccessFlag(_ data: Data) -> Bool? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let flag = obj["full_access"] as? NSNumber,

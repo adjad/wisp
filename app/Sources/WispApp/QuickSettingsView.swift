@@ -61,6 +61,7 @@ struct QuickSettingsView: View {
                 hairline
                 textSizeRow
             }
+            group("Power") { lowPowerRow }
             group("Advanced") {
                 row("Reply details", help: "Open each reply's model, route, timing and tool calls by default (Debug Mode).") {
                     Text("Model, timing and tools under each reply")
@@ -136,6 +137,22 @@ struct QuickSettingsView: View {
     }
 
     private var voiceReplies: VoiceReplyMode { VoiceReplyMode(rawValue: voiceRepliesRaw) ?? .afterVoice }
+
+    private var lowPowerRow: some View {
+        row("Low Power Mode", help: QuickSettingsText.lowPowerHelp) {
+            Text(QuickSettingsText.lowPower(on: settings.lowPower, pending: settings.lowPowerPending))
+        } control: {
+            if settings.lowPower != nil {
+                Toggle("Low Power Mode", isOn: Binding(get: { settings.lowPower == true },
+                                                       set: { settings.setLowPower($0) }))
+                    .toggleStyle(NotchSwitch())
+                    .disabled(settings.lowPowerPending)
+            } else {
+                pillButton("Check") { Task { await settings.refreshLowPower() } }
+                    .disabled(settings.lowPowerPending)
+            }
+        }
+    }
 
     private var fullAccessRow: some View {
         let line = QuickSettingsText.fullAccess(on: settings.fullAccess, pending: settings.fullAccessPending)

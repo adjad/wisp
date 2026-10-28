@@ -49,13 +49,9 @@ GEMMA_E4B_MTP = CatalogModel(
         "mtp_enabled": True, "mtp_adaptive_max_depth": 4,
         "max_context_window": 16384,
         "trust_remote_code": True,
-        # Chat runs under a 20 W GPU cap (user decision, 2026-10-28): +8% time
-        # to first token, -2% decode, -21% GPU energy per token. Background
-        # calls ask for less (service/inference/power_tier.py) and the engine
-        # uses the lower cap. A model-level cap also replaces a background
-        # cap the moment a chat starts, instead of the engine holding the
-        # lower one for 15 s. oMLX 0.7.3+ reads it; older engines drop it.
-        "gpu_power_limit_w": 20,
+        # No gpu_power_limit_w here, ever: a model-level cap throttles the
+        # whole Mac's GPU on every request. Low Power Mode sends per-request
+        # caps instead (service/inference/power_tier.py).
     })
 
 

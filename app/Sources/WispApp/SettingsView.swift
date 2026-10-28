@@ -219,6 +219,8 @@ final class SettingsLoader: ObservableObject {
     // Wisp window's composer all read and write it through this loader.
     @Published private(set) var fullAccess: Bool?
     @Published private(set) var fullAccessPending = false
+    @Published private(set) var lowPower: Bool?
+    @Published private(set) var lowPowerPending = false
     // The Daily Summary's morning and evening hours, as the service confirmed them.
     @Published private(set) var briefTimes: WispClient.BriefTimes?
     @Published private(set) var briefTimesPending = false
@@ -1085,8 +1087,29 @@ final class SettingsLoader: ObservableObject {
     /// The settings quick settings shows, without the models and providers.
     func refreshQuick() async {
         await refreshFullAccess()
+        await refreshLowPower()
         await refreshBehavior()
         await refreshBriefTimes()
+    }
+
+    func refreshLowPower() async {
+        guard !lowPowerPending else { return }
+        let confirmed = await client.lowPowerState()
+        guard !lowPowerPending else { return }
+        lowPower = confirmed
+    }
+
+    /// One change at a time; the row shows what the service confirmed.
+    func setLowPower(_ on: Bool) {
+        guard !lowPowerPending else { return }
+        lowPowerPending = true
+        Task {
+            var confirmed = await self.client.setLowPower(on)
+            // A lost reply may mean the write happened; only a fresh read can tell.
+            if confirmed == nil { confirmed = await self.client.lowPowerState() }
+            self.lowPower = confirmed
+            self.lowPowerPending = false
+        }
     }
 
     func refreshFullAccess() async {

@@ -1,6 +1,7 @@
-"""GPU power tiers for background model calls; no engine is contacted."""
+"""Low Power Mode and GPU power tiers; no engine is contacted."""
 import asyncio
 import json
+import stat
 from types import SimpleNamespace
 
 import httpx
@@ -11,14 +12,62 @@ from service.inference.omlx_client import OMLXClient, _power_fields
 
 
 @pytest.fixture(autouse=True)
-def clean_env(monkeypatch):
+def clean_env(monkeypatch, tmp_path):
     for name in P._ENV.values():
         monkeypatch.delenv(name, raising=False)
+    # Every test starts with Low Power Mode off, in a private settings file.
+    monkeypatch.setattr(P, "SETTINGS_PATH", tmp_path / "power" / "settings.json")
 
 
-def test_defaults_are_10_w_background_and_15_w_intensive():
+@pytest.fixture
+def on():
+    P.set_low_power(True)
+
+
+# --- the setting ------------------------------------------------------------------
+
+def test_low_power_is_off_by_default_persists_and_reads_unreadable_as_off():
+    assert P.low_power() is False
+    assert P.set_low_power(True) is True and P.low_power() is True
+    assert json.loads(P.SETTINGS_PATH.read_text()) == {"low_power": True}
+    assert stat.S_IMODE(P.SETTINGS_PATH.stat().st_mode) == 0o600
+    assert P.set_low_power(False) is False and P.low_power() is False
+    P.SETTINGS_PATH.write_text("{not json")
+    assert P.low_power() is False
+    P.SETTINGS_PATH.write_text('{"low_power": "yes"}')
+    assert P.low_power() is False
+    with pytest.raises(ValueError):
+        P.set_low_power("true")
+
+
+def test_the_endpoint_reads_and_writes_the_setting_from_the_app_only():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from service.power_api import router
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+    assert client.get("/power").json() == {"low_power": False}
+    assert client.post("/power", json={"low_power": True}).json() == {"low_power": True}
+    assert P.low_power() is True
+    # A web page (Origin header), a non-JSON body or a non-bool value can't change it.
+    assert client.post("/power", json={"low_power": False},
+                       headers={"Origin": "https://example.com"}).status_code == 403
+    assert client.post("/power", content="low_power=false",
+                       headers={"Content-Type": "application/x-www-form-urlencoded"}).status_code == 415
+    assert client.post("/power", json={"low_power": "false"}).status_code == 422
+    assert client.post("/power", json={"low_power": False, "watts": 5}).status_code == 422
+    assert P.low_power() is True
+
+
+# --- tiers ------------------------------------------------------------------------
+
+def test_defaults_are_10_w_background_15_w_intensive_20_w_chat():
     assert P.watts(P.BACKGROUND) == 10
     assert P.watts(P.INTENSIVE) == 15
+    assert P.watts(P.CHAT) == 20
     assert P.watts(None) is None
 
 
@@ -32,9 +81,23 @@ def test_env_overrides_zero_turns_off_and_out_of_range_is_ignored(monkeypatch):
         assert P.watts(P.BACKGROUND) == 10
 
 
-def test_tier_is_scoped_to_the_block_and_inherited_by_tasks():
+def test_off_sends_nothing_from_any_tier():
     assert P.payload_fields() == {}
+    for tier in (P.BACKGROUND, P.INTENSIVE, P.CHAT):
+        with P.power_tier(tier):
+            assert P.payload_fields() == {}
 
+
+def test_on_caps_each_tier_and_untiered_calls_get_the_chat_cap(on):
+    assert P.payload_fields() == {"gpu_power_limit_w": 20}
+    with P.power_tier(P.BACKGROUND):
+        assert P.payload_fields() == {"gpu_power_limit_w": 10}
+    with P.power_tier(P.INTENSIVE):
+        assert P.payload_fields() == {"gpu_power_limit_w": 15}
+    assert P.payload_fields() == {"gpu_power_limit_w": 20}
+
+
+def test_tier_is_scoped_to_the_block_and_inherited_by_tasks(on):
     async def seen():
         return P.payload_fields()
 
@@ -49,6 +112,8 @@ def test_tier_is_scoped_to_the_block_and_inherited_by_tasks():
         with P.power_tier("turbo"):
             pass
 
+
+# --- the client -------------------------------------------------------------------
 
 def _client(managed):
     bodies = []
@@ -68,33 +133,76 @@ def _client(managed):
     return client, bodies
 
 
-def test_managed_engine_gets_the_cap_only_inside_a_tier():
+def test_off_sends_no_field_and_on_sends_a_per_request_cap_that_ends_with_the_call():
     client, bodies = _client(managed=True)
+    hi = [{"role": "user", "content": "hi"}]
 
     async def run():
         try:
-            await client.chat("m", [{"role": "user", "content": "hi"}])
+            await client.chat("m", hi)                        # 0: off
+            with P.power_tier(P.BACKGROUND):
+                await client.chat("m", hi)                    # 1: off, tiered
+            P.set_low_power(True)
+            await client.chat("m", hi)                        # 2: on, chat
             with P.power_tier(P.INTENSIVE):
-                await client.chat("m", [{"role": "user", "content": "hi"}])
-                # An explicit field from the caller wins over the tier.
-                await client.chat("m", [{"role": "user", "content": "hi"}], gpu_power_limit_w=20)
+                await client.chat("m", hi)                    # 3: on, intensive
+                await client.chat("m", hi, gpu_power_limit_w=12)  # 4: explicit wins
+            await client.chat("m", hi)                        # 5: tier ended -> chat cap
+            P.set_low_power(False)
+            await client.chat("m", hi)                        # 6: switched off -> nothing
         finally:
             await client._client.aclose()
 
     asyncio.run(run())
-    assert "gpu_power_limit_w" not in bodies[0]
-    assert bodies[1]["gpu_power_limit_w"] == 15
-    assert bodies[2]["gpu_power_limit_w"] == 20
+    caps = [body.get("gpu_power_limit_w") for body in bodies]
+    assert caps == [None, None, 20, 15, 12, 20, None]
 
 
-def test_a_remote_provider_never_gets_the_field():
+def test_a_remote_provider_never_gets_the_field(on):
     client = OMLXClient.__new__(OMLXClient)
     client.managed = False
     with P.power_tier(P.BACKGROUND):
         assert _power_fields(client) == {}
+    assert _power_fields(client) == {}
 
 
-def test_the_gist_call_runs_at_the_background_tier(monkeypatch):
+def test_a_chat_beside_a_running_background_tier_gets_the_chat_cap(on):
+    client, bodies = _client(managed=True)
+    background_started, foreground_done = asyncio.Event(), asyncio.Event()
+
+    async def background():
+        with P.power_tier(P.BACKGROUND):
+            background_started.set()
+            await foreground_done.wait()       # still inside the tier while the turn runs
+            await client.chat("m", [{"role": "user", "content": "bg"}])
+
+    async def foreground():
+        await background_started.wait()
+        await client.chat("m", [{"role": "user", "content": "fg"}])
+        foreground_done.set()
+
+    async def run():
+        try:
+            await asyncio.gather(background(), foreground())
+        finally:
+            await client._client.aclose()
+
+    asyncio.run(run())
+    by_text = {body["messages"][0]["content"]: body for body in bodies}
+    assert by_text["fg"]["gpu_power_limit_w"] == 20
+    assert by_text["bg"]["gpu_power_limit_w"] == 10
+
+
+def test_no_model_level_cap_is_ever_seeded():
+    from service.setup import catalog
+
+    for model in catalog.PRIMARY_MODELS:
+        assert "gpu_power_limit_w" not in model.engine_profile, model.id
+
+
+# --- each background path carries its tier (Low Power Mode on) --------------------
+
+def test_the_gist_call_runs_at_the_background_tier(monkeypatch, on):
     import service.config as config
     from service.assistant import brief, mail_gists
 
@@ -119,7 +227,7 @@ def test_the_gist_call_runs_at_the_background_tier(monkeypatch):
     assert seen == [{"gpu_power_limit_w": 10}]
 
 
-def test_the_scheduled_daily_summary_runs_at_the_intensive_tier(monkeypatch):
+def test_the_scheduled_daily_summary_runs_at_the_intensive_tier(monkeypatch, on):
     from datetime import date
 
     from service.assistant import brief, scheduler
@@ -137,7 +245,7 @@ def test_the_scheduled_daily_summary_runs_at_the_intensive_tier(monkeypatch):
 
 
 class _Recorder:
-    """A fake client that records the tier active when chat() runs."""
+    """A fake client that records the cap active when chat() runs."""
 
     managed = True
     base_url = "local"
@@ -159,7 +267,7 @@ class _Recorder:
         return {"choices": [{"finish_reason": "stop", "message": {"content": "ok"}}]}
 
 
-def test_the_mail_memory_walk_runs_at_the_background_tier(monkeypatch):
+def test_the_mail_memory_walk_runs_at_the_background_tier(monkeypatch, on):
     import service.config as config
     from service import idle
     from service.assistant import brief
@@ -179,10 +287,9 @@ def test_the_mail_memory_walk_runs_at_the_background_tier(monkeypatch):
     assert client.seen == [{"gpu_power_limit_w": 10}]
 
 
-def test_the_behavior_phraser_runs_at_the_background_tier(monkeypatch):
+def test_the_behavior_phraser_runs_at_the_background_tier(monkeypatch, on):
     from service import idle
     from service.assistant.behavior_phraser import WispPhraser
-
     from service.config.endpoints import role_target
 
     client = _Recorder()
@@ -198,7 +305,7 @@ def test_the_behavior_phraser_runs_at_the_background_tier(monkeypatch):
     assert client.seen == [{"gpu_power_limit_w": 10}]
 
 
-def test_research_calls_run_at_the_intensive_tier(monkeypatch):
+def test_research_calls_run_at_the_intensive_tier(monkeypatch, on):
     from service import idle
     from service.research import orchestrator as O
 
@@ -226,48 +333,3 @@ def test_memory_capture_wraps_its_extraction_call_in_the_background_tier():
     source = inspect.getsource(MemoryWorker.process)
     tier = source.index("with power_tier(BACKGROUND):")
     assert tier < source.index("await client.chat(") < tier + 200
-
-
-def test_gemma_profile_seeds_a_20_w_chat_cap_above_both_tiers(tmp_path):
-    from service.engine import profiles
-    from service.setup.catalog import GEMMA_E4B_MTP
-
-    assert GEMMA_E4B_MTP.engine_profile["gpu_power_limit_w"] == 20
-    assert P.watts(P.BACKGROUND) < P.watts(P.INTENSIVE) < 20
-    settings, record = tmp_path / "model_settings.json", tmp_path / "seeded.json"
-    assert profiles.seed(settings, record, [GEMMA_E4B_MTP]) == [GEMMA_E4B_MTP.id]
-    entry = json.loads(settings.read_text())["models"][GEMMA_E4B_MTP.id]
-    assert entry["gpu_power_limit_w"] == 20
-
-
-def test_a_foreground_call_beside_a_running_background_tier_sends_no_cap():
-    client, bodies = _client(managed=True)
-    background_started, foreground_done = asyncio.Event(), asyncio.Event()
-
-    async def background():
-        with P.power_tier(P.BACKGROUND):
-            background_started.set()
-            await foreground_done.wait()       # still inside the tier while the turn runs
-            await client.chat("m", [{"role": "user", "content": "bg"}])
-
-    async def foreground():
-        await background_started.wait()
-        await client.chat("m", [{"role": "user", "content": "fg"}])
-        foreground_done.set()
-
-    async def run():
-        try:
-            await asyncio.gather(background(), foreground())
-        finally:
-            await client._client.aclose()
-
-    asyncio.run(run())
-    by_text = {body["messages"][0]["content"]: body for body in bodies}
-    assert "gpu_power_limit_w" not in by_text["fg"]
-    assert by_text["bg"]["gpu_power_limit_w"] == 10
-
-
-def test_a_live_turn_carries_no_tier():
-    # Ask/chat turns never enter power_tier, so they fall back to the
-    # engine's model-level cap (20 W for Gemma on the user's Mac).
-    assert P.current_tier() is None and P.payload_fields() == {}

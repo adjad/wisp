@@ -11,6 +11,16 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(unconfirmed.status == nil && unconfirmed.rest.hasPrefix("Not confirmed"), "unconfirmed Full access is never off")
     check(QuickSettingsText.fullAccess(on: true, pending: true).status == nil, "a pending change shows no status word")
 
+    // Low Power Mode: says it only caps while Wisp works; unconfirmed is never "off";
+    // the help names the caps and that idle Wisp limits nothing.
+    check(QuickSettingsText.lowPower(on: true, pending: false).contains("only while Wisp is working"), "Low Power on")
+    check(QuickSettingsText.lowPower(on: false, pending: false) == "Wisp runs at full speed", "Low Power off")
+    check(QuickSettingsText.lowPower(on: nil, pending: false) == "Not confirmed", "unconfirmed Low Power is never off")
+    check(QuickSettingsText.lowPower(on: true, pending: true).hasPrefix("Updating"), "a pending Low Power change waits")
+    let lowPowerHelp = QuickSettingsText.lowPowerHelp
+    check(lowPowerHelp.contains("20 W") && lowPowerHelp.contains("10–15 W")
+          && lowPowerHelp.contains("Nothing is limited while Wisp is idle"), "Low Power help names its caps")
+
     // Learn my routines: "stays on this Mac" only when nothing learned leaves it.
     let local = QuickSettingsText.learning(enabled: true, changing: false, status: nil, remote: false, phraser: true)
     check(local == ("From calendar, reminders and how you use Wisp", "stays on this Mac"), "local learning stays on this Mac")
