@@ -554,7 +554,8 @@ final class WispClient {
     // first `session` event. `testMode` asks the service to run a stateless dry
     // run where tool calls are reported but never executed.
     func runAgent(prompt: String, image: String?, imageSource: String? = nil,
-                  video: [String: Any]? = nil, sessionId: String = "",
+                  video: [String: Any]? = nil, document: [String: Any]? = nil,
+                  sessionId: String = "",
                   debug: Bool = false,
                   testMode: Bool = false,
                   corpusCaseID: String? = nil, corpusToken: String? = nil, corpusNormal: Bool = false,
@@ -576,6 +577,7 @@ final class WispClient {
         if let image { body["image"] = image }
         if image != nil, let imageSource { body["image_source"] = imageSource }
         if let video { body["video"] = video }
+        if let document { body["document"] = document }
         if let corpusCaseID {
             body = ["case_id": corpusCaseID, "token": corpusToken ?? "", "mode": corpusNormal ? "normal" : "bounded"]
         }
@@ -776,6 +778,34 @@ final class WispClient {
         guard let (data, response) = try? await URLSession.shared.data(for: req),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
         return Self.fullAccessFlag(data)
+    }
+
+    /// The "Save power when away" switch (GET /power), or nil when it can't be read.
+    func saveWhenAwayState() async -> Bool? {
+        let url = Self.baseURL.appendingPathComponent("power")
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.saveWhenAwayFlag(data)
+    }
+
+    // POST /power -> turn "Save power when away" on or off. Returns the flag the
+    // service confirmed, or nil when the reply was lost or unreadable (the write
+    // may still have happened).
+    func setSaveWhenAway(_ on: Bool) async -> Bool? {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("power"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["save_when_away": on])
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.saveWhenAwayFlag(data)
+    }
+
+    private static func saveWhenAwayFlag(_ data: Data) -> Bool? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let flag = obj["save_when_away"] as? NSNumber,
+              CFGetTypeID(flag) == CFBooleanGetTypeID() else { return nil }
+        return flag.boolValue
     }
 
     private static func fullAccessFlag(_ data: Data) -> Bool? {

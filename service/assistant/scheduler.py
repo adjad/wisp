@@ -155,8 +155,11 @@ def _start_behavior_tick() -> asyncio.Task | None:
         _behavior_task = asyncio.get_running_loop().create_task(_age_out_only(behavior_runtime))
         return _behavior_task
     # behavior_runtime.tick catches every exception itself, so the task never
-    # ends with an unretrieved error.
-    _behavior_task = asyncio.get_running_loop().create_task(behavior_runtime.tick(assistant_store, hub))
+    # ends with an unretrieved error. Its model calls (the interpreter and the
+    # phraser) are background work; the task inherits the tier.
+    from service.inference.power_tier import BACKGROUND, power_tier
+    with power_tier(BACKGROUND):
+        _behavior_task = asyncio.get_running_loop().create_task(behavior_runtime.tick(assistant_store, hub))
     return _behavior_task
 
 
@@ -265,6 +268,13 @@ async def run() -> None:
         # the day went, once, when the app is listening. No model, no sends.
         try:
             await _checkin_tick()
+        except Exception:  # noqa: BLE001 — never break the scheduler loop
+            pass
+        # Whether the user is away, for background calls' GPU cap: read off
+        # the loop here so no request ever runs ioreg.
+        try:
+            from service.inference.power_tier import refresh_away
+            await asyncio.to_thread(refresh_away)
         except Exception:  # noqa: BLE001 — never break the scheduler loop
             pass
         await asyncio.sleep(TICK_S)

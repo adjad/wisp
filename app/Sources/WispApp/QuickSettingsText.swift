@@ -38,6 +38,21 @@ enum QuickSettingsText {
         }
     }
 
+    /// "Save power when away"'s line. Neutral wording in every state: it is a
+    /// preference, not a warning (red/amber stays for status).
+    static func saveWhenAway(on: Bool?, pending: Bool) -> String {
+        if pending { return "Updating · waiting for confirmation…" }
+        switch on {
+        case true?: return "Background work runs at 10 W while you're away"
+        case false?: return "Background work runs at full speed"
+        case nil: return "Not confirmed"
+        }
+    }
+
+    static let saveWhenAwayHelp = "After 10 minutes away from the keyboard and mouse, Wisp's background work "
+        + "(email summaries, proactive checks) runs at 10 W. Replies and anything you start always get full "
+        + "power, and so does everything while another app, like a game, is using the GPU."
+
     /// Learn my routines' line, and the trailing "stays on this Mac" when
     /// nothing learned is sent anywhere.
     static func learning(enabled: Bool?, changing: Bool, status: String?,

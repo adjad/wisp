@@ -219,6 +219,8 @@ final class SettingsLoader: ObservableObject {
     // Wisp window's composer all read and write it through this loader.
     @Published private(set) var fullAccess: Bool?
     @Published private(set) var fullAccessPending = false
+    @Published private(set) var saveWhenAway: Bool?
+    @Published private(set) var saveWhenAwayPending = false
     // The Daily Summary's morning and evening hours, as the service confirmed them.
     @Published private(set) var briefTimes: WispClient.BriefTimes?
     @Published private(set) var briefTimesPending = false
@@ -1085,8 +1087,29 @@ final class SettingsLoader: ObservableObject {
     /// The settings quick settings shows, without the models and providers.
     func refreshQuick() async {
         await refreshFullAccess()
+        await refreshSaveWhenAway()
         await refreshBehavior()
         await refreshBriefTimes()
+    }
+
+    func refreshSaveWhenAway() async {
+        guard !saveWhenAwayPending else { return }
+        let confirmed = await client.saveWhenAwayState()
+        guard !saveWhenAwayPending else { return }
+        saveWhenAway = confirmed
+    }
+
+    /// One change at a time; the row shows what the service confirmed.
+    func setSaveWhenAway(_ on: Bool) {
+        guard !saveWhenAwayPending else { return }
+        saveWhenAwayPending = true
+        Task {
+            var confirmed = await self.client.setSaveWhenAway(on)
+            // A lost reply may mean the write happened; only a fresh read can tell.
+            if confirmed == nil { confirmed = await self.client.saveWhenAwayState() }
+            self.saveWhenAway = confirmed
+            self.saveWhenAwayPending = false
+        }
     }
 
     func refreshFullAccess() async {
