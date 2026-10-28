@@ -51,6 +51,13 @@ struct NotchCommandChecks {
         check(NotchCommand.match("/c", includeCorpus: false) == nil, "no other command starts with c")
         check(NotchCommand.match("/about", includeCorpus: false) == .about, "other commands still run")
 
+        // /screen only exists when Screen Recording is already granted, and only runs in full.
+        check(NotchCommand.match("/screen") == .screen, "/screen runs when available")
+        check(NotchCommand.match("/screen", includeScreen: false) == nil, "/screen is gone without the permission")
+        check(!NotchCommand.suggestions(for: "/", includeScreen: false).contains(.screen), "/screen is not listed without it")
+        check(NotchCommand.match("/s") == .settings, "/s stays /settings")
+        check(NotchCommand.match("/sc") == nil, "a prefix never captures the screen")
+
         // /screen only exists once Screen Recording is already granted, and only when typed in full.
         check(!NotchCommand.suggestions(for: "/", includeScreen: false).contains(.screen), "/screen is not listed without the grant")
         check(NotchCommand.match("/screen", includeScreen: false) == nil, "/screen does not run without the grant")
@@ -79,8 +86,8 @@ struct NotchCommandChecks {
               "prefixes research shares with it still open research")
         check(NotchCommand.match("/resetwisp now") == nil, "extra words make it a prompt")
         check(NotchCommand.match("/resetwisp!") == nil, "punctuation makes it a prompt")
-        check(NotchCommand.resetwisp.exactOnly && NotchCommand.allCases.filter(\.exactOnly) == [.resetwisp],
-              "only /resetwisp is exact-only")
+        check(NotchCommand.resetwisp.exactOnly && NotchCommand.allCases.filter(\.exactOnly) == [.resetwisp, .screen],
+              "only /resetwisp and /screen (a capture) are exact-only")
         check(NotchCommand.isReset("/resetwisp") && !NotchCommand.isReset("/reset") && !NotchCommand.isReset("resetwisp"),
               "isReset is the whole command only")
         check(NotchCommand.suggestions(for: "/rese") == [.research, .resetwisp], "it is listed while typing it")
