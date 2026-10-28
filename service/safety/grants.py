@@ -59,7 +59,11 @@ _NEVER_GRANTABLE = {"send_email", "send_message", "create_tool",
                     # AppleScript drives other apps (one line sends an
                     # iMessage) and runs shell commands; policy confirms it
                     # every time (ALWAYS_CONFIRM_TOOLS).
-                    "run_applescript"}
+                    "run_applescript",
+                    # Always confirmed on model-led turns, where the model
+                    # picks the exact item (model_led.MODEL_LED_ALWAYS_CONFIRM_TOOLS);
+                    # an "always allow" offered there could never be honoured.
+                    "cancel_scheduled_send", "delete_knowledge", "edit_knowledge"}
 
 # Tools that absorbed several single-purpose tools in the 100-tool
 # consolidation: (argument that selects the behaviour, its default, the

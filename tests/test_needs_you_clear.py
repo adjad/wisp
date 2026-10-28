@@ -86,11 +86,33 @@ def test_a_new_text_from_the_same_person_comes_back():
     def text(received):
         return dict(id="messages:mom", source="messages", title="Mom: hi", due_ts=None, sender="Mom",
                     person=True, received_ts=received, reason="Important conversation context")
-    one = pick([text(NOW - 60)])["items"][0]
+    one = pick([text(NOW - 600)])["items"][0]
     cleared = {one["id"]: one["fingerprint"]}
-    assert pick([text(NOW - 60)], cleared)["items"] == []
-    two = pick([text(NOW - 60), dict(text(NOW - 30), id="messages:mom")], cleared)
+    assert pick([text(NOW - 600)], cleared)["items"] == []
+    # A different text has a different id, as in the service; the row is named by the newest.
+    two = pick([text(NOW - 600), dict(text(NOW - 60), id="messages:mom2")], cleared)
     assert two["items"] and two["items"][0]["text"] == "2 texts from Mom"
+
+
+def test_a_clear_stored_by_the_earlier_build_still_hides_a_text_row():
+    """Upgrade: main named the row by the FIRST text listed and fingerprinted it by
+    its words alone (needs_you_fingerprint(text, None)). Those dismissals must hold."""
+    def text(received, ident):
+        return dict(id=ident, source="messages", title="Mom: hi", due_ts=None, sender="Mom",
+                    person=True, received_ts=received, reason="Important conversation context")
+    # Attention lists items by id: "messages:aaaa" comes first, "messages:zzzz" is the newest.
+    both = [text(NOW - 3600, "messages:aaaa"), text(NOW - 600, "messages:zzzz")]
+    old_style = {"messages:aaaa": needs_you_fingerprint("2 texts from Mom", None)}
+    assert pick(both, old_style)["items"] == []
+    # An old Clear of a single text, then the older text leaves the window.
+    single = {"messages:aaaa": needs_you_fingerprint("a text from Mom", None)}
+    assert pick([text(NOW - 3600, "messages:aaaa")], single)["items"] == []
+    # She writes again: the count changes, so the old fingerprint stops matching.
+    again = both + [text(NOW - 60, "messages:bbbb")]
+    row = pick(again, old_style)["items"][0]
+    assert row["text"] == "3 texts from Mom"
+    # The response shape is unchanged.
+    assert set(row) == {"id", "kind", "text", "due_ts", "all_day", "fingerprint"}
 
 
 # --- the endpoints -----------------------------------------------------------------------

@@ -170,12 +170,31 @@ struct SurfaceLayout: Equatable {
         style == .notch ? screenFrame.maxY : usableFrame.maxY - Self.floatingGap
     }
 
+    /// The tallest the expanded panel gets: from its top to a margin above the
+    /// screen's bottom edge. 970 pt on a 14" MacBook Pro's default 982.
+    var maxPanelHeight: CGFloat { max(panelTop - screenFrame.minY - Self.screenMargin, 0) }
+
+    /// The panel's padding under its content, and above a tab's content under
+    /// the header (OverlayView.expandedPanel uses both).
+    static let panelBottomPadding: CGFloat = 16
+    static let tabTopPadding: CGFloat = 12
+    /// A scrolling tab never gets shorter than this, however small the display.
+    static let minTabScroll: CGFloat = 160
+
+    /// The tallest Brief's or Day's content gets before it scrolls: the panel's
+    /// maximum less the content inset, the header and the padding, so the
+    /// header stays put and nothing is cut off by the window's bottom edge.
+    func tabScrollCap(headerHeight: CGFloat) -> CGFloat {
+        let room = maxPanelHeight - contentTopInset - headerHeight.rounded(.up)
+            - Self.tabTopPadding - Self.panelBottomPadding
+        return max(room.rounded(.down), Self.minTabScroll)
+    }
+
     /// Frame of the expanded panel for a given content height: centred on the
     /// anchor, hanging from the top, and never taller than the screen.
     func expandedFrame(contentHeight: CGFloat) -> CGRect {
         let top = panelTop
-        let room = top - screenFrame.minY - Self.screenMargin
-        let height = min(contentHeight, max(room, 0))
+        let height = min(contentHeight, maxPanelHeight)
         return CGRect(x: (usableFrame.midX - expandedWidth / 2).rounded(),
                       y: (top - height).rounded(), width: expandedWidth, height: height)
     }

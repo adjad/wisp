@@ -168,11 +168,17 @@ idle_unload_minutes: 5
 # auto-applies a thinking_budget to grammar-constrained requests when a parser
 # IS set, which force-closes <think> and can leak the monologue into content.
 
-# Test switch: when true, the model answers every /agent turn and typed tasks,
+# Model-led routing, ON by default since 0.5.0-rc3 (off through rc2): the
+# model answers every /agent turn and picks its own tools; typed tasks,
 # delivery workflows, router reads/direct calls and verbatim tool
-# short-circuits are skipped. Safety policy and confirmations still apply.
-# WISP_MODEL_ONLY=1/0 overrides it; ~/.moe/config.yaml can set it too.
-model_only: false
+# short-circuits are skipped. Safety policy, confirmation cards, outbound-send
+# confirmation and permission grants still apply to every call. A turn whose
+# agent role is bound to a cloud or local-provider endpoint keeps the rules
+# path (service/main._model_only_turn).
+# WISP_MODEL_ONLY=1/0 overrides it; ~/.moe/config.yaml can set it too
+# (`model_only: false` brings the rules path back). /resetwisp drops that
+# override, so the packaged default applies again after a reset.
+model_only: true
 
 # Gemma 4 E4B returns zero tokens when it narrates after a tool result with
 # thinking off, so model-only narration steps keep thinking on.

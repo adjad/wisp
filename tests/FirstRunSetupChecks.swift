@@ -1,3 +1,4 @@
+import EventKit
 import Foundation
 
 // Pure checks for the first-run window: when it shows, and what step 1 says for
@@ -182,6 +183,29 @@ struct FirstRunSetupChecks {
         check(!FirstRunPermissions.contactsUseful(messagesReadable: false) && FirstRunPermissions.contactsUseful(messagesReadable: true),
               "Contacts waits for Messages to be readable")
 
+        // The Calendar and Reminders buttons: macOS asks once, so a turned-down row opens its page instead.
+        check(FirstRunPermissions.eventKitClick(.notDetermined) == .ask
+              && FirstRunPermissions.eventKitClick(.fullAccess) == .alreadyAllowed
+              && [.denied, .restricted, .writeOnly].allSatisfy { FirstRunPermissions.eventKitClick($0) == .openSettings },
+              "Undecided: ask macOS; allowed: nothing; denied, restricted or write-only: System Settings")
+        check(FirstRunPermissions.eventKitUnanswered(before: .notDetermined, after: .notDetermined)
+              && !FirstRunPermissions.eventKitUnanswered(before: .notDetermined, after: .fullAccess)
+              && !FirstRunPermissions.eventKitUnanswered(before: .notDetermined, after: .denied)
+              && !FirstRunPermissions.eventKitUnanswered(before: .denied, after: .denied),
+              "An ask that leaves macOS with no answer is reported; a Don't Allow is an answer")
+        let remindersBase = "What's due."
+        let denied = FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .notAllowed, unanswered: false)
+        let silent = FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .notAsked, unanswered: true)
+        check(denied.contains("Privacy & Security > Reminders") && denied.contains("Open System Settings")
+              && FirstRunPermissions.eventKitDetail(.calendar, base: "", state: .notAllowed, unanswered: false)
+                  .contains("Privacy & Security > Calendars")
+              && silent.contains("didn't show its question") && silent.contains("Quit and reopen Wisp")
+              && FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .notAsked, unanswered: false) == remindersBase
+              && FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .allowed, unanswered: true) == remindersBase,
+              "Reminders row: denied says where to switch it on, a silent ask says what to do, otherwise its purpose")
+        check(FirstRunSetupView.settingsPane(.reminders).hasSuffix("Privacy_Reminders")
+              && FirstRunSetupView.settingsPane(.calendar).hasSuffix("Privacy_Calendars"),
+              "Each row opens its own privacy page")
         // Readers never ask: an undecided Calendar or Reminders is a reason, never a request.
         for source in [RemindersWriter.Access.Source.calendar, .reminders] {
             let unasked = RemindersWriter.Access.passive(status: .notDetermined, source: source)

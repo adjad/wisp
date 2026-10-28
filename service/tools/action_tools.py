@@ -198,6 +198,8 @@ def confirm_preview(tool: str, args: dict) -> str | None:
     """
     if tool in _ACTION_PREVIEW_TOOLS:
         return _action_preview(tool, args)
+    if tool == "cancel_scheduled_send":
+        return _cancel_scheduled_preview(args)
     if tool not in _OUTBOUND_PREVIEW_TOOLS:
         return None
     if tool == "forward_email":
@@ -803,6 +805,33 @@ def _scheduled_send_record(row, *, full_body: bool) -> str:
         lines.append("Body preview:\n" + body[:160])
         if len(body) > 160:
             lines.append(f"[Body preview truncated; inspect exact ID {row['id']} for the full stored body.]")
+    return "\n".join(lines)
+
+
+def _cancel_scheduled_preview(args: dict) -> str:
+    """The queued row a cancel card is about: recipient, subject or a text
+    preview, and when it is scheduled. The tool cancels by the same exact ID."""
+    from service.assistant.outbound_queue import outbound_queue
+    sid = str(args.get("id") or "").strip()
+    if not sid:
+        return "Cancel scheduled send: (no ID given; nothing would be cancelled)"
+    try:
+        row = outbound_queue.get(sid)
+    except Exception:  # noqa: BLE001 - an unreadable queue still shows the ID
+        row = None
+    if row is None:
+        return f"Cancel scheduled send [{sid}]: no queued item has this ID; nothing would be cancelled."
+    kind = {"email": "email", "message": "text"}.get(row["channel"], str(row["channel"]))
+    to = row["display"] or row["recipient"]
+    if row["display"] and row["display"] != row["recipient"]:
+        to += f" ({row['recipient']})"
+    lines = [f"Cancel scheduled {kind} [{row['id']}]", f"To: {to}",
+             f"Scheduled: {_scheduled_time(row['when_ts'])}",
+             f"Status: {row['status'] or 'unrecognized'}"]
+    if row["subject"]:
+        lines.append(f"Subject: {row['subject']}")
+    body = str(row["body"] or "")
+    lines.append("Text: " + ((_clip_preview(body[:300]) + ("…" if len(body) > 300 else "")) if body else "(empty)"))
     return "\n".join(lines)
 
 

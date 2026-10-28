@@ -171,6 +171,7 @@ def test_http_explanation_does_not_prepare_or_persist_reminder_deletion(
     from service.tools.registry import REGISTRY
     state = knowledge_entrypoint
     monkeypatch.setenv('WISP_MODEL_LED_ROUTING', '0')
+    monkeypatch.setenv('WISP_MODEL_ONLY', '0')  # rc3: the rules path needs model_only off too
     monkeypatch.setenv('WISP_PLANNER', '0')
     state.reminders.add_manual('Fictional keep blue folder reminder', time.time() + 3600)
     before = state.reminders.active_between()
@@ -195,6 +196,7 @@ def test_http_real_deletion_still_prepares_exact_selection_and_requires_confirma
         knowledge_entrypoint, monkeypatch):
     state = knowledge_entrypoint
     monkeypatch.setenv('WISP_MODEL_LED_ROUTING', '0')
+    monkeypatch.setenv('WISP_MODEL_ONLY', '0')  # rc3: the rules path needs model_only off too
     state.reminders.add_manual('Fictional keep blue folder reminder', time.time() + 3600)
     before = state.reminders.active_between()
     events = state.run('Delete all reminders.', [{'content': 'Synthetic narration.'}],
@@ -307,6 +309,12 @@ def set_mode(monkeypatch, mode):
     monkeypatch.setenv('WISP_MODEL_LED_ROUTING', '1' if mode == 'model-led' else '0')
     monkeypatch.setenv('WISP_PLANNER', '1' if mode == 'planner' else '0')
     monkeypatch.setenv('WISP_TYPED_REMINDERS_SHADOW_ONLY', '1' if mode == 'shadow' else '0')
+    # normal/planner/shadow name the rules path, which since 0.5.0-rc3 needs
+    # model_only off; model-led runs on the packaged default (model_only on).
+    if mode == 'model-led':
+        monkeypatch.delenv('WISP_MODEL_ONLY', raising=False)
+    else:
+        monkeypatch.setenv('WISP_MODEL_ONLY', '0')
 
 
 @pytest.mark.parametrize('owner', ['reminder', 'reply-body'])
@@ -738,7 +746,14 @@ def test_actual_public_explanation_binds_current_public_request_not_private_hist
     # Optional web remains subject to the existing private-context guard; a
     # denial/no attempt is not evidence of an executed lookup. Never force it.
     if name == 'wikipedia_summary':
-        assert state.executed
+        if mode == 'model-led':
+            # model_only (the rc3 default for model-led turns) answers a plain
+            # definition from knowledge in one tool-free step
+            # (service/model_only.knowledge_question): no lookup runs at all,
+            # so the private history cannot reach one either.
+            assert not state.executed
+        else:
+            assert state.executed
     assert not pending_rows(state) and not state.source_calls and not state.native
     assert not any(e['type'] in {'task_plan', 'workflow', 'confirm', 'error'} for e in events)
 

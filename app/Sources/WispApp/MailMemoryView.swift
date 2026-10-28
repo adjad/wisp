@@ -115,6 +115,11 @@ struct MailMemorySettingsRow: View {
             if let status = memory.modeStatus {
                 Text(status).font(.caption).foregroundStyle(.secondary)
             }
+            if memory.mode != "off", let problem = memory.readError {
+                Label(problem, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .task { await memory.refresh() }
     }

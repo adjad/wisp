@@ -575,18 +575,34 @@ def needs_you(attention, *, now, day_end, dismissed=None):
             sender = clean(item.get("sender"), 80)
             if not sender or sender == "Me":
                 continue
-            entry = texts.setdefault(sender, dict(id=item["id"], kind="text", count=0, due_ts=None,
-                                                  all_day=False, received_ts=item.get("received_ts"), vip=False))
+            # legacy_id: the first text listed, which named the row before it was named
+            # by the newest (see below); a Clear stored under it still counts.
+            entry = texts.setdefault(sender, dict(id=item["id"], legacy_id=item["id"], kind="text", count=0,
+                                                  due_ts=None, all_day=False,
+                                                  received_ts=item.get("received_ts"), vip=False))
             entry["count"] += 1
             entry["vip"] = entry["vip"] or bool(item.get("profile_people"))
+            # The row is named by the person's NEWEST text, so its id and what a
+            # Clear remembers move only when they write again. (It used to be
+            # the first text listed, which changes when an older one ages out of
+            # the window: a cleared "text from Mom" came back with no new text.)
             if finite(item.get("received_ts")) and (not finite(entry["received_ts"])
                                                      or item["received_ts"] > entry["received_ts"]):
                 entry["received_ts"] = item["received_ts"]
+                entry["id"] = item["id"]
     newest = lambda e: -(e["received_ts"] if finite(e.get("received_ts")) else float("-inf"))
     people = []
     for sender, entry in sorted(texts.items(), key=lambda kv: newest(kv[1])):
         count = entry.pop("count")
-        people.append(dict(entry, text=(f"{count} texts from {sender}" if count > 1 else f"a text from {sender}")))
+        # What Clear remembers: this person and their latest text, never how many
+        # older ones are still in view ("2 texts" becoming "a text" is no news).
+        stamp = entry["received_ts"] if finite(entry.get("received_ts")) else None
+        text = f"{count} texts from {sender}" if count > 1 else f"a text from {sender}"
+        people.append(dict(entry, text=text, fingerprint=needs_you_fingerprint(f"texts from {sender}", stamp),
+                           # How an earlier build stored a Clear of this row: first text's id, the
+                           # words and no time. Honoured so an upgrade does not bring cleared rows
+                           # back; a new text changes the count, so it stops matching.
+                           legacy_fp=needs_you_fingerprint(text, None)))
     overdue.sort(key=lambda e: e["due_ts"])
     due.sort(key=lambda e: e["due_ts"])
     mail = [e for e in sorted(mail, key=newest) if not e.pop("planned") & seen]
@@ -598,9 +614,13 @@ def needs_you(attention, *, now, day_end, dismissed=None):
     for entry in picked:
         entry.pop("received_ts", None)
         entry.pop("vip", None)
-        entry["fingerprint"] = needs_you_fingerprint(entry["text"], entry["due_ts"])
+        entry.setdefault("fingerprint", needs_you_fingerprint(entry["text"], entry["due_ts"]))
     if dismissed:
-        picked = [e for e in picked if dismissed.get(e["id"]) != e["fingerprint"]]
+        picked = [e for e in picked if dismissed.get(e["id"]) != e["fingerprint"]
+                  and not (e.get("legacy_id") and dismissed.get(e["legacy_id"]) == e.get("legacy_fp"))]
+    for entry in picked:
+        entry.pop("legacy_id", None)
+        entry.pop("legacy_fp", None)
     return dict(items=picked[:NEEDS_YOU_SHOWN], more=max(0, len(picked) - NEEDS_YOU_SHOWN))
 
 

@@ -379,6 +379,17 @@ def test_narration_step_runs_thinking_off_when_the_flag_is_off(synthetic, monkey
     assert client.requests[1]["chat_template_kwargs"] == {"enable_thinking": True}
 
 
+def test_a_model_that_needs_thinking_after_a_tool_keeps_it_with_the_flag_off(synthetic, monkeypatch):
+    # Gemma 4 E4B (models.yaml thinking_required_after_tool) returns zero
+    # tokens after a tool result with thinking off. A user overlay that turns
+    # model_only_narration_thinking off must not empty every answer on it.
+    monkeypatch.setenv("WISP_MODEL_ONLY_NARRATION_THINKING", "0")
+    monkeypatch.setattr(loop, "thinking_after_tool_required", lambda model: model == "synthetic-agent")
+    client, _, answer = ask([[call("get_upcoming", days=1)], "Tomorrow: a workshop."])
+    assert client.requests[1]["chat_template_kwargs"] == {"enable_thinking": True}
+    assert "workshop" in answer
+
+
 def test_compact_catalog_and_step_budget(synthetic):
     history = []
     for i in range(30):
@@ -656,6 +667,17 @@ def test_knowledge_questions_answer_from_knowledge(prompt):
     "How much storage do I have left?", "How do I get to the airport from here?", "Who is Alex Chen?",
     "How do I connect my Google account to you?", "What's the latest news on the Mars mission?"])
 def test_personal_live_or_wisp_questions_are_not_knowledge(prompt):
+    assert not mo.knowledge_question(prompt)
+
+
+@pytest.mark.parametrize("prompt", [
+    # A named record needs reading: these were answered tool-free before rc3.
+    "Explain the email from Alex.", "What is the email from Alex about?",
+    "Explain the reminder about rent", "Describe the meeting with Sam", "Explain the attached document",
+    # A further clause is a request the tool-free step would drop.
+    "Define delete all reminders; delete the Laundry reminder.",
+    "Explain compound interest and then email it to Sam"])
+def test_record_or_compound_questions_keep_their_tools(prompt):
     assert not mo.knowledge_question(prompt)
 
 

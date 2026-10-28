@@ -10,6 +10,8 @@ IMPORTANT rules:
 - One phrase, one date. A phrase naming two dates ("moved from November 12 to
   November 19") is refused, never resolved: the resolver picks the first date,
   which in a correction is the superseded one.
+- An impossible clock ("Friday at 28") costs only the clock: the day still
+  resolves. The resolver refuses the whole phrase, so it is read again bare.
 - Mail-only shims the chat resolver lacks: month-only dates ("October 2026",
   due at the end of that month), "next week" / "in N days|weeks", and numeric
   dates read in the user's month/day order.
@@ -39,7 +41,13 @@ _RELATIVE = re.compile(r"\b(?:in|within)\s+(a|one|two|three|four|\d{1,2})\s+(day
                        r"|\b(next|this)\s+week\b", re.I)
 _NUMBERS = {"a": 1, "one": 1, "two": 2, "three": 3, "four": 4}
 _NUMERIC = re.compile(r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b")
+_SEPT = re.compile(r"\bsept\b\.?", re.I)
 _CHANGE = re.compile(r"\b(?:moved|changed|rescheduled|postponed|instead of|from)\b", re.I)
+# A clock, with its "at": "at 28", "at 9:75", "25:30", "13pm", "0 p.m.". Never a date:
+# "10/28", "28th" and "2026-10-28" are left alone by the lookarounds.
+_CLOCK = re.compile(r"(?:(?<!\w)(?:at|@)\s*)?(?<![\w/:.-])\d{1,2}(?::\d{2})?\s*(?:[ap]\.?m\b\.?)"
+                    r"|(?:(?<!\w)(?:at|@)\s*)?(?<![\w/:.-])\d{1,2}:\d{2}(?![\w/:-])"
+                    r"|(?<!\w)(?:at|@)\s*\d{1,2}(?![\w/:.-])", re.I)
 
 
 @dataclass(frozen=True)
@@ -107,7 +115,15 @@ def resolve_due(phrase: str, sent: datetime, tz: str, *, month_first_order: bool
         written = f"{calendar.month_name[month]} {day}" + (f", {'20' + year if len(year) == 2 else year}" if year else "")
         phrase = phrase[:numeric.start()] + written + phrase[numeric.end():]
 
+    # The resolver knows "Sep" and "September" but not "Sept", which US mail uses a lot.
+    phrase = _SEPT.sub("Sep", phrase)
     got = resolve(phrase, sent, tz, "mail_memory")
+    if got.blocked == "invalid_time":
+        # "Friday at 28", "Nov 3 at 24:00": the clock is impossible but the day is not.
+        # A due date never carries a clock, so read the phrase again without it.
+        bare = _CLOCK.sub(" ", phrase).strip()
+        retry = resolve(bare, sent, tz, "mail_memory") if bare and bare != phrase else got
+        got = retry if retry.day is not None else got
     if got.day is None:
         return Due(None, "", got.blocked or "unresolved")
     return Due(got.day, "day")

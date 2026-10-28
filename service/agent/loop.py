@@ -1805,6 +1805,13 @@ async def run_agent(
                                 f"{_web_detail(args)}, which is not a host you typed. "
                                 "Confirm the exact destination.")
         dec = decide(tool.category, args, tool=tool.name)
+        if model_led_discovery and dec.tier is Tier.ALLOW:
+            from service.router.model_led import MODEL_LED_ALWAYS_CONFIRM_TOOLS
+            if tool.name in MODEL_LED_ALWAYS_CONFIRM_TOOLS:
+                from service.safety.policy import Decision
+                return Decision(Tier.CONFIRM, "the model chose which item this changes — "
+                                "always confirmed on this path, even with full access. "
+                                "Check that it is the right one.")
         # Full access and standing grants do not cover actions whose real-world
         # effect the host cannot inspect: always in model-led routing, and in
         # legacy routing once this turn has read a file, page, mail or other
@@ -3264,6 +3271,11 @@ async def run_agent(
     ask_read_cache: dict = {}
     from service.model_only import narration_thinking_enabled as _ask_nt
     _ask_narration_thinking = _ask_nt() if ask_quality else True
+    # A model that writes nothing after a tool result with thinking off
+    # (models.yaml thinking_required_after_tool, Gemma 4 E4B) keeps it on for
+    # that step even if a user overlay turns model_only_narration_thinking off;
+    # a tool-free direct step does not follow a tool result and may still drop it.
+    _ask_after_tool_thinks = ask_quality and thinking_after_tool_required(model)
 
     def _ask_window(offered, stubs, scale: float) -> int:
         """This step's fit window: the Ask prompt budget (scaled down after a
@@ -3522,7 +3534,8 @@ async def run_agent(
         ask_narrating = bool(
             ask_quality and tools_answered and not (failed_tools - tools_answered)
             and not hard_failed and not forcing_first_step and not expecting_tool
-            and choice != "required" and not _ask_narration_thinking)
+            and choice != "required" and not _ask_narration_thinking
+            and not _ask_after_tool_thinks)
         # A direct (tool-free) step is a written answer too: with thinking on,
         # writing turns drifted into "Let me check…" and refusals.
         if ask_quality and ask_direct and not forcing_first_step and not _ask_narration_thinking:
@@ -4578,6 +4591,12 @@ async def run_agent(
                         from service.tools.assistant_tools import reminders_matching
                         _scope = str(args.get("scope", "all"))
                         _items = reminders_matching(_scope, args.get("query", ""), include_stale=True)
+                        if args.get("expected_ids") is None:
+                            # Bind the deletion to exactly the items this card
+                            # shows: a reminder that syncs in while the card is
+                            # open makes the set differ and nothing is deleted.
+                            args = {**args, "expected_ids": [str(c.get("id") or "") for c in _items]}
+                            action["args"] = json.loads(json.dumps(args))
                         _rows = [
                             f"{datetime.fromtimestamp(c['when_ts']):%a %b %-d, %Y}"
                             f"  {c['title']}" for c in _items]

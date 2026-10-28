@@ -261,6 +261,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_reminder_expiry.py",
     "tests/test_behavior_auto_trial.py",
     "tests/test_brief_day_one.py",
+    # rc2: Brief cards stay put across cycles, and a dismissed or cleared ask stays gone (fake model, scratch store).
+    "tests/test_brief_card_stability.py",
     # rc2: the first Brief once onboarding is answered (scheduler slots with a stubbed store
     # and clock, and the marker endpoint through TestClient); nothing is composed or sent.
     "tests/test_brief_onboarding.py",
@@ -271,6 +273,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_capability_welcome.py",
     "tests/test_wisp_self_questions.py",
     "tests/test_email_gmail_only_and_dedup.py",
+    # rc2 duplicated email summaries: synthetic Gmail + Mail rows, two linked accounts; no live source.
+    "tests/test_email_summary_dedupe.py",
     # Needs you Clear / Mark done over synthetic stores and a stubbed native outbox.
     "tests/test_needs_you_clear.py",
     # Messages read-failure reasons over module state and an inert ASGI app; no native reader.
