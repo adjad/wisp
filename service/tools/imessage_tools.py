@@ -118,6 +118,9 @@ except ValueError:
 # Completion is separate so the same failed request can safely retry.
 _contacts_applied_revision = _contacts_revision
 _contacts_privacy_current = False
+# The app's last Contacts read said it may not read them (not allowed yet, or
+# turned off in System Settings) while Contacts was on in Wisp.
+_contacts_not_allowed = False
 
 
 def clear_contacts() -> None:
@@ -130,8 +133,18 @@ def clear_contacts() -> None:
             (cache_store.CACHE_DIR / f"{name}.{suffix}").unlink(missing_ok=True)
 
 
+def _contacts_not_allowed_message() -> str:
+    from service.tools import access_needed
+    # The setup window offers Contacts only once Full Disk Access lets Wisp
+    # read Messages, so while Messages can't be read that is the step to name.
+    if messages_unavailable_kind() == "full_disk_access":
+        return ("Wisp can't read Contacts yet: it asks for them once it can read Messages. "
+                + access_needed.need("messages", "full_disk_access"))
+    return "Wisp can't read Contacts yet. " + access_needed.need("contacts", "contacts_access")
+
+
 def apply_contacts_sync(body: dict) -> bool:
-    global _contacts_revision, _contacts_applied_revision, _contacts_privacy_current
+    global _contacts_revision, _contacts_applied_revision, _contacts_privacy_current, _contacts_not_allowed
     revision = body.get("revision")
     if revision is not None and (type(revision) is not int or revision <= 0):
         raise ValueError("revision must be a positive integer")
@@ -156,6 +169,7 @@ def apply_contacts_sync(body: dict) -> bool:
     if revision is not None:
         _contacts_revision = revision
     _contacts_privacy_current = False
+    _contacts_not_allowed = enabled and not available
     # Every contact read replaces the complete snapshot, including birthdays.
     # Clear first so empty, denied and failed reads cannot preserve recipients.
     clear_contacts()
@@ -1712,6 +1726,8 @@ def _unavailable_message() -> str:
     # Full Disk Access is named only when the reader's error said so; any other
     # failure keeps its own reason, never a guess at the wrong setting.
     if _unavailable_kind and _unavailable_reason:
+        from service.tools import access_needed
+        access_needed.need("messages", _unavailable_kind)
         return f"({_unavailable_reason})"
     if _unavailable_reason:
         return f"(Can't read Messages: {_unavailable_reason.rstrip('.')}.)"
@@ -2256,6 +2272,8 @@ async def lookup_contact(name: str) -> str:
     matches = find_contacts(name)
     if not matches:
         if not _name_handles:
+            if _contacts_not_allowed:
+                return f"({_contacts_not_allowed_message()} Ask the user for the number directly.)"
             return ("(No contacts are synced yet — Wisp needs Contacts access, "
                     "or the first sync hasn't finished. Ask the user for the "
                     "number directly.)")
@@ -2292,6 +2310,8 @@ async def lookup_contact(name: str) -> str:
 async def list_contacts(query: str = "") -> str:
     names = contact_names()
     if not names:
+        if _contacts_not_allowed:
+            return f"({_contacts_not_allowed_message()})"
         return ("(No contacts are synced yet — Wisp needs Contacts access, or "
                 "the first sync hasn't finished.)")
     q = (query or "").strip().lower()

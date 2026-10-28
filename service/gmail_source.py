@@ -250,6 +250,15 @@ def resolve_client(cfg: dict | None = None, client_id: str = "",
     return "", "", "none"
 
 
+def can_connect(cfg: dict | None = None) -> bool:
+    """Whether this build can start a Google sign-in at all: the user's own
+    client or the built-in one (resolve_client). Source checkouts and builds
+    shipped without WISP_GOOGLE_OAUTH_CLIENT have neither, so nothing should
+    offer "connect Google" there. The app's rule is the same
+    (GoogleStatus.canConnect, from status()'s client_source)."""
+    return resolve_client(cfg)[2] != "none"
+
+
 def connected_accounts(cfg: dict | None = None) -> dict[str, dict]:
     cfg = load_config() if cfg is None else cfg
     accounts = cfg.get("accounts")

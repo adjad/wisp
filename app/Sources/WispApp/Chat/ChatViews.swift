@@ -383,7 +383,9 @@ struct ChatWelcome: View {
 
 struct ChatEmptyState: View {
     let ask: (String) -> Void
-    private let suggestions = AskStarters.chatWindow
+    /// Starters about a source only once Wisp knows it may read it (StarterAccess).
+    @ObservedObject private var access = StarterAccess.shared
+    private var suggestions: [String] { AskStarters.chatStarters(unreadable: access.unreadable) }
     var body: some View {
         VStack(spacing: 18) {
             Spacer(minLength: 24)
@@ -407,6 +409,7 @@ struct ChatEmptyState: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 24)
+        .task { await access.refresh() }
     }
 }
 
@@ -486,6 +489,8 @@ struct ChatThread: View {
     /// Until this time a settling scroll is our own (the animated jump to the bottom),
     /// so the reader has not moved away and following must not be switched off.
     @State private var ownScrollUntil = Date.distantPast
+    /// Which sources "Try another" may ask about (StarterAccess).
+    @ObservedObject private var access = StarterAccess.shared
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -515,11 +520,13 @@ struct ChatThread: View {
             .onChange(of: conversation.messages.last?.approval) { _, _ in follow(proxy) }
             .onChange(of: conversation.messages.last?.draft) { _, _ in follow(proxy) }
         }
+        .task { await access.refresh() }
     }
 
-    /// Starters not yet asked in this chat, from its user messages.
+    /// Starters not yet asked in this chat, from its user messages, none about a
+    /// source Wisp can't read.
     private var remainingStarters: [String] {
-        AskStarters.remaining(AskStarters.chatWindow,
+        AskStarters.remaining(AskStarters.chatStarters(unreadable: access.unreadable),
                               askedTexts: conversation.messages.filter { $0.role == .user }.map(\.text))
     }
 

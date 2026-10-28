@@ -93,6 +93,9 @@ final class OverlayModel: ObservableObject {
         var traceID: String? = nil
         var errorDetail: String? = nil
         var nodeResultID: String? = nil
+        /// What a tool in this reply needed and wasn't allowed ("calendar_access", …),
+        /// from its own result (AskAccess), for the fix button under the reply.
+        var needsAccess: [String] = []
 
         // Debug metadata — populated on assistant turns only (see handle()'s
         // "done"/"error" cases). Everything a debug-mode export needs to
@@ -494,12 +497,23 @@ final class OverlayModel: ObservableObject {
     var commandSuggestions: [NotchCommand] { NotchCommand.suggestions(for: input, includeCorpus: debugMode) }
 
     /// Sources Wisp can't read right now ("calendar", "email"), refreshed each
-    /// time the panel opens, so a starter never asks about a denied source.
-    @Published private(set) var unreadableSources: Set<String> = []
+    /// time the panel opens, so a starter never asks about a denied source. Nil
+    /// until the service has said, so the first open shows no source starter.
+    @Published private(set) var unreadableSources: Set<String>?
+    /// What makes a starter the person's own, from what the app already holds.
+    @Published private(set) var starterPersonal = AskStarters.Personal()
+    /// The name from Getting to know you, for the greeting over the starters.
+    @Published private(set) var starterName = ""
+    /// The profile's first goal, kept between opens so a reopened panel shows
+    /// its starter at once while the profile is read again.
+    private var profileGoal = ""
+    /// Whether a cloud model may get Ask's prompt (Super Model or a cloud role);
+    /// nil until /inference/cloud answers. The goal starter waits for a false.
+    private var cloudInUse: Bool?
 
     // The tappable questions under an empty Ask: ones a fresh install can
     // answer, even before any source is allowed (AgentSend.swift's AskStarters).
-    var suggestions: [String] { AskStarters.prompts(unreadable: unreadableSources) }
+    var suggestions: [String] { AskStarters.prompts(unreadable: unreadableSources, personal: starterPersonal) }
 
     /// Starters not yet asked in this chat (derived from its user turns, so New chat resets them).
     var remainingSuggestions: [String] {
@@ -518,12 +532,45 @@ final class OverlayModel: ObservableObject {
         return !remainingSuggestions.isEmpty
     }
 
-    func refreshStarters() {
+    /// Reads which sources the starters may use, and makes some of them the
+    /// person's own from what the app already holds: the Brief's upcoming
+    /// calendar and waiting mail and texts (`today`), and the profile's name and
+    /// first goal. No model is asked; each read lands on its own, so a slow one
+    /// never holds the starters back.
+    func refreshStarters(today: TodayModel) {
+        updatePersonalStarters(today: today)
         Task { [weak self] in
-            guard let self, let status = await self.client.assistantSyncStatus(sources: ["calendar", "email"]) else { return }
-            self.unreadableSources = AskStarters.unreadable(
-                states: Dictionary(status.sources.map { ($0.id, $0.state) }, uniquingKeysWith: { first, _ in first }))
+            await StarterAccess.shared.refresh()
+            guard let self, let unreadable = StarterAccess.shared.unreadable else { return }
+            if self.unreadableSources != unreadable { self.unreadableSources = unreadable }
         }
+        Task { [weak self] in
+            guard let self, let envelope = await self.client.profile() else { return }
+            self.profileGoal = envelope.profile.goals.first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? ""
+            self.starterName = envelope.profile.name
+            let personal = Self.withGoal(self.starterPersonal, self.profileGoal, cloudInUse: self.cloudInUse)
+            if personal != self.starterPersonal { self.starterPersonal = personal }
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            self.cloudInUse = ChatCloudUse.active(from: await self.client.cloudInference())
+            let personal = Self.withGoal(self.starterPersonal, self.profileGoal, cloudInUse: self.cloudInUse)
+            if personal != self.starterPersonal { self.starterPersonal = personal }
+        }
+    }
+
+    /// The Brief's calendar and mail can land after the panel opened; the
+    /// starters pick them up then instead of waiting for the next open.
+    func updatePersonalStarters(today: TodayModel) {
+        let personal = Self.withGoal(AskStarters.Personal(today: today), profileGoal, cloudInUse: cloudInUse)
+        if personal != starterPersonal { starterPersonal = personal }
+    }
+
+    private static func withGoal(_ personal: AskStarters.Personal, _ goal: String,
+                                 cloudInUse: Bool?) -> AskStarters.Personal {
+        var personal = personal
+        personal.goal = AskStarters.goalStarterAllowed(cloudInUse: cloudInUse) ? goal : ""
+        return personal
     }
 
     private let client = WispClient()
@@ -559,6 +606,7 @@ final class OverlayModel: ObservableObject {
     private var turnNeededTools: Bool?
     private var turnToolCalls: [ToolCallRecord] = []
     private var turnRawIO: [RawModelIO] = []
+    private var turnNeedsAccess: [String] = []
 
     var healthy: Bool { phase != .error }
     var willQueuePrompt: Bool { submissionState.isActive }
@@ -786,6 +834,7 @@ final class OverlayModel: ObservableObject {
         turnModel = nil; turnRouteRole = nil; turnRouteReason = nil; turnNeededTools = nil
         turnToolCalls = []
         turnRawIO = []
+        turnNeedsAccess = []
         phase = .routing
         let image = submission.image
         let sid = sessionId   // continue the same conversation (empty -> server starts one)
@@ -1408,6 +1457,9 @@ final class OverlayModel: ObservableObject {
             }
         case "tool_result":
             activity.append("→ \(ev.str("result").prefix(60))")
+            for kind in AskAccess.kinds(ev.payload["needs_access"]) where !turnNeedsAccess.contains(kind) {
+                turnNeedsAccess.append(kind)
+            }
             let cid = ev.str("id")
             if let idx = turnToolCalls.lastIndex(where: { $0.callId == cid }) {
                 turnToolCalls[idx].result = ev.str("result")
@@ -1610,6 +1662,8 @@ final class OverlayModel: ObservableObject {
         turn.reasoningText = reasoning
         turn.toolCalls = turnToolCalls
         turn.rawIO = turnRawIO
+        // Not debug-only: the reply's fix button (OverlayView.accessFixes).
+        turn.needsAccess = turnNeedsAccess
     }
 
     // Pretty-prints a tool call's `args` payload (an arbitrary JSON-ish `Any`
@@ -2330,5 +2384,46 @@ final class OverlayModel: ObservableObject {
             "LFM2.5-2.6B-MLX-6bit": "LFM-2.6B",
         ]
         return map[model] ?? model
+    }
+}
+
+/// Which sources the starters may ask about, shared by the notch's Ask and the
+/// chat window. Nil until the service has said, so no starter offers a source
+/// Wisp may not be allowed to read; a failed read keeps what was known.
+@MainActor
+final class StarterAccess: ObservableObject {
+    static let shared = StarterAccess()
+    @Published private(set) var unreadable: Set<String>?
+    private let client = WispClient()
+
+    func refresh() async {
+        guard let status = await client.assistantSyncStatus(sources: AskStarters.sources) else { return }
+        let value = AskStarters.unreadable(
+            states: Dictionary(status.sources.map { ($0.id, $0.state) }, uniquingKeysWith: { first, _ in first }))
+        if unreadable != value { unreadable = value }
+    }
+}
+
+extension AskStarters.Personal {
+    /// The next calendar event and the first person waiting on mail or texts,
+    /// from what the Brief already read: its upcoming list and today's plan.
+    /// Nothing from a plan for another day, and nothing a Brief would hide
+    /// (placeholders, newsletters, withheld subjects).
+    @MainActor init(today: TodayModel) {
+        self.init()
+        let events = (UpcomingItem.parseList(today.upcomingReply) ?? [])
+            .filter { $0.source == "calendar" && !$0.isReminder && !DayTimeline.isPlaceholderEvent($0.title) }
+            .map { (title: $0.title, start: $0.when, allDay: $0.allDay) }
+        nextEvent = AskStarters.nextEvent(events, now: today.now.timeIntervalSince1970)
+        let attention = today.isShowingCurrentDay ? today.plan?.workspace?.attention ?? [] : []
+        let needs = attention
+            .filter { ($0.source == "email" || $0.source == "messages")
+                      && !DayTimeline.isBulkMail($0.title) && !BriefMail.isPrivate($0.title) }
+            .map { (sender: BriefMail.displayName($0.sender ?? ""), source: $0.source,
+                    person: $0.person ?? false, replied: $0.replied ?? false) }
+        if let waiting = AskStarters.waitingSender(needs) {
+            sender = waiting.name
+            senderSource = waiting.source
+        }
     }
 }

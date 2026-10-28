@@ -3370,8 +3370,14 @@ def _summary_schedule() -> dict[str, Any]:
     hour = get_daily_summary_hour()
     # "hour"/"period" are the legacy AM/PM choice, kept so older clients still
     # round-trip; the brief now runs at both "times" whatever they say.
+    # The Brief says "Building your first Brief…" while this holds; a failure to
+    # tell must not break the schedule itself.
+    try:
+        building = assistant_scheduler.first_brief_building()
+    except Exception:
+        building = False
     return {"times": get_daily_summary_times(), "hour": hour,
-            "period": "AM" if hour < 12 else "PM"}
+            "period": "AM" if hour < 12 else "PM", "first_brief_building": building}
 
 
 @app.get("/assistant/summary_schedule")

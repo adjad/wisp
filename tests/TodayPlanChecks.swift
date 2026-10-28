@@ -234,6 +234,27 @@ struct TodayPlanChecks {
         status = 404
         await model.refreshStoredBrief()
         check(model.storedBrief == nil, "none composed today: forgotten")
+
+        // The summary times and the first Brief's progress, for the Brief's "no summary yet".
+        var scheduleBody = #"{"times":{"morning":7,"evening":18},"first_brief_building":true}"#
+        var scheduleStatus = 200
+        var schedulePaths: Set<String> = []
+        let scheduled = TodayModel(now: { Date(timeIntervalSince1970: now) }, timeZoneProvider: { zone }) { request in
+            schedulePaths.insert(request.url?.path ?? "")
+            return (Data(scheduleBody.utf8),
+                    HTTPURLResponse(url: request.url!, statusCode: scheduleStatus, httpVersion: nil, headerFields: nil)!)
+        }
+        check(scheduled.briefSchedule == nil, "no schedule until read")
+        await scheduled.refreshBriefSchedule()
+        check(scheduled.briefSchedule == BriefSchedule(morning: 7, evening: 18, buildingFirst: true), "the schedule is read")
+        scheduleStatus = 500
+        await scheduled.refreshBriefSchedule()
+        check(scheduled.briefSchedule?.buildingFirst == true, "a failed read keeps the schedule read before")
+        scheduleStatus = 200
+        scheduleBody = #"{"times":{"morning":7,"evening":18}}"#
+        await scheduled.refreshBriefSchedule()
+        check(scheduled.briefSchedule == BriefSchedule(morning: 7, evening: 18), "the first Brief came: no longer building")
+        check(schedulePaths == ["/assistant/summary_schedule"], "only the schedule is read: \(schedulePaths)")
     }
 
     @MainActor

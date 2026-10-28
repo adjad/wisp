@@ -332,6 +332,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             })
         }
         WispRouter.shared.handler = { [weak self] route in self?.open(route) }
+        // Report a Problem carries how setup went (event names and times only).
+        DiagnosticReport.onboardingTimeline = { OnboardingTimeline.entries() }
         observeFullAccess()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -347,7 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installEditMenu()    // enables ⌘C/⌘V/⌘X/⌘A in the text field
         // ⌥Space summons the overlay
         hotKey = GlobalHotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)) { [weak self] in
-            DispatchQueue.main.async { self?.toggle() }
+            DispatchQueue.main.async { self?.askHotkeyPressed() }
         }
         // ⌥⇧Space asks by voice, like holding the Siri key: it opens Ask and
         // listens; pressed again while listening, it sends at once.
@@ -432,6 +434,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.collapsed = true
         panel?.present()
         watchSetupReadiness()
+        watchSleepDuringDownload()
         armKnowYouOffers()
         // Wisp starts in the notch. The Wisp window opens only when asked for:
         // the Dock icon, the menu bar, or a hand-off from the notch.
@@ -518,6 +521,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         win.contentView = onboardingContent()
         win.center()
         firstRunWindow = win
+        OnboardingTimeline.record(!FirstRunSetup.isUnfinished { defaults.bool(forKey: $0) } ? "permissions opened after setup"
+            : OnboardingTimeline.entries().contains { $0.hasSuffix(" setup window opened") } ? "setup window reopened"
+            : "setup window opened")
         // Closing it early does not give setup up: the download keeps going in the
         // engine, the notch's quiet setup cue carries it until Wisp can answer, and
         // the window comes back at this step from the Dock or the next launch.
@@ -553,16 +559,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // model answers: a Brief made without it would stand as the day's.
                 if step == .tour, FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }),
                    self?.setupModel.status?.canAnswer == true {
-                    Task { await self?.client.onboardingBriefReady() }
+                    if self?.claimFirstBrief() == true { self?.requestFirstBrief() }
+                } else if step == .tour, FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }) {
+                    // Reached before the model: the Brief is owed, and asked for once
+                    // the model answers (finishing setup or the readiness watch).
+                    self?.oweFirstBrief()
                 }
             },
             askKeyRegistered: hotKey?.registered ?? false,
-            searchKeyRegistered: searchHotKey?.registered ?? false,
+            voiceKeyRegistered: voiceHotKey?.registered ?? false,
             // "Setup still unfinished" (started, not done), not "doneKey unset": someone
             // who upgraded from a build without this window never had doneKey written,
             // and opening Permissions… must not switch or test their model.
             setupDone: !FirstRunSetup.isUnfinished { defaults.bool(forKey: $0) },
-            aboutYouDecided: { UserDefaults.standard.set(true, forKey: FirstRunSetup.aboutYouDecidedKey) }))
+            aboutYouDecided: {
+                UserDefaults.standard.set(true, forKey: FirstRunSetup.aboutYouDecidedKey)
+                UserDefaults.standard.set(Date(), forKey: KnowYouSecondOffer.decidedAtKey)
+            }))
     }
 
     /// Done, or one of the last step's prompts: close the window and open the
@@ -571,6 +584,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func finishFirstRun(asking prompt: String? = nil) {
         firstRunFinishing = true
         let ready = setupModel.status?.canAnswer == true
+        // Finishing setup answers everything the first Brief waits on; without
+        // the model yet, the readiness watch asks for it when the model arrives.
+        // (Done in Permissions… opened later is not setup, and owes nothing.)
+        if FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }) { oweFirstBrief() }
+        settleFirstBrief(canAnswer: ready)
         firstRunWindow?.close()
         // Not ready yet: the quiet cue (a line on Ask) carries the download in the
         // notch, and a notification says when Wisp can answer.
@@ -591,6 +609,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // quitting is the quit, and an early close, even with a ready model, leaves
         // setup unfinished at its saved step.
         let ending = FirstRunSetup.ending(finishing: firstRunFinishing, terminating: appTerminating)
+        // Done in Permissions… opened after setup also counts as finishing, but
+        // setup was already done: that is "permissions closed", not a second finish.
+        OnboardingTimeline.record(!FirstRunSetup.isUnfinished({ defaults.bool(forKey: $0) }) ? "permissions closed"
+            : ending == .finished ? "setup finished"
+            : ending == .closedEarly ? "setup window closed early" : "setup window closed by quit")
         if FirstRunSetup.marksDone(ending) {
             defaults.set(true, forKey: FirstRunSetup.doneKey)
             defaults.removeObject(forKey: FirstRunSetup.stepKey)
@@ -636,8 +659,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// From launch until Wisp can answer, on every launch: while it can't and no
     /// first-run window is up, the notch carries the quiet setup cue
     /// (FirstRunSetup.setupCue), so leaving setup aside, an early close or a quit
-    /// never leaves Wisp silent on a later launch. Once it can, the cue goes, and
-    /// "Wisp is ready" follows if it was promised.
+    /// never leaves Wisp silent on a later launch. Once it can, the cue goes,
+    /// "Wisp is ready" follows if it was promised, and a first Brief setup still
+    /// owes is asked for.
     private func watchSetupReadiness() {
         guard setupWatch == nil else { return }
         let started = Date()
@@ -664,16 +688,118 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                                  firstRunWindowUp: self.firstRunWindow != nil)
                 if cue != self.model.setupCard { self.model.setupCard = cue }
                 guard canAnswer else { continue }
+                self.settleFirstBrief(canAnswer: true)
                 if FirstRunSetup.notifiesReady(promised: self.notifyOnReady, windowUp: self.firstRunWindow != nil,
                                                windowMinimized: self.firstRunWindow?.isMiniaturized == true) {
-                    Notifications.post(id: Notifications.readyId, title: "Wisp is ready",
-                                       body: "Press ⌥ Space and ask about your day.")
+                    self.tellReady()
                 }
                 self.notifyOnReady = false
                 self.setupWatch = nil
                 return
             }
         }
+    }
+
+    /// "Wisp is ready" as a notification when they are allowed. Wisp never asks
+    /// for them here, so when they are off (the setup row was skipped) the notch
+    /// says it instead, in the open panel, until the person has opened it.
+    private func tellReady() {
+        Task { @MainActor [weak self] in
+            let shown = await Notifications.postIfAllowed(id: Notifications.readyId, title: ReadyNotice.title,
+                                                          body: ReadyNotice.body)
+            OnboardingTimeline.record(shown ? "ready notice delivered" : "ready notice fell back to notch")
+            guard !shown, let self else { return }
+            self.readyLineUnseen = true
+            self.model.showTransientNotice(ReadyNotice.notchLine, duration: ReadyNotice.unseenFor, info: true)
+            if self.presentation.desired == .chat { self.readyLineSeen() }
+        }
+    }
+
+    /// The notch's "Wisp is ready" line is waiting for the person to open Ask.
+    private var readyLineUnseen = false
+
+    /// The panel is open in front of the person: Ask, Brief, Day and Quick
+    /// Settings all show the ready line, so it has been seen, and goes after a
+    /// short while instead of waiting a day. Getting to know you and /resetwisp
+    /// take the tab's place and hide it.
+    private func readyLineSeen() {
+        guard readyLineUnseen, model.knowYou == nil, model.resetCard == nil else { return }
+        readyLineUnseen = false
+        guard model.transientNotice == ReadyNotice.notchLine else { return }
+        model.showTransientNotice(ReadyNotice.notchLine, duration: ReadyNotice.seenFor, info: true)
+    }
+
+    /// The last step was reached (or setup finished): the first Brief is owed.
+    private func oweFirstBrief() {
+        guard !UserDefaults.standard.bool(forKey: FirstBrief.owedKey) else { return }
+        UserDefaults.standard.set(true, forKey: FirstBrief.owedKey)
+        OnboardingTimeline.record("first brief owed")
+    }
+
+    /// Marks the first Brief asked for; false when it already was. Only during
+    /// setup, as the last step's hook and finishFirstRun are, or once the model
+    /// arrives for a Brief setup owes.
+    private func claimFirstBrief() -> Bool {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: FirstBrief.requestedKey) else { return false }
+        defaults.set(true, forKey: FirstBrief.owedKey)
+        defaults.set(true, forKey: FirstBrief.requestedKey)
+        OnboardingTimeline.record("first brief requested")
+        return true
+    }
+
+    /// Asks for an owed first Brief once the model answers: a Brief made
+    /// without it would stand as the day's.
+    private func settleFirstBrief(canAnswer: Bool) {
+        let defaults = UserDefaults.standard
+        guard FirstBrief.asksNow(owed: defaults.bool(forKey: FirstBrief.owedKey),
+                                 requested: defaults.bool(forKey: FirstBrief.requestedKey),
+                                 canAnswer: canAnswer),
+              claimFirstBrief() else { return }
+        requestFirstBrief()
+    }
+
+    /// Sends the claimed first Brief's request. A failed POST (the service was
+    /// restarting, say) un-claims it, so finishing setup or the next readiness
+    /// check asks again; the service ignores a repeat.
+    private func requestFirstBrief() {
+        Task { [client] in
+            if await client.onboardingBriefReady() == false {
+                UserDefaults.standard.removeObject(forKey: FirstBrief.requestedKey)
+                OnboardingTimeline.record("first brief request failed")
+            }
+        }
+    }
+
+    private var sleepObservers: [NSObjectProtocol] = []
+    /// What each running download had received when the Mac went to sleep; nil
+    /// when nothing was downloading.
+    private var downloadBytesAtSleep: [String: Double]?
+
+    /// A closed lid sleeps the Mac and pauses the model download with it. On
+    /// wake the notch's setup card says so, and only what is true (SleepPause),
+    /// and the download is read again at once instead of at the next poll.
+    private func watchSleepDuringDownload() {
+        guard sleepObservers.isEmpty else { return }
+        let center = NSWorkspace.shared.notificationCenter
+        sleepObservers = [
+            center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.downloadBytesAtSleep = SleepPause.atSleep(
+                        self.setupModel.downloads.map { (model: $0.model, state: $0.state, bytes: $0.downloadedBytes) })
+                }
+            },
+            center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, let bytes = self.downloadBytesAtSleep else { return }
+                    self.downloadBytesAtSleep = nil
+                    NotchSetupNotices.shared.wake = SleepPause.Wake(at: Date(), bytesAtSleep: bytes)
+                    OnboardingTimeline.record("download paused by sleep")
+                    Task { @MainActor [weak self] in await self?.setupModel.refreshDownloads() }
+                }
+            },
+        ]
     }
 
     // Clicking the Dock icon, or opening Wisp again from Finder or Spotlight while it
@@ -947,6 +1073,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         model.toggleVoice()
     }
 
+    /// ⌥Space: what the menu-bar icon does. Each time it opens Ask, the setup
+    /// window's last step hears it (proof the shortcut works on this Mac).
+    private func askHotkeyPressed() {
+        let opens = presentation.desired != .chat
+        toggle()
+        if opens { NotificationCenter.default.post(name: .wispAskHotkeyPressed, object: nil) }
+    }
+
     @objc private func toggle() {
         if let event = NSApp.currentEvent, event.type == .rightMouseUp, let menu = rightClickMenu {
             setupMenuItem?.isHidden = !FirstRunSetup.menuOffersSetup(
@@ -1045,6 +1179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // A panel that just closed is the moment Getting to know you may be offered.
         if step.to == .bar { considerKnowYouOffer(after: 10) }
+        if step.to == .chat { readyLineSeen() }
         drivePresentation()
     }
 
@@ -1578,7 +1713,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             notesReader?.sync()
         case .contacts:
             contactsReader?.sync()
-        case .messages, .notifications:
+        case .messages, .notifications, .screenRecording, .accessibility:
             // Sending only: nothing here reads with them.
             break
         }
@@ -1796,7 +1931,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openSetupGuide() {
-        if let welcome = firstRunWindow, welcome.isVisible {
+        // Minimized counts too: otherwise a Dock click brought it back out of the
+        // Dock beside the guide. Standing aside, the Dock brings the guide alone.
+        if let welcome = firstRunWindow, welcome.isVisible || welcome.isMiniaturized {
             welcome.orderOut(nil)
             firstRunHiddenForGuide = true
         }
@@ -1927,6 +2064,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func armKnowYouOffers() {
         guard !knowYouOffersArmed else { return }
         knowYouOffersArmed = true
+        // A skip from before the window kept its date counts from now, so it too
+        // gets its one later offer (KnowYouSecondOffer).
+        let defaults = UserDefaults.standard
+        if FirstRunSetup.aboutYouDecidedInWindow({ defaults.bool(forKey: $0) }),
+           defaults.object(forKey: KnowYouSecondOffer.decidedAtKey) == nil {
+            defaults.set(Date(), forKey: KnowYouSecondOffer.decidedAtKey)
+        }
         knowYouTimer = Timer.scheduledTimer(withTimeInterval: 1800, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.considerKnowYouOffer() }
         }
@@ -1947,7 +2091,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 || !model.collapsed || model.holdsOpen,
             dismissedToMenuBar: !notchDocked, chosenThisSession: knowYouChosen,
             profileComplete: knowYouProfileComplete,
-            aboutYouDecidedInWindow: FirstRunSetup.aboutYouDecidedInWindow { UserDefaults.standard.bool(forKey: $0) })
+            aboutYouDecidedInWindow: FirstRunSetup.aboutYouDecidedInWindow { UserDefaults.standard.bool(forKey: $0) }
+                && knowYouWindowDecisionHolds)
+    }
+
+    /// The window's Done or skip still holds the notch's offers back: always,
+    /// except for one later offer a few days after a skip (KnowYouSecondOffer).
+    private var knowYouWindowDecisionHolds: Bool {
+        let defaults = UserDefaults.standard
+        return KnowYouSecondOffer.holdsBack(
+            decidedInWindow: true, decidedAt: defaults.object(forKey: KnowYouSecondOffer.decidedAtKey) as? Date,
+            offered: defaults.bool(forKey: KnowYouSecondOffer.offeredKey), now: Date())
     }
 
     /// One check, after `seconds` (a panel that just closed gets a moment before
@@ -1963,6 +2117,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // which records the same): stop asking the service on every close.
             if envelope.status.completed || envelope.profile.dismissCount >= 2 { self.knowYouProfileComplete = true }
             guard KnowYouOffer.shouldOffer(self.knowYouMoment, serviceOffers: envelope.status.offer) else { return }
+            // After a skip in the window this is the one later offer: whatever the
+            // answer, it is the last.
+            if FirstRunSetup.aboutYouDecidedInWindow({ UserDefaults.standard.bool(forKey: $0) }) {
+                UserDefaults.standard.set(true, forKey: KnowYouSecondOffer.offeredKey)
+                OnboardingTimeline.record("getting to know you offered again")
+            }
             // An offer nobody asked for must not take the keyboard from the
             // app the person is typing in: it opens without becoming key.
             self.createPanelIfNeeded()

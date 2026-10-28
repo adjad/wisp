@@ -1,7 +1,10 @@
 import AppKit
+import ApplicationServices
 import Carbon
 import Contacts
+import CoreGraphics
 import EventKit
+import ServiceManagement
 import SwiftUI
 import UserNotifications
 
@@ -172,8 +175,9 @@ enum FirstRunSetup {
 /// When Wisp offers Getting to know you on its own. The service decides whether
 /// it is due (GET /profile status.offer: never finished, no recent Later, at most
 /// twice); this decides whether now is a moment to show it. Someone set up by
-/// the onboarding window answered (or skipped) it there, so the notch never
-/// offers it to them; /about and Memory › About you remain.
+/// the onboarding window answered (or skipped) it there, so the notch holds it
+/// back, apart from one later offer a few days after a skip (KnowYouSecondOffer,
+/// still only while the service says it's due); /about and Memory › About you remain.
 enum KnowYouOffer {
     struct Moment: Equatable {
         var firstRunWindowUp = false
@@ -283,16 +287,21 @@ enum FirstRunBrain: Equatable {
         case retry
         case tryAgain
         case detailedSetup
+        /// Wisp's service hasn't answered for longer than a slow first launch takes.
+        case checkAgain
+
+        /// A click here starts a download, so the disk-space warning belongs beside it.
+        var fetches: Bool { self == .download || self == .retry }
     }
 
     /// `stalled`: the step Wisp takes by itself here stopped and needs a click (the
-    /// engine didn't start, switching to the model failed, or a finished download
-    /// never showed up in the engine).
+    /// service or the engine didn't start, switching to the model failed, or a
+    /// finished download never showed up in the engine).
     func footer(stalled: Bool) -> Footer {
         switch self {
         case .ready: return .ready
-        case .checking: return .working("Starting Wisp…")
-        case .startingEngine: return stalled ? .tryAgain : .working("Starting the engine…")
+        case .checking: return stalled ? .checkAgain : .working("Starting Wisp…")
+        case .startingEngine: return stalled ? .tryAgain : .working("Getting Wisp ready…")
         case .downloading(_, _, let fraction, _, _, _): return .working("Downloading · \(Int(fraction * 100))%")
         case .switching: return stalled ? .tryAgain : .working("Finishing setup…")
         case .waitingForEngine: return stalled ? .retry : .working("Finishing setup…")
@@ -301,6 +310,27 @@ enum FirstRunBrain: Equatable {
         case .unavailable: return .detailedSetup
         case .offered: return .tryAgain
         }
+    }
+
+    /// Return belongs to the card's button while the card waits on a click
+    /// (Download, Retry, Use, or a stuck Check again / Try again / Download again),
+    /// and to the footer's Continue otherwise: exactly one default action per state.
+    func cardTakesReturn(stalled: Bool) -> Bool {
+        switch self {
+        case .needsDownload, .failed, .offered: return true
+        case .checking, .startingEngine, .switching, .waitingForEngine: return stalled
+        default: return false
+        }
+    }
+
+    /// Step 1's heading line. A setup that already answers with a remote model has
+    /// nothing to download, so it isn't told about one (or that the model is local).
+    static func welcomeSubtitle(remoteOnly: Bool) -> String {
+        remoteOnly
+            ? "Wisp already answers with the model you set up, so there's nothing to download here."
+            : "The AI model runs on this Mac. Your mail, calendar and messages stay here; when you ask "
+                + "for something from the web, only the search terms are sent. First Wisp needs to "
+                + "download that model once."
     }
 
     /// `stillLooking`: the person's own oMLX is still inside its search window
@@ -315,6 +345,10 @@ enum FirstRunBrain: Equatable {
             let label = status.models.installed.first(where: { $0.id == model })?.label ?? model
             return .ready(label: plainLabel(label))
         }
+        // Every role on a remote provider: Wisp already answers, so nothing to download.
+        if status.canAnswer {
+            return .ready(label: plainLabel(status.roles.first?.model ?? "Your model"))
+        }
         // The oMLX app this Mac already has (a fresh install picks it when oMLX.app is
         // installed). Until its server answers it is connecting, never a failure: it may
         // be starting or loading the model. Only a running oMLX without the model is stuck.
@@ -328,7 +362,7 @@ enum FirstRunBrain: Equatable {
         // The engine's own reason first: a Mac whose macOS is too old for it also
         // falls back to external mode, and "set to use another app" would be untrue.
         if let engine = status.bundledEngine, !engine.available {
-            return .unavailable(engine.unavailableReason ?? "Wisp's built-in engine can't run on this Mac.")
+            return .unavailable(engine.unavailableReason ?? "Wisp can't run its AI model on this Mac.")
         }
         guard status.omlx.bundled == true else {
             if status.omlx.installed, status.omlx.running {
@@ -361,13 +395,18 @@ enum FirstRunBrain: Equatable {
             case "completed":
                 return .waitingForEngine(model: model, label: label)
             default:
+                // The words name the card's own button: Resume after a Stop, Retry after a failure.
+                let paused = task.state == "cancelled"
                 return .failed(model: model, label: label,
-                               message: task.message ?? "Choose Retry to pick up where it left off.",
-                               paused: task.state == "cancelled")
+                               message: paused ? stoppedMessage : (task.message ?? "Choose Retry to try again."),
+                               paused: paused)
             }
         }
         return .needsDownload(model: model, label: label, sizeGb: status.models.download?.sizeGb)
     }
+
+    /// A download the person stopped. Stop cancels the transfer; Resume starts it again.
+    static let stoppedMessage = "You stopped the download. Choose Resume to start it again."
 
     /// The model's name without its build details: "Gemma 4 E4B", not
     /// "Gemma 4 E4B · 4-bit (oQ4e) + MTP". The detailed setup keeps the full label.
@@ -412,7 +451,7 @@ enum FirstRunBrain: Equatable {
     /// The step-1 card's title while the engine isn't up. The person's own oMLX is
     /// being looked for, not failing, however far into the search it is.
     static func startingTitle(ownOmlx: Bool) -> String {
-        ownOmlx ? "Looking for your oMLX…" : "Starting Wisp's engine…"
+        ownOmlx ? "Looking for your oMLX…" : "Getting Wisp ready…"
     }
 
     /// What step 1 does by itself while it looks for the person's own oMLX (`connecting`:
@@ -431,6 +470,14 @@ enum FirstRunBrain: Equatable {
             ? "Your oMLX isn't running. Choose Try again to start it, or open the oMLX app."
             : "Wisp uses the oMLX app you already have, so there's nothing to download."
     }
+
+    /// How long the window waits for Wisp's service to answer before it says it is
+    /// slow and offers Check again: the 3 minutes the notch's own wait allows a cold
+    /// first launch (AppDelegate's reachability watch).
+    static let serviceStartLimit: TimeInterval = 180
+
+    /// The service has had longer than a slow first launch takes.
+    static func serviceSlow(waited: TimeInterval) -> Bool { waited >= serviceStartLimit }
 
     /// How long a cold start has taken, once it is long enough to be worth saying.
     static func waited(_ seconds: Int) -> String? {
@@ -477,9 +524,17 @@ final class FirstRunPermissions: ObservableObject {
     /// are open; `messages` is Automation for Messages, which sends the texts the
     /// person approves in Ask (OutboundSender.sendMessage), asked here so the
     /// first send doesn't stop on a macOS prompt; `fullDiskAccess` is what reads
-    /// Messages, and Mail and Notes when they are closed.
+    /// Messages, and Mail and Notes when they are closed. `screenRecording` and
+    /// `accessibility` are asked through Permissions' own click-time requests, so
+    /// only the microphone and per-app Automation wait until first use.
     enum Item: String, CaseIterable, Identifiable {
-        case calendar, reminders, mail, messages, fullDiskAccess, contacts, notifications
+        case calendar, reminders, mail, messages, fullDiskAccess, contacts, notifications, screenRecording, accessibility
+
+        /// Under the step's "More access" disclosure: nothing in setup or a first
+        /// answer needs them, so they never count toward "still off" or hold the
+        /// step open.
+        var isExtra: Bool { self == .screenRecording || self == .accessibility }
+        static let core = allCases.filter { !$0.isExtra }
         var id: String { rawValue }
     }
     enum State: Equatable { case checking, notAsked, allowed, notAllowed, notOnThisMac }
@@ -503,18 +558,32 @@ final class FirstRunPermissions: ObservableObject {
     /// Allowed (an update that changed how Wisp is signed does this once), so the
     /// row can say why it asks again instead of looking random.
     @Published private(set) var resetItems: Set<Item> = []
+    /// Read with the rest, so the Contacts row and the footer's count agree on it.
+    @Published private(set) var messagesReadable = false
     private var activeObserver: NSObjectProtocol?
     private var poll: Task<Void, Never>?
 
     func state(_ item: Item) -> State { states[item] ?? .checking }
     /// The step's footer: every row is optional, so no "N of M" score, only how
     /// many could still be switched on (a Mac without Messages data is not one).
-    static func summary(_ states: [Item: State]) -> String {
-        let off = Item.allCases.filter { states[$0] == .notAsked || states[$0] == .notAllowed }.count
+    /// A Contacts row waiting on Full Disk Access has no button of its own, so
+    /// Full Disk Access carries it and it isn't counted twice.
+    static func summary(_ states: [Item: State], messagesReadable: Bool = true) -> String {
+        let waiting = contactsWaits(states, messagesReadable: messagesReadable)
+        let off = Item.core.filter {
+            !(waiting && $0 == .contacts) && (states[$0] == .notAsked || states[$0] == .notAllowed)
+        }.count
         return off == 0 ? "All optional · nothing left off" : "All optional · \(off) still off"
     }
-    /// Every one has an answer from macOS, whichever it was.
-    var allAnswered: Bool { Item.allCases.allSatisfy { Self.isDecided(state($0)) } }
+
+    /// Every one has an answer from macOS, whichever it was. A Contacts row waiting
+    /// on Full Disk Access follows that answer instead of needing its own.
+    static func allAnswered(_ states: [Item: State], messagesReadable: Bool) -> Bool {
+        let waiting = contactsWaits(states, messagesReadable: messagesReadable)
+        return Item.core.allSatisfy { (waiting && $0 == .contacts) || isDecided(states[$0] ?? .checking) }
+    }
+
+    var allAnswered: Bool { Self.allAnswered(states, messagesReadable: messagesReadable) }
 
     /// An answer the row can't change by asking again.
     static func isDecided(_ state: State) -> Bool {
@@ -527,7 +596,7 @@ final class FirstRunPermissions: ObservableObject {
         case .checking: return ""
         case .notAsked: return "Not set"
         case .allowed: return "Allowed"
-        case .notAllowed: return item == .fullDiskAccess ? "Needs System Settings" : "Denied"
+        case .notAllowed: return settingsThroughRequest(item) ? "Needs System Settings" : "Denied"
         case .notOnThisMac: return "Not needed"
         }
     }
@@ -536,9 +605,55 @@ final class FirstRunPermissions: ObservableObject {
     static let fullDiskAccessRelaunchNote =
         "macOS may ask Wisp to quit and reopen. That's expected: setup picks up right here."
 
+    /// Screen Recording only takes effect once Wisp quits and reopens.
+    static let screenRecordingRelaunchNote =
+        "It starts working once Wisp quits and reopens. That's expected: setup picks up right here."
+
+    /// Rows whose turned-down state is fixed in System Settings, through the row's
+    /// own request(): Full Disk Access can't be asked for, and Screen Recording and
+    /// Accessibility show macOS's question only once (Permissions.surface).
+    static func settingsThroughRequest(_ item: Item) -> Bool {
+        item == .fullDiskAccess || item == .screenRecording || item == .accessibility
+    }
+
+    /// Screen Recording and Accessibility, from whether macOS trusts Wisp and whether
+    /// Wisp already showed its one question (Permissions' prompted keys). macOS can't
+    /// tell "not yet switched on" from "turned down", so once asked, a grant that
+    /// isn't there needs System Settings. Pure.
+    static func promptOnceState(granted: Bool, promptedBefore: Bool) -> State {
+        granted ? .allowed : (promptedBefore ? .notAllowed : .notAsked)
+    }
+
+    /// The Screen Recording row's sentence: what it is for, and that it needs Wisp
+    /// to quit and reopen before it works.
+    static func screenRecordingDetail(_ state: State) -> String {
+        let base = "So Wisp can look at your screen when you ask about it."
+        switch state {
+        case .notAsked: return base + " " + screenRecordingRelaunchNote
+        case .notAllowed: return base + " In the page that opens, switch on Wisp. " + screenRecordingRelaunchNote
+        default: return base
+        }
+    }
+
+    /// The Accessibility row's sentence.
+    static func accessibilityDetail(_ state: State) -> String {
+        let base = "So Wisp can read the window you're asking about."
+        return state == .notAllowed ? base + " In the page that opens, switch on Wisp." : base
+    }
+
     /// Contacts puts names on Messages, so it is asked for only once Messages can
     /// be read (the rule ContactsReader kept at launch, now the row's).
     static func contactsUseful(messagesReadable: Bool) -> Bool { messagesReadable }
+
+    /// The Contacts row shows "After Full Disk Access" (no button) only while Full
+    /// Disk Access is still off and Messages can't be read. Once Full Disk Access is
+    /// on, or this Mac has no Messages, Mail or Notes data for it to read ("Not
+    /// needed"), there is nothing to wait for and Contacts can be allowed on its own.
+    static func contactsWaits(_ states: [Item: State], messagesReadable: Bool) -> Bool {
+        guard states[.contacts] == .notAsked, !contactsUseful(messagesReadable: messagesReadable) else { return false }
+        let fullDiskAccess = states[.fullDiskAccess] ?? .checking
+        return fullDiskAccess != .allowed && fullDiskAccess != .notOnThisMac
+    }
 
     /// Re-read while the step is visible: grants made in System Settings arrive
     /// when the person comes back to Wisp.
@@ -574,11 +689,20 @@ final class FirstRunPermissions: ObservableObject {
         next[.contacts] = Self.contactsState()
         next[.fullDiskAccess] = Self.fullDiskAccessState()
         next[.notifications] = await Self.notificationsState()
+        // Read only (never a prompt): CGPreflight and AXIsProcessTrusted just report.
+        let defaults = UserDefaults.standard
+        next[.screenRecording] = Self.promptOnceState(
+            granted: CGPreflightScreenCaptureAccess(),
+            promptedBefore: defaults.bool(forKey: Permissions.screenRecordingPromptedKey))
+        next[.accessibility] = Self.promptOnceState(
+            granted: AXIsProcessTrusted(),
+            promptedBefore: defaults.bool(forKey: Permissions.accessibilityPromptedKey))
         // Remembered across closes and relaunches (see resolveAutomation): a closed
         // Mail or Notes can't be asked about, and that is not a removed grant.
         next[.mail] = await Self.automationState(ask: false)
         next[.messages] = await Self.messagesAutomationState(ask: false)
         resetItems = Set([Item.mail, .messages].filter { Self.storedAutomation($0) == .reset })
+        messagesReadable = Self.messagesReadable()
         waiting = waiting.filter { !Self.isDecided(next[$0] ?? .checking) }
         states = next
     }
@@ -650,6 +774,17 @@ final class FirstRunPermissions: ObservableObject {
             let defaults = UserDefaults.standard
             FirstRunSetup.expectRelaunch({ defaults.bool(forKey: $0) }, { defaults.set(true, forKey: $0) })
             Permissions.openFullDiskAccessPane()
+        case .screenRecording:
+            // macOS's question the first time, its Settings page after that
+            // (Permissions.requestScreenRecording). It works only after Wisp quits
+            // and reopens, which macOS offers once it's switched on, so setup is
+            // marked to come back here first, as for Full Disk Access.
+            let defaults = UserDefaults.standard
+            FirstRunSetup.expectRelaunch({ defaults.bool(forKey: $0) }, { defaults.set(true, forKey: $0) })
+            Permissions.requestScreenRecording()
+        case .accessibility:
+            // The same once-then-Settings rule (Permissions.requestAccessibility).
+            Permissions.requestAccessibility()
         }
         await refresh()
     }
@@ -933,6 +1068,47 @@ final class FirstRunPermissions: ObservableObject {
     }
 }
 
+// MARK: - Open at login
+
+/// "Open Wisp when you log in", on the last step: opt-in, off until the person
+/// switches it on. Wisp never adds itself to Login Items: only the toggle calls set(_:).
+@MainActor
+final class LaunchAtLogin: ObservableObject {
+    @Published private(set) var status: SMAppService.Status = .notRegistered
+    @Published private(set) var problem: String?
+
+    func read() { status = SMAppService.mainApp.status }
+
+    func set(_ on: Bool) {
+        problem = nil
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+            OnboardingTimeline.record(on ? "open at login on" : "open at login off")
+        } catch {
+            NSLog("Wisp: login item \(on ? "register" : "unregister") failed: \(error.localizedDescription)")
+            problem = Self.problem(turningOn: on)
+        }
+        read()
+    }
+
+    /// The switch reads on while macOS holds the request, approved or not, so
+    /// switching it off takes it back.
+    static func isOn(_ status: SMAppService.Status) -> Bool { status == .enabled || status == .requiresApproval }
+
+    /// Said under the switch when macOS wants the person's own yes first.
+    static func note(_ status: SMAppService.Status) -> String? {
+        status == .requiresApproval
+            ? "macOS needs your OK: switch Wisp on in System Settings › General › Login Items."
+            : nil
+    }
+
+    static func problem(turningOn: Bool) -> String {
+        turningOn
+            ? "Wisp couldn't add itself just now. You can add it in System Settings › General › Login Items."
+            : "Wisp couldn't take itself off just now. You can remove it in System Settings › General › Login Items."
+    }
+}
+
 // MARK: - View
 
 struct FirstRunSetupView: View {
@@ -942,6 +1118,8 @@ struct FirstRunSetupView: View {
     @ObservedObject var knowYou: KnowYouModel
     @ObservedObject var google: GoogleAccountModel
     @StateObject private var permissions = FirstRunPermissions()
+    @StateObject private var launchAtLogin = LaunchAtLogin()
+    @ObservedObject private var notices = NotchSetupNotices.shared
     @ObservedObject private var display = DisplayGeometry.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var step: Step
@@ -953,9 +1131,19 @@ struct FirstRunSetupView: View {
     /// When step 1 began looking for the person's own oMLX (FirstRunBrain.connectGrace).
     @State private var connectingSince: Date?
     @State private var connectGraceTick = 0
+    /// Redraws once FirstRunBrain.serviceStartLimit has passed, so the last step's
+    /// footer offers Check again on time too.
+    @State private var serviceSlowTick = 0
+    /// ⌥Space opened Ask while this window was up (Notification.Name.wispAskHotkeyPressed).
+    @State private var askKeyPressed = false
     /// The one automatic test once Wisp is ready (it also loads the model).
     @State private var testedOnce = false
     @State private var showAdvanced = false
+    /// The Permissions step's optional Screen Recording and Accessibility rows.
+    /// Open again after one was asked for (Screen Recording's quit and reopen
+    /// comes back here), so the row's answer is in view.
+    @State private var showMoreAccess = UserDefaults.standard.bool(forKey: Permissions.screenRecordingPromptedKey)
+        || UserDefaults.standard.bool(forKey: Permissions.accessibilityPromptedKey)
     var openDetailedSetup: () -> Void
     /// Closes the window and opens the notch on Ask; with a prompt, Ask's box
     /// holds it, unsent.
@@ -964,9 +1152,9 @@ struct FirstRunSetupView: View {
     var permissionsChanged: ([FirstRunPermissions.Item: FirstRunPermissions.State]) -> Void
     /// Where the person is, saved so setup picks up there after a quit.
     var stepChanged: (Step) -> Void
-    /// Whether ⌥Space and ⌘⇧F really belong to Wisp on this Mac.
+    /// Whether ⌥Space and ⌥⇧Space really belong to Wisp on this Mac.
     var askKeyRegistered: Bool
-    var searchKeyRegistered: Bool
+    var voiceKeyRegistered: Bool
     /// First-run setup already finished: the window was opened again (Permissions…,
     /// a Brief link), so it leaves the model alone (FirstRunSetup.drivesModel).
     var setupDone: Bool
@@ -981,7 +1169,7 @@ struct FirstRunSetupView: View {
          finish: @escaping (_ prompt: String?) -> Void,
          permissionsChanged: @escaping ([FirstRunPermissions.Item: FirstRunPermissions.State]) -> Void = { _ in },
          stepChanged: @escaping (Step) -> Void = { _ in },
-         askKeyRegistered: Bool = true, searchKeyRegistered: Bool = true,
+         askKeyRegistered: Bool = true, searchKeyRegistered: Bool = true, voiceKeyRegistered: Bool = true,
          setupDone: Bool = false, aboutYouDecided: @escaping () -> Void = {}, qaFixture: Bool = false) {
         self.setup = setup
         self.setupDone = setupDone
@@ -995,7 +1183,9 @@ struct FirstRunSetupView: View {
         self.permissionsChanged = permissionsChanged
         self.stepChanged = stepChanged
         self.askKeyRegistered = askKeyRegistered
-        self.searchKeyRegistered = searchKeyRegistered
+        // Smart Search is retired, so ⌘⇧F is no longer taught: `searchKeyRegistered`
+        // is accepted only until AppDelegate stops passing it.
+        self.voiceKeyRegistered = voiceKeyRegistered
     }
 
     private var brain: FirstRunBrain {
@@ -1046,6 +1236,7 @@ struct FirstRunSetupView: View {
         // start or download must not sit under the next one.
         .onChange(of: brain.stage) { _, _ in
             announce(brain)
+            record(brain)
             // The search window belongs to the whole look for their oMLX, not to one
             // stage of it: ending it when the card changes would restart it forever.
             if setup.status?.usesOwnOmlx != true { connectingSince = nil }
@@ -1056,6 +1247,14 @@ struct FirstRunSetupView: View {
         }
         .onAppear {
             drive(brain)
+            OnboardingTimeline.record("window opened at \(step)")
+            // A window that opens on a model already ready (or stuck) never sees the
+            // stage change that records it.
+            record(brain)
+            DispatchQueue.main.asyncAfter(deadline: .now() + FirstRunBrain.serviceStartLimit + 0.1) {
+                serviceSlowTick += 1    // redraw, so `stalled` sees the service's time pass
+            }
+            if !qaFixture { launchAtLogin.read() }
             // One read up front: the last step's prompts follow what is allowed.
             Task { await permissions.refresh() }
             if step == .permissions { permissions.start() }
@@ -1068,8 +1267,16 @@ struct FirstRunSetupView: View {
         .onReceive(permissions.$states) { states in if !states.isEmpty { permissionsChanged(states) } }
         .onChange(of: step) { _, next in
             if next == .permissions { permissions.start() } else { permissions.stop() }
-            if next == .tour { Task { await permissions.refresh() } }
+            if next == .tour {
+                Task { await permissions.refresh() }
+                if !qaFixture { launchAtLogin.read() }
+            }
+            OnboardingTimeline.record("step \(next)")
             stepChanged(next)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .wispAskHotkeyPressed)) { _ in
+            if !askKeyPressed { OnboardingTimeline.record("ask shortcut worked") }
+            askKeyPressed = true
         }
         .onDisappear { permissions.stop() }
         // The automatic start of the person's oMLX may have been skipped (a request in
@@ -1167,7 +1374,7 @@ struct FirstRunSetupView: View {
         case .downloading(_, _, let fraction, _, _, _): return "Model · \(Int(fraction * 100))%"
         case .waitingForEngine, .switching: return "Finishing…"
         case .ready: return "Model ready"
-        case .failed: return "Download stopped"
+        case .failed(_, _, _, let paused): return paused ? "Download stopped" : "Download failed"
         default: return nil
         }
     }
@@ -1182,13 +1389,17 @@ struct FirstRunSetupView: View {
         HStack(spacing: 10) {
             switch step {
             case .brain:
-                Image(systemName: "lock").foregroundStyle(Theme.textMuted).accessibilityHidden(true)
-                Text(brain.isArriving ? "You can keep going while this downloads." : "The AI model runs on this Mac.")
-                    .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                // The heading already says the model runs on this Mac; the footer
+                // only says what is happening.
+                if brain.isArriving {
+                    Text("You can keep going while this downloads.")
+                        .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                }
                 Spacer()
-                if brain.waitsForDownloadClick {
-                    // Return belongs to the card's Download (or Retry) here, so it can't
-                    // skip past the one step Wisp can't answer without.
+                if brain.cardTakesReturn(stalled: stalled) {
+                    // Return belongs to the card's button here (Download, Retry, Use,
+                    // a stuck Try again), so it can't skip past the step Wisp can't
+                    // answer without.
                     Button("Skip for now") { go(step.next) }
                         .buttonStyle(FirstRunButtonStyle())
                 } else {
@@ -1197,7 +1408,7 @@ struct FirstRunSetupView: View {
                         .keyboardShortcut(.defaultAction)
                 }
             case .permissions:
-                Text(FirstRunPermissions.summary(permissions.states))
+                Text(FirstRunPermissions.summary(permissions.states, messagesReadable: permissions.messagesReadable))
                     .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
                 Spacer()
                 Button("Back") { go(step.previous) }.buttonStyle(FirstRunButtonStyle())
@@ -1238,7 +1449,10 @@ struct FirstRunSetupView: View {
                 Spacer(minLength: 6)
                 // Doesn't wait for the model: the notch's quiet setup cue carries
                 // the download from here, with a notification once Wisp can answer.
-                Button("Done — open Wisp") { finish(nil) }
+                Button("Done — open Wisp") {
+                    OnboardingTimeline.record("setup done")
+                    finish(nil)
+                }
                     .buttonStyle(FirstRunButtonStyle(primary: true))
                     .keyboardShortcut(.defaultAction)
             }
@@ -1254,7 +1468,7 @@ struct FirstRunSetupView: View {
             return "Wisp couldn't check the download just now. It tries again by itself."
         }
         if setup.refreshError != nil, setup.status != nil {
-            return "Wisp's service didn't answer just now. This updates by itself."
+            return "Wisp didn't answer just now. This updates by itself."
         }
         return nil
     }
@@ -1270,6 +1484,9 @@ struct FirstRunSetupView: View {
     private var stalled: Bool {
         guard setup.busy == nil else { return false }
         switch brain {
+        case .checking:
+            _ = serviceSlowTick
+            return FirstRunBrain.serviceSlow(waited: Date().timeIntervalSince(openedAt))
         case .startingEngine:
             _ = connectGraceTick
             return FirstRunBrain.startStalled(
@@ -1302,12 +1519,46 @@ struct FirstRunSetupView: View {
                     .buttonStyle(FirstRunButtonStyle())
                     .disabled(setup.busy != nil)
             } else {
-                Button("Start the engine") { Task { await setup.startEngine() } }
+                Button("Try again") { Task { await setup.startEngine() } }
                     .buttonStyle(FirstRunButtonStyle())
                     .disabled(setup.busy != nil)
             }
         case .detailedSetup:
             Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
+        case .checkAgain:
+            Text("Wisp is slow to start").font(.system(size: 12)).foregroundStyle(Theme.textMuted).lineLimit(1)
+            checkAgainButton()
+        }
+    }
+
+    /// Asks the service once more when it has been slow to come up. Wisp keeps
+    /// starting it in the background either way. `takesReturn` on step 1's card
+    /// only: on the last step Return stays with Done.
+    @ViewBuilder private func checkAgainButton(takesReturn: Bool = false) -> some View {
+        let button = Button(setup.loading ? "Checking…" : "Check again") { Task { await setup.refresh() } }
+            .buttonStyle(FirstRunButtonStyle(primary: takesReturn))
+            .disabled(setup.loading)
+        if takesReturn { button.keyboardShortcut(.defaultAction) } else { button }
+    }
+
+    /// Every Download, Retry, Resume and Download again goes through here, so the
+    /// timeline sees each start.
+    private func startDownload(_ model: String) {
+        OnboardingTimeline.record("download started")
+        Task { await setup.download(model) }
+    }
+
+    /// The disk-space warning, wherever a click would start a download (the
+    /// card's button or the last step's footer), not only before the first one.
+    private var diskWarning: String? {
+        guard brain.footer(stalled: stalled).fetches else { return nil }
+        return FirstRunBrain.diskWarning(freeBytes: Self.freeBytes(), sizeGb: setup.status?.models.download?.sizeGb)
+    }
+
+    @ViewBuilder private var diskWarningLine: some View {
+        if let warning = diskWarning {
+            Text(warning).font(.system(size: 12)).foregroundStyle(Color.orange).padding(.bottom, 4)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -1321,7 +1572,7 @@ struct FirstRunSetupView: View {
                 Text("Starting download…").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
             }
         } else {
-            Button(title) { Task { await setup.download(model) } }
+            Button(title) { startDownload(model) }
                 .buttonStyle(FirstRunButtonStyle(primary: true))
                 .keyboardShortcut(.defaultAction)
                 .disabled(setup.busy != nil)
@@ -1337,7 +1588,7 @@ struct FirstRunSetupView: View {
 
     @ViewBuilder private func fetchButton(_ title: String) -> some View {
         if let model = brain.modelToFetch {
-            Button(title) { Task { await setup.download(model) } }
+            Button(title) { startDownload(model) }
                 .buttonStyle(FirstRunButtonStyle())
                 .disabled(setup.busy != nil)
         }
@@ -1348,9 +1599,7 @@ struct FirstRunSetupView: View {
     private var brainStep: some View {
         VStack(alignment: .leading, spacing: 0) {
             OnboardingHeading(title: "Welcome to Wisp",
-                              subtitle: "The AI model runs on this Mac. Your mail, calendar and messages stay here; when you ask "
-                                  + "for something from the web, only the search terms are sent. First Wisp needs to "
-                                  + "download that model once.")
+                              subtitle: FirstRunBrain.welcomeSubtitle(remoteOnly: setup.status?.remoteOnly == true))
             if let hw = setup.status?.hardware {
                 OnboardingCard(icon: "cpu", title: "Picked for your Mac",
                                detail: "\(hw.chip) · \(hw.ramGb > 0 ? "\(hw.ramGb) GB memory" : "memory unknown")") {
@@ -1358,7 +1607,8 @@ struct FirstRunSetupView: View {
                 }
             }
             modelCard
-            if let warning = setup.status?.models.warning {
+            // The can't-set-this-up card may already be saying this very line.
+            if let warning = setup.status?.models.warning, brain != .unavailable(warning) {
                 Text(warning).font(.system(size: 12)).foregroundStyle(Theme.textSecondary).padding(.top, 4)
             }
             if case .unavailable = brain {} else {
@@ -1386,12 +1636,27 @@ struct FirstRunSetupView: View {
         switch brain {
         case .checking:
             // Wisp's service is still starting: a cold first launch (bundle checks,
-            // first imports) can take minutes, so say so and show the time.
+            // first imports) can take minutes, so say so and show the time. Past the
+            // 3 minutes the notch allows too, it stops promising and offers a click.
             TimelineView(.periodic(from: openedAt, by: 5)) { context in
-                let waited = FirstRunBrain.waited(Int(context.date.timeIntervalSince(openedAt)))
-                OnboardingCard(icon: "hourglass", title: "Starting Wisp…",
-                               detail: "The first launch can take a few minutes." + (waited.map { " (\($0))" } ?? "")) {
-                    ProgressView().controlSize(.small)
+                let elapsed = context.date.timeIntervalSince(openedAt)
+                // `stalled` too, so the card and the footer change over together
+                // (Return moves from the footer to Check again at that moment).
+                if stalled || FirstRunBrain.serviceSlow(waited: elapsed) {
+                    OnboardingCard(icon: "hourglass", title: "Wisp is taking longer than usual to start",
+                                   detail: "It keeps trying in the background. Check again in a moment, "
+                                       + "or open the detailed setup to see what's going on.") {
+                        HStack(spacing: 8) {
+                            checkAgainButton(takesReturn: true)
+                            Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
+                        }
+                    }
+                } else {
+                    let waited = FirstRunBrain.waited(Int(elapsed))
+                    OnboardingCard(icon: "hourglass", title: "Starting Wisp…",
+                                   detail: "The first launch can take a few minutes." + (waited.map { " (\($0))" } ?? "")) {
+                        ProgressView().controlSize(.small)
+                    }
                 }
             }
         case .startingEngine:
@@ -1405,7 +1670,9 @@ struct FirstRunSetupView: View {
                             // A fresh look: the person's oMLX gets the whole search window again.
                             if ownOmlx { connectingSince = nil }
                             Task { await setup.startEngine() }
-                        }.buttonStyle(FirstRunButtonStyle())
+                        }
+                        .buttonStyle(FirstRunButtonStyle(primary: true))
+                        .keyboardShortcut(.defaultAction)
                         if ownOmlx {
                             Button("Open detailed setup") { openDetailedSetup() }.buttonStyle(FirstRunButtonStyle())
                         }
@@ -1420,20 +1687,20 @@ struct FirstRunSetupView: View {
             }
         case .needsDownload(let model, let label, let size):
             OnboardingCard(icon: "arrow.down.circle", title: label + (size.map { String(format: " · %.1f GB", $0) } ?? ""),
-                           detail: "Fast and private. The engine is built into Wisp, so there's nothing else to install.") {
+                           detail: "Fast and private. It runs inside Wisp, so there's nothing else to install.") {
                 HStack(spacing: 8) {
                     OnboardingPill(text: "Recommended")
                     downloadButton("Download", model: model)
                 }
             }
-            if let warning = FirstRunBrain.diskWarning(freeBytes: Self.freeBytes(), sizeGb: size) {
-                Text(warning).font(.system(size: 12)).foregroundStyle(Color.orange).padding(.bottom, 4)
-            }
         case .downloading(let model, let label, let fraction, let done, let total, let left):
             VStack(alignment: .leading, spacing: 0) {
                 OnboardingCard(icon: "arrow.down.circle", title: label + String(format: " · %.1f GB", total),
-                               detail: "Fast and private. The engine is built into Wisp, so there's nothing else to install.") {
+                               detail: "Fast and private. It runs inside Wisp, so there's nothing else to install.") {
                     EmptyView()
+                }
+                if let slept = notices.sleepLine(brain, downloads: setup.downloads) {
+                    Text(slept).font(.system(size: 11)).foregroundStyle(.secondary).padding(.bottom, 2)
                 }
                 ProgressView(value: fraction).tint(OnboardingPalette.lilac).padding(.top, 2)
                     .accessibilityLabel("Model download")
@@ -1449,28 +1716,33 @@ struct FirstRunSetupView: View {
                         }
                     }
                     Spacer()
-                    Button("Pause") { Task { await setup.download(model, cancel: true) } }
-                        .buttonStyle(.plain).foregroundStyle(Theme.textMuted)
-                        .help("Stops the download. Retry picks up where it left off.")
+                    // A cancel, not a pause: the transfer ends, and Resume starts it again.
+                    Button("Stop") {
+                        OnboardingTimeline.record("download stopped")
+                        Task { await setup.download(model, cancel: true) }
+                    }
+                    .buttonStyle(.plain).foregroundStyle(Theme.textMuted)
+                    .disabled(setup.busy != nil)
+                    .help("Stops the download. Resume starts it again.")
                 }
                 .font(.system(size: 12)).foregroundStyle(Theme.textMuted).padding(.top, 6)
             }
         case .failed(let model, let label, let message, let paused):
-            OnboardingCard(icon: "arrow.clockwise.circle", title: (paused ? "Download paused" : "Download failed") + " · " + label,
+            OnboardingCard(icon: "arrow.clockwise.circle", title: (paused ? "Download stopped" : "Download failed") + " · " + label,
                            detail: message) {
                 downloadButton(paused ? "Resume" : "Retry", model: model)
             }
         case .waitingForEngine(let model, let label):
             if stuckDownload == model {
                 OnboardingCard(icon: "exclamationmark.triangle", title: label,
-                               detail: "Downloaded, but Wisp's engine can't find its files. Download it again to fix that.") {
-                    Button("Download again") { Task { await setup.download(model) } }
+                               detail: "Downloaded, but Wisp can't find its files. Download it again to fix that.") {
+                    Button("Download again") { startDownload(model) }
                         .buttonStyle(FirstRunButtonStyle(primary: true))
                         .keyboardShortcut(.defaultAction)
                         .disabled(setup.busy != nil)
                 }
             } else {
-                OnboardingCard(icon: "checkmark.circle", title: label, detail: "Downloaded. Waiting for Wisp's engine to load it…") {
+                OnboardingCard(icon: "checkmark.circle", title: label, detail: "Downloaded. Getting it ready…") {
                     ProgressView().controlSize(.small)
                 }
             }
@@ -1510,6 +1782,7 @@ struct FirstRunSetupView: View {
                 }
             }
         }
+        diskWarningLine
         if setup.messageIsError, let message = setup.message, !lookingForOmlx {
             Text(message).font(.system(size: 12)).foregroundStyle(Theme.bad).padding(.top, 6)
         } else if let note = transientNote {
@@ -1542,8 +1815,24 @@ struct FirstRunSetupView: View {
             contactsRow
             permissionRow(.notifications, icon: "bell", title: "Notifications",
                           detail: "Alerts for reminders you set, and when Wisp is ready.")
-            Text("Skipped one? Open Wisp's Settings and choose Permissions… under Privacy, any time. Screen reading and "
-                 + "Accessibility are asked for later, from the feature that needs them.")
+            // Not needed to set up or for a first answer, so out of the way and
+            // out of the count; still asked only from the row's own click.
+            DisclosureGroup(isExpanded: $showMoreAccess) {
+                VStack(alignment: .leading, spacing: 0) {
+                    permissionRow(.screenRecording, icon: "rectangle.dashed.badge.record", title: "Screen Recording",
+                                  detail: FirstRunPermissions.screenRecordingDetail(permissions.state(.screenRecording)))
+                    permissionRow(.accessibility, icon: "accessibility", title: "Accessibility",
+                                  detail: FirstRunPermissions.accessibilityDetail(permissions.state(.accessibility)))
+                }
+            } label: {
+                Text("More access (optional)").font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            .padding(.top, 8)
+            Text("Skipped one? Open Wisp's Settings and choose Permissions… under Privacy, any time. Screen "
+                 + "Recording and Accessibility, under More access, let Wisp look at your screen when you ask "
+                 + "about it. Only the microphone, asked the first time you use voice, and macOS's questions "
+                 + "about Wisp controlling another app wait until first use.")
                 .font(.system(size: 12)).foregroundStyle(Theme.textMuted).padding(.top, 8)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -1563,10 +1852,10 @@ struct FirstRunSetupView: View {
     }
 
     /// Contacts puts names on Messages: it waits for Full Disk Access, which is
-    /// what reads Messages, unless macOS already has an answer.
+    /// what reads Messages, unless macOS already has an answer or Full Disk Access
+    /// has nothing to read here (FirstRunPermissions.contactsWaits).
     @ViewBuilder private var contactsRow: some View {
-        let state = permissions.state(.contacts)
-        if state == .notAsked && !FirstRunPermissions.contactsUseful(messagesReadable: FirstRunPermissions.messagesReadable()) {
+        if FirstRunPermissions.contactsWaits(permissions.states, messagesReadable: permissions.messagesReadable) {
             OnboardingCard(icon: "person.crop.circle", title: "Contacts",
                            detail: "Names instead of phone numbers in Messages. It's useful once Full Disk Access lets Wisp read Messages.") {
                 Text("After Full Disk Access").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
@@ -1594,7 +1883,7 @@ struct FirstRunSetupView: View {
                 case .notAllowed:
                     Text(label).font(.system(size: 11.5)).foregroundStyle(Color.orange.opacity(0.9))
                     Button("Open System Settings") {
-                        if item == .fullDiskAccess { Task { await permissions.request(.fullDiskAccess) } }
+                        if FirstRunPermissions.settingsThroughRequest(item) { Task { await permissions.request(item) } }
                         else { Permissions.openSettingsPane(Self.settingsPane(item)) }
                     }
                     .buttonStyle(FirstRunButtonStyle())
@@ -1622,12 +1911,22 @@ struct FirstRunSetupView: View {
         let text: String
         switch state {
         case .ready(let label): text = "\(label) is ready"
-        case .failed(_, _, _, let paused): text = paused ? "Download paused" : "Download failed"
+        case .failed(_, _, _, let paused): text = paused ? "Download stopped" : "Download failed"
         case .unavailable: text = "Wisp can't set this up on its own"
         default: return
         }
         NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
                              userInfo: [.announcement: text, .priority: NSAccessibilityPriorityLevel.high.rawValue])
+    }
+
+    /// The moments a stuck setup is told apart by (OnboardingTimeline): event names only.
+    private func record(_ state: FirstRunBrain) {
+        switch state {
+        case .ready: OnboardingTimeline.record("model ready")
+        case .failed(_, _, _, let paused): if !paused { OnboardingTimeline.record("download failed") }
+        case .unavailable: OnboardingTimeline.record("model unavailable")
+        default: break
+        }
     }
 
     /// Where to change a permission that was turned down.
@@ -1640,6 +1939,8 @@ struct FirstRunSetupView: View {
         case .fullDiskAccess: return Permissions.fullDiskAccessPane
         case .contacts: return base + "Privacy_Contacts"
         case .notifications: return "com.apple.preference.notifications"
+        case .screenRecording: return base + "Privacy_ScreenCapture"
+        case .accessibility: return base + "Privacy_Accessibility"
         }
     }
 
@@ -1686,7 +1987,14 @@ struct FirstRunSetupView: View {
             OnboardingCard(icon: "hand.point.up.left", title: "Where to find it",
                            detail: Self.findLine(display.layout.style)) { EmptyView() }
             OnboardingCard(icon: "keyboard", title: "Keyboard",
-                           detail: Self.shortcutsLine(ask: askKeyRegistered, search: searchKeyRegistered)) { EmptyView() }
+                           detail: Self.shortcutsLine(ask: askKeyRegistered, voice: voiceKeyRegistered)) { EmptyView() }
+            if let tryIt = Self.shortcutTry(registered: askKeyRegistered, pressed: askKeyPressed) {
+                Label(tryIt, systemImage: askKeyPressed ? "checkmark.circle.fill" : "keyboard")
+                    .font(.system(size: 12))
+                    .foregroundStyle(askKeyPressed ? Color.green.opacity(0.85) : Theme.textSecondary)
+                    .padding(.leading, 4).padding(.bottom, 9)
+                    .accessibilityElement(children: .combine)
+            }
             Text("Open, it has three tabs").font(.system(size: 13, weight: .medium)).padding(.top, 6).padding(.bottom, 8)
             OpenNotchIllustration(tabs: Self.tabLines)
                 .padding(.bottom, 14)
@@ -1694,12 +2002,21 @@ struct FirstRunSetupView: View {
                 Text("You can start now. Wisp lets you know when its model is ready.")
                     .font(.system(size: 12)).foregroundStyle(Theme.textSecondary).padding(.bottom, 10)
             }
+            diskWarningLine
+            // Until Wisp can answer, a prompt would only leave a question it can't
+            // send, and it must not end setup either.
+            let canAnswer = setup.status?.canAnswer == true
             VStack(alignment: .leading, spacing: 6) {
                 Text("Try asking").font(.system(size: 13, weight: .medium))
-                Text("Click one to open Ask with it typed in. Press Return to send it.")
+                Text(canAnswer ? "Click one to open Ask with it typed in. Press Return to send it."
+                               : "These work once the model is ready.")
                     .font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
                 ForEach(OnboardingPrompts.prompts(live), id: \.self) { prompt in
-                    Button { finish(prompt) } label: {
+                    Button {
+                        guard canAnswer else { return }
+                        OnboardingTimeline.record("try asking")
+                        finish(prompt)
+                    } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "text.cursor").accessibilityHidden(true)
                             Text("“\(prompt)”")
@@ -1712,10 +2029,41 @@ struct FirstRunSetupView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help("Opens Ask with this typed in, ready to send")
+                    .disabled(!canAnswer)
+                    .opacity(canAnswer ? 1 : 0.5)
+                    .help(canAnswer ? "Opens Ask with this typed in, ready to send" : "Works once the model is ready")
                     .accessibilityLabel("Try asking: \(prompt)")
-                    .accessibilityHint("Opens Ask with this typed in. It isn't sent until you press Return.")
+                    .accessibilityHint(canAnswer ? "Opens Ask with this typed in. It isn't sent until you press Return."
+                                                 : "Works once the model is ready.")
                 }
+            }
+            .padding(.bottom, 14)
+            launchAtLoginRow
+        }
+    }
+
+    /// Opt-in, off by default: macOS's answer is read, never assumed, and only
+    /// the switch changes it.
+    private var launchAtLoginRow: some View {
+        let status = launchAtLogin.status
+        return VStack(alignment: .leading, spacing: 0) {
+            OnboardingCard(icon: "power", title: "Open Wisp when you log in",
+                           detail: "So it's there at the top of your screen whenever you start your Mac.") {
+                Toggle("Open Wisp when you log in", isOn: Binding(
+                    get: { LaunchAtLogin.isOn(status) },
+                    set: { launchAtLogin.set($0) }))
+                    .toggleStyle(.switch).labelsHidden().controlSize(.small)
+                    .disabled(qaFixture)
+            }
+            if let note = launchAtLogin.problem ?? LaunchAtLogin.note(status) {
+                HStack(alignment: .top, spacing: 10) {
+                    Text(note).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 8)
+                    Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
+                        .buttonStyle(FirstRunButtonStyle())
+                }
+                .padding(.bottom, 9)
             }
         }
     }
@@ -1744,13 +2092,20 @@ struct FirstRunSetupView: View {
 
     /// The shortcuts this Mac really has. A combination another app owns does
     /// nothing in Wisp, so it is not taught; the top of the screen always works.
-    static func shortcutsLine(ask: Bool, search: Bool) -> String {
-        switch (ask, search) {
-        case (true, true): return "⌥ Space to ask  ·  ⌘ ⇧ F to search everything"
+    static func shortcutsLine(ask: Bool, voice: Bool) -> String {
+        switch (ask, voice) {
+        case (true, true): return "⌥ Space to ask  ·  ⌥ ⇧ Space to ask by voice"
         case (true, false): return "⌥ Space to ask"
-        case (false, true): return "Another app uses ⌥ Space, so open Wisp from the top of the screen  ·  ⌘ ⇧ F to search everything"
+        case (false, true): return "Another app uses ⌥ Space, so open Wisp from the top of the screen  ·  ⌥ ⇧ Space to ask by voice"
         case (false, false): return "Another app uses Wisp's shortcuts, so open it from the top of the screen or the menu bar"
         }
+    }
+
+    /// The live check under the shortcuts: an invitation, then the proof once
+    /// ⌥Space has really opened Ask. Nothing when another app owns the key.
+    static func shortcutTry(registered: Bool, pressed: Bool) -> String? {
+        guard registered else { return nil }
+        return pressed ? "That's it — ⌥ Space works." : "Try it now: press ⌥ Space."
     }
 
     /// How to open Wisp on this display, in words that match what's drawn there.
