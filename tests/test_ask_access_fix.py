@@ -30,7 +30,7 @@ def isolated(monkeypatch, tmp_path):
 
 
 def test_only_a_named_fixable_kind_is_noted():
-    noted = access_needed.start()
+    noted, _ = access_needed.start()
     assert "Privacy & Security > Calendars" in access_needed.need("calendar", "calendar_access")
     assert access_needed.need("calendar", "calendar_access")  # said again, noted once
     assert access_needed.need("calendar", "") == ""  # a passing failure offers no button
@@ -56,7 +56,7 @@ def _readiness(*rows):
 def test_calendar_history_names_the_setting_and_notes_the_kind():
     from service.assistant import sync_status
     from service.tools import assistant_tools
-    noted = access_needed.start()
+    noted, _ = access_needed.start()
     row = {"id": "calendar", "label": "Calendar", "state": "unavailable", "reason_kind": "calendar_access"}
     with patch.object(sync_status, "ensure_sources", new_callable=AsyncMock, return_value=_readiness(row)):
         answer = asyncio.run(assistant_tools.get_past_events())
@@ -68,7 +68,7 @@ def test_calendar_history_names_the_setting_and_notes_the_kind():
 def test_an_unexplained_calendar_failure_keeps_the_general_pointer_and_no_button():
     from service.assistant import sync_status
     from service.tools import assistant_tools
-    noted = access_needed.start()
+    noted, _ = access_needed.start()
     row = {"id": "calendar", "label": "Calendar", "state": "unavailable", "reason_kind": ""}
     with patch.object(sync_status, "ensure_sources", new_callable=AsyncMock, return_value=_readiness(row)):
         answer = asyncio.run(assistant_tools.get_past_events())
@@ -79,7 +79,7 @@ def test_an_unexplained_calendar_failure_keeps_the_general_pointer_and_no_button
 def test_schedule_notice_names_each_unreadable_source():
     from service.assistant import sync_status
     from service.tools import assistant_tools
-    noted = access_needed.start()
+    noted, _ = access_needed.start()
     rows = ({"id": "calendar", "label": "Calendar", "state": "unavailable", "reason_kind": "calendar_access"},
             {"id": "reminders", "label": "Reminders", "state": "unavailable", "reason_kind": "reminders_access"})
     with patch.object(sync_status, "ensure_sources", new_callable=AsyncMock, return_value=_readiness(*rows)), \
@@ -94,7 +94,7 @@ def test_schedule_notice_names_each_unreadable_source():
 def test_reminders_search_names_the_setting():
     from service.assistant import sync_status
     from service.tools import assistant_tools
-    noted = access_needed.start()
+    noted, _ = access_needed.start()
     row = {"id": "reminders", "label": "Reminders", "state": "unavailable", "reason_kind": "reminders_access"}
     with patch.object(sync_status, "ensure_sources", new_callable=AsyncMock, return_value=_readiness(row)), \
          patch.object(assistant_tools, "reminders_matching", return_value=[]):
@@ -107,7 +107,7 @@ def test_contacts_not_allowed_is_said_and_noted(monkeypatch):
     from service.tools import imessage_tools as M
     monkeypatch.setattr(M, "_contacts_not_allowed", True)
     monkeypatch.setattr(M, "_name_handles", {})
-    noted = access_needed.start()
+    noted, _ = access_needed.start()
     answer = asyncio.run(M.lookup_contact("Mom"))
     assert "Wisp can't read Contacts yet." in answer and "Privacy & Security > Contacts" in answer
     assert noted == [{"source": "contacts", "kind": "contacts_access"}]
@@ -166,8 +166,53 @@ def test_the_tool_result_carries_the_fix_whatever_the_model_says(monkeypatch):
     assert "needs_access" not in results.get("fine-1", {})
 
 
+def test_a_finished_turn_hands_the_collector_back(monkeypatch):
+    """run_agent resets what it set: a read after the turn, in the caller's own
+    context, notes into the caller's collector (or none), never the turn's."""
+    from service.agent import loop
+    from service.safety import grants, policy
+    from service.tools.registry import REGISTRY
+    from tests.test_direct_dispatch_exec import Approver, ScriptedClient, _tool_call
+    monkeypatch.setattr(loop, "audit", lambda *a, **kw: None)
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    monkeypatch.setattr(grants, "check", lambda *a, **kw: None)
+
+    async def calendar_denied(**kwargs):
+        return "Wisp could not check Calendar. " + access_needed.need("calendar", "calendar_access")
+    monkeypatch.setitem(REGISTRY, "get_upcoming", replace(REGISTRY["get_upcoming"], func=calendar_denied))
+    events = []
+
+    async def emit(event):
+        events.append(event)
+
+    async def turn_then_read():
+        outer, token = access_needed.start()
+        try:
+            await loop.run_agent(ScriptedClient([
+                {"tool_calls": [_tool_call("get_upcoming", {}, "denied-1")]},
+                {"content": "I couldn't look at that just now."},
+                {"content": "I couldn't look at that just now."}]), "Agents-A1-4B-oQe6",
+                [{"role": "user", "content": "What's on today?"}], emit, Approver(True),
+                tools=["get_upcoming"], max_steps=3, include_memory_context=False, allow_skill_context=False)
+            access_needed.need("reminders", "reminders_access")
+            return outer
+        finally:
+            access_needed.finish(token)
+    assert asyncio.run(turn_then_read()) == [{"source": "reminders", "kind": "reminders_access"}]
+    results = [e for e in events if e["type"] == "tool_result"]
+    assert results[0]["needs_access"] == [{"source": "calendar", "kind": "calendar_access"}]
+
+    async def bare():
+        noted, token = access_needed.start()
+        access_needed.finish(token)
+        access_needed.need("calendar", "calendar_access")
+        return noted
+    assert asyncio.run(bare()) == [], "finish leaves no collector behind"
+
+
 def test_a_note_belongs_to_the_one_call_that_made_it():
-    outer = access_needed.start()
+    outer, _ = access_needed.start()
     with access_needed.noting() as one:
         access_needed.need("calendar", "calendar_access")
     with access_needed.noting() as two:
@@ -240,7 +285,7 @@ def test_contacts_waiting_on_messages_names_full_disk_access(monkeypatch):
     monkeypatch.setattr(M, "_contacts_not_allowed", True)
     monkeypatch.setattr(M, "_name_handles", {})
     monkeypatch.setattr(M, "messages_unavailable_kind", lambda: "full_disk_access")
-    noted = access_needed.start()
+    noted, _ = access_needed.start()
     answer = asyncio.run(M.lookup_contact("Mom"))
     assert "Wisp can't read Contacts yet" in answer and "Privacy & Security > Full Disk Access" in answer
     assert "Allow next to Contacts" not in answer
@@ -251,7 +296,7 @@ def test_unreadable_browser_history_names_the_place_without_a_button(monkeypatch
     from service.assistant import sync_status
     from service.tools import browser_history_tools as B
     monkeypatch.setattr(B, "browser_history_sync_state", lambda: "unavailable")
-    noted = access_needed.start()
+    noted, _ = access_needed.start()
     with patch.object(sync_status, "ensure_sources", new_callable=AsyncMock, return_value=_readiness()):
         answer = asyncio.run(B.search_browser_history_impl("recipes"))
     assert "Privacy & Security > Full Disk Access" in answer

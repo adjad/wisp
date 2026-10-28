@@ -30,6 +30,9 @@ extension Notification.Name {
     static let wispOpenPermissions = Notification.Name("WispOpenPermissions")
     /// Asks for the next extra that is still off (Settings › Privacy's More Access…).
     static let wispGrantMoreAccess = Notification.Name("WispGrantMoreAccess")
+    /// Opens Settings in the Wisp window, on the pane `WispSettingsPane` names
+    /// (the Brief's Gmail reconnect link, BriefFix.open).
+    static let wispOpenSettings = Notification.Name("WispOpenSettings")
 }
 
 enum Permissions {

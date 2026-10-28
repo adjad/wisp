@@ -281,6 +281,10 @@ struct ChatMessage: Identifiable, Equatable {
     var errorDetail = ""
     var attachmentName: String?
     var corpusEvaluation: ChatCorpusEvaluation?
+    /// Sources a tool in this reply couldn't read for lack of access, as the
+    /// kinds on its tool_result's `needs_access` (AskAccess), for the reply's
+    /// Allow button. Never set on a corpus reply.
+    var needsAccess: [String] = []
 
     init(id: UUID = UUID(), role: Role, text: String = "", phase: Phase = .done) {
         self.id = id; self.role = role; self.text = text; self.phase = phase

@@ -1073,12 +1073,33 @@ _MIN_OUTPUT_TOKENS = 2000
 _MIN_TOOLS = 4
 
 
+_IMAGE_TOKENS = 280   # a picture costs a flat 280 tokens whatever its size
+
+
 def _est_tokens(obj) -> int:
     """Cheap tokenizer-free estimate, same ~4-chars-per-token rule the context
     budgeter uses. Deliberately approximate: it only has to be right enough to
     keep us off the window boundary, and it errs high on JSON (punctuation-
-    dense), which is the safe direction."""
-    return len(obj if isinstance(obj, str) else json.dumps(obj)) // 4
+    dense), which is the safe direction. An image part counts a flat
+    _IMAGE_TOKENS and its base64 is left out of the character count."""
+    if isinstance(obj, str):
+        return len(obj) // 4
+    text = json.dumps(obj)
+    if "image_url" not in text and "input_image" not in text:
+        return len(text) // 4
+    images = 0
+
+    def strip(node):
+        nonlocal images
+        if isinstance(node, dict):
+            if node.get("type") in ("image_url", "input_image"):
+                images += 1
+                return {"type": node["type"]}
+            return {k: strip(v) for k, v in node.items()}
+        if isinstance(node, list):
+            return [strip(v) for v in node]
+        return node
+    return len(json.dumps(strip(obj))) // 4 + images * _IMAGE_TOKENS
 
 
 def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
@@ -1377,11 +1398,28 @@ def _meeting_redacted_return(function):
     return wrapped
 
 
+def _access_notes_scoped(function):
+    """One turn's access notes (access_needed.start) end with the turn: the
+    ContextVar is reset however run_agent returns or raises, so a later read in
+    the caller's context (a nested turn's caller, the scheduler) never notes into
+    a finished turn's list."""
+    @wraps(function)
+    async def wrapped(*args, **kwargs):
+        from service.tools import access_needed
+        noted, token = access_needed.start()
+        try:
+            return await function(*args, _access_noted=noted, **kwargs)
+        finally:
+            access_needed.finish(token)
+    return wrapped
+
+
 # Reads whose result is model-facing evidence, never a user-facing answer.
 _NARRATED_EVIDENCE_READS = frozenset({"daily_brief"})
 
 
 @_meeting_redacted_return
+@_access_notes_scoped
 async def run_agent(
     client: OMLXClient,
     model: str,
@@ -1503,6 +1541,8 @@ async def run_agent(
     # ask_quality only: lexical rank beyond the preload. Name-only stubs are
     # limited to these plus model_only.ASK_CORE_STUBS (None = every tool).
     model_led_stub_rank: Sequence[str] | None = None,
+    # This turn's access notes, from _access_notes_scoped; never passed by callers.
+    _access_noted: list[dict] | None = None,
 ) -> str:
     """Run the loop. Returns the final assistant text. Streams events via `emit`.
 
@@ -1601,7 +1641,7 @@ async def run_agent(
     # Sources a tool couldn't read for lack of access ride on its tool_result,
     # so Ask shows the fix button whatever the model's reply says.
     from service.tools import access_needed
-    access_noted = access_needed.start()
+    access_noted = _access_noted if _access_noted is not None else []
     def audit(event, **fields):
         _meeting_audit(event, **fields)
 

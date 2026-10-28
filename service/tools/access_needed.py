@@ -9,7 +9,7 @@ call's ``tool_result`` event as ``needs_access``. The kinds are the Brief's own
 maps them with the code that already drives those buttons.
 
 Every path that answers Ask collects this way: ``run_agent`` for the whole
-turn (``start``/``drain``), and the deterministic read, workflow and task
+turn (``start``/``drain``/``finish``), and the deterministic read, workflow and task
 executors per call (``noting``/``payload``). Inert anywhere else: the scheduler
 and the Brief read the same sources and have no reply to attach a button to.
 """
@@ -42,12 +42,17 @@ _HOW = {
 _noted: contextvars.ContextVar[list[dict] | None] = contextvars.ContextVar("_access_needed", default=None)
 
 
-def start() -> list[dict]:
+def start() -> tuple[list[dict], contextvars.Token]:
     """Begin collecting for one agent turn. Tools run in tasks copied from this
-    context share the same list, so a note from any of them is seen."""
+    context share the same list, so a note from any of them is seen. Returns
+    the list and the token ``finish`` takes when the turn ends."""
     collected: list[dict] = []
-    _noted.set(collected)
-    return collected
+    return collected, _noted.set(collected)
+
+
+def finish(token: contextvars.Token) -> None:
+    """End the turn ``start`` began: the collector before it (or none) is back."""
+    _noted.reset(token)
 
 
 def need(source: str, kind: str) -> str:

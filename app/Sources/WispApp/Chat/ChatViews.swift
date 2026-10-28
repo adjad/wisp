@@ -635,6 +635,7 @@ struct ChatMessageRow: View {
                             .environment(\.markdownPalette, ChatTheme.markdown)
                     }
                 }
+                if !message.isLive, !message.needsAccess.isEmpty { accessFixes(message.needsAccess) }
                 if let evaluation = message.corpusEvaluation {
                     ChatCorpusEvaluationCard(evaluation: evaluation, failed: message.isError, tools: message.tools)
                 }
@@ -657,6 +658,21 @@ struct ChatMessageRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// The fix for each source a tool in this reply wasn't allowed to read: the
+    /// notch's own buttons (OverlayView.accessFixes), gone once macOS says yes.
+    @ViewBuilder private func accessFixes(_ kinds: [String]) -> some View {
+        let fixes = Permissions.askFixes(kinds)
+        if !fixes.isEmpty {
+            HStack(spacing: 8) {
+                ForEach(fixes, id: \.url) { fix in
+                    if let url = URL(string: fix.url) {
+                        ChatCardButton(title: Permissions.askFixLabel(fix)) { Permissions.openAskFix(url) }
+                    }
+                }
+            }
         }
     }
 }

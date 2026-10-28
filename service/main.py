@@ -1738,10 +1738,19 @@ async def agent(body: dict[str, Any]):
             yield _sse({"type": "text", "text": KEY_HANDOFF_NOTICE})
             yield _sse({"type": "done"})
         return StreamingResponse(_handoff_stream(), media_type="text/event-stream")
-    # An `image` in the body is ACCEPTED AND IGNORED. Wisp has no vision model
-    # and no vision route any more, so there is nothing that could look at it —
-    # answering the text half of the request is strictly better than 500ing on a
-    # field an older client might still send.
+    # An `image` or `video` in the body starts a VISION turn (service/vision.py): one
+    # dedicated model call, never the agent loop. The media is used for this request
+    # only: it is not stored, logged, remembered or sent anywhere. The turn is saved
+    # as the prompt text plus a short marker.
+    vision_image = body.get("image") if isinstance(body.get("image"), str) and body.get("image") else None
+    vision_video = body.get("video") if isinstance(body.get("video"), dict) else None
+    vision_media = vision_image is not None or vision_video is not None
+    stored_prompt = prompt
+    if vision_media:
+        marker = ("[video clip attached]" if vision_video is not None
+                  else "[screen capture attached]" if body.get("image_source") == "screen"
+                  else "[image attached]")
+        stored_prompt = f"{prompt}\n{marker}" if prompt.strip() else marker
     test_mode = bool(body.get("test_mode"))
     # Whether the client's Debug Mode is on — gates raw_model_io events (the
     # full request + response for every model call this turn). Defaults True
@@ -1804,7 +1813,7 @@ async def agent(body: dict[str, Any]):
     def persist_user_turn() -> int:
         nonlocal persisted_user_idx
         if persisted_user_idx is None:
-            persisted_user_idx = store.add_turn(sid, "user", prompt)
+            persisted_user_idx = store.add_turn(sid, "user", stored_prompt)
         from service.memory.facts import store as fact_store
         fact_store.bind_source(req_id, sid, persisted_user_idx)
         return persisted_user_idx
@@ -1977,6 +1986,17 @@ async def agent(body: dict[str, Any]):
                 pass
 
         try:
+            if vision_media:
+                from service import vision
+                vision_answer = await vision.run_turn(
+                    prompt, image=None if vision_video is not None else vision_image,
+                    video=vision_video, emit=emit, approver=approver, test_mode=test_mode)
+                await emit({"type": "done"})
+                if not test_mode:
+                    persist_user_turn()
+                    store.add_turn(sid, "assistant", vision_answer)
+                    assistant_reply_stored = True
+                return
             # Knowledge fields and bounded queue targets are literal
             # data. Recognize their envelope before task/workflow/skill
             # interpreters can mistake those fields for another command. Credential redaction
@@ -3138,7 +3158,8 @@ async def assistant_next() -> dict[str, Any]:
 
 @app.get("/assistant/upcoming")
 async def assistant_upcoming(days: int = 7) -> dict[str, Any]:
-    return {"commitments": assistant_store.upcoming(days=max(1, min(days, 60)))}
+    rows = assistant_store.upcoming(days=max(1, min(days, 60)))
+    return {"commitments": assistant_store.mark_read_only_calendars(rows)}
 
 
 @app.get("/assistant/status")

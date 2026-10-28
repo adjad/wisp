@@ -1,4 +1,4 @@
-// Compile with app/Sources/WispApp/WispClient.swift and AgentSend.swift.
+// Compile with app/Sources/WispApp/WispClient.swift, AgentSend.swift and AskAccess.swift.
 // Drives WispClient.runAgent through a stub URLProtocol that answers every
 // request in-process: nothing reaches a socket, least of all the live backend.
 import Foundation
@@ -179,14 +179,33 @@ enum AgentSendChecks {
               == "What should I prep for \(String(repeating: "x", count: 27))…?", "a long title is clipped")
 
         let now = 1_000_000.0
-        check(AskStarters.nextEvent([(title: "Later", start: now + 7200, allDay: false),
-                                     (title: "Holiday", start: now + 60, allDay: true),
-                                     (title: "  ", start: now + 120, allDay: false),
-                                     (title: "Started", start: now - 60, allDay: false),
-                                     (title: "Standup", start: now + 1800, allDay: false),
-                                     (title: "Next week", start: now + 90_000, allDay: false)], now: now) == "Standup",
+        check(AskStarters.nextEvent([(title: "Later", start: now + 7200, allDay: false, own: true),
+                                     (title: "Holiday", start: now + 60, allDay: true, own: true),
+                                     (title: "  ", start: now + 120, allDay: false, own: true),
+                                     (title: "Started", start: now - 60, allDay: false, own: true),
+                                     (title: "Standup", start: now + 1800, allDay: false, own: true),
+                                     (title: "Next week", start: now + 90_000, allDay: false, own: true)], now: now) == "Standup",
               "the soonest timed, titled event that hasn't started, within a day")
+        check(AskStarters.nextEvent([(title: "Team offsite", start: now + 600, allDay: false, own: false),
+                                     (title: "Standup", start: now + 1800, allDay: false, own: true)], now: now) == "Standup"
+              && AskStarters.nextEvent([(title: "Team offsite", start: now + 600, allDay: false, own: false)], now: now).isEmpty,
+              "an event on a subscribed or shared read-only calendar never makes a prep starter")
         check(AskStarters.nextEvent([], now: now).isEmpty, "no events: no prep starter")
+
+        // The goal starter's cloud answer is per open: a new open forgets the
+        // last "no", and an answer to an older open is dropped.
+        var cloud = StarterCloudUse()
+        let first = cloud.opened()
+        cloud.answered(false, for: first)
+        check(cloud.inUse == false, "the open's own answer lands")
+        let second = cloud.opened()
+        check(cloud.inUse == nil && !AskStarters.goalStarterAllowed(cloudInUse: cloud.inUse),
+              "a reopened panel shows no goal starter until cloud use is read again")
+        cloud.answered(false, for: first)
+        check(cloud.inUse == nil, "a late answer to the previous open is dropped")
+        cloud.answered(true, for: second)
+        check(cloud.inUse == true && !AskStarters.goalStarterAllowed(cloudInUse: cloud.inUse),
+              "cloud turned on since: no goal starter")
         check(AskStarters.waitingSender([(sender: "Newsletter", source: "email", person: false, replied: false),
                                          (sender: "Sam", source: "messages", person: true, replied: true),
                                          (sender: "a@b.com", source: "email", person: true, replied: false),

@@ -149,10 +149,12 @@ enum AskStarters {
     }
 
     /// The soonest timed event that hasn't started, within `window` seconds, by
-    /// its title. All-day entries and blank titles never make a "prep for" starter.
-    static func nextEvent(_ events: [(title: String, start: Double, allDay: Bool)], now: Double,
+    /// its title. All-day entries, blank titles and events on someone else's
+    /// calendar (`own` false: subscribed, or shared read-only) never make a
+    /// "prep for" starter.
+    static func nextEvent(_ events: [(title: String, start: Double, allDay: Bool, own: Bool)], now: Double,
                           window: Double = 86_400) -> String {
-        events.filter { !$0.allDay && $0.start > now && $0.start <= now + window
+        events.filter { $0.own && !$0.allDay && $0.start > now && $0.start <= now + window
                         && !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
             .min { $0.start < $1.start }?.title.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
@@ -224,18 +226,22 @@ enum AskStarters {
     }
 }
 
-/// A source a tool in an Ask reply couldn't read for lack of access. The
-/// service attaches these to the tool's own result (`needs_access`, see
-/// service/tools/access_needed.py), so the reply's fix button never depends on
-/// the model's wording.
-enum AskAccess {
-    /// The kinds ("calendar_access", "full_disk_access", …) in a tool_result's
-    /// `needs_access`, in order, each once. Anything malformed is skipped.
-    static func kinds(_ payload: Any?) -> [String] {
-        var out: [String] = []
-        for item in payload as? [[String: Any]] ?? [] {
-            if let kind = item["kind"] as? String, !kind.isEmpty, !out.contains(kind) { out.append(kind) }
-        }
-        return out
+/// Ask's view of /inference/cloud for the goal starter (goalStarterAllowed).
+/// Each panel open forgets the last answer, so a cloud model turned on since
+/// never lets the goal starter show on a stale "no"; an answer to an older
+/// open's request is dropped.
+struct StarterCloudUse: Equatable {
+    private(set) var inUse: Bool?
+    private var asked = 0
+
+    /// A panel opened: unknown again until this request's answer lands.
+    mutating func opened() -> Int {
+        inUse = nil
+        asked += 1
+        return asked
+    }
+
+    mutating func answered(_ value: Bool?, for request: Int) {
+        if request == asked { inUse = value }
     }
 }

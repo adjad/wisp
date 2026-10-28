@@ -47,6 +47,13 @@ def test_every_way_into_settings_lands_in_the_wisp_window():
     assert "case .settings:\n            openSettings()" in route
     # ⌘, in the app menu and the menu bar icon's Settings… both use openSettings.
     assert app.count('#selector(openSettings), keyEquivalent: ","') == 2
+    # The Brief's Gmail reconnect link posts a notification AppDelegate observes,
+    # never a selector string a rename could silently break.
+    fix = _body(_read("NotchBriefView.swift"), "@MainActor static func open(_ action: BriefDetail.Action)")
+    assert "NotificationCenter.default.post(name: .wispOpenSettings, object: nil)" in fix
+    assert "sendAction" not in fix and "Selector(" not in fix
+    observer = app[app.index("forName: .wispOpenSettings"):]
+    assert observer[:observer.index("}\n")].count("self?.openSettings()") == 1
     window = _read("WispWindow.swift")
     assert "case chats, today, memory, research, settings" in window
     assert "navigation.section = .settings" in _body(window, "func showSettings()")

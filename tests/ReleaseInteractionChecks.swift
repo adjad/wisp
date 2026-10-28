@@ -107,6 +107,13 @@ enum ReleaseInteractionChecks {
         print("Isolation: actual Foundation home/network denied; owned scratch controls passed (\(outer ? "outer" : "direct"))")
     }
 
+    /// A data-URL fixture as the picked image the model now receives.
+    static func picked(_ dataURL: String?) -> MediaAttachment.Pending? {
+        guard let dataURL, let comma = dataURL.firstIndex(of: ","),
+              let bytes = Data(base64Encoded: String(dataURL[dataURL.index(after: comma)...])) else { return nil }
+        return .image(jpeg: bytes, source: .file)
+    }
+
     actor DeferredImage {
         private var completion: CheckedContinuation<String?, Never>?
         private var observers: [CheckedContinuation<Void, Never>] = []
@@ -142,13 +149,13 @@ enum ReleaseInteractionChecks {
         try check(debugWrites == [false], "Explicit false mutation must save once: saves=\(debugWrites)")
         positive.debugMode = true
         try check(debugWrites == [false, true], "Explicit true mutation must save once: saves=\(debugWrites)")
-        let normal = positive.loadAttachment(name: "normal.png") { "data:image/png;base64,Zml4dHVyZQ==" }
+        let normal = positive.loadAttachment(name: "normal.png") { picked("data:image/png;base64,Zml4dHVyZQ==") }
         await normal.value
         try check(positive.attachedImageName == "normal.png", "Ordinary supplied image completion must attach")
 
         for action in ["reset", "new-chat", "submit", "remove", "replacement"] {
             let current = model(), gate = DeferredImage()
-            let pending = current.loadAttachment(name: "late-A.png") { await gate.read() }
+            let pending = current.loadAttachment(name: "late-A.png") { picked(await gate.read()) }
             await gate.started()
             var researchStarts = 0
             switch action {
@@ -172,9 +179,9 @@ enum ReleaseInteractionChecks {
             current.reset()
         }
         let current = model(), first = DeferredImage(), second = DeferredImage()
-        let a = current.loadAttachment(name: "A.png") { await first.read() }
+        let a = current.loadAttachment(name: "A.png") { picked(await first.read()) }
         await first.started()
-        let b = current.loadAttachment(name: "B.png") { await second.read() }
+        let b = current.loadAttachment(name: "B.png") { picked(await second.read()) }
         await second.started()
         await second.finish("data:image/png;base64,Qg=="); await b.value
         await first.finish("data:image/png;base64,QQ=="); await a.value
