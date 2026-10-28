@@ -122,6 +122,12 @@ enum AskStarters {
         var goal = ""
     }
 
+    /// The goal starter puts what the person said in Getting to know you into
+    /// the prompt, and Wisp promises that never goes to a cloud model. So it is
+    /// offered only once the service said no cloud model gets Ask's prompts
+    /// (Super Model or a cloud role); unknown keeps it back.
+    static func goalStarterAllowed(cloudInUse: Bool?) -> Bool { cloudInUse == false }
+
     /// `unreadable`: source ids ("calendar", "email") Wisp can't read now; nil
     /// while that isn't known yet, which leaves out every source starter.
     static func prompts(unreadable: Set<String>?, personal: Personal = Personal()) -> [String] {

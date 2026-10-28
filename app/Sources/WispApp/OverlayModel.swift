@@ -507,6 +507,9 @@ final class OverlayModel: ObservableObject {
     /// The profile's first goal, kept between opens so a reopened panel shows
     /// its starter at once while the profile is read again.
     private var profileGoal = ""
+    /// Whether a cloud model may get Ask's prompt (Super Model or a cloud role);
+    /// nil until /inference/cloud answers. The goal starter waits for a false.
+    private var cloudInUse: Bool?
 
     // The tappable questions under an empty Ask: ones a fresh install can
     // answer, even before any source is allowed (AgentSend.swift's AskStarters).
@@ -545,7 +548,13 @@ final class OverlayModel: ObservableObject {
             guard let self, let envelope = await self.client.profile() else { return }
             self.profileGoal = envelope.profile.goals.first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? ""
             self.starterName = envelope.profile.name
-            let personal = Self.withGoal(self.starterPersonal, self.profileGoal)
+            let personal = Self.withGoal(self.starterPersonal, self.profileGoal, cloudInUse: self.cloudInUse)
+            if personal != self.starterPersonal { self.starterPersonal = personal }
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            self.cloudInUse = ChatCloudUse.active(from: await self.client.cloudInference())
+            let personal = Self.withGoal(self.starterPersonal, self.profileGoal, cloudInUse: self.cloudInUse)
             if personal != self.starterPersonal { self.starterPersonal = personal }
         }
     }
@@ -553,13 +562,14 @@ final class OverlayModel: ObservableObject {
     /// The Brief's calendar and mail can land after the panel opened; the
     /// starters pick them up then instead of waiting for the next open.
     func updatePersonalStarters(today: TodayModel) {
-        let personal = Self.withGoal(AskStarters.Personal(today: today), profileGoal)
+        let personal = Self.withGoal(AskStarters.Personal(today: today), profileGoal, cloudInUse: cloudInUse)
         if personal != starterPersonal { starterPersonal = personal }
     }
 
-    private static func withGoal(_ personal: AskStarters.Personal, _ goal: String) -> AskStarters.Personal {
+    private static func withGoal(_ personal: AskStarters.Personal, _ goal: String,
+                                 cloudInUse: Bool?) -> AskStarters.Personal {
         var personal = personal
-        personal.goal = goal
+        personal.goal = AskStarters.goalStarterAllowed(cloudInUse: cloudInUse) ? goal : ""
         return personal
     }
 

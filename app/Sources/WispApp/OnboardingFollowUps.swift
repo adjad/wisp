@@ -37,7 +37,7 @@ enum ReadyNotice {
 /// saved queue (which resumes rows after a restart) doesn't come into it: the
 /// same transfer carries on after wake once the network is back, and one that
 /// can't (the engine gives up after five minutes without progress and one
-/// retry) shows as stopped, where Try again picks up from the files on disk.
+/// retry) shows as stopped, where Try again starts the download again.
 enum SleepPause {
     /// The download at wake: which model and its received bytes, or that it stopped.
     enum Transfer: Equatable {

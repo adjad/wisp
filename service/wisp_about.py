@@ -610,10 +610,8 @@ def _optional_cloud_lines(detail: dict) -> list[str]:
                      "answers, the question goes there with the recent conversation, things you "
                      "asked me to remember that relate to it, patterns I've noticed in your "
                      "routines, and the instructions of any skill in use (like a writing-style "
-                     "skill). "
-                     + ("Research also sends the web pages it read, and a"
-                        if "research" in detail["roles"] else "A")
-                     + " document search you upgrade sends the passages it answers from.")
+                     "skill). Research also sends the web pages it read, and a document search "
+                     "you upgrade sends the passages it answers from.")
     if not lines:
         lines.append(f"- A cloud model may answer some questions, at {host}. Check **Settings** "
                      "to see which.")
@@ -670,7 +668,9 @@ def privacy() -> str:
         out.append(f"- Some questions are answered by {nodes_phrase(nodes)}, your own Mac. What a "
                    "reply needs, including what you told me in Getting to know you, goes there "
                    "over your tailnet and nowhere else.")
-    online = "- Some things have to go online: web searches, weather and stocks."
+    # Research stays listed while it exists (/research still reads the web),
+    # though setup and "What can you do?" no longer teach it.
+    online = "- Some things have to go online: web searches, weather, stocks and research."
     if _google_connected():
         online += " I fetch your Google account's mail and calendar from Google."
     elif _google_sign_in():

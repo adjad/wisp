@@ -1722,6 +1722,7 @@ struct FirstRunSetupView: View {
                         Task { await setup.download(model, cancel: true) }
                     }
                     .buttonStyle(.plain).foregroundStyle(Theme.textMuted)
+                    .disabled(setup.busy != nil)
                     .help("Stops the download. Resume starts it again.")
                 }
                 .font(.system(size: 12)).foregroundStyle(Theme.textMuted).padding(.top, 6)

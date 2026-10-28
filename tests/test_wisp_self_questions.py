@@ -290,17 +290,14 @@ def test_howto_points_at_settings_google_only_when_it_can_be_used(monkeypatch):
     assert "If you connect Google" in wisp_about.privacy()
 
 
-def test_privacy_names_research_only_when_a_cloud_model_answers_it(monkeypatch):
-    # Research is retired for now: it is no longer listed among what goes
-    # online, and only a cloud model set for it is said to get its pages.
+def test_privacy_still_names_research_while_it_reads_the_web(monkeypatch):
+    # Research is no longer taught in setup or "What can you do?", but /research
+    # still fetches web pages, so the privacy answer keeps saying so.
     _patch_cloud(monkeypatch, "", "")
-    assert "research" not in wisp_about.privacy().lower()
+    assert "weather, stocks and research" in wisp_about.privacy()
     _patch_cloud(monkeypatch, "super", "openrouter.ai", roles=("coding",))
     text = wisp_about.privacy()
-    assert "research" not in text.lower() and "A document search you upgrade" in text
-    _patch_cloud(monkeypatch, "super", "openrouter.ai", roles=("research",))
-    assert "Research also sends the web pages it read" in wisp_about.privacy()
-
+    assert "Research also sends the web pages it read" in text and "A document search" not in text
 
 def test_howto_permissions_points_at_the_settings_permissions_buttons():
     text = wisp_about.howto("How do I give Wisp calendar access?")

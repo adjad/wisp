@@ -166,6 +166,9 @@ enum AgentSendChecks {
         check(AskStarters.prompts(unreadable: nil, personal: me).count == 4
               && !AskStarters.prompts(unreadable: nil, personal: me).contains { $0.contains("Maya") || $0.contains("Design") },
               "nothing personal about a source before access is known")
+        check(AskStarters.goalStarterAllowed(cloudInUse: false) && !AskStarters.goalStarterAllowed(cloudInUse: true)
+              && !AskStarters.goalStarterAllowed(cloudInUse: nil),
+              "the goal starter only while no cloud model gets Ask's prompts, and not while that's unknown")
         var texted = me
         texted.senderSource = "messages"
         check(AskStarters.prompts(unreadable: ["email"], personal: texted).contains("Anything from Maya Chen I need to answer?"),

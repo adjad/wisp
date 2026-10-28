@@ -66,9 +66,13 @@ enum Permissions {
     /// Access while the setup window still waits on it (its contactsRow).
     /// Status reads only: it never asks.
     @MainActor static func askFixes(_ kinds: [String]) -> [BriefDetail.Action] {
+        // The setup window's own rule (contactsWaits), so a Full Disk Access it
+        // calls "Not needed" never becomes Ask's Contacts fix.
         let contactsWait = kinds.contains("contacts_access")
             && CNContactStore.authorizationStatus(for: .contacts) == .notDetermined
-            && !FirstRunPermissions.contactsUseful(messagesReadable: FirstRunPermissions.messagesReadable())
+            && FirstRunPermissions.contactsWaits(
+                [.contacts: .notAsked, .fullDiskAccess: FirstRunPermissions.fullDiskAccessState()],
+                messagesReadable: FirstRunPermissions.messagesReadable())
         return askFixes(kinds.filter { !askFixDone($0) }, contactsWaitForFullDiskAccess: contactsWait)
     }
 
