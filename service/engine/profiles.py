@@ -40,7 +40,7 @@ FILE_VERSION = 1
 # again themselves. TurboQuant 6-bit KV was briefly Gemma's default and was withdrawn.
 # A model-level 20 W GPU cap was briefly in Gemma's profile (8bff39bc) and was
 # withdrawn: oMLX applies min(request, model), so it would cap every request,
-# intensive work too (which must run uncapped).
+# replies too (which must run uncapped).
 # Each group is retired on its own: all of its keys must still hold Wisp's values.
 RETIRED_KEY = "_retired"
 RETIRED = {

@@ -22,12 +22,78 @@ def clean_env(monkeypatch, tmp_path):
     monkeypatch.setattr(P, "_uncapped_calls", 0)
     from service import idle
     monkeypatch.setattr(idle, "_foreground_turns", 0)
+    # No other app on the GPU, unless a test says so (the real check is tested
+    # on its own below, against a fake ioreg).
+    monkeypatch.setattr(P, "_gpu_quiet", lambda sample: True)
+    monkeypatch.setattr(P, "_gpu_sample", None)
+
+
+_REAL_GPU_QUIET = P._gpu_quiet
 
 
 @pytest.fixture
 def away():
     """Nobody has touched the keyboard or mouse for longer than AWAY_AFTER_S."""
     P.refresh_away(P.AWAY_AFTER_S + 1)
+
+
+# --- other apps on the GPU --------------------------------------------------------
+
+_IOREG = '''+-o AGXDeviceUserClient  <class AGXDeviceUserClient, id 0x1>
+    {
+      "AppUsage" = ({"API"="Metal","accumulatedGPUTime"=%d},{"API"="Metal","accumulatedGPUTime"=5})
+      "IOUserClientCreator" = "pid 200, Game"
+    }
++-o AGXDeviceUserClient  <class AGXDeviceUserClient, id 0x2>
+    {
+      "AppUsage" = ()
+      "IOUserClientCreator" = "pid 300, Idle"
+    }
+'''
+
+
+def test_gpu_times_are_summed_per_process():
+    assert P._parse_gpu_times(_IOREG % 100) == {200: 105, 300: 0}
+    assert P._parse_gpu_times("") == {}
+
+
+def test_another_app_on_the_gpu_keeps_background_uncapped(monkeypatch):
+    clock = [1000.0]
+    gpu = {"ns": 0}
+    monkeypatch.setattr(P, "_gpu_quiet", _REAL_GPU_QUIET)
+    monkeypatch.setattr(P.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(P, "_other_gpu_times", lambda: {200: gpu["ns"]})
+
+    assert P.refresh_away(P.AWAY_AFTER_S + 1) is False       # first look: no baseline yet
+    clock[0] += 30
+    gpu["ns"] += int(30e9 * 0.5)                                # a game held half the GPU
+    assert P.refresh_away(P.AWAY_AFTER_S + 1) is False
+    clock[0] += 30
+    gpu["ns"] += int(30e9 * 0.01)                               # the game was closed
+    assert P.refresh_away(P.AWAY_AFTER_S + 1) is True
+    assert P.refresh_away(30) is False                          # the user came back: baseline reset
+    assert P._gpu_sample is None
+    monkeypatch.setattr(P, "_other_gpu_times", lambda: None)
+    clock[0] += 30
+    assert P.refresh_away(P.AWAY_AFTER_S + 1) is False          # an unreadable ioreg: uncapped
+    clock[0] += 30
+    assert P.refresh_away(P.AWAY_AFTER_S + 1) is False
+
+
+def test_wisp_its_engine_and_windowserver_dont_count(monkeypatch):
+    from service.inference import local_peer
+    paths = {1: "/Applications/oMLX.app/Contents/Resources/Python/cpython-3.11/bin/python3.11",
+             2: "/Applications/Wisp.app/Contents/MacOS/Wisp",
+             3: "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/Resources/WindowServer",
+             4: "/Applications/Blender.app/Contents/MacOS/Blender"}
+
+    def path(pid):
+        if pid not in paths:
+            raise ProcessLookupError(pid)
+        return paths[pid]
+
+    monkeypatch.setattr(local_peer, "process_path", path)
+    assert [pid for pid in (1, 2, 3, 4, 5) if not P._own(pid)] == [4, 5]
 
 
 # --- the switch -------------------------------------------------------------------
@@ -83,9 +149,20 @@ def test_away_needs_ten_idle_input_minutes_a_fresh_reading_and_no_turn(monkeypat
     monkeypatch.setattr(idle, "_foreground_turns", 1)
     assert P.away() is False                                   # a turn is running
     monkeypatch.setattr(idle, "_foreground_turns", 0)
-    read_at, value = P._away
-    P._away = (read_at - P._AWAY_STALE_S - 1, value)
+    mono, wall, value = P._away
+    P._away = (mono - P._AWAY_STALE_S - 1, wall, value)
     assert P.away() is False                                   # a stale reading
+
+
+def test_a_reading_from_before_sleep_is_stale_at_wake(away):
+    # time.monotonic() doesn't advance while the Mac sleeps, so only the wall
+    # clock shows the night: the wake backfill must not run capped on it.
+    assert P.away() is True
+    mono, wall, value = P._away
+    P._away = (mono, wall - 8 * 3600, value)
+    assert P.away() is False
+    P._away = (mono, wall + 3600, value)                       # wall clock set back
+    assert P.away() is False
 
 
 def test_the_scheduler_refreshes_away_off_the_event_loop():
