@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from service.inference import power_tier as P
-from service.inference.omlx_client import OMLXClient
+from service.inference.omlx_client import OMLXClient, _power_fields
 
 
 @pytest.fixture(autouse=True)
@@ -91,7 +91,7 @@ def test_a_remote_provider_never_gets_the_field():
     client = OMLXClient.__new__(OMLXClient)
     client.managed = False
     with P.power_tier(P.BACKGROUND):
-        assert client._power_fields() == {}
+        assert _power_fields(client) == {}
 
 
 def test_the_gist_call_runs_at_the_background_tier(monkeypatch):
@@ -226,6 +226,18 @@ def test_memory_capture_wraps_its_extraction_call_in_the_background_tier():
     source = inspect.getsource(MemoryWorker.process)
     tier = source.index("with power_tier(BACKGROUND):")
     assert tier < source.index("await client.chat(") < tier + 200
+
+
+def test_gemma_profile_seeds_a_20_w_chat_cap_above_both_tiers(tmp_path):
+    from service.engine import profiles
+    from service.setup.catalog import GEMMA_E4B_MTP
+
+    assert GEMMA_E4B_MTP.engine_profile["gpu_power_limit_w"] == 20
+    assert P.watts(P.BACKGROUND) < P.watts(P.INTENSIVE) < 20
+    settings, record = tmp_path / "model_settings.json", tmp_path / "seeded.json"
+    assert profiles.seed(settings, record, [GEMMA_E4B_MTP]) == [GEMMA_E4B_MTP.id]
+    entry = json.loads(settings.read_text())["models"][GEMMA_E4B_MTP.id]
+    assert entry["gpu_power_limit_w"] == 20
 
 
 def test_a_live_turn_carries_no_tier():
