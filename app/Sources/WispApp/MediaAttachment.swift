@@ -21,8 +21,12 @@ enum MediaAttachment {
     /// Re-encodes `data` as a JPEG no larger than `maxSide` on the longest side.
     /// Nil when the data is not an image the system can decode.
     static func downscaleJPEG(_ data: Data, maxSide: Int = maxImageSide, quality: Double = jpegQuality) -> Data? {
-        guard maxSide > 0, let source = CGImageSourceCreateWithData(data as CFData, nil),
-              CGImageSourceGetCount(source) > 0 else { return nil }
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return downscaleJPEG(source: source, maxSide: maxSide, quality: quality)
+    }
+
+    private static func downscaleJPEG(source: CGImageSource, maxSide: Int, quality: Double) -> Data? {
+        guard maxSide > 0, CGImageSourceGetCount(source) > 0 else { return nil }
         // Longest side of the original, so a small image is never upscaled.
         var longest = maxSide
         if let props = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
@@ -36,6 +40,20 @@ enum MediaAttachment {
         ]
         guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
         return jpegData(image, quality: quality)
+    }
+
+    /// Images over this size are refused before anything is read.
+    static let maxImageFileBytes = 50 * 1024 * 1024
+
+    static func tooLarge(bytes: Int) -> Bool { bytes > maxImageFileBytes }
+
+    static var tooLargeMessage: String { "That picture is too large for Wisp to read." }
+
+    /// Like the Data version, but ImageIO reads the file itself, so the whole
+    /// file never sits in memory as a Data.
+    static func downscaleJPEG(contentsOf url: URL, maxSide: Int = maxImageSide, quality: Double = jpegQuality) -> Data? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return downscaleJPEG(source: source, maxSide: maxSide, quality: quality)
     }
 
     /// Re-encodes a decoded image (a screen capture, a pasted bitmap) the same way.
