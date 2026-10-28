@@ -23,13 +23,15 @@ struct ChatRootView: View {
     @ObservedObject var navigation: WispWindowNavigation
     @State private var sidebarVisible = true
     @FocusState private var searchFocused: Bool
+    @AppStorage(Theme.textSizeKey) private var textSize: Double = 1.0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 0) {
             if sidebarVisible {
                 ChatSidebar(store: store, launchers: launchers, navigation: navigation, searchFocused: $searchFocused)
                     .frame(width: 268)
-                    .transition(.move(edge: .leading).combined(with: .opacity))
+                    .transition(reduceMotion ? .opacity : .move(edge: .leading).combined(with: .opacity))
                 Rectangle().fill(ChatTheme.line).frame(width: 1)
             }
             switch navigation.section {
@@ -50,12 +52,13 @@ struct ChatRootView: View {
                 Rectangle().fill(ChatTheme.line).frame(width: 1)
                 ChatInspector(store: store)
                     .frame(width: 300)
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
             }
         }
+        .id(textSize)   // a Text size change rebuilds the content once, as the notch does
         .background(ChatAurora())
-        .animation(.easeOut(duration: 0.22), value: sidebarVisible)
-        .animation(.easeOut(duration: 0.22), value: store.showInspector)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebarVisible)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: store.showInspector)
         .background(shortcuts)
         .task { await store.refreshWhenReady() }
     }
@@ -87,16 +90,16 @@ struct ChatSidebar: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
                 ChatOrb(size: 22)
-                Text("Wisp").font(.system(size: 15, weight: .medium)).foregroundStyle(ChatTheme.text)
+                Text("Wisp").font(.wisp(.reading, on: .window, weight: .medium)).foregroundStyle(ChatTheme.text)
             }
             .padding(.top, 44).padding(.horizontal, 20).padding(.bottom, 14)
 
             Button { store.newChat(); navigation.section = .chats } label: {
                 HStack(spacing: 9) {
-                    Image(systemName: "plus").font(.system(size: 12, weight: .semibold))
-                    Text("New chat").font(.system(size: 13.5, weight: .medium))
+                    Image(systemName: "plus").font(.wisp(size: 12, weight: .semibold))
+                    Text("New chat").font(.wisp(.body, on: .window, weight: .medium))
                     Spacer()
-                    Text("⌘N").font(.system(size: 11, design: .monospaced)).foregroundStyle(ChatTheme.text3)
+                    Text("⌘N").font(.wisp(.caption, on: .window, design: .monospaced)).foregroundStyle(ChatTheme.text3)
                 }
                 .foregroundStyle(ChatTheme.text)
                 .padding(.horizontal, 12).padding(.vertical, 8)
@@ -107,9 +110,9 @@ struct ChatSidebar: View {
             .padding(.horizontal, 12).padding(.bottom, 8)
 
             HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(ChatTheme.text3)
+                Image(systemName: "magnifyingglass").font(.wisp(size: 12)).foregroundStyle(ChatTheme.text3)
                 TextField("Search chats", text: $store.search)
-                    .textFieldStyle(.plain).font(.system(size: 13))
+                    .textFieldStyle(.plain).font(.wisp(.body, on: .window))
                     .foregroundStyle(ChatTheme.text)
                     .focused(searchFocused)
                 if !store.search.isEmpty {
@@ -137,12 +140,12 @@ struct ChatSidebar: View {
                 LazyVStack(alignment: .leading, spacing: 1, pinnedViews: []) {
                     if store.sections.isEmpty {
                         Text(store.search.isEmpty ? (store.reachable ? "No chats yet." : "Wisp isn't running.") : "No matches.")
-                            .font(.system(size: 12.5)).foregroundStyle(ChatTheme.text3)
+                            .font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text3)
                             .padding(.horizontal, 12).padding(.top, 14)
                     }
                     ForEach(store.sections, id: \.title) { section in
                         Text(section.title.uppercased())
-                            .font(.system(size: 10.5, weight: .medium)).tracking(1.0)
+                            .font(.wisp(.caption, on: .window, weight: .medium)).tracking(1.0)
                             .foregroundStyle(ChatTheme.text3)
                             .padding(.horizontal, 12).padding(.top, 14).padding(.bottom, 4)
                         ForEach(section.items) { conversation in
@@ -174,10 +177,10 @@ private struct ChatNavRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Image(systemName: symbol).font(.system(size: 13)).frame(width: 18)
-                Text(title).font(.system(size: 13.5))
+                Image(systemName: symbol).font(.wisp(size: 13)).frame(width: 18)
+                Text(title).font(.wisp(.body, on: .window))
                 Spacer()
-                if let hint { Text(hint).font(.system(size: 11, design: .monospaced)).foregroundStyle(ChatTheme.text3) }
+                if let hint { Text(hint).font(.wisp(.caption, on: .window, design: .monospaced)).foregroundStyle(ChatTheme.text3) }
             }
             .foregroundStyle(selected ? ChatTheme.text : ChatTheme.text2)
             .padding(.horizontal, 10).padding(.vertical, 6)
@@ -201,7 +204,7 @@ private struct ChatHistoryRow: View {
     var body: some View {
         Button(action: select) {
             Text(conversation.title)
-                .font(.system(size: 13.5)).lineLimit(1)
+                .font(.wisp(.body, on: .window)).lineLimit(1)
                 .foregroundStyle(isSelected ? ChatTheme.text : ChatTheme.text2)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 10).padding(.vertical, 6)
@@ -231,16 +234,24 @@ private struct ChatSidebarFooter: View {
                 HStack(spacing: 7) {
                     Circle().fill(store.reachable ? ChatTheme.ok : ChatTheme.amber).frame(width: 7, height: 7)
                     Text(store.reachable ? status : "Wisp isn't running")
-                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(ChatTheme.text2).lineLimit(1)
+                        .font(.wisp(.footnote, on: .window, design: .monospaced)).foregroundStyle(ChatTheme.text2).lineLimit(1)
                 }
-                Text(store.reachable ? "This Mac · all local" : "Start Wisp from the menu bar")
-                    .font(.system(size: 12, design: .monospaced)).foregroundStyle(ChatTheme.text3)
+                Text(store.reachable ? machineLine : "Start Wisp from the menu bar")
+                    .font(.wisp(.footnote, on: .window, design: .monospaced)).foregroundStyle(ChatTheme.text3)
             }
             Spacer()
             Button(action: launchers.settings) { Image(systemName: "slider.horizontal.3") }
                 .buttonStyle(ChatIconButtonStyle()).help("Settings").accessibilityLabel("Settings")
         }
         .padding(.horizontal, 16).padding(.vertical, 11)
+    }
+
+    private var machineLine: String {
+        switch store.cloudInUse {
+        case .some(false): return "This Mac · all local"
+        case .some(true): return "This Mac · cloud on"
+        case .none: return "This Mac"
+        }
     }
 
     private var status: String {
@@ -254,7 +265,7 @@ struct ChatIconButtonStyle: ButtonStyle {
     var active = false
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 13))
+            .font(.wisp(size: 13))
             .foregroundStyle(active ? ChatTheme.teal : ChatTheme.text2)
             .frame(width: 30, height: 30)
             .background(RoundedRectangle(cornerRadius: 8).fill(active ? ChatTheme.tealWash : (configuration.isPressed ? ChatTheme.glass2 : .clear)))
@@ -289,7 +300,11 @@ struct ChatMainColumn: View {
                 .buttonStyle(ChatIconButtonStyle()).help("Show or hide the sidebar (⌘B)").accessibilityLabel("Toggle sidebar")
             ChatTitleLabel(store: store)
             Spacer()
-            ChatPill(text: "Local", tinted: true)
+            if store.cloudInUse == false {
+                ChatPill(text: "Local", tinted: true).help("Everything runs on this Mac")
+            } else if store.cloudInUse == true {
+                ChatPill(text: "Local + cloud").help("Some answers can go to your cloud provider (Settings › Models)")
+            }
             Button { store.showInspector.toggle() } label: { Image(systemName: "sidebar.right") }
                 .buttonStyle(ChatIconButtonStyle(active: store.showInspector))
                 .help("Details about the answer (⌘I)").accessibilityLabel("Toggle details")
@@ -306,14 +321,14 @@ private struct ChatTitleLabel: View {
         if let conversation = store.selected {
             TitleText(conversation: conversation)
         } else {
-            Text("New chat").font(.system(size: 14.5, weight: .medium)).foregroundStyle(ChatTheme.text3)
+            Text("New chat").font(.wisp(.callout, on: .window, weight: .medium)).foregroundStyle(ChatTheme.text3)
         }
     }
     private struct TitleText: View {
         @ObservedObject var conversation: ChatConversation
         var body: some View {
             Text(conversation.isEmpty ? "New chat" : conversation.title)
-                .font(.system(size: 14.5, weight: .medium))
+                .font(.wisp(.callout, on: .window, weight: .medium))
                 .foregroundStyle(conversation.isEmpty ? ChatTheme.text3 : ChatTheme.text)
                 .lineLimit(1)
         }
@@ -325,7 +340,7 @@ struct ChatPill: View {
     var tinted = false
     var body: some View {
         Text(text)
-            .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+            .font(.wisp(.footnote, on: .window, weight: .medium, design: .monospaced))
             .foregroundStyle(tinted ? ChatTheme.teal : ChatTheme.text2)
             .padding(.horizontal, 10).padding(.vertical, 4)
             .background(Capsule().fill(tinted ? ChatTheme.tealWash : ChatTheme.glass))
@@ -353,13 +368,13 @@ struct ChatEmptyState: View {
             Spacer(minLength: 24)
             ChatOrb(size: 76)
             Text("What are we working on?")
-                .font(.system(size: 34, weight: .regular, design: .serif)).foregroundStyle(ChatTheme.text)
+                .font(.wisp(size: 34, weight: .regular, design: .serif)).foregroundStyle(ChatTheme.text)
             Text("Wisp's AI runs on this Mac. Web lookups, and any cloud model you turn on, go online.")
-                .font(.system(size: 14)).foregroundStyle(ChatTheme.text2).multilineTextAlignment(.center)
+                .font(.wisp(.callout, on: .window)).foregroundStyle(ChatTheme.text2).multilineTextAlignment(.center)
             ChatFlowLayout(spacing: 8) {
                 ForEach(suggestions, id: \.self) { s in
                     Button { ask(s) } label: {
-                        Text(s).font(.system(size: 13.5)).foregroundStyle(ChatTheme.text2)
+                        Text(s).font(.wisp(.body, on: .window)).foregroundStyle(ChatTheme.text2)
                             .padding(.horizontal, 14).padding(.vertical, 7)
                             .background(Capsule().fill(ChatTheme.glass))
                             .overlay(Capsule().stroke(ChatTheme.line2, lineWidth: 1))
@@ -499,7 +514,7 @@ struct ChatThread: View {
         ChatFlowLayout(spacing: 8) {
             ForEach(remainingStarters, id: \.self) { s in
                 Button { store.submit(s) } label: {
-                    Text(s).font(.system(size: 12.5)).foregroundStyle(ChatTheme.text2)
+                    Text(s).font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text2)
                         .padding(.horizontal, 12).padding(.vertical, 5)
                         .background(Capsule().fill(ChatTheme.glass))
                         .overlay(Capsule().stroke(ChatTheme.line2, lineWidth: 1))
@@ -562,10 +577,10 @@ struct ChatMessageRow: View {
             Spacer(minLength: 80)
             VStack(alignment: .trailing, spacing: 4) {
                 if let name = message.attachmentName {
-                    Label(name, systemImage: "photo").font(.system(size: 12, design: .monospaced)).foregroundStyle(ChatTheme.text2)
+                    Label(name, systemImage: "photo").font(.wisp(.footnote, on: .window, design: .monospaced)).foregroundStyle(ChatTheme.text2)
                 }
                 Text(message.text)
-                    .font(.system(size: 15)).foregroundStyle(ChatTheme.text)
+                    .font(.wisp(.reading, on: .window)).foregroundStyle(ChatTheme.text)
                     .textSelection(.enabled)
             }
             .padding(.horizontal, 15).padding(.vertical, 9)
@@ -585,7 +600,7 @@ struct ChatMessageRow: View {
                 if !message.reasoning.isEmpty { ChatReasoningView(text: message.reasoning) }
                 if !message.text.isEmpty {
                     if message.isError {
-                        Text(message.text).font(.system(size: 14.5)).foregroundStyle(ChatTheme.danger)
+                        Text(message.text).font(.wisp(.callout, on: .window)).foregroundStyle(ChatTheme.danger)
                             .textSelection(.enabled)
                     } else {
                         MarkdownView(text: message.text)
@@ -604,7 +619,7 @@ struct ChatMessageRow: View {
                     ChatDraftCard(message: message, store: store, conversation: conversation)
                 }
                 if message.phase == .streaming && message.status.isEmpty == false {
-                    Text(message.status).font(.system(size: 12)).foregroundStyle(ChatTheme.text3)
+                    Text(message.status).font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text3)
                 }
                 if message.phase == .done || message.phase == .failed, let meta = message.meta, !meta.model.isEmpty {
                     ChatMetaLine(meta: meta, selected: store.inspectedMessage == message.id) {
@@ -623,7 +638,7 @@ private struct ChatThinkingRow: View {
     var body: some View {
         HStack(spacing: 8) {
             ProgressView().controlSize(.small)
-            Text(label).font(.system(size: 13.5)).foregroundStyle(ChatTheme.text3)
+            Text(label).font(.wisp(.body, on: .window)).foregroundStyle(ChatTheme.text3)
         }
     }
 }
@@ -650,10 +665,10 @@ private struct ChatCorpusEvaluationCard: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 7) {
                 Image(systemName: evaluation.toolPathMatches == true ? "checkmark.circle" : "list.bullet.clipboard")
-                Text(heading).font(.system(size: 12.5, weight: .medium))
+                Text(heading).font(.wisp(.footnote, on: .window, weight: .medium))
                 Spacer()
                 Text("\(evaluation.split) · \(evaluation.category)")
-                    .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(ChatTheme.text3)
+                    .font(.wisp(.caption, on: .window, design: .monospaced)).foregroundStyle(ChatTheme.text3)
             }
             .foregroundStyle(headingColor)
 
@@ -661,32 +676,32 @@ private struct ChatCorpusEvaluationCard: View {
                 Text(evaluation.usesLiveData ? "Relevant reads" : "Expected").foregroundStyle(ChatTheme.text3)
                 Text(toolList(evaluation.expectedTools)).foregroundStyle(ChatTheme.text2)
             }
-            .font(.system(size: 11.5, design: .monospaced))
+            .font(.wisp(.footnote, on: .window, design: .monospaced))
             if evaluation.completed || evaluation.stopped {
                 HStack(alignment: .top, spacing: 8) {
                     Text("Observed").foregroundStyle(ChatTheme.text3)
                     Text(toolList(evaluation.observedTools)).foregroundStyle(ChatTheme.text2)
                 }
-                .font(.system(size: 11.5, design: .monospaced))
+                .font(.wisp(.footnote, on: .window, design: .monospaced))
             }
 
             if evaluation.usesLiveData {
                 Text("Model: \(evaluation.modelName.isEmpty ? "awaiting inference" : evaluation.modelName) · \(evaluation.modelCalls) completed call\(evaluation.modelCalls == 1 ? "" : "s") / \(evaluation.modelAttempts) started")
-                    .font(.system(size: 11.5, design: .monospaced)).foregroundStyle(ChatTheme.text2)
+                    .font(.wisp(.footnote, on: .window, design: .monospaced)).foregroundStyle(ChatTheme.text2)
                 DisclosureGroup("Source results (\(tools.count))") {
                     ForEach(tools) { tool in
                         VStack(alignment: .leading, spacing: 4) {
-                            Text("\(tool.name) · \(tool.decision)").font(.system(size: 11.5, weight: .medium))
+                            Text("\(tool.name) · \(tool.decision)").font(.wisp(.footnote, on: .window, weight: .medium))
                             if let evidence = tool.corpusSourceEvidence {
                                 Text(evidence.text.isEmpty ? "No source text retained." : evidence.text)
-                                    .font(.system(size: 11.5)).textSelection(.enabled)
+                                    .font(.wisp(.footnote, on: .window)).textSelection(.enabled)
                                 if evidence.isTruncated {
                                     Text("Source evidence truncated for display: \(evidence.retainedByteCount) of \(evidence.sourceByteCount) UTF-8 bytes retained. The answer may refer to omitted text; review with this coverage limit.")
-                                        .font(.system(size: 10.5)).foregroundStyle(ChatTheme.amber)
+                                        .font(.wisp(.caption, on: .window)).foregroundStyle(ChatTheme.amber)
                                 }
                             } else {
                                 Text(tool.finished ? "No corpus source evidence retained for this result." : "Awaiting source result")
-                                    .font(.system(size: 11.5)).foregroundStyle(ChatTheme.text3)
+                                    .font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text3)
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 5)
                     }
@@ -695,14 +710,14 @@ private struct ChatCorpusEvaluationCard: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Behavior rubric · review the response")
-                    .font(.system(size: 11.5, weight: .medium)).foregroundStyle(ChatTheme.text2)
+                    .font(.wisp(.footnote, on: .window, weight: .medium)).foregroundStyle(ChatTheme.text2)
                 ForEach(Array(evaluation.behavior.indices), id: \.self) { index in
-                    Text("• \(evaluation.behavior[index])").font(.system(size: 11.5)).foregroundStyle(ChatTheme.text3)
+                    Text("• \(evaluation.behavior[index])").font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             Text(evaluation.usesLiveData ? "Real source reads · writes and sends blocked · review answers manually" : "Tool plan only · no action was executed")
-                .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(ChatTheme.text3)
+                .font(.wisp(.caption, on: .window, design: .monospaced)).foregroundStyle(ChatTheme.text3)
         }
         .padding(11)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -729,8 +744,8 @@ private struct ChatMetaLine: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 6) {
-                Text(text).font(.system(size: 11.5, weight: .medium, design: .monospaced))
-                Image(systemName: "info.circle").font(.system(size: 10.5))
+                Text(text).font(.wisp(.footnote, on: .window, weight: .medium, design: .monospaced))
+                Image(systemName: "info.circle").font(.wisp(size: 10.5))
             }
             .foregroundStyle(selected ? ChatTheme.teal : ChatTheme.text3)
         }
@@ -760,13 +775,13 @@ struct ChatTraceView: View {
         VStack(spacing: 0) {
             Button { expanded.toggle() } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "sparkle").font(.system(size: 12))
-                    Text(title).font(.system(size: 13))
+                    Image(systemName: "sparkle").font(.wisp(size: 12))
+                    Text(title).font(.wisp(.body, on: .window))
                     Spacer()
                     if let d = message.meta?.duration, !message.isLive {
-                        Text(String(format: "%.1f s", d)).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(ChatTheme.text3)
+                        Text(String(format: "%.1f s", d)).font(.wisp(.footnote, on: .window, design: .monospaced)).foregroundStyle(ChatTheme.text3)
                     }
-                    Image(systemName: "chevron.right").font(.system(size: 10, weight: .semibold))
+                    Image(systemName: "chevron.right").font(.wisp(size: 10, weight: .semibold))
                         .rotationEffect(.degrees(isOpen ? 90 : 0)).foregroundStyle(ChatTheme.text3)
                 }
                 .foregroundStyle(ChatTheme.text2)
@@ -778,10 +793,10 @@ struct ChatTraceView: View {
                 ForEach(message.tools) { tool in
                     Rectangle().fill(ChatTheme.line).frame(height: 1)
                     HStack(spacing: 10) {
-                        Image(systemName: tool.kind.symbol).font(.system(size: 12)).foregroundStyle(ChatTheme.blue).frame(width: 16)
-                        Text(tool.title).font(.system(size: 13)).foregroundStyle(ChatTheme.text2).lineLimit(1)
+                        Image(systemName: tool.kind.symbol).font(.wisp(size: 12)).foregroundStyle(ChatTheme.blue).frame(width: 16)
+                        Text(tool.title).font(.wisp(.body, on: .window)).foregroundStyle(ChatTheme.text2).lineLimit(1)
                         Spacer(minLength: 8)
-                        Text(tool.detail).font(.system(size: 11.5, design: .monospaced))
+                        Text(tool.detail).font(.wisp(.footnote, on: .window, design: .monospaced))
                             .foregroundStyle(tool.decision == "deny" ? ChatTheme.danger : ChatTheme.text3).lineLimit(1)
                     }
                     .padding(.horizontal, 12).padding(.vertical, 8)
@@ -800,12 +815,12 @@ private struct ChatReasoningView: View {
     var body: some View {
         DisclosureGroup(isExpanded: $open) {
             ScrollView {
-                Text(text).font(.system(size: 12.5)).foregroundStyle(ChatTheme.text3)
+                Text(text).font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text3)
                     .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(maxHeight: 180)
         } label: {
-            Text("Show reasoning").font(.system(size: 12.5)).foregroundStyle(ChatTheme.text2)
+            Text("Show reasoning").font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text2)
         }
         .tint(ChatTheme.text2)
     }
@@ -821,7 +836,7 @@ struct ChatApprovalCard: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: header.symbol)
-                Text(header.text).font(.system(size: 13, weight: .medium)).fixedSize(horizontal: false, vertical: true)
+                Text(header.text).font(.wisp(.body, on: .window, weight: .medium)).fixedSize(horizontal: false, vertical: true)
                 Spacer(minLength: 0)
             }
             .foregroundStyle(header.color)
@@ -829,7 +844,7 @@ struct ChatApprovalCard: View {
             Rectangle().fill(border).frame(height: 1)
             if !approval.preview.isEmpty {
                 ScrollView {
-                    Text(approval.preview).font(.system(size: 12, design: .monospaced)).foregroundStyle(ChatTheme.text)
+                    Text(approval.preview).font(.wisp(.footnote, on: .window, design: .monospaced)).foregroundStyle(ChatTheme.text)
                         .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(10)
                 }
                 .frame(maxHeight: 220)
@@ -839,7 +854,7 @@ struct ChatApprovalCard: View {
             if approval.state == .pending {
                 if approval.grantable && !approval.scopeHint.isEmpty {
                     Text("Always allow applies to \(approval.tool) on \(approval.scopeHint)")
-                        .font(.system(size: 11.5)).foregroundStyle(ChatTheme.text2).padding(.horizontal, 14).padding(.top, approval.preview.isEmpty ? 12 : 0)
+                        .font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text2).padding(.horizontal, 14).padding(.top, approval.preview.isEmpty ? 12 : 0)
                 }
                 HStack(spacing: 8) {
                     Spacer()
@@ -873,7 +888,7 @@ struct ChatCardButton: View {
     let action: () -> Void
     var body: some View {
         Button(action: action) {
-            Text(title).font(.system(size: 13, weight: primary ? .semibold : .medium))
+            Text(title).font(.wisp(.body, on: .window, weight: primary ? .semibold : .medium))
                 .foregroundStyle(primary ? Color(nsColor: ChatTheme.amberButtonText) : ChatTheme.text2)
                 .padding(.horizontal, 14).padding(.vertical, 6)
                 .background(Capsule().fill(primary ? ChatTheme.amberButton : ChatTheme.glass))
@@ -896,9 +911,9 @@ struct ChatDraftCard: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: draft.sent ? "checkmark.circle" : "bubble.left")
-                Text(draft.sent ? "Message sent" : "Message draft, not sent yet").font(.system(size: 13, weight: .medium))
+                Text(draft.sent ? "Message sent" : "Message draft, not sent yet").font(.wisp(.body, on: .window, weight: .medium))
                 Spacer()
-                Text("To: \(draft.to)").font(.system(size: 11.5, design: .monospaced)).foregroundStyle(ChatTheme.text2)
+                Text("To: \(draft.to)").font(.wisp(.footnote, on: .window, design: .monospaced)).foregroundStyle(ChatTheme.text2)
             }
             .foregroundStyle(draft.sent ? ChatTheme.ok : ChatTheme.amber)
             .padding(.horizontal, 14).padding(.vertical, 10)
@@ -907,17 +922,17 @@ struct ChatDraftCard: View {
                 if draft.isEditing {
                     TextEditor(text: Binding(get: { draft.text },
                                              set: { new in store.updateDraft(conversation, messageID: message.id) { $0.text = new } }))
-                        .font(.system(size: 14)).foregroundStyle(ChatTheme.text)
+                        .font(.wisp(.callout, on: .window)).foregroundStyle(ChatTheme.text)
                         .scrollContentBackground(.hidden)
                         .frame(minHeight: 96, maxHeight: 220)
                 } else {
-                    Text(draft.text).font(.system(size: 14)).foregroundStyle(ChatTheme.text)
+                    Text(draft.text).font(.wisp(.callout, on: .window)).foregroundStyle(ChatTheme.text)
                         .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .padding(14)
             if !draft.status.isEmpty {
-                Text(draft.status).font(.system(size: 11.5))
+                Text(draft.status).font(.wisp(.footnote, on: .window))
                     .foregroundStyle(draft.sent || draft.isSending ? ChatTheme.text2 : ChatTheme.danger)
                     .padding(.horizontal, 14).padding(.bottom, 10)
             }
@@ -968,9 +983,9 @@ struct ChatComposer: View {
             VStack(alignment: .leading, spacing: 8) {
                 if let image {
                     HStack(spacing: 8) {
-                        Image(systemName: "photo").font(.system(size: 12))
-                        Text(image.name).font(.system(size: 12, design: .monospaced)).lineLimit(1)
-                        Button { self.image = nil; attachNote = "" } label: { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)) }
+                        Image(systemName: "photo").font(.wisp(size: 12))
+                        Text(image.name).font(.wisp(.footnote, on: .window, design: .monospaced)).lineLimit(1)
+                        Button { self.image = nil; attachNote = "" } label: { Image(systemName: "xmark").font(.wisp(size: 10, weight: .semibold)) }
                             .buttonStyle(.plain).accessibilityLabel("Remove image")
                     }
                     .foregroundStyle(ChatTheme.text2)
@@ -980,14 +995,16 @@ struct ChatComposer: View {
                 }
                 TextField("Message Wisp", text: $text, axis: .vertical)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 15))
+                    .font(.wisp(.reading, on: .window))
                     .foregroundStyle(ChatTheme.text)
                     .lineLimit(1...8)
                     .focused($focused)
                     .onSubmit(send)
                 HStack(spacing: 6) {
-                    Button(action: pickImage) { Image(systemName: "paperclip") }
-                        .buttonStyle(ChatIconButtonStyle()).help("Attach an image").accessibilityLabel("Attach an image")
+                    if store.debugMode {
+                        Button(action: pickImage) { Image(systemName: "paperclip") }
+                            .buttonStyle(ChatIconButtonStyle()).help("Attach an image (Debug Mode: Wisp can't look at images yet)").accessibilityLabel("Attach an image")
+                    }
                     Menu {
                         Button { store.setFullAccess(false) } label: { Label("Ask before acting", systemImage: store.fullAccessKnown && !store.fullAccess ? "checkmark" : "") }
                         Button { store.setFullAccess(true) } label: { Label("Full access", systemImage: store.fullAccessKnown && store.fullAccess ? "checkmark" : "") }
@@ -1000,14 +1017,14 @@ struct ChatComposer: View {
                     Spacer()
                     if busy {
                         Button(action: stop) {
-                            Image(systemName: "stop.fill").font(.system(size: 11))
+                            Image(systemName: "stop.fill").font(.wisp(size: 11))
                                 .foregroundStyle(ChatTheme.sendIcon).frame(width: 32, height: 32)
                                 .background(Circle().fill(ChatTheme.sendFill))
                         }
                         .buttonStyle(.plain).help("Stop").accessibilityLabel("Stop")
                     } else {
                         Button(action: send) {
-                            Image(systemName: "arrow.up").font(.system(size: 13, weight: .bold))
+                            Image(systemName: "arrow.up").font(.wisp(size: 13, weight: .bold))
                                 .foregroundStyle(canSend ? ChatTheme.sendIcon : ChatTheme.text3)
                                 .frame(width: 32, height: 32)
                                 .background(Circle().fill(canSend ? ChatTheme.sendFill : ChatTheme.glass2))
@@ -1020,8 +1037,8 @@ struct ChatComposer: View {
             .background(RoundedRectangle(cornerRadius: 18).fill(ChatTheme.field))
             .overlay(RoundedRectangle(cornerRadius: 18).stroke(focused ? ChatTheme.tealLine : ChatTheme.line2, lineWidth: 1))
             .frame(maxWidth: 740)
-            Text(attachNote.isEmpty ? "Wisp runs on this Mac and can be wrong. Check anything important." : attachNote)
-                .font(.system(size: 11)).foregroundStyle(attachNote.isEmpty ? ChatTheme.text3 : ChatTheme.danger)
+            Text(attachNote.isEmpty ? disclaimer : attachNote)
+                .font(.wisp(.caption, on: .window)).foregroundStyle(attachNote.isEmpty ? ChatTheme.text3 : ChatTheme.danger)
         }
         .padding(.horizontal, 24).padding(.bottom, 14).padding(.top, 4)
         .frame(maxWidth: .infinity)
@@ -1037,6 +1054,12 @@ struct ChatComposer: View {
     }
 
     private static let maxImageBytes = 10_000_000
+
+    private var disclaimer: String {
+        store.cloudInUse == true
+            ? "Wisp can use your cloud provider and can be wrong. Check anything important."
+            : "Wisp runs on this Mac and can be wrong. Check anything important."
+    }
 
     private func send() {
         guard canSend else { return }
@@ -1058,10 +1081,15 @@ struct ChatComposer: View {
             attachNote = "That image is over 10 MB. Choose a smaller one."
             return
         }
-        guard let data = try? Data(contentsOf: url) else { return }
         attachNote = ""
         let ext = url.pathExtension.lowercased()
-        image = (url.lastPathComponent, "data:image/\(ext);base64,\(data.base64EncodedString())")
+        let name = url.lastPathComponent
+        // Read and encode off the main actor; a 10 MB file would hitch the window.
+        Task {
+            let encoded = await Task.detached { (try? Data(contentsOf: url))?.base64EncodedString() }.value
+            guard let encoded else { return }
+            image = (name, "data:image/\(ext);base64,\(encoded)")
+        }
     }
 }
 
@@ -1074,7 +1102,7 @@ struct ChatInspector: View {
         if let conversation = store.selected {
             InspectorBody(store: store, conversation: conversation)
         } else {
-            InspectorShell { Text("Send a message to see how Wisp answered it.").font(.system(size: 13)).foregroundStyle(ChatTheme.text3) }
+            InspectorShell { Text("Send a message to see how Wisp answered it.").font(.wisp(.body, on: .window)).foregroundStyle(ChatTheme.text3) }
         }
     }
 
@@ -1100,27 +1128,27 @@ struct ChatInspector: View {
                     }
                     if !meta.routeReason.isEmpty {
                         section("Why this route") {
-                            Text(meta.routeReason).font(.system(size: 12.5)).foregroundStyle(ChatTheme.text2)
+                            Text(meta.routeReason).font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text2)
                         }
                     }
                     section("Tools used") {
                         if message.tools.isEmpty {
-                            Text("None. Answered from the model alone.").font(.system(size: 12.5)).foregroundStyle(ChatTheme.text3)
+                            Text("None. Answered from the model alone.").font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text3)
                         } else {
                             ForEach(message.tools) { tool in
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack {
-                                        Image(systemName: tool.kind.symbol).font(.system(size: 11)).foregroundStyle(ChatTheme.blue)
-                                        Text(tool.name).font(.system(size: 12, design: .monospaced)).foregroundStyle(ChatTheme.text2).lineLimit(1)
+                                        Image(systemName: tool.kind.symbol).font(.wisp(size: 11)).foregroundStyle(ChatTheme.blue)
+                                        Text(tool.name).font(.wisp(.footnote, on: .window, design: .monospaced)).foregroundStyle(ChatTheme.text2).lineLimit(1)
                                     }
-                                    Text(tool.detail).font(.system(size: 11.5)).foregroundStyle(ChatTheme.text3).lineLimit(2)
+                                    Text(tool.detail).font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text3).lineLimit(2)
                                 }
                             }
                         }
                     }
                 } else {
                     Text("Send a message to see how Wisp answered it: which model, which tools, and how long it took.")
-                        .font(.system(size: 13)).foregroundStyle(ChatTheme.text3)
+                        .font(.wisp(.body, on: .window)).foregroundStyle(ChatTheme.text3)
                 }
             }
         }
@@ -1138,16 +1166,16 @@ struct ChatInspector: View {
 
         private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
             VStack(alignment: .leading, spacing: 8) {
-                Text(title.uppercased()).font(.system(size: 10.5, weight: .medium)).tracking(1.0).foregroundStyle(ChatTheme.text3)
+                Text(title.uppercased()).font(.wisp(.caption, on: .window, weight: .medium)).tracking(1.0).foregroundStyle(ChatTheme.text3)
                 content()
             }
         }
 
         private func row(_ key: String, _ value: String, color: Color = ChatTheme.text2) -> some View {
             HStack(alignment: .firstTextBaseline) {
-                Text(key).font(.system(size: 13)).foregroundStyle(ChatTheme.text3)
+                Text(key).font(.wisp(.body, on: .window)).foregroundStyle(ChatTheme.text3)
                 Spacer(minLength: 12)
-                Text(value).font(.system(size: 12, design: .monospaced)).foregroundStyle(color).multilineTextAlignment(.trailing)
+                Text(value).font(.wisp(.footnote, on: .window, design: .monospaced)).foregroundStyle(color).multilineTextAlignment(.trailing)
             }
         }
     }

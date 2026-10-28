@@ -27,6 +27,8 @@ protocol ChatBackend: AnyObject {
     func fullAccess() async -> Bool?
     /// The flag the service confirmed after the change; nil when it can't be confirmed.
     func setFullAccess(_ on: Bool) async -> Bool?
+    /// True when this launch may send turns to a cloud provider; nil when unknown.
+    func cloudInUse() async -> Bool?
 }
 
 extension ChatBackend {
@@ -43,6 +45,7 @@ extension ChatBackend {
     }
     func corpusPromptsResults(limit: Int) async throws -> [CorpusPromptsResult] { [] }
     func corpusPromptsExport() async throws -> (markdown: String, csv: String)? { nil }
+    func cloudInUse() async -> Bool? { nil }
 }
 
 /// Where an export landed.
@@ -112,6 +115,9 @@ final class ChatStore: ObservableObject {
     // False while Full access can't be confirmed: the composer then says so
     // rather than showing the last value, or "off", as if it were current.
     @Published private(set) var fullAccessKnown = false
+    /// Whether answers may go to a cloud provider: nil until the service says,
+    /// and the window claims "all local" only on a confirmed false.
+    @Published private(set) var cloudInUse: Bool?
     @Published private(set) var loadingList = false
 
     let backend: ChatBackend
@@ -123,6 +129,9 @@ final class ChatStore: ObservableObject {
         self.backend = backend
         self.debug = debug
     }
+
+    /// Debug Mode, read when a view is built (it gates debug-only tools such as image attach).
+    var debugMode: Bool { debug() }
 
     // MARK: - List
 
@@ -162,12 +171,15 @@ final class ChatStore: ObservableObject {
         loadingList = true
         defer { loadingList = false }
         async let access = backend.fullAccess()
+        async let cloud = backend.cloudInUse()
         guard let rows = await backend.listChats() else {
             reachable = false
+            cloudInUse = nil
             return
         }
         reachable = true
         applyFullAccess(await access)
+        cloudInUse = await cloud
         var byId = Dictionary(conversations.compactMap { c in c.sessionId.isEmpty ? nil : (c.sessionId, c) },
                               uniquingKeysWith: { first, _ in first })
         for row in rows where !deletedSessionIds.contains(row.id) {

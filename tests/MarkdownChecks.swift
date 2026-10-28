@@ -134,6 +134,15 @@ struct MarkdownChecks {
         check(blocks[0].listItems.map(\.text) == ["first", "second"], "list text stays compatible")
         check(blocks[1].codeLang == "swift" && blocks[1].body == "let pipe = \"|\"", "fenced code containing a pipe stays unchanged")
         check(blocks[2].body == "x²\nnext", "math superscripts and HTML line breaks stay compatible")
+
+        // The render path remembers a reply's blocks; it must match a fresh parse,
+        // including for a reply that keeps growing.
+        let reply = "Intro\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n- item"
+        let view = MarkdownView(text: reply)
+        check(kindNames(view.cachedBlocks()) == kindNames(view.blocks()), "cached blocks match a fresh parse")
+        check(kindNames(view.cachedBlocks()) == kindNames(view.blocks()), "a cache hit matches a fresh parse")
+        let grown = MarkdownView(text: reply + "\n\n```\ncode\n```")
+        check(kindNames(grown.cachedBlocks()) == kindNames(grown.blocks()), "grown text is parsed, not served stale")
     }
 
     static func main() {

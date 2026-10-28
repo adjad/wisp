@@ -90,6 +90,8 @@ final class FixtureChatBackend: ChatBackend {
     }
     func sendDraft(to: String, text: String) async -> (ok: Bool, result: String) { (true, "Sent") }
     func fullAccess() async -> Bool? { false }
+    // WISP_CHAT_QA_CLOUD=1 renders the window as a launch that can use a cloud provider.
+    func cloudInUse() async -> Bool? { ProcessInfo.processInfo.environment["WISP_CHAT_QA_CLOUD"] == "1" }
     func setFullAccess(_ on: Bool) async -> Bool? { on }
 }
 
