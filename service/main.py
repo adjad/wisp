@@ -1741,16 +1741,19 @@ async def agent(body: dict[str, Any]):
             yield _sse({"type": "text", "text": KEY_HANDOFF_NOTICE})
             yield _sse({"type": "done"})
         return StreamingResponse(_handoff_stream(), media_type="text/event-stream")
-    # An `image` or `video` in the body starts a VISION turn (service/vision.py): one
-    # dedicated model call, never the agent loop. The media is used for this request
+    # An `image` or `video` in the body starts a VISION turn (service/vision.py), and a
+    # `document` a document turn (service/documents.py): one dedicated model call,
+    # never the agent loop. The media is used for this request
     # only: it is not stored, logged, remembered or sent anywhere. The turn is saved
     # as the prompt text plus a short marker.
     vision_image = body.get("image") if isinstance(body.get("image"), str) and body.get("image") else None
     vision_video = body.get("video") if isinstance(body.get("video"), dict) else None
-    vision_media = vision_image is not None or vision_video is not None
+    vision_document = body.get("document") if isinstance(body.get("document"), dict) else None
+    vision_media = vision_image is not None or vision_video is not None or vision_document is not None
     stored_prompt = prompt
     if vision_media:
-        marker = ("[video clip attached]" if vision_video is not None
+        marker = ("[document attached]" if vision_document is not None
+                  else "[video clip attached]" if vision_video is not None
                   else "[screen capture attached]" if body.get("image_source") == "screen"
                   else "[image attached]")
         stored_prompt = f"{prompt}\n{marker}" if prompt.strip() else marker
@@ -1990,10 +1993,15 @@ async def agent(body: dict[str, Any]):
 
         try:
             if vision_media:
-                from service import vision
-                vision_answer = await vision.run_turn(
-                    prompt, image=None if vision_video is not None else vision_image,
-                    video=vision_video, emit=emit, approver=approver, test_mode=test_mode)
+                if vision_document is not None:
+                    from service import documents
+                    vision_answer = await documents.run_turn(
+                        prompt, document=vision_document, emit=emit, approver=approver, test_mode=test_mode)
+                else:
+                    from service import vision
+                    vision_answer = await vision.run_turn(
+                        prompt, image=None if vision_video is not None else vision_image,
+                        video=vision_video, emit=emit, approver=approver, test_mode=test_mode)
                 await emit({"type": "done"})
                 if not test_mode:
                     persist_user_turn()
