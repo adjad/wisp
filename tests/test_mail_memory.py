@@ -41,6 +41,9 @@ def _sent(d: str) -> datetime:
     ("2026-12-15", "Jan 5", "2027-01-05"),
     ("2026-05-20", "no later than July 2, 2027", "2027-07-02"),
     ("2026-09-01", "in December", "2026-12-31"),
+    ("2026-09-01", "Sept 28", "2026-09-28"),             # the resolver alone reads no "Sept"
+    ("2026-09-01", "by Sept. 28th", "2026-09-28"),
+    ("2026-08-01", "Sept 2026", "2026-09-30"),
 ])
 def test_resolve_due(sent, phrase, want):
     assert resolve_due(phrase, _sent(sent), TZ, month_first_order=True).day.isoformat() == want
@@ -52,12 +55,30 @@ def test_two_dates_or_none_never_resolve(phrase):
     assert resolve_due(phrase, _sent("2026-09-01"), TZ, month_first_order=True).day is None
 
 
-@pytest.mark.parametrize("phrase", ["Pick up at 28", "Doors open 28:00", "November 19 at 25:30"])
+@pytest.mark.parametrize("phrase", ["Pick up at 28", "Doors open 28:00", "at 25:30"])
 def test_an_impossible_clock_is_no_due_date_not_a_crash(phrase):
     # A real model reply on real mail (2026-10-27) crashed tick() here and left that
     # email at the head of the queue for good.
     got = resolve_due(phrase, _sent("2026-09-01"), TZ, month_first_order=True)
     assert got.day is None and got.reason == "invalid_time"
+
+
+@pytest.mark.parametrize("phrase, want", [
+    ("Friday at 28", "2026-09-04"), ("by Friday at 28:00", "2026-09-04"), ("25:30 on Friday", "2026-09-04"),
+    ("Friday 13pm", "2026-09-04"), ("Friday 0pm", "2026-09-04"), ("Friday 0 p.m.", "2026-09-04"),
+    ("Friday at 24:00", "2026-09-04"), ("November 19 at 25:30", "2026-11-19"),
+    ("October 30 at 9:75", "2026-10-30"), ("10/28 at 28", "2026-10-28"), ("September 28 @ 99", "2026-09-28"),
+])
+def test_an_impossible_clock_keeps_its_day(phrase, want):
+    # The day is due whatever the clock says: "Friday at 28" is still Friday.
+    got = resolve_due(phrase, _sent("2026-09-01"), TZ, month_first_order=True)
+    assert got.day is not None and got.day.isoformat() == want and got.precision == "day"
+
+
+@pytest.mark.parametrize("phrase", ["Friday 12am", "Friday at 12pm", "Friday at 23:59", "Friday at 00:00"])
+def test_a_boundary_clock_that_exists_reads_directly(phrase):
+    got = resolve_due(phrase, _sent("2026-09-01"), TZ, month_first_order=True)
+    assert got.day == date(2026, 9, 4)
 
 
 def test_day_first_locale():
