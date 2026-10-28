@@ -366,14 +366,22 @@ final class ReportDraft: ObservableObject {
 
     /// Asks where to save, then writes. The caller marks itself as showing a
     /// file panel first, so the notch doesn't take the panel's focus as "the
-    /// person left" (OverlayModel.pickingFile).
-    func chooseLocationAndSave() {
+    /// person left" (OverlayModel.pickingFile). Asked from the notch, which sits
+    /// at the menu bar's level, the dialog goes `above` it: at its own level it
+    /// opened behind an open notch.
+    func chooseLocationAndSave(above: NSWindow.Level? = nil) {
         guard isOpen else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
         panel.nameFieldStringValue = "Wisp-problem-\(Int(Date().timeIntervalSince1970)).json"
+        if let level = Self.saveLevel(above: above) { panel.level = level }
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         write(to: url)
+    }
+
+    /// The save dialog's level: one above the window that asked, or its own.
+    nonisolated static func saveLevel(above: NSWindow.Level?) -> NSWindow.Level? {
+        above.map { NSWindow.Level(rawValue: $0.rawValue + 1) }
     }
 }

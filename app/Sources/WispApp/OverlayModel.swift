@@ -410,11 +410,11 @@ final class OverlayModel: ObservableObject {
     weak var todayReport: ReportDraft?
 
     /// Saves a report from the notch. The save panel takes focus from the
-    /// panel, which must not read as the person leaving.
+    /// panel, which must not read as the person leaving, and opens above it.
     func saveReport(_ draft: ReportDraft) {
         pickingFile = true
         defer { pickingFile = false }
-        draft.chooseLocationAndSave()
+        draft.chooseLocationAndSave(above: DisplayGeometry.shared.layout.windowLevel)
     }
 
     /// Which report a reply's "Report a problem" opens: its trace (or, for a
