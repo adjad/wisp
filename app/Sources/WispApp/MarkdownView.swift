@@ -13,8 +13,8 @@ struct MarkdownPalette {
     var codeFill: Color
     var tableFill: Color
     var bodySize: CGFloat = 14
-    /// Multiplier for the renderer's fixed sizes (code, tables, chips). The
-    /// notch palette follows the Text size setting; other surfaces keep 1.
+    /// Multiplier for the renderer's fixed sizes (code, tables, chips), so a
+    /// surface's palette can follow the Text size setting.
     var fontScale: CGFloat = 1
 
     /// Computed so the colors and sizes follow Increase Contrast and the
@@ -80,7 +80,7 @@ struct MarkdownView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(blocks().enumerated()), id: \.offset) { _, b in
+            ForEach(Array(cachedBlocks().enumerated()), id: \.offset) { _, b in
                 switch b.kind {
                 case .code:
                     codeCard(b)
@@ -201,6 +201,41 @@ struct MarkdownView: View {
 
     private func matches(_ re: NSRegularExpression, _ s: String) -> Bool {
         re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+    }
+
+    /// Parsed blocks, remembered by text. A surface re-renders every reply
+    /// it shows whenever any of its state changes (each streamed token, for
+    /// one), and parsing is the expensive part. A text is kept only once it is
+    /// asked for a second time unchanged: a finished reply is, while a reply
+    /// still streaming is new on nearly every token, so it rarely reaches the
+    /// long-lived cache and can't churn finished replies out of it.
+    private final class ParsedBlocks {
+        let blocks: [Block]
+        init(_ blocks: [Block]) { self.blocks = blocks }
+    }
+    private static let parsed: NSCache<NSString, ParsedBlocks> = {
+        let cache = NSCache<NSString, ParsedBlocks>()
+        cache.countLimit = 256
+        cache.totalCostLimit = 8_000_000   // characters of source text
+        return cache
+    }()
+    private static let seenOnce: NSCache<NSString, ParsedBlocks> = {
+        let cache = NSCache<NSString, ParsedBlocks>()
+        cache.countLimit = 32
+        return cache
+    }()
+
+    func cachedBlocks() -> [Block] {
+        let key = text as NSString
+        if let hit = Self.parsed.object(forKey: key) { return hit.blocks }
+        if let second = Self.seenOnce.object(forKey: key) {
+            Self.seenOnce.removeObject(forKey: key)
+            Self.parsed.setObject(second, forKey: key, cost: key.length)
+            return second.blocks
+        }
+        let fresh = blocks()
+        Self.seenOnce.setObject(ParsedBlocks(fresh), forKey: key)
+        return fresh
     }
 
     func blocks() -> [Block] {

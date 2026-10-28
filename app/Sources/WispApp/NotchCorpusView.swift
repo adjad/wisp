@@ -174,7 +174,7 @@ private struct PromptResultRow: View {
                   result.latency_s.map { String(format: "%.1f s", $0) } ?? ""]
                     .filter { !$0.isEmpty }.joined(separator: " · "))
                 .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(result.status == "error" ? Theme.warn : Theme.textSecondary)
+                .foregroundStyle(result.status == "error" ? Theme.bad : Theme.textSecondary)
             ForEach(Array(result.exchanges.enumerated()), id: \.offset) { _, turn in
                 Text(turn.prompt).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                     .textSelection(.enabled)

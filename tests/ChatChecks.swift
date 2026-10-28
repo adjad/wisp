@@ -179,6 +179,26 @@ struct ChatChecks {
         check(history[1].tools.allSatisfy { $0.finished }, "reloaded tool rows are not running")
         check(history[1].tools[1].kind == .calendar, "get_upcoming is calendar")
 
+        // Where answers run: "all local" only on a confirmed local launch.
+        let local: [String: Any] = ["enabled": false, "roles": [String](), "super_model_enabled": false,
+                                    "everything": false, "restart_required": false]
+        check(ChatCloudUse.active(from: local) == false, "no cloud endpoint is local")
+        check(ChatCloudUse.active(from: nil) == nil, "an unreadable reply is unknown, not local")
+        check(ChatCloudUse.active(from: ["roles": ["fast"]]) == nil, "a reply without enabled is unknown")
+        var roleOnCloud = local; roleOnCloud["enabled"] = true; roleOnCloud["roles"] = ["fast"]
+        check(ChatCloudUse.active(from: roleOnCloud) == true, "a role bound to the cloud is cloud")
+        var superModel = local; superModel["enabled"] = true; superModel["super_model_enabled"] = true
+        check(ChatCloudUse.active(from: superModel) == true, "the cloud super model is cloud")
+        var disabled = roleOnCloud; disabled["enabled"] = false
+        check(ChatCloudUse.active(from: disabled) == false, "a disabled endpoint sends nothing")
+        var everything = local; everything["everything"] = true; everything["roles"] = ["everything"]
+        check(ChatCloudUse.active(from: everything) == true, "everything in the cloud, running")
+        var pendingOn = everything; pendingOn["restart_required"] = true
+        check(ChatCloudUse.active(from: pendingOn) == nil,
+              "everything saved but not yet running is unknown: the reply hides roles still bound to the cloud")
+        var pendingOff = local; pendingOff["restart_required"] = true
+        check(ChatCloudUse.active(from: pendingOff) == true, "a remote launch waiting to restart is still cloud")
+
         print("Chat contract checks passed (\(count)).")
     }
 }

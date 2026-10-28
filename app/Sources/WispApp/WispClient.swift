@@ -752,6 +752,14 @@ final class WispClient {
         return Self.fullAccessFlag(data)
     }
 
+    // GET /inference/cloud -> the display-safe cloud settings (never credentials).
+    func cloudInference() async -> [String: Any]? {
+        let url = Self.baseURL.appendingPathComponent("inference/cloud")
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
     // POST /mode -> set full-access (no-confirmation) mode. Returns the flag the
     // service confirmed, or nil when the reply was lost or unreadable (the write
     // may still have happened).
