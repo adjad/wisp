@@ -189,27 +189,30 @@ def test_a_look_already_running_or_too_slow_means_uncapped(monkeypatch, away):
     monkeypatch.setattr(P, "_LOOK_TIMEOUT_S", 0.05)
 
     async def run():
-        with P.power_tier(P.BACKGROUND):
-            return await P.checked_payload_fields(_lift_ok_now)
-    try:
-        assert asyncio.run(run()) == {}                         # the request doesn't wait for it
-    finally:
-        stuck.set()
+        try:
+            with P.power_tier(P.BACKGROUND):
+                return await P.checked_payload_fields(_lift_ok_now)
+        finally:
+            stuck.set()                                         # let the stuck look finish
+    assert asyncio.run(run()) == {}                             # the request didn't wait for it
 
 
 async def _lift_ok_now():
     return True
 
 
-def test_the_tick_keeps_a_gpu_baseline_only_while_a_cap_could_apply(monkeypatch):
+def test_the_tick_keeps_a_gpu_baseline_whenever_caps_are_possible(monkeypatch):
+    # Background work can be capped at any time, so the baseline is kept on AC too.
     looks = []
     monkeypatch.setattr(P, "keep_gpu_baseline", lambda: looks.append("baseline"))
     monkeypatch.setattr(P, "check_other_gpu", lambda: looks.append("look") or True)
     P.refresh_away(5, on_battery=False)                         # present, on AC
-    assert looks == []
     P.refresh_away(5, on_battery=True)
     P.refresh_away(P.AWAY_AFTER_S + 1, on_battery=False)
-    assert looks == ["baseline", "baseline"]
+    assert looks == ["baseline", "baseline", "baseline"]
+    P.set_save_when_away(False)
+    P.refresh_away(5, on_battery=False)
+    assert looks == ["baseline", "baseline", "baseline"]        # the switch off: none
 
 
 @pytest.mark.parametrize("failure", [OSError("no ioreg"),
@@ -385,9 +388,10 @@ def _caps():
     return out
 
 
-def test_on_ac_with_the_user_present_nothing_is_capped():
+def test_on_ac_with_the_user_present_only_background_work_is_capped():
+    # The user's answer (2026-10-28): "Always 10 W" for background work.
     P.refresh_away(5, on_battery=False)
-    assert _caps() == {None: None, P.CHAT: None, P.BRIEF: None, P.BACKGROUND: None}
+    assert _caps() == {None: None, P.CHAT: None, P.BRIEF: None, P.BACKGROUND: 10}
 
 
 def test_on_battery_chat_and_brief_run_at_15_w_and_background_at_10_w(battery):
@@ -781,6 +785,46 @@ def test_a_chat_lift_racing_its_own_cap_still_leaves_the_watch_armed(monkeypatch
     asyncio.run(run())
 
 
+def test_the_watch_asks_again_when_a_lift_did_not_go_through(monkeypatch, away):
+    answers = [None, True]                                      # a 2 s timeout, then fine
+    asked = []
+    monkeypatch.setattr(P, "check_other_gpu", lambda: False)    # a game is running
+    monkeypatch.setattr(P, "WATCH_EVERY_S", 0.01)
+
+    async def lift():
+        asked.append(len(asked))
+        return answers[min(len(asked) - 1, 1)]
+
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            started = P.call_started(10, lift)
+        await asyncio.sleep(0.06)
+        P.call_ended(started)
+
+    asyncio.run(run())
+    assert len(asked) == 2 and P._lifted is True               # asked again, then stopped
+
+
+def test_a_watched_call_on_another_thread_lifts_through_the_service_loop(battery):
+    import threading
+    lifted = []
+
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            capped = P.call_started(10, _lifter(lifted))       # on the service loop
+        started = {}
+        worker = threading.Thread(target=lambda: started.update(token=P.call_started(None, _lifter([]))))
+        worker.start()
+        await asyncio.to_thread(worker.join)
+        await asyncio.sleep(0.01)
+        assert lifted == [True]                                 # via call_soon_threadsafe
+        P.call_ended(started["token"])
+        P.call_ended(capped)
+        assert P._uncapped_watched == 0 and not P._capped and not P.watched_running()
+
+    asyncio.run(run())
+
+
 def test_no_chat_call_is_capped_while_a_call_someone_waits_on_runs_uncapped(battery):
     async def run():
         research = P.call_started(None, _lifter([]))     # research, voice transcription
@@ -1101,7 +1145,9 @@ def test_image_and_document_questions_run_at_the_chat_tier():
     assert text.index("with power_tier(CHAT):") < text.index("client.chat(")
 
 
-def test_the_mail_memory_walk_on_battery_runs_at_10_w(monkeypatch, battery):
+@pytest.mark.parametrize("on_battery", [True, False])
+def test_the_mail_memory_walk_runs_at_10_w_on_battery_and_plugged_in(monkeypatch, on_battery):
+    P.refresh_away(5, on_battery=on_battery)
     import service.config as config
     from service import idle
     from service.assistant import brief

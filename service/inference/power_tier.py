@@ -46,10 +46,11 @@ With the "Save power" switch on (the notch; on by default; stored as
 - ``BRIEF`` (Brief generation: the mail and texts gists, the inbox summary, the
   proactive triage/judge/prepare behind its cards): 15 W on battery, and 10 W
   while the user is away; uncapped otherwise.
-- ``BACKGROUND`` (the mail memory walk, the behavior tick's interpreter and
-  phraser, memory capture): 10 W on battery or while the user is away (no
-  keyboard or mouse input for AWAY_AFTER_S and no turn running); uncapped
-  otherwise.
+- ``BACKGROUND`` (the mail memory walk, the behavior tick's interpreter,
+  memory capture): 10 W always, plugged in too (the user's answer, 2026-10-28:
+  "Always 10 W"). The behavior phraser is tiered BACKGROUND too but runs on its
+  own event loop, so it is never capped (see "calls in flight").
+- "Away" is no keyboard or mouse input for AWAY_AFTER_S and no turn running.
 - Everything else is never capped: research, connection investigations the
   user asks for (memory/connections.py), voice transcription, setup probes.
 
@@ -75,7 +76,6 @@ import re
 import subprocess
 import threading
 import time
-from collections import Counter
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -186,10 +186,10 @@ def _on_battery_probe() -> bool:
 def refresh_away(hid_idle_s: float | None = None, on_battery: bool | None = None, *,
                  probe: bool = True) -> bool:
     """Read the input idle time and the power source, and store whether the
-    user is away and whether the Mac is on battery. While either could cap a
-    call, also keep a GPU baseline, so the look before each capped request
-    compares against a reading at most a tick old. Blocking: call it from a
-    worker thread. Returns away.
+    user is away and whether the Mac is on battery. Also keep a GPU baseline
+    (background work can be capped at any time), so the look before each
+    capped request compares against a reading at most a tick old. Blocking:
+    call it from a worker thread. Returns away.
 
     With the switch off, or no engine Wisp may cap (a remote-only profile, the
     user's own oMLX.app), nothing could be capped, so nothing is read: no ioreg,
@@ -207,10 +207,7 @@ def refresh_away(hid_idle_s: float | None = None, on_battery: bool | None = None
         on_battery = _on_battery_probe()
     idle_enough = hid_idle_s is not None and hid_idle_s >= AWAY_AFTER_S
     battery = on_battery is True
-    if idle_enough or battery:
-        keep_gpu_baseline()
-    else:
-        drop_gpu_readings()                      # read only while a cap could apply
+    keep_gpu_baseline()
     mono, wall = time.monotonic(), time.time()
     _away = (mono, wall, idle_enough)
     _battery = (mono, wall, battery)
@@ -234,7 +231,9 @@ def _fresh(reading: tuple[float, float, bool] | None, max_age_s: float = _AWAY_S
 # OTHER_GPU_BUSY of the GPU in between, nothing is capped. A share averaged over
 # a long window would hide an app that started a moment ago, so when the
 # previous read is older than _GPU_WINDOW_S the look also reads twice
-# _GPU_PAIR_GAP_S apart, and both windows must be quiet.
+# _GPU_PAIR_GAP_S apart, and both windows must be quiet. That pair costs the
+# first capped call after a pause (the first call of a chat turn on battery)
+# about 0.27-0.3 s; later calls compare with the watch's samples, one read.
 #
 # Wisp looks right before each capped request (bounded by _LOOK_TIMEOUT_S; a
 # slow look means uncapped) and every WATCH_EVERY_S while one runs; the
@@ -459,15 +458,17 @@ def _note_lift(answer: bool | None) -> None:
 
 async def _lift_now(*, watch: bool = False) -> None:
     """Lift every cap through the newest capped call's client. Cheap and
-    idempotent on the engine; only the watch marks the caps in flight lifted."""
+    idempotent on the engine; only the watch marks the caps in flight lifted,
+    and only once the engine said it lifted them."""
     global _lifted
     with _calls_lock:
         lift = next(reversed(_capped.values()))[1] if _capped else None
     if lift is None:
         return
-    if watch:
-        _lifted = True
-    _note_lift(await _ask_lift(lift))
+    answer = await _ask_lift(lift)
+    if watch and answer is True:
+        _lifted = True                       # otherwise the next look asks again
+    _note_lift(answer)
 
 
 def _schedule_lift() -> None:
@@ -590,7 +591,7 @@ def _wanted(tier: str | None) -> str | None:
         return LOW
     if tier == CHAT and not _turn_running():
         return None
-    if tier == BACKGROUND and on_battery():
+    if tier == BACKGROUND:
         return LOW
     if tier in (CHAT, BRIEF) and on_battery():
         return BATTERY
