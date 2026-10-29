@@ -1462,6 +1462,25 @@ def _stale_note(hidden: int) -> str:
             "(no Apple Reminders copy is confirmed). Ask to clear past-due items to remove them.")
 
 
+# A time word passed as the query is a time scope, not a title: "overdue" listed
+# every reminder and the model called them all overdue (0.5.0 dev8 audit).
+_OVERDUE_WORDS = frozenset({"overdue", "past due", "past-due", "late", "missed"})
+_DUE_SOON_WORDS = frozenset({"due soon", "due", "upcoming", "coming up", "soon", "next"})
+DUE_SOON_DAYS = 7
+
+
+def _reminder_query_scope(query: str, scope: str) -> tuple[str, str, int | None]:
+    """(query, scope, horizon in days) with a time word in the query applied as a
+    scope: "overdue" → past_due, "due soon" → upcoming within DUE_SOON_DAYS."""
+    needle = (query or "").strip().lower()
+    if (scope or "all").strip().lower() == "all":
+        if needle in _OVERDUE_WORDS:
+            return "", "past_due", None
+        if needle in _DUE_SOON_WORDS:
+            return "", "upcoming", DUE_SOON_DAYS
+    return query, scope, None
+
+
 @register(
     "search_reminders",
     "The user's to-dos, tasks and reminders: open, pending, overdue, due soon, "
@@ -1485,6 +1504,7 @@ def _stale_note(hidden: int) -> str:
              "what does my reminder say"],
 )
 async def search_reminders(query: str = "", scope: str = "all") -> str:
+    query, scope, horizon = _reminder_query_scope(query, scope)
     from service.assistant.sync_status import ensure_sources
     readiness = await ensure_sources(("reminders",), timeout_seconds=4.0)
     state = next((source["state"] for source in readiness["sources"]
@@ -1504,6 +1524,9 @@ async def search_reminders(query: str = "", scope: str = "all") -> str:
     # Wisp's own records remain searchable while Apple Reminders cannot be
     # verified; only the native snapshot is withheld.
     items, hidden = _drop_stale_wisp_only(reminders_matching(scope, query))
+    if horizon is not None:
+        cutoff = time.time() + horizon * 86400
+        items = [c for c in items if float(c.get("when_ts") or 0) <= cutoff]
     stale_note = _stale_note(hidden)
     if notice:
         items = _without_withheld_sources(items, {"reminders"})
@@ -1517,6 +1540,12 @@ async def search_reminders(query: str = "", scope: str = "all") -> str:
                 "Apple Reminders couldn't be checked; they may still be active):\n"
                 + "\n".join(wisp_lines) + stale_note)
     undated_section, undated_caveat = _undated_report(query, scope)
+    filtered = ("Only reminders already overdue (due before now) are listed." if scope == "past_due"
+                and not query else f"Only reminders due in the next {horizon} days are listed."
+                if horizon is not None else "")
+    if not items and not undated_section and filtered:
+        return ("A current Reminders read found " + ("no overdue reminders." if scope == "past_due"
+                else f"nothing due in the next {horizon} days.") + stale_note)
     if not items and not undated_section:
         return (f"A current Reminders read found no active match for {query!r}"
                 + (" among reminders with a due date" if undated_caveat else "") + ". "
@@ -1532,6 +1561,8 @@ async def search_reminders(query: str = "", scope: str = "all") -> str:
     sections = ["A fresh Apple Reminders read supersedes older remembered claims. "
                 "These lists describe storage, not who created an item. "
                 "Recently Deleted status is not independently verified."]
+    if filtered:
+        sections.append(filtered)
     sections.append("Apple Reminders incomplete-item matches:\n" +
                     ("\n".join(native_lines) if native_lines else
                      "None with a due date." if undated_section else "None."))

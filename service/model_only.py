@@ -571,9 +571,26 @@ def reminders_first(prompt: str) -> bool:
 
 # The Mac's own state is read with a tool, never answered from knowledge:
 # "how much free disk space?" was offered no tools (2026-10-29 Ask run).
-_DEVICE_STATE = re.compile(
-    r"\b(?:disk|storage|space\s+left|free\s+space|battery|charg\w*|ram|cpu|wi-?fi|bluetooth|"
-    r"ip\s+address|uptime|volume|brightness|clipboard|macos|downloads?|desktop)\b", re.I)
+# A device word counts only with state phrasing ("how much RAM is free", "my
+# disk space"): "What is RAM?" and "How do I screenshot on macOS?" are
+# knowledge (0.5.0 dev8 audit).
+_DEVICE_WORD = re.compile(
+    r"\b(?:disk|storage|space|battery|charg\w*|ram|memory|cpu|wi-?fi|bluetooth|"
+    r"ip\s+address|uptime|volume|brightness|clipboard|macos|os\s+version|downloads?|desktop)\b", re.I)
+_DEVICE_STATE_PHRASE = re.compile(
+    r"\b(?:my|this\s+mac|the\s+mac|my\s+mac|free|left|used|using|available|remaining|full|"
+    r"level|percent|connected|currently|right\s+now|do\s+i\s+have|have\s+i\s+got|am\s+i\s+on|"
+    r"what\s+version|which\s+version|is\s+(?:it|the\s+\w+)\s+(?:on|off))\b", re.I)
+
+
+class _DeviceState:
+    """search() is truthy for a device word with state phrasing."""
+    @staticmethod
+    def search(text: str):
+        return bool(_DEVICE_WORD.search(text or "") and _DEVICE_STATE_PHRASE.search(text or ""))
+
+
+_DEVICE_STATE = _DeviceState()
 # General advice about oneself, with nothing of the user's to read: "how many
 # hours of sleep should I get?" was re-prompted for a tool and ended in "I
 # don't have that".

@@ -119,3 +119,48 @@ def test_general_and_write_requests_keep_their_head_start():
     assert not mo.calendar_first("When is the next solar eclipse?")
     assert not mo.reminders_first("what is a to-do list app?")
     assert main._ask_tool_rank("remind me to do homework")[0][0] == "add_reminder"
+
+
+def test_overdue_and_due_soon_filter_by_due_date(monkeypatch):
+    """dev8 audit: "overdue" as the query listed every reminder, and the model
+    presented the whole list as overdue."""
+    import asyncio, time
+    from service.tools import assistant_tools as A
+    now = time.time()
+    rows = [{"title": "Pay rent", "source": "reminders", "when_ts": now - 86400},
+            {"title": "Call the dentist", "source": "reminders", "when_ts": now + 2 * 86400},
+            {"title": "Renew passport", "source": "reminders", "when_ts": now + 40 * 86400}]
+
+    def between(start, end, include_stale=False):
+        return [r for r in rows if (start is None or r["when_ts"] >= start)
+                and (end is None or r["when_ts"] < end)]
+
+    async def ready(*a, **k):
+        return {"sources": [{"id": "reminders", "state": "ready"}], "reminders_fresh": True}
+    monkeypatch.setattr(A.assistant_store, "active_between", between)
+    monkeypatch.setattr("service.assistant.sync_status.ensure_sources", ready)
+    monkeypatch.setattr(A, "_undated_report", lambda q, s: ("", ""))
+    overdue = asyncio.run(A.search_reminders("overdue"))
+    assert "Pay rent" in overdue and "dentist" not in overdue and "passport" not in overdue
+    assert "Only reminders already overdue" in overdue
+    soon = asyncio.run(A.search_reminders("due soon"))
+    assert "dentist" in soon and "Pay rent" not in soon and "passport" not in soon
+    assert "next 7 days" in soon
+    pending = asyncio.run(A.search_reminders("pending"))
+    assert all(t in pending for t in ("Pay rent", "dentist", "passport"))
+    rows[:] = rows[1:]
+    assert "no overdue reminders" in asyncio.run(A.search_reminders("overdue"))
+
+
+@pytest.mark.parametrize("prompt", ["What is the RAM in a computer for?", "How do I take a screenshot on macOS?",
+                                    "What is a CPU?", "how do I change the volume on a Mac?",
+                                    "why does battery capacity drop over time?"])
+def test_general_device_questions_stay_knowledge(prompt):
+    """dev8 audit: any device word sent these down the tool path."""
+    assert mo.knowledge_question(prompt)
+
+
+@pytest.mark.parametrize("prompt", ["how much RAM is free", "what's my disk space",
+                                    "how much battery do I have", "what macOS version am I on"])
+def test_device_state_phrasing_keeps_tools(prompt):
+    assert not mo.knowledge_question(prompt)
