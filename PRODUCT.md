@@ -33,8 +33,8 @@ show sheets or alerts.
 
 ## Capabilities and Constraints
 - macOS 14+ on Apple silicon; the bundled engine needs macOS 26.2+.
-- Every action is confirmed: Deny / Always allow (limited to a folder or site) / Allow once. Sending and bulk deletes always ask.
-- No image understanding in this release.
+- Full access is on by default, so most actions run without a card. Sending mail or messages, calendar changes, AppleScript, installing a tool, permanent deletes and shell commands that can send data off the Mac always ask. With Full access off, risky actions ask too: Deny / Always allow (limited to a folder or site) / Allow once. The choice does not yet survive a restart.
+- Pictures, video clips up to 30 s and documents are read by the local model in one call with no tools.
 - Notch panel is 640 pt wide; the notch itself is 185 × 32 pt.
 - Undecided: whether the iPhone app joins this design context (out of scope for now).
 
