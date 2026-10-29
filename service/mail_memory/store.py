@@ -68,6 +68,8 @@ _ADDED = (
     # '' (not yet looked at), done, skipped (can't carry a fact), pending (the call
     # was dropped for a turn), failed.
     ("messages", "facts_state", "TEXT NOT NULL DEFAULT ''"),
+    # The Mail account a candidate came from, so an account's removal takes it along.
+    ("fact_candidates", "account", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -286,15 +288,16 @@ class Store:
         return None
 
     def add_candidates(self, key: str, sent_ts: float, kept: list[dict], extractor: str,
-                       now: float | None = None) -> list[tuple[str, str]]:
+                       now: float | None = None, *, account: str = "") -> list[tuple[str, str]]:
         """Record one email's candidates; returns the (kind, group) pairs it touched."""
         now = time.time() if now is None else now
         with self._lock:
             for c in kept:
                 self._db.execute(
-                    "INSERT OR IGNORE INTO fact_candidates(key,kind,grp,value,role,quote,sent_ts,extractor,created) "
-                    "VALUES(?,?,?,?,?,?,?,?,?)",
-                    (key, c["kind"], c["group"], c["value"], c["role"], c["quote"], sent_ts, extractor, now))
+                    "INSERT OR IGNORE INTO fact_candidates(key,kind,grp,value,role,quote,sent_ts,extractor,"
+                    "created,account) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (key, c["kind"], c["group"], c["value"], c["role"], c["quote"], sent_ts, extractor, now,
+                     account))
         return list(dict.fromkeys((c["kind"], c["group"]) for c in kept))
 
     def candidate_groups(self) -> list[tuple[str, str]]:
@@ -310,13 +313,20 @@ class Store:
         return [{**dict(r), "subject": r["subject"] or ""} for r in rows]
 
     def newer_slot_value(self, kind: str, group: str, sent_ts: float) -> bool:
-        """Whether a newer email names a different value for this slot kind."""
-        return self._db.execute("SELECT 1 FROM fact_candidates WHERE kind=? AND grp!=? AND sent_ts>? LIMIT 1",
-                                (kind, group, sent_ts)).fetchone() is not None
+        """Whether a newer email names a different value for this slot kind. Two
+        values from the same moment: the one that sorts last wins, every time."""
+        return self._db.execute(
+            "SELECT 1 FROM fact_candidates WHERE kind=? AND grp!=? AND (sent_ts>? OR (sent_ts=? AND grp>?)) LIMIT 1",
+            (kind, group, sent_ts, sent_ts, group)).fetchone() is not None
 
-    def clear_candidates(self) -> int:
+    def clear_candidates(self, *, account: str | None = None) -> int:
         with self._lock:
-            return self._db.execute("DELETE FROM fact_candidates").rowcount
+            if account is None:
+                return self._db.execute("DELETE FROM fact_candidates").rowcount
+            return self._db.execute("DELETE FROM fact_candidates WHERE account=?", (account,)).rowcount
+
+    def candidate_accounts(self) -> set[str]:
+        return {r[0] for r in self._db.execute("SELECT DISTINCT account FROM fact_candidates")}
 
     def fact_stats(self) -> dict:
         passes = {r["facts_state"] or "unread": r["n"] for r in self._db.execute(

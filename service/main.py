@@ -1480,11 +1480,11 @@ def _profile_block(endpoint) -> str:
 
 
 def _mail_facts_ride(endpoint) -> bool:
-    """Facts learned only from mail go where the know-you profile goes
-    (profile.may_send_to). Unknown sends none."""
+    """Facts learned only from mail stay local (profile.mail_facts_may_go): Wisp's
+    own model or the user's own Mac, never a cloud model. Unknown sends none."""
     try:
-        from service.memory.profile import may_send_to
-        return bool(may_send_to(endpoint))
+        from service.memory.profile import mail_facts_may_go
+        return bool(mail_facts_may_go(endpoint))
     except Exception:  # noqa: BLE001
         return False
 

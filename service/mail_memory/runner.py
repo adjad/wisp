@@ -362,6 +362,8 @@ async def tick(*, now: float | None = None) -> float:
         excluded = await _gmail_excluded()
         merged = await asyncio.to_thread(st.upsert_index, rows, lambda r: extract.tier(r, excluded), now)
         merged["gmail_tab"] = await asyncio.to_thread(st.exclude, excluded) if excluded else 0
+        if rows and not capped:
+            merged["accounts_forgotten"] = await asyncio.to_thread(_forget_gone_accounts, st, rows)
         st.set_meta("last_index", str(now))
         note_ok(now=now)
         log.info("mail memory index: %s capped=%s gmail_tab_exclusions=%d", merged, capped, len(excluded))
@@ -480,9 +482,20 @@ def _own_addresses() -> list[str]:
         return []
 
 
-def _promote(st, now: float, groups) -> dict:
+def _promote(st, now: float, groups) -> dict | None:
     from service.memory.facts import store as facts
     return profile_facts.promote(st, facts, now=now, groups=groups)
+
+
+def _forget_gone_accounts(st, rows: list[dict]) -> dict | None:
+    """Mail accounts that no longer appear in a complete index window have left Mail:
+    forget what was learned from them (profile_facts.forget_accounts)."""
+    seen = {r.get("account", "") for r in rows}
+    gone = st.candidate_accounts() - seen - {""}
+    if not gone:
+        return None
+    from service.memory.facts import store as facts
+    return profile_facts.forget_accounts(st, facts, gone)
 
 
 async def _facts_pass(st, row: dict, email, today, now: float, identity: str) -> None:
@@ -491,6 +504,7 @@ async def _facts_pass(st, row: dict, email, today, now: float, identity: str) ->
     if not profile_facts.eligible(row):
         st.set_facts_state(row["key"], "skipped")
         return
+    expect = profile_facts.generation(st)
     sent = row["box"] == "sent"
     msgs = profile_facts.messages(email, sent_by_user=sent, identity=identity, today=today)
     try:
@@ -501,6 +515,10 @@ async def _facts_pass(st, row: dict, email, today, now: float, identity: str) ->
     if reply is None:
         st.set_facts_state(row["key"], "pending")         # a turn started: try again later
         return
+    if not facts_enabled() or mode() == "off" or profile_facts.generation(st) != expect:
+        # Switched off, or everything from mail was forgotten, while the model ran.
+        st.set_facts_state(row["key"], "skipped")
+        return
     candidates = profile_facts.parse_reply(reply)
     if candidates is None:
         st.set_facts_state(row["key"], "failed")
@@ -508,16 +526,18 @@ async def _facts_pass(st, row: dict, email, today, now: float, identity: str) ->
     try:
         to_user = profile_facts.addressed_to(email, await asyncio.to_thread(_own_addresses))
         kept, dropped = profile_facts.validate(candidates, email, sent_by_user=sent, to_user=to_user)
-        groups = st.add_candidates(row["key"], email.sent.timestamp(), kept, profile_facts.EXTRACTOR, now)
-        promoted = (await asyncio.to_thread(_promote, st, now, groups)
-                    if groups and mode() == "live" else {})
+        from service.memory.facts import store as facts
+        saved = await asyncio.to_thread(
+            profile_facts.record, st, facts, key=row["key"], account=row.get("account", ""),
+            sent_ts=email.sent.timestamp(), kept=kept, now=now, expect=expect,
+            save=mode() == "live" and facts_enabled())
     except Exception as exc:  # noqa: BLE001 — this email's fact pass only
         log.warning("mail memory facts failed: %s", type(exc).__name__)
         st.set_facts_state(row["key"], "failed")
         return
-    st.set_facts_state(row["key"], "done")
-    log.info("mail memory facts: box=%s model=%d kept=%d dropped=%s promoted=%s",
-             row["box"], len(candidates), len(kept), dropped, promoted)
+    st.set_facts_state(row["key"], "done" if saved is not None else "skipped")
+    log.info("mail memory facts: box=%s model=%d kept=%d dropped=%s saved=%s",
+             row["box"], len(candidates), len(kept), dropped, saved)
 
 
 async def _run() -> None:

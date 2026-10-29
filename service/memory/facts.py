@@ -48,10 +48,20 @@ def _clean(text: str) -> str:
 
 
 def claim_slot(text: str) -> tuple[str, str]:
-    """Only literal grammatical subjects; names are never merged into people."""
+    """Only literal grammatical subjects; names are never merged into people.
+    (`_norm` drops punctuation, so "I'm" reads "i m".)"""
     value = _norm(text)
     for pattern, predicate in ((r'i (?:now )?live\b', 'residence'),
+                               (r'i (?:just )?(?:moved|relocated) to\b', 'residence'),
+                               (r'i m (?:now )?(?:living|based) in\b', 'residence'),
+                               (r'my home is in\b', 'residence'),
                                (r'i (?:now )?work\b', 'employment'),
+                               (r'i (?:just )?(?:joined|started at)\b', 'employment'),
+                               (r'i m an? (?:\w+ ){1,3}at\b', 'employment'),
+                               (r'my (?:employer|company) is\b', 'employment'),
+                               (r'i (?:now )?study\b', 'school'),
+                               (r'i m an? (?:\w+ )?student at\b', 'school'),
+                               (r'my school is\b', 'school'),
                                (r'my name is\b', 'name'),
                                (r'i (?:now )?prefer\b', 'preference')):
         if re.match(pattern, value):
@@ -357,11 +367,14 @@ class FactStore:
             raise ValueError('Invalid review decision')
 
     def slot_facts(self, subject, predicate):
-        """Live facts (active, proposed or deferred) that fill one slot, e.g. the user's employment."""
+        """Live facts (active, proposed or deferred) that fill one slot, e.g. the user's
+        employment, including older rows saved before their phrasing had a slot."""
         with self._lock:
-            return [dict(r) for r in self._db.execute(
-                "SELECT * FROM facts WHERE subject=? AND predicate=? AND status IN ('active','proposed','deferred')",
-                (subject, predicate))]
+            rows = [dict(r) for r in self._db.execute(
+                "SELECT * FROM facts WHERE status IN ('active','proposed','deferred') AND "
+                "((subject=? AND predicate=?) OR subject='')", (subject, predicate))]
+        return [r for r in rows if (r['subject'], r['predicate']) == (subject, predicate)
+                or (not r['subject'] and claim_slot(r['text']) == (subject, predicate))]
 
     def retire_slot(self, subject, predicate, *, keep_id):
         """Supersede mail-learned facts for a slot that the user never reviewed, in
@@ -370,34 +383,42 @@ class FactStore:
         with self._write():
             rows = self._db.execute(
                 "SELECT * FROM facts WHERE subject=? AND predicate=? AND status IN ('active','proposed') "
-                "AND reviewed=0 AND origin IN ('mail','historical') AND id!=?",
+                "AND reviewed=0 AND origin IN ('mail','historical','connection') AND id!=?",
                 (subject, predicate, keep_id)).fetchall()
             for row in rows:
-                self._supersede(row, keep_id)
+                # Only this wording is blocked, not its emails: the same email may also
+                # support another fact (a person, a service) that must stay possible.
+                self._db.execute('INSERT OR IGNORE INTO memory_suppression VALUES(?,?)', ('fact', row['fact_key']))
+                self._db.execute("UPDATE facts SET status='superseded',pinned=0 WHERE id=?", (row['id'],))
+                self._db.execute('INSERT OR IGNORE INTO memory_revisions VALUES(?,?,?)', (row['id'], keep_id, time.time()))
             return len(rows)
 
-    def forget_source(self, source_type):
-        """Forget every extracted fact whose evidence all comes from `source_type`, and
-        remove that evidence from facts that also rest on something else (the user's
-        own words, say). Forgotten facts are suppressed like any other forget."""
+    def forget_source(self, source_type, *, prefix=''):
+        """Forget every extracted fact whose evidence all comes from `source_type`
+        (with a source id starting `prefix`, e.g. one mail account), and remove that
+        evidence from facts that also rest on something else (the user's own words,
+        say). Forgotten facts are suppressed like any other forget."""
         forgotten = removed = 0
+
+        def matches(e):
+            return e['source_type'] == source_type and e['source_id'].startswith(prefix)
         with self._write():
             ids = [r[0] for r in self._db.execute(
-                'SELECT DISTINCT fact_id FROM memory_evidence WHERE source_type=?', (source_type,))]
+                'SELECT DISTINCT fact_id FROM memory_evidence WHERE source_type=? AND substr(source_id,1,?)=?',
+                (source_type, len(prefix), prefix))]
             for fid in ids:
                 row = self.get(fid)
                 if not row or row['status'] == 'forgotten':
                     continue
-                others = [e for e in row['evidence'] if e['source_type'] != source_type]
-                if row['origin'] != 'explicit' and not others:
+                others = [e for e in row['evidence'] if not matches(e)]
+                if row['origin'] not in ('explicit', 'automatic', 'legacy') and not others:
                     forgotten += bool(self.delete(fid))
                     continue
                 for e in row['evidence']:
-                    if e['source_type'] == source_type:
+                    if matches(e):
                         self._db.execute('INSERT OR IGNORE INTO memory_suppression VALUES(?,?)',
                                          ('source', f"{e['source_type']}:{e['source_id']}"))
-                removed += self._db.execute('DELETE FROM memory_evidence WHERE fact_id=? AND source_type=?',
-                                            (fid, source_type)).rowcount
+                        removed += self._db.execute('DELETE FROM memory_evidence WHERE id=?', (e['id'],)).rowcount
         return {'forgotten': forgotten, 'evidence_removed': removed}
 
     def source_counts(self, source_type):
@@ -457,7 +478,7 @@ def _select_for_context(max_chars=_CONTEXT_CHARS, query=''):
     return result
 
 
-def memory_context_block(max_chars=_CONTEXT_CHARS, query='', *, mail_facts=True):
+def memory_context_block(max_chars=_CONTEXT_CHARS, query='', *, mail_facts=False):
     if not query.strip():
         return ''
     from service.memory.retrieval import retrieve, render_context

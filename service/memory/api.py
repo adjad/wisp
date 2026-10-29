@@ -125,7 +125,8 @@ def retry():
 
 @router.get('/search')
 def search(query: str, limit: int = 15):
-    result = retrieve(query, facts=facts, sessions=sessions, limit=max(1, min(50, limit)))
+    # The app's own Memory window, on this Mac: mail-learned facts are shown here.
+    result = retrieve(query, facts=facts, sessions=sessions, limit=max(1, min(50, limit)), mail_facts=True)
     render_context(result)  # Populate a content-free selection/budget trace.
     return result
 

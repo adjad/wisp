@@ -261,3 +261,54 @@ forward until this passes. So mail facts are saved `active` with a new `facts.db
 mail". Every other safeguard is unchanged. The one place a fact still waits for the user is a newer email
 that would replace a fact the user stated or confirmed: user-stated facts outrank anything inferred. The
 Decisions section above is kept as the question that was asked.
+
+### Release Auditor repair (aafaa06a was BLOCK)
+
+Because facts apply without review, the code is stricter than the sketch:
+
+- **Own words only, body only.** Every kind, inbox or Sent, needs its quote in the body (never the subject)
+  above any forwarded or quoted block: Gmail, Yahoo, Outlook (rule, `From:` + `Sent:` or `Date:`, HTML-only
+  too), Apple Mail, "On … wrote:" and `>` lines, in English, Spanish, German, French, Italian, Dutch,
+  Portuguese and Scandinavian forms, case- and dash-tolerant.
+- **Services and accounts come from an allowlist of everyday categories** (internet, phone, utilities,
+  landlord, streaming, airline, delivery, gym, cloud storage, memberships and similar). The category must
+  be in the email. A larger blocklist (health, clinics and therapy apps, money, immigration, religion,
+  politics and campaigns, sexuality and dating apps, legal) still applies on top.
+- **Values are short names.** No sentences, instruction words, brackets or hidden format characters
+  (Unicode Cf is stripped before every check), and a word limit per kind. Inbox services must name the
+  sender (the From: name or domain), and the email must be addressed to one of the user's addresses
+  exactly; unknown addresses fail closed. `recall` JSON-quotes fact text.
+- **Employer, school and city need a cue phrase** right before the value ("work at", "joined", "I'm an
+  engineer at", "studying at", "live in", "moved to"…), matched as whole words, and no negation ("no
+  longer", "used to", "left", "not").
+- **The user's own word wins.** Facts captured from chat (`automatic`), saved by older builds (`legacy`),
+  typed (`explicit`) or confirmed are never replaced silently: the mail value waits in Review as "May
+  replace …". `claim_slot` now also knows school and common phrasings ("I'm an engineer at", "my
+  employer is", "I moved to"), and slot lookups re-read unslotted older rows.
+- **Forget can't be raced.** Saving and forgetting share a lock and a generation counter; a fact pass that
+  started before "forget everything from mail" (or an account's removal) writes nothing.
+- **Accounts.** Each candidate records its Mail account, and evidence ids carry it (`account|message-id`).
+  When a complete (uncapped) index window no longer lists an account, its candidates and evidence go,
+  along with every fact that rested only on it. An account quiet for the whole 90-day window counts as
+  gone; a re-added account doesn't bring forgotten facts back.
+- **Local only, fail closed.** Mail facts go only to Wisp's on-Mac model or the user's own Mac
+  (`profile.mail_facts_may_go`), never a cloud model, even under Cloud "Everything". Every default
+  (`retrieve`, `memory_context_block`, `memory_block`, `mail_facts_allowed`) is off; the agent loop and
+  plain chat opt in for local targets, and the app's own Memory search opts in.
+- **Superseding** an employer blocks only that wording, not its emails, so the same email can still
+  support a person or service fact. **Ties** between two values from the same moment always settle on
+  the same one.
+
+Known limits, documented rather than fixed in dev7:
+
+- **L2, chat history.** A local turn can mention a mail fact in its reply. If the user later sends that
+  same chat to a cloud model, the history carries the sentence. Chat history follows its own existing
+  rules; mail facts themselves are never added to a cloud prompt.
+- **L5, the off switch.** Turning the fact pass off stops learning; facts already saved stay until the
+  user deletes them or forgets everything from mail.
+- **L6, no UI yet.** dev7 has no button for "Forget everything from mail" or for the switch, and no
+  notice that Wisp learned something. Memory lists the facts, and each can be deleted there. The dev7
+  notes should say so.
+- **L7, downgrade.** A build older than this one doesn't know the `mail` origin. It would treat saved mail
+  facts as ordinary facts, including for cloud models. Forget everything from mail before rolling back to
+  an older build.

@@ -31,6 +31,9 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import unicodedata
+from email.utils import getaddresses, parseaddr
 
 from service.mail_memory.extract import _LINKISH, _PROMOTIONAL, MIN_QUOTE, TRANSACTIONS, UPDATES, Email, _norm
 from service.mail_memory.importance import _AMOUNT, _NO_REPLY
@@ -51,28 +54,87 @@ KINDS = SELF_KINDS | SERVICE_KINDS
 _FIRST_PERSON = re.compile(r"\b(?:i|i'm|im|i've|i'll|i'd|me|my|we|we're|we've|our|us)\b", re.I)
 # Reported speech or another person as the subject: "Dana told me she moved", "his new job".
 _THIRD_PERSON = re.compile(r"\b(?:he|she|they|his|her|hers|their|theirs|him|them|said|says|told|tells)\b", re.I)
+# "I no longer work at Acme", "I used to live in Austin": not a current fact.
+_NEGATED = re.compile(r"\b(?:not|never|no longer|used to|former(?:ly)?|quit|left|leaving|until|n't)\b|n't\b", re.I)
 _SENSITIVE = re.compile(
     _AMOUNT + r"|\b(?:diagnos\w*|allerg\w*|medication|medicine|medical|prescription|pharmacy|therap\w*|"
+    r"psychiatr\w*|psycholog\w*|counsel+ing|mental|rehab\w*|addiction|recovery|sober\w*|hiv|std|sti|"
+    r"abortion|fertility|ivf|chemo\w*|planned parenthood|betterhelp|talkspace|aa|na|"
     r"doctor|clinic|hospital|surgery|cardiolog\w*|oncolog\w*|cancer|diabet\w*|depress\w*|anxiety|pregnan\w*|"
-    r"lab results?|cholesterol|blood|health|salary|income|balance|loan|debt|credit score|bank account|"
+    r"appointment|patient|lab results?|cholesterol|blood|health\w*|"
+    r"salary|income|balance|loan|debt|credit score|bank\w*|mortgage|bankrupt\w*|unemploy\w*|"
     r"routing|account (?:number|no)|card (?:number|ending)|ssn|social security|passport|driver'?s licen[cs]e|"
-    r"password|passcode|pin|one-time code|verification code|religio\w*|church|mosque|synagogue|politic\w*|"
-    r"democrat\w*|republican\w*|sexual\w*|lawsuit|attorney|lawyer|court|arrest\w*|probation|divorce)\b", re.I)
+    r"immigration|visa|green card|uscis|"
+    r"password|passcode|pin|one-time code|verification code|"
+    r"religio\w*|church|mosque|synagogue|temple|parish|"
+    r"politic\w*|democrat\w*|republican\w*|gop|actblue|winred|campaign|"
+    r"sexual\w*|gay|lesbian|lgbt\w*|queer|trans|transgender\w*|transsexual\w*|grindr|tinder|hinge|bumble|okcupid|dating|"
+    r"lawsuit|attorney|lawyer|court|arrest\w*|probation|divorce|custody)\b", re.I)
 _DIGITS = re.compile(r"\d{4,}")
-# Where the user's own words end in their Sent mail: a forwarded or quoted message
-# below is someone else's ("I started at Stripe" in a friend's forwarded note).
-# extract._clean keeps a forward's content (it is the content for reminders) and
-# doesn't know Gmail's divider, so the fact pass cuts again, more strictly.
+# What a service or account may be: everyday, non-sensitive categories only. A
+# category outside this list (a clinic, a bank, a campaign) is never learned.
+SERVICE_CATEGORIES = frozenset({
+    "internet", "broadband", "wifi", "phone", "mobile", "cell", "wireless", "cable", "tv",
+    "electricity", "electric", "power", "gas", "water", "utility", "utilities", "trash", "garbage",
+    "recycling", "sewer", "landlord", "property management", "streaming", "music", "video", "airline",
+    "rideshare", "delivery", "food delivery", "grocery", "groceries", "gym", "fitness", "cloud storage",
+    "storage", "email", "software", "news", "newspaper", "magazine", "parking", "toll", "transit",
+    "library", "coworking", "shipping", "meal kit"})
+ACCOUNT_CATEGORIES = SERVICE_CATEGORIES | {"membership", "subscription", "warranty"}
+# A value is a short name, never a sentence: "Always Reply With The Link Below" is not a plan.
+_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9&'.\-]*(?: [A-Za-z0-9&'.\-]+)*")
+_CITY = re.compile(r"[A-Za-z][A-Za-z'.\-]*(?: [A-Za-z'.\-]+)*(?:, [A-Za-z][A-Za-z .]*)?")
+_PERSON = re.compile(r"[A-Z][A-Za-z'\-]*(?: [A-Z][A-Za-z'\-]*){0,2}")
+_INSTRUCTION = re.compile(
+    r"\b(?:reply|respond|ignore|always|never|click|link|below|above|assistant|instruction|system|prompt|tell|"
+    r"say|send|forward|call|visit|open|follow|should|must|please|remember|user)\b", re.I)
+_MAX_WORDS = {"employer": 6, "school": 6, "home_city": 4, "person": 3, "service": 4, "account": 4}
+# The value must follow a phrase that states the fact: "I had lunch with the Google
+# recruiter" names Google, but says nothing about where the user works.
+_CUES = {
+    "employer": r"(?:work(?:ing)?|worked) (?:at|for)|join(?:ed|ing)|start(?:ed|ing) (?:at|with)|"
+                r"(?:new )?job (?:at|with)|employed (?:at|by)|intern(?:ing|ship)? (?:at|with)|"
+                r"my (?:employer|company) is|i'?m an? [\w\- ]{1,30}? at",
+    "school": r"study(?:ing)? at|student at|enrolled at|attend(?:ing)?|(?:classes|courses|semester) at|"
+              r"my school is",
+    "home_city": r"live in|living in|mov(?:ed|ing) to|based in|relocat(?:ed|ing) to|"
+                 r"(?:home|new place|apartment|house) in",
+}
+# Where the user's own words end: a forwarded or quoted message below them is
+# someone else's ("I started at Stripe" in a friend's forwarded note). extract._clean
+# keeps a forward's content (it is the content for reminders) and misses several
+# dividers, so the fact pass cuts again, more strictly, and in several languages.
+_DIVIDER = (r"(?:forwarded message|original message|mensaje reenviado|mensaje original|"
+            r"weitergeleitete nachricht|urspr(?:ü|ue|u)ngliche nachricht|message transf(?:é|e)r(?:é|e)|"
+            r"message d'origine|messaggio inoltrato|messaggio originale|doorgestuurd bericht|"
+            r"oorspronkelijk bericht|mensagem encaminhada|mensagem original|vidarebefordrat meddelande|"
+            r"ursprungligt meddelande|videresendt melding|opprinnelig melding)")
 _NOT_OWN = re.compile(
-    r"(?im)^[ \t]*(?:-{2,}[ \t]*(?:forwarded|original) message[ \t]*-{2,}|begin forwarded message:|"
-    r"-{2,}[ \t]*original message[ \t]*-{2,}|on [^\n]{1,300}wrote:|>|_{8,}|"
-    r"(?:from|sent|to|subject|date):[ \t]+[^\n]{0,300}$)")
+    r"(?im)^[ \t]*(?:"
+    r"[-_=*~ \t]*" + _DIVIDER + r"[-_=*~ \t:]*$"
+    r"|(?:begin forwarded message|d(?:é|e)but du message r(?:é|e)exp(?:é|e)di(?:é|e)|"
+    r"anfang der weitergeleiteten nachricht|inicio del mensaje reenviado|inizio messaggio inoltrato)\s*:?"
+    r"|(?:on|am|le|el|il|op|em|den)\s[^\n]{1,300}(?:wrote|schrieb|a (?:é|e)crit|escribi(?:ó|o)|ha scritto|"
+    r"schreef|escreveu|skrev)[^\n]{0,200}:[ \t]*$"
+    r"|>"
+    r"|[-_=]{8,}"
+    r"|(?:from|sent|to|cc|subject|date|de|von|gesendet|an|betreff|datum|envoy(?:é|e)|(?:à|a)|objet|enviado|"
+    r"para|asunto|fecha|da|inviato|oggetto|data|van|verzonden|aan|onderwerp|fr(?:å|a)n|skickat|till|"
+    r"(?:ä|a)mne)[ \t]*:[ \t]*\S[^\n]{0,300}$"
+    r")")
+_CF = dict.fromkeys([0xad, 0x61c, 0x180e, 0xfeff, *range(0x200b, 0x2010), *range(0x202a, 0x202f),
+                    *range(0x2060, 0x2065), *range(0x2066, 0x2070), *range(0xfff9, 0xfffc)])
+
+
+def _plain(text: str) -> str:
+    """Without invisible format characters, which can hide words from every check."""
+    return str(text or "").translate(_CF)
 
 
 def own_words(email: Email) -> str:
-    """The part of an email above any forwarded or quoted message: in Sent mail,
-    the only text that speaks for the user."""
-    return _NOT_OWN.split(email.body, maxsplit=1)[0]
+    """The part of an email's body above any forwarded or quoted message: the
+    only text that speaks for its writer. Never the subject."""
+    return _NOT_OWN.split(_plain(email.body), maxsplit=1)[0]
 
 
 def eligible(row: dict) -> bool:
@@ -92,10 +154,24 @@ def eligible(row: dict) -> bool:
 
 
 def addressed_to(email: Email, own: list[str]) -> bool:
-    """True when the email's To: names one of the user's addresses, or when they
-    are unknown (nothing to check against)."""
-    own = [a.casefold() for a in own if a and "@" in a]
-    return not own or any(a in email.to.casefold() for a in own)
+    """True only when the email's To: lists one of the user's own addresses exactly.
+    Unknown addresses mean False: inbox facts fail closed."""
+    mine = {a.strip().casefold() for a in own if a and "@" in a}
+    listed = {addr.strip().casefold() for _, addr in getaddresses([email.to]) if addr}
+    return bool(mine & listed)
+
+
+def _from_sender(value: str, sender: str) -> bool:
+    """An inbox service must be the one writing: "Comcast" from billing@comcast.net,
+    "AppleCare" from no_reply@apple.com. Text a bulk sender puts in its mail can't
+    name someone else."""
+    name, addr = parseaddr(sender)
+    flat = re.sub(r"[^a-z0-9]", "", f"{name} {addr}".casefold())
+    labels = [l for l in re.split(r"[.@]", addr.casefold().split("@")[-1]) if len(l) >= 4]
+    for token in re.findall(r"[a-z0-9]{3,}", value.casefold()):
+        if token in flat or any(token.startswith(l) or l.startswith(token) for l in labels):
+            return True
+    return False
 
 
 _RULES = """You find lasting facts about the user named above in ONE email. Today is {today}.
@@ -147,13 +223,27 @@ def parse_reply(text: str) -> list[dict] | None:
 
 
 def _clean(value: object, limit: int) -> str:
-    return " ".join(str(value or "").split())[:limit + 1]
+    return " ".join(_plain(value).split())[:limit + 1]
+
+
+def _shape_ok(kind: str, value: str) -> bool:
+    if any(unicodedata.category(ch) in ("Cc", "Cf", "Co", "Cs") for ch in value):
+        return False
+    if len(value.split()) > _MAX_WORDS[kind] or _INSTRUCTION.search(value):
+        return False
+    pattern = _PERSON if kind == "person" else _CITY if kind == "home_city" else _NAME
+    return pattern.fullmatch(value) is not None
 
 
 def validate(candidates: list[dict], email: Email, *, sent_by_user: bool,
-             to_user: bool = True) -> tuple[list[dict], dict]:
-    """Keep candidates the email proves about the user. Returns (kept, why-dropped counts)."""
-    body = _norm(f"{email.subject}\n{email.body}")
+             to_user: bool = False) -> tuple[list[dict], dict]:
+    """Keep candidates the email proves about the user. Returns (kept, why-dropped counts).
+
+    Quotes are checked against the body only (never the subject, which a sender
+    writes for anyone), and must sit in the writer's own words above any
+    forwarded or quoted message. `to_user`: the email's To: names the user
+    exactly (addressed_to); inbox facts need it."""
+    body = _norm(_plain(email.body))
     own = _norm(own_words(email))
     kept, dropped, seen = [], {}, set()
 
@@ -177,14 +267,21 @@ def validate(candidates: list[dict], email: Email, *, sent_by_user: bool,
         if _LINKISH.search(value) or _LINKISH.search(role) or _DIGITS.search(value):
             drop("link_or_number")
             continue
+        if not _shape_ok(kind, value):
+            drop("value_shape")                # a sentence or an instruction, not a name
+            continue
         if len(quote) < MIN_QUOTE:
             drop("quote_too_short")
             continue
         q = _norm(quote).strip(" .…")
+        nv = _norm(value)
         if q not in body:
             drop("quote_not_in_email")
             continue
-        if _norm(value) not in q:
+        if q not in own:
+            drop("not_own_words")              # forwarded or quoted text below the writer's own words
+            continue
+        if not re.search(rf"(?<![\w]){re.escape(nv)}(?![\w])", q):
             drop("value_not_in_quote")
             continue
         if _SENSITIVE.search(quote) or _SENSITIVE.search(value) or _SENSITIVE.search(role):
@@ -194,9 +291,6 @@ def validate(candidates: list[dict], email: Email, *, sent_by_user: bool,
             if not sent_by_user:
                 drop("inbox_self")             # written TO the user: "I got the job" is the sender's
                 continue
-            if q not in own:
-                drop("not_own_words")          # forwarded or quoted text inside the user's Sent mail
-                continue
             if not _FIRST_PERSON.search(quote):
                 drop("not_first_person")
                 continue
@@ -204,17 +298,29 @@ def validate(candidates: list[dict], email: Email, *, sent_by_user: bool,
                 if not role or not re.search(rf"\b(?:my|our)\s+(?:\w+\s+)?{re.escape(role)}\b", q):
                     drop("no_relation")        # "my sister Priya": the relation must be stated
                     continue
-            elif _THIRD_PERSON.search(quote):
-                drop("third_person")           # "Dana told me she moved to Denver"
-                continue
+            else:
+                if _THIRD_PERSON.search(quote):
+                    drop("third_person")       # "Dana told me she moved to Denver"
+                    continue
+                if _NEGATED.search(quote):
+                    drop("negated")            # "I no longer work at Acme"
+                    continue
+                if not re.search(rf"\b(?:{_CUES[kind]})\s+(?:the\s+)?{re.escape(nv)}(?![\w])", q):
+                    drop("no_cue")             # the quote names the value but doesn't state the fact
+                    continue
         else:
-            if not sent_by_user and not to_user:
-                drop("not_to_user")
+            allowed = SERVICE_CATEGORIES if kind == "service" else ACCOUNT_CATEGORIES
+            if role not in allowed or not re.search(rf"\b{re.escape(role)}\b", own):
+                drop("category")               # only everyday categories, as the email says them
                 continue
-            if role and _norm(role) not in body:
-                role = ""                      # what the service is, only if the email says
-        norm_value = _norm(value)
-        group = f"{norm_value}|{role}" if kind == "person" else norm_value
+            if not sent_by_user:
+                if not to_user:
+                    drop("not_to_user")
+                    continue
+                if not _from_sender(value, email.sender):
+                    drop("not_from_sender")
+                    continue
+        group = f"{nv}|{role}" if kind == "person" else nv
         if (kind, group) in seen:
             drop("duplicate")
             continue
@@ -239,19 +345,57 @@ def fact_text(kind: str, value: str, role: str = "") -> str:
         return f"{value} is my {role}"
     if kind == "service":
         return f"I use {value} ({role})" if role else f"I use {value}"
-    return f"I have {value}"
+    return f"I have {value} ({role})" if role else f"I have {value}"
 
 
 def _category(kind: str) -> str:
     return "person" if kind == "person" else "fact"
 
 
-def promote(st, facts, *, now: float, groups: list[tuple[str, str]] | None = None) -> dict:
-    """Save candidates with enough support as facts in facts.db.
+# Origins that are the user's own word: what they told Wisp (explicit, captured
+# from chat, or saved by an older build). Mail never silently overrides these.
+USER_ORIGINS = frozenset({"explicit", "automatic", "legacy"})
+GENERATION = "facts_generation"
+# One writer at a time between saving facts and forgetting them, so nothing learned
+# from mail can land after "forget everything from mail" (or an account's removal).
+_LOCK = threading.Lock()
 
-    - person, service, account: two different emails.
+
+def generation(st) -> str:
+    return st.meta(GENERATION, "0")
+
+
+def source_id(account: str, message_id: str) -> str:
+    """Evidence id for one email: its account, so removing an account can find it."""
+    return f"{account}|{message_id}" if account else message_id
+
+
+def record(st, facts, *, key: str, account: str, sent_ts: float, kept: list[dict], now: float,
+           expect: str, save: bool) -> dict | None:
+    """Store one email's candidates and, when `save`, save what they now support.
+    None (nothing written) when a forget ran since `expect` was read."""
+    with _LOCK:
+        if generation(st) != expect:
+            return None
+        groups = st.add_candidates(key, sent_ts, kept, EXTRACTOR, now, account=account)
+        return _promote(st, facts, now=now, groups=groups) if save and groups else {}
+
+
+def promote(st, facts, *, now: float, groups: list[tuple[str, str]] | None = None,
+            expect: str | None = None) -> dict | None:
+    """Save candidates with enough support (all of them when `groups` is None).
+    None when a forget ran since `expect` was read."""
+    with _LOCK:
+        if expect is not None and generation(st) != expect:
+            return None
+        return _promote(st, facts, now=now, groups=groups)
+
+
+def _promote(st, facts, *, now: float, groups) -> dict:
+    """- person, service, account: two different emails.
     - employer, school, home_city from the user's own Sent mail: one email; only the
-      newest value per slot is saved, and an older email never replaces a newer fact.
+      newest value per slot is saved (ties go to one value, deterministically), and
+      an older email never replaces a newer fact.
     - Nothing whose newest evidence is over MAX_AGE_S old.
     Returns counts: saved (active), offered (proposed, where the user's own word
     holds the slot), held (not enough support, stale or older), suppressed (forgotten)."""
@@ -280,14 +424,16 @@ def promote(st, facts, *, now: float, groups: list[tuple[str, str]] | None = Non
             if any(f["observed_at"] > newest for f in current):
                 out["held"] += 1                  # an older email never replaces a newer fact
                 continue
-            owned = [f for f in current if f["status"] == "active" and (f["origin"] == "explicit" or f["reviewed"])]
+            owned = [f for f in current if f["status"] == "active"
+                     and (f["origin"] in USER_ORIGINS or f["reviewed"])]
             if owned:
                 # The user's own word outranks mail: ask instead of overriding it.
                 origin, status = "historical", "proposed"
                 explanation = f"Learned from your mail. May replace: {owned[0]['text']}"
-        evidence = [{"source_type": SOURCE_TYPE, "source_id": r["source_id"], "quote": r["quote"],
-                     "observed_at": r["sent_ts"], "label": f"From your mail: {r['subject'][:200]}",
-                     "extractor_version": EXTRACTOR} for r in rows]
+        evidence = [{"source_type": SOURCE_TYPE, "source_id": source_id(r["account"], r["source_id"]),
+                     "quote": r["quote"], "observed_at": r["sent_ts"],
+                     "label": f"From your mail: {r['subject'][:200]}", "extractor_version": EXTRACTOR}
+                    for r in rows]
         result = facts.add(text, _category(kind), origin=origin, status=status, evidence=evidence,
                            explanation=explanation, subject=subject, predicate=predicate)
         if result.get("suppressed"):
@@ -307,8 +453,25 @@ def _fact_key(text: str) -> str:
 def forget_all(st, facts) -> dict:
     """"Forget everything from mail": every fact learned only from mail is
     forgotten (and suppressed, so it can't come back), mail evidence is removed
-    from facts that the user also stated elsewhere, and the candidates go."""
-    removed = facts.forget_source(SOURCE_TYPE)
-    cleared = st.clear_candidates()
+    from facts that the user also stated elsewhere, and the candidates go. A fact
+    pass already running finds the generation changed and writes nothing."""
+    with _LOCK:
+        st.set_meta(GENERATION, str(int(generation(st) or 0) + 1))
+        removed = facts.forget_source(SOURCE_TYPE)
+        cleared = st.clear_candidates()
     return {"forgotten": removed["forgotten"], "evidence_removed": removed["evidence_removed"],
             "candidates_cleared": cleared}
+
+
+def forget_accounts(st, facts, accounts) -> dict:
+    """A mail account that left Mail takes what was learned from it along: its
+    candidates, its evidence, and every fact that rested only on it."""
+    out = {"forgotten": 0, "evidence_removed": 0, "candidates_cleared": 0}
+    with _LOCK:
+        for account in sorted(a for a in accounts if a):
+            st.set_meta(GENERATION, str(int(generation(st) or 0) + 1))
+            removed = facts.forget_source(SOURCE_TYPE, prefix=source_id(account, ""))
+            out["forgotten"] += removed["forgotten"]
+            out["evidence_removed"] += removed["evidence_removed"]
+            out["candidates_cleared"] += st.clear_candidates(account=account)
+    return out

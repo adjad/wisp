@@ -9,10 +9,10 @@ from contextvars import ContextVar
 from service.memory.facts import _key, fingerprint, terms
 
 
-# Whether this turn's model may see facts learned only from mail. The agent loop
-# sets it from profile.may_send_to for its target, so the recall tool's results
-# follow the same rule as the prompt's memory block.
-mail_facts_allowed: ContextVar[bool] = ContextVar('mail_facts_allowed', default=True)
+# Whether this turn's model may see facts learned only from mail. Fails closed: the
+# agent loop opts in only for a local target (profile.mail_facts_may_go), so the
+# recall tool's results follow the same rule as the prompt's memory block.
+mail_facts_allowed: ContextVar[bool] = ContextVar('mail_facts_allowed', default=False)
 
 
 def _in_scope(text, query):
@@ -117,11 +117,12 @@ def _strict_passages(sessions, facts, query, limit, exclude_session):
 
 
 def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=15, strict=False,
-             mail_facts=True):
+             mail_facts=None):
     """`strict=True` is opt-in: every significant term must match, not any one.
-    `mail_facts=False` leaves out facts learned only from mail (mail memory's
-    profile facts): they go only where the know-you profile may go."""
-    mail_facts = mail_facts and mail_facts_allowed.get()
+    `mail_facts`: whether facts learned only from mail may be returned. None reads
+    `mail_facts_allowed` (False unless a local turn opted in); only a caller that
+    knows its reader is local (the app's own Memory window, a local prompt) passes True."""
+    mail_facts = mail_facts_allowed.get() if mail_facts is None else bool(mail_facts)
     if facts is None:
         from service.memory.facts import store as facts
     if sessions is None:
