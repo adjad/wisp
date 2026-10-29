@@ -44,7 +44,7 @@ struct NotchDayView: View {
     private var timeColumn: CGFloat { 62 * Theme.textScale }
     /// From a row's bar to its title.
     private static let barInset: CGFloat = 12
-    /// Agenda rows shown before Show more, so the tab fits the notch.
+    /// Things the agenda shows before Show more, so the tab fits the notch.
     private static let agendaRows = 8
     @State private var showWholeAgenda = false
     /// What ended in the last two hours, opened from its one-line summary.
@@ -491,7 +491,7 @@ struct NotchDayView: View {
         // A cancel still in its Undo window keeps an ended event live, on its own row.
         let over = agenda.earlier.filter { $0.isOver(cancelActive: cancelActive($0)) }
         let live = agenda.earlier.filter { !$0.isOver(cancelActive: cancelActive($0)) }
-        let ahead = showWholeAgenda ? agenda.ahead : Array(agenda.ahead.prefix(Self.agendaRows))
+        let ahead = showWholeAgenda ? agenda.ahead : agenda.firstRows(holding: Self.agendaRows)
         // An empty day has nothing to list; the blurb above already says so.
         if !agenda.earlier.isEmpty || !agenda.ahead.isEmpty {
             VStack(alignment: .leading, spacing: 2) {
@@ -507,8 +507,8 @@ struct NotchDayView: View {
                     case .free(let start, let end): freeRow(start, end)
                     }
                 }
-                if agenda.ahead.count > Self.agendaRows {
-                    Button(showWholeAgenda ? "Show fewer" : "Show \(agenda.ahead.count - Self.agendaRows) more") {
+                if agenda.thingsAhead > Self.agendaRows {
+                    Button(showWholeAgenda ? "Show fewer" : "Show \(agenda.thingsAhead - Self.agendaRows) more") {
                         showWholeAgenda.toggle()
                         model.onResize()
                     }

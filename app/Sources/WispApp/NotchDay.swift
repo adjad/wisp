@@ -234,6 +234,25 @@ struct DayAgenda: Equatable {
     let earlier: [DayItem]
     /// On now and later, or the whole day on another day.
     let ahead: [Row]
+
+    /// How many things (not free stretches) are listed ahead.
+    var thingsAhead: Int { ahead.filter { if case .item = $0 { return true } else { return false } }.count }
+
+    /// The first rows of `ahead` holding at most `limit` things. A free stretch
+    /// is never left last, where the thing that ends it would be hidden.
+    func firstRows(holding limit: Int) -> [Row] {
+        var rows: [Row] = []
+        var things = 0
+        for row in ahead {
+            if case .item = row {
+                if things == limit { break }
+                things += 1
+            }
+            rows.append(row)
+        }
+        if case .free = rows.last { rows.removeLast() }
+        return rows
+    }
 }
 
 struct DayTimeline: Equatable {
@@ -490,12 +509,14 @@ struct DayTimeline: Equatable {
     static let shortestFree: Double = 30 * 60
     static let shortestFreeNow: Double = 15 * 60
 
-    /// Whether a style holds a stretch of the day, so the time it covers isn't
-    /// free. Overdue, due-by and to-do rows are asks pinned to a moment.
-    static func holdsTime(_ style: DayStyle) -> Bool {
-        switch style {
+    /// Whether a row holds a stretch of the day, so the time it covers isn't
+    /// free. Overdue and due-by rows are asks pinned to a moment; a to-do that
+    /// happens at its time (a call, a meeting) holds its half hour.
+    static func holdsTime(_ item: DayItem) -> Bool {
+        switch item.style {
         case .calendar, .task, .suggested, .usual, .caught: return true
-        case .needsYou, .overdue, .todo: return false
+        case .todo: return item.due == nil && item.begins != nil
+        case .needsYou, .overdue: return false
         }
     }
 
@@ -509,7 +530,7 @@ struct DayTimeline: Equatable {
         // Free time counts from now on today, from the first thing on another day.
         let opening = isToday ? max(now, from) : nil
         var cursor = opening
-        for item in ahead where Self.holdsTime(item.style) {
+        for item in ahead where Self.holdsTime(item) {
             if let start = cursor, item.start - start >= (start == opening ? Self.shortestFreeNow : Self.shortestFree) {
                 rows.append((start, true, .free(start: start, end: item.start)))
             }

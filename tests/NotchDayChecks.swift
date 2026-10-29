@@ -114,8 +114,9 @@ func dayChecks(_ check: (Bool, String) -> Void) {
           "every kind of block lands on the day")
 
     // The agenda: each thing on its own row in time order, with the free stretches.
-    func rows(_ agenda: DayAgenda) -> [String] {
-        agenda.ahead.map {
+    func rows(_ agenda: DayAgenda) -> [String] { rows(agenda.ahead) }
+    func rows(_ list: [DayAgenda.Row]) -> [String] {
+        list.map {
             switch $0 {
             case .item(let item): return item.id
             case .free(let start, let end): return "free \(clock(start))–\(clock(end))"
@@ -131,6 +132,13 @@ func dayChecks(_ check: (Bool, String) -> Void) {
                            "free 17:30–18:00", "block:task:t1", "caught:c1", "need:n3"],
           "the agenda lists the day in order: \(rows(agenda))")
     check(agenda.ahead.map(\.id).count == Set(agenda.ahead.map(\.id)).count, "agenda rows have distinct ids")
+    // Show more counts things, not free stretches, and never ends on one.
+    check(agenda.thingsAhead == 7, "seven things ahead: \(agenda.thingsAhead)")
+    check(rows(agenda.firstRows(holding: 3)) == ["need:n2", "free 13:07–13:45", "block:pa2", "block:club"],
+          "the first three things, with the free stretch between them")
+    check(rows(agenda.firstRows(holding: 4)) == ["need:n2", "free 13:07–13:45", "block:pa2", "block:club", "block:away"],
+          "a free stretch whose next thing is hidden is left off: \(rows(agenda.firstRows(holding: 4)))")
+    check(agenda.firstRows(holding: 9) == agenda.ahead, "a short day shows all of it")
     let clubItem = item("block:club")!
     check(DayTimeline.gutter(clubItem, clock: clock) == ("15:00", "16:00"), "an event's column shows its start over its end")
     check(DayTimeline.gutter(item("need:n2")!, clock: clock) == ("Overdue", ""), "an overdue one says so in red")
@@ -173,6 +181,17 @@ func dayChecks(_ check: (Bool, String) -> Void) {
                        DayBlockInput(id: "b", title: "B", start: at(14.4), end: at(15), kind: "calendar")], now: now)
     check(rows(soon.agenda(now: now, isToday: true)) == ["free 13:07–13:30", "block:a", "block:b"],
           "23 minutes from now is named; a 24-minute gap later is not")
+    // A to-do that happens at its time holds it; one due by a time doesn't.
+    let withCall = DayTimeline.build(
+        blocks: [DayBlockInput(id: "lunch", title: "Lunch", start: at(12), end: at(13.5), kind: "calendar"),
+                 DayBlockInput(id: "dinner", title: "Dinner", start: at(18), end: at(19), kind: "calendar")],
+        allDay: [], needs: [], caught: [], now: now, dayStart: dayStart, dayEnd: dayEnd, workStart: at(9), workEnd: at(18),
+        isToday: true, clock: clock, dayClock: dayClock,
+        todos: [DayTodoInput(id: "call", title: "Call Priya", source: "messages", who: "Priya", due: at(16.25), kind: "call"),
+                DayTodoInput(id: "form", title: "Send the form", source: "mail", who: "", due: at(17), kind: "task")])
+    check(rows(withCall.agenda(now: now, isToday: true))
+          == ["block:lunch", "free 13:30–16:15", "todo:call", "free 16:45–18:00", "todo:form", "block:dinner"],
+          "a call splits the free time; a form due at 17:00 doesn't: \(rows(withCall.agenda(now: now, isToday: true)))")
     let grouped = window([DayBlockInput(id: "reviews", title: "Review 3 emails · Devarsh, Maya +1", start: at(14),
                                         end: at(14.5), kind: "suggestion", evidenceID: "e1",
                                         members: [DayMember(title: "Week 4", evidenceID: "e1"),
