@@ -1,4 +1,4 @@
-"""GPU power tiers and the "Save power when away" switch; no engine is contacted."""
+"""GPU power tiers and the "Save power" switch; no engine is contacted."""
 import asyncio
 import contextlib
 import json
@@ -23,18 +23,63 @@ def clean_env(monkeypatch, tmp_path):
     monkeypatch.setattr(P, "_away", None)
     monkeypatch.setattr(P, "_battery", None)
     monkeypatch.setattr(P, "_watched_calls", 0)
+    monkeypatch.setattr(P, "_uncapped_watched", 0)
+    monkeypatch.setattr(P, "_capped", {})
+    monkeypatch.setattr(P, "_lift_ok", None)
+    monkeypatch.setattr(P, "_lift_retry_at", 0.0)
+    monkeypatch.setattr(P, "_lifted", False)
+    monkeypatch.setattr(P, "_watch_task", None)
+    monkeypatch.setattr(P, "_service_loop", None)
     monkeypatch.setattr(P, "_on_battery_probe", lambda: False)
     monkeypatch.setattr(P, "_remote_only", lambda: False)
+    monkeypatch.setattr(P, "_bundled_engine", lambda: True)    # Wisp's own engine, which can lift
     from service import idle
     monkeypatch.setattr(idle, "_foreground_turns", 0)
     # No other app on the GPU, unless a test says so (the real check is tested
     # on its own below, against a fake ioreg).
-    monkeypatch.setattr(P, "_gpu_quiet", lambda sample: True)
+    monkeypatch.setattr(P, "check_other_gpu", lambda: True)
+    monkeypatch.setattr(P, "keep_gpu_baseline", lambda: None)
+    monkeypatch.setattr(P, "gpu_quiet", lambda: True)
     monkeypatch.setattr(P, "_gpu_sample", None)
+    monkeypatch.setattr(P, "_gpu_answer", None)
+    monkeypatch.setattr(P, "_gpu_failed_at", None)
 
 
-_REAL_GPU_QUIET = P._gpu_quiet
+_REAL_CHECK = P.check_other_gpu
+_REAL_BASELINE = P.keep_gpu_baseline
+_REAL_GPU_QUIET = P.gpu_quiet
 _REAL_BATTERY_PROBE = P._on_battery_probe
+
+
+class _OtherApp:
+    """Another app's GPU use on a fake clock: ``run(seconds, share)`` advances
+    time with the app holding ``share`` of the GPU; the look's own pause runs at
+    the current share. ``fail`` makes ioreg fail; ``reads`` counts the reads."""
+
+    def __init__(self):
+        self.now, self.ns, self.share, self.fail, self.reads = 1000.0, 0, 0.0, False, 0
+
+    def run(self, seconds, share):
+        self.share = share
+        self.now += seconds
+        self.ns += int(seconds * share * 1e9)
+
+    def times(self):
+        self.reads += 1
+        return None if self.fail else {200: self.ns}
+
+
+@pytest.fixture
+def real_gpu(monkeypatch):
+    """The real looks, against _OtherApp instead of ioreg."""
+    app = _OtherApp()
+    monkeypatch.setattr(P, "check_other_gpu", _REAL_CHECK)
+    monkeypatch.setattr(P, "keep_gpu_baseline", _REAL_BASELINE)
+    monkeypatch.setattr(P, "gpu_quiet", _REAL_GPU_QUIET)
+    monkeypatch.setattr(P.time, "monotonic", lambda: app.now)
+    monkeypatch.setattr(P.time, "sleep", lambda seconds: app.run(seconds, app.share))
+    monkeypatch.setattr(P, "_other_gpu_times", app.times)
+    return app
 
 
 @pytest.fixture
@@ -69,39 +114,108 @@ def test_gpu_times_are_summed_per_process():
     assert P._parse_gpu_times("") == {}
 
 
-def test_another_app_on_the_gpu_keeps_background_uncapped(monkeypatch):
-    clock = [1000.0]
-    gpu = {"ns": 0}
-    monkeypatch.setattr(P, "_gpu_quiet", _REAL_GPU_QUIET)
-    monkeypatch.setattr(P.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(P, "_other_gpu_times", lambda: {200: gpu["ns"]})
-
-    assert P.refresh_away(P.AWAY_AFTER_S + 1) is False       # first look: no baseline yet
-    clock[0] += 30
-    gpu["ns"] += int(30e9 * 0.5)                                # a game held half the GPU
-    assert P.refresh_away(P.AWAY_AFTER_S + 1) is False
-    clock[0] += 30
-    gpu["ns"] += int(30e9 * 0.01)                               # the game was closed
-    assert P.refresh_away(P.AWAY_AFTER_S + 1) is True
-    assert P.refresh_away(30) is False                          # the user came back: baseline reset
-    assert P._gpu_sample is None
-    monkeypatch.setattr(P, "_other_gpu_times", lambda: None)
-    clock[0] += 30
-    assert P.refresh_away(P.AWAY_AFTER_S + 1) is False          # an unreadable ioreg: uncapped
-    clock[0] += 30
-    assert P.refresh_away(P.AWAY_AFTER_S + 1) is False
+def test_another_app_using_seven_and_a_half_percent_of_the_gpu_keeps_every_cap_off(real_gpu, away):
+    app = real_gpu
+    assert P.OTHER_GPU_BUSY == 0.075                            # the user's choice
+    assert P.check_other_gpu() is False                         # first look: no baseline yet
+    assert _caps()[P.BACKGROUND] is None
+    app.run(30, 0.5)                                            # a game held half the GPU
+    assert P.check_other_gpu() is False and _caps()[P.BACKGROUND] is None
+    app.run(30, 0.08)                                           # a video, a browser animating
+    assert P.check_other_gpu() is False and _caps()[P.BACKGROUND] is None
+    app.run(30, 0.05)                                           # an app redrawing its window
+    assert P.check_other_gpu() is True and _caps()[P.BACKGROUND] == 10
+    app.run(30, 0.01)                                           # nothing but a blinking cursor
+    assert P.check_other_gpu() is True and _caps()[P.BACKGROUND] == 10
 
 
-def test_a_refresh_under_five_seconds_after_the_last_counts_as_busy(monkeypatch):
-    clock = [1000.0]
-    monkeypatch.setattr(P, "_gpu_quiet", _REAL_GPU_QUIET)
-    monkeypatch.setattr(P.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(P, "_other_gpu_times", lambda: {200: 0})
-    assert P.refresh_away(P.AWAY_AFTER_S + 1) is False          # baseline
-    clock[0] += 4
-    assert P.refresh_away(P.AWAY_AFTER_S + 1) is False          # too soon to tell
-    clock[0] += 30
-    assert P.refresh_away(P.AWAY_AFTER_S + 1) is True
+def test_an_app_that_started_a_moment_ago_is_seen_over_a_short_window(real_gpu, away):
+    # Averaged over the 30 s since the tick, half a second of a game is 1.7%.
+    app = real_gpu
+    P.keep_gpu_baseline()
+    reads = app.reads
+    app.run(29.5, 0.0)
+    app.run(0.5, 1.0)
+    assert P.check_other_gpu() is False and _caps()[P.BACKGROUND] is None
+    app.run(30, 0.0)                                            # the game was closed
+    assert P.check_other_gpu() is True
+    assert app.reads == reads + 4                               # after the tick, two pairs
+
+
+def test_a_failed_ioreg_read_means_uncapped_and_no_read_for_a_while(real_gpu, away):
+    app = real_gpu
+    P.keep_gpu_baseline()
+    app.run(30, 0.0)
+    app.fail = True
+    assert P.check_other_gpu() is False                         # an unreadable ioreg: uncapped
+    app.fail = False
+    app.run(P._GPU_RETRY_S - 1, 0.0)
+    reads = app.reads
+    assert P.check_other_gpu() is False and app.reads == reads  # not read again yet
+    app.run(2, 0.0)
+    assert P.check_other_gpu() is False and app.reads == reads + 1   # read: a new baseline only
+    app.run(1, 0.0)
+    assert P.check_other_gpu() is True
+
+
+def test_a_cap_needs_a_look_from_the_last_two_seconds(real_gpu, away):
+    app = real_gpu
+    P.check_other_gpu()
+    app.run(30, 0.0)
+    assert P.check_other_gpu() is True and _caps()[P.BACKGROUND] == 10
+    app.run(P._GPU_FRESH_S, 0.0)
+    assert _caps()[P.BACKGROUND] is None                        # the last look is too old
+
+
+def test_a_look_right_after_another_reuses_it_and_an_old_baseline_cant_tell(real_gpu):
+    app = real_gpu
+    P.check_other_gpu()
+    app.run(30, 0.0)
+    assert P.check_other_gpu() is True
+    reads = app.reads
+    app.run(0.2, 1.0)                                           # would be busy, if read
+    assert P.check_other_gpu() is True and app.reads == reads   # too soon: the last answer
+    app.run(1.0, 1.0)
+    assert P.check_other_gpu() is False and app.reads == reads + 1   # a short window: one read
+    app.run(P._GPU_BASELINE_MAX_S + 1, 0.0)
+    assert P.check_other_gpu() is False                         # a baseline that old can't tell
+
+
+def test_a_look_already_running_or_too_slow_means_uncapped(monkeypatch, away):
+    import threading
+    monkeypatch.setattr(P, "check_other_gpu", _REAL_CHECK)
+    monkeypatch.setattr(P, "_GPU_LOCK_WAIT_S", 0.01)
+    with P._gpu_lock:                                           # another look stuck in ioreg
+        assert P.check_other_gpu() is False
+    stuck = threading.Event()
+    monkeypatch.setattr(P, "check_other_gpu", lambda: stuck.wait(5) or True)
+    monkeypatch.setattr(P, "_LOOK_TIMEOUT_S", 0.05)
+
+    async def run():
+        try:
+            with P.power_tier(P.BACKGROUND):
+                return await P.checked_payload_fields(_lift_ok_now)
+        finally:
+            stuck.set()                                         # let the stuck look finish
+    assert asyncio.run(run()) == {}                             # the request didn't wait for it
+
+
+async def _lift_ok_now():
+    return True
+
+
+def test_the_tick_keeps_a_gpu_baseline_whenever_caps_are_possible(monkeypatch):
+    # Background work can be capped at any time, so the baseline is kept on AC too.
+    looks = []
+    monkeypatch.setattr(P, "keep_gpu_baseline", lambda: looks.append("baseline"))
+    monkeypatch.setattr(P, "check_other_gpu", lambda: looks.append("look") or True)
+    P.refresh_away(5, on_battery=False)                         # present, on AC
+    P.refresh_away(5, on_battery=True)
+    P.refresh_away(P.AWAY_AFTER_S + 1, on_battery=False)
+    assert looks == ["baseline", "baseline", "baseline"]
+    P.set_save_when_away(False)
+    P.refresh_away(5, on_battery=False)
+    assert looks == ["baseline", "baseline", "baseline"]        # the switch off: none
 
 
 @pytest.mark.parametrize("failure", [OSError("no ioreg"),
@@ -131,12 +245,14 @@ def test_ioreg_output_that_isnt_utf8_is_still_read(monkeypatch):
     assert seen.get("errors") == "replace"
 
 
-def test_wisp_its_engine_and_windowserver_dont_count(monkeypatch):
+def test_wisp_its_bundled_engine_and_windowserver_dont_count(monkeypatch):
     from service.inference import local_peer
     paths = {1: "/Applications/oMLX.app/Contents/Resources/Python/cpython-3.11/bin/python3.11",
              2: "/Applications/Wisp.app/Contents/MacOS/Wisp",
              3: "/System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/Resources/WindowServer",
-             4: "/Applications/Blender.app/Contents/MacOS/Blender"}
+             4: "/Applications/Blender.app/Contents/MacOS/Blender",
+             6: "/Applications/Wisp.app/Contents/Resources/engine/py/bin/python3.11",
+             7: "/Users/me/MOE/engine/py/bin/python3.11"}           # a source checkout's engine
 
     def path(pid):
         if pid not in paths:
@@ -144,7 +260,9 @@ def test_wisp_its_engine_and_windowserver_dont_count(monkeypatch):
         return paths[pid]
 
     monkeypatch.setattr(local_peer, "process_path", path)
-    assert [pid for pid in (1, 2, 3, 4, 5) if not P._own(pid)] == [4, 5]
+    monkeypatch.setattr(P, "_engine_root", lambda: "/Users/me/MOE/engine/")
+    # The user's oMLX.app is never Wisp's capped engine, so its GPU use counts.
+    assert [pid for pid in (1, 2, 3, 4, 5, 6, 7) if not P._own(pid)] == [1, 4, 5]
 
 
 # --- the switch -------------------------------------------------------------------
@@ -226,8 +344,8 @@ def test_the_scheduler_refreshes_away_off_the_event_loop():
 
 # --- tiers ------------------------------------------------------------------------
 
-def test_the_caps_are_10_w_away_and_15_w_on_battery():
-    assert P.watts(P.AWAY) == 10
+def test_the_caps_are_10_w_and_15_w():
+    assert P.watts(P.LOW) == 10
     assert P.watts(P.BATTERY) == 15
     assert P.watts(None) is None and P.watts(P.CHAT) is None
     with pytest.raises(ValueError):
@@ -237,12 +355,12 @@ def test_the_caps_are_10_w_away_and_15_w_on_battery():
 
 def test_env_overrides_zero_turns_off_and_out_of_range_is_ignored(monkeypatch):
     monkeypatch.setenv("WISP_BACKGROUND_GPU_W", "7")
-    assert P.watts(P.AWAY) == 7
+    assert P.watts(P.LOW) == 7
     monkeypatch.setenv("WISP_BACKGROUND_GPU_W", "0")
-    assert P.watts(P.AWAY) is None
+    assert P.watts(P.LOW) is None
     for bad in ("1", "5000", "ten"):
         monkeypatch.setenv("WISP_BACKGROUND_GPU_W", bad)
-        assert P.watts(P.AWAY) == 10
+        assert P.watts(P.LOW) == 10
     monkeypatch.setenv("WISP_BATTERY_GPU_W", "12")
     assert P.watts(P.BATTERY) == 12
 
@@ -273,13 +391,14 @@ def _caps():
     return out
 
 
-def test_on_ac_with_the_user_present_nothing_is_capped():
+def test_on_ac_with_the_user_present_only_background_work_is_capped():
+    # The user's answer (2026-10-28): "Always 10 W" for background work.
     P.refresh_away(5, on_battery=False)
-    assert _caps() == {None: None, P.CHAT: None, P.BRIEF: None, P.BACKGROUND: None}
+    assert _caps() == {None: None, P.CHAT: None, P.BRIEF: None, P.BACKGROUND: 10}
 
 
-def test_on_battery_chat_and_brief_run_at_15_w_and_the_rest_uncapped(battery):
-    assert _caps() == {None: None, P.CHAT: 15, P.BRIEF: 15, P.BACKGROUND: None}
+def test_on_battery_chat_and_brief_run_at_15_w_and_background_at_10_w(battery):
+    assert _caps() == {None: None, P.CHAT: 15, P.BRIEF: 15, P.BACKGROUND: 10}
 
 
 def test_away_brief_and_background_run_at_10_w_and_chat_uncapped(away):
@@ -298,10 +417,21 @@ def test_the_switch_off_caps_nothing(battery):
     assert _caps() == {None: None, P.CHAT: None, P.BRIEF: None, P.BACKGROUND: None}
 
 
-def test_another_app_on_the_gpu_lifts_the_battery_cap_too(monkeypatch):
-    monkeypatch.setattr(P, "_gpu_quiet", lambda sample: False)
-    P.refresh_away(5, on_battery=True)
-    assert _caps()[P.CHAT] is None
+def test_another_app_on_the_gpu_lifts_every_cap(monkeypatch):
+    monkeypatch.setattr(P, "gpu_quiet", lambda: False)
+    P.refresh_away(P.AWAY_AFTER_S + 1, on_battery=True)
+    assert _caps() == {None: None, P.CHAT: None, P.BRIEF: None, P.BACKGROUND: None}
+
+
+def test_the_users_own_omlx_app_is_never_capped_nor_probed(monkeypatch):
+    # It holds a cap 15 s past its request and can't lift one mid-request.
+    looks = []
+    monkeypatch.setattr(P, "_bundled_engine", lambda: False)
+    monkeypatch.setattr(P, "check_other_gpu", lambda: looks.append("look") or True)
+    monkeypatch.setattr(P, "keep_gpu_baseline", lambda: looks.append("baseline"))
+    P.refresh_away(P.AWAY_AFTER_S + 1, on_battery=True)
+    assert _caps() == {None: None, P.CHAT: None, P.BRIEF: None, P.BACKGROUND: None}
+    assert looks == [] and P.away() is False and P.on_battery() is False
 
 
 def test_a_stale_battery_reading_counts_as_ac(battery):
@@ -323,10 +453,10 @@ def test_the_battery_probe_reads_the_cached_power_source(monkeypatch):
 
 def test_brief_and_background_go_uncapped_while_a_watched_call_runs(away):
     started = P.call_started()                                 # a reply, research, a phone turn
-    assert started is True and P.watched_running()
+    assert started == (True, None) and P.watched_running()
     with P.power_tier(P.BRIEF):
         assert P.payload_fields() == {}
-        assert P.call_started() is False                       # Brief calls aren't watched
+        assert P.call_started() == (False, None)               # Brief calls aren't watched
     with P.power_tier(P.BACKGROUND):
         assert P.payload_fields() == {}
     P.call_ended(started)
@@ -335,11 +465,14 @@ def test_brief_and_background_go_uncapped_while_a_watched_call_runs(away):
         assert P.payload_fields() == {"gpu_power_limit_w": 10}
 
 
-def test_a_chat_on_battery_keeps_its_cap_beside_another_watched_call(battery):
-    started = P.call_started()
-    with _turn(), P.power_tier(P.CHAT):
-        assert P.payload_fields() == {"gpu_power_limit_w": 15}
-    P.call_ended(started)
+def test_a_chat_on_battery_keeps_its_cap_beside_another_capped_chat_call(battery):
+    async def run():
+        with _turn(), P.power_tier(P.CHAT):
+            started = P.call_started(15, _lifter([]))     # the turn's other call, at 15 W
+            assert P.payload_fields() == {"gpu_power_limit_w": 15}
+            P.call_ended(started)
+
+    asyncio.run(run())
 
 
 def test_a_task_left_running_after_its_chat_turn_is_not_capped(battery):
@@ -390,12 +523,14 @@ def test_the_chat_tier_resets_on_an_exception_or_cancellation(battery, ending):
 def test_with_the_switch_off_nothing_is_probed(monkeypatch):
     called = []
     monkeypatch.setattr(P, "_on_battery_probe", lambda: called.append("pmset") or True)
-    monkeypatch.setattr(P, "_gpu_quiet", lambda sample: called.append(("gpu", sample)) or True)
+    monkeypatch.setattr(P, "check_other_gpu", lambda: called.append("gpu") or True)
+    monkeypatch.setattr(P, "keep_gpu_baseline", lambda: called.append("baseline"))
     from service.mail_memory import runner
     monkeypatch.setattr(runner, "_hid_idle_s", lambda: called.append("hid") or 9999.0)
+    P._gpu_sample = (1.0, {200: 5})
     P.set_save_when_away(False)
     assert P.refresh_away() is False
-    assert called == [("gpu", False)]                          # only the baseline is dropped
+    assert called == [] and P._gpu_sample is None              # only the baseline is dropped
     assert P.away() is False and P.on_battery() is False
 
 
@@ -452,10 +587,15 @@ def test_tier_is_scoped_to_the_block_and_inherited_by_tasks(away):
 
 # --- the client -------------------------------------------------------------------
 
-def _client(managed, reply_hook=None):
+def _client(managed, reply_hook=None, lift_status=200):
+    """An OMLXClient on a fake engine; the lift requests it gets land in client.lifts."""
     bodies = []
+    lifts = []
 
     def reply(request):
+        if request.url.path == "/v1/wisp/gpu-power/lift":
+            lifts.append(request.method)
+            return httpx.Response(lift_status, json={"status": "ok"})
         bodies.append(json.loads(request.content))
         if reply_hook:
             reply_hook()
@@ -469,6 +609,7 @@ def _client(managed, reply_hook=None):
     client._fit_request = lambda m, messages, tools, tokens, **kw: (m, messages, tools, tokens)
     client._client = httpx.AsyncClient(base_url="http://test.invalid",
                                        transport=httpx.MockTransport(reply))
+    client.lifts = lifts
     return client, bodies
 
 
@@ -486,7 +627,7 @@ def test_the_client_sends_each_call_its_per_request_cap():
             with P.power_tier(P.BRIEF):
                 await client.chat("m", hi)                    # 3: Brief, battery
             with P.power_tier(P.BACKGROUND):
-                await client.chat("m", hi)                    # 4: background, battery
+                await client.chat("m", hi)                    # 4: background, battery (10 W)
                 P.refresh_away(P.AWAY_AFTER_S + 1, on_battery=False)
                 await client.chat("m", hi)                    # 5: background, away
                 await client.chat("m", hi, gpu_power_limit_w=12)  # 6: explicit wins
@@ -496,7 +637,8 @@ def test_the_client_sends_each_call_its_per_request_cap():
 
     asyncio.run(run())
     caps = [body.get("gpu_power_limit_w") for body in bodies]
-    assert caps == [None, None, 15, 15, None, 10, 12, None]
+    assert caps == [None, None, 15, 15, 10, 10, 12, None]
+    assert client.lifts == ["POST"]                           # asked once, before the first cap
 
 
 def test_the_client_counts_a_watched_call_only_while_it_runs(away):
@@ -522,8 +664,316 @@ def test_a_remote_provider_never_gets_the_field(away):
     client = OMLXClient.__new__(OMLXClient)
     client.managed = False
     with P.power_tier(P.BACKGROUND):
-        assert _power_fields(client) == {}
-    assert _power_fields(client) == {}
+        assert asyncio.run(_power_fields(client)) == {}
+    assert asyncio.run(_power_fields(client)) == {}
+
+
+_HI = [{"role": "user", "content": "hi"}]
+
+
+def _engine(release=None, lift=200):
+    """An OMLXClient on a fake bundled engine whose replies wait for ``release``.
+    Returns (client, bodies, lifts): each lift records how many requests came first."""
+    bodies, lifts = [], []
+
+    async def reply(request):
+        if request.url.path == "/v1/wisp/gpu-power/lift":
+            if lift == "unreachable":
+                raise httpx.ConnectError("engine gone", request=request)
+            lifts.append(len(bodies))
+            return httpx.Response(lift, json={"status": "ok"})
+        bodies.append(json.loads(request.content))
+        if release is not None:
+            await release.wait()
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop",
+                                                      "message": {"content": "ok"}}]})
+
+    client, _ = _client(managed=True)
+    client._client = httpx.AsyncClient(base_url="http://test.invalid", transport=httpx.MockTransport(reply))
+    return client, bodies, lifts
+
+
+def test_the_watch_lifts_a_running_cap_the_moment_another_app_uses_the_gpu(monkeypatch, away):
+    gpu = {"quiet": True}
+    monkeypatch.setattr(P, "check_other_gpu", lambda: gpu["quiet"])
+    monkeypatch.setattr(P, "gpu_quiet", lambda: gpu["quiet"])
+    monkeypatch.setattr(P, "WATCH_EVERY_S", 0.01)
+
+    async def run():
+        release = asyncio.Event()
+        client, bodies, lifts = _engine(release)
+        try:
+            with P.power_tier(P.BACKGROUND):
+                call = asyncio.ensure_future(client.chat("m", _HI))
+                await asyncio.sleep(0.05)
+                assert bodies[0]["gpu_power_limit_w"] == 10 and lifts == [0]   # asked once, first
+                await asyncio.sleep(0.05)
+                assert lifts == [0]                       # nothing else on the GPU: the cap stays
+                gpu["quiet"] = False                      # a game starts mid-request
+                await asyncio.sleep(0.05)
+                assert lifts == [0, 1]                    # lifted while the request still runs
+                await asyncio.sleep(0.05)
+                assert lifts == [0, 1]                    # once
+                release.set()
+                await call
+                await client.chat("m", _HI)               # the game still runs: uncapped
+                assert "gpu_power_limit_w" not in bodies[1]
+            await asyncio.sleep(0.05)
+            assert P._watch_task is None and not P._capped   # nothing capped: no more looks
+        finally:
+            await client._client.aclose()
+
+    asyncio.run(run())
+
+
+def _lifter(log, answer=True):
+    async def lift():
+        log.append(answer)
+        return answer
+    return lift
+
+
+def test_a_call_someone_waits_on_never_runs_under_a_lower_cap(battery):
+    lifted = []
+    lift = _lifter(lifted)
+
+    async def run():
+        with P.power_tier(P.BRIEF):
+            brief = P.call_started(15, lift)
+        with _turn(), P.power_tier(P.CHAT):
+            chat = P.call_started(15, lift)               # the same cap: nothing to lift
+            await asyncio.sleep(0)
+            assert lifted == []
+        with P.power_tier(P.BACKGROUND):
+            background = P.call_started(10, lift)
+            await asyncio.sleep(0)
+            assert lifted == []                           # nobody waits on background work
+        with _turn(), P.power_tier(P.CHAT):
+            chat_too = P.call_started(15, lift)           # would run at 10 W: lifted
+            await asyncio.sleep(0)
+            assert len(lifted) == 1
+        research = P.call_started(None, lift)             # research, never capped: lifted
+        await asyncio.sleep(0)
+        assert len(lifted) == 2
+        assert P._lifted is False                         # only the watch marks a cap lifted
+        for started in (brief, chat, background, chat_too, research):
+            P.call_ended(started)
+        assert not P._capped and not P.watched_running() and P._uncapped_watched == 0
+
+    asyncio.run(run())
+
+
+def test_a_chat_lift_racing_its_own_cap_still_leaves_the_watch_armed(monkeypatch, battery):
+    # The lift for a chat starting beside a 10 W call may reach the engine
+    # before the chat's own 15 W does; the watch must still look after it.
+    gpu = {"quiet": True}
+    lifted = []
+    monkeypatch.setattr(P, "check_other_gpu", lambda: gpu["quiet"])
+    monkeypatch.setattr(P, "WATCH_EVERY_S", 0.01)
+
+    async def run():
+        lift = _lifter(lifted)
+        with P.power_tier(P.BACKGROUND):
+            background = P.call_started(10, lift)
+        with _turn(), P.power_tier(P.CHAT):
+            chat = P.call_started(15, lift)
+            await asyncio.sleep(0.03)
+            assert len(lifted) == 1                       # the chat's lift
+            P.call_ended(background)
+            gpu["quiet"] = False                          # then a game starts
+            await asyncio.sleep(0.05)
+            assert len(lifted) == 2                       # the watch lifts the chat's own cap
+            P.call_ended(chat)
+
+    asyncio.run(run())
+
+
+def test_a_lift_through_a_client_that_just_closed_goes_through_another(away):
+    # The newest capped call's client closed mid-POST (its call ended): the
+    # engine is still reachable through the other call's client.
+    asked = []
+
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            older = P.call_started(10, _lifter(asked, True))
+            newest = P.call_started(10, _lifter(asked, None))
+        await P._lift_now(watch=True)
+        P.call_ended(newest)
+        P.call_ended(older)
+
+    asyncio.run(run())
+    assert asked == [None, True]                               # newest first, then the other
+    assert P._lifted is True and P._lift_ok is True and P._lift_retry_at == 0.0
+
+
+def test_the_watch_asks_again_when_a_lift_did_not_go_through(monkeypatch, away):
+    answers = [None, True]                                      # a 2 s timeout, then fine
+    asked = []
+    monkeypatch.setattr(P, "check_other_gpu", lambda: False)    # a game is running
+    monkeypatch.setattr(P, "WATCH_EVERY_S", 0.01)
+
+    async def lift():
+        asked.append(len(asked))
+        return answers[min(len(asked) - 1, 1)]
+
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            started = P.call_started(10, lift)
+        await asyncio.sleep(0.06)
+        P.call_ended(started)
+
+    asyncio.run(run())
+    assert len(asked) == 2 and P._lifted is True               # asked again, then stopped
+
+
+def test_a_watched_call_on_another_thread_lifts_through_the_service_loop(battery):
+    import threading
+    lifted = []
+
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            capped = P.call_started(10, _lifter(lifted))       # on the service loop
+        started = {}
+        worker = threading.Thread(target=lambda: started.update(token=P.call_started(None, _lifter([]))))
+        worker.start()
+        await asyncio.to_thread(worker.join)
+        await asyncio.sleep(0.01)
+        assert lifted == [True]                                 # via call_soon_threadsafe
+        P.call_ended(started["token"])
+        P.call_ended(capped)
+        assert P._uncapped_watched == 0 and not P._capped and not P.watched_running()
+
+    asyncio.run(run())
+
+
+def test_no_chat_call_is_capped_while_a_call_someone_waits_on_runs_uncapped(battery):
+    async def run():
+        research = P.call_started(None, _lifter([]))     # research, voice transcription
+        with _turn(), P.power_tier(P.CHAT):
+            assert P.payload_fields() == {}
+        P.call_ended(research)
+        with _turn(), P.power_tier(P.CHAT):
+            assert P.payload_fields() == {"gpu_power_limit_w": 15}
+
+    asyncio.run(run())
+
+
+def test_calls_on_another_threads_event_loop_are_never_capped(monkeypatch, battery):
+    # The behavior phraser runs asyncio.run in a worker thread with a client
+    # that closes when it ends: none of its calls is capped or watched, and the
+    # service loop's capped call keeps lifting through its own client.
+    import threading
+    gpu = {"quiet": True}
+    monkeypatch.setattr(P, "check_other_gpu", lambda: gpu["quiet"])
+    monkeypatch.setattr(P, "WATCH_EVERY_S", 0.01)
+    seen = {}
+
+    def phraser():
+        async def go():
+            client, bodies, lifts = _engine()
+            try:
+                with P.power_tier(P.BACKGROUND):
+                    await client.chat("m", _HI)
+            finally:
+                await client._client.aclose()
+            seen.update(bodies=bodies, lifts=lifts, watch=P._watch_task)
+        asyncio.run(go())
+
+    async def run():
+        release = asyncio.Event()
+        client, bodies, lifts = _engine(release)
+        try:
+            with P.power_tier(P.BACKGROUND):
+                call = asyncio.ensure_future(client.chat("m", _HI))
+                await asyncio.sleep(0.03)
+                assert bodies[0]["gpu_power_limit_w"] == 10
+                worker = threading.Thread(target=phraser)
+                worker.start()
+                await asyncio.to_thread(worker.join)
+                gpu["quiet"] = False                      # a game starts
+                await asyncio.sleep(0.05)
+                assert lifts == [0, 1]                    # lifted through the open client
+                release.set()
+                await call
+        finally:
+            await client._client.aclose()
+
+    asyncio.run(run())
+    assert "gpu_power_limit_w" not in seen["bodies"][0] and seen["lifts"] == []
+    assert P._lift_ok is True and not P._capped
+
+
+def test_an_engine_that_cant_lift_is_never_capped(away):
+    async def run():
+        client, bodies, lifts = _engine(lift=404)         # a bundled engine from before the route
+        try:
+            with P.power_tier(P.BACKGROUND):
+                await client.chat("m", _HI)
+                await client.chat("m", _HI)
+        finally:
+            await client._client.aclose()
+        return bodies, lifts
+
+    bodies, lifts = asyncio.run(run())
+    assert [b.get("gpu_power_limit_w") for b in bodies] == [None, None]
+    assert lifts == [0] and P._lift_ok is False
+    assert P.refresh_away(P.AWAY_AFTER_S + 1) is False    # and nothing is probed any more
+
+
+def test_an_unreachable_engine_leaves_caps_off_for_a_minute_then_is_asked_again(monkeypatch, away):
+    clock = [1000.0]
+    monkeypatch.setattr(P.time, "monotonic", lambda: clock[0])
+
+    async def run(lift):
+        client, bodies, _ = _engine(lift=lift)
+        try:
+            with P.power_tier(P.BACKGROUND):
+                await client.chat("m", _HI)
+        finally:
+            await client._client.aclose()
+        return bodies[0].get("gpu_power_limit_w")
+
+    assert asyncio.run(run("unreachable")) is None and P._lift_ok is None
+    clock[0] += 30
+    assert asyncio.run(run(200)) is None                   # still within the minute: not asked
+    clock[0] += P._LIFT_RETRY_S
+    P.refresh_away(P.AWAY_AFTER_S + 1)
+    assert asyncio.run(run(200)) == 10 and P._lift_ok is True
+
+
+@pytest.mark.parametrize("answer, ok", [(False, False), (None, None)])
+def test_a_failed_lift_mid_request_stops_capping(away, answer, ok):
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            started = P.call_started(10, _lifter([], answer))
+        await P._lift_now(watch=True)
+        P.call_ended(started)
+
+    asyncio.run(run())
+    assert P._lift_ok is ok and _caps()[P.BACKGROUND] is None   # refused: the run; unreachable: a minute
+
+
+def test_the_lift_request_has_a_short_timeout():
+    from service.inference.omlx_client import _lift_gpu_power
+    sent = {}
+
+    class Engine:
+        async def post(self, path, **kwargs):
+            sent.update(path=path, **kwargs)
+            return httpx.Response(200)
+
+    assert asyncio.run(_lift_gpu_power(SimpleNamespace(_client=Engine()))) is True
+    assert sent == {"path": "/v1/wisp/gpu-power/lift", "timeout": P._LIFT_TIMEOUT_S} and P._LIFT_TIMEOUT_S <= 2
+
+
+def test_the_engine_overlay_adds_the_lift_route():
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1] / "build-support" / "engine_guard"
+    patch = json.loads((root / "server.py.patch.json").read_text())
+    route = [e for e in patch["edits"] if '"/v1/wisp/gpu-power/lift"' in e["new"]]
+    assert len(route) == 1 and route[0]["count"] == 1
+    assert "Depends(verify_api_key)" in route[0]["new"]
+    assert "await limiter.close()" in route[0]["new"]
 
 
 def test_no_model_level_cap_is_ever_seeded():
@@ -716,7 +1166,9 @@ def test_image_and_document_questions_run_at_the_chat_tier():
     assert text.index("with power_tier(CHAT):") < text.index("client.chat(")
 
 
-def test_the_mail_memory_walk_on_battery_with_the_user_present_is_uncapped(monkeypatch, battery):
+@pytest.mark.parametrize("on_battery", [True, False])
+def test_the_mail_memory_walk_runs_at_10_w_on_battery_and_plugged_in(monkeypatch, on_battery):
+    P.refresh_away(5, on_battery=on_battery)
     import service.config as config
     from service import idle
     from service.assistant import brief
@@ -733,4 +1185,4 @@ def test_the_mail_memory_walk_on_battery_with_the_user_present_is_uncapped(monke
     monkeypatch.setattr(idle, "foreground_busy", lambda: False)
     monkeypatch.setattr(idle, "in_flight", lambda key: 1)
     assert asyncio.run(runner._reply([{"role": "user", "content": "mail"}])) == "ok"
-    assert client.seen == [(P.BACKGROUND, {})]
+    assert client.seen == [(P.BACKGROUND, {"gpu_power_limit_w": 10})]

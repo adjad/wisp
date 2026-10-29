@@ -43,16 +43,19 @@ enum QuickSettingsText {
     static func saveWhenAway(on: Bool?, pending: Bool) -> String {
         if pending { return "Updating · waiting for confirmation…" }
         switch on {
-        case true?: return "Uses less power on battery and while you're away"
+        case true?: return "Uses less power, most of all on battery and while you're away"
         case false?: return "Wisp always runs at full speed"
         case nil: return "Not confirmed"
         }
     }
 
-    static let saveWhenAwayHelp = "On battery, Wisp caps its GPU at 15 W only while it writes a chat reply "
-        + "or updates your Brief. After 10 minutes away from the keyboard and mouse, its background work "
-        + "runs at 10 W. The cap ends as soon as that work is done, and nothing is capped while another "
-        + "app, like a game, is using the GPU."
+    static let saveWhenAwayHelp = "Wisp's background work always runs its GPU at 10 W, plugged in too. "
+        + "On battery, it caps the GPU at 15 W while it writes a chat reply or updates your Brief. After "
+        + "10 minutes away from the keyboard and mouse, the Brief runs at 10 W too. The cap ends as soon as "
+        + "that work is done. It's set only while other apps use little of the GPU, and lifts within about "
+        + "a second when another app, like a game or a video, starts using more. Only Wisp's built-in "
+        + "engine is capped; "
+        + "with your own oMLX app, nothing is."
 
     /// Learn my routines' line, and the trailing "stays on this Mac" when
     /// nothing learned is sent anywhere.
