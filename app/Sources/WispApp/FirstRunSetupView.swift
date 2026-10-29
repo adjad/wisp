@@ -225,9 +225,12 @@ enum FirstRunSetup {
     /// Wisp's notch, its window and asking all wait for the model while setup is
     /// under way and Wisp can't answer yet (`canAnswer` nil: the service hasn't
     /// said). Setup, Permissions and Settings stay open. Someone already set up is
-    /// never held back, even if their model later stops answering. Pure.
-    static func gatesUse(setupUnfinished: Bool, canAnswer: Bool?) -> Bool {
-        setupUnfinished && canAnswer != true
+    /// never held back, even if their model later stops answering. Nor is anyone
+    /// whose Mac can't get a model at all (`brain` .unavailable): waiting would
+    /// never end, so Wisp opens and its notch says it isn't set up. Pure.
+    static func gatesUse(setupUnfinished: Bool, canAnswer: Bool?, brain: FirstRunBrain? = nil) -> Bool {
+        if case .unavailable = brain { return false }
+        return setupUnfinished && canAnswer != true
     }
 
     /// Under the download on How to use, and on its Close for now button.

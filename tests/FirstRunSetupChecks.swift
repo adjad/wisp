@@ -848,6 +848,12 @@ struct FirstRunSetupChecks {
         check(!FirstRunSetup.gatesUse(setupUnfinished: true, canAnswer: true), "Model ready: open")
         check(!FirstRunSetup.gatesUse(setupUnfinished: false, canAnswer: false),
               "Someone already set up is never held back, even if the model stops answering")
+        check(!FirstRunSetup.gatesUse(setupUnfinished: true, canAnswer: false,
+                                      brain: .unavailable("No model Wisp can download fits this Mac.")),
+              "A Mac that can't get a model at all is never held back: the wait would never end")
+        check(FirstRunSetup.gatesUse(setupUnfinished: true, canAnswer: false,
+                                     brain: .failed(model: "m", label: "Gemma", message: "Network", paused: false)),
+              "A failed download can be retried: still held")
 
         // How to use's line: only what is known.
         check(FirstRunBrain.progressLine(doneGb: 2.5, totalGb: 5.5, speed: "10 MB/s", secondsLeft: 360)
