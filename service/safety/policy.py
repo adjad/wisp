@@ -1517,6 +1517,12 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
     if category == "compute":
         return Decision(Tier.ALLOW, "a calculation")
 
+    # Wisp describing itself (wisp_status, wisp_capabilities, wisp_skills,
+    # wisp_mcp) only reads its own state. It also fell through to
+    # "unclassified", so "is my data private?" got a guess instead.
+    if category == "wisp_admin":
+        return Decision(Tier.ALLOW, "reading Wisp's own state")
+
     # Reading system state (volume level, clipboard contents) never changes
     # anything, so it's safe even in view-only mode — same reasoning as fs_read.
     if category == "system_read":

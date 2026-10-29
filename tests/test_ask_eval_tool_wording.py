@@ -68,3 +68,26 @@ def test_do_you_know_my_birthday_asks_memory_not_capability():
     assert not mo.capability_question("do you know my birthday?")
     assert mo.asks_personal_data("do you know my birthday?")
     assert mo.capability_question("can you read my email?")
+
+
+def test_a_summary_asked_for_words_becomes_a_keyword_search(monkeypatch):
+    """summarize_emails(query="bank") failed on an unexpected argument six times
+    in the Ask run; it now hands the search to view_emails with the same scope."""
+    import asyncio
+
+    from service.tools import email_tools as E
+    seen = []
+
+    async def fake_view(query, day, count, account, period, unread, strict_match=False):
+        seen.append((query, day, count, account, period, unread))
+        return "2 emails matched 'bank'."
+
+    async def no_digest(*a, **k):
+        raise AssertionError("the digest must not run for a keyword search")
+
+    monkeypatch.setattr(E, "view_emails_impl", fake_view)
+    monkeypatch.setattr(E, "_ensure_email_cache", no_digest)
+    out = asyncio.run(E.summarize_emails(query=" bank ", period="this week"))
+    assert out == "2 emails matched 'bank'."
+    assert seen == [("bank", None, 20, None, "this week", False)]
+    assert "query" in REGISTRY["summarize_emails"].parameters["properties"]

@@ -74,5 +74,8 @@ def test_a_calculation_runs_in_every_access_mode(monkeypatch, ro, full):
                        ("calculate", {"expression": "23*47"}), ("world_time", {"place": "Tokyo"})):
         assert REGISTRY[name].category == "compute"
         assert policy.decide("compute", args, tool=name).tier is policy.Tier.ALLOW
+    for name in ("wisp_status", "wisp_capabilities", "wisp_skills", "wisp_mcp"):
+        assert REGISTRY[name].category == "wisp_admin"
+        assert policy.decide("wisp_admin", {}, tool=name).tier is policy.Tier.ALLOW
     # Anything still unclassified stays conservative.
     assert policy.decide("no_such_category", {}).tier is not policy.Tier.ALLOW or full

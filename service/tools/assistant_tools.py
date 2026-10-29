@@ -1386,8 +1386,9 @@ def reminders_matching(scope: str = "all", query: str = "",
     needle = (query or "").strip().lower()
     # "all", "*" or "everything" from the model means list them all, not a
     # reminder titled "all" (2026-10-29 Ask run: "you have no reminders").
-    if needle in {"all", "*", "any", "everything", "reminders", "my reminders",
-                  "tasks", "to-dos", "todos", "to do", "todo"}:
+    if needle in {"all", "*", "any", "everything", "reminder", "reminders", "my reminders",
+                  "tasks", "task", "to-dos", "todos", "to do", "todo", "due", "due soon",
+                  "upcoming", "overdue", "open", "pending", "incomplete"}:
         needle = ""
     if needle:
         items = [c for c in items if needle in (c.get("title") or "").lower()]
