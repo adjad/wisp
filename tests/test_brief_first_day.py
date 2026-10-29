@@ -75,7 +75,7 @@ def _isolated(monkeypatch, tmp_path):
 
 def _first_day(store) -> None:
     store.record_completion(FIRST_LAUNCH_KEY, repr(INSTALLED))
-    store.record_completion(scheduler.ONBOARDING_ANSWERED_KEY, repr(time.time()))
+    store.record_completion(scheduler.ONBOARDING_ANSWERED_KEY, repr(INSTALLED + 60))
 
 
 class TestRhythm:

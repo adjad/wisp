@@ -1351,6 +1351,12 @@ class AssistantStore:
             row = self._db.execute("SELECT * FROM assistant_events WHERE dedupe_key=?", (key,)).fetchone()
             return self._event(row) if row else None
 
+    def any_daily_brief(self) -> bool:
+        """Whether this install has ever queued a Daily Summary (any day, any run)."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT 1 FROM assistant_events WHERE kind='daily_brief' LIMIT 1").fetchone() is not None
+
     def reminder_actions_by_prefix(self, action_id_prefix: str) -> list[dict]:
         """Read exact semantic action generations for safe post-failure retry."""
         with self._lock:

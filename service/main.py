@@ -3434,14 +3434,17 @@ async def get_summary_schedule() -> dict[str, Any]:
 
 @app.post("/assistant/onboarding/brief_ready")
 async def onboarding_brief_ready() -> dict[str, Any]:
-    """The app reports that first-run onboarding reached its last step: the
-    permissions were answered or skipped and About you was done or skipped.
+    """The app reports that first-run onboarding is answered enough to build the
+    first Brief: Permissions is behind the person, or setup was closed for now.
+    The About-you answers may arrive after this.
 
-    Only records that, once. The first Daily Summary is still composed by the
-    scheduler on its next tick, through its normal path, so it can never be
-    duplicated and the morning run finds it already delivered."""
+    Records that, once, and asks the scheduler to start the first Daily Summary
+    now, at any hour. The Brief is still composed by
+    the scheduler's normal path, so it can never be duplicated and the morning
+    run finds it already delivered."""
     if assistant_store.completion(assistant_scheduler.ONBOARDING_ANSWERED_KEY) is None:
         assistant_store.record_completion(assistant_scheduler.ONBOARDING_ANSWERED_KEY, repr(time.time()))
+        assistant_scheduler.kick_first_brief()
     return {"ok": True}
 
 
