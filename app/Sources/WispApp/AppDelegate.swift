@@ -1693,6 +1693,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateMenuBarStatus() {
+        // A Mac where no model can be set up: Ask says so instead of sending.
+        let brain = FirstRunBrain.from(status: setupModel.status, downloads: setupModel.downloads)
+        if case .unavailable = brain { model.noModelHere = true } else { model.noModelHere = false }
         guard let button = statusItem?.button else { return }
         // The model download as a ring around the icon, so it can be watched from
         // anywhere once the setup window is put aside.
