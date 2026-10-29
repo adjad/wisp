@@ -719,6 +719,8 @@ async def schedule_send(channel: str, to: str, when: str, body: str = "",
 
 @register(
     "list_scheduled_sends",
+    "Only emails/texts the user scheduled Wisp to send later; for to-dos, tasks "
+    "or \"what's pending\" use search_reminders. "
     "Review scheduled emails/texts by exact queue ID and recorded status. "
     "Default: a bounded pending list with body previews. Use status='all' or "
     "'history' for recent recorded outcomes; absence from pending is never proof "

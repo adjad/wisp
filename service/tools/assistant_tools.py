@@ -1458,24 +1458,27 @@ def _stale_note(hidden: int) -> str:
 
 @register(
     "search_reminders",
-    "Search current Apple Reminders and retained Wisp-only reminder records "
+    "The user's to-dos, tasks and reminders: open, pending, overdue, due soon, "
+    "school or work tasks. Leave query empty to list them; set it only to words "
+    "from a reminder's title (never 'due', 'tasks' or a date). "
+    "Searches current Apple Reminders and retained Wisp-only reminder records "
     "by title, including overdue items. Calendar events are excluded. A "
     "Wisp-only record may be a historical mirror whose Apple copy was deleted; "
     "show it separately for review, never call it a current Apple item. "
     "Storage source labels do not identify who created a reminder.",
     {"type": "object",
      "properties": {
-         "query": {"type": "string", "description": "title text to match"},
+         "query": {"type": "string", "description": "title words to match; empty lists every reminder in scope"},
          "scope": {"type": "string",
                    "enum": ["today", "tomorrow", "past_due", "upcoming", "all"],
                    "description": "time scope; all includes overdue active reminders"},
      },
-     "required": ["query"]},
+     "required": []},
     category="assistant_read",
     aliases=["when is my vaccine reminder", "find my dentist reminder",
              "what does my reminder say"],
 )
-async def search_reminders(query: str, scope: str = "all") -> str:
+async def search_reminders(query: str = "", scope: str = "all") -> str:
     from service.assistant.sync_status import ensure_sources
     readiness = await ensure_sources(("reminders",), timeout_seconds=4.0)
     state = next((source["state"] for source in readiness["sources"]
