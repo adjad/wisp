@@ -30,7 +30,7 @@ SHORT: dict[str, str] = {
     "find_free_time": "Find open gaps in the schedule for a meeting or call.",
     "get_past_events": "Read calendar events from the PAST (up to a year); counterpart to get_upcoming.",
     "get_upcoming": "Read upcoming events, due dates and reminders; use for any schedule question.",
-    "get_my_day_plan": "Read today's prioritized plan from the Brief: due, overdue and to-dos.",
+    "get_my_day_plan": "Read the prioritized plan for today or tomorrow: events, reminders, overdue, to-dos.",
     "plan_meeting": "Read-only private Calendar block proposal; never infer an event's end yourself.",
     "commit_private_meeting": "Create the exact block from plan_meeting, only after explicit user confirmation.",
     "search_reminders": "Search reminders by title, incl. overdue and Wisp-only copies; not events.",
@@ -56,7 +56,7 @@ SHORT: dict[str, str] = {
     # learned patterns
     "describe_me": "Describe the routines and habits Wisp has learned about the user; read-only.",
     "my_patterns": "Search learned routines for one question, e.g. when the user usually works out.",
-    "predict_my_day": "Predict today or tomorrow from learned routines plus the schedule; read-only.",
+    "predict_my_day": "Guess today or tomorrow from learned habits only; not the calendar or a plan.",
     "correct_pattern": "Confirm or reject one learned pattern when the user says it is right or wrong.",
     # email
     "view_emails": "RAW verbatim email text and Message-IDs; for exact details, not overviews.",

@@ -1652,8 +1652,10 @@ def _model_led_preload(prompt: str) -> list[str]:
     it never loads a model or touches the network; any failure means no preload."""
     try:
         from service.router.model_led import MAX_PRELOAD
+        from service.model_only import normalize_day_words
         from service.router.router import has_write_intent, mask_quoted
-        text = mask_quoted(prompt)
+        # "tommorow" never matched get_upcoming's day aliases (2026-10-29).
+        text = normalize_day_words(mask_quoted(prompt))
         return _reranker.ranked_lexical_candidates(text, writing=has_write_intent(text), k=MAX_PRELOAD)
     except Exception:  # noqa: BLE001 — a missing head start must never fail the turn
         return []
@@ -1674,8 +1676,9 @@ def _ask_tool_rank(prompt: str) -> tuple[list[str], list[str]]:
         from service.model_only import ASK_PRELOAD, ASK_STUBS
         from service.router.model_led import READ_CATEGORIES
         from service.router.router import has_write_intent, mask_quoted
+        from service.model_only import normalize_day_words
         from service.tools.registry import REGISTRY
-        text = mask_quoted(prompt)
+        text = normalize_day_words(mask_quoted(prompt))
         writing = has_write_intent(text)
 
         def reads_first(names: list[str]) -> list[str]:
