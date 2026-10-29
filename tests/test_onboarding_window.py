@@ -551,6 +551,9 @@ def test_move_to_applications_only_on_a_click():
     app = sources["AppDelegate.swift"]
     launch = _body(app, "private func launch()")
     assert launch.index("MoveToApplications.offerIfNeeded()") < launch.index("WispReset.readMarker()")
+    # Only a real download: a quarantine mark, never a preview build (Release Auditor, 6c3d68d4).
+    offer_call = offer[offer.index("guard offers("):offer.index("else { return .stayed }")]
+    assert "quarantined: isQuarantined(bundle)" in offer_call and '"WispPreviewBuild"' in offer_call
 
 
 def test_waiting_out_the_download_keeps_people_close():
@@ -580,6 +583,3 @@ def test_first_brief_is_owed_once_permissions_are_behind():
     close = app[app.index("closeForNow: { [weak self] in"):]
     close = close[:close.index("}))")]
     assert close.index("self?.oweFirstBrief()") < close.index("self?.firstRunWindow?.close()")
-    # Only a real download: a quarantine mark, never a preview build (Release Auditor, 6c3d68d4).
-    offer_call = offer[offer.index("guard offers("):offer.index("else { return .stayed }")]
-    assert "quarantined: isQuarantined(bundle)" in offer_call and '"WispPreviewBuild"' in offer_call
