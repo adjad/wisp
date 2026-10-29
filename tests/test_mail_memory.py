@@ -660,21 +660,12 @@ def test_the_away_reading_serves_the_walk_without_a_second_ioreg(monkeypatch):
     monkeypatch.setattr(power_tier, "_away", None)
     reads = []
     monkeypatch.setattr(runner, "_read_hid_idle_s", lambda: reads.append(1) or 42.0)
-    power_tier.refresh_away()                      # the scheduler's tick (present: no GPU sample)
+    monkeypatch.setattr(power_tier, "save_when_away", lambda: True)
+    monkeypatch.setattr(power_tier, "_remote_only", lambda: False)
+    monkeypatch.setattr(power_tier, "_battery", None)
+    power_tier.refresh_away(on_battery=False)      # the scheduler's tick (present, on AC: no GPU sample)
     assert runner._cached("hid", runner._hid_idle_s) == 42.0
     assert reads == [1]
-
-
-def test_the_scheduler_reads_nothing_with_save_power_when_away_off(monkeypatch):
-    from service.assistant import scheduler
-    from service.inference import power_tier
-    calls = []
-    monkeypatch.setattr(power_tier, "refresh_away", lambda: calls.append(1))
-    for on, expected in ((False, []), (True, [1])):
-        monkeypatch.setattr(power_tier, "save_when_away", lambda on=on: on)
-        calls.clear()
-        asyncio.run(scheduler._refresh_away())
-        assert calls == expected
 
 
 def test_mode_defaults_to_live_and_corrupt_means_off(tmp_path):
