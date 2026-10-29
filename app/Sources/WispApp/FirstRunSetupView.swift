@@ -188,6 +188,25 @@ enum FirstRunSetup {
     /// icon or a shortcut brought it forward instead of opening Wisp.
     static let heldBackLine = "Wisp opens once its model has finished downloading. Until then, setup is here."
 
+    /// The same line when the model isn't on its way, naming the way out, so a
+    /// download that keeps failing (or a service that won't answer) never leaves
+    /// a closed Wisp with no next step. Pure.
+    static func heldBackLine(_ footer: FirstRunBrain.Footer) -> String {
+        switch footer {
+        case .retry, .download:
+            return "Wisp opens once its model is ready, and the download isn't running. Choose Model above to start "
+                + "it again, or use another app's model in Settings › Models."
+        case .tryAgain, .detailedSetup:
+            return "Wisp opens once its model is ready. On the Model step, try again or open the detailed setup "
+                + "to use another app's model."
+        case .checkAgain:
+            return "Wisp is slow to start, so it can't open yet. On the Model step, choose Check again, "
+                + "or quit and reopen Wisp."
+        case .ready, .working:
+            return heldBackLine
+        }
+    }
+
     /// How long that line stays.
     static let heldBackShownFor: TimeInterval = 12
 
@@ -2116,7 +2135,7 @@ struct FirstRunSetupView: View {
         if let at = heldBackAt {
             TimelineView(.periodic(from: at, by: 1)) { context in
                 if context.date.timeIntervalSince(at) < FirstRunSetup.heldBackShownFor {
-                    Label(FirstRunSetup.heldBackLine, systemImage: "hourglass")
+                    Label(FirstRunSetup.heldBackLine(brain.footer(stalled: stalled)), systemImage: "hourglass")
                         .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                         .padding(.horizontal, 12).padding(.vertical, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)

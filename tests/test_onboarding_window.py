@@ -538,13 +538,19 @@ def test_move_to_applications_only_on_a_click():
     assert offer.index("ask.runModal()") < offer.index("try move(from:")
     assert "guard answer == .alertFirstButtonReturn" in offer
     assert offer.index("replace.runModal()") < offer.index("try move(from:")
-    body = _body(move, "private static func move(from bundle: URL, original: URL?) throws")
+    body = _body(move, "static func move(from bundle: URL, original: URL?, target: URL = URL(fileURLWithPath: destination)) throws")
     # The person's things only ever go to the Trash; removeItem is for Wisp's own staging copy.
     assert "trashItem(at: target" in body and "trashItem(at: original" in body
     assert body.count("removeItem(") == 1 and "removeItem(at: staging)" in body
+    # A copy that stops part-way is cleaned up too (Release Auditor, 6c3d68d4).
+    assert body.index("do {") < body.index("try fm.copyItem(at: bundle, to: staging)")
+    assert "MoveFailure(underlying: error, oldWispTrashed: oldTrashed)" in body
     assert body.index("moveItem(at: staging, to: target)") < body.index("trashItem(at: original")
     for forbidden in ("with administrator privileges", "AuthorizationExecuteWithPrivileges", "sudo "):
         assert forbidden not in move, forbidden
     app = sources["AppDelegate.swift"]
     launch = _body(app, "private func launch()")
     assert launch.index("MoveToApplications.offerIfNeeded()") < launch.index("WispReset.readMarker()")
+    # Only a real download: a quarantine mark, never a preview build (Release Auditor, 6c3d68d4).
+    offer_call = offer[offer.index("guard offers("):offer.index("else { return .stayed }")]
+    assert "quarantined: isQuarantined(bundle)" in offer_call and '"WispPreviewBuild"' in offer_call
