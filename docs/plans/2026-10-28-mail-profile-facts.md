@@ -332,3 +332,22 @@ Known limits, documented rather than fixed in dev7:
   "I study piano" and "I moved to the night shift" claim nothing. Forget-all runs off the event loop.
 - **Not changed.** `/memory/search` stays as it is: it has the same exposure as `/memory/facts`, which the
   app's own window already uses.
+
+### Third repair (b8cf9294 delta audit was BLOCK)
+
+- **B1: confirmed mail facts stay local.** An origin-`mail` fact is local whatever its evidence, and a
+  `historical` one is local unless something other than mail supports it (`FactStore.mail_only`). So a
+  confirmed mail fact whose account left Mail keeps its row and still never reaches a cloud model.
+- **"Forget everything from mail" forgets confirmed mail facts too** (each row only), as its wording says.
+  An account's automatic removal still keeps facts the user confirmed. If a confirmed mail fact had
+  replaced something the user said earlier, forgetting it leaves that slot empty; the old fact stays
+  superseded.
+- **Wishes and plans are not facts.** "I'd love to work at", "applying to", "thinking about moving to",
+  "dont", "stopped working at" are dropped, and apostrophe look-alikes (U+02BC, U+FF07, ′, `, ´) are folded
+  first.
+- **Senders match by registrable domain.** Only the label before the public suffix counts (with common
+  two-part suffixes such as co.uk), so comcast-billing.evil.com, evilcomcast.com and comcastevil.com don't
+  match Comcast.
+- **Delivery and meal kits are no longer categories.** Pharmacy, cannabis, alcohol, tobacco and gambling
+  words are blocked.
+- **`claim_slot`.** "I work out daily" no longer claims a job; "My home is in <Place>" claims residence.

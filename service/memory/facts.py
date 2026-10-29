@@ -54,7 +54,7 @@ def claim_slot(text: str) -> tuple[str, str]:
     piano" and "I moved to the night shift" claim nothing."""
     value = _norm(text)
     for pattern, predicate in ((r'i (?:now )?live\b', 'residence'),
-                               (r'i (?:now )?work\b', 'employment'),
+                               (r'i (?:now )?work\b(?! ?out)', 'employment'),   # "I work out daily" is no job
                                (r'my name is\b', 'name'),
                                (r'i (?:now )?prefer\b', 'preference'),
                                (r'my (?:employer|company) is\b', 'employment'),
@@ -72,7 +72,8 @@ def claim_slot(text: str) -> tuple[str, str]:
                                 'employment'),
                                (r"[Ii] (?:just )?started (?:working )?at [A-Z]", 'employment'),
                                (r"[Ii] (?:just )?(?:moved|relocated) to (?:the )?[A-Z]", 'residence'),
-                               (r"[Ii](?:'m| am) (?:now )?(?:living|based) in [A-Z]", 'residence')):
+                               (r"[Ii](?:'m| am) (?:now )?(?:living|based) in [A-Z]", 'residence'),
+                               (r"[Mm]y home is in [A-Z]", 'residence')):
         if re.match(pattern, raw):
             return 'user', predicate
     return '', ''
@@ -402,16 +403,18 @@ class FactStore:
                 self._db.execute('INSERT OR IGNORE INTO memory_revisions VALUES(?,?,?)', (row['id'], keep_id, time.time()))
             return len(rows)
 
-    def forget_source(self, source_type, *, prefix=''):
+    def forget_source(self, source_type, *, prefix='', keep_reviewed=True):
         """Forget what rests only on `source_type` evidence (with a source id starting
         `prefix`, e.g. one mail account), one row at a time.
 
         Unlike `delete`, this never follows a correction chain: a mail fact the user
         corrected ("no, I work at Beta") is forgotten, but the user's correction, and
         any other row in the family, stays exactly as it is. Facts that are the user's
-        own word (explicit, captured from chat, saved by an older build) or that the
-        user confirmed keep their row and lose only that evidence. Every removed
-        source and quote is suppressed, so the same emails can't bring it back."""
+        own word (explicit, captured from chat, saved by an older build) keep their
+        row and lose only that evidence; so do facts the user confirmed, unless
+        `keep_reviewed` is False (the user's own "forget everything from mail").
+        Every removed source and quote is suppressed, so the same emails can't
+        bring it back."""
         forgotten = removed = 0
 
         def matches(e):
@@ -426,7 +429,7 @@ class FactStore:
                     continue
                 mine = [e for e in row['evidence'] if matches(e)]
                 others = [e for e in row['evidence'] if not matches(e)]
-                users = row['origin'] in ('explicit', 'automatic', 'legacy') or row['reviewed']
+                users = row['origin'] in ('explicit', 'automatic', 'legacy') or (keep_reviewed and row['reviewed'])
                 for e in mine:
                     self._db.execute('INSERT OR IGNORE INTO memory_suppression VALUES(?,?)',
                                      ('source', f"{e['source_type']}:{e['source_id']}"))
@@ -451,14 +454,18 @@ class FactStore:
                    WHERE e.source_type=? GROUP BY f.status''', (source_type,))}
 
     def mail_only(self, fid):
-        """True for a fact learned only from mail: it may go only where the know-you
-        profile may go (service/memory/profile.may_send_to), never to a cloud model."""
+        """True for a fact learned from mail: it stays local (profile.mail_facts_may_go),
+        never a cloud model. An origin-'mail' row is local whatever its evidence (a
+        confirmed one keeps its row after its account leaves, with no evidence left);
+        a 'historical' row is local unless something other than mail supports it."""
         with self._lock:
             row = self._db.execute('SELECT origin FROM facts WHERE id=?', (fid,)).fetchone()
             if not row or row['origin'] not in ('mail', 'historical'):
                 return False
+            if row['origin'] == 'mail':
+                return True
             kinds = {r[0] for r in self._db.execute('SELECT DISTINCT source_type FROM memory_evidence WHERE fact_id=?', (fid,))}
-        return kinds == {'mail'}
+        return not (kinds - {'mail'})
 
     def bind_source(self, request_id, session_id, turn_idx):
         """Attach synchronous saves to their eventual persisted user turn."""

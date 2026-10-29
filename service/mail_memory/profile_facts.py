@@ -54,8 +54,15 @@ KINDS = SELF_KINDS | SERVICE_KINDS
 _FIRST_PERSON = re.compile(r"\b(?:i|i'm|im|i've|i'll|i'd|me|my|we|we're|we've|our|us)\b", re.I)
 # Reported speech or another person as the subject: "Dana told me she moved", "his new job".
 _THIRD_PERSON = re.compile(r"\b(?:he|she|they|his|her|hers|their|theirs|him|them|said|says|told|tells)\b", re.I)
-# "I no longer work at Acme", "I used to live in Austin": not a current fact.
-_NEGATED = re.compile(r"\b(?:not|never|no longer|used to|former(?:ly)?|quit|left|leaving|until|n't)\b|n't\b", re.I)
+# Not a current fact: negated ("I no longer work at Acme", "dont"), past ("I used to
+# live in Austin", "stopped working at") or wished for ("I'd love to work at Google",
+# "applying to", "thinking about moving to Denver").
+_NEGATED = re.compile(
+    r"n't\b|\b(?:not|never|no longer|no more|used to|former(?:ly)?|quit|left|leaving|until|stopped|"
+    r"dont|didnt|doesnt|wont|cant|isnt|arent|wasnt|havent|"
+    r"want(?:ed|s)?|wish|hope|hoping|love to|like to|would|i'd|we'd|could|should|someday|dream\w*|"
+    r"appl(?:y|ying|ied)|interview\w*|offer\w*|if|maybe|might|perhaps|thinking (?:about|of)|"
+    r"consider\w*|plan(?:ning|s)? to|going to|hopefully|soon)\b", re.I)
 _SENSITIVE = re.compile(
     _AMOUNT + r"|\b(?:diagnos\w*|allerg\w*|medication|medicine|medical|prescription|pharmacy|therap\w*|"
     r"psychiatr\w*|psycholog\w*|counsel+ing|mental|rehab\w*|addiction|recovery|sober\w*|hiv|std|sti|"
@@ -74,16 +81,17 @@ _SENSITIVE = re.compile(
     # weight loss, political and advocacy organisations
     r"onlyfans|fansly|pornhub|porn\w*|xxx|adult|nsfw|hims|hers|roman|nurx|cerebral|teladoc|mdlive|"
     r"amwell|goodrx|telehealth|telemedicine|noom|ww|weight ?watchers|weight\w*|diet\w*|ozempic|wegovy|"
-    r"semaglutide|nra|aclu|moveon|sierra club|greenpeace|union dues|ammo\w*|firearm\w*|gun\w*)\b", re.I)
+    r"semaglutide|nra|aclu|moveon|sierra club|greenpeace|union dues|ammo\w*|firearm\w*|gun\w*|"
+    r"pharmac\w*|rx|cannabis|marijuana|weed|dispensar\w*|thc|cbd|alcohol|liquor|wine|beer|spirits|"
+    r"vape\w*|tobacco|nicotine|casino|betting|gambl\w*|sportsbook)\b", re.I)
 _DIGITS = re.compile(r"\d{4,}")
 # What a service or account may be: everyday, non-sensitive categories only. A
 # category outside this list (a clinic, a bank, a campaign) is never learned.
 SERVICE_CATEGORIES = frozenset({
     "internet", "broadband", "wifi", "phone", "mobile", "cell", "wireless", "cable", "tv",
     "electricity", "electric", "power", "gas", "water", "utility", "utilities", "trash", "garbage",
-    "recycling", "sewer", "landlord", "property management", "airline", "rideshare", "delivery",
-    "food delivery", "grocery", "groceries", "cloud storage", "parking", "toll", "transit", "library",
-    "coworking", "shipping", "meal kit"})
+    "recycling", "sewer", "landlord", "property management", "airline", "rideshare", "cloud storage",
+    "parking", "toll", "transit", "library", "coworking", "shipping"})
 # Broad words like subscription, membership, video, news or fitness fit anything
 # (adult sites, telehealth, advocacy groups), so they are not categories.
 ACCOUNT_CATEGORIES = SERVICE_CATEGORIES | {"warranty"}
@@ -140,8 +148,13 @@ _CF = dict.fromkeys([0xad, 0x34f, 0x61c, 0x115f, 0x1160, 0x17b4, 0x17b5, 0x180e,
                     *range(0xfff9, 0xfffc), *range(0xe0000, 0xe0080), *range(0xe0100, 0xe01f0)])
 
 
+# Apostrophe look-alikes, folded so "don\u02bct" and "don\uff07t" read "don't".
+_CF.update({0x2bc: "'", 0xff07: "'", 0x2032: "'", 0x60: "'", 0xb4: "'"})
+
+
 def _plain(text: str) -> str:
-    """Without invisible format characters, which can hide words from every check."""
+    """Without invisible format characters, which can hide words from every check,
+    and with apostrophe look-alikes folded."""
     return str(text or "").translate(_CF)
 
 
@@ -175,20 +188,32 @@ def addressed_to(email: Email, own: list[str]) -> bool:
     return bool(mine & listed)
 
 
+_SECOND_LEVEL = frozenset({"co", "com", "net", "org", "ac", "gov", "edu", "ne", "or"})
+
+
+def _registrable(domain: str) -> str:
+    """The label just before the public suffix: "comcast" in billing.comcast.net and
+    comcast.co.uk, "evil" in comcast-billing.evil.com. Common two-part suffixes only."""
+    parts = [p for p in domain.split(".") if p]
+    if len(parts) >= 3 and parts[-2] in _SECOND_LEVEL and len(parts[-1]) == 2:
+        return parts[-3]
+    return parts[-2] if len(parts) >= 2 else ""
+
+
 def _from_sender(value: str, sender: str) -> bool:
-    """An inbox service must be the one writing, by its address's domain (the display
-    name is anyone's to set): "Comcast" from billing@comcast.net, "AppleCare" from
-    no_reply@apple.com. Text a bulk sender puts in its mail can't name someone else."""
+    """An inbox service must be the one writing, by its address's registrable domain
+    (the display name is anyone's to set, and look-alikes such as evilcomcast.com or
+    comcast-billing.evil.com don't count): "Comcast" from billing@comcast.net,
+    "AppleCare" from no_reply@apple.com."""
     _, addr = parseaddr(sender)
     if "@" not in addr:
         return False
-    domain = addr.casefold().rsplit("@", 1)[1]
-    labels = [l for l in re.split(r"[.\-]", domain) if len(l) >= 4]
-    flat = re.sub(r"[^a-z0-9]", "", domain)
-    for token in re.findall(r"[a-z0-9]{4,}", value.casefold()):
-        if token in flat or any(token.startswith(l) or l.startswith(token) for l in labels):
-            return True
-    return False
+    name = _registrable(addr.casefold().rsplit("@", 1)[1])
+    if len(name) < 3:
+        return False
+    tokens = re.findall(r"[a-z0-9]+", value.casefold())
+    return any(t == name or (len(name) >= 4 and t.startswith(name)) for t in tokens) or \
+        re.sub(r"[^a-z0-9]", "", value.casefold()) == name
 
 
 _RULES = """You find lasting facts about the user named above in ONE email. Today is {today}.
@@ -477,7 +502,9 @@ def forget_all(st, facts) -> dict:
     pass already running finds the generation changed and writes nothing."""
     with _LOCK:
         st.set_meta(GENERATION, str(int(generation(st) or 0) + 1))
-        removed = facts.forget_source(SOURCE_TYPE)
+        # The user asked to forget everything from mail: facts they once confirmed
+        # in Review go too (that row only), unlike an account's automatic removal.
+        removed = facts.forget_source(SOURCE_TYPE, keep_reviewed=False)
         cleared = st.clear_candidates()
     return {"forgotten": removed["forgotten"], "evidence_removed": removed["evidence_removed"],
             "candidates_cleared": cleared}

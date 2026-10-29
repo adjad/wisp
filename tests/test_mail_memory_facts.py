@@ -219,6 +219,13 @@ def test_injection_shaped_values_are_dropped(value):
     ("school", "Stanford", "I'm attending the Stanford conference."),
     ("home_city", "Austin", "I don’t live in Austin anymore."),                  # typographic apostrophe
     ("home_city", "Night Shift", "I moved to the night shift."),
+    ("employer", "Google", "I'd love to work at Google someday."),              # wished for
+    ("employer", "Stripe", "I'm applying to work at Stripe."),
+    ("home_city", "Denver", "I'm thinking about moving to Denver."),
+    ("employer", "Acme", "I dont work at Acme."),                               # no apostrophe
+    ("employer", "Acme", "I don\u02bct work at Acme."),                          # modifier-letter apostrophe
+    ("employer", "Acme", "I don\uff07t work at Acme."),                          # fullwidth apostrophe
+    ("employer", "Acme", "I stopped working at Acme."),
 ])
 def test_a_slot_fact_needs_a_cue_phrase_and_no_negation(kind, value, quote):
     kept, dropped = _kept([_fact(kind, value, quote)], _email(quote), sent_by_user=True)
@@ -243,6 +250,30 @@ def test_broad_categories_are_not_categories(role):
     assert kept == [] and dropped == {"category": 1}
 
 
+@pytest.mark.parametrize("sender, ok", [
+    ("Comcast <billing@comcast.net>", True),
+    ("Comcast <billing@mail.comcast.co.uk>", True),
+    ("Comcast <billing@comcast-billing.evil.com>", False),
+    ("Comcast <billing@evilcomcast.com>", False),
+    ("Comcast <billing@comcastevil.com>", False),
+])
+def test_lookalike_domains_are_not_the_sender(sender, ok):
+    email = _email("Your Comcast internet bill is ready.", sender=sender)
+    kept, _ = _kept([_fact("service", "Comcast", "Your Comcast internet bill is ready.", role="internet")],
+                    email, sent_by_user=False, to_user=True)
+    assert bool(kept) is ok
+
+
+@pytest.mark.parametrize("value, role", [("Capsule", "delivery"), ("HelloFresh", "meal kit"),
+                                         ("Drizly", "shipping"), ("Eaze", "shipping")])
+def test_delivery_and_meal_kits_are_not_categories(value, role):
+    body = f"Your {value} {role} order with wine and cannabis shipped."
+    email = _email(body, sender=f"{value} <hi@{value.lower()}.com>")
+    kept, dropped = _kept([_fact("service", value, f"Your {value} {role} order with wine and cannabis shipped.",
+                                 role=role)], email, sent_by_user=False, to_user=True)
+    assert kept == [] and list(dropped) in (["category"], ["sensitive"])
+
+
 def test_a_spoofed_display_name_is_not_the_sender():
     email = _email("Your Comcast internet bill is ready.", sender="Comcast <billing@bulk-mailer.example>")
     kept, dropped = _kept([_fact("service", "Comcast", "Your Comcast internet bill is ready.", role="internet")],
@@ -262,6 +293,7 @@ def test_hidden_tag_characters_cant_hide_a_sensitive_word():
     ("I started a diet", ("", "")), ("I moved to Denver", ("user", "residence")),
     ("I’m an engineer at Old Co", ("user", "employment")), ("My employer is Old Co", ("user", "employment")),
     ("I study at UCSC", ("user", "school")), ("I work at Acme", ("user", "employment")),
+    ("I work out daily", ("", "")), ("My home is in Dublin", ("user", "residence")),
 ])
 def test_claim_slot_needs_a_place_or_organisation(text, slot):
     assert facts_mod.claim_slot(text) == slot
@@ -514,6 +546,36 @@ def test_removing_an_account_keeps_a_fact_the_user_confirmed(world):
     kept = fs.get(new["id"])
     assert kept["status"] == "active" and kept["evidence"] == []      # theirs now; only the mail link goes
     assert fs.get(old["id"])["status"] == "superseded"                # the chain is left alone
+
+
+def _cloud_block(fs, monkeypatch, query):
+    monkeypatch.setattr(facts_mod, "store", fs)
+    return facts_mod.memory_context_block(query=query, mail_facts=False)
+
+
+def test_a_confirmed_fact_from_a_removed_account_stays_local(world, monkeypatch):
+    st, fs = world
+    profile_facts.promote(st, fs, now=NOW, groups=_seen(st, "<w@x>", "employer", "New Co", "I work at New Co",
+                                                       ts=NOW - DAY, account="work"))
+    fs.review(fs.all()[0]["id"], "confirm")
+    profile_facts.forget_accounts(st, fs, {"work"})
+    row = fs.all()[0]
+    assert row["text"] == "I work at New Co" and fs.get(row["id"])["evidence"] == []
+    assert "New Co" not in _cloud_block(fs, monkeypatch, "where do I work")          # still never to cloud
+    monkeypatch.setattr(facts_mod, "store", fs)
+    assert "New Co" in facts_mod.memory_context_block(query="where do I work", mail_facts=True)
+
+
+def test_forget_everything_forgets_confirmed_mail_facts_too(world, monkeypatch):
+    st, fs = world
+    profile_facts.promote(st, fs, now=NOW, groups=_seen(st, "<w@x>", "employer", "New Co", "I work at New Co",
+                                                       ts=NOW - DAY))
+    fid = fs.all()[0]["id"]
+    fs.review(fid, "confirm")
+    fs.add("I live in Dublin")
+    profile_facts.forget_all(st, fs)
+    assert fs.get(fid)["status"] == "forgotten" and _active(fs) == ["I live in Dublin"]
+    assert "New Co" not in _cloud_block(fs, monkeypatch, "where do I work and live")
 
 
 def test_a_quiet_or_briefly_missing_account_is_not_forgotten(world):
