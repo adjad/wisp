@@ -21,7 +21,9 @@ render: the cap would throttle it too). Then:
 
 - ``CHAT`` (chat replies: Ask turns typed, spoken or from the phone, with the
   history folding at the end of a turn, and questions about an attached image
-  or document): 15 W while the Mac is on battery; uncapped on AC.
+  or document): 15 W while the Mac is on battery and the turn is still
+  running; uncapped on AC. "On battery" is pmset's "Battery Power"; a desktop
+  drawing from a UPS reports "UPS Power" and counts as battery too.
 - ``BRIEF`` (Brief generation: the mail and texts gists, the inbox summary, the
   proactive triage/judge/prepare behind its cards): 15 W on battery, and 10 W
   while the user is away; uncapped otherwise.
@@ -39,10 +41,10 @@ BACKGROUND calls go uncapped, so they can't drag it below its own cap. One
 already in flight keeps its cap until it ends; most are cancelled when a turn
 starts (mail_gists, the mail memory walk), and the rest are short.
 
-Releasing the cap the moment a request ends DEPENDS on the engine patch
-``GpuPowerLimiter(release_delay_s=0.0)`` in server.py (branch
-claude/engine-gpu-cap-no-linger); upstream oMLX holds it 15 s longer, so a
-reply started within 15 s of a capped call still runs capped until then.
+The cap is released the moment a request ends by Wisp's bundled engine, which
+carries ``GpuPowerLimiter(release_delay_s=0.0)`` in server.py since 0.5.0-dev6.
+A standalone oMLX.app serving Wisp keeps upstream's 15 s release delay, so
+there a call started within 15 s of a capped one still runs capped until then.
 
 A tier is set with ``with power_tier(CHAT):`` around the call (it is a
 ContextVar, so tasks created inside inherit it). OMLXClient adds the field only
@@ -130,6 +132,14 @@ _away: tuple[float, float, bool] | None = None      # (monotonic, wall time read
 _battery: tuple[float, float, bool] | None = None   # (monotonic, wall time read, on battery)
 
 
+def _remote_only() -> bool:
+    try:
+        from service.inference.remote_policy import remote_only_profile
+        return remote_only_profile() is not None
+    except Exception:  # noqa: BLE001 — unreadable policy: assume a local engine
+        return False
+
+
 def _on_battery_probe() -> bool:
     from service.mail_memory.runner import _cached, _power
     on_ac, _percent, _low_power = _cached("power", _power)   # a failed read says AC
@@ -140,8 +150,16 @@ def refresh_away(hid_idle_s: float | None = None, on_battery: bool | None = None
                  probe: bool = True) -> bool:
     """Read the input idle time and the power source, and store whether the
     user is away and whether the Mac is on battery (each only while the GPU is
-    otherwise quiet). Blocking: call it from a worker thread. Returns away."""
+    otherwise quiet). Blocking: call it from a worker thread. Returns away.
+
+    With the switch off, or no local engine to cap (a remote-only profile),
+    nothing could be capped, so nothing is read: no ioreg, no pmset."""
     global _away, _battery
+    if not save_when_away() or _remote_only():
+        _gpu_quiet(sample=False)                 # drops the GPU baseline
+        mono, wall = time.monotonic(), time.time()
+        _away = _battery = (mono, wall, False)
+        return False
     if probe and hid_idle_s is None:
         from service.mail_memory.runner import _hid_idle_s
         hid_idle_s = _hid_idle_s()
@@ -306,9 +324,19 @@ def _cap(tier: str | None) -> str | None:
         return None
     if tier in _UNWATCHED and away():
         return AWAY
+    if tier == CHAT and not _turn_running():
+        return None
     if tier in (CHAT, BRIEF) and on_battery():
         return BATTERY
     return None
+
+
+def _turn_running() -> bool:
+    """A chat turn (or an image or document question) is in flight. CHAT is a
+    ContextVar, so a task spawned inside a turn inherits it; without a turn
+    still running, that task's calls are not chat and go uncapped."""
+    from service import idle
+    return idle.foreground_busy()
 
 
 def payload_fields() -> dict[str, int]:

@@ -11,8 +11,8 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(unconfirmed.status == nil && unconfirmed.rest.hasPrefix("Not confirmed"), "unconfirmed Full access is never off")
     check(QuickSettingsText.fullAccess(on: true, pending: true).status == nil, "a pending change shows no status word")
 
-    // Save power when away: says it caps background work only while away;
-    // unconfirmed is never "off"; the help names every cap and the 10 minutes.
+    // Save power: says it saves power on battery and while away; unconfirmed
+    // is never "off"; the help names both caps, what they cover, and the 10 minutes.
     check(QuickSettingsText.saveWhenAway(on: true, pending: false).contains("on battery")
           && QuickSettingsText.saveWhenAway(on: true, pending: false).contains("while you're away"), "Save power on")
     check(QuickSettingsText.saveWhenAway(on: false, pending: false) == "Wisp always runs at full speed", "Save power off")

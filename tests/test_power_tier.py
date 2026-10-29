@@ -1,5 +1,6 @@
 """GPU power tiers and the "Save power when away" switch; no engine is contacted."""
 import asyncio
+import contextlib
 import json
 import stat
 from types import SimpleNamespace
@@ -23,6 +24,7 @@ def clean_env(monkeypatch, tmp_path):
     monkeypatch.setattr(P, "_battery", None)
     monkeypatch.setattr(P, "_watched_calls", 0)
     monkeypatch.setattr(P, "_on_battery_probe", lambda: False)
+    monkeypatch.setattr(P, "_remote_only", lambda: False)
     from service import idle
     monkeypatch.setattr(idle, "_foreground_turns", 0)
     # No other app on the GPU, unless a test says so (the real check is tested
@@ -245,11 +247,26 @@ def test_env_overrides_zero_turns_off_and_out_of_range_is_ignored(monkeypatch):
     assert P.watts(P.BATTERY) == 12
 
 
+@contextlib.contextmanager
+def _turn():
+    """A chat turn in flight (what main.py's runner and the image and document
+    paths bracket with idle.begin_foreground/end_foreground)."""
+    from service import idle
+    idle.begin_foreground()
+    try:
+        yield
+    finally:
+        idle.end_foreground()
+
+
 def _caps():
     out = {}
     for tier in (None, P.CHAT, P.BRIEF, P.BACKGROUND):
         if tier is None:
             out[tier] = P.payload_fields().get("gpu_power_limit_w")
+        elif tier == P.CHAT:
+            with _turn(), P.power_tier(tier):
+                out[tier] = P.payload_fields().get("gpu_power_limit_w")
         else:
             with P.power_tier(tier):
                 out[tier] = P.payload_fields().get("gpu_power_limit_w")
@@ -320,9 +337,101 @@ def test_brief_and_background_go_uncapped_while_a_watched_call_runs(away):
 
 def test_a_chat_on_battery_keeps_its_cap_beside_another_watched_call(battery):
     started = P.call_started()
-    with P.power_tier(P.CHAT):
+    with _turn(), P.power_tier(P.CHAT):
         assert P.payload_fields() == {"gpu_power_limit_w": 15}
     P.call_ended(started)
+
+
+def test_a_task_left_running_after_its_chat_turn_is_not_capped(battery):
+    # CHAT is a ContextVar, so a task spawned inside a turn inherits it; once
+    # the turn has ended, that task's calls are not chat and go uncapped.
+    async def run():
+        release = asyncio.Event()
+        seen = []
+
+        async def spawned():
+            seen.append(P.payload_fields())
+            await release.wait()
+            seen.append(P.payload_fields())
+
+        with _turn(), P.power_tier(P.CHAT):
+            task = asyncio.ensure_future(spawned())
+            await asyncio.sleep(0)
+        release.set()
+        await task
+        return seen
+
+    assert asyncio.run(run()) == [{"gpu_power_limit_w": 15}, {}]
+
+
+@pytest.mark.parametrize("ending", [ValueError("boom"), asyncio.CancelledError()])
+def test_the_chat_tier_resets_on_an_exception_or_cancellation(battery, ending):
+    with pytest.raises(type(ending)):
+        with P.power_tier(P.CHAT):
+            assert P.current_tier() == P.CHAT
+            raise ending
+    assert P.current_tier() is None
+
+    async def run():
+        async def turn():
+            with P.power_tier(P.CHAT):
+                await asyncio.sleep(10)
+
+        task = asyncio.ensure_future(turn())
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return P.current_tier()
+
+    assert asyncio.run(run()) is None
+
+
+def test_with_the_switch_off_nothing_is_probed(monkeypatch):
+    called = []
+    monkeypatch.setattr(P, "_on_battery_probe", lambda: called.append("pmset") or True)
+    monkeypatch.setattr(P, "_gpu_quiet", lambda sample: called.append(("gpu", sample)) or True)
+    from service.mail_memory import runner
+    monkeypatch.setattr(runner, "_hid_idle_s", lambda: called.append("hid") or 9999.0)
+    P.set_save_when_away(False)
+    assert P.refresh_away() is False
+    assert called == [("gpu", False)]                          # only the baseline is dropped
+    assert P.away() is False and P.on_battery() is False
+
+
+def test_with_a_remote_only_profile_nothing_is_probed(monkeypatch):
+    called = []
+    monkeypatch.setattr(P, "_remote_only", lambda: True)
+    monkeypatch.setattr(P, "_on_battery_probe", lambda: called.append("pmset") or True)
+    from service.mail_memory import runner
+    monkeypatch.setattr(runner, "_hid_idle_s", lambda: called.append("hid") or 9999.0)
+    assert P.refresh_away() is False
+    assert called == []
+
+
+_PMSET_GENERAL = " lowpowermode         0\n"
+
+
+@pytest.mark.parametrize("batt, battery", [
+    ("Now drawing from 'Battery Power'\n -InternalBattery-0 (id=1)\t72%; discharging; 4:10 remaining present: true\n", True),
+    ("Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t80%; AC attached; not charging present: true\n", False),
+    ("Now drawing from 'AC Power'\n -InternalBattery-0 (id=1)\t64%; charging; 1:02 remaining present: true\n", False),
+    ("Now drawing from 'AC Power'\n", False),                                  # a desktop: no battery
+    ("Now drawing from 'UPS Power'\n -CyberPower UPS (id=2)\t90%; discharging present: true\n", True),
+])
+def test_the_power_source_is_read_from_pmset(monkeypatch, batt, battery):
+    import subprocess
+
+    from service.mail_memory import runner
+
+    def run(args, **kwargs):
+        out = batt if args[-1] == "batt" else _PMSET_GENERAL
+        return subprocess.CompletedProcess(args, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(P, "_on_battery_probe", _REAL_BATTERY_PROBE)
+    monkeypatch.setattr(runner, "_probe", {})
+    monkeypatch.setattr(runner.subprocess, "run", run)
+    assert P._on_battery_probe() is battery
 
 
 def test_tier_is_scoped_to_the_block_and_inherited_by_tasks(away):
@@ -370,7 +479,7 @@ def test_the_client_sends_each_call_its_per_request_cap():
     async def run():
         try:
             await client.chat("m", hi)                        # 0: untiered (research...), AC
-            with P.power_tier(P.CHAT):
+            with _turn(), P.power_tier(P.CHAT):
                 await client.chat("m", hi)                    # 1: chat, AC
                 P.refresh_away(5, on_battery=True)
                 await client.chat("m", hi)                    # 2: chat, battery
