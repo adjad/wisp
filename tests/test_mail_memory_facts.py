@@ -106,6 +106,28 @@ def test_traps_are_dropped(candidate, body, sent, reason):
     assert kept == [] and dropped == {reason: 1}
 
 
+@pytest.mark.parametrize("subject, divider", [
+    ("Fwd: big news", "---------- Forwarded message ---------\nFrom: Dana <dana@x.example>"),   # Gmail
+    ("big news", "---------- Forwarded message ---------\nFrom: Dana <dana@x.example>"),        # no Fwd: subject
+    ("FW: big news", "________________________________\nFrom: Dana Park\nSent: Monday"),          # Outlook
+    ("Fwd: big news", "Begin forwarded message:\n\nFrom: Dana"),                                   # Apple Mail
+    ("Re: news", "From: Dana Park <dana@x.example>\nSent: Monday, October 19, 2026"),
+])
+def test_forwarded_text_in_sent_mail_is_not_the_users(subject, divider):
+    raw = (f"From: Sam <sam@example.com>\r\nTo: Lee <lee@x.example>\r\nSubject: {subject}\r\n"
+           "Date: Mon, 19 Oct 2026 09:00:00 -0700\r\nMessage-ID: <f@x>\r\nContent-Type: text/plain\r\n\r\n"
+           "Look at this! I live in Dublin, by the way.\r\n\r\n" + divider.replace("\n", "\r\n") +
+           "\r\n\r\nI started at Stripe last week. My brother Raj says hi.\r\n").encode()
+    email = extract.parse_raw(raw, 0)
+    kept, dropped = _kept([
+        _fact("employer", "Stripe", "I started at Stripe last week."),
+        _fact("person", "Raj", "My brother Raj says hi.", role="brother"),
+        _fact("home_city", "Dublin", "I live in Dublin, by the way."),
+    ], email, sent_by_user=True)
+    assert kept == [("home_city", "Dublin", "")]                     # only the user's own words above it
+    assert dropped.get("not_own_words", 0) + dropped.get("quote_not_in_email", 0) == 2
+
+
 def test_inbox_services_need_mail_addressed_to_the_user():
     email = _email("Your Comcast internet bill is ready.", subject="Your bill")
     good = [_fact("service", "Comcast", "Your Comcast internet bill is ready.", role="internet")]

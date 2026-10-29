@@ -10,7 +10,8 @@ IMPORTANT rules:
   a fact survives only if the quote is verbatim in the email and the value is in
   the quote. Code writes the fact's wording and decides who it is about.
 - Facts about the user themself (employer, school, home city, people and their
-  role) come ONLY from Sent mail, from a first-person quote. Inbox mail is written
+  role) come ONLY from Sent mail, from a first-person quote in the user's own
+  words: never from a message they forwarded or quoted below them. Inbox mail is written
   TO the user, so it can only name services and accounts, and only from
   transactional mail addressed to them.
 - Nothing sensitive: a quote that touches health, money amounts, ids, passwords,
@@ -58,6 +59,20 @@ _SENSITIVE = re.compile(
     r"password|passcode|pin|one-time code|verification code|religio\w*|church|mosque|synagogue|politic\w*|"
     r"democrat\w*|republican\w*|sexual\w*|lawsuit|attorney|lawyer|court|arrest\w*|probation|divorce)\b", re.I)
 _DIGITS = re.compile(r"\d{4,}")
+# Where the user's own words end in their Sent mail: a forwarded or quoted message
+# below is someone else's ("I started at Stripe" in a friend's forwarded note).
+# extract._clean keeps a forward's content (it is the content for reminders) and
+# doesn't know Gmail's divider, so the fact pass cuts again, more strictly.
+_NOT_OWN = re.compile(
+    r"(?im)^[ \t]*(?:-{2,}[ \t]*(?:forwarded|original) message[ \t]*-{2,}|begin forwarded message:|"
+    r"-{2,}[ \t]*original message[ \t]*-{2,}|on [^\n]{1,300}wrote:|>|_{8,}|"
+    r"(?:from|sent|to|subject|date):[ \t]+[^\n]{0,300}$)")
+
+
+def own_words(email: Email) -> str:
+    """The part of an email above any forwarded or quoted message: in Sent mail,
+    the only text that speaks for the user."""
+    return _NOT_OWN.split(email.body, maxsplit=1)[0]
 
 
 def eligible(row: dict) -> bool:
@@ -139,6 +154,7 @@ def validate(candidates: list[dict], email: Email, *, sent_by_user: bool,
              to_user: bool = True) -> tuple[list[dict], dict]:
     """Keep candidates the email proves about the user. Returns (kept, why-dropped counts)."""
     body = _norm(f"{email.subject}\n{email.body}")
+    own = _norm(own_words(email))
     kept, dropped, seen = [], {}, set()
 
     def drop(reason: str) -> None:
@@ -177,6 +193,9 @@ def validate(candidates: list[dict], email: Email, *, sent_by_user: bool,
         if kind in SELF_KINDS:
             if not sent_by_user:
                 drop("inbox_self")             # written TO the user: "I got the job" is the sender's
+                continue
+            if q not in own:
+                drop("not_own_words")          # forwarded or quoted text inside the user's Sent mail
                 continue
             if not _FIRST_PERSON.search(quote):
                 drop("not_first_person")
