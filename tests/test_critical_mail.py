@@ -250,10 +250,46 @@ def test_one_email_seen_through_mail_and_gmail_is_one_card(store):
     assert len(alerts) == 1
 
 
-def test_message_key_ignores_brackets_and_case():
-    assert prepare._message_key({"reply_ref": {"message_id": "<C1@X>"}}) == "c1@x"
-    assert prepare._message_key({"reply_ref": " <c1@x> "}) == "c1@x"
-    assert prepare._message_key({}) == ""
+def test_message_key_is_the_id_and_its_sender():
+    assert prepare._message_key({"reply_ref": {"message_id": "<C1@X>"}, "sender": "Hub <Support@Hub.com>"}) \
+        == "c1@x|support@hub.com"
+    assert prepare._message_key({"reply_ref": " <c1@x> ", "sender_address": "a@b.c"}) == "c1@x|a@b.c"
+    # Either part unknown: no key, so nothing is merged on a guess.
+    assert prepare._message_key({"reply_ref": {"message_id": "<c1@x>"}}) == ""
+    assert prepare._message_key({"sender_address": "a@b.c"}) == ""
+
+
+def _judged(mid, sender, *, critical, title, primary):
+    raw = {"reply_ref": {"message_id": mid, "account": ME, "account_id": "acct-1"},
+           "ref": {"kind": "email", "message_id": mid, "to": sender}, "person": True, "replied": False}
+    if critical:
+        raw["critical"] = True
+    return {"source": "mail", "kind": "reply", "title": title, "who": "Sender", "item": raw,
+            "primary": primary, "fingerprints": [primary], "asks": [], "due_ts": None, "why": ""}
+
+
+def _cards(items):
+    view = {"ok": True, "open_url": "message://%3Cx%3E", "open_label": "Open in Mail"}
+    state, cards = asyncio.run(prepare.prepare(items, {"calendar": [], "reminders": []}, None, lambda: False,
+                                               now=NOW, tz=TZ, freeze=lambda ref: view))
+    assert state == "ok"
+    return cards
+
+
+def test_a_reused_message_id_cannot_hide_a_critical_alert():
+    """Release Auditor, 6c3d68d4: a Message-ID is whatever the sender wrote. An
+    ordinary mail that reuses a real alert's ID and ranks first must not take the
+    alert's card away, whether it comes from another address or spoofs the same one."""
+    alert = _judged("<c1@x>", "support@github.com", critical=True, title="Possible valid secrets detected",
+                    primary="email:alert")
+    for decoy_sender in ("sam@example.com", "support@github.com"):
+        decoy = _judged("<c1@x>", decoy_sender, critical=False, title="Can you check this?", primary="email:decoy")
+        cards = _cards([decoy, alert])
+        assert any(c.get("critical") for c in cards), decoy_sender
+    # The same alert seen twice (Mail and Gmail) is still one card.
+    twin = _judged("<C1@x>", "Support@GitHub.com", critical=True, title="Possible valid secrets detected",
+                   primary="email:twin")
+    assert sum(1 for c in _cards([alert, twin]) if c.get("critical")) == 1
 
 
 def test_open_in_mail_hands_back_the_emails_own_link():

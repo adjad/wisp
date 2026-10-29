@@ -909,14 +909,53 @@ struct FirstRunSetupChecks {
         }
         check(MoveToApplications.place(bundlePath: "/Users/sam/Downloads/Wisp.app", home: "/Users/sam/", translocated: false)
               == .downloaded, "A home with a trailing slash")
-        check(MoveToApplications.offers(place: .downloaded, declined: false, isAppBundle: true)
-              && MoveToApplications.offers(place: .translocated, declined: false, isAppBundle: true),
-              "Downloads and macOS's temporary copy are asked")
-        check(!MoveToApplications.offers(place: .downloaded, declined: true, isAppBundle: true), "Don't ask again holds")
-        check(!MoveToApplications.offers(place: .applications, declined: false, isAppBundle: true)
-              && !MoveToApplications.offers(place: .elsewhere, declined: false, isAppBundle: true)
-              && !MoveToApplications.offers(place: .downloaded, declined: false, isAppBundle: false),
+        func offers(_ place: Place, declined: Bool = false, app: Bool = true, quarantined: Bool = true,
+                    preview: Bool = false) -> Bool {
+            MoveToApplications.offers(place: place, declined: declined, isAppBundle: app,
+                                      quarantined: quarantined, previewBuild: preview)
+        }
+        check(offers(.downloaded) && offers(.translocated), "A download in Downloads and macOS's temporary copy are asked")
+        check(!offers(.downloaded, declined: true), "Don't ask again holds")
+        check(!offers(.applications) && !offers(.elsewhere) && !offers(.downloaded, app: false),
               "Already in Applications, a build folder, or not an app bundle: never asked")
+        // Release Auditor, 6c3d68d4: a build in a repo on the Desktop (no quarantine
+        // mark) or any preview build is never asked, so a move can't Trash build output
+        // or replace the re-signed local install.
+        check(!offers(.downloaded, quarantined: false), "Built on this Mac, say in ~/Desktop/MOE_Project: never asked")
+        check(!offers(.downloaded, preview: true) && !offers(.translocated, preview: true), "A preview build: never asked")
+        check(MoveToApplications.failureDetail("x.", oldWispTrashed: false).contains("Nothing was removed")
+              && !MoveToApplications.failureDetail("x.", oldWispTrashed: true).contains("Nothing was removed")
+              && MoveToApplications.failureDetail("x.", oldWispTrashed: true).contains("is in the Trash"),
+              "A failed move says truthfully whether the old Wisp is in the Trash")
+        // A copy that stops part-way leaves no hidden staging copy behind, and says the
+        // old Wisp wasn't touched. An unreadable file makes copyItem fail mid-bundle.
+        let moveScratch = FileManager.default.temporaryDirectory.appendingPathComponent("wisp-move-\(UUID().uuidString)")
+        let source = moveScratch.appendingPathComponent("Downloads/Wisp.app")
+        let apps = moveScratch.appendingPathComponent("Applications")
+        try! FileManager.default.createDirectory(at: source.appendingPathComponent("Contents/Resources"),
+                                                 withIntermediateDirectories: true)
+        try! FileManager.default.createDirectory(at: apps, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: source.appendingPathComponent("Contents/Info.plist").path, contents: Data("a".utf8))
+        let locked = source.appendingPathComponent("Contents/Resources/locked")
+        FileManager.default.createFile(atPath: locked.path, contents: Data("b".utf8))
+        try! FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: locked.path)
+        var failure: MoveToApplications.MoveFailure?
+        do {
+            try MoveToApplications.move(from: source, original: source, target: apps.appendingPathComponent("Wisp.app"))
+        } catch let error as MoveToApplications.MoveFailure {
+            failure = error
+        } catch {}
+        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: apps.path)) ?? ["?"]
+        check(failure?.oldWispTrashed == false, "The copy failed before anything was Trashed")
+        check(leftovers.isEmpty, "No hidden .Wisp-moving copy is left in Applications: \(leftovers)")
+        check(FileManager.default.fileExists(atPath: source.path), "The download is left where it was")
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: locked.path)
+        try? FileManager.default.removeItem(at: moveScratch)
+
+        check(FirstRunSetup.heldBackLine(.retry).contains("Settings › Models")
+              && FirstRunSetup.heldBackLine(.checkAgain).contains("Check again")
+              && FirstRunSetup.heldBackLine(.working("Downloading · 4%")) == FirstRunSetup.heldBackLine,
+              "Held back with the model not on its way: the line names the way out")
         let replace = MoveToApplications.replaceDetail(existing: "0.5.0 (3075)", this: "0.5.0 (3120)")
         check(replace.contains("The one there is 0.5.0 (3075); this one is 0.5.0 (3120).")
               && replace.contains("goes to the Trash") && replace.contains("stay as they are"),

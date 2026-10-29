@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import datetime, timedelta
+from email.utils import parseaddr
 from zoneinfo import ZoneInfo
 
 from service.proactive import guard
@@ -288,11 +289,18 @@ def _button(method: str, item: dict, has_event: bool, when: str = "") -> str:
 
 
 def _message_key(raw: dict) -> str:
-    """The email's own Message-ID, the same whichever way it arrived (Mail on this
-    Mac, or a linked Gmail account): one email is one card. Empty when unknown."""
+    """The email's own Message-ID with its sender's address, the same whichever way
+    it arrived (Mail on this Mac, or a linked Gmail account): one email is one card.
+    The sender is part of the key because a Message-ID is whatever the sender
+    wrote: another mail reusing an alert's ID must not pass for it. Empty when
+    either is unknown."""
     ref = raw.get("reply_ref")
     mid = ref.get("message_id") if isinstance(ref, dict) else ref
-    return str(mid or "").strip().strip("<>").strip().casefold()
+    mid = str(mid or "").strip().strip("<>").strip().casefold()
+    sent_by = (raw.get("ref") or {}).get("to") if isinstance(raw.get("ref"), dict) else ""
+    sender = str(raw.get("sender_address") or parseaddr(str(raw.get("sender") or ""))[1]
+                 or parseaddr(str(sent_by or ""))[1]).strip().casefold()
+    return f"{mid}|{sender}" if mid and "@" in sender else ""
 
 
 def _read_button(plan: dict) -> str:
@@ -353,9 +361,11 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
     linked = linked or set()
     allowed = allowed or set()
     cards = []
-    # Message-IDs already on a card (2026-10-29: one GitHub alert showed twice, once
-    # through Mail and once through the linked Gmail account).
-    shown_messages: set[str] = set()
+    # Emails already on a card, and whether that card is a critical alert (2026-10-29:
+    # one GitHub alert showed twice, once through Mail and once through the linked
+    # Gmail account). A critical alert is held back only by a critical card for the
+    # same email, so an ordinary card can never hide one.
+    shown_messages: dict[str, bool] = {}
 
     def why(item, reason):
         if debug is not None and item.get("waiting"):
@@ -370,7 +380,8 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
         if item["source"] == "reminders":
             continue                     # already a reminder: it stays on the to-do list
         message = _message_key(raw) if item["source"] == "mail" else ""
-        if message and message in shown_messages:
+        critical = bool(raw.get("critical")) and item["source"] == "mail"
+        if message in shown_messages and (shown_messages[message] or not critical):
             why(item, "the same email is already on a card")
             continue
         if raw.get("critical") and item["source"] == "mail":
@@ -397,7 +408,7 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
                 "critical": True,
             })
             if message:
-                shown_messages.add(message)
+                shown_messages[message] = True
             continue
         if item.get("unranked") and not (raw.get("person") and not raw.get("replied") and not raw.get("group")
                                          and item["source"] in ("mail", "messages")):
@@ -454,5 +465,5 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
             **({"_sealed": plan["sealed"]} if plan.get("sealed") else {}),
         })
         if message:
-            shown_messages.add(message)
+            shown_messages.setdefault(message, False)
     return "ok", cards

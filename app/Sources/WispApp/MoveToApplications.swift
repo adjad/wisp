@@ -45,9 +45,20 @@ enum MoveToApplications {
         return .elsewhere
     }
 
-    /// Pure: whether launch asks.
-    static func offers(place: Place, declined: Bool, isAppBundle: Bool) -> Bool {
-        isAppBundle && !declined && (place == .translocated || place == .downloaded)
+    /// Pure: whether launch asks. Only a real download is asked about: macOS marks
+    /// one with com.apple.quarantine (and runs a marked app from a temporary copy).
+    /// A preview build, or one built on this Mac (no mark, say in a repo on the
+    /// Desktop), is never asked, so a move can't Trash build output or replace the
+    /// re-signed local install and its permissions.
+    static func offers(place: Place, declined: Bool, isAppBundle: Bool,
+                       quarantined: Bool, previewBuild: Bool) -> Bool {
+        guard isAppBundle, !declined, !previewBuild else { return false }
+        return place == .translocated || (place == .downloaded && quarantined)
+    }
+
+    /// Whether macOS marked this bundle as downloaded.
+    static func isQuarantined(_ url: URL) -> Bool {
+        getxattr(url.path, "com.apple.quarantine", nil, 0, 0, 0) >= 0
     }
 
     /// The offer's sentence, saying where Wisp is running from. Pure.
@@ -74,9 +85,19 @@ enum MoveToApplications {
     static let adminDetail = "Applications on this Mac needs an administrator's OK. In the Finder windows that "
         + "open, drag Wisp into Applications (macOS asks for the password), then open it from there."
 
-    /// What happens when a step fails for a reason other than permissions. Pure.
-    static func failureDetail(_ reason: String) -> String {
-        "Wisp couldn't move itself: \(reason) Nothing was removed. You can drag Wisp into Applications in Finder instead."
+    /// What happens when a step fails for a reason other than permissions, saying
+    /// truthfully whether the Wisp that was in Applications is now in the Trash. Pure.
+    static func failureDetail(_ reason: String, oldWispTrashed: Bool) -> String {
+        "Wisp couldn't move itself: \(reason) "
+            + (oldWispTrashed ? "The Wisp that was in Applications is in the Trash; put it back from there if you need it. "
+                              : "Nothing was removed. ")
+            + "You can drag Wisp into Applications in Finder instead."
+    }
+
+    /// A move that stopped part-way, and whether it had already put the old Wisp in the Trash.
+    struct MoveFailure: Error {
+        let underlying: Error
+        let oldWispTrashed: Bool
     }
 
     /// Whether a failed write means "needs an administrator". Pure.
@@ -109,7 +130,10 @@ enum MoveToApplications {
         let translocation = Translocation.original(of: bundle)
         let place = place(bundlePath: bundle.path, home: NSHomeDirectory(), translocated: translocation.translocated)
         guard offers(place: place, declined: defaults.bool(forKey: declinedKey),
-                     isAppBundle: bundle.pathExtension == "app") else { return .stayed }
+                     isAppBundle: bundle.pathExtension == "app",
+                     quarantined: isQuarantined(bundle),
+                     previewBuild: Bundle.main.object(forInfoDictionaryKey: "WispPreviewBuild") as? Bool == true)
+        else { return .stayed }
         NSApp.activate(ignoringOtherApps: true)
         let ask = NSAlert()
         ask.messageText = "Move Wisp to Applications?"
@@ -141,9 +165,11 @@ enum MoveToApplications {
         do {
             try move(from: bundle, original: original)
         } catch {
+            let trashed = (error as? MoveFailure)?.oldWispTrashed == true
+            let error = (error as? MoveFailure)?.underlying ?? error
             NSLog("Wisp: move to Applications failed: \(error.localizedDescription)")
             let failed = NSAlert()
-            if needsAdmin(error) {
+            if needsAdmin(error) && !trashed {
                 failed.messageText = "Wisp needs an administrator to move it"
                 failed.informativeText = adminDetail
                 failed.addButton(withTitle: "Show in Finder")
@@ -154,7 +180,7 @@ enum MoveToApplications {
                 }
             } else {
                 failed.messageText = "Wisp couldn't move itself"
-                failed.informativeText = failureDetail(error.localizedDescription)
+                failed.informativeText = failureDetail(error.localizedDescription, oldWispTrashed: trashed)
                 failed.addButton(withTitle: "OK")
                 failed.runModal()
             }
@@ -169,18 +195,23 @@ enum MoveToApplications {
     /// Copies the running bundle beside the destination, then swaps it in: an
     /// existing Wisp goes to the Trash only once the new copy is complete. The
     /// downloaded original goes to the Trash last, so a failure leaves it as it was.
-    private static func move(from bundle: URL, original: URL?) throws {
+    /// `target` is the real destination except in tests/FirstRunSetupChecks.swift.
+    static func move(from bundle: URL, original: URL?, target: URL = URL(fileURLWithPath: destination)) throws {
         let fm = FileManager.default
-        let target = URL(fileURLWithPath: destination)
         let staging = target.deletingLastPathComponent()
             .appendingPathComponent(".Wisp-moving-\(UUID().uuidString).app")
-        try fm.copyItem(at: bundle, to: staging)
+        var oldTrashed = false
         do {
-            if fm.fileExists(atPath: target.path) { try fm.trashItem(at: target, resultingItemURL: nil) }
+            try fm.copyItem(at: bundle, to: staging)
+            if fm.fileExists(atPath: target.path) {
+                try fm.trashItem(at: target, resultingItemURL: nil)
+                oldTrashed = true
+            }
             try fm.moveItem(at: staging, to: target)
         } catch {
-            try? fm.removeItem(at: staging)   // Wisp's own half-made copy, never the person's
-            throw error
+            // Wisp's own half-made copy (a copy can stop part-way), never the person's.
+            if fm.fileExists(atPath: staging.path) { try? fm.removeItem(at: staging) }
+            throw MoveFailure(underlying: error, oldWispTrashed: oldTrashed)
         }
         // The quarantine mark a downloaded app carries is what makes macOS run it
         // from a temporary copy; the person has now chosen where it lives. The app
