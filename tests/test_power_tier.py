@@ -785,6 +785,24 @@ def test_a_chat_lift_racing_its_own_cap_still_leaves_the_watch_armed(monkeypatch
     asyncio.run(run())
 
 
+def test_a_lift_through_a_client_that_just_closed_goes_through_another(away):
+    # The newest capped call's client closed mid-POST (its call ended): the
+    # engine is still reachable through the other call's client.
+    asked = []
+
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            older = P.call_started(10, _lifter(asked, True))
+            newest = P.call_started(10, _lifter(asked, None))
+        await P._lift_now(watch=True)
+        P.call_ended(newest)
+        P.call_ended(older)
+
+    asyncio.run(run())
+    assert asked == [None, True]                               # newest first, then the other
+    assert P._lifted is True and P._lift_ok is True and P._lift_retry_at == 0.0
+
+
 def test_the_watch_asks_again_when_a_lift_did_not_go_through(monkeypatch, away):
     answers = [None, True]                                      # a 2 s timeout, then fine
     asked = []

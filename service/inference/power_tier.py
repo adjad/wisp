@@ -457,15 +457,20 @@ def _note_lift(answer: bool | None) -> None:
 
 
 async def _lift_now(*, watch: bool = False) -> None:
-    """Lift every cap through the newest capped call's client. Cheap and
-    idempotent on the engine; only the watch marks the caps in flight lifted,
-    and only once the engine said it lifted them."""
+    """Lift every cap through a capped call's client, newest first: one that
+    closed meanwhile (its call just ended) can't be asked, so the next is.
+    Cheap and idempotent on the engine; only the watch marks the caps in
+    flight lifted, and only once the engine said it lifted them."""
     global _lifted
     with _calls_lock:
-        lift = next(reversed(_capped.values()))[1] if _capped else None
-    if lift is None:
+        lifts = [lift for _, lift in reversed(_capped.values())]
+    if not lifts:
         return
-    answer = await _ask_lift(lift)
+    answer = None
+    for lift in lifts:
+        answer = await _ask_lift(lift)
+        if answer is not None:
+            break
     if watch and answer is True:
         _lifted = True                       # otherwise the next look asks again
     _note_lift(answer)
