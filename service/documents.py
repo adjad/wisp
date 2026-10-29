@@ -257,11 +257,13 @@ async def answer_text(prompt: str, name: str, text: str, *, truncated: bool = Fa
                 raise TimeoutError("model busy")
             await asyncio.sleep(0.1)
         request = _messages(prompt, name, text, truncated)
-        response = await asyncio.wait_for(
-            client.chat(model, request, temperature=0, max_tokens=_MAX_TOKENS,
-                        engine_headers={"X-oMLX-Cache-Store": "off"},
-                        chat_template_kwargs={"enable_thinking": False}),
-            timeout=max(0.5, deadline - time.monotonic()))
+        from service.inference.power_tier import CHAT, power_tier
+        with power_tier(CHAT):
+            response = await asyncio.wait_for(
+                client.chat(model, request, temperature=0, max_tokens=_MAX_TOKENS,
+                            engine_headers={"X-oMLX-Cache-Store": "off"},
+                            chat_template_kwargs={"enable_thinking": False}),
+                timeout=max(0.5, deadline - time.monotonic()))
         debug_capture.record("model_call", model=model, request=_redacted(request), response=response)
     finally:
         idle.end_foreground()
