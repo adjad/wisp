@@ -183,12 +183,11 @@ the user can't tell.
 
 - **[verified]** Sessions persist — `~/.moe/sessions.db`, SQLite on disk.
 - **[to confirm]** In-memory-only settings deliberately reset on restart:
-  `thinking_level`, `read_only`/`full_access`, `idle_minutes`,
-  `super_model_active`, and now `narration_thinking`. That is intentional for
-  the safety-shaped ones. **Confirm `full_access` resetting to off is the
-  documented intent** — if a user turns it on and a crash silently turns it
-  off, that's a surprise in the safe direction, which is fine, but it should be
-  stated in the UI.
+  `thinking_level`, `idle_minutes`, `super_model_active`, and now
+  `narration_thinking`.
+- **[verified]** `read_only`/`full_access` are saved when the user changes them
+  (`~/.moe/access_mode.json`, laid over `policy.yaml` at startup), so turning
+  Full access off is no longer undone by a restart.
 - **[to confirm]** Lid-close/sleep: sources backfill on wake, so data is not
   lost, only timely. Worth an explicit "last synced N minutes ago" indicator so
   a stale answer is never mistaken for a current one.

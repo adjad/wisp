@@ -134,7 +134,8 @@ def test_reading_a_key_file_asks_even_with_full_access(path, full_access, monkey
 
 def test_wisp_credential_files_ask_under_wisp_home(full_access):
     from service.paths import MOE_DIR
-    for name in ("gmail.json", "mcp.json", "grants.json", "google_workspace/credentials/a.json"):
+    for name in ("gmail.json", "mcp.json", "grants.json", "access_mode.json",
+                 "google_workspace/credentials/a.json"):
         path = str(MOE_DIR / name)
         assert policy.decide("fs_read", {"path": path}, tool="read_file").tier is policy.Tier.CONFIRM
         assert policy.decide("fs_write", {"path": path, "content": "{}"},
@@ -285,8 +286,9 @@ def test_skill_sandbox_blocks_this_macs_services_and_wisp_secrets(tmp_path):
     from service.skills import sandbox
     profile = sandbox.build_profile(tmp_path, [], [])
     assert '(deny network-outbound (remote ip "localhost:*"))' in profile
-    for name in ("gmail.json", "mcp.json", "grants.json", "google_workspace"):
+    for name in ("gmail.json", "mcp.json", "grants.json", "access_mode.json", "google_workspace"):
         assert f'(deny file-read* (subpath "{MOE_DIR / name}"))' in profile
+        assert f'(deny file-write* (subpath "{MOE_DIR / name}"))' in profile
     # The deny rules come last, so a granted scope such as ~ cannot reopen them.
     assert profile.rstrip().splitlines()[-1].startswith("(deny network-outbound")
 
