@@ -227,3 +227,52 @@ def test_an_outgoing_text_reads_as_sent_not_shared():
     assert updates and updates[0].startswith("You sent ")
     groups = D.analyze([(1.0, "Trishe", "Trishe: The landlord fixed the heater.")], [""])
     assert groups[0].signals["Updates"][0].startswith("Trishe shared ")
+
+
+# --- stall re-prompt limits (Release Auditor tests 7 and 8) --------------------------
+
+def test_a_second_stall_is_not_reprompted_again_and_is_not_the_answer(synthetic):
+    """One re-prompt only: a model that stalls twice ends the turn at the second
+    stall, with the plain "I don't have that" message, not the promise text."""
+    effects, _ = synthetic
+    client, events, answer = run(
+        [STALL, "Still checking, one moment please!", "never reached"],
+        prompt="what is up for tomorrow", ask_quality=True, model_led_preload=["get_upcoming"])
+    assert len(client.requests) == 2  # first stall, one re-prompt, second stall: no third request
+    assert client.requests[1]["tool_choice"] == "required"
+    assert client.requests[1]["messages"][-1]["role"] == "user"
+    assert "Call the tool that holds it now" in client.requests[1]["messages"][-1]["content"]
+    assert not effects  # nothing ran
+    assert answer == mo.ASK_UNKNOWN_MESSAGE
+    texts = [e.get("text") for e in events if e["type"] == "text"]
+    assert texts == [mo.ASK_UNKNOWN_MESSAGE]
+    assert not any("moment" in (t or "") for t in texts)  # neither promise is shown as the answer
+    assert "never reached" not in (answer or "")
+
+
+@pytest.mark.parametrize("name, category, args", [
+    ("send_email", "email_send", {"to": "dan@example.com", "subject": "Hi", "body": "Hello"}),
+    ("send_message", "messages_send", {"to": "Dan", "text": "Hello"}),
+    # update_event is left out: it resolves the exact occurrence from a calendar
+    # snapshot before its card, which a synthetic tool cannot supply.
+    ("add_calendar_event", "calendar_write", {"title": "Office Hours", "when_iso": "2026-10-30T10:00:00"}),
+    ("cancel_event", "calendar_write", {"title": "Office Hours"}),
+])
+@pytest.mark.parametrize("after_stall", [False, True])
+def test_write_tool_after_a_stall_reprompt_still_needs_confirmation(synthetic, name, category, args, after_stall):
+    """The forced-tool step only requires a tool; the write goes through the
+    normal confirmation path, same as a first-pass call, and a refusal leaves
+    it unrun."""
+    from tests.test_model_led_integration import Approval
+    effects, register = synthetic
+    register(name, "action_tools", category, parameters={"type": "object", "properties": {
+        k: {"type": "string"} for k in args}})
+    approval = Approval(False)
+    script = ([STALL] if after_stall else []) + [[call(name, **args)], "Okay, I did not do that."]
+    client, events, _ = run(script, prompt="what is up for tomorrow", approval=approval,
+                            ask_quality=True, model_led_preload=["get_upcoming", name])
+    if after_stall:
+        assert client.requests[1]["tool_choice"] == "required"  # the re-prompt step really ran
+    assert [a["tool"] for a in approval.calls] == [name]
+    assert not effects
+    assert any(e.get("decision") == "confirm" for e in events)
