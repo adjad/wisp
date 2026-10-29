@@ -1,6 +1,6 @@
 # Mail memory, part 2: profile facts from old mail
 
-Status: **approved 2026-10-28 with the four recommended defaults; the backend slice is built** on
+Status: **approved 2026-10-28; built for dev7** on
 `claude/mail-profile-facts-78c834` (see "As built" at the end).
 Builds on `docs/plans/2026-10-26-email-digest-memory-research.md` (Phase 0 measurements and the Phase 2 row)
 and on `service/mail_memory/` as merged in #397/#404.
@@ -10,10 +10,10 @@ and on `service/mail_memory/` as merged in #397/#404.
 While mail memory walks the last 90 days of mail for reminders, it also collects a few kinds of lasting
 facts about the user: where they work or study, the city they live in, the people they write to and how
 those people relate to them, and the services they use. Each fact has to be proven by a quote that is
-really in an email. Code turns that quote into a short fact, counts how many emails support it, and only
-then offers it to the user in **Memory → Review**, the screen that already lists proposed memories. Nothing
-learned from mail is used in a prompt until the user accepts it. Facts are stored in the existing fact
-memory (`facts.db`). Wisp gets no second memory store.
+really in an email. Code turns that quote into a short fact, counts how many emails support it, and then
+saves it in the existing fact memory (`facts.db`), where it is used without asking first (the user's
+choice). Memory lists every learned fact with its quotes, and the user can delete any of them or forget
+everything from mail at once. Wisp gets no second memory store.
 
 ## IMPORTANT rules (the contract the code and tests will enforce)
 
@@ -28,15 +28,17 @@ memory (`facts.db`). Wisp gets no second memory store.
 - Nothing sensitive, ever: health, money beyond a provider's name, government ids, passwords, religion,
   politics, sexuality, legal trouble. A code-side blocklist drops a fact if its quote touches these, even
   when the model offered it.
-- Suggestions, never silent. Every fact goes in as `proposed`. Only facts the user accepts are `active`,
-  and only active facts reach a prompt.
+- Used without review, but never hidden. A fact is saved `active` with origin `mail`, so Memory lists it
+  ("Fact · mail · date") with its quotes, and Delete forgets it for good. The one exception: a newer email
+  never silently overrides a fact the user stated or confirmed; that change is offered in Memory → Review
+  as "May replace …".
 - The email is untrusted. The prompt says so before and after the email, and code ignores anything the
   model marks as suspicious.
 - No mail bodies are stored. A fact keeps its quote (at most 300 characters), the email's Message-ID and
   its sent date, as reminders do now.
-- Local only. The walk already stands down under a remote-only profile. Accepted mail facts follow the
-  know-you profile's rule: they go to Wisp's on-Mac model, or to a cloud model only under Cloud
-  "Everything". See the decision below.
+- Local only. The walk already stands down under a remote-only profile. Mail facts follow the know-you
+  profile's rule (`profile.may_send_to`): they go to Wisp's on-Mac model, and never to an optional cloud
+  model.
 
 ## 1. Which facts are worth learning
 
@@ -115,41 +117,40 @@ Candidates are kept in a new `fact_candidates` table in `mail_memory.db`: kind, 
 Message-ID, sent date, box, extractor version. This is the working pile, like `items` for reminders.
 Promotion to `facts.db` happens in code:
 
-- **When a fact is offered:** a `person`, `service` or `account` fact is offered once two different emails
-  support it. An `employer`, `school` or `home_city` fact from the user's own Sent mail is offered after one
-  email, because the user said it outright. Each offer carries every supporting quote as evidence, so the
-  Review screen shows "seen in 3 emails".
-- **Superseding:** for `employer`, `school` and `home_city`, only the newest-dated candidate is offered.
-  If the user already has an active fact for that slot (`subject='user'`, `predicate='employment'` and so
-  on, as `facts.claim_slot` already uses), the new one is offered with "May replace: Works at Old Co." and
-  accepting it supersedes the old one through `FactStore.review(..., supersedes_id=...)`. An older email
+- **When a fact is saved:** a `person`, `service` or `account` fact is saved once two different emails
+  support it. An `employer`, `school` or `home_city` fact from the user's own Sent mail is saved after one
+  email, because the user said it outright. Each fact carries every supporting quote as evidence.
+- **Superseding:** for `employer`, `school` and `home_city`, only the newest-dated candidate is saved, and
+  it supersedes an older mail-learned value for the same slot (`subject='user'`, `predicate='employment'`
+  and so on, as `facts.claim_slot` already uses). If the slot holds a fact the user stated or confirmed, the
+  new one is offered in Review with "May replace: I work at Old Co" instead, and accepting it supersedes the
+  old one through `FactStore.review(..., supersedes_id=...)`. An older email
   can never replace a newer fact: walking mail newest-first means a 2026-08 "I work at Old Co" arriving
   after a 2026-10 "I started at New Co" is recorded as evidence only.
-- **Aging:** a fact's `observed_at` is its newest email's date. A proposed fact whose newest evidence is
-  over 180 days old is never offered. An accepted fact stays until the user forgets or replaces it: mail
+- **Aging:** a fact's `observed_at` is its newest email's date. A fact whose newest evidence is over 180
+  days old is never saved. A saved fact stays until the user forgets it or a newer email replaces it: mail
   silence is not proof that something stopped being true.
 
 ## 5. Where facts live, review, forget and reset
 
 **Store: the existing `facts.db`, not a new one.** It already has everything this needs:
 
-- `origin='historical'` forces `status='proposed'` (`FactStore.add`), and an extracted fact must carry
-  evidence;
+- extracted facts must carry evidence (`FactStore.add`); mail facts get their own origin, `mail`, saved
+  `active` (the one "May replace" case uses `historical`, which `add` forces to `proposed`);
 - evidence rows with `source_type`, `source_id`, `quote` and `observed_at`. Mail facts use
   `source_type='mail'` and the Message-ID;
-- Review in the window (Memory → Review: Waiting / Later), with Accept, Edit, Later and Reject, and a
-  "replaces" picker;
-- forgetting suppresses the source and the quote, so the same email can't propose the fact again;
+- the Memory window lists saved facts with their origin and evidence, with Delete, and Review (Waiting /
+  Later) for the "May replace" case;
+- forgetting suppresses the source and the quote, so the same email can't save the fact again;
 - retrieval reads only `status='active'`.
 
 The 10-26 research doc said "nothing is written to facts.db" so that the chat-memory rule, "only the user's
 own words", would stay intact. That was written before `historical` and `connection` origins existed in
-`facts.db` for exactly this kind of proposed, evidence-backed memory. With review required, I recommend
-`facts.db`. See decision 2.
+`facts.db` for evidence-backed memory from other sources. The user chose `facts.db` (decision 2).
 
 **Forget:**
 
-- Rejecting or deleting one fact uses the existing `delete`, which suppresses its emails and quotes.
+- Deleting one fact in Memory uses the existing `delete`, which suppresses its emails and quotes.
 - New: "Forget everything from mail" (`POST /assistant/mail_memory/forget_facts`, native-only like the
   other mail-memory writes) deletes every fact whose evidence is all `source_type='mail'`, clears
   `fact_candidates`, and turns the fact pass off until switched back on. A fact the user also stated in chat
@@ -163,11 +164,11 @@ task first. A test will pin that both files are absent from `KEEP_ENTRIES`.
 
 ## 6. How the user sees it
 
-- **Dev7 (backend only, smallest useful slice):** accepted facts reach prompts through the existing memory
-  retrieval. Proposed facts appear in Memory → Review with their quotes and "From your mail: <subject>,
-  <date>". `GET /assistant/mail_memory` gains `facts` counts (candidates, offered, accepted, dropped by
-  reason).
-- **Later (Swift, its own change):** a Brief chip, "Wisp learned 6 things from your mail · Review", shown
+- **Dev7 (backend only):** saved facts reach local prompts through the existing memory retrieval, labelled
+  "from the user's mail". Memory → Facts lists them ("Fact · mail · date") with their quotes and "From your
+  mail: <subject>", and Delete removes one. `GET /assistant/mail_memory` gains `facts` counts (passes,
+  candidates by kind, facts in memory by status).
+- **Later (Swift, its own change):** a Brief line, "Wisp learned 6 things from your mail · See them", shown
   once after the backfill and then at most weekly, and the "Forget everything from mail" button in Settings.
 
 ## 7. Testing with synthetic mail
@@ -228,8 +229,8 @@ does not merge, build, install or publish without their own confirmation.
 
 ## As built (2026-10-28)
 
-The user approved the four recommended defaults: review before use, `facts.db`, no optional cloud models,
-and the backend slice for the integrator to consider for dev7.
+See the revision below: facts are used without review, kept in `facts.db`, never sent to cloud models, and
+built for dev7.
 
 - `service/mail_memory/profile_facts.py`: eligibility, prompt, validation, wording, promotion, forget-all.
 - `store.py`: `fact_candidates` table and `messages.facts_state` (`'' | done | skipped | pending | failed`).
@@ -238,7 +239,8 @@ and the backend slice for the integrator to consider for dev7.
   in `live` mode (shadow collects candidates only).
 - `api.py`: `facts` counts on `GET /assistant/mail_memory`, `PUT /assistant/mail_memory/facts`,
   `POST /assistant/mail_memory/forget_facts`.
-- `facts.py`: `slot_facts`, `retire_proposed`, `forget_source`, `source_counts`, `mail_only`.
+- `facts.py`: the `mail` origin, `slot_facts`, `retire_slot`, `forget_source`, `source_counts`, `mail_only`;
+  `retrieval.render_context` labels mail facts "from the user's mail".
 - Cloud gate: `memory_block(..., mail_facts=)` from `profile.may_send_to` in `main.py` and the agent loop,
   and a `mail_facts_allowed` ContextVar so the `recall` tool follows the same rule.
 
@@ -249,3 +251,13 @@ Differences from the sketch:
   is about is still decided by code from Sent vs Inbox, never by the email's own pronouns.
 - Signature blocks are not read yet: employer and school need a first-person sentence.
 - Not done: the Brief chip, the Settings button, the live Gemma bench with a longer mailbox.
+
+### Revision after the user's answers (2026-10-28, later)
+
+The user answered the four decisions: (1) use facts without their OK, for all six kinds; (2) keep them in
+the existing fact memory; (3) never send them to cloud models; (4) build now for dev7, which does not go
+forward until this passes. So mail facts are saved `active` with a new `facts.db` origin, `mail`
+(`FactStore.add` accepts it and keeps the status given), and the prompt labels them "from the user's
+mail". Every other safeguard is unchanged. The one place a fact still waits for the user is a newer email
+that would replace a fact the user stated or confirmed: user-stated facts outrank anything inferred. The
+Decisions section above is kept as the question that was asked.

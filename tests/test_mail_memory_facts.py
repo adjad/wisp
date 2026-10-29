@@ -1,5 +1,5 @@
 """Mail memory's profile facts (service/mail_memory/profile_facts.py): validation traps,
-promotion into facts.db as proposed facts, superseding, forgetting, the cloud gate, and
+saving into facts.db (used without review), superseding, forgetting, the cloud gate, and
 the tick. Synthetic mail and a stand-in model only: a temporary mail_memory.db, a
 temporary facts.db and settings file, no Mail, no oMLX, no subprocess."""
 from __future__ import annotations
@@ -151,30 +151,35 @@ def _seen(st, key, kind, value, quote, *, ts, role="", box="sent", subject="Hi")
                                         "quote": quote}], profile_facts.EXTRACTOR, now=ts)
 
 
+def _active(fs):
+    return sorted(r["text"] for r in fs.all())
+
+
 def _proposed(fs):
     return sorted(r["text"] for r in fs.all(status="proposed"))
 
 
-def test_a_service_needs_two_emails(world):
+def test_a_service_needs_two_emails_then_is_used_without_review(world):
     st, fs = world
     groups = _seen(st, "<a@x>", "service", "Comcast", "Your Comcast bill", ts=NOW - 5 * DAY, box="inbox")
-    assert profile_facts.promote(st, fs, now=NOW, groups=groups) == {"offered": 0, "held": 1, "suppressed": 0}
-    assert _proposed(fs) == []
+    assert profile_facts.promote(st, fs, now=NOW, groups=groups) == {"saved": 0, "offered": 0, "held": 1,
+                                                                     "suppressed": 0}
+    assert _active(fs) == []
     _seen(st, "<b@x>", "service", "Comcast", "Comcast: your statement", ts=NOW - 2 * DAY, box="inbox")
-    assert profile_facts.promote(st, fs, now=NOW)["offered"] == 1
-    fact = fs.all(status="proposed")[0]
+    assert profile_facts.promote(st, fs, now=NOW)["saved"] == 1
+    fact = fs.all()[0]
     full = fs.get(fact["id"])
-    assert fact["text"] == "I use Comcast" and fact["origin"] == "historical"
+    assert (fact["text"], fact["origin"], fact["reviewed"]) == ("I use Comcast", "mail", 0)
     assert sorted(e["source_id"] for e in full["evidence"]) == ["<a@x>", "<b@x>"]
     assert {e["source_type"] for e in full["evidence"]} == {"mail"}
-    assert fs.all() == []                                            # nothing is active until accepted
+    assert _proposed(fs) == []
 
 
-def test_the_users_own_employer_is_offered_from_one_sent_email(world):
+def test_the_users_own_employer_is_saved_from_one_sent_email(world):
     st, fs = world
     groups = _seen(st, "<s1@x>", "employer", "Acme Robotics", "I started at Acme Robotics", ts=NOW - DAY)
     profile_facts.promote(st, fs, now=NOW, groups=groups)
-    fact = fs.all(status="proposed")[0]
+    fact = fs.all()[0]
     assert (fact["text"], fact["subject"], fact["predicate"]) == ("I work at Acme Robotics", "user", "employment")
 
 
@@ -184,47 +189,50 @@ def test_an_older_employer_never_replaces_a_newer_one(world):
                           groups=_seen(st, "<new@x>", "employer", "New Co", "I joined New Co", ts=NOW - 10 * DAY))
     profile_facts.promote(st, fs, now=NOW,
                           groups=_seen(st, "<old@x>", "employer", "Old Co", "I work at Old Co", ts=NOW - 60 * DAY))
-    assert _proposed(fs) == ["I work at New Co"]
+    assert _active(fs) == ["I work at New Co"] and _proposed(fs) == []
 
 
-def test_a_newer_employer_retires_an_unreviewed_older_one(world):
+def test_a_newer_employer_replaces_an_older_mail_one(world):
     st, fs = world
     profile_facts.promote(st, fs, now=NOW,
                           groups=_seen(st, "<old@x>", "employer", "Old Co", "I work at Old Co", ts=NOW - 60 * DAY))
     profile_facts.promote(st, fs, now=NOW,
                           groups=_seen(st, "<new@x>", "employer", "New Co", "I joined New Co", ts=NOW - 10 * DAY))
-    assert _proposed(fs) == ["I work at New Co"]
+    assert _active(fs) == ["I work at New Co"]
     assert [r["text"] for r in fs.all(status="superseded")] == ["I work at Old Co"]
+    # and the old one can't come back from its own email
+    assert profile_facts.promote(st, fs, now=NOW)["saved"] == 1 and _active(fs) == ["I work at New Co"]
 
 
-def test_a_newer_employer_offers_to_replace_the_accepted_one(world):
+def test_mail_never_overrides_what_the_user_confirmed(world):
     st, fs = world
     profile_facts.promote(st, fs, now=NOW,
                           groups=_seen(st, "<old@x>", "employer", "Old Co", "I work at Old Co", ts=NOW - 60 * DAY))
-    old = fs.all(status="proposed")[0]
-    fs.review(old["id"], "confirm")
-    profile_facts.promote(st, fs, now=NOW,
-                          groups=_seen(st, "<new@x>", "employer", "New Co", "I joined New Co", ts=NOW - 10 * DAY))
+    old = fs.all()[0]
+    fs.review(old["id"], "confirm")                                  # the user vouched for it
+    out = profile_facts.promote(st, fs, now=NOW,
+                                groups=_seen(st, "<new@x>", "employer", "New Co", "I joined New Co", ts=NOW - 10 * DAY))
+    assert out["offered"] == 1 and out["saved"] == 0
     new = fs.all(status="proposed")[0]
     assert new["text"] == "I work at New Co" and "May replace: I work at Old Co" in new["explanation"]
-    assert [r["text"] for r in fs.all()] == ["I work at Old Co"]     # still active until the user says
+    assert _active(fs) == ["I work at Old Co"]                       # still current until the user says
     fs.review(new["id"], "confirm", supersedes_id=old["id"])
-    assert [r["text"] for r in fs.all()] == ["I work at New Co"]
+    assert _active(fs) == ["I work at New Co"]
 
 
-def test_stale_evidence_is_never_offered(world):
+def test_stale_evidence_is_never_saved(world):
     st, fs = world
     groups = _seen(st, "<s@x>", "employer", "Acme", "I work at Acme", ts=NOW - 200 * DAY)
     assert profile_facts.promote(st, fs, now=NOW, groups=groups)["held"] == 1
 
 
-def test_a_rejected_fact_never_comes_back(world):
+def test_a_deleted_fact_never_comes_back(world):
     st, fs = world
     groups = _seen(st, "<s@x>", "employer", "Acme", "I work at Acme", ts=NOW - DAY)
     profile_facts.promote(st, fs, now=NOW, groups=groups)
-    fs.review(fs.all(status="proposed")[0]["id"], "reject")
+    assert fs.delete(fs.all()[0]["id"])                               # Memory's Delete
     assert profile_facts.promote(st, fs, now=NOW, groups=groups)["suppressed"] == 1
-    assert _proposed(fs) == []
+    assert _active(fs) == []
 
 
 def test_forget_everything_from_mail(world):
@@ -234,27 +242,26 @@ def test_forget_everything_from_mail(world):
     _seen(st, "<p1@x>", "person", "Priya", "my sister Priya", role="sister", ts=NOW - 3 * DAY)
     _seen(st, "<p2@x>", "person", "Priya", "my sister Priya visited", role="sister", ts=NOW - 2 * DAY)
     profile_facts.promote(st, fs, now=NOW)
-    sister = next(r for r in fs.all(status="proposed") if r["text"] == "Priya is my sister")
-    fs.review(sister["id"], "confirm")
+    assert _active(fs) == ["I work at Acme", "Priya is my sister"]
+    sister = next(r for r in fs.all() if r["text"] == "Priya is my sister")
     fs.add("Priya is my sister")                                      # the user also said it in chat
     out = profile_facts.forget_all(st, fs)
     assert out["forgotten"] == 1 and out["evidence_removed"] == 2 and out["candidates_cleared"] == 3
-    assert [r["text"] for r in fs.all()] == ["Priya is my sister"] and _proposed(fs) == []
+    assert _active(fs) == ["Priya is my sister"] and _proposed(fs) == []
     assert fs.get(sister["id"])["evidence"] == []
-    # and the same mail can't propose the forgotten fact again
+    # and the same mail can't save the forgotten fact again
     profile_facts.promote(st, fs, now=NOW, groups=_seen(st, "<s@x>", "employer", "Acme", "I work at Acme",
                                                        ts=NOW - DAY))
-    assert _proposed(fs) == []
+    assert _active(fs) == ["Priya is my sister"]
 
 
-# --- accepted mail facts stay off optional cloud models ---------------------------------
+# --- mail facts stay local --------------------------------------------------------------
 
 def test_mail_only_facts_follow_the_profile_rule(world):
-    from service.memory.retrieval import mail_facts_allowed, retrieve
+    from service.memory.retrieval import mail_facts_allowed, render_context, retrieve
     st, fs = world
     profile_facts.promote(st, fs, now=NOW, groups=_seen(st, "<s@x>", "employer", "Acme Robotics",
                                                        "I work at Acme Robotics", ts=NOW - DAY))
-    fs.review(fs.all(status="proposed")[0]["id"], "confirm")
     fs.add("I live in Dublin")
 
     def texts(**kw):
@@ -267,6 +274,8 @@ def test_mail_only_facts_follow_the_profile_rule(world):
         assert texts() == ["I live in Dublin"]
     finally:
         mail_facts_allowed.reset(token)
+    block = render_context(retrieve("where do I work", facts=fs, include_passages=False))
+    assert "from the user's mail" in block and "Acme Robotics" in block
 
 
 def test_callers_pass_the_profile_rule():
@@ -363,14 +372,14 @@ def _replies(monkeypatch, *answers):
     return calls
 
 
-async def test_one_tick_finds_the_reminder_and_proposes_the_fact(ticking, monkeypatch):
+async def test_one_tick_finds_the_reminder_and_saves_the_fact(ticking, monkeypatch):
     st, fs = ticking
     calls = _replies(monkeypatch, REMINDER, FACTS)
     await runner.tick(now=NOW)
     assert len(calls) == 2 and '"facts"' in calls[1][0]["content"]
     assert st.message("<sent-1@x>")["facts_state"] == "done"
-    fact = fs.all(status="proposed")[0]
-    assert fact["text"] == "I work at Acme Robotics"
+    fact = fs.all()[0]
+    assert fact["text"] == "I work at Acme Robotics" and fact["origin"] == "mail"
     assert fs.get(fact["id"])["evidence"][0]["quote"] == "I started at Acme Robotics last week"
     got = st.fact_stats()
     assert got == {"passes": {"done": 1}, "candidates": {"employer": 1}}
@@ -381,7 +390,7 @@ async def test_shadow_mode_collects_but_offers_nothing(ticking, monkeypatch):
     runner.set_mode("shadow")
     _replies(monkeypatch, REMINDER, FACTS)
     await runner.tick(now=NOW)
-    assert st.fact_stats()["candidates"] == {"employer": 1} and fs.all(status="proposed") == []
+    assert st.fact_stats()["candidates"] == {"employer": 1} and fs.all() == []
 
 
 async def test_facts_off_makes_no_fact_call(ticking, monkeypatch):
@@ -401,7 +410,7 @@ async def test_a_dropped_fact_call_is_picked_up_once_the_queue_is_empty(ticking,
     assert st.message("<sent-1@x>")["facts_state"] == "pending"
     await runner.tick(now=NOW + 1)                                   # the backlog: the fact call only
     assert len(calls) == 3 and '"facts"' in calls[2][0]["content"]
-    assert st.message("<sent-1@x>")["facts_state"] == "done" and len(fs.all(status="proposed")) == 1
+    assert st.message("<sent-1@x>")["facts_state"] == "done" and len(fs.all()) == 1
     assert await runner.tick(now=NOW + 2) == runner.IDLE_DONE_GAP_S
 
 
@@ -450,7 +459,7 @@ async def test_counts_switch_and_forget(client, ticking, monkeypatch):
     _replies(monkeypatch, REMINDER, FACTS)
     await runner.tick(now=NOW)
     got = client.get("/assistant/mail_memory").json()["facts"]
-    assert got["enabled"] is True and got["memory"] == {"proposed": 1} and got["candidates"] == {"employer": 1}
+    assert got["enabled"] is True and got["memory"] == {"active": 1} and got["candidates"] == {"employer": 1}
     assert client.put("/assistant/mail_memory/facts", json={"enabled": False}).json()["enabled"] is False
     assert runner.facts_enabled() is False
     assert client.post("/assistant/mail_memory/forget_facts", json={},
@@ -460,5 +469,5 @@ async def test_counts_switch_and_forget(client, ticking, monkeypatch):
     runner.set_facts(True)
     out = client.post("/assistant/mail_memory/forget_facts", json={}).json()
     assert out["forgotten"] == 1 and out["candidates_cleared"] == 1 and out["enabled"] is False
-    assert fs.all(status="proposed") == [] and runner.facts_enabled() is False
+    assert fs.all() == [] and runner.facts_enabled() is False
     assert sum(st.stats()["items"].values()) == 1                     # the reminder is untouched

@@ -9,8 +9,8 @@ IMPORTANT rules:
   verified create path, so nothing new reaches the native writer.
 - The Brief gets only important suggestions due within `importance.SHOW_DAYS`;
   in shadow mode it gets none, only counts.
-- Profile facts are reviewed in Memory -> Review (facts.db), not here; this
-  router reports their counts, switches the fact pass, and forgets every fact
+- Profile facts live in facts.db and are listed (and deleted) in Memory, not
+  here; this router reports their counts, switches the fact pass, and forgets every fact
   learned from mail (`forget_facts`).
 """
 from __future__ import annotations

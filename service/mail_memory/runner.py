@@ -27,8 +27,9 @@ IMPORTANT rules:
 - Profile facts (profile_facts.py) ride on the same tick: after the reminder
   call, a second short call runs only for an email that can carry a fact, and
   only if the model is still free. Read mail whose fact pass never ran is
-  picked up once the reminder queue is empty. Facts are offered (proposed in
-  facts.db) only in "live" mode; the `facts` setting turns the pass off.
+  picked up once the reminder queue is empty. Facts are saved to facts.db
+  only in "live" mode (shadow collects candidates only); the `facts` setting
+  turns the pass off.
 - Logs and the store's meta carry counts and reason codes only, never mail text.
 - A failed tick is never silent: the reason code is kept in meta (`last_error`,
   `last_error_at`, cleared by the next good read) and logged at WARNING, which

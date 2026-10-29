@@ -176,7 +176,9 @@ class FactStore:
         text = _clean(text)
         if not text or len(text) > 1000 or category not in CATEGORIES:
             raise ValueError('A memory needs 1-1000 characters and a valid category')
-        if origin not in ('explicit', 'automatic', 'historical', 'connection') or status not in ('active', 'proposed'):
+        # 'mail': mail memory's profile facts (service/mail_memory/profile_facts.py), used
+        # without review by the user's choice (2026-10-28), so they keep the status given.
+        if origin not in ('explicit', 'automatic', 'historical', 'connection', 'mail') or status not in ('active', 'proposed'):
             raise ValueError('Invalid memory origin or status')
         evidence = evidence or []
         if origin != 'explicit' and not evidence:
@@ -361,13 +363,15 @@ class FactStore:
                 "SELECT * FROM facts WHERE subject=? AND predicate=? AND status IN ('active','proposed','deferred')",
                 (subject, predicate))]
 
-    def retire_proposed(self, subject, predicate, *, keep_id):
-        """Supersede extracted suggestions for a slot that nobody has reviewed yet,
-        in favour of `keep_id` (mail memory offers only the newest employer)."""
+    def retire_slot(self, subject, predicate, *, keep_id):
+        """Supersede mail-learned facts for a slot that the user never reviewed, in
+        favour of `keep_id`: a newer email naming a new employer replaces the old
+        one. Facts the user stated or confirmed are never touched here."""
         with self._write():
             rows = self._db.execute(
-                "SELECT * FROM facts WHERE subject=? AND predicate=? AND status='proposed' AND reviewed=0 "
-                "AND origin='historical' AND id!=?", (subject, predicate, keep_id)).fetchall()
+                "SELECT * FROM facts WHERE subject=? AND predicate=? AND status IN ('active','proposed') "
+                "AND reviewed=0 AND origin IN ('mail','historical') AND id!=?",
+                (subject, predicate, keep_id)).fetchall()
             for row in rows:
                 self._supersede(row, keep_id)
             return len(rows)
@@ -404,11 +408,11 @@ class FactStore:
                    WHERE e.source_type=? GROUP BY f.status''', (source_type,))}
 
     def mail_only(self, fid):
-        """True for an extracted fact whose evidence is all from mail: it may go only
-        where the know-you profile may go (service/memory/profile.may_send_to)."""
+        """True for a fact learned only from mail: it may go only where the know-you
+        profile may go (service/memory/profile.may_send_to), never to a cloud model."""
         with self._lock:
             row = self._db.execute('SELECT origin FROM facts WHERE id=?', (fid,)).fetchone()
-            if not row or row['origin'] == 'explicit':
+            if not row or row['origin'] not in ('mail', 'historical'):
                 return False
             kinds = {r[0] for r in self._db.execute('SELECT DISTINCT source_type FROM memory_evidence WHERE fact_id=?', (fid,))}
         return kinds == {'mail'}

@@ -144,7 +144,7 @@ def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=1
     for row in rows:
         if query.strip() and row['category'] == 'preference' and not _in_scope(row['text'], query):
             continue
-        if not mail_facts and row['origin'] == 'historical' and facts.mail_only(row['id']):
+        if not mail_facts and row['origin'] in ('mail', 'historical') and facts.mail_only(row['id']):
             continue
         if row['origin'] == 'automatic' and not row['reviewed'] and not row['pinned']:
             evidence = facts.get(row['id'])['evidence']
@@ -180,7 +180,8 @@ def render_context(result, *, max_chars=2400):
         return ''
     lines, used, ids, passages = [], len(header.encode()), [], []
     for row in result['facts']:
-        label = 'confirmed' if row['origin'] == 'explicit' or row['reviewed'] else 'user statement'
+        label = ('confirmed' if row['origin'] == 'explicit' or row['reviewed']
+                 else 'from the user\'s mail' if row['origin'] == 'mail' else 'user statement')
         line = f"[memory {row['id']}; {dated(row['observed_at'])}; {label}; {row['category']}] " + json.dumps(row['text'], ensure_ascii=False) + '\n'
         if used + len(line.encode()) <= byte_budget:
             lines.append(line); used += len(line.encode()); ids.append(row['id'])

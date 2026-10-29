@@ -15,8 +15,15 @@ IMPORTANT rules:
   transactional mail addressed to them.
 - Nothing sensitive: a quote that touches health, money amounts, ids, passwords,
   religion, politics, sexuality or legal matters is dropped, whatever the model said.
-- Every fact enters facts.db as `proposed` (origin "historical"); only facts the
-  user accepts in Memory -> Review are used.
+- Facts are used without review (the user's choice, 2026-10-28): each enters
+  facts.db as an active fact with origin "mail", its quotes and Message-IDs as
+  evidence, so Memory lists it and the user can delete it. One exception: a
+  newer email never silently overrides what the user said or confirmed; it is
+  offered in Memory -> Review as "May replace ..." instead.
+- An older email never replaces a newer fact. A newer email replaces an older
+  mail-learned value for employer, school or home city.
+- Mail-learned facts stay local: only where the know-you profile may go
+  (retrieval's `mail_facts`), never to an optional cloud model.
 - The email is untrusted. A candidate the model marks suspicious is dropped.
 """
 from __future__ import annotations
@@ -221,14 +228,15 @@ def _category(kind: str) -> str:
 
 
 def promote(st, facts, *, now: float, groups: list[tuple[str, str]] | None = None) -> dict:
-    """Offer candidates with enough support to the user, as proposed facts in facts.db.
+    """Save candidates with enough support as facts in facts.db.
 
     - person, service, account: two different emails.
     - employer, school, home_city from the user's own Sent mail: one email; only the
-      newest value per slot is offered, and an older email never replaces a newer fact.
+      newest value per slot is saved, and an older email never replaces a newer fact.
     - Nothing whose newest evidence is over MAX_AGE_S old.
-    Returns counts: offered, held (not enough support or stale), suppressed."""
-    out = {"offered": 0, "held": 0, "suppressed": 0}
+    Returns counts: saved (active), offered (proposed, where the user's own word
+    holds the slot), held (not enough support, stale or older), suppressed (forgotten)."""
+    out = {"saved": 0, "offered": 0, "held": 0, "suppressed": 0}
     for kind, group in (groups if groups is not None else st.candidate_groups()):
         rows = st.candidates(kind, group)
         if not rows:
@@ -241,32 +249,34 @@ def promote(st, facts, *, now: float, groups: list[tuple[str, str]] | None = Non
             continue
         latest = max(rows, key=lambda r: r["sent_ts"])
         text = fact_text(kind, latest["value"], latest["role"])
-        subject, predicate, explanation = "", "", "From your mail."
+        mine = _fact_key(text)
+        subject, predicate, explanation = "", "", "Learned from your mail."
+        origin, status = "mail", "active"
         if kind in SLOT_KINDS:
             subject, predicate = "user", SLOT_KINDS[kind]
             if st.newer_slot_value(kind, group, newest):
                 out["held"] += 1                  # a newer email names another value for this slot
                 continue
-            current = facts.slot_facts(subject, predicate)
-            if any(f["observed_at"] > newest and f["fact_key"] != _fact_key(text) for f in current):
+            current = [f for f in facts.slot_facts(subject, predicate) if f["fact_key"] != mine]
+            if any(f["observed_at"] > newest for f in current):
                 out["held"] += 1                  # an older email never replaces a newer fact
                 continue
-            older = [f for f in current if f["status"] == "active" and f["fact_key"] != _fact_key(text)]
-            if older:
-                explanation = f"From your mail. May replace: {older[0]['text']}"
+            owned = [f for f in current if f["status"] == "active" and (f["origin"] == "explicit" or f["reviewed"])]
+            if owned:
+                # The user's own word outranks mail: ask instead of overriding it.
+                origin, status = "historical", "proposed"
+                explanation = f"Learned from your mail. May replace: {owned[0]['text']}"
         evidence = [{"source_type": SOURCE_TYPE, "source_id": r["source_id"], "quote": r["quote"],
                      "observed_at": r["sent_ts"], "label": f"From your mail: {r['subject'][:200]}",
                      "extractor_version": EXTRACTOR} for r in rows]
-        result = facts.add(text, _category(kind), origin="historical", evidence=evidence,
+        result = facts.add(text, _category(kind), origin=origin, status=status, evidence=evidence,
                            explanation=explanation, subject=subject, predicate=predicate)
         if result.get("suppressed"):
             out["suppressed"] += 1
             continue
-        out["offered"] += 1
-        if kind in SLOT_KINDS and result.get("id"):
-            # An older value for this slot that the user hasn't looked at yet is
-            # retired, so Review never shows two employers side by side.
-            facts.retire_proposed(subject, predicate, keep_id=result["id"])
+        out["saved" if status == "active" else "offered"] += 1
+        if kind in SLOT_KINDS and status == "active" and result.get("id"):
+            facts.retire_slot(subject, predicate, keep_id=result["id"])
     return out
 
 
