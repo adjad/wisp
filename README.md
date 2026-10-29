@@ -52,8 +52,13 @@ by default), and your Brief and answers fit you.
 - **The AI runs on your Mac.** Wisp downloads its model once (Gemma 4 E4B, about 5.5 GB) and runs it
   with an engine built into the app. Your mail, calendar, messages and notes are read on the Mac
   and stored there, in `~/.moe`.
-- **It asks before it acts.** Nothing is sent, and no event changes, until you approve it. Every
-  action Wisp takes is logged in `~/.moe/audit.jsonl`.
+- **You decide how much it does on its own.** Wisp starts with **Full access** on, so everyday
+  actions such as adding a reminder, writing a file or opening an app run without asking. Some things
+  always wait for your approval, whatever the setting: sending mail or messages, calendar changes,
+  AppleScript, installing a tool, permanent deletes, and shell commands that could send data off
+  your Mac. Turn Full access off in **Settings › Privacy & Access**, the notch's quick settings or
+  the chat window, and risky actions pause for your confirmation. For now, Full access turns back on
+  when Wisp restarts. Every action Wisp takes is logged in `~/.moe/audit.jsonl`.
 - **You can start over.** `/resetwisp` deletes everything Wisp has stored and revokes the access
   you gave it.
 
