@@ -832,8 +832,79 @@ struct FirstRunSetupChecks {
         check(FirstRunPermissions.fullDiskAccessState(home: scratch) == .allowed, "Readable Mail folder")
         try? FileManager.default.removeItem(at: scratch)
 
+        dev8OnboardingChecks()
+
         // /resetwisp brings all of the above back to a fresh Mac (tests/WispResetChecks.swift).
         WispResetChecks.run()
-        print("PASS: first-run setup — show and resume rules, 11 step-1 states, download click, time left, tour hints, readers never ask, ready notification, remote-only, reopen cap, Full Disk Access, Contacts on its own, slow service, one Return per state, open at login")
+        print("PASS: first-run setup — model gate, Move to Applications, readers re-post when the service comes up, show and resume rules, 11 step-1 states, download click, time left, tour hints, readers never ask, ready notification, remote-only, reopen cap, Full Disk Access, Contacts on its own, slow service, one Return per state, open at login")
+    }
+
+    /// dev8 (2026-10-29 fresh-install test): the model gate, How to use's download
+    /// line, Move to Applications, and the readers that re-post when the service comes up.
+    static func dev8OnboardingChecks() {
+        // Wisp waits for its model only while setup is under way.
+        check(FirstRunSetup.gatesUse(setupUnfinished: true, canAnswer: nil), "Service not answered yet: held")
+        check(FirstRunSetup.gatesUse(setupUnfinished: true, canAnswer: false), "Downloading: held")
+        check(!FirstRunSetup.gatesUse(setupUnfinished: true, canAnswer: true), "Model ready: open")
+        check(!FirstRunSetup.gatesUse(setupUnfinished: false, canAnswer: false),
+              "Someone already set up is never held back, even if the model stops answering")
+
+        // How to use's line: only what is known.
+        check(FirstRunBrain.progressLine(doneGb: 2.5, totalGb: 5.5, speed: "10 MB/s", secondsLeft: 360)
+              == "2.5 of 5.5 GB · 10 MB/s · about 6 minutes left", "Size, speed and time left")
+        check(FirstRunBrain.progressLine(doneGb: 0, totalGb: 5.5, speed: nil, secondsLeft: nil) == "0.0 of 5.5 GB",
+              "Nothing moving yet: no speed, no guess")
+        check(FirstRunSetup.notDownloadingTitle(.download) == "The model hasn't started downloading"
+              && FirstRunSetup.notDownloadingTitle(.working("Starting Wisp…")) == "Starting Wisp…",
+              "How to use names what the model is doing when it isn't downloading")
+        check(FirstRunSetupView.helpsYourDay.map(\.title).prefix(3) == ["Brief", "Day", "Ask"],
+              "What Wisp is for starts with the three tabs")
+        check(!FirstRunSetupView.helpsYourDay.contains { $0.line.contains("never leave") },
+              "No absolute local claim: a cloud model is the person's choice")
+
+        // Move to Applications: asked only where a download lands.
+        let home = "/Users/sam"
+        typealias Place = MoveToApplications.Place
+        let places: [(String, Bool, Place)] = [
+            ("/Applications/Wisp.app", false, .applications),
+            ("/Users/sam/Applications/Wisp.app", false, .applications),
+            ("/Users/sam/Downloads/Wisp.app", false, .downloaded),
+            ("/Users/sam/Downloads/Wisp-0.5.0/Wisp.app", false, .downloaded),
+            ("/Users/sam/Desktop/Wisp.app", false, .downloaded),
+            ("/Volumes/Wisp/Wisp.app", false, .downloaded),
+            ("/private/var/folders/x/AppTranslocation/ABC/d/Wisp.app", false, .translocated),
+            ("/Users/sam/Downloads/Wisp.app", true, .translocated),
+            ("/Users/sam/code/wisp/.build/Wisp.app", false, .elsewhere),
+        ]
+        for (path, translocated, want) in places {
+            check(MoveToApplications.place(bundlePath: path, home: home, translocated: translocated) == want, path)
+        }
+        check(MoveToApplications.place(bundlePath: "/Users/sam/Downloads/Wisp.app", home: "/Users/sam/", translocated: false)
+              == .downloaded, "A home with a trailing slash")
+        check(MoveToApplications.offers(place: .downloaded, declined: false, isAppBundle: true)
+              && MoveToApplications.offers(place: .translocated, declined: false, isAppBundle: true),
+              "Downloads and macOS's temporary copy are asked")
+        check(!MoveToApplications.offers(place: .downloaded, declined: true, isAppBundle: true), "Don't ask again holds")
+        check(!MoveToApplications.offers(place: .applications, declined: false, isAppBundle: true)
+              && !MoveToApplications.offers(place: .elsewhere, declined: false, isAppBundle: true)
+              && !MoveToApplications.offers(place: .downloaded, declined: false, isAppBundle: false),
+              "Already in Applications, a build folder, or not an app bundle: never asked")
+        let replace = MoveToApplications.replaceDetail(existing: "0.5.0 (3075)", this: "0.5.0 (3120)")
+        check(replace.contains("The one there is 0.5.0 (3075); this one is 0.5.0 (3120).")
+              && replace.contains("goes to the Trash") && replace.contains("stay as they are"),
+              "Replacing says both versions, the Trash, and that data stays")
+        check(MoveToApplications.replaceDetail(existing: nil, this: nil).hasPrefix("Replace it"), "Unknown versions")
+        check(MoveToApplications.needsAdmin(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError))
+              && MoveToApplications.needsAdmin(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError,
+                    userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))]))
+              && !MoveToApplications.needsAdmin(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError)),
+              "Only a permission refusal reads as needing an administrator")
+
+        // Reminders after macOS's Quit & Reopen: every reading source re-posts when the
+        // service comes up, since it keeps their last sync in memory only.
+        check(Set(AppDelegate.resyncedWhenReachable).isSuperset(of: [.calendar, .reminders, .fullDiskAccess]),
+              "Calendar, Reminders and the Full Disk Access readers re-post on reconnect")
+        check(!AppDelegate.resyncedWhenReachable.contains(where: \.isExtra),
+              "Nothing that only sends or looks at the screen")
     }
 }

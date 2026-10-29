@@ -23,6 +23,10 @@ enum NativeSyncPace {
     /// that never stops announcing is read no more often than the old timer.
     static let changeFloor: TimeInterval = 60
 
+    /// How long after the service comes up (and every reader posts again) the
+    /// Brief and Day look again for what those posts brought.
+    static let reachableRefreshDelay: UInt64 = 3_000_000_000
+
     static func heartbeatInterval(authorized: Bool) -> TimeInterval {
         authorized ? heartbeat : withoutAccess
     }

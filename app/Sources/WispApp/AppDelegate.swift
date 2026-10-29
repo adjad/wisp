@@ -184,6 +184,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func launch() {
         launched = true
+        // Opened from Downloads (or macOS's temporary copy of a download): offer to
+        // move into Applications first, before anything starts. Only the person's
+        // click moves it; then this copy quits and the moved one opens.
+        if MoveToApplications.offerIfNeeded() == .relaunching {
+            terminateWithoutShutdown()
+            return
+        }
         // A committed /resetwisp (its marker is on disk): this app's part runs once
         // per marker, before any setting is read, so this launch is a first run.
         var resetPending = false
@@ -266,9 +273,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.model.serviceReachable = true
                 self.model.serviceStarting = false
                 self.considerKnowYouOffer(after: 5)
-                // Whatever failed to load while the service was away loads now.
+                // The service keeps each source's last sync in memory only, so a
+                // service that just came up (a relaunch, macOS's Quit & Reopen after
+                // Full Disk Access) has no Calendar or Reminders until the readers
+                // post again, and their launch-time posts went out before it was
+                // listening. Post them now, then load what was waiting.
+                self.resyncAllReaders()
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    await self.todayModel.refresh()
+                    await DayCards.refresh(force: true)
+                    self.model.onResize()
+                    // The readers' posts land a moment later (EventKit reads off the
+                    // main thread), so look once more for what they brought.
+                    try? await Task.sleep(nanoseconds: NativeSyncPace.reachableRefreshDelay)
                     await self.todayModel.refresh()
                     await DayCards.refresh(force: true)
                     self.model.onResize()
@@ -588,7 +606,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             aboutYouDecided: {
                 UserDefaults.standard.set(true, forKey: FirstRunSetup.aboutYouDecidedKey)
                 UserDefaults.standard.set(Date(), forKey: KnowYouSecondOffer.decidedAtKey)
-            }))
+            },
+            closeForNow: { [weak self] in self?.firstRunWindow?.close() }))
     }
 
     /// Done, or one of the last step's prompts: close the window and open the
@@ -920,6 +939,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// this switch, never its callers.
     private func open(_ route: WispRoute) {
         switch route {
+        case .settings, .setup: break
+        default: if holdUntilModelReady() { return }
+        }
+        switch route {
         case .chat(let sessionId):
             if let sessionId { wispWindow.show(sessionId: sessionId) } else { wispWindow.show() }
         case .chatList:
@@ -950,6 +973,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             closeSearch()
             return
         }
+        if holdUntilModelReady() { return }
         // Record intent before the asynchronous capture, so repeated shortcuts
         // cancel it and stale captures can never reopen a dismissed surface.
         cancelScheduledCollapse()
@@ -1082,6 +1106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // between the notch bar and the expanded assistant. No reset — the visible
     // transcript (and server-side session) survive collapse/expand.
     private func askByVoice() {
+        if holdUntilModelReady() { return }
         notchDocked = true
         if presentation.desired != .chat {
             model.prepareTab(byHover: false)
@@ -1178,7 +1203,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func expand() {
         notchDocked = true
+        if holdUntilModelReady() { return }
         requestPresentation(.chat)
+    }
+
+    /// While setup is under way and the model hasn't arrived (FirstRunSetup.gatesUse),
+    /// the notch, the Wisp window and asking stay closed: a click on any of them
+    /// brings the setup window forward instead, and it says why. Setup, Permissions
+    /// and Settings stay open. Returns whether the click was held back.
+    private func holdUntilModelReady() -> Bool {
+        guard modelGateHolds else { return false }
+        OnboardingTimeline.record("open held until the model is ready")
+        bringSetupForward()
+        // After the window's view is up, so a window built just now hears it too.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            NotificationCenter.default.post(name: .wispHeldUntilModelReady, object: nil)
+        }
+        return true
+    }
+
+    private var modelGateHolds: Bool {
+        FirstRunSetup.gatesUse(setupUnfinished: FirstRunSetup.isUnfinished { UserDefaults.standard.bool(forKey: $0) },
+                               canAnswer: setupCanAnswer)
     }
 
     private func collapse() {
@@ -1318,9 +1364,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Hover intent
 
+    /// Hover never opens anything while the model gate holds: only a click
+    /// brings the setup window forward (holdUntilModelReady).
     private var canHoverOpen: Bool {
         model.collapsed && notchDocked && presentation.active == nil
-            && presentation.desired == .bar
+            && presentation.desired == .bar && !modelGateHolds
     }
 
     private func pointerInHoverZone() -> Bool {
@@ -1736,6 +1784,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             resyncReaders(after: item)
         }
     }
+
+    /// Every source reader posts what it can read now. Each one still reads only
+    /// what macOS already allows, so this never asks for anything.
+    private func resyncAllReaders() {
+        for item in Self.resyncedWhenReachable { resyncReaders(after: item) }
+    }
+
+    /// The readers posted again each time Wisp's service comes up. The service
+    /// holds each source's last sync in memory only, and a reader's launch-time
+    /// posts can land before a cold service listens, which left Reminders missing
+    /// for a heartbeat after macOS's Quit & Reopen (2026-10-29 fresh-install test).
+    nonisolated static let resyncedWhenReachable: [FirstRunPermissions.Item] = [.calendar, .reminders, .fullDiskAccess, .contacts]
 
     private func resyncReaders(after item: FirstRunPermissions.Item) {
         switch item {
