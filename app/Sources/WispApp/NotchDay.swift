@@ -10,19 +10,19 @@ import Foundation
 ///
 /// Pure Foundation, checked by tests/NotchDayChecks.swift without the app.
 
-/// How sure Wisp is about a block, which is how it is drawn.
+/// How sure Wisp is about a block, which is how its agenda row is marked.
 enum DayStyle: Int, CaseIterable, Comparable {
-    /// On your calendar: solid.
+    /// On your calendar: solid white.
     case calendar
-    /// One of your own planner tasks: solid, lighter.
+    /// One of your own planner tasks: solid gray.
     case task
-    /// Suggested by Wisp from your sources: dashed, with Keep and Move.
+    /// Suggested by Wisp from your sources: dashed blue, with Keep and Move.
     case suggested
-    /// Learned "usually busy" or "usually away": hatched, with Not today.
+    /// Learned "usually busy" or "usually away": dim, with Not today.
     case usual
     /// A plan caught in your texts: amber, with Add and Ignore.
     case caught
-    /// A reminder due later today.
+    /// A reminder due later today: dotted.
     case needsYou
     /// Past due: red, near now.
     case overdue
@@ -30,19 +30,6 @@ enum DayStyle: Int, CaseIterable, Comparable {
     case todo
 
     static func < (a: DayStyle, b: DayStyle) -> Bool { a.rawValue < b.rawValue }
-
-    var legend: String {
-        switch self {
-        case .calendar: return "Calendar"
-        case .task: return "Your plan"
-        case .suggested: return "Suggested"
-        case .usual: return "Usually busy"
-        case .caught: return "Caught in texts"
-        case .needsYou: return "Needs you"
-        case .overdue: return "Overdue"
-        case .todo: return "To-do"
-        }
-    }
 }
 
 /// One planner block, as the view hands it over.
@@ -191,9 +178,6 @@ struct DayItem: Identifiable, Equatable {
     var start: Double
     var end: Double
     let style: DayStyle
-    /// Side-by-side placement when blocks overlap.
-    var column = 0
-    var columns = 1
     /// What the block came from, for its actions.
     var blockID: String? = nil
     var taskID: String? = nil
@@ -211,6 +195,13 @@ struct DayItem: Identifiable, Equatable {
     var source: String = ""
     /// Over before now, on today: drawn dim, inside the lane's two hours back.
     var past = false
+    /// For a reminder or to-do due by a time: that time, which the agenda lists
+    /// it at. Nil for what holds a stretch of time or happens at a time.
+    var due: Double? = nil
+    /// The block's own times before the lane clipped them to its hours, for the
+    /// agenda's time column. `ends` is nil when the source gave no end.
+    var begins: Double? = nil
+    var ends: Double? = nil
 
     /// Whether the block is drawn as over: dim, with nothing left to act on. A
     /// block that ended keeps its controls while a cancel on it is still in its
@@ -222,18 +213,55 @@ struct DayItem: Identifiable, Equatable {
     func isOver(cancelActive: Bool) -> Bool { past && !cancelActive }
 }
 
+/// The Day tab's calendar as a list (DayTimeline.agenda). The notch is too
+/// narrow for an hour grid: overlapping events squeezed side by side lost
+/// their titles, so each thing gets a full-width row instead.
+struct DayAgenda: Equatable {
+    enum Row: Equatable, Identifiable {
+        case item(DayItem)
+        /// Time nothing holds, before the next thing that does.
+        case free(start: Double, end: Double)
+
+        var id: String {
+            switch self {
+            case .item(let item): return item.id
+            case .free(let start, _): return "free:\(Int(start))"
+            }
+        }
+    }
+
+    /// Over before now, on today.
+    let earlier: [DayItem]
+    /// On now and later, or the whole day on another day.
+    let ahead: [Row]
+
+    /// How many things (not free stretches) are listed ahead.
+    var thingsAhead: Int { ahead.filter { if case .item = $0 { return true } else { return false } }.count }
+
+    /// The first rows of `ahead` holding at most `limit` things. A free stretch
+    /// is never left last, where the thing that ends it would be hidden.
+    func firstRows(holding limit: Int) -> [Row] {
+        var rows: [Row] = []
+        var things = 0
+        for row in ahead {
+            if case .item = row {
+                if things == limit { break }
+                things += 1
+            }
+            rows.append(row)
+        }
+        if case .free = rows.last { rows.removeLast() }
+        return rows
+    }
+}
+
 struct DayTimeline: Equatable {
     /// Hour-aligned range the lane covers.
     let from: Double
     let to: Double
+    /// In order of start.
     let items: [DayItem]
     let allDay: [String]
-
-    /// Legend entries, only for the styles on screen.
-    var styles: [DayStyle] { Array(Set(items.map(\.style))).sorted() }
-
-    /// Hour marks from `from` up to, not including, `to`.
-    var hours: [Double] { stride(from: from, to: to, by: 3600).map { $0 } }
 
     static let hour: Double = 3600
 
@@ -255,7 +283,8 @@ struct DayTimeline: Equatable {
         var items: [DayItem] = []
 
         for block in blocks {
-            let end = block.end.flatMap { $0 > block.start ? $0 : nil } ?? block.start + 30 * 60
+            let given = block.end.flatMap { $0 > block.start ? $0 : nil }
+            let end = given ?? block.start + 30 * 60
             // A calendar event is real whatever it's called ("1:1", an emoji, no
             // title at all); only a placeholder word ("nothing", "n/a") is left off.
             let fromCalendar = block.kind == "calendar" || block.kind == "manual"
@@ -286,7 +315,8 @@ struct DayTimeline: Equatable {
             items.append(DayItem(id: "block:" + block.id, title: fromCalendar ? eventTitle(block.title) : block.title, detail: detail,
                                  start: block.start, end: end, style: style, blockID: block.id,
                                  taskID: block.taskID, patternID: block.patternID,
-                                 evidenceID: block.evidenceID, kind: block.kind, members: block.members))
+                                 evidenceID: block.evidenceID, kind: block.kind, members: block.members,
+                                 begins: block.start, ends: given))
         }
 
         // A reminder that already has a suggested block is drawn once, as the suggestion.
@@ -300,13 +330,14 @@ struct DayTimeline: Equatable {
             } else if due >= dayStart, due <= dayEnd, due > earliest {
                 let start = max(earliest, due - 30 * 60)
                 items.append(DayItem(id: "need:" + need.id, title: need.title, detail: "Due " + clock(due) + " · Needs you",
-                                     start: start, end: max(due, start + 15 * 60), style: .needsYou, needID: need.id))
+                                     start: start, end: max(due, start + 15 * 60), style: .needsYou, needID: need.id,
+                                     due: due))
             }
         }
 
-        // A first day can bring a long overdue backlog. Stacked at "now" they
-        // draw as unreadable slivers, so the lane shows the three most recent
-        // and one block for the rest.
+        // A first day can bring a long overdue backlog. Listed one by one at
+        // "now" they would push the rest of the day out of view, so the agenda
+        // shows the three most recent and one row for the rest.
         let overdueNeeds = items.indices.filter { items[$0].style == .overdue && items[$0].needID != nil }
         if overdueNeeds.count > maxOverdueShown {
             let start = max(earliest, now)
@@ -325,7 +356,7 @@ struct DayTimeline: Equatable {
             guard let when = record.when, when >= dayStart, when < dayEnd, when + hour > earliest else { continue }
             let detail = record.state == "created" ? "Caught in texts · added to Reminders" : "Caught in texts · not on your calendar"
             items.append(DayItem(id: "caught:" + record.id, title: record.title, detail: detail,
-                                 start: when, end: when + hour, style: .caught, caughtID: record.id))
+                                 start: when, end: when + hour, style: .caught, caughtID: record.id, begins: when))
         }
 
         // To-dos with a time today go on the clock, once: not calendar events
@@ -347,7 +378,8 @@ struct DayTimeline: Equatable {
                 let when = (atTime ? "At " : "Due ") + clock(due)
                 items.append(DayItem(id: "todo:" + todo.id, title: todo.title,
                                      detail: [when, from].filter { !$0.isEmpty }.joined(separator: " · "),
-                                     start: start, end: end, style: .todo, todoID: todo.id, source: todo.source))
+                                     start: start, end: end, style: .todo, todoID: todo.id, source: todo.source,
+                                     due: atTime ? nil : due, begins: atTime ? due : nil))
             }
         }
 
@@ -367,11 +399,12 @@ struct DayTimeline: Equatable {
             items[index].past = isToday && items[index].end <= now
         }
         items = items.filter { $0.end > $0.start }
-        return DayTimeline(from: from, to: to, items: arrange(items),
+            .sorted { ($0.start, $0.end, $0.style, $0.id) < ($1.start, $1.end, $1.style, $1.id) }
+        return DayTimeline(from: from, to: to, items: items,
                            allDay: allDay.filter { !isPlaceholderEvent($0) }.map(eventTitle))
     }
 
-    /// The most overdue reminders the lane draws one by one.
+    /// The most overdue reminders the agenda lists one by one.
     static let maxOverdueShown = 3
 
     /// A calendar entry that is only a placeholder word ("nothing", "n/a", "tbd").
@@ -469,40 +502,97 @@ struct DayTimeline: Equatable {
         return rows
     }
 
-    /// The shortest time a block is drawn as: the lane never draws one under 22
-    /// points at 44 points an hour, so a 15-minute block covers 30 minutes on
-    /// screen. Overlap is judged by that, or back-to-back short blocks would draw
-    /// on top of one another, their titles and borders running through each other.
-    static let minimumDrawn: Double = 30 * 60
+    // MARK: Agenda
 
-    /// Side by side where blocks overlap as drawn: each cluster of overlapping
-    /// blocks shares out columns, first free column first.
-    static func arrange(_ input: [DayItem]) -> [DayItem] {
-        var items = input.sorted { ($0.start, $0.end, $0.style, $0.id) < ($1.start, $1.end, $1.style, $1.id) }
-        let drawnEnd = { (item: DayItem) in max(item.end, item.start + minimumDrawn) }
-        var cluster: [Int] = []
-        var columnEnds: [Double] = []
-        var clusterEnd = -Double.infinity
-        func close() {
-            for index in cluster { items[index].columns = max(1, columnEnds.count) }
-            cluster = []
-            columnEnds = []
+    /// The shortest free stretch the agenda names. One that starts now counts
+    /// from 15 minutes: "free until 2 PM" is what you act on next.
+    static let shortestFree: Double = 30 * 60
+    static let shortestFreeNow: Double = 15 * 60
+
+    /// Whether a row holds a stretch of the day, so the time it covers isn't
+    /// free. Overdue and due-by rows are asks pinned to a moment; a to-do that
+    /// happens at its time (a call, a meeting) holds its half hour.
+    static func holdsTime(_ item: DayItem) -> Bool {
+        switch item.style {
+        case .calendar, .task, .suggested, .usual, .caught: return true
+        case .todo: return item.due == nil && item.begins != nil
+        case .needsYou, .overdue: return false
         }
-        for index in items.indices {
-            let end = drawnEnd(items[index])
-            if items[index].start >= clusterEnd { close() }
-            if let free = columnEnds.firstIndex(where: { $0 <= items[index].start }) {
-                items[index].column = free
-                columnEnds[free] = end
-            } else {
-                items[index].column = columnEnds.count
-                columnEnds.append(end)
+    }
+
+    /// The day as a list: what's over, then what's on now and next in time
+    /// order, each on its own row, with the free stretches between. Something
+    /// due by a time is listed at that time; an overdue one at now.
+    func agenda(now: Double, isToday: Bool) -> DayAgenda {
+        let earlier = isToday ? items.filter(\.past) : []
+        let ahead = isToday ? items.filter { !$0.past } : items
+        var rows: [(at: Double, free: Bool, row: DayAgenda.Row)] = ahead.map { ($0.due ?? $0.start, false, .item($0)) }
+        // Free time counts from now on today, from the first thing on another day.
+        let opening = isToday ? max(now, from) : nil
+        var cursor = opening
+        for item in ahead where Self.holdsTime(item) {
+            if let start = cursor, item.start - start >= (start == opening ? Self.shortestFreeNow : Self.shortestFree) {
+                rows.append((start, true, .free(start: start, end: item.start)))
             }
-            cluster.append(index)
-            clusterEnd = max(clusterEnd, end)
+            cursor = max(cursor ?? item.end, item.end)
         }
-        close()
-        return items
+        // A free stretch follows what's listed at its start; ties keep their order.
+        let ordered = rows.enumerated().sorted {
+            ($0.element.at, $0.element.free ? 1 : 0, $0.offset) < ($1.element.at, $1.element.free ? 1 : 0, $1.offset)
+        }
+        return DayAgenda(earlier: earlier, ahead: ordered.map(\.element.row))
+    }
+
+    /// The agenda's time column for a row, as two short lines: "6:30 PM" over
+    /// "7:30 PM", "8:00 PM" over "Due", or "Overdue".
+    static func gutter(_ item: DayItem, clock: (Double) -> String) -> (top: String, bottom: String) {
+        if item.style == .overdue { return ("Overdue", "") }
+        if let due = item.due { return (clock(due), "Due") }
+        return (clock(item.begins ?? item.start), item.ends.map(clock) ?? "")
+    }
+
+    /// A row's second line in the agenda, without the time its column shows:
+    /// what kind of thing it is, and for an event on now, how long is left.
+    static func agendaDetail(_ item: DayItem, now: Double, isToday: Bool, clock: (Double) -> String) -> String {
+        switch item.style {
+        case .calendar:
+            guard let ends = item.ends else { return "Calendar" }
+            let begins = item.begins ?? item.start
+            if isToday && begins <= now && now < ends {
+                return "Calendar · " + length(Int(((ends - now) / 60).rounded(.up))) + " left"
+            }
+            return "Calendar · " + length(Int(((ends - begins) / 60).rounded()))
+        case .overdue:
+            let lead = "Overdue since "
+            return item.detail.hasPrefix(lead) ? "Since " + item.detail.dropFirst(lead.count) : item.detail
+        case .needsYou:
+            return "Needs you"
+        case .todo:
+            // "Due 3:00 PM · Mail · Jordan" keeps where it came from.
+            guard let at = item.due ?? item.begins else { return item.detail }
+            for lead in ["Due ", "At "] where item.detail.hasPrefix(lead + clock(at)) {
+                let rest = item.detail.dropFirst((lead + clock(at)).count)
+                return rest.hasPrefix(" · ") ? String(rest.dropFirst(3)) : "To-do"
+            }
+            return item.detail
+        case .task, .suggested, .usual, .caught:
+            return item.detail
+        }
+    }
+
+    /// "Free until 6:30 PM · 25 min" from now; "Free 2:00 PM – 6:00 PM · 4 h"
+    /// later, since the row above may end before the stretch starts.
+    static func freeLine(start: Double, end: Double, startsNow: Bool, clock: (Double) -> String) -> String {
+        (startsNow ? "Free until " + clock(end) : "Free " + clock(start) + " – " + clock(end))
+            + " · " + length(Int(((end - start) / 60).rounded()))
+    }
+
+    /// What ended in the last two hours, in one line: "Standup and 2 more".
+    static func earlierLine(_ items: [DayItem]) -> String { list(items.map(\.title)) }
+
+    /// "25 min", "1 h", "2 h 15 min".
+    static func length(_ minutes: Int) -> String {
+        minutes < 60 ? "\(minutes) min" : "\(minutes / 60) h" + (minutes % 60 == 0 ? "" : " \(minutes % 60) min")
     }
 
     static func floorHour(_ t: Double, dayStart: Double) -> Double {
