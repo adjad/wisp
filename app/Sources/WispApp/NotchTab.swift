@@ -64,6 +64,11 @@ enum NotchSetupCard: Equatable {
     /// The setup card or its one-line row is on Ask (not the ready dot).
     var showsOnAsk: Bool { self == .open || self == .later }
 
+    /// The quiet ready dot, on the collapsed bar and (wherever the bar draws
+    /// nothing) on the menu-bar icon. Both read this, so both clear together
+    /// when the panel is opened (AppDelegate.readyLineSeen sets .hidden).
+    var showsReadyDot: Bool { self == .ready }
+
     /// What the card becomes when the service reports readiness. A card set
     /// aside goes away by itself; an open one waits for Done, so the person
     /// sees the result first. The ready dot never outlives readiness.

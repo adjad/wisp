@@ -218,7 +218,7 @@ struct OverlayView: View {
                     .opacity(!reduceMotion && breathe ? 0.3 : 1)
                     .animation(reduceMotion ? nil : .easeInOut(duration: 1).repeatForever(autoreverses: true), value: breathe)
                     .accessibilityHidden(true)
-            } else if model.setupCard == .ready {
+            } else if model.setupCard.showsReadyDot {
                 // Ready while notifications are off: a still, quiet dot until the
                 // panel is opened (AppDelegate.tellReady, readyLineSeen).
                 HStack(spacing: 6) {
@@ -277,7 +277,7 @@ struct OverlayView: View {
     /// its dot and badge cannot be read as separate elements.
     private var notchBarStatus: String {
         if model.isProcessing || model.phase == .streaming { return "Working" }
-        if model.setupCard == .ready { return "Wisp is ready" }
+        if model.setupCard.showsReadyDot { return "Wisp is ready" }
         if model.setupCard != .later, todayModel.isShowingCurrentDay, todayCount > 0 {
             return todayCount == 1 ? "1 thing is due today" : "\(todayCount) things are due today"
         }

@@ -1710,7 +1710,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // behind a full-screen app (the hybrid notch).
         let status = DisplayGeometry.shared.layout.statusInMenuBar
             ? MenuBarStatus(working: model.isProcessing || model.phase == .streaming,
-                            ready: model.setupCard == .ready,
+                            ready: model.setupCard.showsReadyDot,
                             dueToday: todayModel.dueBadgeCount,
                             setupSetAside: model.setupCard == .later)
             : MenuBarStatus(working: false, dueToday: 0, setupSetAside: false)

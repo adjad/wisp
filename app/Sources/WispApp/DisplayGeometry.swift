@@ -431,9 +431,23 @@ enum FullScreenProbe {
     static let splitGap: CGFloat = 16
 
     /// The menu bar is hidden on the display: a full-screen space (or the menu
-    /// bar set to hide automatically).
+    /// bar set to hide automatically, which `userHidesMenuBar` rules out).
+    /// UNVERIFIED LIVE: that a native full-screen Space on a notched Mac reports
+    /// its visible frame up to the top edge. If it doesn't, the bar simply stays
+    /// drawn there, as before the hybrid notch.
     static func menuBarHidden(on display: DisplayMetrics) -> Bool {
         display.visibleFrame.maxY >= display.frame.maxY - 0.5
+    }
+
+    /// The global-domain default behind "Automatically hide and show the menu
+    /// bar": true for Always and On Desktop Only. Read only, never written; it
+    /// needs no permission.
+    static let userHidesMenuBarKey = "_HIHideMenuBar"
+
+    /// Whether `globalDefaults` (NSGlobalDomain's values) hide the menu bar on
+    /// the desktop. Absent or malformed reads as not hidden.
+    static func userHidesMenuBar(globalDefaults: [String: Any]?) -> Bool {
+        (globalDefaults?[userHidesMenuBarKey] as? NSNumber)?.boolValue ?? false
     }
 
     /// `windows` front to back, as CGWindowList lists them.
@@ -446,7 +460,16 @@ enum FullScreenProbe {
     ///   full-screen app, video or presentation, or Split View's pair; on a
     ///   notched display those sit just under the camera housing).
     /// A zoomed window under a visible menu bar is never full screen.
-    static func isFullScreen(on display: DisplayMetrics, windows: [OnScreenWindow], ownPID: Int32) -> Bool {
+    ///
+    /// `userHidesMenuBar`: the person set the menu bar to hide on the desktop
+    /// (System Settings › Control Center › Automatically hide and show the menu
+    /// bar: Always or On Desktop Only). Then a maximized window on the desktop
+    /// looks exactly like full screen, and a hitbox there would move the bar's
+    /// marks to a menu-bar icon that is itself hidden. So nothing counts as
+    /// full screen, and the bar keeps its marks.
+    static func isFullScreen(on display: DisplayMetrics, windows: [OnScreenWindow], ownPID: Int32,
+                             userHidesMenuBar: Bool = false) -> Bool {
+        guard !userHidesMenuBar else { return false }
         let screen = display.frame
         let normal = windows
             .filter { $0.layer == 0 && $0.ownerPID != ownPID && $0.alpha > 0.01 }
@@ -557,8 +580,13 @@ final class DisplayGeometry: ObservableObject {
         NSScreen.screens.map(DisplayMetrics.init(screen:))
     }
 
+    /// How many workspace events the full-screen watch listens to (for checks:
+    /// a second `startObserving` must not add more).
+    var watchedEventCount: Int { workspaceObservers.count }
+
+    /// Safe to call more than once: only the first call installs anything.
     func startObserving() {
-        guard observer == nil else { return }
+        guard observer == nil, workspaceObservers.isEmpty else { return }
         observer = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main
@@ -669,8 +697,10 @@ final class DisplayGeometry: ObservableObject {
         let primary = NSScreen.screens.first { $0.frame.origin == .zero } ?? NSScreen.screens.first
         let primaryHeight = primary?.frame.height ?? display.frame.height
         let windows = list.compactMap { OnScreenWindow(info: $0, primaryHeight: primaryHeight) }
+        let global = UserDefaults.standard.persistentDomain(forName: UserDefaults.globalDomain)
         return FullScreenProbe.isFullScreen(on: display, windows: windows,
-                                            ownPID: ProcessInfo.processInfo.processIdentifier)
+                                            ownPID: ProcessInfo.processInfo.processIdentifier,
+                                            userHidesMenuBar: FullScreenProbe.userHidesMenuBar(globalDefaults: global))
     }
 
     private func scheduleRefresh() {

@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 // Pure layout checks: no screen, window, or Wisp process is involved. Display
 // shapes are modelled on the real MacBook and monitor point sizes.
@@ -278,13 +279,121 @@ struct DisplayGeometryChecks {
         check(!geometry.contains("kCGWindowName"), "Window titles (Screen Recording) are never read")
         check(!geometry.contains("CGRequestScreenCaptureAccess") && !geometry.contains("CGPreflightScreenCaptureAccess"),
               "Nothing asks for Screen Recording")
-        check(panel.contains("ignoresMouseEvents = collapsed && !layout.barIsVisible"), "The window follows barIsVisible")
+        check(panel.contains("ignoresMouseEvents = Self.ignoresMouse(collapsed: collapsed, layout: layout)")
+              && panel.contains("collapsed && !layout.barIsVisible"), "The window follows barIsVisible")
         check(view.contains("if layout.barIsVisible { notchBar } else { hiddenBar }"), "The view follows barIsVisible")
         check(view.contains(".animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: layout.barIsVisible)"),
               "The fade respects Reduce Motion")
         check(app.contains("DisplayGeometry.shared.onPresentationChange = { [weak self] in self?.barPresentationChanged() }"),
               "The app applies presentation changes")
-        check(app.contains("ready: model.setupCard == .ready"), "The icon carries the ready dot")
+        // The icon's ready mark and the bar's ready dot read the same condition, so
+        // they clear together once the panel is opened (readyLineSeen → .hidden).
+        check(app.contains("ready: model.setupCard.showsReadyDot,"), "The icon carries the ready dot")
+        check(view.contains("} else if model.setupCard.showsReadyDot {"), "The bar's dot reads the same condition")
+        check(app.contains("if model.setupCard == .ready { model.setupCard = .hidden }"), "Opening the panel clears it")
+        check(NotchSetupCard.ready.showsReadyDot, "Ready shows the dot")
+        for card in [NotchSetupCard.hidden, .open, .later] {
+            check(!card.showsReadyDot, "\(card) shows no ready dot")
+            check(MenuBarStatus(working: false, ready: card.showsReadyDot, dueToday: 0, setupSetAside: card == .later).mark
+                  != .ready, "\(card): the icon's ready mark is gone")
+        }
+
+        // A menu bar the person hides on the desktop is not full screen: the bar
+        // stays drawn and keeps its marks (the icon would be hidden too).
+        check(!F.isFullScreen(on: full, windows: [belowNotch], ownPID: me, userHidesMenuBar: true),
+              "Auto-hidden menu bar, maximized window: not full screen")
+        check(!F.isFullScreen(on: full, windows: [whole], ownPID: me, userHidesMenuBar: true),
+              "Auto-hidden menu bar, window to the top: not full screen")
+        check(F.isFullScreen(on: full, windows: [belowNotch], ownPID: me, userHidesMenuBar: false), "Setting off: detected")
+        check(F.userHidesMenuBar(globalDefaults: ["_HIHideMenuBar": NSNumber(value: true)]), "Hide Always reads as hidden")
+        check(!F.userHidesMenuBar(globalDefaults: ["_HIHideMenuBar": NSNumber(value: false)]), "Never reads as shown")
+        check(!F.userHidesMenuBar(globalDefaults: [:]) && !F.userHidesMenuBar(globalDefaults: nil), "Absent reads as shown")
+        check(!F.userHidesMenuBar(globalDefaults: ["_HIHideMenuBar": "yes"]), "Malformed reads as shown")
+        check(geometry.contains("userHidesMenuBar: FullScreenProbe.userHidesMenuBar(globalDefaults: global)"),
+              "The live probe passes the setting")
+
+        MainActor.assumeIsolated { liveWatchChecks() }
+    }
+
+    /// The real call path: an injected probe answers, `checkFullScreen` runs, and
+    /// the layout, the panel's click-through rule and the change callbacks all
+    /// follow it, on and off again.
+    @MainActor
+    static func liveWatchChecks() {
+        let laptop = notched(1512, 982)
+        let geometry = DisplayGeometry(displays: [laptop])
+        var fullScreen = false
+        var presentationChanges = 0, geometryChanges = 0
+        geometry.fullScreenProbe = { _ in fullScreen }
+        // Native, when the harness has a graphical session; never ordered on screen.
+        var panel: OverlayPanel?
+        if !NSScreen.screens.isEmpty {
+            _ = NSApplication.shared
+            let p = OverlayPanel { EmptyView() }
+            p.layoutProvider = { geometry.layout }
+            p.isCompact = { true }
+            p.applyPresentationChange()
+            panel = p
+        }
+        // Wired as AppDelegate wires them: a re-fit, or only the mouse flag.
+        geometry.onChange = {
+            geometryChanges += 1
+            panel?.applyDisplayChange()
+        }
+        geometry.onPresentationChange = {
+            presentationChanges += 1
+            panel?.applyPresentationChange()
+        }
+        // Starting the watch twice installs its observers once. (Real workspace
+        // observers; the harness runs no run loop, so they and the poll stay idle.)
+        geometry.startObserving()
+        let watched = geometry.watchedEventCount
+        check(watched >= 8, "The watch hears its events (\(watched))")
+        geometry.startObserving()
+        check(geometry.watchedEventCount == watched, "A second start adds nothing")
+        func expect(barVisible: Bool, _ step: String) {
+            let l = geometry.layout
+            check(l.barIsVisible == barVisible, "\(step): bar drawn = \(barVisible)")
+            check(l.statusInMenuBar == !barVisible, "\(step): status on the icon = \(!barVisible)")
+            // Collapsed: clicks pass through exactly when nothing is drawn. Open: never.
+            check(OverlayPanel.ignoresMouse(collapsed: true, layout: l) == !barVisible, "\(step): collapsed click-through")
+            check(!OverlayPanel.ignoresMouse(collapsed: false, layout: l), "\(step): an open panel takes the mouse")
+            if let panel {
+                check(panel.ignoresMouseEvents == !barVisible, "\(step): the real panel's ignoresMouseEvents")
+            }
+        }
+        expect(barVisible: true, "Start")
+        fullScreen = true
+        geometry.checkFullScreen()
+        expect(barVisible: false, "Full screen on")
+        check(presentationChanges == 1 && geometryChanges == 0, "A presentation change, not a re-fit")
+        geometry.checkFullScreen()
+        check(presentationChanges == 1, "No change, no callback")
+        fullScreen = false
+        geometry.checkFullScreen()
+        expect(barVisible: true, "Full screen off")
+        check(presentationChanges == 2 && geometryChanges == 0, "Back to the bar, again without a re-fit")
+        // A display change re-probes: full screen on the laptop at the moment it changes.
+        fullScreen = true
+        geometry.refresh(displays: [laptop, monitor(2560, 1440, origin: CGPoint(x: 1512, y: 0))])
+        expect(barVisible: false, "Monitor attached during full screen")
+        fullScreen = false
+        geometry.refresh(displays: [laptop])
+        expect(barVisible: true, "Monitor removed after leaving full screen")
+        // Clamshell: Wisp moves to the monitor, which is never watched, so the
+        // probe's answer no longer matters and nothing stays a hitbox.
+        fullScreen = true
+        geometry.refresh(displays: [monitor(2560, 1440)])
+        check(geometry.layout.style == .floating && geometry.layout.barIsVisible, "A monitor keeps its capsule")
+        geometry.checkFullScreen()
+        check(geometry.layout.barIsVisible, "A monitor ignores full screen")
+        geometry.refresh(displays: [laptop])
+        geometry.checkFullScreen()
+        expect(barVisible: false, "Back on the laptop, full screen is picked up")
+        fullScreen = false
+        geometry.checkFullScreen()
+        expect(barVisible: true, "And dropped")
+        print("Live watch: \(panel == nil ? "rule only (no graphical session)" : "rule and a real panel")")
     }
 
     /// 2026-10-27, 14" MacBook Pro: the Brief clipped at the bottom with no way to

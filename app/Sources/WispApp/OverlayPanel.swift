@@ -148,7 +148,12 @@ final class OverlayPanel: NSPanel {
     /// bar from the same `barIsVisible`, so the two cannot disagree for longer
     /// than one layout change takes to land.
     private func passMouseThrough(collapsed: Bool) {
-        ignoresMouseEvents = collapsed && !layout.barIsVisible
+        ignoresMouseEvents = Self.ignoresMouse(collapsed: collapsed, layout: layout)
+    }
+
+    /// The rule itself: only a collapsed bar that draws nothing lets clicks through.
+    static func ignoresMouse(collapsed: Bool, layout: SurfaceLayout) -> Bool {
+        collapsed && !layout.barIsVisible
     }
 
     /// The collapsed bar switched between drawn and hitbox (a full-screen app
