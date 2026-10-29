@@ -240,6 +240,36 @@ def test_a_slot_fact_needs_a_cue_phrase_and_no_negation(kind, value, quote):
 
 
 @pytest.mark.parametrize("kind, value, quote", [
+    # dev8 Auditor H1: someone else's occupation, or a name between I and the cue.
+    ("employer", "Google", "I met a recruiter at Google."),
+    ("employer", "Apple", "I spoke with an engineer at Apple."),
+    ("employer", "Stripe", "We hired a designer at Stripe."),
+    ("employer", "Stripe", "I need an assistant for Stripe."),
+    ("home_city", "Denver", "I think Mike is moving to Denver."),
+    ("home_city", "Austin", "I heard Dana is living in Austin."),
+    ("employer", "Acme", "I know Priya works at Acme."),
+])
+def test_only_the_user_can_be_the_subject_of_a_slot_fact(kind, value, quote):
+    kept, dropped = _kept([_fact(kind, value, quote)], _email(quote), sent_by_user=True)
+    assert kept == [] and dropped == {"no_cue": 1}
+
+
+@pytest.mark.parametrize("kind, value, quote", [
+    # dev8 Auditor M1: a hedge before the subject, or a move that hasn't happened yet.
+    ("home_city", "Denver", "If I live in Denver by June, let's meet."),
+    ("employer", "Acme", "Not sure whether I work at Acme after the merger."),
+    ("home_city", "Denver", "I'm moving to Denver next month."),
+    ("home_city", "Denver", "We're relocating to Denver soon."),
+    ("home_city", "Denver", "I'm moving to Denver in March."),
+    ("employer", "Stripe", "I'm starting at Stripe next week."),
+    ("employer", "Stripe", "I'm starting at Stripe by the summer."),
+])
+def test_a_hedge_or_a_future_move_is_no_current_fact(kind, value, quote):
+    kept, dropped = _kept([_fact(kind, value, quote)], _email(quote), sent_by_user=True)
+    assert kept == [] and dropped == {"negated": 1}
+
+
+@pytest.mark.parametrize("kind, value, quote", [
     ("employer", "Acme Robotics", "I'm an engineer at Acme Robotics now."),
     ("employer", "Globex", "I just started at Globex!"),
     ("school", "UC Santa Cruz", "I'm studying at UC Santa Cruz this year."),
@@ -247,6 +277,11 @@ def test_a_slot_fact_needs_a_cue_phrase_and_no_negation(kind, value, quote):
     ("home_city", "Dublin", "I live in Dublin, so if you visit, call me."),     # an "if" elsewhere is fine
     ("home_city", "Dublin", "We live in Dublin now, see you soon."),
     ("employer", "Stripe", "My brother is great, and I just started at Stripe."),
+    ("employer", "Acme", "I'm a senior engineer at Acme."),                     # an occupation, right after I'm
+    ("employer", "Acme", "I am now a designer at Acme."),
+    ("home_city", "Denver", "We've finally moved to Denver."),                  # adverbs from the short list
+    ("home_city", "Denver", "I'm moving to Denver."),                           # under way, no future marker
+    ("employer", "Stripe", "Next week is busy, but I started at Stripe."),      # a marker in another clause
 ])
 def test_cue_phrases_that_state_the_fact(kind, value, quote):
     assert _kept([_fact(kind, value, quote)], _email(quote), sent_by_user=True)[0] == [(kind, value, "")]
@@ -294,6 +329,18 @@ def test_sensitive_words_drop_an_otherwise_allowed_service(value, word):
     email = _email(body, sender=f"{value} <hi@{value.lower()}.com>")
     kept, dropped = _kept([_fact("service", value, body, role="shipping")], email, sent_by_user=False, to_user=True)
     assert kept == [] and dropped == {"sensitive": 1}
+
+
+@pytest.mark.parametrize("value, sender", [
+    ("Gmail", "Pat <pat@gmail.com>"), ("Outlook", "Pat <pat@outlook.com>"), ("Yahoo", "Pat <pat@yahoo.com>"),
+    ("iCloud", "Pat <pat@icloud.com>"), ("Yahoo", "Pat <pat@yahoo.co.uk>"),
+])
+def test_a_webmail_address_never_verifies_a_service(value, sender):
+    # dev8 Auditor L3: anyone can write from these, so "Gmail" from a friend isn't a service.
+    body = f"My {value} cloud storage is full."
+    email = _email(body, sender=sender)
+    kept, _ = _kept([_fact("service", value, body, role="cloud storage")], email, sent_by_user=False, to_user=True)
+    assert kept == []
 
 
 def test_a_hyphenated_brand_matches_its_domain():

@@ -41,8 +41,10 @@ IMPORTANT rules:
 - A stand-down is never silent either: its reason code (`busy_reason`, the
   stand-down codes, or a scheduler gate) is kept in meta (`last_skip`, and
   `last_skip_at` for when that reason began), so GET /assistant/mail_memory
-  names the gate behind a stall. It is written when the reason changes and at
-  most every SKIP_REWRITE_S while it repeats, and cleared by the next step.
+  names the gate behind a stall. It is written when the reason changes (at most
+  every SKIP_FLOOR_S, so a reason that keeps flipping can't flood SQLite or the
+  log) and at most every SKIP_REWRITE_S while it repeats, and cleared by the
+  next step, an index read included.
 - On battery the walk keeps running (between, or away on battery over 50%),
   its calls capped by the BACKGROUND power tier; only Low Power Mode or battery
   under 30% stops it.
@@ -81,6 +83,7 @@ IDLE_DONE_GAP_S = 1800
 FAILURE_GAP_S = 900
 WARN_REPEAT_S = 3600
 SKIP_REWRITE_S = 600
+SKIP_FLOOR_S = 30
 QUIET_AFTER_USE_S = 120
 AWAY_AFTER_S = 600
 CALL_TIMEOUT_S = 30.0
@@ -343,13 +346,16 @@ def note_failure(reason: object, *, now: float | None = None, warn: bool = True)
 
 def note_skip(reason: str | None, *, now: float | None = None) -> None:
     """Remember why the walk stood down (None: it ran). Written when the reason
-    changes and at most every SKIP_REWRITE_S while it repeats; `last_skip_at` is
-    when the current reason began. Never raises."""
+    changes, at most every SKIP_FLOOR_S, and at most every SKIP_REWRITE_S while it
+    repeats; `last_skip_at` is when the current reason began. A failed write still
+    counts as written, so it isn't retried (and logged) on every pass. Never raises."""
     global _skip
     now = time.time() if now is None else now
     code = _code(reason) if reason else ""
-    if _skip is not None and _skip[0] == code and (not code or now - _skip[1] < SKIP_REWRITE_S):
-        return
+    if _skip is not None:
+        since = now - _skip[1]
+        if since < SKIP_FLOOR_S or (_skip[0] == code and (not code or since < SKIP_REWRITE_S)):
+            return
     try:
         st = store()
         if not code and not st.meta("last_skip"):
@@ -360,9 +366,9 @@ def note_skip(reason: str | None, *, now: float | None = None) -> None:
             if code:
                 log.info("mail memory: standing down (%s)", code)
         st.set_meta("last_skip", code)
-        _skip = (code, now)
     except Exception:  # noqa: BLE001 — bookkeeping must not break the scheduler
         log.exception("mail memory: could not record the stand-down")
+    _skip = (code, now)
 
 
 def note_ok(*, now: float | None = None) -> None:
@@ -412,6 +418,7 @@ async def tick(*, now: float | None = None) -> float:
     from service.assistant.attention_runner import current_zone
     tz = current_zone()
     if tz is None:
+        note_skip("no_zone", now=now)
         return FAILURE_GAP_S
     today = datetime.fromtimestamp(now, ZoneInfo(tz)).date()
     # ioreg and pmset run off the event loop: a slow probe must never stall a turn.
@@ -440,6 +447,7 @@ async def tick(*, now: float | None = None) -> float:
             merged["accounts_forgotten"] = await asyncio.to_thread(_forget_gone_accounts, st, rows, now)
         st.set_meta("last_index", str(now))
         note_ok(now=now)
+        note_skip(None, now=now)
         log.info("mail memory index: %s capped=%s gmail_tab_exclusions=%d", merged, capped, len(excluded))
         return gap
 

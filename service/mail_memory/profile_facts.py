@@ -112,37 +112,52 @@ _CUES = {
     # Present tense only ("worked at" is history), and no bare "joined" or
     # "attending" ("joined the Zoom call", "attending the Stanford conference").
     "employer": r"work(?:ing)? (?:at|for)|start(?:ed|ing) (?:work(?:ing)? |a new job )?at|"
-                r"(?:new )?job (?:at|with)|employed (?:at|by)|intern(?:ing)? at|joined the team at|"
-                r"an? (?:[\w\-]+ ){0,2}(?:engineer|developer|designer|"
-                r"manager|director|analyst|scientist|researcher|consultant|teacher|professor|lecturer|"
-                r"intern|associate|specialist|coordinator|officer|architect|writer|editor|accountant|"
-                r"assistant|technician|administrator|founder|recruiter) (?:at|for)",
+                r"(?:new )?job (?:at|with)|employed (?:at|by)|intern(?:ing)? at|joined the team at",
     "school": r"study(?:ing)? at|student at|enrolled at|(?:classes|courses|semester|quarter) at|"
               r"go to school at",
     "home_city": r"live in|living in|mov(?:ed|ing) to|based in|relocat(?:ed|ing) to|"
                  r"(?:home|new place|apartment|house) in",
 }
-# Cues that carry their own subject ("my employer is Acme").
-_OWN_CUES = {"employer": r"my (?:employer|company) is", "school": r"my school is",
-             "home_city": r"my home is in"}
-# Whose fact it is: the cue must follow I or we within a few words, none of them a
-# possessive. "My sister is moving to Denver" and "my brother started at Stripe"
-# are someone else's; "I just started at Stripe" is the user's.
-_SUBJECT = r"(?:i|i'm|i am|i've|i'll|we|we're|we are|we've|we'll)"
-_GAP = r"(?:(?!(?:my|his|her|their|your|our|its)\b)[\w'\-]+ ){0,3}"
+# Cues that carry their own subject ("my employer is Acme", "I'm an engineer at
+# Acme"). An occupation names the user only right after "I'm" or "we are": "I met a
+# recruiter at Google" is someone else's job.
+_ROLE = (r"(?:engineer|developer|designer|manager|director|analyst|scientist|researcher|consultant|"
+         r"teacher|professor|lecturer|intern|associate|specialist|coordinator|officer|architect|writer|"
+         r"editor|accountant|assistant|technician|administrator|founder|recruiter)")
+_ADVERB = r"(?:just|now|recently|also|currently|finally|still|been|officially|actually)"
+_OWN_CUES = {
+    "employer": rf"my (?:employer|company) is|(?:i'm|i am|im|we're|we are)(?: {_ADVERB})? "
+                rf"an? (?:[\w\-]+ ){{0,2}}{_ROLE} (?:at|for)",
+    "school": r"my school is", "home_city": r"my home is in"}
+# Whose fact it is: the cue must follow I or we directly, or after a word or two
+# from a short list of adverbs. "My sister is moving to Denver", "I think Mike is
+# moving to Denver" and "my brother started at Stripe" are someone else's; "I just
+# started at Stripe" is the user's.
+_SUBJECT = r"(?:i|i'm|i am|im|i've|i have|i'll|we|we're|we are|we've|we have|we'll)"
+_GAP = rf"(?:{_ADVERB} ){{0,2}}"
+# A move or a start that hasn't happened yet: "I'm moving to Denver next month".
+_FUTURE = re.compile(
+    r"\b(?:soon|next \w+|tomorrow|later|(?:by|in|this|from) (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
+    r"\w*|(?:by|in|this) (?:the )?(?:spring|summer|fall|autumn|winter|weekend|week|month|year))\b")
 
 
 def _states(kind: str, q: str, nv: str) -> str:
     """Whether a folded quote states a slot fact about the user: "ok", "no_cue" or
-    "negated". Negation is read from the statement and the few words after it, up to
-    the end of its clause."""
+    "negated". Negation is read from the statement's clause: the words before it back to
+    the last punctuation, and up to four after it."""
     value = rf"(?:the )?{re.escape(nv)}(?![\w])"
     match = (re.search(rf"\b{_SUBJECT} {_GAP}(?:{_CUES[kind]}) {value}", q)
              or re.search(rf"\b(?:{_OWN_CUES[kind]}) {value}", q))
     if match is None:
         return "no_cue"
-    after = " ".join(re.split(r"[,.;!?]", q[match.end():], maxsplit=1)[0].split()[:4])
-    return "negated" if _NEGATED.search(f"{match.group(0)} {after}") else "ok"
+    before = re.split(r"[,.;:!?]", q[:match.start()])[-1]
+    after = " ".join(re.split(r"[,.;:!?]", q[match.end():], maxsplit=1)[0].split()[:4])
+    clause = f"{before} {match.group(0)} {after}"
+    if _NEGATED.search(clause):
+        return "negated"                    # "not sure whether I work at", "if I live in"
+    if re.search(r"\b(?:mov|relocat|start)ing\b", match.group(0)) and _FUTURE.search(clause):
+        return "negated"                    # "I'm moving to Denver next month"
+    return "ok"
 
 
 # Where the user's own words end: a forwarded or quoted message below them is
@@ -237,6 +252,13 @@ def _compact(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", text.casefold())
 
 
+# Anyone can write from these, so they never verify a service ("Gmail" from a friend).
+_WEBMAIL = frozenset({"gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
+                      "yahoo.com", "ymail.com", "icloud.com", "me.com", "mac.com", "aol.com", "proton.me",
+                      "protonmail.com", "gmx.com", "gmx.net", "mail.com", "zoho.com", "fastmail.com",
+                      "hey.com", "yandex.com", "hotmail.co.uk", "yahoo.co.uk", "outlook.co.uk"})
+
+
 def _from_sender(value: str, sender: str) -> bool:
     """An inbox service must be the one writing, by its address's registrable domain
     (the display name is anyone's to set): the whole value, or its first word, must
@@ -246,7 +268,10 @@ def _from_sender(value: str, sender: str) -> bool:
     _, addr = parseaddr(sender)
     if "@" not in addr:
         return False
-    name = _compact(_registrable(addr.casefold().rsplit("@", 1)[1]))
+    domain = addr.casefold().rsplit("@", 1)[1].rstrip(".")
+    if domain in _WEBMAIL or any(domain.endswith("." + w) for w in _WEBMAIL):
+        return False
+    name = _compact(_registrable(domain))
     if len(name) < 3:
         return False
     words = value.split()

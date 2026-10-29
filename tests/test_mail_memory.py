@@ -1119,6 +1119,51 @@ def test_a_repeated_reason_is_rewritten_at_most_every_ten_minutes(ticking, monke
     assert st.health()["last_skip"] is None and writes.count("last_skip") == 3
 
 
+def test_a_flipping_reason_is_written_at_most_every_thirty_seconds(ticking, monkeypatch):
+    # dev8 Auditor L2: a reason that keeps changing mustn't write SQLite and log on every pass.
+    st = ticking
+    writes = []
+    real = st.set_meta
+    monkeypatch.setattr(st, "set_meta", lambda k, v: writes.append((k, v)) or real(k, v))
+    for i, code in enumerate(["recent_use", "in_flight", "recent_use", None, "in_flight"]):
+        runner.note_skip(code, now=NOW + i * 5)                      # five changes in 20 s
+    assert [v for k, v in writes if k == "last_skip"] == ["recent_use"]
+    runner.note_skip("in_flight", now=NOW + 31)
+    assert st.health()["last_skip"] == "in_flight"
+
+
+def test_a_failed_skip_write_is_not_retried_every_pass(ticking, monkeypatch):
+    st = ticking
+    tries = []
+
+    def broken(k, v):
+        tries.append(k)
+        raise OSError("disk full")
+    monkeypatch.setattr(st, "set_meta", broken)
+    for i in range(10):
+        runner.note_skip("no_subscribers", now=NOW + i * 30)        # 4.5 minutes of passes
+    assert tries == ["last_skip_at"]                                 # one try, not one per pass
+
+
+async def test_no_time_zone_is_a_recorded_reason(ticking, monkeypatch):
+    from service.assistant import attention_runner
+    monkeypatch.setattr(attention_runner, "current_zone", lambda: None)
+    assert await runner.tick(now=NOW) == runner.FAILURE_GAP_S
+    assert ticking.health()["last_skip"] == "no_zone"
+
+
+async def test_an_index_read_clears_an_old_reason(ticking, monkeypatch):
+    st = ticking
+    st.set_meta("last_skip", "not_resident")
+    st.set_meta("last_skip_at", str(NOW - 3600))
+
+    async def index(days):
+        return [_row(5)], False
+    monkeypatch.setattr(runner, "read_index", index)
+    assert await runner.tick(now=NOW) == runner.BETWEEN_GAP_S
+    assert st.meta("last_index") and st.health()["last_skip"] is None
+
+
 def test_schedule_records_why_it_did_not_start(ticking, monkeypatch, quiet):
     from service.assistant.hub import hub
     monkeypatch.setattr(runner, "_next_at", 0.0)
@@ -1127,6 +1172,7 @@ def test_schedule_records_why_it_did_not_start(ticking, monkeypatch, quiet):
     monkeypatch.setattr(runner, "_other_background_work", lambda: True)
     runner.schedule_tick()
     assert ticking.health()["last_skip"] == "other_background"
+    monkeypatch.setattr(runner, "_skip", ("other_background", time.time() - runner.SKIP_FLOOR_S))  # a pass later
     monkeypatch.setattr(runner, "_other_background_work", lambda: False)
     monkeypatch.setattr(type(hub), "has_subscribers", property(lambda self: False))
     runner.schedule_tick()
