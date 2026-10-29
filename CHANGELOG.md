@@ -5,11 +5,17 @@ All notable changes to Wisp are documented here.
 ## [Unreleased]
 
 ### Fixed
-- **Save power: the 1 s watch keeps to the lift cooldown, and a lift is bounded.** Low notes from the dev7 power-stack audits.
-  - **The watch:** with a capped request running beside a busy GPU, a lift that went unanswered or was refused no longer led to a POST and a warning about once a second for the life of that request. The watch now neither looks nor asks while `_lift_askable()` is false: after a refusal (anything but 200), for the rest of the run; after an unreachable engine or a 2 s timeout, until `_LIFT_RETRY_S` (60 s) has passed. `_capping_possible()` uses the same check, so no new cap is set meanwhile.
-  - **Trade-off:** that capped request stays capped until the cooldown ends or the request does. An engine that didn't answer a lift is unlikely to answer one a second later.
-  - **Calls someone waits on:** one that starts beside a lower cap still asks to lift it, once per call, since that's the only way to keep it from running under that cap.
-  - **The lift:** `_lift_now` asks at most `_LIFT_TRIES` (2) clients, newest first. It asks no other client after one that used up `_LIFT_TIMEOUT_S`, since the engine behind them is the same. Only a client that closed mid-POST (it fails at once) still falls through to the next. An unreachable engine costs at most one timeout per lift instead of one per capped call.
+- **Save power: a failed lift no longer means a POST and a warning every second, and the watch keeps its guard; a lift is bounded.** Low notes from the dev7 power-stack audits, plus the dev8 delta audit's repair.
+  - **The watch:** before, a capped request running beside a busy GPU, whose lift went unanswered, POSTed and logged a warning about once a second for its whole life. Now, after an unreachable engine or a 2 s timeout (a busy GPU is when the engine answers slowest), the watch keeps looking every second and asks again after its own `_WATCH_RETRY_S` (2 s) backoff. Only the watch's own lifts set that backoff, so a failed lift for a call starting elsewhere can't quiet it. After a refusal (anything but 200), it neither looks nor asks for the rest of the run.
+  - **The 60 s cooldown** (`_LIFT_RETRY_S`) now only stops new caps (`_capping_possible()`, through `_lift_askable()`) and holds the warning to one per cooldown.
+  - **Bound:**
+    - When another app starts, Wisp asks the engine to lift within about 2 s: the next 1 s look (itself at most 0.75 s), then the ask.
+    - While asks go unanswered, it asks again at least every 5 s: a 2 s timeout, the 2 s backoff, and up to 1 s to the next look.
+    - So a cap outlives a busy app by about 2 s, plus up to about 5 s for each ask the engine doesn't answer. The engine holds the cap, so it can't end before the engine answers or the capped request ends.
+  - **Calls someone waits on:** one that starts beside a lower cap still asks to lift it, once per call.
+  - **The lift:** `_lift_now` asks at most `_LIFT_TRIES` (2) open clients, newest first, and none after one that used up `_LIFT_TIMEOUT_S`, since the engine behind them is the same.
+    - A client that has already closed (its call just ended but is still in `_capped`) raises `LiftClientClosed` before asking anything. It isn't a try, so an older open client is still asked.
+    - With no client open, nothing is asked or noted.
   - **Tests:** the thread test waits on an event instead of a fixed 10 ms sleep. The comment above the Swift Save power checks matches what they check.
 
 ## [0.5.0-dev7] - 2026-10-28

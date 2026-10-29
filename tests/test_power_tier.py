@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from service.inference import power_tier as P
-from service.inference.omlx_client import OMLXClient, _power_fields
+from service.inference.omlx_client import OMLXClient, _lift_gpu_power, _power_fields
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +27,7 @@ def clean_env(monkeypatch, tmp_path):
     monkeypatch.setattr(P, "_capped", {})
     monkeypatch.setattr(P, "_lift_ok", None)
     monkeypatch.setattr(P, "_lift_retry_at", 0.0)
+    monkeypatch.setattr(P, "_watch_retry_at", 0.0)
     monkeypatch.setattr(P, "_lifted", False)
     monkeypatch.setattr(P, "_watch_task", None)
     monkeypatch.setattr(P, "_service_loop", None)
@@ -806,46 +807,130 @@ def test_a_lift_through_a_client_that_just_closed_goes_through_another(away):
     assert P._lifted is True and P._lift_ok is True and P._lift_retry_at == 0.0
 
 
-def test_the_watch_asks_again_after_the_cooldown_when_a_lift_did_not_go_through(monkeypatch, away):
-    answers = [None, True]                                      # a 2 s timeout, then fine
-    asked = []
-    monkeypatch.setattr(P, "check_other_gpu", lambda: False)    # a game is running
+def _lift_warnings(caplog):
+    return [r for r in caplog.records if "lift" in r.getMessage()]
+
+
+def test_after_an_unanswered_lift_the_watch_asks_again_within_its_short_backoff(monkeypatch, away, caplog):
+    # A game makes the engine slow, so lifts time out, but the cap in flight
+    # stays protected: the watch asks again after _WATCH_RETRY_S, not on every
+    # look and not after the 60 s cooldown, which only stops new caps.
+    answers, asked, looks = [None, None, True], [], []
+    monkeypatch.setattr(P, "check_other_gpu", lambda: looks.append(1) or False)   # a game is running
     monkeypatch.setattr(P, "WATCH_EVERY_S", 0.01)
-    monkeypatch.setattr(P, "_LIFT_RETRY_S", 0.03)
+    monkeypatch.setattr(P, "_WATCH_RETRY_S", 0.03)
 
     async def lift():
-        asked.append(len(asked))
-        return answers[min(len(asked) - 1, 1)]
+        asked.append(answers[len(asked)])
+        return asked[-1]
 
     async def run():
         with P.power_tier(P.BACKGROUND):
             started = P.call_started(10, lift)
-        await asyncio.sleep(0.02)
-        assert len(asked) == 1                                  # not again within the cooldown
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.3)
         P.call_ended(started)
 
-    asyncio.run(run())
-    assert len(asked) == 2 and P._lifted is True               # asked again, then stopped
+    with caplog.at_level("WARNING", logger=P.logger.name):
+        asyncio.run(run())
+    assert asked == [None, None, True] and P._lifted is True    # asked again until it went through
+    assert len(looks) == 3                                      # no look during the backoff
+    assert len(_lift_warnings(caplog)) == 1                     # one warning per cooldown
+    assert not P._lift_askable()                                # no new caps for the cooldown
 
 
-@pytest.mark.parametrize("answer", [None, False], ids=["unreachable", "refused"])
-def test_the_watch_does_not_ask_or_look_every_second_after_a_failed_lift(monkeypatch, away, caplog, answer):
+def test_after_a_refused_lift_the_watch_neither_looks_nor_asks_again(monkeypatch, away, caplog):
     looks, asked = [], []
     monkeypatch.setattr(P, "check_other_gpu", lambda: looks.append(1) or False)   # a game is running
     monkeypatch.setattr(P, "WATCH_EVERY_S", 0.01)
 
     async def run():
         with P.power_tier(P.BACKGROUND):
-            started = P.call_started(10, _lifter(asked, answer))
+            started = P.call_started(10, _lifter(asked, False))
         await asyncio.sleep(0.1)                                # about ten watch rounds
         P.call_ended(started)
 
     with caplog.at_level("WARNING", logger=P.logger.name):
         asyncio.run(run())
-    assert asked == [answer] and len(looks) == 1                # one look, one ask, then quiet
-    assert len([r for r in caplog.records if "lift" in r.getMessage()]) == 1
-    assert P._lifted is False and not P._lift_askable()         # and no new caps meanwhile
+    assert asked == [False] and len(looks) == 1                 # one look, one ask, then quiet
+    assert len(_lift_warnings(caplog)) == 1
+    assert P._lift_ok is False and not P._lift_askable()        # no more caps this run
+
+
+def test_a_failed_lift_for_a_new_call_does_not_quiet_the_watch(monkeypatch, away):
+    # Research starts beside a 10 W call and its lift times out. That stops new
+    # caps for a minute, but the cap already in flight is still watched.
+    gpu = {"quiet": True}
+    answers, asked = [None, True], []
+    monkeypatch.setattr(P, "check_other_gpu", lambda: gpu["quiet"])
+    monkeypatch.setattr(P, "WATCH_EVERY_S", 0.01)
+
+    async def lift():
+        asked.append(answers[len(asked)])
+        return asked[-1]
+
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            background = P.call_started(10, lift)
+        research = P.call_started(None, _lifter([]))            # lifts the 10 W cap: times out
+        await asyncio.sleep(0.03)
+        assert asked == [None] and not P._lift_askable()        # no new caps for the cooldown
+        gpu["quiet"] = False                                    # then a game starts
+        await asyncio.sleep(0.05)
+        assert asked == [None, True] and P._lifted is True      # the watch still lifted it
+        P.call_ended(research)
+        P.call_ended(background)
+
+    asyncio.run(run())
+
+
+def _closed(log):
+    async def lift():
+        log.append("closed")
+        raise P.LiftClientClosed
+    return lift
+
+
+def test_closed_clients_are_not_tries_so_an_older_open_one_is_asked(away):
+    # The two newest capped calls just ended: their clients closed before the
+    # calls left _capped. They ask nothing, so they don't use up the tries.
+    asked = []
+
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            calls = [P.call_started(10, _lifter(asked, True)), P.call_started(10, _lifter(asked, True)),
+                     P.call_started(10, _closed(asked)), P.call_started(10, _closed(asked))]
+        await P._lift_now(watch=True)
+        for started in calls:
+            P.call_ended(started)
+
+    asyncio.run(run())
+    assert asked == ["closed", "closed", True] and P._lifted is True and P._lift_ok is True
+
+
+def test_a_lift_with_every_client_closed_asks_and_notes_nothing(away, caplog):
+    asked = []
+
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            started = P.call_started(10, _closed(asked))
+        await P._lift_now(watch=True)
+        P.call_ended(started)
+
+    with caplog.at_level("WARNING", logger=P.logger.name):
+        asyncio.run(run())
+    assert asked == ["closed"] and P._lift_ok is None and P._lift_retry_at == 0.0
+    assert P._watch_retry_at == 0.0 and not _lift_warnings(caplog)
+
+
+def test_a_closed_client_asks_the_engine_nothing():
+    async def run():
+        client, _, lifts = _engine()
+        await client._client.aclose()
+        with pytest.raises(P.LiftClientClosed):
+            await _lift_gpu_power(client)
+        return lifts
+
+    assert asyncio.run(run()) == []
 
 
 def test_a_lift_asks_at_most_two_clients(away):
