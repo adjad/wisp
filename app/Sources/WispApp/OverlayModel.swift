@@ -200,6 +200,10 @@ final class OverlayModel: ObservableObject {
     // First-run setup at the top of Ask. Its readiness lives on the app's one
     // SetupGuideModel, which Settings › Models › Setup shares.
     @Published var setupCard: NotchSetupCard = .hidden { didSet { if setupCard != oldValue { onResize() } } }
+    /// Setup says no model can be set up on this Mac (its brain is unavailable):
+    /// Ask keeps the question and points to Settings › Models instead of sending
+    /// it to a service that can only fail. Set by the app delegate.
+    var noModelHere = false
     // Whether Wisp's own service answers (BackendManager's reachability watch).
     // False shows "Wisp service isn't running" with Retry instead of a green dot.
     @Published var serviceReachable = true {
@@ -746,6 +750,11 @@ final class OverlayModel: ObservableObject {
         if !NotchCommand.suggestions(for: prompt, includeCorpus: debugMode, includeScreen: screenCommandAvailable).isEmpty { return }
         guard !corpusBusy else {
             showTransientNotice("Stop the corpus run before asking another question.")
+            return
+        }
+        if noModelHere {
+            // Nothing could answer it: the question stays in the box, no spinner.
+            showTransientNotice(AskNotReady.noModel.notice(willRetry: false), duration: 10, info: true)
             return
         }
         let submission = QueuedPrompt(text: prompt, image: attachedImage,

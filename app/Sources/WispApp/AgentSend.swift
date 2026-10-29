@@ -67,6 +67,9 @@ enum AskNotReady: Equatable {
     case setup
     /// The engine or model is still coming up: try again in a moment.
     case starting
+    /// No model can be set up on this Mac (setup's brain is unavailable), so the
+    /// question is never sent: Settings › Models is the only way forward.
+    case noModel
 
     static func classify(code: String, message: String) -> AskNotReady? {
         switch code {
@@ -89,6 +92,9 @@ enum AskNotReady: Equatable {
         switch self {
         case .setup:
             return "Wisp's AI model isn't set up yet. Finish setup above, then press Return: your question is waiting in the box."
+        case .noModel:
+            return "Wisp can't answer yet: no AI model is set up on this Mac. Choose one in Settings › Models. "
+                + "Your question is waiting in the box."
         case .starting:
             return willRetry
                 ? "Wisp's AI is still starting up. Your question is in the box, and I'll send it again in a few seconds."

@@ -611,3 +611,18 @@ def test_setup_can_be_changed_from_the_menu_for_two_days_and_the_notch_always():
     assert "NotificationCenter.default.post(name: .wispOpenPermissions" in setup
     # No time limit in the notch.
     assert "doneAt" not in setup and "offersChangeSetup" not in quick
+
+
+def test_ask_never_sends_when_no_model_can_be_set_up():
+    """dev8: with setup's brain unavailable the gate lets the person in, so Ask
+    must answer plainly (Settings › Models) and keep the question, never send it
+    to a service that can only fail into a spinner or an error."""
+    srcs = _sources()
+    submit = _body(srcs["OverlayModel.swift"], "func submit()")
+    hold = submit.index("if noModelHere {")
+    assert hold < submit.index('input = ""\n        removeAttachment()')
+    assert hold < submit.index("submissionState.submit(submission)")
+    assert "AskNotReady.noModel.notice(willRetry: false)" in submit[hold:hold + 300]
+    status = _body(srcs["AppDelegate.swift"], "private func updateMenuBarStatus()")
+    assert "if case .unavailable = brain { model.noModelHere = true } else { model.noModelHere = false }" in status
+    assert status.index("model.noModelHere") < status.index("guard let button = statusItem?.button")
