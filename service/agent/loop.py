@@ -1723,6 +1723,7 @@ async def run_agent(
     # The current request's own words decide whether a public lookup was asked
     # for. Computed once from the incoming messages, never from tool output.
     current_public_lookup = False
+    public_fact_text: str | None = None
     if model_led_discovery:
         from service.router.web_request import classify as classify_public_lookup
         _last_user = next((m.get("content") for m in reversed(messages)
@@ -1735,6 +1736,16 @@ async def run_agent(
         if not current_public_lookup and re.search(r"https?://\S+", _last_user or ""):
             # A URL the user typed themselves is an explicit public lookup.
             current_public_lookup = True
+        if not current_public_lookup:
+            # A public live fact asked plainly ("what's the price of bitcoin?")
+            # may search too, but only with the user's own words: see
+            # private_web_problem. Never when the request names private data.
+            try:
+                from service.model_only import public_fact_question
+                public_fact_text = (_last_user if public_fact_question(_last_user)
+                                    and not classify_public_lookup(_last_user).private else None)
+            except Exception:  # noqa: BLE001 — unclassifiable means no exemption
+                public_fact_text = None
         # Hosts the user typed in this message. In a turn that starts private,
         # the exemption for fetch-style egress is tied to these hosts only.
         from urllib.parse import urlsplit as _urlsplit
@@ -1758,11 +1769,15 @@ async def run_agent(
         detail = args.get("url") or args.get("query") or args.get("target") or ""
         return str(detail)[:300]
 
-    def private_web_problem(tool):
+    def private_web_problem(tool, args=None):
         """Turn-start private context: public egress needs explicit intent."""
         from service.router.model_led import PRIVATE_WEB_TOOLS
         if (private_at_start and not private_read_in_turn and tool.name in PRIVATE_WEB_TOOLS
                 and not current_public_lookup):
+            if public_fact_text is not None and tool.name == "web_search":
+                from service.model_only import public_fact_query_problem
+                return public_fact_query_problem(str((args or {}).get("query") or ""),
+                                                 public_fact_text)
             return ("Private data is in context; web access is unavailable "
                     "unless the request explicitly asks for a public lookup.")
         return None
@@ -1838,7 +1853,7 @@ async def run_agent(
                 return Decision(Tier.CONFIRM, "Private data was read earlier in this turn; "
                                 f"this would contact the web ({_web_detail(args)}). "
                                 "Confirm the exact destination or query.")
-            if problem := private_web_problem(tool):
+            if problem := private_web_problem(tool, args):
                 return Decision(Tier.DENY, problem)
             if start_private_egress(tool, args):
                 # Private data was in context at turn start: a public-lookup
@@ -1936,7 +1951,7 @@ async def run_agent(
             if problem := private_shell_problem(tool, args):
                 return f"(error: {problem} The tool was NOT run.)"
         if model_led_discovery:
-            if problem := private_web_problem(tool):
+            if problem := private_web_problem(tool, args):
                 return f"(error: {problem} The tool was NOT run.)"
             if in_turn_private_web(tool, args) and _action_fingerprint(tool.name, args) not in confirmed_private_web:
                 return ("(error: Private data was read earlier in this turn; web access now "

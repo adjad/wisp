@@ -689,6 +689,66 @@ def asks_personal_data(prompt: str) -> bool:
                 or (_QUESTION.search(text) and re.search(r"\bmy\s+[a-z]", text, re.I)))
 
 
+# --- public facts ----------------------------------------------------------------
+# A public, live fact asked plainly: a market price, an exchange rate, a game
+# result. "What's the price of bitcoin?" was refused with "Private data is in
+# context" on almost every turn (2026-10-29 Ask run): remembered facts ride
+# along on nearly every Ask turn, and only "search the web for…" phrasing
+# counted as an explicit public lookup. Anything about the user ("my", "I")
+# is never one.
+_CURRENCY = (r"(?:usd|eur|gbp|jpy|inr|cad|aud|cny|chf|mxn|dollars?|euros?|pounds?|yen|"
+             r"rupees?|pesos?|francs?|yuan)")
+_PUBLIC_FACT = re.compile(
+    r"\b(?:(?:price|value|cost)\s+of\s+(?:a\s+|an\s+|one\s+)?(?:bitcoin|btc|ethereum|eth|"
+    r"dogecoin|solana|crypto\w*|gold|silver|oil|gas|[a-z]+\s+stock|(?-i:[A-Z]{2,5}))\b"
+    r"|(?:bitcoin|btc|ethereum|eth|gold|silver|oil|(?-i:[A-Z]{2,5}))\s+(?:price|stock\s+price|quote)\b"
+    r"|how\s+much\s+is\s+(?:a\s+|one\s+)?(?:bitcoin|btc|ethereum|eth|gold)\b"
+    r"|convert\s+[\d.,]+\s*" + _CURRENCY + r"\s+(?:to|into|in)\s+" + _CURRENCY + r"\b"
+    r"|[\d.,]+\s*" + _CURRENCY + r"\s+(?:to|in)\s+" + _CURRENCY + r"\b"
+    r"|exchange\s+rate"
+    r"|who\s+won\s+(?:the\s+)?(?:last|latest|this\s+year'?s|\d{4})?\s*\w*\s*"
+    r"(?:game|match|series|world\s+series|super\s+bowl|cup|final|finals|championship|election|race)"
+    r"|(?:score|result)s?\s+of\s+(?:the\s+)?(?:last|latest|today'?s|tonight'?s)?\s*[\w\s]*?"
+    r"(?:game|match|race)\b)", re.I)
+_FIRST_PERSON = re.compile(r"\b(?:i|i'm|i've|me|my|mine|we|our|us)\b", re.I)
+
+
+def public_fact_question(prompt: str) -> bool:
+    """A public live fact asked plainly ("What's the price of bitcoin?",
+    "convert 100 USD to euros", "who won the last World Series?"), with
+    nothing of the user's in it."""
+    text = (prompt or "").strip()
+    return bool(_PUBLIC_FACT.search(text)) and not _FIRST_PERSON.search(text)
+
+
+# Words a search for a public fact may add to the user's own: the query of a
+# public-fact search is checked against these plus the user's message, so a
+# remembered fact or anything else from context cannot reach the web.
+_LOOKUP_WORDS = frozenset("""
+a an the of to in on for and vs at is what whats who won win winner wins
+price prices current currently today now live latest last recent value quote cost
+score scores result results final game games match series standings
+rate rates exchange convert conversion usd eur gbp jpy inr cad aud cny chf mxn
+dollar dollars euro euros pound pounds yen rupee rupees peso pesos franc francs yuan
+stock stocks share shares crypto cryptocurrency market
+""".split())
+
+
+def public_fact_query_problem(query: str, user_text: str) -> str | None:
+    """None when every word of a public-fact search comes from the user's own
+    message, the small lookup vocabulary above, or a year; otherwise what to
+    fix. A number the user didn't type (a phone number, an order number) fails."""
+    allowed = set(re.findall(r"[a-z0-9]+", (user_text or "").lower())) | _LOOKUP_WORDS
+    extra = [w for w in re.findall(r"[a-z0-9]+", (query or "").lower().replace("'", ""))
+             if w not in allowed and not re.fullmatch(r"(?:19|20)\d\d", w)]
+    if not (query or "").strip():
+        return "Search with the user's own words."
+    if extra:
+        return ("Private data is in context, so a public lookup may only search the "
+                "user's own words. Search again without: " + ", ".join(dict.fromkeys(extra)) + ".")
+    return None
+
+
 # --- argument repair -----------------------------------------------------------
 
 _WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")

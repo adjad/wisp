@@ -328,6 +328,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_ask_eval_tool_wording.py",
     "tests/test_ask_text_tool_calls.py",
     "tests/test_timeranges_spoken_days.py",
+    # Public-fact web lookups with private context: scripted model, fake web tools.
+    "tests/test_public_fact_lookups.py",
     "tests/test_proactive_accounts.py",
     "tests/test_proactive_auto_add.py",
     "tests/test_proactive_clear.py",
