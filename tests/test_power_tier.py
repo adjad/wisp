@@ -1350,6 +1350,84 @@ def test_research_the_user_started_is_never_capped(monkeypatch, away):
     assert client.seen == [(None, {})]
 
 
+def _wav_clip(seconds=0.5, rate=16_000):
+    import base64
+    import io
+    import wave
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as clip:
+        clip.setnchannels(1)
+        clip.setsampwidth(2)
+        clip.setframerate(rate)
+        clip.writeframes(b"\0\0" * int(seconds * rate))
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def test_voice_transcription_is_never_capped_and_holds_chat_caps_off(monkeypatch, battery):
+    # On battery, with the foreground gate the transcription itself holds, a
+    # chat call would run at 15 W. The transcription goes out uncapped through
+    # the real client, and while it runs no chat call is capped either.
+    from service import voice
+    during = []
+
+    def hook():
+        with P.power_tier(P.CHAT):
+            during.append((P._uncapped_watched, P.payload_fields()))
+
+    client, bodies = _client(managed=True, reply_hook=hook)
+
+    async def status():
+        return {"models": [{"id": "m", "model_type": "vlm", "model_path": "/models/m"}]}
+
+    client.status = status
+    client.activity_key = lambda model: f"test:{model}"
+    monkeypatch.setattr(voice, "checkpoint_has_audio", lambda path: True)
+
+    async def run():
+        try:
+            text = await voice.transcribe(_wav_clip(), client=client, model="m")
+            with P.power_tier(P.CHAT):
+                after = P.payload_fields()               # the gate is still handed off to the turn
+            return text, after
+        finally:
+            await client._client.aclose()
+
+    assert asyncio.run(run()) == ("ok", {"gpu_power_limit_w": 15})
+    assert len(bodies) == 1 and "gpu_power_limit_w" not in bodies[0]
+    assert during == [(1, {})]                           # counted as a call someone waits on
+
+
+def test_setup_and_model_qualification_calls_are_never_capped():
+    # Setup's engine probes read /v1/models with their own httpx client, so
+    # there's no request body to cap; qualifying a local model chats through an
+    # OMLXClient without a tier. An untiered call gets no cap even while away
+    # on battery, or on battery in a turn, when the tiers would.
+    import inspect
+
+    from service.inference import qualify
+    from service.setup import engines
+
+    assert "power_tier" not in inspect.getsource(qualify) and "power_tier" not in inspect.getsource(engines)
+    client, bodies = _client(managed=True)
+
+    async def run():
+        try:
+            P.refresh_away(P.AWAY_AFTER_S + 1, on_battery=True)
+            with P.power_tier(P.BACKGROUND):
+                assert P.payload_fields() == {"gpu_power_limit_w": 10}
+            await client.chat("m", _HI)
+            P.refresh_away(5, on_battery=True)
+            with _turn():
+                with P.power_tier(P.CHAT):
+                    assert P.payload_fields() == {"gpu_power_limit_w": 15}
+                await client.chat("m", _HI)
+        finally:
+            await client._client.aclose()
+
+    asyncio.run(run())
+    assert [body.get("gpu_power_limit_w") for body in bodies] == [None, None]
+
+
 def test_memory_capture_wraps_its_extraction_call_in_the_background_tier():
     import inspect
 
