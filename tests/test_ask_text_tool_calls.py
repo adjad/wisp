@@ -79,3 +79,35 @@ def test_a_calculation_runs_in_every_access_mode(monkeypatch, ro, full):
         assert policy.decide("wisp_admin", {}, tool=name).tier is policy.Tier.ALLOW
     # Anything still unclassified stays conservative.
     assert policy.decide("no_such_category", {}).tier is not policy.Tier.ALLOW or full
+
+
+@pytest.mark.parametrize("prompt", ["text mom I'm running late", "add a reminder to buy milk"])
+def test_a_write_written_as_markup_is_never_told_no_tool_exists(synthetic, prompt):
+    """dev8 audit: the knowledge nudge ("No tool is needed or available") fired on
+    write requests, and the model then claimed the send had happened."""
+    client, events, answer = run(
+        ['<|tool_call>call:send_message{to:<|"|>Mom<|"|>}<tool_call|> I\'ve sent it!',
+         "I couldn't send that."],
+        prompt=prompt, ask_quality=True, model_led_preload=["get_upcoming"])
+    sent = [m.get("content") or "" for r in client.requests for m in r["messages"]]
+    assert not any("No tool is needed" in c for c in sent)
+    assert client.requests[1]["tool_choice"] == "required"
+    shown = answer + "".join(e.get("text") or "" for e in events)
+    assert "sent it" not in shown and "<|tool_call>" not in shown
+
+
+def test_a_done_claim_around_markup_is_dropped():
+    from service.agent.loop import _ASK_DONE_CLAIM
+    assert _ASK_DONE_CLAIM.search("I've sent the email to Jordan.")
+    assert _ASK_DONE_CLAIM.search("Done!")
+    assert not _ASK_DONE_CLAIM.search("A hash table maps keys to slots.")
+
+
+def test_the_auto_allowed_categories_hold_only_these_read_only_tools():
+    """dev8 audit: policy allows `compute` and `wisp_admin` as whole categories.
+    A new tool in either (say a mutating Wisp admin action) must be reviewed and
+    added here on purpose, or it would run with no confirmation."""
+    from service.tools.registry import REGISTRY
+    members = lambda c: sorted(n for n, t in REGISTRY.items() if t.category == c)
+    assert members("compute") == ["calculate", "convert_units", "world_time"]
+    assert members("wisp_admin") == ["wisp_capabilities", "wisp_mcp", "wisp_skills", "wisp_status"]

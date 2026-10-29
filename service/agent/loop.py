@@ -665,6 +665,12 @@ _ASK_WRITE_DODGE = re.compile(
     # An announcement with no text after it: "Got it. I'll write a brief note…"
     r"|^\s*(?:(?:got it|sure|okay|ok|alright)[.,!]?\s*)?(?:i(?:'|’)ll|i will|let me)\s+"
     r"(?:write|draft|compose|check|look|put)\b[^\n]{0,160}$", re.I)
+# Prose around a tool call the model wrote as text, claiming the action ran:
+# "I've sent the email." Nothing ran, so it is never shown (0.5.0 dev8 audit).
+_ASK_DONE_CLAIM = re.compile(
+    r"\b(?:i(?:'|’)ve|i\s+have|i|it(?:'|’)s|has\s+been|have\s+been|was|were)\s+(?:just\s+|now\s+)?"
+    r"(?:sent|added|created|scheduled|set|saved|deleted|removed|moved|cancel+ed|texted|emailed|"
+    r"messaged|replied|forwarded|booked|updated|completed|marked)\b|^\s*(?:done|all\s+set|sent)\b", re.I)
 # Offered on a web-only personal re-prompt when the head start held none.
 _ASK_OWN_SOURCE_READS = ("view_emails", "search_reminders", "search_notes", "view_messages")
 _ASK_GUARD_MESSAGE = (
@@ -3903,7 +3909,14 @@ async def run_agent(
                 if wrote_call:
                     text = strip_text_tool_calls(text)
                     audit("ask_text_tool_call", step=_step)
+                    if _ASK_DONE_CLAIM.search(text or ""):
+                        # The call was only text, so nothing ran: a "sent it"
+                        # around it is false and never reaches the user.
+                        text = ""
+                from service.router.router import has_write_intent
+                asks_change = has_write_intent(memory_query)
                 if (wrote_call and not text and not ask_text_call_nudged and _step < max_steps - 1
+                        and not asks_change and not attempted_tools
                         and not asks_personal_data(memory_query)):
                     # A knowledge question answered with a tool call written as
                     # text: one nudge to just answer. (A personal-data question
@@ -3913,6 +3926,18 @@ async def run_agent(
                     msgs.append({"role": "user", "content": (
                         "Answer my question now in plain text, from what you know. No tool "
                         "is needed or available for this one.")})
+                    continue
+                if (wrote_call and not text and not ask_text_call_nudged and _step < max_steps - 1
+                        and asks_change):
+                    # "Text Mom I'm running late" with the send written as text:
+                    # nothing was sent. Re-prompt with the tools, required.
+                    ask_text_call_nudged = True
+                    ask_expect_tool = True
+                    audit("ask_text_call_write_reprompt", step=_step)
+                    msgs.append({"role": "assistant", "content": "(nothing has run yet)"})
+                    msgs.append({"role": "user", "content": (
+                        "Nothing has run: that tool call was written as text. Call the tool "
+                        "for this request now through the tool interface.")})
                     continue
                 if not text and reasoning and not msg.get("_degenerate"):
                     # Content empty but the think block holds an answer: keep
