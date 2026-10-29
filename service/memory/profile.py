@@ -512,6 +512,20 @@ def may_send_to(endpoint=None, *, managed: bool = False) -> bool:
     return bool(_everything_host())
 
 
+def mail_facts_may_go(endpoint=None, *, managed: bool = False) -> bool:
+    """Whether a prompt for `endpoint` may carry facts learned from mail: the endpoint
+    Wisp manages on this Mac, or the user's own Mac on their tailnet (proven by its
+    provisioning record). Unlike the profile, never a cloud model, even while Cloud
+    "Everything" is answering: the user said no to cloud for these (2026-10-28)."""
+    if managed or getattr(endpoint, "managed", False):
+        return True
+    try:
+        from service.wisp_about import own_node
+        return bool(own_node(endpoint))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def tailnet_nodes() -> list[str]:
     """The user's verified nodes the profile also goes to now, for the lock
     line ("Stays on this Mac and your mini on your tailnet")."""

@@ -3,8 +3,8 @@ import AppKit
 
 /// The notch's Day tab: the rest of today on one clock. Calendar events, your
 /// planned tasks, Wisp's suggestions, learned "usually busy" windows, plans
-/// caught in your texts and "Needs you" reminders share an hour-by-hour lane
-/// from now to the end of the day, under a two-line blurb.
+/// caught in your texts and "Needs you" reminders share one agenda in time
+/// order, from now to the end of the day, under a two-line blurb.
 ///
 /// Nothing reaches the plan on its own: a suggestion needs Keep or Move, a
 /// caught plan needs Add, and "Not today" only sets aside a learned window for
@@ -39,15 +39,16 @@ struct NotchDayView: View {
     // Add to Day are shared with the Brief.
     @ObservedObject private var proactive = ProactiveActions.shared
 
-    /// One hour of the lane.
-    /// The lane's measurements grow with the Text size setting so block titles
-    /// and hour labels keep their room.
-    private var hourHeight: CGFloat { 44 * Theme.textScale }
-    /// Tallest the lane gets before it scrolls, so the tab fits the notch.
-    private var laneLimit: CGFloat { 340 * Theme.textScale }
-    /// The hour labels' column beside the lane.
-    private var hourColumn: CGFloat { 46 * Theme.textScale }
-
+    /// The agenda's time column. It grows with the Text size setting so
+    /// "12:30 PM" keeps its room.
+    private var timeColumn: CGFloat { 62 * Theme.textScale }
+    /// From a row's bar to its title.
+    private static let barInset: CGFloat = 12
+    /// Things the agenda shows before Show more, so the tab fits the notch.
+    private static let agendaRows = 8
+    @State private var showWholeAgenda = false
+    /// What ended in the last two hours, opened from its one-line summary.
+    @State private var showEarlier = false
 
     init(model: OverlayModel, today: TodayModel) {
         self.model = model
@@ -292,8 +293,7 @@ struct NotchDayView: View {
                 .onExitCommand { closeMove() }
                 .transaction { $0.animation = nil }
         }
-        lane(timeline)
-        if !timeline.styles.isEmpty { legend(timeline.styles) }
+        agenda(timeline)
         if today.isShowingCurrentDay && !staleReminders.asks.isEmpty {
             // A question that arrives after the first frame never animates the panel's height.
             staleSection.transaction { $0.animation = nil }
@@ -461,7 +461,8 @@ struct NotchDayView: View {
 
     private func allDayStrip(_ titles: [String], booked: [String: String] = [:]) -> some View {
         HStack(spacing: 8) {
-            Text("All day").font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
+            Text("All day").font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
+                .frame(width: timeColumn + 2, alignment: .leading)
             ForEach(Array(titles.prefix(3).enumerated()), id: \.offset) { _, title in
                 let held = booked[Self.looseTitle(title)]
                 Text(held.map { "\(title)  ✓ \($0)" } ?? title)
@@ -478,136 +479,161 @@ struct NotchDayView: View {
         }
     }
 
-    private func lane(_ timeline: DayTimeline) -> some View {
-        let hours: CGFloat = CGFloat((timeline.to - timeline.from) / 3600)
-        let height: CGFloat = max(hourHeight, hours * hourHeight)
-        return ScrollView(.vertical) {
-            HStack(alignment: .top, spacing: 0) {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(timeline.hours, id: \.self) { hour in
-                        Text(hourLabel(hour, first: hour == timeline.from))
-                            .font(.wisp(size: 10.5, design: .monospaced)).foregroundStyle(Theme.textMuted)
-                            .frame(height: hourHeight, alignment: .topLeading)
-                            .offset(y: -6)
+    // MARK: The agenda
+
+    /// The day's calendar as a list: one dim line for what just ended, the now
+    /// line, then each thing on its own full-width row in time order, with the
+    /// free stretches between. A long day shows its first rows and Show more.
+    @ViewBuilder private func agenda(_ timeline: DayTimeline) -> some View {
+        let now = today.now.timeIntervalSince1970
+        let isToday = today.isShowingCurrentDay
+        let agenda = timeline.agenda(now: now, isToday: isToday)
+        // A cancel still in its Undo window keeps an ended event live, on its own row.
+        let over = agenda.earlier.filter { $0.isOver(cancelActive: cancelActive($0)) }
+        let live = agenda.earlier.filter { !$0.isOver(cancelActive: cancelActive($0)) }
+        let ahead = showWholeAgenda ? agenda.ahead : agenda.firstRows(holding: Self.agendaRows)
+        // An empty day has nothing to list; the blurb above already says so.
+        if !agenda.earlier.isEmpty || !agenda.ahead.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                if !over.isEmpty {
+                    earlierRow(over)
+                    if showEarlier { ForEach(over) { agendaRow($0) } }
+                }
+                ForEach(live) { agendaRow($0) }
+                if isToday { nowRow(now) }
+                ForEach(ahead) { row in
+                    switch row {
+                    case .item(let item): agendaRow(item)
+                    case .free(let start, let end): freeRow(start, end)
                     }
                 }
-                .frame(width: hourColumn, alignment: .leading)
-                .overlay(alignment: .topLeading) { nowLabel(timeline) }
-                GeometryReader { geo in
-                    laneBody(timeline, width: geo.size.width, height: height)
+                if agenda.thingsAhead > Self.agendaRows {
+                    Button(showWholeAgenda ? "Show fewer" : "Show \(agenda.thingsAhead - Self.agendaRows) more") {
+                        showWholeAgenda.toggle()
+                        model.onResize()
+                    }
+                    .buttonStyle(.plain).font(.wisp(.footnote, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                    .padding(.leading, timeColumn + 10 + Self.barInset).padding(.top, 2)
                 }
-                .frame(height: height)
-                .overlay(alignment: .leading) { Rectangle().fill(Theme.hairline).frame(width: 1) }
             }
-            .padding(.top, 6)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Agenda")
         }
-        .scrollIndicators(.automatic)
-        .frame(height: min(height + 6, laneLimit))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Timeline, \(today.clock(timeline.from)) to \(today.clock(timeline.to))")
     }
 
-    private func laneBody(_ timeline: DayTimeline, width: CGFloat, height: CGFloat) -> some View {
-        ZStack(alignment: .topLeading) {
-            ForEach(timeline.hours, id: \.self) { hour in
-                Rectangle().fill(Theme.hairline.opacity(0.6)).frame(height: 1)
-                    .offset(y: y(hour, timeline))
+    /// What ended in the last two hours, as one dim line that opens into rows.
+    private func earlierRow(_ items: [DayItem]) -> some View {
+        Button {
+            showEarlier.toggle()
+            model.onResize()
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                HStack(spacing: 4) {
+                    Text("Earlier")
+                    Image(systemName: showEarlier ? "chevron.down" : "chevron.right").font(.wisp(size: 8, weight: .semibold))
+                }
+                .frame(width: timeColumn, alignment: .leading)
+                if !showEarlier {
+                    Text(DayTimeline.earlierLine(items)).lineLimit(1).padding(.leading, Self.barInset)
+                }
+                Spacer(minLength: 0)
             }
-            ForEach(timeline.items) { item in positioned(item, timeline, width: width) }
-            nowMarker(timeline)
+            .font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
+            .contentShape(Rectangle())
         }
-        .frame(width: width, height: height, alignment: .topLeading)
+        .buttonStyle(.plain)
+        .padding(.bottom, 2)
+        .help(showEarlier ? "Hide what's over" : "Show what's over")
+        .accessibilityLabel(showEarlier ? "Hide what's over" : "Earlier: " + DayTimeline.earlierLine(items))
     }
 
-    private func positioned(_ item: DayItem, _ timeline: DayTimeline, width: CGFloat) -> some View {
-        let column: CGFloat = (width - 10) / CGFloat(item.columns)
-        let top: CGFloat = y(item.start, timeline)
-        // The same shortest size DayTimeline.arrange lays blocks out by, less the gap.
-        let shortest = CGFloat(DayTimeline.minimumDrawn / DayTimeline.hour) * hourHeight
-        let tall: CGFloat = max(shortest, y(item.end, timeline) - top - 3)
-        let wide: CGFloat = max(40, column - 4)
-        let left: CGFloat = 8 + CGFloat(item.column) * column
-        return blockView(item, compact: tall < 32 * Theme.textScale).frame(width: wide, height: tall).offset(x: left, y: top)
-    }
-
-    /// The time of now, in the hour column beside its line, as in Calendar.
-    @ViewBuilder private func nowLabel(_ timeline: DayTimeline) -> some View {
-        let now = today.now.timeIntervalSince1970
-        if today.isShowingCurrentDay && now >= timeline.from && now <= timeline.to {
-            Text(today.clock(now)).font(.wisp(size: 9.5, weight: .semibold, design: .monospaced))
+    /// Now, as a line across the agenda between what's over and what's next.
+    private func nowRow(_ now: Double) -> some View {
+        HStack(spacing: 10) {
+            Text(today.clock(now)).font(.wisp(.footnote, weight: .semibold)).monospacedDigit()
                 .foregroundStyle(DayInk.now)
-                .frame(width: hourColumn, alignment: .leading)
-                .background(Theme.surface)
-                .offset(y: y(now, timeline) - 6)
-                .accessibilityHidden(true)
+                .frame(width: timeColumn, alignment: .leading)
+            HStack(spacing: 0) {
+                Circle().fill(DayInk.now).frame(width: 7, height: 7)
+                Rectangle().fill(DayInk.now).frame(height: 1.5)
+            }
+            .padding(.leading, -2)
         }
-    }
-
-    @ViewBuilder private func nowMarker(_ timeline: DayTimeline) -> some View {
-        let now = today.now.timeIntervalSince1970
-        if today.isShowingCurrentDay && now >= timeline.from && now <= timeline.to {
-            nowLine(now).offset(y: y(now, timeline))
-        }
-    }
-
-    private func y(_ t: Double, _ timeline: DayTimeline) -> CGFloat {
-        CGFloat((t - timeline.from) / 3600) * hourHeight
-    }
-
-    /// "1 PM" on the first and noon rows, the bare hour on the rest; "13:00" on every row in a 24-hour locale.
-    private func hourLabel(_ t: Double, first: Bool) -> String {
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = today.timezone
-        return NotchChrome.hourLabel(calendar.component(.hour, from: Date(timeIntervalSince1970: t)),
-                                     first: first, locale: today.clockLocale)
-    }
-
-    private func nowLine(_ now: Double) -> some View {
-        HStack(spacing: 0) {
-            Circle().fill(DayInk.now).frame(width: 7, height: 7).offset(x: -4)
-            Rectangle().fill(DayInk.now).frame(height: 1.5)
-        }
-        .offset(y: -3.5)
-        .allowsHitTesting(false)
+        .padding(.vertical, 3)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Now, \(today.clock(now))")
     }
 
-    /// A short block keeps only its title; its detail is in the VoiceOver label.
-    private func blockView(_ item: DayItem, compact: Bool) -> some View {
+    /// Time nothing holds, before the next thing that does.
+    private func freeRow(_ start: Double, _ end: Double) -> some View {
+        HStack(spacing: 10) {
+            Color.clear.frame(width: timeColumn, height: 1)
+            Text(DayTimeline.freeLine(start: start, end: end,
+                                      startsNow: today.isShowingCurrentDay && start <= today.now.timeIntervalSince1970,
+                                      clock: today.clock))
+                .font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
+                .padding(.leading, Self.barInset)
+                .overlay(alignment: .leading) { DayInk.freeBar.frame(width: 3) }
+        }
+        .padding(.vertical, 3)
+    }
+
+    /// One thing on the agenda: when, a bar in its style's ink, the title on up
+    /// to two lines, what it is, and its actions. Nothing shares its width, so
+    /// the title always shows.
+    private func agendaRow(_ item: DayItem) -> some View {
         let over = item.isOver(cancelActive: cancelActive(item))
-        return HStack(alignment: compact ? .center : .top, spacing: 6) {
-            let status = cancelStatus(item)
+        let status = cancelStatus(item)
+        let time = DayTimeline.gutter(item, clock: today.clock)
+        return HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 5) {
-                    if !item.source.isEmpty {
-                        Image(systemName: DayTimeline.sourceSymbol(item.source)).font(.wisp(size: 9.5))
-                            .foregroundStyle(Theme.textSecondary)
-                    }
-                    Text(item.title).font(.wisp(size: 12, weight: .semibold))
-                        .foregroundStyle(item.style == .usual ? Theme.textSecondary : Theme.textPrimary)
-                        .lineLimit(1)
-                        .strikethrough(status != nil && !status!.failed)
-                }
-                if !compact {
-                    Text(detail(item)).font(.wisp(size: 10.5))
-                        .foregroundStyle(status?.failed == true ? Theme.bad : DayInk.detail(item.style)).lineLimit(1)
+                Text(time.top).font(.wisp(.body, weight: .semibold))
+                    .foregroundStyle(item.style == .overdue ? DayInk.now : Theme.textPrimary)
+                if !time.bottom.isEmpty {
+                    Text(time.bottom).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
                 }
             }
-            Spacer(minLength: 2)
-            // What's over has nothing left to act on; a cancel still in its Undo
-            // window (or in flight) keeps the block live until it settles.
-            if !over { trailing(item) }
+            .monospacedDigit()
+            .padding(.top, 1)
+            .frame(width: timeColumn, alignment: .leading)
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
+                        if !item.source.isEmpty {
+                            Image(systemName: DayTimeline.sourceSymbol(item.source)).font(.wisp(size: 10))
+                                .foregroundStyle(Theme.textSecondary)
+                        }
+                        Text(item.title).font(.wisp(.callout, weight: .semibold))
+                            .foregroundStyle(item.style == .usual ? Theme.textSecondary : Theme.textPrimary)
+                            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                            .strikethrough(status != nil && !status!.failed)
+                    }
+                    Text(detail(item)).font(.wisp(.footnote))
+                        .foregroundStyle(status?.failed == true ? Theme.bad : DayInk.detail(item.style))
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // What's over has nothing left to act on; a cancel still in its Undo
+                // window (or in flight) keeps the row live until it settles.
+                if !over { trailing(item) }
+            }
+            .padding(.leading, Self.barInset)
+            .overlay(alignment: .leading) { DayInk.bar(item.style).frame(width: 3) }
         }
-        .padding(.horizontal, 8).padding(.vertical, compact ? 1 : 4)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(DayInk.fill(item.style))
-        .overlay(DayInk.border(item.style))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(.vertical, 5)
         .opacity(over ? 0.45 : 1)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(item.title), \(detail(item)), \(today.clock(item.start)) to \(today.clock(item.end))"
+        .accessibilityLabel([item.title, spokenTime(item), detail(item)].filter { !$0.isEmpty }.joined(separator: ", ")
                             + (item.members.count > 1 ? ", covers " + item.members.map(\.title).joined(separator: "; ") : "")
                             + (item.past ? ", already over" : ""))
+    }
+
+    /// The time column in words, for VoiceOver.
+    private func spokenTime(_ item: DayItem) -> String {
+        if item.style == .overdue { return "overdue" }
+        if let due = item.due { return "due " + today.clock(due) }
+        let begins = today.clock(item.begins ?? item.start)
+        return item.ends.map { "\(begins) to \(today.clock($0))" } ?? "at " + begins
     }
 
     /// A cancel of this block that is still in its Undo window or being sent.
@@ -631,12 +657,16 @@ struct NotchDayView: View {
         return nil
     }
 
-    /// A block's detail, with its planner warning in plain words when it has one.
+    /// A row's detail: where a cancel stands, its planner warning in plain
+    /// words, or what it is.
     private func detail(_ item: DayItem) -> String {
         if let status = cancelStatus(item) { return status.text }
         guard let id = item.blockID,
               let block = plan?.displayBlocks.first(where: { $0.id == id }),
-              let warning = block.warnings.lazy.compactMap(DayTimeline.plainWarning).first else { return item.detail }
+              let warning = block.warnings.lazy.compactMap(DayTimeline.plainWarning).first else {
+            return DayTimeline.agendaDetail(item, now: today.now.timeIntervalSince1970,
+                                            isToday: today.isShowingCurrentDay, clock: today.clock)
+        }
         return warning
     }
 
@@ -860,23 +890,7 @@ struct NotchDayView: View {
         }
     }
 
-    // MARK: Legend, adding, footer
-
-    private func legend(_ styles: [DayStyle]) -> some View {
-        HStack(spacing: 12) {
-            ForEach(styles, id: \.self) { style in
-                HStack(spacing: 5) {
-                    ZStack {
-                        DayInk.fill(style)
-                        DayInk.border(style)
-                    }
-                    .frame(width: 12, height: 9).clipShape(RoundedRectangle(cornerRadius: 3))
-                    Text(style.legend).font(.wisp(size: 10.5)).foregroundStyle(Theme.textMuted)
-                }
-            }
-        }
-        .accessibilityElement(children: .combine)
-    }
+    // MARK: Adding, footer
 
     private var canAdd: Bool {
         !model.todayTaskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !today.busy
@@ -1056,31 +1070,24 @@ enum DayInk {
     static let caught = Theme.warn
     static let now = Theme.bad
 
-    @ViewBuilder static func fill(_ style: DayStyle) -> some View {
+    /// A row's mark in the agenda: its style's ink as a 3-point bar, dashed for
+    /// a suggestion and dotted for a reminder due later.
+    @ViewBuilder static func bar(_ style: DayStyle) -> some View {
         switch style {
-        case .calendar: calendarFill
-        case .task: Color(white: 0.08)
-        case .suggested: suggested.opacity(0.08)
-        case .usual: Hatch()
-        case .caught: caught.opacity(0.08)
-        case .needsYou: Color.white.opacity(0.05)
-        case .overdue: now.opacity(0.08)
-        case .todo: Color.white.opacity(0.09)
+        case .calendar: Capsule().fill(Theme.textPrimary)
+        case .task: Capsule().fill(Color(white: 0.6))
+        case .suggested: Rule().stroke(suggested, style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: [4, 4]))
+        case .usual: Capsule().fill(Color(white: 0.3))
+        case .caught: Capsule().fill(caught)
+        case .needsYou: Rule().stroke(Color.white.opacity(0.55), style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: [0, 5]))
+        case .overdue: Capsule().fill(now)
+        case .todo: Capsule().fill(Color.white.opacity(0.45))
         }
     }
 
-    @ViewBuilder static func border(_ style: DayStyle) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 8)
-        switch style {
-        case .calendar: shape.stroke(calendarStroke, lineWidth: 1)
-        case .task: shape.stroke(Color(white: 0.2), lineWidth: 1)
-        case .suggested: shape.stroke(suggested, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-        case .usual: shape.stroke(Color(white: 0.17), lineWidth: 1)
-        case .caught: shape.stroke(caught, lineWidth: 1)
-        case .needsYou: shape.stroke(Color.white.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [1.5, 2.5]))
-        case .overdue: shape.stroke(now, lineWidth: 1)
-        case .todo: shape.stroke(Color.white.opacity(0.42), lineWidth: 1)
-        }
+    /// A free stretch's mark: a faint dotted bar.
+    static var freeBar: some View {
+        Rule().stroke(Theme.textMuted.opacity(0.6), style: StrokeStyle(lineWidth: 2, lineCap: .round, dash: [0, 4]))
     }
 
     static func detail(_ style: DayStyle) -> Color {
@@ -1092,20 +1099,13 @@ enum DayInk {
         }
     }
 
-    /// Diagonal stripes for a learned window: there, but not a commitment.
-    struct Hatch: View {
-        var body: some View {
-            Canvas { context, size in
-                context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(Color(white: 0.05)))
-                var path = Path()
-                var x: CGFloat = -size.height
-                while x < size.width {
-                    path.move(to: CGPoint(x: x, y: size.height))
-                    path.addLine(to: CGPoint(x: x + size.height, y: 0))
-                    x += 9
-                }
-                context.stroke(path, with: .color(Color(white: 0.13)), lineWidth: 4)
-            }
+    /// A vertical line down the middle of its frame, inset for round caps.
+    struct Rule: Shape {
+        func path(in rect: CGRect) -> Path {
+            var path = Path()
+            path.move(to: CGPoint(x: rect.midX, y: rect.minY + 1.5))
+            path.addLine(to: CGPoint(x: rect.midX, y: max(rect.minY + 1.5, rect.maxY - 1.5)))
+            return path
         }
     }
 }
@@ -1170,13 +1170,6 @@ enum NotchChrome {
         formatter.dateFormat = h24 ? "EEE HH:mm" : "EEE h:mm a"
         return formatter.string(from: Date(timeIntervalSince1970: timestamp))
             .replacingOccurrences(of: ":00 ", with: " ")
-    }
-
-    /// A lane row's hour label, as the person's locale writes it.
-    static func hourLabel(_ hour: Int, first: Bool, locale: Locale) -> String {
-        if WispClock.uses24Hour(locale) { return WispClock.hour(hour, locale: locale) }
-        let shown = hour % 12 == 0 ? 12 : hour % 12
-        return first || hour == 12 || hour == 0 ? WispClock.hour(hour, locale: locale) : "\(shown)"
     }
 
     static func appName(_ source: DayTimeline.BriefSource) -> String {

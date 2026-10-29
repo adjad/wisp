@@ -218,7 +218,7 @@ struct OverlayView: View {
                 // Ready while notifications are off: a still, quiet dot until the
                 // panel is opened (AppDelegate.tellReady, readyLineSeen).
                 HStack(spacing: 6) {
-                    if !isNotch { orb.scaleEffect(0.7) }
+                    if !isNotch { WispOrb(resting: true).scaleEffect(0.7) }
                     Circle().fill(Theme.good.opacity(0.75)).frame(width: 5, height: 5)
                 }
                 .padding(.bottom, isNotch ? 5 : 8)
@@ -227,7 +227,7 @@ struct OverlayView: View {
                 // What's due today or overdue, from the day's last load (it loads only
                 // while Brief or Day is open, so the bar never triggers a load).
                 HStack(spacing: 6) {
-                    if !isNotch { orb.scaleEffect(0.7) }
+                    if !isNotch { WispOrb(resting: true).scaleEffect(0.7) }
                     Text("\(todayCount)").font(.wisp(.caption, weight: .bold)).foregroundStyle(.black)
                         .padding(.horizontal, 5).frame(minWidth: 14, minHeight: 13)
                         .background(Capsule().fill(.white))
@@ -237,14 +237,14 @@ struct OverlayView: View {
             } else if model.setupCard == .later {
                 // Setup was set aside and Wisp still can't answer.
                 HStack(spacing: 6) {
-                    if !isNotch { orb.scaleEffect(0.7) }
+                    if !isNotch { WispOrb(resting: true).scaleEffect(0.7) }
                     Text("!").font(.wisp(.caption, weight: .heavy)).foregroundStyle(Theme.warn)
                 }
                 .padding(.bottom, isNotch ? 3 : 8)
                 .accessibilityLabel("Wisp isn't set up yet")
             } else if !isNotch {
                 HStack(spacing: 8) {
-                    orb.scaleEffect(0.7)
+                    WispOrb(resting: true).scaleEffect(0.7)
                     Image(systemName: "chevron.down")
                         .font(.wisp(size: 10, weight: .bold))
                         .foregroundStyle(Theme.textMuted)
@@ -283,7 +283,7 @@ struct OverlayView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            orb
+            WispOrb(resting: false)
             Text("Wisp").font(.wisp(.headline, weight: .medium)).foregroundStyle(Theme.textPrimary)
             tabStrip.padding(.leading, 6)
             Spacer()
@@ -495,17 +495,6 @@ struct OverlayView: View {
         .padding(4)
         .background(RoundedRectangle(cornerRadius: 10).fill(Theme.chipFill))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.chipStroke, lineWidth: 1))
-    }
-
-    private var orb: some View {
-        Circle()
-            .fill(Theme.orb)
-            .frame(width: 26, height: 26)
-            .scaleEffect(reduceMotion ? 1 : (breathe ? 1.1 : 0.94))
-            .opacity(reduceMotion ? 1 : (breathe ? 1.0 : 0.85))
-            .shadow(color: .white.opacity(0.12), radius: 5)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 4).repeatForever(autoreverses: true), value: breathe)
-            .accessibilityHidden(true)
     }
 
     private var statusColor: Color {
@@ -1153,6 +1142,72 @@ struct OverlayView: View {
                 model.loadAttachment(url: url)
             }
         }
+    }
+}
+
+/// Whether the orb breathes. It holds still on Reduce Motion, in Low Power Mode,
+/// while the displays sleep, and on the collapsed bar (`resting`), where nothing
+/// is going on and a repeating animation would run for as long as Wisp does.
+enum OrbMotion {
+    static func breathes(reduceMotion: Bool, lowPower: Bool, screensAsleep: Bool, resting: Bool) -> Bool {
+        !(reduceMotion || lowPower || screensAsleep || resting)
+    }
+}
+
+/// The breathing orb. Holding still takes the animated child out of the tree,
+/// because a nil animation on a live repeatForever does not reliably stop it
+/// (see ChatOrbBreathing); the still orb is the Reduce Motion look.
+private struct WispOrb: View {
+    var resting: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+    @State private var screensAsleep = false
+
+    var body: some View {
+        Group {
+            if OrbMotion.breathes(reduceMotion: reduceMotion, lowPower: lowPower,
+                                  screensAsleep: screensAsleep, resting: resting) {
+                BreathingOrb()
+            } else {
+                OrbDisc(scale: 1, opacity: 1)
+            }
+        }
+        .accessibilityHidden(true)
+        // Posted on whichever thread changed the setting.
+        .onReceive(NotificationCenter.default.publisher(for: .NSProcessInfoPowerStateDidChange)
+            .receive(on: DispatchQueue.main)) { _ in
+            lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.screensDidSleepNotification)) { _ in
+            screensAsleep = true
+        }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.screensDidWakeNotification)) { _ in
+            screensAsleep = false
+        }
+    }
+}
+
+private struct OrbDisc: View {
+    var scale: CGFloat
+    var opacity: Double
+
+    var body: some View {
+        Circle()
+            .fill(Theme.orb)
+            .frame(width: 26, height: 26)
+            .scaleEffect(scale)
+            .opacity(opacity)
+            .shadow(color: .white.opacity(0.12), radius: 5)
+    }
+}
+
+private struct BreathingOrb: View {
+    @State private var breathe = false
+
+    var body: some View {
+        OrbDisc(scale: breathe ? 1.1 : 0.94, opacity: breathe ? 1.0 : 0.85)
+            .animation(.easeInOut(duration: 4).repeatForever(autoreverses: true), value: breathe)
+            .onAppear { breathe = true }
     }
 }
 

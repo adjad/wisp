@@ -38,20 +38,24 @@ enum QuickSettingsText {
         }
     }
 
-    /// "Save power when away"'s line. Neutral wording in every state: it is a
+    /// "Save power"'s line. Neutral wording in every state: it is a
     /// preference, not a warning (red/amber stays for status).
     static func saveWhenAway(on: Bool?, pending: Bool) -> String {
         if pending { return "Updating · waiting for confirmation…" }
         switch on {
-        case true?: return "Background work runs at 10 W while you're away"
-        case false?: return "Background work runs at full speed"
+        case true?: return "Uses less power, most of all on battery and while you're away"
+        case false?: return "Wisp always runs at full speed"
         case nil: return "Not confirmed"
         }
     }
 
-    static let saveWhenAwayHelp = "After 10 minutes away from the keyboard and mouse, Wisp's background work "
-        + "(email summaries, proactive checks) runs at 10 W. Replies and anything you start always get full "
-        + "power, and so does everything while another app, like a game, is using the GPU."
+    static let saveWhenAwayHelp = "Wisp's background work always runs its GPU at 10 W, plugged in too. "
+        + "On battery, it caps the GPU at 15 W while it writes a chat reply or updates your Brief. After "
+        + "10 minutes away from the keyboard and mouse, the Brief runs at 10 W too. The cap ends as soon as "
+        + "that work is done. It's set only while other apps use little of the GPU, and lifts within about "
+        + "a second when another app, like a game or a video, starts using more. Only Wisp's built-in "
+        + "engine is capped; "
+        + "with your own oMLX app, nothing is."
 
     /// Learn my routines' line, and the trailing "stays on this Mac" when
     /// nothing learned is sent anywhere.

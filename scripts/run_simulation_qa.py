@@ -174,6 +174,8 @@ PROFILE_TESTS = {
     "tests/test_onboarding_window.py",
     # Settings and Setup as sections of the Wisp window, read from the Swift sources.
     "tests/test_settings_in_window.py",
+    # The app's idle-time polling cadences, read from the Swift and service sources.
+    "tests/test_idle_polling_swift_contract.py",
     "tests/test_super_model_routing.py",
         "tests/test_inference_endpoints.py",
         "tests/test_inference_providers.py",
@@ -434,6 +436,9 @@ ADDITIONAL_FULL_TESTS = {
     # Mail memory with a stand-in app, model and hub, a temporary store and stubbed idle/power
     # probes; no Mail, no model, no subprocess, nothing is added to Reminders.
     "tests/test_mail_memory.py",
+    # Mail memory's profile facts with a stand-in model, a temporary store, facts.db and settings
+    # file; synthetic mail only, nothing is read from Mail and no fact reaches the real memory.
+    "tests/test_mail_memory_facts.py",
     # The kept Daily Summary with an isolated file and a stand-in hub; nothing is composed, read or sent.
     "tests/test_brief_latest.py",
     # Pure identity/port policy; the shell checks skip where spawning is forbidden.

@@ -576,8 +576,8 @@ async def _resident_reply(system: str, material: str, abort, *,
         _stood_down("a turn is in progress")
         return None
     budget = tokens[0] if _thinking_off(model) else tokens[1]
-    from service.inference.power_tier import BACKGROUND, power_tier
-    with power_tier(BACKGROUND):
+    from service.inference.power_tier import BRIEF, power_tier
+    with power_tier(BRIEF):
         request = asyncio.ensure_future(client.chat(
             model, [{"role": "system", "content": system}, {"role": "user", "content": material}],
             max_tokens=budget, temperature=0, **thinking_kwargs(model, on=False)))
@@ -694,7 +694,8 @@ async def refresh(now: float | None = None, *, synth=None, abort=None, force: bo
         return False
     _load()[job["kind"]] = {"gist": gist, "at": now, "key": job["key"]}
     _attempts.pop(attempt_key, None)
-    # The open Brief re-reads the day every 30 s (NotchDayView.DayRefreshLoop).
+    # The app re-reads the day every 30 s while the notch is open or the user is
+    # active, every 5 minutes otherwise (TodayView.swift, DayRefreshPace).
     _save()
     print(f"[mail_gists] wrote the {job['kind']} gist in {time.monotonic() - started:.1f}s", flush=True)
     return True

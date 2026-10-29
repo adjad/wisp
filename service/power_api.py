@@ -1,10 +1,12 @@
-"""The "Save power when away" switch for the notch (service/inference/power_tier.py).
+"""The "Save power" switch for the notch (service/inference/power_tier.py).
 
 IMPORTANT rules:
 - The write is the app's own JSON request, never a browser page's: a cap
   throttles the whole Mac's GPU, so a web page must not be able to change it.
-- The switch only decides background work's cap while the user is away.
-  Replies and everything else the user starts are never capped.
+- The switch gates every cap: chat replies and Brief generation on battery,
+  the Brief while the user is away, and background work always. Off means none.
+- The stored and wire key stays `save_when_away` (the switch's first name), so
+  an existing choice survives the rename.
 """
 from __future__ import annotations
 

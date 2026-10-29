@@ -808,7 +808,7 @@ def _chat_pipeline(raw):
           "idle": SimpleNamespace(begin=lambda *a: None, end=lambda *a: None)}
     path = root / "service/inference/omlx_client.py"
     _functions(path, {"_ensure_choices", "_demote_unclosed_think", "_power_fields",
-                         "_power_call_started", "_power_call_ended"}, ns)
+                         "_lift_gpu_power", "_power_call_started", "_power_call_ended"}, ns)
     _functions(path, {"chat", "_completion_data", "_check_response"}, ns, methods=True)
 
     class Managed:

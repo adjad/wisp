@@ -252,6 +252,33 @@ struct StoredBrief: Equatable {
     }
 }
 
+/// How often the app refreshes the day in the background. The service builds
+/// the whole snapshot for every read, so it is read every 30 s only while
+/// someone can see it or is at the keyboard: the notch is open, or there was
+/// input in the last ten minutes. Otherwise every five minutes, which still
+/// keeps the collapsed bar's badge honest. Opening the notch reads at once
+/// (TodayModel.refreshSoon).
+enum DayRefreshPace {
+    static let active: Duration = .seconds(30)
+    static let away: Duration = .seconds(300)
+    /// Seconds without a key press or mouse event after which the person counts as away.
+    static let awayAfter: TimeInterval = 600
+    /// The fewest seconds between the starts of two reads when `refreshSoon`
+    /// cuts the wait short, so a burst of changes is one read, not many.
+    static let wakeFloor: TimeInterval = 10
+
+    static func interval(notchOpen: Bool, secondsSinceInput: TimeInterval) -> Duration {
+        notchOpen || secondsSinceInput < awayAfter ? active : away
+    }
+
+    /// Seconds since the last key press or mouse event on this Mac. Only that
+    /// number is read, here, to pick a pace: no event is seen, kept or sent.
+    static func secondsSinceInput() -> TimeInterval {
+        CGEventSource.secondsSinceLastEventType(.combinedSessionState,
+                                                eventType: CGEventType(rawValue: UInt32.max)!)
+    }
+}
+
 @MainActor
 final class TodayModel: ObservableObject {
     // The one problem report about Today, shared by the notch's Day tab and
@@ -296,6 +323,13 @@ final class TodayModel: ObservableObject {
     private var refreshing: (key: DayKey, ticket: Int)?
     private var backgroundRefresh: Task<Void, Never>?
     private var backgroundID: UUID?
+    /// How long the app refresh waits between reads; the app swaps in DayRefreshPace's.
+    private var refreshCadence: @MainActor () -> Duration = { DayRefreshPace.active }
+    /// The wait between reads while it sleeps, so `refreshSoon` can end it.
+    private var napping: Task<Void, Error>?
+    /// A read was asked for since the current one began.
+    private var wakeRequested = false
+    private var cycleStartedAt: Date?
     private var lastBriefRead: (key: DayKey, at: Date)?
     private var storedBriefKey: DayKey?
     private var afterBackgroundRefresh: (@MainActor () async -> Void)?
@@ -332,24 +366,24 @@ final class TodayModel: ObservableObject {
 
     /// Owned by the app/model, so collapsing the notch or changing tabs cannot
     /// cancel a read. Repeated starts (including a retained planner reopening)
-    /// keep the same loop and its slower Brief cadence.
-    func startBackgroundRefresh(interval: Duration = .seconds(30),
+    /// keep the same loop and its slower Brief cadence; a `cadence` they pass
+    /// replaces the one in use (the loop asks it after every read).
+    func startBackgroundRefresh(cadence: (@MainActor () -> Duration)? = nil,
                                 sleep: @escaping (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
                                 afterRefresh: (@MainActor () async -> Void)? = nil) {
         if let afterRefresh { afterBackgroundRefresh = afterRefresh }
+        if let cadence { refreshCadence = cadence }
         guard backgroundRefresh == nil else { return }
         let id = UUID()
         backgroundID = id
         backgroundRefresh = Task { [weak self] in
             while !Task.isCancelled {
                 guard self != nil else { return }
+                self?.wakeRequested = false
+                self?.cycleStartedAt = self?.nowProvider()
                 await self?.refreshBackgroundSnapshot()
                 guard !Task.isCancelled else { break }
-                // Nothing on screen yet (the service was still starting, or a read
-                // failed): try again soon rather than leave Brief empty for the
-                // full interval.
-                let empty = self?.plan == nil
-                do { try await sleep(empty ? .seconds(3) : interval) } catch { break }
+                do { try await self?.waitForNextCycle(sleep) } catch { break }
             }
             if self?.backgroundID == id {
                 self?.backgroundRefresh = nil
@@ -362,6 +396,52 @@ final class TodayModel: ObservableObject {
         backgroundID = nil
         backgroundRefresh?.cancel()
         backgroundRefresh = nil
+        napping = nil
+        wakeRequested = false
+    }
+
+    /// Reads the day again now instead of at the next tick: the notch just
+    /// opened, or the service said something changed. With `ifOlderThan`, does
+    /// nothing when a read began more recently than that. A read in flight is
+    /// never cut short; it only means another follows it. Does nothing until
+    /// the loop has started.
+    func refreshSoon(ifOlderThan age: TimeInterval = 0) {
+        guard backgroundRefresh != nil else { return }
+        if age > 0, let started = cycleStartedAt, nowProvider().timeIntervalSince(started) < age { return }
+        wakeRequested = true
+        napping?.cancel()
+    }
+
+    /// The wait between two reads: the cadence's, or a few seconds while there
+    /// is nothing on screen yet (the service was still starting, or a read
+    /// failed) rather than leave Brief empty for the full interval. Ends early
+    /// for `refreshSoon`, though never so early that two reads start closer
+    /// than DayRefreshPace.wakeFloor. Throws when the loop is stopped.
+    private func waitForNextCycle(_ sleep: @escaping (Duration) async throws -> Void) async throws {
+        var woken = wakeRequested
+        if !woken {
+            woken = try await nap(plan == nil ? .seconds(3) : refreshCadence(), sleep)
+        }
+        guard woken, let started = cycleStartedAt else { return }
+        let owed = DayRefreshPace.wakeFloor - nowProvider().timeIntervalSince(started)
+        if owed > 0 { try await sleep(.seconds(owed)) }
+    }
+
+    /// Sleeps for `wait`; true when `refreshSoon` ended it. The sleep runs in
+    /// its own task so a wake can cancel it without cancelling the loop.
+    private func nap(_ wait: Duration, _ sleep: @escaping (Duration) async throws -> Void) async throws -> Bool {
+        let sleeper = Task { try await sleep(wait) }
+        napping = sleeper
+        defer { napping = nil }
+        let outcome = await withTaskCancellationHandler {
+            await sleeper.result
+        } onCancel: {
+            sleeper.cancel()
+        }
+        try Task.checkCancellation()
+        if wakeRequested { return true }
+        try outcome.get()
+        return false
     }
 
     private func refreshBackgroundSnapshot() async {

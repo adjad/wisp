@@ -48,13 +48,33 @@ def _clean(text: str) -> str:
 
 
 def claim_slot(text: str) -> tuple[str, str]:
-    """Only literal grammatical subjects; names are never merged into people."""
+    """Only literal grammatical subjects; names are never merged into people.
+    (`_norm` drops punctuation, so "I'm" reads "i m".) The wider phrasings need a
+    place or an organisation after them, so "I joined a book club", "I study
+    piano" and "I moved to the night shift" claim nothing."""
     value = _norm(text)
     for pattern, predicate in ((r'i (?:now )?live\b', 'residence'),
-                               (r'i (?:now )?work\b', 'employment'),
+                               (r'i (?:now )?work\b(?! ?out)', 'employment'),   # "I work out daily" is no job
                                (r'my name is\b', 'name'),
-                               (r'i (?:now )?prefer\b', 'preference')):
+                               (r'i (?:now )?prefer\b', 'preference'),
+                               (r'my (?:employer|company) is\b', 'employment'),
+                               (r'my school is\b', 'school'),
+                               (r'i (?:now )?study at\b', 'school'),
+                               (r'i m an? (?:\w+ )?student at\b', 'school')):
         if re.match(pattern, value):
+            return 'user', predicate
+    # Phrasings that need a capitalised name right after them, read from the text
+    # itself (case matters only for that name).
+    raw = re.sub(r"\s+", " ", text.strip().replace("\u2019", "'"))
+    for pattern, predicate in ((r"[Ii](?:'m| am) an? (?:[\w-]+ ){0,2}(?:engineer|developer|designer|manager|"
+                                r"director|analyst|scientist|researcher|consultant|teacher|professor|intern|"
+                                r"associate|specialist|architect|writer|editor|accountant) (?:at|for) [A-Z]",
+                                'employment'),
+                               (r"[Ii] (?:just )?started (?:working )?at [A-Z]", 'employment'),
+                               (r"[Ii] (?:just )?(?:moved|relocated) to (?:the )?[A-Z]", 'residence'),
+                               (r"[Ii](?:'m| am) (?:now )?(?:living|based) in [A-Z]", 'residence'),
+                               (r"[Mm]y home is in [A-Z]", 'residence')):
+        if re.match(pattern, raw):
             return 'user', predicate
     return '', ''
 
@@ -176,7 +196,9 @@ class FactStore:
         text = _clean(text)
         if not text or len(text) > 1000 or category not in CATEGORIES:
             raise ValueError('A memory needs 1-1000 characters and a valid category')
-        if origin not in ('explicit', 'automatic', 'historical', 'connection') or status not in ('active', 'proposed'):
+        # 'mail': mail memory's profile facts (service/mail_memory/profile_facts.py), used
+        # without review by the user's choice (2026-10-28), so they keep the status given.
+        if origin not in ('explicit', 'automatic', 'historical', 'connection', 'mail') or status not in ('active', 'proposed'):
             raise ValueError('Invalid memory origin or status')
         evidence = evidence or []
         if origin != 'explicit' and not evidence:
@@ -354,6 +376,97 @@ class FactStore:
                 return self.get(fid)
             raise ValueError('Invalid review decision')
 
+    def slot_facts(self, subject, predicate):
+        """Live facts (active, proposed or deferred) that fill one slot, e.g. the user's
+        employment, including older rows saved before their phrasing had a slot."""
+        with self._lock:
+            rows = [dict(r) for r in self._db.execute(
+                "SELECT * FROM facts WHERE status IN ('active','proposed','deferred') AND "
+                "((subject=? AND predicate=?) OR subject='')", (subject, predicate))]
+        return [r for r in rows if (r['subject'], r['predicate']) == (subject, predicate)
+                or (not r['subject'] and claim_slot(r['text']) == (subject, predicate))]
+
+    def retire_slot(self, subject, predicate, *, keep_id):
+        """Supersede mail-learned facts for a slot that the user never reviewed, in
+        favour of `keep_id`: a newer email naming a new employer replaces the old
+        one. Facts the user stated or confirmed are never touched here."""
+        with self._write():
+            rows = self._db.execute(
+                "SELECT * FROM facts WHERE subject=? AND predicate=? AND status IN ('active','proposed') "
+                "AND reviewed=0 AND origin IN ('mail','historical','connection') AND id!=?",
+                (subject, predicate, keep_id)).fetchall()
+            for row in rows:
+                # Only this wording is blocked, not its emails: the same email may also
+                # support another fact (a person, a service) that must stay possible.
+                self._db.execute('INSERT OR IGNORE INTO memory_suppression VALUES(?,?)', ('fact', row['fact_key']))
+                self._db.execute("UPDATE facts SET status='superseded',pinned=0 WHERE id=?", (row['id'],))
+                self._db.execute('INSERT OR IGNORE INTO memory_revisions VALUES(?,?,?)', (row['id'], keep_id, time.time()))
+            return len(rows)
+
+    def forget_source(self, source_type, *, prefix='', keep_reviewed=True):
+        """Forget what rests only on `source_type` evidence (with a source id starting
+        `prefix`, e.g. one mail account), one row at a time.
+
+        Unlike `delete`, this never follows a correction chain: a mail fact the user
+        corrected ("no, I work at Beta") is forgotten, but the user's correction, and
+        any other row in the family, stays exactly as it is. Facts that are the user's
+        own word (explicit, captured from chat, saved by an older build) keep their
+        row and lose only that evidence; so do facts the user confirmed, unless
+        `keep_reviewed` is False (the user's own "forget everything from mail").
+        Every removed source and quote is suppressed, so the same emails can't
+        bring it back."""
+        forgotten = removed = 0
+
+        def matches(e):
+            return e['source_type'] == source_type and e['source_id'].startswith(prefix)
+        with self._write():
+            ids = [r[0] for r in self._db.execute(
+                'SELECT DISTINCT fact_id FROM memory_evidence WHERE source_type=? AND substr(source_id,1,?)=?',
+                (source_type, len(prefix), prefix))]
+            for fid in ids:
+                row = self.get(fid)
+                if not row or row['status'] == 'forgotten':
+                    continue
+                mine = [e for e in row['evidence'] if matches(e)]
+                others = [e for e in row['evidence'] if not matches(e)]
+                users = row['origin'] in ('explicit', 'automatic', 'legacy') or (keep_reviewed and row['reviewed'])
+                for e in mine:
+                    self._db.execute('INSERT OR IGNORE INTO memory_suppression VALUES(?,?)',
+                                     ('source', f"{e['source_type']}:{e['source_id']}"))
+                    if _norm(e['quote']):
+                        self._db.execute('INSERT OR IGNORE INTO memory_suppression VALUES(?,?)',
+                                         ('quote', _key(e['quote'])))
+                    removed += self._db.execute('DELETE FROM memory_evidence WHERE id=?', (e['id'],)).rowcount
+                if users or others:
+                    continue
+                # This row only: its wording is blocked, the rest of its family is untouched.
+                self._db.execute('INSERT OR IGNORE INTO memory_suppression VALUES(?,?)', ('fact', row['fact_key']))
+                self._db.execute("UPDATE facts SET text='',explanation='',subject='',predicate='',object='',"
+                                 "status='forgotten',pinned=0 WHERE id=?", (fid,))
+                forgotten += 1
+        return {'forgotten': forgotten, 'evidence_removed': removed}
+
+    def source_counts(self, source_type):
+        """Facts resting on `source_type` evidence, by status. Counts only."""
+        with self._lock:
+            return {r['status']: r['n'] for r in self._db.execute(
+                '''SELECT f.status, COUNT(DISTINCT f.id) n FROM facts f JOIN memory_evidence e ON e.fact_id=f.id
+                   WHERE e.source_type=? GROUP BY f.status''', (source_type,))}
+
+    def mail_only(self, fid):
+        """True for a fact learned from mail: it stays local (profile.mail_facts_may_go),
+        never a cloud model. An origin-'mail' row is local whatever its evidence (a
+        confirmed one keeps its row after its account leaves, with no evidence left);
+        a 'historical' row is local unless something other than mail supports it."""
+        with self._lock:
+            row = self._db.execute('SELECT origin FROM facts WHERE id=?', (fid,)).fetchone()
+            if not row or row['origin'] not in ('mail', 'historical'):
+                return False
+            if row['origin'] == 'mail':
+                return True
+            kinds = {r[0] for r in self._db.execute('SELECT DISTINCT source_type FROM memory_evidence WHERE fact_id=?', (fid,))}
+        return not (kinds - {'mail'})
+
     def bind_source(self, request_id, session_id, turn_idx):
         """Attach synchronous saves to their eventual persisted user turn."""
         with self._write():
@@ -394,8 +507,9 @@ def _select_for_context(max_chars=_CONTEXT_CHARS, query=''):
     return result
 
 
-def memory_context_block(max_chars=_CONTEXT_CHARS, query=''):
+def memory_context_block(max_chars=_CONTEXT_CHARS, query='', *, mail_facts=False):
     if not query.strip():
         return ''
     from service.memory.retrieval import retrieve, render_context
-    return render_context(retrieve(query, facts=store, include_passages=bool(query.strip())), max_chars=max_chars)
+    return render_context(retrieve(query, facts=store, include_passages=bool(query.strip()),
+                                   mail_facts=mail_facts), max_chars=max_chars)

@@ -627,6 +627,47 @@ def test_levels(quiet, monkeypatch):
     assert runner.level("m", hid_idle_s=900, power=ac) == "busy"
 
 
+def test_away_walks_back_to_back_only_on_power():
+    ac, battery = (True, 80, False), (False, 70, False)
+    assert runner.step_gap("away", ac) == runner.AWAY_GAP_S == 5
+    assert runner.step_gap("away", battery) == runner.AWAY_BATTERY_GAP_S >= 60
+    assert runner.step_gap("between", battery) == runner.BETWEEN_GAP_S
+    assert runner.step_gap("busy", ac) == runner.BUSY_GAP_S
+    import inspect
+    assert "gap = step_gap(lvl, power)" in inspect.getsource(runner.tick)
+
+
+def test_the_idle_probe_reads_one_key_one_level_deep(monkeypatch):
+    import subprocess
+    monkeypatch.setattr(runner, "_probe", {})
+    seen = []
+
+    class Done:
+        stdout = '    | |   "HIDIdleTime" = 700000000000\n'
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: seen.append(argv) or Done())
+    assert runner._hid_idle_s() == pytest.approx(700.0)
+    assert seen == [["/usr/sbin/ioreg", "-c", "IOHIDSystem", "-r", "-k", "HIDIdleTime", "-d", "1"]]
+
+    def boom(*a, **kw):
+        raise subprocess.TimeoutExpired("ioreg", 3)
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert runner._hid_idle_s() is None
+
+
+def test_the_away_reading_serves_the_walk_without_a_second_ioreg(monkeypatch):
+    from service.inference import power_tier
+    monkeypatch.setattr(runner, "_probe", {})
+    monkeypatch.setattr(power_tier, "_away", None)
+    reads = []
+    monkeypatch.setattr(runner, "_read_hid_idle_s", lambda: reads.append(1) or 42.0)
+    monkeypatch.setattr(power_tier, "save_when_away", lambda: True)
+    monkeypatch.setattr(power_tier, "_remote_only", lambda: False)
+    monkeypatch.setattr(power_tier, "_battery", None)
+    power_tier.refresh_away(on_battery=False)      # the scheduler's tick (present, on AC: no GPU sample)
+    assert runner._cached("hid", runner._hid_idle_s) == 42.0
+    assert reads == [1]
+
+
 def test_mode_defaults_to_live_and_corrupt_means_off(tmp_path):
     path = tmp_path / "s" / "settings.json"
     assert runner.mode(path) == "live"                         # the user's choice for rc2

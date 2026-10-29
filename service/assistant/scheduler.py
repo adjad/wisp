@@ -248,8 +248,9 @@ async def run() -> None:
         # The proactive engine (service/proactive/cycle.py): triage, judge and
         # prepare "Before you ask" cards on the resident model, single-flight,
         # only while nobody is waiting, never alongside a gist call. About
-        # hourly, at the first tick the Mac has sat idle 5 min, it regenerates
-        # the whole Brief (cards, then every gist): cycle.idle_refresh.
+        # hourly, at the first tick the Mac has sat idle 10 min, it regenerates
+        # the whole Brief (cards, then every gist) when something changed:
+        # cycle.idle_refresh.
         try:
             from service.proactive import cycle as proactive_cycle
             proactive_cycle.schedule_tick()
@@ -270,8 +271,9 @@ async def run() -> None:
             await _checkin_tick()
         except Exception:  # noqa: BLE001 — never break the scheduler loop
             pass
-        # Whether the user is away, for background calls' GPU cap: read off
-        # the loop here so no request ever runs ioreg.
+        # Whether the user is away and whether the Mac is on battery, for the
+        # GPU caps, plus a GPU baseline for the look each capped request takes
+        # (power_tier): read off the loop here.
         try:
             from service.inference.power_tier import refresh_away
             await asyncio.to_thread(refresh_away)
