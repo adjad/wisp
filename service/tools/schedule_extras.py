@@ -629,8 +629,15 @@ def _availability_result(options, period, timezone, now):
     def number(value):
         return type(value) in (int, float) and math.isfinite(value)
 
+    from service.tools.assistant_tools import _is_holiday_calendar_item
+
     def interval(row, lo, hi):
         if row.get("status") in {"done", "dismissed", "cancelled", "declined"}:
+            return None
+        # A subscribed holidays calendar's all-day entry (Halloween, Election
+        # Day) is not the user being busy: it emptied whole days in the
+        # 2026-10-29 Ask run. The user's own all-day events still block.
+        if row.get("all_day") and _is_holiday_calendar_item(row):
             return None
         if row.get("status") not in (None, "active", "tentative"):
             raise ValueError("An availability item has an unknown status; no slot was verified.")

@@ -146,6 +146,19 @@ def test_all_day_multiday_event_blocks_every_covered_day(source):
     assert 'No gaps' in S.find_free_time(days=2)
 
 
+@pytest.mark.parametrize('legacy', [False, True])
+def test_a_holiday_calendar_all_day_entry_is_not_busy(source, legacy):
+    """2026-10-29 Ask run: Halloween and Election Day from "US Holidays" left whole
+    days with no gaps. Holidays calendars are skipped; the user's own all-day
+    events still block (above)."""
+    row=event(start='2026-10-10T00:00',end='2026-10-12T00:00', context='US Holidays'); row['all_day']=True
+    source.rows=[row]
+    assert 'No gaps' not in invoke(legacy)
+    mine=event(start='2026-10-10T00:00',end='2026-10-12T00:00', context='Work'); mine['all_day']=True
+    source.rows=[mine]
+    assert 'No gaps' in invoke(legacy)
+
+
 @pytest.mark.parametrize('status,blocked', [('cancelled',False),('declined',False),('done',False),('tentative',True),('active',True)])
 def test_known_local_status_and_unknown_response_semantics(source,status,blocked):
     row=event(start='2026-10-11T09:00',end='2026-10-11T18:00'); row['status']=status
