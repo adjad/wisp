@@ -692,6 +692,7 @@ def ticking(tmp_path, monkeypatch, quiet):
     monkeypatch.setattr(runner, "_hid_idle_s", lambda: 5.0)
     monkeypatch.setattr(runner, "_power", lambda: (True, 90, False))
     monkeypatch.setattr(runner, "_probe", {})
+    monkeypatch.setattr(runner, "_skip", None)
 
     async def ready():
         return None
@@ -1020,6 +1021,117 @@ def test_schedule_waits_for_other_background_model_work(monkeypatch, quiet):
     assert runner._other_background_work()
     monkeypatch.setattr(mail_gists, "_task", None)
     assert not runner._other_background_work()
+
+# --- battery and stand-down reasons (dev8) --------------------------------------------
+
+def test_battery_alone_never_stops_the_walk(quiet):
+    # 2026-10-28: the walk stood down on battery 80% -> 49% with no recorded reason.
+    for pct in (31, 49, 80):
+        assert runner.busy_reason("m", power=(False, pct, False)) is None
+        assert runner.level("m", hid_idle_s=5, power=(False, pct, False)) == "between"
+    assert runner.level("m", hid_idle_s=900, power=(False, 49, False)) == "between"   # away needs > 50%
+    assert runner.level("m", hid_idle_s=900, power=(False, 51, False)) == "away"
+    assert runner.busy_reason("m", power=(False, 29, False)) == "battery_low"
+    assert runner.busy_reason("m", power=(True, None, True)) == "low_power"
+
+
+def test_busy_reason_names_each_gate(quiet, monkeypatch):
+    ac = (True, 90, False)
+    monkeypatch.setattr(quiet, "last_used", lambda key: 1000.0)
+    assert runner.busy_reason("m", power=ac, now=1050.0) == "recent_use"
+    monkeypatch.setattr(quiet, "in_flight", lambda key: 1)
+    assert runner.busy_reason("m", power=ac) == "in_flight"
+    monkeypatch.setattr(quiet, "foreground_busy", lambda: True)
+    assert runner.busy_reason("m", power=ac) == "foreground"
+
+
+@pytest.mark.parametrize("pct", [49, 80])
+async def test_on_battery_a_tick_reads_and_calls_the_model_under_the_background_cap(ticking, monkeypatch, pct):
+    st = ticking
+    monkeypatch.setattr(runner, "_power", lambda: (False, pct, False))
+    async def index(days):
+        return [_row(5, mid="<lease-1@harbor.example>")], False
+    monkeypatch.setattr(runner, "read_index", index)
+    st.set_meta("last_skip", "recent_use")
+    st.set_meta("last_skip_at", str(NOW - 600))
+    tiers, calls = [], []
+
+    import contextlib
+    from service.inference import power_tier as pt
+
+    @contextlib.contextmanager
+    def record(tier):
+        tiers.append(tier)
+        yield
+
+    class Client:
+        async def chat(self, model, msgs, **kw):
+            calls.append(tiers[-1] if tiers else None)
+            return {"choices": [{"finish_reason": "stop", "message": {"content": '{"items": []}'}}]}
+
+    from service.assistant import brief
+    from service import config
+    monkeypatch.setattr(pt, "power_tier", record)
+    monkeypatch.setattr(brief, "_c", lambda: Client())
+    monkeypatch.setattr(config, "role_to_model", lambda role: "fast-model")
+    monkeypatch.setattr(config, "thinking_kwargs", lambda model, on: {})
+
+    async def body(rowid):
+        return RAW, ""
+    monkeypatch.setattr(runner, "read_body", body)
+    monkeypatch.setattr(runner, "facts_enabled", lambda path=None: False)
+    assert await runner.tick(now=NOW) == runner.BETWEEN_GAP_S         # the index, on battery too
+    gap = await runner.tick(now=NOW + 1)
+    assert calls == [pt.BACKGROUND]                     # ran, capped as background work
+    assert gap == runner.BETWEEN_GAP_S
+    assert st.message("<lease-1@harbor.example>")["state"] == "done"
+    assert st.health()["last_skip"] is None            # a step clears the stand-down reason
+
+
+async def test_a_stand_down_is_recorded_then_cleared(ticking, monkeypatch, quiet):
+    st = ticking
+    st.set_meta("last_index", str(NOW))
+    monkeypatch.setattr(quiet, "last_used", lambda key: time.monotonic())   # proactive just used it
+    assert await runner.tick(now=NOW + 1) == runner.BUSY_GAP_S
+    health = st.health()
+    assert health["last_skip"] == "recent_use" and health["last_skip_at"] == NOW + 1
+    assert await runner.tick(now=NOW + 30) == runner.BUSY_GAP_S
+    assert st.health()["last_skip_at"] == NOW + 1       # the same reason keeps when it began
+
+    async def not_resident():
+        return "not_resident"
+    monkeypatch.setattr(quiet, "last_used", lambda key: None)
+    monkeypatch.setattr(runner, "_stand_down", not_resident)
+    assert await runner.tick(now=NOW + 60) == runner.BUSY_GAP_S
+    assert st.health()["last_skip"] == "not_resident" and st.health()["last_skip_at"] == NOW + 60
+
+
+def test_a_repeated_reason_is_rewritten_at_most_every_ten_minutes(ticking, monkeypatch):
+    st = ticking
+    writes = []
+    real = st.set_meta
+    monkeypatch.setattr(st, "set_meta", lambda k, v: writes.append(k) or real(k, v))
+    for i in range(25):
+        runner.note_skip("no_subscribers", now=NOW + i * 30)        # every scheduler pass for 12 minutes
+    assert writes.count("last_skip") == 2 and writes.count("last_skip_at") == 1
+    runner.note_skip(None, now=NOW + 750)
+    runner.note_skip(None, now=NOW + 780)
+    assert st.health()["last_skip"] is None and writes.count("last_skip") == 3
+
+
+def test_schedule_records_why_it_did_not_start(ticking, monkeypatch, quiet):
+    from service.assistant.hub import hub
+    monkeypatch.setattr(runner, "_next_at", 0.0)
+    monkeypatch.setattr(runner, "_task", None)
+    monkeypatch.setattr(runner, "mode", lambda path=None: "live")
+    monkeypatch.setattr(runner, "_other_background_work", lambda: True)
+    runner.schedule_tick()
+    assert ticking.health()["last_skip"] == "other_background"
+    monkeypatch.setattr(runner, "_other_background_work", lambda: False)
+    monkeypatch.setattr(type(hub), "has_subscribers", property(lambda self: False))
+    runner.schedule_tick()
+    assert ticking.health()["last_skip"] == "no_subscribers" and runner._task is None
+
 
 # --- endpoints ----------------------------------------------------------------------
 
@@ -1383,7 +1495,7 @@ async def test_failure_records_carry_a_reason_code_never_mail_text(failing, monk
 
 def test_the_endpoint_shows_the_last_error(client):
     assert client.get("/assistant/mail_memory").json()["health"] == {
-        "last_error": None, "last_error_at": None, "last_ok_at": None}
+        "last_error": None, "last_error_at": None, "last_ok_at": None, "last_skip": None, "last_skip_at": None}
     runner.note_failure("no_mail_index", now=1234.0)
     got = client.get("/assistant/mail_memory").json()
     assert got["health"]["last_error"] == "no_mail_index" and got["health"]["last_error_at"] == 1234.0

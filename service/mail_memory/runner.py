@@ -38,6 +38,14 @@ IMPORTANT rules:
   Python's last-resort handler prints WARNING and above to stderr). A reason
   warns when it first appears or changes, and again at most once an hour while
   it repeats; other repeats log at INFO.
+- A stand-down is never silent either: its reason code (`busy_reason`, the
+  stand-down codes, or a scheduler gate) is kept in meta (`last_skip`, and
+  `last_skip_at` for when that reason began), so GET /assistant/mail_memory
+  names the gate behind a stall. It is written when the reason changes and at
+  most every SKIP_REWRITE_S while it repeats, and cleared by the next step.
+- On battery the walk keeps running (between, or away on battery over 50%),
+  its calls capped by the BACKGROUND power tier; only Low Power Mode or battery
+  under 30% stops it.
 """
 from __future__ import annotations
 
@@ -72,6 +80,7 @@ BUSY_GAP_S = 60
 IDLE_DONE_GAP_S = 1800
 FAILURE_GAP_S = 900
 WARN_REPEAT_S = 3600
+SKIP_REWRITE_S = 600
 QUIET_AFTER_USE_S = 120
 AWAY_AFTER_S = 600
 CALL_TIMEOUT_S = 30.0
@@ -83,6 +92,7 @@ _next_at = 0.0
 _last_own_end = 0.0
 _probe: dict[str, tuple[float, object]] = {}
 _warned: tuple[str, float] | None = None       # (reason code, when it last warned)
+_skip: tuple[str, float] | None = None          # (reason code kept in meta, when it was written)
 _REASON = re.compile(r"[A-Za-z0-9_.:-]{1,40}")
 
 
@@ -188,18 +198,35 @@ def _power() -> tuple[bool, int | None, bool]:
 _UNSET = object()
 
 
-def level(model_key: str, *, hid_idle_s=_UNSET, power=_UNSET, now: float | None = None) -> str:
-    """busy, between or away (see the module docstring). Pass the probes in from a
-    worker thread; left unset they are read here (tests and callers off the loop)."""
-    if idle.foreground_busy() or idle.in_flight(model_key) > 0:
-        return "busy"
+def busy_reason(model_key: str, *, power=_UNSET, now: float | None = None) -> str | None:
+    """Why the walk is busy, as a reason code, or None: foreground (a user's turn),
+    in_flight (a call on the model), recent_use (someone else used it in the last
+    QUIET_AFTER_USE_S), low_power (Low Power Mode) or battery_low (under 30%).
+    Battery alone is never a reason."""
+    if idle.foreground_busy():
+        return "foreground"
+    if idle.in_flight(model_key) > 0:
+        return "in_flight"
     now = time.monotonic() if now is None else now
     last = idle.last_used(model_key)
     if last is not None and last > _last_own_end + 1 and now - last < QUIET_AFTER_USE_S:
-        return "busy"
+        return "recent_use"
     on_ac, pct, low = _cached("power", _power) if power is _UNSET else power
-    if low or (not on_ac and pct is not None and pct < 30):
+    if low:
+        return "low_power"
+    if not on_ac and pct is not None and pct < 30:
+        return "battery_low"
+    return None
+
+
+def level(model_key: str, *, hid_idle_s=_UNSET, power=_UNSET, now: float | None = None) -> str:
+    """busy, between or away (see the module docstring). Pass the probes in from a
+    worker thread; left unset they are read here (tests and callers off the loop)."""
+    if power is _UNSET:
+        power = _cached("power", _power)
+    if busy_reason(model_key, power=power, now=now) is not None:
         return "busy"
+    on_ac, pct, _low = power
     seconds = _cached("hid", _hid_idle_s) if hid_idle_s is _UNSET else hid_idle_s
     if seconds is not None and seconds >= AWAY_AFTER_S and (on_ac or (pct or 0) > 50):
         return "away"
@@ -314,6 +341,30 @@ def note_failure(reason: object, *, now: float | None = None, warn: bool = True)
     log.log(logging.WARNING if fresh else logging.INFO, "mail memory: read failed (%s)", code)
 
 
+def note_skip(reason: str | None, *, now: float | None = None) -> None:
+    """Remember why the walk stood down (None: it ran). Written when the reason
+    changes and at most every SKIP_REWRITE_S while it repeats; `last_skip_at` is
+    when the current reason began. Never raises."""
+    global _skip
+    now = time.time() if now is None else now
+    code = _code(reason) if reason else ""
+    if _skip is not None and _skip[0] == code and (not code or now - _skip[1] < SKIP_REWRITE_S):
+        return
+    try:
+        st = store()
+        if not code and not st.meta("last_skip"):
+            _skip = ("", now)
+            return
+        if _skip is None or _skip[0] != code:
+            st.set_meta("last_skip_at", str(now) if code else "")
+            if code:
+                log.info("mail memory: standing down (%s)", code)
+        st.set_meta("last_skip", code)
+        _skip = (code, now)
+    except Exception:  # noqa: BLE001 — bookkeeping must not break the scheduler
+        log.exception("mail memory: could not record the stand-down")
+
+
 def note_ok(*, now: float | None = None) -> None:
     """A read worked: clear the last error so a stale one never lingers. The warning
     limit is kept: one email that keeps timing out between good reads still warns at
@@ -366,10 +417,12 @@ async def tick(*, now: float | None = None) -> float:
     # ioreg and pmset run off the event loop: a slow probe must never stall a turn.
     power = await asyncio.to_thread(_cached, "power", _power)
     hid = await asyncio.to_thread(_cached, "hid", _hid_idle_s)
-    lvl = level(_model_key(), hid_idle_s=hid, power=power)
+    busy = busy_reason(_model_key(), power=power)
+    lvl = "busy" if busy else level(_model_key(), hid_idle_s=hid, power=power)
     gap = step_gap(lvl, power)
     from service.inference.remote_policy import remote_only_profile
     if remote_only_profile() is not None:
+        note_skip("remote_only", now=now)
         return FAILURE_GAP_S                      # the walk stands down entirely
 
     # The index first: it costs no model time, so a busy or absent model never holds
@@ -391,13 +444,14 @@ async def tick(*, now: float | None = None) -> float:
         return gap
 
     if lvl == "busy":
+        note_skip(busy or "busy", now=now)
         return BUSY_GAP_S
     # Read no mail the model can't take: a body read now would only be read again.
     why_not = await _stand_down()
-    if why_not == "remote_only":
-        return FAILURE_GAP_S
     if why_not is not None:
-        return BUSY_GAP_S
+        note_skip(why_not, now=now)
+        return FAILURE_GAP_S if why_not == "remote_only" else BUSY_GAP_S
+    note_skip(None, now=now)
 
     st.expire(today.isoformat())
     row = st.next_pending(now)
@@ -631,9 +685,16 @@ def schedule_tick() -> None:
     global _task
     if _task is not None and not _task.done():
         return
-    if time.time() < _next_at or mode() == "off" or idle.foreground_busy() or _other_background_work():
+    if time.time() < _next_at or mode() == "off":
+        return
+    if idle.foreground_busy():
+        note_skip("foreground")
+        return
+    if _other_background_work():
+        note_skip("other_background")
         return
     from service.assistant.hub import hub
     if not hub.has_subscribers:
+        note_skip("no_subscribers")
         return
     _task = asyncio.create_task(_run())

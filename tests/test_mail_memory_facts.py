@@ -227,6 +227,12 @@ def test_injection_shaped_values_are_dropped(value):
     ("employer", "Acme", "I don\u02bct work at Acme."),                          # modifier-letter apostrophe
     ("employer", "Acme", "I don\uff07t work at Acme."),                          # fullwidth apostrophe
     ("employer", "Acme", "I stopped working at Acme."),
+    ("home_city", "Denver", "My sister is moving to Denver."),                  # someone else's
+    ("employer", "Stripe", "My brother started at Stripe."),
+    ("employer", "Stripe", "I think my brother started at Stripe."),
+    ("employer", "Acme", "I wouldnt work at Acme."),
+    ("employer", "Acme", "I was working at Acme."),                             # past
+    ("home_city", "Austin", "I live in Austin until June."),                    # ends soon
 ])
 def test_a_slot_fact_needs_a_cue_phrase_and_no_negation(kind, value, quote):
     kept, dropped = _kept([_fact(kind, value, quote)], _email(quote), sent_by_user=True)
@@ -238,6 +244,9 @@ def test_a_slot_fact_needs_a_cue_phrase_and_no_negation(kind, value, quote):
     ("employer", "Globex", "I just started at Globex!"),
     ("school", "UC Santa Cruz", "I'm studying at UC Santa Cruz this year."),
     ("home_city", "Dublin, CA", "We moved to Dublin, CA in June."),
+    ("home_city", "Dublin", "I live in Dublin, so if you visit, call me."),     # an "if" elsewhere is fine
+    ("home_city", "Dublin", "We live in Dublin now, see you soon."),
+    ("employer", "Stripe", "My brother is great, and I just started at Stripe."),
 ])
 def test_cue_phrases_that_state_the_fact(kind, value, quote):
     assert _kept([_fact(kind, value, quote)], _email(quote), sent_by_user=True)[0] == [(kind, value, "")]
@@ -257,6 +266,8 @@ def test_broad_categories_are_not_categories(role):
     ("Comcast <billing@comcast-billing.evil.com>", False),
     ("Comcast <billing@evilcomcast.com>", False),
     ("Comcast <billing@comcastevil.com>", False),
+    ("Comcast <billing@comc.io>", False),                     # a prefix is not the name
+    ("Comcast <billing@comcast.xyz>", False),                 # nor a cheap look-alike TLD
 ])
 def test_lookalike_domains_are_not_the_sender(sender, ok):
     email = _email("Your Comcast internet bill is ready.", sender=sender)
@@ -266,13 +277,30 @@ def test_lookalike_domains_are_not_the_sender(sender, ok):
 
 
 @pytest.mark.parametrize("value, role", [("Capsule", "delivery"), ("HelloFresh", "meal kit"),
-                                         ("Drizly", "shipping"), ("Eaze", "shipping")])
-def test_delivery_and_meal_kits_are_not_categories(value, role):
-    body = f"Your {value} {role} order with wine and cannabis shipped."
+                                         ("Instacart", "groceries"), ("Peloton", "fitness")])
+def test_delivery_meal_kits_and_broad_words_are_not_categories(value, role):
+    # No sensitive word anywhere: only the category can drop these.
+    body = f"Your {value} {role} order has shipped."
     email = _email(body, sender=f"{value} <hi@{value.lower()}.com>")
-    kept, dropped = _kept([_fact("service", value, f"Your {value} {role} order with wine and cannabis shipped.",
-                                 role=role)], email, sent_by_user=False, to_user=True)
-    assert kept == [] and list(dropped) in (["category"], ["sensitive"])
+    kept, dropped = _kept([_fact("service", value, body, role=role)], email, sent_by_user=False, to_user=True)
+    assert kept == [] and dropped == {"category": 1}
+
+
+@pytest.mark.parametrize("value, word", [("Drizly", "wine"), ("Eaze", "cannabis"), ("Capsule", "pharmacy"),
+                                         ("DraftKings", "sportsbook")])
+def test_sensitive_words_drop_an_otherwise_allowed_service(value, word):
+    # An allowed category: only the sensitive word can drop these.
+    body = f"Your {value} shipping update: your {word} order is on its way."
+    email = _email(body, sender=f"{value} <hi@{value.lower()}.com>")
+    kept, dropped = _kept([_fact("service", value, body, role="shipping")], email, sent_by_user=False, to_user=True)
+    assert kept == [] and dropped == {"sensitive": 1}
+
+
+def test_a_hyphenated_brand_matches_its_domain():
+    email = _email("Your T-Mobile phone bill is ready.", sender="T-Mobile <alerts@t-mobile.com>")
+    kept, _ = _kept([_fact("service", "T-Mobile", "Your T-Mobile phone bill is ready.", role="phone")],
+                    email, sent_by_user=False, to_user=True)
+    assert kept == [("service", "T-Mobile", "phone")]
 
 
 def test_a_spoofed_display_name_is_not_the_sender():
@@ -295,6 +323,7 @@ def test_hidden_tag_characters_cant_hide_a_sensitive_word():
     ("I’m an engineer at Old Co", ("user", "employment")), ("My employer is Old Co", ("user", "employment")),
     ("I study at UCSC", ("user", "school")), ("I work at Acme", ("user", "employment")),
     ("I work out daily", ("", "")), ("My home is in Dublin", ("user", "residence")),
+    ("I work outside Boston", ("user", "employment")),
 ])
 def test_claim_slot_needs_a_place_or_organisation(text, slot):
     assert facts_mod.claim_slot(text) == slot
@@ -584,6 +613,16 @@ def test_forget_everything_forgets_confirmed_mail_facts_too(world, monkeypatch):
     profile_facts.forget_all(st, fs)
     assert fs.get(fid)["status"] == "forgotten" and _active(fs) == ["I live in Dublin"]
     assert "New Co" not in _cloud_block(fs, monkeypatch, "where do I work and live")
+
+
+def test_forget_everything_keeps_a_confirmed_fact_it_didnt_learn(world):
+    st, fs = world
+    mail = [{"source_type": "mail", "source_id": "A|<c@x>", "quote": "Priya is my sister", "observed_at": NOW - DAY}]
+    fid = fs.add("Priya is my sister", "person", origin="connection", evidence=mail)["id"]
+    fs.review(fid, "confirm")                                        # a connection the user confirmed
+    profile_facts.forget_all(st, fs)
+    row = fs.get(fid)
+    assert row["status"] == "active" and row["evidence"] == []       # only the mail link goes
 
 
 def test_a_quiet_or_briefly_missing_account_is_not_forgotten(world):

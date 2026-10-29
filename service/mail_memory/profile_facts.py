@@ -55,14 +55,17 @@ _FIRST_PERSON = re.compile(r"\b(?:i|i'm|im|i've|i'll|i'd|me|my|we|we're|we've|ou
 # Reported speech or another person as the subject: "Dana told me she moved", "his new job".
 _THIRD_PERSON = re.compile(r"\b(?:he|she|they|his|her|hers|their|theirs|him|them|said|says|told|tells)\b", re.I)
 # Not a current fact: negated ("I no longer work at Acme", "dont"), past ("I used to
-# live in Austin", "stopped working at") or wished for ("I'd love to work at Google",
-# "applying to", "thinking about moving to Denver").
+# live in Austin", "I was working at", "stopped working at") or wished for ("I'd love
+# to work at Google", "applying to", "thinking about moving to Denver"). Read only
+# around the statement itself (`_states`), so an "if" or "soon" elsewhere in the
+# sentence doesn't drop it.
 _NEGATED = re.compile(
     r"n't\b|\b(?:not|never|no longer|no more|used to|former(?:ly)?|quit|left|leaving|until|stopped|"
-    r"dont|didnt|doesnt|wont|cant|isnt|arent|wasnt|havent|"
+    r"dont|didnt|doesnt|wont|cant|isnt|arent|wasnt|werent|havent|hasnt|hadnt|wouldnt|couldnt|shouldnt|"
+    r"aint|was|were|had|"
     r"want(?:ed|s)?|wish|hope|hoping|love to|like to|would|i'd|we'd|could|should|someday|dream\w*|"
     r"appl(?:y|ying|ied)|interview\w*|offer\w*|if|maybe|might|perhaps|thinking (?:about|of)|"
-    r"consider\w*|plan(?:ning|s)? to|going to|hopefully|soon)\b", re.I)
+    r"consider\w*|plan(?:ning|s)? to|going to|hopefully)\b", re.I)
 _SENSITIVE = re.compile(
     _AMOUNT + r"|\b(?:diagnos\w*|allerg\w*|medication|medicine|medical|prescription|pharmacy|therap\w*|"
     r"psychiatr\w*|psycholog\w*|counsel+ing|mental|rehab\w*|addiction|recovery|sober\w*|hiv|std|sti|"
@@ -110,15 +113,38 @@ _CUES = {
     # "attending" ("joined the Zoom call", "attending the Stanford conference").
     "employer": r"work(?:ing)? (?:at|for)|start(?:ed|ing) (?:work(?:ing)? |a new job )?at|"
                 r"(?:new )?job (?:at|with)|employed (?:at|by)|intern(?:ing)? at|joined the team at|"
-                r"my (?:employer|company) is|i'?m an? (?:[\w\-]+ ){0,2}(?:engineer|developer|designer|"
+                r"an? (?:[\w\-]+ ){0,2}(?:engineer|developer|designer|"
                 r"manager|director|analyst|scientist|researcher|consultant|teacher|professor|lecturer|"
                 r"intern|associate|specialist|coordinator|officer|architect|writer|editor|accountant|"
                 r"assistant|technician|administrator|founder|recruiter) (?:at|for)",
     "school": r"study(?:ing)? at|student at|enrolled at|(?:classes|courses|semester|quarter) at|"
-              r"go to school at|my school is",
+              r"go to school at",
     "home_city": r"live in|living in|mov(?:ed|ing) to|based in|relocat(?:ed|ing) to|"
                  r"(?:home|new place|apartment|house) in",
 }
+# Cues that carry their own subject ("my employer is Acme").
+_OWN_CUES = {"employer": r"my (?:employer|company) is", "school": r"my school is",
+             "home_city": r"my home is in"}
+# Whose fact it is: the cue must follow I or we within a few words, none of them a
+# possessive. "My sister is moving to Denver" and "my brother started at Stripe"
+# are someone else's; "I just started at Stripe" is the user's.
+_SUBJECT = r"(?:i|i'm|i am|i've|i'll|we|we're|we are|we've|we'll)"
+_GAP = r"(?:(?!(?:my|his|her|their|your|our|its)\b)[\w'\-]+ ){0,3}"
+
+
+def _states(kind: str, q: str, nv: str) -> str:
+    """Whether a folded quote states a slot fact about the user: "ok", "no_cue" or
+    "negated". Negation is read from the statement and the few words after it, up to
+    the end of its clause."""
+    value = rf"(?:the )?{re.escape(nv)}(?![\w])"
+    match = (re.search(rf"\b{_SUBJECT} {_GAP}(?:{_CUES[kind]}) {value}", q)
+             or re.search(rf"\b(?:{_OWN_CUES[kind]}) {value}", q))
+    if match is None:
+        return "no_cue"
+    after = " ".join(re.split(r"[,.;!?]", q[match.end():], maxsplit=1)[0].split()[:4])
+    return "negated" if _NEGATED.search(f"{match.group(0)} {after}") else "ok"
+
+
 # Where the user's own words end: a forwarded or quoted message below them is
 # someone else's ("I started at Stripe" in a friend's forwarded note). extract._clean
 # keeps a forward's content (it is the content for reminders) and misses several
@@ -189,31 +215,42 @@ def addressed_to(email: Email, own: list[str]) -> bool:
 
 
 _SECOND_LEVEL = frozenset({"co", "com", "net", "org", "ac", "gov", "edu", "ne", "or"})
+# Top-level domains a real service's mail comes from. Cheap look-alike TLDs (.xyz,
+# .io, .top, ...) never count, so comcast.xyz is not Comcast.
+_SERVICE_TLDS = frozenset({"com", "net", "org", "edu", "gov", "us", "uk", "ca", "au", "nz", "ie", "de",
+                           "fr", "es", "it", "nl", "be", "ch", "at", "se", "no", "dk", "fi", "jp", "in"})
 
 
 def _registrable(domain: str) -> str:
     """The label just before the public suffix: "comcast" in billing.comcast.net and
-    comcast.co.uk, "evil" in comcast-billing.evil.com. Common two-part suffixes only."""
+    comcast.co.uk, "evil" in comcast-billing.evil.com. "" when the suffix isn't one a
+    real service mails from."""
     parts = [p for p in domain.split(".") if p]
+    if len(parts) < 2 or parts[-1] not in _SERVICE_TLDS:
+        return ""
     if len(parts) >= 3 and parts[-2] in _SECOND_LEVEL and len(parts[-1]) == 2:
         return parts[-3]
-    return parts[-2] if len(parts) >= 2 else ""
+    return parts[-2]
+
+
+def _compact(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.casefold())
 
 
 def _from_sender(value: str, sender: str) -> bool:
     """An inbox service must be the one writing, by its address's registrable domain
-    (the display name is anyone's to set, and look-alikes such as evilcomcast.com or
-    comcast-billing.evil.com don't count): "Comcast" from billing@comcast.net,
-    "AppleCare" from no_reply@apple.com."""
+    (the display name is anyone's to set): the whole value, or its first word, must
+    equal it, hyphens and spaces aside. "Comcast" from billing@comcast.net, "T-Mobile"
+    from t-mobile.com; not from evilcomcast.com, comcast-billing.evil.com, comc.io or
+    comcast.xyz."""
     _, addr = parseaddr(sender)
     if "@" not in addr:
         return False
-    name = _registrable(addr.casefold().rsplit("@", 1)[1])
+    name = _compact(_registrable(addr.casefold().rsplit("@", 1)[1]))
     if len(name) < 3:
         return False
-    tokens = re.findall(r"[a-z0-9]+", value.casefold())
-    return any(t == name or (len(name) >= 4 and t.startswith(name)) for t in tokens) or \
-        re.sub(r"[^a-z0-9]", "", value.casefold()) == name
+    words = value.split()
+    return _compact(value) == name or (bool(words) and _compact(words[0]) == name)
 
 
 _RULES = """You find lasting facts about the user named above in ONE email. Today is {today}.
@@ -347,11 +384,11 @@ def validate(candidates: list[dict], email: Email, *, sent_by_user: bool,
                 if _THIRD_PERSON.search(quote):
                     drop("third_person")       # "Dana told me she moved to Denver"
                     continue
-                if _NEGATED.search(q):            # folded, so "don’t" reads "don't"
-                    drop("negated")            # "I no longer work at Acme"
-                    continue
-                if not re.search(rf"\b(?:{_CUES[kind]})\s+(?:the\s+)?{re.escape(nv)}(?![\w])", q):
-                    drop("no_cue")             # the quote names the value but doesn't state the fact
+                said = _states(kind, " ".join(q.split()), nv)
+                if said != "ok":
+                    # "no_cue": names the value without stating the fact, or about someone
+                    # else ("my sister is moving to Denver"); "negated": "I no longer work at".
+                    drop(said)
                     continue
         else:
             allowed = SERVICE_CATEGORIES if kind == "service" else ACCOUNT_CATEGORIES
@@ -458,7 +495,7 @@ def _promote(st, facts, *, now: float, groups) -> dict:
         latest = max(rows, key=lambda r: r["sent_ts"])
         text = fact_text(kind, latest["value"], latest["role"])
         mine = _fact_key(text)
-        subject, predicate, explanation = "", "", "Learned from your mail."
+        subject, predicate, explanation = "", "", f"{MAIL_EXPLANATION}."
         origin, status = "mail", "active"
         if kind in SLOT_KINDS:
             subject, predicate = "user", SLOT_KINDS[kind]
@@ -474,7 +511,7 @@ def _promote(st, facts, *, now: float, groups) -> dict:
             if owned:
                 # The user's own word outranks mail: ask instead of overriding it.
                 origin, status = "historical", "proposed"
-                explanation = f"Learned from your mail. May replace: {owned[0]['text']}"
+                explanation = f"{MAIL_EXPLANATION}. May replace: {owned[0]['text']}"
         evidence = [{"source_type": SOURCE_TYPE, "source_id": source_id(r["account"], r["source_id"]),
                      "quote": r["quote"], "observed_at": r["sent_ts"],
                      "label": f"From your mail: {r['subject'][:200]}", "extractor_version": EXTRACTOR}
@@ -495,6 +532,17 @@ def _fact_key(text: str) -> str:
     return key(text)
 
 
+MAIL_EXPLANATION = "Learned from your mail"
+
+
+def learned_from_mail(row: dict) -> bool:
+    """A fact this module saved: origin 'mail', or a 'historical' "May replace" offer
+    (its explanation says so). Not a historical chat fact or a connection that
+    merely gained mail evidence."""
+    return row.get("origin") == "mail" or (
+        row.get("origin") == "historical" and str(row.get("explanation") or "").startswith(MAIL_EXPLANATION))
+
+
 def forget_all(st, facts) -> dict:
     """"Forget everything from mail": every fact learned only from mail is
     forgotten (and suppressed, so it can't come back), mail evidence is removed
@@ -504,7 +552,7 @@ def forget_all(st, facts) -> dict:
         st.set_meta(GENERATION, str(int(generation(st) or 0) + 1))
         # The user asked to forget everything from mail: facts they once confirmed
         # in Review go too (that row only), unlike an account's automatic removal.
-        removed = facts.forget_source(SOURCE_TYPE, keep_reviewed=False)
+        removed = facts.forget_source(SOURCE_TYPE, forget_reviewed=learned_from_mail)
         cleared = st.clear_candidates()
     return {"forgotten": removed["forgotten"], "evidence_removed": removed["evidence_removed"],
             "candidates_cleared": cleared}

@@ -54,7 +54,7 @@ def claim_slot(text: str) -> tuple[str, str]:
     piano" and "I moved to the night shift" claim nothing."""
     value = _norm(text)
     for pattern, predicate in ((r'i (?:now )?live\b', 'residence'),
-                               (r'i (?:now )?work\b(?! ?out)', 'employment'),   # "I work out daily" is no job
+                               (r'i (?:now )?work\b(?! ?out\b)', 'employment'),   # "I work out daily" is no job
                                (r'my name is\b', 'name'),
                                (r'i (?:now )?prefer\b', 'preference'),
                                (r'my (?:employer|company) is\b', 'employment'),
@@ -403,7 +403,7 @@ class FactStore:
                 self._db.execute('INSERT OR IGNORE INTO memory_revisions VALUES(?,?,?)', (row['id'], keep_id, time.time()))
             return len(rows)
 
-    def forget_source(self, source_type, *, prefix='', keep_reviewed=True):
+    def forget_source(self, source_type, *, prefix='', forget_reviewed=None):
         """Forget what rests only on `source_type` evidence (with a source id starting
         `prefix`, e.g. one mail account), one row at a time.
 
@@ -412,7 +412,8 @@ class FactStore:
         any other row in the family, stays exactly as it is. Facts that are the user's
         own word (explicit, captured from chat, saved by an older build) keep their
         row and lose only that evidence; so do facts the user confirmed, unless
-        `keep_reviewed` is False (the user's own "forget everything from mail").
+        `forget_reviewed(row)` says it may go (the user's own "forget everything from
+        mail" passes one that accepts only rows that were learned from mail).
         Every removed source and quote is suppressed, so the same emails can't
         bring it back."""
         forgotten = removed = 0
@@ -429,7 +430,8 @@ class FactStore:
                     continue
                 mine = [e for e in row['evidence'] if matches(e)]
                 others = [e for e in row['evidence'] if not matches(e)]
-                users = row['origin'] in ('explicit', 'automatic', 'legacy') or (keep_reviewed and row['reviewed'])
+                users = row['origin'] in ('explicit', 'automatic', 'legacy') or (
+                    row['reviewed'] and not (forget_reviewed and forget_reviewed(row)))
                 for e in mine:
                     self._db.execute('INSERT OR IGNORE INTO memory_suppression VALUES(?,?)',
                                      ('source', f"{e['source_type']}:{e['source_id']}"))
