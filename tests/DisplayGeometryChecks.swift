@@ -260,27 +260,31 @@ struct DisplayGeometryChecks {
         check(edge.expandedWidth == 860, "At the edge the panel fills the margins' room")
         check(SurfaceLayout.make(for: monitor(900.5, 700)).widened(true).expandedWidth == 876, "Narrower than 980 rounds down to the room")
         check(SurfaceLayout.make(for: monitor(1000, 700)).widened(true).expandedWidth == 976, "A display a little wider than 980 fits within its margins")
-        // The live layout the expanded panel reads follows the Brief's flag.
-        MainActor.assumeIsolated {
-            let geometry = DisplayGeometry(displays: [notched(1512, 982)])
-            check(!geometry.widePanel && geometry.panelLayout == geometry.layout, "Panel layout starts as the normal layout")
-            geometry.widePanel = true
-            check(geometry.panelLayout.expandedWidth == wide && geometry.layout.expandedWidth == 640,
-                  "The wide flag widens the panel layout, not the display layout")
-            geometry.widePanel = false
-            check(geometry.panelLayout == geometry.layout, "Back to one column")
-            let small = DisplayGeometry(displays: [monitor(800, 600)])
-            small.widePanel = true
-            check(small.panelLayout == small.layout, "A small display ignores the wide flag")
-        }
-        // The window and the content both read the panel layout.
+        // Two columns only on the proactive Brief with nothing over it.
+        check(NotchBriefView.canShowWide(tab: .brief, covered: false, engineBrief: true, canWiden: true),
+              "the proactive Brief can show two columns")
+        check(!NotchBriefView.canShowWide(tab: .day, covered: false, engineBrief: true, canWiden: true)
+              && !NotchBriefView.canShowWide(tab: .ask, covered: false, engineBrief: true, canWiden: true),
+              "Day and Ask stay one panel wide")
+        check(!NotchBriefView.canShowWide(tab: .brief, covered: true, engineBrief: true, canWiden: true),
+              "Quick settings or a card over the Brief: one column")
+        check(!NotchBriefView.canShowWide(tab: .brief, covered: false, engineBrief: false, canWiden: true),
+              "loading, the tiles Brief or another day: one column")
+        check(!NotchBriefView.canShowWide(tab: .brief, covered: false, engineBrief: true, canWiden: false),
+              "no room on the display: one column")
+        // The window and the content widen from the same state; the search panel never does.
         let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
             .appendingPathComponent("app/Sources/WispApp")
         guard let overlay = try? String(contentsOf: app.appendingPathComponent("OverlayView.swift"), encoding: .utf8),
-              let panel = try? String(contentsOf: app.appendingPathComponent("OverlayPanel.swift"), encoding: .utf8)
+              let panel = try? String(contentsOf: app.appendingPathComponent("OverlayPanel.swift"), encoding: .utf8),
+              let delegate = try? String(contentsOf: app.appendingPathComponent("AppDelegate.swift"), encoding: .utf8)
         else { preconditionFailure("wide panel: read the overlay's source") }
-        check(overlay.contains(".frame(width: display.panelLayout.expandedWidth)"), "the content's width follows the panel layout")
-        check(panel.contains("DisplayGeometry.shared.panelLayout"), "the window's width follows the panel layout")
+        check(overlay.contains(".frame(width: layout.widened(briefIsWide).expandedWidth)"),
+              "the content widens with the Brief's two columns")
+        check(delegate.contains("layout.widened(NotchBriefView.showsWide(model: self.model, today: self.todayModel,"),
+              "the notch window widens from the same state")
+        check(panel.contains("var layoutProvider: () -> SurfaceLayout = { MainActor.assumeIsolated { DisplayGeometry.shared.layout } }"),
+              "a panel's default layout (the search panel's) is never widened")
     }
 
     /// The notch's hover zone: most of the notch, never its bottom strip, and the top edge.

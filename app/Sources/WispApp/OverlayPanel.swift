@@ -44,9 +44,8 @@ final class OverlayPanel: NSPanel {
     // Injectable for the isolated native fixture; production follows macOS.
     var reduceMotion: () -> Bool = { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
     // Injectable so fixtures can place the panel on any display shape;
-    // production reads the live, display-change-aware layout, as the expanded
-    // panel uses it (wide while the Brief's two columns are on screen).
-    var layoutProvider: () -> SurfaceLayout = { MainActor.assumeIsolated { DisplayGeometry.shared.panelLayout } }
+    // production reads the live, display-change-aware layout.
+    var layoutProvider: () -> SurfaceLayout = { MainActor.assumeIsolated { DisplayGeometry.shared.layout } }
     private var layout: SurfaceLayout { layoutProvider() }
 
     init<Content: View>(@ViewBuilder content: () -> Content) {

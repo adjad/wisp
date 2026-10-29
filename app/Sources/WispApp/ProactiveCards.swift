@@ -400,11 +400,13 @@ struct ProactiveBriefSection: View {
     private func header(_ title: String, trailing: String = "", color: Color = Theme.textMuted) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(title).font(.wisp(size: 10, design: .monospaced)).foregroundStyle(color)
-                .accessibilityAddTraits(.isHeader)
             if !trailing.isEmpty {
                 Text(trailing).font(.wisp(size: 10, design: .monospaced)).foregroundStyle(color)
             }
         }
+        // One heading for VoiceOver, its count included.
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
     }
 
     /// Wisp's cards, under the Brief's tagline: what it got ready before you
@@ -767,8 +769,10 @@ struct ProactiveBriefSection: View {
 
     private func eventRow(_ event: (start: Double, title: String), next: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
+            // Room for "10:30 AM" at every text size, on one line.
             Text(today.clock(event.start)).font(.wisp(size: 13, weight: .semibold)).monospacedDigit()
-                .foregroundStyle(Theme.textPrimary).frame(width: 66, alignment: .leading)
+                .foregroundStyle(Theme.textPrimary).lineLimit(1).fixedSize()
+                .frame(minWidth: 66 * Theme.textScale, alignment: .leading)
             Text(event.title).font(.wisp(size: 13, weight: next ? .semibold : .regular))
                 .foregroundStyle(Theme.textPrimary).lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -791,11 +795,14 @@ struct ProactiveBriefSection: View {
 
     /// Two columns: the to-dos, always open, under their count.
     private func todoColumn(_ shown: ProactiveState) -> some View {
-        let open = shown.todos.filter { !actions.isDone($0) }.count
+        // Counted as listed: a row just cleared or done has left.
+        let listed = shown.todos.filter { !itemActions.isHidden($0.actionRow) }
+        let open = listed.filter { !actions.isDone($0) }.count
         return VStack(alignment: .leading, spacing: 4) {
             header("TO-DOS", trailing: open == 0 ? "" : "· \(open)")
-            if shown.todos.isEmpty {
-                Text(shown.todoLine(unread: unread)).font(.wisp(size: 12.5)).foregroundStyle(Theme.textMuted)
+            if listed.isEmpty {
+                Text(shown.todos.isEmpty ? shown.todoLine(unread: unread) : "No to-dos left")
+                    .font(.wisp(size: 12.5)).foregroundStyle(Theme.textMuted)
             } else {
                 todoList(shown, limit: Self.wideLimit)
             }
@@ -1008,7 +1015,8 @@ struct ProactiveBriefSection: View {
                 }
                 .buttonStyle(.plain)
                 .onHover { inside in hoveredThread = inside ? thread.id : (hoveredThread == thread.id ? nil : hoveredThread) }
-                .help(open ? "Hide the actions" : "Reply, open or ask about this")
+                // A one-line row's hover shows the whole line.
+                .help(open ? "Hide the actions" : oneLine ? thread.line : "Reply, open or ask about this")
                 .accessibilityValue(open ? "Expanded" : "Collapsed")
                 // Beside the row, not in it: a button inside the row's button
                 // would open the thread instead.

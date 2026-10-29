@@ -369,10 +369,6 @@ final class DisplayGeometry: ObservableObject {
     static let shared = DisplayGeometry()
 
     @Published private(set) var layout: SurfaceLayout
-    /// The Brief's two-column view is on screen, so the expanded panel is wide.
-    @Published var widePanel = false
-    /// The layout the expanded panel uses.
-    var panelLayout: SurfaceLayout { layout.widened(widePanel) }
     private var observer: NSObjectProtocol?
     private var pending: DispatchWorkItem?
     /// Called after `layout` actually changed (panels re-fit themselves).

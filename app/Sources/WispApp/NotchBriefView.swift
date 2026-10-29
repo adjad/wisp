@@ -49,6 +49,27 @@ struct NotchBriefView: View {
     /// The person's choice: the Brief in two columns (true) or one.
     static let wideKey = "WispBriefWide"
 
+    /// Whether the Brief can show two columns: the Brief on screen with
+    /// nothing over it, the proactive Brief there to lay out (loading, the
+    /// tiles and other days stay one column), and a display with room.
+    static func canShowWide(tab: NotchTab, covered: Bool, engineBrief: Bool, canWiden: Bool) -> Bool {
+        tab == .brief && !covered && engineBrief && canWiden
+    }
+
+    /// The same for the live panel. The window (AppDelegate's layout provider)
+    /// and the content (OverlayView) both ask, so their widths never disagree.
+    @MainActor static func canShowWide(model: OverlayModel, today: TodayModel, canWiden: Bool) -> Bool {
+        canShowWide(tab: model.tab,
+                    covered: model.resetCard != nil || model.knowYou != nil || model.showingQuickSettings,
+                    engineBrief: today.isShowingCurrentDay && today.currentPlan?.workspace?.proactive != nil,
+                    canWiden: canWiden)
+    }
+
+    /// Two columns now: chosen (`wideKey`) and possible.
+    @MainActor static func showsWide(model: OverlayModel, today: TodayModel, canWiden: Bool) -> Bool {
+        UserDefaults.standard.bool(forKey: wideKey) && canShowWide(model: model, today: today, canWiden: canWiden)
+    }
+
     @MainActor
     init(model: OverlayModel, today: TodayModel, open: String? = nil, uncapped: Bool = false,
          actions: ProactiveActions? = nil, wide: Bool = false) {
