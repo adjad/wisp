@@ -1308,7 +1308,8 @@ def _weather_request_dates(period: str) -> set[str] | None:
             date.fromisoformat(component)
         except ValueError:
             raise ValueError("ISO clock/offset/datetime forecasts are unsupported; use a whole date") from None
-    start, end, _ = resolve_span(period)
+    # Whole forecast days only: no "tonight", weekends or spoken dates here.
+    start, end, _ = resolve_span(period, extended=False)
     first, last = datetime.fromtimestamp(start).date(), datetime.fromtimestamp(end).date()
     days = (last - first).days
     if days < 1:

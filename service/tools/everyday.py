@@ -221,7 +221,7 @@ async def daily_brief(location: str = "", days: int = 1,
     if period:
         from service.tools.timeranges import resolve_span, BadPeriod
         try:
-            start, end, _ = resolve_span(period, now=now)
+            start, end, _ = resolve_span(period, now=now, forward=True)
         except BadPeriod as exc:
             return f"(error: daily briefing date/range unsupported: {exc}; no sources were read.)"
         if end - start > 62 * 86400:

@@ -565,7 +565,7 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     if period:
         from service.tools.timeranges import resolve_span, BadPeriod
         try:
-            start, end, window_label = resolve_span(period)
+            start, end, window_label = resolve_span(period, forward=True)
         except BadPeriod as exc:
             return f"(error: {exc})"
         today_period = start == today_start and end == today_end
