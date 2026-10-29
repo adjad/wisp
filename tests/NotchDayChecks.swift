@@ -49,7 +49,6 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     // The lane: two hours before the hour of now, to the last thing, on whole hours.
     check(timeline.from == at(11), "today's lane starts two hours before the hour of now")
     check(timeline.to == at(20), "the lane runs to the last block's hour: \(clock(timeline.to))")
-    check(timeline.hours.count == 9 && timeline.hours.first == at(11), "hour marks from 11 to 7")
     check(!timeline.items.contains(where: \.past), "nothing in this fixture ended in the last two hours")
 
     // Two hours back, dim; at least three hours ahead; never past midnight either way.
@@ -111,39 +110,69 @@ func dayChecks(_ check: (Bool, String) -> Void) {
                                   now: now, dayStart: dayStart, dayEnd: dayEnd, workStart: at(9), workEnd: at(18),
                                   isToday: true, clock: clock, dayClock: dayClock)
     check(filed.items.map(\.id) == ["caught:c5"], "a caught plan already in Reminders is drawn once: \(filed.items.map(\.id))")
-    check(timeline.styles == [.calendar, .task, .suggested, .usual, .caught, .needsYou, .overdue],
-          "the legend lists only what is on screen, in order")
+    check(Set(timeline.items.map(\.style)) == [.calendar, .task, .suggested, .usual, .caught, .needsYou, .overdue],
+          "every kind of block lands on the day")
 
-    // Overlaps share the width.
-    check(item("block:pa2")?.columns == 2 && item("block:club")?.columns == 2
-          && item("block:pa2")?.column == 0 && item("block:club")?.column == 1, "overlapping blocks sit side by side")
-    check(item("block:task:t1")?.columns == 1, "a block on its own takes the full width")
-    let minute = 60.0
-    let stacked = DayTimeline.arrange([
-        DayItem(id: "a", title: "a", detail: "", start: 0, end: 30 * minute, style: .calendar),
-        DayItem(id: "b", title: "b", detail: "", start: 10 * minute, end: 40 * minute, style: .calendar),
-        DayItem(id: "c", title: "c", detail: "", start: 20 * minute, end: 50 * minute, style: .calendar),
-        DayItem(id: "d", title: "d", detail: "", start: 35 * minute, end: 60 * minute, style: .calendar),
-        DayItem(id: "e", title: "e", detail: "", start: 70 * minute, end: 80 * minute, style: .calendar),
-    ])
-    check(stacked.map(\.column) == [0, 1, 2, 0, 0] && stacked.map(\.columns) == [3, 3, 3, 3, 1],
-          "columns are reused within a cluster and reset after it: \(stacked.map(\.column)) \(stacked.map(\.columns))")
-    // Back-to-back 15-minute blocks are drawn 30 minutes tall, so they overlap on
-    // screen and must sit side by side, never on top of one another (the
-    // 2026-10-19 stack of seven "Review: …" blocks at noon).
-    let slivers = DayTimeline.arrange((0..<3).map {
-        DayItem(id: "r\($0)", title: "Review \($0)", detail: "", start: Double($0) * 15 * minute,
-                end: Double($0 + 1) * 15 * minute, style: .suggested)
-    })
-    // The first two overlap as drawn, so they share the width; the third starts
-    // where the first's drawn 30 minutes end, so it reuses the first column.
-    check(slivers.map(\.column) == [0, 1, 0] && slivers.allSatisfy { $0.columns == 2 },
-          "short back-to-back blocks sit side by side: \(slivers.map(\.column)) \(slivers.map(\.columns))")
-    let apart = DayTimeline.arrange([
-        DayItem(id: "x", title: "x", detail: "", start: 0, end: 15 * minute, style: .suggested),
-        DayItem(id: "y", title: "y", detail: "", start: 30 * minute, end: 45 * minute, style: .suggested),
-    ])
-    check(apart.allSatisfy { $0.columns == 1 }, "short blocks a drawn height apart keep the full width")
+    // The agenda: each thing on its own row in time order, with the free stretches.
+    func rows(_ agenda: DayAgenda) -> [String] {
+        agenda.ahead.map {
+            switch $0 {
+            case .item(let item): return item.id
+            case .free(let start, let end): return "free \(clock(start))–\(clock(end))"
+            }
+        }
+    }
+    let agenda = timeline.agenda(now: now, isToday: true)
+    check(agenda.earlier.isEmpty, "nothing in this fixture is over")
+    // Overdue leads at now; Call mom is listed at its 20:00 due time, after Dinner;
+    // 17:30–18:00 is free, 18:45–19:00 too short to name; overlapping Club still
+    // gets its own row after PA 2.
+    check(rows(agenda) == ["need:n2", "free 13:07–13:45", "block:pa2", "block:club", "block:away",
+                           "free 17:30–18:00", "block:task:t1", "caught:c1", "need:n3"],
+          "the agenda lists the day in order: \(rows(agenda))")
+    check(agenda.ahead.map(\.id).count == Set(agenda.ahead.map(\.id)).count, "agenda rows have distinct ids")
+    let clubItem = item("block:club")!
+    check(DayTimeline.gutter(clubItem, clock: clock) == ("15:00", "16:00"), "an event's column shows its start over its end")
+    check(DayTimeline.gutter(item("need:n2")!, clock: clock) == ("Overdue", ""), "an overdue one says so in red")
+    check(DayTimeline.gutter(item("need:n3")!, clock: clock) == ("20:00", "Due"), "a reminder is listed at its due time")
+    check(DayTimeline.gutter(item("caught:c1")!, clock: clock) == ("19:00", ""), "a caught plan has no end to show")
+    check(DayTimeline.agendaDetail(clubItem, now: now, isToday: true, clock: clock) == "Calendar · 1 h",
+          "an event says it's from Calendar and how long it runs")
+    check(DayTimeline.agendaDetail(clubItem, now: at(15.5), isToday: true, clock: clock) == "Calendar · 30 min left",
+          "an event on now says how long is left")
+    check(DayTimeline.agendaDetail(item("need:n2")!, now: now, isToday: true, clock: clock) == "Since earlier 19:00",
+          "the column already says overdue")
+    check(DayTimeline.agendaDetail(item("need:n3")!, now: now, isToday: true, clock: clock) == "Needs you",
+          "the column already says when it's due")
+    check(DayTimeline.agendaDetail(item("block:pa2")!, now: now, isToday: true, clock: clock) == item("block:pa2")!.detail,
+          "a suggestion keeps its own words")
+    check(DayTimeline.freeLine(start: now, end: at(13.75), startsNow: true, clock: clock) == "Free until 13:45 · 38 min",
+          "free time from now says until when")
+    check(DayTimeline.freeLine(start: at(17.5), end: at(18), startsNow: false, clock: clock) == "Free 17:30 – 18:00 · 30 min",
+          "free time later says when it starts, too")
+    check(DayTimeline.length(25) == "25 min" && DayTimeline.length(60) == "1 h" && DayTimeline.length(135) == "2 h 15 min",
+          "lengths read as hours and minutes")
+    // What just ended folds into one line; what runs now leads, listed at its real start.
+    let recentAgenda = recent.agenda(now: now, isToday: true)
+    check(recentAgenda.earlier.map(\.id) == ["block:coffee"] && DayTimeline.earlierLine(recentAgenda.earlier) == "Coffee",
+          "what ended in the last two hours is earlier")
+    check(rows(recentAgenda) == ["block:lunch", "free 13:30–15:00", "block:late"],
+          "a block on now comes first, and free time starts when it ends: \(rows(recentAgenda))")
+    let workshop = window([DayBlockInput(id: "workshop", title: "Workshop", start: at(10), end: at(14), kind: "calendar")],
+                          now: now).items.first!
+    check(workshop.start == at(11) && DayTimeline.gutter(workshop, clock: clock) == ("10:00", "14:00"),
+          "the column shows an event's own start, not where the lane cut it")
+    check(DayTimeline.agendaDetail(workshop, now: now, isToday: true, clock: clock) == "Calendar · 53 min left",
+          "minutes left round up")
+    let openEnded = window([DayBlockInput(id: "call", title: "Call", start: at(15), end: nil, kind: "calendar")], now: now).items.first!
+    check(DayTimeline.gutter(openEnded, clock: clock) == ("15:00", "")
+          && DayTimeline.agendaDetail(openEnded, now: now, isToday: true, clock: clock) == "Calendar",
+          "an event with no end shows none")
+    // Free time from now counts from 15 minutes; between things, from 30.
+    let soon = window([DayBlockInput(id: "a", title: "A", start: at(13.5), end: at(14), kind: "calendar"),
+                       DayBlockInput(id: "b", title: "B", start: at(14.4), end: at(15), kind: "calendar")], now: now)
+    check(rows(soon.agenda(now: now, isToday: true)) == ["free 13:07–13:30", "block:a", "block:b"],
+          "23 minutes from now is named; a 24-minute gap later is not")
     let grouped = window([DayBlockInput(id: "reviews", title: "Review 3 emails · Devarsh, Maya +1", start: at(14),
                                         end: at(14.5), kind: "suggestion", evidenceID: "e1",
                                         members: [DayMember(title: "Week 4", evidenceID: "e1"),
@@ -157,6 +186,10 @@ func dayChecks(_ check: (Bool, String) -> Void) {
                                   dayStart: dayStart, dayEnd: dayEnd, workStart: at(9), workEnd: at(18),
                                   isToday: false, clock: clock, dayClock: dayClock)
     check(other.from == at(9) && other.items.contains { $0.id == "block:standup" }, "another day starts at working hours")
+    let otherAgenda = other.agenda(now: dayStart - 30 * hour, isToday: false)
+    check(otherAgenda.earlier.isEmpty && rows(otherAgenda) == ["block:standup", "free 10:00–13:45", "block:pa2", "block:club",
+                                                              "block:away", "free 17:30–18:00", "block:task:t1", "need:n3"],
+          "another day lists all of it, free time counted from the first thing: \(rows(otherAgenda))")
     check(!other.items.contains { $0.style == .overdue }, "nothing is overdue on another day")
 
     // The badge counts only what is due today or overdue.
@@ -192,7 +225,8 @@ func dayChecks(_ check: (Bool, String) -> Void) {
                                   clock: clock, dayClock: dayClock)
     check(DayTimeline.blurb(empty, needs: [], isToday: true, endOfDay: dayEnd, clock: clock)
           == "Nothing is planned for the rest of today.", "an empty day says so")
-    check(empty.items.isEmpty && empty.styles.isEmpty && empty.to == at(18), "an empty day still shows working hours")
+    check(empty.items.isEmpty && empty.to == at(18), "an empty day still shows working hours")
+    check(empty.agenda(now: now, isToday: true) == DayAgenda(earlier: [], ahead: []), "an empty day lists nothing")
 
     // The Brief's sentence.
     check(DayTimeline.lede(weekday: "Saturday", isToday: true, load: .light, dueToday: ["PA 2"],
@@ -481,7 +515,12 @@ func dayTodoChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Doubl
     check(item("dup") == nil, "a to-do a reminder already draws is not drawn twice")
     check(item("dateonly") == nil && item("eod") == nil, "midnight and end-of-day times are date-only, not times")
     check(item("junk") == nil, "placeholder titles never draw")
-    check(timeline.styles.contains(.todo) && DayStyle.todo.legend == "To-do", "the legend names to-dos")
+    check(DayTimeline.gutter(tj!, clock: clock) == ("17:30", "Due")
+          && DayTimeline.agendaDetail(tj!, now: now, isToday: true, clock: clock) == "Reminders",
+          "an errand is listed at its due time, with where it came from")
+    check(DayTimeline.gutter(priya!, clock: clock) == ("16:15", "")
+          && DayTimeline.agendaDetail(priya!, now: now, isToday: true, clock: clock) == "Texts · Priya",
+          "a call is listed at its time, with who it's with")
     check(timeline.to >= at(19), "the lane still reaches the last block")
 
     // Not today: a to-do still draws at its time, without an overdue.
