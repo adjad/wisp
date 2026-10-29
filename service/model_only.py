@@ -177,6 +177,23 @@ _STALL = re.compile(
     re.I)
 
 
+# Gemma's tool-call markup written as plain text: what it does on a turn that
+# offers no tools (a knowledge question) or with a name it made up
+# ("public_web:web_search", "device.system_status"). 13 of the first 252 answers
+# in the 2026-10-29 Ask run were nothing but this markup.
+_TEXT_TOOL_CALL = re.compile(r"<\|tool_call>.*?(?:<tool_call\|>|$)", re.S)
+
+
+def text_tool_call(text: str) -> bool:
+    """The reply holds tool-call markup instead of (or inside) an answer."""
+    return "<|tool_call>" in (text or "")
+
+
+def strip_text_tool_calls(text: str) -> str:
+    """The reply without any tool-call markup (and its stray quote tokens)."""
+    return _TEXT_TOOL_CALL.sub("", text or "").replace('<|"|>', '"').strip()
+
+
 def stall_reply(text: str) -> bool:
     """A short "I'm checking now / one moment" promise instead of an answer."""
     text = (text or "").strip()

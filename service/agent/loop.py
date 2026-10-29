@@ -3321,6 +3321,7 @@ async def run_agent(
     ask_reprompted = False
     ask_reprompt_no_web = False
     ask_write_nudged = False
+    ask_text_call_nudged = False
     ask_guard_retried = False
     ask_scale = 1.0
     ask_tool_calls: Counter = Counter()
@@ -3880,8 +3881,24 @@ async def run_agent(
             text = msg.get("content") or ""
             if ask_quality:
                 from service.model_only import (asks_personal_data, pure_writing, salvage_answer,
-                                                stall_reply, strip_think)
+                                                stall_reply, strip_text_tool_calls, strip_think,
+                                                text_tool_call)
                 text = strip_think(text)
+                wrote_call = text_tool_call(text)
+                if wrote_call:
+                    text = strip_text_tool_calls(text)
+                    audit("ask_text_tool_call", step=_step)
+                if (wrote_call and not text and not ask_text_call_nudged and _step < max_steps - 1
+                        and not asks_personal_data(memory_query)):
+                    # A knowledge question answered with a tool call written as
+                    # text: one nudge to just answer. (A personal-data question
+                    # falls through to the "call the tool now" re-prompt below.)
+                    ask_text_call_nudged = True
+                    msgs.append({"role": "assistant", "content": "(no answer yet)"})
+                    msgs.append({"role": "user", "content": (
+                        "Answer my question now in plain text, from what you know. No tool "
+                        "is needed or available for this one.")})
+                    continue
                 if not text and reasoning and not msg.get("_degenerate"):
                     # Content empty but the think block holds an answer: keep
                     # only its final-answer paragraphs, never the monologue.
@@ -3903,7 +3920,7 @@ async def run_agent(
                 # "I'm checking your schedule now. Give me just a moment!" with
                 # nothing run is a promise, not an answer: the turn ended there
                 # (2026-10-29 dev7 export; only get_upcoming's schema had loaded).
-                stalled = not attempted_tools and stall_reply(text)
+                stalled = not attempted_tools and (stall_reply(text) or (wrote_call and not text))
                 if (not ask_reprompted and (not attempted_tools or web_only)
                         and _step < max_steps - 1
                         and not _ask_capability_prompt and not test_mode
