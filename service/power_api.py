@@ -4,7 +4,7 @@ IMPORTANT rules:
 - The write is the app's own JSON request, never a browser page's: a cap
   throttles the whole Mac's GPU, so a web page must not be able to change it.
 - The switch gates every cap: chat replies and Brief generation on battery,
-  Brief and background work while the user is away. Off means none.
+  the Brief while the user is away, and background work always. Off means none.
 - The stored and wire key stays `save_when_away` (the switch's first name), so
   an existing choice survives the rename.
 """
