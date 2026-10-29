@@ -456,10 +456,20 @@ def _slot_delivered(day: date, part: str) -> bool:
 # Written once, by the app, when first-run onboarding reaches its last step:
 # the permissions were answered or skipped and About you was done or skipped.
 ONBOARDING_ANSWERED_KEY = "install:onboarding_answered_at"
-# On the first launch day, once onboarding is answered, the morning run does not
-# wait for its hour: the person should see a Brief now. Not in the small hours,
-# though: a Brief at 2am about "today" would describe a day that has not begun.
-EARLY_FIRST_BRIEF_HOUR = 5
+# The first Daily Summary does not wait for a clock hour. Once onboarding is
+# answered (the app only reports that when the model can answer) the morning run
+# is due at once, at any hour: a person who finishes setup at 00:26 should open
+# the notch to a Brief, not to "Building your first Brief" until 5 AM.
+#
+# Day rule: a Brief composed early counts as the CALENDAR DAY ON WHICH IT IS
+# COMPOSED (its key is daily_brief:<that date>:morning). At 00:30 that is the new
+# day's morning run, so the 8 AM run the same day finds it delivered (no
+# duplicate), the evening run still follows, and the next day's morning run is a
+# different key and runs normally. It happens once per install: after any
+# summary has ever been queued, the ordinary schedule is the only schedule.
+# The install must be under six hours old (onboarding is a first-run step), so an upgraded
+# install, or an old marker, never triggers it.
+FIRST_RUN_WINDOW_S = 6 * 3600
 
 
 def _onboarding_answered() -> bool:
@@ -467,11 +477,39 @@ def _onboarding_answered() -> bool:
 
 
 def _early_first_brief_due(now: datetime) -> bool:
-    """Whether the first launch day's morning run is due ahead of its hour."""
-    if not _onboarding_answered() or now.hour < EARLY_FIRST_BRIEF_HOUR:
+    """Whether the install's first Daily Summary is due ahead of its hour."""
+    if not _onboarding_answered():
         return False
     first = assistant_store.first_launch_at()
-    return first is not None and datetime.fromtimestamp(first).date() == now.date()
+    if first is None or not 0 <= now.timestamp() - first < FIRST_RUN_WINDOW_S:
+        return False
+    # Events may be pruned and acknowledgements land in completions: either says "delivered".
+    receipts = ("daily_brief", "daily_brief:morning", "daily_brief:evening", _DAY_ONE_KEY)
+    return not (assistant_store.any_daily_brief()
+                or any(assistant_store.completion(key) is not None for key in receipts))
+
+
+def kick_first_brief() -> None:
+    """Called when the app reports onboarding answered: make the first Brief and
+    the proactive and overview work start now rather than at their next gap.
+
+    Only resets "not before" gaps and starts the same single-flight runs the
+    loop would start on its next tick; the Brief still goes through
+    _start_daily_brief (deduped by its day and run key), so it cannot repeat."""
+    try:
+        from service.proactive import cycle as proactive_cycle
+        proactive_cycle._next_tick_at = 0.0
+    except Exception:  # noqa: BLE001 — a missed nudge only means the next tick
+        pass
+    try:
+        from service.assistant import mail_gists
+        mail_gists._next_call_at = 0.0
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        _start_daily_brief()
+    except Exception:  # noqa: BLE001 — the loop starts it on its next tick
+        pass
 
 
 def _pending_slot(now: datetime) -> tuple[date, str] | None:
@@ -498,7 +536,8 @@ def first_brief_building(now: datetime | None = None) -> bool:
     starts again as soon as that turn ends."""
     now = now or datetime.now()
     first = assistant_store.first_launch_at()
-    if first is None or datetime.fromtimestamp(first).date() != now.date():
+    if first is None or (datetime.fromtimestamp(first).date() != now.date()
+                         and not _early_first_brief_due(now)):
         return False
     if any(_slot_delivered(now.date(), part) for part in ("morning", "evening")):
         return False
