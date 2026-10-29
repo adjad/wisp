@@ -111,8 +111,9 @@ def test_heartbeat_beats_the_backend_freshness_windows():
         (ROOT / "service" / "assistant" / "scheduler.py").read_text(),
         r"all\(0 <= now-t < (\d+) for t in metadata",
     )
-    # Room for the EventKit read, the post and timer slack inside the planner's window.
-    assert heartbeat + 30 <= planner_window, (heartbeat, planner_window)
+    # A minute for the EventKit read (on main), the post, timer tolerance and App
+    # Nap inside the planner's window: the timer is re-armed only after each read.
+    assert heartbeat + 60 <= planner_window, (heartbeat, planner_window)
     assert heartbeat < receipt_window, (heartbeat, receipt_window)
     assert heartbeat > 60, "slower than the old one-minute timers"
     assert number(paces, r"static let withoutAccess: TimeInterval = (\d+)") == 60

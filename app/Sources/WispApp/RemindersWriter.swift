@@ -7,13 +7,15 @@ import EventKit
 /// that re-posts regardless. The heartbeat is a safety net for a missed
 /// notification, so it is as slow as the backend allows. The planner calls a
 /// source "not current" once its last sync is 180 s old (service/assistant/today.py,
-/// source_health), so it must beat that with room for the read and the post;
+/// source_health), so it must beat that with a minute to spare: the timer is
+/// re-armed after each read (Calendar's 395-day read runs on main), and timer
+/// tolerance, App Nap and the post all add to the gap between two syncs;
 /// Calendar's and Reminders' behavior receipts count only under 1200 s
 /// (service/assistant/scheduler.py, record_sync). Without access nothing is
 /// read, only a small status is posted, so that keeps the one-minute pace that
 /// picks up a permission granted after launch.
 enum NativeSyncPace {
-    static let heartbeat: TimeInterval = 150
+    static let heartbeat: TimeInterval = 120
     static let withoutAccess: TimeInterval = 60
     /// Calendar waits this long after the last change before it reads.
     static let changeDebounce: TimeInterval = 2

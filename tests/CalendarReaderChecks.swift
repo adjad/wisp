@@ -69,8 +69,8 @@ import Foundation
     // the behavior receipt in service/assistant/scheduler.py: 1200 s).
     static func paceChecks() {
         typealias P = NativeSyncPace
-        check(P.heartbeat == 150, "the heartbeat is two and a half minutes")
-        check(P.heartbeat + 30 <= 180, "a heartbeat plus its read and post stays inside the planner's 180 s window")
+        check(P.heartbeat == 120, "the heartbeat is two minutes")
+        check(P.heartbeat + 60 <= 180, "a heartbeat plus its read, post, timer slack and App Nap stays inside the planner's 180 s window")
         check(P.heartbeat < 1200, "and inside the behavior receipt's 1200 s window")
         check(P.heartbeat > 60, "it is slower than the old one-minute timer")
         check(P.heartbeatInterval(authorized: true) == P.heartbeat, "with access Calendar waits the heartbeat")

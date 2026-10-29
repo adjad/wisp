@@ -131,9 +131,9 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
         accessChecks()
         // No 60 s poll: Reminders re-reads on EventKit's change notice and on a
         // heartbeat that stays inside the planner's 180 s freshness window.
-        precondition(NativeSyncPace.heartbeat == 150 && NativeSyncPace.heartbeat + 30 <= 180
+        precondition(NativeSyncPace.heartbeat == 120 && NativeSyncPace.heartbeat + 60 <= 180
                      && NativeSyncPace.heartbeat < 1200)
-        precondition(NativeSyncPace.heartbeatInterval(authorized: true) == 150)
+        precondition(NativeSyncPace.heartbeatInterval(authorized: true) == 120)
         precondition(NativeSyncPace.heartbeatInterval(authorized: false) == 60)
         print("synthetic native policy checks passed")
     }

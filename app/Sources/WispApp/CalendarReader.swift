@@ -33,6 +33,8 @@ final class CalendarReader {
     // notification or a permission granted AFTER launch is picked up without a
     // restart. sync() itself no-ops (but reports diagnostics) when unauthorized.
     func start() {
+        // A second start replaces the observer rather than adding another.
+        if let changeObserver { NotificationCenter.default.removeObserver(changeObserver) }
         changeObserver = NotificationCenter.default.addObserver(
             forName: .EKEventStoreChanged, object: store, queue: .main
         ) { [weak self] _ in self?.scheduleChangeSync() }
