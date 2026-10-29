@@ -141,11 +141,22 @@ final class OverlayPanel: NSPanel {
     /// seed under the menu bar that the card grows out of.
     private func barFrame() -> NSRect? { layout.barFrame }
 
-    /// A collapsed bar that draws nothing (.menuBar) must not take clicks from
-    /// the menu bar under it; hover is detected from the pointer position, and
-    /// the menu-bar icon and ⌥Space open it. Everything else takes the mouse.
+    /// A collapsed bar that draws nothing (.menuBar, or a notch behind a
+    /// full-screen app) must not take clicks from the menu bar or the app under
+    /// it; hover is detected from the pointer position, and the menu-bar icon
+    /// and ⌥Space open it. Everything else takes the mouse. The view draws the
+    /// bar from the same `barIsVisible`, so the two cannot disagree for longer
+    /// than one layout change takes to land.
     private func passMouseThrough(collapsed: Bool) {
         ignoresMouseEvents = collapsed && !layout.barIsVisible
+    }
+
+    /// The collapsed bar switched between drawn and hitbox (a full-screen app
+    /// came to the front on its display, or left). Its frame is unchanged, so
+    /// only whether the window takes the mouse follows; an open or close in
+    /// flight carries on untouched, and sets this again when it settles.
+    func applyPresentationChange() {
+        passMouseThrough(collapsed: isCompact())
     }
 
     /// The frame for the given state. Collapsed → the bar. Expanded → the

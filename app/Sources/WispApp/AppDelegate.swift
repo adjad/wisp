@@ -395,6 +395,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // follows the displays live, so attaching a monitor or changing
         // resolution re-fits it instead of leaving it stranded.
         DisplayGeometry.shared.onChange = { [weak self] in self?.displaysChanged() }
+        // The hybrid notch: a full-screen app in front of the notch turns the bar
+        // into an undrawn hitbox, and back (CollapsedPresentation).
+        DisplayGeometry.shared.onPresentationChange = { [weak self] in self?.barPresentationChanged() }
         DisplayGeometry.shared.startObserving()
         installHoverMonitors()
         installMenuTrackingObservers()
@@ -1465,6 +1468,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         searchPanel?.applyDisplayChange()
     }
 
+    /// The collapsed bar switched between drawn and hitbox. The hover zone is
+    /// the same notch zone either way, so the pointer rules carry on; a dwell
+    /// already counting restarts on the next move with the new dwell time. The
+    /// menu-bar icon follows through observeMenuBarStatus.
+    private func barPresentationChanged() {
+        cancelHoverDwell()
+        panel?.applyPresentationChange()
+    }
+
     private func cancelScheduledCollapse() {
         pendingCollapse?.cancel()
         pendingCollapse = nil
@@ -1693,9 +1705,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // Said in words beside the ring too: Wisp isn't usable yet.
             shownMenuBarStatus = nil
         }
-        // The same conditions as the collapsed bar (OverlayView.notchBar).
+        // The same conditions as the collapsed bar (OverlayView.notchBar). Shown
+        // wherever no bar is drawn: a notchless built-in display, or a notch
+        // behind a full-screen app (the hybrid notch).
         let status = DisplayGeometry.shared.layout.statusInMenuBar
             ? MenuBarStatus(working: model.isProcessing || model.phase == .streaming,
+                            ready: model.setupCard == .ready,
                             dueToday: todayModel.dueBadgeCount,
                             setupSetAside: model.setupCard == .later)
             : MenuBarStatus(working: false, dueToday: 0, setupSetAside: false)
