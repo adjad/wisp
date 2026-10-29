@@ -114,14 +114,17 @@ def test_gpu_times_are_summed_per_process():
     assert P._parse_gpu_times("") == {}
 
 
-def test_any_other_app_using_two_percent_of_the_gpu_keeps_every_cap_off(real_gpu, away):
+def test_another_app_using_seven_and_a_half_percent_of_the_gpu_keeps_every_cap_off(real_gpu, away):
     app = real_gpu
+    assert P.OTHER_GPU_BUSY == 0.075                            # the user's choice
     assert P.check_other_gpu() is False                         # first look: no baseline yet
     assert _caps()[P.BACKGROUND] is None
     app.run(30, 0.5)                                            # a game held half the GPU
     assert P.check_other_gpu() is False and _caps()[P.BACKGROUND] is None
-    app.run(30, 0.03)                                           # a video, a browser animating
+    app.run(30, 0.08)                                           # a video, a browser animating
     assert P.check_other_gpu() is False and _caps()[P.BACKGROUND] is None
+    app.run(30, 0.05)                                           # an app redrawing its window
+    assert P.check_other_gpu() is True and _caps()[P.BACKGROUND] == 10
     app.run(30, 0.01)                                           # nothing but a blinking cursor
     assert P.check_other_gpu() is True and _caps()[P.BACKGROUND] == 10
 

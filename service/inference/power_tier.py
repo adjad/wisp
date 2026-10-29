@@ -244,7 +244,14 @@ def _fresh(reading: tuple[float, float, bool] | None, max_age_s: float = _AWAY_S
 # failed read (then no read for _GPU_RETRY_S), or a look already running
 # counts as busy (uncapped).
 
-OTHER_GPU_BUSY = 0.02
+# OTHER_GPU_BUSY is the user's choice (2026-10-28: "increase the gpu cap to
+# 7.5%"; it was 2%). An app redrawing its window reads 5-7.3% of an idle GPU,
+# so at 2% a cap almost never applied while the user was at the Mac. Measured
+# the same day: a steady 120 Hz render load reading 7.7% of an idle GPU, beside
+# a Gemma reply capped at 15 W or 10 W, finished each frame within 0.1 ms of
+# the uncapped run and missed no frame (the GPU runs faster beside a reply
+# than idle, so the same load reads only 1-3% there).
+OTHER_GPU_BUSY = 0.075
 WATCH_EVERY_S = 1.0
 _GPU_MIN_GAP_S = 0.5           # a shorter window can't tell: reuse the last answer
 _GPU_WINDOW_S = 1.5            # an older baseline needs a short second window too
@@ -585,7 +592,7 @@ def watts(cap: str | None) -> int | None:
 
 
 def _wanted(tier: str | None) -> str | None:
-    """The cap a call at ``tier`` gets right now if no other app is on the GPU."""
+    """The cap a call at ``tier`` gets right now if other apps are quiet on the GPU."""
     if tier not in _TIERS or not _on_service_loop() or not _capping_possible():
         return None
     if tier in _UNWATCHED and watched_running():

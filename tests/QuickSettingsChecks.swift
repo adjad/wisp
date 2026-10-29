@@ -26,6 +26,8 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(saveHelp.contains("another app") && saveHelp.contains("GPU") && saveHelp.contains("within about a second"),
           "Save power help says another app on the GPU lifts the cap within about a second")
     check(!saveHelp.contains("never slow"), "Save power help doesn't promise other apps never slow down")
+    check(saveHelp.contains("use little of the GPU") && !saveHelp.contains("no other app"),
+          "Save power help says light use by other apps doesn't stop the cap")
     check(saveHelp.contains("background work always") && saveHelp.contains("plugged in too")
           && saveHelp.contains("built-in engine") && saveHelp.contains("oMLX"),
           "Save power help names the 10 W background cap, always, and the engine it needs")
