@@ -1384,6 +1384,11 @@ def reminders_matching(scope: str = "all", query: str = "",
              if c.get("source") in _REMINDER_SOURCES
              or bool(_REMINDER_SOURCES & set(c.get("duplicate_sources") or []))]
     needle = (query or "").strip().lower()
+    # "all", "*" or "everything" from the model means list them all, not a
+    # reminder titled "all" (2026-10-29 Ask run: "you have no reminders").
+    if needle in {"all", "*", "any", "everything", "reminders", "my reminders",
+                  "tasks", "to-dos", "todos", "to do", "todo"}:
+        needle = ""
     if needle:
         items = [c for c in items if needle in (c.get("title") or "").lower()]
     return items
