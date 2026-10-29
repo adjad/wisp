@@ -23,8 +23,9 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(saveHelp.contains("On battery") && saveHelp.contains("15 W") && saveHelp.contains("chat reply")
           && saveHelp.contains("Brief"), "Save power help names the battery cap and what it covers")
     check(saveHelp.contains("ends as soon as"), "Save power help says the cap ends with the work")
-    check(saveHelp.contains("another app") && saveHelp.contains("GPU") && saveHelp.contains("lifts the moment"),
-          "Save power help says another app on the GPU lifts the cap at once")
+    check(saveHelp.contains("another app") && saveHelp.contains("GPU") && saveHelp.contains("within about a second"),
+          "Save power help says another app on the GPU lifts the cap within about a second")
+    check(!saveHelp.contains("never slow"), "Save power help doesn't promise other apps never slow down")
     check(saveHelp.contains("other background work") && saveHelp.contains("built-in engine")
           && saveHelp.contains("oMLX"), "Save power help names the 10 W background cap and the engine it needs")
     check(!saveHelp.contains("20 W") && !saveHelp.contains("full power"),

@@ -16,11 +16,13 @@ requests; the admin benchmark never applies the cap):
     10 W   +35%          -16%     -52%
 
 IMPORTANT rules:
-- A cap must never slow another app. macOS has no per-app GPU cap, so Wisp
-  caps a call only while no other app is using the GPU, looks again right
-  before every capped request, keeps looking every WATCH_EVERY_S while one
-  runs, and lifts the cap the moment another app starts (see "other apps on
-  the GPU" below). Any doubt (a failed read, no recent reading) means uncapped.
+- A cap must not slow another app. macOS has no per-app GPU cap, so Wisp caps
+  a call only while other apps use under OTHER_GPU_BUSY of the GPU, looks
+  again right before every capped request, keeps looking every WATCH_EVERY_S
+  while one runs, and lifts the cap when another app starts (see "other apps
+  on the GPU" below). An app that starts mid-request can still be slowed until
+  the next look and the lift, about a second. Any doubt (a failed or slow
+  read, no recent reading) means uncapped.
 - Only Wisp's bundled engine is ever capped. It drops the cap the moment the
   last capped request ends (``GpuPowerLimiter(release_delay_s=0.0)``, since
   0.5.0-dev6) and whenever Wisp asks, even mid-request (``POST
@@ -28,7 +30,10 @@ IMPORTANT rules:
   user's own oMLX.app holds a cap 15 s past its request and can't lift one, so
   it never gets a cap.
 - A call someone is waiting on never runs under a lower cap than its own: one
-  starting while a lower-capped call is in flight lifts that cap.
+  starting while a lower-capped call is in flight lifts that cap, and no chat
+  call is capped while a call someone waits on runs uncapped (research, voice
+  transcription).
+- Only calls on the service's own event loop are capped (see "calls in flight").
 
 With the "Save power" switch on (the notch; on by default; stored as
 ``save_when_away``):
@@ -168,7 +173,8 @@ def _bundled_engine() -> bool:
 
 def _capping_possible() -> bool:
     """The switch is on and the engine can drop a cap at once (see the module rules)."""
-    return save_when_away() and _lift_ok is not False and not _remote_only() and _bundled_engine()
+    return (save_when_away() and _lift_ok is not False and time.monotonic() >= _lift_retry_at
+            and not _remote_only() and _bundled_engine())
 
 
 def _on_battery_probe() -> bool:
@@ -181,7 +187,7 @@ def refresh_away(hid_idle_s: float | None = None, on_battery: bool | None = None
                  probe: bool = True) -> bool:
     """Read the input idle time and the power source, and store whether the
     user is away and whether the Mac is on battery. While either could cap a
-    call, also read other apps' GPU use, so the look before each capped request
+    call, also keep a GPU baseline, so the look before each capped request
     compares against a reading at most a tick old. Blocking: call it from a
     worker thread. Returns away.
 
@@ -202,7 +208,7 @@ def refresh_away(hid_idle_s: float | None = None, on_battery: bool | None = None
     idle_enough = hid_idle_s is not None and hid_idle_s >= AWAY_AFTER_S
     battery = on_battery is True
     if idle_enough or battery:
-        check_other_gpu()
+        keep_gpu_baseline()
     else:
         drop_gpu_readings()                      # read only while a cap could apply
     mono, wall = time.monotonic(), time.time()
@@ -222,25 +228,38 @@ def _fresh(reading: tuple[float, float, bool] | None, max_age_s: float = _AWAY_S
 #
 # The cap limits the whole Mac's GPU, so anything else using it at the same time
 # (a game, a video, an export, a render, another app's model) would be throttled
-# too. check_other_gpu reads every process's accumulated GPU time (ioreg
-# AGXDeviceUserClient AppUsage, readable without privileges, ~15 ms) and
+# too. A look reads every process's accumulated GPU time (ioreg
+# AGXDeviceUserClient AppUsage, readable without privileges, ~20 ms) and
 # compares it with the previous read: if other apps used at least
-# OTHER_GPU_BUSY of the GPU in between, nothing is capped. It runs on the
-# scheduler tick while a cap could apply, right before each capped request,
-# and every WATCH_EVERY_S while one runs. Wisp itself (the app and its bundled
-# engine) and WindowServer's compositing don't count; the user's oMLX.app does,
-# since it is never Wisp's capped engine. No baseline, a baseline older than
-# _GPU_BASELINE_MAX_S, or a failed read counts as busy (uncapped).
+# OTHER_GPU_BUSY of the GPU in between, nothing is capped. A share averaged over
+# a long window would hide an app that started a moment ago, so when the
+# previous read is older than _GPU_WINDOW_S the look also reads twice
+# _GPU_PAIR_GAP_S apart, and both windows must be quiet.
+#
+# Wisp looks right before each capped request (bounded by _LOOK_TIMEOUT_S; a
+# slow look means uncapped) and every WATCH_EVERY_S while one runs; the
+# scheduler tick only keeps a baseline at most a tick old while a cap could
+# apply. Wisp itself (the app and its bundled engine) and WindowServer's
+# compositing don't count; the user's oMLX.app does, since it is never Wisp's
+# capped engine. No baseline, a baseline older than _GPU_BASELINE_MAX_S, a
+# failed read (then no read for _GPU_RETRY_S), or a look already running
+# counts as busy (uncapped).
 
 OTHER_GPU_BUSY = 0.02
 WATCH_EVERY_S = 1.0
 _GPU_MIN_GAP_S = 0.5           # a shorter window can't tell: reuse the last answer
+_GPU_WINDOW_S = 1.5            # an older baseline needs a short second window too
+_GPU_PAIR_GAP_S = 0.25
 _GPU_BASELINE_MAX_S = 120.0
 _GPU_FRESH_S = 2.0             # a cap needs an answer at most this old
+_GPU_RETRY_S = 10.0
+_GPU_LOCK_WAIT_S = 0.5
+_LOOK_TIMEOUT_S = 0.75
 _OWN_PATH_PARTS = ("/Wisp.app/",)
 _gpu_lock = threading.Lock()
 _gpu_sample: tuple[float, dict[int, int]] | None = None    # (monotonic, {pid: GPU ns})
 _gpu_answer: tuple[float, float, bool] | None = None       # (monotonic, wall, quiet)
+_gpu_failed_at: float | None = None
 _BLOCK = re.compile(r"\+-o AGXDeviceUserClient")
 _CREATOR = re.compile(r'"IOUserClientCreator" = "pid (\d+),')
 _GPU_NS = re.compile(r'"accumulatedGPUTime"=(\d+)')
@@ -288,40 +307,79 @@ def _other_gpu_times() -> dict[int, int] | None:
     return {pid: ns for pid, ns in _parse_gpu_times(raw).items() if not _own(pid)}
 
 
+def _read() -> tuple[float, dict[int, int]] | None:
+    """One sample, or None (and no read for _GPU_RETRY_S) when ioreg fails. Holds _gpu_lock."""
+    global _gpu_failed_at
+    if _gpu_failed_at is not None and time.monotonic() - _gpu_failed_at < _GPU_RETRY_S:
+        return None
+    times = _other_gpu_times()
+    if times is None:
+        _gpu_failed_at = time.monotonic()
+        return None
+    _gpu_failed_at = None
+    return time.monotonic(), times
+
+
+def _quiet_between(before: tuple[float, dict[int, int]], after: tuple[float, dict[int, int]]) -> bool:
+    (then, old), (now, new) = before, after
+    if not 0 < now - then <= _GPU_BASELINE_MAX_S:
+        return False
+    used_ns = sum(max(0, ns - old.get(pid, 0)) for pid, ns in new.items())
+    return used_ns / ((now - then) * 1e9) < OTHER_GPU_BUSY
+
+
 def check_other_gpu() -> bool:
-    """Read other apps' GPU time now and store whether they left the GPU quiet
-    since the previous read. Blocking (an ioreg subprocess): call it from a
-    worker thread. Returns quiet."""
+    """Look at other apps' GPU use now and store whether they left the GPU quiet.
+    Blocking (ioreg, and a _GPU_PAIR_GAP_S pause after an old baseline): call it
+    from a worker thread. Returns quiet."""
     global _gpu_sample, _gpu_answer
-    with _gpu_lock:
+    if not _gpu_lock.acquire(timeout=_GPU_LOCK_WAIT_S):
+        return False                         # another look is stuck: uncapped
+    try:
         previous = _gpu_sample
         if (previous is not None and _gpu_answer is not None
                 and time.monotonic() - previous[0] < _GPU_MIN_GAP_S):
             return _gpu_answer[2]
-        times = _other_gpu_times()
-        now = time.monotonic()
-        _gpu_sample = None if times is None else (now, times)
-        quiet = False
-        if times is not None and previous is not None and 0 < now - previous[0] <= _GPU_BASELINE_MAX_S:
-            then, before = previous
-            used_ns = sum(max(0, ns - before.get(pid, 0)) for pid, ns in times.items())
-            quiet = used_ns / ((now - then) * 1e9) < OTHER_GPU_BUSY
-        _gpu_answer = (now, time.time(), quiet)
+        latest = _read()
+        quiet = latest is not None and previous is not None and _quiet_between(previous, latest)
+        if quiet and latest[0] - previous[0] > _GPU_WINDOW_S:
+            time.sleep(_GPU_PAIR_GAP_S)
+            first, latest = latest, _read()
+            quiet = latest is not None and _quiet_between(first, latest)
+        _gpu_sample = latest
+        _gpu_answer = (time.monotonic(), time.time(), quiet)
         return quiet
+    finally:
+        _gpu_lock.release()
+
+
+def keep_gpu_baseline() -> None:
+    """The scheduler tick: a sample for the next look to compare with. Blocking."""
+    global _gpu_sample
+    if not _gpu_lock.acquire(timeout=_GPU_LOCK_WAIT_S):
+        return
+    try:
+        _gpu_sample = _read()
+    finally:
+        _gpu_lock.release()
 
 
 async def _look() -> bool:
-    """check_other_gpu off the event loop; an error counts as busy."""
+    """check_other_gpu off the event loop, within _LOOK_TIMEOUT_S; slow or failed is busy."""
     try:
-        return await asyncio.to_thread(check_other_gpu)
-    except Exception:  # noqa: BLE001
+        return await asyncio.wait_for(asyncio.to_thread(check_other_gpu), _LOOK_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 — a timeout too (the thread finishes on its own)
         return False
 
 
 def drop_gpu_readings() -> None:
     global _gpu_sample, _gpu_answer
-    with _gpu_lock:
+    if not _gpu_lock.acquire(timeout=_GPU_LOCK_WAIT_S):
+        return                               # the next tick drops them
+    try:
         _gpu_sample = _gpu_answer = None
+    finally:
+        _gpu_lock.release()
 
 
 def gpu_quiet() -> bool:
@@ -345,40 +403,75 @@ def on_battery() -> bool:
 # The engine lifts every cap at once on ``POST /v1/wisp/gpu-power/lift``; the
 # requests still running finish uncapped. Wisp asks when the watch finds
 # another app on the GPU, and when a call someone is waiting on starts beside a
-# lower-capped one. The first capped request of a run asks once beforehand, so
-# an engine that can't lift (an older bundled engine) is never capped at all.
+# lower-capped one. Each capped call registers its own client's lift, so the
+# lift always goes through a client still in use. The first capped request of
+# a run asks once beforehand: an engine that answers anything but 200 (an older
+# bundled engine without the route) is never capped that run, and one that
+# can't be reached isn't capped for _LIFT_RETRY_S.
+#
+# Only calls on the service's own event loop are capped: uvicorn runs it on the
+# main thread. The behavior phraser runs asyncio.run in a worker thread with a
+# client that closes when it ends, so its calls go uncapped and hold no watch.
+# The counters are shared with such threads, so they sit behind _calls_lock.
 
+_LIFT_RETRY_S = 60.0
+_LIFT_TIMEOUT_S = 2.0
+_calls_lock = threading.Lock()
 _watched_calls = 0
-_capped: Counter[int] = Counter()         # the caps of the capped calls in flight, in watts
-_lift: Callable[[], Awaitable[bool | None]] | None = None
-_lift_ok: bool | None = None              # None: not asked yet this run
+_uncapped_watched = 0                     # calls someone waits on that run uncapped
+_capped: dict[int, tuple[int, Callable[[], Awaitable[bool | None]]]] = {}   # id: (watts, lift)
+_next_call = 0
+_lift_ok: bool | None = None              # None: not asked yet (or ask again after _lift_retry_at)
+_lift_retry_at = 0.0
 _lifted = False                           # the watch lifted the caps in flight already
+_service_loop: asyncio.AbstractEventLoop | None = None
 _watch_task: asyncio.Task | None = None
 _lift_tasks: set[asyncio.Task] = set()
 
 
+def _on_service_loop() -> bool:
+    return threading.current_thread() is threading.main_thread()
+
+
 async def _ask_lift(lift: Callable[[], Awaitable[bool | None]]) -> bool | None:
-    """True: the engine lifted the cap. False: it can't (no such route). None: it
-    couldn't be asked (not reachable)."""
+    """True: the engine lifted the cap. False: it refused (anything but 200).
+    None: it couldn't be asked (not reachable)."""
     try:
         return await lift()
     except Exception:  # noqa: BLE001 — treated as unreachable
         return None
 
 
-async def _lift_now() -> None:
-    """Lift every cap. Cheap and idempotent on the engine, so a call someone
-    waits on always asks; only the watch skips a cap it lifted already."""
-    global _lifted, _lift_ok
-    if _lift is None:
+def _note_lift(answer: bool | None) -> None:
+    """After a lift: a refusal stops capping for the run, unreachable for _LIFT_RETRY_S."""
+    global _lift_ok, _lift_retry_at
+    if answer is True:
+        _lift_ok = True
         return
-    _lifted = True
-    if await _ask_lift(_lift) is not True:
-        _lift_ok = False                     # it can't be lifted: cap nothing more this run
-        logger.warning("The engine could not lift Wisp's GPU power cap; no more caps this run")
+    if answer is False:
+        _lift_ok = False
+        logger.warning("The engine refused to lift Wisp's GPU power cap; no more caps this run")
+    else:
+        _lift_ok = None
+        _lift_retry_at = time.monotonic() + _LIFT_RETRY_S
+        logger.warning("The engine could not be asked to lift Wisp's GPU power cap; no caps for a minute")
+
+
+async def _lift_now(*, watch: bool = False) -> None:
+    """Lift every cap through the newest capped call's client. Cheap and
+    idempotent on the engine; only the watch marks the caps in flight lifted."""
+    global _lifted
+    with _calls_lock:
+        lift = next(reversed(_capped.values()))[1] if _capped else None
+    if lift is None:
+        return
+    if watch:
+        _lifted = True
+    _note_lift(await _ask_lift(lift))
 
 
 def _schedule_lift() -> None:
+    """On the service loop (call_soon_threadsafe from another thread)."""
     task = asyncio.get_running_loop().create_task(_lift_now())
     _lift_tasks.add(task)
     task.add_done_callback(_lift_tasks.discard)
@@ -392,39 +485,58 @@ async def _watch() -> None:
         while _capped:
             await asyncio.sleep(WATCH_EVERY_S)
             if _capped and not _lifted and not await _look():
-                await _lift_now()
+                await _lift_now(watch=True)
     finally:
         _watch_task = None
 
 
-def call_started(watts: int | None = None) -> tuple[bool, int | None]:
+def call_started(watts: int | None = None,
+                 lift: Callable[[], Awaitable[bool | None]] | None = None) -> tuple[bool, int | None]:
     """OMLXClient, as a managed request goes out with ``watts`` as its cap (None
-    for none). Pass the result to call_ended. Counts calls someone is waiting on
-    (anything but BRIEF and BACKGROUND) and capped calls, watches while capped
-    ones run, and lifts a lower cap a watched call would otherwise run under."""
-    global _watched_calls, _lifted, _watch_task
+    for none) and ``lift`` to lift it. Pass the result to call_ended. Counts
+    calls someone is waiting on (anything but BRIEF and BACKGROUND) and capped
+    calls, watches while capped ones run, and lifts a lower cap a watched call
+    would otherwise run under."""
+    global _watched_calls, _uncapped_watched, _next_call, _lifted, _watch_task, _service_loop
     watched = current_tier() not in _UNWATCHED
-    if watched:
-        _watched_calls += 1
-        if _capped and min(_capped) < (watts or _MAX_W + 1):
+    on_loop = _on_service_loop()
+    if watts is not None and (lift is None or not on_loop):
+        watts = None                         # never capped off the service loop
+    key = None
+    with _calls_lock:
+        if watched:
+            _watched_calls += 1
+            if watts is None:
+                _uncapped_watched += 1
+            lower = bool(_capped) and min(w for w, _ in _capped.values()) < (watts or _MAX_W + 1)
+        else:
+            lower = False
+        if watts is not None:
+            key, _next_call = _next_call, _next_call + 1
+            _capped[key] = (watts, lift)
+    if lower:
+        if on_loop:
             _schedule_lift()
+        elif _service_loop is not None:
+            _service_loop.call_soon_threadsafe(_schedule_lift)
     if watts is not None:
-        _capped[watts] += 1
         _lifted = False                      # a new cap is set
+        _service_loop = asyncio.get_running_loop()
         if _watch_task is None:
-            _watch_task = asyncio.get_running_loop().create_task(_watch())
-    return watched, watts
+            _watch_task = _service_loop.create_task(_watch())
+    return watched, key
 
 
 def call_ended(started: tuple[bool, int | None]) -> None:
-    global _watched_calls
-    watched, watts = started
-    if watched:
-        _watched_calls = max(0, _watched_calls - 1)
-    if watts is not None:
-        _capped[watts] -= 1
-        if _capped[watts] <= 0:
-            del _capped[watts]
+    global _watched_calls, _uncapped_watched
+    watched, key = started
+    with _calls_lock:
+        if watched:
+            _watched_calls = max(0, _watched_calls - 1)
+            if key is None:
+                _uncapped_watched = max(0, _uncapped_watched - 1)
+        if key is not None:
+            _capped.pop(key, None)
 
 
 def watched_running() -> bool:
@@ -468,10 +580,12 @@ def watts(cap: str | None) -> int | None:
 
 def _wanted(tier: str | None) -> str | None:
     """The cap a call at ``tier`` gets right now if no other app is on the GPU."""
-    if tier not in _TIERS or not _capping_possible():
+    if tier not in _TIERS or not _on_service_loop() or not _capping_possible():
         return None
     if tier in _UNWATCHED and watched_running():
         return None
+    if tier == CHAT and _uncapped_watched:
+        return None                          # research, voice, ... would run under it
     if tier in _UNWATCHED and away():
         return LOW
     if tier == CHAT and not _turn_running():
@@ -501,17 +615,13 @@ async def checked_payload_fields(lift: Callable[[], Awaitable[bool | None]]) -> 
     """payload_fields() after a fresh look at other apps' GPU use. OMLXClient
     awaits it as each managed request is built; ``lift`` asks its engine to lift
     the cap (see "calls in flight")."""
-    global _lift, _lift_ok
     if watts(_wanted(current_tier())) is None:
         return {}
     if _lift_ok is None:
         answer = await _ask_lift(lift)
-        if answer is None:
-            return {}                        # ask again next time
-        _lift_ok = answer
-        if not answer:
-            logger.warning("The engine can't lift a GPU power cap; Wisp won't cap it")
+        _note_lift(answer)
+        if answer is not True:
             return {}
-    _lift = lift
-    await _look()
+    if not await _look():
+        return {}
     return payload_fields()

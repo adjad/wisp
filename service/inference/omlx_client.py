@@ -253,8 +253,9 @@ async def _lift_gpu_power(client) -> bool | None:
     """Ask the bundled engine to drop its GPU power cap now, mid-request too.
     True when it did, False when it can't (an engine without the route), None
     when it couldn't be asked."""
+    from service.inference.power_tier import _LIFT_TIMEOUT_S
     try:
-        r = await client._client.post("/v1/wisp/gpu-power/lift")
+        r = await client._client.post("/v1/wisp/gpu-power/lift", timeout=_LIFT_TIMEOUT_S)
     except Exception:  # noqa: BLE001 — unreachable, or a stand-in without an engine
         return None
     return r.status_code == 200
@@ -263,11 +264,12 @@ async def _lift_gpu_power(client) -> bool | None:
 def _power_call_started(client, payload: dict) -> tuple[bool, int | None] | None:
     """Counts calls someone is waiting on, so Brief and background calls drop
     their cap while one runs (oMLX holds the lowest cap among active requests),
-    and capped calls, which power_tier watches while they run."""
+    and capped calls, which power_tier watches (and lifts through this client)
+    while they run."""
     if not getattr(client, "managed", False):
         return None
     from service.inference.power_tier import call_started
-    return call_started(payload.get("gpu_power_limit_w"))
+    return call_started(payload.get("gpu_power_limit_w"), lambda: _lift_gpu_power(client))
 
 
 def _power_call_ended(started: tuple[bool, int | None] | None) -> None:

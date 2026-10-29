@@ -271,8 +271,9 @@ async def run() -> None:
             await _checkin_tick()
         except Exception:  # noqa: BLE001 — never break the scheduler loop
             pass
-        # Whether the user is away, for background calls' GPU cap: read off
-        # the loop here so no request ever runs ioreg.
+        # Whether the user is away and whether the Mac is on battery, for the
+        # GPU caps, plus a GPU baseline for the look each capped request takes
+        # (power_tier): read off the loop here.
         try:
             from service.inference.power_tier import refresh_away
             await asyncio.to_thread(refresh_away)

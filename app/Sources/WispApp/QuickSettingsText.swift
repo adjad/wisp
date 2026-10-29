@@ -51,9 +51,10 @@ enum QuickSettingsText {
 
     static let saveWhenAwayHelp = "On battery, Wisp caps its GPU at 15 W while it writes a chat reply "
         + "or updates your Brief, and at 10 W for its other background work. After 10 minutes away from "
-        + "the keyboard and mouse, the Brief runs at 10 W too. The cap ends as soon as that work is done, "
-        + "and it lifts the moment another app, like a game or a video, uses the GPU, so other apps never "
-        + "slow down. Only Wisp's built-in engine is capped; with your own oMLX app, nothing is."
+        + "the keyboard and mouse, the Brief runs at 10 W too. The cap ends as soon as that work is done. "
+        + "It's set only while no other app is using the GPU, and lifts within about a second when another "
+        + "app, like a game or a video, starts. Only Wisp's built-in engine is capped; with your own oMLX "
+        + "app, nothing is."
 
     /// Learn my routines' line, and the trailing "stays on this Mac" when
     /// nothing learned is sent anywhere.
