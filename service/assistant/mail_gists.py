@@ -11,7 +11,7 @@ The view never calls a model: the Today endpoint attaches both as
 
 Under the MAIL row the user wanted "an actual email summary not email
 headers": two or three sentences on what people wrote, what changed and what
-the rest is ("John Morada canceled Dublin office hours, then wrote again
+the rest is ("Jordan Lee canceled office hours, then wrote again
 about the next session. …"), written by the same background call from the
 day's mail, with what each person wrote, and attached as
 `workspace["mail_summary"]`. Until one exists, prose built from the same mail
@@ -346,8 +346,8 @@ def _reply_verb(subject: str) -> str:
 
 def mail_prose(rows: list[dict]) -> str:
     """The summary without a model: who wrote and what changed, then the rest.
-    "John Morada canceled “Dublin Community Office Hours”. Devarsh wrote about
-    “180 Degrees Consulting Application Update”. The rest is 9 newsletters,
+    "Jordan Lee canceled “Community Office Hours”. Priya wrote about
+    “Consulting Club Application Update”. The rest is 9 newsletters,
     alerts and promos." """
     if not rows:
         return "No new mail today."

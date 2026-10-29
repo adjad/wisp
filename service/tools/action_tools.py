@@ -272,13 +272,13 @@ def _own_address_guard(to: str, tool: str, confirmed_self_send: bool = False) ->
     """Corrective message when `to` is one of the USER'S OWN addresses — else None.
 
     MEASURED FAILURE (2026-08-18). Asked to "draft a message to mom with my
-    stock movements", the model sent an iMessage to `AdiJain888@gmail.com` —
+    stock movements", the model sent an iMessage to `sam.rivera@example.com` —
     the user's own address, which the identity block puts in every agent system
     prompt (agent/loop.py's identity_hint). Mom never got it; the user texted
     themselves.
 
     This is the SAME failure shape as builtin._wrong_account_path, where the
-    same email became a fake `/Users/AdiJain888` home directory: an identifier
+    same email became a fake `/Users/SamRivera` home directory: an identifier
     that exists in the prompt for ATTRIBUTION gets grabbed to fill an unrelated
     slot. Because a literal address matches _EMAIL_RE, it skips
     _resolve_recipient entirely — the very code that would have caught a name

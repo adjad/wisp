@@ -133,7 +133,7 @@ _AUTHORED = ("sent", "sends", "wrote", "writes", "emailed", "emails", "reminded"
 
 
 def _tidy(text: str) -> str:
-    """Rendering artifacts out: "You (to Trishe) said they…" → "You told Trishe you…"."""
+    """Rendering artifacts out: "You (to Maya) said they…" → "You told Maya you…"."""
     text = re.sub(r"\b([Yy]ou) \(to ([^)]+)\) (?:said|says|told|tells)\b", r"\1 told \2", text)
     text = re.sub(r"\s*\((?:to|from) [^)]*\)", "", text)
     out = []
@@ -194,7 +194,7 @@ def sane(summary: str, item: dict) -> bool:
 
 
 def template_summary(item: dict, result: dict) -> str:
-    """The clean stand-in: "Trishe texted about the hackathon", "Ed emailed: Exam reminder"."""
+    """The clean stand-in: "Maya texted about the hackathon", "Ed emailed: Exam reminder"."""
     who = guard.clean(item.get("who"), 60) or "Someone"
     topic = guard.clean(result.get("title") or "", 60).rstrip("?!.:;, ")
     if item.get("source") == "mail":

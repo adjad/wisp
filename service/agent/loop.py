@@ -390,16 +390,16 @@ SYSTEM = (
     "about themselves, EVEN IN PASSING and even when they never ask you to "
     "remember it. You are building a long-term picture of this person, not "
     "taking dictation. Save it the moment it comes up:\n"
-    "    * what they own, drive, or use — 'I drive a BMW', 'I'm on a Mac'\n"
+    "    * what they own, drive, or use — 'I drive a Subaru', 'I'm on a Mac'\n"
     "    * money and holdings — 'I invest in Nvidia and AMD', 'I bank with Chase'\n"
     "    * people in their life, and who those people are to them\n"
     "    * where they live, work, or study; their job, school, or field\n"
     "    * preferences, tastes, allergies, and how they want you to behave\n"
     "    * recurring routines, commitments, and ongoing projects\n"
     # VERIFIED FAILURE 2026-08-19 (user's debug export): a corrupted memory —
-    # "Adi's family includes his mom (AdiJain888@gmail.com)" — was live for
-    # weeks and used 624 times. AdiJain888@gmail.com is the USER'S OWN email
-    # (it's in the identity block below as one of THEIR addresses), not his
+    # "<user>'s family includes their mom (<the user's own address>)" — was live for
+    # weeks and used 624 times. That address is the USER'S OWN email
+    # (it's in the identity block below as one of THEIR addresses), not their
     # mom's. Nothing in that conversation ever gave a mom's email; the fact was
     # invented and then treated as settled, and every later "email my mom"
     # silently sent to the user's own inbox instead of asking who to actually
@@ -416,7 +416,7 @@ SYSTEM = (
     "wrong contact fact saved to memory does not just mislead one answer, it "
     "silently misdirects every future send to that person until someone "
     "notices.\n"
-    "  A statement like 'I invest in Nvidia and AMD, and I drive a BMW' is "
+    "  A statement like 'I invest in Nvidia and AMD, and I drive a Subaru' is "
     "THREE things worth keeping, and none of them came with the word "
     "'remember'. Waiting to be asked is the single most common way to get this "
     "wrong.\n"
@@ -430,11 +430,11 @@ SYSTEM = (
     "worse than not mentioning memory at all: the user has no way to tell the "
     "difference until it's already gone.\n"
     "  Write each fact as ONE short standalone sentence that still makes sense "
-    "months later with nothing around it: 'Adi drives a BMW', not 'he drives "
+    "months later with nothing around it: 'Sam drives a Subaru', not 'he drives "
     "one'. Skip anything that is only about the request in front of you ('open "
     "Safari', 'summarize this email') — that is a task, not a fact about them.\n"
-    # Verified failure: given "I invest in Nvidia and AMD, and I drive a BMW",
-    # saving only the investments and then claiming the BMW was saved too left
+    # Verified failure: given "I invest in Nvidia and AMD, and I drive a Subaru",
+    # saving only the investments and then claiming the car was saved too left
     # the car permanently unrecorded while telling the user the opposite.
     "  ONE `remember` CALL PER FACT. When a message contains several unrelated "
     "facts, emit several separate tool calls in that same turn — one for the "
@@ -2064,7 +2064,7 @@ async def run_agent(
     # The multi-person message-attribution rules are a SEPARATE, much larger
     # part of this block (~1,600 of its ~2,150 chars) and are gated on whether
     # this turn can even see a messages result — `view_messages` hands the
-    # agent "Group of 3 (Mom, dad, Trishe) | Mom: @Trishe - Your post has 439
+    # agent "Group of 3 (Mom, dad, Maya) | Mom: @Maya - Your post has 439
     # likes", so it needs the same rules the summarizers do for reading them,
     # but ONLY on a turn where that's possible. identity.py's own docstring
     # states the principle this follows: "an unfirable rule still costs

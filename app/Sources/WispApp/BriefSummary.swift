@@ -603,8 +603,8 @@ enum BriefTexts {
         return "\(Int(seconds / 86400))d"
     }
 
-    /// "Trishe is waiting on you", "Trishe and Mom are waiting on you",
-    /// "Trishe, Mom and 2 others are waiting on you".
+    /// "Maya is waiting on you", "Maya and Mom are waiting on you",
+    /// "Maya, Mom and 2 others are waiting on you".
     static func row(_ people: [Person]) -> String {
         let names = people.map(\.name)
         switch names.count {

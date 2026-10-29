@@ -3363,7 +3363,7 @@ async def assistant_daily_summary(body: dict[str, Any] | None = None) -> dict[st
     Pass `session_id` to have the brief RECORDED in that conversation. Without
     it the button's answer exists only in the Swift transcript, and the backend —
     which is what answers the next message — has no idea the user was just shown
-    a summary. That is why the follow-ups failed: "send Trishe my daily summary"
+    a summary. That is why the follow-ups failed: "send Maya my daily summary"
     routes off the previous assistant turn (see the referenced_report case in
     scripts/verify_tool_calling.py), and for this button there was no previous
     assistant turn to find. A new session is opened when none is supplied, and

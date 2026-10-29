@@ -247,7 +247,7 @@ final class WispClient {
     // right now." — is indistinguishable from the button being broken, which it
     // separately was (see brief._sections).
     // `sessionId` continues the panel's conversation, and the brief is recorded
-    // in it so the NEXT message can refer to it — "send Trishe my daily summary",
+    // in it so the NEXT message can refer to it — "send Maya my daily summary",
     // "reply to the second one". Without that the backend, which answers that
     // next message, has no record of the summary the user is looking at.
     func dailySummary(sessionId: String = "") async -> (text: String?, sessionId: String) {

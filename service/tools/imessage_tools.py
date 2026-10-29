@@ -1479,7 +1479,7 @@ def _conversation_aliases(label: str) -> set[str]:
 
 
 def _fuzzy_conversations(candidates, needle: str):
-    """Conversations whose name is a near-miss for `needle` — "trishe" for a
+    """Conversations whose name is a near-miss for `needle` — "maya" for a
     contact saved as "Trisha". People type names the way they say them, and the
     exact-substring match above answered "No conversation matched" for any
     spelling the contact card didn't use, which read as "no messages from her".
@@ -1522,7 +1522,7 @@ def _match_conversation(records, query: str):
 #
 # A prompt rule alone was not enough to stop the misattribution this exists for.
 # The summarizer, told who the user is and that "your" in someone else's message
-# belongs to whoever they addressed, still reported "@Trishe - How is the AI
+# belongs to whoever they addressed, still reported "@Maya - How is the AI
 # conference going? Any traction for your app?" — Mom, to a four-person family
 # group — as the user's conference and the user's app. The fast model (the summarizer
 # E4B) reads a line at a time and simply does not connect a mid-sentence
@@ -1599,7 +1599,7 @@ def _addressee(context: str, sender: str, body: str) -> str:
 # How long an explicit @mention keeps applying to the SAME sender's other
 # messages in the SAME conversation. Sized for the case that produced the bug:
 # Mom sent "Your post has 439 likes", then 20 seconds later the edited
-# "* @Trishe - Your post has 439 likes". Only the second names Trishe, so
+# "* @Maya - Your post has 439 likes". Only the second names Maya, so
 # without carry-over the first still read as the user's post — the very claim
 # the user reported. Same sender and same conversation only; a REPLY from
 # someone else may well have changed who is being talked to, and guessing that

@@ -1287,7 +1287,7 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
     #
     # MEASURED FAILURE (2026-08-23, user's debug export): asked to text mom
     # the GOOGL/MU prices, the model called send_message with
-    # to="AdiJain888@gmail.com" — the user's OWN email, present in the
+    # to="sam.rivera@example.com" — the user's OWN email, present in the
     # system prompt only for attribution — instead of calling
     # `lookup_contact("Mom")` first. The user confirmed that card, THEN it
     # bounced, THEN the model looked up Mom's real number and the user had
