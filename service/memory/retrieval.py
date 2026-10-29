@@ -4,8 +4,15 @@ from __future__ import annotations
 import json
 import re
 import time
+from contextvars import ContextVar
 
 from service.memory.facts import _key, fingerprint, terms
+
+
+# Whether this turn's model may see facts learned only from mail. Fails closed: the
+# agent loop opts in only for a local target (profile.mail_facts_may_go), so the
+# recall tool's results follow the same rule as the prompt's memory block.
+mail_facts_allowed: ContextVar[bool] = ContextVar('mail_facts_allowed', default=False)
 
 
 def _in_scope(text, query):
@@ -109,8 +116,13 @@ def _strict_passages(sessions, facts, query, limit, exclude_session):
     return result
 
 
-def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=15, strict=False):
-    """`strict=True` is opt-in: every significant term must match, not any one."""
+def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=15, strict=False,
+             mail_facts=None):
+    """`strict=True` is opt-in: every significant term must match, not any one.
+    `mail_facts`: whether facts learned only from mail may be returned. None reads
+    `mail_facts_allowed` (False unless a local turn opted in); only a caller that
+    knows its reader is local (the app's own Memory window, a local prompt) passes True."""
+    mail_facts = mail_facts_allowed.get() if mail_facts is None else bool(mail_facts)
     if facts is None:
         from service.memory.facts import store as facts
     if sessions is None:
@@ -132,6 +144,8 @@ def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=1
     valid = []
     for row in rows:
         if query.strip() and row['category'] == 'preference' and not _in_scope(row['text'], query):
+            continue
+        if not mail_facts and row['origin'] in ('mail', 'historical') and facts.mail_only(row['id']):
             continue
         if row['origin'] == 'automatic' and not row['reviewed'] and not row['pinned']:
             evidence = facts.get(row['id'])['evidence']
@@ -167,7 +181,8 @@ def render_context(result, *, max_chars=2400):
         return ''
     lines, used, ids, passages = [], len(header.encode()), [], []
     for row in result['facts']:
-        label = 'confirmed' if row['origin'] == 'explicit' or row['reviewed'] else 'user statement'
+        label = ('confirmed' if row['origin'] == 'explicit' or row['reviewed']
+                 else 'from the user\'s mail' if row['origin'] == 'mail' else 'user statement')
         line = f"[memory {row['id']}; {dated(row['observed_at'])}; {label}; {row['category']}] " + json.dumps(row['text'], ensure_ascii=False) + '\n'
         if used + len(line.encode()) <= byte_budget:
             lines.append(line); used += len(line.encode()); ids.append(row['id'])

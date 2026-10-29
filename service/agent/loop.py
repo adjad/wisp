@@ -2080,6 +2080,14 @@ async def run_agent(
                                      managed=bool(getattr(client, "managed", False)))
     except Exception:  # noqa: BLE001
         _profile_rides = False
+    try:
+        from service.memory.profile import mail_facts_may_go
+        _mail_facts_ride = mail_facts_may_go(getattr(getattr(client, "target", None), "endpoint", None),
+                                             managed=bool(getattr(client, "managed", False)))
+    except Exception:  # noqa: BLE001
+        _mail_facts_ride = False
+    from service.memory.retrieval import mail_facts_allowed
+    mail_facts_allowed.set(_mail_facts_ride)   # the recall tool follows the same rule
     if not public_web_synthesis and include_identity_context:
         try:
             from service.memory.identity import identity_prompt_block
@@ -2158,7 +2166,7 @@ async def run_agent(
         if not isinstance(symbols, list):
             return args  # Existing schema validation rejects malformed calls.
         return {**args, "symbols": permitted_stock_symbols(memory_query, symbols)}
-    memory_hint = (prompt_blocks.memory_block(query=memory_query)
+    memory_hint = (prompt_blocks.memory_block(query=memory_query, mail_facts=_mail_facts_ride)
                    if include_memory_context and not public_web_synthesis else "")
 
     if model_led_discovery and memory_hint:
