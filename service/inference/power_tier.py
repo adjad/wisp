@@ -410,15 +410,15 @@ def on_battery() -> bool:
 # another app on the GPU, and when a call someone is waiting on starts beside a
 # lower-capped one. Each capped call registers its own client's lift, so the
 # lift always goes through a client still in use. The first capped request of
-# a run asks once beforehand: an engine that answers anything but 200 (an older
-# bundled engine without the route) is never capped that run, and one that
-# can't be reached isn't capped for _LIFT_RETRY_S. That cooldown only stops NEW
-# caps (and holds the warning to one per cooldown); a cap already in flight
-# stays protected. The watch keeps looking every WATCH_EVERY_S, and after a
-# lift that went unanswered (unreachable, or a timeout: a busy GPU is when the
-# engine answers slowest) asks again after _WATCH_RETRY_S. Only the watch's own
-# lifts set that backoff, so a failed lift for a call starting elsewhere can't
-# quiet it. After a refusal the watch stops for the run. A call someone waits
+# a run asks once beforehand: an engine without the route (404 or 405: an older
+# bundled engine) is never capped that run, and one that can't be reached or is
+# too busy to answer (429, 5xx) isn't capped for _LIFT_RETRY_S. That cooldown
+# only stops NEW caps (and holds the warning to one per cooldown); a cap already
+# in flight stays protected. The watch keeps looking every WATCH_EVERY_S, and
+# after a lift that went unanswered (unreachable, busy, or a timeout: a busy GPU
+# is when the engine answers slowest) asks again after _WATCH_RETRY_S. Only the
+# watch's own lifts set that backoff, so a failed lift for a call starting
+# elsewhere can't quiet it. After a refusal the watch stops for the run. A call someone waits
 # on that starts beside a lower cap asks once. A lift asks at most _LIFT_TRIES
 # clients that are still open, newest first (a closed one isn't a try), and
 # none after one that timed out.
@@ -455,8 +455,8 @@ class LiftClientClosed(Exception):
 
 
 async def _ask_lift(lift: Callable[[], Awaitable[bool | None]]) -> bool | None:
-    """True: the engine lifted the cap. False: it refused (anything but 200).
-    None: it couldn't be asked (not reachable)."""
+    """True: the engine lifted the cap. False: it has no lift route (404 or
+    405). None: it couldn't be asked, or was too busy to answer (429, 5xx)."""
     try:
         return await lift()
     except Exception:  # noqa: BLE001 — treated as unreachable

@@ -6,12 +6,13 @@ All notable changes to Wisp are documented here.
 
 ### Fixed
 - **Save power: a failed lift no longer means a POST and a warning every second, and the watch keeps its guard; a lift is bounded.** Low notes from the dev7 power-stack audits, plus the dev8 delta audit's repair.
-  - **The watch:** before, a capped request running beside a busy GPU, whose lift went unanswered, POSTed and logged a warning about once a second for its whole life. Now, after an unreachable engine or a 2 s timeout (a busy GPU is when the engine answers slowest), the watch keeps looking every second and asks again after its own `_WATCH_RETRY_S` (2 s) backoff. Only the watch's own lifts set that backoff, so a failed lift for a call starting elsewhere can't quiet it. After a refusal (anything but 200), it neither looks nor asks for the rest of the run.
+  - **The watch:** before, a capped request running beside a busy GPU, whose lift went unanswered, POSTed and logged a warning about once a second for its whole life. Now, after an unreachable engine, a busy one (429 or 5xx) or a 2 s timeout (a busy GPU is when the engine answers slowest), the watch keeps looking every second and asks again after its own `_WATCH_RETRY_S` (2 s) backoff. Only the watch's own lifts set that backoff, so a failed lift for a call starting elsewhere can't quiet it.
+  - **Refusals:** only an engine without the lift route (404 or 405, an older bundled engine) counts as one. The watch then neither looks nor asks for the rest of the run, and no new cap is set. Before, any answer but 200 counted, so one 503 from a busy engine left a cap on beside a game for the rest of the request.
   - **The 60 s cooldown** (`_LIFT_RETRY_S`) now only stops new caps (`_capping_possible()`, through `_lift_askable()`) and holds the warning to one per cooldown.
   - **Bound:**
     - When another app starts, Wisp asks the engine to lift within about 2 s: the next 1 s look (itself at most 0.75 s), then the ask.
-    - While asks go unanswered, it asks again at least every 5 s: a 2 s timeout, the 2 s backoff, and up to 1 s to the next look.
-    - So a cap outlives a busy app by about 2 s, plus up to about 5 s for each ask the engine doesn't answer. The engine holds the cap, so it can't end before the engine answers or the capped request ends.
+    - While asks go unanswered, the next one comes within about 6 s. That's the ask (about 2 s; httpx's timeout applies per phase, so a little longer is possible), the 2 s backoff, up to 1 s to the next look, and the look itself (at most 0.75 s).
+    - So a cap outlives a busy app by about 2 s, plus up to about 6 s for each ask the engine doesn't answer. The engine holds the cap, so it can't end before the engine answers or the capped request ends.
   - **Calls someone waits on:** one that starts beside a lower cap still asks to lift it, once per call.
   - **The lift:** `_lift_now` asks at most `_LIFT_TRIES` (2) open clients, newest first, and none after one that used up `_LIFT_TIMEOUT_S`, since the engine behind them is the same.
     - A client that has already closed (its call just ended but is still in `_capped`) raises `LiftClientClosed` before asking anything. It isn't a try, so an older open client is still asked.

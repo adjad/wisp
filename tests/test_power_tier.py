@@ -922,6 +922,67 @@ def test_a_lift_with_every_client_closed_asks_and_notes_nothing(away, caplog):
     assert P._watch_retry_at == 0.0 and not _lift_warnings(caplog)
 
 
+@pytest.mark.parametrize("status, answer", [(200, True), (404, False), (405, False),
+                                            (429, None), (500, None), (503, None)])
+def test_only_a_missing_lift_route_is_a_refusal(status, answer):
+    # A busy engine (429, 5xx) is asked again; only one without the route
+    # (an older bundled engine) stops the asks for the run.
+    async def run():
+        client, _, lifts = _engine(lift=status)
+        try:
+            return await _lift_gpu_power(client), lifts
+        finally:
+            await client._client.aclose()
+
+    assert asyncio.run(run()) == (answer, [0])
+
+
+def test_a_busy_engine_is_asked_again_until_it_says_the_route_is_missing(monkeypatch, away):
+    # Through the real client: a 503, then a 429, each backed off and asked
+    # again, then a 404, which stops the watch for the run.
+    statuses, seen = [503, 429, 404], []
+    monkeypatch.setattr(P, "check_other_gpu", lambda: False)    # a game is running
+    monkeypatch.setattr(P, "WATCH_EVERY_S", 0.01)
+    monkeypatch.setattr(P, "_WATCH_RETRY_S", 0.02)
+
+    async def reply(request):
+        seen.append(statuses[min(len(seen), 2)])
+        return httpx.Response(seen[-1], json={})
+
+    async def run():
+        client, _ = _client(managed=True)
+        client._client = httpx.AsyncClient(base_url="http://test.invalid", transport=httpx.MockTransport(reply))
+        try:
+            with P.power_tier(P.BACKGROUND):
+                started = P.call_started(10, lambda: _lift_gpu_power(client))
+            await asyncio.sleep(0.3)
+            P.call_ended(started)
+        finally:
+            await client._client.aclose()
+
+    asyncio.run(run())
+    assert seen == [503, 429, 404] and P._lift_ok is False and P._lifted is False
+
+
+def test_after_every_client_closed_the_watch_asks_one_that_opens(monkeypatch, away):
+    asked = []
+    monkeypatch.setattr(P, "check_other_gpu", lambda: False)    # a game is running
+    monkeypatch.setattr(P, "WATCH_EVERY_S", 0.01)
+
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            closed = P.call_started(10, _closed(asked))
+            await asyncio.sleep(0.05)
+            assert set(asked) == {"closed"} and P._watch_retry_at == 0.0   # nothing asked, no backoff
+            fresh = P.call_started(10, _lifter(asked, True))
+        await asyncio.sleep(0.05)
+        assert asked[-1] is True and P._lifted is True
+        P.call_ended(fresh)
+        P.call_ended(closed)
+
+    asyncio.run(run())
+
+
 def test_a_closed_client_asks_the_engine_nothing():
     async def run():
         client, _, lifts = _engine()
