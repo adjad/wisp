@@ -892,6 +892,21 @@ struct FirstRunSetupChecks {
               && OnboardingTour.step(2, by: -2) == 0 && OnboardingTour.position(1) == "2 of 3",
               "Back and Next stay on the pages; Start over goes to the first")
 
+        // Change Setup… in the menu bar for two days after setup; the notch keeps a Setup row.
+        let finished = Date(timeIntervalSince1970: 1_800_000_000)
+        check(FirstRunSetup.offersChangeSetup(finishing: false, doneAt: finished, now: finished.addingTimeInterval(60)),
+              "Just set up: Change Setup… is there")
+        check(FirstRunSetup.offersChangeSetup(finishing: false, doneAt: finished,
+                                              now: finished.addingTimeInterval(2 * 24 * 3600 - 1)), "Still there at 47:59")
+        check(!FirstRunSetup.offersChangeSetup(finishing: false, doneAt: finished,
+                                               now: finished.addingTimeInterval(2 * 24 * 3600)), "Gone after two days")
+        check(!FirstRunSetup.offersChangeSetup(finishing: true, doneAt: finished, now: finished),
+              "Never beside Finish Setup…")
+        check(!FirstRunSetup.offersChangeSetup(finishing: false, doneAt: nil, now: finished),
+              "Set up before the date was kept: not offered")
+        check(!FirstRunSetup.offersChangeSetup(finishing: false, doneAt: finished, now: finished.addingTimeInterval(-60)),
+              "A clock set back doesn't reopen it")
+
         // Move to Applications: asked only where a download lands.
         let home = "/Users/sam"
         typealias Place = MoveToApplications.Place

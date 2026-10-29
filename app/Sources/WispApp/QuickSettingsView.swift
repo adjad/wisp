@@ -62,6 +62,13 @@ struct QuickSettingsView: View {
                 textSizeRow
             }
             group("Power") { saveWhenAwayRow }
+            group("Setup") {
+                row("Setup", help: QuickSettingsText.setupHelp) {
+                    Text("Permissions, Google, About you and How to use")
+                } control: {
+                    pillButton("Open") { NotificationCenter.default.post(name: .wispOpenPermissions, object: nil) }
+                }
+            }
             group("Advanced") {
                 row("Reply details", help: "Open each reply's model, route, timing and tool calls by default (Debug Mode).") {
                     Text("Model, timing and tools under each reply")

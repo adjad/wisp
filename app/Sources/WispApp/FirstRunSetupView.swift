@@ -206,6 +206,22 @@ enum FirstRunSetup {
         "Wisp is downloading its model · \(Int(progress * 100))%. It lets you know when it's ready."
     }
 
+    /// When setup was first finished: the menu bar's Change Setup… is offered for
+    /// `changeSetupWindow` after it.
+    static let doneAtKey = "wisp.firstRun.doneAt"
+    static let changeSetupWindow: TimeInterval = 2 * 24 * 3600
+    static let changeSetupTitle = "Change Setup…"
+
+    /// The menu bar's Change Setup…: for two days after setup was finished, and
+    /// never beside Finish Setup… (or the download line). The notch's quick
+    /// settings keep a Setup row with no limit. A Wisp set up before this key
+    /// existed has no date and isn't offered it. Pure.
+    static func offersChangeSetup(finishing: Bool, doneAt: Date?, now: Date) -> Bool {
+        guard !finishing, let doneAt else { return false }
+        let since = now.timeIntervalSince(doneAt)
+        return since >= 0 && since < changeSetupWindow
+    }
+
     /// Wisp's notch, its window and asking all wait for the model while setup is
     /// under way and Wisp can't answer yet (`canAnswer` nil: the service hasn't
     /// said). Setup, Permissions and Settings stay open. Someone already set up is

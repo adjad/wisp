@@ -589,3 +589,23 @@ def test_first_brief_is_owed_once_permissions_are_behind():
     close = app[app.index("closeForNow: { [weak self] in"):]
     close = close[:close.index("}))")]
     assert close.index("self?.oweFirstBrief()") < close.index("self?.firstRunWindow?.close()")
+
+
+def test_setup_can_be_changed_from_the_menu_for_two_days_and_the_notch_always():
+    """The user's dev8 ask: Change Setup… in the menu bar's menu, time-limited to two
+    days after setup; a Setup entry in the notch's settings with no limit."""
+    sources = _sources()
+    app = sources["AppDelegate.swift"]
+    toggle = _body(app, "@objc private func toggle()")
+    assert "changeSetupMenuItem?.isHidden = !FirstRunSetup.offersChangeSetup(" in toggle
+    assert "forKey: FirstRunSetup.doneAtKey" in toggle
+    closed = _body(app, "private func firstRunClosed()")
+    assert "defaults.set(Date(), forKey: FirstRunSetup.doneAtKey)" in closed
+    # Only the first finish starts the two days.
+    assert "if defaults.object(forKey: FirstRunSetup.doneAtKey) == nil" in closed
+    assert "openFirstRunSetup(at: .permissions)" in _body(app, "@objc private func changeSetupFromMenu()")
+    quick = sources["QuickSettingsView.swift"]
+    setup = quick[quick.index('group("Setup")'):quick.index('group("Advanced")')]
+    assert "NotificationCenter.default.post(name: .wispOpenPermissions" in setup
+    # No time limit in the notch.
+    assert "doneAt" not in setup and "offersChangeSetup" not in quick

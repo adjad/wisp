@@ -656,6 +656,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             : ending == .closedEarly ? "setup window closed early" : "setup window closed by quit")
         if FirstRunSetup.marksDone(ending) {
             defaults.set(true, forKey: FirstRunSetup.doneKey)
+            // Only the first finish starts the two days of Change Setup… in the menu.
+            if defaults.object(forKey: FirstRunSetup.doneAtKey) == nil { defaults.set(Date(), forKey: FirstRunSetup.doneAtKey) }
             defaults.removeObject(forKey: FirstRunSetup.stepKey)
             defaults.removeObject(forKey: FirstRunSetup.reopensKey)
             defaults.removeObject(forKey: FirstRunSetup.resumeKey)
@@ -1101,6 +1103,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         setupMenuItem = menu.addItem(withTitle: "Finish Setup…", action: #selector(openSetupFromMenu), keyEquivalent: "")
         setupMenuItem?.isHidden = true
+        // For the first two days after setup, a way back into it (FirstRunSetup.offersChangeSetup);
+        // after that, the notch's quick settings keep one.
+        changeSetupMenuItem = menu.addItem(withTitle: FirstRunSetup.changeSetupTitle,
+                                           action: #selector(changeSetupFromMenu), keyEquivalent: "")
+        changeSetupMenuItem?.isHidden = true
         menu.addItem(.separator())
         menu.addItem(withTitle: "Report a Problem…", action: #selector(reportProblem), keyEquivalent: "")
         menu.addItem(.separator())
@@ -1112,6 +1119,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var rightClickMenu: NSMenu?
+    private var changeSetupMenuItem: NSMenuItem?
+
+    /// The setup window again at Permissions, for someone already set up. It never
+    /// switches or tests their model (FirstRunSetup.drivesModel).
+    @objc private func changeSetupFromMenu() {
+        OnboardingTimeline.record("change setup from the menu")
+        openFirstRunSetup(at: .permissions)
+    }
 
     // The panel is always on screen; the hotkey and menu-bar click just flip
     // between the notch bar and the expanded assistant. No reset — the visible
@@ -1139,6 +1154,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setupMenuItem?.isHidden = !FirstRunSetup.menuOffersSetup(
                 canAnswer: setupCanAnswer, card: model.setupCard, firstRunWindowUp: firstRunWindow != nil,
                 unfinished: FirstRunSetup.isUnfinished { UserDefaults.standard.bool(forKey: $0) })
+            changeSetupMenuItem?.isHidden = !FirstRunSetup.offersChangeSetup(
+                finishing: setupMenuItem?.isHidden == false,
+                doneAt: UserDefaults.standard.object(forKey: FirstRunSetup.doneAtKey) as? Date, now: Date())
             // While the model downloads, the menu says so first, in plain words.
             if let progress = shownDownloadProgress {
                 setupMenuItem?.title = FirstRunSetup.menuBarProgressMenuLine(progress)
