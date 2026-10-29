@@ -4,6 +4,7 @@ the tick. Synthetic mail and a stand-in model only: a temporary mail_memory.db, 
 temporary facts.db and settings file, no Mail, no oMLX, no subprocess."""
 from __future__ import annotations
 
+import importlib
 from datetime import date, datetime, timezone
 
 import pytest
@@ -548,8 +549,16 @@ def test_removing_an_account_keeps_a_fact_the_user_confirmed(world):
     assert fs.get(old["id"])["status"] == "superseded"                # the chain is left alone
 
 
-def _cloud_block(fs, monkeypatch, query):
+def _local_stores(fs, monkeypatch):
+    # Facts and an empty session store in this test's own folder, so the
+    # passage search never reads the real ~/.moe/sessions.db.
+    sessions_mod = importlib.import_module("service.memory.store")
     monkeypatch.setattr(facts_mod, "store", fs)
+    monkeypatch.setattr(sessions_mod, "store", sessions_mod.SessionStore(fs.path.parent / "sessions.db"))
+
+
+def _cloud_block(fs, monkeypatch, query):
+    _local_stores(fs, monkeypatch)
     return facts_mod.memory_context_block(query=query, mail_facts=False)
 
 
@@ -562,7 +571,6 @@ def test_a_confirmed_fact_from_a_removed_account_stays_local(world, monkeypatch)
     row = fs.all()[0]
     assert row["text"] == "I work at New Co" and fs.get(row["id"])["evidence"] == []
     assert "New Co" not in _cloud_block(fs, monkeypatch, "where do I work")          # still never to cloud
-    monkeypatch.setattr(facts_mod, "store", fs)
     assert "New Co" in facts_mod.memory_context_block(query="where do I work", mail_facts=True)
 
 
