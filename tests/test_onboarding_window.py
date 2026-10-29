@@ -573,6 +573,12 @@ def test_waiting_out_the_download_keeps_people_close():
     for call in ("WispClient", "URLSession", "NotificationCenter", "NSWorkspace", "UserDefaults"):
         assert call not in sample, call
     assert 'OnboardingPill(text: "Example")' in sample
+    # Each sample card carries its own mark (Release Auditor, 98bba9ab).
+    helper = _body(sample, "private func sample<Content: View>(")
+    assert "OnboardingTour.cardMark" in helper and "dash:" in helper
+    for card in ("private var brief: some View", "private var day: some View", "private var ask: some View"):
+        assert _body(sample, card).lstrip("{ \n").startswith("sample {"), card
+    assert "polling: setupModel.isShown" in status
 
 
 def test_first_brief_is_owed_once_permissions_are_behind():

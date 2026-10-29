@@ -1666,7 +1666,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The model download as a ring around the icon, so it can be watched from
         // anywhere once the setup window is put aside.
         let progress = FirstRunSetup.menuBarProgress(FirstRunBrain.from(status: setupModel.status,
-                                                                         downloads: setupModel.downloads))
+                                                                         downloads: setupModel.downloads),
+                                                     polling: setupModel.isShown)
         if progress != shownDownloadProgress {
             shownDownloadProgress = progress
             button.image = Self.menubarOrb(progress: progress)

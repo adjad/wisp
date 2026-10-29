@@ -25,6 +25,9 @@ enum OnboardingTour {
     /// "2 of 3", for the dots' accessibility value. Pure.
     static func position(_ page: Int) -> String { "\(page + 1) of \(pages.count)" }
 
+    /// On every sample card, not only the header.
+    static let cardMark = "EXAMPLE"
+
     // The examples, kept here so the copy can be checked.
     static let briefMeta = "NEW · MAIL"
     static let briefTitle = "Reply to Sam about Friday's dinner"
@@ -101,13 +104,21 @@ struct OnboardingTourView: View {
         .accessibilityValue(OnboardingTour.position(page))
     }
 
-    /// Notch-dark, the way the open notch draws its cards.
+    /// Notch-dark, the way the open notch draws its cards, with a dashed edge and
+    /// its own "Example" mark, so no card can pass for the person's real mail or day.
     private func sample<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 6, content: content)
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.55)))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.hairline))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.hairline, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+            .overlay(alignment: .topTrailing) {
+                Text(OnboardingTour.cardMark).font(.system(size: 9.5, weight: .semibold)).tracking(0.6)
+                    .foregroundStyle(Theme.textMuted)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Capsule().fill(Theme.chipFill))
+                    .padding(8)
+            }
     }
 
     private var brief: some View {

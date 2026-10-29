@@ -867,6 +867,8 @@ struct FirstRunSetupChecks {
         let downloading = FirstRunBrain.downloading(model: gemma, label: "Gemma 4 E4B", fraction: 0.47, doneGb: 2.6,
                                                     totalGb: 5.5, secondsLeft: 300)
         check(FirstRunSetup.menuBarProgress(downloading) == 0.45, "The ring moves in 5% steps")
+        check(FirstRunSetup.menuBarProgress(downloading, polling: false) == nil,
+              "Setup stopped reading the download: no ring that could stick on a stale reading")
         check(FirstRunSetup.menuBarProgress(.ready(label: "Gemma 4 E4B")) == nil
               && FirstRunSetup.menuBarProgress(.checking) == nil, "No ring when nothing downloads")
         check(FirstRunSetup.menuBarProgressTip(0.45).hasPrefix("Wisp is downloading its model · 45%"), "Tooltip")
@@ -899,7 +901,7 @@ struct FirstRunSetupChecks {
             ("/Users/sam/Downloads/Wisp.app", false, .downloaded),
             ("/Users/sam/Downloads/Wisp-0.5.0/Wisp.app", false, .downloaded),
             ("/Users/sam/Desktop/Wisp.app", false, .downloaded),
-            ("/Volumes/Wisp/Wisp.app", false, .downloaded),
+            ("/Volumes/Wisp/Wisp.app", false, .diskImage),
             ("/private/var/folders/x/AppTranslocation/ABC/d/Wisp.app", false, .translocated),
             ("/Users/sam/Downloads/Wisp.app", true, .translocated),
             ("/Users/sam/code/wisp/.build/Wisp.app", false, .elsewhere),
@@ -922,7 +924,11 @@ struct FirstRunSetupChecks {
         // mark) or any preview build is never asked, so a move can't Trash build output
         // or replace the re-signed local install.
         check(!offers(.downloaded, quarantined: false), "Built on this Mac, say in ~/Desktop/MOE_Project: never asked")
-        check(!offers(.downloaded, preview: true) && !offers(.translocated, preview: true), "A preview build: never asked")
+        check(!offers(.downloaded, preview: true) && !offers(.translocated, preview: true)
+              && !offers(.diskImage, preview: true), "A preview build: never asked")
+        check(offers(.diskImage, quarantined: false), "A disk image with no mark of its own is still asked")
+        check(MoveToApplications.offerDetail(place: .diskImage).hasPrefix("Wisp is running from a disk image."),
+              "The offer names a disk image")
         check(MoveToApplications.failureDetail("x.", oldWispTrashed: false).contains("Nothing was removed")
               && !MoveToApplications.failureDetail("x.", oldWispTrashed: true).contains("Nothing was removed")
               && MoveToApplications.failureDetail("x.", oldWispTrashed: true).contains("is in the Trash"),

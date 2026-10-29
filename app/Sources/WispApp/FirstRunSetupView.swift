@@ -174,8 +174,12 @@ enum FirstRunSetup {
 
     /// The menu bar icon's ring: how far the model download is, in 5% steps so the
     /// icon isn't redrawn for every byte. Nil when nothing is downloading. Pure.
-    static func menuBarProgress(_ brain: FirstRunBrain) -> Double? {
-        guard case .downloading(_, _, let fraction, _, _, _) = brain else { return nil }
+    /// `polling`: setup is still reading the download (SetupGuideModel.isShown; the
+    /// download keeps that poll alive after the window closes, until it ends, stalls
+    /// or hits its cap). Without it the last reading is stale, so no ring that could
+    /// stick (Release Auditor, 98bba9ab).
+    static func menuBarProgress(_ brain: FirstRunBrain, polling: Bool = true) -> Double? {
+        guard polling, case .downloading(_, _, let fraction, _, _, _) = brain else { return nil }
         return (min(max(fraction, 0), 1) * 20).rounded(.down) / 20
     }
 

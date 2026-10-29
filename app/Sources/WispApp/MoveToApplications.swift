@@ -25,8 +25,11 @@ enum MoveToApplications {
         case applications
         /// macOS's temporary copy of a downloaded app.
         case translocated
-        /// Downloads, Desktop, Documents or a mounted disk image.
+        /// Downloads, Desktop or Documents.
         case downloaded
+        /// A mounted disk image (/Volumes): an app there is meant to be dragged out,
+        /// and often carries no quarantine mark of its own.
+        case diskImage
         /// Anywhere else (a build folder): never asked.
         case elsewhere
     }
@@ -38,14 +41,16 @@ enum MoveToApplications {
         for folder in ["/Applications/", home + "/Applications/"] where bundlePath.hasPrefix(folder) {
             return .applications
         }
-        for folder in [home + "/Downloads/", home + "/Desktop/", home + "/Documents/", "/Volumes/"]
+        if bundlePath.hasPrefix("/Volumes/") { return .diskImage }
+        for folder in [home + "/Downloads/", home + "/Desktop/", home + "/Documents/"]
             where bundlePath.hasPrefix(folder) {
             return .downloaded
         }
         return .elsewhere
     }
 
-    /// Pure: whether launch asks. Only a real download is asked about: macOS marks
+    /// Pure: whether launch asks. A disk image is always asked about (Release
+    /// Auditor, 4743f581). Otherwise only a real download is: macOS marks
     /// one with com.apple.quarantine (and runs a marked app from a temporary copy).
     /// A preview build, or one built on this Mac (no mark, say in a repo on the
     /// Desktop), is never asked, so a move can't Trash build output or replace the
@@ -53,7 +58,7 @@ enum MoveToApplications {
     static func offers(place: Place, declined: Bool, isAppBundle: Bool,
                        quarantined: Bool, previewBuild: Bool) -> Bool {
         guard isAppBundle, !declined, !previewBuild else { return false }
-        return place == .translocated || (place == .downloaded && quarantined)
+        return place == .translocated || place == .diskImage || (place == .downloaded && quarantined)
     }
 
     /// Whether macOS marked this bundle as downloaded.
@@ -63,8 +68,8 @@ enum MoveToApplications {
 
     /// The offer's sentence, saying where Wisp is running from. Pure.
     static func offerDetail(place: Place) -> String {
-        let from = place == .translocated
-            ? "Wisp is running from a temporary copy macOS made of the download."
+        let from = place == .translocated ? "Wisp is running from a temporary copy macOS made of the download."
+            : place == .diskImage ? "Wisp is running from a disk image."
             : "Wisp is running from the folder it was downloaded to."
         return from + " In Applications it stays put, can open when you log in, and is easy to find. "
             + "Wisp reopens by itself after the move. Your chats, memory and settings aren't affected."
