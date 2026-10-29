@@ -548,6 +548,28 @@ def mail_first(prompt: str) -> bool:
     return bool(_MAILISH.search(prompt or "")) and asks_personal_data(prompt)
 
 
+# The Mac's own state is read with a tool, never answered from knowledge:
+# "how much free disk space?" was offered no tools (2026-10-29 Ask run).
+_DEVICE_STATE = re.compile(
+    r"\b(?:disk|storage|space\s+left|free\s+space|battery|charg\w*|ram|cpu|wi-?fi|bluetooth|"
+    r"ip\s+address|uptime|volume|brightness|clipboard|macos|downloads?|desktop)\b", re.I)
+# General advice about oneself, with nothing of the user's to read: "how many
+# hours of sleep should I get?" was re-prompted for a tool and ended in "I
+# don't have that".
+_ADVICE = re.compile(r"\b(?:should\s+(?:i|we)\s+(?:get|drink|eat|sleep|do|take|use|study|exercise|"
+                     r"run|walk|save|spend|wear|bring|pack|tip)|do\s+(?:i|we)\s+need)\b", re.I)
+_PRONOUNS = re.compile(r"\b(?:i|i'm|i've|we|us|our)\b", re.I)
+
+
+def advice_question(prompt: str) -> bool:
+    """General advice ("how much water should I drink?"), not the user's data."""
+    text = (prompt or "").strip()
+    return bool(_KNOWLEDGE.match(text) and _ADVICE.search(text)
+                and not re.search(r"\b(?:my|mine|me)\b", text, re.I)
+                and not _LIVE.search(_PRONOUNS.sub("", text))
+                and not _SOURCE_RECORD.search(text) and not _DEVICE_STATE.search(text))
+
+
 def knowledge_question(prompt: str) -> bool:
     """General knowledge or a general how-to ("How many ounces are in a cup?",
     "How do I take a screenshot on a Mac?", "Give me tips for studying"): no
@@ -555,8 +577,10 @@ def knowledge_question(prompt: str) -> bool:
     one tool-free step, since a tool path only added failures and refusals."""
     text = (prompt or "").strip()
     head = _KNOWLEDGE.match(text)
-    if not head:
+    if not head or _DEVICE_STATE.search(text):
         return False
+    if advice_question(text):
+        return not _ABOUT_WISP.search(text) and not _SECOND_CLAUSE.search(text)
     rest = text[head.end():]  # "How do I" itself is not first-person data
     return (not _LIVE.search(rest) and not _ABOUT_WISP.search(text)
             and not _SOURCE_RECORD.search(rest) and not _SECOND_CLAUSE.search(rest)
@@ -580,6 +604,9 @@ def capability_question(prompt: str) -> bool:
     for the user's data: "What can you do with my calendar?", "How do I
     connect Google?", "Can you read my email?"."""
     text = (prompt or "").strip().lower()
+    # "do you know my birthday?" asks what Wisp remembers, not what it can do.
+    if re.match(r"^(?:do|did)\s+you\s+(?:know|remember|recall)\s+(?:my|me|who|what|when|where)\b", text):
+        return False
     if re.match(r"^(?:so\s+)?(?:what|which)\s+(?:\w+\s+){0,2}(?:can|could|do)\s+you\s+(?:do|help|handle|access|see|read|check)\b", text):
         return True
     if re.match(r"^(?:what|which)\s+(?:can|could)\s+you\b", text):
@@ -635,7 +662,7 @@ def asks_personal_data(prompt: str) -> bool:
     supply ("what's on my calendar", "did Jordan reply", "how heavy is my
     backpack"). Capability, how-to and compose requests are not."""
     text = normalize_day_words(prompt)
-    if capability_question(text) or _COMPOSE_OR_GENERAL.match(text):
+    if capability_question(text) or _COMPOSE_OR_GENERAL.match(text) or advice_question(text):
         return False
     return bool(_PERSONAL.search(text)
                 or (_QUESTION.search(text) and re.search(r"\bmy\s+[a-z]", text, re.I)))

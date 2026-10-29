@@ -37,3 +37,34 @@ def test_a_catch_all_query_lists_every_reminder(monkeypatch):
 def test_voice_questions_point_to_wisps_own_shortcut():
     from service.model_only import ASK_CAPABILITY_HINT
     assert "⌥⇧Space" in ASK_CAPABILITY_HINT and "never send the user to Siri" in ASK_CAPABILITY_HINT
+
+
+import pytest  # noqa: E402
+
+from service import model_only as mo  # noqa: E402
+
+
+@pytest.mark.parametrize("prompt", ["how much free disk space?", "how much battery is left",
+                                    "how much storage do I have left?"])
+def test_the_macs_own_state_is_never_answered_from_knowledge(prompt):
+    """"how much free disk space?" was offered no tools and answered generically."""
+    assert not mo.knowledge_question(prompt)
+
+
+@pytest.mark.parametrize("prompt", ["how many hours of sleep should I get?",
+                                    "how much water should I drink a day?"])
+def test_general_advice_is_knowledge_not_the_users_data(prompt):
+    """Re-prompted for a personal tool, this ended in "I don't have that"."""
+    assert mo.knowledge_question(prompt) and not mo.asks_personal_data(prompt)
+
+
+@pytest.mark.parametrize("prompt", ["what should I wear today?", "how much should I study for my midterm?",
+                                    "How do I get to the airport from here?"])
+def test_advice_that_needs_the_users_day_or_place_keeps_its_tools(prompt):
+    assert not mo.knowledge_question(prompt)
+
+
+def test_do_you_know_my_birthday_asks_memory_not_capability():
+    assert not mo.capability_question("do you know my birthday?")
+    assert mo.asks_personal_data("do you know my birthday?")
+    assert mo.capability_question("can you read my email?")
