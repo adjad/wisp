@@ -11,6 +11,14 @@ All notable changes to Wisp are documented here.
   - **Calls someone waits on:** one that starts beside a lower cap still asks to lift it, once per call, since that's the only way to keep it from running under that cap.
   - **The lift:** `_lift_now` asks at most `_LIFT_TRIES` (2) clients, newest first. It asks no other client after one that used up `_LIFT_TIMEOUT_S`, since the engine behind them is the same. Only a client that closed mid-POST (it fails at once) still falls through to the next. An unreachable engine costs at most one timeout per lift instead of one per capped call.
   - **Tests:** the thread test waits on an event instead of a fixed 10 ms sleep. The comment above the Swift Save power checks matches what they check.
+- **Mail facts: the dev7 Auditor notes.** See [docs/releases/0.5.0-dev8.md](docs/releases/0.5.0-dev8.md).
+  - **Whose fact:** a slot cue (employer, school, home city) must follow I or we within three words, none of them a possessive (`_SUBJECT`, `_GAP`), or carry its own subject ("my employer is", `_OWN_CUES`). "My sister is moving to Denver" is dropped as `no_cue`.
+  - **Negation:** `_NEGATED` is read from the statement and the words after it up to the end of its clause (`_states`), so an "if" elsewhere no longer drops a fact. It adds wouldnt, couldnt, shouldnt, hasnt, hadnt, werent, aint and past was/were/had, and drops "soon".
+  - **Sender:** a service value (or its first word) must equal the sender's registrable label on an allowlisted TLD (`_SERVICE_TLDS`, `_registrable`), hyphens folded: comc.io and comcast.xyz fail, t-mobile.com passes.
+  - **claim_slot:** "I work outside Boston" is employment (`(?! ?out\b)`).
+  - **Forget:** `forget_all` keeps a reviewed row unless its explanation is "Learned from your mail" (`learned_from_mail`), so a confirmed historical or connection fact loses only its mail evidence.
+  - **Tests:** the sensitive-brand test is split from the category test, each with one cause.
+- **Mail memory records why it stood down, and keeps running on battery.** The 2026-10-28 stall on battery (80% to 49%) left no reason. `busy_reason()` names the busy gate (foreground, in_flight, recent_use, low_power, battery_low); battery alone is never one. `note_skip` keeps the reason in meta (`last_skip`, and `last_skip_at` for when it began), written on change and at most every 10 minutes, cleared by the next step, and shown in the `health` of `GET /assistant/mail_memory`. It covers the busy gate, `_stand_down`'s codes and the scheduler gates (`foreground`, `other_background`, `no_subscribers`). On battery the walk runs under the `BACKGROUND` power tier; Low Power Mode and battery under 30% still stop it. The cause of the 2026-10-28 stall isn't reproduced (live checks are on hold); the next one names its gate.
 
 ## [0.5.0-dev7] - 2026-10-28
 
