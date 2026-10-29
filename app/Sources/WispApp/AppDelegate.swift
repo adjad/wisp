@@ -1262,7 +1262,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var modelGateHolds: Bool {
         FirstRunSetup.gatesUse(setupUnfinished: FirstRunSetup.isUnfinished { UserDefaults.standard.bool(forKey: $0) },
-                               canAnswer: setupCanAnswer)
+                               canAnswer: setupCanAnswer,
+                               brain: setupModel.status.map { FirstRunBrain.from(status: $0, downloads: setupModel.downloads) })
     }
 
     private func collapse() {

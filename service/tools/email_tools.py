@@ -2704,7 +2704,11 @@ def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
                           f"message{'s' if hidden != 1 else ''}) are not in the sections or "
                           "the counts at the top; Coverage counts them as truncated by "
                           "the sender note limit.")
-        return (f"\U0001F4EC **Inbox digest \u2014 {label}**\n" + " \u00b7 ".join(facts)
+        # "17 emails · 14 unread" was read back as "17 unread" (dev8 debug log).
+        # When the two differ, say the unread count once more in a sentence.
+        spelled = (f"\n{unread} of these {represented} emails are unread."
+                   if unread and unread != represented else "")
+        return (f"\U0001F4EC **Inbox digest \u2014 {label}**\n" + " \u00b7 ".join(facts) + spelled
                 + "\n\n" + "\n\n".join(blocks) + "\n\n" + "\n".join(footer))
     bullets = []
     for group in shown_groups:

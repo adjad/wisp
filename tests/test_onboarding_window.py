@@ -495,6 +495,8 @@ def test_notch_and_windows_wait_for_the_model_during_setup():
     assert "bringSetupForward()" in hold and ".wispHeldUntilModelReady" in hold
     gate = _body(app, "private var modelGateHolds: Bool")
     assert "FirstRunSetup.gatesUse(" in gate and "canAnswer: setupCanAnswer" in gate
+    # A Mac that can never get a model is let in (the notch says it isn't set up).
+    assert "brain: setupModel.status.map { FirstRunBrain.from(status: $0" in gate
     expand = _body(app, "private func expand()")
     assert expand.index("if holdUntilModelReady() { return }") < expand.index("requestPresentation(.chat)")
     assert "if holdUntilModelReady() { return }" in _body(app, "private func askByVoice()")

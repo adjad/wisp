@@ -120,6 +120,12 @@ def test_the_top_line_is_a_plain_count_not_a_statistics_paragraph(digest):
     assert "Scanned" not in "\n".join(digest.splitlines()[:4])
 
 
+def test_the_unread_count_is_said_again_when_it_differs_from_the_total(digest):
+    """dev8: "17 emails · 14 unread" came back as "17 unread emails". When the
+    two numbers differ, a plain sentence says which is the unread one."""
+    assert digest.splitlines()[2] == "4 of these 8 emails are unread."
+
+
 def test_each_message_is_one_tidy_line_with_sender_domain_and_unread_mark(digest):
     assert "- ● **Priya Shah** · acme.example — “Can you review the contract before Friday?” · Work" in digest
     assert "- **Maya Chen** · friends.example — “photos from the weekend” · Personal" in digest
