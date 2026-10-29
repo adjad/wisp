@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Security
+import ServiceManagement
 import SwiftUI
 
 extension Notification.Name {
@@ -1278,6 +1279,9 @@ struct SettingsView: View {
     // App-scoped (AppDelegate owns it), shared with the notch's quick settings,
     // so both show the same confirmed and pending states.
     @ObservedObject private var loader: SettingsLoader
+    /// Open at login, beside the permissions (it moved from setup's last step to
+    /// its Permissions step, 2026-10-29); macOS's answer, read when Privacy opens.
+    @StateObject private var launchAtLogin = LaunchAtLogin()
     /// The Wisp window's Settings section (true), or the standalone form with its
     /// own sidebar, fixed frame and black surface (false), which only the
     /// WISP_SETTINGS_QA render still uses. Embedded, it follows the Mac's appearance.
@@ -1996,6 +2000,20 @@ struct SettingsView: View {
                                     NotificationCenter.default.post(name: .wispGrantMoreAccess, object: nil)
                                 }
                             }
+                            Toggle(isOn: Binding(get: { LaunchAtLogin.isOn(launchAtLogin.status) },
+                                                 set: { launchAtLogin.set($0) })) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Open Wisp when you log in")
+                                        .font(.system(size: 14, weight: .medium))
+                                    Text(launchAtLogin.problem ?? LaunchAtLogin.note(launchAtLogin.status)
+                                         ?? "So it's there at the top of your screen whenever you start your Mac.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .toggleStyle(.switch)
+                            .onAppear { launchAtLogin.read() }
                         }
                     }
                 }

@@ -78,6 +78,15 @@ def _show(card: dict, view: dict, store) -> dict:
     return {"recipient": action["recipient"], "to": action["to"], "cc": action["cc"], "subject": action["subject"]}
 
 
+def _own_open_url(url) -> str:
+    """The card's open link, only in the two shapes Wisp itself builds
+    (email_reply_api.open_url): Mail's message:// and Gmail's rfc822msgid search."""
+    url = str(url or "")
+    if url.startswith("message://%3C") or url.startswith("https://mail.google.com/mail/u/"):
+        return url
+    return ""
+
+
 async def _email_reply(card: dict, draft: str, store=None) -> dict:
     """W3's send core, called only from the fire tap with the card's exact
     draft. Never retried. "confirm" (Mail's real recipients differ) sends
@@ -329,7 +338,12 @@ async def _run(card: dict, method: str, words: str, store, methods: dict, now: f
             from service.proactive import deadlines
             result = deadlines.hold(card, now=now)
     elif method == "read":
+        # "Open in Mail?" / "Open in Gmail?": the app opens the email itself, by
+        # Wisp's own link to it (never a link from inside the email).
         result = {"ok": True, "status": "succeeded"}
+        url = _own_open_url(card["action"].get("open_url"))
+        if url:
+            result.update(open_url=url, result="open_in_gmail" if url.startswith("https://") else "open_in_mail")
     elif method == "undo_add":
         from service.proactive import autoadd
         undoers = {k: methods[f"undo_{k}"] for k in ("calendar", "reminder") if f"undo_{k}" in methods} or None

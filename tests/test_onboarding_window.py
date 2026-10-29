@@ -465,3 +465,127 @@ def test_an_unanswered_automation_question_lets_its_row_go():
     assert "waiting = waiting.filter { !Self.isDecided(next[$0] ?? .checking) }" in refresh
     row = _body(setup, "private func permissionRow(")
     assert "permissions.waiting.contains(item)" in row and "FirstRunPermissions.automationWaitingNote" in row
+
+
+def test_readers_post_again_when_the_service_comes_up():
+    """2026-10-29 fresh-install test: Reminders, allowed in setup, was missing after
+    macOS's Quit & Reopen for Full Disk Access. The service keeps each source's last
+    sync in memory only, and the readers' launch-time posts went out before the cold
+    service listened; the reachability handler refreshed Today without re-posting."""
+    app = _sources()["AppDelegate.swift"]
+    handler = app[app.index("backend.onReachabilityChange = {"):]
+    up = _body(handler, "if up")
+    assert "self.resyncAllReaders()" in up
+    assert up.index("self.resyncAllReaders()") < up.index("await self.todayModel.refresh()")
+    # And Today looks again once the posts have landed.
+    assert up.count("await self.todayModel.refresh()") == 2
+    assert "NativeSyncPace.reachableRefreshDelay" in up
+    resync = _body(app, "private func resyncAllReaders()")
+    assert "Self.resyncedWhenReachable" in resync and "resyncReaders(after: item)" in resync
+    # Reading only: no reader asks macOS for anything (test_prompts_only_follow_a_click).
+    assert not PROMPTING.search(resync)
+
+
+def test_notch_and_windows_wait_for_the_model_during_setup():
+    """dev8: until the model has arrived, a click on the notch, the menu bar icon,
+    a shortcut or a Wisp window route brings setup forward and says why."""
+    app = _sources()["AppDelegate.swift"]
+    hold = _body(app, "private func holdUntilModelReady() -> Bool")
+    assert "guard modelGateHolds else { return false }" in hold
+    assert "bringSetupForward()" in hold and ".wispHeldUntilModelReady" in hold
+    gate = _body(app, "private var modelGateHolds: Bool")
+    assert "FirstRunSetup.gatesUse(" in gate and "canAnswer: setupCanAnswer" in gate
+    expand = _body(app, "private func expand()")
+    assert expand.index("if holdUntilModelReady() { return }") < expand.index("requestPresentation(.chat)")
+    assert "if holdUntilModelReady() { return }" in _body(app, "private func askByVoice()")
+    assert "!modelGateHolds" in _body(app, "private var canHoverOpen: Bool")
+    route = _body(app, "private func open(_ route: WispRoute)")
+    assert "case .settings, .setup: break" in route
+    assert route.index("if holdUntilModelReady() { return }") < route.index("wispWindow.show")
+    setup = _sources()["FirstRunSetupView.swift"]
+    footer = _body(setup, "private var footer: some View")
+    tour = footer[footer.index("case .tour:"):]
+    assert tour.index("if setup.status?.canAnswer == true {") < tour.index('Button("Done — open Wisp")')
+    assert 'Button("Close for now")' in tour and "closeForNow()" in tour
+
+
+def test_open_at_login_sits_with_the_permissions():
+    """dev8: the switch moved from How to use to the Permissions step (and Settings › Privacy)."""
+    sources = _sources()
+    setup = sources["FirstRunSetupView.swift"]
+    assert "launchAtLoginRow" in _body(setup, "private var permissionsStep: some View")
+    assert "launchAtLoginRow" not in _body(setup, "private var tourStep: some View")
+    settings = sources["SettingsView.swift"]
+    assert "launchAtLogin.set($0)" in settings and "LaunchAtLogin.isOn(launchAtLogin.status)" in settings
+
+
+def test_how_to_use_starts_with_the_download():
+    setup = _sources()["FirstRunSetupView.swift"]
+    tour = _body(setup, "private var tourStep: some View")
+    assert tour.lstrip("{ \n").split("\n", 1)[1].lstrip().startswith("// The download first") or \
+        tour.index("tourDownload") < tour.index("OnboardingHeading(")
+    assert tour.index("tourDownload") < tour.index("Self.helpsYourDay")
+    download = _body(setup, "@ViewBuilder private var tourDownload: some View")
+    assert "FirstRunBrain.progressLine(" in download and "speedText" in download
+
+
+def test_move_to_applications_only_on_a_click():
+    """dev8: offered at the top of launch; nothing moves or is removed without the
+    person's click, an existing Wisp goes to the Trash, and no password is asked."""
+    sources = _sources()
+    move = sources["MoveToApplications.swift"]
+    offer = _body(move, "static func offerIfNeeded(")
+    assert offer.index("ask.runModal()") < offer.index("try move(from:")
+    assert "guard answer == .alertFirstButtonReturn" in offer
+    assert offer.index("replace.runModal()") < offer.index("try move(from:")
+    body = _body(move, "static func move(from bundle: URL, original: URL?, target: URL = URL(fileURLWithPath: destination)) throws")
+    # The person's things only ever go to the Trash; removeItem is for Wisp's own staging copy.
+    assert "trashItem(at: target" in body and "trashItem(at: original" in body
+    assert body.count("removeItem(") == 1 and "removeItem(at: staging)" in body
+    # A copy that stops part-way is cleaned up too (Release Auditor, 6c3d68d4).
+    assert body.index("do {") < body.index("try fm.copyItem(at: bundle, to: staging)")
+    assert "MoveFailure(underlying: error, oldWispTrashed: oldTrashed)" in body
+    assert body.index("moveItem(at: staging, to: target)") < body.index("trashItem(at: original")
+    for forbidden in ("with administrator privileges", "AuthorizationExecuteWithPrivileges", "sudo "):
+        assert forbidden not in move, forbidden
+    app = sources["AppDelegate.swift"]
+    launch = _body(app, "private func launch()")
+    assert launch.index("MoveToApplications.offerIfNeeded()") < launch.index("WispReset.readMarker()")
+    # Only a real download: a quarantine mark, never a preview build (Release Auditor, 6c3d68d4).
+    offer_call = offer[offer.index("guard offers("):offer.index("else { return .stayed }")]
+    assert "quarantined: isQuarantined(bundle)" in offer_call and '"WispPreviewBuild"' in offer_call
+
+
+def test_waiting_out_the_download_keeps_people_close():
+    """dev8 item 6 (the user's pick): a ring and words on the menu bar icon, a sample
+    tour on How to use, and "Wisp is ready" even with setup left behind another app."""
+    sources = _sources()
+    app = sources["AppDelegate.swift"]
+    status = _body(app, "private func updateMenuBarStatus()")
+    assert "FirstRunSetup.menuBarProgress(" in status and "Self.menubarOrb(progress: progress)" in status
+    assert "FirstRunSetup.menuBarProgressTitle" in status
+    watch = _body(app, "private func watchSetupReadiness()")
+    assert "wispFrontmost: NSApp.isActive" in watch and "onPermissions: onPermissions" in watch
+    tour = _body(sources["FirstRunSetupView.swift"], "private var tourStep: some View")
+    assert tour.index("tourDownload") < tour.index("OnboardingTourView()") < tour.index("Self.helpsYourDay")
+    sample = sources["OnboardingTour.swift"]
+    # Sample cards only: nothing reads data, asks the service, or acts.
+    for call in ("WispClient", "URLSession", "NotificationCenter", "NSWorkspace", "UserDefaults"):
+        assert call not in sample, call
+    assert 'OnboardingPill(text: "Example")' in sample
+    # Each sample card carries its own mark (Release Auditor, 98bba9ab).
+    helper = _body(sample, "private func sample<Content: View>(")
+    assert "OnboardingTour.cardMark" in helper and "dash:" in helper
+    for card in ("private var brief: some View", "private var day: some View", "private var ask: some View"):
+        assert _body(sample, card).lstrip("{ \n").startswith("sample {"), card
+    assert "polling: setupModel.isShown" in status
+
+
+def test_first_brief_is_owed_once_permissions_are_behind():
+    """The user wants the Brief waiting when Wisp first opens: owed from the step after
+    Permissions and on Close for now, so the readiness watch asks for it at once."""
+    app = _sources()["AppDelegate.swift"]
+    assert "FirstRunSetup.owesFirstBrief(after: step)" in app
+    close = app[app.index("closeForNow: { [weak self] in"):]
+    close = close[:close.index("}))")]
+    assert close.index("self?.oweFirstBrief()") < close.index("self?.firstRunWindow?.close()")

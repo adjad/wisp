@@ -17,6 +17,10 @@ import UserNotifications
 // setup card and the detailed setup window see the same state.
 
 extension Notification.Name {
+    /// A click on the notch, the menu bar icon or a shortcut that was held back
+    /// while the model downloads (FirstRunSetup.gatesUse): the setup window came
+    /// forward instead, and says why.
+    static let wispHeldUntilModelReady = Notification.Name("WispHeldUntilModelReady")
     /// Opens the first-run window again (at the step the person left) while
     /// setup is unfinished: the notch's Continue setup posts it.
     static let wispContinueFirstRun = Notification.Name("WispContinueFirstRun")
@@ -159,11 +163,98 @@ enum FirstRunSetup {
         firstRunWindowUp || unfinished || card.showsOnAsk || canAnswer == false
     }
 
-    /// No Wisp notification while the setup window is on screen, even with
-    /// System Settings or the browser in front of it: "Wisp is ready" is said
-    /// only once the window was closed, finished or minimized.
-    static func notifiesReady(promised: Bool, windowUp: Bool, windowMinimized: Bool) -> Bool {
-        promised && (!windowUp || windowMinimized)
+    /// "Wisp is ready" as a notification once the person isn't looking at setup:
+    /// the window closed, finished or minimized, or left behind another app while
+    /// they wait out the download (dev8). Never while Wisp is in front, and never
+    /// from the Permissions step, where System Settings in front is part of setup.
+    static func notifiesReady(promised: Bool, windowUp: Bool, windowMinimized: Bool,
+                              wispFrontmost: Bool = true, onPermissions: Bool = false) -> Bool {
+        promised && (!windowUp || windowMinimized || (!wispFrontmost && !onPermissions))
+    }
+
+    /// The menu bar icon's ring: how far the model download is, in 5% steps so the
+    /// icon isn't redrawn for every byte. Nil when nothing is downloading. Pure.
+    /// `polling`: setup is still reading the download (SetupGuideModel.isShown; the
+    /// download keeps that poll alive after the window closes, until it ends, stalls
+    /// or hits its cap). Without it the last reading is stale, so no ring that could
+    /// stick (Release Auditor, 98bba9ab).
+    static func menuBarProgress(_ brain: FirstRunBrain, polling: Bool = true) -> Double? {
+        guard polling, case .downloading(_, _, let fraction, _, _, _) = brain else { return nil }
+        return (min(max(fraction, 0), 1) * 20).rounded(.down) / 20
+    }
+
+    /// The first Brief is owed once the person is past Permissions (what it reads
+    /// is decided), so it is composed the moment the model answers and is there
+    /// when Wisp first opens. Before that, a Brief would be made without sources.
+    /// Pure.
+    static func owesFirstBrief(after step: OnboardingStep) -> Bool {
+        step.rawValue > OnboardingStep.permissions.rawValue
+    }
+
+    /// The words beside the ring, so the menu bar says plainly Wisp isn't ready. Pure.
+    static func menuBarProgressTitle(_ progress: Double) -> String {
+        "Downloading \(Int(progress * 100))%"
+    }
+
+    /// The right-click menu's setup item while the model downloads. Pure.
+    static func menuBarProgressMenuLine(_ progress: Double) -> String {
+        "Model downloading (\(Int(progress * 100))%) · Open Setup…"
+    }
+
+    /// The icon's tooltip while the ring shows. Pure.
+    static func menuBarProgressTip(_ progress: Double) -> String {
+        "Wisp is downloading its model · \(Int(progress * 100))%. It lets you know when it's ready."
+    }
+
+    /// Wisp's notch, its window and asking all wait for the model while setup is
+    /// under way and Wisp can't answer yet (`canAnswer` nil: the service hasn't
+    /// said). Setup, Permissions and Settings stay open. Someone already set up is
+    /// never held back, even if their model later stops answering. Pure.
+    static func gatesUse(setupUnfinished: Bool, canAnswer: Bool?) -> Bool {
+        setupUnfinished && canAnswer != true
+    }
+
+    /// Under the download on How to use, and on its Close for now button.
+    static let whileDownloading = "Wisp opens once this finishes. Meanwhile you can set up the rest, "
+        + "or close this window. Wisp lets you know when it's ready."
+    static let closeForNowHelp = "The download keeps going. Wisp lets you know when it's ready, "
+        + "and setup picks up here."
+
+    /// Said at the top of the window when a click on the notch, the menu bar
+    /// icon or a shortcut brought it forward instead of opening Wisp.
+    static let heldBackLine = "Wisp opens once its model has finished downloading. Until then, setup is here."
+
+    /// The same line when the model isn't on its way, naming the way out, so a
+    /// download that keeps failing (or a service that won't answer) never leaves
+    /// a closed Wisp with no next step. Pure.
+    static func heldBackLine(_ footer: FirstRunBrain.Footer) -> String {
+        switch footer {
+        case .retry, .download:
+            return "Wisp opens once its model is ready, and the download isn't running. Choose Model above to start "
+                + "it again, or use another app's model in Settings › Models."
+        case .tryAgain, .detailedSetup:
+            return "Wisp opens once its model is ready. On the Model step, try again or open the detailed setup "
+                + "to use another app's model."
+        case .checkAgain:
+            return "Wisp is slow to start, so it can't open yet. On the Model step, choose Check again, "
+                + "or quit and reopen Wisp."
+        case .ready, .working:
+            return heldBackLine
+        }
+    }
+
+    /// How long that line stays.
+    static let heldBackShownFor: TimeInterval = 12
+
+    /// The card's title on How to use when nothing is downloading right now.
+    static func notDownloadingTitle(_ footer: FirstRunBrain.Footer) -> String {
+        switch footer {
+        case .ready: return "The model is ready"
+        case .download: return "The model hasn't started downloading"
+        case .retry: return "The download stopped"
+        case .working(let text): return text
+        case .tryAgain, .detailedSetup, .checkAgain: return "The model isn't ready yet"
+        }
     }
 
     /// The old first launch showed a tip before Wisp could answer and opened the
@@ -488,6 +579,13 @@ enum FirstRunBrain: Equatable {
 
     /// A transfer that hasn't moved in this long gets "No progress".
     static let noProgressAfter: TimeInterval = 30
+
+    /// "2.5 of 5.5 GB · 10 MB/s · about 6 minutes left": what has arrived, how fast,
+    /// and how long is left, each only when it is known. Pure.
+    static func progressLine(doneGb: Double, totalGb: Double, speed: String?, secondsLeft: Int?) -> String {
+        [String(format: "%.1f of %.1f GB", doneGb, totalGb), speed, timeLeft(secondsLeft)]
+            .compactMap { $0 }.joined(separator: " · ")
+    }
 
     /// "about 6 minutes left", rounded the way a person would say it.
     static func timeLeft(_ seconds: Int?) -> String? {
@@ -1163,6 +1261,12 @@ struct FirstRunSetupView: View {
     var aboutYouDecided: () -> Void
     /// NotchQA's renders: the Google step shows its fixture and never asks the service.
     var qaFixture = false
+    /// Closes the window without finishing setup: the model is still on its way,
+    /// and Wisp opens once it can answer (FirstRunSetup.gatesUse).
+    var closeForNow: () -> Void
+    /// When a click on the notch, the menu bar icon or a shortcut was held back
+    /// while the model downloads, so the window says why it came forward.
+    @State private var heldBackAt: Date?
 
     init(setup: SetupGuideModel, knowYou: KnowYouModel, google: GoogleAccountModel,
          initialStep: Step = .brain,
@@ -1171,8 +1275,10 @@ struct FirstRunSetupView: View {
          permissionsChanged: @escaping ([FirstRunPermissions.Item: FirstRunPermissions.State]) -> Void = { _ in },
          stepChanged: @escaping (Step) -> Void = { _ in },
          askKeyRegistered: Bool = true, searchKeyRegistered: Bool = true, voiceKeyRegistered: Bool = true,
-         setupDone: Bool = false, aboutYouDecided: @escaping () -> Void = {}, qaFixture: Bool = false) {
+         setupDone: Bool = false, aboutYouDecided: @escaping () -> Void = {}, qaFixture: Bool = false,
+         closeForNow: @escaping () -> Void = {}) {
         self.setup = setup
+        self.closeForNow = closeForNow
         self.setupDone = setupDone
         self.aboutYouDecided = aboutYouDecided
         self.qaFixture = qaFixture
@@ -1205,6 +1311,7 @@ struct FirstRunSetupView: View {
             stepBar
             Divider().overlay(Theme.hairline)
             ScrollView {
+                heldBackLine
                 Group {
                     switch step {
                     case .brain: brainStep
@@ -1268,12 +1375,13 @@ struct FirstRunSetupView: View {
         .onReceive(permissions.$states) { states in if !states.isEmpty { permissionsChanged(states) } }
         .onChange(of: step) { _, next in
             if next == .permissions { permissions.start() } else { permissions.stop() }
-            if next == .tour {
-                Task { await permissions.refresh() }
-                if !qaFixture { launchAtLogin.read() }
-            }
+            if next == .permissions, !qaFixture { launchAtLogin.read() }
+            if next == .tour { Task { await permissions.refresh() } }
             OnboardingTimeline.record("step \(next)")
             stepChanged(next)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .wispHeldUntilModelReady)) { _ in
+            heldBackAt = Date()
         }
         .onReceive(NotificationCenter.default.publisher(for: .wispAskHotkeyPressed)) { _ in
             if !askKeyPressed { OnboardingTimeline.record("ask shortcut worked") }
@@ -1448,14 +1556,24 @@ struct FirstRunSetupView: View {
                 Button("Back") { go(step.previous) }.buttonStyle(FirstRunButtonStyle())
                 tourModelStatus
                 Spacer(minLength: 6)
-                // Doesn't wait for the model: the notch's quiet setup cue carries
-                // the download from here, with a notification once Wisp can answer.
-                Button("Done — open Wisp") {
-                    OnboardingTimeline.record("setup done")
-                    finish(nil)
-                }
+                // Wisp opens only once it can answer (FirstRunSetup.gatesUse). Until
+                // then the window can be put aside: setup stays unfinished, the
+                // download goes on, and a notification says when Wisp is ready.
+                if setup.status?.canAnswer == true {
+                    Button("Done — open Wisp") {
+                        OnboardingTimeline.record("setup done")
+                        finish(nil)
+                    }
                     .buttonStyle(FirstRunButtonStyle(primary: true))
                     .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Close for now") {
+                        OnboardingTimeline.record("closed for now while the model downloads")
+                        closeForNow()
+                    }
+                    .buttonStyle(FirstRunButtonStyle())
+                    .help(FirstRunSetup.closeForNowHelp)
+                }
             }
         }
         .padding(.horizontal, 22).padding(.vertical, 12)
@@ -1816,6 +1934,7 @@ struct FirstRunSetupView: View {
             contactsRow
             permissionRow(.notifications, icon: "bell", title: "Notifications",
                           detail: "Alerts for reminders you set, and when Wisp is ready.")
+            launchAtLoginRow
             // Not needed to set up or for a first answer, so out of the way and
             // out of the count; still asked only from the row's own click.
             DisclosureGroup(isExpanded: $showMoreAccess) {
@@ -1981,8 +2100,20 @@ struct FirstRunSetupView: View {
 
     private var tourStep: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // The download first: until it is done Wisp can't open, so how far along
+            // it is matters more than anything else on this step.
+            tourDownload
+            // Something to look at while it downloads: sample cards, never real data.
+            OnboardingTourView()
+            Text("What Wisp is for").font(.system(size: 13, weight: .medium)).padding(.top, 4).padding(.bottom, 4)
+            Text(Self.purposeLine).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true).padding(.bottom, 10)
+            ForEach(Self.helpsYourDay, id: \.title) { item in
+                OnboardingCard(icon: item.icon, title: item.title, detail: item.line) { EmptyView() }
+            }
             OnboardingHeading(title: "Wisp lives at the top of your screen",
                               subtitle: "No window to find. It's always one gesture away.")
+                .padding(.top, 12)
             NotchLocationIllustration(style: display.layout.style)
                 .padding(.bottom, 10)
             OnboardingCard(icon: "hand.point.up.left", title: "Where to find it",
@@ -1999,11 +2130,6 @@ struct FirstRunSetupView: View {
             Text("Open, it has three tabs").font(.system(size: 13, weight: .medium)).padding(.top, 6).padding(.bottom, 8)
             OpenNotchIllustration(tabs: Self.tabLines)
                 .padding(.bottom, 14)
-            if case .working = brain.footer(stalled: stalled) {
-                Text("You can start now. Wisp lets you know when its model is ready.")
-                    .font(.system(size: 12)).foregroundStyle(Theme.textSecondary).padding(.bottom, 10)
-            }
-            diskWarningLine
             // Until Wisp can answer, a prompt would only leave a question it can't
             // send, and it must not end setup either.
             let canAnswer = setup.status?.canAnswer == true
@@ -2039,9 +2165,99 @@ struct FirstRunSetupView: View {
                 }
             }
             .padding(.bottom, 14)
-            launchAtLoginRow
         }
     }
+
+    /// Why the window just came forward, for a short while after a held-back click.
+    @ViewBuilder private var heldBackLine: some View {
+        if let at = heldBackAt {
+            TimelineView(.periodic(from: at, by: 1)) { context in
+                if context.date.timeIntervalSince(at) < FirstRunSetup.heldBackShownFor {
+                    Label(FirstRunSetup.heldBackLine(brain.footer(stalled: stalled)), systemImage: "hourglass")
+                        .font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.chipFill))
+                        .padding(.horizontal, 28).padding(.top, 14)
+                        .accessibilityElement(children: .combine)
+                }
+            }
+        }
+    }
+
+    /// The top of How to use: the model's download with its real numbers, or
+    /// what it is doing instead, or the one click that gets it going.
+    @ViewBuilder private var tourDownload: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            switch brain {
+            case .downloading(let model, let label, let fraction, let done, let total, let left):
+                OnboardingCard(icon: "arrow.down.circle", title: "Downloading \(label)",
+                               detail: FirstRunSetup.whileDownloading) {
+                    Text("\(Int(fraction * 100))%").font(.system(size: 13, weight: .medium).monospacedDigit())
+                        .foregroundStyle(Theme.textSecondary)
+                }
+                ProgressView(value: fraction).tint(OnboardingPalette.lilac)
+                    .accessibilityLabel("Model download")
+                    .accessibilityValue("\(Int(fraction * 100)) percent")
+                TimelineView(.periodic(from: .now, by: 5)) { context in
+                    HStack {
+                        if progressWatch.stalled(at: context.date) {
+                            Text(String(format: "%.1f of %.1f GB", done, total) + " · No progress — check your connection")
+                                .foregroundStyle(Color.orange)
+                        } else {
+                            Text(FirstRunBrain.progressLine(doneGb: done, totalGb: total,
+                                                            speed: activeDownload(model)?.speedText, secondsLeft: left))
+                        }
+                        Spacer()
+                        Button("Stop") {
+                            OnboardingTimeline.record("download stopped")
+                            Task { await setup.download(model, cancel: true) }
+                        }
+                        .buttonStyle(.plain).foregroundStyle(Theme.textMuted)
+                        .disabled(setup.busy != nil)
+                        .help("Stops the download. Resume starts it again.")
+                    }
+                    .font(.system(size: 12).monospacedDigit()).foregroundStyle(Theme.textMuted).padding(.top, 6)
+                }
+                if let slept = notices.sleepLine(brain, downloads: setup.downloads) {
+                    Text(slept).font(.system(size: 11)).foregroundStyle(Theme.textMuted).padding(.top, 2)
+                }
+            case .ready(let label):
+                OnboardingCard(icon: "checkmark.circle.fill", title: "\(label) is ready",
+                               detail: "Wisp can answer now. Choose Done to open it.") { OnboardingPill(text: "Ready") }
+            default:
+                // Not downloading: whatever the footer offers (Download, Retry, a
+                // spinner while the engine starts) belongs up here as well.
+                OnboardingCard(icon: "arrow.down.circle", title: FirstRunSetup.notDownloadingTitle(brain.footer(stalled: stalled)),
+                               detail: FirstRunSetup.whileDownloading) {
+                    HStack(spacing: 8) { tourModelStatus }
+                }
+            }
+            diskWarningLine
+        }
+        .padding(.bottom, 14)
+    }
+
+    /// The engine's own task for the model being fetched, for its speed.
+    private func activeDownload(_ model: String) -> SetupGuideModel.DownloadTask? {
+        setup.downloads.first { $0.model == model && $0.active }
+    }
+
+    /// The line under the download card's heading on How to use.
+    nonisolated static let purposeLine = "Wisp is a quiet helper that lives on your Mac. It looks over your mail, calendar, "
+        + "reminders and notes, and helps you see what matters today, so less slips through the cracks."
+
+    /// How Wisp helps a day, one card each, in the order a morning meets them.
+    nonisolated static let helpsYourDay: [(icon: String, title: String, line: String)] = [
+        ("sun.horizon", "Brief", "Each morning, what needs you today: replies you owe, things due, and what's coming up."),
+        ("calendar.day.timeline.left", "Day", "Your meetings and to-dos in time order, so you can see the shape of your day."),
+        ("text.bubble", "Ask", "Ask anything, like \u{201C}what did Sam say about Friday?\u{201D} or \u{201C}remind me to call Mum at 6\u{201D}."),
+        ("brain", "Remembers for you", "It slowly learns the people and plans in your mail, and the facts you tell it. "
+            + "You can see and remove anything in Memory."),
+        ("waveform", "Voice", "Press \u{2325} \u{21E7} Space and just talk. Wisp can read its answers aloud too."),
+        ("lock.shield", "Private by design", "Wisp's model runs on this Mac, so what it reads stays here "
+            + "unless you choose a cloud model in Settings."),
+    ]
 
     /// Opt-in, off by default: macOS's answer is read, never assumed, and only
     /// the switch changes it.

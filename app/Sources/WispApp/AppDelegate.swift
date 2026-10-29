@@ -184,6 +184,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func launch() {
         launched = true
+        // Opened from Downloads (or macOS's temporary copy of a download): offer to
+        // move into Applications first, before anything starts. Only the person's
+        // click moves it; then this copy quits and the moved one opens.
+        if MoveToApplications.offerIfNeeded() == .relaunching {
+            terminateWithoutShutdown()
+            return
+        }
         // A committed /resetwisp (its marker is on disk): this app's part runs once
         // per marker, before any setting is read, so this launch is a first run.
         var resetPending = false
@@ -266,9 +273,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.model.serviceReachable = true
                 self.model.serviceStarting = false
                 self.considerKnowYouOffer(after: 5)
-                // Whatever failed to load while the service was away loads now.
+                // The service keeps each source's last sync in memory only, so a
+                // service that just came up (a relaunch, macOS's Quit & Reopen after
+                // Full Disk Access) has no Calendar or Reminders until the readers
+                // post again, and their launch-time posts went out before it was
+                // listening. Post them now, then load what was waiting.
+                self.resyncAllReaders()
                 Task { @MainActor [weak self] in
                     guard let self else { return }
+                    await self.todayModel.refresh()
+                    await DayCards.refresh(force: true)
+                    self.model.onResize()
+                    // The readers' posts land a moment later (EventKit reads off the
+                    // main thread), so look once more for what they brought.
+                    try? await Task.sleep(nanoseconds: NativeSyncPace.reachableRefreshDelay)
                     await self.todayModel.refresh()
                     await DayCards.refresh(force: true)
                     self.model.onResize()
@@ -573,7 +591,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if step == .tour, FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }),
                    self?.setupModel.status?.canAnswer == true {
                     if self?.claimFirstBrief() == true { self?.requestFirstBrief() }
-                } else if step == .tour, FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }) {
+                } else if FirstRunSetup.owesFirstBrief(after: step), FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) }) {
                     // Reached before the model: the Brief is owed, and asked for once
                     // the model answers (finishing setup or the readiness watch).
                     self?.oweFirstBrief()
@@ -588,6 +606,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             aboutYouDecided: {
                 UserDefaults.standard.set(true, forKey: FirstRunSetup.aboutYouDecidedKey)
                 UserDefaults.standard.set(Date(), forKey: KnowYouSecondOffer.decidedAtKey)
+            },
+            closeForNow: { [weak self] in
+                // Put aside while the model downloads: the first Brief is owed, so it
+                // is composed the moment the model answers, before Wisp is opened.
+                if FirstRunSetup.owesFirstBrief(after: OnboardingStep.restored(
+                    UserDefaults.standard.object(forKey: FirstRunSetup.stepKey) as? Int)) {
+                    self?.oweFirstBrief()
+                }
+                self?.firstRunWindow?.close()
             }))
     }
 
@@ -702,8 +729,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if cue != self.model.setupCard { self.model.setupCard = cue }
                 guard canAnswer else { continue }
                 self.settleFirstBrief(canAnswer: true)
+                let onPermissions = UserDefaults.standard.integer(forKey: FirstRunSetup.stepKey)
+                    == OnboardingStep.permissions.rawValue
                 if FirstRunSetup.notifiesReady(promised: self.notifyOnReady, windowUp: self.firstRunWindow != nil,
-                                               windowMinimized: self.firstRunWindow?.isMiniaturized == true) {
+                                               windowMinimized: self.firstRunWindow?.isMiniaturized == true,
+                                               wispFrontmost: NSApp.isActive, onPermissions: onPermissions) {
                     self.tellReady()
                 }
                 self.notifyOnReady = false
@@ -920,6 +950,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// this switch, never its callers.
     private func open(_ route: WispRoute) {
         switch route {
+        case .settings, .setup: break
+        default: if holdUntilModelReady() { return }
+        }
+        switch route {
         case .chat(let sessionId):
             if let sessionId { wispWindow.show(sessionId: sessionId) } else { wispWindow.show() }
         case .chatList:
@@ -950,6 +984,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             closeSearch()
             return
         }
+        if holdUntilModelReady() { return }
         // Record intent before the asynchronous capture, so repeated shortcuts
         // cancel it and stale captures can never reopen a dismissed surface.
         cancelScheduledCollapse()
@@ -1082,6 +1117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // between the notch bar and the expanded assistant. No reset — the visible
     // transcript (and server-side session) survive collapse/expand.
     private func askByVoice() {
+        if holdUntilModelReady() { return }
         notchDocked = true
         if presentation.desired != .chat {
             model.prepareTab(byHover: false)
@@ -1103,6 +1139,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             setupMenuItem?.isHidden = !FirstRunSetup.menuOffersSetup(
                 canAnswer: setupCanAnswer, card: model.setupCard, firstRunWindowUp: firstRunWindow != nil,
                 unfinished: FirstRunSetup.isUnfinished { UserDefaults.standard.bool(forKey: $0) })
+            // While the model downloads, the menu says so first, in plain words.
+            if let progress = shownDownloadProgress {
+                setupMenuItem?.title = FirstRunSetup.menuBarProgressMenuLine(progress)
+            } else {
+                setupMenuItem?.title = "Finish Setup…"
+            }
             statusItem.menu = menu
             statusItem.button?.performClick(nil)
             statusItem.menu = nil
@@ -1178,7 +1220,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func expand() {
         notchDocked = true
+        if holdUntilModelReady() { return }
         requestPresentation(.chat)
+    }
+
+    /// While setup is under way and the model hasn't arrived (FirstRunSetup.gatesUse),
+    /// the notch, the Wisp window and asking stay closed: a click on any of them
+    /// brings the setup window forward instead, and it says why. Setup, Permissions
+    /// and Settings stay open. Returns whether the click was held back.
+    private func holdUntilModelReady() -> Bool {
+        guard modelGateHolds else { return false }
+        OnboardingTimeline.record("open held until the model is ready")
+        bringSetupForward()
+        // After the window's view is up, so a window built just now hears it too.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            NotificationCenter.default.post(name: .wispHeldUntilModelReady, object: nil)
+        }
+        return true
+    }
+
+    private var modelGateHolds: Bool {
+        FirstRunSetup.gatesUse(setupUnfinished: FirstRunSetup.isUnfinished { UserDefaults.standard.bool(forKey: $0) },
+                               canAnswer: setupCanAnswer)
     }
 
     private func collapse() {
@@ -1318,9 +1381,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Hover intent
 
+    /// Hover never opens anything while the model gate holds: only a click
+    /// brings the setup window forward (holdUntilModelReady).
     private var canHoverOpen: Bool {
         model.collapsed && notchDocked && presentation.active == nil
-            && presentation.desired == .bar
+            && presentation.desired == .bar && !modelGateHolds
     }
 
     private func pointerInHoverZone() -> Bool {
@@ -1579,6 +1644,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             model.objectWillChange.sink { _ in changed() },
             todayModel.objectWillChange.sink { _ in changed() },
             DisplayGeometry.shared.$layout.sink { _ in changed() },
+            setupModel.objectWillChange.sink { _ in changed() },
         ]
         updateMenuBarStatus()
     }
@@ -1597,6 +1663,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateMenuBarStatus() {
         guard let button = statusItem?.button else { return }
+        // The model download as a ring around the icon, so it can be watched from
+        // anywhere once the setup window is put aside.
+        let progress = FirstRunSetup.menuBarProgress(FirstRunBrain.from(status: setupModel.status,
+                                                                         downloads: setupModel.downloads),
+                                                     polling: setupModel.isShown)
+        if progress != shownDownloadProgress {
+            shownDownloadProgress = progress
+            button.image = Self.menubarOrb(progress: progress)
+            button.toolTip = progress.map(FirstRunSetup.menuBarProgressTip) ?? "Wisp"
+            // Said in words beside the ring too: Wisp isn't usable yet.
+            shownMenuBarStatus = nil
+        }
         // The same conditions as the collapsed bar (OverlayView.notchBar).
         let status = DisplayGeometry.shared.layout.statusInMenuBar
             ? MenuBarStatus(working: model.isProcessing || model.phase == .streaming,
@@ -1605,9 +1683,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             : MenuBarStatus(working: false, dueToday: 0, setupSetAside: false)
         guard status != shownMenuBarStatus else { return }
         shownMenuBarStatus = status
-        button.title = status.title
-        button.imagePosition = status.title.isEmpty ? .imageOnly : .imageLeading
-        button.setAccessibilityLabel(status.accessibilityLabel)
+        let title = shownDownloadProgress.map(FirstRunSetup.menuBarProgressTitle) ?? status.title
+        button.title = title
+        button.imagePosition = title.isEmpty ? .imageOnly : .imageLeading
+        button.setAccessibilityLabel(shownDownloadProgress.map(FirstRunSetup.menuBarProgressTip)
+                                     ?? status.accessibilityLabel)
         setWorkingPulse(status.mark == .working)
     }
 
@@ -1635,15 +1715,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private static func menubarOrb() -> NSImage {
+    /// The download ring shown on the icon right now (nil: the plain orb).
+    private var shownDownloadProgress: Double?
+
+    /// Wisp's orb; with `progress`, a faint ring with the part downloaded drawn
+    /// full strength, clockwise from the top.
+    private static func menubarOrb(progress: Double? = nil) -> NSImage {
         let d: CGFloat = 18
         let img = NSImage(size: NSSize(width: d, height: d))
         img.lockFocus()
         if let ctx = NSGraphicsContext.current?.cgContext {
             ctx.setLineWidth(1.5)
-            ctx.setStrokeColor(NSColor.black.cgColor)
             let inset: CGFloat = 2.5
-            ctx.strokeEllipse(in: CGRect(x: inset, y: inset, width: d - 2 * inset, height: d - 2 * inset))
+            if let progress {
+                ctx.setStrokeColor(NSColor.black.withAlphaComponent(0.3).cgColor)
+                ctx.strokeEllipse(in: CGRect(x: inset, y: inset, width: d - 2 * inset, height: d - 2 * inset))
+                let top = CGFloat.pi / 2
+                ctx.addArc(center: CGPoint(x: d / 2, y: d / 2), radius: d / 2 - inset,
+                           startAngle: top, endAngle: top - CGFloat(progress) * 2 * .pi, clockwise: true)
+                ctx.setStrokeColor(NSColor.black.cgColor)
+                ctx.setLineCap(.round)
+                ctx.strokePath()
+            }
+            ctx.setStrokeColor(NSColor.black.cgColor)
+            if progress == nil {
+                ctx.strokeEllipse(in: CGRect(x: inset, y: inset, width: d - 2 * inset, height: d - 2 * inset))
+            }
             ctx.setFillColor(NSColor.black.cgColor)
             ctx.fillEllipse(in: CGRect(x: d * 0.6, y: d * 0.6, width: 3, height: 3))
         }
@@ -1736,6 +1833,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             resyncReaders(after: item)
         }
     }
+
+    /// Every source reader posts what it can read now. Each one still reads only
+    /// what macOS already allows, so this never asks for anything.
+    private func resyncAllReaders() {
+        for item in Self.resyncedWhenReachable { resyncReaders(after: item) }
+    }
+
+    /// The readers posted again each time Wisp's service comes up. The service
+    /// holds each source's last sync in memory only, and a reader's launch-time
+    /// posts can land before a cold service listens, which left Reminders missing
+    /// for a heartbeat after macOS's Quit & Reopen (2026-10-29 fresh-install test).
+    nonisolated static let resyncedWhenReachable: [FirstRunPermissions.Item] = [.calendar, .reminders, .fullDiskAccess, .contacts]
 
     private func resyncReaders(after item: FirstRunPermissions.Item) {
         switch item {

@@ -832,8 +832,152 @@ struct FirstRunSetupChecks {
         check(FirstRunPermissions.fullDiskAccessState(home: scratch) == .allowed, "Readable Mail folder")
         try? FileManager.default.removeItem(at: scratch)
 
+        dev8OnboardingChecks()
+
         // /resetwisp brings all of the above back to a fresh Mac (tests/WispResetChecks.swift).
         WispResetChecks.run()
-        print("PASS: first-run setup — show and resume rules, 11 step-1 states, download click, time left, tour hints, readers never ask, ready notification, remote-only, reopen cap, Full Disk Access, Contacts on its own, slow service, one Return per state, open at login")
+        print("PASS: first-run setup — model gate, Move to Applications, readers re-post when the service comes up, show and resume rules, 11 step-1 states, download click, time left, tour hints, readers never ask, ready notification, remote-only, reopen cap, Full Disk Access, Contacts on its own, slow service, one Return per state, open at login")
+    }
+
+    /// dev8 (2026-10-29 fresh-install test): the model gate, How to use's download
+    /// line, Move to Applications, and the readers that re-post when the service comes up.
+    static func dev8OnboardingChecks() {
+        // Wisp waits for its model only while setup is under way.
+        check(FirstRunSetup.gatesUse(setupUnfinished: true, canAnswer: nil), "Service not answered yet: held")
+        check(FirstRunSetup.gatesUse(setupUnfinished: true, canAnswer: false), "Downloading: held")
+        check(!FirstRunSetup.gatesUse(setupUnfinished: true, canAnswer: true), "Model ready: open")
+        check(!FirstRunSetup.gatesUse(setupUnfinished: false, canAnswer: false),
+              "Someone already set up is never held back, even if the model stops answering")
+
+        // How to use's line: only what is known.
+        check(FirstRunBrain.progressLine(doneGb: 2.5, totalGb: 5.5, speed: "10 MB/s", secondsLeft: 360)
+              == "2.5 of 5.5 GB · 10 MB/s · about 6 minutes left", "Size, speed and time left")
+        check(FirstRunBrain.progressLine(doneGb: 0, totalGb: 5.5, speed: nil, secondsLeft: nil) == "0.0 of 5.5 GB",
+              "Nothing moving yet: no speed, no guess")
+        check(FirstRunSetup.notDownloadingTitle(.download) == "The model hasn't started downloading"
+              && FirstRunSetup.notDownloadingTitle(.working("Starting Wisp…")) == "Starting Wisp…",
+              "How to use names what the model is doing when it isn't downloading")
+        check(FirstRunSetupView.helpsYourDay.map(\.title).prefix(3) == ["Brief", "Day", "Ask"],
+              "What Wisp is for starts with the three tabs")
+        check(!FirstRunSetupView.helpsYourDay.contains { $0.line.contains("never leave") },
+              "No absolute local claim: a cloud model is the person's choice")
+
+        // Waiting out the download (item 6): a ring on the menu bar icon, a sample tour,
+        // and "Wisp is ready" even when the setup window was left behind another app.
+        let downloading = FirstRunBrain.downloading(model: gemma, label: "Gemma 4 E4B", fraction: 0.47, doneGb: 2.6,
+                                                    totalGb: 5.5, secondsLeft: 300)
+        check(FirstRunSetup.menuBarProgress(downloading) == 0.45, "The ring moves in 5% steps")
+        check(FirstRunSetup.menuBarProgress(downloading, polling: false) == nil,
+              "Setup stopped reading the download: no ring that could stick on a stale reading")
+        check(FirstRunSetup.menuBarProgress(.ready(label: "Gemma 4 E4B")) == nil
+              && FirstRunSetup.menuBarProgress(.checking) == nil, "No ring when nothing downloads")
+        check(FirstRunSetup.menuBarProgressTip(0.45).hasPrefix("Wisp is downloading its model · 45%"), "Tooltip")
+        check(FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: false,
+                                          wispFrontmost: false, onPermissions: false),
+              "Setup left behind another app while the model downloads: notify")
+        check(!FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: false,
+                                           wispFrontmost: false, onPermissions: true),
+              "On Permissions, System Settings in front is part of setup: no notification")
+        check(!FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: false,
+                                           wispFrontmost: true, onPermissions: false),
+              "Looking at setup: no notification")
+        check(FirstRunSetup.menuBarProgressTitle(0.45) == "Downloading 45%"
+              && FirstRunSetup.menuBarProgressMenuLine(0.45).hasPrefix("Model downloading (45%)"),
+              "The menu bar says in words that the model isn't downloaded yet")
+        check(!FirstRunSetup.owesFirstBrief(after: .brain) && !FirstRunSetup.owesFirstBrief(after: .permissions)
+              && FirstRunSetup.owesFirstBrief(after: .google) && FirstRunSetup.owesFirstBrief(after: .tour),
+              "The first Brief is owed once Permissions is behind the person")
+        check(OnboardingTour.pages.map(\.tab) == ["Brief", "Day", "Ask"], "The tour follows the notch's tabs")
+        check(OnboardingTour.step(0, by: -1) == 0 && OnboardingTour.step(2, by: 1) == 2
+              && OnboardingTour.step(2, by: -2) == 0 && OnboardingTour.position(1) == "2 of 3",
+              "Back and Next stay on the pages; Start over goes to the first")
+
+        // Move to Applications: asked only where a download lands.
+        let home = "/Users/sam"
+        typealias Place = MoveToApplications.Place
+        let places: [(String, Bool, Place)] = [
+            ("/Applications/Wisp.app", false, .applications),
+            ("/Users/sam/Applications/Wisp.app", false, .applications),
+            ("/Users/sam/Downloads/Wisp.app", false, .downloaded),
+            ("/Users/sam/Downloads/Wisp-0.5.0/Wisp.app", false, .downloaded),
+            ("/Users/sam/Desktop/Wisp.app", false, .downloaded),
+            ("/Volumes/Wisp/Wisp.app", false, .diskImage),
+            ("/private/var/folders/x/AppTranslocation/ABC/d/Wisp.app", false, .translocated),
+            ("/Users/sam/Downloads/Wisp.app", true, .translocated),
+            ("/Users/sam/code/wisp/.build/Wisp.app", false, .elsewhere),
+        ]
+        for (path, translocated, want) in places {
+            check(MoveToApplications.place(bundlePath: path, home: home, translocated: translocated) == want, path)
+        }
+        check(MoveToApplications.place(bundlePath: "/Users/sam/Downloads/Wisp.app", home: "/Users/sam/", translocated: false)
+              == .downloaded, "A home with a trailing slash")
+        func offers(_ place: Place, declined: Bool = false, app: Bool = true, quarantined: Bool = true,
+                    preview: Bool = false) -> Bool {
+            MoveToApplications.offers(place: place, declined: declined, isAppBundle: app,
+                                      quarantined: quarantined, previewBuild: preview)
+        }
+        check(offers(.downloaded) && offers(.translocated), "A download in Downloads and macOS's temporary copy are asked")
+        check(!offers(.downloaded, declined: true), "Don't ask again holds")
+        check(!offers(.applications) && !offers(.elsewhere) && !offers(.downloaded, app: false),
+              "Already in Applications, a build folder, or not an app bundle: never asked")
+        // Release Auditor, 6c3d68d4: a build in a repo on the Desktop (no quarantine
+        // mark) or any preview build is never asked, so a move can't Trash build output
+        // or replace the re-signed local install.
+        check(!offers(.downloaded, quarantined: false), "Built on this Mac, say in ~/Desktop/MOE_Project: never asked")
+        check(!offers(.downloaded, preview: true) && !offers(.translocated, preview: true)
+              && !offers(.diskImage, preview: true), "A preview build: never asked")
+        check(offers(.diskImage, quarantined: false), "A disk image with no mark of its own is still asked")
+        check(MoveToApplications.offerDetail(place: .diskImage).hasPrefix("Wisp is running from a disk image."),
+              "The offer names a disk image")
+        check(MoveToApplications.failureDetail("x.", oldWispTrashed: false).contains("Nothing was removed")
+              && !MoveToApplications.failureDetail("x.", oldWispTrashed: true).contains("Nothing was removed")
+              && MoveToApplications.failureDetail("x.", oldWispTrashed: true).contains("is in the Trash"),
+              "A failed move says truthfully whether the old Wisp is in the Trash")
+        // A copy that stops part-way leaves no hidden staging copy behind, and says the
+        // old Wisp wasn't touched. An unreadable file makes copyItem fail mid-bundle.
+        let moveScratch = FileManager.default.temporaryDirectory.appendingPathComponent("wisp-move-\(UUID().uuidString)")
+        let source = moveScratch.appendingPathComponent("Downloads/Wisp.app")
+        let apps = moveScratch.appendingPathComponent("Applications")
+        try! FileManager.default.createDirectory(at: source.appendingPathComponent("Contents/Resources"),
+                                                 withIntermediateDirectories: true)
+        try! FileManager.default.createDirectory(at: apps, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: source.appendingPathComponent("Contents/Info.plist").path, contents: Data("a".utf8))
+        let locked = source.appendingPathComponent("Contents/Resources/locked")
+        FileManager.default.createFile(atPath: locked.path, contents: Data("b".utf8))
+        try! FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: locked.path)
+        var failure: MoveToApplications.MoveFailure?
+        do {
+            try MoveToApplications.move(from: source, original: source, target: apps.appendingPathComponent("Wisp.app"))
+        } catch let error as MoveToApplications.MoveFailure {
+            failure = error
+        } catch {}
+        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: apps.path)) ?? ["?"]
+        check(failure?.oldWispTrashed == false, "The copy failed before anything was Trashed")
+        check(leftovers.isEmpty, "No hidden .Wisp-moving copy is left in Applications: \(leftovers)")
+        check(FileManager.default.fileExists(atPath: source.path), "The download is left where it was")
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: locked.path)
+        try? FileManager.default.removeItem(at: moveScratch)
+
+        check(FirstRunSetup.heldBackLine(.retry).contains("Settings › Models")
+              && FirstRunSetup.heldBackLine(.checkAgain).contains("Check again")
+              && FirstRunSetup.heldBackLine(.working("Downloading · 4%")) == FirstRunSetup.heldBackLine,
+              "Held back with the model not on its way: the line names the way out")
+        let replace = MoveToApplications.replaceDetail(existing: "0.5.0 (3075)", this: "0.5.0 (3120)")
+        check(replace.contains("The one there is 0.5.0 (3075); this one is 0.5.0 (3120).")
+              && replace.contains("goes to the Trash") && replace.contains("stay as they are"),
+              "Replacing says both versions, the Trash, and that data stays")
+        check(MoveToApplications.replaceDetail(existing: nil, this: nil).hasPrefix("Replace it"), "Unknown versions")
+        check(MoveToApplications.needsAdmin(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError))
+              && MoveToApplications.needsAdmin(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError,
+                    userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))]))
+              && !MoveToApplications.needsAdmin(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError)),
+              "Only a permission refusal reads as needing an administrator")
+
+        // Reminders after macOS's Quit & Reopen: every reading source re-posts when the
+        // service comes up, since it keeps their last sync in memory only.
+        check(Set(AppDelegate.resyncedWhenReachable).isSuperset(of: [.calendar, .reminders, .fullDiskAccess]),
+              "Calendar, Reminders and the Full Disk Access readers re-post on reconnect")
+        check(!AppDelegate.resyncedWhenReachable.contains(where: \.isExtra),
+              "Nothing that only sends or looks at the screen")
     }
 }
