@@ -251,14 +251,21 @@ async def _power_fields(client) -> dict[str, int]:
 
 async def _lift_gpu_power(client) -> bool | None:
     """Ask the bundled engine to drop its GPU power cap now, mid-request too.
-    True when it did, False when it can't (an engine without the route), None
-    when it couldn't be asked."""
-    from service.inference.power_tier import _LIFT_TIMEOUT_S
+    True when it did, False when it can't (an engine without the route: 404
+    or 405), None when it couldn't be asked or was too busy to answer (429,
+    5xx, anything else), so it is asked again. A closed client (its call has
+    ended) asks nothing and raises LiftClientClosed, so another capped call's
+    is asked."""
+    from service.inference.power_tier import _LIFT_TIMEOUT_S, LiftClientClosed
+    if getattr(getattr(client, "_client", None), "is_closed", False):
+        raise LiftClientClosed
     try:
         r = await client._client.post("/v1/wisp/gpu-power/lift", timeout=_LIFT_TIMEOUT_S)
     except Exception:  # noqa: BLE001 — unreachable, or a stand-in without an engine
         return None
-    return r.status_code == 200
+    if r.status_code == 200:
+        return True
+    return False if r.status_code in (404, 405) else None
 
 
 def _power_call_started(client, payload: dict) -> tuple[bool, int | None] | None:
