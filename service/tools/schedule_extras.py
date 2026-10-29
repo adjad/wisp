@@ -636,8 +636,11 @@ def _availability_result(options, period, timezone, now):
             return None
         # A subscribed holidays calendar's all-day entry (Halloween, Election
         # Day) is not the user being busy: it emptied whole days in the
-        # 2026-10-29 Ask run. The user's own all-day events still block.
-        if row.get("all_day") and _is_holiday_calendar_item(row):
+        # 2026-10-29 Ask run. Only a read-only calendar counts: the user's own
+        # "Family Holidays" calendar holds their trips, which still block, and
+        # so does any calendar whose writability was not reported.
+        if (row.get("all_day") and row.get("calendar_writable") is False
+                and _is_holiday_calendar_item(row)):
             return None
         if row.get("status") not in (None, "active", "tentative"):
             raise ValueError("An availability item has an unknown status; no slot was verified.")

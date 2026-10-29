@@ -152,6 +152,7 @@ def test_a_holiday_calendar_all_day_entry_is_not_busy(source, legacy):
     days with no gaps. Holidays calendars are skipped; the user's own all-day
     events still block (above)."""
     row=event(start='2026-10-10T00:00',end='2026-10-12T00:00', context='US Holidays'); row['all_day']=True
+    row['calendar_writable']=False
     source.rows=[row]
     assert 'No gaps' not in invoke(legacy)
     mine=event(start='2026-10-10T00:00',end='2026-10-12T00:00', context='Work'); mine['all_day']=True
@@ -328,3 +329,14 @@ def test_receipt_freshness_boundary_is_exact(source,age,ready):
 def test_unknown_manual_kind_cannot_hide_an_event(source):
     row={**event(),'source':'manual'};row.pop('kind',None);source.rows=[row]
     assert 'unknown kind' in invoke()
+
+
+@pytest.mark.parametrize('writable', [True, None])
+def test_the_users_own_holidays_calendar_still_blocks(source, writable):
+    """dev8 audit: a user-owned "Family Holidays" calendar holding an all-day trip
+    was treated as free. Only a read-only (subscribed) holidays calendar is skipped."""
+    trip=event(start='2026-10-10T00:00',end='2026-10-12T00:00', context='Family Holidays'); trip['all_day']=True
+    if writable is not None:
+        trip['calendar_writable']=writable
+    source.rows=[trip]
+    assert 'No gaps' in invoke(False)
