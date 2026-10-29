@@ -235,3 +235,40 @@ def test_alert_cards_come_before_people_and_deadlines():
     alert = card(9, "read", critical=True)
     ordered = cycle.order_cards(replies + [alert], [card(8, "block_time")])
     assert ordered[0]["id"] == "c9" and len(ordered) == 5
+
+
+def test_one_email_seen_through_mail_and_gmail_is_one_card(store):
+    """2026-10-29: the same GitHub alert showed as card 1 of 4 (Mail) and 4 of 4 (the
+    linked Gmail account). One Message-ID is one card."""
+    native = CRITICAL[0]
+    gmail = dict(native, account="adnjain.personal@gmail.com", account_id="google:adnjain.personal@gmail.com")
+    items = items_for([native, gmail])
+    _run(store, items, Model())
+    view = cycle.snapshot(now=NOW, tz=TZ, store=store, own=ME, linked=set(),
+                          schedule_fn=lambda n, z: {"calendar": [], "reminders": []})
+    alerts = [c for c in view["cards"] if "exposed secret" in c["title"]]
+    assert len(alerts) == 1
+
+
+def test_message_key_ignores_brackets_and_case():
+    assert prepare._message_key({"reply_ref": {"message_id": "<C1@X>"}}) == "c1@x"
+    assert prepare._message_key({"reply_ref": " <c1@x> "}) == "c1@x"
+    assert prepare._message_key({}) == ""
+
+
+def test_open_in_mail_hands_back_the_emails_own_link():
+    """2026-10-29: "Open in Mail?" marked the card done and opened nothing: the read
+    fire returned no link. It now returns Wisp's own link to that email."""
+    from service.proactive import executor
+
+    def fire(url):
+        card = {"id": "c", "action": {"method": "read", "open_url": url}}
+        return asyncio.run(executor._run(card, "read", "", None, {}, NOW))
+
+    mail_link = "message://%3Cc1%40x%3E"
+    assert fire(mail_link) == {"ok": True, "status": "succeeded", "open_url": mail_link, "result": "open_in_mail"}
+    gmail_link = "https://mail.google.com/mail/u/me%40gmail.com/#search/rfc822msgid%3Ac1%40x"
+    assert fire(gmail_link)["result"] == "open_in_gmail" and fire(gmail_link)["open_url"] == gmail_link
+    # Only the shapes Wisp builds itself: never a link that came from somewhere else.
+    for other in ("https://evil.example/x", "file:///etc/passwd", "", None):
+        assert "open_url" not in fire(other)

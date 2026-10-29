@@ -287,6 +287,14 @@ def _button(method: str, item: dict, has_event: bool, when: str = "") -> str:
     }[method]
 
 
+def _message_key(raw: dict) -> str:
+    """The email's own Message-ID, the same whichever way it arrived (Mail on this
+    Mac, or a linked Gmail account): one email is one card. Empty when unknown."""
+    ref = raw.get("reply_ref")
+    mid = ref.get("message_id") if isinstance(ref, dict) else ref
+    return str(mid or "").strip().strip("<>").strip().casefold()
+
+
 def _read_button(plan: dict) -> str:
     label = plan.get("open_label") or ""
     return f"{label}?" if label else "Mark as handled?"
@@ -345,6 +353,9 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
     linked = linked or set()
     allowed = allowed or set()
     cards = []
+    # Message-IDs already on a card (2026-10-29: one GitHub alert showed twice, once
+    # through Mail and once through the linked Gmail account).
+    shown_messages: set[str] = set()
 
     def why(item, reason):
         if debug is not None and item.get("waiting"):
@@ -358,6 +369,10 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
         raw = item.get("item") or {}
         if item["source"] == "reminders":
             continue                     # already a reminder: it stays on the to-do list
+        message = _message_key(raw) if item["source"] == "mail" else ""
+        if message and message in shown_messages:
+            why(item, "the same email is already on a card")
+            continue
         if raw.get("critical") and item["source"] == "mail":
             # A critical account alert: a review card with the fixed title, no draft.
             plan = _critical_plan(raw, freeze)
@@ -381,6 +396,8 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
                 "due_ts": None,
                 "critical": True,
             })
+            if message:
+                shown_messages.add(message)
             continue
         if item.get("unranked") and not (raw.get("person") and not raw.get("replied") and not raw.get("group")
                                          and item["source"] in ("mail", "messages")):
@@ -436,4 +453,6 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
             "due_ts": item.get("due_ts"),
             **({"_sealed": plan["sealed"]} if plan.get("sealed") else {}),
         })
+        if message:
+            shown_messages.add(message)
     return "ok", cards
