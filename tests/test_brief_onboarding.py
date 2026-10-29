@@ -77,7 +77,9 @@ def _isolated(monkeypatch, tmp_path):
 
 
 def _answer_onboarding(store) -> None:
-    store.record_completion(MARKER, repr(time.time()))
+    # Answered a minute after first launch, inside the mocked clock's day.
+    first = store.first_launch_at()
+    store.record_completion(MARKER, repr((INSTALLED if first is None else first) + 60))
 
 
 def _brief_keys(store) -> list[str]:
@@ -129,7 +131,7 @@ class TestEarlyFirstBrief:
         _isolated.record_completion(FIRST_LAUNCH_KEY, repr(INSTALLED))
         _answer_onboarding(_isolated)
         assert self._pending(6, 30) == (DAY, "morning")
-        assert self._pending(5, 30) == (DAY, "morning")
+        assert self._pending(5, 45) == (DAY, "morning")
 
     def test_due_at_any_hour_even_the_small_hours(self, _isolated):
         _isolated.record_completion(FIRST_LAUNCH_KEY, repr(datetime(2026, 10, 16, 0, 26).timestamp()))
@@ -153,7 +155,7 @@ class TestEarlyFirstBrief:
 
     def test_not_for_an_upgraded_install(self, _isolated):
         _isolated.record_completion(FIRST_LAUNCH_KEY, "0")
-        _answer_onboarding(_isolated)
+        _isolated.record_completion(MARKER, "60")   # an old marker is outside the window
         assert self._pending(6, 30) is None
 
     @pytest.mark.asyncio
@@ -237,17 +239,33 @@ class TestSmallHoursBrief:
         assert _brief_keys(_isolated) == ["daily_brief:2026-10-16:morning"]
 
 
+class TestEarlyWindow:
+    def _due(self, store, launched_h, answered_h):
+        now = datetime(2026, 10, 16, 12, 0)
+        store.record_completion(FIRST_LAUNCH_KEY, repr(now.timestamp() - launched_h * 3600))
+        store.record_completion(MARKER, repr(now.timestamp() - answered_h * 3600))
+        return scheduler._early_first_brief_due(now)
+
+    def test_window_runs_from_the_answer_not_first_launch(self, _isolated):
+        assert self._due(_isolated, launched_h=10, answered_h=1) is True
+
+    def test_an_old_answer_is_not_early(self, _isolated):
+        assert self._due(_isolated, launched_h=10, answered_h=7) is False
+
+
 class TestKick:
-    def test_resets_the_proactive_and_overview_gaps_and_starts_the_brief(self, _isolated, monkeypatch):
+    def test_starts_the_brief_without_making_proactive_and_gists_due_together(self, _isolated, monkeypatch):
         from service.assistant import mail_gists
         from service.proactive import cycle
-        monkeypatch.setattr(cycle, "_next_tick_at", time.time() + 300)
-        monkeypatch.setattr(mail_gists, "_next_call_at", time.time() + 300)
+        later = time.time() + 300
+        monkeypatch.setattr(cycle, "_next_tick_at", later)
+        monkeypatch.setattr(mail_gists, "_next_call_at", later)
         started = []
         monkeypatch.setattr(scheduler, "_start_daily_brief", lambda: started.append(1))
         scheduler.kick_first_brief()
-        assert cycle._next_tick_at == 0.0 and mail_gists._next_call_at == 0.0
         assert started == [1]
+        # Neither gap was pulled in, so the two cannot become due at the same moment.
+        assert cycle._next_tick_at == later and mail_gists._next_call_at == later
 
     def test_endpoint_kicks_only_on_the_first_report(self, _isolated, monkeypatch):
         from fastapi.testclient import TestClient

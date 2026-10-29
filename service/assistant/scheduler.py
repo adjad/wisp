@@ -467,8 +467,10 @@ ONBOARDING_ANSWERED_KEY = "install:onboarding_answered_at"
 # duplicate), the evening run still follows, and the next day's morning run is a
 # different key and runs normally. It happens once per install: after any
 # summary has ever been queued, the ordinary schedule is the only schedule.
-# The install must be under six hours old (onboarding is a first-run step), so an upgraded
-# install, or an old marker, never triggers it.
+# The window is six hours from when onboarding was answered (the marker), not from
+# first launch: setup can be set aside while the model downloads, so the answer may
+# arrive hours after the first launch. An upgraded install has no marker, and a
+# stale marker is outside the window, so neither triggers it.
 FIRST_RUN_WINDOW_S = 6 * 3600
 
 
@@ -480,8 +482,11 @@ def _early_first_brief_due(now: datetime) -> bool:
     """Whether the install's first Daily Summary is due ahead of its hour."""
     if not _onboarding_answered():
         return False
-    first = assistant_store.first_launch_at()
-    if first is None or not 0 <= now.timestamp() - first < FIRST_RUN_WINDOW_S:
+    try:
+        answered = float(assistant_store.completion(ONBOARDING_ANSWERED_KEY))
+    except (TypeError, ValueError):
+        return False
+    if not 0 <= now.timestamp() - answered < FIRST_RUN_WINDOW_S:
         return False
     # Events may be pruned and acknowledgements land in completions: either says "delivered".
     receipts = ("daily_brief", "daily_brief:morning", "daily_brief:evening", _DAY_ONE_KEY)
@@ -490,22 +495,15 @@ def _early_first_brief_due(now: datetime) -> bool:
 
 
 def kick_first_brief() -> None:
-    """Called when the app reports onboarding answered: make the first Brief and
-    the proactive and overview work start now rather than at their next gap.
+    """Called when the app reports onboarding answered: start the first Brief now
+    rather than at the loop's next tick.
 
-    Only resets "not before" gaps and starts the same single-flight runs the
-    loop would start on its next tick; the Brief still goes through
-    _start_daily_brief (deduped by its day and run key), so it cannot repeat."""
-    try:
-        from service.proactive import cycle as proactive_cycle
-        proactive_cycle._next_tick_at = 0.0
-    except Exception:  # noqa: BLE001 — a missed nudge only means the next tick
-        pass
-    try:
-        from service.assistant import mail_gists
-        mail_gists._next_call_at = 0.0
-    except Exception:  # noqa: BLE001
-        pass
+    Starts the same single-flight run the loop would start; it still goes through
+    _start_daily_brief (deduped by its day and run key), so it cannot repeat. The
+    Brief is model-free and does not use the mail gists, so it needs neither gap
+    reset. The proactive cycle and the gist refresh stay on their own gaps: the
+    resident model cannot run calls in parallel, and resetting both would start
+    them together."""
     try:
         _start_daily_brief()
     except Exception:  # noqa: BLE001 — the loop starts it on its next tick
