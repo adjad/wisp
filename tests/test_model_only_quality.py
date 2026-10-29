@@ -539,7 +539,7 @@ def test_day_plan_tool_only_reads_the_snapshot(monkeypatch):
     text = asyncio.run(proactive_tools.get_my_day_plan())
     assert calls and "Day plan for" in text
     tool = registry.get_tool("get_my_day_plan")
-    assert tool.category == "assistant_read" and tool.parameters["properties"] == {}
+    assert tool.category == "assistant_read" and set(tool.parameters["properties"]) == {"day"}
 
 
 def test_day_plan_ranks_first_in_the_ask_head_start(monkeypatch):

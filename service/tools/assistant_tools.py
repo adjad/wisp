@@ -565,7 +565,7 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     if period:
         from service.tools.timeranges import resolve_span, BadPeriod
         try:
-            start, end, window_label = resolve_span(period)
+            start, end, window_label = resolve_span(period, forward=True)
         except BadPeriod as exc:
             return f"(error: {exc})"
         today_period = start == today_start and end == today_end
@@ -1384,6 +1384,12 @@ def reminders_matching(scope: str = "all", query: str = "",
              if c.get("source") in _REMINDER_SOURCES
              or bool(_REMINDER_SOURCES & set(c.get("duplicate_sources") or []))]
     needle = (query or "").strip().lower()
+    # "all", "*" or "everything" from the model means list them all, not a
+    # reminder titled "all" (2026-10-29 Ask run: "you have no reminders").
+    if needle in {"all", "*", "any", "everything", "reminder", "reminders", "my reminders",
+                  "tasks", "task", "to-dos", "todos", "to do", "todo", "due", "due soon",
+                  "upcoming", "overdue", "open", "pending", "incomplete"}:
+        needle = ""
     if needle:
         items = [c for c in items if needle in (c.get("title") or "").lower()]
     return items
@@ -1456,26 +1462,49 @@ def _stale_note(hidden: int) -> str:
             "(no Apple Reminders copy is confirmed). Ask to clear past-due items to remove them.")
 
 
+# A time word passed as the query is a time scope, not a title: "overdue" listed
+# every reminder and the model called them all overdue (0.5.0 dev8 audit).
+_OVERDUE_WORDS = frozenset({"overdue", "past due", "past-due", "late", "missed"})
+_DUE_SOON_WORDS = frozenset({"due soon", "due", "upcoming", "coming up", "soon", "next"})
+DUE_SOON_DAYS = 7
+
+
+def _reminder_query_scope(query: str, scope: str) -> tuple[str, str, int | None]:
+    """(query, scope, horizon in days) with a time word in the query applied as a
+    scope: "overdue" → past_due, "due soon" → upcoming within DUE_SOON_DAYS."""
+    needle = (query or "").strip().lower()
+    if (scope or "all").strip().lower() == "all":
+        if needle in _OVERDUE_WORDS:
+            return "", "past_due", None
+        if needle in _DUE_SOON_WORDS:
+            return "", "upcoming", DUE_SOON_DAYS
+    return query, scope, None
+
+
 @register(
     "search_reminders",
-    "Search current Apple Reminders and retained Wisp-only reminder records "
+    "The user's to-dos, tasks and reminders: open, pending, overdue, due soon, "
+    "school or work tasks. Leave query empty to list them; set it only to words "
+    "from a reminder's title (never 'due', 'tasks' or a date). "
+    "Searches current Apple Reminders and retained Wisp-only reminder records "
     "by title, including overdue items. Calendar events are excluded. A "
     "Wisp-only record may be a historical mirror whose Apple copy was deleted; "
     "show it separately for review, never call it a current Apple item. "
     "Storage source labels do not identify who created a reminder.",
     {"type": "object",
      "properties": {
-         "query": {"type": "string", "description": "title text to match"},
+         "query": {"type": "string", "description": "title words to match; empty lists every reminder in scope"},
          "scope": {"type": "string",
                    "enum": ["today", "tomorrow", "past_due", "upcoming", "all"],
                    "description": "time scope; all includes overdue active reminders"},
      },
-     "required": ["query"]},
+     "required": []},
     category="assistant_read",
     aliases=["when is my vaccine reminder", "find my dentist reminder",
              "what does my reminder say"],
 )
-async def search_reminders(query: str, scope: str = "all") -> str:
+async def search_reminders(query: str = "", scope: str = "all") -> str:
+    query, scope, horizon = _reminder_query_scope(query, scope)
     from service.assistant.sync_status import ensure_sources
     readiness = await ensure_sources(("reminders",), timeout_seconds=4.0)
     state = next((source["state"] for source in readiness["sources"]
@@ -1495,6 +1524,9 @@ async def search_reminders(query: str, scope: str = "all") -> str:
     # Wisp's own records remain searchable while Apple Reminders cannot be
     # verified; only the native snapshot is withheld.
     items, hidden = _drop_stale_wisp_only(reminders_matching(scope, query))
+    if horizon is not None:
+        cutoff = time.time() + horizon * 86400
+        items = [c for c in items if float(c.get("when_ts") or 0) <= cutoff]
     stale_note = _stale_note(hidden)
     if notice:
         items = _without_withheld_sources(items, {"reminders"})
@@ -1508,6 +1540,12 @@ async def search_reminders(query: str, scope: str = "all") -> str:
                 "Apple Reminders couldn't be checked; they may still be active):\n"
                 + "\n".join(wisp_lines) + stale_note)
     undated_section, undated_caveat = _undated_report(query, scope)
+    filtered = ("Only reminders already overdue (due before now) are listed." if scope == "past_due"
+                and not query else f"Only reminders due in the next {horizon} days are listed."
+                if horizon is not None else "")
+    if not items and not undated_section and filtered:
+        return ("A current Reminders read found " + ("no overdue reminders." if scope == "past_due"
+                else f"nothing due in the next {horizon} days.") + stale_note)
     if not items and not undated_section:
         return (f"A current Reminders read found no active match for {query!r}"
                 + (" among reminders with a due date" if undated_caveat else "") + ". "
@@ -1523,6 +1561,8 @@ async def search_reminders(query: str, scope: str = "all") -> str:
     sections = ["A fresh Apple Reminders read supersedes older remembered claims. "
                 "These lists describe storage, not who created an item. "
                 "Recently Deleted status is not independently verified."]
+    if filtered:
+        sections.append(filtered)
     sections.append("Apple Reminders incomplete-item matches:\n" +
                     ("\n".join(native_lines) if native_lines else
                      "None with a due date." if undated_section else "None."))

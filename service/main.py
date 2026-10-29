@@ -1652,8 +1652,10 @@ def _model_led_preload(prompt: str) -> list[str]:
     it never loads a model or touches the network; any failure means no preload."""
     try:
         from service.router.model_led import MAX_PRELOAD
+        from service.model_only import normalize_day_words
         from service.router.router import has_write_intent, mask_quoted
-        text = mask_quoted(prompt)
+        # "tommorow" never matched get_upcoming's day aliases (2026-10-29).
+        text = normalize_day_words(mask_quoted(prompt))
         return _reranker.ranked_lexical_candidates(text, writing=has_write_intent(text), k=MAX_PRELOAD)
     except Exception:  # noqa: BLE001 — a missing head start must never fail the turn
         return []
@@ -1674,8 +1676,9 @@ def _ask_tool_rank(prompt: str) -> tuple[list[str], list[str]]:
         from service.model_only import ASK_PRELOAD, ASK_STUBS
         from service.router.model_led import READ_CATEGORIES
         from service.router.router import has_write_intent, mask_quoted
+        from service.model_only import normalize_day_words
         from service.tools.registry import REGISTRY
-        text = mask_quoted(prompt)
+        text = normalize_day_words(mask_quoted(prompt))
         writing = has_write_intent(text)
 
         def reads_first(names: list[str]) -> list[str]:
@@ -1693,6 +1696,12 @@ def _ask_tool_rank(prompt: str) -> tuple[list[str], list[str]]:
         if not writing and mail_first(prompt) and "view_emails" in REGISTRY:
             # "When is the W-9 due?" went to web_search; the answer was in mail.
             head = ["view_emails", *(n for n in head if n != "view_emails")]
+        from service.model_only import calendar_first, reminders_first
+        if not writing:
+            for lead, wanted in (("get_upcoming", calendar_first(prompt)),
+                                 ("search_reminders", reminders_first(prompt))):
+                if wanted and lead in REGISTRY:
+                    head = [lead, *(n for n in head if n != lead)]
         preload = head[:ASK_PRELOAD]
         try:
             ranked = _reranker.ranked_lexical_candidates(text, writing=writing,
@@ -3354,7 +3363,7 @@ async def assistant_daily_summary(body: dict[str, Any] | None = None) -> dict[st
     Pass `session_id` to have the brief RECORDED in that conversation. Without
     it the button's answer exists only in the Swift transcript, and the backend —
     which is what answers the next message — has no idea the user was just shown
-    a summary. That is why the follow-ups failed: "send Trishe my daily summary"
+    a summary. That is why the follow-ups failed: "send Maya my daily summary"
     routes off the previous assistant turn (see the referenced_report case in
     scripts/verify_tool_calling.py), and for this button there was no previous
     assistant turn to find. A new session is opened when none is supplied, and
@@ -3431,14 +3440,17 @@ async def get_summary_schedule() -> dict[str, Any]:
 
 @app.post("/assistant/onboarding/brief_ready")
 async def onboarding_brief_ready() -> dict[str, Any]:
-    """The app reports that first-run onboarding reached its last step: the
-    permissions were answered or skipped and About you was done or skipped.
+    """The app reports that first-run onboarding is answered enough to build the
+    first Brief: Permissions is behind the person, or setup was closed for now.
+    The About-you answers may arrive after this.
 
-    Only records that, once. The first Daily Summary is still composed by the
-    scheduler on its next tick, through its normal path, so it can never be
-    duplicated and the morning run finds it already delivered."""
+    Records that, once, and asks the scheduler to start the first Daily Summary
+    now, at any hour. The Brief is still composed by
+    the scheduler's normal path, so it can never be duplicated and the morning
+    run finds it already delivered."""
     if assistant_store.completion(assistant_scheduler.ONBOARDING_ANSWERED_KEY) is None:
         assistant_store.record_completion(assistant_scheduler.ONBOARDING_ANSWERED_KEY, repr(time.time()))
+        assistant_scheduler.kick_first_brief()
     return {"ok": True}
 
 

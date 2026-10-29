@@ -42,7 +42,10 @@ struct OverlayView: View {
     var body: some View {
         Group {
             if model.collapsed {
-                if layout.barIsVisible { notchBar } else { hiddenBar }
+                // A notch fades to its hitbox and back as a full-screen app comes
+                // and goes (the hybrid notch); with Reduce Motion it just switches.
+                Group { if layout.barIsVisible { notchBar } else { hiddenBar } }
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: layout.barIsVisible)
             } else {
                 expandedPanel
             }
@@ -195,8 +198,9 @@ struct OverlayView: View {
         .onExitCommand { model.requestCollapse() }
     }
 
-    // Collapsed on a built-in display without a notch: nothing at all. Its status
-    // is on the menu-bar icon (AppDelegate.updateMenuBarStatus).
+    // Collapsed with nothing drawn: a built-in display without a notch, or a notch
+    // behind a full-screen app (the hybrid notch). Its status is on the menu-bar
+    // icon (AppDelegate.updateMenuBarStatus), and the window ignores the mouse.
     private var hiddenBar: some View {
         Color.clear.frame(width: layout.barSize.width, height: layout.barSize.height)
             .accessibilityHidden(true)
@@ -214,7 +218,7 @@ struct OverlayView: View {
                     .opacity(!reduceMotion && breathe ? 0.3 : 1)
                     .animation(reduceMotion ? nil : .easeInOut(duration: 1).repeatForever(autoreverses: true), value: breathe)
                     .accessibilityHidden(true)
-            } else if model.setupCard == .ready {
+            } else if model.setupCard.showsReadyDot {
                 // Ready while notifications are off: a still, quiet dot until the
                 // panel is opened (AppDelegate.tellReady, readyLineSeen).
                 HStack(spacing: 6) {
@@ -273,7 +277,7 @@ struct OverlayView: View {
     /// its dot and badge cannot be read as separate elements.
     private var notchBarStatus: String {
         if model.isProcessing || model.phase == .streaming { return "Working" }
-        if model.setupCard == .ready { return "Wisp is ready" }
+        if model.setupCard.showsReadyDot { return "Wisp is ready" }
         if model.setupCard != .later, todayModel.isShowingCurrentDay, todayCount > 0 {
             return todayCount == 1 ? "1 thing is due today" : "\(todayCount) things are due today"
         }

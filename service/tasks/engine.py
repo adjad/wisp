@@ -247,7 +247,7 @@ def _resolve_recipient_slot(plan: TaskPlan, *, contacts_resolver) -> tuple[str, 
 
     matches = contacts_resolver(raw) or []
     if not matches:
-        # No fuzzy matching on purpose: "trishe" is a question, not an
+        # No fuzzy matching on purpose: "maya" is a question, not an
         # autocorrect. Sending to the wrong person is unrecoverable.
         return _ask_for_recipient(
             plan, f"I couldn’t find a saved contact matching “{raw}.” "

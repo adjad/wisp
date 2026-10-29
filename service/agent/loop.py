@@ -390,16 +390,16 @@ SYSTEM = (
     "about themselves, EVEN IN PASSING and even when they never ask you to "
     "remember it. You are building a long-term picture of this person, not "
     "taking dictation. Save it the moment it comes up:\n"
-    "    * what they own, drive, or use — 'I drive a BMW', 'I'm on a Mac'\n"
+    "    * what they own, drive, or use — 'I drive a Subaru', 'I'm on a Mac'\n"
     "    * money and holdings — 'I invest in Nvidia and AMD', 'I bank with Chase'\n"
     "    * people in their life, and who those people are to them\n"
     "    * where they live, work, or study; their job, school, or field\n"
     "    * preferences, tastes, allergies, and how they want you to behave\n"
     "    * recurring routines, commitments, and ongoing projects\n"
     # VERIFIED FAILURE 2026-08-19 (user's debug export): a corrupted memory —
-    # "Adi's family includes his mom (AdiJain888@gmail.com)" — was live for
-    # weeks and used 624 times. AdiJain888@gmail.com is the USER'S OWN email
-    # (it's in the identity block below as one of THEIR addresses), not his
+    # "<user>'s family includes their mom (<the user's own address>)" — was live for
+    # weeks and used 624 times. That address is the USER'S OWN email
+    # (it's in the identity block below as one of THEIR addresses), not their
     # mom's. Nothing in that conversation ever gave a mom's email; the fact was
     # invented and then treated as settled, and every later "email my mom"
     # silently sent to the user's own inbox instead of asking who to actually
@@ -416,7 +416,7 @@ SYSTEM = (
     "wrong contact fact saved to memory does not just mislead one answer, it "
     "silently misdirects every future send to that person until someone "
     "notices.\n"
-    "  A statement like 'I invest in Nvidia and AMD, and I drive a BMW' is "
+    "  A statement like 'I invest in Nvidia and AMD, and I drive a Subaru' is "
     "THREE things worth keeping, and none of them came with the word "
     "'remember'. Waiting to be asked is the single most common way to get this "
     "wrong.\n"
@@ -430,11 +430,11 @@ SYSTEM = (
     "worse than not mentioning memory at all: the user has no way to tell the "
     "difference until it's already gone.\n"
     "  Write each fact as ONE short standalone sentence that still makes sense "
-    "months later with nothing around it: 'Adi drives a BMW', not 'he drives "
+    "months later with nothing around it: 'Sam drives a Subaru', not 'he drives "
     "one'. Skip anything that is only about the request in front of you ('open "
     "Safari', 'summarize this email') — that is a task, not a fact about them.\n"
-    # Verified failure: given "I invest in Nvidia and AMD, and I drive a BMW",
-    # saving only the investments and then claiming the BMW was saved too left
+    # Verified failure: given "I invest in Nvidia and AMD, and I drive a Subaru",
+    # saving only the investments and then claiming the car was saved too left
     # the car permanently unrecorded while telling the user the opposite.
     "  ONE `remember` CALL PER FACT. When a message contains several unrelated "
     "facts, emit several separate tool calls in that same turn — one for the "
@@ -665,6 +665,12 @@ _ASK_WRITE_DODGE = re.compile(
     # An announcement with no text after it: "Got it. I'll write a brief note…"
     r"|^\s*(?:(?:got it|sure|okay|ok|alright)[.,!]?\s*)?(?:i(?:'|’)ll|i will|let me)\s+"
     r"(?:write|draft|compose|check|look|put)\b[^\n]{0,160}$", re.I)
+# Prose around a tool call the model wrote as text, claiming the action ran:
+# "I've sent the email." Nothing ran, so it is never shown (0.5.0 dev8 audit).
+_ASK_DONE_CLAIM = re.compile(
+    r"\b(?:i(?:'|’)ve|i\s+have|i|it(?:'|’)s|has\s+been|have\s+been|was|were)\s+(?:just\s+|now\s+)?"
+    r"(?:sent|added|created|scheduled|set|saved|deleted|removed|moved|cancel+ed|texted|emailed|"
+    r"messaged|replied|forwarded|booked|updated|completed|marked)\b|^\s*(?:done|all\s+set|sent)\b", re.I)
 # Offered on a web-only personal re-prompt when the head start held none.
 _ASK_OWN_SOURCE_READS = ("view_emails", "search_reminders", "search_notes", "view_messages")
 _ASK_GUARD_MESSAGE = (
@@ -1723,6 +1729,7 @@ async def run_agent(
     # The current request's own words decide whether a public lookup was asked
     # for. Computed once from the incoming messages, never from tool output.
     current_public_lookup = False
+    public_fact_text: str | None = None
     if model_led_discovery:
         from service.router.web_request import classify as classify_public_lookup
         _last_user = next((m.get("content") for m in reversed(messages)
@@ -1735,6 +1742,16 @@ async def run_agent(
         if not current_public_lookup and re.search(r"https?://\S+", _last_user or ""):
             # A URL the user typed themselves is an explicit public lookup.
             current_public_lookup = True
+        if not current_public_lookup:
+            # A public live fact asked plainly ("what's the price of bitcoin?")
+            # may search too, but only with the user's own words: see
+            # private_web_problem. Never when the request names private data.
+            try:
+                from service.model_only import public_fact_question
+                public_fact_text = (_last_user if public_fact_question(_last_user)
+                                    and not classify_public_lookup(_last_user).private else None)
+            except Exception:  # noqa: BLE001 — unclassifiable means no exemption
+                public_fact_text = None
         # Hosts the user typed in this message. In a turn that starts private,
         # the exemption for fetch-style egress is tied to these hosts only.
         from urllib.parse import urlsplit as _urlsplit
@@ -1758,11 +1775,15 @@ async def run_agent(
         detail = args.get("url") or args.get("query") or args.get("target") or ""
         return str(detail)[:300]
 
-    def private_web_problem(tool):
+    def private_web_problem(tool, args=None):
         """Turn-start private context: public egress needs explicit intent."""
         from service.router.model_led import PRIVATE_WEB_TOOLS
         if (private_at_start and not private_read_in_turn and tool.name in PRIVATE_WEB_TOOLS
                 and not current_public_lookup):
+            if public_fact_text is not None and tool.name == "web_search":
+                from service.model_only import public_fact_query_problem
+                return public_fact_query_problem(str((args or {}).get("query") or ""),
+                                                 public_fact_text)
             return ("Private data is in context; web access is unavailable "
                     "unless the request explicitly asks for a public lookup.")
         return None
@@ -1838,7 +1859,7 @@ async def run_agent(
                 return Decision(Tier.CONFIRM, "Private data was read earlier in this turn; "
                                 f"this would contact the web ({_web_detail(args)}). "
                                 "Confirm the exact destination or query.")
-            if problem := private_web_problem(tool):
+            if problem := private_web_problem(tool, args):
                 return Decision(Tier.DENY, problem)
             if start_private_egress(tool, args):
                 # Private data was in context at turn start: a public-lookup
@@ -1936,7 +1957,7 @@ async def run_agent(
             if problem := private_shell_problem(tool, args):
                 return f"(error: {problem} The tool was NOT run.)"
         if model_led_discovery:
-            if problem := private_web_problem(tool):
+            if problem := private_web_problem(tool, args):
                 return f"(error: {problem} The tool was NOT run.)"
             if in_turn_private_web(tool, args) and _action_fingerprint(tool.name, args) not in confirmed_private_web:
                 return ("(error: Private data was read earlier in this turn; web access now "
@@ -2064,7 +2085,7 @@ async def run_agent(
     # The multi-person message-attribution rules are a SEPARATE, much larger
     # part of this block (~1,600 of its ~2,150 chars) and are gated on whether
     # this turn can even see a messages result — `view_messages` hands the
-    # agent "Group of 3 (Mom, dad, Trishe) | Mom: @Trishe - Your post has 439
+    # agent "Group of 3 (Mom, dad, Maya) | Mom: @Maya - Your post has 439
     # likes", so it needs the same rules the summarizers do for reading them,
     # but ONLY on a turn where that's possible. identity.py's own docstring
     # states the principle this follows: "an unfirable rule still costs
@@ -3321,6 +3342,7 @@ async def run_agent(
     ask_reprompted = False
     ask_reprompt_no_web = False
     ask_write_nudged = False
+    ask_text_call_nudged = False
     ask_guard_retried = False
     ask_scale = 1.0
     ask_tool_calls: Counter = Counter()
@@ -3880,8 +3902,43 @@ async def run_agent(
             text = msg.get("content") or ""
             if ask_quality:
                 from service.model_only import (asks_personal_data, pure_writing, salvage_answer,
-                                                strip_think)
+                                                stall_reply, strip_text_tool_calls, strip_think,
+                                                text_tool_call)
                 text = strip_think(text)
+                wrote_call = text_tool_call(text)
+                if wrote_call:
+                    text = strip_text_tool_calls(text)
+                    audit("ask_text_tool_call", step=_step)
+                    if _ASK_DONE_CLAIM.search(text or ""):
+                        # The call was only text, so nothing ran: a "sent it"
+                        # around it is false and never reaches the user.
+                        text = ""
+                from service.router.router import has_write_intent
+                asks_change = has_write_intent(memory_query)
+                if (wrote_call and not text and not ask_text_call_nudged and _step < max_steps - 1
+                        and not asks_change and not attempted_tools
+                        and not asks_personal_data(memory_query)):
+                    # A knowledge question answered with a tool call written as
+                    # text: one nudge to just answer. (A personal-data question
+                    # falls through to the "call the tool now" re-prompt below.)
+                    ask_text_call_nudged = True
+                    msgs.append({"role": "assistant", "content": "(no answer yet)"})
+                    msgs.append({"role": "user", "content": (
+                        "Answer my question now in plain text, from what you know. No tool "
+                        "is needed or available for this one.")})
+                    continue
+                if (wrote_call and not text and not ask_text_call_nudged and _step < max_steps - 1
+                        and asks_change):
+                    # "Text Mom I'm running late" with the send written as text:
+                    # nothing was sent. Re-prompt with the tools, required.
+                    ask_text_call_nudged = True
+                    ask_expect_tool = True
+                    audit("ask_text_call_write_reprompt", step=_step)
+                    msgs.append({"role": "assistant", "content": "(nothing has run yet)"})
+                    msgs.append({"role": "user", "content": (
+                        "Nothing has run: that tool call was written as text. Call the tool "
+                        "for this request now through the tool interface.")})
+                    continue
                 if not text and reasoning and not msg.get("_degenerate"):
                     # Content empty but the think block holds an answer: keep
                     # only its final-answer paragraphs, never the monologue.
@@ -3900,11 +3957,15 @@ async def run_agent(
                         "[placeholders] for any detail I didn't give. No questions.")})
                     continue
                 web_only = bool(attempted_tools) and attempted_tools <= _ASK_WEB_TOOLS
+                # "I'm checking your schedule now. Give me just a moment!" with
+                # nothing run is a promise, not an answer: the turn ended there
+                # (2026-10-29 dev7 export; only get_upcoming's schema had loaded).
+                stalled = not attempted_tools and (stall_reply(text) or (wrote_call and not text))
                 if (not ask_reprompted and (not attempted_tools or web_only)
                         and _step < max_steps - 1
                         and not _ask_capability_prompt and not test_mode
                         and not pure_writing(memory_query)
-                        and (asks_personal_data(memory_query) or fresh_personal_scope)
+                        and (asks_personal_data(memory_query) or fresh_personal_scope or stalled)
                         and not _ask_personal_source_ran()
                         and (web_only or not _ask_short_question(text))):
                     # Personal data answered with no tool at all, or from a
@@ -3914,7 +3975,9 @@ async def run_agent(
                     ask_reprompted = True
                     ask_expect_tool = True
                     ask_reprompt_no_web = web_only
-                    audit("ask_personal_reprompt", step=_step, web_only=web_only)
+                    audit("ask_personal_reprompt", step=_step, web_only=web_only, stalled=stalled)
+                    if content_streamed:
+                        await emit({"type": "clear_answer"})
                     msgs.append({"role": "assistant", "content": text})
                     msgs.append({"role": "user", "content": (
                         ("That asks about my own items, and only the web was searched. "
@@ -4150,6 +4213,15 @@ async def run_agent(
                 msgs[0] = {"role": "system", "content": (
                     _sys(set(tools)) + identity_hint + memory_hint + skills_hint)}
                 stub_result = expansion.receipt()
+                # A small model read the bare receipt as "I have called
+                # get_upcoming" and replied "give me a moment" (2026-10-29).
+                # Say plainly that nothing ran and what to call next.
+                if loaded := list(dict.fromkeys(n for _, n in stub_calls if n in expansion.names)):
+                    receipt = json.loads(stub_result)
+                    receipt["not_run_yet"] = loaded
+                    receipt["next"] = (f"Nothing was read yet. Call {', '.join(loaded)} now with "
+                                       "full arguments and answer only from its result.")
+                    stub_result = json.dumps(receipt)
                 await emit({"type": "routing_discovery", "families": list(expansion.families),
                             "tools": tools, "status": "ready_next_step", "implicit": True})
             except SelectionError as error:

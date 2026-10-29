@@ -240,7 +240,7 @@ SELF_QUERY_RE = re.compile(
 # VERIFIED FAILURE 2026-08-18: this phrasing matched no rule, fell to the
 # unscoped 44-tool route, and the model called `recall` twice then — on a pure
 # read question — `remember`, WRITING a fact into permanent memory: "Adi's
-# family includes his mom (AdiJain888@gmail.com)". That address is the user's
+# family includes his mom (sam.rivera@example.com)". That address is the user's
 # OWN email (see action_tools._own_address_guard), so the saved fact was not
 # just an unwanted write on a read turn, it was wrong. `remember` is
 # deliberately absent from this route's toolset — nothing here should be
@@ -1892,7 +1892,7 @@ _INBOUND_RE = re.compile(
     r"\bhear(?:d)? back from\b|"
     r"\bdid\b[^?]{0,25}\b(?:e-?mail|message|text|write to|contact)\s+me\b|"
     r"\bany(?:thing)?\s+(?:new\s+)?(?:e-?mails?|messages?|texts?)\s+from\b", re.I)
-# "what did trishe say" / "what did my mom say" / "what has Dan sent" — a
+# "what did maya say" / "what did my mom say" / "what has Dan sent" — a
 # named PERSON as the subject of a communication verb, no channel named.
 # VERIFIED FAILURE 2026-10-08: with none of the message words above, this
 # fell to the embedding-retrieved "ambiguous" route, whose 22 tools held
@@ -4100,7 +4100,7 @@ _SCHEDULED_QUERY_RE = re.compile(
 # MEASURED (2026-08-23 audit, each verified live through route(), not
 # theorized). Every row lost its first clause entirely:
 #
-#   "remember that I drive a BMW, and check my calendar"     -> memory save lost
+#   "remember that I drive a Subaru, and check my calendar"     -> memory save lost
 #   "lock my screen, and remind me to take my medicine"      -> lock lost
 #   "what's queued to send, and also remind me to call X"    -> reminder lost
 #   "what's mom's number, and add a reminder to call her"    -> reminder lost
@@ -4815,7 +4815,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     #     above, for the pre-check domains rather than the data ones: a
     #     direct call consumes step 0, so pre-dispatching here would strand
     #     the other half of a compound request with no selection step left to
-    #     reach its tools. This is audit row 1 ("remember that I drive a BMW,
+    #     reach its tools. This is audit row 1 ("remember that I drive a Subaru,
     #     and check my calendar" lost the memory save exactly this way).
     if ("calendar" in domains and set(domains) <= {"calendar", "past", "notes"}
             and not claims and not writing and not _NOTE_WRITE_RE.search(t)
@@ -5502,7 +5502,7 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
     # patterns can match a clause anywhere in the sentence. Collected here and
     # handed down so they merge with any data domain instead of being
     # unreachable once one matched — audit rows 1, 2, 5, 6, 8, e.g. "remember
-    # that I drive a BMW, and also check my calendar" silently lost the
+    # that I drive a Subaru, and also check my calendar" silently lost the
     # memory save because the calendar domain returned first.
     #
     # Each mirrors its own route below EXACTLY (same tools, same force, same

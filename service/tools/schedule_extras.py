@@ -245,7 +245,7 @@ async def _meeting_proposal(title, duration_min, when_iso="", after_event_title=
         # across midnight. Freshness and relative periods share this new clock.
         now = dt.datetime.now(zone)
         if after_event_title:
-            lo, hi, _ = resolve_span(event_period, now=now.replace(tzinfo=None))
+            lo, hi, _ = resolve_span(event_period, now=now.replace(tzinfo=None), forward=True)
             bounds = (lo, hi)
 
         snapshots = {}
@@ -504,7 +504,8 @@ async def complete_commitment(row: dict, store=None) -> tuple[bool, str]:
             "days": {"type": "integer",
                      "description": "How many days ahead to consider. Default 3."},
             "period": {"type": "string", "description":
-                       "Exact local range: today, tomorrow, this week, next week, this month, next month, or YYYY-MM-DD. "
+                       "Exact local range: today, tomorrow, a weekday (friday, next monday), this weekend, "
+                       "this week, next week, this month, next month, a date (nov 3) or YYYY-MM-DD. "
                        "Overrides days; returns duration-specific candidate slots."},
             "minutes": {"type": "integer",
                         "description": "Minimum length of gap to report, in minutes. Default 30."},
@@ -564,7 +565,17 @@ def _availability_days(now, days, period):
         first = dt.datetime.fromisoformat(value).date()
         stop = first + dt.timedelta(days=1)
     else:
-        raise ValueError("period must be today, tomorrow, this/next week, this/next month, or YYYY-MM-DD.")
+        # A weekday, a weekend or a date ("friday", "this weekend", "nov 3"),
+        # read forward like any schedule question.
+        from service.tools.timeranges import BadPeriod, resolve_span
+        try:
+            lo, hi, _ = resolve_span(period, now=now.replace(tzinfo=None), forward=True)
+        except BadPeriod:
+            raise ValueError("period must be today, tomorrow, a weekday (friday, next monday), "
+                             "this weekend, this/next week, this/next month, a date (nov 3) "
+                             "or YYYY-MM-DD.") from None
+        first = dt.datetime.fromtimestamp(lo).date()
+        stop = dt.datetime.fromtimestamp(hi).date()
     first = max(first, today)
     if first >= stop:
         raise ValueError("the requested availability range is in the past.")
@@ -618,8 +629,18 @@ def _availability_result(options, period, timezone, now):
     def number(value):
         return type(value) in (int, float) and math.isfinite(value)
 
+    from service.tools.assistant_tools import _is_holiday_calendar_item
+
     def interval(row, lo, hi):
         if row.get("status") in {"done", "dismissed", "cancelled", "declined"}:
+            return None
+        # A subscribed holidays calendar's all-day entry (Halloween, Election
+        # Day) is not the user being busy: it emptied whole days in the
+        # 2026-10-29 Ask run. Only a read-only calendar counts: the user's own
+        # "Family Holidays" calendar holds their trips, which still block, and
+        # so does any calendar whose writability was not reported.
+        if (row.get("all_day") and row.get("calendar_writable") is False
+                and _is_holiday_calendar_item(row)):
             return None
         if row.get("status") not in (None, "active", "tentative"):
             raise ValueError("An availability item has an unknown status; no slot was verified.")

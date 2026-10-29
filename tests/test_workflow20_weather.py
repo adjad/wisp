@@ -172,7 +172,7 @@ def test_other_places_postcodes_and_airports_keep_the_existing_lookup(query, cit
 def test_tomorrow_uses_only_requested_forecast_and_requires_coverage(monkeypatch):
     from service.tools import timeranges
     real_resolve = timeranges.resolve_span
-    monkeypatch.setattr(timeranges, "resolve_span", lambda p: real_resolve(p, now=datetime(2026, 10, 12, 9)))
+    monkeypatch.setattr(timeranges, "resolve_span", lambda p, **kw: real_resolve(p, now=datetime(2026, 10, 12, 9), **kw))
     fake_weather(monkeypatch, payload())
     result = asyncio.run(web_tools.get_weather("SF", period="tomorrow"))
     assert "2026-10-13" in result and "2026-10-12" not in result and "now:" not in result
@@ -328,7 +328,7 @@ def test_shifted_provider_start_date_is_never_labeled_today(monkeypatch):
 def test_requested_dates_are_preserved_through_registry_dispatch(period, day, monkeypatch):
     from service.tools import timeranges
     real_resolve = timeranges.resolve_span
-    monkeypatch.setattr(timeranges, "resolve_span", lambda p: real_resolve(p, now=datetime(2026, 10, 12, 9)))
+    monkeypatch.setattr(timeranges, "resolve_span", lambda p, **kw: real_resolve(p, now=datetime(2026, 10, 12, 9), **kw))
     calls = fake_weather(monkeypatch, payload())
     result = dispatch_weather(location="SF", period=period)
     assert f"forecast ({day})" in result and "now:" not in result and len(calls) == 1
@@ -379,7 +379,7 @@ def test_compound_datetime_scope_is_rejected_before_http(separator, clock_first,
 def test_datetime_guard_preserves_existing_date_only_periods(period, dates, monkeypatch):
     from service.tools import timeranges
     real_resolve = timeranges.resolve_span
-    monkeypatch.setattr(timeranges, "resolve_span", lambda p: real_resolve(p, now=datetime(2026, 10, 12, 9)))
+    monkeypatch.setattr(timeranges, "resolve_span", lambda p, **kw: real_resolve(p, now=datetime(2026, 10, 12, 9), **kw))
     calls = fake_weather(monkeypatch, payload())
     result = dispatch_weather(location="SF", period=period)
     from service.tools.registry import classify_tool_outcome

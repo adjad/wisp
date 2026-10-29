@@ -226,16 +226,16 @@ def _email_block(now: float) -> str:
 # "got it thanks" came back as also having "asked about a code snippet you
 # shared", which appears nowhere in the actual messages. Grouping by
 # conversation FIRST (deterministic, in Python) means the model is handed
-# "Trishe: 2 lines" as a visibly small, complete block instead of 2 lines
+# "Maya: 2 lines" as a visibly small, complete block instead of 2 lines
 # lost inside a 30-line multi-thread stream — it has no interleaved material
-# left to misread as belonging to Trishe, and nothing to pad with.
+# left to misread as belonging to Maya, and nothing to pad with.
 _MAX_CONVERSATIONS = 6
 _MAX_LINES_PER_CONVERSATION = 8
 
 
 def _messages_block() -> str:
     # render_for_summary, not a plain join: it tags each group message with the
-    # member it is addressed to, so "@Trishe - How is the AI conference going?"
+    # member it is addressed to, so "@Maya - How is the AI conference going?"
     # can't be read as the user's conference. See imessage_tools._addressee.
     from service.tools.imessage_tools import (
         messages_sync_state, render_for_summary, recent_priority_message_rows)

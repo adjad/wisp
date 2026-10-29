@@ -2704,7 +2704,11 @@ def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
                           f"message{'s' if hidden != 1 else ''}) are not in the sections or "
                           "the counts at the top; Coverage counts them as truncated by "
                           "the sender note limit.")
-        return (f"\U0001F4EC **Inbox digest \u2014 {label}**\n" + " \u00b7 ".join(facts)
+        # "17 emails · 14 unread" was read back as "17 unread" (dev8 debug log).
+        # When the two differ, say the unread count once more in a sentence.
+        spelled = (f"\n{unread} of these {represented} emails are unread."
+                   if unread and unread != represented else "")
+        return (f"\U0001F4EC **Inbox digest \u2014 {label}**\n" + " \u00b7 ".join(facts) + spelled
                 + "\n\n" + "\n\n".join(blocks) + "\n\n" + "\n".join(footer))
     bullets = []
     for group in shown_groups:
@@ -3132,13 +3136,22 @@ def _is_plain_empty(body: str, status: str = "") -> bool:
                                    "Use for 'what's unread' or 'anything I haven't read'"},
          "account": {"type": "string",
                      "description": "only include this linked account (only useful when more than one is linked)"},
+         "query": {"type": "string",
+                   "description": "words to look for (a sender, topic or subject): returns the matching "
+                                  "emails instead of a digest"},
      }},
     category="email_read",
 )
 async def summarize_emails(day: str | None = None, count: int = 20,
                            account: str | None = None,
                            period: str | None = None,
-                           unread: bool = False) -> str:
+                           unread: bool = False, query: str | None = None) -> str:
+    # "any emails from my bank?" reached here with a query 6 times in the
+    # 2026-10-29 Ask run and failed on an unexpected argument. A keyword search
+    # is view_emails' job: hand it over with the same scope.
+    if query and query.strip():
+        return await view_emails_impl(query.strip(), day, min(max(int(count or 5), 1), 20),
+                                      account, period, unread)
     # Interactive path: if the cache is cold (e.g. just after launch), pull a
     # fresh sync now instead of answering "no emails" and making the user retry.
     await _ensure_email_cache()

@@ -88,7 +88,10 @@ enum AskNotReady: Equatable {
     func notice(willRetry: Bool) -> String {
         switch self {
         case .setup:
-            return "Wisp's AI model isn't set up yet. Finish setup above, then press Return: your question is waiting in the box."
+            // Also what a Mac that can't get a model at all hears: the service is
+            // asked every time, so a model that starts answering is used at once.
+            return "Wisp's AI model isn't set up yet. Finish setup above, or choose a model in Settings › Models. "
+                + "Then press Return: your question is waiting in the box."
         case .starting:
             return willRetry
                 ? "Wisp's AI is still starting up. Your question is in the box, and I'll send it again in a few seconds."

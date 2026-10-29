@@ -83,10 +83,10 @@ def _wrong_account_path(path: str) -> str | None:
     the real one — otherwise None.
 
     MEASURED FAILURE (2026-08-18). Asked to "reorganize my files" — a file
-    request that names no folder — Ling-3.0-tiny built `/Users/AdiJain888` out
+    request that names no folder — Ling-3.0-tiny built `/Users/SamRivera` out
     of the user's EMAIL ADDRESS, which the identity block puts in every agent
     system prompt (see agent/loop.py's identity_hint). It then tried
-    `/Users/AdiJain` and `/Users/Adi`. 10 runs out of 10.
+    `/Users/samrivera` and `/Users/Sam`. 10 runs out of 10.
 
     SYSTEM already forbids exactly this — "you do not know the user's account
     name, so `/Users/<name>/…` is a guess and is usually wrong" — and the model
@@ -455,7 +455,7 @@ def read_file(path: str) -> str:
 #
 # The `~` instruction is the second half of the fix, and it is what actually
 # broke the worst run: the model does not know the account name and guessed
-# `/Users/AdiJain/Downloads` (wrong case — survived only because macOS is
+# `/Users/samrivera/Downloads` (wrong case — survived only because macOS is
 # case-insensitive) and `/Downloads` (did not exist, which is what sent it to
 # run_shell). expanduser() below has always handled `~`; nothing said so.
 @register(

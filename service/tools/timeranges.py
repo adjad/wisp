@@ -152,21 +152,150 @@ def _add_month(d: datetime, delta: int) -> datetime:
     return datetime(d.year + month // 12, month % 12 + 1, 1)
 
 
-def resolve_period(period: str, *, now: datetime | None = None
-                   ) -> tuple[float, float, str]:
+_DAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_DAY_ABBREV = {"mon": 0, "tue": 1, "tues": 1, "wed": 2, "thu": 3, "thur": 3, "thurs": 3,
+               "fri": 4, "sat": 5, "sun": 6}
+_MONTHS = {m.lower(): i for i, m in enumerate(calendar.month_name) if m}
+_MONTHS.update({m.lower(): i for i, m in enumerate(calendar.month_abbr) if m})
+_MONTHS["sept"] = 9
+# Parts of today: the whole day is the window (the tools filter what is past).
+_TODAY_WORDS = {"tonight", "this evening", "this afternoon", "this morning", "today evening",
+                "this morning and afternoon", "later today", "the rest of today",
+                "rest of today", "the rest of the day", "rest of the day"}
+# Wrappers people (and the model) put around a period: "on Friday", "in the past
+# 3 days", "over the weekend", "for this week", "since Monday" is handled below.
+_LEAD_WORDS = re.compile(r"^(?:on|in|over|during|for|within|from)\s+(?:the\s+)?")
+_ORDINAL = r"(\d{1,2})(?:st|nd|rd|th)?"
+_MONTH_DAY_RE = re.compile(r"^([a-z]+)\.?\s+" + _ORDINAL + r"$")      # nov 3, november 3rd
+_DAY_MONTH_RE = re.compile(r"^" + _ORDINAL + r"\s+(?:of\s+)?([a-z]+)$")  # 3rd of november
+_THE_NTH_RE = re.compile(r"^(?:the\s+)?" + _ORDINAL + r"$")             # the 3rd
+
+
+def _weekday(word: str) -> int | None:
+    word = word.rstrip("s") if word.endswith("days") else word  # "fridays"
+    if word in _DAY_NAMES:
+        return _DAY_NAMES.index(word)
+    return _DAY_ABBREV.get(word)
+
+
+def resolve_period(period: str, *, now: datetime | None = None, forward: bool = False,
+                   extended: bool = True) -> tuple[float, float, str]:
     """(start_epoch, end_epoch, human_label) for `period`; end is EXCLUSIVE.
 
-    `now` is injectable so the tests don't depend on today's date.
+    `now` is injectable so the tests don't depend on today's date. `forward`
+    says which way a bare weekday, "the weekend" or a date without a year
+    points: True for a schedule ("what's on Friday" = the coming Friday),
+    False (the default) for history ("emails from Friday" = the last one).
+    Today always counts as either. `extended=False` keeps the original
+    vocabulary only (weather has whole-day forecasts and refuses dayparts).
     """
     now = now or datetime.now()
     today = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
     p = " ".join((period or "").strip().lower().split())
+    p = re.sub(r"[?!.,]+$", "", p)
+    p = _LEAD_WORDS.sub("", p) if not p.startswith("the ") else p
     if not p:
         raise BadPeriod("(period was empty)")
 
     def win(start: datetime, end: datetime, label: str):
         return start.timestamp(), end.timestamp(), label
 
+    def day_win(d: datetime):
+        label = d.strftime("%A, %B %-d") + (f", {d.year}" if d.year != today.year else "")
+        return win(d, d + timedelta(days=1), label)
+
+    if not extended:
+        return _resolve_core(p, period, today, win)
+    if p in _TODAY_WORDS:
+        return win(today, today + timedelta(days=1), "today")
+
+    # A weekday: "friday", "on fri", "this friday", "next friday", "last friday".
+    m = re.match(r"^(this|next|last|past|coming|upcoming)?\s*([a-z]+)$", p)
+    if m and (wd := _weekday(m.group(2))) is not None:
+        mod = m.group(1)
+        ahead = (wd - today.weekday()) % 7
+        behind = (today.weekday() - wd) % 7
+        if mod in ("next", "coming", "upcoming"):
+            d = today + timedelta(days=ahead or 7)
+        elif mod in ("last", "past"):
+            d = today - timedelta(days=behind or 7)
+        elif mod == "this":
+            d = today + timedelta(days=ahead) if forward or ahead <= behind else today - timedelta(days=behind)
+        else:
+            d = today + timedelta(days=ahead) if forward else today - timedelta(days=behind)
+        return day_win(d)
+
+    # Weekends run Saturday 00:00 to Monday 00:00.
+    m = re.match(r"^(?:the\s+)?(this|next|last|past|coming|upcoming)?\s*weekend$", p)
+    if m:
+        mod = m.group(1)
+        sat_ahead = today + timedelta(days=(5 - today.weekday()) % 7)
+        in_weekend = today.weekday() >= 5
+        current = today - timedelta(days=today.weekday() - 5) if in_weekend else None
+        if mod in ("last", "past"):
+            start = (current or sat_ahead) - timedelta(days=7)
+        elif mod == "next":
+            start = current + timedelta(days=7) if current else sat_ahead
+        elif current is not None:
+            start = current
+        elif forward or mod in ("this", "coming", "upcoming"):
+            start = sat_ahead
+        else:
+            start = sat_ahead - timedelta(days=7)
+        return win(start, start + timedelta(days=2),
+                   f"the weekend of {start:%B %-d}")
+
+    # "since monday": from that day (the last one, today included) to today's end.
+    m = re.match(r"^since\s+(?:last\s+)?([a-z]+)$", p)
+    if m and (wd := _weekday(m.group(1))) is not None:
+        start = today - timedelta(days=(today.weekday() - wd) % 7)
+        return win(start, today + timedelta(days=1), f"since {start:%A, %B %-d}")
+
+    # A date without a year: "nov 3", "november 3rd", "3rd of november", "the 3rd".
+    md = None
+    if (m := _MONTH_DAY_RE.match(p)) and m.group(1) in _MONTHS:
+        md = (_MONTHS[m.group(1)], int(m.group(2)))
+    elif (m := _DAY_MONTH_RE.match(p)) and m.group(2) in _MONTHS:
+        md = (_MONTHS[m.group(2)], int(m.group(1)))
+    elif (m := _THE_NTH_RE.match(p)) and (p.startswith("the ") or re.search(r"(st|nd|rd|th)$", p)):
+        n = int(m.group(1))
+        if not 1 <= n <= 31:
+            raise BadPeriod(f"(there is no day {n} in a month)")
+        md = (today.month, n)
+        # For a schedule, "the 3rd" said on the 29th is next month's 3rd, and
+        # "the 30th" in February is March's: the next month that has that day.
+        if forward and (n < today.day or n > calendar.monthrange(today.year, today.month)[1]):
+            nxt = _add_month(today, 1)
+            while n > calendar.monthrange(nxt.year, nxt.month)[1]:
+                nxt = _add_month(nxt, 1)
+            return day_win(datetime(nxt.year, nxt.month, n))
+    if md is not None:
+        month, dom = md
+        year = today.year
+        def dated(y):
+            # Feb 29 outside a leap year is named, never moved to Feb 28.
+            if not 1 <= dom <= calendar.monthrange(y, month)[1]:
+                raise BadPeriod(f"(there is no {calendar.month_name[month]} {dom} in {y})")
+            return datetime(y, month, dom)
+        if not 1 <= dom <= max(calendar.monthrange(2028, month)[1], 1):
+            raise BadPeriod(f"(there is no {calendar.month_name[month]} {dom})")
+        if forward:
+            d = (datetime(year, month, dom) if dom <= calendar.monthrange(year, month)[1]
+                 and datetime(year, month, dom) >= today else dated(year + 1))
+        else:
+            d = (datetime(year, month, dom) if dom <= calendar.monthrange(year, month)[1]
+                 else dated(year - 1))
+            if d > today + timedelta(days=31):
+                # History about a date well ahead means last year's; a few days
+                # ahead is just this year's date (a calendar search, a typo).
+                d = dated(year - 1)
+        return day_win(d)
+
+    return _resolve_core(p, period, today, win)
+
+
+def _resolve_core(p, period, today, win):
+    """The original vocabulary: today, this/last week, N days, YYYY-MM(-DD)."""
     if p in ("today",):
         return win(today, today + timedelta(days=1), "today")
     if p == "tomorrow":
@@ -238,7 +367,9 @@ def resolve_period(period: str, *, now: datetime | None = None
     except ValueError:
         raise BadPeriod(
             f"(couldn't understand the period {period!r}. Use one of: 'today', "
-            "'yesterday', 'this week', 'last week', 'this month', 'last month', "
+            "'tomorrow', 'yesterday', a weekday ('friday', 'next monday', 'last "
+            "friday'), 'this weekend', 'last weekend', a date ('nov 3', "
+            "'the 3rd'), 'this week', 'last week', 'this month', 'last month', "
             "'this year', 'last year', 'last N days/weeks/months/quarters/"
             "years' (N as a digit or spelled out, e.g. '3 weeks' or 'six "
             "months'), 'YYYY-MM' for a specific month, or 'YYYY-MM-DD' for a "
@@ -247,8 +378,8 @@ def resolve_period(period: str, *, now: datetime | None = None
     return win(start, start + timedelta(days=1), start.strftime("%A, %B %-d"))
 
 
-def resolve_span(period: str, *, now: datetime | None = None
-                 ) -> tuple[float, float, str]:
+def resolve_span(period: str, *, now: datetime | None = None, forward: bool = False,
+                 extended: bool = True) -> tuple[float, float, str]:
     """Like resolve_period, but also accepts a COMPOUND range joined by "and"
     or "to" — "this month and last month", "last month to this month".
 
@@ -261,8 +392,8 @@ def resolve_span(period: str, *, now: datetime | None = None
     parts = re.split(r"\s+(?:and|to|through|thru|until|\-\-|:)\s+|\s*\.\.\s*", p)
     parts = [x for x in (s.strip() for s in parts) if x]
     if len(parts) < 2:
-        return resolve_period(period, now=now)
-    windows = [resolve_period(x, now=now) for x in parts]
+        return resolve_period(period, now=now, forward=forward, extended=extended)
+    windows = [resolve_period(x, now=now, forward=forward, extended=extended) for x in parts]
     start = min(w[0] for w in windows)
     end = max(w[1] for w in windows)
     # Label from the outermost pair, in chronological order.
@@ -275,8 +406,10 @@ def resolve_span(period: str, *, now: datetime | None = None
 # takes one so the vocabulary can't drift between them.
 PERIOD_ARG = {
     "type": "string",
-    "description": ("time range to cover, in WORDS — 'today', 'yesterday', "
-                    "'this week', 'last week', 'this month', 'last month', "
+    "description": ("time range to cover, in WORDS — 'today', 'tomorrow', "
+                    "'yesterday', a weekday ('friday', 'next monday', 'last "
+                    "friday'), 'this weekend', 'last weekend', a date ('nov 3', "
+                    "'the 3rd'), 'this week', 'last week', 'this month', 'last month', "
                     "'this year', 'last year', or 'last N days/weeks/months/"
                     "quarters/years' for an EXACT span (N as a digit or "
                     "spelled out — 'last 3 weeks' and 'last three weeks' both "

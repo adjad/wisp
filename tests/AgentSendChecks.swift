@@ -114,6 +114,10 @@ enum AgentSendChecks {
               && AskNotReady.starting.notice(willRetry: true).contains("again in a few seconds")
               && !AskNotReady.starting.notice(willRetry: false).lowercased().contains("error"),
               "the notices say plainly what happens next")
+        let setupNotice = AskNotReady.setup.notice(willRetry: false)
+        check(setupNotice.contains("Settings › Models") && setupNotice.contains("waiting in the box")
+              && !setupNotice.lowercased().contains("error"),
+              "a Mac with no model set up is told where to choose one, not shown an error")
 
         // Ask's starter questions work on a fresh install with nothing allowed.
         check(AskStarters.prompts(unreadable: []) == ["What can you do?", "What's on my calendar today?",

@@ -173,8 +173,7 @@ def _bundled_engine() -> bool:
 
 def _capping_possible() -> bool:
     """The switch is on and the engine can drop a cap at once (see the module rules)."""
-    return (save_when_away() and _lift_ok is not False and time.monotonic() >= _lift_retry_at
-            and not _remote_only() and _bundled_engine())
+    return save_when_away() and _lift_askable() and not _remote_only() and _bundled_engine()
 
 
 def _on_battery_probe() -> bool:
@@ -411,9 +410,18 @@ def on_battery() -> bool:
 # another app on the GPU, and when a call someone is waiting on starts beside a
 # lower-capped one. Each capped call registers its own client's lift, so the
 # lift always goes through a client still in use. The first capped request of
-# a run asks once beforehand: an engine that answers anything but 200 (an older
-# bundled engine without the route) is never capped that run, and one that
-# can't be reached isn't capped for _LIFT_RETRY_S.
+# a run asks once beforehand: an engine without the route (404 or 405: an older
+# bundled engine) is never capped that run, and one that can't be reached or is
+# too busy to answer (429, 5xx) isn't capped for _LIFT_RETRY_S. That cooldown
+# only stops NEW caps (and holds the warning to one per cooldown); a cap already
+# in flight stays protected. The watch keeps looking every WATCH_EVERY_S, and
+# after a lift that went unanswered (unreachable, busy, or a timeout: a busy GPU
+# is when the engine answers slowest) asks again after _WATCH_RETRY_S. Only the
+# watch's own lifts set that backoff, so a failed lift for a call starting
+# elsewhere can't quiet it. After a refusal the watch stops for the run. A call someone waits
+# on that starts beside a lower cap asks once. A lift asks at most _LIFT_TRIES
+# clients that are still open, newest first (a closed one isn't a try), and
+# none after one that timed out.
 #
 # Only calls on the service's own event loop are capped: uvicorn runs it on the
 # main thread. The behavior phraser runs asyncio.run in a worker thread with a
@@ -422,6 +430,8 @@ def on_battery() -> bool:
 
 _LIFT_RETRY_S = 60.0
 _LIFT_TIMEOUT_S = 2.0
+_LIFT_TRIES = 2                           # open clients asked per lift; the engine behind them is the same
+_WATCH_RETRY_S = 2.0
 _calls_lock = threading.Lock()
 _watched_calls = 0
 _uncapped_watched = 0                     # calls someone waits on that run uncapped
@@ -429,6 +439,7 @@ _capped: dict[int, tuple[int, Callable[[], Awaitable[bool | None]]]] = {}   # id
 _next_call = 0
 _lift_ok: bool | None = None              # None: not asked yet (or ask again after _lift_retry_at)
 _lift_retry_at = 0.0
+_watch_retry_at = 0.0                     # the watch asks again from here after an unanswered lift
 _lifted = False                           # the watch lifted the caps in flight already
 _service_loop: asyncio.AbstractEventLoop | None = None
 _watch_task: asyncio.Task | None = None
@@ -439,17 +450,32 @@ def _on_service_loop() -> bool:
     return threading.current_thread() is threading.main_thread()
 
 
+class LiftClientClosed(Exception):
+    """A lift's client has closed (its call just ended), so it asked nothing."""
+
+
 async def _ask_lift(lift: Callable[[], Awaitable[bool | None]]) -> bool | None:
-    """True: the engine lifted the cap. False: it refused (anything but 200).
-    None: it couldn't be asked (not reachable)."""
+    """True: the engine lifted the cap. False: it has no lift route (404 or
+    405). None: it couldn't be asked, or was too busy to answer (429, 5xx)."""
     try:
         return await lift()
     except Exception:  # noqa: BLE001 — treated as unreachable
         return None
 
 
+def _lift_askable() -> bool:
+    """Not refused this run, and not unreachable within the last _LIFT_RETRY_S."""
+    return _lift_ok is not False and time.monotonic() >= _lift_retry_at
+
+
+def _watch_may_ask() -> bool:
+    """Not refused this run, and past the watch's own backoff (not the cooldown)."""
+    return _lift_ok is not False and time.monotonic() >= _watch_retry_at
+
+
 def _note_lift(answer: bool | None) -> None:
-    """After a lift: a refusal stops capping for the run, unreachable for _LIFT_RETRY_S."""
+    """After a lift: a refusal stops capping for the run; unreachable stops new
+    caps for _LIFT_RETRY_S, with one warning per cooldown."""
     global _lift_ok, _lift_retry_at
     if answer is True:
         _lift_ok = True
@@ -457,29 +483,41 @@ def _note_lift(answer: bool | None) -> None:
     if answer is False:
         _lift_ok = False
         logger.warning("The engine refused to lift Wisp's GPU power cap; no more caps this run")
-    else:
-        _lift_ok = None
-        _lift_retry_at = time.monotonic() + _LIFT_RETRY_S
-        logger.warning("The engine could not be asked to lift Wisp's GPU power cap; no caps for a minute")
+        return
+    now = time.monotonic()
+    if now >= _lift_retry_at:
+        logger.warning("The engine could not be asked to lift Wisp's GPU power cap; no new caps for a minute")
+    _lift_ok = None
+    _lift_retry_at = now + _LIFT_RETRY_S
 
 
 async def _lift_now(*, watch: bool = False) -> None:
-    """Lift every cap through a capped call's client, newest first: one that
-    closed meanwhile (its call just ended) can't be asked, so the next is.
-    Cheap and idempotent on the engine; only the watch marks the caps in
-    flight lifted, and only once the engine said it lifted them."""
-    global _lifted
+    """Lift every cap through a capped call's client, newest first. A client
+    that has closed (its call just ended) isn't a try; up to _LIFT_TRIES open
+    ones are asked, and none after a timeout (the engine is the same). Cheap
+    and idempotent on the engine; only the watch marks the caps in flight
+    lifted, and only once the engine said it lifted them."""
+    global _lifted, _watch_retry_at
     with _calls_lock:
         lifts = [lift for _, lift in reversed(_capped.values())]
-    if not lifts:
-        return
-    answer = None
+    answer, tries = None, 0
+    give_up_at = time.monotonic() + _LIFT_TIMEOUT_S
     for lift in lifts:
-        answer = await _ask_lift(lift)
-        if answer is not None:
+        try:
+            answer = await lift()
+        except LiftClientClosed:
+            continue
+        except Exception:  # noqa: BLE001 — treated as unreachable
+            answer = None
+        tries += 1
+        if answer is not None or tries >= _LIFT_TRIES or time.monotonic() >= give_up_at:
             break
+    if not tries:
+        return                               # no capped call's client is open: nothing to ask
     if watch and answer is True:
-        _lifted = True                       # otherwise the next look asks again
+        _lifted = True
+    elif watch and answer is None:
+        _watch_retry_at = time.monotonic() + _WATCH_RETRY_S
     _note_lift(answer)
 
 
@@ -492,12 +530,13 @@ def _schedule_lift() -> None:
 
 async def _watch() -> None:
     """While capped calls run, look at other apps' GPU use every WATCH_EVERY_S.
-    A capped call starts only after a quiet look, and re-arms the watch."""
+    A capped call starts only after a quiet look, and re-arms the watch. No
+    look while the watch couldn't ask anyway (see _watch_may_ask)."""
     global _watch_task
     try:
         while _capped:
             await asyncio.sleep(WATCH_EVERY_S)
-            if _capped and not _lifted and not await _look():
+            if _capped and not _lifted and _watch_may_ask() and not await _look():
                 await _lift_now(watch=True)
     finally:
         _watch_task = None
@@ -506,10 +545,11 @@ async def _watch() -> None:
 def call_started(watts: int | None = None,
                  lift: Callable[[], Awaitable[bool | None]] | None = None) -> tuple[bool, int | None]:
     """OMLXClient, as a managed request goes out with ``watts`` as its cap (None
-    for none) and ``lift`` to lift it. Pass the result to call_ended. Counts
-    calls someone is waiting on (anything but BRIEF and BACKGROUND) and capped
-    calls, watches while capped ones run, and lifts a lower cap a watched call
-    would otherwise run under."""
+    for none) and ``lift`` to lift it (answering as _ask_lift describes, or
+    raising LiftClientClosed once its client has closed). Pass the result to
+    call_ended. Counts calls someone is waiting on (anything but BRIEF and
+    BACKGROUND) and capped calls, watches while capped ones run, and lifts a
+    lower cap a watched call would otherwise run under."""
     global _watched_calls, _uncapped_watched, _next_call, _lifted, _watch_task, _service_loop
     watched = current_tier() not in _UNWATCHED
     on_loop = _on_service_loop()

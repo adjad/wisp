@@ -1287,7 +1287,7 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
     #
     # MEASURED FAILURE (2026-08-23, user's debug export): asked to text mom
     # the GOOGL/MU prices, the model called send_message with
-    # to="AdiJain888@gmail.com" — the user's OWN email, present in the
+    # to="sam.rivera@example.com" — the user's OWN email, present in the
     # system prompt only for attribution — instead of calling
     # `lookup_contact("Mom")` first. The user confirmed that card, THEN it
     # bounced, THEN the model looked up Mom's real number and the user had
@@ -1509,6 +1509,19 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
         if ro:
             return Decision(Tier.DENY, "view-only mode: skill tools are disabled")
         return Decision(Tier.CONFIRM, "running a tool from an installed skill")
+
+    # Arithmetic, unit conversion and world clocks read nothing and change
+    # nothing. They used to fall through to "unclassified": denied in view-only
+    # and a confirmation card in the default mode, for "convert 72 F to C"
+    # (2026-10-29 Ask run).
+    if category == "compute":
+        return Decision(Tier.ALLOW, "a calculation")
+
+    # Wisp describing itself (wisp_status, wisp_capabilities, wisp_skills,
+    # wisp_mcp) only reads its own state. It also fell through to
+    # "unclassified", so "is my data private?" got a guess instead.
+    if category == "wisp_admin":
+        return Decision(Tier.ALLOW, "reading Wisp's own state")
 
     # Reading system state (volume level, clipboard contents) never changes
     # anything, so it's safe even in view-only mode — same reasoning as fs_read.

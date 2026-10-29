@@ -79,7 +79,7 @@ async def _geocode(place: str) -> tuple[float, float, str] | str:
         return data
     if not data:
         return (f"(couldn't find a place called {place!r}. Try adding a city or "
-                f"country — 'Dublin, CA' rather than 'Dublin'.)")
+                f"country — 'Paris, TX' rather than 'Paris'.)")
     hit = data[0]
     return float(hit["lat"]), float(hit["lon"]), hit.get("display_name", place)
 

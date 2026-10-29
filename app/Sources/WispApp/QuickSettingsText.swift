@@ -28,6 +28,10 @@ struct ModelMemory: Equatable {
 /// Quick settings' one-line descriptions. Each keeps the states the service can
 /// be in (waiting for confirmation, not confirmed) instead of guessing "off".
 enum QuickSettingsText {
+    /// The notch's Setup row: always there, unlike the menu bar's two-day Change Setup….
+    static let setupHelp = "Open setup again to change permissions, Google, About you or open at login. "
+        + "Your model stays as it is."
+
     /// Full access's line: a status word ("On" shows amber) and the rest.
     static func fullAccess(on: Bool?, pending: Bool) -> (status: String?, rest: String) {
         if pending { return (nil, "Updating · waiting for confirmation…") }
