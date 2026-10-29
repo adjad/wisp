@@ -363,7 +363,7 @@ async def tick(*, now: float | None = None) -> float:
         merged = await asyncio.to_thread(st.upsert_index, rows, lambda r: extract.tier(r, excluded), now)
         merged["gmail_tab"] = await asyncio.to_thread(st.exclude, excluded) if excluded else 0
         if rows and not capped:
-            merged["accounts_forgotten"] = await asyncio.to_thread(_forget_gone_accounts, st, rows)
+            merged["accounts_forgotten"] = await asyncio.to_thread(_forget_gone_accounts, st, rows, now)
         st.set_meta("last_index", str(now))
         note_ok(now=now)
         log.info("mail memory index: %s capped=%s gmail_tab_exclusions=%d", merged, capped, len(excluded))
@@ -487,11 +487,35 @@ def _promote(st, now: float, groups) -> dict | None:
     return profile_facts.promote(st, facts, now=now, groups=groups)
 
 
-def _forget_gone_accounts(st, rows: list[dict]) -> dict | None:
-    """Mail accounts that no longer appear in a complete index window have left Mail:
-    forget what was learned from them (profile_facts.forget_accounts)."""
+GONE_RUNS = 3
+GONE_SPAN_S = 2 * 86400
+QUIET_MARGIN_DAYS = 14
+
+
+def _forget_gone_accounts(st, rows: list[dict], now: float) -> dict | None:
+    """Forget what was learned from a Mail account that has left Mail
+    (profile_facts.forget_accounts). An account counts as gone only when it
+    should still be in the window (it had mail in the last WINDOW_DAYS -
+    QUIET_MARGIN_DAYS days, so a quiet account never counts) and it is missing
+    from GONE_RUNS complete index reads spanning GONE_SPAN_S or more: a re-import
+    after a macOS update or a mailbox rebuild doesn't erase anything."""
     seen = {r.get("account", "") for r in rows}
-    gone = st.candidate_accounts() - seen - {""}
+    try:
+        missing = json.loads(st.meta("accounts_missing") or "{}")
+    except ValueError:
+        missing = {}
+    newest = st.account_newest()
+    still, gone = {}, set()
+    for account in st.candidate_accounts() - seen - {""}:
+        if now - newest.get(account, 0) > (WINDOW_DAYS - QUIET_MARGIN_DAYS) * 86400:
+            continue                               # quiet, not gone: it would fall out of the window anyway
+        first, runs = (missing.get(account) or [now, 0])[:2]
+        runs += 1
+        if runs >= GONE_RUNS and now - first >= GONE_SPAN_S:
+            gone.add(account)
+        else:
+            still[account] = [first, runs]
+    st.set_meta("accounts_missing", json.dumps(still))
     if not gone:
         return None
     from service.memory.facts import store as facts

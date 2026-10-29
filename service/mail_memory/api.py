@@ -190,8 +190,10 @@ async def forget_facts(body: Nothing) -> dict:
     """Forget everything Wisp learned from mail, and stop learning it until the
     user switches the fact pass back on. Reminder suggestions are untouched."""
     from service.memory.facts import store as facts
+    import asyncio
     runner.set_facts(False)
-    result = profile_facts.forget_all(store(), facts)
+    # Off the loop: it waits for any fact pass that is saving right now.
+    result = await asyncio.to_thread(profile_facts.forget_all, store(), facts)
     await _changed()
     return {"ok": True, **result, "enabled": False}
 

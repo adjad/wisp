@@ -121,6 +121,8 @@ def test_traps_are_dropped(candidate, body, sent, reason):
     ("TR: news", "Début du message réexpédié :"),
     ("Fwd: news", "-- forwarded MESSAGE --"),                                                      # case, dashes
     ("Re: news", "Am 19.10.2026 um 09:00 schrieb Dana Park <dana@x.example>:"),
+    ("VS: news", "Start på videresendt melding:"),                                                  # Apple, nb
+    ("SV: news", "Fra: Dana Park <dana@x.example>\nSendt: 19. oktober 2026"),                       # Outlook, nb/da
 ])
 def test_forwarded_text_in_sent_mail_is_not_the_users(subject, divider):
     """The user's own line above the divider counts; the forwarded note below doesn't."""
@@ -183,7 +185,8 @@ def test_a_sensitive_service_is_never_learned():
     bad = [_fact("service", "Planned Parenthood", "Your appointment at Planned Parenthood is confirmed.",
                  role="health")]
     assert _kept(bad, email, sent_by_user=False, to_user=True)[1] == {"sensitive": 1}
-    for value, role in (("BetterHelp", "subscription"), ("ActBlue", "membership"), ("Grindr", "subscription")):
+    for value, role in (("BetterHelp", "internet"), ("ActBlue", "delivery"), ("Grindr", "internet"),
+                        ("OnlyFans", "internet"), ("Hims", "delivery"), ("Noom", "internet"), ("NRA", "delivery")):
         email = _email(f"Your {value} {role} renews soon.", sender=f"{value} <hi@{value.lower()}.example>")
         kept, dropped = _kept([_fact("account", value, f"Your {value} {role} renews soon.", role=role)],
                               email, sent_by_user=False, to_user=True)
@@ -210,6 +213,12 @@ def test_injection_shaped_values_are_dropped(value):
     ("home_city", "Austin", "I used to live in Austin."),
     ("school", "UCLA", "I visited UCLA with my cousin."),
     ("employer", "Googleplex", "I work at Google."),                              # a whole word only
+    ("employer", "Google", "I worked at Google before Stripe."),                  # past tense
+    ("employer", "Zoom", "I joined the Zoom call late."),
+    ("employer", "Google Meet", "I'm joining Google Meet now."),
+    ("school", "Stanford", "I'm attending the Stanford conference."),
+    ("home_city", "Austin", "I don’t live in Austin anymore."),                  # typographic apostrophe
+    ("home_city", "Night Shift", "I moved to the night shift."),
 ])
 def test_a_slot_fact_needs_a_cue_phrase_and_no_negation(kind, value, quote):
     kept, dropped = _kept([_fact(kind, value, quote)], _email(quote), sent_by_user=True)
@@ -218,12 +227,44 @@ def test_a_slot_fact_needs_a_cue_phrase_and_no_negation(kind, value, quote):
 
 @pytest.mark.parametrize("kind, value, quote", [
     ("employer", "Acme Robotics", "I'm an engineer at Acme Robotics now."),
-    ("employer", "Globex", "I just joined Globex!"),
+    ("employer", "Globex", "I just started at Globex!"),
     ("school", "UC Santa Cruz", "I'm studying at UC Santa Cruz this year."),
     ("home_city", "Dublin, CA", "We moved to Dublin, CA in June."),
 ])
 def test_cue_phrases_that_state_the_fact(kind, value, quote):
     assert _kept([_fact(kind, value, quote)], _email(quote), sent_by_user=True)[0] == [(kind, value, "")]
+
+
+@pytest.mark.parametrize("role", ["subscription", "membership", "video", "news", "fitness"])
+def test_broad_categories_are_not_categories(role):
+    email = _email(f"Your Streamly {role} renews soon.", sender="Streamly <no-reply@streamly.example>")
+    kept, dropped = _kept([_fact("account", "Streamly", f"Your Streamly {role} renews soon.", role=role)],
+                          email, sent_by_user=False, to_user=True)
+    assert kept == [] and dropped == {"category": 1}
+
+
+def test_a_spoofed_display_name_is_not_the_sender():
+    email = _email("Your Comcast internet bill is ready.", sender="Comcast <billing@bulk-mailer.example>")
+    kept, dropped = _kept([_fact("service", "Comcast", "Your Comcast internet bill is ready.", role="internet")],
+                          email, sent_by_user=False, to_user=True)
+    assert kept == [] and dropped == {"not_from_sender": 1}
+
+
+def test_hidden_tag_characters_cant_hide_a_sensitive_word():
+    body = "My th\U000e0041erapy app is BetterTalk, and I live in Dublin."
+    kept, dropped = _kept([_fact("home_city", "Dublin", "My th\U000e0041erapy app is BetterTalk, and I live in Dublin.")],
+                          _email(body), sent_by_user=True)
+    assert kept == [] and dropped == {"sensitive": 1}
+
+
+@pytest.mark.parametrize("text, slot", [
+    ("I joined a book club", ("", "")), ("I study piano", ("", "")), ("I moved to the night shift", ("", "")),
+    ("I started a diet", ("", "")), ("I moved to Denver", ("user", "residence")),
+    ("I’m an engineer at Old Co", ("user", "employment")), ("My employer is Old Co", ("user", "employment")),
+    ("I study at UCSC", ("user", "school")), ("I work at Acme", ("user", "employment")),
+])
+def test_claim_slot_needs_a_place_or_organisation(text, slot):
+    assert facts_mod.claim_slot(text) == slot
 
 
 def test_the_subject_is_never_a_quote():
@@ -362,7 +403,7 @@ def test_forget_everything_from_mail(world):
     sister = next(r for r in fs.all() if r["text"] == "Priya is my sister")
     fs.add("Priya is my sister")                                      # the user also said it in chat
     out = profile_facts.forget_all(st, fs)
-    assert out["forgotten"] == 1 and out["evidence_removed"] == 2 and out["candidates_cleared"] == 3
+    assert out["forgotten"] == 1 and out["evidence_removed"] == 3 and out["candidates_cleared"] == 3
     assert _active(fs) == ["Priya is my sister"] and _proposed(fs) == []
     assert fs.get(sister["id"])["evidence"] == []
     # and the same mail can't save the forgotten fact again
@@ -431,9 +472,64 @@ def test_a_removed_account_takes_its_facts_along(world):
     _seen(st, "<w2@x>", "person", "Priya", "my sister Priya says hi", role="sister", ts=NOW - 2 * DAY, account="work")
     profile_facts.promote(st, fs, now=NOW)
     out = profile_facts.forget_accounts(st, fs, {"work"})
-    assert out["forgotten"] == 1 and out["evidence_removed"] == 1 and out["candidates_cleared"] == 2
+    assert out["forgotten"] == 1 and out["evidence_removed"] == 2 and out["candidates_cleared"] == 2
     assert _active(fs) == ["Priya is my sister"]                     # still resting on the home account
     assert st.candidate_accounts() == {"home"}
+
+
+def test_removing_an_account_never_touches_the_users_correction(world):
+    st, fs = world
+    profile_facts.promote(st, fs, now=NOW, groups=_seen(st, "<w@x>", "employer", "Acme", "I work at Acme",
+                                                       ts=NOW - DAY, account="work"))
+    mail = fs.all()[0]
+    corrected = fs.review(mail["id"], "edit", "I work at Beta")      # "no, I work at Beta"
+    profile_facts.forget_accounts(st, fs, {"work"})
+    row = fs.get(corrected["id"])
+    assert (row["text"], row["status"]) == ("I work at Beta", "active")
+    assert not fs.suppressed_text("I work at Beta")
+    assert fs.get(mail["id"])["status"] == "forgotten"
+
+
+def test_removing_one_account_keeps_the_newer_value_from_another(world):
+    st, fs = world
+    profile_facts.promote(st, fs, now=NOW, groups=_seen(st, "<w@x>", "employer", "Old Co", "I work at Old Co",
+                                                       ts=NOW - 60 * DAY, account="work"))
+    profile_facts.promote(st, fs, now=NOW, groups=_seen(st, "<h@x>", "employer", "New Co", "I joined the team at New Co",
+                                                       ts=NOW - 5 * DAY, account="home"))
+    profile_facts.forget_accounts(st, fs, {"work"})
+    assert _active(fs) == ["I work at New Co"]
+
+
+def test_removing_an_account_keeps_a_fact_the_user_confirmed(world):
+    st, fs = world
+    profile_facts.promote(st, fs, now=NOW, groups=_seen(st, "<old@x>", "employer", "Old Co", "I work at Old Co",
+                                                       ts=NOW - 60 * DAY, account="home"))
+    fs.review(fs.all()[0]["id"], "confirm")
+    profile_facts.promote(st, fs, now=NOW, groups=_seen(st, "<new@x>", "employer", "New Co", "I joined the team at New Co",
+                                                       ts=NOW - 5 * DAY, account="work"))
+    old = fs.all()[0]
+    new = fs.all(status="proposed")[0]
+    fs.review(new["id"], "confirm", supersedes_id=old["id"])         # the user accepted the change
+    profile_facts.forget_accounts(st, fs, {"work"})
+    kept = fs.get(new["id"])
+    assert kept["status"] == "active" and kept["evidence"] == []      # theirs now; only the mail link goes
+    assert fs.get(old["id"])["status"] == "superseded"                # the chain is left alone
+
+
+def test_a_quiet_or_briefly_missing_account_is_not_forgotten(world):
+    st, fs = world
+    profile_facts.promote(st, fs, now=NOW, groups=_seen(st, "<w@x>", "employer", "Acme", "I work at Acme",
+                                                       ts=NOW - DAY, account="work"))
+    other = [{"account": "home"}]
+    assert runner._forget_gone_accounts(st, other, NOW) is None                  # missing once
+    assert runner._forget_gone_accounts(st, other, NOW + 6 * 3600) is None       # twice, same day
+    assert runner._forget_gone_accounts(st, other + [{"account": "work"}], NOW + DAY) is None   # back again
+    assert runner._forget_gone_accounts(st, other, NOW + DAY + 1) is None
+    assert runner._forget_gone_accounts(st, other, NOW + 2 * DAY) is None
+    assert _active(fs) == ["I work at Acme"]
+    # an account with nothing in most of the window is quiet, not gone
+    assert runner._forget_gone_accounts(st, other, NOW + 90 * DAY) is None
+    assert _active(fs) == ["I work at Acme"]
 
 
 # --- mail facts stay local --------------------------------------------------------------
@@ -682,7 +778,7 @@ async def test_counts_switch_and_forget(client, ticking, monkeypatch):
     assert sum(st.stats()["items"].values()) == 1                     # the reminder is untouched
 
 
-async def test_an_account_gone_from_mail_is_forgotten_at_the_next_index(ticking, monkeypatch):
+async def test_an_account_gone_from_mail_is_forgotten_after_runs_over_days(ticking, monkeypatch):
     st, fs = ticking
     _replies(monkeypatch, REMINDER, FACTS)
     await runner.tick(now=NOW)
@@ -698,10 +794,15 @@ async def test_an_account_gone_from_mail_is_forgotten_at_the_next_index(ticking,
     monkeypatch.setattr(runner, "_gmail_excluded", no_gmail)
     monkeypatch.setattr(runner, "read_index", index)
     capped = True                                                    # an incomplete window decides nothing
-    st.set_meta("last_index", "0")
-    await runner.tick(now=NOW + 1)
+    for when in (NOW + 1, NOW + DAY, NOW + 3 * DAY):
+        st.set_meta("last_index", "0")
+        await runner.tick(now=when)
     assert len(fs.all()) == 1
     capped = False
+    for when in (NOW + 4 * DAY, NOW + 5 * DAY):
+        st.set_meta("last_index", "0")
+        await runner.tick(now=when)
+    assert len(fs.all()) == 1                                        # two runs: not yet
     st.set_meta("last_index", "0")
-    await runner.tick(now=NOW + 2)
+    await runner.tick(now=NOW + 6 * DAY)
     assert fs.all() == [] and st.candidate_accounts() == set()

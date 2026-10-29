@@ -49,22 +49,31 @@ def _clean(text: str) -> str:
 
 def claim_slot(text: str) -> tuple[str, str]:
     """Only literal grammatical subjects; names are never merged into people.
-    (`_norm` drops punctuation, so "I'm" reads "i m".)"""
+    (`_norm` drops punctuation, so "I'm" reads "i m".) The wider phrasings need a
+    place or an organisation after them, so "I joined a book club", "I study
+    piano" and "I moved to the night shift" claim nothing."""
     value = _norm(text)
     for pattern, predicate in ((r'i (?:now )?live\b', 'residence'),
-                               (r'i (?:just )?(?:moved|relocated) to\b', 'residence'),
-                               (r'i m (?:now )?(?:living|based) in\b', 'residence'),
-                               (r'my home is in\b', 'residence'),
                                (r'i (?:now )?work\b', 'employment'),
-                               (r'i (?:just )?(?:joined|started at)\b', 'employment'),
-                               (r'i m an? (?:\w+ ){1,3}at\b', 'employment'),
-                               (r'my (?:employer|company) is\b', 'employment'),
-                               (r'i (?:now )?study\b', 'school'),
-                               (r'i m an? (?:\w+ )?student at\b', 'school'),
-                               (r'my school is\b', 'school'),
                                (r'my name is\b', 'name'),
-                               (r'i (?:now )?prefer\b', 'preference')):
+                               (r'i (?:now )?prefer\b', 'preference'),
+                               (r'my (?:employer|company) is\b', 'employment'),
+                               (r'my school is\b', 'school'),
+                               (r'i (?:now )?study at\b', 'school'),
+                               (r'i m an? (?:\w+ )?student at\b', 'school')):
         if re.match(pattern, value):
+            return 'user', predicate
+    # Phrasings that need a capitalised name right after them, read from the text
+    # itself (case matters only for that name).
+    raw = re.sub(r"\s+", " ", text.strip().replace("\u2019", "'"))
+    for pattern, predicate in ((r"[Ii](?:'m| am) an? (?:[\w-]+ ){0,2}(?:engineer|developer|designer|manager|"
+                                r"director|analyst|scientist|researcher|consultant|teacher|professor|intern|"
+                                r"associate|specialist|architect|writer|editor|accountant) (?:at|for) [A-Z]",
+                                'employment'),
+                               (r"[Ii] (?:just )?started (?:working )?at [A-Z]", 'employment'),
+                               (r"[Ii] (?:just )?(?:moved|relocated) to (?:the )?[A-Z]", 'residence'),
+                               (r"[Ii](?:'m| am) (?:now )?(?:living|based) in [A-Z]", 'residence')):
+        if re.match(pattern, raw):
             return 'user', predicate
     return '', ''
 
@@ -394,10 +403,15 @@ class FactStore:
             return len(rows)
 
     def forget_source(self, source_type, *, prefix=''):
-        """Forget every extracted fact whose evidence all comes from `source_type`
-        (with a source id starting `prefix`, e.g. one mail account), and remove that
-        evidence from facts that also rest on something else (the user's own words,
-        say). Forgotten facts are suppressed like any other forget."""
+        """Forget what rests only on `source_type` evidence (with a source id starting
+        `prefix`, e.g. one mail account), one row at a time.
+
+        Unlike `delete`, this never follows a correction chain: a mail fact the user
+        corrected ("no, I work at Beta") is forgotten, but the user's correction, and
+        any other row in the family, stays exactly as it is. Facts that are the user's
+        own word (explicit, captured from chat, saved by an older build) or that the
+        user confirmed keep their row and lose only that evidence. Every removed
+        source and quote is suppressed, so the same emails can't bring it back."""
         forgotten = removed = 0
 
         def matches(e):
@@ -410,15 +424,23 @@ class FactStore:
                 row = self.get(fid)
                 if not row or row['status'] == 'forgotten':
                     continue
+                mine = [e for e in row['evidence'] if matches(e)]
                 others = [e for e in row['evidence'] if not matches(e)]
-                if row['origin'] not in ('explicit', 'automatic', 'legacy') and not others:
-                    forgotten += bool(self.delete(fid))
-                    continue
-                for e in row['evidence']:
-                    if matches(e):
+                users = row['origin'] in ('explicit', 'automatic', 'legacy') or row['reviewed']
+                for e in mine:
+                    self._db.execute('INSERT OR IGNORE INTO memory_suppression VALUES(?,?)',
+                                     ('source', f"{e['source_type']}:{e['source_id']}"))
+                    if _norm(e['quote']):
                         self._db.execute('INSERT OR IGNORE INTO memory_suppression VALUES(?,?)',
-                                         ('source', f"{e['source_type']}:{e['source_id']}"))
-                        removed += self._db.execute('DELETE FROM memory_evidence WHERE id=?', (e['id'],)).rowcount
+                                         ('quote', _key(e['quote'])))
+                    removed += self._db.execute('DELETE FROM memory_evidence WHERE id=?', (e['id'],)).rowcount
+                if users or others:
+                    continue
+                # This row only: its wording is blocked, the rest of its family is untouched.
+                self._db.execute('INSERT OR IGNORE INTO memory_suppression VALUES(?,?)', ('fact', row['fact_key']))
+                self._db.execute("UPDATE facts SET text='',explanation='',subject='',predicate='',object='',"
+                                 "status='forgotten',pinned=0 WHERE id=?", (fid,))
+                forgotten += 1
         return {'forgotten': forgotten, 'evidence_removed': removed}
 
     def source_counts(self, source_type):

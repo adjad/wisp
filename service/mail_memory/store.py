@@ -325,6 +325,10 @@ class Store:
                 return self._db.execute("DELETE FROM fact_candidates").rowcount
             return self._db.execute("DELETE FROM fact_candidates WHERE account=?", (account,)).rowcount
 
+    def account_newest(self) -> dict[str, float]:
+        """Each account's newest indexed message (Mail's received time)."""
+        return {r[0]: r[1] for r in self._db.execute("SELECT account, MAX(ts) FROM messages GROUP BY account")}
+
     def candidate_accounts(self) -> set[str]:
         return {r[0] for r in self._db.execute("SELECT DISTINCT account FROM fact_candidates")}
 

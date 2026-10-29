@@ -69,21 +69,27 @@ _SENSITIVE = re.compile(
     r"religio\w*|church|mosque|synagogue|temple|parish|"
     r"politic\w*|democrat\w*|republican\w*|gop|actblue|winred|campaign|"
     r"sexual\w*|gay|lesbian|lgbt\w*|queer|trans|transgender\w*|transsexual\w*|grindr|tinder|hinge|bumble|okcupid|dating|"
-    r"lawsuit|attorney|lawyer|court|arrest\w*|probation|divorce|custody)\b", re.I)
+    r"lawsuit|attorney|lawyer|court|arrest\w*|probation|divorce|custody|"
+    # brands whose name alone says something sensitive: adult sites, telehealth,
+    # weight loss, political and advocacy organisations
+    r"onlyfans|fansly|pornhub|porn\w*|xxx|adult|nsfw|hims|hers|roman|nurx|cerebral|teladoc|mdlive|"
+    r"amwell|goodrx|telehealth|telemedicine|noom|ww|weight ?watchers|weight\w*|diet\w*|ozempic|wegovy|"
+    r"semaglutide|nra|aclu|moveon|sierra club|greenpeace|union dues|ammo\w*|firearm\w*|gun\w*)\b", re.I)
 _DIGITS = re.compile(r"\d{4,}")
 # What a service or account may be: everyday, non-sensitive categories only. A
 # category outside this list (a clinic, a bank, a campaign) is never learned.
 SERVICE_CATEGORIES = frozenset({
     "internet", "broadband", "wifi", "phone", "mobile", "cell", "wireless", "cable", "tv",
     "electricity", "electric", "power", "gas", "water", "utility", "utilities", "trash", "garbage",
-    "recycling", "sewer", "landlord", "property management", "streaming", "music", "video", "airline",
-    "rideshare", "delivery", "food delivery", "grocery", "groceries", "gym", "fitness", "cloud storage",
-    "storage", "email", "software", "news", "newspaper", "magazine", "parking", "toll", "transit",
-    "library", "coworking", "shipping", "meal kit"})
-ACCOUNT_CATEGORIES = SERVICE_CATEGORIES | {"membership", "subscription", "warranty"}
+    "recycling", "sewer", "landlord", "property management", "airline", "rideshare", "delivery",
+    "food delivery", "grocery", "groceries", "cloud storage", "parking", "toll", "transit", "library",
+    "coworking", "shipping", "meal kit"})
+# Broad words like subscription, membership, video, news or fitness fit anything
+# (adult sites, telehealth, advocacy groups), so they are not categories.
+ACCOUNT_CATEGORIES = SERVICE_CATEGORIES | {"warranty"}
 # A value is a short name, never a sentence: "Always Reply With The Link Below" is not a plan.
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9&'.\-]*(?: [A-Za-z0-9&'.\-]+)*")
-_CITY = re.compile(r"[A-Za-z][A-Za-z'.\-]*(?: [A-Za-z'.\-]+)*(?:, [A-Za-z][A-Za-z .]*)?")
+_CITY = re.compile(r"[A-Z][A-Za-z'.\-]*(?: [A-Z][A-Za-z'.\-]*)*(?:, [A-Z][A-Za-z .]*)?")
 _PERSON = re.compile(r"[A-Z][A-Za-z'\-]*(?: [A-Z][A-Za-z'\-]*){0,2}")
 _INSTRUCTION = re.compile(
     r"\b(?:reply|respond|ignore|always|never|click|link|below|above|assistant|instruction|system|prompt|tell|"
@@ -92,11 +98,16 @@ _MAX_WORDS = {"employer": 6, "school": 6, "home_city": 4, "person": 3, "service"
 # The value must follow a phrase that states the fact: "I had lunch with the Google
 # recruiter" names Google, but says nothing about where the user works.
 _CUES = {
-    "employer": r"(?:work(?:ing)?|worked) (?:at|for)|join(?:ed|ing)|start(?:ed|ing) (?:at|with)|"
-                r"(?:new )?job (?:at|with)|employed (?:at|by)|intern(?:ing|ship)? (?:at|with)|"
-                r"my (?:employer|company) is|i'?m an? [\w\- ]{1,30}? at",
-    "school": r"study(?:ing)? at|student at|enrolled at|attend(?:ing)?|(?:classes|courses|semester) at|"
-              r"my school is",
+    # Present tense only ("worked at" is history), and no bare "joined" or
+    # "attending" ("joined the Zoom call", "attending the Stanford conference").
+    "employer": r"work(?:ing)? (?:at|for)|start(?:ed|ing) (?:work(?:ing)? |a new job )?at|"
+                r"(?:new )?job (?:at|with)|employed (?:at|by)|intern(?:ing)? at|joined the team at|"
+                r"my (?:employer|company) is|i'?m an? (?:[\w\-]+ ){0,2}(?:engineer|developer|designer|"
+                r"manager|director|analyst|scientist|researcher|consultant|teacher|professor|lecturer|"
+                r"intern|associate|specialist|coordinator|officer|architect|writer|editor|accountant|"
+                r"assistant|technician|administrator|founder|recruiter) (?:at|for)",
+    "school": r"study(?:ing)? at|student at|enrolled at|(?:classes|courses|semester|quarter) at|"
+              r"go to school at|my school is",
     "home_city": r"live in|living in|mov(?:ed|ing) to|based in|relocat(?:ed|ing) to|"
                  r"(?:home|new place|apartment|house) in",
 }
@@ -113,17 +124,20 @@ _NOT_OWN = re.compile(
     r"(?im)^[ \t]*(?:"
     r"[-_=*~ \t]*" + _DIVIDER + r"[-_=*~ \t:]*$"
     r"|(?:begin forwarded message|d(?:é|e)but du message r(?:é|e)exp(?:é|e)di(?:é|e)|"
-    r"anfang der weitergeleiteten nachricht|inicio del mensaje reenviado|inizio messaggio inoltrato)\s*:?"
+    r"anfang der weitergeleiteten nachricht|inicio del mensaje reenviado|inizio messaggio inoltrato|"
+    r"start p(?:å|a) videresendt (?:melding|besked)|begynnelse av videresendt melding)\s*:?"
     r"|(?:on|am|le|el|il|op|em|den)\s[^\n]{1,300}(?:wrote|schrieb|a (?:é|e)crit|escribi(?:ó|o)|ha scritto|"
     r"schreef|escreveu|skrev)[^\n]{0,200}:[ \t]*$"
     r"|>"
     r"|[-_=]{8,}"
     r"|(?:from|sent|to|cc|subject|date|de|von|gesendet|an|betreff|datum|envoy(?:é|e)|(?:à|a)|objet|enviado|"
     r"para|asunto|fecha|da|inviato|oggetto|data|van|verzonden|aan|onderwerp|fr(?:å|a)n|skickat|till|"
-    r"(?:ä|a)mne)[ \t]*:[ \t]*\S[^\n]{0,300}$"
+    r"(?:ä|a)mne|fra|sendt|til|emne|dato)[ \t]*:[ \t]*\S[^\n]{0,300}$"
     r")")
-_CF = dict.fromkeys([0xad, 0x61c, 0x180e, 0xfeff, *range(0x200b, 0x2010), *range(0x202a, 0x202f),
-                    *range(0x2060, 0x2065), *range(0x2066, 0x2070), *range(0xfff9, 0xfffc)])
+_CF = dict.fromkeys([0xad, 0x34f, 0x61c, 0x115f, 0x1160, 0x17b4, 0x17b5, 0x180e, 0x3164, 0xfeff, 0xffa0,
+                    *range(0x180b, 0x1810), *range(0x200b, 0x2010), *range(0x202a, 0x202f),
+                    *range(0x2060, 0x2065), *range(0x2066, 0x2070), *range(0xfe00, 0xfe10),
+                    *range(0xfff9, 0xfffc), *range(0xe0000, 0xe0080), *range(0xe0100, 0xe01f0)])
 
 
 def _plain(text: str) -> str:
@@ -162,13 +176,16 @@ def addressed_to(email: Email, own: list[str]) -> bool:
 
 
 def _from_sender(value: str, sender: str) -> bool:
-    """An inbox service must be the one writing: "Comcast" from billing@comcast.net,
-    "AppleCare" from no_reply@apple.com. Text a bulk sender puts in its mail can't
-    name someone else."""
-    name, addr = parseaddr(sender)
-    flat = re.sub(r"[^a-z0-9]", "", f"{name} {addr}".casefold())
-    labels = [l for l in re.split(r"[.@]", addr.casefold().split("@")[-1]) if len(l) >= 4]
-    for token in re.findall(r"[a-z0-9]{3,}", value.casefold()):
+    """An inbox service must be the one writing, by its address's domain (the display
+    name is anyone's to set): "Comcast" from billing@comcast.net, "AppleCare" from
+    no_reply@apple.com. Text a bulk sender puts in its mail can't name someone else."""
+    _, addr = parseaddr(sender)
+    if "@" not in addr:
+        return False
+    domain = addr.casefold().rsplit("@", 1)[1]
+    labels = [l for l in re.split(r"[.\-]", domain) if len(l) >= 4]
+    flat = re.sub(r"[^a-z0-9]", "", domain)
+    for token in re.findall(r"[a-z0-9]{4,}", value.casefold()):
         if token in flat or any(token.startswith(l) or l.startswith(token) for l in labels):
             return True
     return False
@@ -294,6 +311,9 @@ def validate(candidates: list[dict], email: Email, *, sent_by_user: bool,
             if not _FIRST_PERSON.search(quote):
                 drop("not_first_person")
                 continue
+            if not re.search(rf"(?<![\w]){re.escape(value)}(?![\w])", quote):
+                drop("value_case")             # names as the email writes them: "night shift" is no "Night Shift"
+                continue
             if kind == "person":
                 if not role or not re.search(rf"\b(?:my|our)\s+(?:\w+\s+)?{re.escape(role)}\b", q):
                     drop("no_relation")        # "my sister Priya": the relation must be stated
@@ -302,7 +322,7 @@ def validate(candidates: list[dict], email: Email, *, sent_by_user: bool,
                 if _THIRD_PERSON.search(quote):
                     drop("third_person")       # "Dana told me she moved to Denver"
                     continue
-                if _NEGATED.search(quote):
+                if _NEGATED.search(q):            # folded, so "don’t" reads "don't"
                     drop("negated")            # "I no longer work at Acme"
                     continue
                 if not re.search(rf"\b(?:{_CUES[kind]})\s+(?:the\s+)?{re.escape(nv)}(?![\w])", q):

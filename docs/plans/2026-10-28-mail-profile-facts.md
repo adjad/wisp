@@ -312,3 +312,23 @@ Known limits, documented rather than fixed in dev7:
 - **L7, downgrade.** A build older than this one doesn't know the `mail` origin. It would treat saved mail
   facts as ordinary facts, including for cloud models. Forget everything from mail before rolling back to
   an older build.
+
+### Second repair (0c18a65d delta audit was BLOCK)
+
+- **Forgetting never follows a correction chain.** `FactStore.forget_source` forgets only the mail row
+  itself. A user's correction of a mail fact, a newer value from another account, and a mail fact the user
+  confirmed all stay; a confirmed one loses only its mail evidence.
+- **An account counts as removed only when it is really gone.** It must have had mail in the last 76 days
+  (quiet accounts never count) and be missing from 3 complete index reads spanning at least 2 days, so a
+  re-import or mailbox rebuild erases nothing.
+- **Cues are stricter.** Present tense only ("worked at" is history); no bare "joined" or "attending";
+  job-title words for "I'm a … at"; negation is checked on the folded quote, so "don’t" counts. Names of
+  the user's employer, school, city and people must appear in the quote exactly as written.
+- **Categories are narrower.** Subscription, membership, video, news, magazine and fitness were dropped.
+  Adult, telehealth, weight-loss, firearm and political or advocacy brands were added to the blocklist.
+- **Smaller fixes.** Norwegian and Danish dividers and headers are covered. Senders are matched by address
+  domain only, never the display name. Tag characters, variation selectors and Hangul fillers are
+  stripped. `claim_slot` needs a capitalised name after the wider phrasings, so "I joined a book club",
+  "I study piano" and "I moved to the night shift" claim nothing. Forget-all runs off the event loop.
+- **Not changed.** `/memory/search` stays as it is: it has the same exposure as `/memory/facts`, which the
+  app's own window already uses.
