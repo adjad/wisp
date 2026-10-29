@@ -1,4 +1,4 @@
-"""A GPU power cap on Wisp's background model calls while the user is away.
+"""GPU power caps on Wisp's own model calls: on battery, and while the user is away.
 
 oMLX (0.7.3+) takes a per-request ``gpu_power_limit_w`` and holds a firmware
 GPU power cap while that request generates. The cap is a limit on the whole
@@ -12,35 +12,41 @@ requests; the admin benchmark never applies the cap):
 
     cap    first token   decode   GPU J/token
     none   1.16 s        84 t/s   0.270
+    15 W   +25%          -5%      -36%
     10 W   +35%          -16%     -52%
 
-Only ``BACKGROUND`` work is ever capped (10 W): work nobody is waiting on
-(gists and the inbox summary, proactive triage/judge/prepare, the mail memory
-walk, the behavior tick's interpreter and phraser, memory capture). And only
-while the "Save power when away" switch is on (the notch; on by default) AND
-the user is away: no keyboard or mouse input for AWAY_AFTER_S, no turn
-running, and no other app busy on the GPU (a game, an export, a render: the
-cap would throttle it too). With someone at the Mac it runs uncapped.
+Every cap needs the "Save power" switch on (the notch; on by default; stored as
+``save_when_away``) and no other app busy on the GPU (a game, an export, a
+render: the cap would throttle it too). Then:
 
-Everything else is never capped: Ask turns (and the history folding at the
-end of a turn, memory/context.maybe_summarize), voice, phone turns, research,
-connection investigations the user asks for (memory/connections.py), a brief
-the user opens, setup probes. While any of those is in flight,
-background calls go uncapped too, so they can't drag it down to 10 W. A
-background call already in flight keeps its cap until it ends; most of them
-are cancelled when a turn starts (mail_gists, the mail memory walk), and the
-rest are short (the phraser, memory capture).
+- ``CHAT`` (chat replies: Ask turns typed, spoken or from the phone, with the
+  history folding at the end of a turn, and questions about an attached image
+  or document): 15 W while the Mac is on battery and the turn is still
+  running; uncapped on AC. "On battery" is pmset's "Battery Power"; a desktop
+  drawing from a UPS reports "UPS Power" and counts as battery too.
+- ``BRIEF`` (Brief generation: the mail and texts gists, the inbox summary, the
+  proactive triage/judge/prepare behind its cards): 15 W on battery, and 10 W
+  while the user is away; uncapped otherwise.
+- ``BACKGROUND`` (the mail memory walk, the behavior tick's interpreter and
+  phraser, memory capture): 10 W while the user is away (no keyboard or mouse
+  input for AWAY_AFTER_S and no turn running); uncapped otherwise.
+- Everything else is never capped: research, connection investigations the
+  user asks for (memory/connections.py), voice transcription, setup probes.
 
-The scheduled Daily Summary makes no model call (service/assistant/brief.py
-renders it from caches), so it has no tier; the model-written parts of the
-Brief come from the background gists and proactive cards.
+The Daily Summary, scheduled or opened, makes no model call
+(service/assistant/brief.py renders it from caches), so there is nothing to cap.
 
-Releasing the cap the moment a request ends DEPENDS on the engine patch
-``GpuPowerLimiter(release_delay_s=0.0)`` in server.py (branch
-claude/engine-gpu-cap-no-linger); upstream oMLX holds it 15 s longer, so a
-reply started within 15 s of a capped call still runs capped until then.
+While any non-background call is in flight (chat, research, ...), BRIEF and
+BACKGROUND calls go uncapped, so they can't drag it below its own cap. One
+already in flight keeps its cap until it ends; most are cancelled when a turn
+starts (mail_gists, the mail memory walk), and the rest are short.
 
-A tier is set with ``with power_tier(BACKGROUND):`` around the call (it is a
+The cap is released the moment a request ends by Wisp's bundled engine, which
+carries ``GpuPowerLimiter(release_delay_s=0.0)`` in server.py since 0.5.0-dev6.
+A standalone oMLX.app serving Wisp keeps upstream's 15 s release delay, so
+there a call started within 15 s of a capped one still runs capped until then.
+
+A tier is set with ``with power_tier(CHAT):`` around the call (it is a
 ContextVar, so tasks created inside inherit it). OMLXClient adds the field only
 for the managed local engine, never for a remote provider.
 """
@@ -59,11 +65,18 @@ from typing import Iterator
 
 from service.paths import MOE_DIR
 
+CHAT = "chat"
+BRIEF = "brief"
 BACKGROUND = "background"
+_TIERS = (CHAT, BRIEF, BACKGROUND)
+_UNWATCHED = (BRIEF, BACKGROUND)          # nobody is waiting on these
 
-_DEFAULT_WATTS = {BACKGROUND: 10}
+# The two caps: while the user is away, and while the Mac is on battery.
+AWAY = "away"
+BATTERY = "battery"
+_DEFAULT_WATTS = {AWAY: 10, BATTERY: 15}
 # 0 turns the cap off; anything outside oMLX's 2-1000 W range is ignored.
-_ENV = {BACKGROUND: "WISP_BACKGROUND_GPU_W"}
+_ENV = {AWAY: "WISP_BACKGROUND_GPU_W", BATTERY: "WISP_BATTERY_GPU_W"}
 _MIN_W, _MAX_W = 2, 1000
 
 SETTINGS_PATH = MOE_DIR / "power" / "settings.json"
@@ -75,8 +88,8 @@ _tier: ContextVar[str | None] = ContextVar("wisp_power_tier", default=None)
 # --- the switch -------------------------------------------------------------------
 
 def save_when_away(path: Path | None = None) -> bool:
-    """The "Save power when away" switch. On unless the user turned it off: it
-    only ever caps background work while nobody is at the Mac."""
+    """The "Save power" switch (named for its first rule). On unless the user
+    turned it off; off means nothing is ever capped."""
     path = SETTINGS_PATH if path is None else path
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -100,12 +113,13 @@ def set_save_when_away(on: bool, path: Path | None = None) -> bool:
     return on
 
 
-# --- away -------------------------------------------------------------------------
+# --- away and on battery ----------------------------------------------------------
 #
-# Away is read from the keyboard/mouse idle time (IOHIDSystem, the same probe
-# the mail memory walk uses). Reading it runs ioreg, so it is never read on a
-# request: the scheduler refreshes it off the event loop every tick, and a
-# reading older than _AWAY_STALE_S counts as present (uncapped).
+# Away is read from the keyboard/mouse idle time (IOHIDSystem), and the power
+# source from pmset (the mail memory walk's cached probes). Both run a
+# subprocess, so they are never read on a request: the scheduler refreshes them
+# off the event loop every tick, and a reading older than _AWAY_STALE_S counts
+# as present and on AC (uncapped).
 #
 # Age is checked on both clocks. time.monotonic() stops while the Mac sleeps, so
 # a reading taken just before sleep would look fresh at wake and cap the wake
@@ -114,30 +128,67 @@ def set_save_when_away(on: bool, path: Path | None = None) -> bool:
 
 AWAY_AFTER_S = 600.0
 _AWAY_STALE_S = 120.0
-_away: tuple[float, float, bool] | None = None   # (monotonic, wall time read, away)
+_away: tuple[float, float, bool] | None = None      # (monotonic, wall time read, away)
+_battery: tuple[float, float, bool] | None = None   # (monotonic, wall time read, on battery)
 
 
-def refresh_away(hid_idle_s: float | None = None, *, probe: bool = True) -> bool:
-    """Read the input idle time and store whether the user is away. Blocking:
-    call it from a worker thread."""
-    global _away
+def _remote_only() -> bool:
+    try:
+        from service.inference.remote_policy import remote_only_profile
+        return remote_only_profile() is not None
+    except Exception:  # noqa: BLE001 — unreadable policy: assume a local engine
+        return False
+
+
+def _on_battery_probe() -> bool:
+    from service.mail_memory.runner import _cached, _power
+    on_ac, _percent, _low_power = _cached("power", _power)   # a failed read says AC
+    return not on_ac
+
+
+def refresh_away(hid_idle_s: float | None = None, on_battery: bool | None = None, *,
+                 probe: bool = True) -> bool:
+    """Read the input idle time and the power source, and store whether the
+    user is away and whether the Mac is on battery (each only while the GPU is
+    otherwise quiet). Blocking: call it from a worker thread. Returns away.
+
+    With the switch off, or no local engine to cap (a remote-only profile),
+    nothing could be capped, so nothing is read: no ioreg, no pmset."""
+    global _away, _battery
+    if not save_when_away() or _remote_only():
+        _gpu_quiet(sample=False)                 # drops the GPU baseline
+        mono, wall = time.monotonic(), time.time()
+        _away = _battery = (mono, wall, False)
+        return False
     if probe and hid_idle_s is None:
         from service.mail_memory.runner import _hid_idle_s
         hid_idle_s = _hid_idle_s()
+    if probe and on_battery is None:
+        on_battery = _on_battery_probe()
     idle_enough = hid_idle_s is not None and hid_idle_s >= AWAY_AFTER_S
-    value = _gpu_quiet(sample=idle_enough) and idle_enough
-    _away = (time.monotonic(), time.time(), value)
-    return value
+    battery = on_battery is True
+    quiet = _gpu_quiet(sample=idle_enough or battery)
+    mono, wall = time.monotonic(), time.time()
+    _away = (mono, wall, idle_enough and quiet)
+    _battery = (mono, wall, battery and quiet)
+    return _away[2]
+
+
+def _fresh(reading: tuple[float, float, bool] | None) -> bool:
+    if reading is None:
+        return False
+    mono, wall, value = reading
+    return value and time.monotonic() - mono < _AWAY_STALE_S and 0 <= time.time() - wall < _AWAY_STALE_S
 
 
 # --- other apps on the GPU --------------------------------------------------------
 #
-# The cap limits the whole Mac's GPU, so a game, video export or 3D render left
-# running while the user is away would be throttled to 10 W too. While the input
-# is idle, each refresh reads every process's accumulated GPU time (ioreg
+# The cap limits the whole Mac's GPU, so a game, video export or 3D render
+# running at the same time would be throttled too. While the input is idle or
+# the Mac is on battery, each refresh reads every process's accumulated GPU time (ioreg
 # AGXDeviceUserClient AppUsage, readable without privileges) and compares it with
 # the previous refresh: if other apps used at least OTHER_GPU_BUSY of the GPU in
-# between, background work stays uncapped. Wisp, its engine (the user's oMLX.app
+# between, nothing is capped. Wisp, its engine (the user's oMLX.app
 # or the engine bundled in Wisp.app) and WindowServer's compositing don't count.
 # No baseline yet, a failed read, or a too-short gap counts as busy (uncapped).
 
@@ -183,7 +234,7 @@ def _gpu_quiet(sample: bool) -> bool:
     """Whether other apps left the GPU quiet since the previous refresh."""
     global _gpu_sample
     if not sample:
-        _gpu_sample = None                       # sampled only while the input is idle
+        _gpu_sample = None                       # sampled only when a cap could apply
         return False
     times, now = _other_gpu_times(), time.monotonic()
     previous, _gpu_sample = _gpu_sample, (None if times is None else (now, times))
@@ -195,38 +246,39 @@ def _gpu_quiet(sample: bool) -> bool:
 
 
 def away() -> bool:
-    """Whether the user is away: idle input, a fresh reading, and no turn."""
+    """Whether the user is away: idle input, a quiet GPU, a fresh reading, no turn."""
     from service import idle
-    if idle.foreground_busy() or _away is None:
-        return False
-    mono, wall, value = _away
-    return (value and time.monotonic() - mono < _AWAY_STALE_S
-            and 0 <= time.time() - wall < _AWAY_STALE_S)
+    return not idle.foreground_busy() and _fresh(_away)
 
 
-# --- uncapped calls in flight -----------------------------------------------------
+def on_battery() -> bool:
+    """Whether the Mac is on battery, with a quiet GPU and a fresh reading."""
+    return _fresh(_battery)
 
-_uncapped_calls = 0
+
+# --- calls someone is waiting on, in flight ---------------------------------------
+
+_watched_calls = 0
 
 
 def call_started() -> bool:
-    """OMLXClient, as a managed call starts. True when it is an uncapped
-    (non-background) call; pass that to call_ended."""
-    global _uncapped_calls
-    if current_tier() == BACKGROUND:
+    """OMLXClient, as a managed call starts. True when it is a call someone is
+    waiting on (anything but BRIEF and BACKGROUND); pass that to call_ended."""
+    global _watched_calls
+    if current_tier() in _UNWATCHED:
         return False
-    _uncapped_calls += 1
+    _watched_calls += 1
     return True
 
 
-def call_ended(uncapped: bool) -> None:
-    global _uncapped_calls
-    if uncapped:
-        _uncapped_calls = max(0, _uncapped_calls - 1)
+def call_ended(watched: bool) -> None:
+    global _watched_calls
+    if watched:
+        _watched_calls = max(0, _watched_calls - 1)
 
 
-def uncapped_running() -> bool:
-    return _uncapped_calls > 0
+def watched_running() -> bool:
+    return _watched_calls > 0
 
 
 # --- tiers ------------------------------------------------------------------------
@@ -234,7 +286,7 @@ def uncapped_running() -> bool:
 @contextmanager
 def power_tier(tier: str) -> Iterator[None]:
     """Run the enclosed model calls under ``tier``'s GPU power cap."""
-    if tier not in _DEFAULT_WATTS:
+    if tier not in _TIERS:
         raise ValueError(f"unknown power tier: {tier!r}")
     token = _tier.set(tier)
     try:
@@ -247,28 +299,47 @@ def current_tier() -> str | None:
     return _tier.get()
 
 
-def watts(tier: str | None) -> int | None:
-    """The cap for ``tier`` in watts, or None for no cap."""
-    if tier not in _DEFAULT_WATTS:
+def watts(cap: str | None) -> int | None:
+    """The AWAY or BATTERY cap in watts, or None for no cap."""
+    if cap not in _DEFAULT_WATTS:
         return None
-    raw = os.environ.get(_ENV[tier], "").strip()
+    raw = os.environ.get(_ENV[cap], "").strip()
     if raw:
         try:
             value = int(raw)
         except ValueError:
-            value = _DEFAULT_WATTS[tier]
+            value = _DEFAULT_WATTS[cap]
         if value == 0:
             return None
         if _MIN_W <= value <= _MAX_W:
             return value
-    return _DEFAULT_WATTS[tier]
+    return _DEFAULT_WATTS[cap]
+
+
+def _cap(tier: str | None) -> str | None:
+    """Which cap applies to a call at ``tier`` right now, if any."""
+    if tier not in _TIERS or not save_when_away():
+        return None
+    if tier in _UNWATCHED and watched_running():
+        return None
+    if tier in _UNWATCHED and away():
+        return AWAY
+    if tier == CHAT and not _turn_running():
+        return None
+    if tier in (CHAT, BRIEF) and on_battery():
+        return BATTERY
+    return None
+
+
+def _turn_running() -> bool:
+    """A chat turn (or an image or document question) is in flight. CHAT is a
+    ContextVar, so a task spawned inside a turn inherits it; without a turn
+    still running, that task's calls are not chat and go uncapped."""
+    from service import idle
+    return idle.foreground_busy()
 
 
 def payload_fields() -> dict[str, int]:
-    """Request-body fields for this call: a cap only for background work while
-    the user is away, the switch is on, and nothing uncapped is running."""
-    tier = current_tier()
-    if tier != BACKGROUND or not (save_when_away() and away() and not uncapped_running()):
-        return {}
-    value = watts(tier)
+    """Request-body fields for this call (see the module docstring)."""
+    value = watts(_cap(current_tier()))
     return {} if value is None else {"gpu_power_limit_w": value}

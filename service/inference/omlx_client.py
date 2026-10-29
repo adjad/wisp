@@ -250,18 +250,18 @@ def _power_fields(client) -> dict[str, int]:
 
 
 def _power_call_started(client) -> bool:
-    """Counts uncapped calls in flight, so background calls drop their cap
-    while one runs (oMLX holds the lowest cap among active requests)."""
+    """Counts calls someone is waiting on, so Brief and background calls drop
+    their cap while one runs (oMLX holds the lowest cap among active requests)."""
     if not getattr(client, "managed", False):
         return False
     from service.inference.power_tier import call_started
     return call_started()
 
 
-def _power_call_ended(uncapped: bool) -> None:
-    if uncapped:
+def _power_call_ended(watched: bool) -> None:
+    if watched:
         from service.inference.power_tier import call_ended
-        call_ended(uncapped)
+        call_ended(watched)
 
 
 class OMLXClient:
