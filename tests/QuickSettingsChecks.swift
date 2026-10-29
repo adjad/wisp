@@ -12,7 +12,10 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(QuickSettingsText.fullAccess(on: true, pending: true).status == nil, "a pending change shows no status word")
 
     // Save power: says it saves power on battery and while away; unconfirmed
-    // is never "off"; the help names both caps, what they cover, and the 10 minutes.
+    // is never "off"; the help names the 15 W and 10 W caps and what they cover
+    // (background work always, the Brief after 10 minutes away), that light GPU
+    // use by other apps doesn't stop them and a busier app lifts them within
+    // about a second, and that only the built-in engine is capped.
     check(QuickSettingsText.saveWhenAway(on: true, pending: false).contains("on battery")
           && QuickSettingsText.saveWhenAway(on: true, pending: false).contains("while you're away"), "Save power on")
     check(QuickSettingsText.saveWhenAway(on: false, pending: false) == "Wisp always runs at full speed", "Save power off")

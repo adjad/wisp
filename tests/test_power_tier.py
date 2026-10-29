@@ -806,11 +806,12 @@ def test_a_lift_through_a_client_that_just_closed_goes_through_another(away):
     assert P._lifted is True and P._lift_ok is True and P._lift_retry_at == 0.0
 
 
-def test_the_watch_asks_again_when_a_lift_did_not_go_through(monkeypatch, away):
+def test_the_watch_asks_again_after_the_cooldown_when_a_lift_did_not_go_through(monkeypatch, away):
     answers = [None, True]                                      # a 2 s timeout, then fine
     asked = []
     monkeypatch.setattr(P, "check_other_gpu", lambda: False)    # a game is running
     monkeypatch.setattr(P, "WATCH_EVERY_S", 0.01)
+    monkeypatch.setattr(P, "_LIFT_RETRY_S", 0.03)
 
     async def lift():
         asked.append(len(asked))
@@ -819,11 +820,69 @@ def test_the_watch_asks_again_when_a_lift_did_not_go_through(monkeypatch, away):
     async def run():
         with P.power_tier(P.BACKGROUND):
             started = P.call_started(10, lift)
-        await asyncio.sleep(0.06)
+        await asyncio.sleep(0.02)
+        assert len(asked) == 1                                  # not again within the cooldown
+        await asyncio.sleep(0.1)
         P.call_ended(started)
 
     asyncio.run(run())
     assert len(asked) == 2 and P._lifted is True               # asked again, then stopped
+
+
+@pytest.mark.parametrize("answer", [None, False], ids=["unreachable", "refused"])
+def test_the_watch_does_not_ask_or_look_every_second_after_a_failed_lift(monkeypatch, away, caplog, answer):
+    looks, asked = [], []
+    monkeypatch.setattr(P, "check_other_gpu", lambda: looks.append(1) or False)   # a game is running
+    monkeypatch.setattr(P, "WATCH_EVERY_S", 0.01)
+
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            started = P.call_started(10, _lifter(asked, answer))
+        await asyncio.sleep(0.1)                                # about ten watch rounds
+        P.call_ended(started)
+
+    with caplog.at_level("WARNING", logger=P.logger.name):
+        asyncio.run(run())
+    assert asked == [answer] and len(looks) == 1                # one look, one ask, then quiet
+    assert len([r for r in caplog.records if "lift" in r.getMessage()]) == 1
+    assert P._lifted is False and not P._lift_askable()         # and no new caps meanwhile
+
+
+def test_a_lift_asks_at_most_two_clients(away):
+    asked = []
+
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            calls = [P.call_started(10, _lifter(asked, None)) for _ in range(4)]
+        await P._lift_now(watch=True)
+        for started in calls:
+            P.call_ended(started)
+
+    asyncio.run(run())
+    assert asked == [None, None] and P._lift_ok is None and P._lift_retry_at > 0
+
+
+def test_a_lift_that_timed_out_asks_no_other_client(monkeypatch, away):
+    # The engine is the same behind every client: after a timeout another ask
+    # would only wait as long again.
+    monkeypatch.setattr(P, "_LIFT_TIMEOUT_S", 0.02)
+    asked = []
+
+    async def timed_out():
+        await asyncio.sleep(0.03)
+        asked.append(None)
+        return None
+
+    async def run():
+        with P.power_tier(P.BACKGROUND):
+            older = P.call_started(10, _lifter(asked, True))
+            newest = P.call_started(10, timed_out)
+        await P._lift_now(watch=True)
+        P.call_ended(newest)
+        P.call_ended(older)
+
+    asyncio.run(run())
+    assert asked == [None] and P._lifted is False and P._lift_retry_at > 0
 
 
 def test_a_watched_call_on_another_thread_lifts_through_the_service_loop(battery):
@@ -831,13 +890,20 @@ def test_a_watched_call_on_another_thread_lifts_through_the_service_loop(battery
     lifted = []
 
     async def run():
+        asked = asyncio.Event()
+
+        async def lift():
+            lifted.append(True)
+            asked.set()
+            return True
+
         with P.power_tier(P.BACKGROUND):
-            capped = P.call_started(10, _lifter(lifted))       # on the service loop
+            capped = P.call_started(10, lift)                   # on the service loop
         started = {}
         worker = threading.Thread(target=lambda: started.update(token=P.call_started(None, _lifter([]))))
         worker.start()
         await asyncio.to_thread(worker.join)
-        await asyncio.sleep(0.01)
+        await asyncio.wait_for(asked.wait(), 5)
         assert lifted == [True]                                 # via call_soon_threadsafe
         P.call_ended(started["token"])
         P.call_ended(capped)

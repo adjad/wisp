@@ -173,8 +173,7 @@ def _bundled_engine() -> bool:
 
 def _capping_possible() -> bool:
     """The switch is on and the engine can drop a cap at once (see the module rules)."""
-    return (save_when_away() and _lift_ok is not False and time.monotonic() >= _lift_retry_at
-            and not _remote_only() and _bundled_engine())
+    return save_when_away() and _lift_askable() and not _remote_only() and _bundled_engine()
 
 
 def _on_battery_probe() -> bool:
@@ -413,7 +412,13 @@ def on_battery() -> bool:
 # lift always goes through a client still in use. The first capped request of
 # a run asks once beforehand: an engine that answers anything but 200 (an older
 # bundled engine without the route) is never capped that run, and one that
-# can't be reached isn't capped for _LIFT_RETRY_S.
+# can't be reached isn't capped for _LIFT_RETRY_S. The watch keeps to that too:
+# after a refused lift it doesn't ask again that run, and after an unreachable
+# one not before _LIFT_RETRY_S, so a capped request beside a busy GPU doesn't
+# POST and warn every second. A call someone waits on that starts beside a
+# lower cap still asks (once per call: it's the only way to keep it from
+# running under that cap). A lift tries at most _LIFT_TRIES clients, and none
+# after one that timed out.
 #
 # Only calls on the service's own event loop are capped: uvicorn runs it on the
 # main thread. The behavior phraser runs asyncio.run in a worker thread with a
@@ -422,6 +427,7 @@ def on_battery() -> bool:
 
 _LIFT_RETRY_S = 60.0
 _LIFT_TIMEOUT_S = 2.0
+_LIFT_TRIES = 2                           # a client that just closed fails at once; one more is asked
 _calls_lock = threading.Lock()
 _watched_calls = 0
 _uncapped_watched = 0                     # calls someone waits on that run uncapped
@@ -448,6 +454,11 @@ async def _ask_lift(lift: Callable[[], Awaitable[bool | None]]) -> bool | None:
         return None
 
 
+def _lift_askable() -> bool:
+    """Not refused this run, and not unreachable within the last _LIFT_RETRY_S."""
+    return _lift_ok is not False and time.monotonic() >= _lift_retry_at
+
+
 def _note_lift(answer: bool | None) -> None:
     """After a lift: a refusal stops capping for the run, unreachable for _LIFT_RETRY_S."""
     global _lift_ok, _lift_retry_at
@@ -465,18 +476,20 @@ def _note_lift(answer: bool | None) -> None:
 
 async def _lift_now(*, watch: bool = False) -> None:
     """Lift every cap through a capped call's client, newest first: one that
-    closed meanwhile (its call just ended) can't be asked, so the next is.
-    Cheap and idempotent on the engine; only the watch marks the caps in
-    flight lifted, and only once the engine said it lifted them."""
+    closed meanwhile (its call just ended) can't be asked, so the next is, up
+    to _LIFT_TRIES; after a timeout none is (the engine is the same). Cheap and
+    idempotent on the engine; only the watch marks the caps in flight lifted,
+    and only once the engine said it lifted them."""
     global _lifted
     with _calls_lock:
-        lifts = [lift for _, lift in reversed(_capped.values())]
+        lifts = [lift for _, lift in reversed(_capped.values())][:_LIFT_TRIES]
     if not lifts:
         return
     answer = None
+    give_up_at = time.monotonic() + _LIFT_TIMEOUT_S
     for lift in lifts:
         answer = await _ask_lift(lift)
-        if answer is not None:
+        if answer is not None or time.monotonic() >= give_up_at:
             break
     if watch and answer is True:
         _lifted = True                       # otherwise the next look asks again
@@ -492,12 +505,13 @@ def _schedule_lift() -> None:
 
 async def _watch() -> None:
     """While capped calls run, look at other apps' GPU use every WATCH_EVERY_S.
-    A capped call starts only after a quiet look, and re-arms the watch."""
+    A capped call starts only after a quiet look, and re-arms the watch. No
+    look while a lift couldn't be asked anyway (see _lift_askable)."""
     global _watch_task
     try:
         while _capped:
             await asyncio.sleep(WATCH_EVERY_S)
-            if _capped and not _lifted and not await _look():
+            if _capped and not _lifted and _lift_askable() and not await _look():
                 await _lift_now(watch=True)
     finally:
         _watch_task = None
