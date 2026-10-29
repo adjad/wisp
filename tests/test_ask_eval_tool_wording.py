@@ -99,3 +99,23 @@ def test_latest_texts_go_to_view_messages_not_the_important_digest():
     tool = REGISTRY["summarize_messages"]
     assert "use view_messages instead" in tool.description
     assert "view_messages" in short_descriptions.SHORT["summarize_messages"]
+
+
+@pytest.mark.parametrize("prompt,lead", [
+    ("when is my midterm? pls", "get_upcoming"),
+    ("do I have class tomorrow?", "get_upcoming"),
+    ("what r my open tasks", "search_reminders"),
+    ("what are my school tasks?", "search_reminders"),
+])
+def test_dated_events_and_todos_lead_with_their_source(prompt, lead):
+    """2026-10-29 Ask run: "when is my midterm" was offered no calendar tool and
+    "my school tasks" lost Reminders to Google Tasks; both ended in "I don't have that"."""
+    from service import main
+    assert main._ask_tool_rank(prompt)[0][0] == lead
+
+
+def test_general_and_write_requests_keep_their_head_start():
+    from service import main
+    assert not mo.calendar_first("When is the next solar eclipse?")
+    assert not mo.reminders_first("what is a to-do list app?")
+    assert main._ask_tool_rank("remind me to do homework")[0][0] == "add_reminder"

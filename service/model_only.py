@@ -548,6 +548,27 @@ def mail_first(prompt: str) -> bool:
     return bool(_MAILISH.search(prompt or "")) and asks_personal_data(prompt)
 
 
+# "When is my midterm?" was offered no calendar tool and ended in "I don't
+# have that"; "what are my school tasks" lost Reminders to Google Tasks and
+# asked which list (2026-10-29 Ask run). Each leads with its usual source.
+_CALENDARISH = re.compile(
+    r"\b(?:when(?:'s|\s+is|\s+are)\s+my|midterms?|finals?|exams?|quiz(?:zes)?|class(?:es)?|"
+    r"lectures?|appointments?|interviews?|meetings?|dentist|doctor)\b", re.I)
+_TASKISH = re.compile(r"\b(?:tasks?|to-?dos?|todo\s+list|pending|homework|assignments?)\b", re.I)
+
+
+def calendar_first(prompt: str) -> bool:
+    """A personal question about a dated event ("When is my midterm?"):
+    get_upcoming leads the head start."""
+    return bool(_CALENDARISH.search(prompt or "")) and asks_personal_data(prompt)
+
+
+def reminders_first(prompt: str) -> bool:
+    """A personal question about to-dos ("what are my open tasks"):
+    search_reminders leads the head start."""
+    return bool(_TASKISH.search(prompt or "")) and asks_personal_data(prompt)
+
+
 # The Mac's own state is read with a tool, never answered from knowledge:
 # "how much free disk space?" was offered no tools (2026-10-29 Ask run).
 _DEVICE_STATE = re.compile(

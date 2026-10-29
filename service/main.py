@@ -1696,6 +1696,12 @@ def _ask_tool_rank(prompt: str) -> tuple[list[str], list[str]]:
         if not writing and mail_first(prompt) and "view_emails" in REGISTRY:
             # "When is the W-9 due?" went to web_search; the answer was in mail.
             head = ["view_emails", *(n for n in head if n != "view_emails")]
+        from service.model_only import calendar_first, reminders_first
+        if not writing:
+            for lead, wanted in (("get_upcoming", calendar_first(prompt)),
+                                 ("search_reminders", reminders_first(prompt))):
+                if wanted and lead in REGISTRY:
+                    head = [lead, *(n for n in head if n != lead)]
         preload = head[:ASK_PRELOAD]
         try:
             ranked = _reranker.ranked_lexical_candidates(text, writing=writing,

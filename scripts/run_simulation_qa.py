@@ -323,6 +323,11 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_model_only_quality.py",
     # Ask stall re-prompt, tomorrow typos and the day plan: fake model client, stubbed snapshot.
     "tests/test_ask_day_answers.py",
+    # Ask eval fixes: spoken periods, tool-call markup, tool wording and head start;
+    # fake model client, stubbed tools, private WISP_HOME.
+    "tests/test_ask_eval_tool_wording.py",
+    "tests/test_ask_text_tool_calls.py",
+    "tests/test_timeranges_spoken_days.py",
     "tests/test_proactive_accounts.py",
     "tests/test_proactive_auto_add.py",
     "tests/test_proactive_clear.py",
