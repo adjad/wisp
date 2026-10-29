@@ -128,7 +128,8 @@ _ADVERB = r"(?:just|now|recently|also|currently|finally|still|been|officially|ac
 _OWN_CUES = {
     "employer": rf"my (?:employer|company) is|(?:i'm|i am|im|we're|we are)(?: {_ADVERB})? "
                 rf"an? (?:[\w\-]+ ){{0,2}}{_ROLE} (?:at|for)",
-    "school": r"my school is", "home_city": r"my home is in"}
+    "school": rf"my school is|(?:i'm|i am|im)(?: {_ADVERB})? an? (?:[\w\-]+ ){{0,2}}student at",
+    "home_city": r"my home is in"}
 # Whose fact it is: the cue must follow I or we directly, or after a word or two
 # from a short list of adverbs. "My sister is moving to Denver", "I think Mike is
 # moving to Denver" and "my brother started at Stripe" are someone else's; "I just
@@ -137,8 +138,16 @@ _SUBJECT = r"(?:i|i'm|i am|im|i've|i have|i'll|we|we're|we are|we've|we have|we'
 _GAP = rf"(?:{_ADVERB} ){{0,2}}"
 # A move or a start that hasn't happened yet: "I'm moving to Denver next month".
 _FUTURE = re.compile(
-    r"\b(?:soon|next \w+|tomorrow|later|(?:by|in|this|from) (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
-    r"\w*|(?:by|in|this) (?:the )?(?:spring|summer|fall|autumn|winter|weekend|week|month|year))\b")
+    r"\b(?:soon|next \w+|tomorrow|later|(?:by|in|this|from|on) (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)"
+    r"\w*|(?:by|in|this) (?:the )?(?:spring|summer|fall|autumn|winter|weekend|week|month|year)|"
+    r"in (?:\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|a few|few|a couple of|a couple) "
+    r"(?:days?|weeks?|months?|years?)|(?:mon|tues|wednes|thurs|fri|satur|sun)day|"
+    r"on the \d{1,2}(?:st|nd|rd|th)?|on \d{1,2}(?:st|nd|rd|th))\b")
+# "I live in Denver starting in June": a start date makes any slot cue a plan.
+_STARTING = re.compile(r"\bstarting (?:in|on|from|next|this|tomorrow|soon|\d|"
+                       r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*|\w+day)\b")
+# A question asks, it doesn't state: "Do I live in Denver?", "Can I work at Acme".
+_ASKS = re.compile(r"\b(?:do|does|did|can|could|will|would|should|shall|may|might|must|am|are)\s*$")
 
 
 def _states(kind: str, q: str, nv: str) -> str:
@@ -151,12 +160,17 @@ def _states(kind: str, q: str, nv: str) -> str:
     if match is None:
         return "no_cue"
     before = re.split(r"[,.;:!?]", q[:match.start()])[-1]
-    after = " ".join(re.split(r"[,.;:!?]", q[match.end():], maxsplit=1)[0].split()[:4])
+    rest = re.split(r"([,.;:!?])", q[match.end():], maxsplit=1)
+    after = " ".join(rest[0].split()[:4])
     clause = f"{before} {match.group(0)} {after}"
     if _NEGATED.search(clause):
         return "negated"                    # "not sure whether I work at", "if I live in"
+    if (len(rest) > 1 and rest[1] == "?") or _ASKS.search(before):
+        return "negated"                    # "Do I live in Denver?"
     if re.search(r"\b(?:mov|relocat|start)ing\b", match.group(0)) and _FUTURE.search(clause):
-        return "negated"                    # "I'm moving to Denver next month"
+        return "negated"                    # "I'm moving to Denver next month", "on Friday"
+    if _STARTING.search(clause):
+        return "negated"                    # "I live in Denver starting in June"
     return "ok"
 
 
@@ -253,6 +267,10 @@ def _compact(text: str) -> str:
 
 
 # Anyone can write from these, so they never verify a service ("Gmail" from a friend).
+# An ISP's own mailboxes sit at its apex (pat@comcast.net) while the ISP itself
+# mails from subdomains (billing@alerts.comcast.net), so only the apex is barred.
+_ISP_MAILBOXES = frozenset({"att.net", "verizon.net", "sbcglobal.net", "cox.net", "comcast.net",
+                            "pm.me", "mail.ru", "qq.com"})
 _WEBMAIL = frozenset({"gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "msn.com",
                       "yahoo.com", "ymail.com", "icloud.com", "me.com", "mac.com", "aol.com", "proton.me",
                       "protonmail.com", "gmx.com", "gmx.net", "mail.com", "zoho.com", "fastmail.com",
@@ -262,14 +280,14 @@ _WEBMAIL = frozenset({"gmail.com", "googlemail.com", "outlook.com", "hotmail.com
 def _from_sender(value: str, sender: str) -> bool:
     """An inbox service must be the one writing, by its address's registrable domain
     (the display name is anyone's to set): the whole value, or its first word, must
-    equal it, hyphens and spaces aside. "Comcast" from billing@comcast.net, "T-Mobile"
+    equal it, hyphens and spaces aside. "Comcast" from billing@alerts.comcast.net, "T-Mobile"
     from t-mobile.com; not from evilcomcast.com, comcast-billing.evil.com, comc.io or
     comcast.xyz."""
     _, addr = parseaddr(sender)
     if "@" not in addr:
         return False
     domain = addr.casefold().rsplit("@", 1)[1].rstrip(".")
-    if domain in _WEBMAIL or any(domain.endswith("." + w) for w in _WEBMAIL):
+    if domain in _WEBMAIL or domain in _ISP_MAILBOXES or any(domain.endswith("." + w) for w in _WEBMAIL):
         return False
     name = _compact(_registrable(domain))
     if len(name) < 3:

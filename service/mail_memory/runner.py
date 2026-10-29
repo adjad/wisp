@@ -346,16 +346,16 @@ def note_failure(reason: object, *, now: float | None = None, warn: bool = True)
 
 def note_skip(reason: str | None, *, now: float | None = None) -> None:
     """Remember why the walk stood down (None: it ran). Written when the reason
-    changes, at most every SKIP_FLOOR_S, and at most every SKIP_REWRITE_S while it
-    repeats; `last_skip_at` is when the current reason began. A failed write still
+    changes (a new reason at most every SKIP_FLOOR_S, a clear at once) and at most
+    every SKIP_REWRITE_S while it repeats; `last_skip_at` is when the current reason began. A failed write still
     counts as written, so it isn't retried (and logged) on every pass. Never raises."""
     global _skip
     now = time.time() if now is None else now
     code = _code(reason) if reason else ""
     if _skip is not None:
         since = now - _skip[1]
-        if since < SKIP_FLOOR_S or (_skip[0] == code and (not code or since < SKIP_REWRITE_S)):
-            return
+        if (since < SKIP_FLOOR_S and code) or (_skip[0] == code and (not code or since < SKIP_REWRITE_S)):
+            return                      # clearing always writes: a stale reason never outlives a step
     try:
         st = store()
         if not code and not st.meta("last_skip"):

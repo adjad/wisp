@@ -164,7 +164,7 @@ def test_a_forwarded_service_in_sent_mail_is_not_the_users():
     assert kept == [] and dropped == {"not_own_words": 1}
 
 
-COMCAST = "Comcast Billing <billing@comcast.net>"
+COMCAST = "Comcast Billing <billing@alerts.comcast.net>"
 
 
 def test_inbox_services_need_mail_to_the_user_from_that_service():
@@ -263,6 +263,16 @@ def test_only_the_user_can_be_the_subject_of_a_slot_fact(kind, value, quote):
     ("home_city", "Denver", "I'm moving to Denver in March."),
     ("employer", "Stripe", "I'm starting at Stripe next week."),
     ("employer", "Stripe", "I'm starting at Stripe by the summer."),
+    # second re-review: more future markers, and questions
+    ("home_city", "Denver", "I'm moving to Denver in two weeks."),
+    ("home_city", "Denver", "I'm moving to Denver on Friday."),
+    ("home_city", "Denver", "I'm moving to Denver on the 5th."),
+    ("employer", "Acme", "I'm starting at Acme on Monday."),
+    ("employer", "Acme", "I'm starting at Acme in 2 weeks."),
+    ("home_city", "Denver", "I live in Denver starting in June."),
+    ("home_city", "Denver", "Do I live in Denver?"),
+    ("home_city", "Denver", "Can I live in Denver?"),
+    ("employer", "Acme", "Should I work at Acme"),
 ])
 def test_a_hedge_or_a_future_move_is_no_current_fact(kind, value, quote):
     kept, dropped = _kept([_fact(kind, value, quote)], _email(quote), sent_by_user=True)
@@ -279,6 +289,9 @@ def test_a_hedge_or_a_future_move_is_no_current_fact(kind, value, quote):
     ("employer", "Stripe", "My brother is great, and I just started at Stripe."),
     ("employer", "Acme", "I'm a senior engineer at Acme."),                     # an occupation, right after I'm
     ("employer", "Acme", "I am now a designer at Acme."),
+    ("school", "Stanford", "I'm a student at Stanford."),                     # a student, like an occupation
+    ("school", "MIT", "I'm a PhD student at MIT."),
+    ("school", "UCLA", "I am a grad student at UCLA."),
     ("home_city", "Denver", "We've finally moved to Denver."),                  # adverbs from the short list
     ("home_city", "Denver", "I'm moving to Denver."),                           # under way, no future marker
     ("employer", "Stripe", "Next week is busy, but I started at Stripe."),      # a marker in another clause
@@ -296,7 +309,8 @@ def test_broad_categories_are_not_categories(role):
 
 
 @pytest.mark.parametrize("sender, ok", [
-    ("Comcast <billing@comcast.net>", True),
+    ("Comcast <billing@alerts.comcast.net>", True),
+    ("Comcast <pat@comcast.net>", False),                    # the ISP's own mailboxes are anyone's
     ("Comcast <billing@mail.comcast.co.uk>", True),
     ("Comcast <billing@comcast-billing.evil.com>", False),
     ("Comcast <billing@evilcomcast.com>", False),
@@ -334,6 +348,9 @@ def test_sensitive_words_drop_an_otherwise_allowed_service(value, word):
 @pytest.mark.parametrize("value, sender", [
     ("Gmail", "Pat <pat@gmail.com>"), ("Outlook", "Pat <pat@outlook.com>"), ("Yahoo", "Pat <pat@yahoo.com>"),
     ("iCloud", "Pat <pat@icloud.com>"), ("Yahoo", "Pat <pat@yahoo.co.uk>"),
+    ("ATT", "Pat <pat@att.net>"), ("Verizon", "Pat <pat@verizon.net>"), ("SBCGlobal", "Pat <pat@sbcglobal.net>"),
+    ("Cox", "Pat <pat@cox.net>"), ("Comcast", "Pat <pat@comcast.net>"), ("PM", "Pat <pat@pm.me>"),
+    ("Mail", "Pat <pat@mail.ru>"), ("QQ", "Pat <pat@qq.com>"),
 ])
 def test_a_webmail_address_never_verifies_a_service(value, sender):
     # dev8 Auditor L3: anyone can write from these, so "Gmail" from a friend isn't a service.

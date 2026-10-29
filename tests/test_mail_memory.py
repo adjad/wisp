@@ -1127,9 +1127,16 @@ def test_a_flipping_reason_is_written_at_most_every_thirty_seconds(ticking, monk
     monkeypatch.setattr(st, "set_meta", lambda k, v: writes.append((k, v)) or real(k, v))
     for i, code in enumerate(["recent_use", "in_flight", "recent_use", None, "in_flight"]):
         runner.note_skip(code, now=NOW + i * 5)                      # five changes in 20 s
-    assert [v for k, v in writes if k == "last_skip"] == ["recent_use"]
-    runner.note_skip("in_flight", now=NOW + 31)
+    assert [v for k, v in writes if k == "last_skip"] == ["recent_use", ""]   # a clear still writes
+    runner.note_skip("in_flight", now=NOW + 46)
     assert st.health()["last_skip"] == "in_flight"
+
+
+def test_a_clear_right_after_a_reason_still_writes(ticking):
+    # second re-review: the 30 s floor must not keep a stale reason past an index read.
+    runner.note_skip("not_resident", now=NOW)
+    runner.note_skip(None, now=NOW + 2)
+    assert ticking.health()["last_skip"] is None
 
 
 def test_a_failed_skip_write_is_not_retried_every_pass(ticking, monkeypatch):
