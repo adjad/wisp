@@ -2213,8 +2213,10 @@ async def view_messages(query: str | None = None, day: str | None = None,
     "summarize_messages",
     "Summarize important iMessage/SMS messages from the last three days, "
     "grouped by conversation, including important read messages. Omit routine "
-    "chatter, promotions, standalone codes, and resolved items. Use whenever "
-    "the user asks about their messages/texts/iMessage. Pass `period` for a "
+    "chatter, promotions, standalone codes, and resolved items. Use for what "
+    "matters in the user's messages/texts/iMessage. For who messaged the user "
+    "or their latest messages, use view_messages instead: this digest leaves "
+    "routine messages out. Pass `period` for a "
     "RANGE — 'this month', 'last month', 'this week', 'this month and last "
     "month' — or `day` ('today', 'yesterday', 'YYYY-MM-DD') for ONE day; omit "
     "both for the important three-day digest. Pass `conversation` for one named "

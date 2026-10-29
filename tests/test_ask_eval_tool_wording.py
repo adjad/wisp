@@ -91,3 +91,11 @@ def test_a_summary_asked_for_words_becomes_a_keyword_search(monkeypatch):
     assert out == "2 emails matched 'bank'."
     assert seen == [("bank", None, 20, None, "this week", False)]
     assert "query" in REGISTRY["summarize_emails"].parameters["properties"]
+
+
+def test_latest_texts_go_to_view_messages_not_the_important_digest():
+    """"who texted me today?" got "1 message in 3 days" from the important-only
+    digest while dozens of texts had arrived (2026-10-29 Ask run)."""
+    tool = REGISTRY["summarize_messages"]
+    assert "use view_messages instead" in tool.description
+    assert "view_messages" in short_descriptions.SHORT["summarize_messages"]

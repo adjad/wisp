@@ -70,7 +70,7 @@ SHORT: dict[str, str] = {
     "forward_email": "Forward an email by Message-ID to someone.",
     # messages and contacts
     "view_messages": "RAW verbatim iMessage/SMS text; for exact details, not summaries.",
-    "summarize_messages": "Digest of important texts grouped by conversation; not exact wording.",
+    "summarize_messages": "Digest of IMPORTANT texts only; for who texted / latest texts use view_messages.",
     "draft_message": "Prepare an editable text draft in Wisp without sending it.",
     "send_message": "Send an iMessage/SMS now; recipient can be a contact name.",
     "schedule_send": "Send a NEW email or text LATER; `when` in the user's own words.",
