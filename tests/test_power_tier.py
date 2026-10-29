@@ -16,10 +16,13 @@ def clean_env(monkeypatch, tmp_path):
     for name in P._ENV.values():
         monkeypatch.delenv(name, raising=False)
     # Every test starts with the switch at its default, in a private settings
-    # file, the user present (no away reading yet), no turn and no uncapped call.
+    # file, the user present and on AC (no readings yet), no turn and no call
+    # anyone is waiting on.
     monkeypatch.setattr(P, "SETTINGS_PATH", tmp_path / "power" / "settings.json")
     monkeypatch.setattr(P, "_away", None)
-    monkeypatch.setattr(P, "_uncapped_calls", 0)
+    monkeypatch.setattr(P, "_battery", None)
+    monkeypatch.setattr(P, "_watched_calls", 0)
+    monkeypatch.setattr(P, "_on_battery_probe", lambda: False)
     from service import idle
     monkeypatch.setattr(idle, "_foreground_turns", 0)
     # No other app on the GPU, unless a test says so (the real check is tested
@@ -29,12 +32,19 @@ def clean_env(monkeypatch, tmp_path):
 
 
 _REAL_GPU_QUIET = P._gpu_quiet
+_REAL_BATTERY_PROBE = P._on_battery_probe
 
 
 @pytest.fixture
 def away():
     """Nobody has touched the keyboard or mouse for longer than AWAY_AFTER_S."""
     P.refresh_away(P.AWAY_AFTER_S + 1)
+
+
+@pytest.fixture
+def battery():
+    """The user is at the Mac, and it is on battery."""
+    P.refresh_away(5, on_battery=True)
 
 
 # --- other apps on the GPU --------------------------------------------------------
@@ -214,54 +224,105 @@ def test_the_scheduler_refreshes_away_off_the_event_loop():
 
 # --- tiers ------------------------------------------------------------------------
 
-def test_only_background_has_a_cap_and_it_is_10_w():
-    assert P.watts(P.BACKGROUND) == 10
-    assert P.watts(None) is None
-    assert P.watts("chat") is None and P.watts("intensive") is None
-    for gone in ("chat", "intensive"):
-        with pytest.raises(ValueError):
-            with P.power_tier(gone):
-                pass
+def test_the_caps_are_10_w_away_and_15_w_on_battery():
+    assert P.watts(P.AWAY) == 10
+    assert P.watts(P.BATTERY) == 15
+    assert P.watts(None) is None and P.watts(P.CHAT) is None
+    with pytest.raises(ValueError):
+        with P.power_tier("intensive"):
+            pass
 
 
 def test_env_overrides_zero_turns_off_and_out_of_range_is_ignored(monkeypatch):
     monkeypatch.setenv("WISP_BACKGROUND_GPU_W", "7")
-    assert P.watts(P.BACKGROUND) == 7
+    assert P.watts(P.AWAY) == 7
     monkeypatch.setenv("WISP_BACKGROUND_GPU_W", "0")
-    assert P.watts(P.BACKGROUND) is None
+    assert P.watts(P.AWAY) is None
     for bad in ("1", "5000", "ten"):
         monkeypatch.setenv("WISP_BACKGROUND_GPU_W", bad)
-        assert P.watts(P.BACKGROUND) == 10
+        assert P.watts(P.AWAY) == 10
+    monkeypatch.setenv("WISP_BATTERY_GPU_W", "12")
+    assert P.watts(P.BATTERY) == 12
 
 
-def test_chat_and_everything_untiered_is_never_capped():
-    for on in (True, False):
-        P.set_save_when_away(on)
-        for hid in (0, P.AWAY_AFTER_S + 1):
-            P.refresh_away(hid)
-            assert P.payload_fields() == {}
+def _caps():
+    out = {}
+    for tier in (None, P.CHAT, P.BRIEF, P.BACKGROUND):
+        if tier is None:
+            out[tier] = P.payload_fields().get("gpu_power_limit_w")
+        else:
+            with P.power_tier(tier):
+                out[tier] = P.payload_fields().get("gpu_power_limit_w")
+    return out
 
 
-def test_background_is_capped_only_when_the_switch_is_on_and_the_user_away(away):
-    with P.power_tier(P.BACKGROUND):
-        assert P.payload_fields() == {"gpu_power_limit_w": 10}
-        P.set_save_when_away(False)
-        assert P.payload_fields() == {}
-        P.set_save_when_away(True)
-        P.refresh_away(30)                                     # someone is at the Mac
-        assert P.payload_fields() == {}
+def test_on_ac_with_the_user_present_nothing_is_capped():
+    P.refresh_away(5, on_battery=False)
+    assert _caps() == {None: None, P.CHAT: None, P.BRIEF: None, P.BACKGROUND: None}
 
 
-def test_background_goes_uncapped_while_any_uncapped_call_runs(away):
+def test_on_battery_chat_and_brief_run_at_15_w_and_the_rest_uncapped(battery):
+    assert _caps() == {None: None, P.CHAT: 15, P.BRIEF: 15, P.BACKGROUND: None}
+
+
+def test_away_brief_and_background_run_at_10_w_and_chat_uncapped(away):
+    assert _caps() == {None: None, P.CHAT: None, P.BRIEF: 10, P.BACKGROUND: 10}
+
+
+def test_away_on_battery_takes_the_lower_cap():
+    P.refresh_away(P.AWAY_AFTER_S + 1, on_battery=True)
+    assert _caps() == {None: None, P.CHAT: 15, P.BRIEF: 10, P.BACKGROUND: 10}
+
+
+def test_the_switch_off_caps_nothing(battery):
+    P.set_save_when_away(False)
+    assert _caps() == {None: None, P.CHAT: None, P.BRIEF: None, P.BACKGROUND: None}
+    P.refresh_away(P.AWAY_AFTER_S + 1, on_battery=True)
+    assert _caps() == {None: None, P.CHAT: None, P.BRIEF: None, P.BACKGROUND: None}
+
+
+def test_another_app_on_the_gpu_lifts_the_battery_cap_too(monkeypatch):
+    monkeypatch.setattr(P, "_gpu_quiet", lambda sample: False)
+    P.refresh_away(5, on_battery=True)
+    assert _caps()[P.CHAT] is None
+
+
+def test_a_stale_battery_reading_counts_as_ac(battery):
+    mono, wall, value = P._battery
+    P._battery = (mono, wall - 8 * 3600, value)                # read before a night asleep
+    assert P.on_battery() is False and _caps()[P.CHAT] is None
+
+
+def test_the_battery_probe_reads_the_cached_power_source(monkeypatch):
+    from service.mail_memory import runner
+    monkeypatch.setattr(P, "_on_battery_probe", _REAL_BATTERY_PROBE)
+    monkeypatch.setattr(runner, "_probe", {})
+    monkeypatch.setattr(runner, "_power", lambda: (False, 80, False))
+    assert P._on_battery_probe() is True
+    monkeypatch.setattr(runner, "_probe", {})
+    monkeypatch.setattr(runner, "_power", lambda: (True, None, False))   # AC, or a failed read
+    assert P._on_battery_probe() is False
+
+
+def test_brief_and_background_go_uncapped_while_a_watched_call_runs(away):
     started = P.call_started()                                 # a reply, research, a phone turn
-    assert started is True and P.uncapped_running()
+    assert started is True and P.watched_running()
+    with P.power_tier(P.BRIEF):
+        assert P.payload_fields() == {}
+        assert P.call_started() is False                       # Brief calls aren't watched
     with P.power_tier(P.BACKGROUND):
         assert P.payload_fields() == {}
     P.call_ended(started)
-    assert not P.uncapped_running()
+    assert not P.watched_running()
     with P.power_tier(P.BACKGROUND):
         assert P.payload_fields() == {"gpu_power_limit_w": 10}
-        assert P.call_started() is False                       # a background call isn't counted
+
+
+def test_a_chat_on_battery_keeps_its_cap_beside_another_watched_call(battery):
+    started = P.call_started()
+    with P.power_tier(P.CHAT):
+        assert P.payload_fields() == {"gpu_power_limit_w": 15}
+    P.call_ended(started)
 
 
 def test_tier_is_scoped_to_the_block_and_inherited_by_tasks(away):
@@ -302,41 +363,50 @@ def _client(managed, reply_hook=None):
     return client, bodies
 
 
-def test_the_client_caps_only_background_calls_while_away():
+def test_the_client_sends_each_call_its_per_request_cap():
     client, bodies = _client(managed=True)
     hi = [{"role": "user", "content": "hi"}]
 
     async def run():
         try:
-            await client.chat("m", hi)                        # 0: chat, present
+            await client.chat("m", hi)                        # 0: untiered (research...), AC
+            with P.power_tier(P.CHAT):
+                await client.chat("m", hi)                    # 1: chat, AC
+                P.refresh_away(5, on_battery=True)
+                await client.chat("m", hi)                    # 2: chat, battery
+            with P.power_tier(P.BRIEF):
+                await client.chat("m", hi)                    # 3: Brief, battery
             with P.power_tier(P.BACKGROUND):
-                await client.chat("m", hi)                    # 1: background, present
-                P.refresh_away(P.AWAY_AFTER_S + 1)
-                await client.chat("m", hi)                    # 2: background, away
-                await client.chat("m", hi, gpu_power_limit_w=12)  # 3: explicit wins
-            await client.chat("m", hi)                        # 4: chat, away
+                await client.chat("m", hi)                    # 4: background, battery
+                P.refresh_away(P.AWAY_AFTER_S + 1, on_battery=False)
+                await client.chat("m", hi)                    # 5: background, away
+                await client.chat("m", hi, gpu_power_limit_w=12)  # 6: explicit wins
+            await client.chat("m", hi)                        # 7: untiered, away
         finally:
             await client._client.aclose()
 
     asyncio.run(run())
     caps = [body.get("gpu_power_limit_w") for body in bodies]
-    assert caps == [None, None, 10, 12, None]
+    assert caps == [None, None, 15, 15, None, 10, 12, None]
 
 
-def test_the_client_counts_an_uncapped_call_only_while_it_runs(away):
+def test_the_client_counts_a_watched_call_only_while_it_runs(away):
     during = []
-    client, _ = _client(managed=True, reply_hook=lambda: during.append(P.uncapped_running()))
+    client, _ = _client(managed=True, reply_hook=lambda: during.append(P.watched_running()))
 
     async def run():
         try:
-            await client.chat("m", [{"role": "user", "content": "hi"}])
+            with P.power_tier(P.CHAT):
+                await client.chat("m", [{"role": "user", "content": "hi"}])
+            with P.power_tier(P.BRIEF):
+                await client.chat("m", [{"role": "user", "content": "brief"}])
             with P.power_tier(P.BACKGROUND):
                 await client.chat("m", [{"role": "user", "content": "bg"}])
         finally:
             await client._client.aclose()
 
     asyncio.run(run())
-    assert during == [True, False] and not P.uncapped_running()
+    assert during == [True, False, False] and not P.watched_running()
 
 
 def test_a_remote_provider_never_gets_the_field(away):
@@ -360,7 +430,9 @@ def _seen():
     return (P.current_tier(), P.payload_fields())
 
 
-def test_the_gist_call_runs_at_the_background_tier(monkeypatch, away):
+@pytest.mark.parametrize("where, cap", [("away", 10), ("battery", 15)])
+def test_the_gist_call_runs_at_the_brief_tier(monkeypatch, request, where, cap):
+    request.getfixturevalue(where)
     import service.config as config
     from service.assistant import brief, mail_gists
 
@@ -382,7 +454,7 @@ def test_the_gist_call_runs_at_the_background_tier(monkeypatch, away):
     monkeypatch.setattr(config, "thinks_explicitly", lambda name: False)
     monkeypatch.setattr(brief, "_c", lambda: Client())
     assert asyncio.run(mail_gists._resident_reply("s", "m", lambda: False)) == "gist"
-    assert seen == [(P.BACKGROUND, {"gpu_power_limit_w": 10})]
+    assert seen == [(P.BRIEF, {"gpu_power_limit_w": cap})]
 
 
 def test_the_scheduled_daily_summary_has_no_tier_because_it_calls_no_model(monkeypatch, away):
@@ -515,3 +587,41 @@ def test_memory_capture_wraps_its_extraction_call_in_the_background_tier():
     source = inspect.getsource(MemoryWorker.process)
     tier = source.index("with power_tier(BACKGROUND):")
     assert tier < source.index("await client.chat(") < tier + 200
+
+
+def test_a_chat_turn_runs_at_the_chat_tier():
+    import inspect
+    import service.main as main
+    source = inspect.getsource(main)
+    runner = source[source.index("    async def runner():"):]
+    head = runner[:runner.index("await runner_body()")]
+    assert "power_tier(CHAT)" in head
+
+
+def test_image_and_document_questions_run_at_the_chat_tier():
+    import inspect
+    from service import documents, vision
+    answer = inspect.getsource(vision.answer)
+    assert answer.index("with power_tier(CHAT):") < answer.index("await _answer(")
+    text = inspect.getsource(documents.answer_text)
+    assert text.index("with power_tier(CHAT):") < text.index("client.chat(")
+
+
+def test_the_mail_memory_walk_on_battery_with_the_user_present_is_uncapped(monkeypatch, battery):
+    import service.config as config
+    from service import idle
+    from service.assistant import brief
+    from service.mail_memory import runner
+
+    client = _Recorder()
+
+    async def ready():
+        return None
+
+    monkeypatch.setattr(runner, "_stand_down", ready)
+    monkeypatch.setattr(brief, "_c", lambda: client)
+    monkeypatch.setattr(config, "role_to_model", lambda role: "fast")
+    monkeypatch.setattr(idle, "foreground_busy", lambda: False)
+    monkeypatch.setattr(idle, "in_flight", lambda key: 1)
+    assert asyncio.run(runner._reply([{"role": "user", "content": "mail"}])) == "ok"
+    assert client.seen == [(P.BACKGROUND, {})]

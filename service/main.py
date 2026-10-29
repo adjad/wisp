@@ -3006,7 +3006,8 @@ async def agent(body: dict[str, Any]):
                 queue.put_nowait(None)
 
     async def runner():
-        with diagnostics.use(trace):
+        from service.inference.power_tier import CHAT, power_tier
+        with diagnostics.use(trace), power_tier(CHAT):
             try:
                 await runner_body()
             except asyncio.CancelledError:

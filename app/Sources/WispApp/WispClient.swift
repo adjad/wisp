@@ -780,7 +780,7 @@ final class WispClient {
         return Self.fullAccessFlag(data)
     }
 
-    /// The "Save power when away" switch (GET /power), or nil when it can't be read.
+    /// The "Save power" switch (GET /power), or nil when it can't be read.
     func saveWhenAwayState() async -> Bool? {
         let url = Self.baseURL.appendingPathComponent("power")
         guard let (data, response) = try? await URLSession.shared.data(from: url),
@@ -788,7 +788,7 @@ final class WispClient {
         return Self.saveWhenAwayFlag(data)
     }
 
-    // POST /power -> turn "Save power when away" on or off. Returns the flag the
+    // POST /power -> turn "Save power" on or off. Returns the flag the
     // service confirmed, or nil when the reply was lost or unreadable (the write
     // may still have happened).
     func setSaveWhenAway(_ on: Bool) async -> Bool? {

@@ -13,15 +13,19 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
 
     // Save power when away: says it caps background work only while away;
     // unconfirmed is never "off"; the help names every cap and the 10 minutes.
-    check(QuickSettingsText.saveWhenAway(on: true, pending: false).contains("while you're away"), "Save power on")
-    check(QuickSettingsText.saveWhenAway(on: false, pending: false) == "Background work runs at full speed", "Save power off")
+    check(QuickSettingsText.saveWhenAway(on: true, pending: false).contains("on battery")
+          && QuickSettingsText.saveWhenAway(on: true, pending: false).contains("while you're away"), "Save power on")
+    check(QuickSettingsText.saveWhenAway(on: false, pending: false) == "Wisp always runs at full speed", "Save power off")
     check(QuickSettingsText.saveWhenAway(on: nil, pending: false) == "Not confirmed", "unconfirmed Save power is never off")
     check(QuickSettingsText.saveWhenAway(on: true, pending: true).hasPrefix("Updating"), "a pending Save power change waits")
     let saveHelp = QuickSettingsText.saveWhenAwayHelp
     check(saveHelp.contains("10 minutes") && saveHelp.contains("10 W"), "Save power help names when and how much")
+    check(saveHelp.contains("On battery") && saveHelp.contains("15 W") && saveHelp.contains("chat reply")
+          && saveHelp.contains("Brief"), "Save power help names the battery cap and what it covers")
+    check(saveHelp.contains("ends as soon as"), "Save power help says the cap ends with the work")
     check(saveHelp.contains("another app") && saveHelp.contains("GPU"), "Save power help says a busy GPU lifts the cap")
-    check(saveHelp.contains("Replies") && saveHelp.contains("full power") && !saveHelp.contains("20 W"),
-          "Save power help says replies are never capped")
+    check(!saveHelp.contains("20 W") && !saveHelp.contains("full power"),
+          "Save power help no longer says replies always get full power")
 
     // Learn my routines: "stays on this Mac" only when nothing learned leaves it.
     let local = QuickSettingsText.learning(enabled: true, changing: false, status: nil, remote: false, phraser: true)

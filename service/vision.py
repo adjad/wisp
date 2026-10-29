@@ -425,9 +425,11 @@ async def answer(prompt: str, images: list[str], *, transcript: str | None = Non
     images = validate_media(images, video_seconds)
     if client is None or model is None:
         client, model = _resolve()
+    from service.inference.power_tier import CHAT, power_tier
     idle.begin_foreground()
     try:
-        return await _answer(prompt, images, transcript, video_seconds, client, model, scanned_document)
+        with power_tier(CHAT):
+            return await _answer(prompt, images, transcript, video_seconds, client, model, scanned_document)
     finally:
         idle.end_foreground()
 
