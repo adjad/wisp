@@ -3880,7 +3880,7 @@ async def run_agent(
             text = msg.get("content") or ""
             if ask_quality:
                 from service.model_only import (asks_personal_data, pure_writing, salvage_answer,
-                                                strip_think)
+                                                stall_reply, strip_think)
                 text = strip_think(text)
                 if not text and reasoning and not msg.get("_degenerate"):
                     # Content empty but the think block holds an answer: keep
@@ -3900,11 +3900,15 @@ async def run_agent(
                         "[placeholders] for any detail I didn't give. No questions.")})
                     continue
                 web_only = bool(attempted_tools) and attempted_tools <= _ASK_WEB_TOOLS
+                # "I'm checking your schedule now. Give me just a moment!" with
+                # nothing run is a promise, not an answer: the turn ended there
+                # (2026-10-29 dev7 export; only get_upcoming's schema had loaded).
+                stalled = not attempted_tools and stall_reply(text)
                 if (not ask_reprompted and (not attempted_tools or web_only)
                         and _step < max_steps - 1
                         and not _ask_capability_prompt and not test_mode
                         and not pure_writing(memory_query)
-                        and (asks_personal_data(memory_query) or fresh_personal_scope)
+                        and (asks_personal_data(memory_query) or fresh_personal_scope or stalled)
                         and not _ask_personal_source_ran()
                         and (web_only or not _ask_short_question(text))):
                     # Personal data answered with no tool at all, or from a
@@ -3914,7 +3918,9 @@ async def run_agent(
                     ask_reprompted = True
                     ask_expect_tool = True
                     ask_reprompt_no_web = web_only
-                    audit("ask_personal_reprompt", step=_step, web_only=web_only)
+                    audit("ask_personal_reprompt", step=_step, web_only=web_only, stalled=stalled)
+                    if content_streamed:
+                        await emit({"type": "clear_answer"})
                     msgs.append({"role": "assistant", "content": text})
                     msgs.append({"role": "user", "content": (
                         ("That asks about my own items, and only the web was searched. "
@@ -4150,6 +4156,15 @@ async def run_agent(
                 msgs[0] = {"role": "system", "content": (
                     _sys(set(tools)) + identity_hint + memory_hint + skills_hint)}
                 stub_result = expansion.receipt()
+                # A small model read the bare receipt as "I have called
+                # get_upcoming" and replied "give me a moment" (2026-10-29).
+                # Say plainly that nothing ran and what to call next.
+                if loaded := list(dict.fromkeys(n for _, n in stub_calls if n in expansion.names)):
+                    receipt = json.loads(stub_result)
+                    receipt["not_run_yet"] = loaded
+                    receipt["next"] = (f"Nothing was read yet. Call {', '.join(loaded)} now with "
+                                       "full arguments and answer only from its result.")
+                    stub_result = json.dumps(receipt)
                 await emit({"type": "routing_discovery", "families": list(expansion.families),
                             "tools": tools, "status": "ready_next_step", "implicit": True})
             except SelectionError as error:

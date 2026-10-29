@@ -176,10 +176,11 @@ def describe_me(subject: str | None = None) -> str:
 
 @register(
     "predict_my_day",
-    "Predict the user's day from their learned routines plus what is already scheduled: likely "
-    "activities (gym, lunch), contacts they usually talk to, meetings likely to be cancelled, and "
-    "conflicts with habits. Each prediction has a probability and a 'because'. Use for 'predict my "
-    "day', 'what will tomorrow look like'. Read-only; it does not change the calendar.",
+    "Predict the user's day from their learned routines only: likely activities (gym, lunch), "
+    "contacts they usually talk to, meetings likely to be cancelled, and conflicts with habits. "
+    "Each prediction has a probability and a 'because'. It does NOT list the calendar, reminders "
+    "or to-dos: for 'what's tomorrow' use get_upcoming, for 'plan my day' get_my_day_plan. Use for "
+    "'predict my day', 'what will tomorrow look like'. Read-only.",
     {"type": "object", "properties": {
         "day": {"type": "string", "enum": ["today", "tomorrow"], "description": "today or tomorrow (default)"},
     }},

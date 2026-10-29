@@ -455,7 +455,10 @@ def analyze(rows: list[tuple[float, str, str]], addressees: list[str]) -> list[C
                 detail = "" if action else f" about {subject} — {_proposition(clause)}{time_detail}"
                 group.signals["Reply check"].append(f"{actor}: {scope}{detail}")
             if not (decision or action or question or plan):
-                group.signals["Updates"].append(f"{actor}{addressed} shared {_proposition(clause)}{source_day}")
+                # "You shared X" under a contact's heading was read back as
+                # "you received X" (2026-10-29): an outgoing line says sent.
+                said = f"You sent{addressed}" if sender == "Me" else f"{actor}{addressed} shared"
+                group.signals["Updates"].append(f"{said} {_proposition(clause)}{source_day}")
         if truncated:
             # An unread suffix may contain a different subject, even when the
             # analyzed prefix ends with a complete, established event report.

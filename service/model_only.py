@@ -139,16 +139,48 @@ _DAY_PLAN = re.compile(
 def day_plan_question(prompt: str) -> bool:
     """"What should I do today?" and its paraphrases: one get_my_day_plan read
     answers it better than four separate source reads."""
-    return bool(_DAY_PLAN.search(prompt or ""))
+    return bool(_DAY_PLAN.search(normalize_day_words(prompt)))
+
+
+# Misspellings of "tomorrow" seen in real prompts ("what is up for tommorow"
+# ranked get_upcoming out of the Ask head start: the lexical ranker never
+# matched the day word, so the calendar read was offered by name only).
+_TOMORROW_TYPO = re.compile(
+    r"\b(?:tommorow|tommorrow|tomorow|tommrow|tomorrrow|tomoorow|tmrw|tmrow|tmr|2morrow|2moro)\b", re.I)
+
+
+def normalize_day_words(prompt: str) -> str:
+    """The prompt with common misspellings of "tomorrow" spelled out, for
+    lexical matching only (the user's text is never rewritten)."""
+    return _TOMORROW_TYPO.sub("tomorrow", prompt or "")
 
 
 ASK_DAY_PLAN_HINT = (
-    "DAY PLAN: call get_my_day_plan once and answer from it; do not read the "
-    "calendar, mail, messages and notes one by one unless it says the plan is "
-    "unavailable. Answer as a short prioritized list: one lead line, then 3-6 "
-    "bullets — time-bound items first (with times), then people waiting on a "
-    "reply, then tasks. No digests, no data-freshness caveats, no source labels."
+    "DAY PLAN: call get_my_day_plan once and answer from it (day='tomorrow' when "
+    "the user asks about tomorrow); do not read the calendar, mail, messages and "
+    "notes one by one unless it says the plan is unavailable. predict_my_day is "
+    "learned habits only, never the plan. Answer as a short prioritized list: one "
+    "lead line, then 3-6 bullets — time-bound items first (with times), then "
+    "overdue items, then people waiting on a reply, then suggestions and tasks. "
+    "No digests, no data-freshness caveats, no source labels."
 )
+
+# A reply that only promises to look ("I'm checking your schedule now. Give me
+# just a moment!") with no tool run is not an answer: the turn ends there and
+# the user never gets the result (2026-10-29 dev7 export).
+_STALL = re.compile(
+    r"\b(?:give me (?:just )?(?:a|one) (?:moment|sec(?:ond)?|minute)|one moment|just a moment|"
+    r"hang (?:on|tight)|bear with me|stand by)\b"
+    r"|^\s*(?:(?:sure|okay|ok|of course|absolutely|got it)[.,!]?\s*)?"
+    r"(?:i(?:'|’)m|i am|i(?:'|’)ll|i will|let me)\s+(?:now\s+)?(?:go(?:ing)? (?:to )?)?"
+    r"(?:check|look|pull|fetch|grab|search|review)\w*\b[^\n]{0,160}$",
+    re.I)
+
+
+def stall_reply(text: str) -> bool:
+    """A short "I'm checking now / one moment" promise instead of an answer."""
+    text = (text or "").strip()
+    return bool(text) and len(text) <= 300 and bool(_STALL.search(text))
 
 # Appended to a model-led turn's runtime prompt (the light-read style hint the
 # legacy router sets is never set on a model-led turn).
@@ -564,6 +596,10 @@ _PERSONAL = re.compile(
     # "what's on tomorrow", "is there a meeting today", "has the package shipped".
     r"|\b(?:due|deadline|expires?|expiring|overdue|rsvp|shipped|delivered|arriv(?:e|ing))\b"
     r"|\bwhat(?:'s| is)\s+on\b"
+    # "what is up for tomorrow", "what's happening today", "anything planned this weekend"
+    r"|\b(?:what(?:['’]?s| is| are)|anything)\s+(?:up|happening|going on|planned|scheduled|coming up)\s+"
+    r"(?:for\s+|on\s+|this\s+|next\s+)?(?:today|tonight|tomorrow|weekend|week|monday|tuesday|wednesday|"
+    r"thursday|friday|saturday|sunday)\b"
     r"|\b(?:is|are)\s+there\s+(?:a|an|any)\s+(?:meeting|event|email|message|text|reminder|appointment|class)"
     r"|\b(?:when|where|what time)\s+(?:is|was|are)\s+(?:the|my|our)\s+\w+.*\b(?:today|tomorrow|tonight|"
     r"this|next|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
@@ -579,7 +615,7 @@ def asks_personal_data(prompt: str) -> bool:
     """The request asks for the user's own current data, which only a tool can
     supply ("what's on my calendar", "did Jordan reply", "how heavy is my
     backpack"). Capability, how-to and compose requests are not."""
-    text = prompt or ""
+    text = normalize_day_words(prompt)
     if capability_question(text) or _COMPOSE_OR_GENERAL.match(text):
         return False
     return bool(_PERSONAL.search(text)
