@@ -613,16 +613,17 @@ def test_setup_can_be_changed_from_the_menu_for_two_days_and_the_notch_always():
     assert "doneAt" not in setup and "offersChangeSetup" not in quick
 
 
-def test_ask_never_sends_when_no_model_can_be_set_up():
-    """dev8: with setup's brain unavailable the gate lets the person in, so Ask
-    must answer plainly (Settings › Models) and keep the question, never send it
-    to a service that can only fail into a spinner or an error."""
+def test_ask_always_asks_the_service_even_after_setup_said_no_model():
+    """dev8 Auditor: setup's status freezes once its window closes, so a stale
+    "no model here" (an own oMLX briefly down) must never refuse Ask. Ask always
+    sends; only the service's own setup_needed answer keeps the question and
+    points to setup and Settings › Models."""
     srcs = _sources()
     submit = _body(srcs["OverlayModel.swift"], "func submit()")
-    hold = submit.index("if noModelHere {")
-    assert hold < submit.index('input = ""\n        removeAttachment()')
-    assert hold < submit.index("submissionState.submit(submission)")
-    assert "AskNotReady.noModel.notice(willRetry: false)" in submit[hold:hold + 300]
-    status = _body(srcs["AppDelegate.swift"], "private func updateMenuBarStatus()")
-    assert "if case .unavailable = brain { model.noModelHere = true } else { model.noModelHere = false }" in status
-    assert status.index("model.noModelHere") < status.index("guard let button = statusItem?.button")
+    assert "noModelHere" not in "".join(srcs.values())
+    for stale in ("setupModel", "FirstRunBrain", ".unavailable", "setupCanAnswer"):
+        assert stale not in submit
+    assert "submissionState.submit(submission)" in submit
+    send = srcs["AgentSend.swift"]
+    assert 'case "setup_needed": return .setup' in send
+    assert "choose a model in Settings › Models" in send
