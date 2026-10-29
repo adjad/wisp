@@ -12,6 +12,9 @@ IMPORTANT rules:
   email is extracted again.
 - Only important suggestions reach the Brief (`importance.judge`); the rest are
   kept with the reason they were held back, for tuning.
+- Profile-fact candidates (profile_facts.py) are a working pile like `items`:
+  each keeps its short quote, never the body. They reach the user only through
+  facts.db, as proposed facts, and "forget everything from mail" clears them.
 - The file is created 0600 in a 0700 directory, like Wisp's other caches.
 """
 from __future__ import annotations
@@ -49,6 +52,12 @@ _SCHEMA = (
          UNIQUE(key, what, due))""",
     "CREATE INDEX IF NOT EXISTS items_open ON items(state, due)",
     "CREATE TABLE IF NOT EXISTS meta(name TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    """CREATE TABLE IF NOT EXISTS fact_candidates(
+         id INTEGER PRIMARY KEY, key TEXT NOT NULL, kind TEXT NOT NULL, grp TEXT NOT NULL,
+         value TEXT NOT NULL, role TEXT NOT NULL DEFAULT '', quote TEXT NOT NULL,
+         sent_ts REAL NOT NULL, extractor TEXT NOT NULL, created REAL NOT NULL,
+         UNIQUE(key, kind, grp))""",
+    "CREATE INDEX IF NOT EXISTS fact_candidates_group ON fact_candidates(kind, grp)",
 )
 # Columns added after the first schema, for files made by earlier builds of this branch.
 _ADDED = (
@@ -56,6 +65,9 @@ _ADDED = (
     ("messages", "category", "INTEGER NOT NULL DEFAULT -1"),
     ("items", "important", "INTEGER NOT NULL DEFAULT 0"),
     ("items", "why", "TEXT NOT NULL DEFAULT ''"),
+    # '' (not yet looked at), done, skipped (can't carry a fact), pending (the call
+    # was dropped for a turn), failed.
+    ("messages", "facts_state", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -249,6 +261,69 @@ class Store:
         with self._lock:
             return self._db.execute("UPDATE items SET state='expired' WHERE state='new' AND due<?",
                                     (today,)).rowcount
+
+    # --- profile-fact candidates -------------------------------------------------------
+
+    FACT_STATES = ("done", "skipped", "pending", "failed")
+
+    def set_facts_state(self, key: str, state: str) -> None:
+        assert state in self.FACT_STATES
+        with self._lock:
+            self._db.execute("UPDATE messages SET facts_state=? WHERE key=?", (state, key))
+
+    def next_facts_pending(self, eligible, limit: int = 50) -> dict | None:
+        """A read message whose fact pass hasn't run (mail read before this pass
+        existed, or a call a turn interrupted), newest first. Messages `eligible`
+        rejects are marked skipped on the way, so each is looked at once."""
+        rows = self._db.execute(
+            "SELECT * FROM messages WHERE state='done' AND facts_state IN ('','pending') "
+            "ORDER BY tier, ts DESC LIMIT ?", (limit,)).fetchall()
+        for row in rows:
+            row = dict(row)
+            if eligible(row):
+                return row
+            self.set_facts_state(row["key"], "skipped")
+        return None
+
+    def add_candidates(self, key: str, sent_ts: float, kept: list[dict], extractor: str,
+                       now: float | None = None) -> list[tuple[str, str]]:
+        """Record one email's candidates; returns the (kind, group) pairs it touched."""
+        now = time.time() if now is None else now
+        with self._lock:
+            for c in kept:
+                self._db.execute(
+                    "INSERT OR IGNORE INTO fact_candidates(key,kind,grp,value,role,quote,sent_ts,extractor,created) "
+                    "VALUES(?,?,?,?,?,?,?,?,?)",
+                    (key, c["kind"], c["group"], c["value"], c["role"], c["quote"], sent_ts, extractor, now))
+        return list(dict.fromkeys((c["kind"], c["group"]) for c in kept))
+
+    def candidate_groups(self) -> list[tuple[str, str]]:
+        return [(r["kind"], r["grp"]) for r in self._db.execute(
+            "SELECT DISTINCT kind, grp FROM fact_candidates ORDER BY kind, grp")]
+
+    def candidates(self, kind: str, group: str) -> list[dict]:
+        """One group's evidence, joined with its email's Message-ID and subject."""
+        rows = self._db.execute(
+            "SELECT c.*, m.subject, CASE WHEN m.rfc_message_id!='' THEN m.rfc_message_id ELSE c.key END source_id "
+            "FROM fact_candidates c LEFT JOIN messages m ON m.key=c.key WHERE c.kind=? AND c.grp=? "
+            "ORDER BY c.sent_ts DESC, c.id", (kind, group)).fetchall()
+        return [{**dict(r), "subject": r["subject"] or ""} for r in rows]
+
+    def newer_slot_value(self, kind: str, group: str, sent_ts: float) -> bool:
+        """Whether a newer email names a different value for this slot kind."""
+        return self._db.execute("SELECT 1 FROM fact_candidates WHERE kind=? AND grp!=? AND sent_ts>? LIMIT 1",
+                                (kind, group, sent_ts)).fetchone() is not None
+
+    def clear_candidates(self) -> int:
+        with self._lock:
+            return self._db.execute("DELETE FROM fact_candidates").rowcount
+
+    def fact_stats(self) -> dict:
+        passes = {r["facts_state"] or "unread": r["n"] for r in self._db.execute(
+            "SELECT facts_state, COUNT(*) n FROM messages WHERE state='done' GROUP BY facts_state")}
+        kinds = {r["kind"]: r["n"] for r in self._db.execute(
+            "SELECT kind, COUNT(DISTINCT grp) n FROM fact_candidates GROUP BY kind")}
+        return {"passes": passes, "candidates": kinds}
 
     def stats(self) -> dict:
         queue = {r["state"]: r["n"] for r in self._db.execute(

@@ -24,6 +24,11 @@ IMPORTANT rules:
 - Mode "live" (the default, the user's choice for rc2) lets the Brief show
   the important suggestions (`importance.judge`); "shadow" extracts and records
   but shows nothing; "off" stops the walk.
+- Profile facts (profile_facts.py) ride on the same tick: after the reminder
+  call, a second short call runs only for an email that can carry a fact, and
+  only if the model is still free. Read mail whose fact pass never ran is
+  picked up once the reminder queue is empty. Facts are offered (proposed in
+  facts.db) only in "live" mode; the `facts` setting turns the pass off.
 - Logs and the store's meta carry counts and reason codes only, never mail text.
 - A failed tick is never silent: the reason code is kept in meta (`last_error`,
   `last_error_at`, cleared by the next good read) and logged at WARNING, which
@@ -47,7 +52,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from service import idle
-from service.mail_memory import extract, importance
+from service.mail_memory import extract, importance, profile_facts
 from service.mail_memory.bridge import BridgeError, read_body, read_index
 from service.mail_memory.store import store
 from service.paths import MOE_DIR
@@ -80,31 +85,55 @@ _REASON = re.compile(r"[A-Za-z0-9_.:-]{1,40}")
 
 # --- settings ---------------------------------------------------------------------
 
-def mode(path: Path | None = None) -> str:
-    path = SETTINGS_PATH if path is None else path
+def _settings(path: Path) -> dict | None:
+    """The settings file's object; {} when it doesn't exist; None when it can't be read."""
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return "live"
-    except Exception:  # noqa: BLE001 — unreadable: the user's choice is unknown, so stop
-        return "off"
-    value = data.get("mode") if isinstance(data, dict) else None
+        return {}
+    except Exception:  # noqa: BLE001
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def mode(path: Path | None = None) -> str:
+    data = _settings(SETTINGS_PATH if path is None else path)
+    if data is None:
+        return "off"                  # unreadable: the user's choice is unknown, so stop
+    value = data.get("mode", "live")
     return value if value in MODES else "off"
 
 
-def set_mode(value: str, path: Path | None = None) -> str:
-    if value not in MODES:
-        raise ValueError(f"mode must be one of {MODES}")
-    path = SETTINGS_PATH if path is None else path
+def facts_enabled(path: Path | None = None) -> bool:
+    """The profile-fact pass (profile_facts.py): on unless the user turned it off.
+    An unreadable file means off, like the mode."""
+    data = _settings(SETTINGS_PATH if path is None else path)
+    return data is not None and data.get("facts", True) is True
+
+
+def _write_settings(path: Path, **changes) -> None:
+    data = _settings(path) or {}
+    data.update(changes)
     path.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(path.parent, 0o700)
     tmp = path.with_suffix(".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump({"mode": value}, f)
+        json.dump(data, f)
     tmp.replace(path)
+
+
+def set_mode(value: str, path: Path | None = None) -> str:
+    if value not in MODES:
+        raise ValueError(f"mode must be one of {MODES}")
+    _write_settings(SETTINGS_PATH if path is None else path, mode=value)
     return value
+
+
+def set_facts(enabled: bool, path: Path | None = None) -> bool:
+    _write_settings(SETTINGS_PATH if path is None else path, facts=bool(enabled))
+    return bool(enabled)
 
 
 # --- idle levels ------------------------------------------------------------------
@@ -348,14 +377,23 @@ async def tick(*, now: float | None = None) -> float:
 
     st.expire(today.isoformat())
     row = st.next_pending(now)
+    facts_only = False
     if row is None:
-        return IDLE_DONE_GAP_S
+        row = st.next_facts_pending(profile_facts.eligible) if facts_enabled() else None
+        if row is None:
+            if mode() == "live" and facts_enabled():
+                await asyncio.to_thread(_promote, st, now, None)
+            return IDLE_DONE_GAP_S
+        facts_only = True
     try:
         raw, why = await read_body(row["rowid"])
     except BridgeError as exc:
         if str(exc) == "app_not_connected":
             raise
-        st.fail(row["key"], str(exc), now)         # this email's read timed out
+        if facts_only:
+            st.set_facts_state(row["key"], "failed")   # never re-queue mail already read
+        else:
+            st.fail(row["key"], str(exc), now)         # this email's read timed out
         note_failure(exc, now=now)
         return gap
     if raw is None:
@@ -363,7 +401,10 @@ async def tick(*, now: float | None = None) -> float:
             note_failure(why, now=now)
             return FAILURE_GAP_S                  # Mail's index, not this email: try later
         note_ok(now=now)                          # the app answered; only this email is unreadable
-        if why in ("not_on_disk", "not_in_inbox_or_sent"):
+        if facts_only:
+            st.set_facts_state(row["key"], "failed" if why not in ("not_on_disk", "not_in_inbox_or_sent")
+                               else "skipped")
+        elif why in ("not_on_disk", "not_in_inbox_or_sent"):
             # Gone from disk, or moved to Trash, Archive or Junk since the index: never read.
             st.finish(row["key"], "skipped", why)
         else:
@@ -374,7 +415,10 @@ async def tick(*, now: float | None = None) -> float:
         # Off the loop: a 256 KB HTML body is parsed in pure Python, which yields the GIL.
         email = await asyncio.to_thread(extract.parse_raw, raw, row["ts"])
     except Exception as exc:  # noqa: BLE001 — a malformed message is this email's problem only
-        st.fail(row["key"], f"parse:{type(exc).__name__}", now)
+        if facts_only:
+            st.set_facts_state(row["key"], "failed")
+        else:
+            st.fail(row["key"], f"parse:{type(exc).__name__}", now)
         return gap
     if row.get("rfc_message_id") and email.message_id and email.message_id != row["rfc_message_id"]:
         # Mail rebuilt its index since the last refresh: this ROWID is another email now.
@@ -382,9 +426,15 @@ async def tick(*, now: float | None = None) -> float:
         log.info("mail memory: index moved under us; refreshing")
         return gap
     if len(email.body) < 20:
-        st.finish(row["key"], "skipped", "empty_body", email.message_id)
+        if facts_only:
+            st.set_facts_state(row["key"], "skipped")
+        else:
+            st.finish(row["key"], "skipped", "empty_body", email.message_id)
         return gap
     from service.memory.identity import identity_prompt_block
+    if facts_only:
+        await _facts_pass(st, row, email, today, now, identity_prompt_block(messages=False))
+        return gap
     msgs = extract.messages(email, sent_by_user=row["box"] == "sent",
                             identity=identity_prompt_block(messages=False), today=today)
     try:
@@ -414,7 +464,59 @@ async def tick(*, now: float | None = None) -> float:
     st.set_meta("last_tick", str(now))
     log.info("mail memory tick: tier=%s box=%s model_items=%d kept=%d added=%d dropped=%s why=%s level=%s",
              row["tier"], row["box"], len(items), len(kept), added, dropped, why, lvl)
+    if any(it.get("suspicious") for it in kept):
+        st.set_facts_state(row["key"], "skipped")          # an email that tries to instruct gives no facts
+    elif facts_enabled():
+        await _facts_pass(st, row, email, today, now, identity_prompt_block(messages=False))
     return gap
+
+
+def _own_addresses() -> list[str]:
+    try:
+        from service.memory.identity import user_emails
+        return list(user_emails())
+    except Exception:  # noqa: BLE001 — unknown addresses: nothing to check against
+        return []
+
+
+def _promote(st, now: float, groups) -> dict:
+    from service.memory.facts import store as facts
+    return profile_facts.promote(st, facts, now=now, groups=groups)
+
+
+async def _facts_pass(st, row: dict, email, today, now: float, identity: str) -> None:
+    """The profile-fact call for one email (profile_facts.py). Never raises: a
+    failure here is this email's fact pass only, never its reminders."""
+    if not profile_facts.eligible(row):
+        st.set_facts_state(row["key"], "skipped")
+        return
+    sent = row["box"] == "sent"
+    msgs = profile_facts.messages(email, sent_by_user=sent, identity=identity, today=today)
+    try:
+        reply = await _reply(msgs)
+    except (TimeoutError, ValueError, KeyError, IndexError, TypeError):
+        st.set_facts_state(row["key"], "failed")
+        return
+    if reply is None:
+        st.set_facts_state(row["key"], "pending")         # a turn started: try again later
+        return
+    candidates = profile_facts.parse_reply(reply)
+    if candidates is None:
+        st.set_facts_state(row["key"], "failed")
+        return
+    try:
+        to_user = profile_facts.addressed_to(email, await asyncio.to_thread(_own_addresses))
+        kept, dropped = profile_facts.validate(candidates, email, sent_by_user=sent, to_user=to_user)
+        groups = st.add_candidates(row["key"], email.sent.timestamp(), kept, profile_facts.EXTRACTOR, now)
+        promoted = (await asyncio.to_thread(_promote, st, now, groups)
+                    if groups and mode() == "live" else {})
+    except Exception as exc:  # noqa: BLE001 — this email's fact pass only
+        log.warning("mail memory facts failed: %s", type(exc).__name__)
+        st.set_facts_state(row["key"], "failed")
+        return
+    st.set_facts_state(row["key"], "done")
+    log.info("mail memory facts: box=%s model=%d kept=%d dropped=%s promoted=%s",
+             row["box"], len(candidates), len(kept), dropped, promoted)
 
 
 async def _run() -> None:

@@ -35,17 +35,21 @@ def now_line(*, resolve_hint: bool = False) -> str:
     return line
 
 
-def memory_block(query: str = "") -> str:
+def memory_block(query: str = "", *, mail_facts: bool = True) -> str:
     """Explicit-memory context (service/memory/facts.py), safe to call from
     any text path. Best-effort — a missing or unreadable memory store must
     never break a turn. Travels everywhere this is injected, so a fact the
     user asked Wisp to remember is just as visible on a plain chat turn as on
     a tool-using one — otherwise "what's my sister's name" would answer
     correctly only when the router happened to pick a tool route.
+
+    `mail_facts`: whether facts learned only from mail may ride along. Callers
+    pass profile.may_send_to(endpoint), the know-you profile's rule, so they
+    never reach an optional cloud model.
     """
     try:
         from service.memory.facts import memory_context_block
-        block = memory_context_block(query=query)
+        block = memory_context_block(query=query, mail_facts=mail_facts)
     except Exception:  # noqa: BLE001
         block = ""
     return block + profile_block()

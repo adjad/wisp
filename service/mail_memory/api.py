@@ -9,6 +9,9 @@ IMPORTANT rules:
   verified create path, so nothing new reaches the native writer.
 - The Brief gets only important suggestions due within `importance.SHOW_DAYS`;
   in shadow mode it gets none, only counts.
+- Profile facts are reviewed in Memory -> Review (facts.db), not here; this
+  router reports their counts, switches the fact pass, and forgets every fact
+  learned from mail (`forget_facts`).
 """
 from __future__ import annotations
 
@@ -19,7 +22,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 
-from service.mail_memory import bridge, importance, runner
+from service.mail_memory import bridge, importance, profile_facts, runner
 from service.mail_memory.store import store
 
 router = APIRouter()
@@ -43,6 +46,25 @@ class Pick(BaseModel):
 class Mode(BaseModel):
     model_config = ConfigDict(extra="forbid")
     mode: str
+
+
+class FactsSwitch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+
+
+class Nothing(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+def _fact_counts(st) -> dict:
+    out = {"enabled": runner.facts_enabled(), **st.fact_stats()}
+    try:
+        from service.memory.facts import store as facts
+        out["memory"] = facts.source_counts(profile_facts.SOURCE_TYPE)
+    except Exception:  # noqa: BLE001 — counts only; an unreadable memory store shows none
+        out["memory"] = {}
+    return out
 
 
 def _zone() -> str:
@@ -70,7 +92,7 @@ async def suggestions() -> dict:
     current = runner.mode()
     st = store()
     out = {"mode": current, "modes": list(runner.MODES), "stats": st.stats(),
-           "health": st.health(), "suggestions": []}
+           "health": st.health(), "facts": _fact_counts(st), "suggestions": []}
     if current == "live":
         from service.assistant.attention_runner import current_zone
         tz = current_zone()
@@ -154,6 +176,24 @@ async def settings(body: Mode) -> dict:
         raise HTTPException(422, str(exc)) from None
     await _changed()
     return {"ok": True, "mode": value}
+
+
+@router.put("/assistant/mail_memory/facts", dependencies=[Depends(_native_only)])
+async def facts_switch(body: FactsSwitch) -> dict:
+    value = runner.set_facts(body.enabled)
+    await _changed()
+    return {"ok": True, "enabled": value}
+
+
+@router.post("/assistant/mail_memory/forget_facts", dependencies=[Depends(_native_only)])
+async def forget_facts(body: Nothing) -> dict:
+    """Forget everything Wisp learned from mail, and stop learning it until the
+    user switches the fact pass back on. Reminder suggestions are untouched."""
+    from service.memory.facts import store as facts
+    runner.set_facts(False)
+    result = profile_facts.forget_all(store(), facts)
+    await _changed()
+    return {"ok": True, **result, "enabled": False}
 
 
 @router.post("/assistant/sync/mail_memory", dependencies=[Depends(_native_only)])

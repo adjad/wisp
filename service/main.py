@@ -1479,6 +1479,16 @@ def _profile_block(endpoint) -> str:
         return ""
 
 
+def _mail_facts_ride(endpoint) -> bool:
+    """Facts learned only from mail go where the know-you profile goes
+    (profile.may_send_to). Unknown sends none."""
+    try:
+        from service.memory.profile import may_send_to
+        return bool(may_send_to(endpoint))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _sse(event: dict) -> str:
     return f"data: {json.dumps(event)}\n\n"
 
@@ -2809,7 +2819,7 @@ async def agent(body: dict[str, Any]):
                     # never a role bound to an optional cloud model.
                     sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
                             + _profile_block(target.endpoint)
-                            + memory_block(query=prompt)
+                            + memory_block(query=prompt, mail_facts=_mail_facts_ride(target.endpoint))
                             + ("" if literal_envelope else selected_skill_block(prompt, active_skill))
                             + (always_skills_block() if not literal_envelope and decision.role != "coding" else "")
                             + now_line())

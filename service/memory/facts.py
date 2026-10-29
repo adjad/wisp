@@ -354,6 +354,65 @@ class FactStore:
                 return self.get(fid)
             raise ValueError('Invalid review decision')
 
+    def slot_facts(self, subject, predicate):
+        """Live facts (active, proposed or deferred) that fill one slot, e.g. the user's employment."""
+        with self._lock:
+            return [dict(r) for r in self._db.execute(
+                "SELECT * FROM facts WHERE subject=? AND predicate=? AND status IN ('active','proposed','deferred')",
+                (subject, predicate))]
+
+    def retire_proposed(self, subject, predicate, *, keep_id):
+        """Supersede extracted suggestions for a slot that nobody has reviewed yet,
+        in favour of `keep_id` (mail memory offers only the newest employer)."""
+        with self._write():
+            rows = self._db.execute(
+                "SELECT * FROM facts WHERE subject=? AND predicate=? AND status='proposed' AND reviewed=0 "
+                "AND origin='historical' AND id!=?", (subject, predicate, keep_id)).fetchall()
+            for row in rows:
+                self._supersede(row, keep_id)
+            return len(rows)
+
+    def forget_source(self, source_type):
+        """Forget every extracted fact whose evidence all comes from `source_type`, and
+        remove that evidence from facts that also rest on something else (the user's
+        own words, say). Forgotten facts are suppressed like any other forget."""
+        forgotten = removed = 0
+        with self._write():
+            ids = [r[0] for r in self._db.execute(
+                'SELECT DISTINCT fact_id FROM memory_evidence WHERE source_type=?', (source_type,))]
+            for fid in ids:
+                row = self.get(fid)
+                if not row or row['status'] == 'forgotten':
+                    continue
+                others = [e for e in row['evidence'] if e['source_type'] != source_type]
+                if row['origin'] != 'explicit' and not others:
+                    forgotten += bool(self.delete(fid))
+                    continue
+                for e in row['evidence']:
+                    if e['source_type'] == source_type:
+                        self._db.execute('INSERT OR IGNORE INTO memory_suppression VALUES(?,?)',
+                                         ('source', f"{e['source_type']}:{e['source_id']}"))
+                removed += self._db.execute('DELETE FROM memory_evidence WHERE fact_id=? AND source_type=?',
+                                            (fid, source_type)).rowcount
+        return {'forgotten': forgotten, 'evidence_removed': removed}
+
+    def source_counts(self, source_type):
+        """Facts resting on `source_type` evidence, by status. Counts only."""
+        with self._lock:
+            return {r['status']: r['n'] for r in self._db.execute(
+                '''SELECT f.status, COUNT(DISTINCT f.id) n FROM facts f JOIN memory_evidence e ON e.fact_id=f.id
+                   WHERE e.source_type=? GROUP BY f.status''', (source_type,))}
+
+    def mail_only(self, fid):
+        """True for an extracted fact whose evidence is all from mail: it may go only
+        where the know-you profile may go (service/memory/profile.may_send_to)."""
+        with self._lock:
+            row = self._db.execute('SELECT origin FROM facts WHERE id=?', (fid,)).fetchone()
+            if not row or row['origin'] == 'explicit':
+                return False
+            kinds = {r[0] for r in self._db.execute('SELECT DISTINCT source_type FROM memory_evidence WHERE fact_id=?', (fid,))}
+        return kinds == {'mail'}
+
     def bind_source(self, request_id, session_id, turn_idx):
         """Attach synchronous saves to their eventual persisted user turn."""
         with self._write():
@@ -394,8 +453,9 @@ def _select_for_context(max_chars=_CONTEXT_CHARS, query=''):
     return result
 
 
-def memory_context_block(max_chars=_CONTEXT_CHARS, query=''):
+def memory_context_block(max_chars=_CONTEXT_CHARS, query='', *, mail_facts=True):
     if not query.strip():
         return ''
     from service.memory.retrieval import retrieve, render_context
-    return render_context(retrieve(query, facts=store, include_passages=bool(query.strip())), max_chars=max_chars)
+    return render_context(retrieve(query, facts=store, include_passages=bool(query.strip()),
+                                   mail_facts=mail_facts), max_chars=max_chars)

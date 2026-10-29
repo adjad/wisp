@@ -4,8 +4,15 @@ from __future__ import annotations
 import json
 import re
 import time
+from contextvars import ContextVar
 
 from service.memory.facts import _key, fingerprint, terms
+
+
+# Whether this turn's model may see facts learned only from mail. The agent loop
+# sets it from profile.may_send_to for its target, so the recall tool's results
+# follow the same rule as the prompt's memory block.
+mail_facts_allowed: ContextVar[bool] = ContextVar('mail_facts_allowed', default=True)
 
 
 def _in_scope(text, query):
@@ -109,8 +116,12 @@ def _strict_passages(sessions, facts, query, limit, exclude_session):
     return result
 
 
-def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=15, strict=False):
-    """`strict=True` is opt-in: every significant term must match, not any one."""
+def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=15, strict=False,
+             mail_facts=True):
+    """`strict=True` is opt-in: every significant term must match, not any one.
+    `mail_facts=False` leaves out facts learned only from mail (mail memory's
+    profile facts): they go only where the know-you profile may go."""
+    mail_facts = mail_facts and mail_facts_allowed.get()
     if facts is None:
         from service.memory.facts import store as facts
     if sessions is None:
@@ -132,6 +143,8 @@ def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=1
     valid = []
     for row in rows:
         if query.strip() and row['category'] == 'preference' and not _in_scope(row['text'], query):
+            continue
+        if not mail_facts and row['origin'] == 'historical' and facts.mail_only(row['id']):
             continue
         if row['origin'] == 'automatic' and not row['reviewed'] and not row['pinned']:
             evidence = facts.get(row['id'])['evidence']

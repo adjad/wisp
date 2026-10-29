@@ -1,6 +1,7 @@
 # Mail memory, part 2: profile facts from old mail
 
-Status: **sketch, waiting for the user's approval.** No code yet.
+Status: **approved 2026-10-28 with the four recommended defaults; the backend slice is built** on
+`claude/mail-profile-facts-78c834` (see "As built" at the end).
 Builds on `docs/plans/2026-10-26-email-digest-memory-research.md` (Phase 0 measurements and the Phase 2 row)
 and on `service/mail_memory/` as merged in #397/#404.
 
@@ -224,3 +225,27 @@ does not merge, build, install or publish without their own confirmation.
    profile (recommended), or treat them like facts the user typed, which go to whatever model answers?
 4. **Dev7 or later:** build this backend slice now for the integrator to consider for dev7, or wait for
    dev8 with the Brief chip?
+
+## As built (2026-10-28)
+
+The user approved the four recommended defaults: review before use, `facts.db`, no optional cloud models,
+and the backend slice for the integrator to consider for dev7.
+
+- `service/mail_memory/profile_facts.py`: eligibility, prompt, validation, wording, promotion, forget-all.
+- `store.py`: `fact_candidates` table and `messages.facts_state` (`'' | done | skipped | pending | failed`).
+  Mail read by an earlier build (`facts_state=''`) gets its fact pass once the reminder queue is empty.
+- `runner.py`: the second call after the reminder call; the `facts` setting beside `mode`; promotion only
+  in `live` mode (shadow collects candidates only).
+- `api.py`: `facts` counts on `GET /assistant/mail_memory`, `PUT /assistant/mail_memory/facts`,
+  `POST /assistant/mail_memory/forget_facts`.
+- `facts.py`: `slot_facts`, `retire_proposed`, `forget_source`, `source_counts`, `mail_only`.
+- Cloud gate: `memory_block(..., mail_facts=)` from `profile.may_send_to` in `main.py` and the agent loop,
+  and a `mail_facts_allowed` ContextVar so the `recall` tool follows the same rule.
+
+Differences from the sketch:
+
+- Facts are worded in the user's voice ("I work at Acme Robotics", "Priya is my sister"), like every
+  other saved memory, since the prompt block says "First-person quotes refer to the user". Who the fact
+  is about is still decided by code from Sent vs Inbox, never by the email's own pronouns.
+- Signature blocks are not read yet: employer and school need a first-person sentence.
+- Not done: the Brief chip, the Settings button, the live Gemma bench with a longer mailbox.
