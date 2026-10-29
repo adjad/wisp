@@ -862,6 +862,34 @@ struct FirstRunSetupChecks {
         check(!FirstRunSetupView.helpsYourDay.contains { $0.line.contains("never leave") },
               "No absolute local claim: a cloud model is the person's choice")
 
+        // Waiting out the download (item 6): a ring on the menu bar icon, a sample tour,
+        // and "Wisp is ready" even when the setup window was left behind another app.
+        let downloading = FirstRunBrain.downloading(model: gemma, label: "Gemma 4 E4B", fraction: 0.47, doneGb: 2.6,
+                                                    totalGb: 5.5, secondsLeft: 300)
+        check(FirstRunSetup.menuBarProgress(downloading) == 0.45, "The ring moves in 5% steps")
+        check(FirstRunSetup.menuBarProgress(.ready(label: "Gemma 4 E4B")) == nil
+              && FirstRunSetup.menuBarProgress(.checking) == nil, "No ring when nothing downloads")
+        check(FirstRunSetup.menuBarProgressTip(0.45).hasPrefix("Wisp is downloading its model · 45%"), "Tooltip")
+        check(FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: false,
+                                          wispFrontmost: false, onPermissions: false),
+              "Setup left behind another app while the model downloads: notify")
+        check(!FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: false,
+                                           wispFrontmost: false, onPermissions: true),
+              "On Permissions, System Settings in front is part of setup: no notification")
+        check(!FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: false,
+                                           wispFrontmost: true, onPermissions: false),
+              "Looking at setup: no notification")
+        check(FirstRunSetup.menuBarProgressTitle(0.45) == "Downloading 45%"
+              && FirstRunSetup.menuBarProgressMenuLine(0.45).hasPrefix("Model downloading (45%)"),
+              "The menu bar says in words that the model isn't downloaded yet")
+        check(!FirstRunSetup.owesFirstBrief(after: .brain) && !FirstRunSetup.owesFirstBrief(after: .permissions)
+              && FirstRunSetup.owesFirstBrief(after: .google) && FirstRunSetup.owesFirstBrief(after: .tour),
+              "The first Brief is owed once Permissions is behind the person")
+        check(OnboardingTour.pages.map(\.tab) == ["Brief", "Day", "Ask"], "The tour follows the notch's tabs")
+        check(OnboardingTour.step(0, by: -1) == 0 && OnboardingTour.step(2, by: 1) == 2
+              && OnboardingTour.step(2, by: -2) == 0 && OnboardingTour.position(1) == "2 of 3",
+              "Back and Next stay on the pages; Start over goes to the first")
+
         // Move to Applications: asked only where a download lands.
         let home = "/Users/sam"
         typealias Place = MoveToApplications.Place

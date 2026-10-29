@@ -163,11 +163,43 @@ enum FirstRunSetup {
         firstRunWindowUp || unfinished || card.showsOnAsk || canAnswer == false
     }
 
-    /// No Wisp notification while the setup window is on screen, even with
-    /// System Settings or the browser in front of it: "Wisp is ready" is said
-    /// only once the window was closed, finished or minimized.
-    static func notifiesReady(promised: Bool, windowUp: Bool, windowMinimized: Bool) -> Bool {
-        promised && (!windowUp || windowMinimized)
+    /// "Wisp is ready" as a notification once the person isn't looking at setup:
+    /// the window closed, finished or minimized, or left behind another app while
+    /// they wait out the download (dev8). Never while Wisp is in front, and never
+    /// from the Permissions step, where System Settings in front is part of setup.
+    static func notifiesReady(promised: Bool, windowUp: Bool, windowMinimized: Bool,
+                              wispFrontmost: Bool = true, onPermissions: Bool = false) -> Bool {
+        promised && (!windowUp || windowMinimized || (!wispFrontmost && !onPermissions))
+    }
+
+    /// The menu bar icon's ring: how far the model download is, in 5% steps so the
+    /// icon isn't redrawn for every byte. Nil when nothing is downloading. Pure.
+    static func menuBarProgress(_ brain: FirstRunBrain) -> Double? {
+        guard case .downloading(_, _, let fraction, _, _, _) = brain else { return nil }
+        return (min(max(fraction, 0), 1) * 20).rounded(.down) / 20
+    }
+
+    /// The first Brief is owed once the person is past Permissions (what it reads
+    /// is decided), so it is composed the moment the model answers and is there
+    /// when Wisp first opens. Before that, a Brief would be made without sources.
+    /// Pure.
+    static func owesFirstBrief(after step: OnboardingStep) -> Bool {
+        step.rawValue > OnboardingStep.permissions.rawValue
+    }
+
+    /// The words beside the ring, so the menu bar says plainly Wisp isn't ready. Pure.
+    static func menuBarProgressTitle(_ progress: Double) -> String {
+        "Downloading \(Int(progress * 100))%"
+    }
+
+    /// The right-click menu's setup item while the model downloads. Pure.
+    static func menuBarProgressMenuLine(_ progress: Double) -> String {
+        "Model downloading (\(Int(progress * 100))%) · Open Setup…"
+    }
+
+    /// The icon's tooltip while the ring shows. Pure.
+    static func menuBarProgressTip(_ progress: Double) -> String {
+        "Wisp is downloading its model · \(Int(progress * 100))%. It lets you know when it's ready."
     }
 
     /// Wisp's notch, its window and asking all wait for the model while setup is
@@ -2048,6 +2080,8 @@ struct FirstRunSetupView: View {
             // The download first: until it is done Wisp can't open, so how far along
             // it is matters more than anything else on this step.
             tourDownload
+            // Something to look at while it downloads: sample cards, never real data.
+            OnboardingTourView()
             Text("What Wisp is for").font(.system(size: 13, weight: .medium)).padding(.top, 4).padding(.bottom, 4)
             Text(Self.purposeLine).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true).padding(.bottom, 10)

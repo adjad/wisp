@@ -548,3 +548,32 @@ def test_move_to_applications_only_on_a_click():
     app = sources["AppDelegate.swift"]
     launch = _body(app, "private func launch()")
     assert launch.index("MoveToApplications.offerIfNeeded()") < launch.index("WispReset.readMarker()")
+
+
+def test_waiting_out_the_download_keeps_people_close():
+    """dev8 item 6 (the user's pick): a ring and words on the menu bar icon, a sample
+    tour on How to use, and "Wisp is ready" even with setup left behind another app."""
+    sources = _sources()
+    app = sources["AppDelegate.swift"]
+    status = _body(app, "private func updateMenuBarStatus()")
+    assert "FirstRunSetup.menuBarProgress(" in status and "Self.menubarOrb(progress: progress)" in status
+    assert "FirstRunSetup.menuBarProgressTitle" in status
+    watch = _body(app, "private func watchSetupReadiness()")
+    assert "wispFrontmost: NSApp.isActive" in watch and "onPermissions: onPermissions" in watch
+    tour = _body(sources["FirstRunSetupView.swift"], "private var tourStep: some View")
+    assert tour.index("tourDownload") < tour.index("OnboardingTourView()") < tour.index("Self.helpsYourDay")
+    sample = sources["OnboardingTour.swift"]
+    # Sample cards only: nothing reads data, asks the service, or acts.
+    for call in ("WispClient", "URLSession", "NotificationCenter", "NSWorkspace", "UserDefaults"):
+        assert call not in sample, call
+    assert 'OnboardingPill(text: "Example")' in sample
+
+
+def test_first_brief_is_owed_once_permissions_are_behind():
+    """The user wants the Brief waiting when Wisp first opens: owed from the step after
+    Permissions and on Close for now, so the readiness watch asks for it at once."""
+    app = _sources()["AppDelegate.swift"]
+    assert "FirstRunSetup.owesFirstBrief(after: step)" in app
+    close = app[app.index("closeForNow: { [weak self] in"):]
+    close = close[:close.index("}))")]
+    assert close.index("self?.oweFirstBrief()") < close.index("self?.firstRunWindow?.close()")
