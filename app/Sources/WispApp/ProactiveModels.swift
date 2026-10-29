@@ -178,11 +178,14 @@ struct ProactiveState: Decodable, Equatable {
 
     /// "Wisp read 132 emails and texts · skipped 120 newsletters · found 3 things · drafted 1 reply";
     /// nil without stats or when nothing was read.
-    var workLine: String? {
+    var workLine: String? { workLine(short: false) }
+
+    /// The work line; `short` leaves out what was found, for a row it shares.
+    func workLine(short: Bool) -> String? {
         guard let stats, stats.read > 0 else { return nil }
         var parts = ["Wisp read \(stats.read) email\(stats.read == 1 ? "" : "s") and texts"]
         if stats.filtered > 0 { parts.append("skipped \(stats.filtered) newsletter\(stats.filtered == 1 ? "" : "s")") }
-        parts.append("found \(stats.found) thing\(stats.found == 1 ? "" : "s")")
+        if !short { parts.append("found \(stats.found) thing\(stats.found == 1 ? "" : "s")") }
         if stats.drafted > 0 { parts.append("drafted \(stats.drafted) repl\(stats.drafted == 1 ? "y" : "ies")") }
         return parts.joined(separator: " · ")
     }

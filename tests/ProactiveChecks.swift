@@ -130,6 +130,8 @@ struct ProactiveChecks {
         check(top?.headline == "Hack Day fills your midday." && top?.stats == .init(read: 49, found: 3, drafted: 1, asOf: 5),
               "the lede wins and is cut to one sentence: \(top?.headline ?? "")")
         check(top?.workLine == "Wisp read 49 emails and texts · found 3 things · drafted 1 reply", "work line: \(top?.workLine ?? "")")
+        check(top?.workLine(short: true) == "Wisp read 49 emails and texts · drafted 1 reply",
+              "the short work line leaves out what was found: \(top?.workLine(short: true) ?? "")")
         check(ProactiveState(summary: "Dr. Lee moved it to 4:15. Mom called.").headline == "Dr. Lee moved it to 4:15.",
               "titles and clocks don't end a sentence")
         check(ProactiveState(summary: "Call Mom. Then rest.").headline == "Call Mom.", "a short word still ends one")

@@ -73,6 +73,11 @@ struct SurfaceLayout: Equatable {
     // when a display reports a camera housing but implausible side areas.
     static let referenceNotch = CGSize(width: 185, height: 32)
     static let maxExpandedWidth: CGFloat = 640
+    /// The panel's width for the Brief's two-column view.
+    static let wideExpandedWidth: CGFloat = 980
+    /// The narrowest usable width worth widening to; a display with less room
+    /// than this keeps the one-column Brief.
+    static let minWideWidth: CGFloat = 860
     /// Collapsed bar overhang on each side of the notch — a hairline of black
     /// so the bar reads as Wisp's, not merely as the hardware.
     static let wing: CGFloat = 6
@@ -110,7 +115,7 @@ struct SurfaceLayout: Equatable {
     let screenFrame: CGRect
     let usableFrame: CGRect
     let notchSize: CGSize
-    let expandedWidth: CGFloat
+    var expandedWidth: CGFloat
     /// The collapsed window. On .menuBar it is never drawn and lets clicks
     /// through to the menu bar under it (see `barIsVisible`).
     let barFrame: CGRect
@@ -155,6 +160,19 @@ struct SurfaceLayout: Equatable {
                            .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
     }
     var barSize: CGSize { barFrame.size }
+
+    /// Whether the display has room for the wide panel.
+    var canWiden: Bool { usableFrame.width - 2 * Self.screenMargin >= Self.minWideWidth }
+
+    /// This layout with the wide panel's width when asked for and there is room
+    /// for it, otherwise unchanged. Only the expanded width differs: the bar, its
+    /// zone and the panel's centring on the display are the same.
+    func widened(_ wide: Bool) -> SurfaceLayout {
+        guard wide, canWiden else { return self }
+        var copy = self
+        copy.expandedWidth = min(Self.wideExpandedWidth, usableFrame.width - 2 * Self.screenMargin).rounded(.down)
+        return copy
+    }
 
     func shape(radius: CGFloat) -> UnevenRoundedRectangle {
         let top: CGFloat = style == .notch ? 0 : radius
@@ -351,6 +369,10 @@ final class DisplayGeometry: ObservableObject {
     static let shared = DisplayGeometry()
 
     @Published private(set) var layout: SurfaceLayout
+    /// The Brief's two-column view is on screen, so the expanded panel is wide.
+    @Published var widePanel = false
+    /// The layout the expanded panel uses.
+    var panelLayout: SurfaceLayout { layout.widened(widePanel) }
     private var observer: NSObjectProtocol?
     private var pending: DispatchWorkItem?
     /// Called after `layout` actually changed (panels re-fit themselves).

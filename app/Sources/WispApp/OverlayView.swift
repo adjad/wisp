@@ -38,6 +38,8 @@ struct OverlayView: View {
     // The header's laid-out height (it grows with Text size), for the Brief and
     // Day scroll cap.
     @State private var headerHeight: CGFloat = 30
+    // The Brief in two columns in a wider panel (the header's toggle); persists.
+    @AppStorage(NotchBriefView.wideKey) private var briefWide = false
 
     var body: some View {
         Group {
@@ -85,6 +87,12 @@ struct OverlayView: View {
 
     private var renderKey: String { "\(textSize)-\(contrastTick)" }
     private var layout: SurfaceLayout { display.layout }
+    /// Whether the panel shows the Brief's two columns: chosen, on the Brief
+    /// itself (not a card that takes its place), and with room for the width.
+    private var briefIsWide: Bool {
+        briefWide && model.tab == .brief && model.resetCard == nil && model.knowYou == nil
+            && !model.showingQuickSettings && layout.canWiden
+    }
     private var isNotch: Bool { layout.style == .notch }
 
     /// Brief and Day under the fixed header: as tall as their content until the
@@ -140,7 +148,7 @@ struct OverlayView: View {
                     }
                 }
             case .brief:
-                tabScroll { NotchBriefView(model: model, today: todayModel) }
+                tabScroll { NotchBriefView(model: model, today: todayModel, wide: briefIsWide) }
             case .day:
                 tabScroll { NotchDayView(model: model, today: todayModel) }
             case .research:
@@ -185,14 +193,23 @@ struct OverlayView: View {
         // below stays, so the panel still reads as the notch drawing back in.
         .opacity(model.closing ? 0 : 1)
         // Must match the width OverlayPanel sizes its window to — both read
-        // SurfaceLayout.expandedWidth, so they cannot disagree.
-        .frame(width: layout.expandedWidth)
+        // DisplayGeometry.panelLayout, so they cannot disagree.
+        .frame(width: display.panelLayout.expandedWidth)
         .background(Theme.surface)
         .clipShape(layout.panelShape)
         .shadow(color: .black.opacity(0.55), radius: 20, y: 10)
         // Pointer enter/exit is handled by the panel's AppKit tracking area
         // (HoverView), not SwiftUI .onHover — see OverlayPanel/AppDelegate.
         .onExitCommand { model.requestCollapse() }
+        // The Brief's two columns widen the window as well: tell the layout, then
+        // fit the window now so the width lands with the content. Not on appear
+        // (old == new), where the window is still the bar and the reveal sizes it.
+        .onChange(of: briefIsWide, initial: true) { old, wide in
+            display.widePanel = wide
+            guard wide != old else { return }
+            model.onResizeNow()
+            model.onResize()
+        }
     }
 
     // Collapsed on a built-in display without a notch: nothing at all. Its status
@@ -361,6 +378,12 @@ struct OverlayView: View {
         HStack(spacing: 4) {
             if model.tab == .ask && (!model.turns.isEmpty || model.showingCorpus) {
                 ctrl("square.and.pencil", "New chat (⌘N)", { model.newChat() })
+            }
+            // Brief: one column or two. The icon shows the layout the click switches to.
+            if model.tab == .brief && layout.canWiden {
+                ctrl(briefWide ? "rectangle.split.1x2" : "rectangle.split.2x1",
+                     briefWide ? "Show the Brief in one column" : "Show the Brief in two columns",
+                     { briefWide.toggle() })
             }
             // Brief and Day: ask about your day out loud; it opens Ask and listens.
             if model.tab != .ask && model.tab != .research {

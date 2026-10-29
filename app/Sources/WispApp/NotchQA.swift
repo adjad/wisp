@@ -115,6 +115,7 @@ enum NotchQADriver {
         }
         let scenes: [(name: String, tab: NotchTab, view: () -> AnyView)] = [
             ("brief", .brief, { AnyView(NotchBriefView(model: model, today: today, actions: state())) }),
+            ("brief-wide", .brief, { AnyView(NotchBriefView(model: model, today: today, actions: state(), wide: true)) }),
             ("brief-todos", .brief, { AnyView(NotchBriefView(model: model, today: today, uncapped: true,
                                                              actions: state { $0.qaReset(openRow: "todos") })) }),
             ("brief-threads", .brief, { AnyView(NotchBriefView(model: model, today: today, uncapped: true,
@@ -135,13 +136,15 @@ enum NotchQADriver {
         ] + NotchQASetup.scenes() + panelScenes(model: model, today: today, state: state)
         for scene in scenes {
             let name = scene.name
-            let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: width, height: 760),
+            // The Brief's two columns render at the wide panel's width.
+            let sceneWidth = name.hasPrefix("brief-wide") ? SurfaceLayout.wideExpandedWidth : width
+            let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: sceneWidth, height: 760),
                                   styleMask: [.borderless], backing: .buffered, defer: false)
             let content = VStack(alignment: .leading, spacing: 0) {
                 scene.view()
             }
             .padding(EdgeInsets(top: 18, leading: 22, bottom: 16, trailing: 22))
-            .frame(width: width, alignment: .topLeading)
+            .frame(width: sceneWidth, alignment: .topLeading)
             .background(Theme.surface)
             .environment(\.colorScheme, .dark)
             let host = NSHostingView(rootView: content)
