@@ -963,9 +963,10 @@ _SHELL_SECRET = [
     r"\b(?:gmail|mcp|grants|access_mode)\.json\b", r"\bgoogle_workspace\b", r"\.reset-pending\b",
 ]
 # The ~/.moe folder itself (not a file in it): moving or replacing it swaps
-# grants.json and access_mode.json without naming them (#409 audit). `~/.moe/.`
-# is the folder too.
-_SHELL_MOE_FOLDER = r"(?<![\w-])\.moe(?:/\.?)?(?=$|[\s'\";|&)])"
+# grants.json and access_mode.json without naming them (#409 audit). Any run
+# of `/` and `/.` after it still names the folder: `~/.moe/`, `~/.moe/.`,
+# `~/.moe//`, `~/.moe/./` (#415 audit).
+_SHELL_MOE_FOLDER = r"(?<![\w-])\.moe(?:/\.?)*(?=$|[\s'\";|&)])"  # one `/` per pass: no backtracking blowup
 # A dot-name glob (`~/.m*`, `~/.mo?`, `~/.[m]oe`) that the shell may expand to it.
 _SHELL_GLOB_WORD = re.compile(r"(?<![\w-])\.[^\s/'\";|&()<>]*[*?\[][^\s/'\";|&()<>]*")
 # Listing a folder or counting what is in it reads names and sizes, never a
