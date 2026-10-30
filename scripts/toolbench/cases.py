@@ -18,6 +18,7 @@ One YAML file per category under cases/. Each entry:
       max_calls: 4                       # default len(expect) + 3
       confirm: [send_email]              # these may only take effect through a confirmation card
       no_confirm: [add_reminder]         # these must never raise a confirmation card
+      refused: [update_event]            # called, then refused BY DESIGN: no world effect required
       access: full                       # full (shipped default) | default | view
       world:                             # optional world state for this case
         access_needed: [calendar]        # sources whose permission is missing (see WORLD)
@@ -52,6 +53,14 @@ always ask (ALWAYS_ASK, never in `no_confirm`); reminder writes never ask
 (NEVER_ASK, never in `confirm`); `forget` runs unconfirmed under full access
 (never in `confirm` there). View access denies writes outright, so `confirm`
 is meaningless there; use `forbid`.
+
+REFUSED. `refused` lists expected write tools the world or production is meant to
+refuse (a move of an event someone else organizes, a change on a read-only
+calendar): the model must still CALL them, with matching arguments, but the
+scorer does not require a world effect, and the `answer:` checks are what show
+the refusal was relayed. A refused tool must be one the case expects and must
+not also be `forbid`den; an effect it somehow leaves is `unsafe_call` (the
+refusal did not hold).
 
 WORLD. `world.access_needed` lists sources whose macOS permission is missing
 for this case: any of calendar, reminders, contacts, mail, messages
@@ -97,6 +106,7 @@ class Case:
     no_confirm: frozenset[str] = frozenset()
     access: str = "full"
     access_needed: frozenset[str] = frozenset()
+    refused: frozenset[str] = frozenset()
 
     @property
     def call_budget(self) -> int:
@@ -125,7 +135,7 @@ def _fill(value, facts):
 
 
 _CASE_KEYS = {"id", "prompt", "history", "expect", "no_tool", "forbid", "answer", "max_calls", "trap",
-              "split", "confirm", "no_confirm", "access", "world"}
+              "split", "confirm", "no_confirm", "refused", "access", "world"}
 _WORLD_KEYS = {"access_needed"}
 SPLITS = ("gate", "dev", "voice")
 # Splits held out of every training set (shingle export).
@@ -184,6 +194,13 @@ def parse_case(raw: dict, category: str) -> Case:
              confirm if access == "view" else frozenset())):
         if names:
             raise ValueError(f"{where}: {problem}: {sorted(names)}")
+    refused = frozenset(raw.get("refused") or ())
+    for problem, names in (
+            ("refused names tools the case does not expect",
+             refused - {t for s in expect for t in s.tools}),
+            ("refused tools are also forbidden", refused & frozenset(raw.get("forbid") or ()))):
+        if names:
+            raise ValueError(f"{where}: {problem}: {sorted(names)}")
     world = raw.get("world") or {}
     if not isinstance(world, dict) or set(world) - _WORLD_KEYS:
         raise ValueError(f"{where}: world takes only {sorted(_WORLD_KEYS)}")
@@ -196,7 +213,7 @@ def parse_case(raw: dict, category: str) -> Case:
         history=tuple(raw.get("history") or ()), expect=expect,
         no_tool=bool(raw.get("no_tool")), forbid=frozenset(raw.get("forbid") or ()),
         answer=answer, max_calls=int(raw.get("max_calls") or 0), trap=str(raw.get("trap") or ""),
-        split=split, confirm=confirm, no_confirm=no_confirm, access=access,
+        split=split, confirm=confirm, no_confirm=no_confirm, refused=refused, access=access,
         access_needed=frozenset(map(str, needed)))
 
 

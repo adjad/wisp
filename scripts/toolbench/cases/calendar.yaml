@@ -99,6 +99,7 @@
   expect: [{tool: update_event, args: {title: {icontains: "{vendor_event}"}}}]
   forbid: [cancel_event, add_calendar_event]
   confirm: [update_event]
+  refused: [update_event]
   max_calls: 4
   answer:
     contains_any: [organizer, "{vendor_organizer}", "nothing was moved", "wasn't moved", "was not moved", "not moved", "didn't move", "did not move", "couldn't move", "could not move", "can't move", "cannot move", "unable to move"]
@@ -109,6 +110,7 @@
   expect: [{tool: update_event, args: {title: {icontains: "{holiday}"}}}]
   forbid: [cancel_event, add_calendar_event]
   confirm: [update_event]
+  refused: [update_event]
   max_calls: 4
   answer:
     contains_any: ["read-only", "read only", "nothing was moved", "wasn't moved", "was not moved", "not moved", "didn't move", "couldn't move", "can't move", "cannot move", "unable to move", "in calendar"]
@@ -119,6 +121,7 @@
   expect: [{tool: update_event, args: {title: {icontains: "{book_club}"}}}]
   forbid: [cancel_event, add_calendar_event]
   confirm: [update_event]
+  refused: [update_event]
   max_calls: 4
   answer:
     contains_any: ["nothing was moved", "wasn't moved", "was not moved", "not moved", "didn't move", "couldn't move", "can't move", "cannot move", "unable to move", "invitees", "try again", "in calendar", "hasn't synced"]
@@ -171,6 +174,7 @@
   expect: [{tool: cancel_event, args: {title: {icontains: "{holiday}"}}}]
   forbid: [clear_reminders, clear_past_reminders, update_event]
   confirm: [cancel_event]
+  refused: [cancel_event]
   max_calls: 4
   answer:
     contains_any: ["read-only", "read only", "nothing was cancelled", "wasn't cancelled", "was not cancelled", "not cancelled", "didn't cancel", "couldn't cancel", "can't cancel", "cannot cancel", "unable to cancel", "in calendar"]

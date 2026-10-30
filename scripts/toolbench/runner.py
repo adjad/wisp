@@ -178,6 +178,7 @@ _PATCHED_ATTRS = (
     ("service.tools.assistant_tools", "prepare_event_move"),
     ("service.tools.assistant_tools", "reminders_matching"),
     ("service.tools.assistant_tools", "past_due_matching"),
+    ("service.tools.contacts_tools", "manage_contacts"),   # AUTHORITATIVE_FAKES
 )
 # What install_fakes found; None while nothing is installed.
 _INSTALLED: dict | None = None
@@ -224,10 +225,47 @@ def install_fakes(world, *, seed: bool = True) -> set[str]:
     if real:
         raise RuntimeError(f"toolbench: real tool functions survived: {real}")
     world_mod.install_hooks(world)
+    _install_authoritative_fakes()
     _install_fake_outbox(world)
     if seed:
         world_mod.seed_memory(world)
     return set(REGISTRY)
+
+
+def _install_authoritative_fakes() -> None:
+    """Make each world fake of a production authoritative builtin pass
+    router.model_led.authoritative_builtin (its function must be the module's own
+    attribute and claim that module). Without this the loop refuses the call with
+    "no supported completion contract" for every model. uninstall_fakes restores
+    the module attributes (_PATCHED_ATTRS)."""
+    import importlib
+
+    from scripts.toolbench import world as world_mod
+    from service.router.model_led import BUILTIN_COMPLETION_MODULES
+    from service.tools.registry import REGISTRY
+    for name in world_mod.AUTHORITATIVE_FAKES:
+        module = importlib.import_module(BUILTIN_COMPLETION_MODULES[name])
+        fn = REGISTRY[name].func
+        fn.__module__ = module.__name__
+        setattr(module, name, fn)
+
+
+def host_refused_tools() -> frozenset[str]:
+    """Registered tools the model-led loop refuses for EVERY model: production treats
+    them as effects (router.model_led.effectful_call) but they have neither a result
+    classification nor an authoritative-builtin receipt, so loop.py answers "This
+    action has no supported completion contract. It was NOT run." (skill tools such
+    as mac_*, MCP writes, correct_pattern). The scorer reports an expectation that
+    needs only these as a route_fault, the host's, instead of a no_effect."""
+    from service.router.model_led import (BUILTIN_COMPLETION_MODULES, effectful_call,
+                                          has_effect_contract)
+    from service.tools.registry import REGISTRY, classify_tool_outcome
+    # BUILTIN_COMPLETION_MODULES tools (run_shell, run_applescript, manage_contacts) carry
+    # a receipt in production; their fakes here are not authoritative, so judging them
+    # by the faked registry would blame production for the harness.
+    return frozenset(n for n, t in REGISTRY.items()
+                     if n not in BUILTIN_COMPLETION_MODULES and effectful_call(t, {})
+                     and not has_effect_contract(t, classify_tool_outcome(n, "")))
 
 
 def write_tool_names() -> frozenset[str]:

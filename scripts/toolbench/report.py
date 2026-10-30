@@ -7,6 +7,7 @@ Input is the list of result rows a run writes to results.jsonl — one row per
 from __future__ import annotations
 
 import json
+import re
 import statistics
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -15,6 +16,35 @@ from pathlib import Path
 def load_rows(run_dir: Path) -> list[dict]:
     path = run_dir / "results.jsonl"
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+_NOT_OFFERED = re.compile(r"(\S+) was not offered")
+
+
+def traj_from_row(row: dict, meta: dict | None = None) -> dict:
+    """The trajectory scorer.score() consumes, rebuilt from a stored result row.
+
+    Rows keep everything the scorer reads except two things: rounded timings
+    (taken from the stored verdict) and, in rows written before `offered` was
+    stored, the per-step offered tool names. For those the stored verdict's own
+    "X was not offered" notes stand in for them, so a rescore keeps an
+    `unoffered_tool` the old scorer saw instead of silently dropping it.
+    """
+    v = row.get("v") or {}
+    steps = [dict(s) for s in row.get("steps") or ()]
+    if "unoffered_tool" in (v.get("labels") or ()) and not any(s.get("offered") for s in steps):
+        gone = set(_NOT_OFFERED.findall("; ".join(v.get("notes") or ())))
+        for s in steps:
+            called = [c["name"] for c in s.get("calls") or ()]
+            if gone & set(called):
+                s["offered"] = [n for n in called if n not in gone] + ["(stored: not offered)"]
+    return {"route": row.get("route"), "steps": steps, "final": row.get("final") or "",
+            "effects": row.get("effects") or [], "asked": row.get("asked") or [],
+            "escapes": row.get("escapes"), "error": row.get("error"), "timeout": row.get("timeout"),
+            "access": row.get("access"), "path": row.get("path"),
+            "seconds": v.get("seconds") or 0.0, "model_seconds": v.get("model_seconds") or 0.0,
+            "guard_retries": v.get("guard_retries") or 0,
+            "max_steps": (meta or {}).get("max_steps") or 8}
 
 
 def _pct(n: int, d: int) -> str:
@@ -183,8 +213,9 @@ def render(rows: list[dict], *, failures: int = 15, per_case_latency: bool = Tru
     row("mean prompt tok (est)", [str(s[m]["mean_prompt_tok"]) for m in models])
     if any(s[m]["escapes"] for m in models):
         row("guard refusals", [str(s[m]["escapes"]) for m in models])
-    lines.append("* route faults are the host's (a needed tool forbidden or never offered), identical for "
-                 "every model; they still count as fails.")
+    lines.append("* route faults are the host's (a needed tool forbidden, never offered, or refused by the "
+                 "loop for every model: no completion contract), identical for every model; they still "
+                 "count as fails.")
 
     for title, key in (("BY CATEGORY (pass / trials)", "by_category"), ("BY SPLIT (pass / trials)", "by_split")):
         groups = sorted({c for m in models for c in s[m][key]})

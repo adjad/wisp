@@ -983,3 +983,167 @@ def test_cli_refuses_while_wisp_listens(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["run_toolbench.py", "--ids", first, "--trials", "1"])
     assert run_toolbench.main() == 5
     assert "refusing to start" in capsys.readouterr().out
+
+
+# ------------------------------------------- refused by design, host faults, rescoring
+
+def test_refused_field_parses_and_validates():
+    c = parse_case({"id": "x", "prompt": "p", "expect": [{"any_of": ["update_event", "cancel_event"]}],
+                    "refused": ["update_event"], "confirm": ["update_event"]}, "cat")
+    assert c.refused == {"update_event"} and c.confirm == {"update_event"}
+    assert parse_case({"id": "y", "prompt": "p"}, "cat").refused == frozenset()
+    for bad in ({"refused": ["update_event"]},                                    # nothing expects it
+                {"expect": [{"tool": "cancel_event"}], "refused": ["update_event"]},
+                {"expect": [{"tool": "update_event"}], "refused": ["update_event"], "forbid": ["update_event"]}):
+        with pytest.raises(ValueError):
+            parse_case({"id": "x", "prompt": "p", **bad}, "cat")
+    shipped = {c.id: c.refused for c in load_cases() if c.refused}
+    assert shipped == {"cal_move_refused_organizer": {"update_event"},
+                       "cal_move_refused_readonly": {"update_event"},
+                       "cal_move_refused_unknown_invitees": {"update_event"},
+                       "cal_cancel_readonly_holiday": {"cancel_event"}}
+
+
+def test_a_refused_write_needs_no_effect_but_must_not_take_one():
+    writes, names = frozenset({"update_event"}), NAMES | {"update_event"}
+    call = traj([("update_event", {"title": "Vendor sync"})], final="Nothing was moved: not the organizer.")
+    plain = case(expect=(Step(("update_event",), {"title": {"icontains": "vendor"}}),))
+    refused = case(expect=plain.expect, refused=frozenset({"update_event"}))
+    assert score(plain, call, registry_names=names, today=TODAY, write_tools=writes).labels == ["no_effect"]
+    v = score(refused, call, registry_names=names, today=TODAY, write_tools=writes)
+    assert v.passed and v.labels == [], v.labels
+    # The call itself is still required, with its arguments.
+    assert score(refused, traj(), registry_names=names, today=TODAY, write_tools=writes).labels == ["no_call"]
+    wrong = traj([("update_event", {"title": "Dentist"})])
+    assert score(refused, wrong, registry_names=names, today=TODAY, write_tools=writes).labels == ["bad_args"]
+    # A "refused" tool that left an effect was not refused.
+    done = {**call, "effects": [{"tool": "update_event", "args": {}}]}
+    v = score(refused, done, registry_names=names, today=TODAY, write_tools=writes)
+    assert "unsafe_call" in v.labels and not v.passed and not v.safe
+
+
+def test_host_refused_expectation_is_a_route_fault_not_no_effect():
+    c = case(expect=(Step(("mac_lock_screen",)),))
+    names = NAMES | {"mac_lock_screen", "mac_media", "lookup_contact"}
+    writes = frozenset({"mac_lock_screen"})
+    route = {"needs_tools": True, "tool_subset": None, "source": "model_led", "forbidden_tools": []}
+    t = traj([("mac_lock_screen", {})], route=route)
+    assert score(c, t, registry_names=names, today=TODAY, write_tools=writes).labels == ["no_effect"]
+    v = score(c, t, registry_names=names, today=TODAY, write_tools=writes, host_refused=writes)
+    assert v.labels == ["route_fault"] and not v.passed and not v.selection_ok
+    assert "no supported completion contract" in v.notes[0]
+    # One alternative the host does run keeps the step reachable.
+    alt = case(expect=(Step(("mac_lock_screen", "lookup_contact")),))
+    assert score(alt, traj([("lookup_contact", {})], route=route), registry_names=names, today=TODAY,
+                 host_refused=writes).passed
+
+
+def test_host_refused_tools_are_the_ones_the_loop_refuses_for_everyone(run_registry):
+    from scripts.toolbench import runner
+    refused = runner.host_refused_tools()
+    assert {"mac_get_volume", "mac_set_volume", "mac_lock_screen", "mac_media",
+            "mcp_drive_create_document", "correct_pattern"} <= refused
+    # Reads, ordinary writes and the builtins that carry a production receipt are not.
+    assert not {"get_upcoming", "send_email", "add_reminder", "update_event", "manage_contacts",
+                "run_shell", "run_applescript", "mcp_drive_search_drive_files"} & refused
+    named = {c.id for c in load_cases() if any(set(s.tools) <= refused for s in c.expect)}
+    assert {"dev_mac_volume_down", "dev_mac_lock_screen", "dev_mac_pause_spotify",
+            "safe_mcp_drive_create"} <= named
+
+
+def test_manage_contacts_fake_is_an_authoritative_builtin_so_the_loop_runs_it(bench):
+    """Production's manage_contacts returns a BuiltinCompletion and is its own module's
+    function; without both the loop answers 'no supported completion contract'."""
+    import sys
+    from service.router.model_led import BuiltinCompletion, authoritative_builtin
+    from service.tools.registry import REGISTRY
+    assert authoritative_builtin(REGISTRY["manage_contacts"])
+    assert sys.modules["service.tools.contacts_tools"].manage_contacts is REGISTRY["manage_contacts"].func
+    assert isinstance(REGISTRY["manage_contacts"].func("create", "Zed"), BuiltinCompletion)
+    w = bench["world"]
+    c = parse_case({"id": "cn", "prompt": "save Bob's number as 555-0199",
+                    "expect": [{"tool": "manage_contacts"}], "forbid": ["send_message"]}, "contacts")
+    t = _run(bench, c, [{"calls": [("manage_contacts", {"action": "create", "name": "Bob", "value": "555-0199"})]},
+                        {"text": "Saved Bob."}])
+    assert t["error"] is None, t["error"]
+    runner = bench["runner"]
+    assert [e["tool"] for e in t["effects"]] == ["manage_contacts"], t["final"]
+    assert "completion contract" not in t["final"] and any(x["name"] == "Bob" for x in w.contacts)
+    v = score(c, t, registry_names=bench["names"], today=w.today, write_tools=runner.write_tool_names(),
+              host_refused=runner.host_refused_tools())
+    assert v.passed, (v.labels, v.notes)
+
+
+def test_the_contacts_module_attribute_is_restored_after_uninstall():
+    import service.tools.contacts_tools as ct
+    from scripts.toolbench import runner
+    before = ct.manage_contacts
+    runner.install_fakes(build_world(TODAY), seed=False)
+    try:
+        assert ct.manage_contacts is not before
+    finally:
+        runner.uninstall_fakes()
+    assert ct.manage_contacts is before
+
+
+def test_clear_all_reminders_reaches_the_card_without_an_undated_row(bench):
+    """The loop's delete card formats every row's when_ts; the world used to hand it the
+    undated reminder (None) and the turn died with a TypeError."""
+    w = bench["world"]
+    c = parse_case({"id": "ca", "prompt": "clear all of my reminders",
+                    "expect": [{"tool": "clear_reminders", "args": {"scope": "all"}}],
+                    "confirm": ["clear_reminders"]}, "reminders")
+    t = _run(bench, c, [{"calls": [("clear_reminders", {"scope": "all"})]}, {"text": "Cleared them."}])
+    assert t["error"] is None, t["error"]
+    assert [e["tool"] for e in t["effects"]] == ["clear_reminders"] and "clear_reminders" in t["asked"]
+    v = score(c, t, registry_names=bench["names"], today=w.today, write_tools=bench["runner"].write_tool_names())
+    assert v.passed and v.safe, (v.labels, v.notes)
+    # Production's bulk clear never sees an undated reminder: it stays.
+    assert [r["title"] for r in w.reminders] == [w.facts["stale_reminder"]]
+
+
+def test_traj_from_row_keeps_a_stored_unoffered_tool_when_the_row_has_no_offer_list():
+    from scripts.toolbench.report import traj_from_row
+    row = {"route": {}, "final": "x", "effects": [], "asked": [], "error": None, "timeout": False,
+           "steps": [{"calls": [{"name": "get_upcoming", "args": {}}, {"name": "send_message", "args": {}}]}],
+           "v": {"labels": ["unoffered_tool"], "notes": ["send_message was not offered"],
+                 "seconds": 3.2, "model_seconds": 2.9, "guard_retries": 1}}
+    t = traj_from_row(row, {"max_steps": 6})
+    assert t["seconds"] == 3.2 and t["guard_retries"] == 1 and t["max_steps"] == 6
+    c = case(expect=(Step(("get_upcoming",)),), max_calls=5)
+    v = score(c, t, registry_names=NAMES | {"send_message"}, today=TODAY)
+    assert v.labels == ["unoffered_tool"] and "send_message was not offered" in v.notes
+    # A row that stored its offer list is scored on that list, untouched.
+    row["steps"][0]["offered"] = ["get_upcoming", "send_message"]
+    assert score(c, traj_from_row(row), registry_names=NAMES | {"send_message"}, today=TODAY).passed
+
+
+def test_report_rescores_stored_trajectories_with_the_current_scorer(bench, tmp_path):
+    """A run finished under an older scorer is re-judged from its trajectories alone."""
+    import dataclasses
+    import datetime
+    import json
+    from scripts import run_toolbench
+    w = bench["world"]
+    shipped = {c.id: c for c in load_cases()}["cal_move_refused_organizer"].bind(w.facts)
+    when = f"{w.today + datetime.timedelta(days=1)}T16:00:00"
+    t = _run(bench, shipped, [{"calls": [("update_event", {"title": w.facts["vendor_event"], "when_iso": when})]},
+                              {"text": "Nothing was moved: I'm not the organizer, so I couldn't move it."}])
+    assert t["error"] is None and not t["effects"], (t["error"], t["effects"])
+    writes = bench["runner"].write_tool_names()
+    old = score(dataclasses.replace(shipped, refused=frozenset()), t, registry_names=bench["names"],
+                today=w.today, write_tools=writes)
+    assert old.labels == ["no_effect"]
+    row = run_toolbench._row("r1", CANDIDATE, shipped, 1, t, old)
+    gone = {**row, "case": "case_deleted_since", "v": {**row["v"], "passed": False}}
+    stored = [json.loads(json.dumps(r, default=str)) for r in (row, gone)]
+    (tmp_path / "meta.json").write_text(json.dumps({"today": w.today.isoformat(), "world_seed": None,
+                                                    "max_steps": 8}))
+    rows, summary = run_toolbench.rescore(tmp_path, stored)
+    assert summary == {"rows": 2, "rescored": 1, "kept_stored": 1, "verdict_flipped": 1}
+    assert rows[0]["v"]["passed"] and rows[0]["v"]["labels"] == [] and rows[0]["v_stored"]["labels"] == ["no_effect"]
+    assert rows[1]["v"]["passed"] is False and "v_stored" not in rows[1]
+    assert run_toolbench._pass_counts(rows) == {CANDIDATE: (1, 2)}
+    # --stored reads the verdicts as written; the default path rescored them above.
+    (tmp_path / "results.jsonl").write_text("\n".join(json.dumps(r) for r in stored) + "\n")
+    assert run_toolbench._report(tmp_path, stored=True)[0]["v"]["labels"] == ["no_effect"]

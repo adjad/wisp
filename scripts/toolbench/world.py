@@ -1649,7 +1649,9 @@ def make_fakes(w: World) -> dict:
         if normalized not in {"today", "tomorrow", "past_due", "upcoming", "all"}:
             return ("(error: scope must be today, tomorrow, past_due, upcoming, "
                     "or all — no reminders were deleted.)")
-        rows = _rem_rows(w, normalized, query or "", include_stale=True)
+        # Dated reminders only, like production's reminders_matching (see install_hooks).
+        rows = [r for r in _rem_rows(w, normalized, query or "", include_stale=True)
+                if r["when_ts"] is not None]
         label = normalized.replace("_", " ")
         if not rows:
             return (f"No active reminders found for {label}"
@@ -2110,6 +2112,14 @@ def make_fakes(w: World) -> dict:
         return f"Upcoming: Mom ({w.facts['mom_full']}) birthday {w.facts['mom_birthday']}."
 
     def manage_contacts(action, name, value=None, **_):
+        # Production returns a BuiltinCompletion on success, the host-produced completion
+        # receipt the model-led loop requires of an effect (router.model_led). Without it
+        # the loop refuses the call ("no supported completion contract") whatever the
+        # model does; runner.install_fakes makes this fake an authoritative builtin.
+        from service.router.model_led import BuiltinCompletion
+
+        def done(text):
+            return BuiltinCompletion(text, tool_name="manage_contacts", completion_code=0)
         a = (action or "").strip().lower()
         who = (name or "").strip()
         if not who:
@@ -2117,7 +2127,7 @@ def make_fakes(w: World) -> dict:
         if a == "create":
             _record(w, "manage_contacts", {"action": a, "name": who, "value": value})
             w.contacts.append({"name": who, "full": who, "email": "", "phone": ""})
-            return f"Created contact {who}."
+            return done(f"Created contact {who}.")
         if a in ("add_phone", "add_email"):
             if not (value or "").strip():
                 return f"(error: {a} needs `value`.)"
@@ -2128,7 +2138,7 @@ def make_fakes(w: World) -> dict:
                 return f"Several contacts match {who!r} — which one?\n" + "\n".join(f"  - {c['full']}" for c in hits[:8])
             _record(w, "manage_contacts", {"action": a, "name": who, "value": value})
             hits[0]["phone" if a == "add_phone" else "email"] = value.strip()
-            return f"Added {'phone' if a == 'add_phone' else 'email'} to {hits[0]['full']}."
+            return done(f"Added {'phone' if a == 'add_phone' else 'email'} to {hits[0]['full']}.")
         return f"(error: unknown action {a!r}. Use create, add_phone, or add_email.)"
 
     # -------------------------------------------------------------------- notes
@@ -2935,6 +2945,13 @@ def register_extra_tools() -> list[str]:
     return sorted((set(REGISTRY) - before) | ({"use_skill"} & set(REGISTRY)))
 
 
+# Fakes of tools production runs as authoritative builtins (router.model_led
+# BUILTIN_COMPLETION_MODULES): the model-led loop only accepts their effect when the
+# registered function IS the one in that module. runner.install_fakes makes each
+# fake pass that test; the fake returns a BuiltinCompletion on success.
+AUTHORITATIVE_FAKES = ("manage_contacts",)
+
+
 def install_hooks(w: World) -> None:
     """Point the agent loop's own store lookups at the world.
 
@@ -2965,8 +2982,13 @@ def install_hooks(w: World) -> None:
                 "preview": f"Move: {e['title']} — from {old:%a %b %-d %-I:%M %p} to {new}{once}.{notice}"}
 
     def reminders_matching(scope="all", query="", *, now=None, include_stale=False):
+        # Production reads scheduled_commitments, whose active rows always carry a time
+        # (CHECK ... when_ts IS NOT NULL); undated reminders live in a separate
+        # snapshot that bulk operations never see. The loop's delete card formats
+        # every row's when_ts, so an undated row here crashed it (TypeError).
         return [{k: v for k, v in r.items() if k != "_ref"}
-                for r in _rem_rows(w, scope, query, include_stale=include_stale)]
+                for r in _rem_rows(w, scope, query, include_stale=include_stale)
+                if r["when_ts"] is not None]
 
     def past_due_matching(query="", days=365):
         return [{k: v for k, v in r.items() if k != "_ref"} for r in _past_due_rows(w, query, days)]

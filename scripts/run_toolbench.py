@@ -13,7 +13,8 @@
     .venv/bin/python scripts/run_toolbench.py --models G,N --profile-as G     # N treated exactly as G
     .venv/bin/python scripts/run_toolbench.py --omlx-port 8001                # a second engine
     .venv/bin/python scripts/run_toolbench.py --export-shingles out.json      # held-out prompts, hashed
-    .venv/bin/python scripts/run_toolbench.py --report ~/.moe/evals/toolbench/<run>
+    .venv/bin/python scripts/run_toolbench.py --report ~/.moe/evals/toolbench/<run>   # rescored offline
+    .venv/bin/python scripts/run_toolbench.py --report <run> --stored        # the verdicts stored at run time
     .venv/bin/python scripts/run_toolbench.py --report <run> --compare <baseline_run>
 
 Every turn runs the way production's model-led Ask does (runner.prepare_turn):
@@ -100,7 +101,7 @@ def _listening(port: int) -> bool:
 
 def _row(run_id, model, case, trial, traj, verdict, variant="default", profile_as=None) -> dict:
     steps = [{k: s.get(k) for k in ("calls", "error", "tool_errors", "ttft", "seconds", "prompt_tokens_est",
-                                     "output_chars", "reasoning_chars", "stubs", "guard_400")}
+                                     "output_chars", "reasoning_chars", "stubs", "offered", "guard_400")}
              | {"content": (s.get("content") or "")[:600]} for s in traj.get("steps", ())]
     label = model if variant == "default" else f"{model} +{variant}"
     return {"run": run_id, "model": label, "base_model": model, "variant": variant,
@@ -138,7 +139,8 @@ def _dry_run_bound(args, cases, runner, world, names) -> int:
     for c in (c.bind(world.facts) for c in cases):
         problems = []
         for field, tools in (("expect", {t for s in c.expect for t in s.tools}), ("forbid", c.forbid),
-                             ("confirm", c.confirm), ("no_confirm", c.no_confirm)):
+                             ("confirm", c.confirm), ("no_confirm", c.no_confirm),
+                             ("refused", c.refused)):
             if unknown := sorted(set(tools) - names):
                 problems.append(f"{field} names unknown {unknown}")
         turn = runner.prepare_turn(client, c.prompt, c.history)
@@ -152,6 +154,77 @@ def _dry_run_bound(args, cases, runner, world, names) -> int:
               f"preload={head:<44} {'; '.join(problems) or 'ok'}")
     print(f"\n{len(cases)} cases bound for {model}, {bad} with problems (no model was run)")
     return 0
+
+
+def rescore(run_dir: Path, rows: list[dict]) -> tuple[list[dict], dict]:
+    """`rows` with every verdict recomputed by the CURRENT scorer, cases and fakes.
+
+    A finished run keeps trajectories (calls, effects, asked, final) but not the
+    judgement; scoring is a pure function of those, so a fixed scorer or case file
+    applies to old runs without a model. Needs the isolated service import the dry
+    run uses (no server, no model). The world is rebuilt from the run's meta.json
+    (date, world seed) so `{fact}` placeholders bind to what the model saw. A row
+    whose case no longer exists keeps its stored verdict. Returns (rows, summary).
+    """
+    from datetime import date
+
+    from scripts.toolbench import runner
+    from scripts.toolbench.scorer import score
+    from scripts.toolbench.world import build_world
+    meta_path = run_dir / "meta.json"
+    meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
+    today = date.fromisoformat(meta["today"]) if meta.get("today") else None
+    world = build_world(today, seed=meta.get("world_seed"))
+    names = runner.install_fakes(world, seed=False)
+    try:
+        writes, refused = runner.write_tool_names(), runner.host_refused_tools()
+    finally:
+        runner.uninstall_fakes()
+    cases = {c.id: c.bind(world.facts) for c in load_cases()}
+    out, kept, changed = [], 0, 0
+    for row in rows:
+        case = cases.get(row["case"])
+        if case is None:
+            kept += 1
+            out.append(row)
+            continue
+        v = score(case, rep.traj_from_row(row, meta), registry_names=names, today=world.today,
+                  write_tools=writes, host_refused=refused).to_dict()
+        changed += v["passed"] != row["v"]["passed"]
+        out.append({**row, "v": v, "v_stored": row["v"]})
+    return out, {"rows": len(rows), "rescored": len(rows) - kept, "kept_stored": kept,
+                 "verdict_flipped": changed}
+
+
+def _pass_counts(rows: list[dict]) -> dict[str, tuple[int, int]]:
+    """model -> (passed, scored trials), engine-excluded trials left out."""
+    out: dict[str, list[int]] = {}
+    for r in rows:
+        if r["v"].get("excluded"):
+            continue
+        n = out.setdefault(r["model"], [0, 0])
+        n[0] += bool(r["v"]["passed"])
+        n[1] += 1
+    return {m: (a, b) for m, (a, b) in out.items()}
+
+
+def _report(run_dir: Path, *, stored: bool) -> list[dict]:
+    """Rows for a finished run: rescored by default, the stored verdicts with --stored."""
+    rows = rep.load_rows(run_dir)
+    if stored:
+        return rows
+    from scripts.toolbench import runner
+    runner.isolate(Path(tempfile.mkdtemp(prefix="toolbench-")), omlx_port=runner.DEFAULT_OMLX_PORT)
+    rows, summary = rescore(run_dir, rows)
+    before = _pass_counts([{**r, "v": r.get("v_stored", r["v"])} for r in rows])
+    after = _pass_counts(rows)
+    print(f"rescored {summary['rescored']}/{summary['rows']} rows with the current scorer and cases "
+          f"({summary['kept_stored']} kept their stored verdict, {summary['verdict_flipped']} changed):")
+    for m in after:
+        print(f"  {m}: pass {before.get(m, (0, 0))[0]}/{before.get(m, (0, 0))[1]} stored -> "
+              f"{after[m][0]}/{after[m][1]} rescored")
+    print()
+    return rows
 
 
 def _agent_model() -> str:
@@ -189,14 +262,15 @@ async def _recover(client, model, *, wait: float = 240.0) -> None:
 
 
 async def _one(runner, score, client, model, case, world, names, writes, args, run_id, trial,
-               variant) -> dict:
+               variant, host_refused=frozenset()) -> dict:
     """One trial, retried once after a transient engine error (409, restart, dropped stream)."""
     traj = await runner.run_case(client, model, case, world, timeout=args.timeout, max_steps=args.max_steps)
     if traj.get("error") and _TRANSIENT.search(traj["error"]):
         await _recover(client, model)
         traj = await runner.run_case(client, model, case, world, timeout=args.timeout,
                                      max_steps=args.max_steps)
-    v = score(case, traj, registry_names=names, today=world.today, write_tools=writes)
+    v = score(case, traj, registry_names=names, today=world.today, write_tools=writes,
+              host_refused=host_refused)
     profile = args.profile_as if args.profile_as and args.profile_as != model else None
     return _row(run_id, model, case, trial, traj, v, variant, profile)
 
@@ -257,7 +331,7 @@ async def _trials(args, cases, runner, world, names) -> int:
     from scripts.toolbench.scorer import score
     from service.config.endpoints import role_target
 
-    writes = runner.write_tool_names()
+    writes, refused = runner.write_tool_names(), runner.host_refused_tools()
     cases = [c.bind(world.facts) for c in cases]
     variants = [v.strip() for v in args.thinking.split(",") if v.strip()]
     if bad := [v for v in variants if v not in runner.THINKING_MODES]:
@@ -344,7 +418,7 @@ async def _trials(args, cases, runner, world, names) -> int:
                                 return 3
                             turn_client.seed = seeds[trial]   # same schedule for every model
                             row = await _one(runner, score, turn_client, model, case, world, names,
-                                             writes, args, run_id, trial, variant)
+                                             writes, args, run_id, trial, variant, refused)
                             rows.append(row)
                             fh.write(json.dumps(row, default=str) + "\n")
                             fh.flush()
@@ -416,13 +490,16 @@ def main() -> int:
                          "no routing test")
     ap.add_argument("--report", default="", help="re-render a finished run directory")
     ap.add_argument("--compare", default="", help="with --report: baseline run directory")
+    ap.add_argument("--stored", action="store_true",
+                    help="with --report: show the verdicts stored when the run finished instead of "
+                         "rescoring its trajectories with the current scorer and cases")
     args = ap.parse_args()
 
     if args.report:
-        cur = rep.load_rows(Path(args.report).expanduser())
+        cur = _report(Path(args.report).expanduser(), stored=args.stored)
         print(rep.render(cur))
         if args.compare:
-            print("\n" + rep.compare(rep.load_rows(Path(args.compare).expanduser()), cur))
+            print("\n" + rep.compare(_report(Path(args.compare).expanduser(), stored=args.stored), cur))
         return 0
     cases = select(load_cases(), only=args.only, ids=args.ids, split=args.split)
     if not cases:

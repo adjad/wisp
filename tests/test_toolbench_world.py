@@ -451,8 +451,11 @@ def test_stale_reminders_are_hidden_but_clearable(world, fk):
     assert "Only reminders already overdue" in fk["search_reminders"](scope="past_due")
     assert "doordash" not in fk["get_my_day_plan"]().lower() and "doordash" not in fk["daily_brief"]().lower()
     cleared = fk["clear_reminders"](scope="all")
-    assert cleared == "Cleared 7 reminder(s) for all."
-    assert world.reminders == []
+    # Production's bulk clear reads dated commitments only (scheduled_commitments rows always
+    # carry a time); the undated stale reminder is not part of "all" for clear_reminders.
+    assert cleared == "Cleared 6 reminder(s) for all."
+    assert [r["title"] for r in world.reminders] == [f["stale_reminder"]]
+    assert fk["clear_reminders"](scope="all") == "No active reminders found for all."
 
 
 def test_stale_undated_reminder_is_clearable_by_name_and_by_past_due(world, fk):
@@ -697,7 +700,9 @@ def test_hooks_give_the_loop_world_backed_move_and_delete_previews(world, hooked
     refused = hooked.prepare_event_move({"title": "Vendor sync", "when_iso": "2026-10-16T16:00"})
     assert refused["error"].startswith("Only the organizer can move")
     rows = hooked.reminders_matching("all", "", include_stale=True)
-    assert len(rows) == 7 and all("_ref" not in r for r in rows)
+    # Seven reminders, one undated: the loop's delete card formats every row's when_ts, and
+    # production's reminders_matching never returns an undated one.
+    assert len(rows) == 6 and all("_ref" not in r and r["when_ts"] is not None for r in rows)
     assert len(hooked.reminders_matching("all", "")) == 5
     assert [r["title"] for r in hooked.past_due_matching("ladder")] == [world.facts["stale_reminder"]]
 
