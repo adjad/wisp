@@ -308,6 +308,9 @@ ADDITIONAL_FULL_TESTS = {
     # Toolbench matchers/scorer/report on hand-built trajectories and fake-world
     # tools called directly; temp WISP_HOME, no model, network or tool execution.
     "tests/test_toolbench.py",
+    # Toolbench fake-world receipts and seeded facts against the real outcome
+    # classifier; temp WISP_HOME, no model, network, Mac apps or tool execution.
+    "tests/test_toolbench_world.py",
     # Planner eval --dry-run in a temp HOME/WISP_HOME: builds menus, no model, oMLX or tool execution.
     "tests/test_eval_planner_dry_run.py",
     # Inert bounded attestation store; supplied facts and manual interleavings only.
