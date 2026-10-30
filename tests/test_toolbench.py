@@ -176,7 +176,8 @@ def test_runaway_format_answer_and_errors():
     assert "think_leak" in v.labels
     t = traj()
     t["steps"] = [{"calls": [], "error": "IncompleteStreamError: Incomplete tool arguments"}]
-    assert "malformed" in score(case(), t, registry_names=NAMES, today=TODAY).labels
+    v = score(case(), t, registry_names=NAMES, today=TODAY)
+    assert v.labels == ["engine_error"] and v.excluded and "malformed" not in v.labels
     v = score(case(answer={"contains_all": ["1,284.17"], "not_contains": ["forwarded"]}),
               traj(final="I forwarded it; balance 1,284.17"), registry_names=NAMES, today=TODAY)
     assert v.labels == ["ungrounded_answer"] and not v.answer_ok
@@ -624,8 +625,6 @@ def test_access_mode_uses_production_setters():
             pass
 
 
-@pytest.mark.xfail(strict=False, reason="cases/contacts.yaml forbids place_call, which is not a registry "
-                   "tool; the cases owner removes it. Drop this marker once it passes.")
 def test_case_tool_names_exist_in_registry(run_registry):
     bad = {c.id: sorted((set(c.forbid) | c.confirm | c.no_confirm) - run_registry) for c in load_cases()}
     assert not {k: v for k, v in bad.items() if v}
@@ -812,5 +811,175 @@ def test_hooks_let_an_event_move_reach_the_fake(bench):
                         {"text": "Moved your dentist appointment to 4 PM."}])
     assert t["error"] is None, t["error"]
     assert [e["tool"] for e in t["effects"]] == ["update_event"] and "update_event" in t["asked"]
-    v = score(c, t, registry_names=bench["names"], today=w.today)
+    writes = bench["runner"].write_tool_names()
+    assert "update_event" in writes
+    v = score(c, t, registry_names=bench["names"], today=w.today, write_tools=writes)
     assert v.passed and v.safe, (v.labels, v.notes)
+
+
+# --------------------------------------------------------- fidelity review
+
+def _row(model, case_id, *, passed=True, labels=(), excluded=False, guard=0, secs=1.0):
+    return {"model": model, "case": case_id, "category": "mail", "split": "gate", "trial": 1,
+            "no_tool": False, "steps": [], "final": "", "escapes": [],
+            "v": {"passed": passed, "labels": list(labels), "notes": ["n"], "selection_ok": passed,
+                  "args_ok": passed, "safe": True, "format_ok": True, "answer_ok": True, "seconds": secs,
+                  "model_seconds": secs, "steps": 1, "prompt_tokens_est": 10, "excluded": excluded,
+                  "guard_retries": guard}}
+
+
+def test_engine_errors_are_excluded_not_scored_as_the_model():
+    for where in ("step", "turn"):
+        for err in ("IncompleteStreamError: Incomplete tool arguments",
+                    "InferenceError: Invalid inference stream data"):
+            t = traj([("view_emails", {})])
+            if where == "step":
+                t["steps"][0]["error"] = err
+            else:
+                t["error"] = err
+            v = score(case(expect=(Step(("view_emails",)),)), t, registry_names=NAMES, today=TODAY)
+            assert v.labels == ["engine_error"] and v.excluded and not v.passed, (where, err)
+    # A model fault still scores.
+    v = score(case(), traj(error="ValueError: boom"), registry_names=NAMES, today=TODAY)
+    assert "error" in v.labels and not v.excluded
+    rows = [_row("A", "x"), _row("A", "y", passed=False, labels=["engine_error"], excluded=True),
+            _row("A", "z", passed=False, labels=["timeout"]), _row("B", "x", passed=False,
+                                                                 labels=["engine_error"], excluded=True)]
+    s = summarize(rows)
+    assert s["A"]["trials"] == 2 and s["A"]["pass"] == 1 and s["A"]["excluded"] == 1
+    assert s["A"]["timeouts"] == 1 and s["B"]["trials"] == 0 and s["B"]["excluded"] == 1
+    text = render(rows)
+    assert "EXCLUDED (engine)" in text and "EXCLUDED ENGINE ERRORS (2; not scored)" in text
+    assert "timeouts" in text and "engine_error" not in text.split("FAILURE LABELS")[1].split("FAILURES")[0]
+    # The CLI retries them once like any other transient engine fault.
+    from scripts import run_toolbench
+    assert run_toolbench._TRANSIENT.search("IncompleteStreamError: x")
+    assert run_toolbench._TRANSIENT.search("Invalid inference stream data")
+
+
+def test_guard_retries_are_counted_and_reported():
+    t = traj([("view_emails", {})], guard_retries=2)
+    v = score(case(expect=(Step(("view_emails",)),)), t, registry_names=NAMES, today=TODAY)
+    assert v.passed and v.guard_retries == 2
+    from scripts.toolbench.report import guard_retries
+    rows = [_row("A", "x", guard=2), _row("A", "x", guard=1), _row("A", "y")]
+    assert guard_retries(rows) == {"x": {"A": 3}} and summarize(rows)["A"]["guard_retries"] == 3
+    assert "GUARD 400 RETRIES BY CASE" in render(rows)
+
+
+def test_a_write_only_counts_once_it_takes_effect():
+    c = case(expect=(Step(("add_reminder",)),))
+    writes = frozenset({"add_reminder", "send_email"})
+    call = traj([("add_reminder", {"title": "x"})])
+    v = score(c, {**call, "effects": []}, registry_names=NAMES, today=TODAY, write_tools=writes)
+    # The right tool was chosen (selection) but nothing happened, so the turn fails.
+    assert v.labels == ["no_effect"] and not v.passed and v.selection_ok
+    v = score(c, {**call, "effects": [{"tool": "add_reminder"}]}, registry_names=NAMES, today=TODAY,
+              write_tools=writes)
+    assert v.passed, v.labels
+    # Two expected writes need two effects.
+    two = case(expect=(Step(("add_reminder",)), Step(("add_reminder",))))
+    t = traj([("add_reminder", {})], [("add_reminder", {})], effects=[{"tool": "add_reminder"}])
+    assert score(two, t, registry_names=NAMES, today=TODAY, write_tools=writes).labels == ["no_effect"]
+    # A read needs no effect.
+    assert score(case(expect=(Step(("view_emails",)),)), traj([("view_emails", {})], effects=[]),
+                 registry_names=NAMES, today=TODAY, write_tools=writes).passed
+
+
+def test_write_tool_names_follow_production_effect_rule(run_registry):
+    from scripts.toolbench import runner
+    writes = runner.write_tool_names()
+    assert {"send_email", "add_reminder", "update_event", "add_calendar_event", "forget"} <= writes
+    assert not {"view_emails", "get_upcoming", "search_reminders", "get_tool_schemas",
+                "list_running_apps"} & writes
+
+
+def test_think_leak_covers_thought_and_channel_markup():
+    for final in ("<thought>plan</thought> Hi", "<|channel|>analysis<|message|>hmm", "x<channel|>final Hi",
+                  "</think> Hi"):
+        assert "think_leak" in score(case(), traj(final=final), registry_names=NAMES, today=TODAY).labels, final
+    assert "think_leak" not in score(case(), traj(final="I thought about it: 3pm."),
+                                     registry_names=NAMES, today=TODAY).labels
+
+
+def test_bench_client_scores_the_name_the_loop_dispatches():
+    from scripts.toolbench import runner
+    step = {"calls": []}
+    runner.bench_client_class()  # builds the class; _finish is a static helper on it
+    finish = runner.bench_client_class()._finish
+    finish(step, {"tool_calls": [{"function": {"name": "functions.view_emails<|channel|>json",
+                                               "arguments": "{}"}}]})
+    assert step["calls"][0]["name"] == "view_emails"
+    assert step["calls"][0]["raw_name"] == "functions.view_emails<|channel|>json"
+
+
+def test_run_case_refuses_an_unbound_model(bench):
+    import asyncio
+    with pytest.raises(RuntimeError, match="bind_model"):
+        asyncio.run(bench["runner"].run_case(bench["client"], "some-other-model",
+                                             parse_case({"id": "n", "prompt": "hi"}, "chat"),
+                                             bench["world"], timeout=5))
+
+
+def test_active_skill_comes_from_production_selection(bench, monkeypatch):
+    from service import skills
+    seen = []
+    monkeypatch.setattr(skills, "select_for_turn", lambda *a, **k: seen.append(a) or "")
+    turn = bench["runner"].prepare_turn(bench["client"], "what's on my calendar tomorrow?")
+    assert seen and turn.kwargs["active_skill"] == ""
+
+
+def test_pinned_clock_reaches_the_prompt_date_line():
+    from scripts.toolbench import runner
+    from service.memory import prompt_blocks
+    w = build_world(TODAY)
+    runner.set_clock(w.now)
+    try:
+        assert "Wednesday, October 14, 2026 at 8:30 AM" in prompt_blocks.now_line()
+    finally:
+        runner.set_clock(None)
+    assert "October 14, 2026 at 8:30 AM" not in prompt_blocks.now_line()
+
+
+def test_engine_parity_compares_the_review_keys():
+    from scripts.toolbench.runner import PARITY_KEYS, engine_mismatches
+    assert set(PARITY_KEYS) == {"temperature", "top_p", "top_k", "max_context_window", "enable_thinking",
+                                "mtp_enabled", "mtp_adaptive_max_depth"}
+    base = {"temperature": 0.8, "top_p": 0.95, "top_k": 64, "max_context_window": 16384,
+            "enable_thinking": True, "mtp_enabled": True, "mtp_adaptive_max_depth": 3}
+    g = {"source": "x", "settings": dict(base)}
+    assert engine_mismatches({"source": "x", "settings": {f"sampling.{k}": v for k, v in base.items()}}, g) == {}
+    n = {"source": "x", "settings": {**base, "temperature": 0.6, "max_context_window": 8192}}
+    assert engine_mismatches(n, g) == {"temperature": (0.6, 0.8), "max_context_window": (8192, 16384)}
+
+
+def test_parity_gate_aborts_unless_allowed(capsys):
+    import asyncio
+    from types import SimpleNamespace
+    from scripts import run_toolbench
+    from scripts.toolbench.runner import engine_mismatches
+    table = {"G": {"temperature": 0.8, "top_k": 64}, "N": {"temperature": 0.6, "top_k": 64},
+             "M": {"temperature": 0.8, "top_k": 64}}
+
+    async def settings(client, m):
+        return {"source": "test" if m in table else None, "settings": dict(table.get(m, {}))}
+    fake = SimpleNamespace(engine_settings=settings, engine_mismatches=engine_mismatches)
+    s, mm, go = asyncio.run(run_toolbench._parity(fake, None, ["M", "N"], "G", False))
+    assert not go and mm == {"M": {}, "N": {"temperature": [0.6, 0.8]}} and set(s) == {"M", "N", "G"}
+    assert "ABORT" in capsys.readouterr().out
+    assert asyncio.run(run_toolbench._parity(fake, None, ["M", "N"], "G", True))[2]
+    assert asyncio.run(run_toolbench._parity(fake, None, ["M"], "G", False))[2]
+    # Unreadable settings never pass silently.
+    _, mm, go = asyncio.run(run_toolbench._parity(fake, None, ["X"], "G", False))
+    assert not go and mm == {"X": {"unreadable": ["X"]}}
+
+
+def test_cli_refuses_while_wisp_listens(monkeypatch, capsys):
+    from scripts import run_toolbench
+    from scripts.toolbench import runner
+    monkeypatch.setattr(run_toolbench, "_listening", lambda port: port == 8765)
+    monkeypatch.setattr(runner, "isolate", lambda *a, **k: pytest.fail("isolated before the check"))
+    first = load_cases()[0].id
+    monkeypatch.setattr(sys, "argv", ["run_toolbench.py", "--ids", first, "--trials", "1"])
+    assert run_toolbench.main() == 5
+    assert "refusing to start" in capsys.readouterr().out

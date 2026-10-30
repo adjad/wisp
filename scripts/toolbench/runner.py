@@ -230,6 +230,15 @@ def install_fakes(world, *, seed: bool = True) -> set[str]:
     return set(REGISTRY)
 
 
+def write_tool_names() -> frozenset[str]:
+    """Registered tools production treats as effects on a model-led turn
+    (router/model_led.effectful_call): the ones scorer.score requires a world
+    effect for. Judged with empty arguments, so manage_timers counts as a read."""
+    from service.router.model_led import effectful_call
+    from service.tools.registry import REGISTRY
+    return frozenset(n for n, t in REGISTRY.items() if effectful_call(t, {}))
+
+
 def uninstall_fakes() -> None:
     """Put back everything install_fakes changed: the registry (extra tools
     removed, real functions back), MCP tool parts, the skill registry and every
@@ -312,10 +321,12 @@ def bench_client_class():
             self.steps = []
 
         # oMLX samples deterministically without a seed, so repeated trials of
-        # one prompt come back identical; set a seed per trial for variety.
+        # one prompt come back identical; the CLI sets one per trial, on the
+        # same schedule for every model.
         seed: int | None = None
-        # The agent loop sends temperature 0.0 on tool-selection steps, so a
-        # seed alone cannot vary them; set this to sample those steps too.
+        # Harness override of the engine profile's temperature on every step.
+        # Under model_only production sends none (oMLX's per-model profile
+        # decides), so a fair run leaves this None.
         temperature: float | None = None
 
         def _thinking_kw(self, kw: dict) -> dict:
@@ -373,6 +384,7 @@ def bench_client_class():
         @staticmethod
         def _finish(step: dict, message: dict) -> None:
             import json
+            from service.agent.loop import _clean_tool_name
             step["content"] = message.get("content") or ""
             step["reasoning_chars"] = len(message.get("reasoning_content") or "")
             for tc in message.get("tool_calls") or ():
@@ -382,7 +394,12 @@ def bench_client_class():
                     args, err = (json.loads(raw) if isinstance(raw, str) else raw), None
                 except ValueError as e:
                     args, err = {}, str(e)
-                step["calls"].append({"name": fn.get("name", ""), "args": args, "parse_error": err})
+                # Scored under the name the loop dispatches ("functions.x<|channel|>..." -> "x").
+                name = str(fn.get("name", ""))
+                call = {"name": _clean_tool_name(name), "args": args, "parse_error": err}
+                if call["name"] != name:
+                    call["raw_name"] = name
+                step["calls"].append(call)
             step["output_chars"] = (len(step["content"]) + step["reasoning_chars"]
                                     + sum(len(str((tc.get("function") or {}).get("arguments") or ""))
                                           for tc in message.get("tool_calls") or ()))
@@ -399,6 +416,9 @@ def bench_client_class():
                     yield ev
             except Exception as e:
                 step["error"] = f"{type(e).__name__}: {e}"
+                from service.model_only import guard_rejection
+                # oMLX's prefill guard answering 400; the Ask loop retries once trimmed.
+                step["guard_400"] = guard_rejection(e)
                 raise
             finally:
                 step["seconds"] = round(time.monotonic() - t0, 3)
@@ -412,6 +432,8 @@ def bench_client_class():
                 return resp
             except Exception as e:
                 step["error"] = f"{type(e).__name__}: {e}"
+                from service.model_only import guard_rejection
+                step["guard_400"] = guard_rejection(e)
                 raise
             finally:
                 step["seconds"] = step["ttft"] = round(time.monotonic() - t0, 3)
@@ -772,6 +794,22 @@ async def engine_settings(client, model: str) -> dict:
     return out
 
 
+# Engine-side settings that decide how a model samples and thinks; a profiled
+# comparison is only fair when the candidate's match the profile model's.
+PARITY_KEYS = ("temperature", "top_p", "top_k", "max_context_window", "enable_thinking", "mtp_enabled",
+               "mtp_adaptive_max_depth")
+
+
+def engine_mismatches(candidate: dict, profile: dict) -> dict[str, tuple]:
+    """{key: (candidate value, profile value)} for every PARITY_KEYS key that
+    differs between two engine_settings() results. Keys are matched on their
+    last dotted component, so a nested admin-API shape compares too."""
+    def pick(result: dict) -> dict:
+        return {k.rsplit(".", 1)[-1]: v for k, v in (result.get("settings") or {}).items()}
+    a, b = pick(candidate), pick(profile)
+    return {k: (a.get(k), b.get(k)) for k in PARITY_KEYS if a.get(k) != b.get(k)}
+
+
 # --------------------------------------------------------------- access mode
 
 # The app's three modes, as POST /mode sets them: (read_only, full_access).
@@ -913,6 +951,13 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
                         or _scheduled_send_review(prompt) is not None)
     sid = _seed_session(history)
     sess = store.get_session(sid)
+    # Production's skill choice for the turn (the bundled mac-controls skill
+    # is loaded by install_fakes); a fresh session has no active skill yet.
+    from service import skills
+    active_skill = "" if literal_envelope else skills.select_for_turn(
+        prompt, str((sess or {}).get("active_skill") or ""), store.last_assistant_turn(sid) or "")
+    if active_skill:
+        store.set_active_skill(sid, active_skill)
     private_shell_history = bool(sess and (store.turn_count(sid) or sess.get("summary")
                                            or sess.get("summarized_idx")))
     last_assistant = store.last_assistant_turn(sid)
@@ -1003,7 +1048,7 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
     fresh_scope = fresh_personal_obligation(prompt, last_tools or "")
     kwargs = dict(
         tools=decision.tool_subset,
-        active_skill="",                 # the isolated home has no skills installed
+        active_skill=active_skill,
         allow_skill_context=not literal_envelope,
         include_identity_context=True,
         force_first_tool=decision.force_first_tool,
@@ -1067,7 +1112,9 @@ async def run_case(client, model: str, case, world, *, timeout: float, max_steps
                   "error": None, "timeout": False, "final": "", "path": "model_led",
                   "access": access, "asked": approver.asked}
     if role_target("agent").model != model:
-        bind_model(model)
+        # Rebinding here would silently drop a --profile-as treatment.
+        raise RuntimeError(f"agent role is {role_target('agent').model!r}, not {model!r}: "
+                           "call runner.bind_model(model, profile_as=...) before run_case")
     t0 = time.monotonic()
     try:
         with access_mode(access):
@@ -1099,6 +1146,7 @@ async def run_case(client, model: str, case, world, *, timeout: float, max_steps
     traj.setdefault("route", {})
     traj["seconds"] = round(time.monotonic() - t0, 3)
     traj["model_seconds"] = round(sum(float(s.get("seconds") or 0.0) for s in client.steps), 3)
+    traj["guard_retries"] = sum(bool(s.get("guard_400")) for s in client.steps)
     traj["effects"] = list(world.effects)
     traj["escapes"] = list(ESCAPES)
     return traj

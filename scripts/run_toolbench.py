@@ -21,13 +21,24 @@ model_only on, model-led discovery from a small preload plus name-only stubs,
 the Ask hints and guards, and the case's access mode. Every tool is a fake over
 one synthetic world (scripts/toolbench/world.py): nothing real is read, written
 or sent, and network/subprocess access is refused. The real Wisp on :8765 is
-never contacted. Models run one at a time; the harness loads a model if needed
-and never evicts one unless --exclusive is passed (which unloads the others for
-the run and reloads them afterwards). Results land in
-~/.moe/evals/toolbench/<run_id>/ (results.jsonl + meta.json). meta.json records,
-per model, the binding (context window, list membership, --profile-as), the
-effective thinking flags of each variant and the engine's own per-model
-settings (sampling, thinking, window) read from oMLX at run time.
+never contacted: a live run refuses to start while :8765 or :8791 listens
+(--allow-wisp-running overrides). Models run one at a time; the harness loads a
+model if needed and never evicts one unless --exclusive is passed (which unloads
+the others for the run and reloads them afterwards).
+
+A fair comparison: with more than one model, --exclusive is the default
+(--shared opts out) and --profile-as defaults to the packaged agent model.
+Before any trial the engine's per-model settings of each candidate and of the
+profile model are compared on runner.PARITY_KEYS (sampling, thinking, window,
+MTP); a mismatch aborts unless --allow-engine-mismatch. The clock is pinned to
+the world's "now" for prompts and tools, and trial t sends seed --seed-base + t
+to every model. An engine/stream failure is labelled engine_error and excluded
+from every rate (the report counts them), not scored as the model's.
+
+Results land in ~/.moe/evals/toolbench/<run_id>/ (results.jsonl + meta.json).
+meta.json records the pinned time, the seeds, both sides' engine settings and
+their mismatches, and per model the binding (context window, list membership,
+--profile-as) and the effective thinking flags of each variant.
 
 `scripts/test_model.py` stays the live smoke test against real data; this is
 the repeatable comparison.
@@ -49,7 +60,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-sys.stdout.reconfigure(line_buffering=True)
 
 from scripts.toolbench import report as rep  # noqa: E402  (no service imports)
 from scripts.toolbench.cases import load_cases, select  # noqa: E402
@@ -58,7 +68,12 @@ from scripts.toolbench.cases import load_cases, select  # noqa: E402
 DEFAULT_MODEL = ""
 RESULTS_ROOT = Path.home() / ".moe" / "evals" / "toolbench"  # resolved BEFORE WISP_HOME moves
 _TRANSIENT = re.compile(r"409|ModelLoadError|not loaded|ConnectError|RemoteProtocolError|choices|"
+                        r"IncompleteStreamError|Invalid inference stream data|"
                         r"connection unavailable|couldn't verify the local AI engine", re.I)
+# The live Wisp backend and its bundled engine. A run refuses to start while
+# either listens: Wisp would contend for the one GPU and may evict or reload
+# models mid-run.
+WISP_PORTS = (8765, 8791)
 
 
 def _git_sha() -> str:
@@ -77,14 +92,15 @@ def _swap_ok() -> bool:
     return not (free_mb < 500 and (int(pct.group(1)) if pct else 0) < 25)
 
 
-def _wisp_running() -> bool:
-    r = subprocess.run(["pgrep", "-f", "uvicorn service.main:app"], capture_output=True, text=True)
+def _listening(port: int) -> bool:
+    """True when something on this Mac listens on TCP `port`. Asks lsof; never connects."""
+    r = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t"], capture_output=True, text=True)
     return bool(r.stdout.strip())
 
 
 def _row(run_id, model, case, trial, traj, verdict, variant="default", profile_as=None) -> dict:
     steps = [{k: s.get(k) for k in ("calls", "error", "tool_errors", "ttft", "seconds", "prompt_tokens_est",
-                                     "output_chars", "reasoning_chars", "stubs")}
+                                     "output_chars", "reasoning_chars", "stubs", "guard_400")}
              | {"content": (s.get("content") or "")[:600]} for s in traj.get("steps", ())]
     label = model if variant == "default" else f"{model} +{variant}"
     return {"run": run_id, "model": label, "base_model": model, "variant": variant,
@@ -105,6 +121,15 @@ def _dry_run(args, cases) -> int:
     from scripts.toolbench.world import build_world
     world = build_world(seed=args.world_seed)
     names = runner.install_fakes(world)
+    runner.set_clock(world.now)
+    try:
+        return _dry_run_bound(args, cases, runner, world, names)
+    finally:
+        runner.set_clock(None)
+        runner.uninstall_fakes()
+
+
+def _dry_run_bound(args, cases, runner, world, names) -> int:
     model = runner.bind_model(args.models.split(",")[0].strip() or _agent_model(),
                               profile_as=args.profile_as or None)["model"]
     from service.config.endpoints import role_target
@@ -125,7 +150,6 @@ def _dry_run(args, cases) -> int:
         needs = ",".join(sorted(c.access_needed)) or "-"
         print(f"{c.id:<28} {c.access:<7} denied={needs:<9} direct={'y' if turn.route['ask_direct'] else '-'} "
               f"preload={head:<44} {'; '.join(problems) or 'ok'}")
-    runner.uninstall_fakes()
     print(f"\n{len(cases)} cases bound for {model}, {bad} with problems (no model was run)")
     return 0
 
@@ -142,26 +166,37 @@ async def _recover(client, model, *, wait: float = 240.0) -> None:
     during a prefill with nothing in its log and was back 5s later). Polls
     instead of failing on the first refused connection.
     """
+    from service.inference.inference_errors import ModelNotDownloadedError
     deadline = time.monotonic() + wait
     last = None
     while time.monotonic() < deadline:
         try:
             await client.make_resident(model)
             return
+        except ModelNotDownloadedError:
+            # The engine answered: it has no such model. Waiting cannot fix that
+            # (seen 2026-10-29: its model folder was renamed under a running oMLX).
+            try:
+                served = await client.models()
+            except Exception:  # noqa: BLE001
+                served = ["(inventory unavailable)"]
+            raise RuntimeError(f"oMLX at {client.base_url} does not serve {model}; it serves {served}. "
+                               "Rescan or restart oMLX if the files are on disk.") from None
         except Exception as e:  # noqa: BLE001 — engine down or still loading; keep waiting
             last = e
             await asyncio.sleep(3.0)
     raise RuntimeError(f"engine did not recover within {wait:.0f}s: {last}")
 
 
-async def _one(runner, score, client, model, case, world, names, args, run_id, trial, variant) -> dict:
+async def _one(runner, score, client, model, case, world, names, writes, args, run_id, trial,
+               variant) -> dict:
     """One trial, retried once after a transient engine error (409, restart, dropped stream)."""
     traj = await runner.run_case(client, model, case, world, timeout=args.timeout, max_steps=args.max_steps)
     if traj.get("error") and _TRANSIENT.search(traj["error"]):
         await _recover(client, model)
         traj = await runner.run_case(client, model, case, world, timeout=args.timeout,
                                      max_steps=args.max_steps)
-    v = score(case, traj, registry_names=names, today=world.today)
+    v = score(case, traj, registry_names=names, today=world.today, write_tools=writes)
     profile = args.profile_as if args.profile_as and args.profile_as != model else None
     return _row(run_id, model, case, trial, traj, v, variant, profile)
 
@@ -176,12 +211,53 @@ def _update_meta(out: Path, key: str, model: str, value) -> None:
 
 async def _run(args, cases) -> int:
     from scripts.toolbench import runner
-    from scripts.toolbench.scorer import score
     from scripts.toolbench.world import build_world
-    from service.config.endpoints import role_target
 
     world = build_world(seed=args.world_seed)
     names = runner.install_fakes(world)
+    # Every model sees the same pinned date and time, in its prompt and its tools.
+    runner.set_clock(world.now)
+    try:
+        return await _trials(args, cases, runner, world, names)
+    finally:
+        runner.set_clock(None)
+        runner.uninstall_fakes()
+
+
+async def _parity(runner, client, models, profile_as, allow) -> tuple[dict, dict, bool]:
+    """Engine settings of every model and of `profile_as`, and their mismatches
+    on runner.PARITY_KEYS. A profiled candidate is only treated like the profile
+    model fairly when oMLX samples and thinks for both the same way. The bool is
+    False (stop the run) on a mismatch or unreadable settings, unless `allow`."""
+    settings, mismatches, ok = {}, {}, True
+    for m in dict.fromkeys([*models, *([profile_as] if profile_as else [])]):
+        settings[m] = await runner.engine_settings(client, m)
+    for m in models:
+        if not profile_as or m == profile_as:
+            continue
+        unread = [x for x in (m, profile_as) if not settings[x]["source"]]
+        if unread:
+            mismatches[m] = {"unreadable": unread}
+            print(f"engine parity: could not read oMLX settings for {unread}")
+            ok = False
+            continue
+        diff = runner.engine_mismatches(settings[m], settings[profile_as])
+        mismatches[m] = {k: list(v) for k, v in diff.items()}
+        for k, (a, b) in diff.items():
+            print(f"engine parity: {m} {k}={a!r} but {profile_as} {k}={b!r}")
+        ok = ok and not diff
+    if not ok:
+        print(("--allow-engine-mismatch: continuing although " if allow else "ABORT: ")
+              + "engine settings differ between a candidate and the profile model "
+              "(align ~/.omlx/model_settings.json, or pass --allow-engine-mismatch)")
+    return settings, mismatches, ok or allow
+
+
+async def _trials(args, cases, runner, world, names) -> int:
+    from scripts.toolbench.scorer import score
+    from service.config.endpoints import role_target
+
+    writes = runner.write_tool_names()
     cases = [c.bind(world.facts) for c in cases]
     variants = [v.strip() for v in args.thinking.split(",") if v.strip()]
     if bad := [v for v in variants if v not in runner.THINKING_MODES]:
@@ -190,6 +266,12 @@ async def _run(args, cases) -> int:
     Client = runner.bench_client_class()
     client = Client(timeout=args.timeout)       # inventory and residency; turns use a per-model client
     models = [m.strip() for m in args.models.split(",") if m.strip()] or [_agent_model()]
+    if len(models) > 1:
+        # A comparison treats every candidate the same way: as the packaged agent
+        # model (its window, list membership), each alone on the engine.
+        args.profile_as = args.profile_as or _agent_model()
+        if not args.shared:
+            args.exclusive = True
     installed = await client.models()
     if args.profile_as and args.profile_as not in installed:
         print(f"note: --profile-as {args.profile_as} is not installed; its per-model treatment "
@@ -213,18 +295,23 @@ async def _run(args, cases) -> int:
         run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
         out = Path(args.out).expanduser() if args.out else RESULTS_ROOT / run_id
     out.mkdir(parents=True, exist_ok=True)
+    settings, parity, go = await _parity(runner, client, models, args.profile_as or None,
+                                         args.allow_engine_mismatch)
+    seeds = {t: args.seed_base + t for t in range(1, args.trials + 1)}
     meta = {"run": run_id, "git": _git_sha(), "models": models, "trials": args.trials,
             "cases": [c.id for c in cases], "started": time.time(), "exclusive": args.exclusive,
             "today": world.today.isoformat(), "max_steps": args.max_steps,
             "world_seed": args.world_seed, "thinking": variants, "split": args.split or "all",
             "path": "model_led", "profile_as": args.profile_as or None, "omlx_port": args.omlx_port,
             "cleared_env": sorted(runner.CLEARED_ENV),
-            "access": dict(sorted(Counter(c.access for c in cases).items()))}
+            "access": dict(sorted(Counter(c.access for c in cases).items())),
+            "now": world.now.isoformat(), "seed_base": args.seed_base, "seeds": seeds,
+            "engine_settings": settings, "engine_parity": parity,
+            "allow_engine_mismatch": args.allow_engine_mismatch}
     if not args.resume:
-        (out / "meta.json").write_text(json.dumps(meta, indent=2))
-    if _wisp_running():
-        print("note: Wisp is running. It may unload a non-roster model mid-run; the harness "
-              "reloads and retries once. Quit Wisp for the cleanest numbers.")
+        (out / "meta.json").write_text(json.dumps(meta, indent=2, default=str))
+    if not go:
+        return 4
     rows: list[dict] = rep.load_rows(out) if args.resume else []
     started_loaded = await client.loaded_models()
     try:
@@ -241,7 +328,6 @@ async def _run(args, cases) -> int:
                       + (f"  profiled as {binding['profile_as']}" if binding["profile_as"] else ""))
                 await _recover(turn_client, model)
                 _update_meta(out, "bindings", model, binding)
-                _update_meta(out, "engine_settings", model, await runner.engine_settings(turn_client, model))
                 for variant in variants:
                     flags = runner.set_thinking(turn_client, model, variant)
                     _update_meta(out, "thinking_flags", f"{model} +{variant}", flags)
@@ -256,18 +342,21 @@ async def _run(args, cases) -> int:
                             if not _swap_ok():
                                 print("STOP: memory pressure (free swap < 500MB and pressure high)")
                                 return 3
+                            turn_client.seed = seeds[trial]   # same schedule for every model
                             row = await _one(runner, score, turn_client, model, case, world, names,
-                                             args, run_id, trial, variant)
+                                             writes, args, run_id, trial, variant)
                             rows.append(row)
                             fh.write(json.dumps(row, default=str) + "\n")
                             fh.flush()
                             v = row["v"]
-                            mark = "PASS" if v["passed"] else "FAIL " + ",".join(v["labels"])
+                            mark = ("EXCLUDED engine_error" if v.get("excluded") else
+                                    "PASS" if v["passed"] else "FAIL " + ",".join(v["labels"]))
+                            if v.get("guard_retries"):
+                                mark += f"  guard400x{v['guard_retries']}"
                             calls = [c["name"] for s in row["steps"] for c in s.get("calls", ())]
                             print(f"[{k}/{total}] {case.id:<28} t{trial} {v['seconds']:>6.1f}s "
                                   f"(model {v['model_seconds']:.1f}s, {v['steps']} steps)  {mark}  {calls}")
     finally:
-        runner.uninstall_fakes()
         if args.exclusive:
             for m in started_loaded:
                 if m not in await client.loaded_models():
@@ -282,6 +371,8 @@ async def _run(args, cases) -> int:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--models", default=DEFAULT_MODEL,
                     help="comma-separated oMLX model ids (default: the packaged agent model)")
@@ -296,7 +387,17 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=180.0, help="per-turn seconds")
     ap.add_argument("--max-steps", type=int, default=8, help="agent loop step ceiling (production: 8)")
     ap.add_argument("--exclusive", action="store_true",
-                    help="unload every other model while a model runs; restore them afterwards")
+                    help="unload every other model while a model runs; restore them afterwards "
+                         "(the default when more than one model runs)")
+    ap.add_argument("--shared", action="store_true",
+                    help="with several --models: do not unload the others (unfair: they contend)")
+    ap.add_argument("--allow-engine-mismatch", action="store_true",
+                    help="run even when a candidate's oMLX settings differ from --profile-as's on "
+                         "sampling, thinking, window or MTP (recorded in meta.json either way)")
+    ap.add_argument("--allow-wisp-running", action="store_true",
+                    help=f"run even while something listens on {WISP_PORTS} (the live Wisp)")
+    ap.add_argument("--seed-base", type=int, default=1000,
+                    help="trial t sends seed seed_base+t, the same for every model")
     ap.add_argument("--out", default="", help="results directory (default ~/.moe/evals/toolbench/<run>)")
     ap.add_argument("--split", default="", choices=["", "gate", "dev", "voice"], help="only this split")
     ap.add_argument("--world-seed", type=int, default=None,
@@ -344,6 +445,11 @@ def main() -> int:
     if args.trials < 1:
         ap.error("--trials must be >= 1")
 
+    if not args.dry_run and not args.allow_wisp_running:
+        if busy := [p for p in WISP_PORTS if _listening(p)]:
+            print(f"refusing to start: something listens on {busy} (the live Wisp or its engine). "
+                  "Quit Wisp, or pass --allow-wisp-running.")
+            return 5
     from scripts.toolbench import runner
     runner.isolate(Path(tempfile.mkdtemp(prefix="toolbench-")),
                    omlx_port=args.omlx_port or runner.DEFAULT_OMLX_PORT)
