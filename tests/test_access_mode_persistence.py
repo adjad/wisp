@@ -273,3 +273,26 @@ def test_post_mode_takes_only_true_or_false(wisp, mode_file, value):
     response = wisp.post("/mode", json={"full_access": value})
     assert response.status_code == 422
     assert wisp.get("/mode").json() == before and not mode_file.exists()
+
+
+def test_moving_wisp_s_folder_itself_asks_in_every_mode(monkeypatch):
+    """#409 audit: moving ~/.moe aside and another folder into its place swaps in a
+    forged access_mode.json without naming it, so a change to the folder itself asks."""
+    from service.paths import MOE_DIR
+    from service.safety import grants
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    monkeypatch.setattr(grants, "check", lambda *args: "allow")
+    staged = str(MOE_DIR.parent / "staged")
+    move = policy.decide("fs_write", {"source": str(MOE_DIR), "destination": str(MOE_DIR) + ".old"},
+                         tool="move_file")
+    assert move.tier is policy.Tier.CONFIRM
+    into = policy.decide("fs_write", {"source": staged, "destination": str(MOE_DIR) + "/"}, tool="move_file")
+    assert into.tier is policy.Tier.CONFIRM
+    shell = policy.decide("shell", {"cmd": "mv ~/.moe ~/.moe.old && mv ~/staged ~/.moe"}, tool="run_shell")
+    assert shell.tier is policy.Tier.CONFIRM
+    # A file inside the folder that isn't a guarded one, and reading the folder, don't.
+    note = policy.decide("fs_write", {"path": str(MOE_DIR / "notes.txt"), "content": "x"}, tool="write_file")
+    assert note.tier is policy.Tier.ALLOW
+    listing = policy.decide("fs_read", {"path": str(MOE_DIR)}, tool="list_directory")
+    assert listing.tier is policy.Tier.ALLOW

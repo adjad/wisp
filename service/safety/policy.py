@@ -961,6 +961,9 @@ _SHELL_SECRET = [
     r"(?<![\w-])\.(?:ssh|aws|gnupg|netrc)(?![\w-])",
     r"\.config/(?:gh|gcloud)\b", r"\bkeychains?\b", r"\bsecurity\s+(?:find|dump|export)-",
     r"\b(?:gmail|mcp|grants|access_mode)\.json\b", r"\bgoogle_workspace\b", r"\.reset-pending\b",
+    # The ~/.moe folder itself (not a file in it): moving or replacing it swaps
+    # grants.json and access_mode.json without naming them (#409 audit).
+    r"(?<![\w-])\.moe/?(?=$|[\s'\";|&)])",
 ]
 
 
@@ -969,11 +972,37 @@ def _within(path: str, roots: list[str]) -> bool:
     return any(p == r or p.startswith(r + "/") for r in roots)
 
 
-def credential_path_hit(args: dict, tool: str | None = None) -> str | None:
-    """The credential location a file tool's arguments name, or None."""
+def _wisp_folders() -> list[str]:
+    """Wisp's data folder itself, in _within's spelling. (The folders above it
+    are home and /Users: a move into ~ is ordinary, and moving those is not.)"""
+    from service.paths import MOE_DIR
+    found: list[str] = []
+    for folder in dict.fromkeys((MOE_DIR, Path.home() / ".moe")):
+        found.append(str(folder).rstrip("/").casefold())
+        try:
+            found.append(str(folder.resolve()).rstrip("/").casefold())
+        except (OSError, RuntimeError):
+            pass
+    return found
+
+
+def credential_path_hit(args: dict, tool: str | None = None, *, mutating: bool = False) -> str | None:
+    """The credential location a file tool's arguments name, or None. A change
+    (`mutating`) aimed at Wisp's data folder itself counts too:
+    moving ~/.moe aside and another folder into its place replaces grants.json
+    and access_mode.json without naming either (#409 audit)."""
     operands = _path_operands(args, tool)
     if not operands:
         return None
+    if mutating:
+        folders = set(_wisp_folders())
+        for _, operand in operands:
+            try:
+                forms = _path_forms(operand)
+            except (ValueError, OSError, RuntimeError):
+                return operand
+            if any(f.rstrip("/").casefold() in folders for f in forms):
+                return operand
     roots: list[str] = []
     for root in _credential_roots():
         roots.append(str(root).rstrip("/").casefold())
@@ -1426,7 +1455,7 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
     outbound = ((shell_egress_hit(args) or shell_secret_hit(args))
                 if category == "shell" and tool not in ALWAYS_CONFIRM_TOOLS
                 else app_open_hit(args) if tool == "open_app" else None)
-    secret = (credential_path_hit(args, tool)
+    secret = (credential_path_hit(args, tool, mutating=category != "fs_read")
               if category in ("fs_read", "fs_write", "fs_delete") else None)
 
     # A standing grant the user gave for this exact tool (and scope). Checked
