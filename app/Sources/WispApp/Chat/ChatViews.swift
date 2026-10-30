@@ -1052,12 +1052,19 @@ struct ChatComposer: View {
                     Menu {
                         Button { store.setFullAccess(false) } label: { Label("Ask before acting", systemImage: store.fullAccessKnown && !store.fullAccess ? "checkmark" : "") }
                         Button { store.setFullAccess(true) } label: { Label("Full access", systemImage: store.fullAccessKnown && store.fullAccess ? "checkmark" : "") }
+                        // Applied but not saved: it lasts until Wisp restarts.
+                        if let problem = store.fullAccessSaveProblem {
+                            Divider()
+                            Text(problem)
+                        }
                     } label: {
-                        ChatPill(text: !store.fullAccessKnown ? "Access unconfirmed"
-                                 : store.fullAccess ? "Full access" : "Ask before acting")
+                        ChatPill(text: (!store.fullAccessKnown ? "Access unconfirmed"
+                                        : store.fullAccess ? "Full access" : "Ask before acting")
+                                 + (store.fullAccessKnown && store.fullAccessSaveProblem != nil ? " · not saved" : ""))
                     }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                    .help("Whether Wisp asks before it acts. Sending and bulk deletes always ask.")
+                    .help(store.fullAccessSaveProblem
+                          ?? "Whether Wisp asks before it acts. Sending and bulk deletes always ask.")
                     Spacer()
                     if busy {
                         Button(action: stop) {

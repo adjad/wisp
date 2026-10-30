@@ -38,6 +38,8 @@ struct OverlayView: View {
     // The header's laid-out height (it grows with Text size), for the Brief and
     // Day scroll cap.
     @State private var headerHeight: CGFloat = 30
+    // The Brief in two columns in a wider panel (the header's toggle); persists.
+    @AppStorage(NotchBriefView.wideKey) private var briefWide = false
 
     var body: some View {
         Group {
@@ -88,6 +90,13 @@ struct OverlayView: View {
 
     private var renderKey: String { "\(textSize)-\(contrastTick)" }
     private var layout: SurfaceLayout { display.layout }
+    /// Whether the Brief can show two columns (NotchBriefView.canShowWide);
+    /// the header's toggle shows only then.
+    private var briefCanWiden: Bool {
+        NotchBriefView.canShowWide(model: model, today: todayModel, canWiden: layout.canWiden)
+    }
+    /// The Brief in two columns, in the wider panel.
+    private var briefIsWide: Bool { briefWide && briefCanWiden }
     private var isNotch: Bool { layout.style == .notch }
 
     /// Brief and Day under the fixed header: as tall as their content until the
@@ -143,7 +152,7 @@ struct OverlayView: View {
                     }
                 }
             case .brief:
-                tabScroll { NotchBriefView(model: model, today: todayModel) }
+                tabScroll { NotchBriefView(model: model, today: todayModel, wide: briefIsWide) }
             case .day:
                 tabScroll { NotchDayView(model: model, today: todayModel) }
             case .research:
@@ -187,15 +196,19 @@ struct OverlayView: View {
         // Closing: the content fades before the shape retracts; the surface
         // below stays, so the panel still reads as the notch drawing back in.
         .opacity(model.closing ? 0 : 1)
-        // Must match the width OverlayPanel sizes its window to — both read
-        // SurfaceLayout.expandedWidth, so they cannot disagree.
-        .frame(width: layout.expandedWidth)
+        // Must match the width OverlayPanel sizes its window to — both widen
+        // SurfaceLayout.expandedWidth from the same state (AppDelegate's layout
+        // provider asks NotchBriefView.showsWide), so they cannot disagree.
+        .frame(width: layout.widened(briefIsWide).expandedWidth)
         .background(Theme.surface)
         .clipShape(layout.panelShape)
         .shadow(color: .black.opacity(0.55), radius: 20, y: 10)
         // Pointer enter/exit is handled by the panel's AppKit tracking area
         // (HoverView), not SwiftUI .onHover — see OverlayPanel/AppDelegate.
         .onExitCommand { model.requestCollapse() }
+        // Two columns on or off: refit the window, which reads the same state,
+        // once SwiftUI has laid the change out.
+        .onChange(of: briefIsWide) { model.onResize() }
     }
 
     // Collapsed with nothing drawn: a built-in display without a notch, or a notch
@@ -366,6 +379,15 @@ struct OverlayView: View {
             if model.tab == .ask && (!model.turns.isEmpty || model.showingCorpus) {
                 ctrl("square.and.pencil", "New chat (⌘N)", { model.newChat() })
             }
+            // Brief: one column or two. The icon shows the layout the click switches to.
+            if briefCanWiden {
+                // VoiceOver hears one switch, "Two columns", with its state,
+                // rather than a label that flips with each press.
+                ctrl(briefWide ? "rectangle.split.1x2" : "rectangle.split.2x1",
+                     briefWide ? "Show the Brief in one column" : "Show the Brief in two columns",
+                     toggle: (label: "Two columns", isOn: briefWide),
+                     { setBriefWide(!briefWide) })
+            }
             // Brief and Day: ask about your day out loud; it opens Ask and listens.
             if model.tab != .ask && model.tab != .research {
                 ctrl("mic", "Ask about your day by voice (⌥⇧Space)", { model.toggleVoice() })
@@ -412,7 +434,20 @@ struct OverlayView: View {
         .accessibilityHidden(true)
     }
 
+    /// The Brief's columns, switched so the window and the content change width
+    /// in the same pass: the window is refit now, from the saved choice the
+    /// layout provider reads, instead of a runloop after SwiftUI has redrawn the
+    /// content at the new width (a visible one-frame snap). onChange(briefIsWide)
+    /// still refits once the new height is laid out.
+    private func setBriefWide(_ on: Bool) {
+        briefWide = on
+        model.onResizeNow()
+    }
+
+    /// A header button. `toggle` makes it a switch for VoiceOver: a fixed
+    /// label, an On/Off value and the toggle trait, while `help` stays the tooltip.
     private func ctrl(_ icon: String, _ help: String, enabled: Bool = true, active: Bool = false,
+                      toggle: (label: String, isOn: Bool)? = nil,
                       _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
@@ -427,7 +462,9 @@ struct OverlayView: View {
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.4)
         .help(help)
-        .accessibilityLabel(help)
+        .accessibilityLabel(toggle?.label ?? help)
+        .accessibilityValue(toggle.map { $0.isOn ? "On" : "Off" } ?? "")
+        .accessibilityAddTraits(toggle == nil ? [] : .isToggle)
     }
 
     // Which conversation is open here, and a way back into recent saved ones

@@ -62,10 +62,11 @@ _NEVER_READ = [
     "~/Library/Keychains",
     "~/.moe/sessions.db", "~/.moe/facts.db", "~/.moe/assistant.db",
     "~/.moe/gmail.json", "~/.moe/mcp.json", "~/.moe/google_workspace", "~/.moe/grants.json",
+    "~/.moe/access_mode.json",
 ]
 # The same Wisp files under WISP_HOME, when it points somewhere else.
 _NEVER_READ_WISP = ["sessions.db", "facts.db", "assistant.db", "gmail.json", "mcp.json",
-                    "google_workspace", "grants.json"]
+                    "google_workspace", "grants.json", "access_mode.json"]
 
 # Network: a skill tool may reach the internet (a weather skill must), but not
 # this Mac's own services. Wisp's API on 127.0.0.1:8765 treats some requests

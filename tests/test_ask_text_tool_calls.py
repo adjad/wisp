@@ -101,6 +101,11 @@ def test_a_done_claim_around_markup_is_dropped():
     assert _ASK_DONE_CLAIM.search("I've sent the email to Jordan.")
     assert _ASK_DONE_CLAIM.search("Done!")
     assert not _ASK_DONE_CLAIM.search("A hash table maps keys to slots.")
+    # dev8 delta review: a bare "was/were" is a fact about the past, not a claim
+    # that this turn acted, so an answer around stray markup keeps it.
+    assert not _ASK_DONE_CLAIM.search("Your reply to Jordan was sent on Tuesday.")
+    assert not _ASK_DONE_CLAIM.search("The invites were updated last week.")
+    assert _ASK_DONE_CLAIM.search("The email has been sent.")
 
 
 def test_the_auto_allowed_categories_hold_only_these_read_only_tools():

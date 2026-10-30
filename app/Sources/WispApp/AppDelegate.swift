@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // and its Full access pill: one source for confirmed and pending state.
     private lazy var settingsLoader = SettingsLoader()
     private var fullAccessObserver: AnyCancellable?
+    private var fullAccessProblemObserver: AnyCancellable?
     // One setup model for the notch's setup card, the first-run window and
     // Settings › Models › Setup, so a test result, a running action and readiness
     // are the same in all of them.
@@ -947,6 +948,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         fullAccessObserver = settingsLoader.$fullAccess.dropFirst().sink { [weak self] value in
             MainActor.assumeIsolated { self?.wispWindow.store.applyFullAccess(value) }
         }
+        fullAccessProblemObserver = settingsLoader.$fullAccessSaveProblem.dropFirst().sink { [weak self] problem in
+            MainActor.assumeIsolated { self?.wispWindow.store.applyFullAccessSaveProblem(problem) }
+        }
     }
 
     /// Where every route lands. Today, Research, Memory and Settings (with Setup as
@@ -1512,6 +1516,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         onDismiss: { [weak self] in self?.dismissToMenuBar() })
         }
         panel?.isCompact = { [weak self] in self?.model.collapsed ?? false }
+        // The Brief's two columns widen this window, from the same state
+        // OverlayView widens its content from. The search panel keeps the plain layout.
+        panel?.layoutProvider = { [weak self] in
+            MainActor.assumeIsolated {
+                let layout = DisplayGeometry.shared.layout
+                guard let self else { return layout }
+                return layout.widened(NotchBriefView.showsWide(model: self.model, today: self.todayModel,
+                                                               canWiden: layout.canWiden))
+            }
+        }
         model.onResize = { [weak self] in
             DispatchQueue.main.async { self?.panel?.resizeToFit() }
         }

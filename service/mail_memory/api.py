@@ -92,7 +92,8 @@ async def suggestions() -> dict:
     current = runner.mode()
     st = store()
     out = {"mode": current, "modes": list(runner.MODES), "stats": st.stats(),
-           "health": st.health(), "facts": _fact_counts(st), "suggestions": []}
+           "health": {**st.health(), "skips_since_last_call": runner.skip_tally()},
+           "facts": _fact_counts(st), "suggestions": []}
     if current == "live":
         from service.assistant.attention_runner import current_zone
         tz = current_zone()

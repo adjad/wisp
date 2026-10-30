@@ -1,5 +1,9 @@
 # MOE safety policy (overrides the built-in defaults in safety/policy.py).
 #
+# read_only and full_access here are the fresh-install defaults. A choice made in
+# the app (POST /mode) is saved in ~/.moe/access_mode.json and wins over them at
+# the next start; delete that file to go back to these values.
+#
 # read_only = view-only mode. When true, MOE may READ and inspect anything on the
 # machine but cannot modify it: file writes/deletes, non-read-only shell commands,
 # app control, and network actions are all DENIED outright (not just confirmed).

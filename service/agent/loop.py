@@ -668,7 +668,7 @@ _ASK_WRITE_DODGE = re.compile(
 # Prose around a tool call the model wrote as text, claiming the action ran:
 # "I've sent the email." Nothing ran, so it is never shown (0.5.0 dev8 audit).
 _ASK_DONE_CLAIM = re.compile(
-    r"\b(?:i(?:'|’)ve|i\s+have|i|it(?:'|’)s|has\s+been|have\s+been|was|were)\s+(?:just\s+|now\s+)?"
+    r"\b(?:i(?:'|’)ve|i\s+have|i|it(?:'|’)s|has\s+been|have\s+been)\s+(?:just\s+|now\s+)?"
     r"(?:sent|added|created|scheduled|set|saved|deleted|removed|moved|cancel+ed|texted|emailed|"
     r"messaged|replied|forwarded|booked|updated|completed|marked)\b|^\s*(?:done|all\s+set|sent)\b", re.I)
 # Offered on a web-only personal re-prompt when the head start held none.
