@@ -293,7 +293,7 @@ _NOTES = """**Wisp 0.5.0-dev8** is a development build.
 def _resources(tmp_path: Path, version: str, names: list[str]) -> Path:
     res = tmp_path / "Resources"
     (res / "Documentation" / "releases").mkdir(parents=True)
-    (tmp_path / "build-info.json").write_text(json.dumps({"version": version}))
+    (res / "build-info.json").write_text(json.dumps({"version": version}))
     for name in names:
         (res / "Documentation" / "releases" / name).write_text(f"notes for {name}")
     return res
@@ -311,6 +311,20 @@ def test_release_notes_path_picks_this_version_s_newest_build(tmp_path):
 
 def test_release_notes_path_is_none_without_notes_for_this_version(tmp_path):
     assert misc_t1.release_notes_path(_resources(tmp_path, "0.6.0", ["0.5.0-dev8.md"])) is None
+
+
+def test_release_notes_are_found_in_the_real_app_bundle_layout(tmp_path, monkeypatch):
+    # The app ships this module at Resources/backend/service/tools/misc_t1.py, while
+    # pipeline.py writes Resources/Documentation/releases and Resources/build-info.json.
+    res = _resources(tmp_path, "0.5.0", ["0.5.0-dev7.md", "0.5.0-dev8.md"])
+    module = res / "backend" / "service" / "tools" / "misc_t1.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("")
+    monkeypatch.setattr(misc_t1, "__file__", str(module))
+    assert misc_t1._resources() == res.resolve()
+    found = misc_t1.release_notes_path()
+    assert found is not None and found[1] == "0.5.0-dev8"
+    assert found[0] == (res / "Documentation" / "releases" / "0.5.0-dev8.md").resolve()
 
 
 def test_release_notes_from_source_are_this_checkout_s_newest():

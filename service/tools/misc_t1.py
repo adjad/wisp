@@ -180,8 +180,10 @@ _NOTES_NAME = re.compile(r"(\d+\.\d+\.\d+)(?:-(dev|rc)(\d+))?\.md")
 
 
 def _resources() -> Path:
-    """Contents/Resources in the app; the repository root from source."""
-    return Path(__file__).resolve().parent.parent.parent
+    """Contents/Resources in the app, where this file is
+    Resources/backend/service/tools/misc_t1.py; the repository root from source."""
+    root = Path(__file__).resolve().parent.parent.parent
+    return root.parent if root.name == "backend" else root
 
 
 def _changelog_path() -> Path | None:
@@ -197,7 +199,7 @@ def _changelog_path() -> Path | None:
 def _app_version(resources: Path) -> str:
     """The app's version: build-info.json in the app, toolchain.json from source."""
     import json
-    for path in (resources.parent / "build-info.json", resources / "build-support" / "toolchain.json"):
+    for path in (resources / "build-info.json", resources / "build-support" / "toolchain.json"):
         try:
             version = json.loads(path.read_text()).get("version")
         except (OSError, ValueError, AttributeError):
