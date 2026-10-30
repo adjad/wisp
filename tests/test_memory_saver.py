@@ -509,3 +509,46 @@ def test_a_turn_waiting_on_a_prewarm_shows_the_loading_status(monkeypatch):
     with pytest.raises(StopAsyncIteration):
         asyncio.run(Probe()._ensure_managed(MODEL, emit=emit))
     assert events[0].startswith("Loading") and events[1] == "waited"
+
+
+def test_unheld_outside_a_hold_never_leaks_a_count():
+    with M.unheld():
+        assert not M.held()
+    assert M._holds == 0
+
+
+def test_two_jobs_one_paused_then_cancelled_while_paused():
+    from service.research.orchestrator import ResearchManager
+    jobs = {"paused": {"pause_requested": True}}
+
+    class Store:
+        def get_job(self, job_id):
+            return jobs[job_id]
+
+        def update_job(self, *a, **k):
+            pass
+
+        def event(self, *a, **k):
+            pass
+
+    manager = ResearchManager.__new__(ResearchManager)
+    manager.store = Store()
+
+    async def paused_run(self, job_id, client):
+        await self._checkpoint(job_id)
+
+    import types
+    manager._run = types.MethodType(paused_run, manager)
+
+    async def go():
+        running = M.hold()
+        running.__enter__()                      # another job, still working
+        task = asyncio.create_task(manager._run_held("paused", None))
+        await asyncio.sleep(0.1)
+        assert M._holds == 1 and M.held()        # the paused job let go; the running one holds
+        running.__exit__(None, None, None)
+        assert M._holds == 0                     # only the paused job left: the model may park
+        task.cancel()                            # cancelled during the paused sleep
+        await asyncio.gather(task, return_exceptions=True)
+        return M._holds
+    assert asyncio.run(go()) == 0

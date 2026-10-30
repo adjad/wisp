@@ -179,11 +179,14 @@ def unheld():
     """Inside a hold(), let go while the work waits on the user (a paused Research
     job), so a forgotten pause doesn't keep the model resident for good."""
     global _holds
-    _holds = max(0, _holds - 1)
+    released = _holds > 0          # outside a hold there is nothing to give back
+    if released:
+        _holds -= 1
     try:
         yield
     finally:
-        _holds += 1
+        if released:
+            _holds += 1
 
 
 def note_notch_hidden(now: float | None = None) -> None:
@@ -325,7 +328,14 @@ async def prewarm(client) -> str:
 
 
 def prewarm_pending() -> bool:
-    return _prewarm_task is not None and not _prewarm_task.done()
+    """A prewarm load is in flight on this loop (what settle_prewarm would wait on)."""
+    task = _prewarm_task
+    if task is None or task.done():
+        return False
+    try:
+        return task.get_loop() is asyncio.get_running_loop()
+    except RuntimeError:
+        return False
 
 
 async def settle_prewarm(timeout: float = 15.0) -> None:
