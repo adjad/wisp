@@ -381,9 +381,12 @@ struct OverlayView: View {
             }
             // Brief: one column or two. The icon shows the layout the click switches to.
             if briefCanWiden {
+                // VoiceOver hears one switch, "Two columns", with its state,
+                // rather than a label that flips with each press.
                 ctrl(briefWide ? "rectangle.split.1x2" : "rectangle.split.2x1",
                      briefWide ? "Show the Brief in one column" : "Show the Brief in two columns",
-                     { briefWide.toggle() })
+                     toggle: (label: "Two columns", isOn: briefWide),
+                     { setBriefWide(!briefWide) })
             }
             // Brief and Day: ask about your day out loud; it opens Ask and listens.
             if model.tab != .ask && model.tab != .research {
@@ -431,7 +434,20 @@ struct OverlayView: View {
         .accessibilityHidden(true)
     }
 
+    /// The Brief's columns, switched so the window and the content change width
+    /// in the same pass: the window is refit now, from the saved choice the
+    /// layout provider reads, instead of a runloop after SwiftUI has redrawn the
+    /// content at the new width (a visible one-frame snap). onChange(briefIsWide)
+    /// still refits once the new height is laid out.
+    private func setBriefWide(_ on: Bool) {
+        briefWide = on
+        model.onResizeNow()
+    }
+
+    /// A header button. `toggle` makes it a switch for VoiceOver: a fixed
+    /// label, an On/Off value and the toggle trait, while `help` stays the tooltip.
     private func ctrl(_ icon: String, _ help: String, enabled: Bool = true, active: Bool = false,
+                      toggle: (label: String, isOn: Bool)? = nil,
                       _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
@@ -446,7 +462,9 @@ struct OverlayView: View {
         .disabled(!enabled)
         .opacity(enabled ? 1 : 0.4)
         .help(help)
-        .accessibilityLabel(help)
+        .accessibilityLabel(toggle?.label ?? help)
+        .accessibilityValue(toggle.map { $0.isOn ? "On" : "Off" } ?? "")
+        .accessibilityAddTraits(toggle == nil ? [] : .isToggle)
     }
 
     // Which conversation is open here, and a way back into recent saved ones

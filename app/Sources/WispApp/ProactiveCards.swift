@@ -539,12 +539,9 @@ struct ProactiveBriefSection: View {
                 .font(.wisp(size: 15.5, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
             if !card.body.isEmpty {
-                // Two lines keep the card short; the rest is on hover.
-                Text(card.body)
-                    .font(.wisp(size: 12.5)).foregroundStyle(Theme.textSecondary)
-                    .lineSpacing(1.5).lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .help(card.body)
+                // Two lines keep the card short; More opens the rest in place,
+                // so it isn't reachable only by hovering for the tooltip.
+                ClampedText(text: card.body, onToggle: { model.onResize() })
             }
             // A reply's Send sits inside its shown draft; the card's own button
             // only opens the draft (ProactiveCard.Action.primaryStep).
@@ -1193,4 +1190,56 @@ extension View {
 private struct CappedScrollHeight: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// A card body held to `lines` lines, with More and Less when it's longer, so
+/// the rest is a click (or VoiceOver's press) away rather than hover-only. The
+/// full text is measured hidden behind the clamped one to know whether it was cut.
+struct ClampedText: View {
+    let text: String
+    var lines = 2
+    /// Told when the text opens or closes, to refit the panel.
+    var onToggle: () -> Void = {}
+    @State private var open = false
+    @State private var clampedHeight: CGFloat = 0
+    @State private var fullHeight: CGFloat = 0
+
+    private var cut: Bool { fullHeight > clampedHeight + 1 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            styled(Text(text))
+                .lineLimit(open ? nil : lines)
+                .fixedSize(horizontal: false, vertical: true)
+                .background(GeometryReader { geo in
+                    Color.clear
+                        .onAppear { clampedHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { clampedHeight = geo.size.height }
+                })
+                .background(alignment: .topLeading) {
+                    styled(Text(text))
+                        .fixedSize(horizontal: false, vertical: true)
+                        .hidden()
+                        .background(GeometryReader { geo in
+                            Color.clear
+                                .onAppear { fullHeight = geo.size.height }
+                                .onChange(of: geo.size.height) { fullHeight = geo.size.height }
+                        })
+                        .accessibilityHidden(true)
+                }
+            if open || cut {
+                Button(open ? "Less" : "More") {
+                    open.toggle()
+                    onToggle()
+                }
+                .buttonStyle(.plain)
+                .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textMuted)
+                .accessibilityHint(open ? "Shows two lines" : "Shows the whole note")
+            }
+        }
+    }
+
+    private func styled(_ t: Text) -> some View {
+        t.font(.wisp(size: 12.5)).foregroundStyle(Theme.textSecondary).lineSpacing(1.5)
+    }
 }
