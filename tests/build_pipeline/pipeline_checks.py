@@ -59,6 +59,7 @@ class PipelineTests(unittest.TestCase):
                     "Contents/Resources/backend/service/config/models.yaml", "Contents/Resources/backend/service/config/policy.yaml",
                     "Contents/Resources/backend/service/skills/bundled/interview-me/SKILL.md",
                     "Contents/Resources/backend/service/skills/bundled/idea-refine/SKILL.md",
+                    "Contents/Resources/backend/service/skills/bundled/humanizer/SKILL.md",
                     "Contents/Resources/backend/service/skills/bundled/mac-controls/SKILL.md",
                     "Contents/Resources/backend/service/skills/bundled/mac-controls/controls.sh"):
             path = bundle / rel

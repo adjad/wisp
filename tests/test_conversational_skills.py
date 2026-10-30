@@ -23,8 +23,9 @@ def loaded_bundled_skills(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def test_wisp_ships_only_the_two_requested_workflows(loaded_bundled_skills) -> None:
     bundled = {name for name, skill in loaded_bundled_skills.items()
                if skill.bundled}
-    # mac-controls is a tool skill (fixed device commands), not a workflow.
-    assert bundled == {"interview-me", "idea-refine", "mac-controls"}
+    # mac-controls is a tool skill (fixed device commands), not a workflow; humanizer
+    # is the style skill behind Settings › Human-sounding replies.
+    assert bundled == {"interview-me", "idea-refine", "mac-controls", "humanizer"}
     assert all(skill.body for skill in loaded_bundled_skills.values())
     assert all(len(skill.body) <= skills.MAX_BODY_CHARS
                for skill in loaded_bundled_skills.values())
@@ -120,3 +121,23 @@ def test_existing_session_database_migrates_active_skill(tmp_path: Path) -> None
     session = store.get_session(sid)
     assert session is not None
     assert session["active_skill"] == "interview-me"
+
+
+def test_the_human_sounding_replies_switch_has_a_skill_to_turn_on(loaded_bundled_skills, tmp_path: Path) -> None:
+    """Settings › Human-sounding replies posts /skills/humanizer/enable. No humanizer
+    skill shipped (it only ever existed as a user-installed one), so set_enabled
+    returned False, the app re-read "off" and the switch snapped back (2026-10-29)."""
+    humanizer = skills.get("humanizer")
+    assert humanizer is not None and humanizer.bundled and humanizer.always
+    assert humanizer.enabled is False                         # off until the user turns it on
+    assert skills.always_skills_block() == "" or "humanizer" not in skills.always_skills_block()
+
+    assert skills.set_enabled("humanizer", True) is True
+    on = skills.get("humanizer")
+    assert on.enabled is True and on.path == tmp_path / "user-skills" / "humanizer"
+    assert "--- humanizer ---" in skills.always_skills_block()
+    assert {s["name"]: s["enabled"] for s in (x.as_dict() for x in skills.all_skills().values())}["humanizer"] is True
+
+    assert skills.set_enabled("humanizer", False) is True
+    assert skills.get("humanizer").enabled is False
+    assert "humanizer" not in skills.always_skills_block()
