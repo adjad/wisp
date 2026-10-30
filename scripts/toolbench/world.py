@@ -1702,9 +1702,12 @@ def make_fakes(w: World) -> dict:
                 "are available, so I couldn’t verify your inbox. " + fix + " Then try again.")
 
     def view_emails(query=None, period=None, day=None, unread=None, count=None, account=None,
-                    strict_match=None, **_):
+                    strict_match=None, mailbox=None, **_):
         if "mail" in w.access_needed:
             return _mail_unavailable()
+        if mailbox == "sent":
+            # The synthetic world has an inbox only; say so rather than pass inbox rows off as sent.
+            return "No sent emails found."
         label = "your recent inbox"
         rows = _mail_rows(None, account, None, period, day)
         if isinstance(rows, str):
