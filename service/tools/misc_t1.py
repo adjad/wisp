@@ -344,8 +344,8 @@ def whats_new() -> str:
              "why are you being slow today", "how much memory are you using",
              "which brain is answering me", "what version of you is this",
              "how fresh is your data right now", "when did you last sync everything",
-             "how up to date is what you know", "what's my work email address",
-             "which google workspace account is connected", "what's new in wisp"],
+             "how up to date is what you know", "which of my accounts is for work",
+             "which google workspace account is connected", "what changed in this version of wisp"],
 )
 async def wisp_status(topic: str = "models") -> str:
     topic = (topic or "models").strip().lower().replace("-", "_").replace(" ", "_")
