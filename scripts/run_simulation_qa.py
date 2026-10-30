@@ -127,6 +127,7 @@ PROFILE_TESTS = {
         "tests/test_temporal_facts.py",
         "tests/test_daily_workspace.py",
         "tests/test_day_review_blocks.py",
+        "tests/test_day_remove_suggestion.py",
         "tests/test_brief_needs_you.py",
         "tests/test_day_timeline_event_fields.py",
         "tests/test_mail_gists.py",
