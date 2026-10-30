@@ -960,7 +960,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func open(_ route: WispRoute) {
         switch route {
         case .settings, .setup: break
-        default: if holdUntilModelReady() { return }
+        default:
+            if holdUntilModelReady() { return }
+            client.prewarmModel()
         }
         switch route {
         case .chat(let sessionId):
@@ -1232,6 +1234,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Pinning only holds off automatic collapse. Once the panel goes back to
         // the bar or away by any route (collapse, Search closing, dismiss), it is unpinned.
         if surface == .bar || surface == .hidden { model.pinned = false }
+        // Opening Ask (hover, ⌥Space, ⌥⇧Space, the menu-bar icon): a model Save
+        // memory unloaded starts loading while the user types.
+        if surface == .chat { client.prewarmModel() }
         cancelScheduledCollapse()
         cancelHoverDwell()
         if surface != .search {

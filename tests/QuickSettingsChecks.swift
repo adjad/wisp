@@ -11,6 +11,20 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(unconfirmed.status == nil && unconfirmed.rest.hasPrefix("Not confirmed"), "unconfirmed Full access is never off")
     check(QuickSettingsText.fullAccess(on: true, pending: true).status == nil, "a pending change shows no status word")
 
+    // Save memory: neutral lines; unconfirmed is never "off"; the help names the
+    // 5.5 GB, both timers, the reload on opening Ask, the ~6 s wait, the hourly
+    // catch-up and what off means.
+    check(QuickSettingsText.saveMemory(on: true, pending: false).contains("memory")
+          && QuickSettingsText.saveMemory(on: true, pending: false).contains("not using"), "Save memory on")
+    check(QuickSettingsText.saveMemory(on: false, pending: false) == "Wisp's model always stays loaded", "Save memory off")
+    check(QuickSettingsText.saveMemory(on: nil, pending: false) == "Not confirmed", "unconfirmed Save memory is never off")
+    check(QuickSettingsText.saveMemory(on: true, pending: true).hasPrefix("Updating"), "a pending Save memory change waits")
+    let memoryHelp = QuickSettingsText.saveMemoryHelp
+    check(memoryHelp.contains("5.5 GB") && memoryHelp.contains("30 minutes") && memoryHelp.contains("2 minutes"),
+          "Save memory help names the size and both timers")
+    check(memoryHelp.contains("Opening Ask") && memoryHelp.contains("6 seconds") && memoryHelp.contains("once an hour")
+          && memoryHelp.contains("Off keeps"), "Save memory help names the reload, the wait, the catch-up and off")
+
     // Save power: says it saves power on battery and while away; unconfirmed
     // is never "off"; the help names the 15 W and 10 W caps and what they cover
     // (background work always, the Brief after 10 minutes away), that light GPU

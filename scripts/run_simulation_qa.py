@@ -421,6 +421,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_engine_guard_overlay.py",
     # Background GPU power tier: settings in tmp_path, idle state and clients stubbed.
     "tests/test_power_tier.py",
+    # Save memory: a fake client and clock, settings in tmp_path; one read-only
+    # sysctl of macOS memory pressure (unknown when denied), no engine or model.
+    "tests/test_memory_saver.py",
     "tests/test_engine_guard_client.py",
     "tests/test_engine_guard_admission.py",
     "tests/test_bundled_engine_startup.py",

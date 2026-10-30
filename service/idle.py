@@ -84,17 +84,26 @@ def forget(model: str) -> None:
 # send firing while the user types), and a bool would let the first one to
 # finish re-open the gate while the second is still running.
 _foreground_turns = 0
+# When a user-facing turn last started or ended (service/memory_saver.py parks the
+# chat model after a long gap). Background calls never touch it.
+_last_turn: float | None = None
 
 
 def begin_foreground() -> None:
     """A user-facing turn has started — background model work should stand down."""
-    global _foreground_turns
+    global _foreground_turns, _last_turn
     _foreground_turns += 1
+    _last_turn = time.monotonic()
 
 
 def end_foreground() -> None:
-    global _foreground_turns
+    global _foreground_turns, _last_turn
     _foreground_turns = max(0, _foreground_turns - 1)
+    _last_turn = time.monotonic()
+
+
+def last_turn() -> float | None:
+    return _last_turn
 
 
 def foreground_busy() -> bool:
