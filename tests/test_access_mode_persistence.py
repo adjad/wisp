@@ -323,6 +323,7 @@ def test_listing_the_folder_doesnt_ask(monkeypatch, cmd):
 @pytest.mark.parametrize("cmd", [
     "cd ~/.moe && cat *", "cd ~/.moe && ls & mv ~/.moe ~/x", "ls ~/.moe; mv ~/.moe ~/x",
     "ls $(mv ~/.moe ~/x)", "cd ~/.moe && cat grants.json", "ls ~/.moe > ~/out",
+    "ls ~/.moe | sort -o ~/.moe", "ls ~/.moe | uniq - ~/.moe",
 ])
 def test_a_listing_with_anything_else_still_asks(cmd):
     assert policy.shell_secret_hit({"cmd": cmd})

@@ -970,7 +970,8 @@ _SHELL_MOE_FOLDER = r"(?<![\w-])\.moe(?:/\.?)?(?=$|[\s'\";|&)])"
 _SHELL_GLOB_WORD = re.compile(r"(?<![\w-])\.[^\s/'\";|&()<>]*[*?\[][^\s/'\";|&()<>]*")
 # Listing a folder or counting what is in it reads names and sizes, never a
 # file's contents, so `cd ~/.moe && ls` and `ls ~/.moe | wc -l` don't ask.
-_LISTING_ONLY = frozenset({"cd", "ls", "wc", "du", "stat", "pwd", "sort", "uniq"})
+# Not sort or uniq: `sort -o FILE` and `uniq IN OUT` write a file.
+_LISTING_ONLY = frozenset({"cd", "ls", "wc", "du", "stat", "pwd"})
 
 
 def _only_lists(cmd: str) -> bool:
