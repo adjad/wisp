@@ -1780,11 +1780,12 @@ async def run_agent(
         """Turn-start private context: public egress needs explicit intent."""
         from service.router.model_led import PRIVATE_WEB_TOOLS
         if (private_at_start and not private_read_in_turn and not searched_in_turn[0]
-                and (current_public_lookup or public_fact_text is not None)
+                and not typed_hosts and (current_public_lookup or public_fact_text is not None)
                 and tool.name in {"web_fetch", "http_request"}
                 and args is not None and start_private_egress(tool, args)):
             # A guessed page or API ("what's bitcoin at?" -> a price API) would
-            # need the user's OK; a search answers it without one.
+            # need the user's OK; a search answers it without one. A request
+            # that names a site keeps its fetch (and its confirmation).
             return ("Search first: call web_search with the user's own words. A page "
                     "from its results can be opened after that, with confirmation.")
         if (private_at_start and not private_read_in_turn and tool.name in PRIVATE_WEB_TOOLS
