@@ -18,6 +18,15 @@ All notable changes to Wisp are documented here.
 - **Brief: trimmed one column, optional two columns.** The proactive Brief drops the lede, How it works and In mind (the legacy no-engine Brief keeps them); today and to-dos sit under the date; FYI threads one line, card bodies two; Before you ask is amber with its count. A header toggle beside the mic (UserDefaults `WispBriefWide`) widens the panel to 840 pt via `SurfaceLayout.widened` when at least 800 pt is usable, with cards and to-dos left and Today plus mail and texts right. The window width comes from `NotchBriefView.showsWide` through the panel layout provider, so it never goes stale or widens Smart Search.
 
 ### Fixed
+- **dev8 follow-ups.**
+  - **Mail counted a Gmail inbox twice.** Mail names a Gmail account "Google", so the linked Gmail wasn't bound to it unless picked in Settings. The binding is now inferred from subjects the two share within a minute: at least 20 messages and half of the smaller side, with a clear winner. It never takes a Mail account named by another address and never overrides the user's choice.
+  - **Full access:** the `~/.moe` floor also catches `~/.moe//` and `~/.moe/./`.
+  - **Skills:**
+    - A copy an older build made to switch a bundled skill is retired to `~/.moe/skills/.retired`, keeping its on/off, if its body is a shipped version. A copy the user edited stays.
+    - The on/off save is locked and uses a unique temporary file.
+  - **Focus:** a Focus file of the wrong shape or over 1 MB reads as unknown instead of an error.
+  - **Corpus JSONL (#356):** records split only at LF, so U+2028/U+2029/U+0085 inside a value no longer break a line.
+  - **Brief MAIL summary (#348):** private mail reaches the inbox summary (sign-in codes and security notices stay out), list-footer promos count as mass mail, and the request stands down for any engine that isn't on this Mac. Only today's Brief from before the proactive engine is ready shows this summary.
 - **rc1 follow-ups: the Brief, Full access and Human-sounding replies review notes.**
   - **Brief (#411):** the two-column switch is one VoiceOver toggle ("Two columns", On/Off); the window widens in the same pass as the content; a card body cut at two lines has More/Less instead of a hover-only tooltip.
   - **Full access (#413 Auditor notes):** the `~/.moe` floor catches `~/.moe/.` and dot-name globs (`~/.m*`); listing or counting it (`cd ~/.moe && ls`, `ls ~/.moe | wc -l`) doesn't ask; the chat composer's pill says "not saved" with the reason; a lost reply keeps an earlier save problem.

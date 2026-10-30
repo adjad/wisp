@@ -184,3 +184,21 @@ def test_view_only_mode_allows_the_new_reads(monkeypatch):
     monkeypatch.setattr(policy, "_FULL_ACCESS", False)
     assert policy.decide("system_read", {"section": "focus"}, tool="system_status").tier is policy.Tier.ALLOW
     assert policy.decide("wisp_admin", {"topic": "accounts"}, tool="wisp_status").tier is policy.Tier.ALLOW
+
+
+@pytest.mark.parametrize("assertions", [
+    "[]", '{"data": "x"}', '{"data": [1, "a", null]}', '{"data": [{"storeAssertionRecords": [7, {"assertionDetails": 3}]}]}',
+    "not json",
+])
+def test_focus_of_an_odd_shape_reads_as_unknown_or_off(tmp_path, assertions):
+    """#415 audit: valid JSON of the wrong shape raised AttributeError (an error result)."""
+    (tmp_path / "Assertions.json").write_text(assertions)
+    (tmp_path / "ModeConfigurations.json").write_text('{"data": [{"modeConfigurations": []}]}')
+    out = system_extras.focus_status(tmp_path)
+    assert out.startswith(("I couldn't read the Focus state", "No Focus is turned on"))
+
+
+def test_focus_won_t_read_an_oversized_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(system_extras, "_FOCUS_MAX_BYTES", 10)
+    _focus_db(tmp_path, [{"assertionDetails": {"assertionDetailsModeIdentifier": "com.apple.focus.work"}}])
+    assert system_extras.focus_status(tmp_path) == "I couldn't read the Focus state on this Mac."
