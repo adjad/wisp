@@ -317,7 +317,7 @@ def _focus_json(path: Path):
         return None
     try:
         return json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):  # deep nesting overflows the parser
         return None
 
 

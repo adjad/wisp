@@ -506,7 +506,7 @@ def test_private_mail_reaches_the_summary_input_but_a_sign_in_code_does_not(monk
     from service.tools import imessage_tools
     # The redactor withholds these as "private" (a schedule change, an order id);
     # the summary reads them. The sign-in code is the only thing it still hides.
-    private = mail_row(11, "Rescheduled: Dublin Community Office Hours to Oct 28", "John Morada", "john@dublin.example",
+    private = mail_row(11, "Rescheduled: Dublin Community Office Hours to Oct 28", "Jordan Lee", "jordan@dublin.example",
                        "Moving to 5pm. Order ZX9K2Q81 stays the same.")
     code = mail_row(12, "Your sign in code is 482913", "Acme Bank", "alerts@bank.example", "Use 482913 to verify.")
     private_row = mail_row(13, "Private details omitted.", "Someone", "someone@example.com")
@@ -537,8 +537,8 @@ def test_a_reply_that_is_an_input_line_is_rejected_and_the_prose_stands():
     assert not G.summary_ok("From Darlyze: Learn AR with SPECS: $2,500 in prizes, no glasses needed. The rest is job alerts.", lines)
     assert not G.summary_ok("Learn AR with SPECS: $2,500 in prizes — Join the build weekend and more. Rest is promos.", lines)
     assert G.echoes_input("- From Ann: Lunch") and G.echoes_input("Also 3 newsletters, alerts and promos, from X")
-    lines = ["- From John Morada: Canceled: Office Hours — We'll meet Monday instead."]
-    assert G.summary_ok("John Morada canceled office hours and will meet Monday instead.", lines)
+    lines = ["- From Jordan Lee: Canceled: Office Hours — We'll meet Monday instead."]
+    assert G.summary_ok("Jordan Lee canceled office hours and will meet Monday instead.", lines)
 
 
 def test_an_echoed_summary_already_cached_gives_way_to_the_prose(isolated):
@@ -549,18 +549,18 @@ def test_an_echoed_summary_already_cached_gives_way_to_the_prose(isolated):
 
 
 def test_the_prose_fallback_covers_private_mail_compactly():
-    morada = [mail_row(i, s, "John Morada", "john@dublin.example", ago=100.0 * i) for i, s in
+    lee_rows = [mail_row(i, s, "Jordan Lee", "jordan@dublin.example", ago=100.0 * i) for i, s in
               enumerate(["Canceled: Dublin Community Office Hours", "Re: Dublin Community Office Hours",
                          "Dublin Community Office Hours"], 1)]
-    assert G.mail_prose(morada) == "John Morada canceled “Dublin Community Office Hours” (3 emails)."
-    one = mail_row(9, "Rescheduled: Dublin Office Hours to Oct 28", "John Morada", "john@dublin.example", "Moving to 5pm.")
-    assert G.mail_prose([one]) == "John Morada wrote about “Rescheduled: Dublin Office Hours to Oct 28”."
+    assert G.mail_prose(lee_rows) == "Jordan Lee canceled “Dublin Community Office Hours” (3 emails)."
+    one = mail_row(9, "Rescheduled: Dublin Office Hours to Oct 28", "Jordan Lee", "jordan@dublin.example", "Moving to 5pm.")
+    assert G.mail_prose([one]) == "Jordan Lee wrote about “Rescheduled: Dublin Office Hours to Oct 28”."
 
 
 def test_private_summary_input_carries_no_number_the_model_may_not_repeat():
-    lines = G.summary_lines([mail_row(31, "Rescheduled: Office Hours to Oct 28", "John Morada", "john@dublin.example")])
-    assert G.summary_ok("John Morada moved office hours to Oct 28.", lines)
-    assert not G.summary_ok("John Morada moved office hours to Oct 29.", lines)
+    lines = G.summary_lines([mail_row(31, "Rescheduled: Office Hours to Oct 28", "Jordan Lee", "jordan@dublin.example")])
+    assert G.summary_ok("Jordan Lee moved office hours to Oct 28.", lines)
+    assert not G.summary_ok("Jordan Lee moved office hours to Oct 29.", lines)
 
 
 def test_the_summary_request_goes_only_to_the_local_fast_model(monkeypatch, model):
@@ -569,7 +569,7 @@ def test_the_summary_request_goes_only_to_the_local_fast_model(monkeypatch, mode
     Mac's, gets nothing sent."""
     import inspect
     from service.inference import remote_policy
-    client = use(monkeypatch, FakeClient(["fast"], content="John canceled office hours. The rest is quiet."))
+    client = use(monkeypatch, FakeClient(["fast"], content="Jordan canceled office hours. The rest is quiet."))
     assert asyncio.run(G._resident_reply("sys", "mail", lambda: False, local_only=True)) is not None and client.requests[0][0] == "fast"
     # remote-only profile on: stand down before any request, even with a "local" client object
     remote = use(monkeypatch, FakeClient(["fast"]))
