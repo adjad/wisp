@@ -24,6 +24,7 @@ Exit code 1 on any problem. Checks, per example:
               over EVERYTHING, system prompts and tool schemas included
   leak        the user prompt does not repeat or nearly repeat an eval question
   markup      no <|tool_call> text inside assistant content
+  harness     no trace of the build harness (World.t_* names, stub errors)
   template    (with --template MODEL_DIR) the model's chat template renders every
               example, and the prompt is a prefix of the full text, as mlx-lm's
               mask_prompt needs
@@ -291,6 +292,9 @@ def validate_file(path, leaks, ident, deny, wl):
                 bad("bad_role", f"{where}:{j}")
         if pending:
             bad("call_without_tool_result", where)
+        # the synthetic harness must never show through (class or stub names)
+        if re.search(r"\bWorld\.t_\w+|\bt_[a-z_]+\(\)|synthetic world|lora-dataset harness", json.dumps(msgs)):
+            bad("harness_leak", where)
         # privacy: the whole example, scaffold included
         blob = json.dumps(ex, ensure_ascii=False)
         low = blob.lower()

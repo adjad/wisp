@@ -110,7 +110,16 @@ class World:
         fn = getattr(self, "t_" + name, None)
         if fn is None:
             raise RuntimeError(f"synthetic world has no handler for {name}")
-        return fn(**args)
+        try:
+            return fn(**args)
+        except TypeError as exc:
+            # A wrong argument name must read exactly as the real tool's TypeError
+            # does ("summarize_emails() got an unexpected keyword argument ..."),
+            # never with this class's method name.
+            text = str(exc).replace(f"World.t_{name}()", f"{name}()")
+            if text != str(exc):
+                raise TypeError(text) from None
+            raise
 
     # ---------------------------------------------------------------- helpers
     @property

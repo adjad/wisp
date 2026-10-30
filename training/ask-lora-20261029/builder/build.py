@@ -168,6 +168,9 @@ def write_stats(metas, train_idx, valid_idx):
     """stats.json: the counts the README quotes, plus the code head they came from."""
     import subprocess
     head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=H.boot.REPO).stdout.strip()
+    # the code that shaped the prompts and tools: the last commit touching service/
+    service = subprocess.run(["git", "log", "-1", "--format=%H", "--", "service"], capture_output=True, text=True,
+                             cwd=H.boot.REPO).stdout.strip()
     turns = {m["id"].rsplit("-s", 1)[0]: m for m in metas}
     split_of = {i: "train" for i in train_idx} | {i: "valid" for i in valid_idx}
     fam = defaultdict(lambda: Counter())
@@ -177,7 +180,7 @@ def write_stats(metas, train_idx, valid_idx):
         fam[m["family"]][m["target_kind"]] += 1
     for t, m in turns.items():
         fam[m["family"]]["turns"] += 1
-    stats = {"code_head": head, "examples": len(metas), "turns": len(turns),
+    stats = {"code_head": head, "service_head": service, "examples": len(metas), "turns": len(turns),
              "train": len(train_idx), "valid": len(valid_idx),
              "by_target": dict(Counter(m["target_kind"] for m in metas)),
              "paraphrased_turns": sum(1 for m in turns.values() if m.get("paraphrase_of")),
