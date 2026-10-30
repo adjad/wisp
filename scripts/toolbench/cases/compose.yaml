@@ -1,0 +1,334 @@
+# Compose: "read something, then send it" chains, the largest real-usage class (real-usage report 1A).
+# The body of every send must carry the data that was actually read, so each send step
+# matches the body with a regex of lookaheads; the reads are proved by the content, not by order.
+# Placeholders only: the same cases grade in every seeded world.
+- id: compose_cal_mom_imessage
+  prompt: "send mom my calendar for this week and next week via imessage"
+  expect:
+    - any_of: [get_upcoming, daily_brief]
+    - tool: send_message
+      args:
+        to: {contains_any: [mom, "{mom_phone_tail}"]}
+        text: {regex: '(?:dentist|{dentist}|brunch|budget|standup|{class_word}|vendor)'}
+  forbid: [send_email, draft_message, draft_email]
+  confirm: [send_message]
+  max_calls: 6
+  trap: "real-usage 1A #1: asked which channel though 'via imessage' was in the sentence; the payload was invented or empty"
+
+- id: compose_cal_friend_lower_noask
+  prompt: "send my calender to {friend_lower} for the next 2 weeks"
+  expect:
+    - any_of: [get_upcoming, daily_brief]
+    - any_of: [send_message, send_email]
+      args:
+        to: {contains_any: ["{friend_lower}", "{friend_lower_email}", "0133"]}
+  forbid: [schedule_send]
+  confirm: [send_message, send_email]
+  answer:
+    not_contains: ["who should i", "who would you like", "which contact"]
+  max_calls: 6
+  trap: "real-usage 1A #14: asked who to message though the lowercase name was in the sentence (jules is saved in lowercase; 0133 is the jules phone tail)"
+
+- id: compose_email_dad_schedule
+  prompt: "email dad my schedule for the week"
+  expect:
+    - any_of: [get_upcoming, daily_brief]
+    - tool: send_email
+      args:
+        to: {contains_any: [dad, "{dad_email}"]}
+        body: {regex: '(?:dentist|{dentist}|brunch|budget|standup|{class_word}|vendor)'}
+  forbid: [send_message, schedule_send]
+  confirm: [send_email]
+  max_calls: 6
+  trap: "real-usage 1A #1/#2 with the channel in the sentence: the email body must be the schedule, not a question"
+
+- id: compose_mail_and_schedule_mom
+  prompt: "send mom my email summaries and my schedule for this month"
+  expect:
+    - any_of: [get_upcoming, daily_brief]
+      args:
+        period: {regex: 'month'}
+    - tool: send_message
+      args:
+        to: {contains_any: [mom, "{mom_phone_tail}"]}
+        text: {regex: '(?=[\s\S]*(?:flight|{bank}|statement|water|landlord|facilities|lasagna))(?=[\s\S]*(?:dentist|{dentist}|brunch|standup|{class_word}|vendor|book club))'}
+  forbid: [schedule_send]
+  confirm: [send_message]
+  max_calls: 7
+  trap: "real-usage 1A #2: 'this month' became a rolling 31 days and the email body was the clarifying question. Mom has only a phone, so the send is a text"
+
+- id: compose_stock_two_tickers_period
+  prompt: "text {friend_lower} the share price of {stock_a} and {stock_b} from today and 2 weeks ago, be descriptive"
+  expect:
+    - tool: get_stock_price
+      args:
+        period: {present: true}
+    - tool: send_message
+      args:
+        to: {contains_any: ["{friend_lower}", "{friend_lower_email}", "0133"]}
+        text: {regex: '(?=[\s\S]*{stock_a})(?=[\s\S]*{stock_b})(?=[\s\S]*\d+\.\d\d)'}
+  forbid: [send_email, schedule_send, get_upcoming]
+  confirm: [send_message]
+  max_calls: 6
+  trap: "real-usage 1A #3: a coarse period was used, only one ticker was fetched, or a weekly-calendar body replaced the stock data"
+
+- id: compose_news_not_invented
+  split: dev
+  prompt: "send my dad the world news for today as a text"
+  expect:
+    - tool: web_search
+  forbid: [send_message, send_email, schedule_send, draft_message]
+  answer:
+    not_contains: ["I sent", "I've sent", "message sent", "sent it"]
+  max_calls: 4
+  trap: "real-usage 1A #4. News search results are display-only (registry.DisplayOnlyToolResult): the model cannot read the headlines, so a sent 'summary' is invented. Judgement call, hence dev: the right answer is to show the news and say it cannot forward the headlines"
+
+- id: compose_bitcoin_price_text
+  prompt: "text {friend_first} the bitcoin price right now"
+  expect:
+    - any_of: [web_search, get_stock_price]
+    - tool: send_message
+      args:
+        to: {contains_any: ["{friend_first}", "{friend_email}", "0144"]}
+        text: {regex: '\d+,\d\d\d'}
+  forbid: [send_email, schedule_send]
+  confirm: [send_message]
+  max_calls: 5
+  trap: "public-fact read then send: a lookup that is not display-only, and the sent text must carry the looked-up price (dev8 public-fact lookups, 237fb596)"
+
+- id: compose_portfolio_dad
+  prompt: "send my dad my stock portfolio update for today"
+  expect:
+    - tool: get_stock_price
+    - tool: send_message
+      args:
+        to: {contains_any: [dad, "0102", "{dad_email}"]}
+        text: {regex: '(?=[\s\S]*{stock_a})(?=[\s\S]*{stock_b})(?=[\s\S]*\d+\.\d\d)'}
+  forbid: [send_email, schedule_send]
+  confirm: [send_message]
+  max_calls: 6
+  trap: "real-usage 1A #5: prices were fetched, the send was dropped, and the model then claimed it had no sending tool (HALLU). Tickers come from saved memory"
+
+- id: compose_stock_report_no_tickers
+  prompt: "send mom my stoock report pls"
+  expect:
+    - tool: get_stock_price
+      args:
+        symbols: {regex: '(?=[\s\S]*{stock_a})(?=[\s\S]*{stock_b})'}
+    - tool: send_message
+      args:
+        to: {contains_any: [mom, "{mom_phone_tail}"]}
+        text: {regex: '^(?![\s\S]*\b(?:GOOGL?|TSLA|AMZN|META|SPY|QQQ|AMD)\b)(?=[\s\S]*{stock_a})(?=[\s\S]*{stock_b})'}
+  forbid: [send_email, schedule_send]
+  confirm: [send_message]
+  max_calls: 6
+  trap: "real-usage 1A #19: no tickers in the request, so the held tickers must come from memory (recall or the memory block), never invented and never only one of them"
+
+- id: compose_multipart_report_email
+  prompt: "email team@example.com a report with my calendar, inbox, {city} weather and {stock_a} {stock_b} prices"
+  expect:
+    - tool: send_email
+      args:
+        to: {icontains: "team@example.com"}
+        body: {regex: '(?=[\s\S]*(?:dentist|{dentist}|brunch|budget|standup|{class_word}|{offsite}|{garage}|vendor))(?=[\s\S]*(?:flight|{bank}|statement|water|landlord|facilities|lasagna))(?=[\s\S]*(?:°|fog|sunny|cloud|forecast|{high_tomorrow}))(?=[\s\S]*{stock_a})(?=[\s\S]*{stock_b})'}
+  forbid: [send_message, schedule_send]
+  confirm: [send_email]
+  max_calls: 9
+  trap: "real-usage 1A #6: 16 calls in one turn, most irrelevant (LOOP). Four reads then one send; max_calls bounds the loop"
+
+- id: compose_schedule_nine_pm_mom
+  prompt: "scedule a text to mom at 9pm with my schedule for tmrow"
+  expect:
+    - any_of: [get_upcoming, daily_brief]
+    - tool: schedule_send
+      args:
+        channel: message
+        to: {contains_any: [mom, "{mom_phone_tail}"]}
+        when: {regex: '9|21|night'}
+        body: {regex: '(?:dentist|{dentist})'}
+  forbid: [send_message, send_email]
+  confirm: [schedule_send]
+  max_calls: 5
+  trap: "real-usage 1A #7: the first schedule_send call used `text` instead of `body`; and the message must be scheduled, not sent now"
+
+- id: compose_schedule_text_friend
+  prompt: "Schedule a text to {friend_first} for tomorrow at 8am saying good luck on the interview."
+  expect:
+    - tool: schedule_send
+      args:
+        channel: message
+        to: {contains_any: ["{friend_first}", "{friend_email}", "0144"]}
+        when: {regex: '8'}
+        body: {icontains: luck}
+  forbid: [send_message, send_email, add_reminder, add_calendar_event]
+  confirm: [schedule_send]
+  max_calls: 4
+  trap: "clean-phrased control for schedule_send: literal body, time in the user's words"
+
+- id: compose_schedule_self_email
+  prompt: "schedule an email to myself at 6pm tonight with my schedule for tomorrow"
+  expect:
+    - any_of: [get_upcoming, daily_brief]
+    - tool: schedule_send
+      args:
+        channel: email
+        to: {regex: '^[^@\s]+@[^@\s]+\.[^@\s]+$'}
+        body: {regex: '(?:dentist|{dentist})'}
+  forbid: [send_email, send_message]
+  confirm: [schedule_send]
+  max_calls: 5
+  trap: "real-usage 1A #8: the recipient was the literal string 'me'. Self must resolve to the user's own address"
+
+- id: compose_self_email_now
+  prompt: "email myself my schedule for tomorrow"
+  expect:
+    - any_of: [get_upcoming, daily_brief]
+    - tool: send_email
+      args:
+        to: {regex: '^[^@\s]+@[^@\s]+\.[^@\s]+$'}
+        body: {regex: '(?:dentist|{dentist})'}
+        confirmed_self_send: true
+  forbid: [send_message, schedule_send]
+  confirm: [send_email]
+  max_calls: 6
+  trap: "a self-send is refused once; the retry carries confirmed_self_send=true only because the user's own words said 'myself' (decided behaviour)"
+
+- id: compose_send_me_is_chat
+  prompt: "send me my email summaries for today"
+  expect:
+    - any_of: [summarize_emails, view_emails, triage_inbox]
+  forbid: [send_email, send_message, schedule_send]
+  answer:
+    contains_any: [flight, "{bank}", budget, dinner, statement]
+    not_contains: ["don't have access", "do not have access", "can't access", "cannot access"]
+  max_calls: 4
+  trap: "real-usage 1A #15: 'send me' means answer here in chat; the model read the mail and then said it had no access to email"
+
+- id: compose_daily_brief_dad
+  prompt: "send my dad my daily summary via Messages"
+  expect:
+    - any_of: [daily_brief, get_upcoming]
+    - tool: send_message
+      args:
+        to: {contains_any: [dad, "0102", "{dad_email}"]}
+        text: {regex: '(?:dentist|{dentist}|water|plants|{dentist_reminder}|{rent_reminder}|brunch|standup|budget)'}
+  forbid: [send_email, schedule_send]
+  confirm: [send_message]
+  max_calls: 6
+  trap: "real-usage 1A #9: the channel was asked again though it was stated in the sentence"
+
+- id: compose_draft_inbox_not_send
+  prompt: "draft an email to {dad_email} summarizing my inbox today, but do not send it"
+  expect:
+    - any_of: [summarize_emails, view_emails, triage_inbox]
+    - tool: draft_email
+      args:
+        to: {icontains: "{dad_email}"}
+        body: {regex: '(?:flight|{bank}|statement|budget|water|landlord|facilities|lasagna|dinner)'}
+  forbid: [send_email, send_message, schedule_send]
+  max_calls: 5
+  trap: "real-usage 1A #18: draft with the data, never send. Production forbids the send tools on 'do not send'"
+
+- id: compose_draft_calendar_message
+  prompt: "write a message to my mom with my calendar for the next month, dont send it"
+  expect:
+    - any_of: [get_upcoming, daily_brief]
+    - tool: draft_message
+      args:
+        to: {contains_any: [mom, "{mom_phone_tail}"]}
+        text: {regex: '(?:dentist|{dentist}|brunch|budget|standup|{class_word}|vendor)'}
+  forbid: [send_message, send_email, schedule_send]
+  max_calls: 5
+  trap: "real-usage 1A #10: a prose answer and no draft was created. Draft means draft_message, never a send ('my calendar' keeps the reads available)"
+
+- id: compose_draft_events_message
+  split: dev
+  prompt: "write a message to my mom with my upcoming events for the next month"
+  expect:
+    - any_of: [get_upcoming, daily_brief]
+    - tool: draft_message
+      args:
+        to: {contains_any: [mom, "{mom_phone_tail}"]}
+        text: {regex: '(?:dentist|{dentist}|brunch|budget|standup|{class_word}|vendor)'}
+  forbid: [send_message, send_email, schedule_send]
+  max_calls: 5
+  trap: "real-usage 1A #10 verbatim. production guard blocks get_upcoming and draft_message (found 2026-10-29): model_only.pure_writing treats it as pure writing because 'my upcoming events' is not in _STORED_CONTENT and the lowercase 'mom' is no destination (_DESTINATION needs a capital). Right behaviour is a draft with the events, so this fails as a production bug"
+
+- id: compose_literal_text
+  prompt: "text jules saying running 10 min late"
+  expect:
+    - tool: send_message
+      args:
+        to: {contains_any: ["{friend_lower}", "{friend_lower_email}", "0133"]}
+        text: {icontains: late}
+  forbid: [send_email, schedule_send, get_upcoming, daily_brief, view_messages]
+  confirm: [send_message]
+  max_calls: 3
+  trap: "real-usage 1A #16: a literal send is one lookup at most and one send, with one confirmation"
+
+- id: compose_literal_email
+  prompt: "Email {dad_email} with subject Sunday and body I'll bring dessert."
+  expect:
+    - tool: send_email
+      args:
+        to: {icontains: "{dad_email}"}
+        subject: {icontains: sunday}
+        body: {icontains: dessert}
+  forbid: [send_message, schedule_send, view_emails, get_upcoming]
+  confirm: [send_email]
+  max_calls: 3
+  trap: "real-usage 1A #17: full address, subject and body given, so no lookup"
+
+- id: compose_dentist_time_mom
+  prompt: "send mom a message with my dentist appointment time"
+  expect:
+    - any_of: [get_upcoming, daily_brief]
+    - tool: send_message
+      args:
+        to: {contains_any: [mom, "{mom_phone_tail}"]}
+        text: {regex: '(?:{dentist_time}|dentist)'}
+  forbid: [send_email, schedule_send]
+  confirm: [send_message]
+  max_calls: 5
+  trap: "real-usage 1A #12/#13: the model looked up the contact only and never searched the sources for the date"
+
+- id: compose_weather_text
+  prompt: "text {friend_first} the weather for tomorrow in {city}"
+  expect:
+    - tool: get_weather
+    - tool: send_message
+      args:
+        to: {contains_any: ["{friend_first}", "{friend_email}", "0144"]}
+        text: {regex: '(?:{high_tomorrow}|sunny)'}
+  forbid: [send_email, schedule_send, web_search]
+  confirm: [send_message]
+  max_calls: 5
+  trap: "read then send with a public source: the text must carry the forecast that was read"
+
+- id: compose_voice_cal_mom
+  split: voice
+  prompt: "um can you text my mom what i have planned this week"
+  expect:
+    - any_of: [get_upcoming, daily_brief]
+    - tool: send_message
+      args:
+        to: {contains_any: [mom, "{mom_phone_tail}"]}
+        text: {regex: '(?:dentist|{dentist}|brunch|budget|standup|{class_word}|vendor)'}
+  forbid: [send_email, draft_message]
+  confirm: [send_message]
+  max_calls: 6
+  trap: "spoken variant of compose_cal_mom_imessage (voice transcripts are lowercase run-ons)"
+
+- id: compose_voice_email_dad
+  split: voice
+  prompt: "uh email dad my schedule for tomorrow"
+  expect:
+    - any_of: [get_upcoming, daily_brief]
+    - tool: send_email
+      args:
+        to: {contains_any: [dad, "{dad_email}"]}
+        body: {regex: '(?:dentist|{dentist})'}
+  forbid: [send_message, schedule_send]
+  confirm: [send_email]
+  max_calls: 5
+  trap: "spoken variant of compose_email_dad_schedule"

@@ -32,3 +32,30 @@
   split: dev
   prompt: "jot down: call the plumber about the leak"
   expect: [{any_of: [create_note, append_note]}]
+
+# ---- real-life phrasing: lowercase, typos, note vs reminder ----
+- id: notes_packing_typo
+  prompt: "wats on my packing lst"
+  expect: [{tool: search_notes}]
+  forbid: [create_note, append_note, search_reminders]
+  answer: {contains_any: [passport, boots, charger]}
+  trap: "real-usage style (20 of 110 turns carry a typo): a misspelled list name still reads the note, not a reminders search"
+- id: notes_append_power_bank
+  prompt: "add a power bank to packing list"
+  expect: [{tool: append_note, args: {title: {icontains: packing}, text: {icontains: power bank}}}]
+  forbid: [create_note, add_reminder]
+  trap: "lowercase append with no 'my' and no 'note': the list exists, so append, never a second note or a reminder"
+- id: notes_save_vs_remind
+  prompt: "save this to my notes: call the vet monday"
+  expect: [{any_of: [create_note, append_note]}]
+  forbid: [add_reminder, add_calendar_event]
+  trap: "'monday' invites a reminder or event, but the user asked for a note"
+- id: notes_gift_lc_typo
+  prompt: "wat did i put down as a gift for {friend_first}"
+  expect: [{tool: search_notes}]
+  answer: {contains_any: ["{gift_friend}"]}
+- id: notes_which_notes_do_i_have
+  prompt: "what notes do i have"
+  expect: [{tool: search_notes}]
+  answer: {contains_any: ["Latte", "Packing", "Gift"]}
+  trap: "an unqualified listing request: search_notes with no or an empty query, not a guess from memory"

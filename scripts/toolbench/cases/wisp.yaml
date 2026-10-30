@@ -1,0 +1,109 @@
+# Questions about Wisp itself (features #40-41, real-usage 1H #88-89 and #38, #67-68).
+# They are answered from the wisp_admin tools, which are allowed in every access mode
+# (dev8 4637f5b8; they were denied as 'unclassified (wisp_admin)' before). Wisp is never
+# Siri, so every answer here also refuses to say so.
+- id: wisp_tools_available
+  prompt: "what tools are available to you"
+  expect: [{tool: wisp_capabilities}]
+  forbid: [run_shell, web_search]
+  answer:
+    contains_any: [calendar, reminders, mail]
+    not_contains: ["Siri", "<|tool_call", "call:"]
+  trap: "real-usage 1H #88 (a real turn): the capability inventory comes from wisp_capabilities, not from memory or the web"
+- id: wisp_what_can_you_do_lc
+  prompt: "what can u do"
+  expect: [{tool: wisp_capabilities}]
+  forbid: [run_shell, web_search]
+  answer:
+    contains_any: [calendar, reminders, mail, messages]
+    not_contains: ["Siri", "<|tool_call", "call:"]
+  trap: "features #41 / dev8 881b9810: a lowercase 'what can you do' is the general inventory (topic=overview)"
+- id: wisp_who_are_you
+  prompt: "so what exactly are you"
+  expect: [{tool: wisp_capabilities}]
+  forbid: [web_search]
+  answer:
+    contains_any: [Wisp]
+    not_contains: ["Siri", "ChatGPT", "OpenAI", "<|tool_call"]
+  trap: "features #41: identity answer (topic=identity); Wisp, running on this Mac"
+- id: wisp_data_private
+  prompt: "is my data private"
+  expect: [{any_of: [wisp_capabilities, wisp_status]}]
+  forbid: [web_search, run_shell]
+  answer:
+    contains_any: ["this Mac", "your Mac", "on-device", "locally", "local"]
+    not_contains: ["Siri", "<|tool_call", "I don't know"]
+  trap: "real-usage 1H #89: the model guessed; the answer is read from the privacy report (on this Mac, no cloud model) via wisp_capabilities(topic=privacy) or wisp_status"
+- id: wisp_model_running
+  prompt: "what model are you running"
+  expect: [{tool: wisp_status}]
+  forbid: [web_search, run_shell]
+  answer:
+    contains_any: [gemma]
+    not_contains: ["Siri", "GPT", "Claude"]
+  trap: "features #40: wisp_status(topic=models) names the loaded model; a model that answers from its own weights says GPT or Claude"
+- id: wisp_email_last_sync
+  prompt: "when did my email last sync"
+  expect: [{tool: wisp_status, args: {topic: sync}}]
+  forbid: [view_emails, summarize_emails, run_shell]
+  answer: {contains_any: ["3m", "3 min", "3 minutes", "minutes ago"]}
+  trap: "features #40: sync times come from wisp_status(topic=sync) (Mail 3m ago), not from reading the inbox and guessing from the newest message"
+- id: wisp_skills_have
+  prompt: "what skills do i have"
+  expect: [{tool: wisp_skills}]
+  forbid: [run_shell, search_notes, recall]
+  answer: {contains_any: ["mac-controls", "mac controls", "idea-refine", "interview-me"]}
+  trap: "features #40: installed skills are listed by wisp_skills; the bundled set is mac-controls, idea-refine and interview-me"
+- id: wisp_mcp_working
+  prompt: "is my mcp server working"
+  expect: [{tool: wisp_mcp}]
+  forbid: [run_shell, mcp_drive_create_document]
+  answer: {contains_any: [drive, connected]}
+  trap: "features #40: the fake world has one connected 'drive' server with 2 tools; the check is wisp_mcp, never a tool call against the server"
+- id: wisp_can_i_talk
+  prompt: "can i talk to you"
+  expect: [{tool: wisp_capabilities}]
+  forbid: [web_search, run_shell, toggle_setting]
+  answer:
+    contains_any: ["⌥⇧Space", "Option-Shift-Space", "mic", "microphone"]
+    not_contains: ["Siri", "Hey Siri"]
+  trap: "features #41 / dev8 814c0c0b: voice is ⌥⇧Space or the mic in Ask, and Wisp is never Siri (the how-to entry's regex even lists 'siri' as a keyword)"
+- id: wisp_how_to_use
+  prompt: "how do i use wisp"
+  expect: [{tool: wisp_capabilities}]
+  forbid: [web_search, run_shell]
+  answer:
+    contains_any: ["⌥Space", "Option-Space", "notch"]
+    not_contains: ["Siri", "<|tool_call"]
+  trap: "features #41: topic=howto; the guide opens with the ⌥Space shortcut and the notch"
+- id: wisp_connect_gmail
+  prompt: "how do i connect my gmail"
+  expect: [{tool: wisp_capabilities}]
+  forbid: [web_search, web_fetch, run_shell, open_app]
+  answer:
+    contains_any: ["Settings", "Mail app", "Apple"]
+    not_contains: ["Siri", "<|tool_call"]
+  trap: "features #41 / dev8 d69f3c5f, 8240bb2d: the Google steps depend on the build (Settings → Google, or 'this version can't sign in; if your Gmail is in Apple's Mail I read it there'); either is right, a web search is not"
+- id: wisp_email_how_far_back
+  prompt: "from how far back can you check emails"
+  expect: [{any_of: [wisp_capabilities, wisp_status, view_emails, summarize_emails]}]
+  forbid: [run_shell, web_search]
+  answer:
+    contains_any: [recent, days, weeks, months, "50"]
+    not_contains: ["Siri", "<|tool_call"]
+  trap: "real-usage 1E #67 (3 real turns, outcome not visible): an honest answer states the recent-mail window instead of promising everything or refusing"
+- id: wisp_can_you_send_texts
+  prompt: "can you send texts?"
+  forbid: [send_message, send_email, schedule_send, draft_message]
+  answer:
+    contains_any: ["confirm", "approve", "ask", "first", "before", "show you"]
+    not_contains: ["Siri", "<|tool_call"]
+  trap: "features #40: a capability question is answered (wisp_capabilities(query) or from the system prompt) and sends nothing; the answer says every send is shown to the user first"
+- id: wisp_what_do_you_know_about_me
+  prompt: "what do u know about me"
+  expect: [{any_of: [recall, describe_me]}]
+  forbid: [web_search, wisp_capabilities]
+  answer:
+    contains_any: ["{employer}", "{preferred_name}", "{isp}", "{user_birthday}", penicillin]
+    not_contains: ["Siri"]
+  trap: "dev8 a1731a57: 'what do you know about me' is a memory question, not a capability question; wisp_capabilities as the whole answer is the old failure"

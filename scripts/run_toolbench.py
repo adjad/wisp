@@ -1,25 +1,33 @@
 #!/usr/bin/env python3
-"""Hermetic tool-calling scorecard: compare models on Wisp's real router + loop.
+"""Hermetic tool-calling scorecard: compare models on Wisp's real model-led Ask turn.
 
     .venv/bin/python scripts/run_toolbench.py --list                      # cases, no model
-    .venv/bin/python scripts/run_toolbench.py --dry-run                   # route every case, no model
-    .venv/bin/python scripts/run_toolbench.py                             # Ling V3, 3 trials
+    .venv/bin/python scripts/run_toolbench.py --dry-run                   # load + bind cases, no model
+    .venv/bin/python scripts/run_toolbench.py                             # the rostered agent model, 3 trials
     .venv/bin/python scripts/run_toolbench.py --models A,B --trials 3
     .venv/bin/python scripts/run_toolbench.py --only mail,safety --ids mail_chase_balance
     .venv/bin/python scripts/run_toolbench.py --models LFM2.5-24B-A2B-MLX-4bit --exclusive
     .venv/bin/python scripts/run_toolbench.py --split gate                    # the frozen fine-tune gate
     .venv/bin/python scripts/run_toolbench.py --world-seed 7                  # a variant world
     .venv/bin/python scripts/run_toolbench.py --models M --thinking default,narration-off,off
-    .venv/bin/python scripts/run_toolbench.py --export-shingles out.json      # gate prompts, hashed
+    .venv/bin/python scripts/run_toolbench.py --models G,N --profile-as G     # N treated exactly as G
+    .venv/bin/python scripts/run_toolbench.py --omlx-port 8001                # a second engine
+    .venv/bin/python scripts/run_toolbench.py --export-shingles out.json      # held-out prompts, hashed
     .venv/bin/python scripts/run_toolbench.py --report ~/.moe/evals/toolbench/<run>
     .venv/bin/python scripts/run_toolbench.py --report <run> --compare <baseline_run>
 
-Every tool is a fake over one synthetic world (scripts/toolbench/world.py):
-nothing real is read, written or sent, and network/subprocess access is
-refused. The real Wisp on :8765 is never contacted. Models run one at a time;
-the harness loads a model if needed and never evicts one unless --exclusive is
-passed (which unloads the others for the run and reloads them afterwards).
-Results land in ~/.moe/evals/toolbench/<run_id>/ (results.jsonl + meta.json).
+Every turn runs the way production's model-led Ask does (runner.prepare_turn):
+model_only on, model-led discovery from a small preload plus name-only stubs,
+the Ask hints and guards, and the case's access mode. Every tool is a fake over
+one synthetic world (scripts/toolbench/world.py): nothing real is read, written
+or sent, and network/subprocess access is refused. The real Wisp on :8765 is
+never contacted. Models run one at a time; the harness loads a model if needed
+and never evicts one unless --exclusive is passed (which unloads the others for
+the run and reloads them afterwards). Results land in
+~/.moe/evals/toolbench/<run_id>/ (results.jsonl + meta.json). meta.json records,
+per model, the binding (context window, list membership, --profile-as), the
+effective thinking flags of each variant and the engine's own per-model
+settings (sampling, thinking, window) read from oMLX at run time.
 
 `scripts/test_model.py` stays the live smoke test against real data; this is
 the repeatable comparison.
@@ -34,6 +42,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import Counter
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -45,7 +54,8 @@ sys.stdout.reconfigure(line_buffering=True)
 from scripts.toolbench import report as rep  # noqa: E402  (no service imports)
 from scripts.toolbench.cases import load_cases, select  # noqa: E402
 
-DEFAULT_MODEL = "Ling-3.0-tiny-Wisp-V3-merged-oQ4e"
+# Empty = the packaged models.yaml agent model (what a fresh install runs).
+DEFAULT_MODEL = ""
 RESULTS_ROOT = Path.home() / ".moe" / "evals" / "toolbench"  # resolved BEFORE WISP_HOME moves
 _TRANSIENT = re.compile(r"409|ModelLoadError|not loaded|ConnectError|RemoteProtocolError|choices|"
                         r"connection unavailable|couldn't verify the local AI engine", re.I)
@@ -72,48 +82,57 @@ def _wisp_running() -> bool:
     return bool(r.stdout.strip())
 
 
-def _row(run_id, model, case, trial, traj, verdict, variant="default") -> dict:
+def _row(run_id, model, case, trial, traj, verdict, variant="default", profile_as=None) -> dict:
     steps = [{k: s.get(k) for k in ("calls", "error", "tool_errors", "ttft", "seconds", "prompt_tokens_est",
-                                     "output_chars", "reasoning_chars")}
+                                     "output_chars", "reasoning_chars", "stubs")}
              | {"content": (s.get("content") or "")[:600]} for s in traj.get("steps", ())]
     label = model if variant == "default" else f"{model} +{variant}"
     return {"run": run_id, "model": label, "base_model": model, "variant": variant,
+            "profile_as": profile_as, "access": traj.get("access"),
             "split": case.split, "case": case.id, "category": case.category,
             "trial": trial, "no_tool": case.no_tool, "path": traj.get("path"),
             "route": traj.get("route"), "steps": steps, "final": traj.get("final", "")[:2000],
-            "effects": traj.get("effects"), "escapes": traj.get("escapes"),
+            "effects": traj.get("effects"), "asked": traj.get("asked"), "escapes": traj.get("escapes"),
             "error": traj.get("error"), "timeout": traj.get("timeout"), "v": verdict.to_dict()}
 
 
-async def _dry_run(args, cases) -> int:
-    """Route every case (no model call) and flag expectations the router can't reach."""
+def _dry_run(args, cases) -> int:
+    """Offline: bind every case to the world and check its tool names and host
+    preparation. Runs no model and tests no routing (production has no router
+    menu any more; the model chooses). `host-forbids` flags an expected tool the
+    host's own guards withhold this turn, which no model can then call."""
     from scripts.toolbench import runner
     from scripts.toolbench.world import build_world
-    from service.router.pinning import apply_session_pin
-    from service.router.router import route
     world = build_world(seed=args.world_seed)
     names = runner.install_fakes(world)
+    model = runner.bind_model(args.models.split(",")[0].strip() or _agent_model(),
+                              profile_as=args.profile_as or None)["model"]
+    from service.config.endpoints import role_target
+    client = runner.bench_client_class()(target=role_target("agent"))
     bad = 0
     for c in (c.bind(world.facts) for c in cases):
-        _, ctx = runner._history_messages(c.history)
-        d = apply_session_pin(await route(c.prompt, last_user=ctx["last_user"],
-                                          recent_users=ctx["recent_users"] or None,
-                                          last_assistant=ctx["last_assistant"],
-                                          last_tools=ctx["last_tools"]), None, c.prompt)
-        offered = set(d.tool_subset or names) | {n for n, _ in (d.direct_calls or ())}
-        if d.force_first_tool:
-            offered.add(d.force_first_tool)
-        miss = [("/".join(s.tools)) for s in c.expect if not set(s.tools) & offered]
-        if c.expect and not d.needs_tools:
-            miss.append("(plain chat route)")
-        flag = "ROUTE-FAULT " + ",".join(miss) if miss else "ok"
-        bad += bool(miss)
-        menu = len(d.tool_subset) if d.tool_subset else "ALL"
-        direct = [n for n, _ in (d.direct_calls or ())]
-        print(f"{c.id:<28} {d.role:<8} menu={menu!s:<4} force={d.force_first_tool or '-':<16} "
-              f"direct={direct or '-'}  {flag}")
-    print(f"\n{len(cases)} cases, {bad} route faults")
+        problems = []
+        for field, tools in (("expect", {t for s in c.expect for t in s.tools}), ("forbid", c.forbid),
+                             ("confirm", c.confirm), ("no_confirm", c.no_confirm)):
+            if unknown := sorted(set(tools) - names):
+                problems.append(f"{field} names unknown {unknown}")
+        turn = runner.prepare_turn(client, c.prompt, c.history)
+        withheld = set(turn.route["forbidden_tools"])
+        if blocked := ["/".join(s.tools) for s in c.expect if not set(s.tools) - withheld]:
+            problems.append(f"host-forbids {blocked}")
+        bad += bool(problems)
+        head = ",".join(turn.route["preload"][:3]) or "-"
+        needs = ",".join(sorted(c.access_needed)) or "-"
+        print(f"{c.id:<28} {c.access:<7} denied={needs:<9} direct={'y' if turn.route['ask_direct'] else '-'} "
+              f"preload={head:<44} {'; '.join(problems) or 'ok'}")
+    runner.uninstall_fakes()
+    print(f"\n{len(cases)} cases bound for {model}, {bad} with problems (no model was run)")
     return 0
+
+
+def _agent_model() -> str:
+    from service.config import _packaged_config
+    return str(_packaged_config()["roles"]["agent"])
 
 
 async def _recover(client, model, *, wait: float = 240.0) -> None:
@@ -143,21 +162,38 @@ async def _one(runner, score, client, model, case, world, names, args, run_id, t
         traj = await runner.run_case(client, model, case, world, timeout=args.timeout,
                                      max_steps=args.max_steps)
     v = score(case, traj, registry_names=names, today=world.today)
-    return _row(run_id, model, case, trial, traj, v, variant)
+    profile = args.profile_as if args.profile_as and args.profile_as != model else None
+    return _row(run_id, model, case, trial, traj, v, variant, profile)
+
+
+def _update_meta(out: Path, key: str, model: str, value) -> None:
+    """meta.json[key][model] = value, kept across --resume."""
+    path = out / "meta.json"
+    meta = json.loads(path.read_text()) if path.exists() else {}
+    meta.setdefault(key, {})[model] = value
+    path.write_text(json.dumps(meta, indent=2, default=str))
 
 
 async def _run(args, cases) -> int:
     from scripts.toolbench import runner
     from scripts.toolbench.scorer import score
     from scripts.toolbench.world import build_world
+    from service.config.endpoints import role_target
 
     world = build_world(seed=args.world_seed)
     names = runner.install_fakes(world)
     cases = [c.bind(world.facts) for c in cases]
     variants = [v.strip() for v in args.thinking.split(",") if v.strip()]
-    client = runner.bench_client_class()(timeout=args.timeout)
-    models = [m.strip() for m in args.models.split(",") if m.strip()]
+    if bad := [v for v in variants if v not in runner.THINKING_MODES]:
+        print(f"unknown --thinking {bad}; choose from {runner.THINKING_MODES}")
+        return 2
+    Client = runner.bench_client_class()
+    client = Client(timeout=args.timeout)       # inventory and residency; turns use a per-model client
+    models = [m.strip() for m in args.models.split(",") if m.strip()] or [_agent_model()]
     installed = await client.models()
+    if args.profile_as and args.profile_as not in installed:
+        print(f"note: --profile-as {args.profile_as} is not installed; its per-model treatment "
+              "still applies, it just cannot run itself")
     missing = [m for m in models if m not in installed]
     if missing:
         print(f"not installed in oMLX: {missing}")
@@ -180,7 +216,10 @@ async def _run(args, cases) -> int:
     meta = {"run": run_id, "git": _git_sha(), "models": models, "trials": args.trials,
             "cases": [c.id for c in cases], "started": time.time(), "exclusive": args.exclusive,
             "today": world.today.isoformat(), "max_steps": args.max_steps,
-            "world_seed": args.world_seed, "thinking": variants, "split": args.split or "all"}
+            "world_seed": args.world_seed, "thinking": variants, "split": args.split or "all",
+            "path": "model_led", "profile_as": args.profile_as or None, "omlx_port": args.omlx_port,
+            "cleared_env": sorted(runner.CLEARED_ENV),
+            "access": dict(sorted(Counter(c.access for c in cases).items()))}
     if not args.resume:
         (out / "meta.json").write_text(json.dumps(meta, indent=2))
     if _wisp_running():
@@ -196,11 +235,18 @@ async def _run(args, cases) -> int:
                         if other != model:
                             print(f"--exclusive: unloading {other}")
                             await client.unload(other)
-                print(f"\n== {model}: loading…")
-                await _recover(client, model)
+                binding = runner.bind_model(model, profile_as=args.profile_as or None)
+                turn_client = Client(timeout=args.timeout, target=role_target("agent"))
+                print(f"\n== {model}: loading…  window={binding['context_window']}"
+                      + (f"  profiled as {binding['profile_as']}" if binding["profile_as"] else ""))
+                await _recover(turn_client, model)
+                _update_meta(out, "bindings", model, binding)
+                _update_meta(out, "engine_settings", model, await runner.engine_settings(turn_client, model))
                 for variant in variants:
-                    runner.set_thinking(client, model, variant)
-                    print(f"-- thinking: {variant}")
+                    flags = runner.set_thinking(turn_client, model, variant)
+                    _update_meta(out, "thinking_flags", f"{model} +{variant}", flags)
+                    print(f"-- thinking: {variant}  narration={flags['narration_after_tool_thinks']} "
+                          f"direct={flags['direct_answer_thinks']}")
                     total, k = len(cases) * args.trials, 0
                     for trial in range(1, args.trials + 1):
                         for case in cases:
@@ -210,7 +256,7 @@ async def _run(args, cases) -> int:
                             if not _swap_ok():
                                 print("STOP: memory pressure (free swap < 500MB and pressure high)")
                                 return 3
-                            row = await _one(runner, score, client, model, case, world, names,
+                            row = await _one(runner, score, turn_client, model, case, world, names,
                                              args, run_id, trial, variant)
                             rows.append(row)
                             fh.write(json.dumps(row, default=str) + "\n")
@@ -218,9 +264,10 @@ async def _run(args, cases) -> int:
                             v = row["v"]
                             mark = "PASS" if v["passed"] else "FAIL " + ",".join(v["labels"])
                             calls = [c["name"] for s in row["steps"] for c in s.get("calls", ())]
-                            print(f"[{k}/{total}] {case.id:<28} t{trial} {v['seconds']:>6.1f}s  {mark}"
-                                  f"  {calls}")
+                            print(f"[{k}/{total}] {case.id:<28} t{trial} {v['seconds']:>6.1f}s "
+                                  f"(model {v['model_seconds']:.1f}s, {v['steps']} steps)  {mark}  {calls}")
     finally:
+        runner.uninstall_fakes()
         if args.exclusive:
             for m in started_loaded:
                 if m not in await client.loaded_models():
@@ -236,7 +283,13 @@ async def _run(args, cases) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--models", default=DEFAULT_MODEL, help="comma-separated oMLX model ids")
+    ap.add_argument("--models", default=DEFAULT_MODEL,
+                    help="comma-separated oMLX model ids (default: the packaged agent model)")
+    ap.add_argument("--profile-as", default="",
+                    help="give every other --models entry exactly the per-model treatment production "
+                         "gives this rostered model id (models.yaml lists, context window)")
+    ap.add_argument("--omlx-port", type=int, default=0,
+                    help="oMLX port on 127.0.0.1 (default 8000); the only port the network guard allows")
     ap.add_argument("--trials", type=int, default=3)
     ap.add_argument("--only", default="", help="categories (case file stems), comma-separated")
     ap.add_argument("--ids", default="", help="case ids, comma-separated")
@@ -245,17 +298,21 @@ def main() -> int:
     ap.add_argument("--exclusive", action="store_true",
                     help="unload every other model while a model runs; restore them afterwards")
     ap.add_argument("--out", default="", help="results directory (default ~/.moe/evals/toolbench/<run>)")
-    ap.add_argument("--split", default="", choices=["", "gate", "dev"], help="only this split")
+    ap.add_argument("--split", default="", choices=["", "gate", "dev", "voice"], help="only this split")
     ap.add_argument("--world-seed", type=int, default=None,
                     help="variant world (default: the canonical gate world)")
     ap.add_argument("--thinking", default="default",
-                    help="comma-separated variants: default, narration-off, off")
+                    help="comma-separated variants: default, narration-on, narration-off, off "
+                         "(see runner.set_thinking)")
     ap.add_argument("--export-shingles", default="",
-                    help="write hashed n-grams of every gate prompt (canonical + 50 seeded worlds) and exit")
+                    help="write hashed n-grams of every held-out (gate, voice) prompt (canonical + 50 "
+                         "seeded worlds) and exit")
     ap.add_argument("--resume", default="", help="continue an interrupted run directory in place "
                     "(same --models/--thinking/--trials/--split); finished trials are skipped")
     ap.add_argument("--list", action="store_true", help="list cases and exit")
-    ap.add_argument("--dry-run", action="store_true", help="route every case without a model")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="offline: bind every case and check tool names and host preparation; no model, "
+                         "no routing test")
     ap.add_argument("--report", default="", help="re-render a finished run directory")
     ap.add_argument("--compare", default="", help="with --report: baseline run directory")
     args = ap.parse_args()
@@ -288,9 +345,11 @@ def main() -> int:
         ap.error("--trials must be >= 1")
 
     from scripts.toolbench import runner
-    runner.isolate(Path(tempfile.mkdtemp(prefix="toolbench-")))
+    runner.isolate(Path(tempfile.mkdtemp(prefix="toolbench-")),
+                   omlx_port=args.omlx_port or runner.DEFAULT_OMLX_PORT)
+    args.omlx_port = args.omlx_port or runner.DEFAULT_OMLX_PORT
     if args.dry_run:
-        return asyncio.run(_dry_run(args, cases))
+        return _dry_run(args, cases)
     return asyncio.run(_run(args, cases))
 
 

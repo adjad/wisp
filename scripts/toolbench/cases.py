@@ -16,7 +16,12 @@ One YAML file per category under cases/. Each entry:
         contains_any: []
         not_contains: []
       max_calls: 4                       # default len(expect) + 3
-      split: gate                        # gate (held out from all training; default) | dev
+      confirm: [send_email]              # these may only take effect through a confirmation card
+      no_confirm: [add_reminder]         # these must never raise a confirmation card
+      access: full                       # full (shipped default) | default | view
+      world:                             # optional world state for this case
+        access_needed: [calendar]        # sources whose permission is missing (see WORLD)
+      split: gate                        # gate (held out; default) | dev | voice
       trap: "why this case exists"       # free text, shown in reports
 
 FACTS. Anything a world can vary is written as a `{fact}` placeholder —
@@ -29,6 +34,30 @@ SPLITS. `gate` cases are the frozen held-out set the fine-tune gate runs on:
 their prompts must never reach training data (`--export-shingles` writes the
 hashed n-grams a dataset generator filters against). `dev` cases are for
 iterating on the harness and the data; still never train on them verbatim.
+`voice` cases are spoken-transcript variants of typed cases ("um whats on my
+calendar tomorrow"); they are held out like `gate` and included in the shingle
+export, since they paraphrase gate prompts. Real-usage-derived cases need no
+split of their own: a split decides training hold-out, and such a case is
+held out like any other gate case; its category or `trap` says where it came from.
+
+ACCESS. `access` is the app's access mode for the turn, applied with
+production's own setters (safety.set_read_only / set_full_access, as POST /mode
+does): full = full access (shipped default), default = ask before writes,
+view = view only (writes denied).
+
+CONFIRMATION. `confirm` / `no_confirm` are scored against the confirmation
+cards the loop actually raised (scorer.py). Decided behaviour is enforced at
+load time, so a case cannot demand the opposite: sends and calendar writes
+always ask (ALWAYS_ASK, never in `no_confirm`); reminder writes never ask
+(NEVER_ASK, never in `confirm`); `forget` runs unconfirmed under full access
+(never in `confirm` there). View access denies writes outright, so `confirm`
+is meaningless there; use `forbid`.
+
+WORLD. `world.access_needed` lists sources whose macOS permission is missing
+for this case: any of calendar, reminders, contacts, mail, messages
+(world.ACCESS_DOMAINS). Their fakes then answer with production's
+access-needed sentence and note the fix, as the real tools do. The runner sets
+it after resetting the world at the start of the case; omitted means none.
 
 `expect` and `no_tool` are mutually exclusive. A case with neither only checks
 safety, format and the answer.
@@ -64,6 +93,10 @@ class Case:
     max_calls: int = 0
     trap: str = ""
     split: str = "gate"
+    confirm: frozenset[str] = frozenset()
+    no_confirm: frozenset[str] = frozenset()
+    access: str = "full"
+    access_needed: frozenset[str] = frozenset()
 
     @property
     def call_budget(self) -> int:
@@ -77,7 +110,8 @@ class Case:
             expect=tuple(Step(s.tools, f(dict(s.args))) for s in self.expect), answer=f(dict(self.answer)))
 
 
-_PLACEHOLDER = re.compile(r"\{([a-z_0-9]+)\}")
+# Fact names start with a letter, so a regex quantifier in a matcher ({2}) is never one.
+_PLACEHOLDER = re.compile(r"\{([a-z_][a-z_0-9]*)\}")
 
 
 def _fill(value, facts):
@@ -91,9 +125,22 @@ def _fill(value, facts):
 
 
 _CASE_KEYS = {"id", "prompt", "history", "expect", "no_tool", "forbid", "answer", "max_calls", "trap",
-              "split"}
-SPLITS = ("gate", "dev")
+              "split", "confirm", "no_confirm", "access", "world"}
+_WORLD_KEYS = {"access_needed"}
+SPLITS = ("gate", "dev", "voice")
+# Splits held out of every training set (shingle export).
+HELD_OUT_SPLITS = frozenset({"gate", "voice"})
+ACCESS = ("full", "default", "view")
 _ANSWER_KEYS = {"contains_all", "contains_any", "not_contains"}
+
+# Decided confirmation behaviour (safety/policy.py). Names, not categories, so
+# loading cases needs no service import; tests/test_toolbench.py pins
+# ALWAYS_ASK to the registry's send and calendar-write categories.
+ALWAYS_ASK = frozenset({"send_email", "send_message", "reply_to_email", "forward_email", "schedule_send",
+                        "add_calendar_event", "update_event", "cancel_event", "clear_reminders",
+                        "clear_past_reminders", "commit_private_meeting"})
+NEVER_ASK = frozenset({"add_reminder", "update_reminder", "complete_reminder"})
+FULL_ACCESS_UNCONFIRMED = frozenset({"forget"})
 
 
 def _step(raw: dict, where: str) -> Step:
@@ -122,12 +169,35 @@ def parse_case(raw: dict, category: str) -> Case:
     answer = dict(raw.get("answer") or {})
     if set(answer) - _ANSWER_KEYS:
         raise ValueError(f"{where}: unknown answer keys {sorted(set(answer) - _ANSWER_KEYS)}")
+    access = str(raw.get("access") or "full")
+    if access not in ACCESS:
+        raise ValueError(f"{where}: access must be one of {ACCESS}")
+    confirm = frozenset(raw.get("confirm") or ())
+    no_confirm = frozenset(raw.get("no_confirm") or ())
+    for problem, names in (
+            ("both confirm and no_confirm", confirm & no_confirm),
+            ("no_confirm on tools that always ask", no_confirm & ALWAYS_ASK),
+            ("confirm on reminder writes, which never ask", confirm & NEVER_ASK),
+            ("confirm on tools that run unconfirmed under full access",
+             confirm & FULL_ACCESS_UNCONFIRMED if access == "full" else frozenset()),
+            ("confirm under view access, which denies writes (use forbid)",
+             confirm if access == "view" else frozenset())):
+        if names:
+            raise ValueError(f"{where}: {problem}: {sorted(names)}")
+    world = raw.get("world") or {}
+    if not isinstance(world, dict) or set(world) - _WORLD_KEYS:
+        raise ValueError(f"{where}: world takes only {sorted(_WORLD_KEYS)}")
+    from scripts.toolbench.world import ACCESS_DOMAINS   # stdlib-only module; no service import
+    needed = world.get("access_needed") or []
+    if not isinstance(needed, list) or set(map(str, needed)) - set(ACCESS_DOMAINS):
+        raise ValueError(f"{where}: world.access_needed must be a list of {sorted(ACCESS_DOMAINS)}")
     return Case(
         id=str(raw["id"]), category=category, prompt=str(raw["prompt"]),
         history=tuple(raw.get("history") or ()), expect=expect,
         no_tool=bool(raw.get("no_tool")), forbid=frozenset(raw.get("forbid") or ()),
         answer=answer, max_calls=int(raw.get("max_calls") or 0), trap=str(raw.get("trap") or ""),
-        split=split)
+        split=split, confirm=confirm, no_confirm=no_confirm, access=access,
+        access_needed=frozenset(map(str, needed)))
 
 
 def load_cases(directory: Path = CASES_DIR) -> list[Case]:
@@ -164,10 +234,10 @@ def _h(tokens: list[str]) -> str:
 
 
 def heldout_shingles(cases: list[Case], facts_list: list[dict[str, str]]) -> dict:
-    """Hashed n-grams of every gate prompt (and its history) bound in each world given."""
+    """Hashed n-grams of every held-out prompt (and its history) bound in each world given."""
     prompts = set()
     for c in cases:
-        if c.split != "gate":
+        if c.split not in HELD_OUT_SPLITS:
             continue
         for facts in facts_list:
             b = c.bind(facts)

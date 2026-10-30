@@ -40,3 +40,75 @@
   prompt: "what's 15% of 84?"
   answer: {contains_all: ["12.6"]}
   forbid: [run_shell]
+
+# ---- knowledge questions with no tool (features #36, real-usage 1I #93-94) ----
+# 13 of the first 252 Ask-run answers were only tool-call markup, mostly on knowledge
+# questions; 106 of ~1,040 were re-prompted for personal data. Wisp is never Siri.
+- id: chat_llm_beginner
+  prompt: "how does an llm work step by step for a beginner"
+  no_tool: true
+  answer:
+    contains_any: [predict, "next word", "next token", tokens, training]
+    not_contains: ["<|tool_call", "call:", "Siri", "i don't have that"]
+  trap: "real-usage 1I #93: a real turn; the control that a how-it-works question picks up no action tool and no markup"
+- id: chat_sleep_hours
+  prompt: "how many hours of sleep should i get"
+  no_tool: true
+  answer:
+    contains_any: ["7", "8", "9"]
+    not_contains: ["<|tool_call", "call:", "Siri", "i don't have that", "i don't have access"]
+  trap: "real-usage 1I #94 / dev8 87e2372f: advice, not personal data; it was re-prompted for the user's details and ended 'I don't have that'"
+- id: chat_sky_blue
+  prompt: "what makes the sky blue"
+  no_tool: true
+  answer:
+    contains_any: [scatter, rayleigh]
+    not_contains: ["<|tool_call", "call:", "Siri"]
+  trap: "features #36 / dev8 14c0c0b7: knowledge answers leaked 'call:public_web' markup instead of text"
+- id: chat_screenshot_macos
+  prompt: "how do i screenshot on macos"
+  no_tool: true
+  answer:
+    contains_any: [shift, command, cmd, "⌘"]
+    not_contains: ["<|tool_call", "call:", "Siri"]
+  trap: "features #36: how-to for the OS, not an action; the answer must not call toggle_setting, run_shell or a screen tool"
+- id: chat_change_volume_howto
+  prompt: "how do i change the volume on a mac"
+  no_tool: true
+  forbid: [mac_set_volume, mac_get_volume, run_shell, run_applescript]
+  answer: {not_contains: ["<|tool_call", "call:", "Siri"]}
+  trap: "dev8 audit (tests/test_ask_eval_tool_wording.py): any device word sent knowledge questions down the tool path; 'how do I' is not 'turn it down'"
+- id: chat_ram_what_for
+  prompt: "what is ram for"
+  no_tool: true
+  forbid: [system_status, run_shell]
+  answer: {not_contains: ["<|tool_call", "call:", "Siri"]}
+  trap: "contrast with dev_status_ram_free: a definition question never reads the machine"
+- id: chat_battery_over_time
+  prompt: "why does battery capacity drop over time"
+  no_tool: true
+  forbid: [system_status, run_shell]
+  answer: {not_contains: ["<|tool_call", "call:", "Siri"]}
+  trap: "dev8 audit: 'battery' alone made this a tool question; it is general knowledge"
+- id: chat_cpu_what
+  prompt: "what is a cpu"
+  no_tool: true
+  answer: {not_contains: ["<|tool_call", "call:", "Siri"]}
+- id: chat_goal_chip
+  prompt: "Help me with my goal: {goal_a}"
+  no_tool: true
+  forbid: [remember, save_knowledge, add_reminder, add_calendar_event]
+  answer: {not_contains: ["<|tool_call", "call:", "Siri", "i don't have that"]}
+  trap: "real-usage 1I #91: the app's 'Help me with my goal' chip prompt is advice only; saving or scheduling anything on it is unrequested"
+- id: chat_goal_chip_lc
+  prompt: "help me with my goal: {goal_b}"
+  no_tool: true
+  forbid: [remember, save_knowledge, add_reminder, add_calendar_event]
+  answer: {not_contains: ["<|tool_call", "call:", "Siri", "i don't have that"]}
+  trap: "real-usage 1I #91: the same chip typed lowercase"
+- id: chat_decline_meeting_wording
+  prompt: "how do i say no to a meeting politely"
+  no_tool: true
+  forbid: [send_email, draft_email, cancel_event, send_message]
+  answer: {not_contains: ["<|tool_call", "call:", "Siri"]}
+  trap: "wording advice sits next to calendar and mail verbs but needs no tool"

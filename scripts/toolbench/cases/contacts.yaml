@@ -1,16 +1,18 @@
 - id: contact_mom_phone
   prompt: "What's Mom's phone number?"
   expect: [{tool: lookup_contact}]
-  forbid: [send_message, place_call]
+  forbid: [send_message]
   answer: {contains_all: ["{mom_phone_tail}"]}
 - id: contact_count
   prompt: "How many contacts do I have?"
   expect: [{tool: list_contacts}]
-  answer: {contains_any: ["4 contacts", "four", " 4"]}
+  answer: {contains_all: ["{contact_count}"]}
+  trap: "world update: the count is the contact_count fact (6), no longer a literal 4"
 - id: contact_mom_birthday
   prompt: "When is mom's birthday?"
   expect: [{any_of: [contact_dates, lookup_contact]}]
   answer: {contains_all: ["{mom_birthday}"]}
+  trap: "production guard blocks contact_dates and lookup_contact (found 2026-10-29): routing_guard_contract reads 'When is ...' as a named calendar-time question that is neither personal nor public, so it leaves no tool at all. Mom's birthday is in Contacts, so the right behaviour is a contact read and this fails as a production bug"
 - id: contact_friend_email
   prompt: "what's {friend_first}'s email address?"
   expect: [{tool: lookup_contact}]
@@ -29,3 +31,68 @@
   prompt: "who's in my contacts?"
   expect: [{tool: list_contacts}]
   answer: {contains_any: ["{friend_first}", "{coworker_first}"]}
+
+# ---- Real-usage contact cases (real-usage report 1F #77 and 1B #33).
+- id: contact_phone_only_not_email
+  prompt: "email mom that my flight got in safe"
+  expect:
+    - any_of: [send_email, draft_email]
+      args:
+        to: {regex: '@'}
+  forbid: [send_message]
+  confirm: [send_email]
+  max_calls: 6
+  trap: "real-usage 1F #77 / 1B #22: Mom is saved with a phone number only; a phone number used as the email address is the failure. A valid `to` here is an address found in her mail (mom@example.com), reached by reading her email after the contact lookup comes back without one"
+
+- id: contact_in_my_contacts
+  prompt: "is {friend_lower} in my contacts"
+  expect:
+    - any_of: [lookup_contact, list_contacts]
+  answer:
+    contains_all: ["{friend_lower}"]
+    not_contains: ["not in your contacts", "isn't in your contacts", "no saved contact"]
+  forbid: [manage_contacts, send_message]
+  max_calls: 3
+  trap: "real-usage 1F #77: a membership lookup for a lowercase-saved name; it is a read, and the contact exists (saved as 'jules')"
+
+- id: contact_not_in_my_contacts
+  prompt: "is bob in my contacts"
+  expect:
+    - any_of: [lookup_contact, list_contacts]
+  answer:
+    contains_any: ["not in", "isn't", "no saved", "don't see", "couldn't find", "could not find", "no contact", "not saved", "don't have", "no match", "doesn't"]
+    not_contains: ["yes, bob", "bob is in your contacts"]
+  forbid: [manage_contacts, send_message]
+  max_calls: 3
+  trap: "negative lookup: the honest 'no saved contact matches' must be relayed, with no contact created behind the user's back"
+
+- id: contact_this_is_mom_btw
+  history:
+    - user: "who is +1 555-555-0188"
+      assistant: "That number isn't saved in your Contacts. Its last message said: 'running late, be there soon'."
+      tools: view_messages
+  prompt: "this is my mom btw"
+  expect:
+    - tool: manage_contacts
+      args:
+        name: {icontains: mom}
+        value: {icontains: "0188"}
+  forbid: [send_message, send_email]
+  max_calls: 4
+  trap: "real-usage 1B #33: an identity correction about a number is a Contacts write (manage_contacts), not just a remembered sentence"
+
+- id: contact_its_email_btw
+  history:
+    - user: "whats moms email"
+      assistant: "Mom only has a phone number saved in Contacts, no email address."
+      tools: lookup_contact
+  prompt: "its mom@example.com btw"
+  expect:
+    - tool: manage_contacts
+      args:
+        action: add_email
+        name: {icontains: mom}
+        value: {icontains: "mom@example.com"}
+  forbid: [send_message, send_email]
+  max_calls: 5
+  trap: "real-usage 1B #33 ('its {email} btw'): with no send pending, the address is saved to Mom's contact (manage_contacts add_email)"
