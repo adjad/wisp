@@ -379,7 +379,9 @@ def read_day(date, directory=None):
     except OSError:
         return []
     lines = []
-    for text in raw.splitlines():
+    # JSONL records end at physical LF bytes. str.splitlines() also splits
+    # Unicode separators that can legally appear inside JSON string values.
+    for text in raw.split("\n"):
         try:
             value = json.loads(text)
         except ValueError:

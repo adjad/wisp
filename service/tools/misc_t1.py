@@ -111,10 +111,27 @@ def _where_inference_runs() -> str:
     return f"Inference runs on {where}: no question or data is sent to a cloud model."
 
 
+# Personal mail providers: an address anywhere else is a work or school one
+# (for a Google account, a Google Workspace domain).
+_PERSONAL_MAIL = frozenset({
+    "gmail.com", "googlemail.com", "icloud.com", "me.com", "mac.com", "outlook.com", "hotmail.com",
+    "live.com", "msn.com", "yahoo.com", "ymail.com", "aol.com", "proton.me", "protonmail.com", "pm.me",
+    "gmx.com", "gmx.net", "mail.com", "zoho.com", "fastmail.com", "hey.com", "yandex.com",
+    "hotmail.co.uk", "yahoo.co.uk", "outlook.co.uk", "att.net", "verizon.net", "sbcglobal.net",
+    "cox.net", "comcast.net"})
+
+
+def _is_work_address(email: str) -> bool:
+    domain = email.rpartition("@")[2].strip().lower()
+    return bool(domain) and domain not in _PERSONAL_MAIL
+
+
 def _accounts_report() -> str:
-    """The linked Google accounts by address and use, and Mail's own accounts
-    (2026-10-29 Ask eval: "what's my Workspace account" had nothing to read).
-    Read from Wisp's saved settings only: nothing is fetched."""
+    """The user's own addresses: each linked Google account by use, and the
+    addresses Apple Mail sends from, each marked personal or work/school, so
+    "what's my work email" is answered from what's configured (2026-10-29 Ask
+    eval). Read from Wisp's saved settings and Mail's cached identity only:
+    nothing is fetched."""
     from service import gmail_source
     lines: list[str] = []
     try:
@@ -129,23 +146,44 @@ def _accounts_report() -> str:
         except Exception:  # noqa: BLE001
             pass
         if item.get("workspace"):
-            uses.append("Google Workspace (Drive, Docs, Sheets)")
+            uses.append("Drive, Docs and Sheets")
+        kind = ("work or school (Google Workspace) account" if _is_work_address(email)
+                else "personal Google account")
         note = " (sign-in expired: reconnect it in Settings › Accounts)" if item.get("auth_expired") else ""
-        lines.append(f"- {email}: {', '.join(uses)}{note}")
+        lines.append(f"- {email}: {kind}; {', '.join(uses)}{note}")
     out = (["Google accounts linked to Wisp:"] + lines) if lines else [
         "No Google account is linked to Wisp (Settings › Accounts links one)."]
     try:
-        from service.tools.email_tools import native_email_accounts
+        from service.tools.email_tools import get_identity_emails, native_email_accounts
         mail = sorted({row["name"] for row in native_email_accounts() if row.get("name")})
+        own = [e for e in get_identity_emails() if e.lower() not in accounts]
     except Exception:  # noqa: BLE001
-        mail = []
+        mail, own = [], []
     if mail:
         out.append("Accounts in Apple Mail that Wisp reads: " + ", ".join(mail) + ".")
+    if own:
+        out.append("Your addresses in Apple Mail: " + ", ".join(
+            f"{e} ({'work or school' if _is_work_address(e) else 'personal'})" for e in sorted(own)) + ".")
+    addresses = sorted({*accounts, *own}, key=str.lower)
+    work = [e for e in addresses if _is_work_address(e)]
+    if work:
+        out.append("Work or school addresses (not a personal mail provider): " + ", ".join(work) + ".")
+    elif addresses:
+        out.append("None of these addresses is on a work or school domain; all are personal providers.")
     return "\n".join(out)
 
 
-# Headlines given from the changelog's newest section, at most.
-_WHATS_NEW_MAX = 12
+# Headlines given from the release notes or the changelog, at most.
+_WHATS_NEW_MAX = 20
+_WHATS_NEW_PER_GROUP = 5
+_NOTES_NAME = re.compile(r"(\d+\.\d+\.\d+)(?:-(dev|rc)(\d+))?\.md")
+
+
+def _resources() -> Path:
+    """Contents/Resources in the app, where this file is
+    Resources/backend/service/tools/misc_t1.py; the repository root from source."""
+    root = Path(__file__).resolve().parent.parent.parent
+    return root.parent if root.name == "backend" else root
 
 
 def _changelog_path() -> Path | None:
@@ -158,18 +196,94 @@ def _changelog_path() -> Path | None:
     return None
 
 
-def whats_new(text: str | None = None) -> str:
-    """The newest changelog section's headlines, grouped as it groups them, so
-    "what's new in Wisp" is answered from the release itself rather than made up
-    (2026-10-29 Ask eval). `text` is the changelog, for tests."""
-    if text is None:
-        path = _changelog_path()
-        if path is None:
-            return "This copy of Wisp has no changelog to read, so I can't say what changed."
+def _app_version(resources: Path) -> str:
+    """The app's version: build-info.json in the app, toolchain.json from source."""
+    import json
+    for path in (resources / "build-info.json", resources / "build-support" / "toolchain.json"):
         try:
-            text = path.read_text(errors="replace")
-        except OSError:
-            return "I couldn't read Wisp's changelog, so I can't say what changed."
+            version = json.loads(path.read_text()).get("version")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if isinstance(version, str) and version:
+            return version
+    return ""
+
+
+def release_notes_path(resources: Path | None = None) -> tuple[Path, str] | None:
+    """The newest release notes for this version and that build's name ("0.5.0-dev8"):
+    Documentation/releases in the app (pipeline.py copies this version's notes),
+    docs/releases from source. Final > rc > dev, higher number first."""
+    resources = resources or _resources()
+    version = _app_version(resources)
+    if not version:
+        return None
+    best: tuple[tuple[int, int], Path, str] | None = None
+    for folder in (resources / "Documentation" / "releases", resources / "docs" / "releases"):
+        if not folder.is_dir():
+            continue
+        for path in folder.iterdir():
+            m = _NOTES_NAME.fullmatch(path.name)
+            if not m or m.group(1) != version:
+                continue
+            key = ({"dev": 0, "rc": 1}.get(m.group(2) or "", 2), int(m.group(3) or 0))
+            if best is None or key > best[0]:
+                best = (key, path, path.name[:-3])
+        if best:
+            return best[1], best[2]
+    return None
+
+
+def _headline(line: str) -> str:
+    """A bullet's bold lead when it is a sentence of its own ("**Move to
+    Applications.**"), else the bullet's first sentence ("**Open at login** moved to …")."""
+    head = re.match(r"- \*\*(.+?)\*\*", line)
+    if head and head.group(1).rstrip().endswith((".", "!", "?")):
+        return head.group(1).strip().rstrip(".")
+    text = line[2:].replace("**", "").replace("`", "")
+    return re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0].strip().rstrip(".")
+
+
+def _headlines_out(intro: str, groups: list[tuple[str, list[str]]], source: str) -> str:
+    total = sum(len(items) for _, items in groups)
+    if not total:
+        return f"Wisp's {source} lists no changes."
+    out = [intro]
+    left = _WHATS_NEW_MAX
+    for name, items in groups:
+        # A few from each group, so a long first group doesn't hide the fixes.
+        take = items[:min(left, _WHATS_NEW_PER_GROUP)]
+        if take:
+            out.append(f"{name}:")
+            out += [f"- {item}." for item in take]
+            left -= len(take)
+    shown = _WHATS_NEW_MAX - left
+    if total > shown:
+        out.append(f"(+{total - shown} more in the {source}.)")
+    return "\n".join(out)
+
+
+def release_notes_headlines(text: str, build: str) -> str:
+    """The headlines of a docs/releases page, grouped under its own headings:
+    "What's new" sub-sections, then Fixes and Known issues."""
+    groups: list[tuple[str, list[str]]] = []
+    section = ""
+    for line in text.splitlines():
+        if line.startswith("## "):
+            section = line[3:].strip()
+            if not section.lower().startswith("what"):
+                groups.append((section, []))
+        elif line.startswith("### "):
+            groups.append((line[4:].strip(), []))
+        elif line.startswith("- ") and section:
+            if not groups:
+                groups.append((section, []))
+            groups[-1][1].append(_headline(line))
+    intro = f"What's new in Wisp {build} (from its release notes; headlines only):"
+    return _headlines_out(intro, groups, "release notes")
+
+
+def changelog_headlines(text: str) -> str:
+    """The newest changelog section's headlines, grouped as it groups them."""
     sections = re.split(r"(?m)^## ", text)[1:]
     if not sections:
         return "Wisp's changelog has no release sections to read."
@@ -181,21 +295,32 @@ def whats_new(text: str | None = None) -> str:
         if line.startswith("### "):
             groups.append((line[4:].strip(), []))
         elif line.startswith("- ") and groups:
-            head = re.match(r"- \*\*(.+?)\*\*", line)
-            groups[-1][1].append((head.group(1) if head else line[2:]).strip().rstrip("."))
-    total = sum(len(items) for _, items in groups)
-    if not total:
+            groups[-1][1].append(_headline(line))
+    if not sum(len(items) for _, items in groups):
         return f"Wisp's changelog for {version} lists no changes."
-    out = [f"What's new in Wisp, {version} (from its changelog; headlines only):"]
-    left = _WHATS_NEW_MAX
-    for name, items in groups:
-        if items and left > 0:
-            out.append(f"{name}:")
-            out += [f"- {item}." for item in items[:left]]
-            left -= len(items[:left])
-    if total > _WHATS_NEW_MAX:
-        out.append(f"(+{total - _WHATS_NEW_MAX} more in the changelog.)")
-    return "\n".join(out)
+    intro = f"What's new in Wisp, {version} (from its changelog; headlines only):"
+    return _headlines_out(intro, groups, "changelog")
+
+
+def whats_new() -> str:
+    """What changed in this version, from the release notes the app bundles
+    (the user-facing page for this build), else the changelog, so "what's new
+    in Wisp" is answered from the release itself rather than made up
+    (2026-10-29 Ask eval)."""
+    found = release_notes_path()
+    if found is not None:
+        path, build = found
+        try:
+            return release_notes_headlines(path.read_text(errors="replace"), build)
+        except OSError:
+            pass
+    path = _changelog_path()
+    if path is None:
+        return "This copy of Wisp has no release notes or changelog to read, so I can't say what changed."
+    try:
+        return changelog_headlines(path.read_text(errors="replace"))
+    except OSError:
+        return "I couldn't read Wisp's release notes or changelog, so I can't say what changed."
 
 
 @register(
@@ -204,11 +329,12 @@ def whats_new(text: str | None = None) -> str:
     "what's loaded, and how much memory it's using — for 'what model are you "
     "running', 'why are you slow', 'are you using the cloud'. topic='sync': when "
     "mail, messages and notes last synced — for 'when did my email last sync'. "
-    "topic='accounts': the Google account addresses linked to Wisp and what each "
-    "is used for (Gmail, Calendar, Google Workspace), plus Mail's own accounts — "
-    "for 'which Google account is connected', 'what's my workspace email'. "
+    "topic='accounts': the user's own email addresses — each Google account linked "
+    "to Wisp and what it's used for, and Apple Mail's addresses — each marked "
+    "personal or work/school (Google Workspace) — for 'which Google account is "
+    "connected', 'what's my work email', 'what's my workspace email'. "
     "topic='whats_new': what changed in this version of Wisp, from its own "
-    "changelog — for 'what's new in Wisp', 'what changed in this update'.",
+    "release notes — for 'what's new in Wisp', 'what changed in this update'.",
     {"type": "object", "properties": {
         "topic": {"type": "string", "enum": ["models", "sync", "accounts", "whats_new"],
                   "description": "What to report. Defaults to models."},
@@ -218,7 +344,8 @@ def whats_new(text: str | None = None) -> str:
              "why are you being slow today", "how much memory are you using",
              "which brain is answering me", "what version of you is this",
              "how fresh is your data right now", "when did you last sync everything",
-             "how up to date is what you know"],
+             "how up to date is what you know", "which of my accounts is for work",
+             "which google workspace account is connected", "what changed in this version of wisp"],
 )
 async def wisp_status(topic: str = "models") -> str:
     topic = (topic or "models").strip().lower().replace("-", "_").replace(" ", "_")

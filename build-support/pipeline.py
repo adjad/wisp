@@ -684,6 +684,12 @@ def assemble(runner, binary, destination, meta, offline=False, engine_app=None, 
     docs.mkdir()
     for name in ("CHANGELOG.md", "docs/build-release.md"):
         shutil.copyfile(ROOT / name, docs / Path(name).name)
+    # This version's release notes: wisp_status(topic="whats_new") answers from the newest.
+    notes = docs / "releases"
+    notes.mkdir()
+    for page in sorted((ROOT / "docs/releases").glob(meta["version"] + "*.md")):
+        if re.fullmatch(re.escape(meta["version"]) + r"(?:-(?:dev|rc)\d+)?\.md", page.name):
+            shutil.copyfile(page, notes / page.name)
     shutil.copyfile(SUPPORT / "requirements-runtime.lock", docs / "requirements-runtime.lock")
     if engine_app is not None:
         # Release candidates must match engine.lock.json; previews may use an unpinned local oMLX.

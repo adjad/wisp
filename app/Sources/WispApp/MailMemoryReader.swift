@@ -11,13 +11,18 @@ import SQLite3
 /// IMPORTANT rules:
 /// - Read-only. The Envelope Index is opened SQLITE_OPEN_READONLY; .emlx files
 ///   are only read. Mail.app is never scripted or launched from here.
-/// - Two requests only: `index` (metadata for a window of days, no bodies) and
-///   `body` (one message's raw RFC 822 bytes, capped). The backend parses MIME.
+/// - Three requests only: `index` (metadata for a window of days, no bodies),
+///   `body` (one message's raw RFC 822 bytes, capped; the backend parses MIME) and
+///   `sent` (the user's own sent mail for a few weeks: when, to whom, subject; no
+///   bodies), which answers Ask's "what did I send" (view_emails mailbox='sent').
 /// - Every POST answers one request: nothing is ever sent unasked.
 final class MailMemoryReader {
     static let maxDays = 200
     static let maxIndexRows = 6000
     static let maxBodyBytes = 262_144
+    static let maxSentDays = 31
+    static let maxSentRows = 200
+    static let maxRecipients = 5
 
     private let mailRoot: String
     private let rebuildInterval: TimeInterval
@@ -56,7 +61,8 @@ final class MailMemoryReader {
         let rowid: Int64
     }
 
-    /// Strict shape: {type, request_id, kind: "index", days} or {type, request_id, kind: "body", rowid}.
+    /// Strict shape: {type, request_id, kind: "index", days}, {type, request_id, kind: "body", rowid}
+    /// or {type, request_id, kind: "sent", days} (at most `maxSentDays`).
     static func request(_ payload: [String: Any]) -> Request? {
         guard payload["type"] as? String == "mail_memory_read",
               let id = payload["request_id"] as? String,
@@ -70,6 +76,11 @@ final class MailMemoryReader {
                   let days = payload["days"] as? Int, (1...maxDays).contains(days) else { return nil }
             return Request(id: id, kind: kind, days: days, rowid: 0)
         }
+        if kind == "sent" {
+            guard keys == ["type", "request_id", "kind", "days"],
+                  let days = payload["days"] as? Int, (1...maxSentDays).contains(days) else { return nil }
+            return Request(id: id, kind: kind, days: days, rowid: 0)
+        }
         if kind == "body" {
             guard keys == ["type", "request_id", "kind", "rowid"],
                   let rowid = (payload["rowid"] as? NSNumber)?.int64Value, rowid > 0 else { return nil }
@@ -79,6 +90,20 @@ final class MailMemoryReader {
     }
 
     private func answer(_ request: Request) -> [String: Any] {
+        if request.kind == "sent" {
+            guard let path = MailMemoryReader.envelopeIndexPath(mailRoot) else {
+                return ["ok": false, "error": "no_mail_index"]
+            }
+            let since = Date().timeIntervalSince1970 - Double(request.days) * 86400
+            do {
+                let (rows, capped) = try MailMemoryReader.sentRows(dbPath: path, since: since)
+                return ["ok": true, "rows": rows, "capped": capped]
+            } catch let failure as IndexFailure {
+                return ["ok": false, "error": failure.rawValue]
+            } catch {
+                return ["ok": false, "error": IndexFailure.unreadable.rawValue]
+            }
+        }
         if request.kind == "index" {
             guard let path = MailMemoryReader.envelopeIndexPath(mailRoot) else {
                 return ["ok": false, "error": "no_mail_index"]
@@ -300,6 +325,119 @@ final class MailMemoryReader {
         }
         guard step == SQLITE_DONE else { throw IndexFailure.unreadable }
         return (rows, false)
+    }
+
+    /// The user's sent mail since `since`, newest first, at most `maxSentRows`: when it
+    /// was sent, the account (its native ID, the mailbox URL host), the subject, the RFC
+    /// Message-ID and up to `maxRecipients` To recipients ("Name <address>" or the bare
+    /// address; Cc when there is no To), plus how many recipients there were in all.
+    /// Sent membership is the mailbox or a Gmail label, as in `indexRows`. No bodies.
+    static func sentRows(dbPath: String, since: Double) throws -> ([[String: Any]], Bool) {
+        var db: OpaquePointer?
+        guard sqlite3_open_v2(dbPath, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
+            sqlite3_close(db)
+            throw IndexFailure.unreadable
+        }
+        defer { sqlite3_close(db) }
+        sqlite3_busy_timeout(db, 2000)
+        guard exists(db, table: "messages", column: "date_received"),
+              exists(db, table: "messages", column: "mailbox"),
+              exists(db, table: "mailboxes", column: "url") else { throw IndexFailure.unsupportedSchema }
+        var sentIDs: [Int64] = []
+        var list: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT ROWID, url FROM mailboxes", -1, &list, nil) == SQLITE_OK else {
+            sqlite3_finalize(list)
+            throw IndexFailure.unreadable
+        }
+        while sqlite3_step(list) == SQLITE_ROW {
+            if isSentMailbox(url: text(list, 1)) { sentIDs.append(sqlite3_column_int64(list, 0)) }
+        }
+        sqlite3_finalize(list)
+        guard !sentIDs.isEmpty else { return ([], false) }
+        let sentList = sentIDs.map(String.init).joined(separator: ",")
+        let labels = exists(db, table: "labels", column: "mailbox_id") && exists(db, table: "labels", column: "message_id")
+        let membership = labels
+            ? "(m.mailbox IN (\(sentList)) OR m.ROWID IN (SELECT message_id FROM labels WHERE mailbox_id IN (\(sentList))))"
+            : "m.mailbox IN (\(sentList))"
+        // date_sent is when the user sent it; date_received is when Mail filed the copy.
+        let when = exists(db, table: "messages", column: "date_sent")
+            ? "CASE WHEN IFNULL(m.date_sent, 0) > 0 THEN m.date_sent ELSE m.date_received END" : "m.date_received"
+        let notDeleted = exists(db, table: "messages", column: "deleted") ? "IFNULL(m.deleted, 0) = 0" : "1"
+        let hasSubject = exists(db, table: "messages", column: "subject") && exists(db, table: "subjects", column: "subject")
+        let subject = hasSubject ? "IFNULL(s.subject, '')" : "''"
+        let subjectJoin = hasSubject ? "LEFT JOIN subjects s ON m.subject = s.ROWID" : ""
+        let global = exists(db, table: "message_global_data", column: "message_id_header")
+            && exists(db, table: "messages", column: "global_message_id")
+        let rfcID = global ? "IFNULL(g.message_id_header, '')" : "''"
+        let globalJoin = global ? "LEFT JOIN message_global_data g ON g.ROWID = m.global_message_id" : ""
+        let sql = """
+        SELECT m.ROWID, IFNULL(mb.url, ''), \(when) AS sent_at, \(subject), \(rfcID)
+        FROM messages m
+        JOIN mailboxes mb ON m.mailbox = mb.ROWID
+        \(globalJoin)
+        \(subjectJoin)
+        WHERE \(membership) AND \(notDeleted) AND \(when) > \(since)
+        ORDER BY sent_at DESC
+        LIMIT \(maxSentRows + 1)
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+            sqlite3_finalize(stmt)
+            throw IndexFailure.unreadable
+        }
+        defer { sqlite3_finalize(stmt) }
+        // Recipients are optional: an index without the table still lists what was sent.
+        var people: OpaquePointer?
+        if exists(db, table: "recipients", column: "message") && exists(db, table: "addresses", column: "comment") {
+            let recipientSQL = """
+            SELECT a.address, a.comment, IFNULL(r.type, 0) FROM recipients r
+            JOIN addresses a ON a.ROWID = r.address
+            WHERE r.message = ? ORDER BY IFNULL(r.type, 0), IFNULL(r.position, 0)
+            """
+            if sqlite3_prepare_v2(db, recipientSQL, -1, &people, nil) != SQLITE_OK {
+                sqlite3_finalize(people)
+                people = nil
+            }
+        }
+        defer { sqlite3_finalize(people) }
+        var rows: [[String: Any]] = []
+        var step = sqlite3_step(stmt)
+        while step == SQLITE_ROW {
+            defer { step = sqlite3_step(stmt) }
+            if rows.count == maxSentRows { return (rows, true) }
+            let rowid = sqlite3_column_int64(stmt, 0)
+            let (to, total) = recipients(people, message: rowid)
+            rows.append([
+                "rowid": rowid,
+                "account": URL(string: text(stmt, 1))?.host ?? "",
+                "ts": sqlite3_column_double(stmt, 2),
+                "subject": text(stmt, 3),
+                "rfc_message_id": text(stmt, 4),
+                "to": to,
+                "recipients": total,
+            ])
+        }
+        guard step == SQLITE_DONE else { throw IndexFailure.unreadable }
+        return (rows, false)
+    }
+
+    /// Up to `maxRecipients` of one message's To recipients (Cc, then Bcc, when it has no
+    /// To), each "Name <address>" or the bare address, and how many recipients it had.
+    private static func recipients(_ stmt: OpaquePointer?, message: Int64) -> ([String], Int) {
+        guard let stmt else { return ([], 0) }
+        sqlite3_reset(stmt)
+        sqlite3_bind_int64(stmt, 1, message)
+        var byType: [Int32: [String]] = [:]
+        var total = 0
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            total += 1
+            let address = text(stmt, 0)
+            let name = text(stmt, 1).trimmingCharacters(in: .whitespaces)
+            guard !address.isEmpty else { continue }
+            byType[sqlite3_column_int(stmt, 2), default: []].append(name.isEmpty ? address : "\(name) <\(address)>")
+        }
+        guard let first = byType.keys.min() else { return ([], total) }
+        return (Array(byType[first]!.prefix(maxRecipients)), total)
     }
 
     // MARK: - .emlx files
