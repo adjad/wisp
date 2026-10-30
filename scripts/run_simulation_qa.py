@@ -87,6 +87,9 @@ PROFILE_TESTS = {
         "tests/test_workflow_engine.py",
     },
     "sources": {
+        # The 2026-10-29 eval reads: sent mail, folder sizes, file search, accounts,
+        # what's new, Focus and volume. Mocked sources and tmp_path only.
+        "tests/test_rc1_eval_reads.py",
         "tests/test_brief_fallback.py",
         "tests/test_daily_summary_history_independence.py",
         "tests/test_email_digest_presentation.py",
