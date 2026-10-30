@@ -155,7 +155,8 @@ struct DisplayGeometryChecks {
         tabScrollSourceChecks()
         hybridNotchChecks()
         fullScreenProbeChecks()
-        print("PASS: display geometry — 8 notched MacBooks, 7 notchless built-in displays, 7 monitor placements, overrides, target selection, hover intent, menu-bar status, Brief/Day scroll cap, hybrid notch, full-screen probe")
+        widePanelChecks()
+        print("PASS: display geometry — 8 notched MacBooks, 7 notchless built-in displays, 7 monitor placements, overrides, target selection, hover intent, menu-bar status, Brief/Day scroll cap, hybrid notch, full-screen probe, wide Brief panel")
     }
 
     /// The hybrid notch: a notch behind a full-screen app becomes an undrawn
@@ -435,7 +436,7 @@ struct DisplayGeometryChecks {
         guard let overlay = try? String(contentsOf: app.appendingPathComponent("OverlayView.swift"), encoding: .utf8),
               let cards = try? String(contentsOf: app.appendingPathComponent("ProactiveCards.swift"), encoding: .utf8)
         else { preconditionFailure("tab scroll: read the overlay's source") }
-        check(overlay.contains("case .brief:\n                tabScroll { NotchBriefView(model: model, today: todayModel) }"),
+        check(overlay.contains("case .brief:\n                tabScroll { NotchBriefView(model: model, today: todayModel, wide: briefIsWide) }"),
               "Brief sits in the tab scroll")
         check(overlay.contains("case .day:\n                tabScroll { NotchDayView(model: model, today: todayModel) }"),
               "Day sits in the tab scroll")
@@ -454,6 +455,77 @@ struct DisplayGeometryChecks {
               "an opened draft scrolls into sight")
         check(!cards.contains("withAnimation { proxy.scrollTo") && cards.contains("{ proxy.scrollTo(id) }"),
               "revealing never animates")
+    }
+
+    /// The Brief's two-column view: a wider expanded panel, still centred under the
+    /// notch or card anchor, only where the display has the room. Nothing else about
+    /// the layout moves.
+    static func widePanelChecks() {
+        let wide = SurfaceLayout.wideExpandedWidth
+        check(wide == 840 && SurfaceLayout.minWideWidth == 800 && SurfaceLayout.minWideWidth < wide, "wide panel constants")
+        // Notch, menu-bar and floating layouts all widen, scaled modes included.
+        for (n, d, style) in [("MBP 14", notched(1512, 982), .notch),
+                              ("MBP 14 larger text", notched(1352, 878), .notch),
+                              ("M1 Air", notchless(1440, 900), .menuBar),
+                              ("monitor", monitor(1920, 1080), .floating),
+                              ("monitor right of laptop", monitor(2560, 1440, origin: CGPoint(x: 1512, y: 0)), .floating)]
+            as [(String, DisplayMetrics, SurfaceLayout.Style)] {
+            let l = SurfaceLayout.make(for: d)
+            let w = l.widened(true)
+            check(l.style == style && l.canWiden && w.canWiden, "\(n): has room for the wide panel")
+            check(l.expandedWidth == 640 && w.expandedWidth == wide, "\(n): widens 640 → \(wide)")
+            // Only the expanded width differs: the bar, its zone and the anchor stay put.
+            var narrowed = w; narrowed.expandedWidth = l.expandedWidth
+            check(narrowed == l, "\(n): widening changes nothing but the expanded width")
+            check(w.maxPanelHeight == l.maxPanelHeight && w.contentTopInset == l.contentTopInset, "\(n): same room and inset")
+            for h in [120, 640, 4000] as [CGFloat] {
+                let f = w.expandedFrame(contentHeight: h)
+                check(f.width == wide && d.frame.contains(f), "\(n): wide panel \(h) on screen")
+                check(abs(f.midX - l.usableFrame.midX) <= 1, "\(n): wide panel centred on the anchor")
+                check(f.maxY == l.expandedFrame(contentHeight: h).maxY, "\(n): wide panel hangs from the same top")
+            }
+            check(l.widened(false) == l, "\(n): widened(false) is unchanged")
+            check(w.widened(true) == w, "\(n): widening twice is the same as once")
+        }
+        let notch = SurfaceLayout.make(for: notched(1512, 982))
+        check(abs(notch.widened(true).expandedFrame(contentHeight: 300).midX - 756) <= 1, "Notch: wide panel centred on the display")
+        // A display without the room stays at its normal width, whatever is asked.
+        for (n, d) in [("small monitor", monitor(820, 700)), ("narrow", monitor(500, 700)),
+                       ("just short", monitor(823, 700))] {
+            let l = SurfaceLayout.make(for: d)
+            check(!l.canWiden, "\(n): too narrow to widen")
+            check(l.widened(true) == l && l.widened(false) == l, "\(n): keeps its normal width")
+        }
+        // The edge: usable width less the screen margins must reach 800.
+        let edge = SurfaceLayout.make(for: monitor(824, 700)).widened(true)
+        check(edge.expandedWidth == 800, "At the edge the panel fills the margins' room")
+        check(SurfaceLayout.make(for: monitor(840.5, 700)).widened(true).expandedWidth == 816, "Narrower than 840 rounds down to the room")
+        check(SurfaceLayout.make(for: monitor(860, 700)).widened(true).expandedWidth == 836, "A display a little wider than 840 fits within its margins")
+        // Two columns only on the proactive Brief with nothing over it.
+        check(NotchBriefView.canShowWide(tab: .brief, covered: false, engineBrief: true, canWiden: true),
+              "the proactive Brief can show two columns")
+        check(!NotchBriefView.canShowWide(tab: .day, covered: false, engineBrief: true, canWiden: true)
+              && !NotchBriefView.canShowWide(tab: .ask, covered: false, engineBrief: true, canWiden: true),
+              "Day and Ask stay one panel wide")
+        check(!NotchBriefView.canShowWide(tab: .brief, covered: true, engineBrief: true, canWiden: true),
+              "Quick settings or a card over the Brief: one column")
+        check(!NotchBriefView.canShowWide(tab: .brief, covered: false, engineBrief: false, canWiden: true),
+              "loading, the tiles Brief or another day: one column")
+        check(!NotchBriefView.canShowWide(tab: .brief, covered: false, engineBrief: true, canWiden: false),
+              "no room on the display: one column")
+        // The window and the content widen from the same state; the search panel never does.
+        let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("app/Sources/WispApp")
+        guard let overlay = try? String(contentsOf: app.appendingPathComponent("OverlayView.swift"), encoding: .utf8),
+              let panel = try? String(contentsOf: app.appendingPathComponent("OverlayPanel.swift"), encoding: .utf8),
+              let delegate = try? String(contentsOf: app.appendingPathComponent("AppDelegate.swift"), encoding: .utf8)
+        else { preconditionFailure("wide panel: read the overlay's source") }
+        check(overlay.contains(".frame(width: layout.widened(briefIsWide).expandedWidth)"),
+              "the content widens with the Brief's two columns")
+        check(delegate.contains("layout.widened(NotchBriefView.showsWide(model: self.model, today: self.todayModel,"),
+              "the notch window widens from the same state")
+        check(panel.contains("var layoutProvider: () -> SurfaceLayout = { MainActor.assumeIsolated { DisplayGeometry.shared.layout } }"),
+              "a panel's default layout (the search panel's) is never widened")
     }
 
     /// The notch's hover zone: most of the notch, never its bottom strip, and the top edge.
