@@ -3,7 +3,8 @@
 POST /mode used to flip only the in-memory flags, so a user who turned Full
 access off got it back from policy.yaml's `full_access: true` on the next
 start. The choice is now saved in WISP_HOME/access_mode.json (0600) and laid
-over the YAML default at import; a missing or bad file means the YAML default.
+over the YAML default at import; a missing file means the YAML default, and a
+file that is there but bad means Full access off (it may have been an "off").
 
 A restart is a fresh interpreter: MOE_DIR is resolved once at import, so each
 boot runs in its own process with WISP_HOME and HOME under tmp_path. Nothing
@@ -87,29 +88,55 @@ def test_read_only_survives_a_restart_the_same_way(tmp_path):
     assert _boot(tmp_path) == {**default, "read_only": flipped}
 
 
+def test_a_missing_file_means_the_yaml_default(tmp_path):
+    assert _boot(tmp_path) == _yaml_default()
+
+
 @pytest.mark.parametrize("contents", [
-    None,                                   # missing
     "",                                     # empty (a torn write)
     "not json",
     "[]",
     '{"full_access": "false"}',             # strings are not choices
     '{"full_access": 0}',
     '{"full_access": null}',
-    '{"full_access": OPPOSITE, "disable_safety_floor": true}',   # unknown key: the whole file is refused
+    '{"full_access": true, "disable_safety_floor": true}',   # unknown key: the whole file is refused
     "symlink",                              # a link to a valid file is refused, not followed
+    "directory",
+    "fifo",                                 # must not hang the start either
+    "hardlink",
+    "unreadable",
 ])
-def test_a_missing_or_bad_file_means_the_yaml_default(tmp_path, contents):
+def test_a_bad_file_fails_closed(tmp_path, contents):
+    """#409 audit: a saved "off" that was damaged or replaced must not fall back to
+    policy.yaml's shipped `full_access: true`. read_only keeps the YAML default."""
     default = _yaml_default()
-    opposite = json.dumps(not default["full_access"])
     path = tmp_path / "moe" / "access_mode.json"
     path.parent.mkdir(parents=True)
+    target = tmp_path / "elsewhere.json"
+    target.write_text(json.dumps({"full_access": True}))
     if contents == "symlink":
-        target = tmp_path / "elsewhere.json"
-        target.write_text(json.dumps({"full_access": not default["full_access"]}))
         path.symlink_to(target)
-    elif contents is not None:
-        path.write_text(contents.replace("OPPOSITE", opposite))
-    assert _boot(tmp_path) == default
+    elif contents == "directory":
+        path.mkdir()
+    elif contents == "fifo":
+        os.mkfifo(path)
+    elif contents == "hardlink":
+        os.link(target, path)
+    elif contents == "unreadable":
+        path.write_text(json.dumps({"full_access": True}))
+        path.chmod(0)
+    else:
+        path.write_text(contents)
+    assert _boot(tmp_path) == {**default, "full_access": False}
+
+
+def test_a_new_choice_replaces_a_bad_file(tmp_path):
+    path = tmp_path / "moe" / "access_mode.json"
+    path.parent.mkdir(parents=True)
+    path.write_text("not json")
+    _boot(tmp_path, {"full_access": True})
+    assert json.loads(path.read_text()) == {"full_access": True}
+    assert _boot(tmp_path)["full_access"] is True
 
 
 # --- the saved file ---------------------------------------------------------------------
@@ -237,3 +264,12 @@ def test_post_mode_reports_a_choice_it_could_not_save(wisp, mode_file):
     assert "restarts" in response.json()["detail"]
     # The app re-reads /mode after a failed reply and sees what is in force.
     assert wisp.get("/mode").json()["full_access"] is False
+
+
+@pytest.mark.parametrize("value", ["false", 0, 1, None, [], {}])
+def test_post_mode_takes_only_true_or_false(wisp, mode_file, value):
+    """bool("false") is True, and the choice is saved: anything but a boolean is refused."""
+    before = wisp.get("/mode").json()
+    response = wisp.post("/mode", json={"full_access": value})
+    assert response.status_code == 422
+    assert wisp.get("/mode").json() == before and not mode_file.exists()

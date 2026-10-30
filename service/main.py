@@ -1303,8 +1303,12 @@ async def set_mode(body: dict[str, Any]) -> dict[str, Any]:
     """The user's access choice. Saved (service/safety/policy.choose_mode), so it
     survives a restart instead of falling back to policy.yaml's default."""
     from service.safety import read_only, full_access, choose_mode
+    chosen = {key: body[key] for key in ("read_only", "full_access") if key in body}
+    if any(type(value) is not bool for value in chosen.values()):
+        # bool("false") is True, and the choice is now saved across restarts.
+        raise HTTPException(status_code=422, detail="read_only and full_access must be true or false.")
     try:
-        choose_mode({key: bool(body[key]) for key in ("read_only", "full_access") if key in body})
+        choose_mode(chosen)
     except OSError:
         # Already applied in memory; the app re-reads /mode when this reply fails.
         raise HTTPException(status_code=500, detail="Wisp changed this for now, but couldn't save it, "

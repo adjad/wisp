@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shlex
+import stat
 from contextlib import contextmanager
 from contextvars import ContextVar
 from itertools import chain
@@ -645,17 +646,60 @@ MODE_PATH = MOE_DIR / "access_mode.json"
 _MODE_KEYS = frozenset({"read_only", "full_access"})
 
 
-def _saved_mode() -> dict[str, bool]:
-    """The saved choice, or {} when it is missing, unreadable or malformed."""
+class _BadModeFile(Exception):
+    """access_mode.json exists but isn't a valid saved choice."""
+
+
+def _read_mode() -> dict[str, bool]:
+    """The saved choice; {} when there is none. A file that is there but can't be
+    trusted (a symlink, a FIFO or directory, another owner, an extra hard link,
+    unreadable, malformed or with unknown keys) raises _BadModeFile."""
     try:
-        with os.fdopen(os.open(MODE_PATH, os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:  # noqa: BLE001 — a bad file means the policy.yaml default
+        # O_NONBLOCK: a FIFO planted here must not hang the service's start.
+        fd = os.open(MODE_PATH, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except (FileNotFoundError, NotADirectoryError):
         return {}
+    except OSError as e:
+        raise _BadModeFile(str(e)) from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+            raise _BadModeFile("not a regular file of this user's")
+        with os.fdopen(fd, encoding="utf-8") as f:
+            fd = -1
+            data = json.load(f)
+    except _BadModeFile:
+        raise
+    except Exception as e:  # noqa: BLE001 — unreadable or not JSON
+        raise _BadModeFile(str(e)) from None
+    finally:
+        if fd >= 0:
+            os.close(fd)
     if (type(data) is not dict or not data.keys() <= _MODE_KEYS
             or any(type(value) is not bool for value in data.values())):
-        return {}
+        raise _BadModeFile("not a saved access choice")
     return data
+
+
+def _saved_mode() -> dict[str, bool]:
+    """The saved choice, or {} when it is missing or can't be trusted."""
+    try:
+        return _read_mode()
+    except _BadModeFile:
+        return {}
+
+
+def _startup_mode() -> dict[str, bool]:
+    """The saved choice laid over policy.yaml at import. A file that is there but
+    bad fails closed: Full access off, whatever policy.yaml says, since it may
+    have been the user's "off" that got damaged or replaced (0.5.0 #409 audit)."""
+    try:
+        return _read_mode()
+    except _BadModeFile as e:
+        import logging
+        logging.getLogger("wisp.policy").warning(
+            "access_mode.json can't be read (%s); Full access stays off until it is chosen again", e)
+        return {"full_access": False}
 
 
 def _save_mode(data: dict[str, bool]) -> None:
@@ -677,7 +721,7 @@ def _save_mode(data: dict[str, bool]) -> None:
         raise
 
 
-_STARTUP_MODE = _saved_mode()
+_STARTUP_MODE = _startup_mode()
 
 # View-only mode: the app may READ/inspect anything but never modify the machine.
 # Default ON — a local assistant shouldn't be able to change things unless you opt in.

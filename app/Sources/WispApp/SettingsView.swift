@@ -220,6 +220,9 @@ final class SettingsLoader: ObservableObject {
     // Wisp window's composer all read and write it through this loader.
     @Published private(set) var fullAccess: Bool?
     @Published private(set) var fullAccessPending = false
+    /// Set when the service applied the last change but couldn't save it, so it
+    /// will go back at the next restart (#409 audit: the 500 was never shown).
+    @Published private(set) var fullAccessSaveProblem: String?
     @Published private(set) var saveWhenAway: Bool?
     @Published private(set) var saveWhenAwayPending = false
     // The Daily Summary's morning and evening hours, as the service confirmed them.
@@ -1136,10 +1139,12 @@ final class SettingsLoader: ObservableObject {
 
     @discardableResult
     private func confirmFullAccess(_ on: Bool) async -> Bool? {
-        var confirmed = await client.requestFullAccess(on)
+        let reply = await client.requestFullAccessReporting(on)
+        var confirmed = reply.confirmed
         // A lost reply may mean the write happened; only a fresh read can tell.
         if confirmed == nil { confirmed = await client.fullAccessState() }
         fullAccess = confirmed
+        fullAccessSaveProblem = reply.problem
         fullAccessPending = false
         return confirmed
     }
@@ -1156,8 +1161,10 @@ final class SettingsLoader: ObservableObject {
         guard let on = fullAccess else {
             return "Full access hasn't been confirmed. Wisp may still be acting without asking. Check status or turn it off."
         }
-        return on ? "Actions run automatically with no confirmation."
-                  : "Risky actions pause for your confirmation."
+        let state = on ? "Actions run automatically with no confirmation."
+                       : "Risky actions pause for your confirmation."
+        guard let problem = fullAccessSaveProblem else { return state }
+        return state + " " + problem
     }
 
     func refreshBriefTimes() async {
