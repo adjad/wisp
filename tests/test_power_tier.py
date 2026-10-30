@@ -157,10 +157,12 @@ def test_the_watch_sees_an_app_that_starts_mid_request_within_half_a_second(real
             app.run(started, 0.0)
             app.run(P.WATCH_EVERY_S - started, share)
             held = P.WATCH_EVERY_S - started
-            while P.check_other_gpu():
+            for _ in range(4):                      # bounded: a look that never sees it fails
+                if not P.check_other_gpu():
+                    break
                 app.run(P.WATCH_EVERY_S, share)
                 held += P.WATCH_EVERY_S
-            assert held <= 0.5, (share, started, held)
+            assert held <= 2 * P.WATCH_EVERY_S, (share, started, held)
 
 
 def test_a_failed_ioreg_read_means_uncapped_and_no_read_for_a_while(real_gpu, away):

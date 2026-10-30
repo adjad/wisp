@@ -258,9 +258,11 @@ def _fresh(reading: tuple[float, float, bool] | None, max_age_s: float = _AWAY_S
 # than beside the same reply uncapped (p99 3.1-3.5 vs 2.6-3.0 ms). Live on
 # 0.5.0-dev8 build 3152 such an app was held 1.36 s with a 1 s watch (a 1 s
 # window reaches 7.5% only ~0.4 s after the app starts, and the next look can
-# be a second away), and 2 of its 1,440 frames ran past 8.3 ms. A look is one
-# ioreg read (~15 ms of CPU, in a worker thread), so four a second while a
-# capped call runs costs ~6% of one core, small next to the watts saved.
+# be a second away), and 2 of its 1,440 frames ran past 8.3 ms. With this
+# code's own watch (no HTTP hop), the lift came 0.89-1.09 s after such an app
+# started at 1 s and 0.27-0.30 s at 0.25 s. A look is one ioreg read (~20 ms of
+# CPU, in a worker thread), so four a second while a capped call runs costs
+# ~8.5% of one core (3% at 1 s), small next to the watts saved.
 OTHER_GPU_BUSY = 0.075
 WATCH_EVERY_S = 0.25
 _GPU_MIN_GAP_S = 0.2           # a shorter window can't tell: reuse the last answer
