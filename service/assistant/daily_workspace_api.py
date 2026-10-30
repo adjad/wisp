@@ -9,6 +9,7 @@ import threading
 import time
 import secrets
 from ipaddress import ip_address
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
@@ -222,6 +223,12 @@ class Correction(BaseModel):
     ignored: bool = Field(default=True, strict=True)
 
 
+class RemoveSuggestion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # daily_workspace.key ids; a grouped review block sends each item it covers.
+    evidence_ids: list[Annotated[str, Field(pattern=r"^[a-z_]{1,24}:[0-9a-f]{24}$")]] = Field(min_length=1, max_length=20)
+
+
 def fail(exc):
     raise HTTPException(409 if isinstance(exc, RevisionConflict) else 422, str(exc)) from exc
 
@@ -241,6 +248,18 @@ def correct_availability(body: Correction):
         return {"ok": True}
     except ValueError as exc:
         fail(exc)
+
+
+@router.post("/suggestions/remove")
+async def remove_suggestion(body: RemoveSuggestion):
+    """Remove a suggested block from the Day: its items are not suggested again, by
+    Replan or by any later plan. Only Wisp's own record changes; the mail, reminder
+    or text it came from is untouched and stays in Needs you."""
+    from service.assistant.store import assistant_store
+    assistant_store.remove_suggestions(body.evidence_ids)
+    from service.assistant.hub import hub
+    await hub.publish({"type": "changed"})
+    return {"ok": True, "removed": len(set(body.evidence_ids))}
 
 
 @router.get("/email")
