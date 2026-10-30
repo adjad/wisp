@@ -255,3 +255,50 @@ def test_simultaneous_toggles_keep_both_changes(loaded_bundled_skills, tmp_path:
     assert skills._bundled_state() == {"humanizer": True, "interview-me": True, "idea-refine": True,
                                       "mac-controls": False}
     assert not list((tmp_path / "user-skills").glob("*.tmp"))
+
+
+def test_a_copy_with_only_its_frontmatter_edited_stays_theirs(loaded_bundled_skills, tmp_path: Path) -> None:
+    """Auditor note: the body and other files matched, so a triggers edit was retired."""
+    copy = _old_build_toggle_copy(tmp_path, "humanizer", True)
+    md = copy / "SKILL.md"
+    md.write_text(md.read_text().replace("---\n", "---\ntriggers: [my own phrase]\n", 1))
+    skills.load()
+    mine = skills.get("humanizer")
+    assert not mine.bundled and "my own phrase" in mine.triggers and copy.exists()
+
+
+def test_a_safe_dump_rewrite_of_the_frontmatter_is_still_a_toggle_copy(loaded_bundled_skills, tmp_path: Path) -> None:
+    """The old set_enabled re-serialized the frontmatter with yaml.safe_dump."""
+    import yaml
+    copy = tmp_path / "user-skills" / "humanizer"
+    shutil.copytree(skills.BUNDLED_SKILLS_DIR / "humanizer", copy)
+    md = copy / "SKILL.md"
+    m = skills._FRONTMATTER_RE.match(md.read_text())
+    meta = yaml.safe_load(m.group(1))
+    meta.setdefault("metadata", {}).setdefault("wisp", {})["enabled"] = True
+    meta.pop("enabled", None)
+    md.write_text("---\n" + yaml.safe_dump(meta, sort_keys=False) + "---\n\n" + m.group(2).lstrip())
+    skills.load()
+    assert skills.get("humanizer").bundled and not copy.exists()
+
+
+def test_a_copy_that_can_t_move_stays_and_is_retried(loaded_bundled_skills, tmp_path: Path, monkeypatch) -> None:
+    copy = _old_build_toggle_copy(tmp_path, "humanizer", True)
+
+    move = shutil.move
+
+    def refuse(*a, **k):
+        raise OSError("read-only")
+    monkeypatch.setattr(skills.shutil, "move", refuse)
+    skills.load()
+    assert copy.exists() and not skills.get("humanizer").bundled
+    monkeypatch.setattr(skills.shutil, "move", move)
+    skills.load()
+    assert not copy.exists() and skills.get("humanizer").bundled
+
+
+def test_a_failed_migration_still_loads_every_skill(loaded_bundled_skills, monkeypatch) -> None:
+    def boom():
+        raise RuntimeError("unexpected")
+    monkeypatch.setattr(skills, "_retire_toggle_copies", boom)
+    assert {"humanizer", "interview-me"} <= set(skills.load())

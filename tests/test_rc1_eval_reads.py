@@ -202,3 +202,10 @@ def test_focus_won_t_read_an_oversized_file(tmp_path, monkeypatch):
     monkeypatch.setattr(system_extras, "_FOCUS_MAX_BYTES", 10)
     _focus_db(tmp_path, [{"assertionDetails": {"assertionDetailsModeIdentifier": "com.apple.focus.work"}}])
     assert system_extras.focus_status(tmp_path) == "I couldn't read the Focus state on this Mac."
+
+
+def test_focus_of_deeply_nested_json_reads_as_unknown(tmp_path):
+    """Auditor note: json.loads raised RecursionError past the size cap's reach."""
+    (tmp_path / "Assertions.json").write_text("[" * 200_000 + "]" * 200_000)
+    (tmp_path / "ModeConfigurations.json").write_text('{"data": []}')
+    assert system_extras.focus_status(tmp_path) == "I couldn't read the Focus state on this Mac."

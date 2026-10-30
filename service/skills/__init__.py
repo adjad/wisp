@@ -198,7 +198,10 @@ def load() -> dict[str, Skill]:
     found: dict[str, Skill] = {}
     try:
         SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-        _retire_toggle_copies()
+        try:
+            _retire_toggle_copies()
+        except Exception:  # noqa: BLE001 — a failed migration must not hide every skill
+            pass
         for root, bundled in ((BUNDLED_SKILLS_DIR, True), (SKILLS_DIR, False)):
             if not root.exists():
                 continue
@@ -275,6 +278,27 @@ def _same_files(copy: Path, bundled: Path) -> bool:
         return False
 
 
+def _toggle_free_meta(md: Path) -> dict | None:
+    """A SKILL.md's frontmatter without the `enabled` an older set_enabled
+    wrote (top level or under metadata.wisp, adding those maps when absent)."""
+    try:
+        m = _FRONTMATTER_RE.match(md.read_text(errors="replace"))
+        meta = yaml.safe_load(m.group(1)) if m else {}
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(meta, dict):
+        return None if meta else {}
+    meta.pop("enabled", None)
+    metadata = meta.get("metadata")
+    if isinstance(metadata, dict) and isinstance(metadata.get("wisp"), dict):
+        metadata["wisp"].pop("enabled", None)
+        if not metadata["wisp"]:
+            del metadata["wisp"]
+        if not metadata:
+            del meta["metadata"]
+    return meta
+
+
 def _retire_toggle_copies() -> None:
     """Move aside each override an older build's set_enabled made, keeping the
     on/off it carried (see _SHIPPED_BODIES), so the bundled skill applies again."""
@@ -289,6 +313,9 @@ def _retire_toggle_copies() -> None:
         if (mine is None or mine.error or mine.name != bundled.name
                 or _body_hash(mine.body) not in _SHIPPED_BODIES.get(bundled.name, frozenset())
                 or not _same_files(copy, bundled_dir)):
+            continue
+        frontmatter = _toggle_free_meta(copy / "SKILL.md")
+        if frontmatter is None or frontmatter != _toggle_free_meta(bundled_dir / "SKILL.md"):
             continue
         if not _save_bundled_state(bundled.name, mine.enabled, unless_set=True):
             continue
