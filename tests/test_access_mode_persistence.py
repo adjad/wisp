@@ -296,3 +296,33 @@ def test_moving_wisp_s_folder_itself_asks_in_every_mode(monkeypatch):
     assert note.tier is policy.Tier.ALLOW
     listing = policy.decide("fs_read", {"path": str(MOE_DIR)}, tool="list_directory")
     assert listing.tier is policy.Tier.ALLOW
+
+
+@pytest.mark.parametrize("cmd", [
+    "mv ~/.moe/. ~/old", "mv ~/.m* ~/old", "mv ~/.mo? ~/old", "mv ~/.[m]oe ~/old",
+    "cp -R ~/staged/ ~/.moe/", "rsync -a ~/staged/ ~/.moe",
+])
+def test_changing_the_folder_by_glob_or_dot_asks(monkeypatch, cmd):
+    """#413 audit: `~/.moe/.` and a dot-name glob that expands to it name the folder too."""
+    from service.safety import grants
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    monkeypatch.setattr(grants, "check", lambda *args: "allow")
+    assert policy.shell_secret_hit({"cmd": cmd})
+    assert policy.decide("shell", {"cmd": cmd}, tool="run_shell").tier is policy.Tier.CONFIRM
+
+
+@pytest.mark.parametrize("cmd", [
+    "cd ~/.moe && ls", "ls ~/.moe | wc -l", "ls -la ~/.moe", "du -sh ~/.moe", "ls ~/.m*",
+])
+def test_listing_the_folder_doesnt_ask(monkeypatch, cmd):
+    """#413 audit: listing or counting what's in ~/.moe reads names, not a file's contents."""
+    assert policy.shell_secret_hit({"cmd": cmd}) is None
+
+
+@pytest.mark.parametrize("cmd", [
+    "cd ~/.moe && cat *", "cd ~/.moe && ls & mv ~/.moe ~/x", "ls ~/.moe; mv ~/.moe ~/x",
+    "ls $(mv ~/.moe ~/x)", "cd ~/.moe && cat grants.json", "ls ~/.moe > ~/out",
+])
+def test_a_listing_with_anything_else_still_asks(cmd):
+    assert policy.shell_secret_hit({"cmd": cmd})

@@ -961,10 +961,40 @@ _SHELL_SECRET = [
     r"(?<![\w-])\.(?:ssh|aws|gnupg|netrc)(?![\w-])",
     r"\.config/(?:gh|gcloud)\b", r"\bkeychains?\b", r"\bsecurity\s+(?:find|dump|export)-",
     r"\b(?:gmail|mcp|grants|access_mode)\.json\b", r"\bgoogle_workspace\b", r"\.reset-pending\b",
-    # The ~/.moe folder itself (not a file in it): moving or replacing it swaps
-    # grants.json and access_mode.json without naming them (#409 audit).
-    r"(?<![\w-])\.moe/?(?=$|[\s'\";|&)])",
 ]
+# The ~/.moe folder itself (not a file in it): moving or replacing it swaps
+# grants.json and access_mode.json without naming them (#409 audit). `~/.moe/.`
+# is the folder too.
+_SHELL_MOE_FOLDER = r"(?<![\w-])\.moe(?:/\.?)?(?=$|[\s'\";|&)])"
+# A dot-name glob (`~/.m*`, `~/.mo?`, `~/.[m]oe`) that the shell may expand to it.
+_SHELL_GLOB_WORD = re.compile(r"(?<![\w-])\.[^\s/'\";|&()<>]*[*?\[][^\s/'\";|&()<>]*")
+# Listing a folder or counting what is in it reads names and sizes, never a
+# file's contents, so `cd ~/.moe && ls` and `ls ~/.moe | wc -l` don't ask.
+_LISTING_ONLY = frozenset({"cd", "ls", "wc", "du", "stat", "pwd", "sort", "uniq"})
+
+
+def _only_lists(cmd: str) -> bool:
+    """Every command in `cmd` lists or counts (_LISTING_ONLY): no substitution,
+    redirect, background `&` or subshell, and each `&&`/`||`/`;`/`|` part
+    starts with one of those programs. Quoting is not parsed: a quoted
+    separator just makes a part fail, which asks."""
+    if re.search(r"[`$<>(){}\n\\]|(?<!&)&(?!&)", cmd):
+        return False
+    for part in re.split(r"&&|\|\||[;|]", cmd):
+        words = part.split()
+        if not words or words[0] not in _LISTING_ONLY:
+            return False
+    return True
+
+
+def _moe_folder_hit(text: str) -> str | None:
+    """Where `text` names Wisp's data folder itself, spelled out or as a glob."""
+    if (m := re.search(_SHELL_MOE_FOLDER, text, re.IGNORECASE)):
+        return " ".join(m.group(0).split())[:60]
+    for m in _SHELL_GLOB_WORD.finditer(text):
+        if fnmatch.fnmatchcase(".moe", m.group(0).casefold()):
+            return m.group(0)[:60]
+    return None
 
 
 def _within(path: str, roots: list[str]) -> bool:
@@ -1045,15 +1075,18 @@ def _grep_file_operands(cmd: str) -> str:
 def shell_secret_hit(args: dict) -> str | None:
     """The credential location a shell-category call names, or None."""
     cmd = str(args.get("cmd") or "")
+    folder = not (not args.get("script") and _only_lists(cmd))
+
+    def hit_in(form: str) -> str | None:
+        return _first_match(_SHELL_SECRET, form) or (_moe_folder_hit(form) if folder else None)
+
     if not args.get("script") and len(cmd) <= SHELL_TEXT_LIMIT:
         if read_only_shell_argv(cmd) is not None:
             return None               # validated reads never reach hidden paths or ~/Library
         if _cannot_reach_network(args):
             cmd = _grep_file_operands(cmd)
-            return next((hit for form in _quote_forms(cmd)
-                         if (hit := _first_match(_SHELL_SECRET, form))), None)
-    return next((hit for form in shell_forms(args)
-                 if (hit := _first_match(_SHELL_SECRET, form))), None)
+            return next((hit for form in _quote_forms(cmd) if (hit := hit_in(form))), None)
+    return next((hit for form in shell_forms(args) if (hit := hit_in(form))), None)
 
 
 # First words that make a scoped "always allow" a blanket one: an interpreter

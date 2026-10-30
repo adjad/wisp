@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // and its Full access pill: one source for confirmed and pending state.
     private lazy var settingsLoader = SettingsLoader()
     private var fullAccessObserver: AnyCancellable?
+    private var fullAccessProblemObserver: AnyCancellable?
     // One setup model for the notch's setup card, the first-run window and
     // Settings › Models › Setup, so a test result, a running action and readiness
     // are the same in all of them.
@@ -946,6 +947,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func observeFullAccess() {
         fullAccessObserver = settingsLoader.$fullAccess.dropFirst().sink { [weak self] value in
             MainActor.assumeIsolated { self?.wispWindow.store.applyFullAccess(value) }
+        }
+        fullAccessProblemObserver = settingsLoader.$fullAccessSaveProblem.dropFirst().sink { [weak self] problem in
+            MainActor.assumeIsolated { self?.wispWindow.store.applyFullAccessSaveProblem(problem) }
         }
     }
 

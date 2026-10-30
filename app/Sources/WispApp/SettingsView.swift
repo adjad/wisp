@@ -1144,7 +1144,10 @@ final class SettingsLoader: ObservableObject {
         // A lost reply may mean the write happened; only a fresh read can tell.
         if confirmed == nil { confirmed = await client.fullAccessState() }
         fullAccess = confirmed
-        fullAccessSaveProblem = reply.problem
+        // A lost reply says nothing about the save, so an earlier "couldn't
+        // save" stands until a reply says how this one went: the saved file is
+        // still the old one until a change is saved.
+        if reply.confirmed != nil || reply.problem != nil { fullAccessSaveProblem = reply.problem }
         fullAccessPending = false
         return confirmed
     }
