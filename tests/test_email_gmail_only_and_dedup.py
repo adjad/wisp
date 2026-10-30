@@ -249,3 +249,62 @@ class HistoryParseCache(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _h2(ts, account, account_id, subject, message_id="-1"):
+    return "\x01".join(["H2", str(int(ts)), "R", account, account_id, "Ann", "ann@example.test",
+                        message_id, subject, f"row-{account_id}-{message_id}"])
+
+
+class MailNamesTheGmailAccountGoogle(unittest.TestCase):
+    """2026-10-30 repro: Mail calls a Gmail account "Google", so the linked Gmail
+    (named by its address) wasn't bound to it and that inbox was counted twice.
+    Mail's records carry its own row id, not the Message-ID, so the binding is
+    inferred from shared (minute, subject) pairs, and only when it's clear."""
+
+    def setUp(self):
+        self.base = time.time() - 86400
+        self.enterContext(patch.object(E, "_external_accounts", {}))
+        self.enterContext(patch.object(E, "_swift_headers", ""))
+        self.enterContext(patch.object(E, "native_email_accounts", lambda: [
+            {"id": "MAIL-G", "name": "Google"}, {"id": "MAIL-W", "name": "Work"}]))
+
+    def _gmail(self, n, offset=0):
+        return "\n".join(_h2(self.base + 600 * (i + offset), ME, ME, f"Note {i + offset}", f"<m{i}@x>")
+                         for i in range(n))
+
+    def _mail(self, native, name, n, offset=0):
+        return [_h2(self.base + 600 * (i + offset) + 5, name, native, f"Note {i + offset}", f"-{native}{i + offset}")
+                for i in range(n)]
+
+    def _bind(self, gmail_headers, mail_lines):
+        E._swift_headers = "\n".join(mail_lines)
+        E._external_accounts = {ME: {"mail_account_id": "", "headers": gmail_headers}}
+        E._refresh_native_bindings()
+        return E._external_accounts[ME]["inferred_native_id"]
+
+    def test_the_mail_account_holding_the_same_inbox_is_bound(self):
+        mail = self._mail("MAIL-G", "Google", 40) + self._mail("MAIL-W", "Work", 40, offset=1000)
+        self.assertEqual(self._bind(self._gmail(40), mail), "MAIL-G")
+        composed = E._parse_header_records(E._compose_source(E._swift_headers, "headers"))
+        self.assertEqual(sum(1 for r in composed if r["account"] == "Google"), 0)
+
+    def test_too_little_overlap_binds_nothing(self):
+        mail = self._mail("MAIL-G", "Google", 10) + self._mail("MAIL-G", "Google", 30, offset=500)
+        self.assertEqual(self._bind(self._gmail(40), mail), "")
+
+    def test_two_close_candidates_bind_nothing(self):
+        mail = self._mail("MAIL-G", "Google", 40) + self._mail("MAIL-W", "Work", 30)
+        self.assertEqual(self._bind(self._gmail(40), mail), "")
+
+    def test_a_mail_account_named_by_another_address_is_never_taken(self):
+        mail = self._mail("MAIL-O", "other@school.edu", 40)
+        self.enterContext(patch.object(E, "native_email_accounts",
+                                       lambda: [{"id": "MAIL-O", "name": "other@school.edu"}]))
+        self.assertEqual(self._bind(self._gmail(40), mail), "")
+
+    def test_the_user_s_own_choice_wins(self):
+        E._swift_headers = "\n".join(self._mail("MAIL-G", "Google", 40))
+        E._external_accounts = {ME: {"mail_account_id": "MAIL-W", "headers": self._gmail(40)}}
+        E._refresh_native_bindings()
+        self.assertEqual(E._external_accounts[ME]["inferred_native_id"], "")

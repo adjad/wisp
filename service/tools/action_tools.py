@@ -198,6 +198,8 @@ def confirm_preview(tool: str, args: dict) -> str | None:
     """
     if tool in _ACTION_PREVIEW_TOOLS:
         return _action_preview(tool, args)
+    if tool == "cancel_scheduled_send":
+        return _cancel_scheduled_preview(args)
     if tool not in _OUTBOUND_PREVIEW_TOOLS:
         return None
     if tool == "forward_email":
@@ -270,13 +272,13 @@ def _own_address_guard(to: str, tool: str, confirmed_self_send: bool = False) ->
     """Corrective message when `to` is one of the USER'S OWN addresses — else None.
 
     MEASURED FAILURE (2026-08-18). Asked to "draft a message to mom with my
-    stock movements", the model sent an iMessage to `AdiJain888@gmail.com` —
+    stock movements", the model sent an iMessage to `sam.rivera@example.com` —
     the user's own address, which the identity block puts in every agent system
     prompt (agent/loop.py's identity_hint). Mom never got it; the user texted
     themselves.
 
     This is the SAME failure shape as builtin._wrong_account_path, where the
-    same email became a fake `/Users/AdiJain888` home directory: an identifier
+    same email became a fake `/Users/SamRivera` home directory: an identifier
     that exists in the prompt for ATTRIBUTION gets grabbed to fill an unrelated
     slot. Because a literal address matches _EMAIL_RE, it skips
     _resolve_recipient entirely — the very code that would have caught a name
@@ -717,6 +719,8 @@ async def schedule_send(channel: str, to: str, when: str, body: str = "",
 
 @register(
     "list_scheduled_sends",
+    "Only emails/texts the user scheduled Wisp to send later; for to-dos, tasks "
+    "or \"what's pending\" use search_reminders. "
     "Review scheduled emails/texts by exact queue ID and recorded status. "
     "Default: a bounded pending list with body previews. Use status='all' or "
     "'history' for recent recorded outcomes; absence from pending is never proof "
@@ -803,6 +807,33 @@ def _scheduled_send_record(row, *, full_body: bool) -> str:
         lines.append("Body preview:\n" + body[:160])
         if len(body) > 160:
             lines.append(f"[Body preview truncated; inspect exact ID {row['id']} for the full stored body.]")
+    return "\n".join(lines)
+
+
+def _cancel_scheduled_preview(args: dict) -> str:
+    """The queued row a cancel card is about: recipient, subject or a text
+    preview, and when it is scheduled. The tool cancels by the same exact ID."""
+    from service.assistant.outbound_queue import outbound_queue
+    sid = str(args.get("id") or "").strip()
+    if not sid:
+        return "Cancel scheduled send: (no ID given; nothing would be cancelled)"
+    try:
+        row = outbound_queue.get(sid)
+    except Exception:  # noqa: BLE001 - an unreadable queue still shows the ID
+        row = None
+    if row is None:
+        return f"Cancel scheduled send [{sid}]: no queued item has this ID; nothing would be cancelled."
+    kind = {"email": "email", "message": "text"}.get(row["channel"], str(row["channel"]))
+    to = row["display"] or row["recipient"]
+    if row["display"] and row["display"] != row["recipient"]:
+        to += f" ({row['recipient']})"
+    lines = [f"Cancel scheduled {kind} [{row['id']}]", f"To: {to}",
+             f"Scheduled: {_scheduled_time(row['when_ts'])}",
+             f"Status: {row['status'] or 'unrecognized'}"]
+    if row["subject"]:
+        lines.append(f"Subject: {row['subject']}")
+    body = str(row["body"] or "")
+    lines.append("Text: " + ((_clip_preview(body[:300]) + ("…" if len(body) > 300 else "")) if body else "(empty)"))
     return "\n".join(lines)
 
 

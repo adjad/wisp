@@ -1,8 +1,8 @@
 # Wisp demo test prompts
 
 Run these after installing the freshly built app (not `./scripts/run.sh` — the
-packaged app is what you will demo). Turn on **Debug Mode** (menu-bar icon →
-right-click) so each reply shows model, route, tok/s and tool calls.
+packaged app is what you will demo). Turn on **Reply details** (type `/settings`
+in the notch, under Advanced) so each reply shows model, route, tok/s and tool calls.
 
 For every prompt note: **time to first text**, **total time**, **answer quality**,
 and **anything that looks stuck**. Run each flow once cold (right after launch)

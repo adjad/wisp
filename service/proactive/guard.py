@@ -305,7 +305,7 @@ def _conjugate(word: str) -> str:
 
 def second_person(text: str, names: list[str] | tuple[str, ...] = ()) -> str:
     """Model prose about the user, addressed to them: "The user posted…" and
-    "Adi told Trishe…" become "You posted…" and "You told Trishe…"; "Adi's"
+    "Sam told Maya…" become "You posted…" and "You told Maya…"; "Sam's"
     becomes "your", and a verb right after a replaced subject agrees ("The
     user reminds" → "You remind")."""
     if not text:

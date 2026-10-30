@@ -23,6 +23,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from service.proactive import guard
+from service.proactive.stable import ask_key
 
 TOKENS = (700, 2200)
 MAX_ITEMS = 8
@@ -322,6 +323,74 @@ def _extra_item(entry: dict) -> dict:
     return entry["survivor"]["item"] if "survivor" in entry else entry["item"]
 
 
+def _finalize_item(raw: dict, primary: dict, extra: list[dict], *, item: dict, result: dict, source_text: str,
+                   fingerprints: list[str], now: float, tz: str, sched: dict, allowed: set[str]) -> dict | None:
+    survivor = primary["survivor"]
+    if item.get("critical"):
+        # A critical account alert: code's fixed title and sentence only,
+        # never the judge's words or a quote, and nothing to reply to.
+        title = guard.clean(item.get("title"), 90)
+        if not title:
+            return None
+        return dict(title=title, kind="read", why=guard.clean(result.get("summary"), 200), due_ts=None,
+                    has_clock=False, due_label="", urgency="high", source=item["source"],
+                    account=item["account"], who=item.get("who", ""), quote="", primary=item["id"],
+                    sources=[item["id"]], fingerprints=fingerprints[:1], item=item, result=result,
+                    critical=True)
+    if item.get("entries"):
+        return _digest_item(raw, item, result, fingerprints, extra, now=now, tz=tz, sched=sched)
+    kind = raw.get("action") if raw.get("action") in KINDS else _infer_kind(
+        result.get("asks_of_me") or raw.get("title", ""), item["source"])
+    if kind in ("reply", "meet", "call") and not item.get("person", True):
+        kind = "task"                             # nobody to answer: an organization's notice
+    if kind == "reply" and item.get("replied") and item["source"] in ("mail", "messages"):
+        return None                               # they already answered
+    names = _user_names()
+    title = guard.clean(raw.get("title"), 90)
+    if not _good_title(title, source_text, allowed, names) or (
+            not item.get("person", True) and re.match(_TOWARD_SOMEONE, title)):
+        title = action_title(kind, item, result, names)
+    if kind == "reply" and item.get("person", True) and item["source"] in ("mail", "messages"):
+        # Who to answer comes from the source, never from model text.
+        title = reply_title(item, result, names) or title
+    if not title:
+        return None                               # nothing the user can actually do
+    why = guard.clean(raw.get("why"), 200)
+    if why and (not guard.grounded(why, source_text, allowed=allowed) or guard.output_has_pii(why)):
+        why = ""
+    why = guard.second_person(why or guard.clean(result.get("summary"), 200), names)
+    quote_lines = item.get("lines") or []
+    pending = item.get("pending") or []
+    if kind == "reply" and pending:
+        # A conversation that went on after an ask was answered: the draft
+        # replies to the latest lines, so the card's sentence and quote do
+        # too. Seen live: "let me know if you run out of credits" (answered)
+        # headlining a draft that replied to "prepare well".
+        quote_lines = pending
+        if not _content_words(why) & _content_words(" ".join(pending)):
+            why = "They texted again after your last reply."
+    due_phrase = _due_from_source(raw.get("due", ""), survivor)
+    arrival = item.get("received_ts") or now
+    due_ts, fixed, has_clock = guard.resolve_due(due_phrase, arrival, tz) if due_phrase else (None, "", False)
+    if due_ts is None:
+        # The source's own words may still date it ("let's talk tmrw").
+        for text in (result.get("asks_of_me", ""), _best_quote(item.get("lines") or [], title)):
+            due_ts, fixed, has_clock = guard.resolve_due(text, arrival, tz)
+            if due_ts is not None:
+                break
+    if kind != "reply" and _schedule_duplicate(" ".join([title, result.get("asks_of_me", "")]), sched):
+        return None                               # already on the calendar or a reminder
+    if not item.get("person", True) and (due_ts is None or due_ts < now - 86400):
+        return None                               # an organization's mail needs a live deadline
+    return dict(title=title, kind=kind, why=why, due_ts=due_ts, has_clock=has_clock,
+                due_label=guard.due_label(due_ts, now, tz, has_clock=has_clock, fixed=fixed),
+                urgency=raw.get("urgency") if raw.get("urgency") in _URGENCY else "medium",
+                source=item["source"], account=item["account"], who=item.get("who", ""),
+                quote=_best_quote(quote_lines, " ".join([title, result.get("asks_of_me", "")])),
+                primary=item["id"], sources=[item["id"]] + [_extra_item(e)["id"] for e in extra],
+                fingerprints=fingerprints, item=item, result=result)
+
+
 def _finalize(raw: dict, primary: dict, extra: list[dict], *, now: float, tz: str, sched: dict,
               suppressed: set[str], allowed: set[str]) -> dict | None:
     """One validated item, or None when it must not surface."""
@@ -331,61 +400,16 @@ def _finalize(raw: dict, primary: dict, extra: list[dict], *, now: float, tz: st
         source_text = "\n".join([item["text"], item.get("who", ""), item.get("title", ""),
                                  result.get("summary", ""), result.get("asks_of_me", "")])
         fingerprints = [f"{item['id']}:{item['hash']}"] + [f"{_extra_item(e)['id']}:{_extra_item(e)['hash']}" for e in extra]
-        if all(fp in suppressed for fp in fingerprints[:1]):
+        # The stable ask (conversation + latest incoming message) outlives a
+        # content hash that moved for any reason but a new message.
+        ask = ask_key(item)
+        if fingerprints[0] in suppressed or (ask is not None and ask in suppressed):
             return None
-        if item.get("critical"):
-            # A critical account alert: code's fixed title and sentence only,
-            # never the judge's words or a quote, and nothing to reply to.
-            title = guard.clean(item.get("title"), 90)
-            if not title:
-                return None
-            return dict(title=title, kind="read", why=guard.clean(result.get("summary"), 200), due_ts=None,
-                        has_clock=False, due_label="", urgency="high", source=item["source"],
-                        account=item["account"], who=item.get("who", ""), quote="", primary=item["id"],
-                        sources=[item["id"]], fingerprints=fingerprints[:1], item=item, result=result,
-                        critical=True)
-        if item.get("entries"):
-            return _digest_item(raw, item, result, fingerprints, extra, now=now, tz=tz, sched=sched)
-        kind = raw.get("action") if raw.get("action") in KINDS else _infer_kind(
-            result.get("asks_of_me") or raw.get("title", ""), item["source"])
-        if kind in ("reply", "meet", "call") and not item.get("person", True):
-            kind = "task"                             # nobody to answer: an organization's notice
-        if kind == "reply" and item.get("replied") and item["source"] in ("mail", "messages"):
-            return None                               # they already answered
-        names = _user_names()
-        title = guard.clean(raw.get("title"), 90)
-        if not _good_title(title, source_text, allowed, names) or (
-                not item.get("person", True) and re.match(_TOWARD_SOMEONE, title)):
-            title = action_title(kind, item, result, names)
-        if kind == "reply" and item.get("person", True) and item["source"] in ("mail", "messages"):
-            # Who to answer comes from the source, never from model text.
-            title = reply_title(item, result, names) or title
-        if not title:
-            return None                               # nothing the user can actually do
-        why = guard.clean(raw.get("why"), 200)
-        if why and (not guard.grounded(why, source_text, allowed=allowed) or guard.output_has_pii(why)):
-            why = ""
-        why = guard.second_person(why or guard.clean(result.get("summary"), 200), names)
-        due_phrase = _due_from_source(raw.get("due", ""), survivor)
-        arrival = item.get("received_ts") or now
-        due_ts, fixed, has_clock = guard.resolve_due(due_phrase, arrival, tz) if due_phrase else (None, "", False)
-        if due_ts is None:
-            # The source's own words may still date it ("let's talk tmrw").
-            for text in (result.get("asks_of_me", ""), _best_quote(item.get("lines") or [], title)):
-                due_ts, fixed, has_clock = guard.resolve_due(text, arrival, tz)
-                if due_ts is not None:
-                    break
-        if kind != "reply" and _schedule_duplicate(" ".join([title, result.get("asks_of_me", "")]), sched):
-            return None                               # already on the calendar or a reminder
-        if not item.get("person", True) and (due_ts is None or due_ts < now - 86400):
-            return None                               # an organization's mail needs a live deadline
-        return dict(title=title, kind=kind, why=why, due_ts=due_ts, has_clock=has_clock,
-                    due_label=guard.due_label(due_ts, now, tz, has_clock=has_clock, fixed=fixed),
-                    urgency=raw.get("urgency") if raw.get("urgency") in _URGENCY else "medium",
-                    source=item["source"], account=item["account"], who=item.get("who", ""),
-                    quote=_best_quote(item.get("lines") or [], " ".join([title, result.get("asks_of_me", "")])),
-                    primary=item["id"], sources=[item["id"]] + [_extra_item(e)["id"] for e in extra],
-                    fingerprints=fingerprints, item=item, result=result)
+        made = _finalize_item(raw, primary, extra, item=item, result=result, source_text=source_text,
+                              fingerprints=fingerprints, now=now, tz=tz, sched=sched, allowed=allowed)
+        if made is not None and ask is not None:
+            made["asks"] = [ask]
+        return made
     if primary["kind"] == "reminder":
         row = primary["row"]
         fingerprint = f"reminder:{row['id']}"
@@ -466,24 +490,35 @@ def rank(items: list[dict], now: float) -> list[dict]:
 
 async def judge(survivors: list[dict], sched: dict, reply_fn, abort, *, now: float | None = None,
                 tz: str = "UTC", suppressed: set[str] | None = None,
-                allowed: set[str] | None = None) -> tuple[str, list[dict], str]:
-    """("ok"|"fallback"|"standdown", items, summary)."""
+                allowed: set[str] | None = None, cached_reply: str | None = None,
+                capture: dict | None = None) -> tuple[str, list[dict], str]:
+    """("ok"|"fallback"|"standdown", items, summary).
+
+    `cached_reply` is the model's earlier reply for the same survivors and
+    schedule: it is validated again against this moment (dates, dismissals)
+    without asking the model, so an unchanged Brief is judged once, not every
+    half hour. `capture`, when given, receives the reply that validated."""
     now = time.time() if now is None else now
     suppressed = suppressed or set()
     if not survivors and not sched.get("reminders"):
         return "ok", [], ""
     material, ids = build_input(survivors, sched, now, tz)
-    try:
-        reply = await reply_fn(_system(), "<<<LINES\n" + material + "\nLINES>>>", abort, TOKENS)
-    except Exception:  # noqa: BLE001 — the rule items stand in
-        import traceback
-        traceback.print_exc()
-        reply = ""
+    if cached_reply:
+        reply = cached_reply
+    else:
+        try:
+            reply = await reply_fn(_system(), "<<<LINES\n" + material + "\nLINES>>>", abort, TOKENS)
+        except Exception:  # noqa: BLE001 — the rule items stand in
+            import traceback
+            traceback.print_exc()
+            reply = ""
     if reply is None:
         return "standdown", [], ""
     got = validate(reply, ids, now=now, tz=tz, sched=sched, suppressed=suppressed, allowed=allowed)
     if got is None:
         return "fallback", rank(by_rule(survivors, sched, now=now, tz=tz, suppressed=suppressed, allowed=allowed), now), ""
+    if capture is not None:
+        capture["reply"] = reply
     items, summary = got
     # A survivor with an ask the judge left out still becomes a to-do (not a
     # card): the model's ranking decides cards, never what is visible at all.

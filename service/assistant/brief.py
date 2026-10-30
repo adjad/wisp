@@ -226,16 +226,16 @@ def _email_block(now: float) -> str:
 # "got it thanks" came back as also having "asked about a code snippet you
 # shared", which appears nowhere in the actual messages. Grouping by
 # conversation FIRST (deterministic, in Python) means the model is handed
-# "Trishe: 2 lines" as a visibly small, complete block instead of 2 lines
+# "Maya: 2 lines" as a visibly small, complete block instead of 2 lines
 # lost inside a 30-line multi-thread stream — it has no interleaved material
-# left to misread as belonging to Trishe, and nothing to pad with.
+# left to misread as belonging to Maya, and nothing to pad with.
 _MAX_CONVERSATIONS = 6
 _MAX_LINES_PER_CONVERSATION = 8
 
 
 def _messages_block() -> str:
     # render_for_summary, not a plain join: it tags each group message with the
-    # member it is addressed to, so "@Trishe - How is the AI conference going?"
+    # member it is addressed to, so "@Maya - How is the AI conference going?"
     # can't be read as the user's conference. See imessage_tools._addressee.
     from service.tools.imessage_tools import (
         messages_sync_state, render_for_summary, recent_priority_message_rows)
@@ -1909,10 +1909,64 @@ def _greeting_line(now: float) -> str:
     return f"{_greeting(now)}{who} — {when.strftime('%A, %B %-d')}. ☀️"
 
 
+def _hour_label(hour: int) -> str:
+    """"8 AM", or "08:00" on a 24-hour Mac."""
+    if _uses_24_hour():
+        return f"{hour % 24:02d}:00"
+    return f"{hour % 12 or 12} {'AM' if hour % 24 < 12 else 'PM'}"
+
+
+_WEEK_WORDS = {2: "two", 3: "three", 4: "four"}
+
+
+def rhythm_line() -> str:
+    """What Wisp does on its own and when, in one sentence, from the settings
+    that decide it: the two summary runs (config.get_daily_summary_times), the
+    evening check-in's hour (checkin.CHECKIN_HOUR) and, while Learn my routines
+    is on, how many separate weeks a habit needs before it counts
+    (miners.HABIT_MIN_WEEKS; calendar history counts, so it can be sooner on a
+    Mac with a long calendar). The first Brief and "What can you do?" say it."""
+    from service.config import get_daily_summary_times
+    times = get_daily_summary_times()
+    parts = [f"send a summary at {_hour_label(times['morning'])} and {_hour_label(times['evening'])}"]
+    try:
+        from service.assistant.checkin import CHECKIN_HOUR
+        parts.append(f"ask how your day went after {_hour_label(CHECKIN_HOUR)}")
+    except Exception:  # noqa: BLE001 — say less rather than guess
+        pass
+    try:
+        from service.behavior_switch import enabled
+        if enabled():
+            from service.behavior.miners import HABIT_MIN_WEEKS
+            weeks = _WEEK_WORDS.get(HABIT_MIN_WEEKS, str(HABIT_MIN_WEEKS))
+            parts.append(f"learn a routine once I've seen it in {weeks} different weeks")
+    except Exception:  # noqa: BLE001 — an unreadable switch never promises learning
+        pass
+    if len(parts) == 1:
+        return f"I {parts[0]}."
+    return f"I {', '.join(parts[:-1])}{',' if len(parts) > 2 else ''} and {parts[-1]}."
+
+
+def _first_day_section(now: float) -> str:
+    """On the first launch day only, what Wisp does and when (rhythm_line), so
+    a new user knows when the next summary comes. Its header is the Brief's
+    `.intro` section (app BriefSummary.swift); it sits right after the greeting,
+    where an older app's parser drops it whole."""
+    try:
+        first = assistant_store.first_launch_at()
+        if first is None or datetime.fromtimestamp(first).date() != datetime.fromtimestamp(now).date():
+            return ""
+        return "**🌱 How Wisp works**\n- " + rhythm_line()
+    except Exception:  # noqa: BLE001 — the brief must never fail because of it
+        traceback.print_exc()
+        return ""
+
+
 def _render_brief(now: float, messages_section: str) -> str:
-    """Greeting + the personal section + the three sections + the sign-off.
-    The brief's only shape."""
+    """Greeting + the first-day note + the personal section + the three
+    sections + the sign-off. The brief's only shape."""
     parts = [_greeting_line(now),
+             _first_day_section(now),
              _keeping_in_mind(now),
              _schedule_section(now),
              _email_section(now),

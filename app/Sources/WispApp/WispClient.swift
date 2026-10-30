@@ -247,7 +247,7 @@ final class WispClient {
     // right now." — is indistinguishable from the button being broken, which it
     // separately was (see brief._sections).
     // `sessionId` continues the panel's conversation, and the brief is recorded
-    // in it so the NEXT message can refer to it — "send Trishe my daily summary",
+    // in it so the NEXT message can refer to it — "send Maya my daily summary",
     // "reply to the second one". Without that the backend, which answers that
     // next message, has no record of the summary the user is looking at.
     func dailySummary(sessionId: String = "") async -> (text: String?, sessionId: String) {
@@ -334,6 +334,18 @@ final class WispClient {
         guard let (data, response) = try? await URLSession.shared.data(for: req),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
         return BriefTimes.parse(try? JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    // POST /assistant/onboarding/brief_ready. First-run onboarding reached its last
+    // step, so the service may compose the first Brief now. The service records it
+    // once; false when it didn't answer 200, so the caller can ask again later.
+    @discardableResult
+    func onboardingBriefReady() async -> Bool {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("assistant/onboarding/brief_ready"))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 10
+        guard let (_, response) = try? await URLSession.shared.data(for: req) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
     }
 
     // --- behavior engine (service/behavior) ---------------------------------
@@ -541,7 +553,9 @@ final class WispClient {
     // history. Omit it (empty) to start a fresh chat — the new id arrives in the
     // first `session` event. `testMode` asks the service to run a stateless dry
     // run where tool calls are reported but never executed.
-    func runAgent(prompt: String, image: String?, sessionId: String = "",
+    func runAgent(prompt: String, image: String?, imageSource: String? = nil,
+                  video: [String: Any]? = nil, document: [String: Any]? = nil,
+                  sessionId: String = "",
                   debug: Bool = false,
                   testMode: Bool = false,
                   corpusCaseID: String? = nil, corpusToken: String? = nil, corpusNormal: Bool = false,
@@ -561,6 +575,9 @@ final class WispClient {
         if testMode { body["test_mode"] = true }
         if !testMode && !sessionId.isEmpty { body["session_id"] = sessionId }
         if let image { body["image"] = image }
+        if image != nil, let imageSource { body["image_source"] = imageSource }
+        if let video { body["video"] = video }
+        if let document { body["document"] = document }
         if let corpusCaseID {
             body = ["case_id": corpusCaseID, "token": corpusToken ?? "", "mode": corpusNormal ? "normal" : "bounded"]
         }
@@ -676,6 +693,27 @@ final class WispClient {
         _ = try? await URLSession.shared.data(for: req)
     }
 
+    /// /resetwisp's service route and the phrase it requires (service/wisp_reset.py).
+    /// Here rather than in ResetWisp.swift, so the gates that compile this file alone
+    /// (build-support/simulation.py, scripts/run_simulation_qa.py) need nothing else.
+    static let resetRoute = "assistant/reset_wisp"
+    static let resetConfirmPhrase = "reset wisp"
+
+    /// POST /assistant/reset_wisp: the HTTP status and body, or a nil status when
+    /// the service didn't answer. Only after the person's Reset Wisp click
+    /// (AppDelegate.performWispReset).
+    func resetWisp() async -> (status: Int?, body: [String: Any]?) {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent(Self.resetRoute))
+        req.httpMethod = "POST"
+        // Longer than the service's own bounds: stop work, sign out of Google, delete.
+        req.timeoutInterval = 180
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["confirm": Self.resetConfirmPhrase])
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse else { return (nil, nil) }
+        return (http.statusCode, (try? JSONSerialization.jsonObject(with: data)) as? [String: Any])
+    }
+
     // Stop the oMLX engine entirely: its models and its ~2GB baseline. Used on quit.
     // The wait is longer than the backend's own bound on the stop, so the engine is
     // gone before the backend is; an engine left running would keep its models loaded.
@@ -687,6 +725,30 @@ final class WispClient {
     }
 
     // GET /mode -> current safety mode flags.
+    enum TranscriptResult { case success(String), failure(String) }
+
+    /// POST /voice/transcribe: the words in a spoken WAV clip, heard by the Ask
+    /// model on this Mac. A failure carries the service's own plain sentence.
+    func transcribe(wav: Data) async -> TranscriptResult {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("voice/transcribe"))
+        req.httpMethod = "POST"
+        // A cold model load plus the wait for a busy model, with room to spare.
+        req.timeoutInterval = 60
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["audio": wav.base64EncodedString()])
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse else {
+            return .failure("Wisp's service isn't answering. Try again in a moment.")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        if http.statusCode == 200, let text = object?["text"] as? String {
+            return .success(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        if http.statusCode == 404 { return .failure("This copy of Wisp's service can't take voice yet. Restart Wisp.") }
+        if let detail = object?["detail"] as? String, !detail.isEmpty { return .failure(detail) }
+        return .failure("Wisp couldn't make out that recording. Try again, or type your question.")
+    }
+
     /// The service's Full access flag (GET /mode), or nil when it can't be read.
     /// An unreadable flag is unknown, never "off": Wisp may still be acting
     /// without asking.
@@ -697,17 +759,61 @@ final class WispClient {
         return Self.fullAccessFlag(data)
     }
 
+    // GET /inference/cloud -> the display-safe cloud settings (never credentials).
+    func cloudInference() async -> [String: Any]? {
+        let url = Self.baseURL.appendingPathComponent("inference/cloud")
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+
     // POST /mode -> set full-access (no-confirmation) mode. Returns the flag the
     // service confirmed, or nil when the reply was lost or unreadable (the write
     // may still have happened).
     func requestFullAccess(_ on: Bool) async -> Bool? {
+        await requestFullAccessReporting(on).confirmed
+    }
+
+    /// The same, plus the service's reason when it applied the change but
+    /// couldn't save it (a 500 whose detail says it won't survive a restart).
+    func requestFullAccessReporting(_ on: Bool) async -> (confirmed: Bool?, problem: String?) {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("mode"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["full_access": on])
         guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let status = (response as? HTTPURLResponse)?.statusCode else { return (nil, nil) }
+        if status == 200 { return (Self.fullAccessFlag(data), nil) }
+        let detail = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["detail"] as? String
+        return (nil, status == 500 ? detail.flatMap { $0.isEmpty ? nil : $0 } : nil)
+    }
+
+    /// The "Save power" switch (GET /power), or nil when it can't be read.
+    func saveWhenAwayState() async -> Bool? {
+        let url = Self.baseURL.appendingPathComponent("power")
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        return Self.fullAccessFlag(data)
+        return Self.saveWhenAwayFlag(data)
+    }
+
+    // POST /power -> turn "Save power" on or off. Returns the flag the
+    // service confirmed, or nil when the reply was lost or unreadable (the write
+    // may still have happened).
+    func setSaveWhenAway(_ on: Bool) async -> Bool? {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("power"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["save_when_away": on])
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.saveWhenAwayFlag(data)
+    }
+
+    private static func saveWhenAwayFlag(_ data: Data) -> Bool? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let flag = obj["save_when_away"] as? NSNumber,
+              CFGetTypeID(flag) == CFBooleanGetTypeID() else { return nil }
+        return flag.boolValue
     }
 
     private static func fullAccessFlag(_ data: Data) -> Bool? {

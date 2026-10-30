@@ -25,7 +25,7 @@ def isolated(monkeypatch, tmp_path):
     monkeypatch.setenv("TZ", "America/Los_Angeles")
     time.tzset()
     monkeypatch.setattr(A, "time", SimpleNamespace(time=lambda: NOW.timestamp()))
-    monkeypatch.setattr(timeranges, "resolve_span", lambda value: timeranges.resolve_period(value, now=NOW))
+    monkeypatch.setattr(timeranges, "resolve_span", lambda value, **kw: timeranges.resolve_period(value, now=NOW, **kw))
     store = AssistantStore(tmp_path / "synthetic.db")
     monkeypatch.setattr(A, "assistant_store", store)
     monkeypatch.setattr("service.assistant.sync_status.ensure_sources", AsyncMock(return_value={

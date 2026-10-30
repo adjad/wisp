@@ -43,7 +43,7 @@ def _ready(monkeypatch, *, calendar_state: str = "ready"):
             calendar_events_overlapping=lambda *_args: []))
     monkeypatch.setattr(
         timeranges, "resolve_span",
-        lambda period: timeranges.resolve_period(period, now=NOW))
+        lambda period, **kw: timeranges.resolve_period(period, now=NOW, **kw))
     monkeypatch.setattr(
         "service.assistant.sync_status.ensure_sources",
         AsyncMock(return_value={"sources": [

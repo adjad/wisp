@@ -626,12 +626,25 @@ class SessionStore:
                "updated_at=? WHERE session_id=? AND kind='model_led_effect' "
                "AND status IN ('running','uncertain')")
         params: list = [time.time(), sid]
+        # A legacy typed task (rc2 and earlier) that consumed its effect claim
+        # and never reached a verified result blocks every model-proposed action
+        # in the session (_unresolved_action_locked), with no age limit. The
+        # user's attestation lifts it the same way. Only its status column
+        # changes, so a legacy state_json, however old, is never rewritten,
+        # and the consumed claim stays (0.5.0-rc3 audit M2).
+        legacy_sql = ("UPDATE workflows SET status='completed', updated_at=? "
+                      "WHERE session_id=? AND kind != 'model_led_effect' AND status != 'completed' "
+                      "AND EXISTS (SELECT 1 FROM task_effect_claims c WHERE c.plan_id=workflows.id)")
+        legacy_params: list = [time.time(), sid]
         if effect_id is not None:
             sql += " AND id=?"
             params.append(effect_id)
+            legacy_sql += " AND id=?"
+            legacy_params.append(effect_id)
         with self._lock:
             try:
                 changed = self._db.execute(sql, params).rowcount
+                changed += self._db.execute(legacy_sql, legacy_params).rowcount
                 self._db.commit()
             except BaseException:
                 self._db.rollback()

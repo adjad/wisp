@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import datetime, timedelta
+from email.utils import parseaddr
 from zoneinfo import ZoneInfo
 
 from service.proactive import guard
@@ -287,6 +288,21 @@ def _button(method: str, item: dict, has_event: bool, when: str = "") -> str:
     }[method]
 
 
+def _message_key(raw: dict) -> str:
+    """The email's own Message-ID with its sender's address, the same whichever way
+    it arrived (Mail on this Mac, or a linked Gmail account): one email is one card.
+    The sender is part of the key because a Message-ID is whatever the sender
+    wrote: another mail reusing an alert's ID must not pass for it. Empty when
+    either is unknown."""
+    ref = raw.get("reply_ref")
+    mid = ref.get("message_id") if isinstance(ref, dict) else ref
+    mid = str(mid or "").strip().strip("<>").strip().casefold()
+    sent_by = (raw.get("ref") or {}).get("to") if isinstance(raw.get("ref"), dict) else ""
+    sender = str(raw.get("sender_address") or parseaddr(str(raw.get("sender") or ""))[1]
+                 or parseaddr(str(sent_by or ""))[1]).strip().casefold()
+    return f"{mid}|{sender}" if mid and "@" in sender else ""
+
+
 def _read_button(plan: dict) -> str:
     label = plan.get("open_label") or ""
     return f"{label}?" if label else "Mark as handled?"
@@ -335,12 +351,21 @@ def body(item: dict, method: str, plan: dict, sched: dict, now: float, tz: str) 
 
 async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float, tz: str,
                   linked: set[str] | None = None, resolve_handle=None, allowed: set[str] | None = None,
-                  limit: int = MAX_CARDS, freeze=None, debug: list | None = None) -> tuple[str, list[dict]]:
+                  limit: int = MAX_CARDS, freeze=None, debug: list | None = None,
+                  drafts: dict | None = None) -> tuple[str, list[dict]]:
     """("ok"|"standdown", cards). `resolve_handle(item)` returns a literal phone
-    or address for a one-to-one conversation's contact, or None."""
+    or address for a one-to-one conversation's contact, or None. `drafts` maps
+    (item id, ask, method) to a reply already written for that same ask: it is
+    reused, so the model is not asked for the words twice."""
+    drafts = drafts or {}
     linked = linked or set()
     allowed = allowed or set()
     cards = []
+    # Emails already on a card, and whether that card is a critical alert (2026-10-29:
+    # one GitHub alert showed twice, once through Mail and once through the linked
+    # Gmail account). A critical alert is held back only by a critical card for the
+    # same email, so an ordinary card can never hide one.
+    shown_messages: dict[str, bool] = {}
 
     def why(item, reason):
         if debug is not None and item.get("waiting"):
@@ -354,6 +379,11 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
         raw = item.get("item") or {}
         if item["source"] == "reminders":
             continue                     # already a reminder: it stays on the to-do list
+        message = _message_key(raw) if item["source"] == "mail" else ""
+        critical = bool(raw.get("critical")) and item["source"] == "mail"
+        if message in shown_messages and (shown_messages[message] or not critical):
+            why(item, "the same email is already on a card")
+            continue
         if raw.get("critical") and item["source"] == "mail":
             # A critical account alert: a review card with the fixed title, no draft.
             plan = _critical_plan(raw, freeze)
@@ -373,9 +403,12 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
                            "open_url": plan.get("open_url", ""), "open_label": plan.get("open_label", "")},
                 "todo_id": todo_id(item["primary"]),
                 "fingerprints": list(item.get("fingerprints") or []),
+                "asks": list(item.get("asks") or []),
                 "due_ts": None,
                 "critical": True,
             })
+            if message:
+                shown_messages[message] = True
             continue
         if item.get("unranked") and not (raw.get("person") and not raw.get("replied") and not raw.get("group")
                                          and item["source"] in ("mail", "messages")):
@@ -402,7 +435,9 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
             continue                     # a reply Wisp can't send: a to-do, not a card
         words = ""
         if method in ("email_reply", "text_reply"):
-            words = await draft(item, method, reply_fn, abort, allowed=allowed)
+            asked = (item.get("asks") or [None])[0]
+            words = drafts.get((item["primary"], asked, method)) or await draft(item, method, reply_fn, abort,
+                                                                                   allowed=allowed)
             if words is None:
                 return "standdown", cards
         fingerprint = (item.get("fingerprints") or [item["primary"]])[0]
@@ -425,7 +460,10 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
                        "open_label": plan.get("open_label", "")},
             "todo_id": todo_id(item["primary"]),
             "fingerprints": list(item.get("fingerprints") or []),
+            "asks": list(item.get("asks") or []),
             "due_ts": item.get("due_ts"),
             **({"_sealed": plan["sealed"]} if plan.get("sealed") else {}),
         })
+        if message:
+            shown_messages.setdefault(message, False)
     return "ok", cards

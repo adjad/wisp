@@ -194,6 +194,30 @@ struct ChatCorpusEvaluation: Equatable {
     }
 }
 
+// MARK: - Where answers run
+
+/// Whether this launch may send a turn to a cloud provider, from the service's
+/// GET /inference/cloud. The window says "all local" only when this is false.
+enum ChatCloudUse {
+    /// nil when the reply can't be read, so the window says nothing rather
+    /// than claiming local.
+    static func active(from object: [String: Any]?) -> Bool? {
+        guard let object, let enabled = object["enabled"] as? Bool else { return nil }
+        let everything = object["everything"] as? Bool ?? false
+        let restartRequired = object["restart_required"] as? Bool ?? false
+        // "Everything in the cloud" is a launch profile: it takes effect, or
+        // stops, only after a restart, so the running launch is the opposite
+        // of the saved flag while a restart is pending.
+        if everything != restartRequired { return true }
+        // Saved but not yet running: the reply lists only "everything", which
+        // hides any role this launch still sends to the cloud. Unknown.
+        if everything { return nil }
+        let roles = (object["roles"] as? [String] ?? []).filter { $0 != "everything" }
+        let superModel = object["super_model_enabled"] as? Bool ?? false
+        return enabled && (!roles.isEmpty || superModel)
+    }
+}
+
 // MARK: - Metadata
 
 struct ChatMeta: Equatable {
@@ -257,6 +281,10 @@ struct ChatMessage: Identifiable, Equatable {
     var errorDetail = ""
     var attachmentName: String?
     var corpusEvaluation: ChatCorpusEvaluation?
+    /// Sources a tool in this reply couldn't read for lack of access, as the
+    /// kinds on its tool_result's `needs_access` (AskAccess), for the reply's
+    /// Allow button. Never set on a corpus reply.
+    var needsAccess: [String] = []
 
     init(id: UUID = UUID(), role: Role, text: String = "", phase: Phase = .done) {
         self.id = id; self.role = role; self.text = text; self.phase = phase

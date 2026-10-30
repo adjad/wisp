@@ -57,12 +57,24 @@ enum NotchSetupCard: Equatable {
     /// Set aside with Later: one line on Ask and a "!" on the collapsed bar,
     /// until Wisp can answer.
     case later
+    /// Wisp became ready while notifications were off: no card, only a gentle
+    /// dot on the collapsed bar ("Wisp is ready") until the panel is opened.
+    case ready
+
+    /// The setup card or its one-line row is on Ask (not the ready dot).
+    var showsOnAsk: Bool { self == .open || self == .later }
+
+    /// The quiet ready dot, on the collapsed bar and (wherever the bar draws
+    /// nothing) on the menu-bar icon. Both read this, so both clear together
+    /// when the panel is opened (AppDelegate.readyLineSeen sets .hidden).
+    var showsReadyDot: Bool { self == .ready }
 
     /// What the card becomes when the service reports readiness. A card set
     /// aside goes away by itself; an open one waits for Done, so the person
-    /// sees the result first.
+    /// sees the result first. The ready dot never outlives readiness.
     func afterReadiness(_ ready: Bool) -> NotchSetupCard {
-        ready && self == .later ? .hidden : self
+        if ready { return self == .later ? .hidden : self }
+        return self == .ready ? .hidden : self
     }
 
     /// The tab an opening panel shows: Ask while the full card is up.

@@ -11,7 +11,7 @@ The view never calls a model: the Today endpoint attaches both as
 
 Under the MAIL row the user wanted "an actual email summary not email
 headers": two or three sentences on what people wrote, what changed and what
-the rest is ("John Morada canceled Dublin office hours, then wrote again
+the rest is ("Jordan Lee canceled office hours, then wrote again
 about the next session. …"), written by the same background call from the
 day's mail, with what each person wrote, and attached as
 `workspace["mail_summary"]`. Until one exists, prose built from the same mail
@@ -53,7 +53,7 @@ Rules:
 - The summary stays compact, like `summarize_emails`: a few short sentences,
   who wrote and what changed. A reply that is an input line (or starts with the
   `From <sender>:` form) is dropped for `mail_prose`, which also covers private
-  mail ("John Morada canceled “Office Hours” (3 emails).").
+  mail ("Jordan Lee canceled “Office Hours” (3 emails).").
 """
 from __future__ import annotations
 
@@ -391,8 +391,8 @@ def _reply_verb(subject: str) -> str:
 
 def mail_prose(rows: list[dict]) -> str:
     """The summary without a model: who wrote and what changed, then the rest.
-    "John Morada canceled “Dublin Community Office Hours”. Devarsh wrote about
-    “180 Degrees Consulting Application Update”. The rest is 9 newsletters,
+    "Jordan Lee canceled “Community Office Hours”. Priya wrote about
+    “Consulting Club Application Update”. The rest is 9 newsletters,
     alerts and promos." """
     if not rows:
         return "No new mail today."
@@ -651,9 +651,11 @@ async def _resident_reply(system: str, material: str, abort, *,
         _stood_down("a turn is in progress")
         return None
     budget = tokens[0] if _thinking_off(model) else tokens[1]
-    request = asyncio.ensure_future(client.chat(
-        model, [{"role": "system", "content": system}, {"role": "user", "content": material}],
-        max_tokens=budget, temperature=0, **thinking_kwargs(model, on=False)))
+    from service.inference.power_tier import BRIEF, power_tier
+    with power_tier(BRIEF):
+        request = asyncio.ensure_future(client.chat(
+            model, [{"role": "system", "content": system}, {"role": "user", "content": material}],
+            max_tokens=budget, temperature=0, **thinking_kwargs(model, on=False)))
     deadline = time.monotonic() + _TIMEOUT_S
     try:
         while not request.done():
@@ -768,7 +770,8 @@ async def refresh(now: float | None = None, *, synth=None, abort=None, force: bo
         return False
     _load()[job["kind"]] = {"gist": gist, "at": now, "key": job["key"]}
     _attempts.pop(attempt_key, None)
-    # The open Brief re-reads the day every 30 s (NotchDayView.DayRefreshLoop).
+    # The app re-reads the day every 30 s while the notch is open or the user is
+    # active, every 5 minutes otherwise (TodayView.swift, DayRefreshPace).
     _save()
     print(f"[mail_gists] wrote the {job['kind']} gist in {time.monotonic() - started:.1f}s", flush=True)
     return True

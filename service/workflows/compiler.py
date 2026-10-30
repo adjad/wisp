@@ -237,8 +237,8 @@ def extract_recipient(text: str, channel: str = "") -> str:
             return match.group("name").strip()
 
     # Lowercase contact names are normal user input. The older proper-name
-    # branch intentionally required capitals and therefore lost "trishe" in
-    # the exact phrase "send a message to trishe with ...". Keep lowercase
+    # branch intentionally required capitals and therefore lost "maya" in
+    # the exact phrase "send a message to maya with ...". Keep lowercase
     # extraction bounded by compose grammar so payload nouns cannot become a
     # recipient.
     bounded_name_patterns = [
@@ -261,23 +261,23 @@ def extract_recipient(text: str, channel: str = "") -> str:
         if match := re.search(pattern, text, re.I):
             # Trimmed by the same rule as the artifact-first pattern below: a
             # greedy three-word capture otherwise swallows the tail of the
-            # sentence, and "send this to trishe via messages" addressed a
-            # contact named "trishe via messages".
+            # sentence, and "send this to maya via messages" addressed a
+            # contact named "maya via messages".
             if name := _trim_name(match.group("name")):
                 return name
 
     # EVERY pattern above assumes the sentence's direct object is the word
-    # "message"/"text"/"email" — "send a message to trishe with my calendar".
-    # MEASURED FAILURE (2026-09-08, live): "send my calender to trishe(the next
+    # "message"/"text"/"email" — "send a message to maya with my calendar".
+    # MEASURED FAILURE (2026-09-08, live): "send my calender to maya(the next
     # two weeks)" names the ARTIFACT as the object instead, so none of them fit,
-    # the case-sensitive proper-name branch below skipped a lowercase "trishe",
+    # the case-sensitive proper-name branch below skipped a lowercase "maya",
     # and Wisp asked "Who should I message it to?" about a person the user had
     # already named in their very first sentence.
     #
     # So: any delivery verb, then "to"/"with", then a name — case-insensitive,
     # with the payload nouns and the sentence's continuation stripped off by
     # _trim_name rather than by a lookahead. A lookahead was what lost this one
-    # in the first place: "trishe(the" has no space before its terminator.
+    # in the first place: "maya(the" has no space before its terminator.
     if match := _DELIVER_TO.search(text):
         if name := _trim_name(match.group("name")):
             return name

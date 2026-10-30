@@ -1,7 +1,7 @@
 {
   "path": "omlx/server.py",
-  "input_sha256": "a79a0493b06e1f69326aab95f26b81b4653f9b6317f2e50d58efe483a9451d9d",
-  "output_sha256": "98c5c03ee7884f37fd94eca944e08aaca3dfe34903added14aab37b73471939b",
+  "input_sha256": "76d160aadace9f22d1a5a3ba589f3a72f93e7f3e1d1cb9fe1d6e2b4a7b626183",
+  "output_sha256": "74e25a8f81517e7f5db6a9c4797a77848ec9910b4d81e54fba495ba72f27aea6",
   "edits": [
     {
       "old": "logger = logging.getLogger(__name__)",
@@ -52,6 +52,16 @@
       "old": "    except EnginePoolError as e:\n        raise HTTPException(status_code=500, detail=str(e))",
       "new": "    except _wisp_guard.GuardEvidenceUnavailable:\n        raise\n    except EnginePoolError as e:\n        raise HTTPException(status_code=500, detail=str(e))",
       "count": 2
+    },
+    {
+      "old": "    _server_state.gpu_power_limiter = gpu_power.GpuPowerLimiter(base_path)",
+      "new": "    # Modified by Wisp: release the GPU power cap as soon as the last capped\n    # request ends (upstream holds it 15 s), so Low Power Mode never throttles\n    # the Mac while Wisp is idle.\n    _server_state.gpu_power_limiter = gpu_power.GpuPowerLimiter(base_path, release_delay_s=0.0)",
+      "count": 1
+    },
+    {
+      "old": "@app.post(\"/v1/models/{model_id}/unload\")\n",
+      "new": "# Modified by Wisp: drop the GPU power cap now, even while capped requests\n# still run (they finish uncapped), so an app that starts using the GPU in the\n# middle of a capped request is not held under it. The cap is Mac-wide.\n@app.post(\"/v1/wisp/gpu-power/lift\")\nasync def wisp_lift_gpu_power(_: bool = Depends(verify_api_key)):\n    limiter = _server_state.gpu_power_limiter\n    if limiter is not None:\n        await limiter.close()\n    return {\"status\": \"ok\"}\n\n\n@app.post(\"/v1/models/{model_id}/unload\")\n",
+      "count": 1
     }
   ]
 }

@@ -8,6 +8,9 @@ enum WispRoute: Equatable {
     /// A chat in the Wisp window, by service session id. Nil opens the window's
     /// current chat (a new one when none is selected); an empty id opens a new chat.
     case chat(sessionId: String?)
+    /// The Wisp window's Chats section even when the window is open on another
+    /// section: the notch's "All chats in the Wisp window".
+    case chatList
     case today(focus: TodayFocus)
     case research
     case memory(MemoryFocus)

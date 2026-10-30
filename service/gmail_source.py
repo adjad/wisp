@@ -33,7 +33,9 @@ What is fetched, per connected account, in the background (`run`):
 - full bodies of the newest RAW_LIMIT messages, every RAW_EVERY s (15 min,
   the cadence MailReader.swift uses for Mail.app), and once right after a
   sign-in. The proactive engine reads these bodies to find what people asked;
-  they live in the same expiring raw-body cache as Mail.app's.
+  they live in the same expiring raw-body cache as Mail.app's. A message's
+  content never changes under its id, so each body is fetched once (`_raw`);
+  later syncs list the ids and re-read only which of them are unread.
 
 Consent also asks for `calendar.readonly` (google_calendar_source.py reads the
 next week of events into the same calendar store EventKit fills). Google lets
@@ -130,6 +132,9 @@ _last: dict[str, dict[str, float]] = {}
 _errors: dict[str, str] = {}
 # account -> the user's sent messages: {ts, to, subject, message_id, in_reply_to}.
 _sent: dict[str, list[dict]] = {}
+# account -> {Gmail message id: its raw record}, only the ids the last raw sync
+# listed. Dropped with the account's other caches on reconnect, disconnect and erase.
+_raw: dict[str, dict[str, str]] = {}
 _access: dict[str, dict] = {}
 _epochs: dict[str, int] = {}
 _locks: dict[tuple[str, str], asyncio.Lock] = {}
@@ -248,6 +253,15 @@ def resolve_client(cfg: dict | None = None, client_id: str = "",
     if shipped_id:
         return shipped_id, shipped_secret, "builtin"
     return "", "", "none"
+
+
+def can_connect(cfg: dict | None = None) -> bool:
+    """Whether this build can start a Google sign-in at all: the user's own
+    client or the built-in one (resolve_client). Source checkouts and builds
+    shipped without WISP_GOOGLE_OAUTH_CLIENT have neither, so nothing should
+    offer "connect Google" there. The app's rule is the same
+    (GoogleStatus.canConnect, from status()'s client_source)."""
+    return resolve_client(cfg)[2] != "none"
 
 
 def connected_accounts(cfg: dict | None = None) -> dict[str, dict]:
@@ -672,6 +686,35 @@ async def _ensure_meta(http, ids: list[str]) -> None:
     await asyncio.gather(*(one(i) for i in missing))
 
 
+async def tab_message_ids(days: int, tabs: tuple[str, ...] = ("promotions", "social", "forums"),
+                          limit: int = 2000) -> set[str] | None:
+    """RFC Message-IDs of inbox mail Gmail filed under `tabs` in the last `days`, across
+    every connected account. None when no account is connected or any read failed:
+    unknown, never an empty set that would read as "nothing to exclude"."""
+    accounts = connected_accounts()
+    if not accounts:
+        return None
+    query = f"newer_than:{int(days)}d {{" + " ".join(f"category:{t}" for t in tabs) + "}"
+    found: set[str] = set()
+    for account, cfg in accounts.items():
+        token = _context.set((account, dict(cfg), _epochs.get(account, 0)))
+        try:
+            async with httpx.AsyncClient(timeout=10) as http:
+                ids = await _list_ids(http, limit, query=query)
+                if len(ids) >= limit:
+                    return None   # more than we listed: a partial set would let the rest through
+                await _ensure_meta(http, ids)
+                for i in ids:
+                    mid = _meta.get((account, i), {}).get("message_id", "").strip()
+                    if mid:   # Mail's index keeps the angle brackets; match its form
+                        found.add(mid if mid.startswith("<") else f"<{mid}>")
+        except Exception:  # noqa: BLE001 — a partial answer would wrongly include promotions
+            return None
+        finally:
+            _context.reset(token)
+    return found
+
+
 def _lines(ids: list[str], unread_ids: set[str], account: str) -> str:
     rows = [header_line(_meta[(account, i)], account, i in unread_ids)
             for i in ids if (account, i) in _meta]
@@ -709,22 +752,36 @@ def sent_rows() -> list[dict]:
             for row in rows]
 
 
+def _with_read_state(record: str, unread: bool) -> str:
+    """A cached raw record with its read state brought up to date (field 2)."""
+    stamp, _state, rest = record.split(_FS, 2)
+    return _FS.join([stamp, "U" if unread else "R", rest])
+
+
 async def _sync_raw(http, account: str) -> None:
     from service.tools import email_tools
     newest = await _list_ids(http, RAW_LIMIT)
     week = await _list_ids(http, WEEK_RAW_LIMIT, query=f"newer_than:{WEEK_RAW_DAYS}d")
     ids = list(dict.fromkeys(newest + week))
+    known = _raw.get(account, {})
+    missing = [i for i in ids if i not in known]
+    # Every listed id is among the newest RAW_LIMIT + WEEK_RAW_LIMIT unread inbox
+    # messages if it is unread at all, so one list call re-reads the read state of
+    # the cached ones instead of a full fetch each.
+    unread = set(await _list_ids(http, RAW_LIMIT + WEEK_RAW_LIMIT, unread=True)) if len(missing) < len(ids) else set()
     gate = asyncio.Semaphore(FETCH_CONCURRENCY)
 
     async def one(message_id: str) -> dict:
         async with gate:
             return await _get(http, f"messages/{message_id}", [("format", "full")])
 
-    messages = await asyncio.gather(*(one(i) for i in ids))
+    messages = await asyncio.gather(*(one(i) for i in missing))
     if not _still_connected():
         return
-    email_tools.cache_external_emails(account=account,
-        raw=_RS.join(raw_record(m, account) for m in messages))
+    fetched = {i: raw_record(m, account) for i, m in zip(missing, messages)}
+    records = {i: fetched[i] if i in fetched else _with_read_state(known[i], i in unread) for i in ids}
+    _raw[account] = records
+    email_tools.cache_external_emails(account=account, raw=_RS.join(records[i] for i in ids))
     _last.setdefault(account, {})["raw"] = time.time()
 
 
@@ -993,6 +1050,7 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
         _access.pop(email, None)
         _last.pop(email, None)
         _sent.pop(email, None)
+        _raw.pop(email, None)
         _errors.pop(email, None)       # e.g. the expired sign-in this replaces
         # Every sign-in serves the Workspace tools too: its refresh token is
         # copied for the Workspace server (sync_credentials below). An older
@@ -1210,6 +1268,7 @@ async def disconnect(account: str = "") -> dict:
             _access.pop(email, None)
             _last.pop(email, None)
             _sent.pop(email, None)
+            _raw.pop(email, None)
             _errors.pop(email, None)
             for key in list(_meta):
                 if key[0] == email:
@@ -1226,15 +1285,21 @@ async def disconnect(account: str = "") -> dict:
                 _observe_history_config({})
         E.configure_external_accounts(accounts)
     erased = {email: erase_account_data(email) for email in removed}
-    for item in removed.values():
+    # Revocation is best effort: the local disconnect already succeeded. Each
+    # account says whether Google confirmed it ("revoked"), refused the token
+    # ("rejected", e.g. already revoked) or could not be reached ("offline").
+    revoked: dict[str, str] = {}
+    for email, item in removed.items():
         try:
             async with httpx.AsyncClient(timeout=5) as http:
-                await http.post("https://oauth2.googleapis.com/revoke", data={"token": item["refresh_token"]})
+                answer = await http.post("https://oauth2.googleapis.com/revoke",
+                                         data={"token": item["refresh_token"]})
+            revoked[email] = "revoked" if answer.status_code == 200 else "rejected"
         except Exception:
-            pass  # Local disconnect already succeeded.
+            revoked[email] = "offline"
     complete = all(value == "erased" or value.startswith("erased ")
                    for parts in erased.values() for value in parts.values())
-    return {"removed": sorted(removed), "erased": erased, "complete": complete}
+    return {"removed": sorted(removed), "erased": erased, "complete": complete, "revoked": revoked}
 
 
 def erase_account_data(account: str) -> dict:
@@ -1265,6 +1330,7 @@ def erase_account_data(account: str) -> dict:
         if key[0] == account:
             _meta.pop(key, None)
     _sent.pop(account, None)
+    _raw.pop(account, None)
     try:
         from service import google_workspace
         google_workspace.credentials_path(account).unlink(missing_ok=True)

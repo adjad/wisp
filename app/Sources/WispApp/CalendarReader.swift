@@ -18,31 +18,69 @@ final class CalendarReader {
     private let historyDays = 365
     private var timer: Timer?
     private var historyTask: Task<Void, Never>?
+    private var changeObserver: NSObjectProtocol?
+    private var pendingChangeSync: DispatchWorkItem?
+    private var lastSyncStartedAt: TimeInterval?
 
     // The same rules as Reminders (RemindersWriter.Access.passive): it never
     // asks macOS for access, and an unanswered permission is a reason with a
     // next step, never "syncing" forever.
     private typealias Access = RemindersWriter.Access
 
-    // Sync now (which never asks for access: Access.passive), then
-    // keep a repeating timer regardless of the result, so a permission granted
-    // AFTER launch is picked up within a minute instead of needing a restart.
-    // sync() itself no-ops (but reports diagnostics) when unauthorized.
+    // Sync now (which never asks for access: Access.passive), then read again
+    // whenever EventKit says the store changed (debounced, see scheduleChangeSync)
+    // and on a heartbeat (NativeSyncPace), regardless of the result, so a missed
+    // notification or a permission granted AFTER launch is picked up without a
+    // restart. sync() itself no-ops (but reports diagnostics) when unauthorized.
     func start() {
+        // A second start replaces the observer rather than adding another.
+        if let changeObserver { NotificationCenter.default.removeObserver(changeObserver) }
+        changeObserver = NotificationCenter.default.addObserver(
+            forName: .EKEventStoreChanged, object: store, queue: .main
+        ) { [weak self] _ in self?.scheduleChangeSync() }
         DispatchQueue.main.async { [weak self] in self?.sync() }
         // Beat the backend-startup race: the Python backend may not be listening
         // yet when the app launches, so the earliest sync POSTs fail silently.
-        // Retry on a short ramp until it lands, then settle into a 60s cadence.
+        // Retry on a short ramp until it lands, then settle into the heartbeat.
         for delay in [1.0, 3.0, 6.0, 12.0, 25.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 self?.sync()
             }
         }
-        DispatchQueue.main.async { [weak self] in
-            self?.timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
-                self?.sync()
-            }
+        DispatchQueue.main.async { [weak self] in self?.scheduleHeartbeat() }
+    }
+
+    deinit {
+        if let changeObserver { NotificationCenter.default.removeObserver(changeObserver) }
+        pendingChangeSync?.cancel()
+        timer?.invalidate()
+    }
+
+    private func scheduleHeartbeat() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: NativeSyncPace.heartbeatInterval(authorized: isAuthorized),
+                                     repeats: false) { [weak self] _ in
+            self?.sync()
+            self?.scheduleHeartbeat()
         }
+    }
+
+    // Calendar can announce several changes for one edit, and a busy store (a
+    // subscribed calendar refreshing) announces them all day. Wait for them to
+    // settle, and never read more often than NativeSyncPace.changeFloor. Wisp's
+    // own writes go through this store, which EventKit does not announce to
+    // itself, so they ask for a read here too (without the floor).
+    private func scheduleChangeSync(afterOwnWrite: Bool = false) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.scheduleChangeSync(afterOwnWrite: afterOwnWrite) }
+            return
+        }
+        pendingChangeSync?.cancel()
+        let delay = afterOwnWrite ? NativeSyncPace.changeDebounce
+            : NativeSyncPace.changeDelay(lastSyncStartedAt: lastSyncStartedAt, now: Date().timeIntervalSince1970)
+        let work = DispatchWorkItem { [weak self] in self?.sync() }
+        pendingChangeSync = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     var isAuthorized: Bool {
@@ -59,6 +97,7 @@ final class CalendarReader {
             return
         }
         let snapshotStartedAt = Date().timeIntervalSince1970
+        lastSyncStartedAt = snapshotStartedAt
         guard isAuthorized else {
             let raw = EKEventStore.authorizationStatus(for: .event)
             let report = Access.passive(status: Access.status(of: raw), source: .calendar)
@@ -214,6 +253,7 @@ final class CalendarReader {
     // Create a real event in the default calendar (write access comes with the
     // full-access grant). The backend receipt records it before the next sync.
     func createEvent(title: String, startTs: Double, durationMin: Int, location: String) -> [String: Any] {
+        defer { scheduleChangeSync(afterOwnWrite: true) }
         guard isAuthorized, let cal = store.defaultCalendarForNewEvents else {
             return ["ok": false, "error": "Calendar access denied or no writable default calendar"]
         }
@@ -228,6 +268,7 @@ final class CalendarReader {
 
     /// A date-only commitment never borrows an arbitrary meeting start or duration.
     func createAllDayEvent(title: String, day: String, timezone: String, location: String) -> [String: Any] {
+        defer { scheduleChangeSync(afterOwnWrite: true) }
         guard isAuthorized, let cal = store.defaultCalendarForNewEvents,
               cal.allowsContentModifications,
               !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -267,6 +308,7 @@ final class CalendarReader {
     // meant. Searching a narrow window around the occurrence's own start time
     // and matching the identifier there finds the exact instance.
     func deleteEvent(identifier: String, occurrenceTs: Double? = nil) -> [String: Any] {
+        defer { scheduleChangeSync(afterOwnWrite: true) }
         guard isAuthorized else { return ["ok": false, "error": "Calendar access denied"] }
         let target: EKEvent?
         if let ts = occurrenceTs {
@@ -305,6 +347,7 @@ final class CalendarReader {
     // "unknown", not done.
     func moveEvent(identifier: String, expectedTitle: String, expectedStart: Double,
                    newStart: Double, durationMin: Int?, expectedInvitees: Int) -> [String: Any] {
+        defer { scheduleChangeSync(afterOwnWrite: true) }
         guard isAuthorized else { return ["ok": false, "error": "Calendar access denied"] }
         guard let ev = occurrence(identifier, at: expectedStart) else {
             return ["ok": false, "error": "That event is no longer at the time Wisp last read; nothing was moved"]
@@ -338,6 +381,7 @@ final class CalendarReader {
     // keeps every other occurrence; then read back that this one is gone.
     func cancelEvent(identifier: String, expectedTitle: String, expectedStart: Double,
                      expectedInvitees: Int) -> [String: Any] {
+        defer { scheduleChangeSync(afterOwnWrite: true) }
         guard isAuthorized else { return ["ok": false, "error": "Calendar access denied"] }
         guard let ev = occurrence(identifier, at: expectedStart) else {
             return ["ok": false, "error": "That event is no longer at the time Wisp last read; nothing was cancelled"]

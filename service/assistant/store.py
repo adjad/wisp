@@ -1351,6 +1351,12 @@ class AssistantStore:
             row = self._db.execute("SELECT * FROM assistant_events WHERE dedupe_key=?", (key,)).fetchone()
             return self._event(row) if row else None
 
+    def any_daily_brief(self) -> bool:
+        """Whether this install has ever queued a Daily Summary (any day, any run)."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT 1 FROM assistant_events WHERE kind='daily_brief' LIMIT 1").fetchone() is not None
+
     def reminder_actions_by_prefix(self, action_id_prefix: str) -> list[dict]:
         """Read exact semantic action generations for safe post-failure retry."""
         with self._lock:
@@ -1688,6 +1694,27 @@ class AssistantStore:
             if row[flag] is not None:
                 row[flag] = bool(row[flag])
         return row
+
+    def mark_read_only_calendars(self, rows: list[dict]) -> list[dict]:
+        """Sets ``calendar_read_only`` True on each EventKit row whose calendar this Mac
+        can't change (allowsContentModifications false: a subscribed or read-only shared
+        calendar), so Ask's "What should I prep for …" starter keeps to the person's own.
+        Google rows never get it: their stored False says only that Wisp can't move them
+        through EventKit, not whose calendar they are on. Unknown leaves a row unmarked."""
+        from service.google_calendar_source import PREFIX
+        ids = [r["id"] for r in rows if r.get("source") == "calendar" and r.get("id")
+               and not str(r.get("source_id") or "").startswith(PREFIX)]
+        read_only: set[str] = set()
+        with self._lock:
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                read_only.update(r[0] for r in self._db.execute(
+                    "SELECT commitment_id FROM calendar_event_writable WHERE writable=0 "
+                    "AND commitment_id IN (" + ",".join("?" * len(chunk)) + ")", chunk))
+        for r in rows:
+            if r.get("id") in read_only:
+                r["calendar_read_only"] = True
+        return rows
 
     def calendar_occurrence_current(self, source_id: str, start_ts: float, title: str) -> bool:
         """True while the synced Calendar occurrence (identifier + start) is active with

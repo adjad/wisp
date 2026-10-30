@@ -13,7 +13,7 @@ from pathlib import Path
 import stat
 
 ROOT = Path(__file__).resolve().parent / "engine_guard"
-TARGETS = {"omlx/process_memory_enforcer.py", "omlx/engine_pool.py", "omlx/server.py", "omlx/engine/dflash.py"}
+TARGETS = {"omlx/process_memory_enforcer.py", "omlx/engine_pool.py", "omlx/server.py"}
 ADDITION = "omlx/wisp_guard.py"
 
 

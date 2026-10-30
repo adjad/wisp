@@ -235,6 +235,56 @@ def _split_inline_thought(message: dict) -> None:
     thought = "".join(t for k, t in parts if k == "reasoning")
     message["reasoning_content"] = ((message.get("reasoning_content") or "") + thought).strip()
 
+async def _power_fields(client) -> dict[str, int]:
+    """The current power tier's GPU cap (service/inference/power_tier.py), after
+    a fresh look at other apps' GPU use.
+
+    Only the managed local engine gets it: a remote provider has no use for it
+    and a remote-only profile refuses unknown payload keys. A module function,
+    not a method, because stand-in clients borrow OMLXClient.chat.
+    """
+    if not getattr(client, "managed", False):
+        return {}
+    from service.inference.power_tier import checked_payload_fields
+    return await checked_payload_fields(lambda: _lift_gpu_power(client))
+
+
+async def _lift_gpu_power(client) -> bool | None:
+    """Ask the bundled engine to drop its GPU power cap now, mid-request too.
+    True when it did, False when it can't (an engine without the route: 404
+    or 405), None when it couldn't be asked or was too busy to answer (429,
+    5xx, anything else), so it is asked again. A closed client (its call has
+    ended) asks nothing and raises LiftClientClosed, so another capped call's
+    is asked."""
+    from service.inference.power_tier import _LIFT_TIMEOUT_S, LiftClientClosed
+    if getattr(getattr(client, "_client", None), "is_closed", False):
+        raise LiftClientClosed
+    try:
+        r = await client._client.post("/v1/wisp/gpu-power/lift", timeout=_LIFT_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 — unreachable, or a stand-in without an engine
+        return None
+    if r.status_code == 200:
+        return True
+    return False if r.status_code in (404, 405) else None
+
+
+def _power_call_started(client, payload: dict) -> tuple[bool, int | None] | None:
+    """Counts calls someone is waiting on, so Brief and background calls drop
+    their cap while one runs (oMLX holds the lowest cap among active requests),
+    and capped calls, which power_tier watches (and lifts through this client)
+    while they run."""
+    if not getattr(client, "managed", False):
+        return None
+    from service.inference.power_tier import call_started
+    return call_started(payload.get("gpu_power_limit_w"), lambda: _lift_gpu_power(client))
+
+
+def _power_call_ended(started: tuple[bool, int | None] | None) -> None:
+    if started is not None:
+        from service.inference.power_tier import call_ended
+        call_ended(started)
+
+
 class OMLXClient:
     def __init__(self, base_url: str | None = None, api_key: str | None = None,
                  timeout: float = 600.0, *, target: Target | None = None) -> None:
@@ -799,19 +849,30 @@ class OMLXClient:
         tool_choice: str | dict | None = None,
         temperature: float | None = None,
         max_tokens: int = 2048,
+        engine_headers: dict[str, str] | None = None,
         **extra: Any,
     ) -> dict[str, Any]:
-        """Non-streaming chat completion. Returns the raw oMLX response dict."""
+        """Non-streaming chat completion. Returns the raw oMLX response dict.
+
+        `engine_headers` go only to the local managed engine (for example
+        oMLX's `X-oMLX-Cache-Store: off`); a remote provider never sees them.
+        """
         model, messages, tools, max_tokens = self._fit_request(model, messages, tools, max_tokens)
         payload = self._payload(model, messages, tools, tool_choice,
-                                temperature, max_tokens, stream=False, **extra)
+                                temperature, max_tokens, stream=False,
+                                **{**(await _power_fields(self)), **extra})
         # A generation can make the engine load its model, so it counts as
         # engine activity for every readiness proof (see engine_epoch).
         engine_epoch.begin()
         idle.begin(self.activity_key(model))
+        power_call = _power_call_started(self, payload)
         try:
             if self.managed:
-                r = await self._client.post(self.api_prefix + "/chat/completions", json=payload)
+                if engine_headers:
+                    r = await self._client.post(self.api_prefix + "/chat/completions", json=payload,
+                                                headers=engine_headers)
+                else:
+                    r = await self._client.post(self.api_prefix + "/chat/completions", json=payload)
                 self._check_response(r)
                 data = self._completion_data(r)
             else:
@@ -845,6 +906,7 @@ class OMLXClient:
                         _demote_unclosed_think(choice["message"], choice.get("finish_reason"))
             return data
         finally:
+            _power_call_ended(power_call)
             idle.end(self.activity_key(model))
             engine_epoch.end()
 
@@ -885,7 +947,8 @@ class OMLXClient:
             model, messages, tools, max_tokens,
             use_remaining_context=use_remaining_context)
         payload = self._payload(model, messages, tools, tool_choice,
-                                temperature, max_tokens, stream=True, **extra)
+                                temperature, max_tokens, stream=True,
+                                **{**(await _power_fields(self)), **extra})
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         thought_splitter = _ThoughtSplitter()
@@ -898,6 +961,7 @@ class OMLXClient:
         output_limit, wire_limit = self._remote_limits(max_tokens)
         engine_epoch.begin()
         idle.begin(self.activity_key(model))
+        power_call = _power_call_started(self, payload)
         try:
             headers = None if self.managed else {"Accept-Encoding": "identity"}
             async with self._client.stream("POST", self.api_prefix + "/chat/completions",
@@ -971,6 +1035,7 @@ class OMLXClient:
                                     output_size, fn["arguments"], output_limit)
                             slot["arguments"] += fn["arguments"]
         finally:
+            _power_call_ended(power_call)
             idle.end(self.activity_key(model))
             engine_epoch.end()
         for kind, piece in thought_splitter.flush():

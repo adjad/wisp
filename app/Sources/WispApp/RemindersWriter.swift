@@ -2,6 +2,42 @@ import AppKit
 import Foundation
 import EventKit
 
+/// When Calendar and Reminders are read besides on request (the backend asks,
+/// setup grants access): when EventKit says the store changed, and on a heartbeat
+/// that re-posts regardless. The heartbeat is a safety net for a missed
+/// notification, so it is as slow as the backend allows. The planner calls a
+/// source "not current" once its last sync is 180 s old (service/assistant/today.py,
+/// source_health), so it must beat that with a minute to spare: the timer is
+/// re-armed after each read (Calendar's 395-day read runs on main), and timer
+/// tolerance, App Nap and the post all add to the gap between two syncs;
+/// Calendar's and Reminders' behavior receipts count only under 1200 s
+/// (service/assistant/scheduler.py, record_sync). Without access nothing is
+/// read, only a small status is posted, so that keeps the one-minute pace that
+/// picks up a permission granted after launch.
+enum NativeSyncPace {
+    static let heartbeat: TimeInterval = 120
+    static let withoutAccess: TimeInterval = 60
+    /// Calendar waits this long after the last change before it reads.
+    static let changeDebounce: TimeInterval = 2
+    /// Calendar's change-driven reads start at least this far apart, so a store
+    /// that never stops announcing is read no more often than the old timer.
+    static let changeFloor: TimeInterval = 60
+
+    /// How long after the service comes up (and every reader posts again) the
+    /// Brief and Day look again for what those posts brought.
+    static let reachableRefreshDelay: UInt64 = 3_000_000_000
+
+    static func heartbeatInterval(authorized: Bool) -> TimeInterval {
+        authorized ? heartbeat : withoutAccess
+    }
+
+    /// Seconds to wait before a change-driven read, given when the last read began.
+    static func changeDelay(lastSyncStartedAt: TimeInterval?, now: TimeInterval) -> TimeInterval {
+        guard let last = lastSyncStartedAt, now >= last else { return changeDebounce }
+        return max(changeDebounce, changeFloor - (now - last))
+    }
+}
+
 // Mirrors Wisp reminders INTO the macOS Reminders app (EKReminder) so they
 // also appear on the user's other devices, and reads reminders back OUT —
 // items the user created directly in Reminders.app (via Siri, iPhone, typing
@@ -122,7 +158,7 @@ final class RemindersWriter {
 
         /// What a reader reports. Readers never ask macOS for access: the person
         /// allows each permission by clicking its row in Wisp's setup window
-        /// (also reached from the menu bar icon's Permissions…), so a prompt only
+        /// (also reached from Settings › Privacy's Permissions…), so a prompt only
         /// ever follows that click. Until then the source is unavailable, with a
         /// reason that says where to allow it; never "syncing", never a request.
         static func passive(status: Status, source: Source = .reminders) -> Report {
@@ -134,8 +170,8 @@ final class RemindersWriter {
         }
 
         static func notAskedReason(_ source: Source) -> String {
-            "Wisp hasn't been allowed to see your \(source.name) yet. Right-click Wisp's menu bar icon, "
-                + "choose Permissions…, and click Allow next to \(source.name)."
+            "Wisp hasn't been allowed to see your \(source.name) yet. Open Wisp's Settings, "
+                + "choose Permissions… under Privacy, and click Allow next to \(source.name)."
         }
 
         /// The diagnostics object the backend reads (`record_sync`, sync_status).
@@ -279,6 +315,10 @@ final class RemindersWriter {
     }
 
     private func scheduleChangeSync() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.scheduleChangeSync() }
+            return
+        }
         // Reminders.app can emit several store changes for one edit. Coalesce
         // them, then fetch a new complete snapshot instead of reusing objects.
         pendingChangeSync?.cancel()
@@ -348,6 +388,8 @@ final class RemindersWriter {
                          expectedTitle: String = "", expectedDueTs: Double? = nil,
                          title: String = "", dueTs: Double = 0,
                          commitmentKind: String = "reminder", dueDate: String = "", expectedDueDate: String = "") -> [String: Any] {
+        // EventKit does not announce this store's own writes to itself.
+        defer { scheduleChangeSync() }
         guard isAuthorized else { return failure("Reminders access is unavailable") }
         guard !actionID.isEmpty, actionID.count <= 128,
               actionID.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "._:-".contains($0)) })
@@ -546,10 +588,17 @@ final class RemindersWriter {
                 self?.sync()
             }
         }
-        DispatchQueue.main.async { [weak self] in
-            self?.timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { _ in
-                self?.sync()
-            }
+        DispatchQueue.main.async { [weak self] in self?.scheduleHeartbeat() }
+    }
+
+    // The change observer above is the real trigger; this re-reads regardless
+    // (NativeSyncPace) in case a notification was missed.
+    private func scheduleHeartbeat() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: NativeSyncPace.heartbeatInterval(authorized: isAuthorized),
+                                     repeats: false) { [weak self] _ in
+            self?.sync()
+            self?.scheduleHeartbeat()
         }
     }
 

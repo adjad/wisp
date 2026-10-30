@@ -6,9 +6,11 @@ service/config/policy.yaml but ships with safe defaults so it works standalone.
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import re
 import shlex
+import stat
 from contextlib import contextmanager
 from contextvars import ContextVar
 from itertools import chain
@@ -19,6 +21,7 @@ from urllib.parse import unquote
 
 import yaml
 
+from service.paths import MOE_DIR
 from service.publication_authority import Authority, Witness, revocation
 
 POLICY_YAML = Path(__file__).parent.parent / "config" / "policy.yaml"
@@ -190,6 +193,8 @@ _LOCAL_SEND_DENY = [
     r"assistant/+proactive/+cards/+[^/\s'\"]+/+fire\b",
     r"assistant/+needs_you/+[^/\s'\"]+/+(?:done|clear)\b",
     r"assistant/+proactive/+(?:todos|threads)/+[^/\s'\"]+/+(?:done|clear)\b",
+    # /resetwisp's erase: only the app, after the person's Reset Wisp click.
+    r"assistant/+reset_wisp\b",
     # Bounded: unbounded lazy runs here were quadratic on a long command.
     # The route patterns above already match the path at any length.
     r"(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)[^\s'\"]{0,256}?:8765\b[^\s'\"]{0,256}?(email_reply|send_message_draft)",
@@ -632,9 +637,95 @@ def publication_witness() -> Witness | None:
     token = _publication.token() if _proof_known else None
     return Witness((token,)) if token is not None else None
 
+
+# The user's own access choice (POST /mode -> choose_mode), kept across restarts
+# so "Ask before acting" stays chosen. policy.yaml is only the fresh-install
+# default: a key saved here wins over it at startup. The bare setters below stay
+# in-memory only (tests and scripts flip them freely); only choose_mode saves.
+MODE_PATH = MOE_DIR / "access_mode.json"
+_MODE_KEYS = frozenset({"read_only", "full_access"})
+
+
+class _BadModeFile(Exception):
+    """access_mode.json exists but isn't a valid saved choice."""
+
+
+def _read_mode() -> dict[str, bool]:
+    """The saved choice; {} when there is none. A file that is there but can't be
+    trusted (a symlink, a FIFO or directory, another owner, an extra hard link,
+    unreadable, malformed or with unknown keys) raises _BadModeFile."""
+    try:
+        # O_NONBLOCK: a FIFO planted here must not hang the service's start.
+        fd = os.open(MODE_PATH, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except (FileNotFoundError, NotADirectoryError):
+        return {}
+    except OSError as e:
+        raise _BadModeFile(str(e)) from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.getuid():
+            raise _BadModeFile("not a regular file of this user's")
+        with os.fdopen(fd, encoding="utf-8") as f:
+            fd = -1
+            data = json.load(f)
+    except _BadModeFile:
+        raise
+    except Exception as e:  # noqa: BLE001 — unreadable or not JSON
+        raise _BadModeFile(str(e)) from None
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if (type(data) is not dict or not data.keys() <= _MODE_KEYS
+            or any(type(value) is not bool for value in data.values())):
+        raise _BadModeFile("not a saved access choice")
+    return data
+
+
+def _saved_mode() -> dict[str, bool]:
+    """The saved choice, or {} when it is missing or can't be trusted."""
+    try:
+        return _read_mode()
+    except _BadModeFile:
+        return {}
+
+
+def _startup_mode() -> dict[str, bool]:
+    """The saved choice laid over policy.yaml at import. A file that is there but
+    bad fails closed: Full access off, whatever policy.yaml says, since it may
+    have been the user's "off" that got damaged or replaced (0.5.0 #409 audit)."""
+    try:
+        return _read_mode()
+    except _BadModeFile as e:
+        import logging
+        logging.getLogger("wisp.policy").warning(
+            "access_mode.json can't be read (%s); Full access stays off until it is chosen again", e)
+        return {"full_access": False}
+
+
+def _save_mode(data: dict[str, bool]) -> None:
+    MODE_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = MODE_PATH.with_name(MODE_PATH.name + ".tmp")
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+        with os.fdopen(os.open(tmp, flags, 0o600), "w", encoding="utf-8") as f:
+            os.fchmod(f.fileno(), 0o600)   # O_CREAT's mode skips a leftover tmp
+            json.dump(data, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, MODE_PATH)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+_STARTUP_MODE = _startup_mode()
+
 # View-only mode: the app may READ/inspect anything but never modify the machine.
 # Default ON — a local assistant shouldn't be able to change things unless you opt in.
-_READ_ONLY = bool(_CFG.get("read_only", True))
+_READ_ONLY = _STARTUP_MODE.get("read_only", bool(_CFG.get("read_only", True)))
 
 
 def read_only() -> bool:
@@ -654,7 +745,7 @@ def set_read_only(value: bool) -> None:
 # read_only. The catastrophic-command floor (_SHELL_DENY) is still enforced
 # unless `disable_safety_floor: true` is also set — that floor guards against the
 # model being prompt-injected into something irreversible, not against you.
-_FULL_ACCESS = bool(_CFG.get("full_access", False))
+_FULL_ACCESS = _STARTUP_MODE.get("full_access", bool(_CFG.get("full_access", False)))
 _KEEP_FLOOR = not bool(_CFG.get("disable_safety_floor", False))
 if _proof_known:
     _publication.publish()
@@ -671,6 +762,28 @@ def set_full_access(value: bool) -> None:
         _FULL_ACCESS = bool(value)
         if _proof_known:
             _publication.publish()
+
+
+def choose_mode(chosen: dict[str, bool]) -> None:
+    """The user's choice (POST /mode): apply it now and save it for the next start.
+
+    Each key goes through set_read_only / set_full_access, so it revokes and
+    republishes exactly as they do; the save happens under the same lease, so
+    two choices can't leave memory and the file disagreeing. The change stands
+    even if saving fails (turning Full access off must take effect now) and the
+    OSError is raised, so the caller can say it won't survive a restart.
+    """
+    if not chosen.keys() <= _MODE_KEYS:
+        raise ValueError(f"unknown access mode keys: {sorted(chosen.keys() - _MODE_KEYS)}")
+    chosen = {key: bool(value) for key, value in chosen.items()}
+    if not chosen:
+        return
+    with revocation():
+        if "read_only" in chosen:
+            set_read_only(chosen["read_only"])
+        if "full_access" in chosen:
+            set_full_access(chosen["full_access"])
+        _save_mode({**_saved_mode(), **chosen})
 
 
 def _rules(key: str, default: list[str]) -> list[str]:
@@ -828,8 +941,9 @@ ALWAYS_CONFIRM_TOOLS = frozenset({"run_applescript"})
 
 
 # Where keys, tokens and Wisp's own grants live. Reading one puts a secret in
-# the model's context; writing one can rewrite who Wisp trusts. Either asks
-# first in every mode (view-only refuses), and a grant cannot lift it.
+# the model's context; writing one can rewrite who Wisp trusts (access_mode.json
+# would turn Full access on at the next start). Either asks first in every mode
+# (view-only refuses), and a grant cannot lift it.
 def _credential_roots() -> list[Path]:
     from service.paths import MOE_DIR
     home = Path.home()
@@ -837,15 +951,52 @@ def _credential_roots() -> list[Path]:
              home / ".config" / "gh", home / ".config" / "gcloud", home / "Library" / "Keychains"]
     for moe in dict.fromkeys((MOE_DIR, home / ".moe")):
         roots += [moe / "gmail.json", moe / "mcp.json", moe / "google_workspace",
-                  moe / "grants.json"]
+                  moe / "grants.json", moe / "access_mode.json",
+                  # /resetwisp's commit marker: its presence erases Wisp's data at the next start.
+                  moe / ".reset-pending"]
     return roots
 
 
 _SHELL_SECRET = [
     r"(?<![\w-])\.(?:ssh|aws|gnupg|netrc)(?![\w-])",
     r"\.config/(?:gh|gcloud)\b", r"\bkeychains?\b", r"\bsecurity\s+(?:find|dump|export)-",
-    r"\b(?:gmail|mcp|grants)\.json\b", r"\bgoogle_workspace\b",
+    r"\b(?:gmail|mcp|grants|access_mode)\.json\b", r"\bgoogle_workspace\b", r"\.reset-pending\b",
 ]
+# The ~/.moe folder itself (not a file in it): moving or replacing it swaps
+# grants.json and access_mode.json without naming them (#409 audit). Any run
+# of `/` and `/.` after it still names the folder: `~/.moe/`, `~/.moe/.`,
+# `~/.moe//`, `~/.moe/./` (#415 audit).
+_SHELL_MOE_FOLDER = r"(?<![\w-])\.moe(?:/\.?)*(?=$|[\s'\";|&)])"  # one `/` per pass: no backtracking blowup
+# A dot-name glob (`~/.m*`, `~/.mo?`, `~/.[m]oe`) that the shell may expand to it.
+_SHELL_GLOB_WORD = re.compile(r"(?<![\w-])\.[^\s/'\";|&()<>]*[*?\[][^\s/'\";|&()<>]*")
+# Listing a folder or counting what is in it reads names and sizes, never a
+# file's contents, so `cd ~/.moe && ls` and `ls ~/.moe | wc -l` don't ask.
+# Not sort or uniq: `sort -o FILE` and `uniq IN OUT` write a file.
+_LISTING_ONLY = frozenset({"cd", "ls", "wc", "du", "stat", "pwd"})
+
+
+def _only_lists(cmd: str) -> bool:
+    """Every command in `cmd` lists or counts (_LISTING_ONLY): no substitution,
+    redirect, background `&` or subshell, and each `&&`/`||`/`;`/`|` part
+    starts with one of those programs. Quoting is not parsed: a quoted
+    separator just makes a part fail, which asks."""
+    if re.search(r"[`$<>(){}\n\\]|(?<!&)&(?!&)", cmd):
+        return False
+    for part in re.split(r"&&|\|\||[;|]", cmd):
+        words = part.split()
+        if not words or words[0] not in _LISTING_ONLY:
+            return False
+    return True
+
+
+def _moe_folder_hit(text: str) -> str | None:
+    """Where `text` names Wisp's data folder itself, spelled out or as a glob."""
+    if (m := re.search(_SHELL_MOE_FOLDER, text, re.IGNORECASE)):
+        return " ".join(m.group(0).split())[:60]
+    for m in _SHELL_GLOB_WORD.finditer(text):
+        if fnmatch.fnmatchcase(".moe", m.group(0).casefold()):
+            return m.group(0)[:60]
+    return None
 
 
 def _within(path: str, roots: list[str]) -> bool:
@@ -853,11 +1004,37 @@ def _within(path: str, roots: list[str]) -> bool:
     return any(p == r or p.startswith(r + "/") for r in roots)
 
 
-def credential_path_hit(args: dict, tool: str | None = None) -> str | None:
-    """The credential location a file tool's arguments name, or None."""
+def _wisp_folders() -> list[str]:
+    """Wisp's data folder itself, in _within's spelling. (The folders above it
+    are home and /Users: a move into ~ is ordinary, and moving those is not.)"""
+    from service.paths import MOE_DIR
+    found: list[str] = []
+    for folder in dict.fromkeys((MOE_DIR, Path.home() / ".moe")):
+        found.append(str(folder).rstrip("/").casefold())
+        try:
+            found.append(str(folder.resolve()).rstrip("/").casefold())
+        except (OSError, RuntimeError):
+            pass
+    return found
+
+
+def credential_path_hit(args: dict, tool: str | None = None, *, mutating: bool = False) -> str | None:
+    """The credential location a file tool's arguments name, or None. A change
+    (`mutating`) aimed at Wisp's data folder itself counts too:
+    moving ~/.moe aside and another folder into its place replaces grants.json
+    and access_mode.json without naming either (#409 audit)."""
     operands = _path_operands(args, tool)
     if not operands:
         return None
+    if mutating:
+        folders = set(_wisp_folders())
+        for _, operand in operands:
+            try:
+                forms = _path_forms(operand)
+            except (ValueError, OSError, RuntimeError):
+                return operand
+            if any(f.rstrip("/").casefold() in folders for f in forms):
+                return operand
     roots: list[str] = []
     for root in _credential_roots():
         roots.append(str(root).rstrip("/").casefold())
@@ -900,15 +1077,18 @@ def _grep_file_operands(cmd: str) -> str:
 def shell_secret_hit(args: dict) -> str | None:
     """The credential location a shell-category call names, or None."""
     cmd = str(args.get("cmd") or "")
+    folder = not (not args.get("script") and _only_lists(cmd))
+
+    def hit_in(form: str) -> str | None:
+        return _first_match(_SHELL_SECRET, form) or (_moe_folder_hit(form) if folder else None)
+
     if not args.get("script") and len(cmd) <= SHELL_TEXT_LIMIT:
         if read_only_shell_argv(cmd) is not None:
             return None               # validated reads never reach hidden paths or ~/Library
         if _cannot_reach_network(args):
             cmd = _grep_file_operands(cmd)
-            return next((hit for form in _quote_forms(cmd)
-                         if (hit := _first_match(_SHELL_SECRET, form))), None)
-    return next((hit for form in shell_forms(args)
-                 if (hit := _first_match(_SHELL_SECRET, form))), None)
+            return next((hit for form in _quote_forms(cmd) if (hit := hit_in(form))), None)
+    return next((hit for form in shell_forms(args) if (hit := hit_in(form))), None)
 
 
 # First words that make a scoped "always allow" a blanket one: an interpreter
@@ -1283,7 +1463,7 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
     #
     # MEASURED FAILURE (2026-08-23, user's debug export): asked to text mom
     # the GOOGL/MU prices, the model called send_message with
-    # to="AdiJain888@gmail.com" — the user's OWN email, present in the
+    # to="sam.rivera@example.com" — the user's OWN email, present in the
     # system prompt only for attribution — instead of calling
     # `lookup_contact("Mom")` first. The user confirmed that card, THEN it
     # bounced, THEN the model looked up Mom's real number and the user had
@@ -1310,7 +1490,7 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
     outbound = ((shell_egress_hit(args) or shell_secret_hit(args))
                 if category == "shell" and tool not in ALWAYS_CONFIRM_TOOLS
                 else app_open_hit(args) if tool == "open_app" else None)
-    secret = (credential_path_hit(args, tool)
+    secret = (credential_path_hit(args, tool, mutating=category != "fs_read")
               if category in ("fs_read", "fs_write", "fs_delete") else None)
 
     # A standing grant the user gave for this exact tool (and scope). Checked
@@ -1505,6 +1685,19 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
         if ro:
             return Decision(Tier.DENY, "view-only mode: skill tools are disabled")
         return Decision(Tier.CONFIRM, "running a tool from an installed skill")
+
+    # Arithmetic, unit conversion and world clocks read nothing and change
+    # nothing. They used to fall through to "unclassified": denied in view-only
+    # and a confirmation card in the default mode, for "convert 72 F to C"
+    # (2026-10-29 Ask run).
+    if category == "compute":
+        return Decision(Tier.ALLOW, "a calculation")
+
+    # Wisp describing itself (wisp_status, wisp_capabilities, wisp_skills,
+    # wisp_mcp) only reads its own state. It also fell through to
+    # "unclassified", so "is my data private?" got a guess instead.
+    if category == "wisp_admin":
+        return Decision(Tier.ALLOW, "reading Wisp's own state")
 
     # Reading system state (volume level, clipboard contents) never changes
     # anything, so it's safe even in view-only mode — same reasoning as fs_read.

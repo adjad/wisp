@@ -6,7 +6,7 @@ who the user is at all. That is a correctness bug, not a polish issue, because
 the raw material is a conversation between several people and second-person
 pronouns in it belong to whoever was addressed:
 
-    Group of 3 (Mom, dad, Trishe) | Mom: @Trishe - Your post has 439 likes
+    Group of 3 (Mom, dad, Maya) | Mom: @Maya - Your post has 439 likes
 
 With no identity in the prompt the summarizer read "Your post" as the reader's
 and reported the user's sister's milestone as the user's own. The message data
@@ -162,9 +162,9 @@ def attribution_rules(shape: str) -> str:
         "- 'you' / 'your' / 'u' INSIDE a message someone else sent refers to "
         f"whoever THEY were addressing, which is often another member, not "
         f"{who}. When the message names or @-mentions a person "
-        "('@Trishe - your post', 'nice work Sam'), everything in that message "
+        "('@Maya - your post', 'nice work Sam'), everything in that message "
         f"is about THAT person. Attribute it to them, not to {who}, and say so "
-        "plainly (e.g. 'Mom congratulated Trishe on her post').\n"
+        "plainly (e.g. 'Mom congratulated Maya on her post').\n"
         "- Only treat a message as being about the user when it is a "
         "one-to-one chat with them, when it addresses them by name, or when "
         "nobody else is named in it. If you genuinely cannot tell who is meant, "

@@ -134,6 +134,22 @@ struct MarkdownChecks {
         check(blocks[0].listItems.map(\.text) == ["first", "second"], "list text stays compatible")
         check(blocks[1].codeLang == "swift" && blocks[1].body == "let pipe = \"|\"", "fenced code containing a pipe stays unchanged")
         check(blocks[2].body == "x²\nnext", "math superscripts and HTML line breaks stay compatible")
+
+        // The render path remembers a reply's blocks; it must match a fresh parse,
+        // including for a reply that keeps growing.
+        func same(_ a: [MarkdownView.Block], _ b: [MarkdownView.Block]) -> Bool {
+            kindNames(a) == kindNames(b) && a.map(\.body) == b.map(\.body) && a.map(\.tableRows) == b.map(\.tableRows)
+                && a.map { $0.listItems.map { $0.marker } } == b.map { $0.listItems.map { $0.marker } }
+                && a.map { $0.listItems.map { $0.text } } == b.map { $0.listItems.map { $0.text } }
+        }
+        let reply = "Intro\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n- item"
+        let view = MarkdownView(text: reply)
+        // First ask parses; the second is served from the short-lived tier; the third from the cache.
+        for pass in 1...3 {
+            check(same(view.cachedBlocks(), view.blocks()), "cached blocks match a fresh parse on pass \(pass)")
+        }
+        let grown = MarkdownView(text: reply + "\n\n```\ncode\n```")
+        check(same(grown.cachedBlocks(), grown.blocks()), "grown text is parsed, not served stale")
     }
 
     static func main() {

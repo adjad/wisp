@@ -157,7 +157,7 @@ Testing-mode limits:
 
 ## 8. Paste it into Wisp and connect your own account
 
-1. Open Wisp's Settings window (**⌘,** or the notch gear ▸ **All settings**) ▸ **Google**.
+1. Open Wisp's Settings (**⌘,** or the notch gear ▸ **All settings**; it opens in the Wisp window) ▸ **Google**.
 2. Open **Advanced ▸ Use your own OAuth client**:
    - Paste the **OAuth client ID**.
    - Paste the **Client secret**.

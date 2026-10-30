@@ -1,7 +1,13 @@
 import AppKit
 import CryptoKit
 import Security
+import ServiceManagement
 import SwiftUI
+
+extension Notification.Name {
+    /// Settings › General's Export Chat Debug Log…: AppDelegate writes the notch's conversation.
+    static let wispExportDebugLog = Notification.Name("WispExportDebugLog")
+}
 
 private enum CloudCredentialError: LocalizedError {
     case invalidKey
@@ -214,6 +220,11 @@ final class SettingsLoader: ObservableObject {
     // Wisp window's composer all read and write it through this loader.
     @Published private(set) var fullAccess: Bool?
     @Published private(set) var fullAccessPending = false
+    /// Set when the service applied the last change but couldn't save it, so it
+    /// will go back at the next restart (#409 audit: the 500 was never shown).
+    @Published private(set) var fullAccessSaveProblem: String?
+    @Published private(set) var saveWhenAway: Bool?
+    @Published private(set) var saveWhenAwayPending = false
     // The Daily Summary's morning and evening hours, as the service confirmed them.
     @Published private(set) var briefTimes: WispClient.BriefTimes?
     @Published private(set) var briefTimesPending = false
@@ -1080,8 +1091,29 @@ final class SettingsLoader: ObservableObject {
     /// The settings quick settings shows, without the models and providers.
     func refreshQuick() async {
         await refreshFullAccess()
+        await refreshSaveWhenAway()
         await refreshBehavior()
         await refreshBriefTimes()
+    }
+
+    func refreshSaveWhenAway() async {
+        guard !saveWhenAwayPending else { return }
+        let confirmed = await client.saveWhenAwayState()
+        guard !saveWhenAwayPending else { return }
+        saveWhenAway = confirmed
+    }
+
+    /// One change at a time; the row shows what the service confirmed.
+    func setSaveWhenAway(_ on: Bool) {
+        guard !saveWhenAwayPending else { return }
+        saveWhenAwayPending = true
+        Task {
+            var confirmed = await self.client.setSaveWhenAway(on)
+            // A lost reply may mean the write happened; only a fresh read can tell.
+            if confirmed == nil { confirmed = await self.client.saveWhenAwayState() }
+            self.saveWhenAway = confirmed
+            self.saveWhenAwayPending = false
+        }
     }
 
     func refreshFullAccess() async {
@@ -1107,15 +1139,20 @@ final class SettingsLoader: ObservableObject {
 
     @discardableResult
     private func confirmFullAccess(_ on: Bool) async -> Bool? {
-        var confirmed = await client.requestFullAccess(on)
+        let reply = await client.requestFullAccessReporting(on)
+        var confirmed = reply.confirmed
         // A lost reply may mean the write happened; only a fresh read can tell.
         if confirmed == nil { confirmed = await client.fullAccessState() }
         fullAccess = confirmed
+        // A lost reply says nothing about the save, so an earlier "couldn't
+        // save" stands until a reply says how this one went: the saved file is
+        // still the old one until a change is saved.
+        if reply.confirmed != nil || reply.problem != nil { fullAccessSaveProblem = reply.problem }
         fullAccessPending = false
         return confirmed
     }
 
-    #if WISP_NOTCH_QA
+    #if WISP_NOTCH_QA || WISP_CHAT_QA
     func qaShow(fullAccess: Bool?, briefTimes: WispClient.BriefTimes?) {
         self.fullAccess = fullAccess
         self.briefTimes = briefTimes
@@ -1127,8 +1164,10 @@ final class SettingsLoader: ObservableObject {
         guard let on = fullAccess else {
             return "Full access hasn't been confirmed. Wisp may still be acting without asking. Check status or turn it off."
         }
-        return on ? "Actions run automatically with no confirmation."
-                  : "Risky actions pause for your confirmation."
+        let state = on ? "Actions run automatically with no confirmation."
+                       : "Risky actions pause for your confirmation."
+        guard let problem = fullAccessSaveProblem else { return state }
+        return state + " " + problem
     }
 
     func refreshBriefTimes() async {
@@ -1250,14 +1289,36 @@ struct SettingsView: View {
     // App-scoped (AppDelegate owns it), shared with the notch's quick settings,
     // so both show the same confirmed and pending states.
     @ObservedObject private var loader: SettingsLoader
-    @MainActor init(loader: SettingsLoader) {
+    /// Open at login, beside the permissions (it moved from setup's last step to
+    /// its Permissions step, 2026-10-29); macOS's answer, read when Privacy opens.
+    @StateObject private var launchAtLogin = LaunchAtLogin()
+    /// The Wisp window's Settings section (true), or the standalone form with its
+    /// own sidebar, fixed frame and black surface (false), which only the
+    /// WISP_SETTINGS_QA render still uses. Embedded, it follows the Mac's appearance.
+    private let embedded: Bool
+    /// Settings › Models › Setup's guide, the app's one SetupGuideModel. Without
+    /// one (the QA harnesses) Setup guide… posts .wispOpenSetupGuide instead.
+    private let setup: SetupGuideModel?
+    /// Setup is standing in for the first-run window, hidden while it is up:
+    /// Setup offers the way back to it.
+    private let setupStandsInForWelcome: Bool
+    @MainActor init(loader: SettingsLoader, setup: SetupGuideModel? = nil, embedded: Bool = false,
+                    setupStandsInForWelcome: Bool = false) {
         self.loader = loader
+        self.setup = setup
+        self.embedded = embedded
+        self.setupStandsInForWelcome = setupStandsInForWelcome
     }
+    /// Where Settings keeps its last pane, so it reopens where the person left it.
+    /// AppDelegate writes them too, to open Settings › Models › Setup.
+    static let paneKey = "WispSettingsPane"
+    static let modelsPaneKey = "WispModelsPane"
+    private var palette: ThemePalette { embedded ? .wispWindow : .notch }
     @ObservedObject private var sync = SyncProgress.shared
     // Keep the last-used settings pane so reopening Settings returns to the
     // user's context when the window opens again.
-    @AppStorage("WispSettingsPane") private var selectedPane = "models"
-    @AppStorage("WispModelsPane") private var modelsPane = "assignments"
+    @AppStorage(SettingsView.paneKey) private var selectedPane = "models"
+    @AppStorage(SettingsView.modelsPaneKey) private var modelsPane = "assignments"
     // Off by default — see BrowserHistoryReader's doc comment on why this
     // needs its own explicit opt-in rather than following Mail/Notes/Messages
     // (which sync as soon as their own TCC permission is granted).
@@ -1268,7 +1329,73 @@ struct SettingsView: View {
     @State private var confirmForgetBehavior = false
 
     var body: some View {
-        HStack(spacing: 0) {
+        if embedded {
+            VStack(alignment: .leading, spacing: 0) {
+                embeddedHeader
+                paneScroll
+            }
+            .environment(\.themePalette, palette)
+            .foregroundStyle(ChatTheme.text)
+            .tint(palette.accent)
+            .task { refreshOnAppear() }
+        } else {
+            HStack(spacing: 0) {
+                sidebar
+                Rectangle().fill(Theme.hairline).frame(width: 1)
+                paneScroll
+            }
+            .frame(width: 760, height: 620)
+            .background(Theme.surface)
+            .foregroundStyle(Theme.textPrimary)
+            .tint(Theme.accent)
+            .preferredColorScheme(.dark)
+            .task { refreshOnAppear() }
+        }
+    }
+
+    private func refreshOnAppear() {
+        // The QA renders never reach Wisp's service.
+        #if !WISP_SETTINGS_QA && !WISP_CHAT_QA
+        loader.refresh()
+        #endif
+    }
+
+    /// The Wisp window's Settings header: the panes as one segmented row, in
+    /// place of the standalone form's sidebar.
+    private var embeddedHeader: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Settings").font(.system(size: 22, weight: .medium)).foregroundStyle(ChatTheme.text)
+                Text("Models, Google, activity, privacy and access.")
+                    .font(.system(size: 13)).foregroundStyle(ChatTheme.text2)
+            }
+            Picker("Settings", selection: $selectedPane) {
+                ForEach(panes) { pane in Text(pane.title).tag(pane.id) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .fixedSize()
+        }
+        .padding(.horizontal, 24).padding(.top, 18).padding(.bottom, 4)
+    }
+
+    @ViewBuilder
+    private var paneScroll: some View {
+        ScrollView(.vertical) {
+            if embedded {
+                // A readable column on a wide window, from the left like the other sections.
+                paneContent.padding(24)
+                    .frame(maxWidth: 720, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                paneContent.padding(24)
+            }
+        }
+        .scrollIndicators(.visible)
+    }
+
+    /// The standalone form's pane list.
+    private var sidebar: some View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("SETTINGS")
                     .font(.system(size: 11, weight: .semibold))
@@ -1300,10 +1427,9 @@ struct SettingsView: View {
             .frame(width: 164)
             .padding(16)
             .background(Theme.chipFill.opacity(0.35))
+    }
 
-            Rectangle().fill(Theme.hairline).frame(width: 1)
-
-            ScrollView(.vertical) {
+    private var paneContent: some View {
             VStack(alignment: .leading, spacing: 16) {
                 if selectedPane == "general" {
                 HStack {
@@ -1377,6 +1503,7 @@ struct SettingsView: View {
                                     }
                                     .pickerStyle(.menu)
                                     .labelsHidden()
+                                    .redrawsOnAppearanceChange()
                                     .frame(width: 190)
                                 }
                             }
@@ -1390,6 +1517,13 @@ struct SettingsView: View {
                             Spacer()
                             Button("Local models…") { modelsPane = "local" }
                             Button("Cloud…") { modelsPane = "cloud" }
+                            Button("Setup guide…") {
+                                if setup != nil {
+                                    modelsPane = "setup"
+                                } else {
+                                    NotificationCenter.default.post(name: .wispOpenSetupGuide, object: nil)
+                                }
+                            }
                         }
 
                         } else {
@@ -1399,6 +1533,10 @@ struct SettingsView: View {
                             Label("Models", systemImage: "chevron.left")
                         }
                         .buttonStyle(.link)
+                        }
+                        if modelsPane == "setup", let setup {
+                        SettingsSetupPane(model: setup, standsInForWelcome: setupStandsInForWelcome,
+                                          backToWelcome: { modelsPane = "assignments" })
                         }
                         if modelsPane == "local" {
                         GroupBox {
@@ -1443,6 +1581,7 @@ struct SettingsView: View {
                                                 Text(model).tag(model)
                                             }
                                         }
+                                        .redrawsOnAppearanceChange()
                                         .frame(width: 260)
                                     }
                                 }
@@ -1583,7 +1722,7 @@ struct SettingsView: View {
                                             Text(preset.label).tag(preset.id)
                                         }
                                     }
-                                    .labelsHidden().frame(width: 210)
+                                    .labelsHidden().redrawsOnAppearanceChange().frame(width: 210)
                                 }
 
                                 LabeledContent("HTTPS endpoint") {
@@ -1716,7 +1855,7 @@ struct SettingsView: View {
                                 fullAccessLabel
                             }
                             .toggleStyle(.switch)
-                            .tint(Theme.accent)
+                            .tint(palette.accent)
                             .disabled(loader.fullAccessPending)
                         } else {
                             VStack(alignment: .leading, spacing: 8) {
@@ -1755,7 +1894,7 @@ struct SettingsView: View {
                             }
                         }
                         .toggleStyle(.switch)
-                        .tint(Theme.accent)
+                        .tint(palette.accent)
 
                         Divider()
 
@@ -1774,7 +1913,11 @@ struct SettingsView: View {
                             }
                         }
                         .toggleStyle(.switch)
-                        .tint(Theme.accent)
+                        .tint(palette.accent)
+
+                        Divider()
+
+                        MailMemorySettingsRow()
 
                         Divider()
 
@@ -1785,7 +1928,7 @@ struct SettingsView: View {
                                 behaviorLearningLabel
                             }
                             .toggleStyle(.switch)
-                            .tint(Theme.accent)
+                            .tint(palette.accent)
                             .disabled(loader.behaviorChanging)
                             if !loader.behaviorChanging, let status = loader.behaviorStatus {
                                 Text(status).font(.caption).foregroundStyle(.secondary)
@@ -1845,6 +1988,43 @@ struct SettingsView: View {
                                 }
                             }
                         }
+
+                        Divider()
+
+                        // What macOS lets Wisp read and do. Each button asks only
+                        // when clicked, one row or one system surface at a time.
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("macOS permissions")
+                                .font(.system(size: 14, weight: .medium))
+                            Text("Permissions… shows what Wisp reads, such as Calendar, Mail and Messages, each "
+                                 + "with its own Allow. More Access… asks for Screen Recording, Accessibility and "
+                                 + "Full Disk Access, one at a time.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                            HStack {
+                                Button("Permissions…") {
+                                    NotificationCenter.default.post(name: .wispOpenPermissions, object: nil)
+                                }
+                                Button("More Access…") {
+                                    NotificationCenter.default.post(name: .wispGrantMoreAccess, object: nil)
+                                }
+                            }
+                            Toggle(isOn: Binding(get: { LaunchAtLogin.isOn(launchAtLogin.status) },
+                                                 set: { launchAtLogin.set($0) })) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Open Wisp when you log in")
+                                        .font(.system(size: 14, weight: .medium))
+                                    Text(launchAtLogin.problem ?? LaunchAtLogin.note(launchAtLogin.status)
+                                         ?? "So it's there at the top of your screen whenever you start your Mac.")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .toggleStyle(.switch)
+                            .onAppear { launchAtLogin.read() }
+                        }
                     }
                 }
                 }
@@ -1895,7 +2075,25 @@ struct SettingsView: View {
                             }
                         }
                         .toggleStyle(.switch)
-                        .tint(Theme.accent)
+                        .tint(palette.accent)
+
+                        Divider()
+
+                        HStack(alignment: .center) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Chat debug log")
+                                    .font(.system(size: 14, weight: .medium))
+                                Text("Saves the notch's conversation to Downloads, with each turn's "
+                                     + "model, route, timing, tool calls and errors.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer()
+                            Button("Export Chat Debug Log…") {
+                                NotificationCenter.default.post(name: .wispExportDebugLog, object: nil)
+                            }
+                        }
                     }
                 }
                 }
@@ -1909,27 +2107,10 @@ struct SettingsView: View {
                     Spacer()
                     if loader.saving { ProgressView().controlSize(.small) }
                     if selectedPane == "models" {
-                        Button("Setup guide…") {
-                            NotificationCenter.default.post(name: .wispOpenSetupGuide, object: nil)
-                        }
                         Button("Refresh models") { loader.refresh() }
                     }
                 }
             }
-            .padding(24)
-            }
-            .scrollIndicators(.visible)
-        }
-        .frame(width: 760, height: 620)
-        .background(Theme.surface)
-        .foregroundStyle(Theme.textPrimary)
-        .tint(Theme.accent)
-        .preferredColorScheme(.dark)
-        .task {
-            #if !WISP_SETTINGS_QA
-            loader.refresh()
-            #endif
-        }
     }
 
     // One sync's live status: a percentage + linear bar while `fraction` is
@@ -1967,4 +2148,76 @@ struct SettingsView: View {
             }
         }
     }
+}
+
+/// Settings › Models › Setup: the setup guide's header and page in the Settings
+/// column, where its own window used to be. The guide's footer stays behind (its
+/// Done and Settings… belong to a window of their own), so only Check again comes
+/// along, and Back to Welcome while Setup stands in for the first-run window.
+/// AppDelegate counts this pane as the shared SetupGuideModel's "settings" host
+/// while it is on screen, so the guide's poll runs exactly then.
+struct SettingsSetupPane: View {
+    @ObservedObject var model: SetupGuideModel
+    var standsInForWelcome = false
+    var backToWelcome: () -> Void = {}
+    @Environment(\.themePalette) private var palette
+
+    var body: some View {
+        let guide = SetupGuideView(model: model, inset: 0, palette: palette)
+        VStack(alignment: .leading, spacing: 16) {
+            guide.header
+            guide.pageContent
+            HStack(spacing: 8) {
+                if let busy = model.busy {
+                    ProgressView().controlSize(.small)
+                    Text(busy).font(.caption).foregroundStyle(palette.textSecondary)
+                }
+                Spacer()
+                if standsInForWelcome {
+                    Button("Back to Welcome") { backToWelcome() }
+                        .help("Wisp's first-run window comes back at the step you left")
+                }
+                Button("Check again") { Task { await model.refresh(); await model.refreshDownloads() } }
+                    .disabled(model.busy != nil)
+            }
+        }
+    }
+}
+
+/// The Wisp window's Settings section: SettingsView without its own sidebar,
+/// frame or black surface, under the window's top bar, in the window's colours.
+struct SettingsHomeView: View {
+    let loader: SettingsLoader
+    let setup: SetupGuideModel?
+    let setupStandsInForWelcome: Bool
+    @Binding var sidebarVisible: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                if !sidebarVisible { Spacer().frame(width: 62) }   // clear the window's traffic lights
+                Button { sidebarVisible.toggle() } label: { Image(systemName: "sidebar.left") }
+                    .buttonStyle(ChatIconButtonStyle()).help("Show or hide the sidebar (⌘B)")
+                    .accessibilityLabel("Toggle sidebar")
+                Text("Settings").font(.system(size: 14.5, weight: .medium)).foregroundStyle(ChatTheme.text)
+                Spacer()
+            }
+            .padding(.leading, 14).padding(.trailing, 16)
+            .frame(height: 52)
+            Rectangle().fill(ChatTheme.line).frame(height: 1)
+            SettingsView(loader: loader, setup: setup, embedded: true,
+                         setupStandsInForWelcome: setupStandsInForWelcome)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+extension ThemePalette {
+    /// The Wisp window's colours (ChatTheme), which follow the Mac's appearance.
+    static let wispWindow = ThemePalette(
+        surface: .clear, textPrimary: ChatTheme.text, textSecondary: ChatTheme.text2,
+        textMuted: ChatTheme.text3, hairline: ChatTheme.line, chipFill: ChatTheme.glass,
+        chipStroke: ChatTheme.line2, accent: ChatTheme.teal, onAccent: ChatTheme.sendIcon,
+        selectedFill: ChatTheme.tealWash, selectedStroke: ChatTheme.tealLine,
+        cardFill: ChatTheme.glass, codeFill: ChatTheme.glass2, actionFill: ChatTheme.glass2)
 }

@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Contacts
 
 private extension Theme {
     static let tileOpenFill = Color.white.opacity(0.14)
@@ -7,13 +8,16 @@ private extension Theme {
     static let tileFocusStroke = Color.white.opacity(0.6)
 }
 
-/// The notch's Brief tab: everything to know about the day. One sentence about
-/// the day, then, when the proactive engine has run (`workspace.proactive`), its
-/// overview, "Before you ask" cards, the to-dos from every source and each
-/// thread's summary (ProactiveCards.swift). Without it, four count tiles (Today, Mail, Messages, Events) over one list:
-/// the Top 3 by default, or the open tile's list in its place, so opening a
-/// tile never pushes the tab past one list's height. What Wisp is keeping in
-/// mind closes the tab. Doing things belongs to Ask and Day.
+/// The notch's Brief tab: everything to know about the day. When the proactive
+/// engine has run (`workspace.proactive`): the rest of today and the to-dos,
+/// "Before you ask" cards, then mail and texts (ProactiveCards.swift), in one
+/// column or, by the person's choice (`wideKey`), two in a wider panel.
+/// Without it, one sentence about the day, then four count tiles (Today, Mail,
+/// Messages, Events) over one list: the Top 3 by default, or the open tile's
+/// list in its place, so opening a tile never pushes the tab past one list's
+/// height. What Wisp is keeping in mind sits right under the sentence (on the
+/// first launch day, under what Wisp does and when). Doing things belongs to
+/// Ask and Day.
 ///
 /// Everything comes from the day's plan, the composed brief the service already
 /// sent, and the week's upcoming items (`NotchDay.swift`, `BriefSummary.swift`),
@@ -28,23 +32,52 @@ struct NotchBriefView: View {
     /// The focus ring shows only once the keyboard is in use, so the tile that
     /// takes focus when the tab opens doesn't look selected.
     @State private var keyboardNav = false
+    /// "Keeping in mind" shows four lines until the person asks for all.
+    @State private var showAllInMind = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// The QA driver's full render: the proactive section without its scroll cap.
     private let uncapped: Bool
     /// Card, to-do and thread state; the app's shared one, or a QA scene's own.
     private let actions: ProactiveActions
+    /// Two columns in the wider panel (OverlayView sets it from `wideKey`
+    /// while the display has room).
+    private let wide: Bool
     /// Clear and Mark done on the Top 3's Needs you rows.
     @ObservedObject private var needActions: NeedsYouActionsModel = NotchBriefView.needsYouActions
     static let needsYouActions = NeedsYouActionsModel(baseURL: WispClient.baseURL)
+    /// The person's choice: the Brief in two columns (true) or one.
+    static let wideKey = "WispBriefWide"
+
+    /// Whether the Brief can show two columns: the Brief on screen with
+    /// nothing over it, the proactive Brief there to lay out (loading, the
+    /// tiles and other days stay one column), and a display with room.
+    static func canShowWide(tab: NotchTab, covered: Bool, engineBrief: Bool, canWiden: Bool) -> Bool {
+        tab == .brief && !covered && engineBrief && canWiden
+    }
+
+    /// The same for the live panel. The window (AppDelegate's layout provider)
+    /// and the content (OverlayView) both ask, so their widths never disagree.
+    @MainActor static func canShowWide(model: OverlayModel, today: TodayModel, canWiden: Bool) -> Bool {
+        canShowWide(tab: model.tab,
+                    covered: model.resetCard != nil || model.knowYou != nil || model.showingQuickSettings,
+                    engineBrief: today.isShowingCurrentDay && today.currentPlan?.workspace?.proactive != nil,
+                    canWiden: canWiden)
+    }
+
+    /// Two columns now: chosen (`wideKey`) and possible.
+    @MainActor static func showsWide(model: OverlayModel, today: TodayModel, canWiden: Bool) -> Bool {
+        UserDefaults.standard.bool(forKey: wideKey) && canShowWide(model: model, today: today, canWiden: canWiden)
+    }
 
     @MainActor
     init(model: OverlayModel, today: TodayModel, open: String? = nil, uncapped: Bool = false,
-         actions: ProactiveActions? = nil) {
+         actions: ProactiveActions? = nil, wide: Bool = false) {
         self.model = model
         self.today = today
         self.uncapped = uncapped
         self.actions = actions ?? .shared
+        self.wide = wide
         // The QA driver names the old rows; each maps to the tile that holds it.
         _open = State(initialValue: open.flatMap { tag in
             switch tag {
@@ -68,6 +101,22 @@ struct NotchBriefView: View {
         }
         .environment(\.timeZone, today.timezone)
         .modifier(DayRefreshLoop(model: model, today: today))
+        // While today has no summary: when it comes, and whether the first
+        // one is being built (read again every 20 seconds while it is, so the
+        // row goes if its retries run out; else every two minutes).
+        .task(id: today.isShowingCurrentDay && composedBrief == nil) {
+            guard today.isShowingCurrentDay, composedBrief == nil else { return }
+            while !Task.isCancelled {
+                await today.refreshBriefSchedule()
+                try? await Task.sleep(for: .seconds(today.briefSchedule?.buildingFirst == true ? 20 : 120))
+            }
+        }
+        .onChange(of: buildingFirstBrief) { _, _ in model.onResize() }
+    }
+
+    /// The first launch day's first summary is on its way and none is on screen.
+    private var buildingFirstBrief: Bool {
+        today.isShowingCurrentDay && composedBrief == nil && today.briefSchedule?.buildingFirst == true
     }
 
     private var content: some View {
@@ -80,26 +129,29 @@ struct NotchBriefView: View {
                     SourceSyncTip(label: model.dailySyncLabel, progress: progress, sources: model.sourceSyncStatuses)
                 }
                 ProcessingRow(label: "Building your brief…")
+            } else if buildingFirstBrief {
+                ProcessingRow(label: "Building your first Brief…")
             }
             if let plan {
-                let brief = BriefContent(plan: plan, today: today, composed: composedToday)
                 if today.isShowingCurrentDay, let proactive = plan.workspace?.proactive {
-                    // The proactive engine's Brief: one sentence, the work behind
-                    // it, the top card, then three rows that open in place. It
-                    // replaces the tiles and the Top 3.
-                    lede(proactive.headline ?? brief.lede)
+                    // The proactive engine's Brief, with no opening sentence: the
+                    // day and the to-dos first, then the cards and mail and texts.
+                    // It replaces the tiles and the Top 3.
+                    if let contacts = BriefFix.contactsAccess() { accessRow(contacts) }
                     ProactiveBriefSection(proactive: proactive, model: model, today: today, actions: actions,
                                           events: restOfToday(plan),
                                           scrollCap: uncapped ? nil : Self.proactiveCap,
-                                          coverage: Self.coverage(plan))
-                    HStack {
+                                          coverage: Self.coverage(plan), wide: wide)
+                    MailMemorySection(memory: MailMemoryCards.model, onResize: { model.onResize() })
+                    HStack(spacing: 12) {
                         askChip(plan)
-                        Spacer()
+                        Spacer(minLength: 0)
+                        workLine(proactive)
                     }
-                    // What Wisp is keeping in mind (the day's goal among it).
-                    if !brief.summary.isEmpty { goalLines(brief.summary) }
                 } else {
+                    let brief = BriefContent(plan: plan, today: today, composed: composedToday)
                     lede(brief.lede)
+                    underLede(brief)
                     legacy(plan, brief)
                 }
             } else if today.error.isEmpty {
@@ -130,9 +182,22 @@ struct NotchBriefView: View {
     /// The tallest an opened row (to-dos, mail and texts) gets before it scrolls.
     static let proactiveCap: CGFloat = 300
 
+    /// What Wisp read to make the Brief, beside Ask about this: the whole line
+    /// when it fits, else without what was found (the cards and rows show that).
+    @ViewBuilder private func workLine(_ proactive: ProactiveState) -> some View {
+        if let full = proactive.workLine {
+            let short = proactive.workLine(short: true) ?? full
+            ViewThatFits(in: .horizontal) {
+                Text(full)
+                Text(short).help(full)
+            }
+            .font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
+        }
+    }
+
     private func lede(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 16.5)).foregroundStyle(Theme.textPrimary)
+            .font(.wisp(size: 16.5)).foregroundStyle(Theme.textPrimary)
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
             .textSelection(.enabled)
@@ -190,7 +255,16 @@ struct NotchBriefView: View {
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .clipped()
         if !brief.suggestions.isEmpty { suggestionsRow(brief.suggestions) }
+        MailMemorySection(memory: MailMemoryCards.model, onResize: { model.onResize() })
         footerChips(plan)
+    }
+
+    /// Right under the sentence, in both layouts: Contacts when macOS turned it
+    /// down, what Wisp does and when (first launch day), and what it is keeping
+    /// in mind (the day's goal among it).
+    @ViewBuilder private func underLede(_ brief: BriefContent) -> some View {
+        if today.isShowingCurrentDay, let contacts = BriefFix.contactsAccess() { accessRow(contacts) }
+        if !brief.intro.isEmpty { introLines(brief.intro) }
         if !brief.summary.isEmpty { goalLines(brief.summary) }
     }
 
@@ -225,10 +299,10 @@ struct NotchBriefView: View {
         return Button { keyboardNav = false; toggle(tile) } label: {
             VStack(alignment: .leading, spacing: 3) {
                 Text(tile.title.uppercased())
-                    .font(.system(size: 10, design: .monospaced))
+                    .font(.wisp(size: 10, design: .monospaced))
                     .foregroundStyle(isOpen ? Theme.textSecondary : Theme.textMuted)
                 Text(count.map(String.init) ?? "–")
-                    .font(.system(size: 20, weight: .semibold)).monospacedDigit()
+                    .font(.wisp(size: 20, weight: .semibold)).monospacedDigit()
                     .foregroundStyle(quiet && !isOpen ? Theme.textSecondary : Theme.textPrimary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -286,7 +360,7 @@ struct NotchBriefView: View {
         let width = Self.labelWidth(lines + glance)
         return VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("TOP 3").font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                Text("TOP 3").font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
                     .accessibilityAddTraits(.isHeader)
                 if lines.isEmpty {
                     row(BriefDetail.Line(id: "empty", leading: "", text: BriefTiles.emptyTop(unread: unread, uncheckedMail: uncheckedMail), muted: true), width: width)
@@ -312,14 +386,14 @@ struct NotchBriefView: View {
     private func tileList(_ tile: BriefTile, _ detail: BriefDetail) -> some View {
         let width = Self.labelWidth(detail.lines)
         return VStack(alignment: .leading, spacing: 6) {
-            Text(tile.title.uppercased()).font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+            Text(tile.title.uppercased()).font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
                 .accessibilityAddTraits(.isHeader)
             ForEach(detail.lines) { row($0, width: width) }
             Button {
-                if let action = detail.action, let url = URL(string: action.url) { Permissions.openFix(url) }
+                if let action = detail.action { BriefFix.open(action) }
                 else { NotchChrome.open(detail.source) }
             } label: {
-                Text(detail.action.map(Permissions.fixLabel) ?? "Open \(NotchChrome.appName(detail.source)) ↗").font(.system(size: 12.5, weight: .medium))
+                Text(detail.action.map(Permissions.fixLabel) ?? "Open \(NotchChrome.appName(detail.source)) ↗").font(.wisp(size: 12.5, weight: .medium))
                     .foregroundStyle(Theme.textPrimary).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -331,15 +405,56 @@ struct NotchBriefView: View {
         .accessibilityLabel(tile.title)
     }
 
-    /// What Wisp is keeping in mind (the day's goal among it), last in the tab.
+    /// What Wisp is keeping in mind (the day's goal among it): four lines,
+    /// then "Show all" for the rest.
     private func goalLines(_ lines: [String]) -> some View {
-        let rows = lines.enumerated().map { BriefDetail.Line(id: "goal-\($0.offset)", leading: $0.offset == 0 ? "In mind" : "", text: $0.element) }
+        let (shown, more) = ComposedBrief.inMind(lines, showAll: showAllInMind)
+        let rows = shown.enumerated().map { BriefDetail.Line(id: "goal-\($0.offset)", leading: $0.offset == 0 ? "In mind" : "", text: $0.element) }
+        let width = Self.labelWidth(rows)
+        return VStack(alignment: .leading, spacing: 4) {
+            ForEach(rows) { row($0, width: width, secondary: true) }
+            if more > 0 || showAllInMind && lines.count > ComposedBrief.keepingShown {
+                Button(showAllInMind ? "Show fewer" : "Show all \(lines.count)") {
+                    showAllInMind.toggle()
+                    model.onResize()
+                }
+                .buttonStyle(.plain).font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                .padding(.leading, width + Self.labelGap)
+                .accessibilityHint(showAllInMind ? "Shows the first four" : "Shows \(more) more")
+            }
+        }
+        .textSelection(.enabled)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Keeping in mind")
+    }
+
+    /// The first launch day's line about what Wisp does on its own and when.
+    private func introLines(_ lines: [String]) -> some View {
+        let rows = lines.enumerated().map { BriefDetail.Line(id: "intro-\($0.offset)", leading: $0.offset == 0 ? "How it works" : "", text: $0.element) }
         return VStack(alignment: .leading, spacing: 4) {
             ForEach(rows) { row($0, width: Self.labelWidth(rows), secondary: true) }
         }
         .textSelection(.enabled)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Keeping in mind")
+        .accessibilityLabel("How Wisp works")
+    }
+
+    /// One source Wisp can't read and the setting that fixes it, as the
+    /// proactive Brief's and the Day tab's rows show theirs.
+    private func accessRow(_ access: SourceAccess) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: access.symbol).font(.wisp(size: 10.5))
+                .foregroundStyle(Theme.textMuted).frame(width: 15)
+            Text(access.headline).font(.wisp(size: 12.5)).foregroundStyle(Theme.textSecondary)
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                .help(access.detail)
+            Spacer(minLength: 6)
+            if let fix = access.fixLink {
+                NotchChrome.small(Permissions.fixLabel(fix)) { BriefFix.open(fix) }
+                    .help(access.detail)
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 
     /// The tab's one row style: a mono label column, then the text. A row
@@ -353,7 +468,7 @@ struct NotchBriefView: View {
                     needControls(need)
                 }
                 if let failure = needActions.failures[need.id] {
-                    Text(failure).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                    Text(failure).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.leading, width + Self.labelGap)
                 }
@@ -374,9 +489,9 @@ struct NotchBriefView: View {
             // An empty label still sets a baseline; an empty Text doesn't, and
             // throws the row's first-baseline alignment off.
             Text(line.leading.isEmpty ? " " : line.leading.uppercased())
-                .font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
+                .font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
                 .frame(width: width, alignment: .leading)
-            Text(line.text).font(.system(size: line.paragraph ? 14 : 13.5))
+            Text(line.text).font(.wisp(size: line.paragraph ? 14 : 13.5))
                 .foregroundStyle(line.muted ? Theme.textMuted : secondary ? Theme.textSecondary : Theme.textPrimary)
                 .lineLimit(line.paragraph ? nil : 2).fixedSize(horizontal: false, vertical: true)
                 .padding(.bottom, line.paragraph ? 3 : 0)
@@ -430,7 +545,7 @@ struct NotchBriefView: View {
     private var heading: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(today.selectedDate, format: .dateTime.weekday(.wide).month(.abbreviated).day())
-                .font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                .font(.wisp(size: 18, weight: .semibold)).foregroundStyle(Theme.textPrimary)
             if !today.followsToday {
                 NotchChrome.chip("Back to today", icon: "calendar", help: "Show today instead of the day picked in the planner") {
                     today.returnToToday()
@@ -441,7 +556,7 @@ struct NotchBriefView: View {
             Spacer()
             if let updated = updatedAt {
                 Text("Updated " + updated.formatted(date: .omitted, time: .shortened))
-                    .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                    .font(.wisp(size: 12)).foregroundStyle(Theme.textMuted)
             }
             NotchChrome.iconButton(model.briefComposing ? "ellipsis" : "arrow.clockwise",
                                    help: "Compose a new brief and reload your day") {
@@ -471,6 +586,8 @@ struct BriefContent {
     /// What Wisp is keeping in mind, from today's composed Daily Summary
     /// (the day's goal among it); empty without one.
     let summary: [String]
+    /// What Wisp does on its own and when, from the first launch day's summary.
+    let intro: [String]
     /// Each tile's count and list, from the same lists.
     let tiles: [BriefTile: BriefTileContent]
     /// The three things that matter most, shown while no tile is open.
@@ -558,6 +675,12 @@ struct BriefContent {
             if let composed { return composed.lines(kind) }
             return today.storedBriefChecked ? nil : []
         }
+        // Said when none came yet: the real summary times once they're read.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let noSummary = today.briefSchedule.map {
+            $0.noSummaryLine(hour: calendar.component(.hour, from: today.now), locale: today.clockLocale)
+        } ?? BriefDetail.noSummaryYet
 
         // Today: reminders and deadlines due by the end of the day (and what's
         // overdue), then the Day tab's tasks, each once.
@@ -584,10 +707,10 @@ struct BriefContent {
         let textsReady = coverage("messages")?.ready == true && !textsBlocked
         let mailDetail = BriefDetail.mail(needing: mailNeeds, ready: mailReady, summary: summarySection(.mail),
                                           prose: isToday ? plan.workspace?.mail_summary?.text : nil,
-                                          access: mailTile?.access)
+                                          access: mailTile?.access, noSummary: noSummary)
         let textsDetail = BriefDetail.texts(needing: textNeeds, ready: coverage("messages")?.ready == true,
                                             needsAccess: textsBlocked, summary: summarySection(.messages),
-                                            access: coverage("messages")?.access,
+                                            access: coverage("messages")?.access, noSummary: noSummary,
                                             age: { BriefTexts.age($0, now: now) })
 
         // Events: today's calendar, then what's coming up this week.
@@ -619,7 +742,33 @@ struct BriefContent {
                                           mailOverview: plan.workspace?.mail_overview?.text,
                                           textsOverview: plan.workspace?.texts_overview?.text, soon: .unknown)
         glance = BriefTiles.glance(rows, mailProse: isToday ? plan.workspace?.mail_summary?.text : nil)
-        summary = composed?.cutDown ?? []
+        summary = composed?.keeping ?? []
+        intro = composed?.intro ?? []
+    }
+}
+
+/// Opens a Brief or Day fix link. Wisp's own Settings > Google (a Google
+/// account to reconnect) opens on its Google pane, through the notification
+/// AppDelegate observes (.wispOpenSettings); everything else is a System Settings page
+/// (Permissions.openFix, which asks in Wisp first when macOS never has).
+enum BriefFix {
+    @MainActor static func open(_ action: BriefDetail.Action) {
+        if action == BriefDetail.googleSettings {
+            // SettingsView's @AppStorage pane, so an open Settings window switches too.
+            UserDefaults.standard.set("google", forKey: "WispSettingsPane")
+            NotificationCenter.default.post(name: .wispOpenSettings, object: nil)
+            return
+        }
+        if let url = URL(string: action.url) { Permissions.openFix(url) }
+    }
+
+    /// Contacts as Brief and Day show it: a row only once macOS said no and
+    /// Contacts is on in Wisp's Settings (ContactsReader.enabledKey). Reads the
+    /// status only; never asks.
+    static func contactsAccess() -> SourceAccess? {
+        let status = CNContactStore.authorizationStatus(for: .contacts)
+        let enabled = UserDefaults.standard.object(forKey: ContactsReader.enabledKey) as? Bool ?? true
+        return SourceAccess.contacts(denied: status == .denied || status == .restricted, enabled: enabled)
     }
 }
 
@@ -642,7 +791,7 @@ struct NeedsYouRowControls: View {
         } else if let working = actions.busy[row.id] {
             HStack(spacing: 5) {
                 ProgressView().controlSize(.mini)
-                Text(working.progress).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                Text(working.progress).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
             }
             .fixedSize()
             .accessibilityElement(children: .combine)
@@ -662,7 +811,7 @@ struct NeedsYouRowControls: View {
 
     private func icon(_ symbol: String, action: NeedsYouRowAction) -> some View {
         Button { answer(action) } label: {
-            Image(systemName: symbol).font(.system(size: 9, weight: .semibold))
+            Image(systemName: symbol).font(.wisp(size: 9, weight: .semibold))
                 .foregroundStyle(Theme.textMuted).frame(width: 16, height: 16).contentShape(Rectangle())
         }
         .buttonStyle(.plain)

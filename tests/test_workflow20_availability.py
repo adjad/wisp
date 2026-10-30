@@ -146,6 +146,20 @@ def test_all_day_multiday_event_blocks_every_covered_day(source):
     assert 'No gaps' in S.find_free_time(days=2)
 
 
+@pytest.mark.parametrize('legacy', [False, True])
+def test_a_holiday_calendar_all_day_entry_is_not_busy(source, legacy):
+    """2026-10-29 Ask run: Halloween and Election Day from "US Holidays" left whole
+    days with no gaps. Holidays calendars are skipped; the user's own all-day
+    events still block (above)."""
+    row=event(start='2026-10-10T00:00',end='2026-10-12T00:00', context='US Holidays'); row['all_day']=True
+    row['calendar_writable']=False
+    source.rows=[row]
+    assert 'No gaps' not in invoke(legacy)
+    mine=event(start='2026-10-10T00:00',end='2026-10-12T00:00', context='Work'); mine['all_day']=True
+    source.rows=[mine]
+    assert 'No gaps' in invoke(legacy)
+
+
 @pytest.mark.parametrize('status,blocked', [('cancelled',False),('declined',False),('done',False),('tentative',True),('active',True)])
 def test_known_local_status_and_unknown_response_semantics(source,status,blocked):
     row=event(start='2026-10-11T09:00',end='2026-10-11T18:00'); row['status']=status
@@ -315,3 +329,34 @@ def test_receipt_freshness_boundary_is_exact(source,age,ready):
 def test_unknown_manual_kind_cannot_hide_an_event(source):
     row={**event(),'source':'manual'};row.pop('kind',None);source.rows=[row]
     assert 'unknown kind' in invoke()
+
+
+@pytest.mark.parametrize('writable', [True, None])
+def test_the_users_own_holidays_calendar_still_blocks(source, writable):
+    """dev8 audit: a user-owned "Family Holidays" calendar holding an all-day trip
+    was treated as free. Only a read-only (subscribed) holidays calendar is skipped."""
+    trip=event(start='2026-10-10T00:00',end='2026-10-12T00:00', context='Family Holidays'); trip['all_day']=True
+    if writable is not None:
+        trip['calendar_writable']=writable
+    source.rows=[trip]
+    assert 'No gaps' in invoke(False)
+
+
+def test_only_google_s_own_holiday_calendars_free_a_day():
+    """dev8 delta review: every Google row is calendar_writable=False (Wisp can't move
+    one), so a user's own Google calendar named "Holidays" freed their trip days.
+    Google rows now count only when they come from a #holiday@group.v.calendar.google.com
+    calendar; EventKit rows keep the read-only + name rule."""
+    from service import google_calendar_source as gcal
+    from service.tools.assistant_tools import _is_holiday_calendar_item
+    event = {"id": "abc123", "summary": "Halloween", "start": {"date": "2026-10-31"},
+             "end": {"date": "2026-11-01"}}
+    public = gcal.event_item(event, "a@example.com", "Holidays in United States",
+                             holiday_calendar=gcal.is_holiday_calendar_id(
+                                 "en.usa#holiday@group.v.calendar.google.com"))
+    own = gcal.event_item(event, "a@example.com", "Family Holidays",
+                          holiday_calendar=gcal.is_holiday_calendar_id("family123@group.calendar.google.com"))
+    assert _is_holiday_calendar_item({**public, "source": "calendar"})
+    assert not _is_holiday_calendar_item({**own, "source": "calendar"})
+    native = {"source": "calendar", "source_id": "EK-1", "context": "US Holidays"}
+    assert _is_holiday_calendar_item(native)

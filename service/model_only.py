@@ -1,4 +1,4 @@
-"""Test switch that sends every /agent turn to the model (see model_only_enabled),
+"""model_only: sends every /agent turn to the model (see model_only_enabled),
 plus the answer-quality guards a model-only Ask turn runs with.
 
 The guards are pure helpers: they never import tools, read user stores or call
@@ -22,11 +22,24 @@ from __future__ import annotations
 import math
 import os
 import re
+from contextvars import ContextVar
 from datetime import date, timedelta
 
 
+# Set by service/main.py for one /agent turn that cannot be model-led (an agent
+# role bound to a cloud or local-provider endpoint): that turn takes the rules
+# path, and the agent loop must follow it rather than the global setting.
+_TURN_OFF: ContextVar[bool] = ContextVar("wisp_model_only_turn_off", default=False)
+
+
+def disable_for_turn() -> None:
+    """Turn model_only off for the rest of the current task's context only."""
+    _TURN_OFF.set(True)
+
+
 def model_only_enabled() -> bool:
-    """TEST SWITCH: every /agent turn goes to the model, nothing answers first.
+    """Every /agent turn goes to the model, nothing answers first. ON by
+    default since 0.5.0-rc3 (service/config/models.yaml `model_only`).
 
     On, it forces model-led discovery for every turn and skips the
     deterministic layers that otherwise answer before the model: the batch
@@ -41,6 +54,8 @@ def model_only_enabled() -> bool:
     (~/.moe/config.yaml overrides the packaged default). Invalid values fail
     closed to OFF rather than raising, so a typo never breaks a turn.
     """
+    if _TURN_OFF.get():
+        return False
     value = os.environ.get("WISP_MODEL_ONLY")
     if value is None:
         from service.config import models_config
@@ -124,16 +139,65 @@ _DAY_PLAN = re.compile(
 def day_plan_question(prompt: str) -> bool:
     """"What should I do today?" and its paraphrases: one get_my_day_plan read
     answers it better than four separate source reads."""
-    return bool(_DAY_PLAN.search(prompt or ""))
+    return bool(_DAY_PLAN.search(normalize_day_words(prompt)))
+
+
+# Misspellings of "tomorrow" seen in real prompts ("what is up for tommorow"
+# ranked get_upcoming out of the Ask head start: the lexical ranker never
+# matched the day word, so the calendar read was offered by name only).
+_TOMORROW_TYPO = re.compile(
+    r"\b(?:tommorow|tommorrow|tomorow|tommrow|tomorrrow|tomoorow|tmrw|tmrow|tmr|2morrow|2moro)\b", re.I)
+
+
+def normalize_day_words(prompt: str) -> str:
+    """The prompt with common misspellings of "tomorrow" spelled out, for
+    lexical matching only (the user's text is never rewritten)."""
+    return _TOMORROW_TYPO.sub("tomorrow", prompt or "")
 
 
 ASK_DAY_PLAN_HINT = (
-    "DAY PLAN: call get_my_day_plan once and answer from it; do not read the "
-    "calendar, mail, messages and notes one by one unless it says the plan is "
-    "unavailable. Answer as a short prioritized list: one lead line, then 3-6 "
-    "bullets — time-bound items first (with times), then people waiting on a "
-    "reply, then tasks. No digests, no data-freshness caveats, no source labels."
+    "DAY PLAN: call get_my_day_plan once and answer from it (day='tomorrow' when "
+    "the user asks about tomorrow); do not read the calendar, mail, messages and "
+    "notes one by one unless it says the plan is unavailable. predict_my_day is "
+    "learned habits only, never the plan. Answer as a short prioritized list: one "
+    "lead line, then 3-6 bullets — time-bound items first (with times), then "
+    "overdue items, then people waiting on a reply, then suggestions and tasks. "
+    "No digests, no data-freshness caveats, no source labels."
 )
+
+# A reply that only promises to look ("I'm checking your schedule now. Give me
+# just a moment!") with no tool run is not an answer: the turn ends there and
+# the user never gets the result (2026-10-29 dev7 export).
+_STALL = re.compile(
+    r"\b(?:give me (?:just )?(?:a|one) (?:moment|sec(?:ond)?|minute)|one moment|just a moment|"
+    r"hang (?:on|tight)|bear with me|stand by)\b"
+    r"|^\s*(?:(?:sure|okay|ok|of course|absolutely|got it)[.,!]?\s*)?"
+    r"(?:i(?:'|’)m|i am|i(?:'|’)ll|i will|let me)\s+(?:now\s+)?(?:go(?:ing)? (?:to )?)?"
+    r"(?:check|look|pull|fetch|grab|search|review)\w*\b[^\n]{0,160}$",
+    re.I)
+
+
+# Gemma's tool-call markup written as plain text: what it does on a turn that
+# offers no tools (a knowledge question) or with a name it made up
+# ("public_web:web_search", "device.system_status"). 13 of the first 252 answers
+# in the 2026-10-29 Ask run were nothing but this markup.
+_TEXT_TOOL_CALL = re.compile(r"<\|tool_call>.*?(?:<tool_call\|>|$)", re.S)
+
+
+def text_tool_call(text: str) -> bool:
+    """The reply holds tool-call markup instead of (or inside) an answer."""
+    return "<|tool_call>" in (text or "")
+
+
+def strip_text_tool_calls(text: str) -> str:
+    """The reply without any tool-call markup (and its stray quote tokens)."""
+    return _TEXT_TOOL_CALL.sub("", text or "").replace('<|"|>', '"').strip()
+
+
+def stall_reply(text: str) -> bool:
+    """A short "I'm checking now / one moment" promise instead of an answer."""
+    text = (text or "").strip()
+    return bool(text) and len(text) <= 300 and bool(_STALL.search(text))
 
 # Appended to a model-led turn's runtime prompt (the light-read style hint the
 # legacy router sets is never set on a model-led turn).
@@ -165,7 +229,9 @@ ASK_CAPABILITY_HINT = (
     "tools: you can read and summarize the user's email, texts, calendar, reminders "
     "and notes; draft and send emails and texts (every send is shown to the user to "
     "confirm first); add reminders and calendar events; search the web, weather and "
-    "stocks; and control Mac settings and apps.\n"
+    "stocks; and control Mac settings and apps. To open Wisp from any app press "
+    "⌥Space; to ask out loud press ⌥⇧Space or click the mic in Ask (Wisp has its "
+    "own voice input; never send the user to Siri).\n"
     "Connecting Google (Gmail and Google Calendar), when asked: answer with ALL of "
     "these, in 3 short sentences: (1) open the notch, then Quick Settings (the gear) > "
     "Google > Connect Google, and sign in in the browser; (2) Wisp reads Gmail and "
@@ -482,6 +548,66 @@ def mail_first(prompt: str) -> bool:
     return bool(_MAILISH.search(prompt or "")) and asks_personal_data(prompt)
 
 
+# "When is my midterm?" was offered no calendar tool and ended in "I don't
+# have that"; "what are my school tasks" lost Reminders to Google Tasks and
+# asked which list (2026-10-29 Ask run). Each leads with its usual source.
+_CALENDARISH = re.compile(
+    r"\b(?:when(?:'s|\s+is|\s+are)\s+my|midterms?|finals?|exams?|quiz(?:zes)?|class(?:es)?|"
+    r"lectures?|appointments?|interviews?|meetings?|dentist|doctor)\b", re.I)
+_TASKISH = re.compile(r"\b(?:tasks?|to-?dos?|todo\s+list|pending|homework|assignments?)\b", re.I)
+
+
+def calendar_first(prompt: str) -> bool:
+    """A personal question about a dated event ("When is my midterm?"):
+    get_upcoming leads the head start."""
+    return bool(_CALENDARISH.search(prompt or "")) and asks_personal_data(prompt)
+
+
+def reminders_first(prompt: str) -> bool:
+    """A personal question about to-dos ("what are my open tasks"):
+    search_reminders leads the head start."""
+    return bool(_TASKISH.search(prompt or "")) and asks_personal_data(prompt)
+
+
+# The Mac's own state is read with a tool, never answered from knowledge:
+# "how much free disk space?" was offered no tools (2026-10-29 Ask run).
+# A device word counts only with state phrasing ("how much RAM is free", "my
+# disk space"): "What is RAM?" and "How do I screenshot on macOS?" are
+# knowledge (0.5.0 dev8 audit).
+_DEVICE_WORD = re.compile(
+    r"\b(?:disk|storage|space|battery|charg\w*|ram|memory|cpu|wi-?fi|bluetooth|"
+    r"ip\s+address|uptime|volume|brightness|clipboard|macos|os\s+version|downloads?|desktop)\b", re.I)
+_DEVICE_STATE_PHRASE = re.compile(
+    r"\b(?:my|this\s+mac|the\s+mac|my\s+mac|free|left|used|using|available|remaining|full|"
+    r"level|percent|connected|currently|right\s+now|do\s+i\s+have|have\s+i\s+got|am\s+i\s+on|"
+    r"what\s+version|which\s+version|is\s+(?:it|the\s+\w+)\s+(?:on|off))\b", re.I)
+
+
+class _DeviceState:
+    """search() is truthy for a device word with state phrasing."""
+    @staticmethod
+    def search(text: str):
+        return bool(_DEVICE_WORD.search(text or "") and _DEVICE_STATE_PHRASE.search(text or ""))
+
+
+_DEVICE_STATE = _DeviceState()
+# General advice about oneself, with nothing of the user's to read: "how many
+# hours of sleep should I get?" was re-prompted for a tool and ended in "I
+# don't have that".
+_ADVICE = re.compile(r"\b(?:should\s+(?:i|we)\s+(?:get|drink|eat|sleep|do|take|use|study|exercise|"
+                     r"run|walk|save|spend|wear|bring|pack|tip)|do\s+(?:i|we)\s+need)\b", re.I)
+_PRONOUNS = re.compile(r"\b(?:i|i'm|i've|we|us|our)\b", re.I)
+
+
+def advice_question(prompt: str) -> bool:
+    """General advice ("how much water should I drink?"), not the user's data."""
+    text = (prompt or "").strip()
+    return bool(_KNOWLEDGE.match(text) and _ADVICE.search(text)
+                and not re.search(r"\b(?:my|mine|me)\b", text, re.I)
+                and not _LIVE.search(_PRONOUNS.sub("", text))
+                and not _SOURCE_RECORD.search(text) and not _DEVICE_STATE.search(text))
+
+
 def knowledge_question(prompt: str) -> bool:
     """General knowledge or a general how-to ("How many ounces are in a cup?",
     "How do I take a screenshot on a Mac?", "Give me tips for studying"): no
@@ -489,11 +615,26 @@ def knowledge_question(prompt: str) -> bool:
     one tool-free step, since a tool path only added failures and refusals."""
     text = (prompt or "").strip()
     head = _KNOWLEDGE.match(text)
-    if not head:
+    if not head or _DEVICE_STATE.search(text):
         return False
+    if advice_question(text):
+        return not _ABOUT_WISP.search(text) and not _SECOND_CLAUSE.search(text)
     rest = text[head.end():]  # "How do I" itself is not first-person data
     return (not _LIVE.search(rest) and not _ABOUT_WISP.search(text)
+            and not _SOURCE_RECORD.search(rest) and not _SECOND_CLAUSE.search(rest)
             and not asks_personal_data(text))
+
+
+# A knowledge question that names one of the user's records ("Explain the
+# email from Alex", "What is the reminder about rent about?") needs that
+# record read, and one with a further clause ("Define X; delete the Laundry
+# reminder") carries a request the tool-free step would drop. Both keep tools.
+_SOURCE_RECORD = re.compile(
+    r"\b(?:e-?mails?|mail|inbox|messages?|texts?|imessages?|reminders?|notes?|events?|"
+    r"meetings?|appointments?|contacts?|files?|documents?|attachments?|threads?|chats?)\b", re.I)
+_SECOND_CLAUSE = re.compile(r"[;]|\b(?:and|then|also)\s+(?:please\s+)?(?:delete|remove|clear|send|"
+                            r"text|e-?mail|add|create|set|remind|cancel|move|mark|reply|forward|save|"
+                            r"schedule|open|show|read|summari[sz]e|check)\b", re.I)
 
 
 def capability_question(prompt: str) -> bool:
@@ -501,6 +642,9 @@ def capability_question(prompt: str) -> bool:
     for the user's data: "What can you do with my calendar?", "How do I
     connect Google?", "Can you read my email?"."""
     text = (prompt or "").strip().lower()
+    # "do you know my birthday?" asks what Wisp remembers, not what it can do.
+    if re.match(r"^(?:do|did)\s+you\s+(?:know|remember|recall)\s+(?:my|me|who|what|when|where)\b", text):
+        return False
     if re.match(r"^(?:so\s+)?(?:what|which)\s+(?:\w+\s+){0,2}(?:can|could|do)\s+you\s+(?:do|help|handle|access|see|read|check)\b", text):
         return True
     if re.match(r"^(?:what|which)\s+(?:can|could)\s+you\b", text):
@@ -536,6 +680,10 @@ _PERSONAL = re.compile(
     # "what's on tomorrow", "is there a meeting today", "has the package shipped".
     r"|\b(?:due|deadline|expires?|expiring|overdue|rsvp|shipped|delivered|arriv(?:e|ing))\b"
     r"|\bwhat(?:'s| is)\s+on\b"
+    # "what is up for tomorrow", "what's happening today", "anything planned this weekend"
+    r"|\b(?:what(?:['’]?s| is| are)|anything)\s+(?:up|happening|going on|planned|scheduled|coming up)\s+"
+    r"(?:for\s+|on\s+|this\s+|next\s+)?(?:today|tonight|tomorrow|weekend|week|monday|tuesday|wednesday|"
+    r"thursday|friday|saturday|sunday)\b"
     r"|\b(?:is|are)\s+there\s+(?:a|an|any)\s+(?:meeting|event|email|message|text|reminder|appointment|class)"
     r"|\b(?:when|where|what time)\s+(?:is|was|are)\s+(?:the|my|our)\s+\w+.*\b(?:today|tomorrow|tonight|"
     r"this|next|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
@@ -551,11 +699,121 @@ def asks_personal_data(prompt: str) -> bool:
     """The request asks for the user's own current data, which only a tool can
     supply ("what's on my calendar", "did Jordan reply", "how heavy is my
     backpack"). Capability, how-to and compose requests are not."""
-    text = prompt or ""
-    if capability_question(text) or _COMPOSE_OR_GENERAL.match(text):
+    text = normalize_day_words(prompt)
+    if capability_question(text) or _COMPOSE_OR_GENERAL.match(text) or advice_question(text):
         return False
     return bool(_PERSONAL.search(text)
                 or (_QUESTION.search(text) and re.search(r"\bmy\s+[a-z]", text, re.I)))
+
+
+# --- public facts ----------------------------------------------------------------
+# A public, live fact asked plainly: a market price, an exchange rate, a game
+# result. "What's the price of bitcoin?" was refused with "Private data is in
+# context" on almost every turn (2026-10-29 Ask run): remembered facts ride
+# along on nearly every Ask turn, and only "search the web for…" phrasing
+# counted as an explicit public lookup. The whole request must be one such
+# question (anchored, one clause, a few words), with nothing of the user's in it:
+# "what's the exchange rate. Also the gate code from Dana is 4471" and "who won
+# the game Dana went to" are not (0.5.0 dev8 egress audit).
+_CURRENCY = (r"(?:usd|eur|gbp|jpy|inr|cad|aud|cny|chf|mxn|dollars?|euros?|pounds?|yen|"
+             r"rupees?|pesos?|francs?|yuan)")
+_ASSET = (r"(?:bitcoin|btc|ethereum|eth|dogecoin|solana|gold|silver|oil|gas|"
+          r"(?-i:[A-Z]{2,5})(?:\s+stock)?|[a-z]+\s+stock)")
+_EVENT = (r"(?:game|match|series|world\s+series|super\s+bowl|cup|world\s+cup|final|finals|"
+          r"championship|race)")
+_FACT_LEAD = (r"^(?:(?:what(?:'s|s|\s+is|\s+was|\s+are)|tell\s+me|check|get|show\s+me|look\s+up)\s+)?"
+              r"(?:the\s+)?(?:current\s+|latest\s+|today'?s\s+|live\s+)?")
+_FACT_TAIL = r"(?:\s+(?:today|now|right\s+now|currently|tonight|yesterday))?\s*[?.!]?$"
+_PUBLIC_FACT = re.compile(
+    _FACT_LEAD + r"(?:"
+    r"(?:price|value|cost)\s+of\s+(?:a\s+|an\s+|one\s+)?" + _ASSET
+    + r"|" + _ASSET + r"\s+(?:stock\s+)?(?:price|quote)"
+    + r"|how\s+much\s+is\s+(?:a\s+|one\s+)?(?:bitcoin|btc|ethereum|eth|gold)"
+    + r"|convert\s+[\d.,]+\s*" + _CURRENCY + r"\s+(?:to|into|in)\s+" + _CURRENCY
+    + r"|[\d.,]+\s*" + _CURRENCY + r"\s+(?:to|in)\s+" + _CURRENCY
+    + r"|exchange\s+rate(?:\s+(?:for|of|from)\s+(?:the\s+)?" + _CURRENCY
+    + r"(?:\s+(?:to|and|vs)\s+(?:the\s+)?" + _CURRENCY + r")?)?"
+    + r"|who\s+won\s+(?:the\s+)?(?:last\s+|latest\s+|this\s+year'?s\s+|\d{4}\s+)?(?:[a-z]+\s+){0,2}?" + _EVENT
+    + r"|(?:score|result)s?\s+(?:of|for|from)\s+(?:the\s+)?(?:last\s+|latest\s+|today'?s\s+|tonight'?s\s+)?"
+    r"(?:[a-z]+\s+){0,2}?(?:game|match|race)"
+    + r")" + _FACT_TAIL, re.I)
+_FIRST_PERSON = re.compile(r"\b(?:i|i'm|i've|i'd|i'll|me|my|mine|myself|we|we're|our|ours|ourselves|"
+                           r"us|let'?s|lemme|gimme)\b", re.I)
+_FACT_MAX_WORDS = 12
+
+
+_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u02bc": "'", "\u201c": '"', "\u201d": '"'})
+
+
+def _ascii_text(text: str) -> str:
+    """NFKC-folded: full-width letters and digits become their ASCII forms, and
+    curly quotes become straight ones (iOS and macOS smart punctuation types
+    "what\u2019s", which would otherwise never count as a public fact)."""
+    import unicodedata
+    return unicodedata.normalize("NFKC", text or "").translate(_QUOTES)
+
+
+def public_fact_question(prompt: str) -> bool:
+    """The whole request is one public live fact asked plainly ("What's the
+    price of bitcoin?", "convert 100 USD to euros", "who won the last World
+    Series?"), in plain ASCII, with nothing of the user's in it."""
+    text = _ascii_text(prompt).strip()
+    return bool(text.isascii() and len(text.split()) <= _FACT_MAX_WORDS
+                and _PUBLIC_FACT.match(text) and not _FIRST_PERSON.search(text))
+
+
+# Words a search for a public fact may add to the user's own: the query of a
+# public-fact search is checked against these plus the user's message, so a
+# remembered fact or anything else from context cannot reach the web.
+_LOOKUP_WORDS = frozenset("""
+a an the of to in on for and vs at is what whats who won win winner wins
+price prices current currently today now live latest last recent value quote cost
+score scores result results final game games match series standings
+rate rates exchange convert conversion usd eur gbp jpy inr cad aud cny chf mxn
+dollar dollars euro euros pound pounds yen rupee rupees peso pesos franc francs yuan
+stock stocks share shares crypto cryptocurrency market
+""".split())
+# The only characters a public-fact search may contain, after NFKC folding:
+# anything else (Cyrillic, other scripts' digits) is invisible to a word check.
+_QUERY_CHARS = re.compile(r"^[A-Za-z0-9 '.,?$%\-]*$")
+# How many words a public-fact search may add to the user's own (dev8 egress
+# re-review: lookup words alone had no cap).
+_QUERY_EXTRA_WORDS = 4
+
+
+def public_fact_query_problem(query: str, user_text: str, *, year: int | None = None) -> str | None:
+    """None when a public-fact search is plain ASCII and every word comes from
+    the user's own message or the small lookup vocabulary above; a year the
+    user didn't type may be added only once and only this year or last year
+    ("who won the World Series" in spring). The search is at most four words
+    longer than the user's message, so lookup words alone can't spell out a
+    long query. Anything else (a phone number, a gate code, a name) is refused."""
+    q = _ascii_text(query).strip()
+    if not q:
+        return "Search with the user's own words."
+    if not _QUERY_CHARS.match(q):
+        return ("Private data is in context, so a public lookup may only search the user's own "
+                "words in plain letters and digits. Search again with the user's words only.")
+    user_tokens = re.findall(r"[a-z0-9]+", _ascii_text(user_text).lower().replace("'", ""))
+    query_tokens = re.findall(r"[a-z0-9]+", q.lower().replace("'", ""))
+    if len(query_tokens) > len(user_tokens) + _QUERY_EXTRA_WORDS:
+        return ("Private data is in context, so a public lookup may only search the user's own "
+                "words. Search again with a shorter query.")
+    # Both spellings of the user's own words count: "Dana's" allows "danas" and "dana".
+    allowed = set(user_tokens) | set(re.findall(r"[a-z0-9]+", _ascii_text(user_text).lower())) | _LOOKUP_WORDS
+    this_year = year if year is not None else date.today().year
+    extra, added_years = [], 0
+    for w in query_tokens:
+        if w in allowed:
+            continue
+        if re.fullmatch(r"\d{4}", w) and int(w) in (this_year, this_year - 1) and added_years == 0:
+            added_years += 1
+            continue
+        extra.append(w)
+    if extra:
+        return ("Private data is in context, so a public lookup may only search the "
+                "user's own words. Search again without: " + ", ".join(dict.fromkeys(extra)) + ".")
+    return None
 
 
 # --- argument repair -----------------------------------------------------------

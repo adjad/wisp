@@ -4,6 +4,64 @@ import AppKit
 // Inert dependency: all requests are captured by the injected transport below.
 enum WispClient { static let baseURL = URL(string: "http://127.0.0.1:1")! }
 
+/// A sleep that ends when released or when its task is cancelled, like Task.sleep,
+/// so a check can tell a wake (the sleep cancelled) from a tick (released).
+final class NapGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiting: [Int: CheckedContinuation<Void, Error>] = [:]
+    private var order: [Int] = []
+    private var next = 0
+
+    var count: Int { lock.lock(); defer { lock.unlock() }; return waiting.count }
+
+    // The lock is only taken in these synchronous helpers (NSLock is unavailable from async code).
+    private func newID() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        next += 1
+        return next
+    }
+
+    private func park(_ id: Int, _ continuation: CheckedContinuation<Void, Error>) {
+        lock.lock()
+        if Task.isCancelled {
+            lock.unlock()
+            continuation.resume(throwing: CancellationError())
+            return
+        }
+        waiting[id] = continuation
+        order.append(id)
+        lock.unlock()
+    }
+
+    private func cancel(_ id: Int) {
+        lock.lock()
+        let continuation = waiting.removeValue(forKey: id)
+        order.removeAll { $0 == id }
+        lock.unlock()
+        continuation?.resume(throwing: CancellationError())
+    }
+
+    func wait() async throws {
+        let id = newID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                park(id, continuation)
+            }
+        } onCancel: {
+            cancel(id)
+        }
+    }
+
+    /// Ends the oldest wait as if its time had come.
+    func release() {
+        lock.lock()
+        let id = order.isEmpty ? nil : order.removeFirst()
+        let continuation = id.flatMap { waiting.removeValue(forKey: $0) }
+        lock.unlock()
+        continuation?.resume()
+    }
+}
+
 @main
 struct TodayPlanChecks {
     @MainActor static var count = 0
@@ -234,6 +292,27 @@ struct TodayPlanChecks {
         status = 404
         await model.refreshStoredBrief()
         check(model.storedBrief == nil, "none composed today: forgotten")
+
+        // The summary times and the first Brief's progress, for the Brief's "no summary yet".
+        var scheduleBody = #"{"times":{"morning":7,"evening":18},"first_brief_building":true}"#
+        var scheduleStatus = 200
+        var schedulePaths: Set<String> = []
+        let scheduled = TodayModel(now: { Date(timeIntervalSince1970: now) }, timeZoneProvider: { zone }) { request in
+            schedulePaths.insert(request.url?.path ?? "")
+            return (Data(scheduleBody.utf8),
+                    HTTPURLResponse(url: request.url!, statusCode: scheduleStatus, httpVersion: nil, headerFields: nil)!)
+        }
+        check(scheduled.briefSchedule == nil, "no schedule until read")
+        await scheduled.refreshBriefSchedule()
+        check(scheduled.briefSchedule == BriefSchedule(morning: 7, evening: 18, buildingFirst: true), "the schedule is read")
+        scheduleStatus = 500
+        await scheduled.refreshBriefSchedule()
+        check(scheduled.briefSchedule?.buildingFirst == true, "a failed read keeps the schedule read before")
+        scheduleStatus = 200
+        scheduleBody = #"{"times":{"morning":7,"evening":18}}"#
+        await scheduled.refreshBriefSchedule()
+        check(scheduled.briefSchedule == BriefSchedule(morning: 7, evening: 18), "the first Brief came: no longer building")
+        check(schedulePaths == ["/assistant/summary_schedule"], "only the schedule is read: \(schedulePaths)")
     }
 
     @MainActor
@@ -420,6 +499,111 @@ struct TodayPlanChecks {
         sleeps.removeFirst().resume()
         await Task.yield()
         check(todayReads == 7, "Stopping the app refresh must prevent another read")
+    }
+
+    /// The app loop reads every 30 s only while someone is looking or at the keyboard,
+    /// every 5 minutes otherwise, and reads at once when asked to (the notch opening).
+    @MainActor
+    static func backgroundPaceChecks() async throws {
+        typealias Pace = DayRefreshPace
+        check(Pace.active == .seconds(30) && Pace.away == .seconds(300) && Pace.awayAfter == 600)
+        check(Pace.interval(notchOpen: true, secondsSinceInput: 86_400) == Pace.active,
+              "An open notch is read every 30 s even when no one is typing")
+        check(Pace.interval(notchOpen: false, secondsSinceInput: 0) == Pace.active, "Input keeps the fast pace")
+        check(Pace.interval(notchOpen: false, secondsSinceInput: Pace.awayAfter - 1) == Pace.active,
+              "Just under ten idle minutes is still active")
+        check(Pace.interval(notchOpen: false, secondsSinceInput: Pace.awayAfter) == Pace.away,
+              "Ten idle minutes with the notch closed is away")
+        check(Pace.interval(notchOpen: false, secondsSinceInput: 100_000) == Pace.away)
+        TodayModel().refreshSoon()   // before the loop starts: nothing to wake, nothing happens
+
+        let zone = TimeZone(identifier: "America/Los_Angeles")!
+        var now = instant("2026-10-28T18:00:00Z")
+        let model = TodayModel(now: { now }, timeZoneProvider: { zone })
+        defer { model.stopBackgroundRefresh() }
+        let readGate = NapGate()
+        var holdNextRead = false
+        var reads = 0
+        model.transport = { request in
+            switch request.url!.path {
+            case "/assistant/today":
+                reads += 1
+                if holdNextRead {
+                    holdNextRead = false
+                    try await readGate.wait()
+                }
+                return (try planData(day: model.day, zone: zone.identifier), response(request))
+            case "/assistant/upcoming":
+                return (Data(#"{"commitments":[]}"#.utf8), response(request))
+            default:
+                return (Data("{}".utf8), HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+            }
+        }
+        let gate = NapGate()
+        var naps: [Duration] = []
+        let sleep: (Duration) async throws -> Void = { nap in
+            naps.append(nap)
+            try await gate.wait()
+        }
+        var notchOpen = false
+        let idleSeconds: TimeInterval = 3600
+        let cadence: @MainActor () -> Duration = {
+            Pace.interval(notchOpen: notchOpen, secondsSinceInput: idleSeconds)
+        }
+
+        model.startBackgroundRefresh(sleep: sleep)
+        await waitFor("The loop reads once and waits") { reads == 1 && gate.count == 1 }
+        check(naps == [.seconds(30)], "Without a cadence the loop keeps the 30 s interval")
+        model.startBackgroundRefresh(cadence: cadence)
+        await Task.yield()
+        check(reads == 1 && gate.count == 1, "A second start keeps one loop and takes the new cadence")
+
+        // A wake ends the wait now, but two reads never start closer than the floor.
+        now = now.addingTimeInterval(4)
+        model.refreshSoon()
+        await waitFor("A wake cuts the wait short and owes the rest of the floor") {
+            naps.last == .seconds(6) && gate.count == 1
+        }
+        check(reads == 1, "The floor holds the read a few seconds, it does not drop it")
+        model.refreshSoon()
+        await Task.yield()
+        check(reads == 1 && gate.count == 1, "A second wake during the floor changes nothing")
+        gate.release()
+        await waitFor("Away and closed, the next wait is five minutes") { reads == 2 && naps.last == .seconds(300) && gate.count == 1 }
+
+        // The notch opening reads at once, with no floor owed after a quiet spell.
+        now = now.addingTimeInterval(60)
+        notchOpen = true
+        model.refreshSoon(ifOlderThan: Pace.wakeFloor)
+        await waitFor("Opening the notch reads now and goes back to 30 s") {
+            reads == 3 && naps.last == .seconds(30) && gate.count == 1
+        }
+        // Opening it again a moment after a read adds nothing.
+        model.refreshSoon(ifOlderThan: Pace.wakeFloor)
+        await Task.yield()
+        await Task.yield()
+        check(reads == 3 && gate.count == 1 && naps.last == .seconds(30), "A read that just began is fresh enough")
+
+        // A change that arrives mid-read is not lost: one more read follows it.
+        now = now.addingTimeInterval(60)
+        holdNextRead = true
+        model.refreshSoon()
+        await waitFor("The wake starts a read that is still in flight") { reads == 4 && readGate.count == 1 }
+        model.refreshSoon()
+        now = now.addingTimeInterval(1)
+        readGate.release()
+        await waitFor("The finished read hands straight to the floor, not to a long wait") {
+            naps.last == .seconds(9) && gate.count == 1
+        }
+        gate.release()
+        await waitFor("One more read follows") { reads == 5 && naps.last == .seconds(30) && gate.count == 1 }
+
+        // Stopping ends the loop and a later wake does nothing.
+        model.stopBackgroundRefresh()
+        await waitFor("Stopping ends the wait") { gate.count == 0 }
+        model.refreshSoon()
+        await Task.yield()
+        check(reads == 5 && gate.count == 0, "A stopped loop does not read again")
     }
 
     @MainActor
@@ -692,6 +876,7 @@ struct TodayPlanChecks {
         try evidenceLabelChecks()
         await storedBriefChecks()
         try await refreshLifecycleChecks()
+        try await backgroundPaceChecks()
         try await storedBriefRolloverChecks()
         let zone = TimeZone(identifier: "America/Los_Angeles")!
         let model = TodayModel(timezone: zone)

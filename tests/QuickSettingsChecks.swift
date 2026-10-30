@@ -11,6 +11,32 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(unconfirmed.status == nil && unconfirmed.rest.hasPrefix("Not confirmed"), "unconfirmed Full access is never off")
     check(QuickSettingsText.fullAccess(on: true, pending: true).status == nil, "a pending change shows no status word")
 
+    // Save power: says it saves power on battery and while away; unconfirmed
+    // is never "off"; the help names the 15 W and 10 W caps and what they cover
+    // (background work always, the Brief after 10 minutes away), that light GPU
+    // use by other apps doesn't stop them and a busier app lifts them within
+    // about a second, and that only the built-in engine is capped.
+    check(QuickSettingsText.saveWhenAway(on: true, pending: false).contains("on battery")
+          && QuickSettingsText.saveWhenAway(on: true, pending: false).contains("while you're away"), "Save power on")
+    check(QuickSettingsText.saveWhenAway(on: false, pending: false) == "Wisp always runs at full speed", "Save power off")
+    check(QuickSettingsText.saveWhenAway(on: nil, pending: false) == "Not confirmed", "unconfirmed Save power is never off")
+    check(QuickSettingsText.saveWhenAway(on: true, pending: true).hasPrefix("Updating"), "a pending Save power change waits")
+    let saveHelp = QuickSettingsText.saveWhenAwayHelp
+    check(saveHelp.contains("10 minutes") && saveHelp.contains("10 W"), "Save power help names when and how much")
+    check(saveHelp.contains("On battery") && saveHelp.contains("15 W") && saveHelp.contains("chat reply")
+          && saveHelp.contains("Brief"), "Save power help names the battery cap and what it covers")
+    check(saveHelp.contains("ends as soon as"), "Save power help says the cap ends with the work")
+    check(saveHelp.contains("another app") && saveHelp.contains("GPU") && saveHelp.contains("within about a second"),
+          "Save power help says another app on the GPU lifts the cap within about a second")
+    check(!saveHelp.contains("never slow"), "Save power help doesn't promise other apps never slow down")
+    check(saveHelp.contains("use little of the GPU") && !saveHelp.contains("no other app"),
+          "Save power help says light use by other apps doesn't stop the cap")
+    check(saveHelp.contains("background work always") && saveHelp.contains("plugged in too")
+          && saveHelp.contains("built-in engine") && saveHelp.contains("oMLX"),
+          "Save power help names the 10 W background cap, always, and the engine it needs")
+    check(!saveHelp.contains("20 W") && !saveHelp.contains("full power"),
+          "Save power help no longer says replies always get full power")
+
     // Learn my routines: "stays on this Mac" only when nothing learned leaves it.
     let local = QuickSettingsText.learning(enabled: true, changing: false, status: nil, remote: false, phraser: true)
     check(local == ("From calendar, reminders and how you use Wisp", "stays on this Mac"), "local learning stays on this Mac")

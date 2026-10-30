@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
+from datetime import datetime
 from pathlib import Path
 
 from service.tools.registry import register
@@ -83,10 +85,10 @@ def _wrong_account_path(path: str) -> str | None:
     the real one — otherwise None.
 
     MEASURED FAILURE (2026-08-18). Asked to "reorganize my files" — a file
-    request that names no folder — Ling-3.0-tiny built `/Users/AdiJain888` out
+    request that names no folder — Ling-3.0-tiny built `/Users/SamRivera` out
     of the user's EMAIL ADDRESS, which the identity block puts in every agent
     system prompt (see agent/loop.py's identity_hint). It then tried
-    `/Users/AdiJain` and `/Users/Adi`. 10 runs out of 10.
+    `/Users/samrivera` and `/Users/Sam`. 10 runs out of 10.
 
     SYSTEM already forbids exactly this — "you do not know the user's account
     name, so `/Users/<name>/…` is a guess and is usually wrong" — and the model
@@ -176,8 +178,9 @@ def run_shell(cmd: str) -> str:
                 timeout=120, cwd=str(Path.home()), stdin=subprocess.DEVNULL,
                 env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"})
         else:
+            from service.identity import child_environment
             p = subprocess.run(cmd, shell=True, capture_output=True, text=True,
-                               timeout=120, cwd=str(Path.home()))
+                               timeout=120, cwd=str(Path.home()), env=child_environment())
         out = (p.stdout or "") + (("\n[stderr]\n" + p.stderr) if p.stderr else "")
         return BuiltinCompletion(_clip(out.strip() or f"(exit {p.returncode}, no output)"),
                                  tool_name="run_shell", completion_code=p.returncode,
@@ -454,7 +457,7 @@ def read_file(path: str) -> str:
 #
 # The `~` instruction is the second half of the fix, and it is what actually
 # broke the worst run: the model does not know the account name and guessed
-# `/Users/AdiJain/Downloads` (wrong case — survived only because macOS is
+# `/Users/samrivera/Downloads` (wrong case — survived only because macOS is
 # case-insensitive) and `/Downloads` (did not exist, which is what sent it to
 # run_shell). expanduser() below has always handled `~`; nothing said so.
 @register(
@@ -469,7 +472,10 @@ def read_file(path: str) -> str:
     "(subfolders and their contents) in one call instead of listing each "
     "subfolder one at a time — use this whenever the job needs to know what's "
     "inside nested folders, e.g. reorganizing/sorting files that might be "
-    "scattered across several subfolders. Folders end with `/` in the output.",
+    "scattered across several subfolders. Folders end with `/` in the output. "
+    "Pass `details=true` for each entry's size (a folder's is the total of "
+    "everything in it) and last-modified date, e.g. 'what's taking up space "
+    "in Downloads' or 'which folder did I change last'; `sort` orders them.",
     {"type": "object",
      "properties": {
          "path": {"type": "string", "description": "directory path, e.g. ~/Downloads"},
@@ -479,16 +485,26 @@ def read_file(path: str) -> str:
          "max_depth": {"type": "integer",
                        "description": "how many folder levels deep to descend when "
                                       "recursive is true (default 3)"},
+         "details": {"type": "boolean",
+                     "description": "show each entry's size and last-modified date "
+                                    "(with recursive, every entry in the tree; default false)"},
+         "sort": {"type": "string", "enum": ["name", "size", "modified"],
+                  "description": "with details: order by name (default), largest first, "
+                                 "or most recently modified first"},
      },
      "required": ["path"]},
     category="fs_read",
 )
-def list_dir(path: str, recursive: bool = False, max_depth: int = 3) -> str:
+def list_dir(path: str, recursive: bool = False, max_depth: int = 3,
+             details: bool = False, sort: str = "name") -> str:
     if (msg := _wrong_account_path(path)):
         return msg
     p = Path(path).expanduser()
     if not p.is_dir():
         return _missing_dir_message(p)
+    if details:
+        depth = max(1, min(int(max_depth or 3), 8)) if recursive else 1
+        return _list_dir_details(p, sort, depth)
     if not recursive:
         try:
             entries = sorted(os.listdir(p))
@@ -521,6 +537,93 @@ def list_dir(path: str, recursive: bool = False, max_depth: int = 3) -> str:
         lines.append(f"…[{len(_blocked)} subfolder(s) skipped — macOS denied "
                      "access; see Full Disk Access in System Settings]")
     return _clip("\n".join(lines) or "(empty)")
+
+
+# A folder's size is a walk of everything under it, so the walks of one
+# listing share a budget: past it, sizes are marked as at least that much.
+_DETAIL_BUDGET_S = 3.0
+_DETAIL_MAX_FILES = 200_000
+
+
+def _human_size(n: int) -> str:
+    size = float(n)
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if size < 1000 or unit == "GB":
+            return f"{int(size)} {unit}" if unit == "bytes" else f"{size:.1f} {unit}"
+        size /= 1000
+    return f"{size:.1f} TB"
+
+
+def _list_dir_details(p: Path, sort: str, max_depth: int = 1) -> str:
+    """One line per entry of `p` down to `max_depth` levels: name, size, last
+    modified (2026-10-29 Ask eval: folder sizes and dates had nothing to read).
+    A folder's size is everything under it, at any depth, from one walk of the
+    tree on one budget; a folder the walk didn't finish is "at least" its size."""
+    deadline = time.monotonic() + _DETAIL_BUDGET_S
+    totals: dict[Path, int] = {}
+    partial: set[Path] = set()
+    rows: list[tuple[Path, int, float, bool]] = []
+    root = Path(".")
+
+    def unfinished(rel: Path) -> None:
+        partial.add(rel)
+        partial.update(rel.parents)
+
+    seen, stack, stopped = 0, [root], False
+    while stack and not stopped:
+        rel = stack.pop()
+        try:
+            it = os.scandir(p / rel)
+        except PermissionError:
+            if rel == root:
+                return _tcc_message(p, "listing")
+            unfinished(rel)
+            continue
+        except OSError:
+            unfinished(rel)
+            continue
+        with it:
+            for entry in it:
+                seen += 1
+                if seen > _DETAIL_MAX_FILES or time.monotonic() > deadline:
+                    stopped = True
+                    unfinished(rel)
+                    break
+                child = rel / entry.name
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    unfinished(rel)
+                    continue
+                if is_dir:
+                    stack.append(child)
+                    totals.setdefault(child, 0)
+                else:
+                    for folder in child.parents:
+                        totals[folder] = totals.get(folder, 0) + info.st_size
+                if len(child.parts) <= max_depth:
+                    rows.append((child, 0 if is_dir else info.st_size, info.st_mtime, is_dir))
+    for rel in stack:
+        unfinished(rel)
+    if not rows:
+        return "(empty)"
+    sized = [(f"{rel}/" if is_dir else str(rel), totals.get(rel, 0) if is_dir else size, mtime,
+              not (is_dir and rel in partial))
+             for rel, size, mtime, is_dir in rows]
+    order = (sort or "name").strip().lower()
+    if order == "size":
+        sized.sort(key=lambda r: r[1], reverse=True)
+    elif order == "modified":
+        sized.sort(key=lambda r: r[2], reverse=True)
+    else:
+        sized.sort(key=lambda r: r[0].casefold())
+    lines = [f"{name}  {'at least ' if not complete else ''}{_human_size(size)}  "
+             f"modified {datetime.fromtimestamp(mtime).strftime('%b %-d, %Y %-I:%M %p')}"
+             for name, size, mtime, complete in sized]
+    if any(not r[3] for r in sized):
+        lines.append("(\"at least\": that folder was too big to total in time, or macOS refused part of it.)")
+    return _clip("\n".join(lines))
 
 
 @register(

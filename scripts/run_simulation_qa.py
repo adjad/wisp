@@ -87,12 +87,22 @@ PROFILE_TESTS = {
         "tests/test_workflow_engine.py",
     },
     "sources": {
+        # The 2026-10-29 eval reads: sent mail, folder sizes, file search, accounts,
+        # what's new, Focus and volume. Mocked sources and tmp_path only.
+        "tests/test_rc1_eval_reads.py",
+        "tests/test_dev8_ask_reads.py",
         "tests/test_brief_fallback.py",
         "tests/test_daily_summary_history_independence.py",
         "tests/test_email_digest_presentation.py",
         "tests/test_email_scoping.py",
         "tests/test_live_corpus.py",
         "tests/test_long_email_digest.py",
+        # Voice input: the clip reaches only a local model with an audio encoder (stub client).
+        "tests/test_voice_transcribe.py",
+        # Image/video input: one dedicated vision call (stub client, synthetic media).
+        "tests/test_vision.py",
+        # Document input: text extracted in memory, one no-tools call (stub client, synthetic files).
+        "tests/test_documents.py",
         "tests/test_corpus_prompts.py",
         "tests/test_corpus_reasoning_export.py",
         "tests/test_gmail_source.py",
@@ -120,6 +130,7 @@ PROFILE_TESTS = {
         "tests/test_brief_needs_you.py",
         "tests/test_day_timeline_event_fields.py",
         "tests/test_mail_gists.py",
+        "tests/test_mail_memory.py",
         "tests/test_behavior_gmail_history.py",
         "tests/test_behavior_availability.py",
     },
@@ -141,8 +152,11 @@ PROFILE_TESTS = {
         "tests/test_reminder_civil_date_controls.py",
         "tests/test_reminder_entrypoint.py",
         "tests/test_reminder_date_updates.py",
+        "tests/test_reminder_date_only_due_today.py",
     },
     "safety": {
+        # The user's access choice survives a restart; boots under tmp_path only.
+        "tests/test_access_mode_persistence.py",
         "tests/test_always_confirm_grants.py",
         "tests/test_approver_timeout.py",
         "tests/test_destructive_shell.py",
@@ -150,6 +164,8 @@ PROFILE_TESTS = {
         "tests/test_forced_step_withholding.py",
         "tests/test_shell_boundary.py",
         "tests/test_shell_local_service_deny.py",
+        # /resetwisp on a scratch home under pytest's temp dir; no Google, Keychain, TCC or live service.
+        "tests/test_wisp_reset.py",
         "tests/test_outbound_shell_gate.py",
         "tests/test_local_http_guard.py",
         "tests/test_tool_calling_invariants.py",
@@ -163,6 +179,10 @@ PROFILE_TESTS = {
     # Fresh-install model detection over fake model folders and fake /v1/models answers.
     "tests/test_setup_existing_omlx.py",
     "tests/test_onboarding_window.py",
+    # Settings and Setup as sections of the Wisp window, read from the Swift sources.
+    "tests/test_settings_in_window.py",
+    # The app's idle-time polling cadences, read from the Swift and service sources.
+    "tests/test_idle_polling_swift_contract.py",
     "tests/test_super_model_routing.py",
         "tests/test_inference_endpoints.py",
         "tests/test_inference_providers.py",
@@ -254,11 +274,25 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_reminder_expiry.py",
     "tests/test_behavior_auto_trial.py",
     "tests/test_brief_day_one.py",
+    # rc2: Brief cards stay put across cycles, and a dismissed or cleared ask stays gone (fake model, scratch store).
+    "tests/test_brief_card_stability.py",
+    # rc2: the first Brief once onboarding is answered (scheduler slots with a stubbed store
+    # and clock, and the marker endpoint through TestClient); nothing is composed or sent.
+    "tests/test_brief_onboarding.py",
+    # rc2: an unoffered web lookup on a general-knowledge question, with a scripted model.
+    "tests/test_general_knowledge_unoffered_web.py",
     # rc1 Ask backend: reply-needed reads stay read-only, the capability welcome, Gmail-only identity.
     "tests/test_router_reply_needed_reads.py",
     "tests/test_capability_welcome.py",
     "tests/test_wisp_self_questions.py",
+    # Onboarding Ask access fix: needs_access from scripted tool results through the
+    # agent loop, reads, workflows and tasks; no live source or model.
+    "tests/test_ask_access_fix.py",
+    # The first launch day's rhythm line and first-Brief progress over a scratch store.
+    "tests/test_brief_first_day.py",
     "tests/test_email_gmail_only_and_dedup.py",
+    # rc2 duplicated email summaries: synthetic Gmail + Mail rows, two linked accounts; no live source.
+    "tests/test_email_summary_dedupe.py",
     # Needs you Clear / Mark done over synthetic stores and a stubbed native outbox.
     "tests/test_needs_you_clear.py",
     # Messages read-failure reasons over module state and an inert ASGI app; no native reader.
@@ -294,6 +328,15 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_google_calendar_source.py",
     "tests/test_mcp_large_tool_list.py",
     "tests/test_model_only_quality.py",
+    # Ask stall re-prompt, tomorrow typos and the day plan: fake model client, stubbed snapshot.
+    "tests/test_ask_day_answers.py",
+    # Ask eval fixes: spoken periods, tool-call markup, tool wording and head start;
+    # fake model client, stubbed tools, private WISP_HOME.
+    "tests/test_ask_eval_tool_wording.py",
+    "tests/test_ask_text_tool_calls.py",
+    "tests/test_timeranges_spoken_days.py",
+    # Public-fact web lookups with private context: scripted model, fake web tools.
+    "tests/test_public_fact_lookups.py",
     "tests/test_proactive_accounts.py",
     "tests/test_proactive_auto_add.py",
     "tests/test_proactive_clear.py",
@@ -377,6 +420,8 @@ ADDITIONAL_FULL_TESTS = {
     # No engine/model/native launch, real provider or host memory probes.
     "tests/test_engine_guard_proof.py",
     "tests/test_engine_guard_overlay.py",
+    # Background GPU power tier: settings in tmp_path, idle state and clients stubbed.
+    "tests/test_power_tier.py",
     "tests/test_engine_guard_client.py",
     "tests/test_engine_guard_admission.py",
     "tests/test_bundled_engine_startup.py",
@@ -404,6 +449,12 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_brief_summary_contract.py",
     # Mail gists with a fake model and an isolated cache; nothing is read or sent.
     "tests/test_mail_gists.py",
+    # Mail memory with a stand-in app, model and hub, a temporary store and stubbed idle/power
+    # probes; no Mail, no model, no subprocess, nothing is added to Reminders.
+    "tests/test_mail_memory.py",
+    # Mail memory's profile facts with a stand-in model, a temporary store, facts.db and settings
+    # file; synthetic mail only, nothing is read from Mail and no fact reaches the real memory.
+    "tests/test_mail_memory_facts.py",
     # The kept Daily Summary with an isolated file and a stand-in hub; nothing is composed, read or sent.
     "tests/test_brief_latest.py",
     # Pure identity/port policy; the shell checks skip where spawning is forbidden.
@@ -626,6 +677,8 @@ _NATIVE_PASSED = re.compile(
 _LEGACY_PROMPTS_VALIDATED = re.compile(r"\bok:\s*(?P<passed>\d+)\s+prompts validated\b")
 _NATIVE_GATE_DEPENDENCIES = {
     "native/mail-db-contract": "native/mail-db-compile",
+    "native/mail-memory-contract": "native/mail-memory-compile",
+    "native/mail-memory-brief-contract": "native/mail-memory-brief-compile",
     "native/mail-history-contract": "native/mail-history-compile",
     "native/privacy-sync-contract": "native/privacy-sync-compile",
     "native/source-sync-label-contract": "native/source-sync-label-compile",
@@ -910,6 +963,8 @@ def _dependencies() -> dict[str, str]:
 def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     module_cache = str(build_dir / "module-cache")
     mail_db = str(build_dir / "mail-db-regression")
+    mail_memory = str(build_dir / "mail-memory-regression")
+    mail_memory_brief = str(build_dir / "mail-memory-brief")
     mail_history = str(build_dir / "mail-history")
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
@@ -974,6 +1029,24 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         ),
         ("native/mail-db-contract", [mail_db]),
         (
+            "native/mail-memory-compile",
+            [
+                TRUSTED_SWIFTC, "-module-cache-path", module_cache,
+                "app/Sources/WispApp/MailMemoryReader.swift",
+                "tests/MailMemoryReaderRegression.swift", "-lsqlite3", "-o", mail_memory,
+            ],
+        ),
+        ("native/mail-memory-contract", [mail_memory]),
+        (
+            "native/mail-memory-brief-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-module-cache-path", module_cache,
+                "app/Sources/WispApp/MailMemory.swift",
+                "tests/MailMemoryChecks.swift", "-o", mail_memory_brief,
+            ],
+        ),
+        ("native/mail-memory-brief-contract", [mail_memory_brief]),
+        (
             "native/mail-history-compile",
             [
                 TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
@@ -1018,6 +1091,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
                 TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
                 "-module-cache-path", module_cache,
                 "app/Sources/WispApp/WispClient.swift", "app/Sources/WispApp/AgentSend.swift",
+                "app/Sources/WispApp/AskAccess.swift",
                 "tests/AgentSendChecks.swift", "-o", agent_send,
             ],
         ),
@@ -1079,6 +1153,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
                 "app/Sources/WispApp/Chat/AssistantTaskCorpus.swift",
                 "app/Sources/WispApp/Chat/ChatStore.swift",
                 "app/Sources/WispApp/Chat/NotchCorpusController.swift",
+                "app/Sources/WispApp/AskAccess.swift",
                 "tests/ChatStoreChecks.swift", "-o", chat_store,
             ],
         ),

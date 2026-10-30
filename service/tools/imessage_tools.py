@@ -118,6 +118,9 @@ except ValueError:
 # Completion is separate so the same failed request can safely retry.
 _contacts_applied_revision = _contacts_revision
 _contacts_privacy_current = False
+# The app's last Contacts read said it may not read them (not allowed yet, or
+# turned off in System Settings) while Contacts was on in Wisp.
+_contacts_not_allowed = False
 
 
 def clear_contacts() -> None:
@@ -130,8 +133,18 @@ def clear_contacts() -> None:
             (cache_store.CACHE_DIR / f"{name}.{suffix}").unlink(missing_ok=True)
 
 
+def _contacts_not_allowed_message() -> str:
+    from service.tools import access_needed
+    # The setup window offers Contacts only once Full Disk Access lets Wisp
+    # read Messages, so while Messages can't be read that is the step to name.
+    if messages_unavailable_kind() == "full_disk_access":
+        return ("Wisp can't read Contacts yet: it asks for them once it can read Messages. "
+                + access_needed.need("messages", "full_disk_access"))
+    return "Wisp can't read Contacts yet. " + access_needed.need("contacts", "contacts_access")
+
+
 def apply_contacts_sync(body: dict) -> bool:
-    global _contacts_revision, _contacts_applied_revision, _contacts_privacy_current
+    global _contacts_revision, _contacts_applied_revision, _contacts_privacy_current, _contacts_not_allowed
     revision = body.get("revision")
     if revision is not None and (type(revision) is not int or revision <= 0):
         raise ValueError("revision must be a positive integer")
@@ -156,6 +169,7 @@ def apply_contacts_sync(body: dict) -> bool:
     if revision is not None:
         _contacts_revision = revision
     _contacts_privacy_current = False
+    _contacts_not_allowed = enabled and not available
     # Every contact read replaces the complete snapshot, including birthdays.
     # Clear first so empty, denied and failed reads cannot preserve recipients.
     clear_contacts()
@@ -1465,7 +1479,7 @@ def _conversation_aliases(label: str) -> set[str]:
 
 
 def _fuzzy_conversations(candidates, needle: str):
-    """Conversations whose name is a near-miss for `needle` — "trishe" for a
+    """Conversations whose name is a near-miss for `needle` — "maya" for a
     contact saved as "Trisha". People type names the way they say them, and the
     exact-substring match above answered "No conversation matched" for any
     spelling the contact card didn't use, which read as "no messages from her".
@@ -1508,7 +1522,7 @@ def _match_conversation(records, query: str):
 #
 # A prompt rule alone was not enough to stop the misattribution this exists for.
 # The summarizer, told who the user is and that "your" in someone else's message
-# belongs to whoever they addressed, still reported "@Trishe - How is the AI
+# belongs to whoever they addressed, still reported "@Maya - How is the AI
 # conference going? Any traction for your app?" — Mom, to a four-person family
 # group — as the user's conference and the user's app. The fast model (the summarizer
 # E4B) reads a line at a time and simply does not connect a mid-sentence
@@ -1585,7 +1599,7 @@ def _addressee(context: str, sender: str, body: str) -> str:
 # How long an explicit @mention keeps applying to the SAME sender's other
 # messages in the SAME conversation. Sized for the case that produced the bug:
 # Mom sent "Your post has 439 likes", then 20 seconds later the edited
-# "* @Trishe - Your post has 439 likes". Only the second names Trishe, so
+# "* @Maya - Your post has 439 likes". Only the second names Maya, so
 # without carry-over the first still read as the user's post — the very claim
 # the user reported. Same sender and same conversation only; a REPLY from
 # someone else may well have changed who is being talked to, and guessing that
@@ -1712,6 +1726,8 @@ def _unavailable_message() -> str:
     # Full Disk Access is named only when the reader's error said so; any other
     # failure keeps its own reason, never a guess at the wrong setting.
     if _unavailable_kind and _unavailable_reason:
+        from service.tools import access_needed
+        access_needed.need("messages", _unavailable_kind)
         return f"({_unavailable_reason})"
     if _unavailable_reason:
         return f"(Can't read Messages: {_unavailable_reason.rstrip('.')}.)"
@@ -2197,8 +2213,10 @@ async def view_messages(query: str | None = None, day: str | None = None,
     "summarize_messages",
     "Summarize important iMessage/SMS messages from the last three days, "
     "grouped by conversation, including important read messages. Omit routine "
-    "chatter, promotions, standalone codes, and resolved items. Use whenever "
-    "the user asks about their messages/texts/iMessage. Pass `period` for a "
+    "chatter, promotions, standalone codes, and resolved items. Use for what "
+    "matters in the user's messages/texts/iMessage. For who messaged the user "
+    "or their latest messages, use view_messages instead: this digest leaves "
+    "routine messages out. Pass `period` for a "
     "RANGE — 'this month', 'last month', 'this week', 'this month and last "
     "month' — or `day` ('today', 'yesterday', 'YYYY-MM-DD') for ONE day; omit "
     "both for the important three-day digest. Pass `conversation` for one named "
@@ -2256,6 +2274,8 @@ async def lookup_contact(name: str) -> str:
     matches = find_contacts(name)
     if not matches:
         if not _name_handles:
+            if _contacts_not_allowed:
+                return f"({_contacts_not_allowed_message()} Ask the user for the number directly.)"
             return ("(No contacts are synced yet — Wisp needs Contacts access, "
                     "or the first sync hasn't finished. Ask the user for the "
                     "number directly.)")
@@ -2292,6 +2312,8 @@ async def lookup_contact(name: str) -> str:
 async def list_contacts(query: str = "") -> str:
     names = contact_names()
     if not names:
+        if _contacts_not_allowed:
+            return f"({_contacts_not_allowed_message()})"
         return ("(No contacts are synced yet — Wisp needs Contacts access, or "
                 "the first sync hasn't finished.)")
     q = (query or "").strip().lower()

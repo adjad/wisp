@@ -1,3 +1,4 @@
+import EventKit
 import Foundation
 
 // Pure checks for the first-run window: when it shows, and what step 1 says for
@@ -15,12 +16,13 @@ struct FirstRunSetupChecks {
     static func status(ready: Bool = false, bundled: Bool = true, running: Bool = true,
                        available: Bool = true, installed: [String] = [], roles: String = "Ling-3.0-tiny-oQ4e",
                        fits: Bool? = nil, download: Bool = true, warning: String? = nil,
-                       modelAction: String? = nil) -> SetupStatus {
+                       modelAction: String? = nil, remoteOnly: Bool = false,
+                       roleEndpoint: String = "local") -> SetupStatus {
         let installedJSON = installed.map {
             #"{"id":"\#($0)","label":"\#($0 == gemma ? realLabel : $0)","size_gb":5.5,"fit":"recommended","tested":true,"note":""}"#
         }.joined(separator: ",")
         let json = """
-        {"ready":\(ready),
+        {"ready":\(ready),"remote_only":\(remoteOnly),
          "hardware":{"chip":"Apple M5 Pro","ram_gb":24,"tier":"comfortable"},
          "omlx":{"installed":true,"running":\(running),"model_dir":null,"min_macos":26,"url":"","admin_url":"","bundled":\(bundled)},
          "bundled_engine":{"available":\(available),"minimum_macos":"26.0","unavailable_reason":\(available ? "null" : "\"Wisp's engine needs macOS 26.\"")},
@@ -30,7 +32,7 @@ struct FirstRunSetupChecks {
                    "recommended_label":"Gemma 4 E4B · 4-bit (oQ4e) + MTP",
                    "download":\(download ? #"{"model":"\#(gemma)","label":"\#(realLabel)","size_gb":5.5,"repo":"Jundot/\#(gemma)","url":"","command":"","install_hf":""}"# : "null"),
                    "embedding_download":null},
-         "roles":[{"role":"general","label":"General","model":"\(roles)","endpoint":"local"}],
+         "roles":[{"role":"general","label":"General","model":"\(roles)","endpoint":"\(roleEndpoint)"}],
          "engines":[],
          "checks":[\(modelAction.map { #"{"id":"model","state":"todo","title":"","detail":"\#(warning ?? "")","action":"\#($0)","url":null}"# } ?? "")],
          "disclosure":"","configuration_token":null}
@@ -45,6 +47,10 @@ struct FirstRunSetupChecks {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try! decoder.decode(SetupGuideModel.DownloadTask.self, from: Data(json.utf8))
+    }
+
+    static func footerOf(_ s: SetupStatus, _ tasks: [SetupGuideModel.DownloadTask], stalled: Bool = false) -> FirstRunBrain.Footer {
+        FirstRunBrain.from(status: s, downloads: tasks).footer(stalled: stalled)
     }
 
     static func main() {
@@ -159,6 +165,23 @@ struct FirstRunSetupChecks {
         check(FirstRunSetup.setupCue(.later, canAnswer: true, firstRunWindowUp: false) == .hidden, "Ready: the cue goes")
         check(FirstRunSetup.setupCue(.open, canAnswer: true, firstRunWindowUp: false) == .open, "Ready: an open card waits for Done")
         check(FirstRunSetup.setupCue(.hidden, canAnswer: true, firstRunWindowUp: false) == .hidden, "Ready: nothing to show")
+        check(FirstRunSetup.setupCue(.ready, canAnswer: true, firstRunWindowUp: false) == .ready,
+              "Ready: the ready dot stays until the panel opens")
+        check(FirstRunSetup.setupCue(.ready, canAnswer: false, firstRunWindowUp: false) == .later
+              && FirstRunSetup.setupCue(.ready, canAnswer: false, firstRunWindowUp: true) == .hidden,
+              "Can't answer again: the ready dot gives way to the ! cue (none over the window)")
+
+        // The menu bar icon's Finish Setup…: only while setup is under way.
+        func menuSetup(_ canAnswer: Bool?, _ card: NotchSetupCard, window: Bool = false, unfinished: Bool = false) -> Bool {
+            FirstRunSetup.menuOffersSetup(canAnswer: canAnswer, card: card, firstRunWindowUp: window, unfinished: unfinished)
+        }
+        check(menuSetup(false, .hidden), "Wisp can't answer: Finish Setup… shows")
+        check(menuSetup(nil, .later) && menuSetup(true, .open), "A setup cue or an open card: it shows")
+        check(menuSetup(nil, .hidden, window: true) && menuSetup(true, .hidden, unfinished: true),
+              "The first-run window is up, or was left unfinished: it shows")
+        check(!menuSetup(true, .hidden), "Set up: it hides (Settings › Models changes the model)")
+        check(!menuSetup(true, .ready), "The ready dot is not setup under way")
+        check(!menuSetup(nil, .hidden), "Before the service first answers: nothing shown by itself")
 
         // Permission rows: their state in a word, and Contacts only once it helps.
         check(FirstRunPermissions.label(.calendar, .notAsked) == "Not set"
@@ -171,6 +194,40 @@ struct FirstRunSetupChecks {
         check(!FirstRunPermissions.contactsUseful(messagesReadable: false) && FirstRunPermissions.contactsUseful(messagesReadable: true),
               "Contacts waits for Messages to be readable")
 
+        // The Calendar and Reminders buttons: macOS asks once, so a turned-down row opens its page instead.
+        check(FirstRunPermissions.eventKitClick(.notDetermined) == .ask
+              && FirstRunPermissions.eventKitClick(.fullAccess) == .alreadyAllowed
+              && [.denied, .restricted, .writeOnly].allSatisfy { FirstRunPermissions.eventKitClick($0) == .openSettings },
+              "Undecided: ask macOS; allowed: nothing; denied, restricted or write-only: System Settings")
+        check(FirstRunPermissions.eventKitUnanswered(before: .notDetermined, after: .notDetermined)
+              && !FirstRunPermissions.eventKitUnanswered(before: .notDetermined, after: .fullAccess)
+              && !FirstRunPermissions.eventKitUnanswered(before: .notDetermined, after: .denied)
+              && !FirstRunPermissions.eventKitUnanswered(before: .denied, after: .denied),
+              "An ask that leaves macOS with no answer is reported; a Don't Allow is an answer")
+        // An Automation question nobody answers: "Asking…" while it is new, then Ask again.
+        check(FirstRunPermissions.allowTitle(.mail, asking: true, waiting: false) == "Asking…"
+              && FirstRunPermissions.allowTitle(.mail, asking: true, waiting: true) == "Asking…"
+              && FirstRunPermissions.allowTitle(.mail, asking: false, waiting: true) == "Ask again"
+              && FirstRunPermissions.allowTitle(.messages, asking: false, waiting: true) == "Ask again"
+              && FirstRunPermissions.allowTitle(.mail, asking: false, waiting: false) == "Allow"
+              && FirstRunPermissions.allowTitle(.fullDiskAccess, asking: false, waiting: false) == "Open System Settings",
+              "A question still up after the wait reads Ask again; a new one reads Asking…")
+        check(FirstRunPermissions.automationPatience >= .seconds(5) && FirstRunPermissions.automationPatience <= .seconds(30)
+              && FirstRunPermissions.automationWaitingNote.contains("Ask again"),
+              "The row is let go after a short wait and says how to get the question back")
+        let remindersBase = "What's due."
+        let denied = FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .notAllowed, unanswered: false)
+        let silent = FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .notAsked, unanswered: true)
+        check(denied.contains("Privacy & Security > Reminders") && denied.contains("Open System Settings")
+              && FirstRunPermissions.eventKitDetail(.calendar, base: "", state: .notAllowed, unanswered: false)
+                  .contains("Privacy & Security > Calendars")
+              && silent.contains("didn't show its question") && silent.contains("Quit and reopen Wisp")
+              && FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .notAsked, unanswered: false) == remindersBase
+              && FirstRunPermissions.eventKitDetail(.reminders, base: remindersBase, state: .allowed, unanswered: true) == remindersBase,
+              "Reminders row: denied says where to switch it on, a silent ask says what to do, otherwise its purpose")
+        check(FirstRunSetupView.settingsPane(.reminders).hasSuffix("Privacy_Reminders")
+              && FirstRunSetupView.settingsPane(.calendar).hasSuffix("Privacy_Calendars"),
+              "Each row opens its own privacy page")
         // Readers never ask: an undecided Calendar or Reminders is a reason, never a request.
         for source in [RemindersWriter.Access.Source.calendar, .reminders] {
             let unasked = RemindersWriter.Access.passive(status: .notDetermined, source: source)
@@ -205,6 +262,20 @@ struct FirstRunSetupChecks {
         check(OnboardingGoogleCopy.signInProblem(GoogleAccountModel.serviceDown) == nil
               && OnboardingGoogleCopy.signInProblem("Account connected.") == nil
               && OnboardingGoogleCopy.signInProblem("") == nil, "Outage, success, nothing: no sign-in problem")
+        let builtIn = OnboardingGoogleCopy.connectDetail(GoogleStatus(clientSource: "builtin",
+                                                                      consentNotice: GoogleConsentCopy.unverified))
+        check(builtIn.contains("tester list") && builtIn.contains("isn't verified") && builtIn.contains("7 days")
+              && builtIn.contains("reconnect") && builtIn.components(separatedBy: "verified").count == 2,
+              "Built-in Google sign-in: tester list, the unverified warning once, and 7 days")
+        check(OnboardingGoogleCopy.connectDetail(GoogleStatus(clientSource: "user"))
+                == "Opens Google's sign-in page in your browser.", "The person's own Google client: no testing notes")
+        let noNotice = OnboardingGoogleCopy.connectDetail(GoogleStatus(clientSource: "builtin"))
+        check(noNotice.contains("tester list") && noNotice.contains(GoogleConsentCopy.unverified) && noNotice.contains("7 days"),
+              "Built-in, no notice from the service: Wisp's own unverified warning")
+        let ownNotice = OnboardingGoogleCopy.connectDetail(GoogleStatus(clientSource: "builtin", consentNotice: "Google says X."))
+        check(ownNotice.contains("Google says X.") && !ownNotice.contains(GoogleConsentCopy.unverified)
+              && ownNotice.contains("tester list") && ownNotice.contains("7 days"),
+              "Built-in with the service's own notice: its words, plus the tester list and 7 days")
         check(OnboardingGoogleCopy.signInProblem("Wisp could not connect Gmail: Gmail read access wasn't granted — on "
                   + "Google's consent screen, tick the box to view your email messages, then try again")
               == GoogleGrantNames.gmailNotGrantedMessage, "Gmail unticked: the tick-box message")
@@ -246,29 +317,75 @@ struct FirstRunSetupChecks {
         // never the "can't set this up" card, however long the first answer takes.
         let connecting = FirstRunBrain.from(status: status(bundled: false, running: false), downloads: [])
         check(connecting == .startingEngine, "External mode, not ready yet, is not unavailable")
-        check(connecting.footer(stalled: false) == .working("Starting the engine…"), "Connecting shows a spinner, not a failure")
+        check(connecting.footer(stalled: false) == .working("Getting Wisp ready…"), "Connecting shows a spinner, not a failure")
         check(FirstRunBrain.from(status: status(bundled: false, running: false, available: false), downloads: [])
                 == .startingEngine, "A Mac that can't run the built-in engine still connects to its own oMLX")
         if case .unavailable(let why) = FirstRunBrain.from(status: status(bundled: false), downloads: []) {
             check(why.hasPrefix("Your oMLX app is running but doesn't have Gemma 4 E4B"),
                   "A running oMLX without Wisp's model is the stuck case, and says so")
         } else { check(false, "A running oMLX without the model goes to the detailed setup") }
+        // Right after Wisp starts their oMLX its server answers before it lists any model: that is
+        // still the search, not the stuck case, until the search window has passed.
+        let running = status(bundled: false)
+        check(running.usesOwnOmlx && running.existingOmlx == nil, "A running oMLX without the model is still their oMLX")
+        check(FirstRunBrain.from(status: running, downloads: [], stillLooking: true) == .startingEngine,
+              "Inside the search window a running oMLX without the model is still being looked for")
+        check(FirstRunBrain.from(status: running, downloads: [], stillLooking: true).footer(stalled: false)
+                == .working("Getting Wisp ready…"), "...with a spinner, no failure copy and no Try again")
+        check(FirstRunBrain.from(status: status(bundled: false, available: false), downloads: [], stillLooking: true)
+                == .startingEngine, "...even on a Mac that can't run the built-in engine")
+        if case .unavailable = FirstRunBrain.from(status: running, downloads: [], stillLooking: false) {} else {
+            check(false, "Past the search window the stuck case reaches the detailed setup")
+        }
+        if case .unavailable = FirstRunBrain.from(status: running, downloads: []) {} else {
+            check(false, "The window is off by default: the notch's card reads it as before")
+        }
+        if case .unavailable = FirstRunBrain.from(status: status(available: false), downloads: [], stillLooking: true) {} else {
+            check(false, "The window never hides the built-in engine's own failure")
+        }
+        check(FirstRunBrain.from(status: status(ready: true, bundled: false), downloads: [], stillLooking: true).isReady,
+              "Ready wins over the search window")
+        check(FirstRunBrain.stillLooking(waited: nil) && FirstRunBrain.stillLooking(waited: 0)
+              && FirstRunBrain.stillLooking(waited: FirstRunBrain.connectGrace - 0.1)
+              && !FirstRunBrain.stillLooking(waited: FirstRunBrain.connectGrace),
+              "The search lasts exactly connectGrace, and starts when it is first seen")
+        check(FirstRunBrain.connectGrace >= 30, "A cold oMLX gets a long search before anything is called wrong")
+        check(FirstRunBrain.startingTitle(ownOmlx: true) == "Looking for your oMLX…"
+              && FirstRunBrain.startingTitle(ownOmlx: false) == "Getting Wisp ready…",
+              "Their oMLX is looked for, the built-in engine is started")
         // A model the person's oMLX serves that would replace a choice: one click, never automatic.
         let offered = FirstRunBrain.offered(model: gemma, label: "Gemma 4 E4B")
         check(offered.modelToUse == gemma && offered.footer(stalled: false) == .tryAgain
               && !offered.isArriving && !offered.waitsForDownloadClick && offered.modelToFetch == nil,
               "An offered model waits for its Use click and is never fetched")
         // Connecting to the person's oMLX always reaches a Try again, even with no automatic start.
-        check(!FirstRunBrain.startStalled(autoStarted: false, failed: false, connecting: true, waited: 9),
-              "Connecting is not stalled inside the grace period")
-        check(FirstRunBrain.startStalled(autoStarted: false, failed: false, connecting: true,
+        check(!FirstRunBrain.startStalled(autoStarted: false, failed: false, ownOmlx: true,
+                                          waited: FirstRunBrain.connectGrace - 1),
+              "Looking for their oMLX is not stalled inside the grace period")
+        check(FirstRunBrain.startStalled(autoStarted: false, failed: false, ownOmlx: true,
                                          waited: FirstRunBrain.connectGrace),
-              "Connecting past the grace period offers Try again without an automatic start")
-        check(!FirstRunBrain.startStalled(autoStarted: false, failed: false, connecting: false, waited: 600),
+              "Looking for their oMLX past the grace period offers Try again without an automatic start")
+        check(!FirstRunBrain.startStalled(autoStarted: true, failed: false, ownOmlx: true, waited: 1)
+              && !FirstRunBrain.startStalled(autoStarted: false, failed: true, ownOmlx: true, waited: 1),
+              "An early or failed automatic start of their oMLX waits out the search before Try again")
+        check(!FirstRunBrain.startStalled(autoStarted: false, failed: false, ownOmlx: false, waited: 600),
               "The built-in engine keeps its own rule: stalled only after Wisp's start or a failure")
-        check(FirstRunBrain.startStalled(autoStarted: true, failed: false, connecting: false, waited: 0)
-              && FirstRunBrain.startStalled(autoStarted: false, failed: true, connecting: false, waited: 0),
+        check(FirstRunBrain.startStalled(autoStarted: true, failed: false, ownOmlx: false, waited: 0)
+              && FirstRunBrain.startStalled(autoStarted: false, failed: true, ownOmlx: false, waited: 0),
               "An automatic start that left nothing running, or a failure, offers Try again")
+        // S1: setup finished, reopened from Permissions…, the person's oMLX off. The wait is
+        // still timed so Try again appears and says oMLX isn't running; Wisp never starts it.
+        let reopened = FirstRunBrain.whileConnecting(setupDone: true, connecting: true)
+        check(!reopened.startsOmlx && reopened.timesGrace, "Finished setup: Try again after the grace, no automatic start")
+        check(FirstRunBrain.whileConnecting(setupDone: false, connecting: true) == (true, true)
+              && FirstRunBrain.whileConnecting(setupDone: false, connecting: false) == (false, false),
+              "Only an unfinished first run starts the person's oMLX by itself")
+        check(FirstRunBrain.from(status: status(bundled: false, running: false), downloads: []).footer(
+                stalled: FirstRunBrain.startStalled(autoStarted: false, failed: false, ownOmlx: true,
+                                                    waited: FirstRunBrain.connectGrace)) == .tryAgain
+              && FirstRunBrain.connectingDetail(setupDone: true, stalled: true).hasPrefix("Your oMLX isn't running")
+              && !FirstRunBrain.connectingDetail(setupDone: true, stalled: false).contains("isn't running"),
+              "Finished setup, oMLX off: Try again and a plain line once the grace has passed")
         check(FirstRunBrain.from(status: status(), downloads: []) == .needsDownload(model: gemma, label: "Gemma 4 E4B", sizeGb: 5.5),
               "Nothing installed: offer the download")
         guard case .downloading(_, _, let fraction, let done, let total, let left) =
@@ -287,6 +404,71 @@ struct FirstRunSetupChecks {
               "Ready names the model in use")
         check(FirstRunBrain.from(status: status(ready: true), downloads: []).isReady, "Ready wins over everything")
 
+        // Every role on a remote provider (Cloud Everything): Wisp already answers, no download.
+        let remote = FirstRunBrain.from(status: status(roles: "claude-sonnet", remoteOnly: true, roleEndpoint: "anthropic"),
+                                        downloads: [])
+        check(remote == .ready(label: "claude-sonnet") && remote.footer(stalled: false) == .ready
+              && remote.modelToFetch == nil, "Remote-only skips the model download")
+        check(FirstRunBrain.from(status: status(running: false, remoteOnly: true), downloads: []).isReady,
+              "Remote-only answers even with no local engine running")
+        check(NotchModelOffer.from(status: status(remoteOnly: true), downloads: []) == .none,
+              "Remote-only: the notch offers no download either")
+
+        // Wisp's service that never comes up: after the notch's 3 minutes, Check again.
+        check(FirstRunBrain.serviceStartLimit == 180, "The same 3 minutes AppDelegate allows a cold first launch")
+        check(!FirstRunBrain.serviceSlow(waited: 179) && FirstRunBrain.serviceSlow(waited: 180), "Slow from 3 minutes")
+        check(FirstRunBrain.checking.footer(stalled: false) == .working("Starting Wisp…")
+              && FirstRunBrain.checking.footer(stalled: true) == .checkAgain, "The last step's footer offers Check again too")
+
+        // A stop is a stop: its words name the card's own button.
+        if case .failed(_, _, let message, true) = FirstRunBrain.from(status: status(), downloads: [task("cancelled")]) {
+            check(message == FirstRunBrain.stoppedMessage && message.contains("Resume") && !message.contains("Retry"),
+                  "Stopped: the message names Resume, the button it sits beside")
+        } else { check(false, "Cancelled reads as stopped") }
+        if case .failed(_, _, let message, false) = FirstRunBrain.from(status: status(), downloads: [task("failed")]) {
+            check(message.contains("Retry") && !message.contains("Resume"), "Failed: the message names Retry")
+        } else { check(false, "Failed reads as failed") }
+
+        // The disk warning goes with every click that starts a download.
+        check(FirstRunBrain.Footer.download.fetches && FirstRunBrain.Footer.retry.fetches
+              && !FirstRunBrain.Footer.tryAgain.fetches && !FirstRunBrain.Footer.ready.fetches
+              && !FirstRunBrain.Footer.working("Downloading · 45%").fetches, "Download, Retry, Resume, Download again")
+        check(footerOf(status(), [task("cancelled")]).fetches && footerOf(status(), [task("completed")], stalled: true).fetches
+              && !footerOf(status(), [task("completed")]).fetches && !footerOf(status(), [task("downloading")]).fetches,
+              "Resume and a stuck Download again warn; a download under way or finishing doesn't")
+
+        // Exactly one default action per state: the card's when it waits on a click.
+        let returnCases: [(SetupStatus, [SetupGuideModel.DownloadTask], Bool, Bool)] = [
+            (status(), [], false, true),
+            (status(), [task("failed")], false, true),
+            (status(), [task("cancelled")], false, true),
+            (status(), [task("completed")], false, false),
+            (status(), [task("completed")], true, true),
+            (status(installed: [gemma]), [], false, false),
+            (status(installed: [gemma]), [], true, true),
+            (status(), [task("downloading")], false, false),
+            (status(ready: true), [], false, false),
+            (status(available: false), [], false, false),
+        ]
+        for (s, tasks, stalled, card) in returnCases {
+            check(FirstRunBrain.from(status: s, downloads: tasks).cardTakesReturn(stalled: stalled) == card,
+                  "Return goes to \(card ? "the card" : "Continue") for \(FirstRunBrain.from(status: s, downloads: tasks))")
+        }
+        check(FirstRunBrain.offered(model: gemma, label: "Gemma 4 E4B").cardTakesReturn(stalled: false),
+              "An offered model: Return is its Use button, not Continue")
+        check(!FirstRunBrain.checking.cardTakesReturn(stalled: false) && FirstRunBrain.checking.cardTakesReturn(stalled: true),
+              "A slow service: Return is Check again, never a skip past the step")
+        check(!FirstRunBrain.startingEngine.cardTakesReturn(stalled: false)
+              && FirstRunBrain.startingEngine.cardTakesReturn(stalled: true),
+              "A start that stalled: Return is the card's Try again, never a skip past the step")
+
+        // Remote-only: step 1 says there is nothing to download, and nothing about a local model.
+        let remoteHeading = FirstRunBrain.welcomeSubtitle(remoteOnly: true)
+        check(remoteHeading.contains("nothing to download") && !remoteHeading.contains("runs on this Mac")
+              && !remoteHeading.contains("download that model"), "Remote-only: no download, no local-model claim")
+        check(FirstRunBrain.welcomeSubtitle(remoteOnly: false).contains("download that model once"),
+              "A local setup still hears about its one download")
+
         // Return on step 1 belongs to Download/Retry only while one is waiting.
         check(FirstRunBrain.from(status: status(), downloads: []).waitsForDownloadClick, "Download waits for its click")
         check(FirstRunBrain.from(status: status(), downloads: [task("failed")]).waitsForDownloadClick, "Retry waits for its click")
@@ -301,7 +483,7 @@ struct FirstRunSetupChecks {
             FirstRunBrain.from(status: s, downloads: tasks).footer(stalled: failed)
         }
         check(footer(nil) == .working("Starting Wisp…"), "Service still starting")
-        check(footer(status(running: false)) == .working("Starting the engine…"), "Engine starting")
+        check(footer(status(running: false)) == .working("Getting Wisp ready…"), "Engine starting")
         check(footer(status(running: false), failed: true) == .tryAgain, "Engine start failed: Try again")
         check(footer(status()) == .download, "Never downloaded: Download")
         check(footer(status(), [task("failed")]) == .retry && footer(status(), [task("cancelled")]) == .retry, "Stopped: Retry")
@@ -366,15 +548,15 @@ struct FirstRunSetupChecks {
                 == "2.5 of 5.5 GB · 10 MB/s · about 5 minutes left", "Notch: size, speed and time left")
         check(NotchModelOffer.progressLine(doneGb: 2.5, totalGb: 5.5, speed: "10 MB/s", secondsLeft: 300, stalled: true)
                 == "2.5 of 5.5 GB · No progress — check your connection", "Notch: stalled after 30 s")
-        check(NotchModelOffer.stoppedDetail(paused: true, engineMessage: "x") == "Resume picks up where it left off."
-              && NotchModelOffer.stoppedDetail(paused: false, engineMessage: nil) == "Try again picks up where it left off."
+        check(NotchModelOffer.stoppedDetail(paused: true, engineMessage: "x") == "Resume starts it again."
+              && NotchModelOffer.stoppedDetail(paused: false, engineMessage: nil) == "Try again starts it again."
               && NotchModelOffer.stoppedDetail(paused: false, engineMessage: "Disk full.")
-                 == "Disk full. Try again picks up where it left off.", "Notch: a stop says what its button does")
+                 == "Disk full. Try again starts it again.", "Notch: a stop says what its button does")
         check(NotchModelOffer.listingWait == 30, "Notch: Download again after the same 30 s as the window")
 
         // Paused and failed downloads are told apart.
         if case .failed(_, _, _, let paused) = FirstRunBrain.from(status: status(), downloads: [task("cancelled")]) {
-            check(paused, "Cancelled: Download paused")
+            check(paused, "Cancelled: Download stopped")
         }
         if case .failed(_, _, _, let paused) = FirstRunBrain.from(status: status(), downloads: [task("failed")]) {
             check(!paused, "Failed: Download failed")
@@ -401,11 +583,30 @@ struct FirstRunSetupChecks {
               "Plain model name")
 
         // The tour teaches only shortcuts Wisp really holds, and examples that can work.
-        check(FirstRunSetupView.shortcutsLine(ask: true, search: true).hasPrefix("⌥ Space to ask"), "Both keys")
-        check(!FirstRunSetupView.shortcutsLine(ask: false, search: true).hasPrefix("⌥ Space to ask")
-              && FirstRunSetupView.shortcutsLine(ask: false, search: true).contains("top of the screen"),
+        check(FirstRunSetupView.shortcutsLine(ask: true, voice: true) == "⌥ Space to ask  ·  ⌥ ⇧ Space to ask by voice",
+              "Both keys: ask, and ask by voice")
+        check(!FirstRunSetupView.shortcutsLine(ask: false, voice: true).hasPrefix("⌥ Space to ask")
+              && FirstRunSetupView.shortcutsLine(ask: false, voice: true).contains("top of the screen"),
               "Another app owns ⌥Space: point at the top of the screen instead")
-        check(!FirstRunSetupView.shortcutsLine(ask: true, search: false).contains("⌘ ⇧ F"), "No ⌘⇧F when it isn't Wisp's")
+        check(!FirstRunSetupView.shortcutsLine(ask: true, voice: false).contains("voice"), "No voice line when it isn't Wisp's")
+        for (ask, voice) in [(true, true), (true, false), (false, true), (false, false)] {
+            let line = FirstRunSetupView.shortcutsLine(ask: ask, voice: voice)
+            check(!line.contains("⌘ ⇧ F") && !line.lowercased().contains("search"), "Smart Search is retired: never taught")
+        }
+        // The live check on the last step: invite, then confirm once ⌥Space really opened Ask.
+        check(FirstRunSetupView.shortcutTry(registered: true, pressed: false) == "Try it now: press ⌥ Space."
+              && FirstRunSetupView.shortcutTry(registered: true, pressed: true) == "That's it — ⌥ Space works."
+              && FirstRunSetupView.shortcutTry(registered: false, pressed: false) == nil
+              && FirstRunSetupView.shortcutTry(registered: false, pressed: true) == nil,
+              "Try it now, then That's it; nothing when another app owns ⌥Space")
+        // Open Wisp when you log in: on only once macOS holds the request; approval explained.
+        check(!LaunchAtLogin.isOn(.notRegistered) && !LaunchAtLogin.isOn(.notFound)
+              && LaunchAtLogin.isOn(.enabled) && LaunchAtLogin.isOn(.requiresApproval), "The switch follows macOS's status")
+        check(LaunchAtLogin.note(.requiresApproval)?.contains("System Settings › General › Login Items") == true
+              && LaunchAtLogin.note(.enabled) == nil && LaunchAtLogin.note(.notRegistered) == nil,
+              "Waiting for approval says where; otherwise nothing")
+        check(LaunchAtLogin.problem(turningOn: true).contains("Login Items")
+              && LaunchAtLogin.problem(turningOn: false).contains("Login Items"), "A failure says where to do it by hand")
         check(FirstRunSetupView.tabLines.map(\.tab) == ["Ask", "Brief", "Day"], "The tabs in the notch's order")
         for style in [SurfaceLayout.Style.notch, .menuBar, .floating] {
             check(FirstRunSetupView.findLine(style).contains("menu bar"), "Every display names the menu bar icon")
@@ -453,11 +654,78 @@ struct FirstRunSetupChecks {
         // Messages: its own Automation row, so the first send from Ask isn't the
         // moment macOS asks. Mail & Notes keeps its own targets and its own answer.
         check(FirstRunPermissions.Item.allCases == [.calendar, .reminders, .mail, .messages, .fullDiskAccess,
-                                                    .contacts, .notifications], "Messages sits after Mail & Notes")
+                                                    .contacts, .notifications, .screenRecording, .accessibility],
+              "Messages sits after Mail & Notes; Screen Recording and Accessibility come last")
         check(FirstRunPermissions.messagesAutomationTargets == ["com.apple.MobileSMS"], "Messages asks about Messages only")
         check(FirstRunPermissions.automationTargets == ["com.apple.mail", "com.apple.Notes"]
               && Set(FirstRunPermissions.automationTargets).isDisjoint(with: FirstRunPermissions.messagesAutomationTargets),
               "Mail & Notes' targets are unchanged and never include Messages")
+        // Asking opens the apps only for a moment: closed again unless the person was handed them.
+        check(FirstRunPermissions.quitsAfterAsking(launchedByWisp: true, isHidden: true, isActive: false),
+              "Opened by Wisp, still hidden and not in use: closed after asking")
+        check(!FirstRunPermissions.quitsAfterAsking(launchedByWisp: false, isHidden: true, isActive: false),
+              "Already open before Wisp asked: never closed")
+        check(!FirstRunPermissions.quitsAfterAsking(launchedByWisp: true, isHidden: false, isActive: false)
+              && !FirstRunPermissions.quitsAfterAsking(launchedByWisp: true, isHidden: true, isActive: true),
+              "Shown or brought forward while the prompt was up: left open")
+        // A closed Mail or Notes (procNotFound) is "can't say": it keeps the last
+        // definite answer and never reads as a removed permission.
+        let noProc = OSStatus(procNotFound)
+        check(FirstRunPermissions.automationRead([noProc, noProc]) == .unknown
+              && FirstRunPermissions.automationRead([noErr, noProc]) == .unknown
+              && FirstRunPermissions.automationRead([]) == .unknown, "A closed app can't be read")
+        check(FirstRunPermissions.automationRead([noErr, noErr]) == .granted
+              && FirstRunPermissions.automationRead([noErr]) == .granted, "Every target answering allowed is granted")
+        check(FirstRunPermissions.automationRead([noErr, OSStatus(errAEEventNotPermitted)]) == .denied
+              && FirstRunPermissions.automationRead([noProc, OSStatus(errAEEventNotPermitted)]) == .denied,
+              "A running target refusing (-1743) is denied, closed or not for the other")
+        check(FirstRunPermissions.automationRead([noErr, OSStatus(errAEEventWouldRequireUserConsent)]) == .notAsked,
+              "A running target with no answer (-1744) is not asked")
+        for stored in [FirstRunPermissions.AutomationAnswer.allowed, .denied, .reset, nil] {
+            let kept = FirstRunPermissions.resolveAutomation(.unknown, stored: stored)
+            check(kept.stored == stored, "procNotFound never changes what is remembered")
+        }
+        check(FirstRunPermissions.resolveAutomation(.unknown, stored: .allowed).state == .allowed
+              && FirstRunPermissions.resolveAutomation(.unknown, stored: .denied).state == .notAllowed
+              && FirstRunPermissions.resolveAutomation(.unknown, stored: nil).state == .notAsked
+              && FirstRunPermissions.resolveAutomation(.unknown, stored: .reset).state == .notAsked,
+              "A closed app shows the last answer, Not set when there was none")
+        check(FirstRunPermissions.resolveAutomation(.denied, stored: .allowed) == (.notAllowed, .denied),
+              "-1743 flips the remembered answer to denied")
+        check(FirstRunPermissions.resolveAutomation(.granted, stored: .denied) == (.allowed, .allowed)
+              && FirstRunPermissions.resolveAutomation(.granted, stored: nil) == (.allowed, .allowed),
+              "A successful probe flips it to granted")
+        check(FirstRunPermissions.resolveAutomation(.notAsked, stored: .allowed) == (.notAsked, .reset)
+              && FirstRunPermissions.resolveAutomation(.notAsked, stored: .reset) == (.notAsked, .reset)
+              && FirstRunPermissions.resolveAutomation(.notAsked, stored: nil) == (.notAsked, nil),
+              "A grant macOS dropped reads Not set and is remembered as reset, so the row can say why")
+        // Persisted: survives the window closing and Wisp relaunching (a fresh read of the same defaults).
+        // An in-memory store: a UserDefaults suite would leave a .plist in ~/Library/Preferences.
+        final class Answers: AutomationAnswerStore {
+            var values: [String: Any] = [:]
+            func string(forKey defaultName: String) -> String? { values[defaultName] as? String }
+            func set(_ value: Any?, forKey defaultName: String) { values[defaultName] = value }
+            func removeObject(forKey defaultName: String) { values[defaultName] = nil }
+        }
+        let suite = Answers()
+        check(FirstRunPermissions.recordAutomation(.granted, item: .mail, defaults: suite) == .allowed, "Granted")
+        check(FirstRunPermissions.recordAutomation(.unknown, item: .mail, defaults: suite) == .allowed
+              && FirstRunPermissions.storedAutomation(.mail, defaults: suite) == .allowed,
+              "Mail closed afterwards: still Allowed, still remembered")
+        check(FirstRunPermissions.storedAutomation(.messages, defaults: suite) == nil
+              && FirstRunPermissions.recordAutomation(.unknown, item: .messages, defaults: suite) == .notAsked,
+              "Messages keeps its own answer")
+        check(FirstRunPermissions.recordAutomation(.notAsked, item: .mail, defaults: suite) == .notAsked
+              && FirstRunPermissions.storedAutomation(.mail, defaults: suite) == .reset,
+              "macOS dropping the grant is remembered as reset")
+        check(FirstRunPermissions.recordAutomation(.denied, item: .mail, defaults: suite) == .notAllowed
+              && FirstRunPermissions.storedAutomation(.mail, defaults: suite) == .denied, "Then refused")
+        let before = suite.values
+        _ = FirstRunPermissions.recordAutomation(.unknown, item: .mail, defaults: suite)
+        check(suite.values.count == before.count && suite.string(forKey: FirstRunPermissions.automationKey(.mail)) == "denied",
+              "A read that can't say (Mail closed) never writes, so a poll can't undo an answer just recorded")
+        check(FirstRunPermissions.automationKey(.mail).hasPrefix("wisp."),
+              "Remembered under wisp.*, so /resetwisp clears it with the other markers")
         check(FirstRunPermissions.label(.messages, .notAsked) == "Not set"
               && FirstRunPermissions.label(.messages, .allowed) == "Allowed"
               && FirstRunPermissions.label(.messages, .notAllowed) == "Denied", "Messages: Not set, Allowed, Denied")
@@ -468,8 +736,85 @@ struct FirstRunSetupChecks {
               == "All optional · 2 still off", "Counts only what could still be switched on")
         check(FirstRunPermissions.summary([.calendar: .allowed, .fullDiskAccess: .notOnThisMac]) == "All optional · nothing left off",
               "Nothing left")
+        // Contacts and Full Disk Access: no dead end on a Mac with nothing for Full Disk Access to read.
+        let everyOther: [FirstRunPermissions.Item: FirstRunPermissions.State] = [
+            .calendar: .allowed, .reminders: .allowed, .mail: .allowed, .messages: .allowed, .notifications: .allowed,
+            .screenRecording: .allowed, .accessibility: .allowed]
+        var noData = everyOther
+        noData[.fullDiskAccess] = .notOnThisMac
+        noData[.contacts] = .notAsked
+        check(!FirstRunPermissions.contactsWaits(noData, messagesReadable: false),
+              "Full Disk Access not needed here: Contacts has its own Allow, never After Full Disk Access")
+        check(FirstRunPermissions.summary(noData, messagesReadable: false) == "All optional · 1 still off"
+              && !FirstRunPermissions.allAnswered(noData, messagesReadable: false),
+              "...and until it is answered it is the one still off")
+        noData[.contacts] = .allowed
+        check(FirstRunPermissions.allAnswered(noData, messagesReadable: false)
+              && FirstRunPermissions.summary(noData, messagesReadable: false) == "All optional · nothing left off",
+              "Contacts allowed on its own: the step ticks and nothing is left off")
+        var fdaOff = everyOther
+        fdaOff[.fullDiskAccess] = .notAllowed
+        fdaOff[.contacts] = .notAsked
+        check(FirstRunPermissions.contactsWaits(fdaOff, messagesReadable: false),
+              "Full Disk Access still off with Messages unread: Contacts waits for it")
+        check(FirstRunPermissions.summary(fdaOff, messagesReadable: false) == "All optional · 1 still off",
+              "A waiting Contacts isn't counted on top of Full Disk Access")
+        check(FirstRunPermissions.allAnswered(fdaOff, messagesReadable: false),
+              "A waiting Contacts follows Full Disk Access's answer, so the step can still tick")
+        var fdaOn = fdaOff
+        fdaOn[.fullDiskAccess] = .allowed
+        check(!FirstRunPermissions.contactsWaits(fdaOn, messagesReadable: false)
+              && !FirstRunPermissions.contactsWaits(fdaOff, messagesReadable: true),
+              "Full Disk Access on (even with no Messages), or Messages readable: Contacts is asked on its own")
+        check(!FirstRunPermissions.contactsWaits([.contacts: .allowed, .fullDiskAccess: .notAllowed], messagesReadable: false),
+              "Contacts already answered never waits")
         check(FirstRunSetupView.settingsPane(.fullDiskAccess) == Permissions.fullDiskAccessPane
               && Permissions.fullDiskAccessPane.hasSuffix("Privacy_AllFiles"), "Full Disk Access opens its own page")
+
+        // Screen Recording and Accessibility: rows of their own, asked once, then System Settings.
+        check(FirstRunPermissions.promptOnceState(granted: true, promptedBefore: false) == .allowed
+              && FirstRunPermissions.promptOnceState(granted: true, promptedBefore: true) == .allowed,
+              "Trusted by macOS: Allowed, asked here or not")
+        check(FirstRunPermissions.promptOnceState(granted: false, promptedBefore: false) == .notAsked,
+              "Never asked: Not set, with Allow")
+        check(FirstRunPermissions.promptOnceState(granted: false, promptedBefore: true) == .notAllowed
+              && FirstRunPermissions.label(.screenRecording, .notAllowed) == "Needs System Settings"
+              && FirstRunPermissions.label(.accessibility, .notAllowed) == "Needs System Settings",
+              "Asked and still off: Needs System Settings (macOS asks only once)")
+        check(FirstRunPermissions.label(.screenRecording, .notAsked) == "Not set"
+              && FirstRunPermissions.label(.accessibility, .allowed) == "Allowed", "Not set and Allowed as elsewhere")
+        check([.fullDiskAccess, .screenRecording, .accessibility].allSatisfy(FirstRunPermissions.settingsThroughRequest)
+              && ![.calendar, .reminders, .mail, .messages, .contacts, .notifications]
+                    .contains(where: FirstRunPermissions.settingsThroughRequest),
+              "Open System Settings goes through the row's request only where macOS can't ask again")
+        check(FirstRunSetupView.settingsPane(.screenRecording).hasSuffix("Privacy_ScreenCapture")
+              && FirstRunSetupView.settingsPane(.accessibility).hasSuffix("Privacy_Accessibility"),
+              "Each opens its own page")
+        let screenBase = "So Wisp can look at your screen when you ask about it."
+        let screenRelaunch = FirstRunPermissions.screenRecordingRelaunchNote
+        let screenDenied = FirstRunPermissions.screenRecordingDetail(.notAllowed)
+        check(FirstRunPermissions.screenRecordingDetail(.notAsked) == screenBase + " " + screenRelaunch
+              && screenDenied.hasSuffix(screenRelaunch) && screenDenied.contains("switch on Wisp")
+              && FirstRunPermissions.screenRecordingDetail(.allowed) == screenBase,
+              "Screen Recording says it works once Wisp quits and reopens, until it's on")
+        check(FirstRunPermissions.screenRecordingRelaunchNote.contains("quits and reopens")
+              && FirstRunPermissions.screenRecordingRelaunchNote.contains("picks up right here"),
+              "...and that setup picks up here")
+        check(FirstRunPermissions.accessibilityDetail(.notAsked) == "So Wisp can read the window you're asking about."
+              && FirstRunPermissions.accessibilityDetail(.notAllowed).contains("switch on Wisp")
+              && !FirstRunPermissions.accessibilityDetail(.notAllowed).contains("Smart Search"),
+              "Accessibility: what it's for, and where to switch it on")
+        var extrasOff = everyOther
+        extrasOff[.fullDiskAccess] = .allowed
+        extrasOff[.contacts] = .allowed
+        extrasOff[.screenRecording] = .notAsked
+        extrasOff[.accessibility] = .notAllowed
+        check(FirstRunPermissions.summary(extrasOff, messagesReadable: true) == "All optional · nothing left off"
+              && FirstRunPermissions.allAnswered(extrasOff, messagesReadable: true),
+              "Screen Recording and Accessibility sit under More access: never counted, never hold the step open")
+        check(FirstRunPermissions.Item.core.allSatisfy { !$0.isExtra }
+              && FirstRunPermissions.Item.allCases.filter(\.isExtra) == [.screenRecording, .accessibility],
+              "Only Screen Recording and Accessibility are extras")
 
         // Full Disk Access: a row of its own, on whether Messages, Mail or Notes data
         // really reads (Automation alone only helps while those apps are open).
@@ -487,6 +832,173 @@ struct FirstRunSetupChecks {
         check(FirstRunPermissions.fullDiskAccessState(home: scratch) == .allowed, "Readable Mail folder")
         try? FileManager.default.removeItem(at: scratch)
 
-        print("PASS: first-run setup — show and resume rules, 11 step-1 states, download click, time left, tour hints, readers never ask, ready notification, remote-only, reopen cap, Full Disk Access")
+        dev8OnboardingChecks()
+
+        // /resetwisp brings all of the above back to a fresh Mac (tests/WispResetChecks.swift).
+        WispResetChecks.run()
+        print("PASS: first-run setup — model gate, Move to Applications, readers re-post when the service comes up, show and resume rules, 11 step-1 states, download click, time left, tour hints, readers never ask, ready notification, remote-only, reopen cap, Full Disk Access, Contacts on its own, slow service, one Return per state, open at login")
+    }
+
+    /// dev8 (2026-10-29 fresh-install test): the model gate, How to use's download
+    /// line, Move to Applications, and the readers that re-post when the service comes up.
+    static func dev8OnboardingChecks() {
+        // Wisp waits for its model only while setup is under way.
+        check(FirstRunSetup.gatesUse(setupUnfinished: true, canAnswer: nil), "Service not answered yet: held")
+        check(FirstRunSetup.gatesUse(setupUnfinished: true, canAnswer: false), "Downloading: held")
+        check(!FirstRunSetup.gatesUse(setupUnfinished: true, canAnswer: true), "Model ready: open")
+        check(!FirstRunSetup.gatesUse(setupUnfinished: false, canAnswer: false),
+              "Someone already set up is never held back, even if the model stops answering")
+        check(!FirstRunSetup.gatesUse(setupUnfinished: true, canAnswer: false,
+                                      brain: .unavailable("No model Wisp can download fits this Mac.")),
+              "A Mac that can't get a model at all is never held back: the wait would never end")
+        check(FirstRunSetup.gatesUse(setupUnfinished: true, canAnswer: false,
+                                     brain: .failed(model: "m", label: "Gemma", message: "Network", paused: false)),
+              "A failed download can be retried: still held")
+
+        // How to use's line: only what is known.
+        check(FirstRunBrain.progressLine(doneGb: 2.5, totalGb: 5.5, speed: "10 MB/s", secondsLeft: 360)
+              == "2.5 of 5.5 GB · 10 MB/s · about 6 minutes left", "Size, speed and time left")
+        check(FirstRunBrain.progressLine(doneGb: 0, totalGb: 5.5, speed: nil, secondsLeft: nil) == "0.0 of 5.5 GB",
+              "Nothing moving yet: no speed, no guess")
+        check(FirstRunSetup.notDownloadingTitle(.download) == "The model hasn't started downloading"
+              && FirstRunSetup.notDownloadingTitle(.working("Starting Wisp…")) == "Starting Wisp…",
+              "How to use names what the model is doing when it isn't downloading")
+        check(FirstRunSetupView.helpsYourDay.map(\.title).prefix(3) == ["Brief", "Day", "Ask"],
+              "What Wisp is for starts with the three tabs")
+        check(!FirstRunSetupView.helpsYourDay.contains { $0.line.contains("never leave") },
+              "No absolute local claim: a cloud model is the person's choice")
+
+        // Waiting out the download (item 6): a ring on the menu bar icon, a sample tour,
+        // and "Wisp is ready" even when the setup window was left behind another app.
+        let downloading = FirstRunBrain.downloading(model: gemma, label: "Gemma 4 E4B", fraction: 0.47, doneGb: 2.6,
+                                                    totalGb: 5.5, secondsLeft: 300)
+        check(FirstRunSetup.menuBarProgress(downloading) == 0.45, "The ring moves in 5% steps")
+        check(FirstRunSetup.menuBarProgress(downloading, polling: false) == nil,
+              "Setup stopped reading the download: no ring that could stick on a stale reading")
+        check(FirstRunSetup.menuBarProgress(.ready(label: "Gemma 4 E4B")) == nil
+              && FirstRunSetup.menuBarProgress(.checking) == nil, "No ring when nothing downloads")
+        check(FirstRunSetup.menuBarProgressTip(0.45).hasPrefix("Wisp is downloading its model · 45%"), "Tooltip")
+        check(FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: false,
+                                          wispFrontmost: false, onPermissions: false),
+              "Setup left behind another app while the model downloads: notify")
+        check(!FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: false,
+                                           wispFrontmost: false, onPermissions: true),
+              "On Permissions, System Settings in front is part of setup: no notification")
+        check(!FirstRunSetup.notifiesReady(promised: true, windowUp: true, windowMinimized: false,
+                                           wispFrontmost: true, onPermissions: false),
+              "Looking at setup: no notification")
+        check(FirstRunSetup.menuBarProgressTitle(0.45) == "Downloading 45%"
+              && FirstRunSetup.menuBarProgressMenuLine(0.45).hasPrefix("Model downloading (45%)"),
+              "The menu bar says in words that the model isn't downloaded yet")
+        check(!FirstRunSetup.owesFirstBrief(after: .brain) && !FirstRunSetup.owesFirstBrief(after: .permissions)
+              && FirstRunSetup.owesFirstBrief(after: .google) && FirstRunSetup.owesFirstBrief(after: .tour),
+              "The first Brief is owed once Permissions is behind the person")
+        check(OnboardingTour.pages.map(\.tab) == ["Brief", "Day", "Ask"], "The tour follows the notch's tabs")
+        check(OnboardingTour.step(0, by: -1) == 0 && OnboardingTour.step(2, by: 1) == 2
+              && OnboardingTour.step(2, by: -2) == 0 && OnboardingTour.position(1) == "2 of 3",
+              "Back and Next stay on the pages; Start over goes to the first")
+
+        // Change Setup… in the menu bar for two days after setup; the notch keeps a Setup row.
+        let finished = Date(timeIntervalSince1970: 1_800_000_000)
+        check(FirstRunSetup.offersChangeSetup(finishing: false, doneAt: finished, now: finished.addingTimeInterval(60)),
+              "Just set up: Change Setup… is there")
+        check(FirstRunSetup.offersChangeSetup(finishing: false, doneAt: finished,
+                                              now: finished.addingTimeInterval(2 * 24 * 3600 - 1)), "Still there at 47:59")
+        check(!FirstRunSetup.offersChangeSetup(finishing: false, doneAt: finished,
+                                               now: finished.addingTimeInterval(2 * 24 * 3600)), "Gone after two days")
+        check(!FirstRunSetup.offersChangeSetup(finishing: true, doneAt: finished, now: finished),
+              "Never beside Finish Setup…")
+        check(!FirstRunSetup.offersChangeSetup(finishing: false, doneAt: nil, now: finished),
+              "Set up before the date was kept: not offered")
+        check(!FirstRunSetup.offersChangeSetup(finishing: false, doneAt: finished, now: finished.addingTimeInterval(-60)),
+              "A clock set back doesn't reopen it")
+
+        // Move to Applications: asked only where a download lands.
+        let home = "/Users/sam"
+        typealias Place = MoveToApplications.Place
+        let places: [(String, Bool, Place)] = [
+            ("/Applications/Wisp.app", false, .applications),
+            ("/Users/sam/Applications/Wisp.app", false, .applications),
+            ("/Users/sam/Downloads/Wisp.app", false, .downloaded),
+            ("/Users/sam/Downloads/Wisp-0.5.0/Wisp.app", false, .downloaded),
+            ("/Users/sam/Desktop/Wisp.app", false, .downloaded),
+            ("/Volumes/Wisp/Wisp.app", false, .diskImage),
+            ("/private/var/folders/x/AppTranslocation/ABC/d/Wisp.app", false, .translocated),
+            ("/Users/sam/Downloads/Wisp.app", true, .translocated),
+            ("/Users/sam/code/wisp/.build/Wisp.app", false, .elsewhere),
+        ]
+        for (path, translocated, want) in places {
+            check(MoveToApplications.place(bundlePath: path, home: home, translocated: translocated) == want, path)
+        }
+        check(MoveToApplications.place(bundlePath: "/Users/sam/Downloads/Wisp.app", home: "/Users/sam/", translocated: false)
+              == .downloaded, "A home with a trailing slash")
+        func offers(_ place: Place, declined: Bool = false, app: Bool = true, quarantined: Bool = true,
+                    preview: Bool = false) -> Bool {
+            MoveToApplications.offers(place: place, declined: declined, isAppBundle: app,
+                                      quarantined: quarantined, previewBuild: preview)
+        }
+        check(offers(.downloaded) && offers(.translocated), "A download in Downloads and macOS's temporary copy are asked")
+        check(!offers(.downloaded, declined: true), "Don't ask again holds")
+        check(!offers(.applications) && !offers(.elsewhere) && !offers(.downloaded, app: false),
+              "Already in Applications, a build folder, or not an app bundle: never asked")
+        // Release Auditor, 6c3d68d4: a build in a repo on the Desktop (no quarantine
+        // mark) or any preview build is never asked, so a move can't Trash build output
+        // or replace the re-signed local install.
+        check(!offers(.downloaded, quarantined: false), "Built on this Mac, say in ~/Desktop/MOE_Project: never asked")
+        check(!offers(.downloaded, preview: true) && !offers(.translocated, preview: true)
+              && !offers(.diskImage, preview: true), "A preview build: never asked")
+        check(offers(.diskImage, quarantined: false), "A disk image with no mark of its own is still asked")
+        check(MoveToApplications.offerDetail(place: .diskImage).hasPrefix("Wisp is running from a disk image."),
+              "The offer names a disk image")
+        check(MoveToApplications.failureDetail("x.", oldWispTrashed: false).contains("Nothing was removed")
+              && !MoveToApplications.failureDetail("x.", oldWispTrashed: true).contains("Nothing was removed")
+              && MoveToApplications.failureDetail("x.", oldWispTrashed: true).contains("is in the Trash"),
+              "A failed move says truthfully whether the old Wisp is in the Trash")
+        // A copy that stops part-way leaves no hidden staging copy behind, and says the
+        // old Wisp wasn't touched. An unreadable file makes copyItem fail mid-bundle.
+        let moveScratch = FileManager.default.temporaryDirectory.appendingPathComponent("wisp-move-\(UUID().uuidString)")
+        let source = moveScratch.appendingPathComponent("Downloads/Wisp.app")
+        let apps = moveScratch.appendingPathComponent("Applications")
+        try! FileManager.default.createDirectory(at: source.appendingPathComponent("Contents/Resources"),
+                                                 withIntermediateDirectories: true)
+        try! FileManager.default.createDirectory(at: apps, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: source.appendingPathComponent("Contents/Info.plist").path, contents: Data("a".utf8))
+        let locked = source.appendingPathComponent("Contents/Resources/locked")
+        FileManager.default.createFile(atPath: locked.path, contents: Data("b".utf8))
+        try! FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: locked.path)
+        var failure: MoveToApplications.MoveFailure?
+        do {
+            try MoveToApplications.move(from: source, original: source, target: apps.appendingPathComponent("Wisp.app"))
+        } catch let error as MoveToApplications.MoveFailure {
+            failure = error
+        } catch {}
+        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: apps.path)) ?? ["?"]
+        check(failure?.oldWispTrashed == false, "The copy failed before anything was Trashed")
+        check(leftovers.isEmpty, "No hidden .Wisp-moving copy is left in Applications: \(leftovers)")
+        check(FileManager.default.fileExists(atPath: source.path), "The download is left where it was")
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: locked.path)
+        try? FileManager.default.removeItem(at: moveScratch)
+
+        check(FirstRunSetup.heldBackLine(.retry).contains("Settings › Models")
+              && FirstRunSetup.heldBackLine(.checkAgain).contains("Check again")
+              && FirstRunSetup.heldBackLine(.working("Downloading · 4%")) == FirstRunSetup.heldBackLine,
+              "Held back with the model not on its way: the line names the way out")
+        let replace = MoveToApplications.replaceDetail(existing: "0.5.0 (3075)", this: "0.5.0 (3120)")
+        check(replace.contains("The one there is 0.5.0 (3075); this one is 0.5.0 (3120).")
+              && replace.contains("goes to the Trash") && replace.contains("stay as they are"),
+              "Replacing says both versions, the Trash, and that data stays")
+        check(MoveToApplications.replaceDetail(existing: nil, this: nil).hasPrefix("Replace it"), "Unknown versions")
+        check(MoveToApplications.needsAdmin(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteNoPermissionError))
+              && MoveToApplications.needsAdmin(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteUnknownError,
+                    userInfo: [NSUnderlyingErrorKey: NSError(domain: NSPOSIXErrorDomain, code: Int(EACCES))]))
+              && !MoveToApplications.needsAdmin(NSError(domain: NSCocoaErrorDomain, code: NSFileWriteOutOfSpaceError)),
+              "Only a permission refusal reads as needing an administrator")
+
+        // Reminders after macOS's Quit & Reopen: every reading source re-posts when the
+        // service comes up, since it keeps their last sync in memory only.
+        check(Set(AppDelegate.resyncedWhenReachable).isSuperset(of: [.calendar, .reminders, .fullDiskAccess]),
+              "Calendar, Reminders and the Full Disk Access readers re-post on reconnect")
+        check(!AppDelegate.resyncedWhenReachable.contains(where: \.isExtra),
+              "Nothing that only sends or looks at the screen")
     }
 }

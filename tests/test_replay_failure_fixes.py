@@ -465,7 +465,7 @@ def test_tomorrow_forecast_does_not_include_today(monkeypatch):
         "weather": [{"date": "2026-09-08", "maxtempF": "99"}, {"date": "2026-09-09", "maxtempF": "70"}]})
     monkeypatch.setattr(web_tools, "_yahoo_get", AsyncMock(return_value=response))
     real_resolve = timeranges.resolve_span
-    monkeypatch.setattr(timeranges, "resolve_span", lambda p: real_resolve(p, now=NOW))
+    monkeypatch.setattr(timeranges, "resolve_span", lambda p, **kw: real_resolve(p, now=NOW, **kw))
     result = asyncio.run(web_tools.get_weather("Dublin, CA", period="tomorrow"))
     assert "2026-09-09" in result and "2026-09-08" not in result and "now:" not in result
     assert "does not cover" in asyncio.run(web_tools.get_weather("Dublin, CA", period="this week"))
@@ -488,7 +488,7 @@ def test_calendar_tool_filters_month_boundary_and_source_kind(monkeypatch):
     monkeypatch.setattr(assistant_tools.time, "time", lambda: NOW.timestamp())
     monkeypatch.setattr(sync_status, "ensure_sources", AsyncMock(return_value={"sources": []}))
     real_resolve = timeranges.resolve_span
-    monkeypatch.setattr(timeranges, "resolve_span", lambda p: real_resolve(p, now=NOW))
+    monkeypatch.setattr(timeranges, "resolve_span", lambda p, **kw: real_resolve(p, now=NOW, **kw))
     result = asyncio.run(assistant_tools.get_upcoming(period="this month", calendar_only=True, query="move in"))
     assert "Move-in" in result and "preparation" not in result and "October" not in result
 

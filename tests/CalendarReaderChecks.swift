@@ -10,6 +10,7 @@ import Foundation
         classifyChecks()
         includeChecks()
         accessChecks()
+        paceChecks()
         print("synthetic calendar reader checks passed")
     }
 
@@ -60,6 +61,31 @@ import Foundation
         check(P.include(cancelled: false, attendees: [organizer, otherDeclined, otherDeclined]),
               "an organizer's event stays when the invitees decline")
         check(!P.include(cancelled: true, attendees: [organizer]), "an organizer's cancelled event is dropped")
+    }
+
+    // Calendar is read when EventKit says it changed and on a heartbeat. The heartbeat
+    // has to beat the backend's freshness windows or the planner calls Calendar
+    // "not current" between reads (service/assistant/today.py source_health: 180 s;
+    // the behavior receipt in service/assistant/scheduler.py: 1200 s).
+    static func paceChecks() {
+        typealias P = NativeSyncPace
+        check(P.heartbeat == 120, "the heartbeat is two minutes")
+        check(P.heartbeat + 60 <= 180, "a heartbeat plus its read, post, timer slack and App Nap stays inside the planner's 180 s window")
+        check(P.heartbeat < 1200, "and inside the behavior receipt's 1200 s window")
+        check(P.heartbeat > 60, "it is slower than the old one-minute timer")
+        check(P.heartbeatInterval(authorized: true) == P.heartbeat, "with access Calendar waits the heartbeat")
+        check(P.heartbeatInterval(authorized: false) == 60,
+              "without access the cheap status post keeps its one-minute pace, so a new grant is seen")
+        // A change waits for the burst to settle, and reads are at least a minute apart.
+        check(P.changeDelay(lastSyncStartedAt: nil, now: 1000) == P.changeDebounce, "the first change waits only the debounce")
+        check(P.changeDelay(lastSyncStartedAt: 100, now: 1000) == P.changeDebounce, "a long-quiet store reads after the debounce")
+        check(P.changeDelay(lastSyncStartedAt: 1000, now: 1000) == P.changeFloor, "a read that just began holds the next one a minute")
+        check(P.changeDelay(lastSyncStartedAt: 1000, now: 1010) == P.changeFloor - 10, "the floor counts down")
+        check(P.changeDelay(lastSyncStartedAt: 1000, now: 1000 + P.changeFloor - 1) == P.changeDebounce,
+              "the debounce is the least wait")
+        check(P.changeDelay(lastSyncStartedAt: 2000, now: 1000) == P.changeDebounce,
+              "a clock that moved back does not stall reads")
+        check(P.changeDebounce > 0 && P.changeFloor >= 60, "never faster than the old timer")
     }
 
     // Calendar uses Reminders' permission rules, with its own name, Settings page

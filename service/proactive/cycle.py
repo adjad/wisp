@@ -17,9 +17,12 @@ Rules:
 - With no model available the cycle still works by rule: calendar, reminders
   and Notes to-dos are deterministic, and each item's own verbatim ask stands
   in for its triage, so a model outage never hides a to-do.
-- About hourly, while the user is away from the keyboard (HID idle ≥ 5 min),
-  the whole Brief regenerates: a forced cycle, then every mail/texts overview
-  (idle_refresh). Never during a turn; a failed idle probe counts as "in use".
+- About hourly, while the user is away from the keyboard (HID idle ≥ 10 min,
+  the same "away" the background GPU cap uses), the whole Brief regenerates:
+  a forced cycle, then every mail/texts overview (idle_refresh). Only when its
+  inputs changed or the day rolled over, and only when the user has been back
+  since the last one (nobody has seen it otherwise). Never during a turn; a
+  failed idle probe counts as "in use".
 - Auto-add (autoadd.py) runs last, in this background cycle only and never
   once a turn has started. Off by default, a missed, time-sensitive event or
   deadline becomes a tap-to-add card; with `proactive_auto_add: true` it goes
@@ -37,7 +40,7 @@ import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from service.proactive import guard, handled, judge as judge_mod, prepare as prepare_mod, sources, triage
+from service.proactive import guard, handled, judge as judge_mod, prepare as prepare_mod, sources, stable, triage
 from service.proactive.prepare import todo_id
 
 JUDGE_EVERY_S = 30 * 60
@@ -47,9 +50,13 @@ MAX_THREADS = 30
 _MAIL_GIST_HOLD_S = 90
 _PATIENT_WAIT_S = 600
 # The hourly idle refresh: at most once per IDLE_REFRESH_S, at the first tick
-# the machine has seen no keyboard/mouse input for IDLE_AFTER_S.
+# the machine has seen no keyboard/mouse input for IDLE_AFTER_S. Ten minutes,
+# the same "away" as the background GPU cap (power_tier.AWAY_AFTER_S), so the
+# refresh never runs uncapped in the minutes before the cap applies.
 IDLE_REFRESH_S = 55 * 60
-IDLE_AFTER_S = 5 * 60
+IDLE_AFTER_S = 10 * 60
+# The shortest wait before the idle probe runs again after a refresh was not run.
+_IDLE_RETRY_MIN_S = 30
 _IDLE_PROBE_TIMEOUT_S = 2.0
 
 _status = {"state": "idle", "phase": "", "progress": {"done": 0, "total": 0}, "account": None,
@@ -173,7 +180,7 @@ def todo_from_item(item: dict, card_ids: dict[str, str]) -> dict:
             "account": item.get("account", ""), "who": item.get("who", ""), "quote": item.get("quote", ""),
             "due_ts": item.get("due_ts"), "due_label": item.get("due_label", ""), "kind": item["kind"],
             "done": False, "card_id": card_ids.get(item["primary"]),
-            "fingerprints": list(item.get("fingerprints") or [])}
+            "fingerprints": list(item.get("fingerprints") or []), "asks": list(item.get("asks") or [])}
 
 
 def item_fingerprint(text, ts) -> str:
@@ -187,14 +194,18 @@ def item_fingerprint(text, ts) -> str:
     return hashlib.sha256((text + "\x1f" + stamp).encode()).hexdigest()[:24]
 
 
-def _clearable(rows: list[dict], cleared: dict, text_key: str, ts_key: str) -> list[dict]:
+def _clearable(rows: list[dict], cleared: dict, text_key: str, ts_key: str,
+               cleared_asks: set[str] | frozenset[str] = frozenset()) -> list[dict]:
     """Each row with its ``fingerprint``, less the ones the user cleared while
-    they still read the same."""
+    they still read the same, and less the ones about an ask (stable.ask_key)
+    the user cleared: a row's wording can be rewritten by the next cycle, the
+    ask it answers does not change until someone writes again."""
     out = []
     for row in rows:
         row = {**row, "fingerprint": item_fingerprint(row.get(text_key), row.get(ts_key))}
-        if cleared.get(row.get("id")) != row["fingerprint"]:
-            out.append(row)
+        if cleared.get(row.get("id")) == row["fingerprint"] or (cleared_asks & set(row.get("asks") or [])):
+            continue
+        out.append(row)
     return out
 
 
@@ -247,6 +258,12 @@ def _survivor(item: dict, store, offline_results: dict) -> dict | None:
     if not isinstance(result, dict) or result.get("junk") or result.get("sensitive"):
         return None
     return {"item": item, "result": result}
+
+
+def _key_items(survivors: list[dict]) -> list[str]:
+    """The judge input's identity: each surviving item, its content and its
+    triage reading."""
+    return sorted(f"{s['item']['id']}:{s['item']['hash']}:{_digest(s['result'])}" for s in survivors)
 
 
 def _tkey(item: dict) -> str:
@@ -443,7 +460,8 @@ def _threads(survivors: list[dict], now: float | None = None, tz: str = "UTC") -
                     "asked": "?" in (item.get("text") or "") and bool(result.get("asks_of_me")),
                     "replied": bool(item.get("replied")),
                     "deadline": mentioned_deadline(item, now, tz),
-                    "received_ts": item.get("received_ts"), "reply_ref": item.get("reply_ref", "")})
+                    "received_ts": item.get("received_ts"), "reply_ref": item.get("reply_ref", ""),
+                    "asks": [a] if (a := stable.ask_key(item)) else []})
         if len(out) >= MAX_THREADS:
             break
     return out
@@ -551,6 +569,10 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
                             + [r.get("account") for r in sched.get("calendar", []) + sched.get("reminders", [])])
     suppressed = store.suppressed_fingerprints()
     previous = store.state()
+    items_by_id = {i["id"]: i for i in items}
+    # Never kept as a card past a sensitive or withheld reading.
+    withheld_ids = {i["id"] for i in items if i["source"] in ("mail", "messages") and (
+        triage.withheld(i) or ((store.triage_get(i["id"], _tkey(i)) or {}).get("result") or {}).get("sensitive"))}
     judged = dict(previous.get("judged") or {})
     cards_by_account = {a: [c for c in previous.get("cards") or [] if c.get("account") == a] for a in accounts}
     todos_by_account = {a: [t for t in previous.get("todos") or [] if t.get("account") == a] for a in accounts}
@@ -560,7 +582,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
     for acct in accounts:
         mine = [s for s in survivors if (s["item"].get("account") or own) == acct]
         acct_sched = _account_schedule(sched, acct, own)
-        key = _digest({"s": sorted(f"{s['item']['id']}:{s['item']['hash']}:{_digest(s['result'])}" for s in mine),
+        key = _digest({"s": _key_items(mine),
                        "c": [r["id"] for r in acct_sched["calendar"]], "r": [r["id"] for r in acct_sched["reminders"]],
                        "p": [r["id"] for r in acct_sched["past_calendar"]],
                        "x": sorted(suppressed), "day": datetime.fromtimestamp(now, ZoneInfo(tz)).date().isoformat(),
@@ -569,12 +591,23 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         last = judged.get(acct) or {}
         if not force and last.get("key") == key and now - float(last.get("at") or 0) < JUDGE_EVERY_S:
             continue
+        # What the model sees (not what the user dismissed, not the clock): when
+        # that is unchanged its earlier reply is validated again against now
+        # instead of asking the model for a ranking that may come out different.
+        rkey = _digest({"s": _key_items(mine), "c": [r["id"] for r in acct_sched["calendar"]],
+                        "r": [r["id"] for r in acct_sched["reminders"]],
+                        "p": [r["id"] for r in acct_sched["past_calendar"]],
+                        "day": datetime.fromtimestamp(now, ZoneInfo(tz)).date().isoformat()})
+        reuse = last.get("reply") if (not force and model_ok and last.get("model") and last.get("rkey") == rkey
+                                      and isinstance(last.get("reply"), str)) else None
+        captured: dict = {}
         if model_ok:
-            if not await _wait_out_turn(abort, patient):
+            if not reuse and not await _wait_out_turn(abort, patient):
                 yielded = True
                 break
             state, ranked, summary = await judge_mod.judge(mine, acct_sched, reply_fn, abort, now=now, tz=tz,
-                                                           suppressed=suppressed, allowed=allowed)
+                                                           suppressed=suppressed, allowed=allowed,
+                                                           cached_reply=reuse or None, capture=captured)
             if state == "standdown":
                 if abort():
                     yielded = True
@@ -604,9 +637,11 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
                 waiting_debug.append({"who": (entry.get("item") or {}).get("who", ""), "waiting": False,
                                       "reason": "read, under a day"})
         card_ranked = [e for e in ranked if card_due(e.get("item") or {}, now)]
+        shown = [c for c in previous.get("cards") or [] if c.get("account") == acct]
         state, cards = await prepare_mod.prepare(card_ranked, acct_sched, reply_fn if model_ok else _offline, abort,
                                                  now=now, tz=tz, linked=linked, resolve_handle=resolve or resolve_handle,
-                                                 allowed=allowed, freeze=freeze, debug=waiting_debug)
+                                                 allowed=allowed, freeze=freeze, debug=waiting_debug,
+                                                 drafts=stable.reusable_drafts(shown))
         debug_by_account[acct] = waiting_debug
         if state == "standdown":
             if abort():
@@ -615,8 +650,15 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
             state, cards = await prepare_mod.prepare(card_ranked, acct_sched, _offline, abort, now=now, tz=tz,
                                                      linked=linked, resolve_handle=resolve or resolve_handle,
                                                      allowed=allowed, freeze=freeze)
-        dismissed = set(store.decisions()["dismissed"]) | set(store.decisions()["fired"])
-        cards = [c for c in cards if c["id"] not in dismissed]
+        decided = store.decisions()
+        dismissed = set(decided["dismissed"]) | set(decided["fired"])
+        suppressed_now = store.suppressed_fingerprints()
+        cards = [c for c in cards if not stable.is_gone(c, dismissed, suppressed_now)]
+        # A card already shown stays until its ask is handled, dismissed or
+        # changed; this cycle's cards are added after it, never reshuffled.
+        cards = stable.carry(shown, cards, items=items_by_id, withheld=withheld_ids, gone=dismissed,
+                             suppressed=suppressed_now, done_todos=set(decided["done"]), now=now,
+                             since=float(previous.get("as_of") or now), limit=prepare_mod.MAX_CARDS)
         for card in cards:
             if store.locked(card, now):
                 card["action"]["locked"] = "unknown"     # an unconfirmed send is never offered again
@@ -628,8 +670,15 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         card_ids = {c["sources"][0]["ref"]: c["id"] for c in cards}
         cards_by_account[acct] = cards
         todos_by_account[acct] = [todo_from_item(i, card_ids) for i in ranked]
+        # A kept card whose to-do the judge left out this time keeps its to-do.
+        have = {t["id"] for t in todos_by_account[acct]}
+        for old in previous.get("todos") or []:
+            card = next((c for c in cards if c.get("todo_id") == old.get("id")), None)
+            if card is not None and old.get("id") not in have and old.get("account") == acct:
+                todos_by_account[acct].append({**old, "card_id": card["id"]})
         summaries[acct] = summary
-        judged[acct] = {"key": key, "at": now, "model": model_ok}
+        judged[acct] = {"key": key, "rkey": rkey, "at": now, "model": model_ok,
+                        "reply": captured.get("reply") or (reuse or "")}
     # 3. Deadline cards: a real free slot for work due soon. Code only, every
     # cycle (a slot goes stale as the day moves), filling what replies leave.
     # Runs even when the judge yielded to a turn: it is code only, and skipping
@@ -668,6 +717,12 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
     notes = [i for i in items if i["source"] == "notes"]
     summaries = {k: v for k, v in summaries.items() if k not in erased}
     judged = {k: v for k, v in judged.items() if k not in erased}
+    # A card dismissed or fired while this cycle ran (it can take minutes, with a
+    # model in the loop) must not be written back by it.
+    decided = store.decisions()
+    gone, handled_now = set(decided["dismissed"]) | set(decided["fired"]), store.suppressed_fingerprints()
+    cards_by_account = {a: [c for c in v if not stable.is_gone(c, gone, handled_now)]
+                        for a, v in cards_by_account.items()}
     store.prune(now)
     store.save_state(
         as_of=now, timezone=tz, accounts=accounts,
@@ -793,19 +848,44 @@ def hid_idle_seconds() -> float | None:
 idle_probe = hid_idle_seconds      # injectable: tests swap in a fake
 
 
-def user_away(probe=None) -> bool:
-    """True only when the probe says the machine has sat idle long enough.
-    Any failure counts as "in use": the refresh never runs during use."""
+def _idle_seconds(probe=None) -> float | None:
+    """The probe's reading, or None on any failure ("in use")."""
     try:
         seconds = (probe or idle_probe)()
     except Exception:  # noqa: BLE001
-        return False
-    return isinstance(seconds, (int, float)) and seconds >= IDLE_AFTER_S
+        return None
+    return float(seconds) if isinstance(seconds, (int, float)) and not isinstance(seconds, bool) else None
+
+
+def user_away(probe=None) -> bool:
+    """True only when the probe says the machine has sat idle long enough.
+    Any failure counts as "in use": the refresh never runs during use."""
+    seconds = _idle_seconds(probe)
+    return seconds is not None and seconds >= IDLE_AFTER_S
 
 
 def idle_refresh_due(now: float, store) -> bool:
     last = float(store.state().get("idle_refresh_at") or 0)
     return now - last >= IDLE_REFRESH_S and now >= _idle_retry_at
+
+
+def refresh_inputs(store, now: float) -> str:
+    """What the idle refresh regenerates from: each account's judge key (the
+    ordinary cycle keeps it current), the mail/texts overviews' input keys, and
+    the local day. Unchanged means a refresh would rewrite the same Brief."""
+    state = store.state()
+    tz = state.get("timezone") or _zone()
+    judged = {acct: (entry or {}).get("key") for acct, entry in (state.get("judged") or {}).items()}
+    try:
+        from service.assistant import mail_gists
+        gists = {kind: (entry or {}).get("key") for kind, entry in mail_gists._load().items()}
+    except Exception:  # noqa: BLE001 — unreadable overviews: the cards alone decide
+        gists = {}
+    try:
+        day = datetime.fromtimestamp(now, ZoneInfo(tz)).date().isoformat()
+    except Exception:  # noqa: BLE001
+        day = datetime.fromtimestamp(now, ZoneInfo("UTC")).date().isoformat()
+    return _digest({"judged": judged, "gists": gists, "day": day})
 
 
 async def _refresh_gists() -> None:
@@ -815,18 +895,40 @@ async def _refresh_gists() -> None:
 
 async def idle_refresh(*, now: float | None = None, probe=None, store=None, cycle=None, gists=None) -> str:
     """Regenerate the whole Brief while the user is away: a forced cycle
-    (re-judge and re-prepare even when nothing changed), then every mail and
-    texts overview, one after another. "not_due", "active", "yielded" or "ran".
-    The last run's time lives in the store's state, so a restart doesn't
-    rerun it."""
+    (re-judge and re-prepare), then every mail and texts overview, one after
+    another. The last run's time and inputs live in the store's state, so a
+    restart doesn't rerun it. Returns one of:
+
+    - "not_due": under IDLE_REFRESH_S since the last one, or backing off;
+    - "unchanged": nothing it reads from changed and it is the same day, so it
+      would rewrite the same Brief: counted as a refresh, no probe, no model;
+    - "active": someone is at the Mac (or the probe failed); the probe waits
+      until the user could first be away again;
+    - "unseen": nobody has touched the Mac since the last refresh, so nobody
+      has seen it; the next one waits until they come back and leave again;
+    - "yielded": a turn started; retried after a short backoff;
+    - "ran"."""
     global _idle_retry_at
     from service.proactive.store import store as default_store
     store = store or default_store()
     now = time.time() if now is None else now
     if not idle_refresh_due(now, store):
         return "not_due"
-    if not await asyncio.to_thread(user_away, probe) or _foreground():
-        return "active"            # checked again on the next scheduler tick
+    state = store.state()
+    last = float(state.get("idle_refresh_at") or 0)
+    inputs = refresh_inputs(store, now)
+    if last and state.get("idle_refresh_inputs") == inputs:
+        store.save_state(idle_refresh_at=now)
+        return "unchanged"
+    seconds = await asyncio.to_thread(_idle_seconds, probe)
+    if seconds is None or seconds < IDLE_AFTER_S or _foreground():
+        # The user can't be away before IDLE_AFTER_S of quiet: no probe until then.
+        wait = TICK_GAP_S if seconds is None else IDLE_AFTER_S - min(seconds, IDLE_AFTER_S)
+        _idle_retry_at = now + max(_IDLE_RETRY_MIN_S, wait)
+        return "active"
+    if last and seconds >= now - last:
+        _idle_retry_at = now + IDLE_AFTER_S
+        return "unseen"
     _log("idle refresh: regenerating the Brief")
     result = await (cycle or run_cycle)(force=True)
     if not isinstance(result, dict) or result.get("status") != "done":
@@ -837,6 +939,9 @@ async def idle_refresh(*, now: float | None = None, probe=None, store=None, cycl
         await (gists or _refresh_gists)()
     except Exception:  # noqa: BLE001 — the cards are fresh; the overviews keep their last text
         traceback.print_exc()
+    # What this refresh wrote from, read after it: the cycle and the overviews
+    # just brought their keys up to date.
+    store.save_state(idle_refresh_inputs=refresh_inputs(store, now))
     return "ran"
 
 
@@ -987,7 +1092,7 @@ def request_analyze(account: str | None = None) -> dict:
 
 
 def _public(record: dict) -> dict:
-    return {k: v for k, v in record.items() if k not in ("fingerprints",)}
+    return {k: v for k, v in record.items() if k not in ("fingerprints", "asks", "seen_at")}
 
 
 _NUMBER = ["No", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten"]
@@ -1135,7 +1240,10 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     added = store.added_to_day()
     for todo in merged.values():
         todo["added_to_day"] = todo["id"] in added
-    cards = [c for c in state.get("cards") or [] if c.get("todo_id") not in done]
+    handled_asks = store.suppressed_fingerprints() if hasattr(store, "suppressed_fingerprints") else set()
+    dismissed_ids = set(store.decisions()["dismissed"]) | set(store.decisions()["fired"])
+    cards = [c for c in state.get("cards") or [] if c.get("todo_id") not in done
+             and not stable.is_gone(c, dismissed_ids, handled_asks)]
     cards = [{**c, "action": {**c["action"], "locked": "unknown"}} if store.locked(c, now) else c for c in cards]
     # A held slot that has started is no offer; the next cycle finds another.
     cards = [c for c in cards if c["action"].get("method") != "block_time"
@@ -1147,7 +1255,11 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     todos = sorted(merged.values(), key=lambda t: (t["done"], t.get("due_ts") is None, t.get("due_ts") or 0,
                                                    t["title"].casefold()))
     cleared = store.cleared() if hasattr(store, "cleared") else {}
-    todos = _clearable(todos, cleared, "title", "due_ts")
+    cleared_asks = store.cleared_asks() if hasattr(store, "cleared_asks") else set()
+    # A dismissed card takes its own to-do with it (the next cycle would drop
+    # it anyway); a done to-do stays, shown checked.
+    todos = [t for t in todos if t.get("done") or not any(a in handled_asks for a in t.get("asks") or [])]
+    todos = _clearable(todos, cleared, "title", "due_ts", cleared_asks)
     for todo in todos:
         # A dated reminder (its rule-built to-do) can be completed in Reminders
         # through the verified path (api.complete_todo); nothing else can.
@@ -1159,7 +1271,7 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     # Answered by the user (here or in Messages/Mail): no longer needs attention,
     # unless it names a deadline still ahead.
     threads = [t for t in threads if not t.get("replied") or t.get("attention") == "deadline"]
-    threads = _clearable(threads, cleared, "title", "received_ts")
+    threads = _clearable(threads, cleared, "title", "received_ts", cleared_asks)
     erased = store.erased_accounts()
     seen = {str(a).casefold() for a in state.get("accounts") or []}
     accounts = account_list(own, {a for a in linked if a in seen or a not in erased}, seen)
@@ -1179,7 +1291,7 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
         view_state = "unavailable"
     result = {"state": view_state, "as_of": state.get("as_of"), "progress": dict(_status["progress"]),
               "accounts": accounts, "owner": {"id": own, "label": sources.owner_label()}, "summary": summary, "cards": [_public(c) for c in cards],
-              "todos": [_public(t) for t in todos], "threads": threads,
+              "todos": [_public(t) for t in todos], "threads": [{k: v for k, v in t.items() if k != "asks"} for t in threads],
               "lede": _lede(cards, todos, summary, now, tz), "stats": _stats(state, cards, todos, account)}
     if view_state == "unavailable":
         result["reason"] = "Wisp hasn't read your mail and texts yet. Tap Analyze now."

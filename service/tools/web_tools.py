@@ -1271,7 +1271,7 @@ async def get_stock_price(symbols: list[str], period: str = "") -> str:
 # MEASURED FAILURES (2026-08-18 22:36 log), all from hand-built wttr.in URLs:
 #
 #   1. NO LOCATION -> INVENTED ONE. "can you check the weather for tomorrow"
-#      became `wttr.in/Los_Angeles`. The user is in Dublin, California. Nothing
+#      became `wttr.in/Los_Angeles`. The user is in California. Nothing
 #      in the prompt said Los Angeles; the model simply supplied a plausible
 #      city and reported the result as fact.
 #   2. AMBIGUOUS CITY -> WRONG CONTINENT. Told "in dublin ca", it fetched
@@ -1308,7 +1308,8 @@ def _weather_request_dates(period: str) -> set[str] | None:
             date.fromisoformat(component)
         except ValueError:
             raise ValueError("ISO clock/offset/datetime forecasts are unsupported; use a whole date") from None
-    start, end, _ = resolve_span(period)
+    # Whole forecast days only: no "tonight", weekends or spoken dates here.
+    start, end, _ = resolve_span(period, extended=False)
     first, last = datetime.fromtimestamp(start).date(), datetime.fromtimestamp(end).date()
     days = (last - first).days
     if days < 1:
@@ -1418,7 +1419,7 @@ def _weather_forecast_rows(raw: object) -> list[dict]:
     "Current weather and a 3-day forecast for a place. Use this for ANY "
     "weather question — today's, tomorrow's, this weekend's — NOT web_fetch. "
     "`location` must name the place the user actually means, and US cities "
-    "need their state ('Dublin,CA' — plain 'Dublin' is Dublin, Ireland). "
+    "need their state ('Paris,TX' — plain 'Paris' is Paris, France). "
     "If you do not know where the user is, ASK them; never guess a city, and "
     "never answer a weather question from memory. The result names the area it "
     "resolved to. California lookups verify the provider's city, state and "
@@ -1429,8 +1430,8 @@ def _weather_forecast_rows(raw: object) -> list[dict]:
      "properties": {
          "location": {"type": "string",
                       "description": "city, 'City,ST' for the US, postcode, or "
-                                     "airport code — e.g. 'Dublin,CA', "
-                                     "'London', '94568'"},
+                                     "airport code — e.g. 'Paris,TX', "
+                                     "'London', '10001'"},
          "period": {"type": "string", "description": "Exact requested forecast date/range; unavailable coverage is reported, never expanded silently."},
          "include": {"type": "array",
                      "items": {"type": "string",
@@ -1479,7 +1480,7 @@ async def get_weather(location: str, period: str = "", include: list[str] | None
     if r.status_code >= 400:
         return (f"(error: weather lookup for {place!r} failed: HTTP {r.status_code}. "
                 "Check the spelling, or add the state/country — "
-                "'Dublin,CA' rather than 'Dublin')")
+                "'Paris,TX' rather than 'Paris')")
     try:
         d = r.json()
         cur = d["current_condition"][0]

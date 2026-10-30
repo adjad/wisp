@@ -4,6 +4,9 @@ Start with the root [README](../README.md) for what Wisp is and how to run it.
 
 ## System reference
 
+- [technical-overview.md](technical-overview.md) — how Wisp is built, in one
+  page: tools, assistant layer, memory, safety, models and engines, running
+  from source, layout and state on disk (moved here from the root README).
 - [WISP_OVERVIEW.md](WISP_OVERVIEW.md) — the long-form system reference: every
   subsystem, what's broken, and how it got that way.
 - [ASSISTANT_ARCHITECTURE.md](ASSISTANT_ARCHITECTURE.md) — the assistant layer
@@ -43,7 +46,7 @@ Start with the root [README](../README.md) for what Wisp is and how to run it.
 - [../TESTING.md](../TESTING.md) — manual test plan.
 - [DEMO_TEST_PROMPTS.md](DEMO_TEST_PROMPTS.md) — manual prompt checklist, including notch and display checks.
 - [google-cloud-setup.md](google-cloud-setup.md) — Google Cloud project, tester list and OAuth client for Connect Google.
-- [releases/](releases/) — curated release notes; start with [0.5.0-rc1](releases/0.5.0-rc1.md).
+- [releases/](releases/) — curated release notes; start with [0.5.0-dev4](releases/0.5.0-dev4.md).
 
 ## Audits and backlog
 

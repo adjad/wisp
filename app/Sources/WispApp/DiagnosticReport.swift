@@ -6,6 +6,18 @@ import Darwin
 /// A local, reviewable report. No upload, agent call, or native action occurs.
 enum DiagnosticReport {
     static let maximumBytes = 2 * 1024 * 1024
+    /// How first-run setup went (OnboardingTimeline: event names and times only),
+    /// for the report's "onboarding" section. The app points this at the
+    /// timeline at launch; left alone (this file's own checks), it is empty.
+    nonisolated(unsafe) static var onboardingTimeline: () -> [String] = { [] }
+
+    /// The report's metadata with the onboarding section, when setup left one.
+    static func withOnboarding(_ metadata: [String: Any], timeline: [String]) -> [String: Any] {
+        guard !timeline.isEmpty, metadata["onboarding"] == nil else { return metadata }
+        var result = metadata
+        result["onboarding"] = timeline
+        return result
+    }
 
     static func journal(traceID: String?, expectedUID: uid_t = getuid(), expectedDirectoryUID: uid_t? = nil) -> [String: Any]? {
         guard let traceID, traceID.range(of: "^[a-f0-9]{32}$", options: .regularExpression) != nil else { return nil }
@@ -296,7 +308,8 @@ struct ReportSnapshot {
 
     init(key: String, metadata: [String: Any], details: [String: Any]?) {
         self.key = key
-        self.metadata = metadata
+        // Read once, with the rest: a later setup event doesn't change this report.
+        self.metadata = DiagnosticReport.withOnboarding(metadata, timeline: DiagnosticReport.onboardingTimeline())
         self.scrubbedDetails = details.flatMap { DiagnosticReport.scrub($0) as? [String: Any] }
     }
 
@@ -366,14 +379,22 @@ final class ReportDraft: ObservableObject {
 
     /// Asks where to save, then writes. The caller marks itself as showing a
     /// file panel first, so the notch doesn't take the panel's focus as "the
-    /// person left" (OverlayModel.pickingFile).
-    func chooseLocationAndSave() {
+    /// person left" (OverlayModel.pickingFile). Asked from the notch, which sits
+    /// at the menu bar's level, the dialog goes `above` it: at its own level it
+    /// opened behind an open notch.
+    func chooseLocationAndSave(above: NSWindow.Level? = nil) {
         guard isOpen else { return }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
         panel.nameFieldStringValue = "Wisp-problem-\(Int(Date().timeIntervalSince1970)).json"
+        if let level = Self.saveLevel(above: above) { panel.level = level }
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         write(to: url)
+    }
+
+    /// The save dialog's level: one above the window that asked, or its own.
+    nonisolated static func saveLevel(above: NSWindow.Level?) -> NSWindow.Level? {
+        above.map { NSWindow.Level(rawValue: $0.rawValue + 1) }
     }
 }

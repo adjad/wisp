@@ -50,15 +50,47 @@ struct NotchCommandChecks {
         check(NotchCommand.match("/corpus", includeCorpus: false) == nil, "/corpus does not run")
         check(NotchCommand.match("/c", includeCorpus: false) == nil, "no other command starts with c")
         check(NotchCommand.match("/about", includeCorpus: false) == .about, "other commands still run")
+
+        // /screen only exists when Screen Recording is already granted, and only runs in full.
+        check(NotchCommand.match("/screen") == .screen, "/screen runs when available")
+        check(NotchCommand.match("/screen", includeScreen: false) == nil, "/screen is gone without the permission")
+        check(!NotchCommand.suggestions(for: "/", includeScreen: false).contains(.screen), "/screen is not listed without it")
+        check(NotchCommand.match("/s") == .settings, "/s stays /settings")
+        check(NotchCommand.match("/sc") == nil, "a prefix never captures the screen")
+
+        // /screen only exists once Screen Recording is already granted, and only when typed in full.
+        check(!NotchCommand.suggestions(for: "/", includeScreen: false).contains(.screen), "/screen is not listed without the grant")
+        check(NotchCommand.match("/screen", includeScreen: false) == nil, "/screen does not run without the grant")
+        check(NotchCommand.match("/screen") == .screen, "/screen runs with the grant")
+        check(NotchCommand.match("/sc") == nil, "a prefix never captures the screen")
+        check(NotchCommand.match("/s") == .settings, "/s stays settings")
         check(NotchCommand.suggestions(for: "/", includeCorpus: true).contains(.corpus), "Debug Mode lists /corpus")
 
         // Suggestions appear only while typing a command.
         check(NotchCommand.suggestions(for: "/") == NotchCommand.allCases, "a bare slash lists every command")
-        check(NotchCommand.suggestions(for: "/re") == [.research, .report], "a prefix narrows the list in order")
+        check(NotchCommand.suggestions(for: "/re") == [.research, .report, .resetwisp], "a prefix narrows the list in order")
         check(NotchCommand.suggestions(for: "/tmp").isEmpty, "no list for a non-command word")
         check(NotchCommand.suggestions(for: "/Users/me").isEmpty, "no list for a path")
         check(NotchCommand.suggestions(for: "hello").isEmpty, "no list for a prompt")
         check(NotchCommand.suggestions(for: "/today now").isEmpty, "no list once words follow")
+
+        // /resetwisp erases Wisp's data (after its confirmation card): it runs only
+        // when typed in full, never from a prefix, and never makes another prefix ambiguous.
+        check(NotchCommand.match("/resetwisp") == .resetwisp, "/resetwisp runs when typed in full")
+        check(NotchCommand.match(" /ResetWisp ") == .resetwisp, "case and surrounding space are ignored")
+        check(NotchCommand.match("/resetwisp", includeCorpus: false) == .resetwisp, "available outside Debug Mode")
+        for prefix in ["/reset", "/resetw", "/resetwis"] {
+            check(NotchCommand.match(prefix) == nil, "\(prefix) never stands in for /resetwisp")
+        }
+        check(NotchCommand.match("/res") == .research && NotchCommand.match("/rese") == .research,
+              "prefixes research shares with it still open research")
+        check(NotchCommand.match("/resetwisp now") == nil, "extra words make it a prompt")
+        check(NotchCommand.match("/resetwisp!") == nil, "punctuation makes it a prompt")
+        check(NotchCommand.resetwisp.exactOnly && NotchCommand.allCases.filter(\.exactOnly) == [.resetwisp, .screen],
+              "only /resetwisp and /screen (a capture) are exact-only")
+        check(NotchCommand.isReset("/resetwisp") && !NotchCommand.isReset("/reset") && !NotchCommand.isReset("resetwisp"),
+              "isReset is the whole command only")
+        check(NotchCommand.suggestions(for: "/rese") == [.research, .resetwisp], "it is listed while typing it")
 
         print("\(count) notch command checks passed.")
     }

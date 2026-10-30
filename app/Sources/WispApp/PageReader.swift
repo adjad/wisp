@@ -245,7 +245,7 @@ enum PageReader {
     private static func captureWindow(pid: pid_t) -> CGImage? {
         // Capturing another app's window without Screen Recording makes macOS ask,
         // and Wisp never asks on its own (Permissions.swift): without it, no OCR
-        // fallback. Grant More Access… turns it on.
+        // fallback. Settings › Privacy's More Access… turns it on.
         guard CGPreflightScreenCaptureAccess() else { return nil }
         let infoList = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
@@ -302,5 +302,28 @@ enum PageReader {
                 .activate(options: [])
         }
         return scrolled || selected
+    }
+}
+
+/// "Explain my screen": one capture of the main display with Wisp's own windows
+/// left out, downscaled to JPEG in memory (never written to disk). Callers check
+/// `CGPreflightScreenCaptureAccess()` first; this never asks for the permission.
+enum ScreenSnapshot {
+    static func captureMainDisplayJPEG() -> Data? {
+        guard CGPreflightScreenCaptureAccess() else { return nil }
+        let me = ProcessInfo.processInfo.processIdentifier
+        let infoList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        let others = infoList.compactMap { info -> UInt32? in
+            guard let owner = info[kCGWindowOwnerPID as String] as? pid_t, owner != me,
+                  let number = info[kCGWindowNumber as String] as? UInt32 else { return nil }
+            return number
+        }
+        guard !others.isEmpty else { return nil }
+        var ids = others.map { UnsafeRawPointer(bitPattern: UInt($0)) }
+        let created: CFArray? = ids.withUnsafeMutableBufferPointer { CFArrayCreate(nil, $0.baseAddress, $0.count, nil) }
+        guard let array = created,
+              let image = CGImage(windowListFromArrayScreenBounds: CGDisplayBounds(CGMainDisplayID()), windowArray: array, imageOption: [.boundsIgnoreFraming, .nominalResolution])
+        else { return nil }
+        return MediaAttachment.downscaleJPEG(image)
     }
 }

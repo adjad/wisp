@@ -1,13 +1,14 @@
 """service/paths.py — WISP_HOME redirection, regression tests.
 
-The 10 `.moe` constants (assistant.db, cache/, sessions.db, facts.db,
-config.yaml, mcp.json, grants.json, audit dir, skills/) are all resolved at
-IMPORT time from service.paths.MOE_DIR, which reads WISP_HOME once at import.
+The 11 `.moe` constants (assistant.db, cache/, sessions.db, facts.db,
+config.yaml, mcp.json, grants.json, access_mode.json, audit dir, skills/) are
+all resolved at IMPORT time from service.paths.MOE_DIR, which reads WISP_HOME
+once at import.
 That makes them impossible to test by just re-importing in-process (the
 module is already cached) — each case has to boot a fresh interpreter.
 
 What must keep holding:
-  * every one of the 10 constants lands under WISP_HOME when it's set;
+  * every one of the 11 constants lands under WISP_HOME when it's set;
   * with WISP_HOME unset, every one still resolves under the real ~/.moe
     (byte-identical to pre-sandbox behavior);
   * the two ~/.omlx constants (model roster, favorites) are NEVER redirected
@@ -53,6 +54,7 @@ MOE_CONSTANTS = {
     "service.config": ["USER_CONFIG"],
     "service.mcp": ["CONFIG_PATH"],
     "service.safety.grants": ["GRANTS_PATH"],
+    "service.safety.policy": ["MODE_PATH"],
     "service.safety.audit": ["AUDIT_DIR"],
     "service.skills": ["SKILLS_DIR"],
 }

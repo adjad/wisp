@@ -28,6 +28,10 @@ struct ModelMemory: Equatable {
 /// Quick settings' one-line descriptions. Each keeps the states the service can
 /// be in (waiting for confirmation, not confirmed) instead of guessing "off".
 enum QuickSettingsText {
+    /// The notch's Setup row: always there, unlike the menu bar's two-day Change Setup….
+    static let setupHelp = "Open setup again to change permissions, Google, About you or open at login. "
+        + "Your model stays as it is."
+
     /// Full access's line: a status word ("On" shows amber) and the rest.
     static func fullAccess(on: Bool?, pending: Bool) -> (status: String?, rest: String) {
         if pending { return (nil, "Updating · waiting for confirmation…") }
@@ -37,6 +41,25 @@ enum QuickSettingsText {
         case nil: return (nil, "Not confirmed · Wisp may still act without asking")
         }
     }
+
+    /// "Save power"'s line. Neutral wording in every state: it is a
+    /// preference, not a warning (red/amber stays for status).
+    static func saveWhenAway(on: Bool?, pending: Bool) -> String {
+        if pending { return "Updating · waiting for confirmation…" }
+        switch on {
+        case true?: return "Uses less power, most of all on battery and while you're away"
+        case false?: return "Wisp always runs at full speed"
+        case nil: return "Not confirmed"
+        }
+    }
+
+    static let saveWhenAwayHelp = "Wisp's background work always runs its GPU at 10 W, plugged in too. "
+        + "On battery, it caps the GPU at 15 W while it writes a chat reply or updates your Brief. After "
+        + "10 minutes away from the keyboard and mouse, the Brief runs at 10 W too. The cap ends as soon as "
+        + "that work is done. It's set only while other apps use little of the GPU, and lifts within about "
+        + "a second when another app, like a game or a video, starts using more. Only Wisp's built-in "
+        + "engine is capped; "
+        + "with your own oMLX app, nothing is."
 
     /// Learn my routines' line, and the trailing "stays on this Mac" when
     /// nothing learned is sent anywhere.

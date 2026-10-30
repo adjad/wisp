@@ -400,6 +400,7 @@ def test_actual_agent_and_router_saved_loaders_and_schemas(
     state = synthetic_agent_endpoint
     calls, sentinel = _router_saved_context_sentinels(monkeypatch)
     monkeypatch.setenv("WISP_MODEL_LED_ROUTING", "0")
+    monkeypatch.setenv("WISP_MODEL_ONLY", "0")  # rc3: the router path needs model_only off too
     monkeypatch.setattr(main, "route", route)
     monkeypatch.setattr(main, "run_agent", loop.run_agent)
     monkeypatch.setattr(identity, "identity_prompt_block", lambda **kw: "")
@@ -426,6 +427,7 @@ def test_actual_agent_literal_envelope_does_not_load_saved_router_context(
     from service.router.router import route
     calls, _ = _router_saved_context_sentinels(monkeypatch)
     monkeypatch.setenv("WISP_MODEL_LED_ROUTING", "0")
+    monkeypatch.setenv("WISP_MODEL_ONLY", "0")  # rc3: the router path needs model_only off too
     monkeypatch.setattr(main, "route", route)
     synthetic_agent_endpoint.request('remember that fixture title is "turn it down"', test_mode=True)
     assert calls == []
@@ -451,6 +453,12 @@ def test_synthetic_endpoint_never_loads_saved_context(
         return read
 
     monkeypatch.setenv("WISP_MODEL_LED_ROUTING", "1" if model_led else "0")
+    # This pins saved-context loading on the router and plain model-led paths
+    # (the scripted probe call relies on _model_led_preload). Since 0.5.0-rc3
+    # model_only is on by default and its Ask path offers a narrower tool
+    # head start; its context and tool offering are covered in
+    # tests/test_model_only_quality.py.
+    monkeypatch.setenv("WISP_MODEL_ONLY", "0")
     monkeypatch.setattr(identity, "identity_prompt_block", spy("identity", sentinel))
     monkeypatch.setattr(identity, "user_name", spy("user_name", sentinel))
     monkeypatch.setattr(profile, "profile_block", spy("profile", sentinel))
@@ -778,6 +786,31 @@ def test_runs_list_and_export_the_latest_run(saved_runs):
     for date, run_id in (("2026-10-24", None), ("../etc", None), ("2026-10-23", "../x"), ("2026-10-23", "missing")):
         with pytest.raises(HTTPException):
             corpus.export_md(date, run_id=run_id)
+
+
+def test_read_day_preserves_unicode_line_separators_in_jsonl_values(saved_runs):
+    separators = "\u0085\u2028\u2029"
+    line = {"run_id": "run-unicode", "date": "2026-10-23", "started_at": "2026-10-23T11:00:00-07:00",
+            "case_id": "LIVE-UNICODE-001", "category": "messages", "prompt": f"Before{separators}after",
+            "model": "local-test", "role": "agent", "route_source": "corpus_live_model", "tools": [],
+            "answer": f"First{separators}last", "status": "done", "error": "", "latency_s": 1.5,
+            "model_calls": 1, "inference_verified": True}
+
+    path = corpus.persist(line)
+
+    assert path.read_bytes().count(b"\n") == 1
+    assert corpus.read_day("2026-10-23") == [line]
+    assert corpus.run_lines("2026-10-23", "run-unicode") == [line]
+    assert corpus.list_runs() == [{"run_id": "run-unicode", "date": "2026-10-23",
+                                  "started_at": "2026-10-23T11:00:00-07:00", "cases": 1,
+                                  "done": 1, "errors": 0, "verified": 1}]
+
+    markdown = corpus.export_md("2026-10-23", run_id="run-unicode").body.decode()
+    assert "1 cases · 1 done · 0 errors · 1 with verified inference" in markdown
+    assert "**Prompt:** Before after" in markdown
+    csv_text = corpus.export_csv_route("2026-10-23", run_id="run-unicode").body.decode()
+    assert separators in csv_text
+    assert "LIVE-UNICODE-001" in csv_text
 
 
 def test_bounded_case_is_saved_as_a_titled_chat(monkeypatch, chats, saved_runs):

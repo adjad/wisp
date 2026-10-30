@@ -120,9 +120,9 @@ struct KnowYouChecks {
         check(envelope?.preview == ["I'll call you Adi."], "preview keeps strings only")
         check(ProfileEnvelope(json: ["profile": 1]) == nil, "a malformed envelope is refused")
         check(UserProfile(json: [:]).hasContent == false, "an empty profile has no content")
-        check(!UserProfile(json: ["tone": "warm", "detail": "thorough"]).hasContent,
+        check(!UserProfile(json: ["tone": "gentle", "detail": "thorough"]).hasContent,
               "default choices alone keep a fresh profile empty")
-        let preferenceOnlyProfiles: [[String: Any]] = [["tone": "direct"], ["tone": "gentle"], ["detail": "short"]]
+        let preferenceOnlyProfiles: [[String: Any]] = [["tone": "direct"], ["tone": "warm"], ["detail": "short"]]
         for choices in preferenceOnlyProfiles {
             let styled = UserProfile(json: choices)
             check(styled.hasContent, "a nondefault reply preference alone is profile content: \(choices)")
@@ -167,7 +167,7 @@ struct KnowYouChecks {
               == "Stays on this Mac and your mini on your tailnet", "the user's own node is named, not cloud")
 
         // The notices after the flow.
-        check(KnowYouNotice.notNow.contains("/about") && KnowYouNotice.notNow.contains("Tell Wisp About You…"),
+        check(KnowYouNotice.notNow.contains("/about") && KnowYouNotice.notNow.contains("About you"),
               "Not now says where the questions are")
         check(KnowYouNotice.thanks(name: "Sam") == "Thank you, Sam. I'll put this to work.", "Done thanks by name")
 

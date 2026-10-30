@@ -23,6 +23,19 @@ _KIND_LABEL = {"exam": "EXAM", "assignment": "due", "meeting": "meeting",
                "event": "event", "reminder": "reminder"}
 
 
+def _access_fixes(unavailable: list[dict]) -> str:
+    """Where to allow each unreadable source, named exactly, as sentences that
+    end in a space. Each one is also noted for the Ask reply's fix button
+    (access_needed), so the button never depends on the model's wording. A
+    source that failed for another reason gets the general pointer."""
+    from service.tools import access_needed
+    fixes = [access_needed.need(row["id"], row.get("reason_kind") or "") for row in unavailable]
+    named = list(dict.fromkeys(fix for fix in fixes if fix))
+    if len(named) < len(fixes):
+        named.append("Check its access in Settings.")
+    return " ".join(named) + " " if named else ""
+
+
 def _calendar_local_start(when_iso: str) -> tuple[datetime, datetime]:
     """Validate a proposed local wall time against what EventKit will show."""
     start = datetime.fromisoformat(when_iso)
@@ -187,6 +200,12 @@ def _is_holiday_calendar_item(item: dict) -> bool:
     """
     if item.get("source") != "calendar":
         return False
+    source_id = str(item.get("source_id") or "")
+    if source_id.startswith("gcal:"):
+        # A Google row is read-only to Wisp whatever its calendar, so only
+        # Google's own holiday calendars count, never a name (dev8 delta review).
+        from service.google_calendar_source import HOLIDAY_MARK
+        return source_id.split(":", 2)[-1].startswith(HOLIDAY_MARK)
     calendar_names = (item.get("context"), item.get("calendar"),
                       item.get("calendar_name"))
     return any(_HOLIDAY_CALENDAR_RE.search(str(name or ""))
@@ -401,8 +420,6 @@ def _format_forward_agenda(items: list[dict], *, now: float, window_label: str,
             if apple_reminders_checked else
             "Apple Reminders could not be checked, so Wisp reminders are "
             "listed without a confirmed Apple copy; they may still be active.")
-    if any("reminders" in _schedule_sources(item) for item in items):
-        notes.append("Apple Reminders deletion status is not independently verified.")
     window = re.sub(r"\bnext 1 day\(s\)", "next day", window_label)
     window = window.replace("day(s)", "days")
     header = f"{window[:1].upper()}{window[1:]}: {', '.join(counts)}"
@@ -552,7 +569,7 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     if period:
         from service.tools.timeranges import resolve_span, BadPeriod
         try:
-            start, end, window_label = resolve_span(period)
+            start, end, window_label = resolve_span(period, forward=True)
         except BadPeriod as exc:
             return f"(error: {exc})"
         today_period = start == today_start and end == today_end
@@ -593,8 +610,8 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     unavailable_ids = {s["id"] for s in unavailable}
     withheld = unavailable_ids | ({"reminders"} if reminders_pending else set())
     items = _without_withheld_sources(items, withheld)
-    notice = ("Wisp could not check " + " and ".join(s["label"] for s in unavailable)
-              + ". Check its access in Settings; this schedule may be incomplete.\n") if unavailable else ""
+    notice = ("Wisp could not check " + " and ".join(s["label"] for s in unavailable) + ". "
+              + _access_fixes(unavailable) + "This schedule may be incomplete.\n") if unavailable else ""
     # A pending Reminders sync is secondary to a calendar question, so it trails
     # the answer instead of leading it. A source Wisp could NOT check stays first:
     # that can make the whole schedule incomplete.
@@ -651,8 +668,9 @@ async def get_past_events(days: int = 30, query: str | None = None,
         return ("Wisp is still syncing your calendar after launch, so I’m "
                 "holding off rather than showing incomplete history. Try "
                 "again in a moment.")
-    if any(s["state"] == "unavailable" for s in readiness["sources"]):
-        return "Wisp could not check Calendar. Check Calendar access in Settings, then try again."
+    unavailable = [s for s in readiness["sources"] if s["state"] == "unavailable"]
+    if unavailable:
+        return "Wisp could not check Calendar. " + _access_fixes(unavailable) + "Then try again."
     days = max(1, min(int(days or 30), 365))
     now = time.time()
     today_str = datetime.fromtimestamp(now).strftime("%A, %B %-d, %Y")
@@ -1370,6 +1388,12 @@ def reminders_matching(scope: str = "all", query: str = "",
              if c.get("source") in _REMINDER_SOURCES
              or bool(_REMINDER_SOURCES & set(c.get("duplicate_sources") or []))]
     needle = (query or "").strip().lower()
+    # "all", "*" or "everything" from the model means list them all, not a
+    # reminder titled "all" (2026-10-29 Ask run: "you have no reminders").
+    if needle in {"all", "*", "any", "everything", "reminder", "reminders", "my reminders",
+                  "tasks", "task", "to-dos", "todos", "to do", "todo", "due", "due soon",
+                  "upcoming", "overdue", "open", "pending", "incomplete"}:
+        needle = ""
     if needle:
         items = [c for c in items if needle in (c.get("title") or "").lower()]
     return items
@@ -1442,33 +1466,57 @@ def _stale_note(hidden: int) -> str:
             "(no Apple Reminders copy is confirmed). Ask to clear past-due items to remove them.")
 
 
+# A time word passed as the query is a time scope, not a title: "overdue" listed
+# every reminder and the model called them all overdue (0.5.0 dev8 audit).
+_OVERDUE_WORDS = frozenset({"overdue", "past due", "past-due", "late", "missed"})
+_DUE_SOON_WORDS = frozenset({"due soon", "due", "upcoming", "coming up", "soon", "next"})
+DUE_SOON_DAYS = 7
+
+
+def _reminder_query_scope(query: str, scope: str) -> tuple[str, str, int | None]:
+    """(query, scope, horizon in days) with a time word in the query applied as a
+    scope: "overdue" → past_due, "due soon" → upcoming within DUE_SOON_DAYS."""
+    needle = (query or "").strip().lower()
+    if (scope or "all").strip().lower() == "all":
+        if needle in _OVERDUE_WORDS:
+            return "", "past_due", None
+        if needle in _DUE_SOON_WORDS:
+            return "", "upcoming", DUE_SOON_DAYS
+    return query, scope, None
+
+
 @register(
     "search_reminders",
-    "Search current Apple Reminders and retained Wisp-only reminder records "
+    "The user's to-dos, tasks and reminders: open, pending, overdue, due soon, "
+    "school or work tasks. Leave query empty to list them; set it only to words "
+    "from a reminder's title (never 'due', 'tasks' or a date). "
+    "Searches current Apple Reminders and retained Wisp-only reminder records "
     "by title, including overdue items. Calendar events are excluded. A "
     "Wisp-only record may be a historical mirror whose Apple copy was deleted; "
     "show it separately for review, never call it a current Apple item. "
     "Storage source labels do not identify who created a reminder.",
     {"type": "object",
      "properties": {
-         "query": {"type": "string", "description": "title text to match"},
+         "query": {"type": "string", "description": "title words to match; empty lists every reminder in scope"},
          "scope": {"type": "string",
                    "enum": ["today", "tomorrow", "past_due", "upcoming", "all"],
                    "description": "time scope; all includes overdue active reminders"},
      },
-     "required": ["query"]},
+     "required": []},
     category="assistant_read",
     aliases=["when is my vaccine reminder", "find my dentist reminder",
              "what does my reminder say"],
 )
-async def search_reminders(query: str, scope: str = "all") -> str:
+async def search_reminders(query: str = "", scope: str = "all") -> str:
+    query, scope, horizon = _reminder_query_scope(query, scope)
     from service.assistant.sync_status import ensure_sources
     readiness = await ensure_sources(("reminders",), timeout_seconds=4.0)
     state = next((source["state"] for source in readiness["sources"]
                   if source["id"] == "reminders"), "unavailable")
     if state == "unavailable":
-        notice = ("Wisp could not check Apple Reminders; check its access in "
-                  "Settings. No Apple Reminders item is listed or verified.")
+        rows = [source for source in readiness["sources"] if source["id"] == "reminders"]
+        notice = ("Wisp could not check Apple Reminders. " + _access_fixes(rows)
+                  + "No Apple Reminders item is listed or verified.")
     elif not readiness.get("reminders_fresh", True):
         notice = ("I haven't received a current Reminders read yet, so no Apple "
                   "Reminders item is listed or verified. Try again in a moment.")
@@ -1480,6 +1528,9 @@ async def search_reminders(query: str, scope: str = "all") -> str:
     # Wisp's own records remain searchable while Apple Reminders cannot be
     # verified; only the native snapshot is withheld.
     items, hidden = _drop_stale_wisp_only(reminders_matching(scope, query))
+    if horizon is not None:
+        cutoff = time.time() + horizon * 86400
+        items = [c for c in items if float(c.get("when_ts") or 0) <= cutoff]
     stale_note = _stale_note(hidden)
     if notice:
         items = _without_withheld_sources(items, {"reminders"})
@@ -1493,6 +1544,12 @@ async def search_reminders(query: str, scope: str = "all") -> str:
                 "Apple Reminders couldn't be checked; they may still be active):\n"
                 + "\n".join(wisp_lines) + stale_note)
     undated_section, undated_caveat = _undated_report(query, scope)
+    filtered = ("Only reminders already overdue (due before now) are listed." if scope == "past_due"
+                and not query else f"Only reminders due in the next {horizon} days are listed."
+                if horizon is not None else "")
+    if not items and not undated_section and filtered:
+        return ("A current Reminders read found " + ("no overdue reminders." if scope == "past_due"
+                else f"nothing due in the next {horizon} days.") + stale_note)
     if not items and not undated_section:
         return (f"A current Reminders read found no active match for {query!r}"
                 + (" among reminders with a due date" if undated_caveat else "") + ". "
@@ -1506,8 +1563,9 @@ async def search_reminders(query: str, scope: str = "all") -> str:
         line = f"- {item['title']} — {when:%a %b %-d, %Y at %-I:%M %p}"
         (native_lines if "reminders" in sources else wisp_lines).append(line)
     sections = ["A fresh Apple Reminders read supersedes older remembered claims. "
-                "These lists describe storage, not who created an item. "
-                "Recently Deleted status is not independently verified."]
+                "These lists describe storage, not who created an item."]
+    if filtered:
+        sections.append(filtered)
     sections.append("Apple Reminders incomplete-item matches:\n" +
                     ("\n".join(native_lines) if native_lines else
                      "None with a due date." if undated_section else "None."))

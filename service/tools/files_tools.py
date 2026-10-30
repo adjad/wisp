@@ -25,8 +25,10 @@ retrieved tool set — but it should no longer be the FIRST answer to "where is"
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from service.tools.registry import register
@@ -42,33 +44,101 @@ _NOISE = (
     "/Library/CloudStorage/.", "/Library/Group Containers/",
 )
 
+# Hits shown by default, and at most when the caller asks for more.
+_DEFAULT_HITS = 15
 _MAX_HITS = 40
+# Hits whose dates are read to break ties; the rest keep their name order.
+_DATED_HITS = 400
+# Where people keep the files they mean: these rank above the rest of home.
+_USER_PLACES = ("Desktop", "Documents", "Downloads", "Library/Mobile Documents/com~apple~CloudDocs")
 
 
 def _looks_noisy(path: str) -> bool:
     return any(seg in path for seg in _NOISE)
 
 
-def _fmt(paths: list[str], *, truncated: bool) -> str:
+def _name_rank(path: str, query: str) -> int:
+    """0 the name is the query, 1 it starts with it, 2 has it as a word,
+    3 has it inside a word, 4 has every word of it in any order, 5 none of
+    that (a content hit)."""
+    name = Path(path).name.casefold()
+    stem = Path(path).stem.casefold()
+    q = query.casefold()
+    if q in (name, stem):
+        return 0
+    if name.startswith(q):
+        return 1
+    if re.search(rf"(?<![^\W_]){re.escape(q)}(?![^\W_])", name):
+        return 2
+    if q in name:
+        return 3
+    words = _words(q)
+    return 4 if len(words) > 1 and all(w in name for w in words) else 5
+
+
+def _place_rank(path: str, home: str) -> int:
+    if any(path.startswith(f"{home}/{place}/") for place in _USER_PLACES):
+        return 0
+    return 1 if path.startswith(home + "/") else 2
+
+
+def rank_hits(hits: list[str], query: str) -> list[str]:
+    """Spotlight's hits, best first (2026-10-29 Ask eval: they came in mdfind's
+    own order, so a stray match buried the file meant). By how well the name
+    matches, then the user's own folders, then the most recently modified,
+    then the shallowest path."""
+    home = str(Path.home())
+    keyed = sorted(hits, key=lambda h: (_name_rank(h, query), _place_rank(h, home), h.count("/")))
+
+    def modified(path: str) -> float:
+        try:
+            return os.stat(path).st_mtime
+        except OSError:
+            return 0.0
+
+    head = keyed[:_DATED_HITS]
+    head.sort(key=lambda h: (_name_rank(h, query), _place_rank(h, home), -modified(h), h.count("/")))
+    return head + keyed[_DATED_HITS:]
+
+
+def _words(query: str) -> list[str]:
+    return [w for w in re.split(r"[\s_\-.]+", query) if w]
+
+
+def _mdfind_literal(text: str) -> str:
+    """`text` safe inside a quoted mdfind value: a backslash is dropped (a
+    trailing one would escape the closing quote) and a double quote escaped."""
+    return text.replace("\\", "").replace('"', '\\"')
+
+
+def _fmt(paths: list[str], *, total: int) -> str:
     home = str(Path.home())
     lines = []
     for p in paths:
         try:
             st = os.stat(p)
-            size = st.st_size
-            unit = ("B", "KB", "MB", "GB")
-            i = 0
-            while size >= 1024 and i < 3:
-                size /= 1024.0
-                i += 1
-            meta = f"{size:.0f}{unit[i]}"
+            modified = f"modified {datetime.fromtimestamp(st.st_mtime).strftime('%b %-d, %Y')}"
+            if os.path.isdir(p) and not p.endswith((".app", ".bundle")):
+                # A folder's own st_size is its directory entry, not what's in it;
+                # list_dir(details=true) totals a folder.
+                meta = f"folder, {modified}"
+            else:
+                size = st.st_size
+                unit = ("B", "KB", "MB", "GB")
+                i = 0
+                while size >= 1024 and i < 3:
+                    size /= 1024.0
+                    i += 1
+                meta = f"{size:.0f}{unit[i]}, {modified}"
         except OSError:
             meta = "?"
         lines.append(f"{p.replace(home, '~')}  ({meta})")
     out = "\n".join(lines)
-    if truncated:
-        out += (f"\n\n(showing the first {_MAX_HITS}; narrow with `folder` or a "
-                f"more specific query if none of these are right)")
+    if total > len(paths):
+        # The real count, so "how many …" isn't answered with the cap.
+        out += (f"\n\n(+{total - len(paths)} more: Spotlight found {total} matches and these are "
+                f"the best {len(paths)}, closest name match first, then your own folders, then newest. "
+                f"Narrow with `folder`, `kind` or a more specific query if none of these are right.)")
     return out
 
 
@@ -80,7 +150,9 @@ def _fmt(paths: list[str], *, truncated: bool) -> str:
     "documents. `query` is what to look for ('lease', 'tax return', "
     "'screenshot'). Set `content=true` to search INSIDE documents rather than "
     "just filenames. Optionally restrict to `folder` (e.g. '~/Downloads') or a "
-    "file `kind` ('pdf', 'image', 'folder').",
+    "file `kind` ('pdf', 'image', 'folder'). Hits come best first (closest name "
+    "match, then the user's own folders, then most recently modified) with the "
+    "total Spotlight found.",
     {
         "type": "object",
         "properties": {
@@ -92,6 +164,8 @@ def _fmt(paths: list[str], *, truncated: bool) -> str:
                      "description": "Optional file type filter: pdf, image, movie, audio, document, folder, app, text."},
             "content": {"type": "boolean",
                         "description": "Search inside file contents instead of filenames. Default false."},
+            "limit": {"type": "integer",
+                      "description": f"How many of the best hits to show (default {_DEFAULT_HITS}, at most {_MAX_HITS})."},
         },
         "required": ["query"],
     },
@@ -106,7 +180,7 @@ def _fmt(paths: list[str], *, truncated: bool) -> str:
     ],
 )
 def find_files(query: str, folder: str = "", kind: str = "",
-               content: bool = False) -> str:
+               content: bool = False, limit: int = _DEFAULT_HITS) -> str:
     query = (query or "").strip()
     if not query:
         return "(error: find_files needs a `query` — what should I look for?)"
@@ -114,11 +188,11 @@ def find_files(query: str, folder: str = "", kind: str = "",
     # mdfind's query language is its own thing, not shell — but the value still
     # has to survive being embedded in a quoted expression, so a literal double
     # quote in the user's query would otherwise terminate the predicate early.
-    safe = query.replace('"', '\\"')
-    if content:
-        expr = f'kMDItemTextContent == "*{safe}*"cd'
-    else:
-        expr = f'kMDItemDisplayName == "*{safe}*"cd'
+    # Each word on its own, so "tax return 2025" finds "2025 Tax Return.pdf";
+    # rank_hits puts the names with the exact phrase first.
+    attribute = "kMDItemTextContent" if content else "kMDItemDisplayName"
+    words = _words(query) or [query]
+    expr = " && ".join(f'{attribute} == "*{_mdfind_literal(w)}*"cd' for w in words)
 
     kinds = {
         "pdf": "com.adobe.pdf", "image": "public.image", "movie": "public.movie",
@@ -160,8 +234,12 @@ def find_files(query: str, folder: str = "", kind: str = "",
         return (f"No files{where} matched {query!r} by {scope}. "
                 f"{'Try content=true to search inside documents.' if not content else ''}").strip()
 
-    truncated = len(shown) > _MAX_HITS
-    return _fmt(shown[:_MAX_HITS], truncated=truncated)
+    try:
+        top = max(1, min(int(limit or _DEFAULT_HITS), _MAX_HITS))
+    except (TypeError, ValueError):
+        top = _DEFAULT_HITS
+    ranked = rank_hits(shown, query)
+    return _fmt(ranked[:top], total=len(shown))
 
 
 # ==========================================================================

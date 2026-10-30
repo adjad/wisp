@@ -13,15 +13,30 @@ struct MarkdownPalette {
     var codeFill: Color
     var tableFill: Color
     var bodySize: CGFloat = 14
+    /// Multiplier for the renderer's fixed sizes (code, tables, chips), so a
+    /// surface's palette can follow the Text size setting.
+    var fontScale: CGFloat = 1
 
-    static let notch = MarkdownPalette(
-        text: Theme.textPrimary, secondary: Theme.textSecondary, muted: Theme.textMuted,
-        chipFill: Theme.chipFill, chipStroke: Theme.chipStroke, hairline: Theme.hairline,
-        codeFill: Color.white.opacity(0.06), tableFill: Color.white.opacity(0.04))
+    /// Computed so the colors and sizes follow Increase Contrast and the
+    /// Text size setting at the moment the view is built.
+    static var notch: MarkdownPalette {
+        var p = MarkdownPalette(
+            text: Theme.textPrimary, secondary: Theme.textSecondary, muted: Theme.textMuted,
+            chipFill: Theme.chipFill, chipStroke: Theme.chipStroke, hairline: Theme.hairline,
+            codeFill: Color.white.opacity(0.06), tableFill: Color.white.opacity(0.04))
+        p.fontScale = Theme.textScale
+        p.bodySize = 14 * Theme.textScale
+        return p
+    }
+
+    /// A fixed-size font scaled for this palette's surface.
+    func font(_ size: CGFloat, weight: Font.Weight = .regular, design: Font.Design = .default) -> Font {
+        .system(size: size * fontScale, weight: weight, design: design)
+    }
 }
 
 private struct MarkdownPaletteKey: EnvironmentKey {
-    static let defaultValue = MarkdownPalette.notch
+    static var defaultValue: MarkdownPalette { MarkdownPalette.notch }
 }
 
 extension EnvironmentValues {
@@ -65,7 +80,7 @@ struct MarkdownView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            ForEach(Array(blocks().enumerated()), id: \.offset) { _, b in
+            ForEach(Array(cachedBlocks().enumerated()), id: \.offset) { _, b in
                 switch b.kind {
                 case .code:
                     codeCard(b)
@@ -90,7 +105,7 @@ struct MarkdownView: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 10) {
                 if !b.codeLang.isEmpty {
-                    Text(b.codeLang).font(.system(size: 10, weight: .medium))
+                    Text(b.codeLang).font(palette.font(10, weight: .medium))
                         .foregroundStyle(palette.muted)
                 }
                 Spacer(minLength: 8)
@@ -107,7 +122,7 @@ struct MarkdownView: View {
                 }
             }
             Text(b.body)
-                .font(.system(size: 12.5, design: .monospaced))
+                .font(palette.font(12.5, design: .monospaced))
                 .foregroundStyle(palette.text)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -120,8 +135,8 @@ struct MarkdownView: View {
     private func codeActionButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             HStack(spacing: 4) {
-                Image(systemName: icon).font(.system(size: 9))
-                Text(label).font(.system(size: 10, weight: .medium))
+                Image(systemName: icon).font(palette.font(9))
+                Text(label).font(palette.font(10, weight: .medium))
             }
             .foregroundStyle(palette.secondary)
             .padding(.horizontal, 7).padding(.vertical, 3)
@@ -143,7 +158,7 @@ struct MarkdownView: View {
                     ForEach(0..<colCount, id: \.self) { col in
                         let cell = col < row.count ? row[col] : ""
                         Text(inline(cell))
-                            .font(.system(size: 13, weight: rowIdx == 0 ? .semibold : .regular))
+                            .font(palette.font(13, weight: rowIdx == 0 ? .semibold : .regular))
                             .foregroundStyle(rowIdx == 0 ? palette.text : palette.text.opacity(0.9))
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
@@ -165,7 +180,7 @@ struct MarkdownView: View {
             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                 HStack(alignment: .top, spacing: 7) {
                     Text(item.marker)
-                        .font(.system(size: 13)).foregroundStyle(palette.muted)
+                        .font(palette.font(13)).foregroundStyle(palette.muted)
                         .frame(minWidth: 14, alignment: .trailing)
                     Text(inline(item.text))
                         .font(.system(size: palette.bodySize))
@@ -186,6 +201,41 @@ struct MarkdownView: View {
 
     private func matches(_ re: NSRegularExpression, _ s: String) -> Bool {
         re.firstMatch(in: s, range: NSRange(s.startIndex..., in: s)) != nil
+    }
+
+    /// Parsed blocks, remembered by text. A surface re-renders every reply
+    /// it shows whenever any of its state changes (each streamed token, for
+    /// one), and parsing is the expensive part. A text is kept only once it is
+    /// asked for a second time unchanged: a finished reply is, while a reply
+    /// still streaming is new on nearly every token, so it rarely reaches the
+    /// long-lived cache and can't churn finished replies out of it.
+    private final class ParsedBlocks {
+        let blocks: [Block]
+        init(_ blocks: [Block]) { self.blocks = blocks }
+    }
+    private static let parsed: NSCache<NSString, ParsedBlocks> = {
+        let cache = NSCache<NSString, ParsedBlocks>()
+        cache.countLimit = 256
+        cache.totalCostLimit = 8_000_000   // characters of source text
+        return cache
+    }()
+    private static let seenOnce: NSCache<NSString, ParsedBlocks> = {
+        let cache = NSCache<NSString, ParsedBlocks>()
+        cache.countLimit = 32
+        return cache
+    }()
+
+    func cachedBlocks() -> [Block] {
+        let key = text as NSString
+        if let hit = Self.parsed.object(forKey: key) { return hit.blocks }
+        if let second = Self.seenOnce.object(forKey: key) {
+            Self.seenOnce.removeObject(forKey: key)
+            Self.parsed.setObject(second, forKey: key, cost: key.length)
+            return second.blocks
+        }
+        let fresh = blocks()
+        Self.seenOnce.setObject(ParsedBlocks(fresh), forKey: key)
+        return fresh
     }
 
     func blocks() -> [Block] {

@@ -27,9 +27,14 @@ protocol ChatBackend: AnyObject {
     func fullAccess() async -> Bool?
     /// The flag the service confirmed after the change; nil when it can't be confirmed.
     func setFullAccess(_ on: Bool) async -> Bool?
+    /// Why the last change applied but won't survive a restart, or nil.
+    func fullAccessSaveProblem() async -> String?
+    /// True when this launch may send turns to a cloud provider; nil when unknown.
+    func cloudInUse() async -> Bool?
 }
 
 extension ChatBackend {
+    func fullAccessSaveProblem() async -> String? { nil }
     func liveCorpusCases(selector: String) async throws -> [AssistantTaskCorpusCase] {
         throw AssistantTaskCorpusCommand.CommandError.resourceUnavailable
     }
@@ -43,6 +48,7 @@ extension ChatBackend {
     }
     func corpusPromptsResults(limit: Int) async throws -> [CorpusPromptsResult] { [] }
     func corpusPromptsExport() async throws -> (markdown: String, csv: String)? { nil }
+    func cloudInUse() async -> Bool? { nil }
 }
 
 /// Where an export landed.
@@ -112,6 +118,12 @@ final class ChatStore: ObservableObject {
     // False while Full access can't be confirmed: the composer then says so
     // rather than showing the last value, or "off", as if it were current.
     @Published private(set) var fullAccessKnown = false
+    /// Set when the service applied a change but couldn't save it: the
+    /// composer's pill then says it won't last past a restart.
+    @Published private(set) var fullAccessSaveProblem: String?
+    /// Whether answers may go to a cloud provider: nil until the service says,
+    /// and the window claims "all local" only on a confirmed false.
+    @Published private(set) var cloudInUse: Bool?
     @Published private(set) var loadingList = false
 
     let backend: ChatBackend
@@ -123,6 +135,9 @@ final class ChatStore: ObservableObject {
         self.backend = backend
         self.debug = debug
     }
+
+    /// Debug Mode, read when a view is built (it gates debug-only tools such as image attach).
+    var debugMode: Bool { debug() }
 
     // MARK: - List
 
@@ -162,12 +177,15 @@ final class ChatStore: ObservableObject {
         loadingList = true
         defer { loadingList = false }
         async let access = backend.fullAccess()
+        async let cloud: Void = refreshCloudUse()
         guard let rows = await backend.listChats() else {
             reachable = false
+            await cloud
             return
         }
         reachable = true
         applyFullAccess(await access)
+        await cloud
         var byId = Dictionary(conversations.compactMap { c in c.sessionId.isEmpty ? nil : (c.sessionId, c) },
                               uniquingKeysWith: { first, _ in first })
         for row in rows where !deletedSessionIds.contains(row.id) {
@@ -264,6 +282,8 @@ final class ChatStore: ObservableObject {
 
     /// Interprets the Ask composer command and otherwise sends a normal prompt.
     func submit(_ text: String, attachmentName: String? = nil, image: String? = nil) {
+        // Cloud settings can change in another window; re-read them as the turn starts.
+        Task { await refreshCloudUse() }
         do {
             guard let selection = try AssistantTaskCorpusCommand.resolve(text) else {
                 send(text, attachmentName: attachmentName, image: image)
@@ -593,6 +613,13 @@ final class ChatStore: ObservableObject {
         guard let i = conversation.messages.firstIndex(where: { $0.id == replyID }) else { return }
         var message = conversation.messages[i]
         let outcome = ChatTurnReducer.apply(event, to: &message)
+        // The fix button under the reply comes from the tool's own result, never
+        // the model's wording (the notch's OverlayModel reads it the same way).
+        if event.type == "tool_result", message.corpusEvaluation == nil {
+            for kind in AskAccess.kinds(event.payload["needs_access"]) where !message.needsAccess.contains(kind) {
+                message.needsAccess.append(kind)
+            }
+        }
         // Corpus replies are text and read evidence, never actionable drafts.
         if message.corpusEvaluation != nil { message.draft = nil }
         if let start = conversation.streamStart, message.meta != nil {
@@ -707,8 +734,23 @@ final class ChatStore: ObservableObject {
 
     // MARK: - Access
 
+    /// Re-read whether answers may go to a cloud provider. The only writer of
+    /// cloudInUse: a reply that arrives after a newer request's is dropped, so a
+    /// slow read from before a Settings change can't put "Local" back.
+    func refreshCloudUse() async {
+        cloudGeneration &+= 1
+        let ticket = cloudGeneration
+        let value = await backend.cloudInUse()
+        guard ticket == cloudGeneration else { return }
+        cloudInUse = value
+    }
+    private var cloudGeneration = 0
+
     func setFullAccess(_ on: Bool) {
-        Task { applyFullAccess(await backend.setFullAccess(on)) }
+        Task {
+            applyFullAccess(await backend.setFullAccess(on))
+            fullAccessSaveProblem = await backend.fullAccessSaveProblem()
+        }
     }
 
     /// Show Full access as the service confirmed it; nil marks it unconfirmed.
@@ -717,5 +759,10 @@ final class ChatStore: ObservableObject {
     func applyFullAccess(_ value: Bool?) {
         if let value { fullAccess = value }
         fullAccessKnown = value != nil
+    }
+
+    /// The same for a change that applied but couldn't be saved.
+    func applyFullAccessSaveProblem(_ problem: String?) {
+        fullAccessSaveProblem = problem
     }
 }

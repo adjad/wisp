@@ -155,8 +155,11 @@ def _start_behavior_tick() -> asyncio.Task | None:
         _behavior_task = asyncio.get_running_loop().create_task(_age_out_only(behavior_runtime))
         return _behavior_task
     # behavior_runtime.tick catches every exception itself, so the task never
-    # ends with an unretrieved error.
-    _behavior_task = asyncio.get_running_loop().create_task(behavior_runtime.tick(assistant_store, hub))
+    # ends with an unretrieved error. Its model calls (the interpreter and the
+    # phraser) are background work; the task inherits the tier.
+    from service.inference.power_tier import BACKGROUND, power_tier
+    with power_tier(BACKGROUND):
+        _behavior_task = asyncio.get_running_loop().create_task(behavior_runtime.tick(assistant_store, hub))
     return _behavior_task
 
 
@@ -245,18 +248,35 @@ async def run() -> None:
         # The proactive engine (service/proactive/cycle.py): triage, judge and
         # prepare "Before you ask" cards on the resident model, single-flight,
         # only while nobody is waiting, never alongside a gist call. About
-        # hourly, at the first tick the Mac has sat idle 5 min, it regenerates
-        # the whole Brief (cards, then every gist): cycle.idle_refresh.
+        # hourly, at the first tick the Mac has sat idle 10 min, it regenerates
+        # the whole Brief (cards, then every gist) when something changed:
+        # cycle.idle_refresh.
         try:
             from service.proactive import cycle as proactive_cycle
             proactive_cycle.schedule_tick()
         except Exception:  # noqa: BLE001 — the Brief keeps its last cards
+            pass
+        # Mail memory (service/mail_memory): walks 90 days of mail one email per tick,
+        # only while nobody is waiting, for long-term reminders; the Brief shows the
+        # important ones (importance.py).
+        try:
+            from service.mail_memory import runner as mail_memory
+            mail_memory.schedule_tick()
+        except Exception:  # noqa: BLE001 — never break the scheduler loop
             pass
         # The chief-of-staff loop (service/assistant/checkin.py): carry
         # unfinished tasks onto today each morning, and in the evening ask how
         # the day went, once, when the app is listening. No model, no sends.
         try:
             await _checkin_tick()
+        except Exception:  # noqa: BLE001 — never break the scheduler loop
+            pass
+        # Whether the user is away and whether the Mac is on battery, for the
+        # GPU caps, plus a GPU baseline for the look each capped request takes
+        # (power_tier): read off the loop here.
+        try:
+            from service.inference.power_tier import refresh_away
+            await asyncio.to_thread(refresh_away)
         except Exception:  # noqa: BLE001 — never break the scheduler loop
             pass
         await asyncio.sleep(TICK_S)
@@ -433,15 +453,95 @@ def _slot_delivered(day: date, part: str) -> bool:
     return _brief_date() == day or (completed is not None and completed >= iso)
 
 
+# Written once, by the app, when first-run onboarding reaches its last step:
+# the permissions were answered or skipped and About you was done or skipped.
+ONBOARDING_ANSWERED_KEY = "install:onboarding_answered_at"
+# The first Daily Summary does not wait for a clock hour. Once onboarding is
+# answered (the app only reports that when the model can answer) the morning run
+# is due at once, at any hour: a person who finishes setup at 00:26 should open
+# the notch to a Brief, not to "Building your first Brief" until 5 AM.
+#
+# Day rule: a Brief composed early counts as the CALENDAR DAY ON WHICH IT IS
+# COMPOSED (its key is daily_brief:<that date>:morning). At 00:30 that is the new
+# day's morning run, so the 8 AM run the same day finds it delivered (no
+# duplicate), the evening run still follows, and the next day's morning run is a
+# different key and runs normally. It happens once per install: after any
+# summary has ever been queued, the ordinary schedule is the only schedule.
+# The window is six hours from when onboarding was answered (the marker), not from
+# first launch: setup can be set aside while the model downloads, so the answer may
+# arrive hours after the first launch. An upgraded install has no marker, and a
+# stale marker is outside the window, so neither triggers it.
+FIRST_RUN_WINDOW_S = 6 * 3600
+
+
+def _onboarding_answered() -> bool:
+    return assistant_store.completion(ONBOARDING_ANSWERED_KEY) is not None
+
+
+def _early_first_brief_due(now: datetime) -> bool:
+    """Whether the install's first Daily Summary is due ahead of its hour."""
+    if not _onboarding_answered():
+        return False
+    try:
+        answered = float(assistant_store.completion(ONBOARDING_ANSWERED_KEY))
+    except (TypeError, ValueError):
+        return False
+    if not 0 <= now.timestamp() - answered < FIRST_RUN_WINDOW_S:
+        return False
+    # Events may be pruned and acknowledgements land in completions: either says "delivered".
+    receipts = ("daily_brief", "daily_brief:morning", "daily_brief:evening", _DAY_ONE_KEY)
+    return not (assistant_store.any_daily_brief()
+                or any(assistant_store.completion(key) is not None for key in receipts))
+
+
+def kick_first_brief() -> None:
+    """Called when the app reports onboarding answered: start the first Brief now
+    rather than at the loop's next tick.
+
+    Starts the same single-flight run the loop would start; it still goes through
+    _start_daily_brief (deduped by its day and run key), so it cannot repeat. The
+    Brief is model-free and does not use the mail gists, so it needs neither gap
+    reset. The proactive cycle and the gist refresh stay on their own gaps: the
+    resident model cannot run calls in parallel, and resetting both would start
+    them together."""
+    try:
+        _start_daily_brief()
+    except Exception:  # noqa: BLE001 — the loop starts it on its next tick
+        pass
+
+
 def _pending_slot(now: datetime) -> tuple[date, str] | None:
     """The run to start now, if any: due, not yet delivered, retries left."""
     from service.config import get_daily_summary_times
     part = _due_slot(now, get_daily_summary_times())
+    if part is None and _early_first_brief_due(now):
+        part = "morning"   # at its own hour this is already delivered: no second Brief
     if part is None or _slot_delivered(now.date(), part):
         return None
     if _brief_attempts.get((now.date(), part), 0) >= _MAX_BRIEF_ATTEMPTS:
         return None
     return now.date(), part
+
+
+def first_brief_building(now: datetime | None = None) -> bool:
+    """Whether the first launch day's first Daily Summary is on its way: it is
+    being composed, or it is due and not delivered with retries left. The app's
+    Brief says "Building your first Brief…" instead of nothing while this holds.
+    False on any later day, once a run was delivered, and once its retries ran
+    out (the Brief then names the summary times instead). Also False while the
+    run is held for first-launch permissions, since nothing is being built
+    then. A run that stood down for the user's own turn still counts: it
+    starts again as soon as that turn ends."""
+    now = now or datetime.now()
+    first = assistant_store.first_launch_at()
+    if first is None or (datetime.fromtimestamp(first).date() != now.date()
+                         and not _early_first_brief_due(now)):
+        return False
+    if any(_slot_delivered(now.date(), part) for part in ("morning", "evening")):
+        return False
+    if _brief_task is not None and not _brief_task.done():
+        return True
+    return _pending_slot(now) is not None and not _awaiting_first_permission(now.timestamp())
 
 
 _brief_task: asyncio.Task | None = None
@@ -490,6 +590,10 @@ def _never_answered_sources() -> list[str]:
 def _awaiting_first_permission(now_ts: float) -> bool:
     first = assistant_store.first_launch_at()
     if first is None or not 0 <= now_ts - first < FIRST_LAUNCH_GRACE_S:
+        return False
+    if _onboarding_answered():
+        # They went through the permissions step, so a source still never
+        # answered was skipped on purpose. The day-one rebuild picks it up later.
         return False
     return bool(_never_answered_sources())
 
