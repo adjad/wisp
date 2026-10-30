@@ -147,3 +147,30 @@ def test_an_all_caps_word_reads_as_a_ticker_but_the_search_stays_the_users_words
     assert mo.public_fact_question("what's the price of AAPL?")
     assert not mo.public_fact_question("what's the price of dana?")
     assert mo.public_fact_query_problem("PRIYA stock price 4471", "whats the PRIYA stock price")
+
+
+def test_a_guessed_price_api_is_steered_to_search_without_asking(synthetic):
+    """dev8 live check: "what's the price of bitcoin right now?" fetched a price API
+    and sat waiting for the user's OK. Before any search, an untyped fetch is refused
+    with a hint, and the search answers without a prompt."""
+    effects, register = synthetic
+    _web_tools(register)
+    approval = Approval(False)
+    _, events, _ = run([[call(DISCOVERY_TOOL, families=["public_web"], tools=["web_fetch", "web_search"])],
+         [call("web_fetch", url="https://api.example.invalid/price?ids=bitcoin")],
+         [call("web_search", query="bitcoin price")], "Bitcoin is about $70,000."],
+        prompt="what's the price of bitcoin right now?", history=PRIVATE_HISTORY, approval=approval)
+    assert effects == [("web_search", {"query": "bitcoin price"})] and not approval.calls
+    assert any("Search first" in str(e) for e in events)
+
+
+def test_a_page_from_the_search_still_needs_confirmation(synthetic):
+    effects, register = synthetic
+    _web_tools(register)
+    approval = Approval(False)
+    run([[call(DISCOVERY_TOOL, families=["public_web"], tools=["web_fetch", "web_search"])],
+         [call("web_search", query="bitcoin price")],
+         [call("web_fetch", url="https://news.example.invalid/bitcoin")], "Synthetic reply."],
+        prompt="what's the price of bitcoin right now?", history=PRIVATE_HISTORY, approval=approval)
+    assert [n for n, _ in effects] == ["web_search"]
+    assert [c["tool"] for c in approval.calls] == ["web_fetch"]
