@@ -2,14 +2,20 @@
 timeout (service.idle.get_idle_minutes()). Purely a memory-reclaim measure —
 an unloaded model just reloads, at the usual cold-start cost, the next time
 it's actually needed.
+
+The keep-warm chat model is exempt from that timer; "Save memory"
+(service.memory_saver) decides when it goes, on the same poll.
 """
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 
-from service import idle
+from service import idle, memory_saver
 from service.inference.omlx_client import OMLXClient
+
+log = logging.getLogger(__name__)
 
 
 async def run(client: OMLXClient, poll_seconds: float = 30.0) -> None:
@@ -17,6 +23,10 @@ async def run(client: OMLXClient, poll_seconds: float = 30.0) -> None:
         await asyncio.sleep(poll_seconds)
         if not getattr(client, "managed", True):
             continue
+        try:
+            await memory_saver.tick(client)
+        except Exception as exc:  # noqa: BLE001 — oMLX briefly unreachable isn't fatal
+            log.debug("memory saver tick failed: %s", type(exc).__name__)
         minutes = idle.get_idle_minutes()
         if minutes <= 0:
             continue

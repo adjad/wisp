@@ -61,6 +61,23 @@ enum QuickSettingsText {
         + "engine is capped; "
         + "with your own oMLX app, nothing is."
 
+    /// "Save memory"'s line, neutral like Save power's.
+    static func saveMemory(on: Bool?, pending: Bool) -> String {
+        if pending { return "Updating · waiting for confirmation…" }
+        switch on {
+        case true?: return "Frees Wisp's model memory while you're not using it"
+        case false?: return "Wisp's model stays loaded"
+        case nil: return "Not confirmed"
+        }
+    }
+
+    static let saveMemoryHelp = "Wisp's model uses about 5.5 GB of memory. After 30 minutes without using "
+        + "Wisp, or sooner when your Mac runs low on memory, Wisp unloads it so other apps get that "
+        + "memory back. Research and Smart Search keep it loaded while they run. Opening Ask or the "
+        + "Wisp window loads it again while you type; a question asked right away waits about 6 "
+        + "seconds. While it's unloaded, the Brief and other background work catch up about once an "
+        + "hour. Off keeps the model loaded, except after you hide the notch with its X."
+
     /// Learn my routines' line, and the trailing "stays on this Mac" when
     /// nothing learned is sent anywhere.
     static func learning(enabled: Bool?, changing: Bool, status: String?,

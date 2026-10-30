@@ -11,6 +11,24 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(unconfirmed.status == nil && unconfirmed.rest.hasPrefix("Not confirmed"), "unconfirmed Full access is never off")
     check(QuickSettingsText.fullAccess(on: true, pending: true).status == nil, "a pending change shows no status word")
 
+    // Save memory: neutral lines; unconfirmed is never "off"; the help names the
+    // 5.5 GB, both timers, the reload on opening Ask, the ~6 s wait, the hourly
+    // catch-up and what off means.
+    check(QuickSettingsText.saveMemory(on: true, pending: false).contains("memory")
+          && QuickSettingsText.saveMemory(on: true, pending: false).contains("not using"), "Save memory on")
+    check(QuickSettingsText.saveMemory(on: false, pending: false) == "Wisp's model stays loaded", "Save memory off")
+    check(QuickSettingsText.saveMemory(on: nil, pending: false) == "Not confirmed", "unconfirmed Save memory is never off")
+    check(QuickSettingsText.saveMemory(on: true, pending: true).hasPrefix("Updating"), "a pending Save memory change waits")
+    let memoryHelp = QuickSettingsText.saveMemoryHelp
+    check(memoryHelp.contains("5.5 GB") && memoryHelp.contains("30 minutes without using Wisp")
+          && memoryHelp.contains("sooner when your Mac runs low on memory"),
+          "Save memory help names the size and when it unloads")
+    check(memoryHelp.contains("Research and Smart Search keep it loaded"), "Save memory help says running work holds it")
+    check(memoryHelp.contains("Opening Ask") && memoryHelp.contains("6 seconds") && memoryHelp.contains("once an hour"),
+          "Save memory help names the reload, the wait and the catch-up")
+    check(memoryHelp.contains("Off keeps the model loaded, except after you hide the notch"),
+          "Save memory help says what off still does")
+
     // Save power: says it saves power on battery and while away; unconfirmed
     // is never "off"; the help names the 15 W and 10 W caps and what they cover
     // (background work always, the Brief after 10 minutes away), that light GPU

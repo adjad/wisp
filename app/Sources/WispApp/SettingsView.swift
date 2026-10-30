@@ -225,6 +225,8 @@ final class SettingsLoader: ObservableObject {
     @Published private(set) var fullAccessSaveProblem: String?
     @Published private(set) var saveWhenAway: Bool?
     @Published private(set) var saveWhenAwayPending = false
+    @Published private(set) var saveMemory: Bool?
+    @Published private(set) var saveMemoryPending = false
     // The Daily Summary's morning and evening hours, as the service confirmed them.
     @Published private(set) var briefTimes: WispClient.BriefTimes?
     @Published private(set) var briefTimesPending = false
@@ -1092,6 +1094,7 @@ final class SettingsLoader: ObservableObject {
     func refreshQuick() async {
         await refreshFullAccess()
         await refreshSaveWhenAway()
+        await refreshSaveMemory()
         await refreshBehavior()
         await refreshBriefTimes()
     }
@@ -1113,6 +1116,25 @@ final class SettingsLoader: ObservableObject {
             if confirmed == nil { confirmed = await self.client.saveWhenAwayState() }
             self.saveWhenAway = confirmed
             self.saveWhenAwayPending = false
+        }
+    }
+
+    func refreshSaveMemory() async {
+        guard !saveMemoryPending else { return }
+        let confirmed = await client.saveMemoryState()
+        guard !saveMemoryPending else { return }
+        saveMemory = confirmed
+    }
+
+    /// One change at a time, like Save power; the row shows what the service confirmed.
+    func setSaveMemory(_ on: Bool) {
+        guard !saveMemoryPending else { return }
+        saveMemoryPending = true
+        Task {
+            var confirmed = await self.client.setSaveMemory(on)
+            if confirmed == nil { confirmed = await self.client.saveMemoryState() }
+            self.saveMemory = confirmed
+            self.saveMemoryPending = false
         }
     }
 

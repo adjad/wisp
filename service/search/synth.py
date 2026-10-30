@@ -434,6 +434,16 @@ _ANSWER_TIMEOUT_S = 90.0
 
 
 async def answer(client: OMLXClient, question: str, chunks: list[Chunk], picks: list[int], **kwargs) -> dict:
+    # A search answer is the user using Wisp: it holds the chat model while it runs
+    # and counts as intent after (service/memory_saver.py).
+    from service import memory_saver
+    memory_saver.note_intent()
+    with memory_saver.hold():
+        return await _answer_upgraded(client, question, chunks, picks, **kwargs)
+
+
+async def _answer_upgraded(client: OMLXClient, question: str, chunks: list[Chunk], picks: list[int],
+                           **kwargs) -> dict:
     # Explicit long-document upgrades use the quality role. Ordinary search
     # stays on the supplied local client and retains lexical results on failure.
     if kwargs.get("upgrade_model"):
