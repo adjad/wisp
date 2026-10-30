@@ -1516,6 +1516,19 @@ def _tool_turn_messages(sid: str, user_msg: dict[str, Any], *, max_tokens: int,
     return build_messages(sid, max_tokens=max_tokens) + [user_msg]
 
 
+def _plain_chat_skill_blocks(prompt: str, active_skill: str, *, role: str,
+                             literal_envelope: bool) -> str:
+    """The skill text a tool-free chat reply gets: the active conversational
+    workflow's body, then every always-on style skill (the humanizer behind
+    Settings › Human-sounding replies). Neither rides a literal envelope (the
+    prompt is quoted text to transform, not a request), and the style skills
+    skip "coding", whose prose rules (no dashes) would bleed into code."""
+    from service.skills import always_skills_block, selected_skill_block
+    if literal_envelope:
+        return ""
+    return selected_skill_block(prompt, active_skill) + (always_skills_block() if role != "coding" else "")
+
+
 def _local_provider_direct_messages(role: str, prompt: str) -> list[dict[str, str]]:
     """Send only the current prompt and static role guidance to an external local app."""
     return [
@@ -2830,15 +2843,14 @@ async def agent(body: dict[str, Any]):
                     # Do not automatically disclose stored conversation or memory.
                     msgs = _local_provider_direct_messages(decision.role, prompt)
                 else:
-                    from service.skills import always_skills_block, selected_skill_block
                     # Who the user is, in their own words (service/memory/profile.py):
                     # Wisp's on-Mac model, or any model under Cloud "Everything";
                     # never a role bound to an optional cloud model.
                     sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
                             + _profile_block(target.endpoint)
                             + memory_block(query=prompt, mail_facts=_mail_facts_ride(target.endpoint))
-                            + ("" if literal_envelope else selected_skill_block(prompt, active_skill))
-                            + (always_skills_block() if not literal_envelope and decision.role != "coding" else "")
+                            + _plain_chat_skill_blocks(prompt, active_skill, role=decision.role,
+                                                       literal_envelope=literal_envelope)
                             + now_line())
                     msgs = [{"role": "system", "content": sysp}] + messages
                 # "fast" is TRIVIAL_RE's positive match only (greetings, thanks,

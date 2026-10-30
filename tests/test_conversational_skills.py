@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -20,7 +21,7 @@ def loaded_bundled_skills(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         skills._skills = original
 
 
-def test_wisp_ships_only_the_two_requested_workflows(loaded_bundled_skills) -> None:
+def test_wisp_ships_two_workflows_a_tool_skill_and_a_style_skill(loaded_bundled_skills) -> None:
     bundled = {name for name, skill in loaded_bundled_skills.items()
                if skill.bundled}
     # mac-controls is a tool skill (fixed device commands), not a workflow; humanizer
@@ -34,17 +35,21 @@ def test_wisp_ships_only_the_two_requested_workflows(loaded_bundled_skills) -> N
     assert workflows == {"interview-me", "idea-refine"}
 
 
-def test_bundled_skill_toggle_creates_a_user_override(
+def test_bundled_skill_toggle_keeps_the_bundled_skill(
         loaded_bundled_skills, tmp_path: Path) -> None:
+    """The on/off is saved beside the user's skills; the skill itself stays the
+    bundled one (it used to be copied out, which froze its text: #414 audit)."""
     assert skills.get("interview-me").bundled is True
 
     assert skills.set_enabled("interview-me", False) is True
 
-    overridden = skills.get("interview-me")
-    assert overridden is not None
-    assert overridden.enabled is False
-    assert overridden.bundled is False
-    assert overridden.path == tmp_path / "user-skills" / "interview-me"
+    toggled = skills.get("interview-me")
+    assert toggled is not None
+    assert toggled.enabled is False
+    assert toggled.bundled is True
+    assert not (tmp_path / "user-skills" / "interview-me").exists()
+    skills.load()
+    assert skills.get("interview-me").enabled is False
 
 
 def test_interview_activation_persists_and_can_stop(loaded_bundled_skills) -> None:
@@ -134,10 +139,53 @@ def test_the_human_sounding_replies_switch_has_a_skill_to_turn_on(loaded_bundled
 
     assert skills.set_enabled("humanizer", True) is True
     on = skills.get("humanizer")
-    assert on.enabled is True and on.path == tmp_path / "user-skills" / "humanizer"
+    # Still the bundled skill: no copy that would freeze it at this release's text.
+    assert on.enabled is True and on.bundled and on.path == skills.BUNDLED_SKILLS_DIR / "humanizer"
+    assert not (tmp_path / "user-skills" / "humanizer").exists()
     assert "--- humanizer ---" in skills.always_skills_block()
     assert {s["name"]: s["enabled"] for s in (x.as_dict() for x in skills.all_skills().values())}["humanizer"] is True
 
     assert skills.set_enabled("humanizer", False) is True
     assert skills.get("humanizer").enabled is False
     assert "humanizer" not in skills.always_skills_block()
+
+
+def test_a_bundled_skill_s_switch_survives_a_reload_and_follows_bundle_edits(
+        loaded_bundled_skills, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """#414 audit: turning a bundled skill on copied it to ~/.moe/skills, so the
+    user kept that copy's text after later releases changed the bundled one."""
+    bundle = tmp_path / "bundle"
+    shutil.copytree(skills.BUNDLED_SKILLS_DIR / "humanizer", bundle / "humanizer")
+    monkeypatch.setattr(skills, "BUNDLED_SKILLS_DIR", bundle)
+    skills.load()
+    assert skills.set_enabled("humanizer", True) is True
+    md = bundle / "humanizer" / "SKILL.md"
+    md.write_text(md.read_text().replace("Answer first.", "Answer first, always."))
+    skills.load()
+    humanizer = skills.get("humanizer")
+    assert humanizer.enabled is True and "Answer first, always." in humanizer.body
+
+
+def test_the_style_skill_stays_out_of_tool_turns(loaded_bundled_skills) -> None:
+    """#414 audit: the humanizer applies to plain chat only, so the agent's catalog,
+    an @humanizer mention and use_skill don't bring it into a tool-using turn."""
+    import asyncio
+    from service.skills.tools import use_skill
+    assert skills.set_enabled("humanizer", True) is True
+    block = skills.skills_context_block("@humanizer reword this")
+    assert "humanizer" not in block
+    assert "humanizer" not in skills.turn_skill_names("@humanizer reword this")
+    assert "nothing to load" in asyncio.run(use_skill("humanizer"))
+    assert "--- humanizer ---" in skills.always_skills_block()
+
+
+@pytest.mark.parametrize(("role", "literal", "styled"), [
+    ("general", False, True), ("coding", False, False), ("general", True, False),
+])
+def test_plain_chat_style_skips_coding_and_literal_envelopes(loaded_bundled_skills, role, literal, styled) -> None:
+    """#414 audit: the dash and wording rules would bleed into code, and a literal
+    envelope is quoted text to transform, so neither gets the style skill."""
+    from service.main import _plain_chat_skill_blocks
+    assert skills.set_enabled("humanizer", True) is True
+    block = _plain_chat_skill_blocks("hi there", "", role=role, literal_envelope=literal)
+    assert ("--- humanizer ---" in block) is styled

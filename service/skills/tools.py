@@ -225,4 +225,8 @@ async def use_skill(name: str) -> str:
         return f"(the '{skill.name}' skill is broken: {skill.error})"
     if not skill.enabled:
         return f"(the '{skill.name}' skill is turned off — the user can enable it in Settings)"
+    if skill.always:
+        # A reply style, added to plain chat replies by Wisp itself; a
+        # tool-using turn doesn't follow it (skills.Skill.always).
+        return f"(the '{skill.name}' skill is a reply style Wisp applies to plain chat replies on its own; there's nothing to load)"
     return f"Instructions from the '{skill.name}' skill:\n\n{skill.body}"
