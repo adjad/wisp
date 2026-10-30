@@ -200,6 +200,12 @@ def _is_holiday_calendar_item(item: dict) -> bool:
     """
     if item.get("source") != "calendar":
         return False
+    source_id = str(item.get("source_id") or "")
+    if source_id.startswith("gcal:"):
+        # A Google row is read-only to Wisp whatever its calendar, so only
+        # Google's own holiday calendars count, never a name (dev8 delta review).
+        from service.google_calendar_source import HOLIDAY_MARK
+        return source_id.split(":", 2)[-1].startswith(HOLIDAY_MARK)
     calendar_names = (item.get("context"), item.get("calendar"),
                       item.get("calendar_name"))
     return any(_HOLIDAY_CALENDAR_RE.search(str(name or ""))
