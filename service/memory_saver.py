@@ -17,25 +17,34 @@ reason to unload.
 IMPORTANT rules:
 - Only keep-warm models (the chat model) are parked here. Every other model
   keeps the plain idle timer in service/idle_unloader.py.
-- Never unload while a generation runs on the model or a user's turn is in
-  flight. Parking never refuses a turn: a turn loads the model on demand, as it
-  always has ("Loading model… (Ns)").
+- Never unload while a generation runs on the model, a user's turn is in
+  flight, or a hold() is open. Parking never refuses a turn: a turn loads the
+  model on demand, as it always has ("Loading model… (Ns)").
+- Work the user started that loads the model itself between calls (a Research
+  job, a Smart Search answer) runs under hold(): its steps leave the model idle
+  between calls (web fetches), and parking it there would reload it every step.
 - Background model work is resident-only (mail_gists._resident_reply,
   mail_memory's _stand_down, memory capture, the behavior phraser all stand down
   when the model isn't loaded), so parking pauses it with no change to any job.
   A batch window loads the model about once an hour so that work catches up,
   then parks it again. Background calls never extend a park timer: only the
   user's turns and intent do.
-- Memory pressure (macOS warn or critical) parks after PRESSURE_GRACE_S and
-  holds batch windows off until it eases.
+- Memory pressure parks early: critical after PRESSURE_GRACE_S, warn (routine
+  on a 16 GB Mac) after WARN_GRACE_S. Either holds batch windows off.
 - Intent (the app opening Ask or the Wisp window, the Ask hotkeys) loads the
   model early so the reload hides behind typing, and holds it INTENT_HOLD_S.
 - The "Save memory" switch (on by default) turns parking and batch windows off;
-  the chat model then stays resident as before.
+  the chat model then stays resident as before (the notch's X still unloads it,
+  as it did before Save memory, but that no longer counts as parked).
+- A resident-only background caller checks residency, then awaits before its
+  call registers in idle.in_flight; a tick in that gap unloads the model and the
+  call reloads it. That costs one load and heals on the next tick; it is not
+  closed here.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import ctypes
 import ctypes.util
 import json
@@ -54,17 +63,21 @@ log = logging.getLogger(__name__)
 PARK_AFTER_S = 30 * 60
 # Intent without a turn keeps the model this long.
 INTENT_HOLD_S = 5 * 60
-# Under memory pressure, park once the user has been quiet this long.
+# Under memory pressure, park once the user has been quiet this long: critical
+# soon, warn (which a 16 GB Mac reaches in ordinary use) later.
 PRESSURE_GRACE_S = 2 * 60
+WARN_GRACE_S = 10 * 60
 # While parked, a batch window opens at most this often.
 BATCH_EVERY_S = 60 * 60
 # A window stays open at least BATCH_MIN_S, closes once background calls have
 # been quiet for BATCH_QUIET_S, and never stays open past BATCH_MAX_S. The minimum
 # outlasts the longest wait a job takes after a "not loaded" stand-down (the
 # proactive cycle's IDLE_GAP_S of 300 s, plus the scheduler's 30 s tick), so every
-# job gets its turn; mail_gists and the mail memory walk retry after 60 s.
+# job gets its turn. The quiet gap outlasts the mail memory walk's wait after
+# someone else's call (QUIET_AFTER_USE_S 120 s + BUSY_GAP_S 60 s + a 30 s tick),
+# so the walk isn't starved behind the proactive cycle.
 BATCH_MIN_S = 6 * 60
-BATCH_QUIET_S = 2 * 60
+BATCH_QUIET_S = 4 * 60
 BATCH_MAX_S = 15 * 60
 
 SETTINGS_PATH = MOE_DIR / "memory_saver" / "settings.json"
@@ -142,6 +155,31 @@ class _State:
 
 _state = _State(started=time.monotonic())
 _prewarm_task: asyncio.Task | None = None
+_holds = 0
+
+
+@contextlib.contextmanager
+def hold():
+    """Keep the chat model resident while user-started work runs (Research, a
+    Smart Search answer). A counter: holds overlap."""
+    global _holds
+    _holds += 1
+    try:
+        yield
+    finally:
+        _holds = max(0, _holds - 1)
+
+
+def held() -> bool:
+    return _holds > 0
+
+
+def note_notch_hidden(now: float | None = None) -> None:
+    """/unload_agent (the notch's X) unloaded the chat model. Parked only with the
+    switch on: off, the old behavior stands (unloaded until next use) rather than
+    a reload 30 s later."""
+    if save_memory():
+        note_parked("notch hidden", now)
 
 
 def note_intent(now: float | None = None) -> None:
@@ -174,6 +212,7 @@ def decide(*, now: float, loaded: bool, busy: bool, pressure: str, enabled: bool
         return LEAVE
     since_user = min(_since_turn(now), _since_intent(now))
     tight = pressure in (WARN, CRITICAL)
+    grace = PRESSURE_GRACE_S if pressure == CRITICAL else WARN_GRACE_S
     if loaded:
         if busy:
             return KEEP
@@ -184,7 +223,7 @@ def decide(*, now: float, loaded: bool, busy: bool, pressure: str, enabled: bool
             if tight or age >= BATCH_MAX_S or (age >= BATCH_MIN_S and quiet):
                 return CLOSE_WINDOW
             return KEEP
-        if tight and since_user >= PRESSURE_GRACE_S:
+        if tight and since_user >= grace:
             return PARK
         if _since_turn(now) >= PARK_AFTER_S and _since_intent(now) >= INTENT_HOLD_S:
             return PARK
@@ -214,7 +253,7 @@ async def tick(client, now: float | None = None, *, pressure: str | None = None)
         _state.window_started = None   # the user came back during the window: theirs now
     if loaded and _state.window_started is None:
         _state.parked = False          # a turn, intent or the switch loaded it again
-    busy = idle.foreground_busy() or idle.in_flight(model) > 0
+    busy = idle.foreground_busy() or idle.in_flight(model) > 0 or held()
     enabled = save_memory()
     if not enabled:
         # Off means resident as before: bring back a model Wisp parked.
@@ -229,9 +268,6 @@ async def tick(client, now: float | None = None, *, pressure: str | None = None)
     action = decide(now=now, loaded=loaded, busy=busy, pressure=level, enabled=enabled,
                     last_used=idle.last_used(model))
     if action in (PARK, CLOSE_WINDOW):
-        # Looked again right before the unload: a turn may have started since.
-        if idle.foreground_busy() or idle.in_flight(model) > 0:
-            return KEEP
         await client.unload(model)
         idle.forget(model)
         note_parked("pressure" if level in (WARN, CRITICAL) else
@@ -276,9 +312,25 @@ async def prewarm(client) -> str:
     return "loading"
 
 
+async def settle_prewarm(timeout: float = 15.0) -> None:
+    """Wait for a prewarm load in flight, so a turn's ensure_only doesn't POST a
+    second load of the same model beside it (or evict others mid-load). Only on
+    the prewarm's own loop; the behavior phraser runs a loop of its own."""
+    task = _prewarm_task
+    if task is None or task.done():
+        return
+    try:
+        if task.get_loop() is not asyncio.get_running_loop():
+            return
+        await asyncio.wait({task}, timeout=timeout)
+    except Exception:  # noqa: BLE001 — never hold a turn up on this
+        return
+
+
 def state() -> dict:
     now = time.monotonic()
     return {"save_memory": save_memory(), "parked": _state.parked,
             "batch_window": _state.window_started is not None,
-            "pressure": pressure_level(), "minutes_since_turn": round(_since_turn(now) / 60, 1),
+            "pressure": pressure_level(), "held": held(),
+            "minutes_since_turn": round(_since_turn(now) / 60, 1),
             "reason": _state.last_reason}

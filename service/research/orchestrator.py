@@ -658,8 +658,15 @@ class ResearchManager:
         self.store.update_job(job_id, state="running", cancel_requested=False,
                               pause_requested=False, error="")
         self.store.event(job_id, "status", {"stage": "starting", "text": "Research started"})
-        self._tasks[job_id] = asyncio.create_task(self._run(job_id, client))
+        self._tasks[job_id] = asyncio.create_task(self._run_held(job_id, client))
         return self.detail(job_id)
+
+    async def _run_held(self, job_id: str, client: OMLXClient) -> None:
+        """A job loads the model before each call and idles it during fetches, so
+        Save memory must not park it mid-run (service/memory_saver.py hold())."""
+        from service import memory_saver
+        with memory_saver.hold():
+            await self._run(job_id, client)
 
     def cancel(self, job_id: str) -> dict:
         job = self.store.get_job(job_id)

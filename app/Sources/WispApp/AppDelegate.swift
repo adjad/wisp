@@ -1235,8 +1235,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // the bar or away by any route (collapse, Search closing, dismiss), it is unpinned.
         if surface == .bar || surface == .hidden { model.pinned = false }
         // Opening Ask (hover, ⌥Space, ⌥⇧Space, the menu-bar icon): a model Save
-        // memory unloaded starts loading while the user types.
-        if surface == .chat { client.prewarmModel() }
+        // memory unloaded starts loading while the user types. Not while setup holds
+        // the app: the model may not be downloaded yet.
+        if surface == .chat && !modelGateHolds { client.prewarmModel() }
         cancelScheduledCollapse()
         cancelHoverDwell()
         if surface != .search {

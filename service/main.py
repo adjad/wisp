@@ -1386,10 +1386,10 @@ async def unload_agent() -> dict[str, Any]:
     if model in loaded:
         await client.unload(model)
         if model == role_to_model("fast"):
-            # Every text role is the chat model now, so this parks it: Save memory's
-            # hourly batch window lets background work catch up (service/memory_saver.py).
+            # Every text role is the chat model now, so with Save memory on this parks
+            # it and the hourly batch window lets background work catch up.
             from service import memory_saver
-            memory_saver.note_parked("notch hidden")
+            memory_saver.note_notch_hidden()
         return {"unloaded": [model]}
     return {"unloaded": []}
 

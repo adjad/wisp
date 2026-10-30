@@ -41,6 +41,7 @@ def clean(monkeypatch, tmp_path):
     monkeypatch.setattr(M, "SETTINGS_PATH", tmp_path / "memory_saver" / "settings.json")
     monkeypatch.setattr(M, "_state", M._State(started=0.0))
     monkeypatch.setattr(M, "_prewarm_task", None)
+    monkeypatch.setattr(M, "_holds", 0)
     monkeypatch.setattr(M, "pressure_level", lambda: M.NORMAL)
     monkeypatch.setattr(idle, "_foreground_turns", 0)
     monkeypatch.setattr(idle, "_last_turn", None)
@@ -94,12 +95,22 @@ def test_intent_holds_the_model_five_minutes():
     assert tick(c, 33 * MIN) == M.PARK
 
 
-def test_memory_pressure_parks_after_two_quiet_minutes():
+def test_critical_pressure_parks_after_two_quiet_minutes():
     c = FakeClient()
     idle._last_turn = 10 * MIN
-    assert tick(c, 11 * MIN, pressure=M.WARN) == M.KEEP      # the user just asked
+    assert tick(c, 11 * MIN, pressure=M.CRITICAL) == M.KEEP  # the user just asked
     assert tick(c, 12 * MIN, pressure=M.CRITICAL) == M.PARK
     assert M._state.last_reason == "pressure"
+
+
+def test_warn_pressure_waits_ten_minutes():
+    # Warn is routine on a 16 GB Mac: parking 2 minutes after every question would
+    # make most questions pay the reload.
+    c = FakeClient()
+    idle._last_turn = 10 * MIN
+    assert tick(c, 12 * MIN, pressure=M.WARN) == M.KEEP
+    assert tick(c, 19 * MIN, pressure=M.WARN) == M.KEEP
+    assert tick(c, 20 * MIN, pressure=M.WARN) == M.PARK
 
 
 def test_unknown_pressure_never_parks_early():
@@ -125,12 +136,11 @@ def test_an_hour_after_parking_a_window_loads_the_model_and_closes_when_quiet():
     # A quiet window still waits BATCH_MIN_S, so a job that stood down just
     # before it opened (the proactive cycle waits 300 s) gets its turn.
     assert tick(c, 95 * MIN) == M.KEEP
-    # Background work runs; the window closes 2 quiet minutes after it.
+    # Background work runs; the window closes 4 quiet minutes after it.
     idle._last_used[MODEL] = 95 * MIN
-    assert tick(c, 96 * MIN) == M.KEEP
-    assert tick(c, 97 * MIN) == M.CLOSE_WINDOW and MODEL not in c.loaded
+    assert tick(c, 98 * MIN) == M.KEEP
+    assert tick(c, 99 * MIN) == M.CLOSE_WINDOW and MODEL not in c.loaded
     assert M._state.parked and M._state.last_reason == "batch done"
-    assert M.BATCH_MIN_S > 300 + 30
     # The next window is an hour after the last one opened.
     assert tick(c, 149 * MIN) == M.LEAVE
     assert tick(c, 150 * MIN) == M.OPEN_WINDOW
@@ -290,3 +300,117 @@ def test_pressure_level_reads_a_known_level_and_never_raises():
     # The real sysctl on macOS (normal on an idle CI runner); unknown elsewhere.
     assert REAL_PRESSURE() in (M.NORMAL, M.WARN, M.CRITICAL, M.UNKNOWN)
     assert M._LEVELS == {1: M.NORMAL, 2: M.WARN, 4: M.CRITICAL}
+
+
+def test_window_timings_outlast_every_jobs_retry():
+    # Each job stood down while parked; the window must last until its retry.
+    from service.assistant import scheduler
+    from service.mail_memory import runner
+    from service.proactive import cycle
+    assert M.BATCH_MIN_S > cycle.IDLE_GAP_S + scheduler.TICK_S
+    assert M.BATCH_QUIET_S >= runner.QUIET_AFTER_USE_S + runner.BUSY_GAP_S + scheduler.TICK_S
+
+
+# --- holds: user-started work that loads the model itself -------------------------
+
+def test_a_hold_keeps_the_model_across_ticks_between_calls():
+    c = FakeClient()
+    idle._last_turn = 0.0
+    with M.hold():
+        for minute in range(30, 61, 1):     # a long Research job, idle between fetches
+            assert tick(c, minute * MIN) == M.KEEP
+        with M.hold():                      # holds overlap
+            pass
+        assert M.held()
+    assert not M.held()
+    assert tick(c, 61 * MIN) == M.PARK
+    assert c.calls == [("unload", MODEL)]
+
+
+def test_a_research_job_runs_under_a_hold():
+    from service.research.orchestrator import ResearchManager
+    seen = []
+
+    async def fake_run(self, job_id, client):
+        seen.append(M.held())
+
+    manager = ResearchManager.__new__(ResearchManager)
+    import types
+    manager._run = types.MethodType(fake_run, manager)
+    asyncio.run(manager._run_held("job", None))
+    assert seen == [True] and not M.held()
+
+
+def test_a_search_answer_holds_the_model_and_counts_as_intent(monkeypatch):
+    from service.search import synth
+    seen = []
+
+    async def fake(client, question, chunks, picks, **kwargs):
+        seen.append(M.held())
+        return {"answer": "x"}
+
+    monkeypatch.setattr(synth, "_answer_upgraded", fake)
+    assert asyncio.run(synth.answer(None, "q", [], [])) == {"answer": "x"}
+    assert seen == [True] and not M.held() and M._state.last_intent is not None
+
+
+# --- the notch's X ------------------------------------------------------------------
+
+def test_the_notch_x_parks_only_with_the_switch_on():
+    M.note_notch_hidden(now=0.0)
+    assert M._state.parked
+    M._state.parked = False
+    M.set_save_memory(False)
+    M.note_notch_hidden(now=0.0)
+    assert not M._state.parked
+    c = FakeClient(loaded=False)             # off: no reload 30 s after the X
+    assert tick(c, 1 * MIN) == M.LEAVE and c.calls == []
+
+
+# --- clients the saver leaves alone -------------------------------------------------
+
+def test_an_unmanaged_client_or_a_model_not_kept_warm_is_left_alone():
+    remote = FakeClient()
+    remote.managed = False
+    idle._last_turn = 0.0
+    assert tick(remote, 60 * MIN) == M.LEAVE
+
+    class Cold(FakeClient):
+        def keep_warm(self):
+            return set()
+    cold = Cold()
+    assert tick(cold, 60 * MIN) == M.LEAVE
+    assert remote.calls == [] and cold.calls == []
+
+
+def test_prewarm_on_a_remote_profile_does_nothing(monkeypatch):
+    from service.inference import remote_policy
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: "cloud")
+    c = FakeClient(loaded=False)
+    assert asyncio.run(M.prewarm(c)) == "remote" and c.calls == []
+
+
+def test_a_turn_waits_for_a_prewarm_load_in_flight():
+    order = []
+
+    class Slow(FakeClient):
+        async def load(self, model):
+            await asyncio.sleep(0.05)
+            order.append("prewarm loaded")
+            self.loaded.add(model)
+
+    async def go():
+        c = Slow(loaded=False)
+        await M.prewarm(c)
+        await M.settle_prewarm(timeout=2)   # what OMLXClient._ensure_managed awaits first
+        order.append("turn checks residency")
+        return c
+    c = asyncio.run(go())
+    assert order == ["prewarm loaded", "turn checks residency"] and MODEL in c.loaded
+
+
+def test_ensure_managed_settles_a_prewarm_before_it_reads_residency():
+    import inspect
+    from service.inference.omlx_client import OMLXClient
+    src = inspect.getsource(OMLXClient._ensure_managed)
+    assert src.index("settle_prewarm()") < src.index("await self.loaded_models()")
