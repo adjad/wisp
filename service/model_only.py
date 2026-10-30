@@ -742,10 +742,15 @@ _FIRST_PERSON = re.compile(r"\b(?:i|i'm|i've|i'd|i'll|me|my|mine|myself|we|we're
 _FACT_MAX_WORDS = 12
 
 
+_QUOTES = str.maketrans({"\u2018": "'", "\u2019": "'", "\u02bc": "'", "\u201c": '"', "\u201d": '"'})
+
+
 def _ascii_text(text: str) -> str:
-    """NFKC-folded: full-width letters and digits become their ASCII forms."""
+    """NFKC-folded: full-width letters and digits become their ASCII forms, and
+    curly quotes become straight ones (iOS and macOS smart punctuation types
+    "what\u2019s", which would otherwise never count as a public fact)."""
     import unicodedata
-    return unicodedata.normalize("NFKC", text or "")
+    return unicodedata.normalize("NFKC", text or "").translate(_QUOTES)
 
 
 def public_fact_question(prompt: str) -> bool:
@@ -771,27 +776,37 @@ stock stocks share shares crypto cryptocurrency market
 # The only characters a public-fact search may contain, after NFKC folding:
 # anything else (Cyrillic, other scripts' digits) is invisible to a word check.
 _QUERY_CHARS = re.compile(r"^[A-Za-z0-9 '.,?$%\-]*$")
+# How many words a public-fact search may add to the user's own (dev8 egress
+# re-review: lookup words alone had no cap).
+_QUERY_EXTRA_WORDS = 4
 
 
 def public_fact_query_problem(query: str, user_text: str, *, year: int | None = None) -> str | None:
     """None when a public-fact search is plain ASCII and every word comes from
     the user's own message or the small lookup vocabulary above; a year the
-    user didn't type may be added only once and only within two of this year.
-    Anything else (a phone number, a gate code, a name) is refused."""
+    user didn't type may be added only once and only this year or last year
+    ("who won the World Series" in spring). The search is at most four words
+    longer than the user's message, so lookup words alone can't spell out a
+    long query. Anything else (a phone number, a gate code, a name) is refused."""
     q = _ascii_text(query).strip()
     if not q:
         return "Search with the user's own words."
     if not _QUERY_CHARS.match(q):
         return ("Private data is in context, so a public lookup may only search the user's own "
                 "words in plain letters and digits. Search again with the user's words only.")
-    user_words = set(re.findall(r"[a-z0-9]+", _ascii_text(user_text).lower()))
-    allowed = user_words | _LOOKUP_WORDS
+    user_tokens = re.findall(r"[a-z0-9]+", _ascii_text(user_text).lower().replace("'", ""))
+    query_tokens = re.findall(r"[a-z0-9]+", q.lower().replace("'", ""))
+    if len(query_tokens) > len(user_tokens) + _QUERY_EXTRA_WORDS:
+        return ("Private data is in context, so a public lookup may only search the user's own "
+                "words. Search again with a shorter query.")
+    # Both spellings of the user's own words count: "Dana's" allows "danas" and "dana".
+    allowed = set(user_tokens) | set(re.findall(r"[a-z0-9]+", _ascii_text(user_text).lower())) | _LOOKUP_WORDS
     this_year = year if year is not None else date.today().year
     extra, added_years = [], 0
-    for w in re.findall(r"[a-z0-9]+", q.lower().replace("'", "")):
+    for w in query_tokens:
         if w in allowed:
             continue
-        if re.fullmatch(r"\d{4}", w) and abs(int(w) - this_year) <= 2 and added_years == 0:
+        if re.fullmatch(r"\d{4}", w) and int(w) in (this_year, this_year - 1) and added_years == 0:
             added_years += 1
             continue
         extra.append(w)

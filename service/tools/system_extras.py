@@ -249,8 +249,8 @@ def toggle_setting(setting: str, on: bool) -> str:
 # --------------------------------------------------------------------------
 @register(
     "system_status",
-    "Report how the Mac is doing. section='overview' (default): battery plus free "
-    "disk, memory pressure, CPU load and uptime. section='battery': charge %, "
+    "Report how the Mac is doing. section='overview' (default): battery, macOS "
+    "version, installed memory, free disk, memory pressure, CPU load and uptime. section='battery': charge %, "
     "charging state, time remaining, cycle count and battery HEALTH (max capacity "
     "vs. design capacity) — use it for ANY battery question, not run_shell/pmset "
     "(`pmset -g log` 'BatteryHealth Warning level'/'cap:' lines are low-charge "
@@ -291,6 +291,20 @@ def system_status(section: str = "overview") -> str:
 
 def _resources() -> str:
     lines: list[str] = []
+
+    # The macOS version and installed memory (2026-10-29 Ask eval: "what macOS am I
+    # on" and "how much RAM do I have" had nothing to read).
+    p = _run(["sw_vers"])
+    if p.returncode == 0:
+        name = re.search(r"ProductName:\s*(.+)", p.stdout)
+        version = re.search(r"ProductVersion:\s*(\S+)", p.stdout)
+        build = re.search(r"BuildVersion:\s*(\S+)", p.stdout)
+        if version:
+            lines.append(f"System: {(name.group(1).strip() if name else 'macOS')} {version.group(1)}"
+                         + (f" ({build.group(1)})" if build else ""))
+    p = _run(["sysctl", "-n", "hw.memsize"])
+    if p.returncode == 0 and p.stdout.strip().isdigit():
+        lines.append(f"Installed memory: {int(p.stdout.strip()) // (1 << 30)} GB")
 
     p = _run(["df", "-H", "/System/Volumes/Data"])
     if p.returncode == 0 and len(p.stdout.splitlines()) > 1:

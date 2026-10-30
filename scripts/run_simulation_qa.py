@@ -148,8 +148,11 @@ PROFILE_TESTS = {
         "tests/test_reminder_civil_date_controls.py",
         "tests/test_reminder_entrypoint.py",
         "tests/test_reminder_date_updates.py",
+        "tests/test_reminder_date_only_due_today.py",
     },
     "safety": {
+        # The user's access choice survives a restart; boots under tmp_path only.
+        "tests/test_access_mode_persistence.py",
         "tests/test_always_confirm_grants.py",
         "tests/test_approver_timeout.py",
         "tests/test_destructive_shell.py",

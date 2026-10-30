@@ -340,3 +340,23 @@ def test_the_users_own_holidays_calendar_still_blocks(source, writable):
         trip['calendar_writable']=writable
     source.rows=[trip]
     assert 'No gaps' in invoke(False)
+
+
+def test_only_google_s_own_holiday_calendars_free_a_day():
+    """dev8 delta review: every Google row is calendar_writable=False (Wisp can't move
+    one), so a user's own Google calendar named "Holidays" freed their trip days.
+    Google rows now count only when they come from a #holiday@group.v.calendar.google.com
+    calendar; EventKit rows keep the read-only + name rule."""
+    from service import google_calendar_source as gcal
+    from service.tools.assistant_tools import _is_holiday_calendar_item
+    event = {"id": "abc123", "summary": "Halloween", "start": {"date": "2026-10-31"},
+             "end": {"date": "2026-11-01"}}
+    public = gcal.event_item(event, "a@example.com", "Holidays in United States",
+                             holiday_calendar=gcal.is_holiday_calendar_id(
+                                 "en.usa#holiday@group.v.calendar.google.com"))
+    own = gcal.event_item(event, "a@example.com", "Family Holidays",
+                          holiday_calendar=gcal.is_holiday_calendar_id("family123@group.calendar.google.com"))
+    assert _is_holiday_calendar_item({**public, "source": "calendar"})
+    assert not _is_holiday_calendar_item({**own, "source": "calendar"})
+    native = {"source": "calendar", "source_id": "EK-1", "context": "US Holidays"}
+    assert _is_holiday_calendar_item(native)

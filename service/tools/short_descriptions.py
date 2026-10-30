@@ -104,7 +104,7 @@ SHORT: dict[str, str] = {
     "clipboard_write": "Replace the clipboard text.",
     "screen_capture": "Take a screenshot of the screen, window or a selection to a file.",
     "toggle_setting": "Turn a macOS setting on or off (wifi, bluetooth, dark_mode...); not volume.",
-    "system_status": "Mac battery, disk, memory, CPU, network or Bluetooth status.",
+    "system_status": "Mac battery, macOS version, RAM, disk, memory, CPU, network or Bluetooth status.",
     "list_running_apps": "List running apps and which is frontmost.",
     "open_app": "Open or focus a macOS app, optionally with a file or URL.",
     "quit_app": "Quit a macOS app by name.",

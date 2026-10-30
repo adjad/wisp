@@ -127,11 +127,13 @@ def test_february_29():
     assert day("feb 29", now=datetime(2028, 2, 20, 9), forward=True)[0] == "Tue 02-29"
     # Ahead from a non-leap February, the next Feb 29 is next year's.
     assert resolve_span("feb 29", now=datetime(2027, 2, 20, 9), forward=True)[2].endswith("2028")
-    with pytest.raises(BadPeriod, match="no February 29 in 2026"):
-        resolve_span("feb 29", now=datetime(2027, 2, 20, 9))
-    # After this year's Feb 29 the next one is years away: named, never Feb 28.
-    with pytest.raises(BadPeriod, match="2029"):
-        resolve_span("feb 29", now=datetime(2028, 3, 5, 9), forward=True)
+    # dev8 delta review: outside a leap year, the nearest leap year's Feb 29 in the
+    # direction asked (it used to be an error naming the wrong year), never Feb 28.
+    assert resolve_span("feb 29", now=datetime(2027, 2, 20, 9))[2].endswith("2024")
+    assert resolve_span("feb 29", now=datetime(2028, 3, 5, 9), forward=True)[2].endswith("2032")
+    # Looking back, "the 31st" in February is January's.
+    assert day("the 31st", now=datetime(2027, 2, 20, 9))[0] == "Sun 01-31"
+    assert day("the 31st", now=datetime(2026, 4, 2, 9))[0] == "Tue 03-31"
     # "the 29th" in a short February is the next month that has one.
     assert day("the 29th", now=datetime(2027, 2, 20, 9), forward=True)[0] == "Mon 03-29"
     assert day("the 31st", now=datetime(2026, 4, 2, 9), forward=True)[0] == "Sun 05-31"

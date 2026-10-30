@@ -48,7 +48,9 @@ def _guard(p: subprocess.CompletedProcess) -> str | None:
     "List the applications currently running and which one is in front. Use "
     "this to answer 'what do I have open' or before switching to something.",
     {"type": "object", "properties": {}},
-    category="app_control",
+    # Only reads process names, so it runs in view-only mode too (2026-10-29
+    # Ask eval: as app_control, "what do I have open" was denied there).
+    category="system_read",
     aliases=["what do I have open", "what's running right now",
              "which programs are running right now", "what am I looking at",
              "show me everything that's open"],
