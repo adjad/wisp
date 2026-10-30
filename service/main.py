@@ -1300,11 +1300,19 @@ async def get_mode() -> dict[str, Any]:
 
 @app.post("/mode")
 async def set_mode(body: dict[str, Any]) -> dict[str, Any]:
-    from service.safety import read_only, set_read_only, full_access, set_full_access
-    if "read_only" in body:
-        set_read_only(bool(body["read_only"]))
-    if "full_access" in body:
-        set_full_access(bool(body["full_access"]))
+    """The user's access choice. Saved (service/safety/policy.choose_mode), so it
+    survives a restart instead of falling back to policy.yaml's default."""
+    from service.safety import read_only, full_access, choose_mode
+    chosen = {key: body[key] for key in ("read_only", "full_access") if key in body}
+    if any(type(value) is not bool for value in chosen.values()):
+        # bool("false") is True, and the choice is now saved across restarts.
+        raise HTTPException(status_code=422, detail="read_only and full_access must be true or false.")
+    try:
+        choose_mode(chosen)
+    except OSError:
+        # Already applied in memory; the app re-reads /mode when this reply fails.
+        raise HTTPException(status_code=500, detail="Wisp changed this for now, but couldn't save it, "
+                                                    "so it will go back when Wisp restarts.") from None
     return {"read_only": read_only(), "full_access": full_access()}
 
 
@@ -1506,6 +1514,19 @@ def _tool_turn_messages(sid: str, user_msg: dict[str, Any], *, max_tokens: int,
     if test_mode or verified_results_only:
         return [user_msg]
     return build_messages(sid, max_tokens=max_tokens) + [user_msg]
+
+
+def _plain_chat_skill_blocks(prompt: str, active_skill: str, *, role: str,
+                             literal_envelope: bool) -> str:
+    """The skill text a tool-free chat reply gets: the active conversational
+    workflow's body, then every always-on style skill (the humanizer behind
+    Settings › Human-sounding replies). Neither rides a literal envelope (the
+    prompt is quoted text to transform, not a request), and the style skills
+    skip "coding", whose prose rules (no dashes) would bleed into code."""
+    from service.skills import always_skills_block, selected_skill_block
+    if literal_envelope:
+        return ""
+    return selected_skill_block(prompt, active_skill) + (always_skills_block() if role != "coding" else "")
 
 
 def _local_provider_direct_messages(role: str, prompt: str) -> list[dict[str, str]]:
@@ -2822,15 +2843,14 @@ async def agent(body: dict[str, Any]):
                     # Do not automatically disclose stored conversation or memory.
                     msgs = _local_provider_direct_messages(decision.role, prompt)
                 else:
-                    from service.skills import always_skills_block, selected_skill_block
                     # Who the user is, in their own words (service/memory/profile.py):
                     # Wisp's on-Mac model, or any model under Cloud "Everything";
                     # never a role bound to an optional cloud model.
                     sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
                             + _profile_block(target.endpoint)
                             + memory_block(query=prompt, mail_facts=_mail_facts_ride(target.endpoint))
-                            + ("" if literal_envelope else selected_skill_block(prompt, active_skill))
-                            + (always_skills_block() if not literal_envelope and decision.role != "coding" else "")
+                            + _plain_chat_skill_blocks(prompt, active_skill, role=decision.role,
+                                                       literal_envelope=literal_envelope)
                             + now_line())
                     msgs = [{"role": "system", "content": sysp}] + messages
                 # "fast" is TRIVIAL_RE's positive match only (greetings, thanks,

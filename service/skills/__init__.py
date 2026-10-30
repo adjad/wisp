@@ -25,6 +25,8 @@ only when triggered, or when the model deliberately calls `use_skill`.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import shutil
 from dataclasses import dataclass, field
@@ -36,6 +38,10 @@ from service.paths import MOE_DIR
 
 SKILLS_DIR = MOE_DIR / "skills"
 BUNDLED_SKILLS_DIR = Path(__file__).parent / "bundled"
+# A bundled skill's on/off, by name. The signed bundle can't hold it, and a copy
+# of the skill in SKILLS_DIR would freeze it at the version it was copied from:
+# later releases' edits to its SKILL.md would never reach the user (#414 audit).
+_BUNDLED_STATE = ".bundled-enabled.json"  # in SKILLS_DIR
 
 # Frontmatter is fenced by --- on its own line, same convention as every other
 # tool that reads SKILL.md-style files.
@@ -59,7 +65,9 @@ class Skill:
     tools: list[dict] = field(default_factory=list)
     error: str = ""
     # Bypasses `matches()` entirely — injected into every eligible turn
-    # instead of only on a trigger hit. See `always_skills_block()`.
+    # instead of only on a trigger hit. See `always_skills_block()`. Such a
+    # skill is a reply style for plain chat only: it is never in the agent's
+    # catalog, never trigger-loaded there, and use_skill does not hand it out.
     always: bool = False
     bundled: bool = False
     conversation_workflow: bool = False
@@ -180,11 +188,39 @@ def load() -> dict[str, Skill]:
                     found[skill.name] = skill
     except Exception:  # noqa: BLE001 — skills are optional; never break startup
         pass
+    for name, enabled in _bundled_state().items():
+        skill = found.get(name)
+        if skill is not None and skill.bundled:
+            skill.enabled = enabled
     _skills = found
 
     from service.skills.tools import register_skill_tools
     register_skill_tools(found)
     return found
+
+
+def _bundled_state() -> dict[str, bool]:
+    try:
+        raw = json.loads((SKILLS_DIR / _BUNDLED_STATE).read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): v for k, v in raw.items() if isinstance(v, bool)}
+
+
+def _save_bundled_state(name: str, enabled: bool) -> bool:
+    state = _bundled_state()
+    state[name] = enabled
+    path = SKILLS_DIR / _BUNDLED_STATE
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(state, indent=2, sort_keys=True))
+        os.replace(tmp, path)
+    except OSError:
+        return False
+    return True
 
 
 def all_skills() -> dict[str, Skill]:
@@ -198,23 +234,20 @@ def get(name: str) -> Skill | None:
 def set_enabled(name: str, enabled: bool) -> bool:
     """Toggle a skill by rewriting `enabled:` in its frontmatter, so the state
     survives a reload — the folder on disk stays the single source of truth
-    rather than a separate index that can drift out of sync with it."""
+    rather than a separate index that can drift out of sync with it.
+
+    A bundled skill is the exception: the signed app bundle is not a
+    user-state store, and copying the skill out to flip one flag would pin it
+    to this release's text. Its on/off goes in SKILLS_DIR/_BUNDLED_STATE instead."""
     skill = _skills.get(name)
     if not skill:
         return False
-    # A signed app bundle is not a user-state store. Customizing a bundled
-    # skill first creates a private override, and the normal parser precedence
-    # above makes that copy win from then on.
-    path = skill.path
     if skill.bundled:
-        path = SKILLS_DIR / skill.path.name
-        try:
-            if path.exists():
-                shutil.rmtree(path)
-            shutil.copytree(skill.path, path)
-        except Exception:  # noqa: BLE001
+        if not _save_bundled_state(skill.name, enabled):
             return False
-    md = path / "SKILL.md"
+        load()
+        return True
+    md = skill.path / "SKILL.md"
     try:
         raw = md.read_text()
         m = _FRONTMATTER_RE.match(raw)
@@ -300,13 +333,14 @@ def skills_context_block(user_text: str = "", active_name: str = "",
     for a turn that does not offer `use_skill` at all: the model could not act
     on the list, so only matched (or active) skill bodies are returned.
     """
-    enabled = [s for s in _skills.values() if s.enabled and not s.error]
+    # An always-on style skill belongs to plain chat (always_skills_block).
+    enabled = [s for s in _skills.values() if s.enabled and not s.error and not s.always]
     if not enabled:
         return ""
 
     matched = [s for s in enabled if s.matches(user_text)]
     active = _skills.get(active_name) if active_name else None
-    if active and active.enabled and not active.error and active not in matched:
+    if active and active in enabled and active not in matched:
         matched.append(active)
     matched_names = {s.name for s in matched}
 
@@ -377,7 +411,7 @@ def turn_skill_names(user_text: str) -> list[str]:
     the router that an ORDINARY skill is about to be loaded. This can.
     """
     return [s.name for s in _skills.values()
-            if s.enabled and not s.error and s.matches(user_text)]
+            if s.enabled and not s.error and not s.always and s.matches(user_text)]
 
 
 # Tools that return skill content or metadata although they are not skill-defined tools.

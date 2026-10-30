@@ -114,3 +114,36 @@ def test_a_private_read_earlier_in_the_turn_still_needs_confirmation(synthetic):
         prompt="what's the price of bitcoin?", history=PRIVATE_HISTORY, approval=approval)
     assert [n for n, _ in effects] == ["view_messages"]
     assert [c["tool"] for c in approval.calls] == ["web_search"]
+
+
+def test_curly_apostrophes_still_count_as_a_public_fact():
+    """dev8 egress re-review: smart punctuation ("what’s") fell back to blocking."""
+    assert mo.public_fact_question("what’s the price of bitcoin?")
+    assert mo.public_fact_query_problem("bitcoin price", "what’s the price of bitcoin?") is None
+    assert mo.public_fact_query_problem("what’s the bitcoin price", "what's the price of bitcoin?") is None
+
+
+def test_the_search_is_at_most_four_words_longer_than_the_request():
+    """dev8 egress re-review: lookup words alone had no length cap."""
+    user = "bitcoin price"
+    assert mo.public_fact_query_problem("bitcoin price today in usd now", user) is None
+    assert "shorter" in mo.public_fact_query_problem("bitcoin price today in usd now and the", user)
+
+
+def test_an_added_year_is_this_year_or_last_year_only():
+    """dev8 egress re-review: 2024-2028 let a PIN-shaped year ride along."""
+    user = "what's the exchange rate for yen"
+    assert mo.public_fact_query_problem("yen rate 2025", user, year=2026) is None
+    assert mo.public_fact_query_problem("yen rate 2027", user, year=2026)
+    assert mo.public_fact_query_problem("yen rate 2028", user, year=2026)
+    assert mo.public_fact_query_problem("yen rate 2024", user, year=2026)
+
+
+def test_an_all_caps_word_reads_as_a_ticker_but_the_search_stays_the_users_words():
+    """Reviewed (dev8 egress re-review): the ticker branch is case-sensitive on purpose,
+    so "price of dana" is not a public fact while "price of AAPL" is. An all-caps name
+    can't be told from a symbol without a symbol list; the search may still only use
+    the words the user typed, so nothing from context can ride along."""
+    assert mo.public_fact_question("what's the price of AAPL?")
+    assert not mo.public_fact_question("what's the price of dana?")
+    assert mo.public_fact_query_problem("PRIYA stock price 4471", "whats the PRIYA stock price")

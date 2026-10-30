@@ -3396,7 +3396,9 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
     "more than one is linked; omit any/all for the most recent emails. Covers "
     "roughly the 50 most-recently-received emails (shared across the linked "
     "accounts when more than one) — for anything older, fall back to "
-    "summarize_emails (which reaches back about two years).",
+    "summarize_emails (which reaches back about two years). mailbox='sent' "
+    "lists the user's OWN sent mail instead (recipient, subject, time; no "
+    "bodies), from a linked Gmail account, for about the last week.",
     {"type": "object",
      "properties": {
          "query": {"type": "string",
@@ -3412,14 +3414,79 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
                      "description": "only include this linked account (only useful when more than one is linked)"},
          "strict_match": {"type": "boolean",
                           "description": "true for a specific user-requested lookup; return no match instead of unrelated fallback mail"},
+         "mailbox": {"type": "string", "enum": ["inbox", "sent"],
+                     "description": "'sent' for mail the user sent (default inbox)"},
      }},
     category="email_read",
 )
 async def view_emails(query: str | None = None, day: str | None = None, count: int = 5,
                       account: str | None = None, period: str | None = None,
-                      unread: bool = False, strict_match: bool = False) -> str:
+                      unread: bool = False, strict_match: bool = False,
+                      mailbox: str | None = None) -> str:
+    if str(mailbox or "inbox").strip().lower() == "sent":
+        if _CORPUS_MAIL_IDENTIFIER.get() is not None:
+            return "Corpus mail scope rejected: sent mail is outside the corpus scope."
+        return sent_emails_view(query, day, count, account, period)
     return await view_emails_impl(query, day, count, account, period, unread,
                                   strict_match)
+
+
+# Sent mail rows shown at most, newest first.
+_SENT_SHOWN = 15
+
+
+def sent_emails_view(query: str | None = None, day: str | None = None, count: int = 5,
+                     account: str | None = None, period: str | None = None) -> str:
+    """The user's own recent sent mail: headers only, from each linked Gmail
+    account's SENT label (gmail_source._sync_sent, about the last week). Apple
+    Mail's Sent mailbox isn't read, so a setup with no Gmail linked is told so
+    rather than shown an empty list as if nothing was sent (2026-10-29 Ask eval)."""
+    from service import gmail_source
+    accounts = gmail_source.connected_accounts()
+    if not accounts:
+        return ("I can only read sent mail from a Gmail account linked in Settings › Accounts, "
+                "and none is linked. Mail's Sent mailbox isn't read.")
+    rows = gmail_source.sent_rows()
+    if account:
+        wanted = account.strip().lower()
+        picked = [a for a in accounts if a == wanted or wanted in a]
+        if not picked:
+            return f"No linked Gmail account matches {account!r}. Linked: {', '.join(sorted(accounts))}."
+        rows = [r for r in rows if r["account"] in picked]
+    label = f"the last {gmail_source.SENT_DAYS} days"
+    if period:
+        try:
+            start, end, label = resolve_span(period)
+        except BadPeriod as e:
+            return str(e)
+        rows = [r for r in rows if start <= float(r.get("ts") or 0) < end]
+    elif day:
+        try:
+            start, end, label = _day_bounds(day)
+        except ValueError:
+            return f"(couldn't understand the date {day!r} — use 'today', 'yesterday', or YYYY-MM-DD)"
+        rows = [r for r in rows if start <= float(r.get("ts") or 0) < end]
+    if query:
+        rows = [r for r in rows if _matches(query, "", str(r.get("to") or ""), str(r.get("subject") or ""), "")]
+    rows.sort(key=lambda r: float(r.get("ts") or 0), reverse=True)
+    if not rows:
+        what = f" matching “{query}”" if query else ""
+        return (f"No sent mail{what} in {label} from {', '.join(sorted(accounts))}. "
+                f"Wisp reads about the last {gmail_source.SENT_DAYS} days of Gmail's Sent label.")
+    try:
+        limit = int(count)
+    except (TypeError, ValueError):
+        limit = 5
+    shown = rows[:max(1, min(limit, _SENT_SHOWN))]
+    many = len(accounts) > 1
+    lines = [f"Sent mail, {label} ({len(rows)} found, newest first; headers only):"]
+    for r in shown:
+        when = datetime.fromtimestamp(float(r.get("ts") or 0)).strftime("%a %b %-d, %-I:%M %p")
+        lines.append(f"- {when} to {r.get('to') or '(no recipient)'}: {r.get('subject') or '(no subject)'}"
+                     + (f" [from {r['account']}]" if many else ""))
+    if len(rows) > len(shown):
+        lines.append(f"(+{len(rows) - len(shown)} more; narrow it by person or day.)")
+    return "\n".join(lines)
 
 
 async def run_daily_email_summary() -> None:

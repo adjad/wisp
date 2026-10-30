@@ -771,13 +771,21 @@ final class WispClient {
     // service confirmed, or nil when the reply was lost or unreadable (the write
     // may still have happened).
     func requestFullAccess(_ on: Bool) async -> Bool? {
+        await requestFullAccessReporting(on).confirmed
+    }
+
+    /// The same, plus the service's reason when it applied the change but
+    /// couldn't save it (a 500 whose detail says it won't survive a restart).
+    func requestFullAccessReporting(_ on: Bool) async -> (confirmed: Bool?, problem: String?) {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("mode"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["full_access": on])
         guard let (data, response) = try? await URLSession.shared.data(for: req),
-              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-        return Self.fullAccessFlag(data)
+              let status = (response as? HTTPURLResponse)?.statusCode else { return (nil, nil) }
+        if status == 200 { return (Self.fullAccessFlag(data), nil) }
+        let detail = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["detail"] as? String
+        return (nil, status == 500 ? detail.flatMap { $0.isEmpty ? nil : $0 } : nil)
     }
 
     /// The "Save power" switch (GET /power), or nil when it can't be read.

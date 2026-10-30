@@ -27,11 +27,14 @@ protocol ChatBackend: AnyObject {
     func fullAccess() async -> Bool?
     /// The flag the service confirmed after the change; nil when it can't be confirmed.
     func setFullAccess(_ on: Bool) async -> Bool?
+    /// Why the last change applied but won't survive a restart, or nil.
+    func fullAccessSaveProblem() async -> String?
     /// True when this launch may send turns to a cloud provider; nil when unknown.
     func cloudInUse() async -> Bool?
 }
 
 extension ChatBackend {
+    func fullAccessSaveProblem() async -> String? { nil }
     func liveCorpusCases(selector: String) async throws -> [AssistantTaskCorpusCase] {
         throw AssistantTaskCorpusCommand.CommandError.resourceUnavailable
     }
@@ -115,6 +118,9 @@ final class ChatStore: ObservableObject {
     // False while Full access can't be confirmed: the composer then says so
     // rather than showing the last value, or "off", as if it were current.
     @Published private(set) var fullAccessKnown = false
+    /// Set when the service applied a change but couldn't save it: the
+    /// composer's pill then says it won't last past a restart.
+    @Published private(set) var fullAccessSaveProblem: String?
     /// Whether answers may go to a cloud provider: nil until the service says,
     /// and the window claims "all local" only on a confirmed false.
     @Published private(set) var cloudInUse: Bool?
@@ -741,7 +747,10 @@ final class ChatStore: ObservableObject {
     private var cloudGeneration = 0
 
     func setFullAccess(_ on: Bool) {
-        Task { applyFullAccess(await backend.setFullAccess(on)) }
+        Task {
+            applyFullAccess(await backend.setFullAccess(on))
+            fullAccessSaveProblem = await backend.fullAccessSaveProblem()
+        }
     }
 
     /// Show Full access as the service confirmed it; nil marks it unconfirmed.
@@ -750,5 +759,10 @@ final class ChatStore: ObservableObject {
     func applyFullAccess(_ value: Bool?) {
         if let value { fullAccess = value }
         fullAccessKnown = value != nil
+    }
+
+    /// The same for a change that applied but couldn't be saved.
+    func applyFullAccessSaveProblem(_ problem: String?) {
+        fullAccessSaveProblem = problem
     }
 }

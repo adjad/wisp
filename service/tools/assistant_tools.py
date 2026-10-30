@@ -200,6 +200,12 @@ def _is_holiday_calendar_item(item: dict) -> bool:
     """
     if item.get("source") != "calendar":
         return False
+    source_id = str(item.get("source_id") or "")
+    if source_id.startswith("gcal:"):
+        # A Google row is read-only to Wisp whatever its calendar, so only
+        # Google's own holiday calendars count, never a name (dev8 delta review).
+        from service.google_calendar_source import HOLIDAY_MARK
+        return source_id.split(":", 2)[-1].startswith(HOLIDAY_MARK)
     calendar_names = (item.get("context"), item.get("calendar"),
                       item.get("calendar_name"))
     return any(_HOLIDAY_CALENDAR_RE.search(str(name or ""))
@@ -414,8 +420,6 @@ def _format_forward_agenda(items: list[dict], *, now: float, window_label: str,
             if apple_reminders_checked else
             "Apple Reminders could not be checked, so Wisp reminders are "
             "listed without a confirmed Apple copy; they may still be active.")
-    if any("reminders" in _schedule_sources(item) for item in items):
-        notes.append("Apple Reminders deletion status is not independently verified.")
     window = re.sub(r"\bnext 1 day\(s\)", "next day", window_label)
     window = window.replace("day(s)", "days")
     header = f"{window[:1].upper()}{window[1:]}: {', '.join(counts)}"
@@ -1559,8 +1563,7 @@ async def search_reminders(query: str = "", scope: str = "all") -> str:
         line = f"- {item['title']} — {when:%a %b %-d, %Y at %-I:%M %p}"
         (native_lines if "reminders" in sources else wisp_lines).append(line)
     sections = ["A fresh Apple Reminders read supersedes older remembered claims. "
-                "These lists describe storage, not who created an item. "
-                "Recently Deleted status is not independently verified."]
+                "These lists describe storage, not who created an item."]
     if filtered:
         sections.append(filtered)
     sections.append("Apple Reminders incomplete-item matches:\n" +

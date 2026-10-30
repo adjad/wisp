@@ -98,7 +98,20 @@ def _ts(part: dict) -> float | None:
     return None
 
 
-def event_item(event: dict, account: str, calendar_name: str = "") -> dict | None:
+# Google's public holiday calendars ("Holidays in United States") have ids like
+# en.usa#holiday@group.v.calendar.google.com. Their rows carry HOLIDAY_MARK in
+# source_id (Google event ids never contain "#"), so free time can tell them from
+# the user's own calendar that happens to be named "Holidays": every Google row
+# is calendar_writable=False, since Wisp can't move one (dev8 delta review).
+HOLIDAY_MARK = "#holiday:"
+
+
+def is_holiday_calendar_id(calendar_id: str) -> bool:
+    return str(calendar_id or "").casefold().endswith("#holiday@group.v.calendar.google.com")
+
+
+def event_item(event: dict, account: str, calendar_name: str = "",
+               *, holiday_calendar: bool = False) -> dict | None:
     """One Calendar API event -> one commitments item, or None to skip it."""
     if not isinstance(event, dict) or not event.get("id"):
         return None
@@ -118,7 +131,7 @@ def event_item(event: dict, account: str, calendar_name: str = "") -> dict | Non
     organizer = event.get("organizer") if isinstance(event.get("organizer"), dict) else {}
     others = [a for a in attendees if not a.get("self") and not a.get("resource")]
     item = {
-        "source_id": _prefix(account) + _clean(event["id"], 300),
+        "source_id": _prefix(account) + (HOLIDAY_MARK if holiday_calendar else "") + _clean(event["id"], 300),
         "ical_uid": _clean(event.get("iCalUID"), 300),
         "kind": "event" if all_day else "meeting",
         "title": _clean(event.get("summary")) or "(untitled)",
@@ -239,7 +252,8 @@ async def fetch_account(http: httpx.AsyncClient, account: str, now: float | None
             data = await _get(http, account, f"calendars/{_quote(calendar['id'])}/events", params)
             for event in data.get("items") or []:
                 count += 1
-                item = event_item(event, account, name)
+                item = event_item(event, account, name,
+                                  holiday_calendar=is_holiday_calendar_id(calendar["id"]))
                 if item is None:
                     continue
                 # The same meeting on two of this account's calendars is one event.

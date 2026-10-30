@@ -269,26 +269,37 @@ def resolve_period(period: str, *, now: datetime | None = None, forward: bool = 
             while n > calendar.monthrange(nxt.year, nxt.month)[1]:
                 nxt = _add_month(nxt, 1)
             return day_win(datetime(nxt.year, nxt.month, n))
+        # Looking back, "the 31st" in February is January's: the last month
+        # that has that day (dev8 delta review; it used to name a missing date).
+        if not forward and n > calendar.monthrange(today.year, today.month)[1]:
+            prev = _add_month(today.replace(day=1), -1)
+            while n > calendar.monthrange(prev.year, prev.month)[1]:
+                prev = _add_month(prev, -1)
+            return day_win(datetime(prev.year, prev.month, n))
     if md is not None:
         month, dom = md
         year = today.year
-        def dated(y):
-            # Feb 29 outside a leap year is named, never moved to Feb 28.
-            if not 1 <= dom <= calendar.monthrange(y, month)[1]:
-                raise BadPeriod(f"(there is no {calendar.month_name[month]} {dom} in {y})")
-            return datetime(y, month, dom)
+        def dated(y, step):
+            # Feb 29 outside a leap year is the nearest leap year's, in the
+            # direction asked, never moved to Feb 28 (dev8 delta review: it
+            # used to be an error that named the wrong year).
+            for _ in range(8):
+                if dom <= calendar.monthrange(y, month)[1]:
+                    return datetime(y, month, dom)
+                y += step
+            raise BadPeriod(f"(there is no {calendar.month_name[month]} {dom})")
         if not 1 <= dom <= max(calendar.monthrange(2028, month)[1], 1):
             raise BadPeriod(f"(there is no {calendar.month_name[month]} {dom})")
         if forward:
             d = (datetime(year, month, dom) if dom <= calendar.monthrange(year, month)[1]
-                 and datetime(year, month, dom) >= today else dated(year + 1))
+                 and datetime(year, month, dom) >= today else dated(year + 1, 1))
         else:
             d = (datetime(year, month, dom) if dom <= calendar.monthrange(year, month)[1]
-                 else dated(year - 1))
+                 else dated(year - 1, -1))
             if d > today + timedelta(days=31):
                 # History about a date well ahead means last year's; a few days
                 # ahead is just this year's date (a calendar search, a typo).
-                d = dated(year - 1)
+                d = dated(year - 1, -1)
         return day_win(d)
 
     return _resolve_core(p, period, today, win)

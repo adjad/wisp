@@ -725,6 +725,7 @@ def validate_structure(bundle: Path, meta: dict):
                 "Contents/Resources/backend/service/config/policy.yaml",
                 "Contents/Resources/backend/service/skills/bundled/interview-me/SKILL.md",
                 "Contents/Resources/backend/service/skills/bundled/idea-refine/SKILL.md",
+                "Contents/Resources/backend/service/skills/bundled/humanizer/SKILL.md",
                 "Contents/Resources/backend/service/skills/bundled/mac-controls/SKILL.md",
                 "Contents/Resources/backend/service/skills/bundled/mac-controls/controls.sh"]
     for name in required:

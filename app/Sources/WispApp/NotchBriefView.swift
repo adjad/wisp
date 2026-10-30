@@ -8,14 +8,16 @@ private extension Theme {
     static let tileFocusStroke = Color.white.opacity(0.6)
 }
 
-/// The notch's Brief tab: everything to know about the day. One sentence about
-/// the day, then, when the proactive engine has run (`workspace.proactive`), its
-/// overview, "Before you ask" cards, the to-dos from every source and each
-/// thread's summary (ProactiveCards.swift). Without it, four count tiles (Today, Mail, Messages, Events) over one list:
-/// the Top 3 by default, or the open tile's list in its place, so opening a
-/// tile never pushes the tab past one list's height. What Wisp is keeping in
-/// mind sits right under the sentence (on the first launch day, under what Wisp
-/// does and when). Doing things belongs to Ask and Day.
+/// The notch's Brief tab: everything to know about the day. When the proactive
+/// engine has run (`workspace.proactive`): the rest of today and the to-dos,
+/// "Before you ask" cards, then mail and texts (ProactiveCards.swift), in one
+/// column or, by the person's choice (`wideKey`), two in a wider panel.
+/// Without it, one sentence about the day, then four count tiles (Today, Mail,
+/// Messages, Events) over one list: the Top 3 by default, or the open tile's
+/// list in its place, so opening a tile never pushes the tab past one list's
+/// height. What Wisp is keeping in mind sits right under the sentence (on the
+/// first launch day, under what Wisp does and when). Doing things belongs to
+/// Ask and Day.
 ///
 /// Everything comes from the day's plan, the composed brief the service already
 /// sent, and the week's upcoming items (`NotchDay.swift`, `BriefSummary.swift`),
@@ -38,17 +40,44 @@ struct NotchBriefView: View {
     private let uncapped: Bool
     /// Card, to-do and thread state; the app's shared one, or a QA scene's own.
     private let actions: ProactiveActions
+    /// Two columns in the wider panel (OverlayView sets it from `wideKey`
+    /// while the display has room).
+    private let wide: Bool
     /// Clear and Mark done on the Top 3's Needs you rows.
     @ObservedObject private var needActions: NeedsYouActionsModel = NotchBriefView.needsYouActions
     static let needsYouActions = NeedsYouActionsModel(baseURL: WispClient.baseURL)
+    /// The person's choice: the Brief in two columns (true) or one.
+    static let wideKey = "WispBriefWide"
+
+    /// Whether the Brief can show two columns: the Brief on screen with
+    /// nothing over it, the proactive Brief there to lay out (loading, the
+    /// tiles and other days stay one column), and a display with room.
+    static func canShowWide(tab: NotchTab, covered: Bool, engineBrief: Bool, canWiden: Bool) -> Bool {
+        tab == .brief && !covered && engineBrief && canWiden
+    }
+
+    /// The same for the live panel. The window (AppDelegate's layout provider)
+    /// and the content (OverlayView) both ask, so their widths never disagree.
+    @MainActor static func canShowWide(model: OverlayModel, today: TodayModel, canWiden: Bool) -> Bool {
+        canShowWide(tab: model.tab,
+                    covered: model.resetCard != nil || model.knowYou != nil || model.showingQuickSettings,
+                    engineBrief: today.isShowingCurrentDay && today.currentPlan?.workspace?.proactive != nil,
+                    canWiden: canWiden)
+    }
+
+    /// Two columns now: chosen (`wideKey`) and possible.
+    @MainActor static func showsWide(model: OverlayModel, today: TodayModel, canWiden: Bool) -> Bool {
+        UserDefaults.standard.bool(forKey: wideKey) && canShowWide(model: model, today: today, canWiden: canWiden)
+    }
 
     @MainActor
     init(model: OverlayModel, today: TodayModel, open: String? = nil, uncapped: Bool = false,
-         actions: ProactiveActions? = nil) {
+         actions: ProactiveActions? = nil, wide: Bool = false) {
         self.model = model
         self.today = today
         self.uncapped = uncapped
         self.actions = actions ?? .shared
+        self.wide = wide
         // The QA driver names the old rows; each maps to the tile that holds it.
         _open = State(initialValue: open.flatMap { tag in
             switch tag {
@@ -104,23 +133,23 @@ struct NotchBriefView: View {
                 ProcessingRow(label: "Building your first Brief…")
             }
             if let plan {
-                let brief = BriefContent(plan: plan, today: today, composed: composedToday)
                 if today.isShowingCurrentDay, let proactive = plan.workspace?.proactive {
-                    // The proactive engine's Brief: one sentence, the work behind
-                    // it, the top card, then three rows that open in place. It
-                    // replaces the tiles and the Top 3.
-                    lede(proactive.headline ?? brief.lede)
-                    underLede(brief)
+                    // The proactive engine's Brief, with no opening sentence: the
+                    // day and the to-dos first, then the cards and mail and texts.
+                    // It replaces the tiles and the Top 3.
+                    if let contacts = BriefFix.contactsAccess() { accessRow(contacts) }
                     ProactiveBriefSection(proactive: proactive, model: model, today: today, actions: actions,
                                           events: restOfToday(plan),
                                           scrollCap: uncapped ? nil : Self.proactiveCap,
-                                          coverage: Self.coverage(plan))
+                                          coverage: Self.coverage(plan), wide: wide)
                     MailMemorySection(memory: MailMemoryCards.model, onResize: { model.onResize() })
-                    HStack {
+                    HStack(spacing: 12) {
                         askChip(plan)
-                        Spacer()
+                        Spacer(minLength: 0)
+                        workLine(proactive)
                     }
                 } else {
+                    let brief = BriefContent(plan: plan, today: today, composed: composedToday)
                     lede(brief.lede)
                     underLede(brief)
                     legacy(plan, brief)
@@ -152,6 +181,19 @@ struct NotchBriefView: View {
 
     /// The tallest an opened row (to-dos, mail and texts) gets before it scrolls.
     static let proactiveCap: CGFloat = 300
+
+    /// What Wisp read to make the Brief, beside Ask about this: the whole line
+    /// when it fits, else without what was found (the cards and rows show that).
+    @ViewBuilder private func workLine(_ proactive: ProactiveState) -> some View {
+        if let full = proactive.workLine {
+            let short = proactive.workLine(short: true) ?? full
+            ViewThatFits(in: .horizontal) {
+                Text(full)
+                Text(short).help(full)
+            }
+            .font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
+        }
+    }
 
     private func lede(_ text: String) -> some View {
         Text(text)

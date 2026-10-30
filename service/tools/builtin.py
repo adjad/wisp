@@ -4,6 +4,8 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
+from datetime import datetime
 from pathlib import Path
 
 from service.tools.registry import register
@@ -470,7 +472,10 @@ def read_file(path: str) -> str:
     "(subfolders and their contents) in one call instead of listing each "
     "subfolder one at a time — use this whenever the job needs to know what's "
     "inside nested folders, e.g. reorganizing/sorting files that might be "
-    "scattered across several subfolders. Folders end with `/` in the output.",
+    "scattered across several subfolders. Folders end with `/` in the output. "
+    "Pass `details=true` for each entry's size (a folder's is the total of "
+    "everything in it) and last-modified date, e.g. 'what's taking up space "
+    "in Downloads' or 'which folder did I change last'; `sort` orders them.",
     {"type": "object",
      "properties": {
          "path": {"type": "string", "description": "directory path, e.g. ~/Downloads"},
@@ -480,16 +485,25 @@ def read_file(path: str) -> str:
          "max_depth": {"type": "integer",
                        "description": "how many folder levels deep to descend when "
                                       "recursive is true (default 3)"},
+         "details": {"type": "boolean",
+                     "description": "show each entry's size and last-modified date "
+                                    "(this folder's entries only; default false)"},
+         "sort": {"type": "string", "enum": ["name", "size", "modified"],
+                  "description": "with details: order by name (default), largest first, "
+                                 "or most recently modified first"},
      },
      "required": ["path"]},
     category="fs_read",
 )
-def list_dir(path: str, recursive: bool = False, max_depth: int = 3) -> str:
+def list_dir(path: str, recursive: bool = False, max_depth: int = 3,
+             details: bool = False, sort: str = "name") -> str:
     if (msg := _wrong_account_path(path)):
         return msg
     p = Path(path).expanduser()
     if not p.is_dir():
         return _missing_dir_message(p)
+    if details:
+        return _list_dir_details(p, sort)
     if not recursive:
         try:
             entries = sorted(os.listdir(p))
@@ -522,6 +536,80 @@ def list_dir(path: str, recursive: bool = False, max_depth: int = 3) -> str:
         lines.append(f"…[{len(_blocked)} subfolder(s) skipped — macOS denied "
                      "access; see Full Disk Access in System Settings]")
     return _clip("\n".join(lines) or "(empty)")
+
+
+# A folder's size is a walk of everything under it, so the walks of one
+# listing share a budget: past it, sizes are marked as at least that much.
+_DETAIL_BUDGET_S = 3.0
+_DETAIL_MAX_FILES = 200_000
+
+
+def _human_size(n: int) -> str:
+    size = float(n)
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if size < 1000 or unit == "GB":
+            return f"{int(size)} {unit}" if unit == "bytes" else f"{size:.1f} {unit}"
+        size /= 1000
+    return f"{size:.1f} TB"
+
+
+def _folder_size(folder: Path, deadline: float, seen: list[int]) -> tuple[int, bool]:
+    """Bytes of every file under `folder` (links not followed), and whether
+    the walk finished: False when it ran out of budget or was refused a subfolder."""
+    total, complete, stack = 0, True, [folder]
+    while stack:
+        current = stack.pop()
+        try:
+            with os.scandir(current) as it:
+                for entry in it:
+                    seen[0] += 1
+                    if seen[0] > _DETAIL_MAX_FILES or time.monotonic() > deadline:
+                        return total, False
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            stack.append(Path(entry.path))
+                        else:
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        complete = False
+        except OSError:
+            complete = False
+    return total, complete
+
+
+def _list_dir_details(p: Path, sort: str) -> str:
+    """One line per entry of `p`: name, size, last modified (2026-10-29 Ask eval:
+    folder sizes and dates had nothing to read)."""
+    try:
+        entries = sorted(os.scandir(p), key=lambda e: e.name.casefold())
+    except PermissionError:
+        return _tcc_message(p, "listing")
+    deadline = time.monotonic() + _DETAIL_BUDGET_S
+    seen = [0]
+    rows: list[tuple[str, int, float, bool]] = []
+    for entry in entries:
+        try:
+            info = entry.stat(follow_symlinks=False)
+        except OSError:
+            continue
+        if entry.is_dir(follow_symlinks=False):
+            size, complete = _folder_size(Path(entry.path), deadline, seen)
+            rows.append((entry.name + "/", size, info.st_mtime, complete))
+        else:
+            rows.append((entry.name, info.st_size, info.st_mtime, True))
+    if not rows:
+        return "(empty)"
+    order = (sort or "name").strip().lower()
+    if order == "size":
+        rows.sort(key=lambda r: r[1], reverse=True)
+    elif order == "modified":
+        rows.sort(key=lambda r: r[2], reverse=True)
+    lines = [f"{name}  {'at least ' if not complete else ''}{_human_size(size)}  "
+             f"modified {datetime.fromtimestamp(mtime).strftime('%b %-d, %Y %-I:%M %p')}"
+             for name, size, mtime, complete in rows]
+    if any(not r[3] for r in rows):
+        lines.append("(\"at least\": that folder was too big to total in time, or macOS refused part of it.)")
+    return _clip("\n".join(lines))
 
 
 @register(
