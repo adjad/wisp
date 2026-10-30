@@ -667,6 +667,8 @@ class ResearchManager:
         from service import memory_saver
         with memory_saver.hold():
             await self._run(job_id, client)
+        # The report just arrived: give follow-up questions the intent hold.
+        memory_saver.note_intent()
 
     def cancel(self, job_id: str) -> dict:
         job = self.store.get_job(job_id)
@@ -728,7 +730,10 @@ class ResearchManager:
                 return False
             if not job.get("pause_requested"):
                 return True
-            await asyncio.sleep(0.5)
+            # Paused: Save memory may park the model meanwhile (memory_saver.unheld).
+            from service import memory_saver
+            with memory_saver.unheld():
+                await asyncio.sleep(0.5)
 
     async def _queries(self, client: OMLXClient, job_id: str, job: dict,
                        questions: list[dict], *, limit: int, round_index: int) -> list[tuple[str, str]]:

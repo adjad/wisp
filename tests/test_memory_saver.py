@@ -414,3 +414,98 @@ def test_ensure_managed_settles_a_prewarm_before_it_reads_residency():
     from service.inference.omlx_client import OMLXClient
     src = inspect.getsource(OMLXClient._ensure_managed)
     assert src.index("settle_prewarm()") < src.index("await self.loaded_models()")
+
+
+def test_a_paused_research_job_lets_go_and_takes_the_hold_back_on_resume():
+    from service.research.orchestrator import ResearchManager
+    jobs = {"j": {"pause_requested": True}}
+    seen = []
+
+    class Store:
+        def get_job(self, job_id):
+            return jobs[job_id]
+
+    manager = ResearchManager.__new__(ResearchManager)
+    manager.store = Store()
+
+    async def go():
+        with M.hold():
+            waiting = asyncio.create_task(manager._checkpoint("j"))
+            await asyncio.sleep(0.1)
+            seen.append(M.held())            # paused: not held
+            jobs["j"]["pause_requested"] = False
+            assert await asyncio.wait_for(waiting, 2) is True
+            seen.append(M.held())            # resumed: held again
+        seen.append(M.held())
+    asyncio.run(go())
+    assert seen == [False, True, False]
+
+
+def test_a_cancelled_research_job_releases_its_hold():
+    from service.research.orchestrator import ResearchManager
+    import types
+
+    async def forever(self, job_id, client):
+        await asyncio.sleep(60)
+
+    manager = ResearchManager.__new__(ResearchManager)
+    manager._run = types.MethodType(forever, manager)
+
+    async def go():
+        task = asyncio.create_task(manager._run_held("j", None))
+        await asyncio.sleep(0.05)
+        assert M.held()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    asyncio.run(go())
+    assert not M.held()
+
+
+def test_a_finished_research_job_counts_as_intent():
+    from service.research.orchestrator import ResearchManager
+    import types
+
+    async def done(self, job_id, client):
+        return None
+
+    manager = ResearchManager.__new__(ResearchManager)
+    manager._run = types.MethodType(done, manager)
+    asyncio.run(manager._run_held("j", None))
+    assert M._state.last_intent is not None
+
+
+def test_a_failed_or_finished_prewarm_never_holds_a_turn():
+    class Failing(FakeClient):
+        async def load(self, model):
+            raise RuntimeError("507")
+
+    async def go():
+        await M.prewarm(Failing(loaded=False))
+        await asyncio.sleep(0)
+        await asyncio.wait_for(M.settle_prewarm(timeout=5), 1)
+        return M.prewarm_pending()
+    assert asyncio.run(go()) is False
+
+
+def test_a_turn_waiting_on_a_prewarm_shows_the_loading_status(monkeypatch):
+    from service.inference.omlx_client import OMLXClient
+    events = []
+
+    class Probe(OMLXClient):
+        def __init__(self):
+            self._keep_warm = set()
+
+        async def loaded_models(self):
+            raise StopAsyncIteration          # stop right after the status and the wait
+
+    monkeypatch.setattr(M, "prewarm_pending", lambda: True)
+    async def settle():
+        events.append("waited")
+    monkeypatch.setattr(M, "settle_prewarm", settle)
+
+    async def emit(event):
+        events.append(event["text"].split("…")[0])
+
+    with pytest.raises(StopAsyncIteration):
+        asyncio.run(Probe()._ensure_managed(MODEL, emit=emit))
+    assert events[0].startswith("Loading") and events[1] == "waited"

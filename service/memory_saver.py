@@ -174,6 +174,18 @@ def held() -> bool:
     return _holds > 0
 
 
+@contextlib.contextmanager
+def unheld():
+    """Inside a hold(), let go while the work waits on the user (a paused Research
+    job), so a forgotten pause doesn't keep the model resident for good."""
+    global _holds
+    _holds = max(0, _holds - 1)
+    try:
+        yield
+    finally:
+        _holds += 1
+
+
 def note_notch_hidden(now: float | None = None) -> None:
     """/unload_agent (the notch's X) unloaded the chat model. Parked only with the
     switch on: off, the old behavior stands (unloaded until next use) rather than
@@ -310,6 +322,10 @@ async def prewarm(client) -> str:
 
     _prewarm_task = asyncio.create_task(_load())
     return "loading"
+
+
+def prewarm_pending() -> bool:
+    return _prewarm_task is not None and not _prewarm_task.done()
 
 
 async def settle_prewarm(timeout: float = 15.0) -> None:
