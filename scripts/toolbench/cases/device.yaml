@@ -31,3 +31,153 @@
   split: dev
   prompt: "open spotify"
   expect: [{tool: open_app, args: {name: {icontains: spotify}}}]
+
+# ---- mac-controls skill (features #39): turn-down, lock, pause. Kept to three on purpose:
+# on today's model-led Ask path production refuses every skill tool, so these grade the
+# CORRECT call and say nothing about the effect having happened.
+- id: dev_mac_volume_down
+  prompt: "turn it down"
+  expect:
+    - tool: mac_get_volume
+    - tool: mac_set_volume
+      args: {level: {regex: '^([0-9]|[12][0-9]|3[0-9])$'}}
+  forbid: [run_shell, run_applescript, toggle_setting]
+  max_calls: 4
+  trap: "features #39: volume sits at 40, so 'turn it down' reads it first and sets a LOWER level; never osascript. Production refuses skill tools on the model-led path ('no supported completion contract', loop.py ~1973, found 2026-10-29), so the effect and answer are not graded"
+- id: dev_mac_lock_screen
+  prompt: "lock my screen"
+  expect: [{tool: mac_lock_screen}]
+  forbid: [run_shell, run_applescript, quit_app]
+  trap: "features #39: lock via the mac-controls skill, not pmset or osascript. Production refuses skill tools on the model-led path ('no supported completion contract', loop.py ~1973, found 2026-10-29)"
+- id: dev_mac_pause_spotify
+  prompt: "pause spotify"
+  expect: [{tool: mac_media, args: {action: pause, app: {icontains: spotify}}}]
+  forbid: [run_shell, run_applescript, quit_app]
+  trap: "features #39: pause via mac_media(action=pause, app=spotify); quitting the app or osascript is wrong. Production refuses skill tools on the model-led path ('no supported completion contract', loop.py ~1973, found 2026-10-29)"
+
+# ---- system_status: sections are overview, battery, network, bluetooth ----
+- id: dev_status_disk_space
+  prompt: "how much free disk space do i have"
+  expect: [{tool: system_status}]
+  forbid: [run_shell, run_applescript]
+  answer: {contains_any: ["{disk_free}", "{disk_used_pct}%", "{disk_used_pct} %", "{disk_used_pct} percent"]}
+  trap: "real-usage 1H #87: device-state questions are not knowledge questions (19 Ask-run calls); df via the shell is wrong. The overview prints 'Disk: {disk_free} free of {disk_total} ({disk_used_pct}% used)'; a reply that writes the figure as '412 GB' with a space and omits the percent would miss this check"
+- id: dev_status_ram_free
+  prompt: "how much ram is free rn"
+  expect: [{tool: system_status}]
+  forbid: [run_shell, run_applescript]
+  answer: {contains_any: ["{memory_free_pct}%", "{memory_free_pct} %", "{memory_free_pct} percent"]}
+  trap: "real-usage 1H #87 / tests/test_ask_eval_tool_wording.py: 'how much RAM is free' keeps tools while 'what is RAM for' does not. The overview prints 'Memory: {memory_free_pct}% free'"
+- id: dev_status_macos_version
+  prompt: "what macos version am i on"
+  expect: [{any_of: [system_status, run_shell]}]
+  forbid: [run_applescript]
+  answer:
+    contains_any: ["can't", "cannot", "don't", "doesn't", "not shown", "not available", "unable", "couldn't", "isn't", "no way"]
+    not_contains: ["Sonoma", "Sequoia", "Tahoe", "macOS 14", "macOS 15", "macOS 26", "macOS 27"]
+  trap: "tests/test_ask_eval_tool_wording.py: this phrasing keeps tools, but no system_status section reports a macOS version (production too). Honest outcome: the status call (or a shell attempt, which the fake does not run) and an answer that says the version isn't visible; naming a version is invented"
+- id: dev_status_wifi_name
+  prompt: "what wifi am i on"
+  expect: [{tool: system_status}]
+  forbid: [run_shell, toggle_setting]
+  answer: {contains_any: [HomeNet, "wi-fi", wifi]}
+
+# ---- world_time ----
+- id: dev_time_tokyo
+  prompt: "what time is it in tokyo"
+  expect: [{tool: world_time, args: {place: {icontains: tokyo}}}]
+  forbid: [run_shell, web_search]
+  answer: {contains_any: [Tokyo]}
+  trap: "real-usage 1G #83: 3 world_time calls were denied as 'unclassified (compute)'; a clock is never answered from memory or the shell"
+- id: dev_time_london_vs_here
+  prompt: "time in london vs here"
+  expect: [{tool: world_time, args: {place: {icontains: london}}}]
+  forbid: [run_shell, web_search]
+  answer: {contains_any: [ahead, behind, London]}
+  trap: "real-usage 1G #83: 'what time is it in {city} vs here' is one world_time call"
+
+# ---- calculate / convert_units (real-usage 1G #84: 13 + 5 denied before compute became always-allowed) ----
+- id: dev_calc_percent
+  prompt: "whats 22% of 135"
+  expect: [{tool: calculate}]
+  forbid: [run_shell]
+  answer: {contains_all: ["29.7"]}
+- id: dev_calc_split
+  prompt: "split a 96 dollar bill 4 ways"
+  expect: [{tool: calculate}]
+  forbid: [run_shell]
+  answer: {contains_all: ["24"]}
+- id: dev_calc_divide
+  prompt: "what is 1,250 divided by 8"
+  expect: [{tool: calculate}]
+  forbid: [run_shell]
+  answer: {contains_all: ["156.25"]}
+- id: dev_convert_temp
+  prompt: "convert 72 fahrenheit to celsius"
+  expect: [{tool: convert_units}]
+  forbid: [run_shell]
+  answer: {contains_any: ["22.2"]}
+- id: dev_convert_weight
+  prompt: "how many kg is 180 lbs"
+  expect: [{tool: convert_units}]
+  forbid: [run_shell]
+  answer: {contains_any: ["81.6", "81.65"]}
+- id: dev_convert_km_miles
+  prompt: "5 km in miles"
+  expect: [{tool: convert_units}]
+  forbid: [run_shell]
+  answer: {contains_any: ["3.1"]}
+
+# ---- timers through manage_timers (a {timer_label} timer is already running) ----
+- id: dev_timers_list
+  prompt: "any timers running"
+  expect: [{tool: manage_timers, args: {action: list}}]
+  forbid: [search_reminders, get_upcoming, run_shell]
+  answer: {contains_any: ["{timer_label}"]}
+  trap: "the world carries a running '{timer_label}' timer; a timer is not a reminder"
+- id: dev_timer_time_left
+  prompt: "how long is left on my {timer_label} timer"
+  expect: [{tool: manage_timers, args: {action: list}}]
+  forbid: [search_reminders, run_shell]
+  answer: {contains_any: ["{timer_minutes}", "{timer_label}"]}
+- id: dev_timer_cancel_named
+  prompt: "cancel the {timer_label} timer"
+  expect: [{tool: manage_timers, args: {action: cancel, label: {icontains: "{timer_label}"}}}]
+  forbid: [cancel_event, clear_reminders, complete_reminder, clear_past_reminders]
+  answer: {contains_any: [cancel]}
+  trap: "'cancel' must not reach the calendar or reminder tools; the running timer is the target"
+- id: dev_timer_cancel_all
+  prompt: "kill all my timers"
+  expect: [{tool: manage_timers, args: {action: cancel_all}}]
+  forbid: [cancel_event, clear_reminders, clear_past_reminders]
+- id: dev_stopwatch_start
+  prompt: "start a stopwatch"
+  expect: [{tool: manage_timers, args: {action: stopwatch_start}}]
+  forbid: [set_timer, add_reminder]
+- id: dev_timer_set_lc
+  prompt: "timer 15 mins pls"
+  expect: [{tool: set_timer, args: {duration: {regex: '15|fifteen'}}}]
+  forbid: [add_reminder, run_shell]
+  trap: "real-usage style: terse lowercase fragment, no verb"
+- id: dev_timer_set_label
+  prompt: "set a 20 minute timer for the eggs"
+  expect: [{tool: set_timer, args: {duration: {regex: '20|twenty'}, label: {icontains: egg}}}]
+  forbid: [add_reminder, run_shell]
+- id: dev_alarm_7am
+  prompt: "set an alarm for 7am"
+  expect: [{any_of: [set_timer, add_reminder]}]
+  forbid: [run_shell, run_applescript]
+  trap: "uncertainty in the reports: set_timer(kind=alarm) is the tool, but the rules path routes alarms through reminders (f258f1ce); accept either, never a shell"
+
+# ---- list_running_apps ----
+- id: dev_running_apps
+  prompt: "what apps are open"
+  expect: [{tool: list_running_apps}]
+  forbid: [run_shell, run_applescript]
+  answer: {contains_any: [Safari, Mail, Notes]}
+- id: dev_app_open_check
+  prompt: "is spotify open rn"
+  expect: [{tool: list_running_apps}]
+  forbid: [run_shell, run_applescript, open_app]
+  answer: {contains_any: ["not open", "isn't open", "not running", "isn't running", "not currently", "closed", "don't see"]}
+  trap: "a status question must not open the app; Spotify is not in the running list"

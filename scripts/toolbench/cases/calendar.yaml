@@ -16,7 +16,8 @@
 - id: cal_free_tomorrow
   prompt: "When am I free tomorrow?"
   expect: [{any_of: [find_free_time, get_upcoming]}]
-  answer: {contains_any: ["9:00", "5:00", "11:30", "{dentist_time}"]}
+  answer: {contains_any: ["9:00", "9:45", "4:30", "5:00", "11:30", "{dentist_time}"]}
+  trap: "the recurring standup now splits tomorrow's free windows (9:00-9:30, 9:45-...), so the old 9:00/5:00 anchors need 9:45 and 4:30 beside them"
 - id: cal_add_lunch
   prompt: "Add lunch with {coworker_first} on Friday at 12:30"
   expect:
@@ -65,3 +66,201 @@
   split: dev
   prompt: "Do I have time for a one hour meeting the day after tomorrow?"
   expect: [{any_of: [find_free_time, get_upcoming]}]
+
+# ---- The native move (update_event): a verified EventKit move, never cancel-and-recreate.
+# Features report cases 1-7 (#293, #301, #291). update_event always asks, even under Full access.
+- id: cal_move_basic
+  prompt: "move my dentist appointment to 3pm"
+  expect: [{tool: update_event, args: {title: {icontains: dentist}, when_iso: {regex: "T15:00"}}}]
+  forbid: [cancel_event, add_calendar_event, update_reminder, add_reminder, send_email, send_message]
+  confirm: [update_event]
+  max_calls: 4
+  answer: {contains_any: ["3:00", "3 pm", "3pm", "15:00"]}
+  trap: "features report case 1 (be56fb95 / #293): the old move was cancel_event + add_calendar_event; a native update_event must be the only write and must ask"
+- id: cal_move_recurring_lc
+  prompt: "push standup to 10:30"
+  expect: [{tool: update_event, args: {title: {icontains: standup}, when_iso: {regex: "T10:30"}}}]
+  forbid: [cancel_event, add_calendar_event, update_reminder, add_reminder]
+  confirm: [update_event]
+  max_calls: 4
+  answer:
+    contains_all: ["10:30"]
+    contains_any: [occurrence, "just this", "only this", "this one", "this time", "just the", "only the", series, recurring, repeat]
+  trap: "features report case 1 / #293: a repeating event moves only that occurrence, and the answer must say so (the fake's 'Only this occurrence moved.')"
+- id: cal_move_checkin_prefill
+  prompt: "Move this calendar event to {tomorrow_date_long} at 4:30 PM, keeping it 60 minutes: “Dentist appointment with Dr. {dentist}” on {tomorrow_date_long} at {dentist_time} [calendar event 6F2A9C1E-4B7D-4E0A-9B55-0D2C8A7E31F4]"
+  expect: [{tool: update_event, args: {title: {icontains: dentist}, when_iso: {regex: "T16:30"}}}]
+  forbid: [cancel_event, add_calendar_event, add_reminder, update_reminder, complete_reminder]
+  confirm: [update_event]
+  max_calls: 4
+  trap: "features report case 2 (c009add4 / #291): the exact Ask prefill the check-in Move chip sends (CheckInView.swift moveRequest: wide weekday, abbreviated month, day). The dentist is always tomorrow, so the date comes from {tomorrow_date_long} and the case holds in any world"
+- id: cal_move_refused_organizer
+  prompt: "move the {vendor_event} to 4pm tomorrow"
+  expect: [{tool: update_event, args: {title: {icontains: "{vendor_event}"}}}]
+  forbid: [cancel_event, add_calendar_event]
+  confirm: [update_event]
+  refused: [update_event]
+  max_calls: 4
+  answer:
+    contains_any: [organizer, "{vendor_organizer}", "nothing was moved", "wasn't moved", "was not moved", "not moved", "didn't move", "did not move", "couldn't move", "could not move", "can't move", "cannot move", "unable to move"]
+    not_contains: ["i've moved", "i have moved", "i moved", "has been moved", "successfully moved", "is now at"]
+  trap: "features report case 3 (28f29af4, #293/#301): someone else organizes it, so the move is refused with no card; the model must relay 'nothing moved' and must not fall back to cancel + re-add"
+- id: cal_move_refused_readonly
+  prompt: "can you push {holiday} to saturday at 10am"
+  expect: [{tool: update_event, args: {title: {icontains: "{holiday}"}}}]
+  forbid: [cancel_event, add_calendar_event]
+  confirm: [update_event]
+  refused: [update_event]
+  max_calls: 4
+  answer:
+    contains_any: ["read-only", "read only", "nothing was moved", "wasn't moved", "was not moved", "not moved", "didn't move", "couldn't move", "can't move", "cannot move", "unable to move", "in calendar"]
+    not_contains: ["i've moved", "i have moved", "i moved", "has been moved", "successfully moved"]
+  trap: "features report case 3 (d3a9c140, 44859e3e): the event sits on the subscribed read-only holidays calendar; the refusal is 'Nothing was moved', never a cancel + add"
+- id: cal_move_refused_unknown_invitees
+  prompt: "move {book_club} to 8pm"
+  expect: [{tool: update_event, args: {title: {icontains: "{book_club}"}}}]
+  forbid: [cancel_event, add_calendar_event]
+  confirm: [update_event]
+  refused: [update_event]
+  max_calls: 4
+  answer:
+    contains_any: ["nothing was moved", "wasn't moved", "was not moved", "not moved", "didn't move", "couldn't move", "can't move", "cannot move", "unable to move", "invitees", "try again", "in calendar", "hasn't synced"]
+    not_contains: ["i've moved", "i have moved", "i moved", "has been moved", "successfully moved"]
+  trap: "features report case 3: Calendar hasn't synced whether the event has invitees, so the move is refused; relay 'nothing moved', no cancel + re-add"
+- id: cal_move_rename_location
+  prompt: "move brunch with {friend_first} to 12:30 and change the location to the rooftop place"
+  forbid: [cancel_event, add_calendar_event]
+  confirm: [update_event]
+  max_calls: 5
+  answer:
+    contains_any: [rename, location, "can't change", "cannot change", "not supported", "isn't supported", "unable", "in calendar", "edit that", "only move", "just the time", "only the time"]
+    not_contains: ["changed the location to", "location is now", "updated the location", "renamed"]
+  trap: "features report case 4 (be56fb95): update_event moves time only; a location/title change must be passed through to the user as unsupported (move done, or asked first), never faked with cancel + re-add. JUDGEMENT case: no required call, either path passes"
+- id: cal_move_event_not_reminder
+  prompt: "push the water the plants reminder to tomorrow"
+  expect: [{tool: update_reminder, args: {title: {icontains: plants}}}]
+  forbid: [update_event, cancel_event, add_calendar_event, remember]
+  no_confirm: [update_reminder]
+  max_calls: 4
+  answer: {contains_any: [tomorrow]}
+  trap: "features report case 5: 'reminder' means update_reminder (never update_event, which only matches Calendar events); reminder writes raise no card"
+- id: cal_fix_reminder_day
+  history:
+    - user: "remind me to water the plants at 6pm"
+      assistant: "Reminder set: “Water the plants” — {today_6pm_label}."
+      tools: add_reminder
+  prompt: "i mean tomorrow sorry, 6pm"
+  expect: [{tool: update_reminder, args: {when_iso: {date_offset: 1}}}]
+  forbid: [remember, save_knowledge, update_event, cancel_event]
+  no_confirm: [update_reminder]
+  max_calls: 4
+  trap: "features report case 5 + real-usage #29/#31 (H-001..019): 'i mean today' after a reminder was answered with remember() and a false 'updated'; it is update_reminder. Title is optional: omitted, the tool edits the most recently created dated reminder, which in the world is Water the plants"
+- id: cal_block_duration_lc
+  prompt: "block 2 to 3:30 friday for focus"
+  expect: [{tool: add_calendar_event, args: {title: {icontains: focus}, when_iso: {regex: "T14:00"}, duration_min: 90}}]
+  forbid: [add_reminder, send_email, send_message, schedule_send]
+  confirm: [add_calendar_event]
+  max_calls: 4
+  trap: "features report case 6: the add must carry duration_min=90 (default is 60); calendar adds always ask"
+- id: cal_dinner_hour_sunday
+  prompt: "put dinner with {friend2_first} on sunday 6-7pm"
+  expect: [{tool: add_calendar_event, args: {title: {icontains: "{friend2_first}"}, when_iso: {weekday: sunday}, duration_min: 60}}]
+  forbid: [add_reminder, send_email, send_message, schedule_send]
+  confirm: [add_calendar_event]
+  max_calls: 4
+  trap: "features report case 6: 'for 6-7 PM use 60' in the schema; a time range gives start plus duration, not a reminder or a message to the friend"
+- id: cal_cancel_readonly_holiday
+  prompt: "cancel {holiday} on my calendar"
+  expect: [{tool: cancel_event, args: {title: {icontains: "{holiday}"}}}]
+  forbid: [clear_reminders, clear_past_reminders, update_event]
+  confirm: [cancel_event]
+  refused: [cancel_event]
+  max_calls: 4
+  answer:
+    contains_any: ["read-only", "read only", "nothing was cancelled", "wasn't cancelled", "was not cancelled", "not cancelled", "didn't cancel", "couldn't cancel", "can't cancel", "cannot cancel", "unable to cancel", "in calendar"]
+    not_contains: ["i've cancelled", "i have cancelled", "i cancelled", "has been cancelled", "successfully cancelled", "is cancelled"]
+  trap: "features report case 7 (assistant_tools._read_only_calendar_row, 28f29af4): a subscribed holidays calendar can't be changed from the Mac; the answer is 'Nothing was cancelled' plus where to do it"
+
+# ---- Period words and history (09f5f830, 2b5134e1): the tool rejects "tmrw" and "next 10 days";
+# the model must translate, and a multi-day span must be read whole.
+- id: cal_weekend_both_days
+  prompt: "whats on this weekend"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer:
+    contains_all: ["{friend_first}"]
+    contains_any: [budget, vendor]
+  trap: "features report case 10 (09f5f830): 'this weekend' must span Saturday AND Sunday; the failure reported 'Sunday is clear' from a Saturday-only call. Brunch is Sunday, the budget review and vendor sync are Saturday (the trip now sits a week later)"
+- id: cal_tmrw_typo
+  prompt: "whats on tmrw"
+  expect: [{any_of: [get_upcoming, daily_brief, get_my_day_plan]}]
+  forbid: [add_calendar_event, add_reminder]
+  answer: {contains_any: ["{dentist}", dentist]}
+  trap: "features report case 10: 'tmrw' is not a period the tool reads (it errors with the period list), so the model must send 'tomorrow'"
+- id: cal_tonight_lc
+  prompt: "anything on tonight"
+  expect: [{any_of: [get_upcoming, daily_brief, get_my_day_plan]}]
+  answer: {contains_any: [plants, "6:00", "6 pm", "6pm"]}
+  trap: "features report case 10 (09f5f830): 'tonight' was rejected as a period before dev8"
+- id: cal_date_nov3
+  prompt: "what do i have on {future_date_short}"
+  expect: [{any_of: [get_upcoming, daily_brief], args: {period: {regex: "{future_date_short}|{future_date_iso}|{future_day_ordinal}|{future_weekday}"}}}]
+  answer: {contains_all: ["{book_club}"]}
+  trap: "features report case 10 (09f5f830): a date with no year ('nov 3') was rejected. The date is the world's five-days-out day, which holds Book club"
+- id: cal_date_the_3rd
+  prompt: "whats the schedule for {future_day_ordinal}"
+  expect: [{any_of: [get_upcoming, daily_brief], args: {period: {regex: "{future_day_ordinal}|{future_date_short}|{future_date_iso}|{future_weekday}"}}}]
+  answer: {contains_all: ["{book_club}"]}
+  trap: "features report case 10 (2b5134e1): 'the 3rd' resolves to the NEXT month that has a 3rd (here the world's five-days-out day, which holds Book club)"
+- id: cal_leap_day_no_feb28
+  prompt: "what's on feb 29"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer:
+    contains_any: ["no february 29", "no feb 29", "leap", "doesn't exist", "does not exist", "isn't a", "is not a", "no such"]
+    not_contains: ["feb 28", "february 28", "feb. 28"]
+  trap: "features report case 10 (2b5134e1): Feb 29 outside a leap year is named, never moved to Feb 28; the tool errors 'there is no February 29 in <year>' and the answer must relay that"
+- id: cal_history_last_weekend
+  prompt: "what did i have last weekend"
+  expect: [{tool: get_past_events}]
+  answer: {contains_any: [standup, "{garage}", offsite, nothing, "no events", "didn't have", "nothing on"]}
+  trap: "features report case 11 (09f5f830): history phrases read backward through get_past_events, never get_upcoming. NOTE production get_past_events has no period arg (days only); the fake accepts one"
+
+# ---- Real-usage calendar reads (real-usage report C #40-53): typo'd, lowercase, terse.
+- id: cal_check_calender_typo
+  prompt: "check my calender"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  forbid: [add_calendar_event, cancel_event]
+  answer: {contains_any: ["{dentist}", dentist, standup, "{trip}"]}
+  trap: "real-usage #44 (R x2): the bare typo'd 'check my calender' with no period"
+- id: cal_next_10_days
+  prompt: "whats on my calendar for the next 10 days"
+  expect: [{tool: get_upcoming, args: {days: {in: [10, "10"]}}}]
+  answer: {contains_any: ["{dentist}", dentist, "{book_club}", "{class_word}"]}
+  trap: "real-usage #43 (R x2): an N-day window is days=10; period='next 10 days' is rejected and the model must retry with days"
+- id: cal_when_is_midterm
+  prompt: "when is my midterm"
+  expect: [{tool: get_upcoming, args: {query: {icontains: midterm}}}]
+  forbid: [web_search, add_calendar_event, add_reminder]
+  answer: {contains_any: [midterm]}
+  trap: "real-usage #46 (Ask run): 'when is my midterm' / 'do I have class tomorrow' got no calendar tool and answered 'I don't have that'. It is a query search; the world has no midterm, so the answer says none is on the calendar"
+- id: cal_budget_review_when
+  prompt: "when is my budget review"
+  expect: [{tool: get_upcoming, args: {query: {icontains: budget}}}]
+  forbid: [web_search, list_scheduled_sends]
+  answer: {contains_any: ["10:00", "10 am", "10am"]}
+  trap: "real-usage #46 / features case 14 (08cd8da2): 'when is my X' is an event lead question, a get_upcoming query, not the send queue or a web lookup"
+
+# ---- Spoken variants (split voice): the same tools as the typed forms.
+- id: cal_voice_tomorrow
+  split: voice
+  prompt: "um whats on my calendar tomorrow"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer: {contains_any: ["{dentist}", dentist]}
+  trap: "features case 47 (3f4d84ae): a transcript is lowercase and disfluent but the tool is the same"
+- id: cal_voice_move_dentist
+  split: voice
+  prompt: "hey move my dentist thing to three"
+  expect: [{tool: update_event, args: {title: {icontains: dentist}, when_iso: {regex: "T15:00"}}}]
+  forbid: [cancel_event, add_calendar_event, add_reminder]
+  confirm: [update_event]
+  max_calls: 4
+  trap: "features case 47: 'move my dentist thing to three' is the native move, not a reminder or a cancel + re-add"

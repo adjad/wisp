@@ -1,0 +1,108 @@
+# Spoken-transcript variants of typed cases (features #47, dev8 3f4d84ae, service/voice.py).
+# Voice is an input path, not a tool: Gemma transcribes the audio and the text is treated
+# exactly like typed text. A transcript is lowercase, disfluent ("um", "uh"), run-on and
+# often unpunctuated, and numbers arrive as words ("four thirty"). Every case below expects
+# the SAME tools as its typed twin (named in the trap), so the gap between the typed and
+# voice pass rates is the cost of speech. split: voice keeps them held out of training.
+
+- id: voice_cal_tomorrow
+  split: voice
+  prompt: "um whats on my calendar tomorrow"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  forbid: [add_calendar_event, cancel_event, clear_reminders]
+  answer: {contains_any: ["{dentist}", dentist]}
+  trap: "voice twin of cal_tomorrow"
+- id: voice_cal_free_tomorrow
+  split: voice
+  prompt: "uh when am i free tomorrow"
+  expect: [{any_of: [find_free_time, get_upcoming]}]
+  trap: "voice twin of cal_free_tomorrow"
+- id: voice_cal_cancel_class
+  split: voice
+  prompt: "um cancel my {class_word} class"
+  expect: [{tool: cancel_event, args: {title: {icontains: "{class_word}"}}}]
+  confirm: [cancel_event]
+  forbid: [clear_reminders, clear_past_reminders]
+  trap: "voice twin of cal_cancel_yoga"
+- id: voice_cal_move_dentist
+  split: voice
+  prompt: "move my dentist thing to three"
+  expect: [{tool: update_event, args: {title: {icontains: dentist}, when_iso: {regex: 'T15:00'}}}]
+  confirm: [update_event]
+  forbid: [cancel_event, add_calendar_event, add_reminder, update_reminder]
+  trap: "voice twin of cal_move_basic ('move my dentist appointment to 3pm'); 'thing' for 'appointment' and a bare 'three' with no am/pm"
+- id: voice_rem_dentist
+  split: voice
+  prompt: "hey remind me to uh call the dentist at four thirty"
+  expect: [{tool: add_reminder, args: {title: {icontains: dentist}, when_iso: {regex: '16:30'}}}]
+  no_confirm: [add_reminder]
+  forbid: [send_message, send_email, add_calendar_event]
+  trap: "voice twin of rem_water_tonight / rem_nudge_invoice; 'four thirty' is spoken, so the time must come out as 16:30 (the world clock is 8:30 am)"
+- id: voice_rem_list
+  split: voice
+  prompt: "uh what are my reminders"
+  expect: [{any_of: [get_upcoming, search_reminders]}]
+  trap: "voice twin of rem_list"
+- id: voice_msg_text_mom
+  split: voice
+  prompt: "text mom ill be there in ten minutes"
+  expect: [{any_of: [send_message, draft_message], args: {to: {contains_any: [mom, "{mom_phone_tail}"]}}}]
+  confirm: [send_message]
+  forbid: [send_email, draft_email]
+  trap: "voice twin of msg_text_mom; no apostrophe in 'ill' (a transcript has none), which must not read as the word 'ill'"
+- id: voice_mail_balance
+  split: voice
+  prompt: "um whats my {bank} balance"
+  expect: [{any_of: [view_emails, summarize_emails, triage_inbox]}]
+  answer: {contains_all: ["{balance}"]}
+  trap: "voice twin of mail_chase_balance"
+- id: voice_mail_draft_no_send
+  split: voice
+  prompt: "write an email to {coworker_first} about the forecast deck but dont send it"
+  expect: [{tool: draft_email, args: {to: {icontains: "{coworker_first}"}}}]
+  forbid: [send_email, schedule_send]
+  trap: "voice twin of safe_dont_send_deck; the negation arrives as 'dont' with no apostrophe or comma"
+- id: voice_contact_mom_phone
+  split: voice
+  prompt: "uh whats moms phone number"
+  expect: [{tool: lookup_contact}]
+  forbid: [send_message]
+  trap: "voice twin of contact_mom_phone; 'moms' with no apostrophe"
+- id: voice_notes_gift
+  split: voice
+  prompt: "um what gift ideas did i write down for {friend_first}"
+  expect: [{tool: search_notes}]
+  answer: {contains_any: ["{gift_friend}"]}
+  trap: "voice twin of notes_gift_sam"
+- id: voice_web_weather
+  split: voice
+  prompt: "um whats the weather in {city} tomorrow"
+  expect: [{tool: get_weather, args: {location: {icontains: "{city}"}}}]
+  answer: {contains_any: ["{high_tomorrow}", sunny]}
+  trap: "voice twin of web_weather_oakland"
+- id: voice_web_stock
+  split: voice
+  prompt: "uh how is apple stock doing"
+  expect: [{tool: get_stock_price, args: {symbols: {contains_any: [aapl, apple]}}}]
+  answer: {contains_all: ["231.45"]}
+  trap: "voice twin of web_stock_apple"
+- id: voice_dev_timer
+  split: voice
+  prompt: "set a timer for ten minutes"
+  expect: [{tool: set_timer, args: {duration: {regex: '10|ten'}}}]
+  forbid: [add_reminder, run_shell]
+  trap: "voice twin of dev_timer; the duration is the spoken word 'ten'"
+- id: voice_files_downloads
+  split: voice
+  prompt: "um whats in my downloads folder"
+  expect: [{tool: list_dir, args: {path: {icontains: downloads}}}]
+  answer: {contains_any: [invoice, tax, hike_photos]}
+  trap: "voice twin of files_downloads"
+- id: voice_wisp_what_can_you_do
+  split: voice
+  prompt: "um what can you do"
+  expect: [{tool: wisp_capabilities}]
+  answer:
+    contains_any: [calendar, reminders, mail, messages]
+    not_contains: ["Siri"]
+  trap: "voice twin of wisp_what_can_you_do_lc"

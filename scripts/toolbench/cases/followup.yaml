@@ -64,5 +64,309 @@
       assistant: "Yes — {bank} says your statement is ready."
       tools: view_emails
   prompt: "how much is it?"
-  expect: [{any_of: [view_emails, summarize_emails, triage_inbox]}]
+  expect: [{tool: view_emails}]
   answer: {contains_all: ["{balance}"]}
+  trap: "world update: summarize_emails and triage_inbox are header-only, so only view_emails can supply the balance"
+
+# ---- Real-usage slot-fill and correction chains (real-usage report 1B and failure modes 2.1 to 2.4, 2.8).
+# Guard note: service/router/model_led.continuation_requires_baseline forbids every non-read tool when the
+# whole prompt is a bare assent ("yes", "sure", "ok") or a bare channel word ("messages", "via imessage") after
+# an assistant turn containing "?". The gate variants below avoid those exact shapes; the bare ones are dev.
+- id: fu_channel_messages_bare
+  split: dev
+  history:
+    - user: "send mom my calendar for this week"
+      assistant: "Coming up: dentist with Dr. {dentist} at {dentist_time}, brunch with {friend_first} at {restaurant} on Sunday, and {class} at 7:00 AM. Should I send that to your mom through Messages or email?"
+      tools: get_upcoming
+  prompt: "messages"
+  expect:
+    - tool: send_message
+      args:
+        to: {contains_any: [mom, "{mom_phone_tail}"]}
+        text: {regex: '(?:dentist|{dentist}|brunch|{restaurant}|{class_word})'}
+  forbid: [send_email, draft_message]
+  confirm: [send_message]
+  max_calls: 4
+  trap: "real-usage 1B #20 (about 8 turns): the payload was lost or the channel question repeated. production guard blocks send_message on a bare channel answer (continuation_requires_baseline, found 2026-10-29), so this fails as a production bug"
+
+- id: fu_channel_messages_pls
+  history:
+    - user: "send mom my calendar for this week"
+      assistant: "Coming up: dentist with Dr. {dentist} at {dentist_time}, brunch with {friend_first} at {restaurant} on Sunday, and {class} at 7:00 AM. Should I send that to your mom through Messages or email?"
+      tools: get_upcoming
+  prompt: "messages pls"
+  expect:
+    - tool: send_message
+      args:
+        to: {contains_any: [mom, "{mom_phone_tail}"]}
+        text: {regex: '(?:dentist|{dentist}|brunch|{restaurant}|{class_word})'}
+  forbid: [send_email, draft_message]
+  confirm: [send_message]
+  max_calls: 4
+  trap: "real-usage 1B #20 in a shape the continuation guard lets through: the pending payload from the earlier turn must be the text"
+
+- id: fu_recipient_answer
+  history:
+    - user: "text my schedule for the week"
+      assistant: "Coming up: dentist with Dr. {dentist} at {dentist_time}, brunch with {friend_first} at {restaurant} on Sunday, and {class} at 7:00 AM. Who should I text it to?"
+      tools: get_upcoming
+  prompt: "dad"
+  expect:
+    - tool: send_message
+      args:
+        to: {contains_any: [dad, "0102", "{dad_email}"]}
+        text: {regex: '(?:dentist|{dentist}|brunch|{restaurant}|{class_word})'}
+  forbid: [send_email, draft_message]
+  confirm: [send_message]
+  max_calls: 4
+  trap: "real-usage 1B #21: a recipient answer to 'who?' resolves the contact and sends the pending text; once the wrong recipient was used"
+
+- id: fu_email_address_answer
+  history:
+    - user: "email mom my schedule for tomorrow"
+      assistant: "Mom only has a phone number saved in Contacts, so I can't email her yet. What email address should I use? Tomorrow you have the dentist with Dr. {dentist} at {dentist_time}."
+      tools: lookup_contact
+  prompt: "mom@example.com"
+  expect:
+    - tool: send_email
+      args:
+        to: {icontains: "mom@example.com"}
+        body: {regex: '(?:dentist|{dentist}|{dentist_time})'}
+  forbid: [send_message, schedule_send]
+  confirm: [send_email]
+  max_calls: 5
+  trap: "real-usage 1B #22: a phone number was passed as the email `to` twice; the typed address must be the recipient and the pending schedule the body"
+
+- id: fu_sure_after_offer
+  split: dev
+  history:
+    - user: "when does mom's flight land?"
+      assistant: "Friday at {flight_time} at SFO, terminal 2. I can text her that if you'd like?"
+      tools: view_emails
+  prompt: "sure"
+  expect:
+    - tool: send_message
+      args:
+        to: {contains_any: [mom, "{mom_phone_tail}"]}
+        text: {icontains: "{flight_time}"}
+  forbid: [send_email]
+  confirm: [send_message]
+  max_calls: 4
+  trap: "real-usage 1B #23 (5 turns): repeated the contact info and called no tool. production guard blocks send_message on a bare 'sure' (continuation_requires_baseline, found 2026-10-29), so this fails as a production bug"
+
+- id: fu_ok_send_it
+  history:
+    - user: "when does mom's flight land?"
+      assistant: "Friday at {flight_time} at SFO, terminal 2. I can text her that if you'd like?"
+      tools: view_emails
+  prompt: "ok send it"
+  expect:
+    - tool: send_message
+      args:
+        to: {contains_any: [mom, "{mom_phone_tail}"]}
+        text: {icontains: "{flight_time}"}
+  forbid: [send_email]
+  confirm: [send_message]
+  max_calls: 4
+  trap: "real-usage 1B #23: an assent plus a verb after an offer sends the offered text (the bare 'sure' form is the dev case above)"
+
+- id: fu_send_this_to_mom
+  history:
+    - user: "anything planned for me the next few days"
+      assistant: "Coming up: dentist with Dr. {dentist} at {dentist_time}, brunch with {friend_first} at {restaurant} on Sunday, and {class} at 7:00 AM."
+      tools: get_upcoming
+  prompt: "send this to mom"
+  expect:
+    - tool: send_message
+      args:
+        to: {contains_any: [mom, "{mom_phone_tail}"]}
+        text: {regex: '(?:dentist|{dentist}|brunch|{restaurant}|{class_word})'}
+  forbid: [send_email, draft_message]
+  confirm: [send_message]
+  max_calls: 5
+  trap: "real-usage 1B #24 (3 turns): the channel was asked again and the printed answer was dropped as the payload"
+
+- id: fu_send_this_to_dad
+  history:
+    - user: "anything planned for me the next few days"
+      assistant: "Coming up: dentist with Dr. {dentist} at {dentist_time}, brunch with {friend_first} at {restaurant} on Sunday, and {class} at 7:00 AM."
+      tools: get_upcoming
+  prompt: "send this to dad"
+  expect:
+    - any_of: [send_message, send_email]
+      args:
+        to: {contains_any: [dad, "0102", "{dad_email}"]}
+  forbid: [draft_message, schedule_send]
+  confirm: [send_message, send_email]
+  answer:
+    not_contains: ["which channel", "messages or email", "text or email"]
+  max_calls: 5
+  trap: "real-usage 1B #24 with a contact that has both a phone and an email: either channel is a send, but asking the channel again is the failure"
+
+- id: fu_actually_send_to_friend
+  history:
+    - user: "text dad my dentist appointment time"
+      assistant: "Done. I texted Dad: your dentist appointment is tomorrow at {dentist_time}."
+      tools: send_message
+  prompt: "actually send it to {friend_lower} instead"
+  expect:
+    - tool: send_message
+      args:
+        to: {contains_any: ["{friend_lower}", "{friend_lower_email}", "0133"]}
+        text: {regex: '(?:{dentist_time}|dentist)'}
+  forbid: [send_email, schedule_send]
+  confirm: [send_message]
+  max_calls: 4
+  trap: "real-usage 1B #25: asked again, then claimed there was no messaging function (HALLU). The override sends the same text to the new recipient"
+
+- id: fu_reminder_i_mean_today
+  history:
+    - user: "remind me to water the plants tomorrow at 6pm"
+      assistant: "Done. I set “Water the plants” for tomorrow at 6:00 PM."
+      tools: add_reminder
+  prompt: "i mean today sorry"
+  expect:
+    - tool: update_reminder
+  forbid: [remember, add_reminder, save_knowledge]
+  no_confirm: [update_reminder]
+  answer:
+    contains_all: [plants]
+    contains_any: [today, "6:00", "6 pm", "6pm"]
+    not_contains: ["{doordash_reminder}", "{rent_reminder}", "{dentist_reminder}"]
+  max_calls: 4
+  trap: "real-usage 1B #29 / failure mode 2.4: `remember` was called and 'updated' claimed. A correction to a reminder is update_reminder, with no confirmation card. `title` is unchecked on purpose (the tool allows omitting it for an immediate correction); with no title the fake edits the most recently created dated reminder, which in the world is 'Water the plants', so the answer must name it and no other reminder"
+
+- id: fu_reminder_i_dont_see_it
+  history:
+    - user: "remind me to water the plants at 6pm today"
+      assistant: "Done. I set a reminder to water the plants for 6:00 PM today."
+      tools: add_reminder
+  prompt: "i dont see it"
+  expect:
+    - any_of: [search_reminders, get_upcoming]
+  forbid: [remember, add_reminder]
+  answer:
+    contains_any: [plants, "6:00", "6 pm", "6pm"]
+  max_calls: 4
+  trap: "real-usage 1B #30 (3 turns): `remember` was substituted for a check. 'I dont see it' means verify with a reminders read"
+
+- id: fu_reminder_ok_so_fix_it
+  history:
+    - user: "is the {bank} bill reminder set for today?"
+      assistant: "No. “Pay {bank} bill” is still set for next week, not today."
+      tools: search_reminders
+  prompt: "ok so fix it?"
+  expect:
+    - tool: update_reminder
+      args:
+        title: {icontains: "{bank}"}
+  forbid: [remember, run_shell, add_reminder]
+  no_confirm: [update_reminder]
+  answer:
+    contains_all: ["{bank}"]
+    contains_any: [today, "9:00", "9 am", "9am"]
+    not_contains: ["{rent_reminder}", "{doordash_reminder}"]
+  max_calls: 4
+  trap: "real-usage 1B #31 (2 turns): shell date commands and memory writes, never an update. Fixing a verified-wrong reminder is update_reminder"
+
+- id: fu_first_thing_i_asked
+  history:
+    - user: "what did we talk about a while back"
+      assistant: "I found a couple of earlier chats. Do you want the most recent one or the very first one?"
+  prompt: "no i mean the first convo we had"
+  expect:
+    - any_of: [search_conversations, recall]
+  answer:
+    contains_any: ["{convo_topic}", reviews]
+  forbid: [web_search, send_message]
+  max_calls: 4
+  trap: "real-usage 1B #38 (3 turns) and the stale `search_conversations` rejections (unoffered x4 in the 2026-10-29 audit): the registry has it, so a history question uses it"
+
+- id: fu_nope_abandons
+  history:
+    - user: "remind me about the thing"
+      assistant: "Which reminder do you want me to update, and to when?"
+  prompt: "nope"
+  no_tool: true
+  forbid: [add_reminder, update_reminder, complete_reminder, remember, clear_reminders]
+  trap: "real-usage 1B #35: after a bad clarification the model stayed in an invented reminder-update workflow (and invented a reminder). 'nope' ends it with no action"
+
+- id: fu_question_mark_restates
+  history:
+    - user: "move my reminder"
+      assistant: "Which reminder do you want me to move, and to when?"
+  prompt: "?"
+  no_tool: true
+  answer:
+    contains_any: [which, reminder, "what"]
+  forbid: [add_reminder, update_reminder, remember]
+  trap: "real-usage 1B #35: a bare '?' asks the model to restate its question, not to act"
+
+- id: fu_really_recheck
+  history:
+    - user: "when is my dentist appointment"
+      assistant: "Your dentist appointment is next Tuesday at 9am."
+      tools: get_upcoming
+  prompt: "really?"
+  expect:
+    - any_of: [get_upcoming, daily_brief]
+  answer:
+    contains_all: ["{dentist_time}"]
+  forbid: [send_message, send_email, add_calendar_event]
+  max_calls: 4
+  trap: "real-usage 1B #34: a challenge to an answer is a re-check against the source, not a repeat or an apology"
+
+- id: fu_compare_stocks_last_week
+  history:
+    - user: "what are my stock prices today"
+      assistant: "{stock_a} and {stock_b} are both trading up a little today."
+      tools: get_stock_price
+  prompt: "compare this to what it was last week"
+  expect:
+    - tool: get_stock_price
+      args:
+        period: {present: true}
+  forbid: [get_upcoming, search_notes, view_emails, daily_brief, send_message]
+  max_calls: 4
+  trap: "real-usage 1B #26: 16 irrelevant calls (LOOP) fanning into calendar and notes reads. A comparison is one stock call with a period"
+
+- id: fu_market_after_news
+  history:
+    - user: "whats the news today"
+      assistant: "Here are today's headlines on the news card above."
+      tools: web_search
+  prompt: "and in the stock market?"
+  expect:
+    - any_of: [web_search, get_stock_price]
+  forbid: [send_message, send_email, get_upcoming]
+  max_calls: 4
+  trap: "real-usage 1B #27: a follow-up on a related public topic is another public lookup"
+
+- id: fu_check_next_month
+  history:
+    - user: "anything planned for me the next few days"
+      assistant: "Coming up: dentist with Dr. {dentist} at {dentist_time} and brunch with {friend_first} on Sunday."
+      tools: get_upcoming
+  prompt: "check the calendar for next month"
+  expect:
+    - any_of: [get_upcoming, daily_brief]
+      args:
+        period: {icontains: month}
+  forbid: [get_past_events, add_calendar_event]
+  max_calls: 4
+  trap: "real-usage 1B #36 (2 turns): the follow-up widened the earlier window or used get_past_events. 'next month' is a forward period"
+
+- id: fu_weather_city_answer
+  history:
+    - user: "can you check the weather for tomorrow"
+      assistant: "Which city should I check?"
+  prompt: "in {city}"
+  expect:
+    - tool: get_weather
+      args:
+        location: {icontains: "{city}"}
+  answer:
+    contains_any: ["{high_tomorrow}", sunny]
+  forbid: [web_search]
+  max_calls: 3
+  trap: "real-usage 1B #28 (5 sessions): a bare place answers the pending weather question; a temporal phrase once went in as the location"

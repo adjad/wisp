@@ -1,0 +1,156 @@
+# Day planning, event-vs-to-do lead questions and free time (features report cases 8, 9, 12-16;
+# real-usage C #40-53). get_my_day_plan is the one call for "what should I do today";
+# predict_my_day is the routine predictor and has no schedule.
+- id: day_plan_today_lc
+  prompt: "what should i do today"
+  expect: [{tool: get_my_day_plan}]
+  forbid: [predict_my_day, web_search]
+  max_calls: 3
+  answer: {contains_any: [plants, "{rent_reminder}", "{coworker_first}"]}
+  trap: "features case 12 (21b0d611 / #363): 'what should I do today' is one get_my_day_plan call, not a per-app crawl"
+- id: day_plan_forgetting
+  prompt: "what am i forgetting"
+  expect: [{tool: get_my_day_plan}]
+  forbid: [predict_my_day, web_search]
+  max_calls: 3
+  answer: {contains_any: [plants, "{rent_reminder}", "{coworker_first}", overdue]}
+  trap: "features case 12: the tool description names 'what am I forgetting?'; the plan carries the overdue rent and the person waiting on a reply"
+- id: day_plan_clean
+  prompt: "How should I plan my day today?"
+  expect: [{tool: get_my_day_plan}]
+  forbid: [predict_my_day, web_search]
+  max_calls: 3
+  answer: {contains_any: [plants, "{rent_reminder}", "{coworker_first}"]}
+  trap: "features case 12: the clean-phrased contrast for the lowercase forms"
+- id: day_plan_tomorrow_typo
+  prompt: "help me plan my day tommorow"
+  expect: [{tool: get_my_day_plan, args: {day: tomorrow}}]
+  forbid: [predict_my_day, web_search]
+  max_calls: 3
+  answer: {contains_any: ["{dentist}", dentist]}
+  trap: "real-usage #42 (local turn): 'plan my day tommorow' was answered with predict_my_day, which has no schedule (2ba3ba8c). Must be get_my_day_plan(day=tomorrow)"
+- id: day_tomorrow_no_stall
+  prompt: "what is up for tommorow"
+  expect: [{any_of: [get_upcoming, get_my_day_plan, daily_brief]}]
+  answer:
+    contains_any: ["{dentist}", dentist]
+    not_contains: ["give me a moment", "one moment", "checking now", "let me check", "i'll check", "hold on"]
+  trap: "real-usage #40 (3 of the 4 local turns, fixed in dev8 2ba3ba8c): the typo'd tomorrow question stalled on 'checking now, give me a moment' with no tool call"
+- id: day_going_on_tmrw
+  prompt: "whats going on tmrw"
+  expect: [{any_of: [get_upcoming, get_my_day_plan, daily_brief]}]
+  answer:
+    contains_any: ["{dentist}", dentist]
+    not_contains: ["give me a moment", "one moment", "checking now", "let me check", "i'll check", "hold on"]
+  trap: "features case 13 (2ba3ba8c): same no-stall guard on 'tmrw' (the tool rejects it, so the model must say 'tomorrow')"
+- id: day_planned_friday
+  prompt: "anything planned for {tomorrow_weekday}"
+  expect: [{any_of: [get_upcoming, get_my_day_plan, daily_brief]}]
+  answer:
+    contains_all: ["{dentist}"]
+    not_contains: ["give me a moment", "one moment", "checking now"]
+  trap: "features case 13 (09f5f830): a bare weekday was rejected as a period before dev8. The weekday is tomorrow's, so the dentist appointment is always on it"
+
+# ---- Event lead vs to-do lead (08cd8da2, 7f239eb3 / #410): events live in get_upcoming, to-dos in
+# search_reminders; neither is the send queue or Google Tasks.
+- id: day_open_tasks
+  prompt: "what r my open tasks"
+  expect: [{tool: search_reminders}]
+  forbid: [list_scheduled_sends, web_search]
+  max_calls: 3
+  answer: {contains_any: [plants, "{rent_reminder}", "{dentist_reminder}", "{passport_reminder}", "{bank}"]}
+  trap: "real-usage #62 (Ask run): 'open tasks / school tasks / to-dos' landed in Google Tasks or list_scheduled_sends and ended 'I don't have that'; they are search_reminders with an empty query (7f239eb3)"
+- id: day_todo_list_clean
+  prompt: "What are my to-dos?"
+  expect: [{tool: search_reminders}]
+  forbid: [list_scheduled_sends, web_search]
+  max_calls: 3
+  answer: {contains_any: [plants, "{rent_reminder}", "{dentist_reminder}", "{passport_reminder}", "{bank}"]}
+  trap: "features case 14: clean-phrased contrast for day_open_tasks"
+- id: day_class_tomorrow_pls
+  prompt: "do i have class tomorrow pls"
+  expect: [{any_of: [get_upcoming, get_my_day_plan, daily_brief]}]
+  forbid: [list_scheduled_sends, web_search]
+  answer: {contains_any: ["{dentist}", dentist, "no class", "don't have class", "nothing", "no events", "{class_word}"]}
+  trap: "features case 14 (08cd8da2): an event lead question reads the calendar; 'I don't have that' without a calendar read was the failure"
+
+# ---- Free time (09f5f830, c5e7b2ce, 13e7e0c8): a period word, never a days=N guess that misses the day.
+# World: the read-only holidays entry never blocks a day; the user's own all-day trip does.
+- id: day_free_friday_afternoon
+  prompt: "is {tomorrow_weekday} afternoon open"
+  expect: [{any_of: [find_free_time, get_upcoming], args: {period: {regex: "{tomorrow_weekday}|tomorrow|20\\d\\d-\\d\\d-\\d\\d"}}}]
+  max_calls: 4
+  answer: {contains_any: [pm, afternoon, free]}
+  trap: "features case 8 / real-usage #47 (09f5f830): a bare weekday was rejected as a period and the model gave up or guessed days=N. Tomorrow's free windows depend on the dentist time (it varies by world), so the answer check stays loose"
+- id: day_free_weekend_coffee
+  prompt: "when can i grab coffee with {friend_first} this weekend"
+  expect: [{any_of: [find_free_time, get_upcoming], args: {period: {regex: "weekend|sat|sun|20\\d\\d-\\d\\d-\\d\\d"}}}]
+  forbid: [add_calendar_event, send_message]
+  max_calls: 4
+  answer: {contains_all: [saturday, sunday]}
+  trap: "features case 8 (09f5f830): 'this weekend' must cover both days; the old failure reported 'Sunday is clear' from a one-day call. Both days have gaps in the canonical world (Saturday's budget review and vendor sync leave some), so both must appear"
+- id: day_free_hour_nov3
+  prompt: "do i have an hour on {future_date_short}"
+  expect: [{any_of: [find_free_time, get_upcoming], args: {period: {regex: "{future_date_short}|{future_date_iso}|{future_day_ordinal}|{future_weekday}"}}}]
+  max_calls: 4
+  answer: {contains_any: [yes, "9:00", "9 am", "9am"]}
+  trap: "features case 8 (09f5f830): a date with no year as the period. The date is five days out; only Book club (evening) is on it, so the morning is open"
+- id: day_free_thirty_friday_2
+  prompt: "do i have time for 30 min {tomorrow_weekday} around 2"
+  expect: [{any_of: [find_free_time, get_upcoming], args: {period: {regex: "{tomorrow_weekday}|tomorrow|20\\d\\d-\\d\\d-\\d\\d"}}}]
+  max_calls: 4
+  answer: {contains_any: [yes, free, "2:00", "2 pm", "2pm", "1:00", "available", open]}
+  trap: "real-usage #48: 'time for N minutes <day> around <time>' is find_free_time with a period (and minutes=30); tomorrow's dentist is at 3:30 PM in the canonical world so 2 PM is open (other seeds put the dentist near 2, hence the loose check)"
+- id: day_free_trip_blocks
+  prompt: "do i have any free time during the {trip}"
+  expect: [{any_of: [find_free_time, get_upcoming]}]
+  max_calls: 4
+  answer:
+    contains_any: ["{trip}", busy, booked, blocked, "not free", "no free", "no gap", "no opening", "nothing free", "all day", "no available", "not available"]
+    not_contains: ["completely free", "wide open", "free all day", "totally free"]
+  trap: "features case 9 (c5e7b2ce, 13e7e0c8): the user's OWN all-day Family trip on a writable calendar blocks the day; only a read-only holidays calendar frees it"
+- id: day_free_holiday_counts_free
+  prompt: "am i free on {holiday}"
+  expect: [{any_of: [find_free_time, get_upcoming], args: {period: {present: true}}}]
+  max_calls: 4
+  answer:
+    contains_any: [free, gap, open, available, "9:00", "9 am", "9am"]
+    not_contains: ["no gaps", "no gap", "not free", "no free", "fully booked", "busy all day", "blocked", "nothing free", "isn't free", "not available"]
+  trap: "features case 9 (c5e7b2ce, 13e7e0c8): a read-only subscribed holidays entry must not make the day busy, so the holiday day is free (with gaps) and the answer must not say it is blocked. The world's trip never shares a day with the holiday, so nothing else blocks it"
+- id: day_free_tonight_lc
+  prompt: "any gaps tonight"
+  expect: [{any_of: [find_free_time, get_upcoming]}]
+  max_calls: 4
+  trap: "features case 8 (09f5f830): 'tonight' as a period for the availability tool"
+
+# ---- Source exclusion and the routine predictor.
+- id: day_focus_not_email
+  prompt: "what should i focus on today, not my email"
+  expect: [{any_of: [get_my_day_plan, daily_brief]}]
+  forbid: [view_emails, summarize_emails, triage_inbox]
+  max_calls: 3
+  answer: {contains_any: [plants, "{rent_reminder}", "{dentist_reminder}"]}
+  trap: "features case 16 (dev4 notes): a source exclusion in the sentence ('not my email') must keep every mail tool unused"
+- id: day_predict_tomorrow
+  prompt: "predict my day tomorrow"
+  expect: [{tool: predict_my_day, args: {day: tomorrow}}]
+  forbid: [get_my_day_plan, web_search]
+  max_calls: 3
+  answer: {contains_any: ["{class_word}", "{friend_first}", "{vendor_event}", probab]}
+  trap: "real-usage #53 (A: 6 calls) / features case 12: 'predict my day' proper IS predict_my_day, the routine predictor, not the plan"
+- id: day_predict_clean
+  prompt: "Predict my day."
+  expect: [{tool: predict_my_day}]
+  forbid: [get_my_day_plan, web_search]
+  max_calls: 3
+  answer: {contains_any: ["{class_word}", "{friend_first}", "{vendor_event}", probab]}
+  trap: "features case 12: the clean contrast for day_predict_tomorrow"
+
+# ---- Spoken variants (split voice).
+- id: day_voice_plan_tomorrow
+  split: voice
+  prompt: "um help me plan tomorrow"
+  expect: [{tool: get_my_day_plan, args: {day: tomorrow}}]
+  forbid: [predict_my_day]
+  max_calls: 3
+  trap: "features case 47 (3f4d84ae): spoken plan request, same tool and day as the typed form"

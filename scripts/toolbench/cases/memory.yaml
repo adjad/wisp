@@ -25,3 +25,110 @@
   split: dev
   prompt: "forget that I'm allergic to penicillin"
   expect: [{tool: forget, args: {query: {icontains: penicillin}}}]
+
+# ---- Facts about the user: saved facts and the profile are answered plainly (#273, #406).
+# The world's memory holds {employer} and {isp} (origin mail, used without review), a stated
+# birthday, and a profile with a preferred name and two goals. There is no home-city fact.
+- id: mem_know_birthday_lc
+  prompt: "do u know my birthday"
+  forbid: [wisp_capabilities, web_search, search_notes, remember]
+  max_calls: 3
+  answer: {contains_all: ["{user_birthday}"]}
+  trap: "features case 21 / real-usage #90 (a1731a57): 'do you know my X' was swallowed by capability_question and answered 'I can't know that' with no tool; recall (or the injected fact) holds the stated birthday"
+- id: mem_where_work_plain
+  prompt: "where do i work"
+  forbid: [wisp_capabilities, web_search, search_notes, remember]
+  max_calls: 3
+  answer:
+    contains_all: ["{employer}"]
+    not_contains: ["can you confirm", "please confirm", "is that right", "is that correct", "should i use", "want me to use", "not sure"]
+  trap: "features case 22 (aafaa06a, 19907948 / #406): 'Works at <employer>' was learned from the user's Sent mail (origin mail) and is DECIDED to be used without review: stated plainly, no confirmation asked"
+- id: mem_isp_lc
+  prompt: "whats my isp"
+  forbid: [wisp_capabilities, web_search, search_notes, remember]
+  max_calls: 3
+  answer:
+    contains_all: ["{isp}"]
+    not_contains: ["can you confirm", "please confirm", "is that right", "is that correct", "should i use", "want me to use"]
+  trap: "features case 22 (#406): a second mail-origin fact ('Uses <isp> (internet)'), same plain-statement rule; web_search for 'my isp' would be the wrong source"
+- id: mem_home_city_unknown
+  prompt: "what's my home city"
+  forbid: [remember, save_knowledge, web_search]
+  max_calls: 3
+  answer:
+    contains_any: ["don't have", "do not have", "don't know", "haven't", "have not", "not sure", "no record", "didn't", "can't find", "couldn't find", "don't see", "tell me", "let me know", "no saved", "not saved"]
+    not_contains: ["{city}"]
+  trap: "features case 22 negative: no home-city fact exists, so the answer is 'I don't have that', never a guess from the weather city or the timezone"
+- id: mem_name_from_profile
+  prompt: "what's my name"
+  forbid: [wisp_capabilities, web_search, get_upcoming, search_notes, remember]
+  max_calls: 3
+  answer: {contains_all: ["{preferred_name}"]}
+  trap: "features case 21 (1f763053 / #273): the name they asked to be called outranks the account name; answered from the profile, not a calendar or notes search"
+- id: mem_goals_from_profile
+  prompt: "what are my goals"
+  forbid: [wisp_capabilities, web_search, get_upcoming, search_notes, remember, save_knowledge]
+  max_calls: 3
+  answer: {contains_any: ["{goal_a}", "{goal_b}"]}
+  trap: "features case 21 (1f763053 / #273): goals come from the saved profile, not from a search; 'Help me with my goal' chips are advice, not saves"
+
+# ---- Not facts: remember is strict, and an observation about someone else is not a user fact
+# (dev8 extractor rules 32a2726e, 5cdf640b; memory_tools.remember).
+- id: mem_not_fact_sister_moving
+  prompt: "my sister is moving to denver"
+  no_tool: true
+  forbid: [remember, save_knowledge]
+  trap: "features case 23 (dev8 notes): a fact about another person is never saved without an explicit remember/save request"
+- id: mem_not_fact_think_mike
+  prompt: "i think mike is moving to denver"
+  no_tool: true
+  forbid: [remember, save_knowledge]
+  trap: "features case 23: a hedged claim about a third party is not a user fact"
+- id: mem_not_fact_do_i_live
+  prompt: "do i live in denver?"
+  forbid: [remember, save_knowledge, web_search]
+  max_calls: 3
+  answer: {not_contains: ["yes, you live in denver", "yes you live in denver", "you do live in denver", "yes, you do live"]}
+  trap: "features case 23: a question is not a statement; with no home-city fact the answer must not confirm Denver (recall may be called, remember never)"
+- id: mem_not_fact_recruiter
+  prompt: "i met a recruiter at google today"
+  no_tool: true
+  forbid: [remember, save_knowledge]
+  trap: "features case 23 (dev8 notes): 'a recruiter' is a third party and an event, not a stored user fact"
+
+# ---- Correction: an explicit update supersedes the old memory (remember schema).
+- id: mem_correct_employer
+  prompt: "actually i work at stripe now, update that"
+  expect: [{tool: remember, args: {fact: {icontains: stripe}, supersedes_id: {regex: "^{employer_fact_id}$"}}}]
+  forbid: [web_search, save_knowledge]
+  max_calls: 5
+  answer: {contains_any: [stripe]}
+  trap: "features case 24: a correction must call remember with supersedes_id = the old 'Works at <employer>' memory ({employer_fact_id}), not save a second contradictory fact. The id comes from recall or the memory block"
+
+# ---- forget (DECIDED 2026-10-14: no confirmation card under Full access).
+- id: mem_forget_work_count
+  access: full
+  prompt: "forget that i work at {employer}"
+  expect: [{tool: forget, args: {query: {regex: "work|{employer}"}}}]
+  no_confirm: [forget]
+  forbid: [web_search, delete_knowledge]
+  max_calls: 4
+  answer: {contains_any: ["1 matching", "1 memory", "1 record", "1 fact", "1 item", "1 entry", "one memory", "one matching", "one record", "one fact", "one item", "one entry", "forgot 1", "forgotten 1", "removed 1", "just one", "only one"]}
+  trap: "features case 25 (memory_tools.forget): runs with NO card under Full access (never score the absence of one as a failure), and the answer says how many were forgotten (the tool reports 'Forgot 1 matching memory record(s)')"
+- id: mem_forget_nothing_matched
+  access: full
+  prompt: "forget my gate code"
+  expect: [{any_of: [forget, recall]}]
+  no_confirm: [forget]
+  forbid: [delete_knowledge]
+  max_calls: 4
+  answer:
+    contains_any: ["no matching", "nothing", "didn't find", "couldn't find", "could not find", "no memor", "not find", "don't have", "no exact", "wasn't any", "weren't any", "no saved"]
+    not_contains: ["i've forgotten your", "i forgot your", "forgot that", "i've removed your", "deleted your gate"]
+  trap: "features case 25: forget does not delete a fuzzy nearest match; with no gate code stored the tool says nothing was forgotten and the answer must not claim success on a zero result"
+- id: mem_forget_everything_mail
+  prompt: "forget everything you learned from my mail"
+  forbid: [forget, delete_knowledge, clear_reminders, clear_past_reminders]
+  max_calls: 4
+  answer: {contains_any: [memory, settings, "one by one", individually, review, "can't", "cannot", "won't", "which", "specific"]}
+  trap: "features case 26 (profile_facts.forget_all, dev7 known issue). JUDGEMENT case, not a decided rule: a sweeping 'forget everything' must not run any destructive call from Ask (a recall to list the mail-learned facts is fine). The bulk delete exists in the service but has no button yet, so the right move is to list them and point to Memory, or ask which ones"

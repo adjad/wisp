@@ -44,3 +44,153 @@
   prompt: "what's due today?"
   expect: [{any_of: [get_upcoming, search_reminders, daily_brief]}]
   answer: {contains_any: [plants]}
+
+# ---- Overdue / due soon / pending / list all (87e2372f, 3fe9f176, 7f239eb3 / #410). The world has
+# {rent_reminder} overdue, three future reminders, a {doordash_reminder} reminder far past due and an
+# undated {stale_reminder} reminder: the last two are stale and hidden from every list.
+- id: rem_overdue_lc
+  prompt: "whats overdue"
+  expect: [{tool: search_reminders}]
+  forbid: [list_scheduled_sends, clear_reminders, clear_past_reminders, web_search]
+  max_calls: 3
+  answer:
+    contains_all: ["{rent_reminder}"]
+    not_contains: ["{doordash_reminder}", "{stale_reminder}", "{passport_reminder}"]
+  trap: "features case 15 / real-usage #63 (87e2372f): 'overdue' returned the whole list; only {rent_reminder} is past due and visible (the older records are hidden stale)"
+- id: rem_due_soon
+  prompt: "what's due in the next few days?"
+  expect: [{any_of: [search_reminders, get_upcoming]}]
+  forbid: [list_scheduled_sends, clear_reminders, clear_past_reminders]
+  max_calls: 3
+  answer: {contains_any: [plants, "{dentist_reminder}", "{bank}", "{passport_reminder}"]}
+  trap: "features case 15 / real-usage #63 (87e2372f): the 'due soon' family (here 'due in the next few days') is the upcoming scope, not overdue and not the send queue"
+- id: rem_pending_lc
+  prompt: "show me whats pending"
+  expect: [{tool: search_reminders}]
+  forbid: [list_scheduled_sends, clear_reminders, clear_past_reminders]
+  max_calls: 3
+  answer:
+    contains_any: [plants, "{rent_reminder}", "{bank}"]
+    not_contains: ["{doordash_reminder}", "{stale_reminder}"]
+  trap: "features case 15 / real-usage #62-63 (7f239eb3): 'pending' went to list_scheduled_sends (a send-queue read); it is search_reminders with no query"
+- id: rem_list_all_clean
+  prompt: "List all my reminders."
+  expect: [{tool: search_reminders}]
+  forbid: [list_scheduled_sends, clear_reminders, clear_past_reminders]
+  max_calls: 3
+  answer:
+    contains_any: [plants, "{rent_reminder}", "{bank}"]
+    not_contains: ["{doordash_reminder}", "{stale_reminder}"]
+  trap: "features case 15 / real-usage #63 (3fe9f176): the catch-all 'all' query used to return 'no reminders'; the clean-phrased contrast lists every visible reminder"
+- id: rem_stale_hidden
+  prompt: "any old reminders i forgot about"
+  expect: [{tool: search_reminders}]
+  forbid: [clear_reminders, clear_past_reminders, cancel_event, complete_reminder]
+  max_calls: 3
+  answer:
+    contains_any: ["{rent_reminder}", overdue, old, older]
+    not_contains: ["{doordash_reminder}", "{stale_reminder}"]
+  trap: "features case 17 (cd3a2d22, b24815c7, e2da8bc8): a reminder 14+ days overdue, or undated and a week old, is hidden from lists; the answer must not name it (only a count may be mentioned) and must not delete anything unasked"
+
+# ---- Deleting reminders (7ab2fb1d, clear_past_reminders description, real-usage #59-61 / failure 5).
+- id: rem_delete_stale_by_name
+  prompt: "get rid of the reminder {doordash_reminder}"
+  expect: [{any_of: [cancel_event, clear_past_reminders]}]
+  forbid: [clear_reminders, forget, complete_reminder]
+  confirm: [cancel_event, clear_past_reminders]
+  max_calls: 4
+  answer: {contains_any: ["{doordash_reminder}"]}
+  trap: "features case 18 (7ab2fb1d): an explicit removal reaches a hidden stale reminder by name. 'Done' (complete_reminder) is not deletion and clear_reminders(all) would wipe every list"
+- id: rem_bulk_delete_old
+  prompt: "delete all my old reminders pls"
+  expect: [{tool: clear_past_reminders}]
+  forbid: [clear_reminders, cancel_event, complete_reminder, forget]
+  confirm: [clear_past_reminders]
+  max_calls: 3
+  answer: {contains_any: [cleared, deleted, removed]}
+  trap: "features case 19 / real-usage #60: ONE clear_past_reminders, confirmed, not a cancel_event per title and not clear_reminders(all)"
+- id: rem_bulk_overdue_phrase
+  prompt: "clear out the overdue ones"
+  expect: [{tool: clear_past_reminders}]
+  forbid: [clear_reminders, cancel_event, complete_reminder, forget]
+  confirm: [clear_past_reminders]
+  max_calls: 3
+  trap: "features case 19: the same bulk delete in a different wording (the tool description names 'get rid of the overdue ones')"
+- id: rem_clear_today_scope
+  prompt: "delete my reminders for today"
+  expect: [{tool: clear_reminders, args: {scope: today}}]
+  forbid: [clear_past_reminders, cancel_event, complete_reminder, forget]
+  confirm: [clear_reminders]
+  max_calls: 3
+  trap: "real-usage failure 5 / #59 (H-014..016): 'delete my reminders for today' ran clear_past_reminders or cancel_event; the scope is today"
+- id: rem_clear_all_scope
+  prompt: "clear all of my reminders"
+  expect: [{tool: clear_reminders, args: {scope: all}}]
+  forbid: [clear_past_reminders, cancel_event, forget]
+  confirm: [clear_reminders]
+  max_calls: 3
+  trap: "real-usage failure 5 / #61: 'clear all of my reminders' cleared only the past ones; scope=all is for an explicit every-reminder request"
+
+# ---- Creation, not update (real-usage failure 6 / #57-58), plus the notify-someone step.
+- id: rem_set_on_monday
+  prompt: "set me a reminder on {next_weekday} at 9 to renew the parking permit"
+  expect: [{tool: add_reminder, args: {title: {icontains: permit}, when_iso: {regex: "^{next_weekday_iso}T09:00"}}}]
+  forbid: [update_reminder, update_event, remember, complete_reminder]
+  no_confirm: [add_reminder]
+  max_calls: 3
+  trap: "real-usage failure 6 / #57: 'set me a reminder on monday to ...' was classified as an UPDATE of an existing reminder, so nothing was created"
+- id: rem_set_and_tell_mom
+  prompt: "set me a reminder on {next_weekday} at 9 to book the vet. let mom know too"
+  expect:
+    - tool: add_reminder
+      args: {title: {icontains: vet}, when_iso: {regex: "^{next_weekday_iso}T09:00"}}
+    - any_of: [send_message, draft_message]
+      args: {to: {contains_any: [mom, "{mom_phone_tail}"]}}
+  forbid: [update_reminder, send_email, draft_email, remember]
+  confirm: [send_message]
+  no_confirm: [add_reminder]
+  max_calls: 6
+  trap: "real-usage #56-57 (R x3): a reminder PLUS 'let <relation> know too' needs both actions; the notify step was dropped and the reminder was treated as an update"
+- id: rem_send_me_a_reminder
+  prompt: "can u send me a reminder friday morning to ask {friend_first} for the spare key"
+  expect: [{tool: add_reminder, args: {title: {icontains: key}, when_iso: {weekday: friday}}}]
+  forbid: [update_reminder, send_message, send_email, schedule_send, remember]
+  no_confirm: [add_reminder]
+  max_calls: 3
+  trap: "real-usage #58 (R x2): 'send me a reminder ...' (to myself) was read as update and as a message to the person named in the title; Sam is in the reminder text only"
+- id: rem_alarm_no_time
+  prompt: "can u set an alarm for me tommorow to return the library books"
+  expect: [{any_of: [set_timer, add_reminder]}]
+  forbid: [remember, save_knowledge, update_reminder]
+  no_confirm: [add_reminder]
+  max_calls: 3
+  answer: {contains_any: [":00", ":30", "a.m", "p.m", "9am", "8am", "7am", "9 am", "8 am", "7 am"]}
+  trap: "real-usage #55 / failure 18 (H-001): an alarm with no time was stored as a silent 9am reminder after remember() and a false 'reminder set'. Either tool is fine, but the answer must STATE the time that was assumed"
+- id: rem_keep_doordash
+  history:
+    - user: "delete my old reminders"
+      assistant: "I can clear your past-due reminders, including “{doordash_reminder}”. Want me to go ahead?"
+  prompt: "keep the {doordash_reminder} one"
+  no_tool: true
+  forbid: [cancel_event, clear_past_reminders, clear_reminders, complete_reminder, forget]
+  answer:
+    not_contains: ["i've deleted", "i deleted", "has been deleted", "i've removed", "i removed", "i've cleared", "i cleared"]
+  trap: "features case 20 (inference: Keep has no Ask tool, only the app's Keep/Delete button): an instruction to KEEP must not delete or complete anything, and must not call a write tool"
+
+# ---- Spoken variants (split voice).
+- id: rem_voice_call_dentist
+  split: voice
+  prompt: "hey remind me to uh call the dentist at four thirty"
+  expect: [{tool: add_reminder, args: {title: {icontains: dentist}, when_iso: {regex: "T16:30"}}}]
+  forbid: [add_calendar_event, update_reminder, remember]
+  no_confirm: [add_reminder]
+  max_calls: 3
+  trap: "features case 47 (3f4d84ae): a spoken reminder with a spelled-out time becomes the same add_reminder at 16:30"
+- id: rem_voice_clear_today
+  split: voice
+  prompt: "um delete my reminders for today"
+  expect: [{tool: clear_reminders, args: {scope: today}}]
+  forbid: [clear_past_reminders, cancel_event]
+  confirm: [clear_reminders]
+  max_calls: 3
+  trap: "features case 47 + real-usage failure 5: the spoken form of the scope-correctness case"

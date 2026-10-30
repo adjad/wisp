@@ -34,3 +34,65 @@
   prompt: "what did mom text me?"
   expect: [{any_of: [view_messages, summarize_messages]}]
   answer: {contains_any: [flight, email]}
+
+# ---- Real-usage and dev8 message cases (real-usage report 1F, features report case 27).
+- id: msg_who_texted_today
+  prompt: "who texted me today"
+  expect:
+    - tool: view_messages
+  forbid: [summarize_messages, send_message, send_email]
+  answer: {contains_all: ["{friend_first}", Mom]}
+  max_calls: 3
+  trap: "real-usage 1F #73 (Ask run: 3 view_messages vs 11 summarize_messages): the important-only summary returned '1 message in 3 days'. 'Who texted me' wants the raw list for the day"
+
+- id: msg_weekly_group_chat
+  prompt: "summarize my group chats this week"
+  expect:
+    - any_of: [summarize_messages, view_messages]
+  answer: {contains_any: ["{family_group}", Mom, dessert, pie, Sunday]}
+  forbid: [send_message, send_email]
+  max_calls: 4
+  trap: "real-usage 1F #74 (28 calls in the Ask run): a group-chat summary over a named period, grounded in the Family thread"
+
+- id: msg_post_likes_not_mine
+  prompt: "did my post get any likes in the family chat"
+  expect:
+    - any_of: [view_messages, summarize_messages]
+  answer:
+    contains_all: ["{family_member}"]
+    not_contains: ["your post has {post_likes}", "your post got {post_likes}", "you have {post_likes}", "you got {post_likes}"]
+  forbid: [send_message]
+  max_calls: 4
+  trap: "dev8 2ba3ba8c / identity layer (features report case 27): Mom writes '@{family_member} - Your post has {post_likes} likes' to someone else. The likes belong to {family_member}'s post, never the user's"
+
+- id: msg_what_i_sent_family
+  prompt: "what did i say in the family chat"
+  expect:
+    - any_of: [view_messages, summarize_messages]
+  answer:
+    contains_any: [pie, "see them", "Sunday"]
+    not_contains: ["Mom said she'll bring the apple pie", "Dad said he'll bring the apple pie", "Mom will bring the apple pie"]
+  forbid: [send_message]
+  max_calls: 4
+  trap: "features report case 27: the 'Me:' lines are the user's own; a digest must say 'you sent', and the pie line is the user's, not Mom's or Dad's"
+
+- id: msg_message_most
+  prompt: "who do i message the most"
+  expect:
+    - any_of: [my_patterns, describe_me, view_messages, summarize_messages]
+  answer: {contains_any: ["{friend_first}", "{family_group}", Mom]}
+  forbid: [send_message, send_email]
+  max_calls: 4
+  trap: "real-usage 1F #75: a behaviour question about messaging habits; learned patterns or the message read answer it, a send never does"
+
+- id: msg_text_dad_tmrw
+  prompt: "texxt dad that ill call him tmrw"
+  expect:
+    - tool: send_message
+      args:
+        to: {contains_any: [dad, "0102", "{dad_email}"]}
+        text: {regex: 'call'}
+  forbid: [send_email, schedule_send, add_reminder]
+  confirm: [send_message]
+  max_calls: 3
+  trap: "typo and shorthand variant of msg_text_mom (96 of 110 real turns are lowercase, 20 carry a misspelling)"
