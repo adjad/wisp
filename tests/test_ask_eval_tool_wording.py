@@ -164,3 +164,11 @@ def test_general_device_questions_stay_knowledge(prompt):
                                     "how much battery do I have", "what macOS version am I on"])
 def test_device_state_phrasing_keeps_tools(prompt):
     assert not mo.knowledge_question(prompt)
+
+
+def test_reminder_reads_carry_no_internal_verification_note():
+    """Ask eval 2026-10-29: "Deletion status is not independently verified" was
+    read back to the user verbatim. The tools' own text no longer carries it."""
+    import inspect
+    from service.tools import assistant_tools
+    assert "not independently verified" not in inspect.getsource(assistant_tools)
