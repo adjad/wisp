@@ -20,6 +20,7 @@ reach in the plan rather than faked here.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -303,34 +304,64 @@ def system_status(section: str = "overview") -> str:
 _FOCUS_DB = Path.home() / "Library" / "DoNotDisturb" / "DB"
 
 
+# Each Focus file read at most (they're a few KB; a bigger one isn't the daemon's).
+_FOCUS_MAX_BYTES = 1_000_000
+
+
+def _focus_json(path: Path):
+    """The parsed file, or None when it's too big or not JSON. PermissionError
+    passes through: it means Full Disk Access, which the answer names."""
+    with open(path, "rb") as f:
+        raw = f.read(_FOCUS_MAX_BYTES + 1)
+    if len(raw) > _FOCUS_MAX_BYTES:
+        return None
+    try:
+        return json.loads(raw)
+    except (ValueError, RecursionError):  # deep nesting overflows the parser
+        return None
+
+
+def _dicts(value, key: str) -> list[dict]:
+    """value[key] as a list of dicts, whatever shape the file is in."""
+    items = value.get(key) if isinstance(value, dict) else None
+    return [item for item in items if isinstance(item, dict)] if isinstance(items, list) else []
+
+
 def focus_status(db: Path | None = None) -> str:
     """Whether a Focus is on, and which, from the Focus daemon's own records
     (2026-10-29 Ask eval: "is Do Not Disturb on" had nothing to read). A Focus
     turned on by hand or from Control Center is an assertion in Assertions.json;
-    a scheduled or automatic one isn't kept there, so "off" is said with that caveat."""
-    import json
+    a scheduled or automatic one isn't kept there, so "off" is said with that
+    caveat. A file of any other shape or size reads as unknown, never an error
+    (#415 audit)."""
     db = db or _FOCUS_DB
+    unknown = "I couldn't read the Focus state on this Mac."
     try:
-        data = json.loads((db / "Assertions.json").read_text())
+        data = _focus_json(db / "Assertions.json")
     except PermissionError:
         return ("I can't read the Focus state: macOS needs Full Disk Access for Wisp "
                 "(System Settings › Privacy & Security › Full Disk Access).")
-    except (OSError, ValueError):
-        return "I couldn't read the Focus state on this Mac."
+    except OSError:
+        return unknown
+    if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+        return unknown
     names: dict[str, str] = {}
     try:
-        modes = json.loads((db / "ModeConfigurations.json").read_text())
-        for store in modes.get("data") or []:
-            for ident, config in (store.get("modeConfigurations") or {}).items():
-                name = ((config or {}).get("mode") or {}).get("name")
-                if isinstance(name, str) and name:
-                    names[ident] = name
-    except (OSError, ValueError, AttributeError):
-        pass
+        modes = _focus_json(db / "ModeConfigurations.json")
+    except OSError:
+        modes = None
+    for store in _dicts(modes, "data"):
+        configs = store.get("modeConfigurations")
+        for ident, config in (configs.items() if isinstance(configs, dict) else ()):
+            mode = config.get("mode") if isinstance(config, dict) else None
+            name = mode.get("name") if isinstance(mode, dict) else None
+            if isinstance(ident, str) and isinstance(name, str) and name:
+                names[ident] = name
     active: list[str] = []
-    for store in data.get("data") or []:
-        for record in store.get("storeAssertionRecords") or []:
-            ident = ((record or {}).get("assertionDetails") or {}).get("assertionDetailsModeIdentifier")
+    for store in _dicts(data, "data"):
+        for record in _dicts(store, "storeAssertionRecords"):
+            details = record.get("assertionDetails")
+            ident = details.get("assertionDetailsModeIdentifier") if isinstance(details, dict) else None
             if isinstance(ident, str) and ident:
                 label = names.get(ident) or ("Do Not Disturb" if "donotdisturb" in ident else ident.rsplit(".", 1)[-1])
                 if label not in active:

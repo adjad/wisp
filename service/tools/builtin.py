@@ -487,7 +487,7 @@ def read_file(path: str) -> str:
                                       "recursive is true (default 3)"},
          "details": {"type": "boolean",
                      "description": "show each entry's size and last-modified date "
-                                    "(this folder's entries only; default false)"},
+                                    "(with recursive, every entry in the tree; default false)"},
          "sort": {"type": "string", "enum": ["name", "size", "modified"],
                   "description": "with details: order by name (default), largest first, "
                                  "or most recently modified first"},
@@ -503,7 +503,8 @@ def list_dir(path: str, recursive: bool = False, max_depth: int = 3,
     if not p.is_dir():
         return _missing_dir_message(p)
     if details:
-        return _list_dir_details(p, sort)
+        depth = max(1, min(int(max_depth or 3), 8)) if recursive else 1
+        return _list_dir_details(p, sort, depth)
     if not recursive:
         try:
             entries = sorted(os.listdir(p))
@@ -553,61 +554,74 @@ def _human_size(n: int) -> str:
     return f"{size:.1f} TB"
 
 
-def _folder_size(folder: Path, deadline: float, seen: list[int]) -> tuple[int, bool]:
-    """Bytes of every file under `folder` (links not followed), and whether
-    the walk finished: False when it ran out of budget or was refused a subfolder."""
-    total, complete, stack = 0, True, [folder]
-    while stack:
-        current = stack.pop()
-        try:
-            with os.scandir(current) as it:
-                for entry in it:
-                    seen[0] += 1
-                    if seen[0] > _DETAIL_MAX_FILES or time.monotonic() > deadline:
-                        return total, False
-                    try:
-                        if entry.is_dir(follow_symlinks=False):
-                            stack.append(Path(entry.path))
-                        else:
-                            total += entry.stat(follow_symlinks=False).st_size
-                    except OSError:
-                        complete = False
-        except OSError:
-            complete = False
-    return total, complete
-
-
-def _list_dir_details(p: Path, sort: str) -> str:
-    """One line per entry of `p`: name, size, last modified (2026-10-29 Ask eval:
-    folder sizes and dates had nothing to read)."""
-    try:
-        entries = sorted(os.scandir(p), key=lambda e: e.name.casefold())
-    except PermissionError:
-        return _tcc_message(p, "listing")
+def _list_dir_details(p: Path, sort: str, max_depth: int = 1) -> str:
+    """One line per entry of `p` down to `max_depth` levels: name, size, last
+    modified (2026-10-29 Ask eval: folder sizes and dates had nothing to read).
+    A folder's size is everything under it, at any depth, from one walk of the
+    tree on one budget; a folder the walk didn't finish is "at least" its size."""
     deadline = time.monotonic() + _DETAIL_BUDGET_S
-    seen = [0]
-    rows: list[tuple[str, int, float, bool]] = []
-    for entry in entries:
+    totals: dict[Path, int] = {}
+    partial: set[Path] = set()
+    rows: list[tuple[Path, int, float, bool]] = []
+    root = Path(".")
+
+    def unfinished(rel: Path) -> None:
+        partial.add(rel)
+        partial.update(rel.parents)
+
+    seen, stack, stopped = 0, [root], False
+    while stack and not stopped:
+        rel = stack.pop()
         try:
-            info = entry.stat(follow_symlinks=False)
-        except OSError:
+            it = os.scandir(p / rel)
+        except PermissionError:
+            if rel == root:
+                return _tcc_message(p, "listing")
+            unfinished(rel)
             continue
-        if entry.is_dir(follow_symlinks=False):
-            size, complete = _folder_size(Path(entry.path), deadline, seen)
-            rows.append((entry.name + "/", size, info.st_mtime, complete))
-        else:
-            rows.append((entry.name, info.st_size, info.st_mtime, True))
+        except OSError:
+            unfinished(rel)
+            continue
+        with it:
+            for entry in it:
+                seen += 1
+                if seen > _DETAIL_MAX_FILES or time.monotonic() > deadline:
+                    stopped = True
+                    unfinished(rel)
+                    break
+                child = rel / entry.name
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                    is_dir = entry.is_dir(follow_symlinks=False)
+                except OSError:
+                    unfinished(rel)
+                    continue
+                if is_dir:
+                    stack.append(child)
+                    totals.setdefault(child, 0)
+                else:
+                    for folder in child.parents:
+                        totals[folder] = totals.get(folder, 0) + info.st_size
+                if len(child.parts) <= max_depth:
+                    rows.append((child, 0 if is_dir else info.st_size, info.st_mtime, is_dir))
+    for rel in stack:
+        unfinished(rel)
     if not rows:
         return "(empty)"
+    sized = [(f"{rel}/" if is_dir else str(rel), totals.get(rel, 0) if is_dir else size, mtime,
+              not (is_dir and rel in partial))
+             for rel, size, mtime, is_dir in rows]
     order = (sort or "name").strip().lower()
     if order == "size":
-        rows.sort(key=lambda r: r[1], reverse=True)
+        sized.sort(key=lambda r: r[1], reverse=True)
     elif order == "modified":
-        rows.sort(key=lambda r: r[2], reverse=True)
+        sized.sort(key=lambda r: r[2], reverse=True)
+    else:
+        sized.sort(key=lambda r: r[0].casefold())
     lines = [f"{name}  {'at least ' if not complete else ''}{_human_size(size)}  "
              f"modified {datetime.fromtimestamp(mtime).strftime('%b %-d, %Y %-I:%M %p')}"
-             for name, size, mtime, complete in rows]
-    if any(not r[3] for r in rows):
+             for name, size, mtime, complete in sized]
+    if any(not r[3] for r in sized):
         lines.append("(\"at least\": that folder was too big to total in time, or macOS refused part of it.)")
     return _clip("\n".join(lines))
 

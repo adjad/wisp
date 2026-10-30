@@ -272,6 +272,84 @@ enum MailMemoryReaderRegression {
         check(indexReply["ok"] as? Bool == false && indexReply["error"] as? String == "unsupported_schema",
               "the reply names unsupported_schema: \(indexReply)")
 
+        // Sent mail (view_emails mailbox='sent'): Sent mailboxes and Gmail's Sent label only,
+        // newest by date_sent, To before Cc, capped recipients, no bodies.
+        check(MailMemoryReader.request(["type": "mail_memory_read", "request_id": "abcdefghijklmnop",
+                                        "kind": "sent", "days": 14])?.kind == "sent", "sent request")
+        check(MailMemoryReader.request(["type": "mail_memory_read", "request_id": "abcdefghijklmnop",
+                                        "kind": "sent", "days": 90]) == nil, "sent window is capped")
+        check(MailMemoryReader.request(["type": "mail_memory_read", "request_id": "abcdefghijklmnop",
+                                        "kind": "sent", "rowid": 3]) == nil, "sent takes days only")
+        let sentRoot = "\(root)/sent"
+        try FileManager.default.createDirectory(atPath: "\(sentRoot)/V10/MailData", withIntermediateDirectories: true)
+        let sentDB = makeDB("sentfixture", """
+        CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+        CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
+        CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT, comment TEXT);
+        CREATE TABLE recipients (ROWID INTEGER PRIMARY KEY, message INTEGER, address INTEGER, type INTEGER, position INTEGER);
+        CREATE TABLE labels (message_id INTEGER, mailbox_id INTEGER);
+        CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, subject INTEGER, date_sent REAL, date_received REAL,
+          mailbox INTEGER, deleted INTEGER, global_message_id INTEGER);
+        CREATE TABLE message_global_data (ROWID INTEGER PRIMARY KEY, message_id_header TEXT);
+        INSERT INTO message_global_data VALUES (1, '<dinner@me.example>');
+        INSERT INTO mailboxes VALUES (1, 'imap://ICLOUD-UUID/Sent%20Messages'), (2, 'imap://ICLOUD-UUID/INBOX'),
+          (3, 'imap://GMAIL-UUID/%5BGmail%5D/All%20Mail'), (4, 'imap://GMAIL-UUID/%5BGmail%5D/Sent%20Mail'),
+          (5, 'imap://ICLOUD-UUID/Consent');
+        INSERT INTO subjects VALUES (1, 'Dinner Friday'), (2, 'Lease'), (3, 'Inbox mail'), (4, 'Deleted'),
+          (5, 'Old'), (6, 'Consent form'), (7, 'Team update');
+        INSERT INTO addresses VALUES (1, 'ana@example.com', 'Ana'), (2, 'bo@example.com', ''),
+          (3, 'cc@example.com', 'Cee'), (4, 'x1@example.com', ''), (5, 'x2@example.com', ''),
+          (6, 'x3@example.com', ''), (7, 'x4@example.com', ''), (8, 'x5@example.com', ''), (9, 'x6@example.com', '');
+        -- iCloud Sent: received (filed) later than sent; ordered by date_sent.
+        INSERT INTO messages VALUES (1, 1, \(now - 60), \(now - 10), 1, 0, 1);
+        INSERT INTO recipients VALUES (1, 1, 3, 1, 0), (2, 1, 1, 0, 0), (3, 1, 2, 0, 1);
+        -- Gmail: All Mail with the Sent label.
+        INSERT INTO messages VALUES (2, 2, \(now - 3600), \(now - 3600), 3, 0, NULL);
+        INSERT INTO labels VALUES (2, 4);
+        INSERT INTO recipients VALUES (4, 2, 3, 1, 0);
+        -- Seven recipients: five shown, seven counted.
+        INSERT INTO messages VALUES (3, 7, \(now - 7200), \(now - 7200), 1, 0, NULL);
+        INSERT INTO recipients VALUES (5, 3, 4, 0, 0), (6, 3, 5, 0, 1), (7, 3, 6, 0, 2), (8, 3, 7, 0, 3),
+          (9, 3, 8, 0, 4), (10, 3, 9, 0, 5), (11, 3, 2, 0, 6);
+        -- Not sent mail: inbox, deleted, too old, a folder merely named like it.
+        INSERT INTO messages VALUES (4, 3, \(now - 30), \(now - 30), 2, 0, NULL);
+        INSERT INTO messages VALUES (5, 4, \(now - 30), \(now - 30), 1, 1, NULL);
+        INSERT INTO messages VALUES (6, 5, \(now - 40 * 86400), \(now - 40 * 86400), 1, 0, NULL);
+        INSERT INTO messages VALUES (7, 6, \(now - 30), \(now - 30), 5, 0, NULL);
+        """)
+        try FileManager.default.copyItem(atPath: sentDB, toPath: "\(sentRoot)/V10/MailData/Envelope Index")
+        let sentReader = makeReader(sentRoot)
+        let sentReply = sentReader.1.ask(sentReader.0, ["type": "mail_memory_read", "request_id": "sent-request-0001",
+                                                        "kind": "sent", "days": 14])
+        let sent = sentReply["rows"] as? [[String: Any]] ?? []
+        check(sentReply["ok"] as? Bool == true && sentReply["kind"] as? String == "sent"
+              && sentReply["request_id"] as? String == "sent-request-0001", "sent reply answers its request")
+        check(sent.map { $0["subject"] as? String ?? "" } == ["Dinner Friday", "Lease", "Team update"],
+              "sent rows: Sent mailbox and Gmail Sent label, newest first: \(sent)")
+        if sent.count == 3 {
+            check(sent[0]["to"] as? [String] == ["Ana <ana@example.com>", "bo@example.com"]
+                  && sent[0]["recipients"] as? Int == 3, "To before Cc, name with address")
+            check(sent[0]["account"] as? String == "ICLOUD-UUID" && sent[0]["rfc_message_id"] as? String == "<dinner@me.example>"
+                  && abs((sent[0]["ts"] as? Double ?? 0) - (now - 60)) < 1, "account ID, Message-ID, date_sent")
+            check(sent[1]["to"] as? [String] == ["Cee <cc@example.com>"], "Cc when there is no To")
+            check((sent[2]["to"] as? [String])?.count == MailMemoryReader.maxRecipients
+                  && sent[2]["recipients"] as? Int == 7, "recipients capped, total kept")
+            check(sent.allSatisfy { $0["raw_b64"] == nil && $0["body"] == nil }, "sent rows carry no body")
+        }
+        let noRecipients = makeDB("sentbare", """
+        CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+        CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, date_received REAL, mailbox INTEGER);
+        INSERT INTO mailboxes VALUES (1, 'imap://X/Sent'), (2, 'imap://X/INBOX');
+        INSERT INTO messages VALUES (1, \(now - 60), 1), (2, \(now - 60), 2);
+        """)
+        if let (r, capped) = try? MailMemoryReader.sentRows(dbPath: noRecipients, since: now - 86400) {
+            check(r.count == 1 && (r[0]["to"] as? [String]) == [] && r[0]["subject"] as? String == "" && !capped,
+                  "no recipients/subjects tables: sent rows still come back")
+        } else { check(false, "bare schema returns sent rows") }
+        if let (r, _) = try? MailMemoryReader.sentRows(dbPath: bare, since: now - 86400) {
+            check(r.isEmpty, "no Sent mailbox: an empty answer")
+        } else { check(false, "no Sent mailbox reads") }
+
         if failures > 0 { print("\(failures) failure(s)"); exit(1) }
         print("MailMemoryReader: \(total) checks passed")
     }

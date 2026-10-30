@@ -35,8 +35,13 @@ def test_the_new_reads_extend_existing_read_tools():
 # -- sent mail ---------------------------------------------------------------
 
 def _sent(monkeypatch, rows, accounts=("me@gmail.com",)):
+    from service.mail_memory import bridge
     monkeypatch.setattr(gmail_source, "connected_accounts", lambda cfg=None: {a: {} for a in accounts})
     monkeypatch.setattr(gmail_source, "sent_rows", lambda: [dict(r) for r in rows])
+
+    async def no_app(days, timeout=8.0):
+        raise bridge.BridgeError("app_not_connected")
+    monkeypatch.setattr(bridge, "read_sent", no_app)
 
 
 def test_sent_mail_lists_the_user_s_own_mail_newest_first(monkeypatch):
@@ -45,17 +50,19 @@ def test_sent_mail_lists_the_user_s_own_mail_newest_first(monkeypatch):
         {"ts": now - 7200, "to": "ana@example.com", "subject": "Lease", "account": "me@gmail.com"},
         {"ts": now - 60, "to": "bo@example.com", "subject": "Dinner Friday", "account": "me@gmail.com"},
     ])
-    out = email_tools.sent_emails_view()
+    import asyncio
+    out = asyncio.run(email_tools.sent_emails_view())
     assert out.index("bo@example.com") < out.index("ana@example.com")
     assert "2 found" in out and "headers only" in out
-    only = email_tools.sent_emails_view(query="ana")
+    only = asyncio.run(email_tools.sent_emails_view(query="ana"))
     assert "ana@example.com" in only and "bo@example.com" not in only
 
 
-def test_sent_mail_without_gmail_says_where_it_reads_from(monkeypatch):
+def test_sent_mail_without_gmail_or_the_app_says_why(monkeypatch):
+    import asyncio
     _sent(monkeypatch, [], accounts=())
-    out = email_tools.sent_emails_view()
-    assert "Gmail" in out and "Mail's Sent mailbox isn't read" in out
+    out = asyncio.run(email_tools.sent_emails_view())
+    assert "couldn't read your sent mail" in out and "isn't connected" in out and "Gmail" in out
 
 
 def test_view_emails_routes_mailbox_sent(monkeypatch):
@@ -107,7 +114,7 @@ def test_find_files_says_the_real_total_past_the_cap(monkeypatch):
     names = [f"/tmp/report{i}.txt" for i in range(55)]
     monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, "\n".join(names), ""))
     out = files_tools.find_files("report")
-    assert "found 55 matches" in out and f"best {files_tools._MAX_HITS}" in out
+    assert "+40 more" in out and "found 55 matches" in out and f"best {files_tools._DEFAULT_HITS}" in out
 
 
 # -- wisp_status: accounts and what's new ------------------------------------
@@ -118,8 +125,8 @@ def test_accounts_names_each_google_address_and_its_uses(monkeypatch):
     monkeypatch.setattr(gmail_source, "has_calendar", lambda email, item=None: email == "me@work.com")
     monkeypatch.setattr(email_tools, "native_email_accounts", lambda: [{"id": "1", "name": "iCloud"}])
     out = misc_t1._accounts_report()
-    assert "me@work.com: Gmail, Calendar, Google Workspace" in out
-    assert "me@gmail.com: Gmail (sign-in expired" in out
+    assert "me@work.com: work or school (Google Workspace) account; Gmail, Calendar, Drive, Docs and Sheets" in out
+    assert "me@gmail.com: personal Google account; Gmail (sign-in expired" in out
     assert "Apple Mail that Wisp reads: iCloud" in out
 
 
@@ -142,7 +149,7 @@ _CHANGELOG = """# Changelog
 
 
 def test_whats_new_reads_the_newest_changelog_section_only():
-    out = misc_t1.whats_new(_CHANGELOG)
+    out = misc_t1.changelog_headlines(_CHANGELOG)
     assert "Added:\n- Sent mail.\n- Folder sizes.\nFixed:\n- A crash." in out
     assert "Older thing" not in out and "Long detail" not in out
     assert "not yet released" in out
@@ -184,3 +191,28 @@ def test_view_only_mode_allows_the_new_reads(monkeypatch):
     monkeypatch.setattr(policy, "_FULL_ACCESS", False)
     assert policy.decide("system_read", {"section": "focus"}, tool="system_status").tier is policy.Tier.ALLOW
     assert policy.decide("wisp_admin", {"topic": "accounts"}, tool="wisp_status").tier is policy.Tier.ALLOW
+
+
+@pytest.mark.parametrize("assertions", [
+    "[]", '{"data": "x"}', '{"data": [1, "a", null]}', '{"data": [{"storeAssertionRecords": [7, {"assertionDetails": 3}]}]}',
+    "not json",
+])
+def test_focus_of_an_odd_shape_reads_as_unknown_or_off(tmp_path, assertions):
+    """#415 audit: valid JSON of the wrong shape raised AttributeError (an error result)."""
+    (tmp_path / "Assertions.json").write_text(assertions)
+    (tmp_path / "ModeConfigurations.json").write_text('{"data": [{"modeConfigurations": []}]}')
+    out = system_extras.focus_status(tmp_path)
+    assert out.startswith(("I couldn't read the Focus state", "No Focus is turned on"))
+
+
+def test_focus_won_t_read_an_oversized_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(system_extras, "_FOCUS_MAX_BYTES", 10)
+    _focus_db(tmp_path, [{"assertionDetails": {"assertionDetailsModeIdentifier": "com.apple.focus.work"}}])
+    assert system_extras.focus_status(tmp_path) == "I couldn't read the Focus state on this Mac."
+
+
+def test_focus_of_deeply_nested_json_reads_as_unknown(tmp_path):
+    """Auditor note: json.loads raised RecursionError past the size cap's reach."""
+    (tmp_path / "Assertions.json").write_text("[" * 200_000 + "]" * 200_000)
+    (tmp_path / "ModeConfigurations.json").write_text('{"data": []}')
+    assert system_extras.focus_status(tmp_path) == "I couldn't read the Focus state on this Mac."

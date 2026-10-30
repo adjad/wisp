@@ -21,8 +21,8 @@ IMPORTANT rules:
   again right before every capped request, keeps looking every WATCH_EVERY_S
   while one runs, and lifts the cap when another app starts (see "other apps
   on the GPU" below). An app that starts mid-request can still be slowed until
-  the next look and the lift, about a second. Any doubt (a failed or slow
-  read, no recent reading) means uncapped.
+  the next look and the lift, a few tenths of a second. Any doubt (a failed or
+  slow read, no recent reading) means uncapped.
 - Only Wisp's bundled engine is ever capped. It drops the cap the moment the
   last capped request ends (``GpuPowerLimiter(release_delay_s=0.0)``, since
   0.5.0-dev6) and whenever Wisp asks, even mid-request (``POST
@@ -235,7 +235,8 @@ def _fresh(reading: tuple[float, float, bool] | None, max_age_s: float = _AWAY_S
 # about 0.27-0.3 s; later calls compare with the watch's samples, one read.
 #
 # Wisp looks right before each capped request (bounded by _LOOK_TIMEOUT_S; a
-# slow look means uncapped) and every WATCH_EVERY_S while one runs; the
+# slow look means uncapped) and every WATCH_EVERY_S while one runs, each look
+# judging the window since the last read (at least _GPU_MIN_GAP_S); the
 # scheduler tick only keeps a baseline at most a tick old while a cap could
 # apply. Wisp itself (the app and its bundled engine) and WindowServer's
 # compositing don't count; the user's oMLX.app does, since it is never Wisp's
@@ -250,9 +251,21 @@ def _fresh(reading: tuple[float, float, bool] | None, max_age_s: float = _AWAY_S
 # a Gemma reply capped at 15 W or 10 W, finished each frame within 0.1 ms of
 # the uncapped run and missed no frame (the GPU runs faster beside a reply
 # than idle, so the same load reads only 1-3% there).
+#
+# WATCH_EVERY_S sets how long an app that starts mid-request runs under the
+# cap: until a look sees it, then the lift. Measured 2026-10-29/30: a heavy
+# 120 Hz app's frames beside a Gemma reply took ~20% longer under a 15 W cap
+# than beside the same reply uncapped (p99 3.1-3.5 vs 2.6-3.0 ms). Live on
+# 0.5.0-dev8 build 3152 such an app was held 1.36 s with a 1 s watch (a 1 s
+# window reaches 7.5% only ~0.4 s after the app starts, and the next look can
+# be a second away), and 2 of its 1,440 frames ran past 8.3 ms. With this
+# code's own watch (no HTTP hop), the lift came 0.89-1.09 s after such an app
+# started at 1 s and 0.27-0.30 s at 0.25 s. A look is one ioreg read (~20 ms of
+# CPU, in a worker thread), so four a second while a capped call runs costs
+# ~8.5% of one core (3% at 1 s), small next to the watts saved.
 OTHER_GPU_BUSY = 0.075
-WATCH_EVERY_S = 1.0
-_GPU_MIN_GAP_S = 0.5           # a shorter window can't tell: reuse the last answer
+WATCH_EVERY_S = 0.25
+_GPU_MIN_GAP_S = 0.2           # a shorter window can't tell: reuse the last answer
 _GPU_WINDOW_S = 1.5            # an older baseline needs a short second window too
 _GPU_PAIR_GAP_S = 0.25
 _GPU_BASELINE_MAX_S = 120.0

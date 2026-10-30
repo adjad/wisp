@@ -299,7 +299,8 @@ def test_moving_wisp_s_folder_itself_asks_in_every_mode(monkeypatch):
 
 
 @pytest.mark.parametrize("cmd", [
-    "mv ~/.moe/. ~/old", "mv ~/.m* ~/old", "mv ~/.mo? ~/old", "mv ~/.[m]oe ~/old",
+    "mv ~/.moe/. ~/old", "mv ~/.moe// ~/old", "mv ~/.moe/./ /x", "mv ~/.moe/.//./ /x",
+    "mv ~/.m* ~/old", "mv ~/.mo? ~/old", "mv ~/.[m]oe ~/old",
     "cp -R ~/staged/ ~/.moe/", "rsync -a ~/staged/ ~/.moe",
 ])
 def test_changing_the_folder_by_glob_or_dot_asks(monkeypatch, cmd):
@@ -327,3 +328,15 @@ def test_listing_the_folder_doesnt_ask(monkeypatch, cmd):
 ])
 def test_a_listing_with_anything_else_still_asks(cmd):
     assert policy.shell_secret_hit({"cmd": cmd})
+
+
+def test_a_file_inside_the_folder_or_its_parent_isn_t_the_folder():
+    for cmd in ("touch ~/.moe/notes.txt", "mv ~/.moe/../x ~/y"):
+        assert policy._moe_folder_hit(cmd) is None, cmd
+
+
+def test_the_folder_pattern_is_linear_on_a_long_run_of_slashes():
+    import time
+    started = time.monotonic()
+    policy._moe_folder_hit("mv ~/.moe" + "/" * 50_000 + "x")
+    assert time.monotonic() - started < 1

@@ -143,6 +143,28 @@ def test_an_app_that_started_a_moment_ago_is_seen_over_a_short_window(real_gpu, 
     assert app.reads == reads + 4                               # after the tick, two pairs
 
 
+def test_the_watch_sees_an_app_that_starts_mid_request_within_half_a_second(real_gpu):
+    # Live on dev8 build 3152, a 1 s watch held a heavy app that started mid-reply
+    # under the cap for 1.36 s, and 2 of its 1,440 frames ran late. Every watch
+    # look reads afresh and judges the window since the last read.
+    assert P._GPU_MIN_GAP_S < P.WATCH_EVERY_S <= 0.25
+    app = real_gpu
+    P.check_other_gpu()
+    for share in (0.2, 0.08):                       # a heavy app beside a capped reply; a light one
+        for started in (0.0, 0.05, 0.1, 0.15, 0.2, 0.24):   # seconds after the last look
+            app.run(5, 0.0)
+            assert P.check_other_gpu() is True
+            app.run(started, 0.0)
+            app.run(P.WATCH_EVERY_S - started, share)
+            held = P.WATCH_EVERY_S - started
+            for _ in range(4):                      # bounded: a look that never sees it fails
+                if not P.check_other_gpu():
+                    break
+                app.run(P.WATCH_EVERY_S, share)
+                held += P.WATCH_EVERY_S
+            assert held <= 2 * P.WATCH_EVERY_S, (share, started, held)
+
+
 def test_a_failed_ioreg_read_means_uncapped_and_no_read_for_a_while(real_gpu, away):
     app = real_gpu
     P.keep_gpu_baseline()
@@ -174,7 +196,7 @@ def test_a_look_right_after_another_reuses_it_and_an_old_baseline_cant_tell(real
     app.run(30, 0.0)
     assert P.check_other_gpu() is True
     reads = app.reads
-    app.run(0.2, 1.0)                                           # would be busy, if read
+    app.run(P._GPU_MIN_GAP_S / 2, 1.0)                          # would be busy, if read
     assert P.check_other_gpu() is True and app.reads == reads   # too soon: the last answer
     app.run(1.0, 1.0)
     assert P.check_other_gpu() is False and app.reads == reads + 1   # a short window: one read
