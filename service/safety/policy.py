@@ -6,6 +6,7 @@ service/config/policy.yaml but ships with safe defaults so it works standalone.
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import re
 import shlex
@@ -19,6 +20,7 @@ from urllib.parse import unquote
 
 import yaml
 
+from service.paths import MOE_DIR
 from service.publication_authority import Authority, Witness, revocation
 
 POLICY_YAML = Path(__file__).parent.parent / "config" / "policy.yaml"
@@ -634,9 +636,52 @@ def publication_witness() -> Witness | None:
     token = _publication.token() if _proof_known else None
     return Witness((token,)) if token is not None else None
 
+
+# The user's own access choice (POST /mode -> choose_mode), kept across restarts
+# so "Ask before acting" stays chosen. policy.yaml is only the fresh-install
+# default: a key saved here wins over it at startup. The bare setters below stay
+# in-memory only (tests and scripts flip them freely); only choose_mode saves.
+MODE_PATH = MOE_DIR / "access_mode.json"
+_MODE_KEYS = frozenset({"read_only", "full_access"})
+
+
+def _saved_mode() -> dict[str, bool]:
+    """The saved choice, or {} when it is missing, unreadable or malformed."""
+    try:
+        with os.fdopen(os.open(MODE_PATH, os.O_RDONLY | os.O_NOFOLLOW), encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:  # noqa: BLE001 — a bad file means the policy.yaml default
+        return {}
+    if (type(data) is not dict or not data.keys() <= _MODE_KEYS
+            or any(type(value) is not bool for value in data.values())):
+        return {}
+    return data
+
+
+def _save_mode(data: dict[str, bool]) -> None:
+    MODE_PATH.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    tmp = MODE_PATH.with_name(MODE_PATH.name + ".tmp")
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+        with os.fdopen(os.open(tmp, flags, 0o600), "w", encoding="utf-8") as f:
+            os.fchmod(f.fileno(), 0o600)   # O_CREAT's mode skips a leftover tmp
+            json.dump(data, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, MODE_PATH)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+_STARTUP_MODE = _saved_mode()
+
 # View-only mode: the app may READ/inspect anything but never modify the machine.
 # Default ON — a local assistant shouldn't be able to change things unless you opt in.
-_READ_ONLY = bool(_CFG.get("read_only", True))
+_READ_ONLY = _STARTUP_MODE.get("read_only", bool(_CFG.get("read_only", True)))
 
 
 def read_only() -> bool:
@@ -656,7 +701,7 @@ def set_read_only(value: bool) -> None:
 # read_only. The catastrophic-command floor (_SHELL_DENY) is still enforced
 # unless `disable_safety_floor: true` is also set — that floor guards against the
 # model being prompt-injected into something irreversible, not against you.
-_FULL_ACCESS = bool(_CFG.get("full_access", False))
+_FULL_ACCESS = _STARTUP_MODE.get("full_access", bool(_CFG.get("full_access", False)))
 _KEEP_FLOOR = not bool(_CFG.get("disable_safety_floor", False))
 if _proof_known:
     _publication.publish()
@@ -673,6 +718,28 @@ def set_full_access(value: bool) -> None:
         _FULL_ACCESS = bool(value)
         if _proof_known:
             _publication.publish()
+
+
+def choose_mode(chosen: dict[str, bool]) -> None:
+    """The user's choice (POST /mode): apply it now and save it for the next start.
+
+    Each key goes through set_read_only / set_full_access, so it revokes and
+    republishes exactly as they do; the save happens under the same lease, so
+    two choices can't leave memory and the file disagreeing. The change stands
+    even if saving fails (turning Full access off must take effect now) and the
+    OSError is raised, so the caller can say it won't survive a restart.
+    """
+    if not chosen.keys() <= _MODE_KEYS:
+        raise ValueError(f"unknown access mode keys: {sorted(chosen.keys() - _MODE_KEYS)}")
+    chosen = {key: bool(value) for key, value in chosen.items()}
+    if not chosen:
+        return
+    with revocation():
+        if "read_only" in chosen:
+            set_read_only(chosen["read_only"])
+        if "full_access" in chosen:
+            set_full_access(chosen["full_access"])
+        _save_mode({**_saved_mode(), **chosen})
 
 
 def _rules(key: str, default: list[str]) -> list[str]:
@@ -830,8 +897,9 @@ ALWAYS_CONFIRM_TOOLS = frozenset({"run_applescript"})
 
 
 # Where keys, tokens and Wisp's own grants live. Reading one puts a secret in
-# the model's context; writing one can rewrite who Wisp trusts. Either asks
-# first in every mode (view-only refuses), and a grant cannot lift it.
+# the model's context; writing one can rewrite who Wisp trusts (access_mode.json
+# would turn Full access on at the next start). Either asks first in every mode
+# (view-only refuses), and a grant cannot lift it.
 def _credential_roots() -> list[Path]:
     from service.paths import MOE_DIR
     home = Path.home()
@@ -839,7 +907,7 @@ def _credential_roots() -> list[Path]:
              home / ".config" / "gh", home / ".config" / "gcloud", home / "Library" / "Keychains"]
     for moe in dict.fromkeys((MOE_DIR, home / ".moe")):
         roots += [moe / "gmail.json", moe / "mcp.json", moe / "google_workspace",
-                  moe / "grants.json",
+                  moe / "grants.json", moe / "access_mode.json",
                   # /resetwisp's commit marker: its presence erases Wisp's data at the next start.
                   moe / ".reset-pending"]
     return roots
@@ -848,7 +916,7 @@ def _credential_roots() -> list[Path]:
 _SHELL_SECRET = [
     r"(?<![\w-])\.(?:ssh|aws|gnupg|netrc)(?![\w-])",
     r"\.config/(?:gh|gcloud)\b", r"\bkeychains?\b", r"\bsecurity\s+(?:find|dump|export)-",
-    r"\b(?:gmail|mcp|grants)\.json\b", r"\bgoogle_workspace\b", r"\.reset-pending\b",
+    r"\b(?:gmail|mcp|grants|access_mode)\.json\b", r"\bgoogle_workspace\b", r"\.reset-pending\b",
 ]
 
 

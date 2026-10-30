@@ -89,6 +89,9 @@ Fifth development build for testers; it builds on dev4. See [docs/releases/0.5.0
 - **Release candidates renamed to development builds.** 0.5.0 isn't close to a release candidate yet, so 0.5.0-rc1, rc2 and rc3 are now 0.5.0-dev2, dev3 and dev4: GitHub releases, tags (v0.5.0-dev2 to dev4, at the same commits), ZIP names and release notes. The old v0.5.0-rc tags were deleted on 2026-10-28.
 - **Versions renumbered down by 1.0.** Wisp is not yet a finished product, so every release is now 0.x (1.4.0 became 0.4.0, 1.3.3 became 0.3.3, and so on). Release tags and GitHub releases were renamed to match, and the old v0.1.0 is now v0.0.0-initial. The next release is 0.5.0.
 
+### Fixed
+- **Turning Full access off survives a restart.** `POST /mode` only changed the service's memory, so the next start read `full_access: true` from `policy.yaml` again. The choice from Settings › Privacy & Access, the notch's quick settings or the chat composer is now saved in `~/.moe/access_mode.json` (0600, written atomically) and wins over `policy.yaml` at startup; `read_only` is saved the same way. Only the keys you changed are saved, so `policy.yaml` stays the default for a fresh install, and a missing, unreadable or malformed file (or a symlink) means that default. The change goes through the same revocation and republication as before. If the file can't be written the change still applies now and `/mode` answers 500 saying it won't survive a restart. Like `grants.json`, the file asks before any file tool, shell command or skill writes it, in every mode, and a standing grant can't lift that. `/resetwisp` deletes it with the rest of `~/.moe`.
+
 ## [0.5.0-dev4] - 2026-10-28
 
 Fourth development build for testers (first called 0.5.0-rc3); it builds on dev3. See [docs/releases/0.5.0-dev4.md](docs/releases/0.5.0-dev4.md) for the release notes.
