@@ -1547,9 +1547,79 @@ async def test_failure_records_carry_a_reason_code_never_mail_text(failing, monk
 
 
 def test_the_endpoint_shows_the_last_error(client):
+    runner.note_called()
     assert client.get("/assistant/mail_memory").json()["health"] == {
-        "last_error": None, "last_error_at": None, "last_ok_at": None, "last_skip": None, "last_skip_at": None}
+        "last_error": None, "last_error_at": None, "last_ok_at": None, "last_skip": None, "last_skip_at": None,
+        "skips_since_last_call": {"since": None, "counts": {}}}
     runner.note_failure("no_mail_index", now=1234.0)
     got = client.get("/assistant/mail_memory").json()
     assert got["health"]["last_error"] == "no_mail_index" and got["health"]["last_error_at"] == 1234.0
     assert got["mode"] == "live" and "queue" in got["stats"] and "last_index" in got["stats"]
+
+
+@pytest.mark.parametrize("general, low", [
+    (" powermode            1\n", True),          # macOS 26: Low Power Mode
+    (" lowpowermode         1\n", True),          # older macOS
+    (" powermode            0\n", False),
+    (" powermode            2\n", False),         # High Power Mode
+    (" lowpowermode         0\n powermode 0\n", False),
+])
+def test_low_power_mode_is_read_from_either_pmset_key(monkeypatch, general, low):
+    """The battery stall investigation (2026-10-29): this Mac's pmset -g says
+    `powermode`, and only `lowpowermode` was read, so Low Power Mode never stood
+    the walk down."""
+    import subprocess as sp
+
+    def run(argv, **kw):
+        out = ("Now drawing from 'Battery Power'\n -InternalBattery-0\t64%; discharging;\n"
+               if argv[-1] == "batt" else "System-wide power settings:\nCurrently in use:\n" + general)
+        return sp.CompletedProcess(argv, 0, out, "")
+    monkeypatch.setattr(runner.subprocess, "run", run)
+    assert runner._power() == (False, 64, low)
+
+
+async def test_stand_downs_are_tallied_by_reason_and_power_until_the_next_call(ticking, monkeypatch, quiet):
+    """last_skip keeps only the latest reason; a long stall whose reasons alternate
+    needs the whole tally, split by AC and battery."""
+    st = ticking
+    st.set_meta("last_index", str(NOW))
+    runner.note_called()
+    monkeypatch.setattr(runner, "_probe", {})
+    monkeypatch.setattr(runner, "_power", lambda: (False, 70, False))
+    monkeypatch.setattr(quiet, "last_used", lambda key: time.monotonic())
+    for i in range(3):
+        await runner.tick(now=NOW + 1 + i * 60)
+    monkeypatch.setattr(quiet, "last_used", lambda key: None)
+
+    async def not_resident():
+        return "not_resident"
+    monkeypatch.setattr(runner, "_stand_down", not_resident)
+    await runner.tick(now=NOW + 400)
+    tally = runner.skip_tally()
+    assert tally["counts"] == {"not_resident@battery": 1, "recent_use@battery": 3}
+    assert tally["since"] == NOW + 1
+    runner.note_called()
+    assert runner.skip_tally() == {"since": None, "counts": {}}
+
+
+async def test_a_call_that_yields_is_a_recorded_stand_down(ticking, monkeypatch):
+    st = ticking
+    st.set_meta("last_index", str(NOW))
+    st.upsert_index([_row(5, mid="<lease-1@harbor.example>")], extract.tier, NOW)
+
+    async def body(rowid):
+        return RAW, ""
+
+    async def free():
+        return None
+
+    async def yielded(msgs):
+        return None
+    monkeypatch.setattr(runner, "read_body", body)
+    monkeypatch.setattr(runner, "_stand_down", free)
+    monkeypatch.setattr(runner, "_reply", yielded)
+    runner.note_called()
+    assert await runner.tick(now=NOW + 1) == runner.BUSY_GAP_S
+    assert runner.skip_tally()["counts"] == {"call_yielded@ac": 1}
+    assert await runner.tick(now=NOW + 61) == runner.BUSY_GAP_S
+    assert st.health()["last_skip"] == "call_yielded"      # past the 30 s floor, it is kept in meta too

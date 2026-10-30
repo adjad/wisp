@@ -96,6 +96,12 @@ _last_own_end = 0.0
 _probe: dict[str, tuple[float, object]] = {}
 _warned: tuple[str, float] | None = None       # (reason code, when it last warned)
 _skip: tuple[str, float] | None = None          # (reason code kept in meta, when it was written)
+# Every stand-down since the walk's last model call, by reason and power source
+# ("recent_use@battery": 41). In memory only: last_skip keeps just the latest
+# reason, which can't show what held a long stall when reasons alternate (the
+# 2026-10-28 battery stall was never pinned down for lack of this).
+_skips_since_call: dict[str, int] = {}
+_skips_since_at: float | None = None
 _REASON = re.compile(r"[A-Za-z0-9_.:-]{1,40}")
 
 
@@ -194,7 +200,10 @@ def _power() -> tuple[bool, int | None, bool]:
     except (OSError, subprocess.SubprocessError):
         return True, None, False
     pct = re.search(r"(\d{1,3})%", batt)
-    low = re.search(r"\blowpowermode\s+1\b", general) is not None
+    # macOS 26 reports Low Power Mode as `powermode 1` (0 automatic, 2 high power);
+    # older releases as `lowpowermode 1`. Only `lowpowermode` was read, so Low Power
+    # Mode never stood the walk down on this Mac (pmset -g on macOS 26.0).
+    low = re.search(r"^\s*(?:lowpowermode|powermode)\s+1\b", general, re.M) is not None
     return "AC Power" in batt or pct is None, int(pct.group(1)) if pct else None, low
 
 
@@ -349,9 +358,15 @@ def note_skip(reason: str | None, *, now: float | None = None) -> None:
     changes (a new reason at most every SKIP_FLOOR_S, a clear at once) and at most
     every SKIP_REWRITE_S while it repeats; `last_skip_at` is when the current reason began. A failed write still
     counts as written, so it isn't retried (and logged) on every pass. Never raises."""
-    global _skip
+    global _skip, _skips_since_at
     now = time.time() if now is None else now
     code = _code(reason) if reason else ""
+    if code:
+        if _skips_since_at is None:
+            _skips_since_at = now
+        key = f"{code}@{_power_label()}"
+        if key in _skips_since_call or len(_skips_since_call) < 32:
+            _skips_since_call[key] = _skips_since_call.get(key, 0) + 1
     if _skip is not None:
         since = now - _skip[1]
         if (since < SKIP_FLOOR_S and code) or (_skip[0] == code and (not code or since < SKIP_REWRITE_S)):
@@ -369,6 +384,27 @@ def note_skip(reason: str | None, *, now: float | None = None) -> None:
     except Exception:  # noqa: BLE001 — bookkeeping must not break the scheduler
         log.exception("mail memory: could not record the stand-down")
     _skip = (code, now)
+
+
+def _power_label() -> str:
+    """"ac", "battery" or "unknown" from the cached power probe; never runs pmset."""
+    hit = _probe.get("power")
+    if hit is None:
+        return "unknown"
+    on_ac, _pct, low = hit[1]
+    return "low_power" if low else "ac" if on_ac else "battery"
+
+
+def note_called() -> None:
+    """The walk's model call ran: start the stand-down tally over."""
+    global _skips_since_at
+    _skips_since_call.clear()
+    _skips_since_at = None
+
+
+def skip_tally() -> dict:
+    """Stand-downs since the last model call, by reason@power, and since when."""
+    return {"since": _skips_since_at, "counts": dict(sorted(_skips_since_call.items()))}
 
 
 def note_ok(*, now: float | None = None) -> None:
@@ -529,6 +565,9 @@ async def tick(*, now: float | None = None) -> float:
         st.fail(row["key"], f"model:{type(exc).__name__}", now)   # truncated, empty or slow
         return gap
     if reply is None:
+        # Stood down before the call, or cancelled during it (a turn, another caller
+        # on the model): this used to be the one silent stand-down in the walk.
+        note_skip("call_yielded", now=now)
         return BUSY_GAP_S
     items = extract.parse_reply(reply)
     if items is None:
@@ -548,6 +587,7 @@ async def tick(*, now: float | None = None) -> float:
     added = st.add_items(row["key"], kept, extract.EXTRACTOR, now)
     st.finish(row["key"], "done", f"model={len(items)} kept={len(kept)} added={added}", email.message_id)
     st.set_meta("last_tick", str(now))
+    note_called()
     log.info("mail memory tick: tier=%s box=%s model_items=%d kept=%d added=%d dropped=%s why=%s level=%s",
              row["tier"], row["box"], len(items), len(kept), added, dropped, why, lvl)
     if any(it.get("suspicious") for it in kept):
