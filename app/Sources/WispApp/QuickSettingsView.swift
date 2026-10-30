@@ -61,7 +61,11 @@ struct QuickSettingsView: View {
                 hairline
                 textSizeRow
             }
-            group("Power") { saveWhenAwayRow }
+            group("Power") {
+                saveWhenAwayRow
+                hairline
+                saveMemoryRow
+            }
             group("Setup") {
                 row("Setup", help: QuickSettingsText.setupHelp) {
                     Text("Permissions, Google, About you and How to use")
@@ -157,6 +161,22 @@ struct QuickSettingsView: View {
             } else {
                 pillButton("Check") { Task { await settings.refreshSaveWhenAway() } }
                     .disabled(settings.saveWhenAwayPending)
+            }
+        }
+    }
+
+    private var saveMemoryRow: some View {
+        row("Save memory", help: QuickSettingsText.saveMemoryHelp) {
+            Text(QuickSettingsText.saveMemory(on: settings.saveMemory, pending: settings.saveMemoryPending))
+        } control: {
+            if settings.saveMemory != nil {
+                Toggle("Save memory", isOn: Binding(get: { settings.saveMemory == true },
+                                                        set: { settings.setSaveMemory($0) }))
+                    .toggleStyle(NotchSwitch())
+                    .disabled(settings.saveMemoryPending)
+            } else {
+                pillButton("Check") { Task { await settings.refreshSaveMemory() } }
+                    .disabled(settings.saveMemoryPending)
             }
         }
     }

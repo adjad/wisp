@@ -809,6 +809,51 @@ final class WispClient {
         return Self.saveWhenAwayFlag(data)
     }
 
+    /// The "Save memory" switch (GET /memory_saver), or nil when it can't be read.
+    func saveMemoryState() async -> Bool? {
+        let url = Self.baseURL.appendingPathComponent("memory_saver")
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.flag("save_memory", in: data)
+    }
+
+    // POST /memory_saver -> turn "Save memory" on or off. Returns the flag the
+    // service confirmed, or nil when the reply was lost or unreadable.
+    func setSaveMemory(_ on: Bool) async -> Bool? {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("memory_saver"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["save_memory": on])
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.flag("save_memory", in: data)
+    }
+
+    private static func flag(_ key: String, in data: Data) -> Bool? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let flag = obj[key] as? NSNumber,
+              CFGetTypeID(flag) == CFBooleanGetTypeID() else { return nil }
+        return flag.boolValue
+    }
+
+    /// When the app last asked for the chat model early, so a hover or hotkey
+    /// burst sends one request, not one per event.
+    @MainActor private static var lastModelPrewarm: Date?
+
+    /// POST /model/prewarm: the user is opening Ask or the Wisp window, so a
+    /// model "Save memory" unloaded starts loading while they type. Fire and
+    /// forget; at most one request every 20 s.
+    @MainActor func prewarmModel(now: Date = Date()) {
+        if let last = Self.lastModelPrewarm, now.timeIntervalSince(last) < 20 { return }
+        Self.lastModelPrewarm = now
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("model/prewarm"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 5   // the endpoint returns at once; the load continues server-side
+        req.httpBody = Data("{}".utf8)
+        Task { _ = try? await URLSession.shared.data(for: req) }
+    }
+
     private static func saveWhenAwayFlag(_ data: Data) -> Bool? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let flag = obj["save_when_away"] as? NSNumber,

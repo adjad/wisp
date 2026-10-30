@@ -769,6 +769,13 @@ class OMLXClient:
         """
         import asyncio
 
+        # A prewarm load in flight (service/memory_saver.py) finishes first, so this
+        # doesn't POST a second load of the same model beside it.
+        from service import memory_saver
+        if emit and memory_saver.prewarm_pending():
+            await emit({"type": "status", "text": (
+                f"Loading {_model_label(model)}… The first answer after a rest takes a little longer.")})
+        await memory_saver.settle_prewarm()
         loop = asyncio.get_running_loop()
         keep = {model} if exclusive else (self._keep_warm | {model})
         loaded = set(await self.loaded_models())

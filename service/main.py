@@ -42,7 +42,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import anyio
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
 from service import idle, idle_unloader
@@ -498,6 +498,8 @@ from service.mail_memory.api import router as mail_memory_router
 app.include_router(mail_memory_router)
 from service.power_api import router as power_router
 app.include_router(power_router)
+from service.memory_saver_api import native_only, router as memory_saver_router
+app.include_router(memory_saver_router)
 from service.corpus import router as corpus_router
 app.include_router(corpus_router)
 from service.corpus_prompts import router as corpus_prompts_router
@@ -1383,8 +1385,21 @@ async def unload_agent() -> dict[str, Any]:
     loaded = await client.loaded_models()
     if model in loaded:
         await client.unload(model)
+        if model == role_to_model("fast"):
+            # Every text role is the chat model now, so with Save memory on this parks
+            # it and the hourly batch window lets background work catch up.
+            from service import memory_saver
+            memory_saver.note_notch_hidden()
         return {"unloaded": [model]}
     return {"unloaded": []}
+
+
+@app.post("/model/prewarm", dependencies=[Depends(native_only)])
+async def prewarm_model() -> dict[str, Any]:
+    """The app is opening Ask or the Wisp window: load the chat model now so a
+    parked model's ~5.9 s reload hides behind typing. Returns at once."""
+    from service import memory_saver
+    return {"status": await memory_saver.prewarm(client)}
 
 
 @app.get("/idle_timeout")
