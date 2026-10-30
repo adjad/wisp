@@ -14,10 +14,15 @@ MIN = 60.0
 REAL_PRESSURE = M.pressure_level      # before the fixture swaps it out
 
 
+BUNDLED_URL = "http://127.0.0.1:%d"
+
+
 class FakeClient:
     managed = True
 
     def __init__(self, loaded=True):
+        from service.engine import BUNDLED_PORT
+        self.base_url = BUNDLED_URL % BUNDLED_PORT
         self.loaded = {MODEL} if loaded else set()
         self.calls = []
 
@@ -43,6 +48,8 @@ def clean(monkeypatch, tmp_path):
     monkeypatch.setattr(M, "_prewarm_task", None)
     monkeypatch.setattr(M, "_holds", 0)
     monkeypatch.setattr(M, "pressure_level", lambda: M.NORMAL)
+    from service.engine import mode
+    monkeypatch.setattr(mode, "is_bundled", lambda: True)
     monkeypatch.setattr(idle, "_foreground_turns", 0)
     monkeypatch.setattr(idle, "_last_turn", None)
     monkeypatch.setattr(idle, "_in_flight", {})
@@ -449,6 +456,37 @@ def test_an_unmanaged_client_or_a_model_not_kept_warm_is_left_alone():
     cold = Cold()
     assert tick(cold, 60 * MIN) == M.LEAVE
     assert remote.calls == [] and cold.calls == []
+
+
+def test_the_users_own_omlx_is_never_parked_windowed_or_reloaded(monkeypatch):
+    # Another app may be using the model on the user's oMLX.app, and Wisp sees
+    # only its own calls: parking there could evict it mid-use.
+    from service.engine import mode
+    monkeypatch.setattr(mode, "is_bundled", lambda: False)
+    c = FakeClient()
+    c.base_url = "http://127.0.0.1:8000"
+    idle._last_turn = 0.0
+    assert tick(c, 31 * MIN) == M.LEAVE
+    assert tick(c, 31 * MIN, pressure=M.CRITICAL) == M.LEAVE
+    c.loaded.discard(MODEL)                  # /unload_agent, the notch's X
+    M.note_notch_hidden(now=32 * MIN)
+    assert not M._state.parked
+    assert tick(c, 200 * MIN) == M.LEAVE     # no batch window
+    M.set_save_memory(False)
+    M._state.parked = True                   # even a stale parked flag brings no reload
+    assert tick(c, 201 * MIN) == M.LEAVE
+    assert asyncio.run(M.prewarm(c)) == "external"
+    assert c.calls == []
+    assert M.state()["applies"] is False
+
+
+def test_a_local_client_beside_the_bundled_engine_is_left_alone():
+    # Bundled mode, but this client talks to some other loopback server.
+    c = FakeClient()
+    c.base_url = "http://127.0.0.1:8000"
+    idle._last_turn = 0.0
+    assert tick(c, 31 * MIN) == M.LEAVE and c.calls == []
+    assert M.bundled_engine() and not M.bundled_engine(c)
 
 
 def test_prewarm_on_a_remote_profile_does_nothing(monkeypatch):

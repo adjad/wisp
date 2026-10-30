@@ -189,11 +189,29 @@ def unheld():
             _holds += 1
 
 
+def bundled_engine(client=None) -> bool:
+    """Wisp serves the chat model from its own bundled engine (and `client` talks
+    to it). Save memory acts only there: on the user's oMLX.app another app may be
+    using the same model, and Wisp sees only its own calls, so parking it could
+    pull the model out from under that app."""
+    try:
+        from service.engine import BUNDLED_PORT
+        from service.engine.mode import is_bundled
+        if not is_bundled():
+            return False
+        if client is None:
+            return True
+        return (getattr(client, "managed", False) and
+                str(getattr(client, "base_url", "")).rstrip("/") == f"http://127.0.0.1:{BUNDLED_PORT}")
+    except Exception:  # noqa: BLE001 — unknown engine: leave it alone
+        return False
+
+
 def note_notch_hidden(now: float | None = None) -> None:
     """/unload_agent (the notch's X) unloaded the chat model. Parked only with the
-    switch on: off, the old behavior stands (unloaded until next use) rather than
-    a reload 30 s later."""
-    if save_memory():
+    switch on, on Wisp's own engine: otherwise the old behavior stands (unloaded
+    until next use) rather than a reload 30 s later."""
+    if save_memory() and bundled_engine():
         note_parked("notch hidden", now)
 
 
@@ -265,7 +283,7 @@ def decide(*, now: float, loaded: bool, busy: bool, pressure: str, enabled: bool
 async def tick(client, now: float | None = None, *, pressure: str | None = None) -> str:
     """One pass, called from idle_unloader.run every poll."""
     from service.config import role_to_model
-    if not getattr(client, "managed", True):
+    if not bundled_engine(client):
         return LEAVE
     now = time.monotonic() if now is None else now
     model = role_to_model("fast")
@@ -329,6 +347,8 @@ async def prewarm(client) -> str:
     note_intent()
     if remote_only_profile() is not None or not getattr(client, "managed", True):
         return "remote"
+    if not bundled_engine(client):
+        return "external"              # the user's oMLX.app: Save memory never parks there
     if idle.foreground_busy():
         return "busy"                  # the turn loads it
     if pressure_level() == CRITICAL:
@@ -376,7 +396,7 @@ async def settle_prewarm(timeout: float = 15.0) -> None:
 
 def state() -> dict:
     now = time.monotonic()
-    return {"save_memory": save_memory(), "parked": _state.parked,
+    return {"save_memory": save_memory(), "applies": bundled_engine(), "parked": _state.parked,
             "batch_window": _state.window_started is not None,
             "pressure": pressure_level(), "held": held(),
             "minutes_since_turn": round(_since_turn(now) / 60, 1),
