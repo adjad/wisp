@@ -330,11 +330,63 @@ def _source_identity(record: str, *, raw: bool = False) -> tuple[str, str]:
     return ((fields[2] if fields[1] in ("R", "U") else fields[1]), "") if len(fields) > 2 else ("", "")
 
 
+# Binding a linked Gmail account to the Mail account that holds the same mailbox,
+# when Mail's name for it isn't the address (Mail calls a Gmail account
+# "Google"). Mail's header records carry Mail's own row id, not the RFC
+# Message-ID, so the two are matched on subject within a minute. Strict, because a
+# wrong binding hides that Mail account's mail behind the Gmail copy: at least
+# _OVERLAP_MIN shared messages, at least half of the smaller side, and the
+# runner-up at most half of the best.
+_OVERLAP_MIN = 20
+
+
+def _mail_keys(records: list[dict]) -> set[tuple[int, str]]:
+    return {(int(r["ts"]) // 60, " ".join(str(r.get("subject") or "").casefold().split()))
+            for r in records if r.get("ts") and str(r.get("subject") or "").strip()}
+
+
+def _overlap_native_id(address: str, item: dict, observed: list[dict], taken: set[str]) -> str:
+    """The one Mail account whose recent headers are clearly this Gmail
+    account's own, or "" (2026-10-30: Mail's "Google" account and the linked
+    Gmail were both counted, so every count of that inbox was doubled)."""
+    mine = _mail_keys(_parse_header_records(item.get("headers") or ""))
+    if len(mine) < _OVERLAP_MIN:
+        return ""
+    names = {row["id"]: row["name"].casefold() for row in observed}
+    by_native: dict[str, list[dict]] = {}
+    for record in _parse_header_records(_swift_headers):
+        native = record.get("account_id") or ""
+        # An account Mail names by another address is that address's, never this one's.
+        if native and native not in taken and "@" not in names.get(native, record["account"].casefold()):
+            by_native.setdefault(native, []).append(record)
+    def shared(keys: set[tuple[int, str]]) -> int:
+        # The same message can land a minute apart in the two (a boundary between).
+        return sum(1 for minute, subject in keys
+                   if any((minute + d, subject) in mine for d in (-1, 0, 1)))
+
+    scores = sorted(((shared(keys), len(keys), native) for native, records in by_native.items()
+                     if (keys := _mail_keys(records))), reverse=True)
+    if not scores:
+        return ""
+    best, size, native = scores[0]
+    runner_up = scores[1][0] if len(scores) > 1 else 0
+    if best >= _OVERLAP_MIN and best * 2 >= min(len(mine), size) and runner_up * 2 <= best:
+        return native
+    return ""
+
+
 def _refresh_native_bindings() -> None:
     observed = native_email_accounts()
     for address, item in _external_accounts.items():
         exact = {row["id"] for row in observed if row["name"].casefold() == address}
         item["inferred_native_id"] = next(iter(exact)) if len(exact) == 1 else ""
+    taken = {str(item.get("mail_account_id") or item.get("inferred_native_id") or "")
+             for item in _external_accounts.values()} - {""}
+    for address, item in _external_accounts.items():
+        if not item.get("mail_account_id") and not item["inferred_native_id"]:
+            item["inferred_native_id"] = _overlap_native_id(address, item, observed, taken)
+            if item["inferred_native_id"]:
+                taken.add(item["inferred_native_id"])
 
 
 def _covered_source(label: str, native_id: str, address: str, item: dict) -> bool:
@@ -420,6 +472,8 @@ def cache_external_emails(*, account: str, headers: str | None = None,
         item["verified"] = True
         _headers_at = now
         _headers_sync_generation += 1
+        # New Gmail headers can show which Mail account holds the same inbox.
+        _refresh_native_bindings()
     if history is not None:
         _history_at = now
     if raw is not None:
