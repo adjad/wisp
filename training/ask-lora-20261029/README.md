@@ -101,7 +101,7 @@ Optional deeper checks (both run clean on this build):
 
 ```bash
 $PY validate.py --private-results <askeval>/results.jsonl \
-    --template ~/Desktop/OMLX_Model_Files.hidden/Jundot/gemma-4-E4B-it-oQ4e-mtp
+    --template ~/Desktop/OMLX_Model_Files/Jundot/gemma-4-E4B-it-oQ4e-mtp
 ```
 
 ### What changed from the overnight build (853 examples at `2b5134e1`)

@@ -52,7 +52,7 @@ The rendered data is synthetic and already public in this repository, so no user
 cd training/ask-lora-20261029
 PY=<main checkout>/.venv/bin/python
 $PY builder/build.py && $PY builder/validate.py          # only if the dataset changed
-$PY brev/render.py --model ~/Desktop/OMLX_Model_Files.hidden/Jundot/gemma-4-E4B-it-oQ4e-mtp
+$PY brev/render.py --model ~/Desktop/OMLX_Model_Files/Jundot/gemma-4-E4B-it-oQ4e-mtp
 ```
 
 **On the Brev instance:**
