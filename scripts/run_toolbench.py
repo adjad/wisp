@@ -214,7 +214,8 @@ def _report(run_dir: Path, *, stored: bool) -> list[dict]:
     if stored:
         return rows
     from scripts.toolbench import runner
-    runner.isolate(Path(tempfile.mkdtemp(prefix="toolbench-")), omlx_port=runner.DEFAULT_OMLX_PORT)
+    if "service" not in sys.modules:  # --compare rescores a second run in the same process
+        runner.isolate(Path(tempfile.mkdtemp(prefix="toolbench-")), omlx_port=runner.DEFAULT_OMLX_PORT)
     rows, summary = rescore(run_dir, rows)
     before = _pass_counts([{**r, "v": r.get("v_stored", r["v"])} for r in rows])
     after = _pass_counts(rows)
