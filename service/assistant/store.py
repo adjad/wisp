@@ -422,6 +422,12 @@ class AssistantStore:
                 self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_needs_you_dismissals (
                     item_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, dismissed_at REAL NOT NULL
                 )""")
+                # Day suggestions the user removed, by the attention item they came from
+                # (daily_workspace.key). Only keeps them out of the suggested plan: the
+                # mail, reminder or text itself is never changed.
+                self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_removed_suggestions (
+                    evidence_id TEXT PRIMARY KEY, removed_at REAL NOT NULL
+                )""")
                 self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_completion (
                     key TEXT PRIMARY KEY, value TEXT NOT NULL, completed_at REAL NOT NULL
                 )""")
@@ -2591,6 +2597,28 @@ class AssistantStore:
         with self.transaction(write=False) as db:
             return {r["item_id"]: r["fingerprint"] for r in
                     db.execute("SELECT item_id,fingerprint FROM assistant_needs_you_dismissals")}
+
+    # The newest removed suggestions kept; older ones lapse (their items are long gone).
+    REMOVED_SUGGESTIONS_KEPT = 500
+
+    def remove_suggestions(self, evidence_ids) -> None:
+        """Keep these attention items out of the Day's suggested blocks. Writes only
+        this table: nothing in Mail, Reminders or Messages changes."""
+        now = time.time()
+        with self._write_transaction():
+            self._db.executemany(
+                "INSERT INTO assistant_removed_suggestions(evidence_id,removed_at) VALUES (?,?) "
+                "ON CONFLICT(evidence_id) DO UPDATE SET removed_at=excluded.removed_at",
+                [(i, now) for i in evidence_ids])
+            self._db.execute(
+                "DELETE FROM assistant_removed_suggestions WHERE evidence_id NOT IN (SELECT evidence_id FROM "
+                "assistant_removed_suggestions ORDER BY removed_at DESC, evidence_id LIMIT ?)",
+                (self.REMOVED_SUGGESTIONS_KEPT,))
+
+    def removed_suggestions(self) -> set[str]:
+        """The attention item ids whose suggested blocks the user removed."""
+        with self.transaction(write=False) as db:
+            return {r["evidence_id"] for r in db.execute("SELECT evidence_id FROM assistant_removed_suggestions")}
 
     def keep_stale_reminder(self, source_id: str, title: str) -> None:
         with self._write_transaction():

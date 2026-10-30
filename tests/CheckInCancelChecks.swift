@@ -57,6 +57,12 @@ import Foundation
                      == [.reason("On a read-only calendar"), .open])
         precondition(menu(canCancel: false, canMove: false, writable: true, organizer: false) == [.decline],
                      "someone else's event: Decline in Calendar")
+        precondition(CheckInCancel.cancelLabel(inviteeCount: 0, retry: false) == "Delete event",
+                     "an event only the user is on is deleted")
+        precondition(CheckInCancel.cancelLabel(inviteeCount: 3, retry: false) == "Cancel event"
+                     && CheckInCancel.cancelLabel(inviteeCount: nil, retry: false) == "Cancel event",
+                     "invitees, or none synced yet, keep Cancel")
+        precondition(CheckInCancel.cancelLabel(inviteeCount: 0, retry: true) == "Try cancelling again")
         let unsynced = "Wisp hasn't synced this event's invitees yet; cancel it in Calendar."
         precondition(menu(canCancel: false, canMove: false, writable: true, organizer: nil, reason: unsynced)
                      == [.reason(unsynced), .open], "another block on Cancel: the service's reason, then Open")
