@@ -189,3 +189,69 @@ def test_plain_chat_style_skips_coding_and_literal_envelopes(loaded_bundled_skil
     assert skills.set_enabled("humanizer", True) is True
     block = _plain_chat_skill_blocks("hi there", "", role=role, literal_envelope=literal)
     assert ("--- humanizer ---" in block) is styled
+
+
+def test_every_bundled_body_is_a_shipped_one(loaded_bundled_skills) -> None:
+    """A changed bundled body must be added to _SHIPPED_BODIES, or a toggle copy of
+    it made by an older build would never be retired."""
+    for name, skill in loaded_bundled_skills.items():
+        if skill.bundled:
+            assert skills._body_hash(skill.body) in skills._SHIPPED_BODIES[name], name
+
+
+def _old_build_toggle_copy(tmp_path: Path, name: str, enabled: bool) -> Path:
+    """What set_enabled did before #415: copy the bundled skill out and rewrite `enabled`."""
+    copy = tmp_path / "user-skills" / name
+    shutil.copytree(skills.BUNDLED_SKILLS_DIR / name, copy)
+    md = copy / "SKILL.md"
+    raw = md.read_text()
+    marker = "enabled: false" if "enabled: false" in raw else "enabled: true"
+    md.write_text(raw.replace(marker, f"enabled: {'true' if enabled else 'false'}", 1))
+    return copy
+
+
+def test_an_older_build_s_toggle_copy_is_retired_and_keeps_its_choice(loaded_bundled_skills, tmp_path: Path) -> None:
+    """#415 audit: a copy an older build made to flip a bundled skill outranked the
+    bundled skill for good, so later bundled edits never reached that user."""
+    copy = _old_build_toggle_copy(tmp_path, "humanizer", True)
+    skills.load()
+    humanizer = skills.get("humanizer")
+    assert humanizer.bundled and humanizer.enabled is True
+    assert not copy.exists()
+    assert any((tmp_path / "user-skills" / ".retired").iterdir())
+
+
+def test_a_copy_the_user_edited_stays_theirs(loaded_bundled_skills, tmp_path: Path) -> None:
+    copy = _old_build_toggle_copy(tmp_path, "humanizer", True)
+    md = copy / "SKILL.md"
+    md.write_text(md.read_text() + "\n- Always sign off with my initials.\n")
+    skills.load()
+    mine = skills.get("humanizer")
+    assert not mine.bundled and "my initials" in mine.body and copy.exists()
+
+
+def test_a_retired_copy_never_undoes_a_newer_toggle(loaded_bundled_skills, tmp_path: Path) -> None:
+    assert skills.set_enabled("interview-me", False) is True
+    _old_build_toggle_copy(tmp_path, "interview-me", True)
+    skills.load()
+    assert skills.get("interview-me").bundled and skills.get("interview-me").enabled is False
+
+
+def test_simultaneous_toggles_keep_both_changes(loaded_bundled_skills, tmp_path: Path) -> None:
+    """#415 audit: the state save was an unlocked read-modify-write with one temp name."""
+    import threading
+    names = ["humanizer", "interview-me", "idea-refine", "mac-controls"]
+    barrier = threading.Barrier(len(names))
+
+    def toggle(name: str) -> None:
+        barrier.wait()
+        assert skills._save_bundled_state(name, name != "mac-controls")
+
+    threads = [threading.Thread(target=toggle, args=(n,)) for n in names]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert skills._bundled_state() == {"humanizer": True, "interview-me": True, "idea-refine": True,
+                                      "mac-controls": False}
+    assert not list((tmp_path / "user-skills").glob("*.tmp"))
