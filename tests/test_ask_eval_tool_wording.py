@@ -172,3 +172,13 @@ def test_reminder_reads_carry_no_internal_verification_note():
     import inspect
     from service.tools import assistant_tools
     assert "not independently verified" not in inspect.getsource(assistant_tools)
+
+
+def test_listing_running_apps_is_a_read_that_view_only_allows(monkeypatch):
+    """Ask eval 2026-10-29: "what do I have open" was denied in view-only mode."""
+    from service.safety import policy
+    from service.tools.registry import REGISTRY
+    assert REGISTRY["list_running_apps"].category == "system_read"
+    monkeypatch.setattr(policy, "_READ_ONLY", True)
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    assert policy.decide("system_read", {}, tool="list_running_apps").tier is policy.Tier.ALLOW
