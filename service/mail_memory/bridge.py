@@ -1,5 +1,8 @@
 """Ask the app for Mail data, one request at a time (MailMemoryReader.swift answers).
 
+Mail memory asks for `index` and `body`; Ask's sent-mail read (view_emails
+mailbox='sent') asks for `sent`: the user's own sent mail, headers only.
+
 The backend can't read Mail's files: Full Disk Access belongs to the app. So a
 request is a non-durable `mail_memory_read` hub event carrying a random,
 single-use `request_id`, and the app answers by POST to
@@ -93,3 +96,37 @@ async def read_body(rowid: int, timeout: float = 15.0) -> tuple[bytes | None, st
         return base64.b64decode(str(reply.get("raw_b64") or ""), validate=True), ""
     except ValueError:
         return None, "bad_base64"
+
+
+# The app answers `sent` for at most this many days back (MailMemoryReader.maxSentDays).
+SENT_DAYS_MAX = 31
+
+
+def _sent_rows(reply: dict) -> list[dict]:
+    out = []
+    for r in reply.get("rows") or []:
+        if not isinstance(r, dict):
+            continue
+        try:
+            ts = float(r["ts"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if ts <= 0:
+            continue
+        to = r.get("to") if isinstance(r.get("to"), list) else []
+        total = r.get("recipients")
+        out.append({"ts": ts, "account": str(r.get("account") or "")[:80],
+                    "subject": str(r.get("subject") or "")[:300],
+                    "rfc_message_id": str(r.get("rfc_message_id") or "")[:300],
+                    "to": [str(x)[:200] for x in to[:5] if isinstance(x, str) and x],
+                    "recipients": total if type(total) is int and total >= 0 else 0})
+    return out
+
+
+async def read_sent(days: int, timeout: float = 8.0) -> tuple[list[dict], bool]:
+    """Apple Mail's sent mail for the last `days` (at most SENT_DAYS_MAX), newest
+    first, headers and recipients only, and whether the app capped the list."""
+    reply = await _ask("sent", timeout, days=max(1, min(int(days), SENT_DAYS_MAX)))
+    if reply.get("ok") is not True:
+        raise BridgeError(str(reply.get("error") or "sent_failed")[:40])
+    return _sent_rows(reply), reply.get("capped") is True

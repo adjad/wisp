@@ -5,6 +5,12 @@ All notable changes to Wisp are documented here.
 ## [Unreleased]
 
 ### Added
+- **Ask reads Apple Mail's sent mail, whole-tree sizes, work addresses and the release notes.** The rest of the 2026-10-29 Ask eval's reads, still on existing tools (count stays 93, no grant changes):
+  - `view_emails(mailbox="sent")` also reads Apple Mail's Sent mailboxes (and Gmail-in-Mail's Sent label) through a new `sent` request on the app's Mail bridge (`MailMemoryReader.sentRows`: Envelope Index, read-only, headers and up to 5 To recipients, no bodies, at most 31 days and 200 rows, answered only when asked). It merges with linked Gmail's Sent label, shows an email seen through both once (by Message-ID), labels the Mail account by name, and says why Mail couldn't be read (app not connected, no index or Full Disk Access) instead of claiming nothing was sent.
+  - `list_dir(details=true, recursive=true)` gives sizes and dates through the whole tree to `max_depth`, every folder totalled from one walk on the same 3 s / 200,000-entry budget; only folders the walk didn't finish say "at least".
+  - `find_files` matches each word of the query in any order (the exact phrase still ranks first), shows a ranked top 15 by default (`limit`, at most 40) with "+N more", and lists a folder hit as a folder instead of its directory-entry size.
+  - `wisp_status(topic="accounts")` marks each address personal or work/school (Google Workspace for a linked Google account on its own domain), lists Apple Mail's own addresses, and names the work ones, for "what's my work email".
+  - `wisp_status(topic="whats_new")` reads this version's newest release notes (`docs/releases/<version>-*.md`, now bundled in `Contents/Resources/Documentation/releases`), a few headlines from each section including Fixes and Known issues, and falls back to the CHANGELOG.
 - **Ask can read sent mail, folder sizes, linked accounts, what's new, Focus and volume.** Reads the 2026-10-29 Ask eval found missing, each on an existing tool, so the registry keeps its count and no grants change:
   - `view_emails(mailbox="sent")`: the user's own sent mail from each linked Gmail account's Sent label (about the last 8 days, headers only). Mail's Sent mailbox isn't read, and says so.
   - `list_dir(details=true, sort=name|size|modified)`: each entry's size and last-modified date, a folder's size being the total under it (one 3 s, 200,000-file budget per listing; past it, "at least").
