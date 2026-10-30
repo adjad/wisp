@@ -14,10 +14,15 @@ MIN = 60.0
 REAL_PRESSURE = M.pressure_level      # before the fixture swaps it out
 
 
+BUNDLED_URL = "http://127.0.0.1:%d"
+
+
 class FakeClient:
     managed = True
 
     def __init__(self, loaded=True):
+        from service.engine import BUNDLED_PORT
+        self.base_url = BUNDLED_URL % BUNDLED_PORT
         self.loaded = {MODEL} if loaded else set()
         self.calls = []
 
@@ -43,6 +48,8 @@ def clean(monkeypatch, tmp_path):
     monkeypatch.setattr(M, "_prewarm_task", None)
     monkeypatch.setattr(M, "_holds", 0)
     monkeypatch.setattr(M, "pressure_level", lambda: M.NORMAL)
+    from service.engine import mode
+    monkeypatch.setattr(mode, "is_bundled", lambda: True)
     monkeypatch.setattr(idle, "_foreground_turns", 0)
     monkeypatch.setattr(idle, "_last_turn", None)
     monkeypatch.setattr(idle, "_in_flight", {})
@@ -192,6 +199,74 @@ def test_the_notch_hiding_counts_as_parked_for_windows():
     M.note_parked("notch hidden", now=10 * MIN)
     assert tick(c, 69 * MIN) == M.LEAVE
     assert tick(c, 70 * MIN) == M.OPEN_WINDOW
+
+
+def _window_then_user_returns(c):
+    """Park at 30, a window at 90 that closes quiet at 96, then the user is back
+    at 300 and the turn loads the model."""
+    idle._last_turn = 0.0
+    assert tick(c, 30 * MIN) == M.PARK
+    assert tick(c, 90 * MIN) == M.OPEN_WINDOW
+    assert tick(c, 96 * MIN) == M.CLOSE_WINDOW
+    c.loaded.add(MODEL)
+    idle._last_turn = 300 * MIN
+    assert tick(c, 301 * MIN) == M.KEEP and not M._state.parked
+
+
+def test_an_idle_park_counts_its_hour_from_the_park_not_an_old_window():
+    c = FakeClient()
+    _window_then_user_returns(c)
+    assert tick(c, 330 * MIN) == M.PARK
+    loads = c.calls.count(("load", MODEL))
+    assert tick(c, 330.5 * MIN) == M.LEAVE
+    assert tick(c, 389 * MIN) == M.LEAVE
+    assert c.calls.count(("load", MODEL)) == loads
+    assert tick(c, 390 * MIN) == M.OPEN_WINDOW
+
+
+def test_the_notch_x_counts_its_hour_from_the_x_not_an_old_window():
+    c = FakeClient()
+    _window_then_user_returns(c)
+    c.loaded.discard(MODEL)                  # /unload_agent
+    M.note_notch_hidden(now=310 * MIN)
+    assert tick(c, 310.5 * MIN) == M.LEAVE
+    assert tick(c, 369 * MIN) == M.LEAVE
+    assert tick(c, 370 * MIN) == M.OPEN_WINDOW
+
+
+def test_a_window_closed_by_pressure_still_counts_from_that_window():
+    c = FakeClient()
+    idle._last_turn = 0.0
+    tick(c, 30 * MIN)
+    assert tick(c, 90 * MIN) == M.OPEN_WINDOW
+    assert tick(c, 91 * MIN, pressure=M.WARN) == M.CLOSE_WINDOW
+    assert M._state.last_reason == "pressure"
+    assert tick(c, 149 * MIN) == M.LEAVE
+    assert tick(c, 150 * MIN) == M.OPEN_WINDOW
+
+
+def test_a_turn_waits_for_a_window_load_instead_of_loading_twice():
+    class Slow(FakeClient):
+        async def load(self, model):
+            self.calls.append(("load", model))
+            await asyncio.sleep(0.05)
+            self.loaded.add(model)
+
+    async def go():
+        c = Slow(loaded=False)
+        M.note_parked("idle", now=0.0)
+        window = asyncio.create_task(M.tick(c, 60 * MIN, pressure=M.NORMAL))
+        for _ in range(10):
+            if M.prewarm_pending():
+                break
+            await asyncio.sleep(0)
+        assert M.prewarm_pending()
+        await M.settle_prewarm(timeout=2)    # what OMLXClient._ensure_managed awaits first
+        assert MODEL in c.loaded
+        assert await window == M.OPEN_WINDOW
+        return c
+    c = asyncio.run(go())
+    assert c.calls == [("load", MODEL)]
 
 
 def test_a_failed_window_load_waits_for_the_next_window():
@@ -381,6 +456,37 @@ def test_an_unmanaged_client_or_a_model_not_kept_warm_is_left_alone():
     cold = Cold()
     assert tick(cold, 60 * MIN) == M.LEAVE
     assert remote.calls == [] and cold.calls == []
+
+
+def test_the_users_own_omlx_is_never_parked_windowed_or_reloaded(monkeypatch):
+    # Another app may be using the model on the user's oMLX.app, and Wisp sees
+    # only its own calls: parking there could evict it mid-use.
+    from service.engine import mode
+    monkeypatch.setattr(mode, "is_bundled", lambda: False)
+    c = FakeClient()
+    c.base_url = "http://127.0.0.1:8000"
+    idle._last_turn = 0.0
+    assert tick(c, 31 * MIN) == M.LEAVE
+    assert tick(c, 31 * MIN, pressure=M.CRITICAL) == M.LEAVE
+    c.loaded.discard(MODEL)                  # /unload_agent, the notch's X
+    M.note_notch_hidden(now=32 * MIN)
+    assert not M._state.parked
+    assert tick(c, 200 * MIN) == M.LEAVE     # no batch window
+    M.set_save_memory(False)
+    M._state.parked = True                   # even a stale parked flag brings no reload
+    assert tick(c, 201 * MIN) == M.LEAVE
+    assert asyncio.run(M.prewarm(c)) == "external"
+    assert c.calls == []
+    assert M.state()["applies"] is False
+
+
+def test_a_local_client_beside_the_bundled_engine_is_left_alone():
+    # Bundled mode, but this client talks to some other loopback server.
+    c = FakeClient()
+    c.base_url = "http://127.0.0.1:8000"
+    idle._last_turn = 0.0
+    assert tick(c, 31 * MIN) == M.LEAVE and c.calls == []
+    assert M.bundled_engine() and not M.bundled_engine(c)
 
 
 def test_prewarm_on_a_remote_profile_does_nothing(monkeypatch):

@@ -149,7 +149,7 @@ class _State:
     parked_at: float | None = None
     last_intent: float | None = None
     window_started: float | None = None  # a batch window is open
-    last_window: float | None = None
+    last_window: float | None = None     # when the window that last parked it opened
     last_reason: str = ""
 
 
@@ -189,11 +189,29 @@ def unheld():
             _holds += 1
 
 
+def bundled_engine(client=None) -> bool:
+    """Wisp serves the chat model from its own bundled engine (and `client` talks
+    to it). Save memory acts only there: on the user's oMLX.app another app may be
+    using the same model, and Wisp sees only its own calls, so parking it could
+    pull the model out from under that app."""
+    try:
+        from service.engine import BUNDLED_PORT
+        from service.engine.mode import is_bundled
+        if not is_bundled():
+            return False
+        if client is None:
+            return True
+        return (getattr(client, "managed", False) and
+                str(getattr(client, "base_url", "")).rstrip("/") == f"http://127.0.0.1:{BUNDLED_PORT}")
+    except Exception:  # noqa: BLE001 — unknown engine: leave it alone
+        return False
+
+
 def note_notch_hidden(now: float | None = None) -> None:
     """/unload_agent (the notch's X) unloaded the chat model. Parked only with the
-    switch on: off, the old behavior stands (unloaded until next use) rather than
-    a reload 30 s later."""
-    if save_memory():
+    switch on, on Wisp's own engine: otherwise the old behavior stands (unloaded
+    until next use) rather than a reload 30 s later."""
+    if save_memory() and bundled_engine():
         note_parked("notch hidden", now)
 
 
@@ -202,10 +220,17 @@ def note_intent(now: float | None = None) -> None:
     _state.last_intent = time.monotonic() if now is None else now
 
 
-def note_parked(reason: str, now: float | None = None) -> None:
-    """The chat model was unloaded on Wisp's side (here, or /unload_agent)."""
+def note_parked(reason: str, now: float | None = None, *, window_closed: bool = False) -> None:
+    """The chat model was unloaded on Wisp's side (here, or /unload_agent).
+
+    The next window is an hour after this park, unless the park closed a window
+    (for any reason, pressure included): then an hour after that window opened.
+    Without the reset, a window from the morning would reload the model on the
+    tick after an evening park."""
     _state.parked = True
     _state.parked_at = time.monotonic() if now is None else now
+    if not window_closed:
+        _state.last_window = None
     _state.window_started = None
     _state.last_reason = reason
 
@@ -226,6 +251,8 @@ def decide(*, now: float, loaded: bool, busy: bool, pressure: str, enabled: bool
     if not enabled:
         return LEAVE
     since_user = min(_since_turn(now), _since_intent(now))
+    # Warn keeps windows shut too. On a 16 GB Mac warn is routine, so there the
+    # resident-only background work often waits for the next use of Wisp.
     tight = pressure in (WARN, CRITICAL)
     grace = PRESSURE_GRACE_S if pressure == CRITICAL else WARN_GRACE_S
     if loaded:
@@ -256,7 +283,7 @@ def decide(*, now: float, loaded: bool, busy: bool, pressure: str, enabled: bool
 async def tick(client, now: float | None = None, *, pressure: str | None = None) -> str:
     """One pass, called from idle_unloader.run every poll."""
     from service.config import role_to_model
-    if not getattr(client, "managed", True):
+    if not bundled_engine(client):
         return LEAVE
     now = time.monotonic() if now is None else now
     model = role_to_model("fast")
@@ -275,7 +302,7 @@ async def tick(client, now: float | None = None, *, pressure: str | None = None)
         if _state.parked and not loaded and not busy:
             _state.parked = False
             try:
-                await client.load(model)
+                await _load_shared(client, model)
             except Exception as exc:  # noqa: BLE001 — a turn loads it anyway
                 log.info("memory saver: reload after switching off failed: %s", type(exc).__name__)
         return LEAVE
@@ -286,18 +313,30 @@ async def tick(client, now: float | None = None, *, pressure: str | None = None)
         await client.unload(model)
         idle.forget(model)
         note_parked("pressure" if level in (WARN, CRITICAL) else
-                    "batch done" if action == CLOSE_WINDOW else "idle", now)
+                    "batch done" if action == CLOSE_WINDOW else "idle", now,
+                    window_closed=action == CLOSE_WINDOW)
         log.info("memory saver: unloaded %s (%s)", model, _state.last_reason)
     elif action == OPEN_WINDOW:
         _state.last_window = now
         try:
-            await client.load(model)
+            await _load_shared(client, model)
         except Exception as exc:  # noqa: BLE001 — try again at the next window
             log.info("memory saver: batch window load failed: %s", type(exc).__name__)
             return LEAVE
         _state.window_started = now
         log.info("memory saver: batch window open for %s", model)
     return action
+
+
+async def _load_shared(client, model: str) -> None:
+    """Load through the slot settle_prewarm waits on, so a turn that starts while
+    a window (or the switch turning off) loads the model waits for that load
+    instead of POSTing a second one. A prewarm already loading it is reused."""
+    global _prewarm_task
+    task = _prewarm_task
+    if task is None or task.done() or task.get_loop() is not asyncio.get_running_loop():
+        task = _prewarm_task = asyncio.create_task(client.load(model))
+    await task
 
 
 async def prewarm(client) -> str:
@@ -308,6 +347,8 @@ async def prewarm(client) -> str:
     note_intent()
     if remote_only_profile() is not None or not getattr(client, "managed", True):
         return "remote"
+    if not bundled_engine(client):
+        return "external"              # the user's oMLX.app: Save memory never parks there
     if idle.foreground_busy():
         return "busy"                  # the turn loads it
     if pressure_level() == CRITICAL:
@@ -355,7 +396,7 @@ async def settle_prewarm(timeout: float = 15.0) -> None:
 
 def state() -> dict:
     now = time.monotonic()
-    return {"save_memory": save_memory(), "parked": _state.parked,
+    return {"save_memory": save_memory(), "applies": bundled_engine(), "parked": _state.parked,
             "batch_window": _state.window_started is not None,
             "pressure": pressure_level(), "held": held(),
             "minutes_since_turn": round(_since_turn(now) / 60, 1),
