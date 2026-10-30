@@ -194,6 +194,74 @@ def test_the_notch_hiding_counts_as_parked_for_windows():
     assert tick(c, 70 * MIN) == M.OPEN_WINDOW
 
 
+def _window_then_user_returns(c):
+    """Park at 30, a window at 90 that closes quiet at 96, then the user is back
+    at 300 and the turn loads the model."""
+    idle._last_turn = 0.0
+    assert tick(c, 30 * MIN) == M.PARK
+    assert tick(c, 90 * MIN) == M.OPEN_WINDOW
+    assert tick(c, 96 * MIN) == M.CLOSE_WINDOW
+    c.loaded.add(MODEL)
+    idle._last_turn = 300 * MIN
+    assert tick(c, 301 * MIN) == M.KEEP and not M._state.parked
+
+
+def test_an_idle_park_counts_its_hour_from_the_park_not_an_old_window():
+    c = FakeClient()
+    _window_then_user_returns(c)
+    assert tick(c, 330 * MIN) == M.PARK
+    loads = c.calls.count(("load", MODEL))
+    assert tick(c, 330.5 * MIN) == M.LEAVE
+    assert tick(c, 389 * MIN) == M.LEAVE
+    assert c.calls.count(("load", MODEL)) == loads
+    assert tick(c, 390 * MIN) == M.OPEN_WINDOW
+
+
+def test_the_notch_x_counts_its_hour_from_the_x_not_an_old_window():
+    c = FakeClient()
+    _window_then_user_returns(c)
+    c.loaded.discard(MODEL)                  # /unload_agent
+    M.note_notch_hidden(now=310 * MIN)
+    assert tick(c, 310.5 * MIN) == M.LEAVE
+    assert tick(c, 369 * MIN) == M.LEAVE
+    assert tick(c, 370 * MIN) == M.OPEN_WINDOW
+
+
+def test_a_window_closed_by_pressure_still_counts_from_that_window():
+    c = FakeClient()
+    idle._last_turn = 0.0
+    tick(c, 30 * MIN)
+    assert tick(c, 90 * MIN) == M.OPEN_WINDOW
+    assert tick(c, 91 * MIN, pressure=M.WARN) == M.CLOSE_WINDOW
+    assert M._state.last_reason == "pressure"
+    assert tick(c, 149 * MIN) == M.LEAVE
+    assert tick(c, 150 * MIN) == M.OPEN_WINDOW
+
+
+def test_a_turn_waits_for_a_window_load_instead_of_loading_twice():
+    class Slow(FakeClient):
+        async def load(self, model):
+            self.calls.append(("load", model))
+            await asyncio.sleep(0.05)
+            self.loaded.add(model)
+
+    async def go():
+        c = Slow(loaded=False)
+        M.note_parked("idle", now=0.0)
+        window = asyncio.create_task(M.tick(c, 60 * MIN, pressure=M.NORMAL))
+        for _ in range(10):
+            if M.prewarm_pending():
+                break
+            await asyncio.sleep(0)
+        assert M.prewarm_pending()
+        await M.settle_prewarm(timeout=2)    # what OMLXClient._ensure_managed awaits first
+        assert MODEL in c.loaded
+        assert await window == M.OPEN_WINDOW
+        return c
+    c = asyncio.run(go())
+    assert c.calls == [("load", MODEL)]
+
+
 def test_a_failed_window_load_waits_for_the_next_window():
     class Refusing(FakeClient):
         async def load(self, model):
