@@ -221,7 +221,7 @@ struct DisplayGeometryChecks {
     /// the layout moves.
     static func widePanelChecks() {
         let wide = SurfaceLayout.wideExpandedWidth
-        check(wide == 980 && SurfaceLayout.minWideWidth == 860 && SurfaceLayout.minWideWidth < wide, "wide panel constants")
+        check(wide == 840 && SurfaceLayout.minWideWidth == 800 && SurfaceLayout.minWideWidth < wide, "wide panel constants")
         // Notch, menu-bar and floating layouts all widen, scaled modes included.
         for (n, d, style) in [("MBP 14", notched(1512, 982), .notch),
                               ("MBP 14 larger text", notched(1352, 878), .notch),
@@ -250,16 +250,16 @@ struct DisplayGeometryChecks {
         check(abs(notch.widened(true).expandedFrame(contentHeight: 300).midX - 756) <= 1, "Notch: wide panel centred on the display")
         // A display without the room stays at its normal width, whatever is asked.
         for (n, d) in [("small monitor", monitor(820, 700)), ("narrow", monitor(500, 700)),
-                       ("just short", monitor(883, 700))] {
+                       ("just short", monitor(823, 700))] {
             let l = SurfaceLayout.make(for: d)
             check(!l.canWiden, "\(n): too narrow to widen")
             check(l.widened(true) == l && l.widened(false) == l, "\(n): keeps its normal width")
         }
-        // The edge: usable width less the screen margins must reach 860.
-        let edge = SurfaceLayout.make(for: monitor(884, 700)).widened(true)
-        check(edge.expandedWidth == 860, "At the edge the panel fills the margins' room")
-        check(SurfaceLayout.make(for: monitor(900.5, 700)).widened(true).expandedWidth == 876, "Narrower than 980 rounds down to the room")
-        check(SurfaceLayout.make(for: monitor(1000, 700)).widened(true).expandedWidth == 976, "A display a little wider than 980 fits within its margins")
+        // The edge: usable width less the screen margins must reach 800.
+        let edge = SurfaceLayout.make(for: monitor(824, 700)).widened(true)
+        check(edge.expandedWidth == 800, "At the edge the panel fills the margins' room")
+        check(SurfaceLayout.make(for: monitor(840.5, 700)).widened(true).expandedWidth == 816, "Narrower than 840 rounds down to the room")
+        check(SurfaceLayout.make(for: monitor(860, 700)).widened(true).expandedWidth == 836, "A display a little wider than 840 fits within its margins")
         // Two columns only on the proactive Brief with nothing over it.
         check(NotchBriefView.canShowWide(tab: .brief, covered: false, engineBrief: true, canWiden: true),
               "the proactive Brief can show two columns")

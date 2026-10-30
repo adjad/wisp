@@ -74,10 +74,10 @@ struct SurfaceLayout: Equatable {
     static let referenceNotch = CGSize(width: 185, height: 32)
     static let maxExpandedWidth: CGFloat = 640
     /// The panel's width for the Brief's two-column view.
-    static let wideExpandedWidth: CGFloat = 980
+    static let wideExpandedWidth: CGFloat = 840
     /// The narrowest usable width worth widening to; a display with less room
     /// than this keeps the one-column Brief.
-    static let minWideWidth: CGFloat = 860
+    static let minWideWidth: CGFloat = 800
     /// Collapsed bar overhang on each side of the notch — a hairline of black
     /// so the bar reads as Wisp's, not merely as the hardware.
     static let wing: CGFloat = 6
