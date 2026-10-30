@@ -1,0 +1,26 @@
+# Suggested mlx_lm.lora config for the Wisp Ask adapter (Gemma 4 E4B).
+# NOT RUN. Pilot first: set iters: 50 and watch tokens/sec and peak memory.
+# `model`: the production weights are mixed 4/5-bit MLX affine (oQ4e), which
+# mlx-lm 0.31 loads as a quantized base, so this is QLoRA on the exact weights
+# Wisp serves. Point it at that folder (or a copy of it).
+model: "<path to gemma-4-E4B-it-oQ4e-mtp>"
+train: true
+data: "."                      # run from this folder (train.jsonl / valid.jsonl)
+fine_tune_type: lora
+mask_prompt: true              # train only the last assistant message of each example
+num_layers: 16                 # of 42; -1 = all
+batch_size: 1
+iters: 1700                    # ~2 epochs over 833 examples
+learning_rate: 2.0e-5          # few target tokens per example (median 18); try 5e-5 if valid loss barely moves
+max_seq_length: 10240          # examples are 6.4k tokens median, 9.5k max (Gemma tokenizer)
+grad_checkpoint: true
+steps_per_report: 20
+steps_per_eval: 200
+val_batches: 40
+save_every: 200
+adapter_path: "adapters/wisp-ask-lora"
+seed: 0
+lora_parameters:
+  rank: 16
+  scale: 20.0
+  dropout: 0.05

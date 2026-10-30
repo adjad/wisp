@@ -1,0 +1,113 @@
+{
+ "by_target": {
+  "call": 344,
+  "final": 449,
+  "load": 127
+ },
+ "code_head": "b85027863b34a16ee2871d5f93dfc1aed912eb42",
+ "examples": 920,
+ "families": {
+  "act_dont_promise": {
+   "call": 40,
+   "examples": 94,
+   "final": 40,
+   "load": 14,
+   "train": 86,
+   "turns": 40,
+   "valid": 8
+  },
+  "capability_honest": {
+   "call": 14,
+   "examples": 72,
+   "final": 44,
+   "load": 14,
+   "train": 66,
+   "turns": 44,
+   "valid": 6
+  },
+  "concise_gentle": {
+   "call": 31,
+   "examples": 71,
+   "final": 37,
+   "load": 3,
+   "train": 65,
+   "turns": 37,
+   "valid": 6
+  },
+  "grounded_only": {
+   "call": 37,
+   "examples": 87,
+   "final": 37,
+   "load": 13,
+   "train": 80,
+   "turns": 37,
+   "valid": 7
+  },
+  "ignore_embedded_instructions": {
+   "call": 31,
+   "examples": 67,
+   "final": 31,
+   "load": 5,
+   "train": 61,
+   "turns": 31,
+   "valid": 6
+  },
+  "knowledge_direct": {
+   "call": 9,
+   "examples": 95,
+   "final": 86,
+   "train": 86,
+   "turns": 86,
+   "valid": 9
+  },
+  "multi_source": {
+   "call": 29,
+   "examples": 70,
+   "final": 29,
+   "load": 12,
+   "train": 63,
+   "turns": 29,
+   "valid": 7
+  },
+  "no_write_for_reads": {
+   "call": 27,
+   "examples": 62,
+   "final": 27,
+   "load": 8,
+   "train": 52,
+   "turns": 27,
+   "valid": 10
+  },
+  "recover_from_tool_error": {
+   "call": 37,
+   "examples": 83,
+   "final": 37,
+   "load": 9,
+   "train": 79,
+   "turns": 37,
+   "valid": 4
+  },
+  "right_source": {
+   "call": 47,
+   "examples": 119,
+   "final": 47,
+   "load": 25,
+   "train": 107,
+   "turns": 47,
+   "valid": 12
+  },
+  "weather_and_web": {
+   "call": 42,
+   "examples": 100,
+   "final": 34,
+   "load": 24,
+   "train": 88,
+   "turns": 34,
+   "valid": 12
+  }
+ },
+ "paraphrased_turns": 293,
+ "train": 833,
+ "turns": 449,
+ "valid": 87
+}

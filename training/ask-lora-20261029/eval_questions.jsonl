@@ -1,0 +1,1040 @@
+{"id": "q0000", "category": "planning", "prompt": "plan my week"}
+{"id": "q0001", "category": "email", "prompt": "what's new in email and messages?"}
+{"id": "q0002", "category": "wisp_help", "prompt": "what's new in Wisp?"}
+{"id": "q0003", "category": "planning", "prompt": "status update on my life lol"}
+{"id": "q0004", "category": "email", "prompt": "any important emails in the last hour?"}
+{"id": "q0005", "category": "calendar", "prompt": "any meetings Wednesday?"}
+{"id": "q0006", "category": "calendar_typo", "prompt": "how busy am i saturday"}
+{"id": "q0007", "category": "cross", "prompt": "who's been trying to reach me?"}
+{"id": "q0008", "category": "reminders_typo", "prompt": "what's my most urgent task"}
+{"id": "q0009", "category": "messages_typo", "prompt": "whats going on in my msgs"}
+{"id": "q0010", "category": "calendar", "prompt": "what's on my calendar tomorrow?"}
+{"id": "q0011", "category": "system", "prompt": "is Do Not Disturb on?"}
+{"id": "q0012", "category": "calendar", "prompt": "what's my first event Friday?"}
+{"id": "q0013", "category": "general", "prompt": "what is SQL?"}
+{"id": "q0014", "category": "email_framed", "prompt": "emails and messages thanks"}
+{"id": "q0015", "category": "chitchat", "prompt": "lol"}
+{"id": "q0016", "category": "notes", "prompt": "find my notes about studying"}
+{"id": "q0017", "category": "reminders_typo", "prompt": "what remiders are due monday"}
+{"id": "q0018", "category": "weather_web", "prompt": "what's the forecast for the week?"}
+{"id": "q0019", "category": "planning", "prompt": "what's the plan for today?"}
+{"id": "q0020", "category": "weather_web", "prompt": "what's the price of bitcoin?"}
+{"id": "q0021", "category": "reminders", "prompt": "what reminders are due Monday?"}
+{"id": "q0022", "category": "planning", "prompt": "give me my morning brief"}
+{"id": "q0023", "category": "email_framed", "prompt": "any emails about my midterm? pls"}
+{"id": "q0024", "category": "notes", "prompt": "any notes about ideas?"}
+{"id": "q0025", "category": "email_framed", "prompt": "quick question: any important emails over the weekend?"}
+{"id": "q0026", "category": "calendar", "prompt": "do I have to be anywhere tomorrow?"}
+{"id": "q0027", "category": "reminders", "prompt": "are there reminders I should clean up?"}
+{"id": "q0028", "category": "calendar_typo", "prompt": "what do i have saturday"}
+{"id": "q0029", "category": "weather_web", "prompt": "is it going to be sunny tomorrow?"}
+{"id": "q0030", "category": "chitchat", "prompt": "good morning"}
+{"id": "q0031", "category": "reminders_typo", "prompt": "show me whats pending"}
+{"id": "q0032", "category": "reminders_typo", "prompt": "what r my open tasks"}
+{"id": "q0033", "category": "reminders", "prompt": "what did I finish this week?"}
+{"id": "q0034", "category": "calendar_framed", "prompt": "when is my midterm? pls"}
+{"id": "q0035", "category": "reminders", "prompt": "what reminders do I have today?"}
+{"id": "q0036", "category": "reminders", "prompt": "what are my school tasks?"}
+{"id": "q0037", "category": "email", "prompt": "any emails from Google?"}
+{"id": "q0038", "category": "planning_framed", "prompt": "quick question: help me plan my day"}
+{"id": "q0039", "category": "calendar_typo", "prompt": "when am i free tuesday"}
+{"id": "q0040", "category": "messages_framed", "prompt": "quick question: what's going on in my messages"}
+{"id": "q0041", "category": "cross", "prompt": "is anything in my email asking me to do something?"}
+{"id": "q0042", "category": "email", "prompt": "summarize my email from in the last hour"}
+{"id": "q0043", "category": "email", "prompt": "any emails about my midterm?"}
+{"id": "q0044", "category": "general", "prompt": "how many minutes in a day?"}
+{"id": "q0045", "category": "messages_typo", "prompt": "any msgs i haven't answered?"}
+{"id": "q0046", "category": "calendar", "prompt": "am I free tomorrow afternoon?"}
+{"id": "q0047", "category": "general", "prompt": "convert 5 miles to km"}
+{"id": "q0048", "category": "system", "prompt": "what's my uptime?"}
+{"id": "q0049", "category": "reminders", "prompt": "do I have any reminders about my midterm?"}
+{"id": "q0050", "category": "system", "prompt": "how much free disk space?"}
+{"id": "q0051", "category": "email", "prompt": "anything in my inbox about Friday?"}
+{"id": "q0052", "category": "calendar_typo", "prompt": "what do i have tuesday"}
+{"id": "q0053", "category": "planning_typo", "prompt": "whats the plan for tday?"}
+{"id": "q0054", "category": "notes", "prompt": "how many notes do I have?"}
+{"id": "q0055", "category": "general", "prompt": "what's a neural network?"}
+{"id": "q0056", "category": "reminders_typo", "prompt": "what did i finish this week?"}
+{"id": "q0057", "category": "planning", "prompt": "what's happening this week overall?"}
+{"id": "q0058", "category": "email_typo", "prompt": "what promotions did i get"}
+{"id": "q0059", "category": "general", "prompt": "how do I get a stain out of a shirt?"}
+{"id": "q0060", "category": "reminders", "prompt": "any reminders for tomorrow?"}
+{"id": "q0061", "category": "general", "prompt": "what's a prime number?"}
+{"id": "q0062", "category": "cross", "prompt": "did anyone reach out about my midterm?"}
+{"id": "q0063", "category": "general", "prompt": "what's the square root of 144?"}
+{"id": "q0064", "category": "reminders", "prompt": "what reminders are due today?"}
+{"id": "q0065", "category": "general", "prompt": "what is a hash table?"}
+{"id": "q0066", "category": "notes", "prompt": "search my notes for groceries"}
+{"id": "q0067", "category": "reminders", "prompt": "anything I keep putting off?"}
+{"id": "q0068", "category": "memory", "prompt": "what's my job?"}
+{"id": "q0069", "category": "system", "prompt": "what's my IP address?"}
+{"id": "q0070", "category": "calendar_typo", "prompt": "whats on my calendar saturday?"}
+{"id": "q0071", "category": "messages_framed", "prompt": "hey wisp, what did I text last?"}
+{"id": "q0072", "category": "memory", "prompt": "what are my interests?"}
+{"id": "q0073", "category": "email_framed", "prompt": "any security alerts in my email? pls"}
+{"id": "q0074", "category": "email", "prompt": "any emails about events this weekend?"}
+{"id": "q0075", "category": "calendar_typo", "prompt": "whats my first event monday?"}
+{"id": "q0076", "category": "reminders", "prompt": "show me what's pending"}
+{"id": "q0077", "category": "calendar_typo", "prompt": "anything important coming up"}
+{"id": "q0078", "category": "general", "prompt": "who painted the Mona Lisa?"}
+{"id": "q0079", "category": "calendar", "prompt": "what's on my calendar Wednesday?"}
+{"id": "q0080", "category": "calendar", "prompt": "how busy am I tomorrow?"}
+{"id": "q0081", "category": "writing", "prompt": "give me a study checklist for a biology midterm"}
+{"id": "q0082", "category": "calendar", "prompt": "what do I have Wednesday"}
+{"id": "q0083", "category": "calendar", "prompt": "what's on my calendar next week?"}
+{"id": "q0084", "category": "planning_typo", "prompt": "what's urgent vs what can wait"}
+{"id": "q0085", "category": "planning", "prompt": "plan Monday for me"}
+{"id": "q0086", "category": "chitchat", "prompt": "I have a midterm tomorrow and I'm nervous"}
+{"id": "q0087", "category": "wisp_help", "prompt": "what's view-only mode?"}
+{"id": "q0088", "category": "system", "prompt": "what's my battery level?"}
+{"id": "q0089", "category": "planning_typo", "prompt": "anything i should prep for tuesday"}
+{"id": "q0090", "category": "messages_framed", "prompt": "any new messages? thanks"}
+{"id": "q0091", "category": "planning", "prompt": "plan Tuesday for me"}
+{"id": "q0092", "category": "calendar", "prompt": "do I have any exams coming up?"}
+{"id": "q0093", "category": "reminders", "prompt": "what's due Friday?"}
+{"id": "q0094", "category": "cross", "prompt": "what came in while I was asleep?"}
+{"id": "q0095", "category": "general", "prompt": "how does the stock market work?"}
+{"id": "q0096", "category": "files", "prompt": "what's in my documents folder?"}
+{"id": "q0097", "category": "calendar", "prompt": "do I have class tomorrow?"}
+{"id": "q0098", "category": "weather_web", "prompt": "look up the best laptops for students"}
+{"id": "q0099", "category": "calendar_framed", "prompt": "can you tell me anything early tomorrow morning?"}
+{"id": "q0100", "category": "calendar_typo", "prompt": "whats my last event tmrw?"}
+{"id": "q0101", "category": "email_framed", "prompt": "summarize my email from this week pls"}
+{"id": "q0102", "category": "messages", "prompt": "who texted me this morning?"}
+{"id": "q0103", "category": "general", "prompt": "how old is the universe?"}
+{"id": "q0104", "category": "email", "prompt": "what's the gist of my inbox right now"}
+{"id": "q0105", "category": "calendar_framed", "prompt": "what's the last thing on my calendar today pls"}
+{"id": "q0106", "category": "planning_framed", "prompt": "hey wisp, what do I need to do this weekend?"}
+{"id": "q0107", "category": "planning", "prompt": "what do I need to do Friday?"}
+{"id": "q0108", "category": "calendar", "prompt": "what's coming up next"}
+{"id": "q0109", "category": "calendar", "prompt": "when am I free Sunday?"}
+{"id": "q0110", "category": "planning", "prompt": "what do I need to do today?"}
+{"id": "q0111", "category": "calendar", "prompt": "what do I have tomorrow"}
+{"id": "q0112", "category": "calendar_typo", "prompt": "when am i free monday"}
+{"id": "q0113", "category": "email_framed", "prompt": "quick question: what emails did I get this morning?"}
+{"id": "q0114", "category": "email", "prompt": "any important emails over the weekend?"}
+{"id": "q0115", "category": "email_typo", "prompt": "any new emials"}
+{"id": "q0116", "category": "email", "prompt": "anything from my bank?"}
+{"id": "q0117", "category": "calendar_typo", "prompt": "what's after my next meetng?"}
+{"id": "q0118", "category": "general", "prompt": "how many planets are in the solar system?"}
+{"id": "q0119", "category": "email", "prompt": "any important emails yesterday?"}
+{"id": "q0120", "category": "email_typo", "prompt": "any important emials in the last hour?"}
+{"id": "q0121", "category": "planning", "prompt": "plan Sunday for me"}
+{"id": "q0122", "category": "calendar", "prompt": "give me a rundown of my week"}
+{"id": "q0123", "category": "general", "prompt": "convert 50 kg to pounds"}
+{"id": "q0124", "category": "email_typo", "prompt": "did anyone email me about a meetng"}
+{"id": "q0125", "category": "planning", "prompt": "what can I push to next week?"}
+{"id": "q0126", "category": "messages", "prompt": "any messages I haven't answered?"}
+{"id": "q0127", "category": "email_framed", "prompt": "hey wisp, what's new in email and messages?"}
+{"id": "q0128", "category": "system", "prompt": "what Bluetooth devices are connected?"}
+{"id": "q0129", "category": "wisp_help", "prompt": "how do I turn on full access?"}
+{"id": "q0130", "category": "planning", "prompt": "what's on deck"}
+{"id": "q0131", "category": "planning_typo", "prompt": "what should i focus on today"}
+{"id": "q0132", "category": "general", "prompt": "what's the population of Japan?"}
+{"id": "q0133", "category": "calendar", "prompt": "what do I have this weekend"}
+{"id": "q0134", "category": "general", "prompt": "how does a credit score work?"}
+{"id": "q0135", "category": "planning", "prompt": "what do I need to do next week?"}
+{"id": "q0136", "category": "chitchat", "prompt": "motivate me"}
+{"id": "q0137", "category": "general", "prompt": "how many feet in a mile?"}
+{"id": "q0138", "category": "files", "prompt": "where is my resume file?"}
+{"id": "q0139", "category": "system", "prompt": "what's the frontmost app?"}
+{"id": "q0140", "category": "planning", "prompt": "summarize everything I have going on"}
+{"id": "q0141", "category": "general", "prompt": "what's the Pythagorean theorem?"}
+{"id": "q0142", "category": "planning", "prompt": "plan today for me"}
+{"id": "q0143", "category": "email", "prompt": "what promotions did I get?"}
+{"id": "q0144", "category": "calendar", "prompt": "what's on my calendar Friday?"}
+{"id": "q0145", "category": "general", "prompt": "convert 100 USD to euros"}
+{"id": "q0146", "category": "email", "prompt": "summarize my email from this week"}
+{"id": "q0147", "category": "cross", "prompt": "what do I owe people?"}
+{"id": "q0148", "category": "wisp_help", "prompt": "can you set reminders?"}
+{"id": "q0149", "category": "calendar", "prompt": "what's my schedule looking like"}
+{"id": "q0150", "category": "wisp_help", "prompt": "how much memory do you use?"}
+{"id": "q0151", "category": "messages", "prompt": "do I have unread texts?"}
+{"id": "q0152", "category": "general", "prompt": "what's a healthy breakfast?"}
+{"id": "q0153", "category": "messages", "prompt": "who texted me since Monday?"}
+{"id": "q0154", "category": "general", "prompt": "how does a vaccine work?"}
+{"id": "q0155", "category": "writing", "prompt": "help me write a reply to my professor's last email"}
+{"id": "q0156", "category": "calendar_framed", "prompt": "hey wisp, what's on my calendar tomorrow?"}
+{"id": "q0157", "category": "calendar", "prompt": "what do I have Saturday"}
+{"id": "q0158", "category": "calendar", "prompt": "what's my first event tomorrow?"}
+{"id": "q0159", "category": "email", "prompt": "what emails did I get last week?"}
+{"id": "q0160", "category": "wisp_help", "prompt": "can you browse the web?"}
+{"id": "q0161", "category": "general", "prompt": "what's the difference between a 401k and an IRA?"}
+{"id": "q0162", "category": "email_framed", "prompt": "quick question: check my mail"}
+{"id": "q0163", "category": "writing", "prompt": "write a message congratulating a friend on a new job"}
+{"id": "q0164", "category": "messages", "prompt": "who texted me last week?"}
+{"id": "q0165", "category": "wisp_help", "prompt": "can you remember things?"}
+{"id": "q0166", "category": "calendar_typo", "prompt": "whats on for the weekend"}
+{"id": "q0167", "category": "messages_typo", "prompt": "summarize my texts from tday"}
+{"id": "q0168", "category": "system", "prompt": "am I connected to the internet?"}
+{"id": "q0169", "category": "general", "prompt": "how many hours of sleep should I get?"}
+{"id": "q0170", "category": "email", "prompt": "who emailed me today?"}
+{"id": "q0171", "category": "planning", "prompt": "what's up for today?"}
+{"id": "q0172", "category": "planning", "prompt": "what is up for tommorow"}
+{"id": "q0173", "category": "general", "prompt": "synonyms for important"}
+{"id": "q0174", "category": "planning", "prompt": "whats up for tmrw"}
+{"id": "q0175", "category": "wisp_help", "prompt": "how do I stop the Brief?"}
+{"id": "q0176", "category": "planning_typo", "prompt": "what do i need to do next week?"}
+{"id": "q0177", "category": "general", "prompt": "what's the best way to take notes?"}
+{"id": "q0178", "category": "email", "prompt": "any important emails last night?"}
+{"id": "q0179", "category": "chitchat", "prompt": "I'm tired"}
+{"id": "q0180", "category": "calendar_typo", "prompt": "when am i free next week?"}
+{"id": "q0181", "category": "planning", "prompt": "ok what do I have going on"}
+{"id": "q0182", "category": "notes", "prompt": "do I have any meeting notes?"}
+{"id": "q0183", "category": "weather_web", "prompt": "any updates on the Mac release?"}
+{"id": "q0184", "category": "messages", "prompt": "summarize my texts from last night"}
+{"id": "q0185", "category": "general", "prompt": "what's the time zone of Tokyo?"}
+{"id": "q0186", "category": "calendar_typo", "prompt": "am i free friday afternoon?"}
+{"id": "q0187", "category": "memory", "prompt": "what do you know about my classes?"}
+{"id": "q0188", "category": "messages", "prompt": "what was my last text?"}
+{"id": "q0189", "category": "memory", "prompt": "what facts have you saved about me?"}
+{"id": "q0190", "category": "general", "prompt": "what's a linked list?"}
+{"id": "q0191", "category": "cross", "prompt": "what did I promise people this week?"}
+{"id": "q0192", "category": "general", "prompt": "explain the CAP theorem"}
+{"id": "q0193", "category": "system", "prompt": "what's on my clipboard?"}
+{"id": "q0194", "category": "calendar", "prompt": "what do I have this week"}
+{"id": "q0195", "category": "planning", "prompt": "what do I need to do tomorrow?"}
+{"id": "q0196", "category": "notes", "prompt": "any notes with a to-do list?"}
+{"id": "q0197", "category": "calendar", "prompt": "what's my last event Monday?"}
+{"id": "q0198", "category": "cross", "prompt": "who am I waiting to hear back from?"}
+{"id": "q0199", "category": "general", "prompt": "what's HTTP vs HTTPS?"}
+{"id": "q0200", "category": "planning", "prompt": "I have 2 free hours, what should I work on?"}
+{"id": "q0201", "category": "planning_framed", "prompt": "anything I should prep for Tuesday? thanks"}
+{"id": "q0202", "category": "calendar", "prompt": "what's my first event today?"}
+{"id": "q0203", "category": "reminders_framed", "prompt": "quick question: do I have any reminders about my midterm?"}
+{"id": "q0204", "category": "system", "prompt": "is my Mac charging?"}
+{"id": "q0205", "category": "planning", "prompt": "anything I should prep for Monday?"}
+{"id": "q0206", "category": "general", "prompt": "how do I write a for loop in JavaScript?"}
+{"id": "q0207", "category": "general", "prompt": "how do I make a budget?"}
+{"id": "q0208", "category": "planning_framed", "prompt": "quick question: what's my day look like"}
+{"id": "q0209", "category": "calendar_typo", "prompt": "whats on my calendar sunday?"}
+{"id": "q0210", "category": "general", "prompt": "what's Docker?"}
+{"id": "q0211", "category": "reminders_typo", "prompt": "whats the oldest reminder i have"}
+{"id": "q0212", "category": "general", "prompt": "how do I reverse a string in Python?"}
+{"id": "q0213", "category": "files", "prompt": "what's the largest file in downloads?"}
+{"id": "q0214", "category": "email", "prompt": "any emails from school?"}
+{"id": "q0215", "category": "messages", "prompt": "what did I text last?"}
+{"id": "q0216", "category": "calendar", "prompt": "what's on for the weekend"}
+{"id": "q0217", "category": "general", "prompt": "explain photosynthesis simply"}
+{"id": "q0218", "category": "wisp_help", "prompt": "why is the notch dot amber?"}
+{"id": "q0219", "category": "general", "prompt": "what's 12 factorial?"}
+{"id": "q0220", "category": "email_framed", "prompt": "can you tell me what emails did I get last week?"}
+{"id": "q0221", "category": "reminders_framed", "prompt": "hey wisp, what are my reminders?"}
+{"id": "q0222", "category": "messages", "prompt": "any messages from my family?"}
+{"id": "q0223", "category": "files", "prompt": "any old installers in downloads I can delete?"}
+{"id": "q0224", "category": "notes", "prompt": "what are my recent notes?"}
+{"id": "q0225", "category": "memory", "prompt": "what are my goals?"}
+{"id": "q0226", "category": "files", "prompt": "any PDFs in my downloads?"}
+{"id": "q0227", "category": "calendar", "prompt": "do I have to be anywhere today?"}
+{"id": "q0228", "category": "calendar", "prompt": "any meetings Friday?"}
+{"id": "q0229", "category": "calendar_typo", "prompt": "whats on my calendar today"}
+{"id": "q0230", "category": "writing", "prompt": "outline an essay on climate change"}
+{"id": "q0231", "category": "email_framed", "prompt": "what emails did I send today? thanks"}
+{"id": "q0232", "category": "planning", "prompt": "anything I should prep for tomorrow?"}
+{"id": "q0233", "category": "weather_web", "prompt": "what's trending today?"}
+{"id": "q0234", "category": "planning_framed", "prompt": "can you tell me summarize everything I have going on"}
+{"id": "q0235", "category": "general", "prompt": "recommend a good book"}
+{"id": "q0236", "category": "writing", "prompt": "write a 3 sentence apology for missing a meeting"}
+{"id": "q0237", "category": "messages", "prompt": "what's going on in my messages"}
+{"id": "q0238", "category": "general", "prompt": "what's an API?"}
+{"id": "q0239", "category": "calendar_framed", "prompt": "any meetings tomorrow? pls"}
+{"id": "q0240", "category": "cross", "prompt": "any commitments I made in email?"}
+{"id": "q0241", "category": "general", "prompt": "what is DNA?"}
+{"id": "q0242", "category": "reminders_typo", "prompt": "what are my school tasks"}
+{"id": "q0243", "category": "messages", "prompt": "any messages about school?"}
+{"id": "q0244", "category": "calendar", "prompt": "how busy am I Wednesday?"}
+{"id": "q0245", "category": "reminders_typo", "prompt": "whats due soon?"}
+{"id": "q0246", "category": "planning", "prompt": "what's my priority right now?"}
+{"id": "q0247", "category": "reminders", "prompt": "what reminders are due next week?"}
+{"id": "q0248", "category": "calendar_framed", "prompt": "hey wisp, any meetings Saturday?"}
+{"id": "q0249", "category": "system", "prompt": "what's my username?"}
+{"id": "q0250", "category": "general", "prompt": "how does encryption work?"}
+{"id": "q0251", "category": "reminders_framed", "prompt": "quick question: what reminders are due Monday?"}
+{"id": "q0252", "category": "general", "prompt": "what's 45 minutes in hours?"}
+{"id": "q0253", "category": "messages_framed", "prompt": "quick question: any texts about this weekend?"}
+{"id": "q0254", "category": "reminders", "prompt": "what reminders are due Saturday?"}
+{"id": "q0255", "category": "wisp_help", "prompt": "who made you?"}
+{"id": "q0256", "category": "calendar_typo", "prompt": "whats my last event tuesday"}
+{"id": "q0257", "category": "calendar", "prompt": "will I be busy at 3pm tomorrow?"}
+{"id": "q0258", "category": "general", "prompt": "how do I focus better?"}
+{"id": "q0259", "category": "general", "prompt": "what is the French Revolution about?"}
+{"id": "q0260", "category": "messages", "prompt": "what's the latest in my group chats?"}
+{"id": "q0261", "category": "reminders", "prompt": "what are my reminders?"}
+{"id": "q0262", "category": "email_framed", "prompt": "quick question: what's the most recent email I got?"}
+{"id": "q0263", "category": "email", "prompt": "emails and messages"}
+{"id": "q0264", "category": "planning_framed", "prompt": "can you tell me what do I need to do today?"}
+{"id": "q0265", "category": "planning_framed", "prompt": "tell me about my day pls"}
+{"id": "q0266", "category": "email_typo", "prompt": "any emials about my midterm"}
+{"id": "q0267", "category": "email_typo", "prompt": "any important emials last week"}
+{"id": "q0268", "category": "reminders", "prompt": "what reminders are due Friday?"}
+{"id": "q0269", "category": "general", "prompt": "how do I boil an egg?"}
+{"id": "q0270", "category": "calendar", "prompt": "when am I free this week?"}
+{"id": "q0271", "category": "planning", "prompt": "make me a study plan for the week"}
+{"id": "q0272", "category": "wisp_help", "prompt": "how do I ask you by voice?"}
+{"id": "q0273", "category": "general", "prompt": "what's the mitochondria?"}
+{"id": "q0274", "category": "email", "prompt": "any emails from people I know?"}
+{"id": "q0275", "category": "reminders", "prompt": "how many things are overdue?"}
+{"id": "q0276", "category": "general", "prompt": "what is inflation?"}
+{"id": "q0277", "category": "calendar", "prompt": "which day this week is the busiest?"}
+{"id": "q0278", "category": "general", "prompt": "what is mindfulness?"}
+{"id": "q0279", "category": "email_framed", "prompt": "any important emails in the last hour? pls"}
+{"id": "q0280", "category": "general", "prompt": "what's a good way to memorize vocabulary?"}
+{"id": "q0281", "category": "planning", "prompt": "anything I should prep for Saturday?"}
+{"id": "q0282", "category": "calendar", "prompt": "anything important coming up?"}
+{"id": "q0283", "category": "planning_typo", "prompt": "whats on deck"}
+{"id": "q0284", "category": "calendar", "prompt": "am I free Saturday afternoon?"}
+{"id": "q0285", "category": "general", "prompt": "round 3.14159 to 2 decimals"}
+{"id": "q0286", "category": "email", "prompt": "how many unread emails do I have?"}
+{"id": "q0287", "category": "general", "prompt": "how do airplanes fly?"}
+{"id": "q0288", "category": "reminders_typo", "prompt": "what remiders are due friday"}
+{"id": "q0289", "category": "general", "prompt": "what's a haiku? write one about fall"}
+{"id": "q0290", "category": "wisp_help", "prompt": "do you use the cloud?"}
+{"id": "q0291", "category": "calendar_typo", "prompt": "whats on my schedle for the 3rd"}
+{"id": "q0292", "category": "wisp_help", "prompt": "how do you work?"}
+{"id": "q0293", "category": "wisp_help", "prompt": "how do I reset Wisp?"}
+{"id": "q0294", "category": "reminders", "prompt": "remind me what I have to do"}
+{"id": "q0295", "category": "files", "prompt": "find files about my midterm"}
+{"id": "q0296", "category": "calendar", "prompt": "do I have to be anywhere Tuesday?"}
+{"id": "q0297", "category": "messages_framed", "prompt": "what are my latest texts? pls"}
+{"id": "q0298", "category": "email_framed", "prompt": "hey wisp, what are my unread messages in mail?"}
+{"id": "q0299", "category": "reminders", "prompt": "what did I finish yesterday?"}
+{"id": "q0300", "category": "reminders_typo", "prompt": "what r my remiders?"}
+{"id": "q0301", "category": "general", "prompt": "how many calories in a banana?"}
+{"id": "q0302", "category": "email", "prompt": "summarize my email from today"}
+{"id": "q0303", "category": "cross", "prompt": "any messages or emails about Friday?"}
+{"id": "q0304", "category": "writing", "prompt": "write a tweet about finishing midterms"}
+{"id": "q0305", "category": "reminders", "prompt": "what's due next week?"}
+{"id": "q0306", "category": "files", "prompt": "how big is my downloads folder?"}
+{"id": "q0307", "category": "general", "prompt": "how far is the moon?"}
+{"id": "q0308", "category": "reminders", "prompt": "what's on my plate"}
+{"id": "q0309", "category": "calendar_framed", "prompt": "hey wisp, any meetings Tuesday?"}
+{"id": "q0310", "category": "reminders", "prompt": "any reminders for this weekend?"}
+{"id": "q0311", "category": "calendar", "prompt": "what do I have Sunday"}
+{"id": "q0312", "category": "reminders", "prompt": "what did I finish today?"}
+{"id": "q0313", "category": "planning", "prompt": "what do I need to do Saturday?"}
+{"id": "q0314", "category": "weather_web", "prompt": "what movies are out this week?"}
+{"id": "q0315", "category": "general", "prompt": "what's the Krebs cycle?"}
+{"id": "q0316", "category": "calendar", "prompt": "any meetings this week?"}
+{"id": "q0317", "category": "messages", "prompt": "any verification codes in my texts?"}
+{"id": "q0318", "category": "reminders_framed", "prompt": "hey wisp, are there reminders I should clean up?"}
+{"id": "q0319", "category": "planning", "prompt": "anything I should prep for Tuesday?"}
+{"id": "q0320", "category": "calendar", "prompt": "is my morning free tomorrow?"}
+{"id": "q0321", "category": "reminders_framed", "prompt": "anything I need to remember today? thanks"}
+{"id": "q0322", "category": "email_typo", "prompt": "what emials did i get in the last hour"}
+{"id": "q0323", "category": "calendar", "prompt": "when am I free Saturday?"}
+{"id": "q0324", "category": "general", "prompt": "what's the capital of Canada?"}
+{"id": "q0325", "category": "email", "prompt": "what emails came in today?"}
+{"id": "q0326", "category": "email", "prompt": "do I have unread emails?"}
+{"id": "q0327", "category": "general", "prompt": "tips for studying for an exam"}
+{"id": "q0328", "category": "calendar", "prompt": "what's my last event Tuesday?"}
+{"id": "q0329", "category": "email_framed", "prompt": "quick question: give me an email rundown"}
+{"id": "q0330", "category": "calendar", "prompt": "any meetings Tuesday?"}
+{"id": "q0331", "category": "email_typo", "prompt": "whats in my gmail"}
+{"id": "q0332", "category": "writing", "prompt": "write a professional sign-off"}
+{"id": "q0333", "category": "calendar", "prompt": "when am I free this weekend?"}
+{"id": "q0334", "category": "weather_web", "prompt": "do I need a jacket today?"}
+{"id": "q0335", "category": "planning", "prompt": "what do I need to get done before Friday?"}
+{"id": "q0336", "category": "general", "prompt": "what's a good stretch for back pain?"}
+{"id": "q0337", "category": "planning_typo", "prompt": "plan saturday for me"}
+{"id": "q0338", "category": "email_typo", "prompt": "any emials about deadlines"}
+{"id": "q0339", "category": "messages_typo", "prompt": "anything from mom"}
+{"id": "q0340", "category": "system", "prompt": "what's my volume?"}
+{"id": "q0341", "category": "email", "prompt": "any emails about a password reset?"}
+{"id": "q0342", "category": "email_framed", "prompt": "check my email pls"}
+{"id": "q0343", "category": "general", "prompt": "how long until the weekend?"}
+{"id": "q0344", "category": "calendar", "prompt": "what's my next meeting?"}
+{"id": "q0345", "category": "general", "prompt": "who discovered penicillin?"}
+{"id": "q0346", "category": "reminders_framed", "prompt": "can you tell me remind me what I have to do"}
+{"id": "q0347", "category": "notes", "prompt": "any notes about travel?"}
+{"id": "q0348", "category": "general", "prompt": "explain big O notation"}
+{"id": "q0349", "category": "calendar_framed", "prompt": "hey wisp, what's on my calendar this week?"}
+{"id": "q0350", "category": "general", "prompt": "what day is Thanksgiving this year?"}
+{"id": "q0351", "category": "reminders_typo", "prompt": "what did i finish today"}
+{"id": "q0352", "category": "calendar_framed", "prompt": "quick question: any meetings today?"}
+{"id": "q0353", "category": "email", "prompt": "any important emails this morning?"}
+{"id": "q0354", "category": "planning_typo", "prompt": "anything i should prep for tday?"}
+{"id": "q0355", "category": "planning_framed", "prompt": "what can I push to next week? thanks"}
+{"id": "q0356", "category": "system", "prompt": "what's taking up space on my Mac?"}
+{"id": "q0357", "category": "calendar", "prompt": "what's my first event Tuesday?"}
+{"id": "q0358", "category": "reminders", "prompt": "what reminders are due this week?"}
+{"id": "q0359", "category": "email", "prompt": "any shipping or delivery emails?"}
+{"id": "q0360", "category": "calendar", "prompt": "am I free Monday afternoon?"}
+{"id": "q0361", "category": "email_typo", "prompt": "any important emials since monday"}
+{"id": "q0362", "category": "wisp_help", "prompt": "can you see my screen?"}
+{"id": "q0363", "category": "cross", "prompt": "everything due tomorrow, from anywhere"}
+{"id": "q0364", "category": "reminders", "prompt": "what should I get done today?"}
+{"id": "q0365", "category": "files", "prompt": "what did I save most recently?"}
+{"id": "q0366", "category": "notes", "prompt": "what did I write in my last note?"}
+{"id": "q0367", "category": "planning", "prompt": "what's left for today?"}
+{"id": "q0368", "category": "messages", "prompt": "any texts about this weekend?"}
+{"id": "q0369", "category": "messages", "prompt": "who messaged me recently?"}
+{"id": "q0370", "category": "planning", "prompt": "help me plan my day around my midterm"}
+{"id": "q0371", "category": "planning", "prompt": "anything I should know about today?"}
+{"id": "q0372", "category": "calendar", "prompt": "do I have to be anywhere Sunday?"}
+{"id": "q0373", "category": "email", "prompt": "what's in my gmail"}
+{"id": "q0374", "category": "calendar_typo", "prompt": "am i free wednesday afternoon?"}
+{"id": "q0375", "category": "email", "prompt": "any new mail and texts?"}
+{"id": "q0376", "category": "contacts", "prompt": "what's my email address?"}
+{"id": "q0377", "category": "general", "prompt": "explain Newton's three laws"}
+{"id": "q0378", "category": "general", "prompt": "what's a good beginner workout?"}
+{"id": "q0379", "category": "calendar_framed", "prompt": "quick question: what's my next meeting?"}
+{"id": "q0380", "category": "general", "prompt": "what causes the seasons?"}
+{"id": "q0381", "category": "files", "prompt": "what files did I download today?"}
+{"id": "q0382", "category": "calendar_framed", "prompt": "can you tell me what do I have Wednesday"}
+{"id": "q0383", "category": "calendar", "prompt": "when am I free Tuesday?"}
+{"id": "q0384", "category": "reminders_framed", "prompt": "what do I need to prepare for tomorrow? pls"}
+{"id": "q0385", "category": "general", "prompt": "convert 72 F to C"}
+{"id": "q0386", "category": "email_typo", "prompt": "did i get any job or internship emials?"}
+{"id": "q0387", "category": "email", "prompt": "any emails from my professors?"}
+{"id": "q0388", "category": "reminders", "prompt": "do I have anything overdue?"}
+{"id": "q0389", "category": "general", "prompt": "what's an index fund?"}
+{"id": "q0390", "category": "memory", "prompt": "what have I told you about myself?"}
+{"id": "q0391", "category": "general", "prompt": "how do I write a good cover letter?"}
+{"id": "q0392", "category": "email_typo", "prompt": "any order confirmations recently"}
+{"id": "q0393", "category": "email", "prompt": "summarize my email from last night"}
+{"id": "q0394", "category": "cross", "prompt": "anything I should respond to before tomorrow?"}
+{"id": "q0395", "category": "messages", "prompt": "who texted me last night?"}
+{"id": "q0396", "category": "contacts", "prompt": "who do I know at Google?"}
+{"id": "q0397", "category": "calendar", "prompt": "what do I have Tuesday"}
+{"id": "q0398", "category": "general", "prompt": "why is the sky blue?"}
+{"id": "q0399", "category": "calendar_typo", "prompt": "whats my last event sunday"}
+{"id": "q0400", "category": "planning_framed", "prompt": "what should I do first today? pls"}
+{"id": "q0401", "category": "general", "prompt": "what's the tallest mountain?"}
+{"id": "q0402", "category": "calendar_framed", "prompt": "any meetings next week? pls"}
+{"id": "q0403", "category": "calendar", "prompt": "when am I free next week?"}
+{"id": "q0404", "category": "reminders", "prompt": "what reminders are coming up?"}
+{"id": "q0405", "category": "messages", "prompt": "what are people saying in my texts"}
+{"id": "q0406", "category": "messages", "prompt": "anything urgent in my messages?"}
+{"id": "q0407", "category": "notes", "prompt": "what notes did I edit this week?"}
+{"id": "q0408", "category": "email", "prompt": "which emails look urgent?"}
+{"id": "q0409", "category": "wisp_help", "prompt": "what can you do?"}
+{"id": "q0410", "category": "calendar_typo", "prompt": "what time is my first meeting tomorrow"}
+{"id": "q0411", "category": "calendar", "prompt": "what's the last thing on my calendar today"}
+{"id": "q0412", "category": "email_framed", "prompt": "can you tell me any emails from people I know?"}
+{"id": "q0413", "category": "general", "prompt": "what's the largest ocean?"}
+{"id": "q0414", "category": "reminders_typo", "prompt": "anything i keep putting off"}
+{"id": "q0415", "category": "writing", "prompt": "help me say no to plans politely"}
+{"id": "q0416", "category": "calendar_framed", "prompt": "hey wisp, am I free Tuesday afternoon?"}
+{"id": "q0417", "category": "calendar_framed", "prompt": "can you tell me what do I have tomorrow"}
+{"id": "q0418", "category": "notes", "prompt": "any notes about passwords?"}
+{"id": "q0419", "category": "chitchat", "prompt": "test"}
+{"id": "q0420", "category": "reminders", "prompt": "how many reminders do I have?"}
+{"id": "q0421", "category": "weather_web", "prompt": "what's the temperature right now?"}
+{"id": "q0422", "category": "planning", "prompt": "what's going on today"}
+{"id": "q0423", "category": "calendar", "prompt": "do I have to be anywhere Saturday?"}
+{"id": "q0424", "category": "writing", "prompt": "help me write a birthday message for a friend"}
+{"id": "q0425", "category": "calendar", "prompt": "do I have anything on November 1st?"}
+{"id": "q0426", "category": "chitchat", "prompt": "I'm stressed"}
+{"id": "q0427", "category": "files", "prompt": "what spreadsheets do I have?"}
+{"id": "q0428", "category": "planning", "prompt": "help me plan my day"}
+{"id": "q0429", "category": "calendar_framed", "prompt": "what's my last event tomorrow? pls"}
+{"id": "q0430", "category": "email_typo", "prompt": "whats my oldest unread email"}
+{"id": "q0431", "category": "wisp_help", "prompt": "how do I connect Gmail?"}
+{"id": "q0432", "category": "wisp_help", "prompt": "how do I export my data?"}
+{"id": "q0433", "category": "general", "prompt": "how many continents are there?"}
+{"id": "q0434", "category": "cross", "prompt": "anything about money in my email or texts?"}
+{"id": "q0435", "category": "general", "prompt": "explain dynamic programming"}
+{"id": "q0436", "category": "wisp_help", "prompt": "can you read my notes?"}
+{"id": "q0437", "category": "email", "prompt": "check my mail"}
+{"id": "q0438", "category": "system", "prompt": "what's using my CPU?"}
+{"id": "q0439", "category": "email_framed", "prompt": "anything from my bank? pls"}
+{"id": "q0440", "category": "email_framed", "prompt": "hey wisp, summarize the last 5 emails"}
+{"id": "q0441", "category": "calendar", "prompt": "what events did I have this past week?"}
+{"id": "q0442", "category": "general", "prompt": "what's a good study playlist genre?"}
+{"id": "q0443", "category": "general", "prompt": "how do I ask for an extension politely?"}
+{"id": "q0444", "category": "calendar_framed", "prompt": "what do I have this week pls"}
+{"id": "q0445", "category": "reminders_typo", "prompt": "what deadlines do i have"}
+{"id": "q0446", "category": "calendar_typo", "prompt": "is there anything i'm forgetting this week"}
+{"id": "q0447", "category": "general", "prompt": "how do I deal with stress before an exam?"}
+{"id": "q0448", "category": "system", "prompt": "is my Mac up to date?"}
+{"id": "q0449", "category": "system", "prompt": "what's my default browser?"}
+{"id": "q0450", "category": "planning", "prompt": "day overview"}
+{"id": "q0451", "category": "email_framed", "prompt": "any emails about my classes? thanks"}
+{"id": "q0452", "category": "calendar_typo", "prompt": "do i have to be anywhere friday?"}
+{"id": "q0453", "category": "notes", "prompt": "what's in my notes about the midterm?"}
+{"id": "q0454", "category": "reminders_typo", "prompt": "anything i need to remember today"}
+{"id": "q0455", "category": "reminders", "prompt": "what reminders did I set recently?"}
+{"id": "q0456", "category": "email", "prompt": "what emails did I get in the last hour?"}
+{"id": "q0457", "category": "email_framed", "prompt": "quick question: summarize my email from in the last hour"}
+{"id": "q0458", "category": "email_framed", "prompt": "quick question: what emails did I get yesterday?"}
+{"id": "q0459", "category": "planning", "prompt": "what do I need to do Sunday?"}
+{"id": "q0460", "category": "planning", "prompt": "what do I need to do this week?"}
+{"id": "q0461", "category": "wisp_help", "prompt": "are you better than Siri?"}
+{"id": "q0462", "category": "general", "prompt": "explain the electoral college"}
+{"id": "q0463", "category": "calendar", "prompt": "what's my first event Saturday?"}
+{"id": "q0464", "category": "general", "prompt": "how many cups in a quart?"}
+{"id": "q0465", "category": "calendar_typo", "prompt": "what was on my calender last monday"}
+{"id": "q0466", "category": "messages", "prompt": "who texted me today?"}
+{"id": "q0467", "category": "planning", "prompt": "help me plan tomorrow"}
+{"id": "q0468", "category": "calendar_typo", "prompt": "whats my first event friday"}
+{"id": "q0469", "category": "general", "prompt": "how do I tie a tie?"}
+{"id": "q0470", "category": "planning_framed", "prompt": "hey wisp, anything I should prep for today?"}
+{"id": "q0471", "category": "wisp_help", "prompt": "can you summarize a PDF?"}
+{"id": "q0472", "category": "calendar_framed", "prompt": "what's on my calendar Wednesday? pls"}
+{"id": "q0473", "category": "planning", "prompt": "what's my schedule and to-dos for tomorrow"}
+{"id": "q0474", "category": "cross", "prompt": "summarize my unread email and texts"}
+{"id": "q0475", "category": "general", "prompt": "what's the derivative of x squared?"}
+{"id": "q0476", "category": "general", "prompt": "explain the Monty Hall problem"}
+{"id": "q0477", "category": "weather_web", "prompt": "what's happening in the world?"}
+{"id": "q0478", "category": "planning", "prompt": "plan my weekend"}
+{"id": "q0479", "category": "contacts", "prompt": "find contacts named Sam"}
+{"id": "q0480", "category": "writing", "prompt": "rewrite this to sound more professional: hey can u send the file"}
+{"id": "q0481", "category": "calendar_framed", "prompt": "hey wisp, what's on my calendar Saturday?"}
+{"id": "q0482", "category": "email", "prompt": "did anyone email me about a meeting?"}
+{"id": "q0483", "category": "email_framed", "prompt": "what's my oldest unread email? thanks"}
+{"id": "q0484", "category": "email", "prompt": "what emails did I get in the past 3 days?"}
+{"id": "q0485", "category": "calendar", "prompt": "any meetings Monday?"}
+{"id": "q0486", "category": "email_typo", "prompt": "what r my unread msgs in mail"}
+{"id": "q0487", "category": "general", "prompt": "what's 1500 divided by 12?"}
+{"id": "q0488", "category": "calendar_framed", "prompt": "hey wisp, find me a free hour tomorrow"}
+{"id": "q0489", "category": "calendar", "prompt": "how busy am I this weekend?"}
+{"id": "q0490", "category": "general", "prompt": "how many days until Christmas?"}
+{"id": "q0491", "category": "planning", "prompt": "how should I spend my afternoon?"}
+{"id": "q0492", "category": "reminders", "prompt": "what tasks are due this week?"}
+{"id": "q0493", "category": "calendar_typo", "prompt": "am i free today afternoon"}
+{"id": "q0494", "category": "planning_framed", "prompt": "can you tell me anything I should prep for Saturday?"}
+{"id": "q0495", "category": "memory", "prompt": "do you know my birthday?"}
+{"id": "q0496", "category": "planning", "prompt": "what did I do today?"}
+{"id": "q0497", "category": "calendar", "prompt": "any meetings next week?"}
+{"id": "q0498", "category": "weather_web", "prompt": "what's the weather today?"}
+{"id": "q0499", "category": "calendar", "prompt": "find me a free hour tomorrow"}
+{"id": "q0500", "category": "notes", "prompt": "what's my oldest note?"}
+{"id": "q0501", "category": "reminders", "prompt": "what's left on my list today?"}
+{"id": "q0502", "category": "general", "prompt": "how do I negotiate a salary?"}
+{"id": "q0503", "category": "writing", "prompt": "draft a reply to my latest email"}
+{"id": "q0504", "category": "general", "prompt": "how do I center a div in CSS?"}
+{"id": "q0505", "category": "writing", "prompt": "summarize the plot of Hamlet in 3 sentences"}
+{"id": "q0506", "category": "email", "prompt": "what emails did I get last night?"}
+{"id": "q0507", "category": "calendar", "prompt": "what's happening on Halloween?"}
+{"id": "q0508", "category": "calendar", "prompt": "what's on my calendar Saturday?"}
+{"id": "q0509", "category": "calendar", "prompt": "what's my first event Sunday?"}
+{"id": "q0510", "category": "reminders", "prompt": "what did I need to do this week?"}
+{"id": "q0511", "category": "cross", "prompt": "what do I need to reply to today, email or texts?"}
+{"id": "q0512", "category": "calendar", "prompt": "any meetings Saturday?"}
+{"id": "q0513", "category": "email", "prompt": "what emails did I get today?"}
+{"id": "q0514", "category": "general", "prompt": "what's a good substitute for eggs in baking?"}
+{"id": "q0515", "category": "wisp_help", "prompt": "does my data leave my Mac?"}
+{"id": "q0516", "category": "calendar_typo", "prompt": "what do i have monday"}
+{"id": "q0517", "category": "general", "prompt": "who was the first president of the US?"}
+{"id": "q0518", "category": "calendar", "prompt": "which day this week is the lightest?"}
+{"id": "q0519", "category": "calendar", "prompt": "when am I free tomorrow?"}
+{"id": "q0520", "category": "messages", "prompt": "did anyone text me about plans?"}
+{"id": "q0521", "category": "messages", "prompt": "check my messages"}
+{"id": "q0522", "category": "calendar_typo", "prompt": "do i have any exams coming up"}
+{"id": "q0523", "category": "general", "prompt": "what's 30% off $120?"}
+{"id": "q0524", "category": "cross", "prompt": "is there an email about any of my meetings this week?"}
+{"id": "q0525", "category": "reminders_typo", "prompt": "how many things are overdue"}
+{"id": "q0526", "category": "reminders_typo", "prompt": "any homework due"}
+{"id": "q0527", "category": "general", "prompt": "what's the date next Friday?"}
+{"id": "q0528", "category": "weather_web", "prompt": "what's the air quality today?"}
+{"id": "q0529", "category": "calendar_framed", "prompt": "can you tell me when am I free Friday?"}
+{"id": "q0530", "category": "calendar", "prompt": "how busy am I Friday?"}
+{"id": "q0531", "category": "notes", "prompt": "what notes do I have?"}
+{"id": "q0532", "category": "memory", "prompt": "who's my closest friend?"}
+{"id": "q0533", "category": "email", "prompt": "what's my oldest unread email?"}
+{"id": "q0534", "category": "calendar_framed", "prompt": "am I free tomorrow afternoon? pls"}
+{"id": "q0535", "category": "notes", "prompt": "do I have any notes about my classes?"}
+{"id": "q0536", "category": "calendar_framed", "prompt": "quick question: what did I have yesterday?"}
+{"id": "q0537", "category": "reminders_framed", "prompt": "quick question: what reminders are due this weekend?"}
+{"id": "q0538", "category": "calendar", "prompt": "what do I have Monday"}
+{"id": "q0539", "category": "reminders_framed", "prompt": "can you tell me anything I keep putting off?"}
+{"id": "q0540", "category": "messages", "prompt": "summarize my texts from in the last hour"}
+{"id": "q0541", "category": "email", "prompt": "any important emails last week?"}
+{"id": "q0542", "category": "memory", "prompt": "what do you know about me?"}
+{"id": "q0543", "category": "contacts", "prompt": "what's my own phone number?"}
+{"id": "q0544", "category": "general", "prompt": "how much water should I drink a day?"}
+{"id": "q0545", "category": "calendar", "prompt": "how busy am I Tuesday?"}
+{"id": "q0546", "category": "calendar", "prompt": "when am I free today?"}
+{"id": "q0547", "category": "general", "prompt": "what's the difference between a list and a tuple in Python?"}
+{"id": "q0548", "category": "files", "prompt": "where are my screenshots saved?"}
+{"id": "q0549", "category": "general", "prompt": "how long should I cook pasta?"}
+{"id": "q0550", "category": "email_framed", "prompt": "quick question: any important emails last night?"}
+{"id": "q0551", "category": "planning_typo", "prompt": "what can i push to next week?"}
+{"id": "q0552", "category": "wisp_help", "prompt": "what does the menu bar icon mean?"}
+{"id": "q0553", "category": "calendar_typo", "prompt": "any meetngs this weekend"}
+{"id": "q0554", "category": "wisp_help", "prompt": "can you read my email?"}
+{"id": "q0555", "category": "general", "prompt": "what's the difference between weather and climate?"}
+{"id": "q0556", "category": "planning_framed", "prompt": "quick question: what do I need to do Friday?"}
+{"id": "q0557", "category": "calendar", "prompt": "any meetings tomorrow?"}
+{"id": "q0558", "category": "cross", "prompt": "anything I've been invited to?"}
+{"id": "q0559", "category": "calendar", "prompt": "any meetings this weekend?"}
+{"id": "q0560", "category": "general", "prompt": "how many weeks are in a year?"}
+{"id": "q0561", "category": "general", "prompt": "tell me a joke"}
+{"id": "q0562", "category": "planning", "prompt": "is today going to be busy?"}
+{"id": "q0563", "category": "email", "prompt": "what did I miss in email?"}
+{"id": "q0564", "category": "writing", "prompt": "write a text saying I'm running late"}
+{"id": "q0565", "category": "reminders_framed", "prompt": "hey wisp, how many reminders do I have?"}
+{"id": "q0566", "category": "email", "prompt": "what are my unread messages in mail?"}
+{"id": "q0567", "category": "planning_typo", "prompt": "anything i should prep for monday"}
+{"id": "q0568", "category": "cross", "prompt": "what's on my calendar and in my reminders for Friday?"}
+{"id": "q0569", "category": "planning_typo", "prompt": "plan sunday for me"}
+{"id": "q0570", "category": "memory", "prompt": "where do I go to school?"}
+{"id": "q0571", "category": "planning", "prompt": "end of day recap"}
+{"id": "q0572", "category": "memory", "prompt": "what do I usually do on weekends?"}
+{"id": "q0573", "category": "calendar", "prompt": "do I have any events this evening?"}
+{"id": "q0574", "category": "weather_web", "prompt": "what's the score of the last Warriors game?"}
+{"id": "q0575", "category": "wisp_help", "prompt": "what's your name?"}
+{"id": "q0576", "category": "general", "prompt": "what's 0.1 + 0.2 in floating point?"}
+{"id": "q0577", "category": "chitchat", "prompt": "thank you!"}
+{"id": "q0578", "category": "writing", "prompt": "help me write an email asking for an extension"}
+{"id": "q0579", "category": "contacts", "prompt": "how many contacts do I have?"}
+{"id": "q0580", "category": "wisp_help", "prompt": "can you check my calendar?"}
+{"id": "q0581", "category": "wisp_help", "prompt": "how do I make you forget something?"}
+{"id": "q0582", "category": "general", "prompt": "what does 'ubiquitous' mean?"}
+{"id": "q0583", "category": "email", "prompt": "what's in my inbox?"}
+{"id": "q0584", "category": "email_framed", "prompt": "quick question: any important emails since Monday?"}
+{"id": "q0585", "category": "calendar", "prompt": "is there anything I'm forgetting this week?"}
+{"id": "q0586", "category": "planning_framed", "prompt": "hey wisp, what should I do tonight?"}
+{"id": "q0587", "category": "planning_framed", "prompt": "hey wisp, is today going to be busy?"}
+{"id": "q0588", "category": "cross", "prompt": "are there any plans people texted me about that aren't on my calendar?"}
+{"id": "q0589", "category": "messages", "prompt": "summarize my texts from today"}
+{"id": "q0590", "category": "calendar", "prompt": "when am I free Friday?"}
+{"id": "q0591", "category": "files", "prompt": "what documents did I open recently?"}
+{"id": "q0592", "category": "messages", "prompt": "who texted me this week?"}
+{"id": "q0593", "category": "planning_framed", "prompt": "what's my priority right now? pls"}
+{"id": "q0594", "category": "email", "prompt": "summarize my unread email"}
+{"id": "q0595", "category": "contacts", "prompt": "whose birthday is coming up?"}
+{"id": "q0596", "category": "general", "prompt": "what year did World War 2 end?"}
+{"id": "q0597", "category": "general", "prompt": "what is the GDP?"}
+{"id": "q0598", "category": "reminders_framed", "prompt": "hey wisp, what reminders are due tomorrow?"}
+{"id": "q0599", "category": "wisp_help", "prompt": "how do I use the Brief?"}
+{"id": "q0600", "category": "wisp_help", "prompt": "what apps can you access?"}
+{"id": "q0601", "category": "calendar_framed", "prompt": "when am I free Tuesday? thanks"}
+{"id": "q0602", "category": "general", "prompt": "what's the difference between affect and effect?"}
+{"id": "q0603", "category": "planning_framed", "prompt": "quick question: what should I focus on today?"}
+{"id": "q0604", "category": "planning", "prompt": "what do I need to do Tuesday?"}
+{"id": "q0605", "category": "weather_web", "prompt": "what's the weather in New York?"}
+{"id": "q0606", "category": "memory", "prompt": "who are the important people in my life?"}
+{"id": "q0607", "category": "email", "prompt": "any newsletters I can skip?"}
+{"id": "q0608", "category": "cross", "prompt": "what should I reply to first?"}
+{"id": "q0609", "category": "memory", "prompt": "what do you remember about me?"}
+{"id": "q0610", "category": "calendar_typo", "prompt": "any meetngs saturday"}
+{"id": "q0611", "category": "writing", "prompt": "give me 5 subject lines for an email asking for a recommendation letter"}
+{"id": "q0612", "category": "messages", "prompt": "summarize my texts from yesterday"}
+{"id": "q0613", "category": "planning_typo", "prompt": "anything i should prep for friday?"}
+{"id": "q0614", "category": "calendar", "prompt": "when am I free Monday?"}
+{"id": "q0615", "category": "general", "prompt": "split a $84 bill 3 ways with 20% tip"}
+{"id": "q0616", "category": "general", "prompt": "recommend a movie for tonight"}
+{"id": "q0617", "category": "general", "prompt": "what's 23 times 47?"}
+{"id": "q0618", "category": "planning", "prompt": "help me organize my day"}
+{"id": "q0619", "category": "calendar", "prompt": "what's my last event Saturday?"}
+{"id": "q0620", "category": "messages", "prompt": "summarize today's texts"}
+{"id": "q0621", "category": "files", "prompt": "what's in my downloads folder?"}
+{"id": "q0622", "category": "writing", "prompt": "write a quick out-of-office message"}
+{"id": "q0623", "category": "email", "prompt": "any emails about deadlines?"}
+{"id": "q0624", "category": "cross", "prompt": "do I have anything tomorrow that conflicts with my reminders?"}
+{"id": "q0625", "category": "messages_framed", "prompt": "did anyone text me about plans? pls"}
+{"id": "q0626", "category": "general", "prompt": "how does WiFi work?"}
+{"id": "q0627", "category": "email_typo", "prompt": "any emials about a password reset?"}
+{"id": "q0628", "category": "email", "prompt": "any emails about payments or bills?"}
+{"id": "q0629", "category": "planning", "prompt": "plan tomorrow for me"}
+{"id": "q0630", "category": "messages", "prompt": "summarize my messages"}
+{"id": "q0631", "category": "messages", "prompt": "any missed messages?"}
+{"id": "q0632", "category": "calendar_typo", "prompt": "when am i free wednesday?"}
+{"id": "q0633", "category": "general", "prompt": "what's the fastest land animal?"}
+{"id": "q0634", "category": "calendar_typo", "prompt": "do i have to be anywhere sunday"}
+{"id": "q0635", "category": "contacts", "prompt": "what's my address?"}
+{"id": "q0636", "category": "calendar", "prompt": "what do I have today"}
+{"id": "q0637", "category": "email", "prompt": "any emails with attachments today?"}
+{"id": "q0638", "category": "general", "prompt": "what's a black hole?"}
+{"id": "q0639", "category": "email", "prompt": "what emails have I starred?"}
+{"id": "q0640", "category": "planning", "prompt": "what's the most important thing this week?"}
+{"id": "q0641", "category": "calendar_framed", "prompt": "quick question: what's my last event Sunday?"}
+{"id": "q0642", "category": "general", "prompt": "convert 180 cm to feet"}
+{"id": "q0643", "category": "planning_framed", "prompt": "hey wisp, help me plan my day around my midterm"}
+{"id": "q0644", "category": "calendar", "prompt": "what's after my next meeting?"}
+{"id": "q0645", "category": "calendar", "prompt": "what was on my calendar last Monday?"}
+{"id": "q0646", "category": "planning", "prompt": "anything I should prep for Friday?"}
+{"id": "q0647", "category": "wisp_help", "prompt": "can you help me with homework?"}
+{"id": "q0648", "category": "email_framed", "prompt": "can you tell me what emails are waiting on me?"}
+{"id": "q0649", "category": "calendar", "prompt": "when is my next event"}
+{"id": "q0650", "category": "email_typo", "prompt": "any important emials last night"}
+{"id": "q0651", "category": "general", "prompt": "what's 15% of 80?"}
+{"id": "q0652", "category": "planning", "prompt": "what should I do tonight?"}
+{"id": "q0653", "category": "calendar_framed", "prompt": "can you tell me when am I free this week?"}
+{"id": "q0654", "category": "calendar_typo", "prompt": "how many events do i have this week"}
+{"id": "q0655", "category": "email", "prompt": "any new emails?"}
+{"id": "q0656", "category": "reminders", "prompt": "what are my open tasks"}
+{"id": "q0657", "category": "messages", "prompt": "who texted me over the weekend?"}
+{"id": "q0658", "category": "planning_framed", "prompt": "can you tell me plan Tuesday for me"}
+{"id": "q0659", "category": "planning", "prompt": "what did I miss?"}
+{"id": "q0660", "category": "messages_framed", "prompt": "anything from dad? thanks"}
+{"id": "q0661", "category": "calendar", "prompt": "what's my last event Friday?"}
+{"id": "q0662", "category": "chitchat", "prompt": "?"}
+{"id": "q0663", "category": "reminders", "prompt": "what should I prioritize this week"}
+{"id": "q0664", "category": "calendar", "prompt": "when is my midterm?"}
+{"id": "q0665", "category": "email", "prompt": "what emails are waiting on me?"}
+{"id": "q0666", "category": "writing", "prompt": "write a short thank-you note to a professor"}
+{"id": "q0667", "category": "email_typo", "prompt": "any emails from school"}
+{"id": "q0668", "category": "planning", "prompt": "what's important today?"}
+{"id": "q0669", "category": "weather_web", "prompt": "will it rain tomorrow?"}
+{"id": "q0670", "category": "general", "prompt": "tell me a fun fact"}
+{"id": "q0671", "category": "general", "prompt": "is it a leap year?"}
+{"id": "q0672", "category": "email", "prompt": "summarize my email from yesterday"}
+{"id": "q0673", "category": "reminders_typo", "prompt": "how many remiders do i have"}
+{"id": "q0674", "category": "calendar_typo", "prompt": "do i have class tomorrow"}
+{"id": "q0675", "category": "reminders", "prompt": "what do I need to prepare for tomorrow?"}
+{"id": "q0676", "category": "calendar", "prompt": "what's on my calendar this weekend?"}
+{"id": "q0677", "category": "planning", "prompt": "what's my day look like"}
+{"id": "q0678", "category": "reminders", "prompt": "what's next on my to-do list"}
+{"id": "q0679", "category": "notes", "prompt": "do I have a shopping list note?"}
+{"id": "q0680", "category": "wisp_help", "prompt": "how do I open the chat window?"}
+{"id": "q0681", "category": "notes", "prompt": "summarize my most recent note"}
+{"id": "q0682", "category": "reminders_framed", "prompt": "what reminders are due next week? thanks"}
+{"id": "q0683", "category": "email", "prompt": "what emails did I send today?"}
+{"id": "q0684", "category": "calendar", "prompt": "any meetings Sunday?"}
+{"id": "q0685", "category": "calendar_typo", "prompt": "whats my first event tmrw"}
+{"id": "q0686", "category": "reminders", "prompt": "what's on my list for Monday?"}
+{"id": "q0687", "category": "planning", "prompt": "am I ready for tomorrow?"}
+{"id": "q0688", "category": "wisp_help", "prompt": "can you read my messages?"}
+{"id": "q0689", "category": "email", "prompt": "anything important in my email?"}
+{"id": "q0690", "category": "reminders_typo", "prompt": "what reminders are due tmrw?"}
+{"id": "q0691", "category": "email", "prompt": "what's the most recent email I got?"}
+{"id": "q0692", "category": "email", "prompt": "any important emails in the past 3 days?"}
+{"id": "q0693", "category": "wisp_help", "prompt": "what are you?"}
+{"id": "q0694", "category": "planning_framed", "prompt": "quick question: give me a quick overview of my day"}
+{"id": "q0695", "category": "wisp_help", "prompt": "can you work offline?"}
+{"id": "q0696", "category": "cross", "prompt": "what's the most recent thing anyone sent me?"}
+{"id": "q0697", "category": "reminders", "prompt": "what reminders are due Tuesday?"}
+{"id": "q0698", "category": "reminders_typo", "prompt": "what remiders did i set recently?"}
+{"id": "q0699", "category": "general", "prompt": "what's the boiling point of water in Fahrenheit?"}
+{"id": "q0700", "category": "planning_typo", "prompt": "what do i need to do sunday"}
+{"id": "q0701", "category": "cross", "prompt": "anything new since last night?"}
+{"id": "q0702", "category": "messages", "prompt": "catch me up on my texts"}
+{"id": "q0703", "category": "calendar_typo", "prompt": "how busy am i next week?"}
+{"id": "q0704", "category": "notes", "prompt": "find notes mentioning Wisp"}
+{"id": "q0705", "category": "planning", "prompt": "morning rundown please"}
+{"id": "q0706", "category": "files", "prompt": "what's on my desktop?"}
+{"id": "q0707", "category": "calendar", "prompt": "what's due this week?"}
+{"id": "q0708", "category": "reminders", "prompt": "any homework due?"}
+{"id": "q0709", "category": "calendar_typo", "prompt": "what do i have friday"}
+{"id": "q0710", "category": "writing", "prompt": "write a short bio for a club website"}
+{"id": "q0711", "category": "email", "prompt": "any important emails today?"}
+{"id": "q0712", "category": "messages", "prompt": "anything from dad?"}
+{"id": "q0713", "category": "chitchat", "prompt": "hello"}
+{"id": "q0714", "category": "system", "prompt": "what's my battery health?"}
+{"id": "q0715", "category": "email_typo", "prompt": "what emials did i get over the weekend"}
+{"id": "q0716", "category": "messages", "prompt": "who texted me in the last hour?"}
+{"id": "q0717", "category": "messages_typo", "prompt": "anything urgent in my msgs?"}
+{"id": "q0718", "category": "calendar_framed", "prompt": "hey wisp, what's my last event Friday?"}
+{"id": "q0719", "category": "email", "prompt": "what emails did I get yesterday?"}
+{"id": "q0720", "category": "email_typo", "prompt": "what emails did i get this morning"}
+{"id": "q0721", "category": "calendar_framed", "prompt": "am I free Sunday afternoon? pls"}
+{"id": "q0722", "category": "general", "prompt": "how do I improve my sleep?"}
+{"id": "q0723", "category": "reminders", "prompt": "what reminders are due Wednesday?"}
+{"id": "q0724", "category": "weather_web", "prompt": "when is sunset today?"}
+{"id": "q0725", "category": "writing", "prompt": "write a to-do list for moving apartments"}
+{"id": "q0726", "category": "calendar_typo", "prompt": "what do i have next week"}
+{"id": "q0727", "category": "wisp_help", "prompt": "can you make calendar events?"}
+{"id": "q0728", "category": "general", "prompt": "what's the difference between git merge and rebase?"}
+{"id": "q0729", "category": "email_typo", "prompt": "what was the last email i sent?"}
+{"id": "q0730", "category": "wisp_help", "prompt": "help"}
+{"id": "q0731", "category": "planning_typo", "prompt": "whats going on today"}
+{"id": "q0732", "category": "calendar_framed", "prompt": "can you tell me what was on my calendar last Monday?"}
+{"id": "q0733", "category": "wisp_help", "prompt": "what permissions do you have?"}
+{"id": "q0734", "category": "calendar", "prompt": "what's on my schedule for the 3rd?"}
+{"id": "q0735", "category": "wisp_help", "prompt": "what's the Day tab?"}
+{"id": "q0736", "category": "general", "prompt": "how many bones are in the human body?"}
+{"id": "q0737", "category": "calendar_framed", "prompt": "hey wisp, what do I have Monday"}
+{"id": "q0738", "category": "planning", "prompt": "plan Friday for me"}
+{"id": "q0739", "category": "writing", "prompt": "make this shorter: I wanted to reach out to see if you might have some time to meet this week"}
+{"id": "q0740", "category": "planning", "prompt": "where do I need to be today?"}
+{"id": "q0741", "category": "general", "prompt": "what's 7% of 2300?"}
+{"id": "q0742", "category": "planning", "prompt": "brief me"}
+{"id": "q0743", "category": "email", "prompt": "what are my latest emails?"}
+{"id": "q0744", "category": "email", "prompt": "what emails did I get over the weekend?"}
+{"id": "q0745", "category": "contacts", "prompt": "any birthdays this month?"}
+{"id": "q0746", "category": "calendar_typo", "prompt": "whats my first event saturday"}
+{"id": "q0747", "category": "email_framed", "prompt": "quick question: any order confirmations recently?"}
+{"id": "q0748", "category": "reminders_typo", "prompt": "what did i finish yesterday?"}
+{"id": "q0749", "category": "calendar", "prompt": "what's on my calendar Monday?"}
+{"id": "q0750", "category": "files", "prompt": "find my notes PDF"}
+{"id": "q0751", "category": "general", "prompt": "convert 3 cups to ml"}
+{"id": "q0752", "category": "messages", "prompt": "any texts about dinner?"}
+{"id": "q0753", "category": "planning", "prompt": "yo what's my day"}
+{"id": "q0754", "category": "calendar_framed", "prompt": "hey wisp, do I have to be anywhere today?"}
+{"id": "q0755", "category": "email_framed", "prompt": "any important emails yesterday? pls"}
+{"id": "q0756", "category": "calendar", "prompt": "am I free today afternoon?"}
+{"id": "q0757", "category": "calendar_framed", "prompt": "what's happening on Halloween? thanks"}
+{"id": "q0758", "category": "planning", "prompt": "how's my evening looking?"}
+{"id": "q0759", "category": "messages", "prompt": "summarize my texts from this morning"}
+{"id": "q0760", "category": "planning", "prompt": "what should I focus on today?"}
+{"id": "q0761", "category": "calendar", "prompt": "what gaps do I have on Friday?"}
+{"id": "q0762", "category": "system", "prompt": "how much storage do I have left?"}
+{"id": "q0763", "category": "reminders", "prompt": "what deadlines do I have?"}
+{"id": "q0764", "category": "wisp_help", "prompt": "how do I use you in a chat window?"}
+{"id": "q0765", "category": "calendar_typo", "prompt": "how busy am i friday"}
+{"id": "q0766", "category": "email_typo", "prompt": "what emials did i get yesterday?"}
+{"id": "q0767", "category": "email", "prompt": "what emails did I get this morning?"}
+{"id": "q0768", "category": "general", "prompt": "how do I start running?"}
+{"id": "q0769", "category": "calendar", "prompt": "what's my first event Monday?"}
+{"id": "q0770", "category": "email", "prompt": "summarize my email from this morning"}
+{"id": "q0771", "category": "calendar_framed", "prompt": "quick question: what's on my calendar Tuesday?"}
+{"id": "q0772", "category": "calendar", "prompt": "am I free Friday afternoon?"}
+{"id": "q0773", "category": "system", "prompt": "what time zone am I in?"}
+{"id": "q0774", "category": "general", "prompt": "how do I make cold brew?"}
+{"id": "q0775", "category": "calendar", "prompt": "when does my day start tomorrow"}
+{"id": "q0776", "category": "email_typo", "prompt": "any emials with attachments tday"}
+{"id": "q0777", "category": "reminders_framed", "prompt": "can you tell me what should I get done today?"}
+{"id": "q0778", "category": "calendar", "prompt": "how busy am I next week?"}
+{"id": "q0779", "category": "messages", "prompt": "anything from mom?"}
+{"id": "q0780", "category": "system", "prompt": "what Wi-Fi am I on?"}
+{"id": "q0781", "category": "general", "prompt": "how do I meal prep for a week?"}
+{"id": "q0782", "category": "planning_typo", "prompt": "am i ready for tmrw"}
+{"id": "q0783", "category": "planning_framed", "prompt": "quick question: plan today for me"}
+{"id": "q0784", "category": "planning_typo", "prompt": "what do i need to do tuesday"}
+{"id": "q0785", "category": "wisp_help", "prompt": "how do I change your settings?"}
+{"id": "q0786", "category": "chitchat", "prompt": "thanks"}
+{"id": "q0787", "category": "weather_web", "prompt": "who won the last World Series?"}
+{"id": "q0788", "category": "general", "prompt": "what's the difference between TCP and UDP?"}
+{"id": "q0789", "category": "planning", "prompt": "anything I should prep for today?"}
+{"id": "q0790", "category": "writing", "prompt": "write a cover letter opening line for a software internship"}
+{"id": "q0791", "category": "calendar_framed", "prompt": "hey wisp, any all-day events this week?"}
+{"id": "q0792", "category": "messages_framed", "prompt": "can you tell me who do I text the most?"}
+{"id": "q0793", "category": "calendar", "prompt": "do I have any recurring meetings?"}
+{"id": "q0794", "category": "planning_framed", "prompt": "plan my week thanks"}
+{"id": "q0795", "category": "email_typo", "prompt": "what emials did i send tday"}
+{"id": "q0796", "category": "general", "prompt": "what's the difference between RAM and storage?"}
+{"id": "q0797", "category": "general", "prompt": "how do I make rice?"}
+{"id": "q0798", "category": "wisp_help", "prompt": "what's the keyboard shortcut to open you?"}
+{"id": "q0799", "category": "calendar", "prompt": "am I free Tuesday afternoon?"}
+{"id": "q0800", "category": "weather_web", "prompt": "look up how to change my Mac's wallpaper"}
+{"id": "q0801", "category": "calendar_framed", "prompt": "quick question: do I have to be anywhere Sunday?"}
+{"id": "q0802", "category": "email", "prompt": "check my email"}
+{"id": "q0803", "category": "calendar", "prompt": "what's my last event today?"}
+{"id": "q0804", "category": "general", "prompt": "what time is it?"}
+{"id": "q0805", "category": "general", "prompt": "explain supply and demand"}
+{"id": "q0806", "category": "wisp_help", "prompt": "what model are you running?"}
+{"id": "q0807", "category": "calendar", "prompt": "any all-day events this week?"}
+{"id": "q0808", "category": "reminders_typo", "prompt": "any remiders for this weekend?"}
+{"id": "q0809", "category": "email", "prompt": "any security alerts in my email?"}
+{"id": "q0810", "category": "messages", "prompt": "who texted me in the past 3 days?"}
+{"id": "q0811", "category": "email_typo", "prompt": "any important emails over the weekend"}
+{"id": "q0812", "category": "planning", "prompt": "what's coming up I should prep for?"}
+{"id": "q0813", "category": "calendar_typo", "prompt": "do i have any events this evening"}
+{"id": "q0814", "category": "files", "prompt": "how many files are on my desktop?"}
+{"id": "q0815", "category": "calendar_framed", "prompt": "when am I free Saturday? pls"}
+{"id": "q0816", "category": "calendar", "prompt": "what time is my first meeting tomorrow?"}
+{"id": "q0817", "category": "email_typo", "prompt": "what emials did i get tday?"}
+{"id": "q0818", "category": "general", "prompt": "what day of the week is it?"}
+{"id": "q0819", "category": "reminders", "prompt": "what reminders are due Sunday?"}
+{"id": "q0820", "category": "email", "prompt": "did I get a reply to my last email?"}
+{"id": "q0821", "category": "calendar_typo", "prompt": "when am i free this weekend"}
+{"id": "q0822", "category": "calendar", "prompt": "what's on my calendar Sunday?"}
+{"id": "q0823", "category": "calendar", "prompt": "do I have to be anywhere Monday?"}
+{"id": "q0824", "category": "reminders_framed", "prompt": "how many things are overdue? thanks"}
+{"id": "q0825", "category": "planning", "prompt": "tell me about my day"}
+{"id": "q0826", "category": "general", "prompt": "if my exam is 40% and I got 85, homework 60% at 92, what's my grade?"}
+{"id": "q0827", "category": "reminders", "prompt": "which reminders are due tomorrow morning?"}
+{"id": "q0828", "category": "calendar", "prompt": "do I have anything in the next hour?"}
+{"id": "q0829", "category": "planning_framed", "prompt": "what did I do today? thanks"}
+{"id": "q0830", "category": "general", "prompt": "what's the quadratic formula?"}
+{"id": "q0831", "category": "general", "prompt": "what's the average of 82, 91, 77 and 88?"}
+{"id": "q0832", "category": "messages", "prompt": "who's waiting on a reply from me?"}
+{"id": "q0833", "category": "files", "prompt": "find my resume"}
+{"id": "q0834", "category": "reminders", "prompt": "what reminders are due this weekend?"}
+{"id": "q0835", "category": "planning", "prompt": "what do I need to do Monday?"}
+{"id": "q0836", "category": "reminders_typo", "prompt": "any to-dos without a date"}
+{"id": "q0837", "category": "general", "prompt": "how do I make friends in college?"}
+{"id": "q0838", "category": "memory", "prompt": "what's my schedule usually like?"}
+{"id": "q0839", "category": "files", "prompt": "any screenshots on my desktop?"}
+{"id": "q0840", "category": "chitchat", "prompt": "hi"}
+{"id": "q0841", "category": "cross", "prompt": "what's new today across everything?"}
+{"id": "q0842", "category": "reminders", "prompt": "what tasks are flagged?"}
+{"id": "q0843", "category": "email_typo", "prompt": "any emials from people i know"}
+{"id": "q0844", "category": "reminders", "prompt": "what's my most urgent task?"}
+{"id": "q0845", "category": "system", "prompt": "which apps are open right now?"}
+{"id": "q0846", "category": "general", "prompt": "what's the longest river?"}
+{"id": "q0847", "category": "system", "prompt": "how hot is my Mac?"}
+{"id": "q0848", "category": "reminders", "prompt": "anything I need to remember today?"}
+{"id": "q0849", "category": "contacts", "prompt": "who are my favorite contacts?"}
+{"id": "q0850", "category": "wisp_help", "prompt": "how fast are you?"}
+{"id": "q0851", "category": "general", "prompt": "what's the integral of 1/x?"}
+{"id": "q0852", "category": "chitchat", "prompt": "ok"}
+{"id": "q0853", "category": "general", "prompt": "explain recursion"}
+{"id": "q0854", "category": "calendar_framed", "prompt": "can you tell me what do I have Tuesday"}
+{"id": "q0855", "category": "system", "prompt": "what's my Mac's name?"}
+{"id": "q0856", "category": "email_framed", "prompt": "hey wisp, any new emails?"}
+{"id": "q0857", "category": "contacts", "prompt": "do I have a contact for a dentist?"}
+{"id": "q0858", "category": "calendar", "prompt": "what do I have Friday"}
+{"id": "q0859", "category": "writing", "prompt": "help me reply to a friend asking to hang out Saturday"}
+{"id": "q0860", "category": "messages", "prompt": "any group chat activity?"}
+{"id": "q0861", "category": "general", "prompt": "who wrote Pride and Prejudice?"}
+{"id": "q0862", "category": "memory", "prompt": "what did I ask you yesterday?"}
+{"id": "q0863", "category": "reminders", "prompt": "what's overdue?"}
+{"id": "q0864", "category": "messages_framed", "prompt": "quick question: who texted me yesterday?"}
+{"id": "q0865", "category": "wisp_help", "prompt": "are you private?"}
+{"id": "q0866", "category": "general", "prompt": "how do solar panels work?"}
+{"id": "q0867", "category": "wisp_help", "prompt": "what languages do you speak?"}
+{"id": "q0868", "category": "general", "prompt": "what's the difference between a stock and a bond?"}
+{"id": "q0869", "category": "chitchat", "prompt": "goodnight"}
+{"id": "q0870", "category": "system", "prompt": "what's my Mac model?"}
+{"id": "q0871", "category": "files", "prompt": "find a file called budget"}
+{"id": "q0872", "category": "chitchat", "prompt": "how are you?"}
+{"id": "q0873", "category": "writing", "prompt": "fix the grammar: their going to the store tomorow"}
+{"id": "q0874", "category": "chitchat", "prompt": "I'm bored"}
+{"id": "q0875", "category": "calendar", "prompt": "how busy am I today?"}
+{"id": "q0876", "category": "general", "prompt": "what's an atom made of?"}
+{"id": "q0877", "category": "email_framed", "prompt": "quick question: any emails I need to reply to?"}
+{"id": "q0878", "category": "email_typo", "prompt": "any important emials this week?"}
+{"id": "q0879", "category": "email", "prompt": "is there anything in my email I should worry about?"}
+{"id": "q0880", "category": "general", "prompt": "what's 3/8 as a percent?"}
+{"id": "q0881", "category": "email", "prompt": "what was the last email I sent?"}
+{"id": "q0882", "category": "planning", "prompt": "what do I need to do this weekend?"}
+{"id": "q0883", "category": "messages", "prompt": "who texted me yesterday?"}
+{"id": "q0884", "category": "chitchat", "prompt": "you're awesome"}
+{"id": "q0885", "category": "reminders", "prompt": "any to-dos without a date?"}
+{"id": "q0886", "category": "calendar_typo", "prompt": "what's on my calender next week"}
+{"id": "q0887", "category": "calendar_typo", "prompt": "what do i have this weekend"}
+{"id": "q0888", "category": "calendar", "prompt": "what does my week look like"}
+{"id": "q0889", "category": "email_typo", "prompt": "what emails did i get since monday?"}
+{"id": "q0890", "category": "email_framed", "prompt": "any new mail and texts? thanks"}
+{"id": "q0891", "category": "calendar", "prompt": "how busy am I Monday?"}
+{"id": "q0892", "category": "planning", "prompt": "what do I need to do Wednesday?"}
+{"id": "q0893", "category": "calendar", "prompt": "what did I have yesterday?"}
+{"id": "q0894", "category": "reminders_typo", "prompt": "which remiders r due tmrw morning"}
+{"id": "q0895", "category": "general", "prompt": "explain opportunity cost"}
+{"id": "q0896", "category": "weather_web", "prompt": "what's the news today?"}
+{"id": "q0897", "category": "email", "prompt": "any emails I need to reply to?"}
+{"id": "q0898", "category": "general", "prompt": "what is quantum computing?"}
+{"id": "q0899", "category": "calendar", "prompt": "what do I have next week"}
+{"id": "q0900", "category": "notes", "prompt": "show my latest note"}
+{"id": "q0901", "category": "calendar_typo", "prompt": "whats on my calendar wednesday?"}
+{"id": "q0902", "category": "email", "prompt": "any emails about my classes?"}
+{"id": "q0903", "category": "weather_web", "prompt": "search the web for good study techniques"}
+{"id": "q0904", "category": "general", "prompt": "what's a good GPA for grad school?"}
+{"id": "q0905", "category": "email", "prompt": "what did I get in email yesterday?"}
+{"id": "q0906", "category": "notes", "prompt": "find a note about a recipe"}
+{"id": "q0907", "category": "calendar", "prompt": "what's on my calendar today?"}
+{"id": "q0908", "category": "calendar", "prompt": "what's on my calendar Tuesday?"}
+{"id": "q0909", "category": "cross", "prompt": "anything about travel coming up?"}
+{"id": "q0910", "category": "calendar", "prompt": "how much free time do I have today?"}
+{"id": "q0911", "category": "general", "prompt": "who was Shakespeare?"}
+{"id": "q0912", "category": "general", "prompt": "what is a sonnet?"}
+{"id": "q0913", "category": "files", "prompt": "what are my most recent downloads?"}
+{"id": "q0914", "category": "email", "prompt": "any important emails this week?"}
+{"id": "q0915", "category": "reminders", "prompt": "what did I finish last night?"}
+{"id": "q0916", "category": "messages", "prompt": "any new messages?"}
+{"id": "q0917", "category": "calendar", "prompt": "am I free Wednesday afternoon?"}
+{"id": "q0918", "category": "calendar_typo", "prompt": "what do i have tday"}
+{"id": "q0919", "category": "writing", "prompt": "write a haiku about coffee"}
+{"id": "q0920", "category": "general", "prompt": "how many days between Oct 29 and Dec 15?"}
+{"id": "q0921", "category": "calendar", "prompt": "what's on my calendar this week?"}
+{"id": "q0922", "category": "messages_framed", "prompt": "any missed messages? pls"}
+{"id": "q0923", "category": "general", "prompt": "how do I calculate GPA?"}
+{"id": "q0924", "category": "messages_typo", "prompt": "check my msgs"}
+{"id": "q0925", "category": "calendar", "prompt": "what's my last event tomorrow?"}
+{"id": "q0926", "category": "calendar", "prompt": "when am I free Wednesday?"}
+{"id": "q0927", "category": "chitchat", "prompt": "never mind"}
+{"id": "q0928", "category": "general", "prompt": "how many days until November 15?"}
+{"id": "q0929", "category": "general", "prompt": "what's the speed of light?"}
+{"id": "q0930", "category": "email", "prompt": "summarize the last 5 emails"}
+{"id": "q0931", "category": "reminders", "prompt": "show my to-dos"}
+{"id": "q0932", "category": "messages", "prompt": "who do I text the most?"}
+{"id": "q0933", "category": "calendar_typo", "prompt": "whats my first event sunday"}
+{"id": "q0934", "category": "email_typo", "prompt": "how many unread emails do i have"}
+{"id": "q0935", "category": "reminders_typo", "prompt": "what tasks r due this week?"}
+{"id": "q0936", "category": "calendar", "prompt": "how busy am I this week?"}
+{"id": "q0937", "category": "weather_web", "prompt": "latest headlines"}
+{"id": "q0938", "category": "reminders_framed", "prompt": "hey wisp, show me what's pending"}
+{"id": "q0939", "category": "chitchat", "prompt": "I can't focus"}
+{"id": "q0940", "category": "memory", "prompt": "where do I live?"}
+{"id": "q0941", "category": "system", "prompt": "what's my screen brightness?"}
+{"id": "q0942", "category": "calendar", "prompt": "anything early tomorrow morning?"}
+{"id": "q0943", "category": "planning", "prompt": "what's urgent vs what can wait?"}
+{"id": "q0944", "category": "memory", "prompt": "what's my name?"}
+{"id": "q0945", "category": "planning_typo", "prompt": "how should i spend my afternoon"}
+{"id": "q0946", "category": "planning", "prompt": "what's my brief"}
+{"id": "q0947", "category": "email_typo", "prompt": "what emials did i get in the past 3 days?"}
+{"id": "q0948", "category": "planning", "prompt": "give me a quick overview of my day"}
+{"id": "q0949", "category": "writing", "prompt": "turn these into bullets: buy milk, call mom, finish lab, email TA"}
+{"id": "q0950", "category": "reminders", "prompt": "what did I finish this morning?"}
+{"id": "q0951", "category": "weather_web", "prompt": "is there traffic right now?"}
+{"id": "q0952", "category": "writing", "prompt": "write a short LinkedIn summary for a CS student"}
+{"id": "q0953", "category": "email_framed", "prompt": "what was the last email I sent? pls"}
+{"id": "q0954", "category": "email", "prompt": "any important emails since Monday?"}
+{"id": "q0955", "category": "wisp_help", "prompt": "how do I change my Brief time?"}
+{"id": "q0956", "category": "writing", "prompt": "explain this simply: opportunity cost"}
+{"id": "q0957", "category": "cross", "prompt": "what's the next thing I need to do?"}
+{"id": "q0958", "category": "calendar", "prompt": "do I have to be anywhere Friday?"}
+{"id": "q0959", "category": "general", "prompt": "what's 2 to the 10th?"}
+{"id": "q0960", "category": "planning", "prompt": "how do I prep for my midterm this week?"}
+{"id": "q0961", "category": "email", "prompt": "any order confirmations recently?"}
+{"id": "q0962", "category": "messages", "prompt": "what are my latest texts?"}
+{"id": "q0963", "category": "weather_web", "prompt": "any big tech news?"}
+{"id": "q0964", "category": "reminders_typo", "prompt": "what tasks r flagged?"}
+{"id": "q0965", "category": "planning", "prompt": "what should I do first today?"}
+{"id": "q0966", "category": "email_framed", "prompt": "quick question: what emails came in today?"}
+{"id": "q0967", "category": "reminders", "prompt": "what reminders are due tomorrow?"}
+{"id": "q0968", "category": "wisp_help", "prompt": "what can't you do?"}
+{"id": "q0969", "category": "calendar_framed", "prompt": "hey wisp, what's my first event Sunday?"}
+{"id": "q0970", "category": "general", "prompt": "what does git rebase do?"}
+{"id": "q0971", "category": "reminders", "prompt": "what's on my to do list"}
+{"id": "q0972", "category": "weather_web", "prompt": "what's the weather this weekend?"}
+{"id": "q0973", "category": "messages", "prompt": "what did people text me yesterday?"}
+{"id": "q0974", "category": "system", "prompt": "how much RAM does my Mac have?"}
+{"id": "q0975", "category": "writing", "prompt": "what should I say back to my last text?"}
+{"id": "q0976", "category": "chitchat", "prompt": "what's up"}
+{"id": "q0977", "category": "cross", "prompt": "who needs something from me this week?"}
+{"id": "q0978", "category": "general", "prompt": "what's 18% tip on $62?"}
+{"id": "q0979", "category": "email", "prompt": "give me an email rundown"}
+{"id": "q0980", "category": "email", "prompt": "what emails did I get since Monday?"}
+{"id": "q0981", "category": "calendar_framed", "prompt": "do I have any events this evening? pls"}
+{"id": "q0982", "category": "calendar_typo", "prompt": "am i free tuesday afternoon?"}
+{"id": "q0983", "category": "calendar_typo", "prompt": "how much free time do i have tday"}
+{"id": "q0984", "category": "planning", "prompt": "catch me up"}
+{"id": "q0985", "category": "writing", "prompt": "draft a polite reminder to a group project member"}
+{"id": "q0986", "category": "system", "prompt": "how long has my Mac been on?"}
+{"id": "q0987", "category": "wisp_help", "prompt": "how do I give feedback?"}
+{"id": "q0988", "category": "calendar_typo", "prompt": "any meetings monday?"}
+{"id": "q0989", "category": "messages_framed", "prompt": "can you tell me any messages I haven't answered?"}
+{"id": "q0990", "category": "email", "prompt": "what emails did I get this week?"}
+{"id": "q0991", "category": "general", "prompt": "what's the difference between a virus and bacteria?"}
+{"id": "q0992", "category": "calendar", "prompt": "how many events do I have this week?"}
+{"id": "q0993", "category": "planning_typo", "prompt": "what do i need to do saturday?"}
+{"id": "q0994", "category": "reminders", "prompt": "what's due soon?"}
+{"id": "q0995", "category": "general", "prompt": "what language is spoken in Brazil?"}
+{"id": "q0996", "category": "planning", "prompt": "anything I should prep for Sunday?"}
+{"id": "q0997", "category": "calendar_typo", "prompt": "when does my day start tmrw"}
+{"id": "q0998", "category": "planning", "prompt": "plan Saturday for me"}
+{"id": "q0999", "category": "general", "prompt": "what's the capital of Australia?"}
+{"id": "q1000", "category": "general", "prompt": "what's a Roth IRA?"}
+{"id": "q1001", "category": "calendar", "prompt": "how busy am I Sunday?"}
+{"id": "q1002", "category": "calendar", "prompt": "what's my last event Sunday?"}
+{"id": "q1003", "category": "general", "prompt": "who invented the telephone?"}
+{"id": "q1004", "category": "memory", "prompt": "what are my habits?"}
+{"id": "q1005", "category": "calendar_typo", "prompt": "whats on my calender tuesday"}
+{"id": "q1006", "category": "calendar", "prompt": "am I free Sunday afternoon?"}
+{"id": "q1007", "category": "email", "prompt": "any important mail this week?"}
+{"id": "q1008", "category": "cross", "prompt": "what's happened since this morning?"}
+{"id": "q1009", "category": "general", "prompt": "how many ounces in a pound?"}
+{"id": "q1010", "category": "wisp_help", "prompt": "how do I see my reminders in Wisp?"}
+{"id": "q1011", "category": "memory", "prompt": "what have we talked about before?"}
+{"id": "q1012", "category": "reminders", "prompt": "list my reminders"}
+{"id": "q1013", "category": "general", "prompt": "how does compound interest work?"}
+{"id": "q1014", "category": "calendar", "prompt": "how busy am I Saturday?"}
+{"id": "q1015", "category": "general", "prompt": "what is machine learning?"}
+{"id": "q1016", "category": "general", "prompt": "if I save $50 a week, how much in a year?"}
+{"id": "q1017", "category": "general", "prompt": "define entropy"}
+{"id": "q1018", "category": "system", "prompt": "what apps are running?"}
+{"id": "q1019", "category": "messages", "prompt": "summarize my texts from this week"}
+{"id": "q1020", "category": "calendar_framed", "prompt": "what's on for the weekend pls"}
+{"id": "q1021", "category": "cross", "prompt": "is there anything time-sensitive right now?"}
+{"id": "q1022", "category": "cross", "prompt": "what are people asking me for?"}
+{"id": "q1023", "category": "messages_framed", "prompt": "summarize today's texts thanks"}
+{"id": "q1024", "category": "general", "prompt": "what's a limit in calculus?"}
+{"id": "q1025", "category": "wisp_help", "prompt": "can you send emails for me?"}
+{"id": "q1026", "category": "system", "prompt": "what macOS version am I on?"}
+{"id": "q1027", "category": "email", "prompt": "did I get any job or internship emails?"}
+{"id": "q1028", "category": "system", "prompt": "what's using the most memory?"}
+{"id": "q1029", "category": "reminders_typo", "prompt": "what remiders are due tuesday"}
+{"id": "q1030", "category": "reminders", "prompt": "what's the oldest reminder I have?"}
+{"id": "q1031", "category": "weather_web", "prompt": "what's Apple's stock price?"}
+{"id": "q1032", "category": "general", "prompt": "what's the date today?"}
+{"id": "q1033", "category": "general", "prompt": "how long is a marathon?"}
+{"id": "q1034", "category": "cross", "prompt": "give me a summary of email, messages and calendar for today"}
+{"id": "q1035", "category": "calendar", "prompt": "any meetings today?"}
+{"id": "q1036", "category": "messages", "prompt": "any imessages?"}
+{"id": "q1037", "category": "memory", "prompt": "what's my major?"}
+{"id": "q1038", "category": "writing", "prompt": "brainstorm 5 names for a study group"}
+{"id": "q1039", "category": "reminders_typo", "prompt": "what reminders are due today"}
