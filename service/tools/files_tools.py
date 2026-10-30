@@ -25,8 +25,10 @@ retrieved tool set — but it should no longer be the FIRST answer to "where is"
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
+from datetime import datetime
 from pathlib import Path
 
 from service.tools.registry import register
@@ -43,13 +45,57 @@ _NOISE = (
 )
 
 _MAX_HITS = 40
+# Hits whose dates are read to break ties; the rest keep their name order.
+_DATED_HITS = 400
+# Where people keep the files they mean: these rank above the rest of home.
+_USER_PLACES = ("Desktop", "Documents", "Downloads", "Library/Mobile Documents/com~apple~CloudDocs")
 
 
 def _looks_noisy(path: str) -> bool:
     return any(seg in path for seg in _NOISE)
 
 
-def _fmt(paths: list[str], *, truncated: bool) -> str:
+def _name_rank(path: str, query: str) -> int:
+    """0 the name is the query, 1 it starts with it, 2 has it as a word,
+    3 has it inside a word, 4 neither (a content hit)."""
+    name = Path(path).name.casefold()
+    stem = Path(path).stem.casefold()
+    q = query.casefold()
+    if q in (name, stem):
+        return 0
+    if name.startswith(q):
+        return 1
+    if re.search(rf"(?<![^\W_]){re.escape(q)}(?![^\W_])", name):
+        return 2
+    return 3 if q in name else 4
+
+
+def _place_rank(path: str, home: str) -> int:
+    if any(path.startswith(f"{home}/{place}/") for place in _USER_PLACES):
+        return 0
+    return 1 if path.startswith(home + "/") else 2
+
+
+def rank_hits(hits: list[str], query: str) -> list[str]:
+    """Spotlight's hits, best first (2026-10-29 Ask eval: they came in mdfind's
+    own order, so a stray match buried the file meant). By how well the name
+    matches, then the user's own folders, then the most recently modified,
+    then the shallowest path."""
+    home = str(Path.home())
+    keyed = sorted(hits, key=lambda h: (_name_rank(h, query), _place_rank(h, home), h.count("/")))
+
+    def modified(path: str) -> float:
+        try:
+            return os.stat(path).st_mtime
+        except OSError:
+            return 0.0
+
+    head = keyed[:_DATED_HITS]
+    head.sort(key=lambda h: (_name_rank(h, query), _place_rank(h, home), -modified(h), h.count("/")))
+    return head + keyed[_DATED_HITS:]
+
+
+def _fmt(paths: list[str], *, total: int) -> str:
     home = str(Path.home())
     lines = []
     for p in paths:
@@ -61,14 +107,15 @@ def _fmt(paths: list[str], *, truncated: bool) -> str:
             while size >= 1024 and i < 3:
                 size /= 1024.0
                 i += 1
-            meta = f"{size:.0f}{unit[i]}"
+            meta = f"{size:.0f}{unit[i]}, modified {datetime.fromtimestamp(st.st_mtime).strftime('%b %-d, %Y')}"
         except OSError:
             meta = "?"
         lines.append(f"{p.replace(home, '~')}  ({meta})")
     out = "\n".join(lines)
-    if truncated:
-        out += (f"\n\n(showing the first {_MAX_HITS}; narrow with `folder` or a "
-                f"more specific query if none of these are right)")
+    if total > len(paths):
+        # The real count, so "how many …" isn't answered with the cap.
+        out += (f"\n\n(Spotlight found {total} matches; these are the best {len(paths)}. "
+                f"Narrow with `folder` or a more specific query if none of these are right.)")
     return out
 
 
@@ -160,8 +207,8 @@ def find_files(query: str, folder: str = "", kind: str = "",
         return (f"No files{where} matched {query!r} by {scope}. "
                 f"{'Try content=true to search inside documents.' if not content else ''}").strip()
 
-    truncated = len(shown) > _MAX_HITS
-    return _fmt(shown[:_MAX_HITS], truncated=truncated)
+    ranked = rank_hits(shown, query)
+    return _fmt(ranked[:_MAX_HITS], total=len(shown))
 
 
 # ==========================================================================

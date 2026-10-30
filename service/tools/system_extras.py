@@ -9,7 +9,8 @@ reason is retrieval accuracy, not tidiness — seven schemas differing only in a
 noun are exactly the case a small model picks wrong from, and each one costs
 ~200 tokens of every menu it appears in. Wi-Fi power, VoiceOver and dark/auto
 appearance joined the same enum in 2026-10. Wisp has no volume tool (set_volume
-and get_volume were retired in 2026-10).
+and get_volume were retired in 2026-10); system_status(section='sound') reads
+the volume, and the mac-controls skill changes it.
 
 WHAT IS DELIBERATELY MISSING
 ----------------------------
@@ -256,10 +257,12 @@ def toggle_setting(setting: str, on: bool) -> str:
     "(`pmset -g log` 'BatteryHealth Warning level'/'cap:' lines are low-charge "
     "UI events, NOT a wear metric). section='network': local/public IP, Wi-Fi "
     "network name, Wi-Fi vs Ethernet. section='bluetooth': connected Bluetooth "
-    "devices and whether Bluetooth is on (read-only; toggle_setting turns it on/off).",
+    "devices and whether Bluetooth is on (read-only; toggle_setting turns it on/off). "
+    "section='focus': whether a Focus (Do Not Disturb, Work, Sleep…) is on, and "
+    "which (read-only). section='sound': output volume, mute, and input volume (read-only).",
     {"type": "object", "properties": {
         "section": {"type": "string",
-                    "enum": ["overview", "battery", "network", "bluetooth"],
+                    "enum": ["overview", "battery", "network", "bluetooth", "focus", "sound"],
                     "description": "What to report. Defaults to overview."},
     }},
     category="system_read",
@@ -269,7 +272,9 @@ def toggle_setting(setting: str, on: bool) -> str:
              "what's my ip address", "what wifi network am I on",
              "am I connected to the internet", "what's connected over bluetooth",
              "are my airpods connected", "how's my battery health",
-             "how much battery do I have left", "am I plugged in"],
+             "how much battery do I have left", "am I plugged in",
+             "is do not disturb on", "what focus am I in", "what's my volume at",
+             "is my mac muted"],
 )
 def system_status(section: str = "overview") -> str:
     section = (section or "overview").strip().lower()
@@ -282,11 +287,80 @@ def system_status(section: str = "overview") -> str:
     if section == "bluetooth":
         from service.tools.system_control import bluetooth_devices
         return bluetooth_devices()
+    if section == "focus":
+        return focus_status()
+    if section in ("sound", "volume"):
+        return sound_status()
     if section != "overview":
-        return f"(error: unknown section {section!r}. Use overview, battery, network, or bluetooth.)"
+        return (f"(error: unknown section {section!r}. Use overview, battery, network, "
+                "bluetooth, focus, or sound.)")
     from service.tools.system_control import battery_status
     # Battery first: the conditional low-power route reads the first "N%".
     return f"Battery: {battery_status()}\n{_resources()}"
+
+
+# Focus has no public API to read; the Focus daemon keeps the state in JSON.
+_FOCUS_DB = Path.home() / "Library" / "DoNotDisturb" / "DB"
+
+
+def focus_status(db: Path | None = None) -> str:
+    """Whether a Focus is on, and which, from the Focus daemon's own records
+    (2026-10-29 Ask eval: "is Do Not Disturb on" had nothing to read). A Focus
+    turned on by hand or from Control Center is an assertion in Assertions.json;
+    a scheduled or automatic one isn't kept there, so "off" is said with that caveat."""
+    import json
+    db = db or _FOCUS_DB
+    try:
+        data = json.loads((db / "Assertions.json").read_text())
+    except PermissionError:
+        return ("I can't read the Focus state: macOS needs Full Disk Access for Wisp "
+                "(System Settings › Privacy & Security › Full Disk Access).")
+    except (OSError, ValueError):
+        return "I couldn't read the Focus state on this Mac."
+    names: dict[str, str] = {}
+    try:
+        modes = json.loads((db / "ModeConfigurations.json").read_text())
+        for store in modes.get("data") or []:
+            for ident, config in (store.get("modeConfigurations") or {}).items():
+                name = ((config or {}).get("mode") or {}).get("name")
+                if isinstance(name, str) and name:
+                    names[ident] = name
+    except (OSError, ValueError, AttributeError):
+        pass
+    active: list[str] = []
+    for store in data.get("data") or []:
+        for record in store.get("storeAssertionRecords") or []:
+            ident = ((record or {}).get("assertionDetails") or {}).get("assertionDetailsModeIdentifier")
+            if isinstance(ident, str) and ident:
+                label = names.get(ident) or ("Do Not Disturb" if "donotdisturb" in ident else ident.rsplit(".", 1)[-1])
+                if label not in active:
+                    active.append(label)
+    if active:
+        return f"Focus is on: {', '.join(active)}."
+    return ("No Focus is turned on by hand right now. A scheduled or automatic Focus "
+            "(a set time, an app, Sleep) isn't recorded where Wisp can read it.")
+
+
+def sound_status() -> str:
+    """Output volume, mute and input volume (StandardAdditions; no app is scripted)."""
+    try:
+        p = _osa('set s to get volume settings\n'
+                 'return ((output volume of s) as text) & "|" & ((output muted of s) as text) '
+                 '& "|" & ((input volume of s) as text)', timeout=5)
+    except subprocess.TimeoutExpired:
+        return "I couldn't read the volume: macOS didn't answer in time."
+    parts = p.stdout.strip().split("|") if p.returncode == 0 else []
+    if len(parts) != 3:
+        return "I couldn't read the volume on this Mac."
+    out, muted, mic = parts
+    if out == "missing value":
+        # An output (HDMI, some interfaces) whose volume macOS doesn't control.
+        line = "This output's volume isn't controlled by macOS (it's set on the device)."
+    else:
+        line = f"Output volume: {out}%" + (", muted" if muted == "true" else "") + "."
+    if mic != "missing value":
+        line += f" Input (microphone) volume: {mic}%."
+    return line
 
 
 def _resources() -> str:

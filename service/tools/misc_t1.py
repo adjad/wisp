@@ -14,6 +14,7 @@ which is the worst possible failure for a severe-weather tool.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import httpx
 
@@ -110,14 +111,106 @@ def _where_inference_runs() -> str:
     return f"Inference runs on {where}: no question or data is sent to a cloud model."
 
 
+def _accounts_report() -> str:
+    """The linked Google accounts by address and use, and Mail's own accounts
+    (2026-10-29 Ask eval: "what's my Workspace account" had nothing to read).
+    Read from Wisp's saved settings only: nothing is fetched."""
+    from service import gmail_source
+    lines: list[str] = []
+    try:
+        accounts = gmail_source.connected_accounts()
+    except Exception:  # noqa: BLE001 — a bad settings file must not fail status
+        accounts = {}
+    for email, item in sorted(accounts.items()):
+        uses = ["Gmail"]
+        try:
+            if gmail_source.has_calendar(email, item):
+                uses.append("Calendar")
+        except Exception:  # noqa: BLE001
+            pass
+        if item.get("workspace"):
+            uses.append("Google Workspace (Drive, Docs, Sheets)")
+        note = " (sign-in expired: reconnect it in Settings › Accounts)" if item.get("auth_expired") else ""
+        lines.append(f"- {email}: {', '.join(uses)}{note}")
+    out = (["Google accounts linked to Wisp:"] + lines) if lines else [
+        "No Google account is linked to Wisp (Settings › Accounts links one)."]
+    try:
+        from service.tools.email_tools import native_email_accounts
+        mail = sorted({row["name"] for row in native_email_accounts() if row.get("name")})
+    except Exception:  # noqa: BLE001
+        mail = []
+    if mail:
+        out.append("Accounts in Apple Mail that Wisp reads: " + ", ".join(mail) + ".")
+    return "\n".join(out)
+
+
+# Headlines given from the changelog's newest section, at most.
+_WHATS_NEW_MAX = 12
+
+
+def _changelog_path() -> Path | None:
+    """CHANGELOG.md: in the app, Contents/Resources/Documentation (build-support/
+    pipeline.py copies it there); from source, the repository root."""
+    service = Path(__file__).resolve().parent.parent
+    for path in (service.parent.parent / "Documentation" / "CHANGELOG.md", service.parent / "CHANGELOG.md"):
+        if path.is_file():
+            return path
+    return None
+
+
+def whats_new(text: str | None = None) -> str:
+    """The newest changelog section's headlines, grouped as it groups them, so
+    "what's new in Wisp" is answered from the release itself rather than made up
+    (2026-10-29 Ask eval). `text` is the changelog, for tests."""
+    if text is None:
+        path = _changelog_path()
+        if path is None:
+            return "This copy of Wisp has no changelog to read, so I can't say what changed."
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            return "I couldn't read Wisp's changelog, so I can't say what changed."
+    sections = re.split(r"(?m)^## ", text)[1:]
+    if not sections:
+        return "Wisp's changelog has no release sections to read."
+    title, _, body = sections[0].partition("\n")
+    title = title.strip()
+    version = "the next release (not yet released)" if title.startswith("[Unreleased]") else title
+    groups: list[tuple[str, list[str]]] = []
+    for line in body.splitlines():
+        if line.startswith("### "):
+            groups.append((line[4:].strip(), []))
+        elif line.startswith("- ") and groups:
+            head = re.match(r"- \*\*(.+?)\*\*", line)
+            groups[-1][1].append((head.group(1) if head else line[2:]).strip().rstrip("."))
+    total = sum(len(items) for _, items in groups)
+    if not total:
+        return f"Wisp's changelog for {version} lists no changes."
+    out = [f"What's new in Wisp, {version} (from its changelog; headlines only):"]
+    left = _WHATS_NEW_MAX
+    for name, items in groups:
+        if items and left > 0:
+            out.append(f"{name}:")
+            out += [f"- {item}." for item in items[:left]]
+            left -= len(items[:left])
+    if total > _WHATS_NEW_MAX:
+        out.append(f"(+{total - _WHATS_NEW_MAX} more in the changelog.)")
+    return "\n".join(out)
+
+
 @register(
     "wisp_status",
     "Report Wisp's own state. topic='models' (default): which model is answering, "
     "what's loaded, and how much memory it's using — for 'what model are you "
     "running', 'why are you slow', 'are you using the cloud'. topic='sync': when "
-    "mail, messages and notes last synced — for 'when did my email last sync'.",
+    "mail, messages and notes last synced — for 'when did my email last sync'. "
+    "topic='accounts': the Google account addresses linked to Wisp and what each "
+    "is used for (Gmail, Calendar, Google Workspace), plus Mail's own accounts — "
+    "for 'which Google account is connected', 'what's my workspace email'. "
+    "topic='whats_new': what changed in this version of Wisp, from its own "
+    "changelog — for 'what's new in Wisp', 'what changed in this update'.",
     {"type": "object", "properties": {
-        "topic": {"type": "string", "enum": ["models", "sync"],
+        "topic": {"type": "string", "enum": ["models", "sync", "accounts", "whats_new"],
                   "description": "What to report. Defaults to models."},
     }},
     category="wisp_admin",
@@ -128,11 +221,15 @@ def _where_inference_runs() -> str:
              "how up to date is what you know"],
 )
 async def wisp_status(topic: str = "models") -> str:
-    topic = (topic or "models").strip().lower()
+    topic = (topic or "models").strip().lower().replace("-", "_").replace(" ", "_")
     if topic == "sync":
         return _sync_report()
+    if topic == "accounts":
+        return _accounts_report()
+    if topic in ("whats_new", "what's_new", "changelog"):
+        return whats_new()
     if topic != "models":
-        return f"(error: unknown topic {topic!r}. Use models or sync.)"
+        return f"(error: unknown topic {topic!r}. Use models, sync, accounts or whats_new.)"
     from service.config import models_config, role_to_model
 
     from service.inference.remote_policy import remote_only_profile
