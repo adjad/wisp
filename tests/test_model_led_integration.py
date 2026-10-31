@@ -222,7 +222,8 @@ def test_calendar_only_binding_overrides_model(synthetic):
 def test_refusal_reaches_actual_policy_and_no_fake_write(synthetic):
     approval = Approval(False)
     _, events, _ = run([[discover("files", "write_file")],
-        [call("write_file", path="/private/tmp/synthetic-routing-only.txt", content="Synthetic")]], approval=approval)
+        [call("write_file", path="/private/tmp/synthetic-routing-only.txt", content="Synthetic")]],
+        prompt="write Synthetic to the routing file", approval=approval)
     assert len(approval.calls) == 1
     assert synthetic[0] == []
     assert any(e.get("decision") == "confirm" for e in events)

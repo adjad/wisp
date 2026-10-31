@@ -250,16 +250,19 @@ def test_a_second_stall_is_not_reprompted_again_and_is_not_the_answer(synthetic)
     assert "never reached" not in (answer or "")
 
 
-@pytest.mark.parametrize("name, category, args", [
-    ("send_email", "email_send", {"to": "dan@example.com", "subject": "Hi", "body": "Hello"}),
-    ("send_message", "messages_send", {"to": "Dan", "text": "Hello"}),
+@pytest.mark.parametrize("name, category, args, prompt", [
+    ("send_email", "email_send", {"to": "dan@example.com", "subject": "Hi", "body": "Hello"},
+     "email dan what is up for tomorrow"),
+    ("send_message", "messages_send", {"to": "Dan", "text": "Hello"}, "text dan what is up for tomorrow"),
     # update_event is left out: it resolves the exact occurrence from a calendar
     # snapshot before its card, which a synthetic tool cannot supply.
-    ("add_calendar_event", "calendar_write", {"title": "Office Hours", "when_iso": "2026-10-30T10:00:00"}),
-    ("cancel_event", "calendar_write", {"title": "Office Hours"}),
+    ("add_calendar_event", "calendar_write", {"title": "Office Hours", "when_iso": "2026-10-30T10:00:00"},
+     "add office hours for tomorrow"),
+    ("cancel_event", "calendar_write", {"title": "Office Hours"}, "cancel office hours for tomorrow"),
 ])
 @pytest.mark.parametrize("after_stall", [False, True])
-def test_write_tool_after_a_stall_reprompt_still_needs_confirmation(synthetic, name, category, args, after_stall):
+def test_write_tool_after_a_stall_reprompt_still_needs_confirmation(synthetic, name, category, args, prompt,
+                                                                     after_stall):
     """The forced-tool step only requires a tool; the write goes through the
     normal confirmation path, same as a first-pass call, and a refusal leaves
     it unrun."""
@@ -269,7 +272,9 @@ def test_write_tool_after_a_stall_reprompt_still_needs_confirmation(synthetic, n
         k: {"type": "string"} for k in args}})
     approval = Approval(False)
     script = ([STALL] if after_stall else []) + [[call(name, **args)], "Okay, I did not do that."]
-    client, events, _ = run(script, prompt="what is up for tomorrow", approval=approval,
+    # The prompt asks for the action: a read-only question is stopped earlier
+    # by the intent guard, before any card (tests/test_intent_guard.py).
+    client, events, _ = run(script, prompt=prompt, approval=approval,
                             ask_quality=True, model_led_preload=["get_upcoming", name])
     if after_stall:
         assert client.requests[1]["tool_choice"] == "required"  # the re-prompt step really ran

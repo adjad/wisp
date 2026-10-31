@@ -262,7 +262,7 @@ def test_stub_effect_with_fitting_arguments_still_goes_through_confirmation(synt
     effects, _ = synthetic
     approval = Approval(allowed=False)
     run([[call("write_file", path="/tmp/x.txt", content="hi")], "Synthetic answer."],
-        approval=approval)
+        prompt="write hi to /tmp/x.txt", approval=approval)
     assert effects == []                      # declined at the card
     assert [a["tool"] for a in approval.calls] == ["write_file"]
 
