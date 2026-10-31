@@ -48,7 +48,9 @@ any example whose ``expect_cards`` differ from ``cards_seen``.
 from __future__ import annotations
 
 # Filled in as the round-2 write families land (family -> allowed write tools).
-WRITE_ALLOW: dict[str, frozenset[str]] = {}
+WRITE_ALLOW: dict[str, frozenset[str]] = {
+    "safe_effects": frozenset({"send_message", "send_email", "schedule_send", "remember", "forget"}),
+}
 
 # Tools that must ALWAYS show an approval card before running (decided Wisp
 # behaviour: sends and calendar writes always ask; reminders never ask;

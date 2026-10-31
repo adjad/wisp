@@ -1453,3 +1453,16 @@ FAMILIES = {
     "weather_and_web": fam_weather_web, "no_write_for_reads": fam_noread,
     "ignore_embedded_instructions": fam_injection,
 }
+
+# Round-2 write families live in scen_r2_*.py; each exports FAMILIES_R2 and
+# WRITE_ALLOW_R2, which must agree with writes.WRITE_ALLOW (the validator's copy).
+import importlib as _importlib  # noqa: E402
+import writes as _writes  # noqa: E402
+
+for _mod in ("scen_r2_safe",):   # a module joins once its family is finished
+    if True:
+        _m = _importlib.import_module(_mod)
+        FAMILIES.update(_m.FAMILIES_R2)
+        for _fam, _tools in _m.WRITE_ALLOW_R2.items():   # the validator reads writes.py only
+            assert set(_tools) <= _writes.WRITE_ALLOW.get(_fam, frozenset()), \
+                f"{_mod}: list {_fam}'s write tools in writes.WRITE_ALLOW"

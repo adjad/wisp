@@ -182,9 +182,12 @@ def claims_done(text: str) -> bool:
 def pair_cards(calls: list[tuple[str, str]], cards: list[str], approve: list) -> dict[str, bool]:
     """Match the example's calls (id, name), in order, to the turn's cards (tool names, in order);
     returns {tool_call_id: approved}. A card with no approve entry was approved."""
+    # Pair from the END: a name-only stub call (a schema load) precedes its real
+    # call and raises no card, so the real call is always the later one.
     used, out = set(), {}
-    for cid, name in calls:
-        for k, card in enumerate(cards):
+    for cid, name in reversed(calls):
+        for k in reversed(range(len(cards))):
+            card = cards[k]
             if k not in used and card == name:
                 used.add(k)
                 out[cid] = bool(approve[k]) if k < len(approve) else True
@@ -329,7 +332,9 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
                     calls.append((tc.get("id"), name))
                     if tc.get("type") != "function" or not tc.get("id"):
                         bad("tool_call_shape", f"{where}:{j}")
-                    if name not in offered:
+                    # Only the target step's offer list is stored; history calls were
+                    # offered on their own step (get_tool_schemas drops out after loads).
+                    if is_target and name not in offered:
                         bad("call_not_offered", f"{where}:{j} {name}")
                     if name != DISCOVERY_TOOL and name not in REGISTRY:
                         bad("call_not_in_registry", f"{where}:{j} {name}")

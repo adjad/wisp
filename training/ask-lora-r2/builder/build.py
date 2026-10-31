@@ -3,6 +3,7 @@ model step (the captured request + the ideal response), split 90/10 by family.""
 from __future__ import annotations
 
 import copy
+import datetime as _dt
 import json
 import os
 import random
@@ -78,6 +79,14 @@ def _same_call(s_, r_) -> bool:
             sent["when_iso"] = bind_calendar_local_start(sent["when_iso"])
         except Exception:  # noqa: BLE001  (an invalid time never reaches the tool)
             pass
+    if s_[0] == "schedule_send" and sent.get("when") != ran.get("when"):
+        # The schedule card resolves the user's words ("tomorrow at 9") to ISO before it runs.
+        try:
+            _dt.datetime.fromisoformat(str(ran.get("when")))
+            sent.pop("when", None)
+            ran.pop("when", None)
+        except ValueError:
+            return False
     if any(ran.get(k) != v for k, v in sent.items()):
         return False
     bound = HOST_BOUND.get(s_[0], set())
@@ -158,7 +167,7 @@ def main(only=None):
                 ex = {"messages": sanitize(clean_history(req["messages"])) + [target_message(resp)],
                       "tools": sanitize(copy.deepcopy(req.get("tools") or []))}
                 examples.append(ex)
-                writes = [n for n, a in _calls(policy.responses[:i + 1], ("call", "bad")) if H.is_write(n, a)]
+                writes = [n for n, a in _calls(policy.responses[:i + 1], ("call", "bad", "load")) if H.is_write(n, a)]
                 metas.append({"id": f"{sid}-s{i}", "family": family, "paraphrase_of": sc.paraphrase_of,
                               "notes": sc.notes, "step": i, "steps_in_turn": len(policy.requests),
                               "target_kind": resp["kind"], "prompt": sc.prompt,
