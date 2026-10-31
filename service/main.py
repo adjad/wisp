@@ -2605,6 +2605,7 @@ async def agent(body: dict[str, Any]):
                 verified_results_only=(decision.verified_results_only or
                                        schedule_read),
             ))
+            subject_tools: list[str] = []
             if model_led_turn:
                 # Keep references/clarification history without promoting old
                 # assistant answers or summaries to current source evidence.
@@ -2613,6 +2614,13 @@ async def agent(body: dict[str, Any]):
                     "interpreting the request. Read current personal sources before "
                     "answering about today's messages/calendar. An old assistant "
                     "offer or claimed action is not an execution receipt.")})
+                if not test_mode:
+                    # What the last turns resolved, for "reply to her" / "move it"
+                    # (service/memory/subject.py): one line, not a longer history.
+                    from service.memory.subject import system_message as subject_message
+                    subject_msg, subject_tools = subject_message(store, sid)
+                    if subject_msg:
+                        messages.insert(1, subject_msg)
                 if task_owner_verdict != "none":
                     messages.insert(1, {"role": "system", "content": (
                         "An older task is still pending; this turn did not advance it. "
@@ -2731,6 +2739,8 @@ async def agent(body: dict[str, Any]):
                 # turn, so the answer-style hint is restored here instead.
                 ask_quality = model_only and model_led_turn
                 ask_preload, ask_stub_rank = _ask_tool_rank(prompt) if ask_quality else ([], [])
+                if ask_quality and subject_tools:
+                    ask_stub_rank = list(dict.fromkeys([*ask_stub_rank, *subject_tools]))
                 if ask_quality:
                     from service.model_only import ASK_STYLE_HINT, wisp_self_hint, wisp_self_question
                     synthesis_guidance.insert(0, ASK_STYLE_HINT)
@@ -2979,6 +2989,9 @@ async def agent(body: dict[str, Any]):
                 persist_user_turn()
                 store.add_turn(sid, "assistant", persisted_reply, tool_digest=digest)
                 assistant_reply_stored = True
+                if model_led_turn:
+                    from service.memory.subject import record_turn
+                    record_turn(store, sid, captured["tool_calls"], captured["tool_results"])
                 # Rolling conversation summaries contain prior user turns and
                 # are a local memory operation even when this turn used cloud
                 # inference. Never reuse the remote turn client here.

@@ -977,6 +977,7 @@ def _seed_session(history) -> str:
     """A real session in the isolated store holding the case's earlier turns,
     so history, last_assistant and last_tools come from production's store."""
     from service.memory import store
+    from service.memory.subject import record_turn
     sid = store.create_session()
     for turn in history or ():
         if turn.get("user"):
@@ -984,6 +985,11 @@ def _seed_session(history) -> str:
         if turn.get("assistant"):
             store.add_turn(sid, "assistant", str(turn["assistant"]),
                            tool_digest=str(turn["tools"]) if turn.get("tools") else None)
+            # A turn's `calls` ({name, args, result}) are what production
+            # captured from that turn: they leave its current subject.
+            calls = [c for c in turn.get("calls") or () if isinstance(c, dict)]
+            record_turn(store, sid, [{"name": c.get("name"), "args": c.get("args") or {}} for c in calls],
+                        [{"name": c.get("name"), "result": c.get("result") or ""} for c in calls])
     return sid
 
 
@@ -1078,6 +1084,10 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
                                      test_mode=False,
                                      verified_results_only=decision.verified_results_only)
     messages.insert(0, {"role": "system", "content": UNVERIFIED_CONTEXT})
+    from service.memory.subject import system_message as subject_message
+    subject_msg, subject_tools = subject_message(store, sid)
+    if subject_msg:
+        messages.insert(1, subject_msg)
     if pending_effects:
         messages.insert(1, {"role": "system", "content": (
             PENDING_EFFECTS_PREFIX + json.dumps(pending_effects) + PENDING_EFFECTS_SUFFIX)})
@@ -1107,6 +1117,8 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
     guidance: list[str] = []
     hints: list[str] = ["style"]
     ask_preload, ask_stub_rank = M._ask_tool_rank(prompt)
+    if subject_tools:
+        ask_stub_rank = list(dict.fromkeys([*ask_stub_rank, *subject_tools]))
     guidance.insert(0, ASK_STYLE_HINT)
     if wisp_self_question(prompt):
         guidance.insert(1, wisp_self_hint())

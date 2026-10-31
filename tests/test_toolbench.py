@@ -1158,3 +1158,23 @@ def test_report_rescores_stored_trajectories_with_the_current_scorer(bench, tmp_
     # --stored reads the verdicts as written; the default path rescored them above.
     (tmp_path / "results.jsonl").write_text("\n".join(json.dumps(r) for r in stored) + "\n")
     assert run_toolbench._report(tmp_path, stored=True)[0]["v"]["labels"] == ["no_effect"]
+
+
+def test_followup_history_calls_leave_the_current_subject_for_the_next_turn(bench):
+    """fu_tell_him_yes: the seeded prior turn's view_messages call (as production
+    captured it) names the friend; the follow-up turn gets the subject line and
+    can reach send_message by name (service/memory/subject.py)."""
+    runner = bench["runner"]
+    case = next(c for c in load_cases() if c.id == "fu_tell_him_yes").bind(bench["world"].facts)
+    turn = runner.prepare_turn(bench["client"], case.prompt, case.history)
+    lines = [m["content"] for m in turn.messages if m["role"] == "system"]
+    friend = bench["world"].facts["friend_first"]
+    assert any(line.startswith("Current subject") and f"person: {friend}" in line for line in lines)
+    assert "send_message" in (turn.kwargs.get("model_led_stub_rank") or [])
+
+
+def test_history_without_calls_leaves_no_subject(bench):
+    runner = bench["runner"]
+    turn = runner.prepare_turn(bench["client"], "and tmrw?",
+                               [{"user": "what's on today?", "assistant": "Nothing.", "tools": "get_upcoming"}])
+    assert not any(m["content"].startswith("Current subject") for m in turn.messages if m["role"] == "system")
