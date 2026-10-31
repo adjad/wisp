@@ -1,18 +1,34 @@
 {
  "file": "ask-lora-data.zip",
- "sha256": "997d1930c1e0aca1ee642c976be995dcc1010e4e3234539417e67af5e730430c",
- "bytes": 6307802,
+ "sha256": "ae938e3f9d60dadd599fac7f9736abb0d8c46d1effc6fd8c55b392a007672c7b",
+ "bytes": 6382419,
  "train": {
-  "rows": 1708,
-  "with_thought": 973,
+  "rows": 1694,
+  "think": 618,
+  "no_think": 1076,
+  "shapes": {
+   "first_answer": 449,
+   "first_think": 272,
+   "forced_empty": 627,
+   "forced_think": 346
+  },
+  "forced_prompts": 973,
   "ends": {
    "<turn|>": 752,
-   "<|tool_response>": 956
+   "<|tool_response>": 942
   }
  },
  "dev": {
   "rows": 186,
-  "with_thought": 107,
+  "think": 70,
+  "no_think": 116,
+  "shapes": {
+   "first_answer": 49,
+   "first_think": 30,
+   "forced_empty": 67,
+   "forced_think": 40
+  },
+  "forced_prompts": 107,
   "ends": {
    "<turn|>": 81,
    "<|tool_response>": 105

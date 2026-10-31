@@ -14,6 +14,7 @@ from collections import Counter, defaultdict
 import harness as H
 import leak
 import scen
+import thinking
 
 OUT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -160,14 +161,16 @@ def main(only=None):
                 failures.append((sid, sc.prompt, f"host rewrote tool args: {problem} sent={sent} ran={ran}"))
                 continue
             effects = [[t, a] for t, a in getattr(sc.world, "effects", [])]
+            turn_writes = [n for n, a in _calls(policy.responses, ("call", "bad", "load", "bad_load")) if H.is_write(n, a)]
             per_family_scen[family] += 1
+            first_new = len(examples)
             for i, (req, resp) in enumerate(zip(policy.requests, policy.responses)):
-                if resp["kind"] == "bad":
+                if resp["kind"] in ("bad", "bad_load"):
                     continue
                 ex = {"messages": sanitize(clean_history(req["messages"])) + [target_message(resp)],
                       "tools": sanitize(copy.deepcopy(req.get("tools") or []))}
                 examples.append(ex)
-                writes = [n for n, a in _calls(policy.responses[:i + 1], ("call", "bad", "load")) if H.is_write(n, a)]
+                writes = [n for n, a in _calls(policy.responses[:i + 1], ("call", "bad", "load", "bad_load")) if H.is_write(n, a)]
                 metas.append({"id": f"{sid}-s{i}", "family": family, "paraphrase_of": sc.paraphrase_of,
                               "notes": sc.notes, "step": i, "steps_in_turn": len(policy.requests),
                               "target_kind": resp["kind"], "prompt": sc.prompt,
@@ -175,8 +178,58 @@ def main(only=None):
                               "tool_choice": req.get("tool_choice"),
                               "chat_template_kwargs": req.get("chat_template_kwargs"),
                               "writes": writes, "approve": approve, "expect_cards": expect_cards,
-                              "cards_seen": cards_seen, "shown_final": shown_final, "effects": effects})
+                              "cards_seen": cards_seen, "shown_final": shown_final, "effects": effects,
+                              "turn_writes": turn_writes})
+            think_turn(examples[first_new:], metas[first_new:], failures)
     return examples, metas, failures, per_family_scen
+
+
+def turn_context(exs: list[dict], k: int) -> dict:
+    """What thinking.make_thought needs from the rest of the turn: the later steps' calls and the final."""
+    final = next((e["messages"][-1]["content"] for e in exs if not e["messages"][-1].get("tool_calls")), "")
+    later = [c for e in exs[k + 1:] for c in thinking.calls_of(e["messages"][-1])]
+    return {"later_calls": later, "final": final}
+
+
+def think_turn(exs: list[dict], ms: list[dict], failures: list) -> None:
+    """Situational thinking (thinking.py): record per step whether it thinks, and the thought."""
+    for k, (ex, m) in enumerate(zip(exs, ms)):
+        m["step_kind"] = thinking.step_kind(m, ex["messages"])
+        m["think"] = thinking.decide(m, ex["messages"])
+        m["thought"] = None
+        if m["think"]:
+            t, errs = thinking.make_thought(m, ex["messages"], turn_context(exs, k))
+            m["thought"] = t
+            if errs:
+                failures.append((m["id"], m["prompt"], f"thought: {errs} {t!r}"))
+
+
+def fix_adjacent(examples, metas, orders) -> list[str]:
+    """No two consecutive THINK examples (in all.jsonl, train or valid order) share a thought: re-phrase the
+    later one, avoiding both neighbours. Returns ids that could not be made distinct."""
+    turn_of = defaultdict(list)
+    for i, m in enumerate(metas):
+        turn_of[m["id"].rsplit("-s", 1)[0]].append(i)
+    stuck = []
+    for _ in range(5):
+        changed = False
+        for order in orders:
+            seq = [i for i in order if metas[i].get("think")]
+            for a, b, c in zip(seq, seq[1:], seq[2:] + [None]):
+                if metas[a]["thought"] != metas[b]["thought"]:
+                    continue
+                tidx = turn_of[metas[b]["id"].rsplit("-s", 1)[0]]
+                ctx = turn_context([examples[i] for i in tidx], tidx.index(b))
+                avoid = {metas[a]["thought"]} | ({metas[c]["thought"]} if c is not None else set())
+                t, errs = thinking.make_thought(metas[b], examples[b]["messages"], ctx, avoid)
+                if errs:
+                    stuck.append(metas[b]["id"])
+                    continue
+                metas[b]["thought"] = t
+                changed = True
+        if not changed:
+            break
+    return sorted(set(stuck))
 
 
 def for_training(ex: dict) -> dict:
@@ -193,12 +246,27 @@ def for_training(ex: dict) -> dict:
 
 def write(examples, metas):
     examples = [for_training(ex) for ex in examples]
+    train_idx, valid_idx = split(metas)
+    stuck = fix_adjacent(examples, metas, [list(range(len(metas))), train_idx, valid_idx])
+    if stuck:
+        raise SystemExit(f"thoughts: consecutive duplicates that could not be re-phrased: {stuck[:5]}")
     with open(os.path.join(OUT, "all.jsonl"), "w") as f:
         for ex in examples:
             f.write(json.dumps(ex, ensure_ascii=False) + "\n")
     with open(os.path.join(OUT, "meta.jsonl"), "w") as f:
         for m in metas:
             f.write(json.dumps(m, ensure_ascii=False) + "\n")
+    for name, idxs in (("train", train_idx), ("valid", valid_idx)):
+        with open(os.path.join(OUT, f"{name}.jsonl"), "w") as f:
+            for i in sorted(idxs):
+                f.write(json.dumps(examples[i], ensure_ascii=False) + "\n")
+        with open(os.path.join(OUT, f"{name}.meta.jsonl"), "w") as f:
+            for i in sorted(idxs):
+                f.write(json.dumps(metas[i], ensure_ascii=False) + "\n")
+    return train_idx, valid_idx
+
+
+def split(metas):
     # 90/10 split by family. The unit is a prompt GROUP (prompts that fold to the
     # same text, see leak.fold; a group belongs to the family that first uses it),
     # so every step of a turn, and every turn that
@@ -218,13 +286,6 @@ def write(examples, metas):
     train_idx, valid_idx = [], []
     for idx, m in enumerate(metas):
         (valid_idx if leak.fold(m["prompt"]) in valid_groups else train_idx).append(idx)
-    for name, idxs in (("train", train_idx), ("valid", valid_idx)):
-        with open(os.path.join(OUT, f"{name}.jsonl"), "w") as f:
-            for i in sorted(idxs):
-                f.write(json.dumps(examples[i], ensure_ascii=False) + "\n")
-        with open(os.path.join(OUT, f"{name}.meta.jsonl"), "w") as f:
-            for i in sorted(idxs):
-                f.write(json.dumps(metas[i], ensure_ascii=False) + "\n")
     return train_idx, valid_idx
 
 
@@ -242,12 +303,24 @@ def write_stats(metas, train_idx, valid_idx):
         fam[m["family"]]["examples"] += 1
         fam[m["family"]][split_of[i]] += 1
         fam[m["family"]][m["target_kind"]] += 1
+        fam[m["family"]]["think"] += bool(m.get("think"))
     for t, m in turns.items():
         fam[m["family"]]["turns"] += 1
+    by_kind = defaultdict(Counter)
+    for i, m in enumerate(metas):
+        by_kind[m.get("step_kind")]["think" if m.get("think") else "no_think"] += 1
+        by_kind[m.get("step_kind")][f"{split_of[i]}_think"] += bool(m.get("think"))
+    n_think = sum(bool(m.get("think")) for m in metas)
+    thinking_stats = {"think": n_think, "no_think": len(metas) - n_think,
+                      "think_share": round(n_think / max(1, len(metas)), 3),
+                      "train_think": sum(bool(metas[i].get("think")) for i in train_idx),
+                      "valid_think": sum(bool(metas[i].get("think")) for i in valid_idx),
+                      "by_step_kind": {k: dict(v) for k, v in sorted(by_kind.items(), key=lambda kv: str(kv[0]))}}
     stats = {"code_head": head, "service_head": service, "examples": len(metas), "turns": len(turns),
              "train": len(train_idx), "valid": len(valid_idx),
              "by_target": dict(Counter(m["target_kind"] for m in metas)),
              "paraphrased_turns": sum(1 for m in turns.values() if m.get("paraphrase_of")),
+             "thinking": thinking_stats,
              "families": {k: dict(v) for k, v in sorted(fam.items())}}
     with open(os.path.join(OUT, "stats.json"), "w") as f:
         json.dump(stats, f, indent=1, sort_keys=True)
@@ -269,6 +342,13 @@ if __name__ == "__main__":
         print("train per family:", dict(Counter(metas[i]["family"] for i in tr)))
         print("valid per family:", dict(Counter(metas[i]["family"] for i in va)))
         write_stats(metas, tr, va)
+        n_think = sum(bool(m.get("think")) for m in metas)
+        print(f"thinking: {n_think} THINK / {len(metas) - n_think} NO THINK ({n_think / len(metas):.1%})")
+        for f_ in sorted(fam):
+            k = sum(bool(m.get("think")) for m in metas if m["family"] == f_)
+            print(f"   {f_:30s} {k:4d}/{fam[f_]:4d}")
+    if any(str(f[2]).startswith("thought:") for f in failures):
+        sys.exit(1)
     else:
         with open(os.path.join(OUT, "builder", "partial.jsonl"), "w") as f:
             for ex, m in zip(examples, metas):

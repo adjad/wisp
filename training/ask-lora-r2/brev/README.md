@@ -51,13 +51,14 @@ Preflight also checks `config.json`: `Gemma4ForConditionalGeneration`, 42 langua
 | sanity checks | cache parity, then overfit 2 rows before training | the KV-sharing bug report and Oxen's "overfit a tiny set first" |
 | optional QLoRA | `QLORA=1` loads the base in NF4 for a 24 GB GPU; the merge stays bf16 | Google's guide |
 
-### Thinking: why some targets start with a short thought
+### Thinking: situational (round 2)
 
-Wisp sends every Ask step with `enable_thinking: true`. After a tool result, the template ends the prompt with `<|channel>thought\n`, so the model's reply there always opens inside a thought.
+Wisp sends every Ask step with `enable_thinking: true`, and that does not change, because toggling it would break oMLX's prefix cache. Each example's meta carries `think` and `thought`, chosen by `builder/thinking.py`:
+- **THINK:** the target opens with the thought, 1–3 sentences of at most 60 words. On a first step the model opens the channel itself; after a tool result the template has already opened it.
+- **NO THINK on a first step:** answer or call only.
+- **NO THINK after a tool result:** the template forces `<|channel>thought\n`, so the completion closes it empty, `\n<channel|>` (token ids 107, 101), then answers.
 
-A target with no thought would therefore teach the model to put its answer inside the thought channel. So `render.py` gives those steps a one-sentence thought before the answer or call, for example: "The get_upcoming result has what's needed. Answer only from it, lead with the answer, keep it short." First steps, straight after the user, have no forced thought and stay answer-only.
-
-The thoughts are deliberately short, because decode dominates Wisp's latency. Unsloth suggests keeping at least 75% reasoning-style rows to preserve reasoning. This set is below that, with very short thoughts, so check reasoning-heavy Ask questions in the eval (the chat-quality item in the post-train checklist).
+About 37% of steps think. Chat, knowledge, simple reads and narration over one clean result never think.
 
 ## GPU, time and disk (estimates, not measurements)
 
@@ -145,7 +146,7 @@ A LoRA on attention and MLP shifts the hidden states the head predicts from. Mea
 - [ ] **Toolbench gate**, with Wisp quit and nothing else loading models, one model at a time:
   `scripts/run_toolbench.py --models <model id> --profile-as gemma-4-E4B-it-oQ4e-mtp --exclusive --trials 3`
   once for the untuned quant and once for the tuned quant of each model, so the profile (prompts, thinking flags, sampling) is the packaged agent's for both. Compare against the untuned quant of the same model, then across models.
-- [ ] **Chat-quality check:** reasoning-heavy and plain-chat Ask questions, tone, and the short-thought behaviour. Confirm the answers do not open inside the thought channel and are not terser or stiffer than the untuned build. Check Bolt separately: it is an RL post-train and may behave differently from Gemma on the same prompts.
+- [ ] **Chat-quality check:** reasoning-heavy and plain-chat Ask questions, tone, and the short-thought behaviour. Confirm the answers do not open inside the thought channel and are not terser or stiffer than the untuned build. Also confirm simple questions skip thinking (an empty thought) and that write, error and multi-source steps still think.
 - [ ] **Isolation:** evaluation backends on port 8775, never the live 8765.
 
 ## Not verified

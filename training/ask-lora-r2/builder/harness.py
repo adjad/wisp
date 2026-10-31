@@ -349,8 +349,10 @@ class ScriptedPolicy:
                         tools=sorted({c.name for c in missing}))
             return {"role": "assistant", "content": "", "tool_calls": [self._tc(load)]}, "load"
         if stubs:
+            # A stub call carries the step's own arguments, so a Bad step's stub load is
+            # itself a bad call: history only, never a training target.
             return {"role": "assistant", "content": "",
-                    "tool_calls": [self._tc(c) for c in stubs]}, "load"
+                    "tool_calls": [self._tc(c) for c in stubs]}, "bad_load" if bad else "load"
         assert len(full) == len(calls)
         self.idx += 1
         return ({"role": "assistant", "content": "", "tool_calls": [self._tc(c) for c in calls]},

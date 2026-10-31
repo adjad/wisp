@@ -38,10 +38,22 @@ Exit code 1 on any problem. Checks, per example:
               the conversation (leak.py)
   markup      no <|tool_call> text inside assistant content
   harness     no trace of the build harness (World.t_* names, stub errors)
+  thinking    (needs the meta line; builder/thinking.py) every example has a bool
+              `think`; THINK => a non-empty thought of at most 60 words, with no
+              tool plumbing, markup or harness text, not the user's name, no
+              injected payload, and not a copy of the reply (character-trigram
+              Jaccard < 0.5 against the target text and the turn's final); NO
+              THINK => thought null; a date or weekday the thought states must
+              equal the date in the step's call arguments (or, with no dated
+              call, a date some tool result shows, or today); `think` equals
+              thinking.decide() re-run on the example; chat_voice and
+              knowledge_direct never think; two consecutive THINK examples
+              never share a thought
   template    (with --template MODEL_DIR, repeatable) each model's chat template
               renders every example, and the prompt is a prefix of the full text,
-              as mlx-lm's mask_prompt needs. With two or more, brev/render.py's
-              prompt and completion must be byte-identical under every template.
+              as mlx-lm's mask_prompt needs; brev/render.py renders the row (the
+              thought, the empty thought or none, per meta). With two or more,
+              its prompt and completion must be byte-identical under every template.
 Across files: no prompt group appears in both train and valid.
 """
 from __future__ import annotations
@@ -57,9 +69,10 @@ import sys
 from collections import Counter
 
 import leak
+import thinking
 import writes
 
-OUT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+OUT =os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DENIED = "The user denied this action."
 
 import service.tools  # noqa: E402,F401
@@ -251,6 +264,65 @@ def private_denylist(path: str):
     return tokens, emails, phrases
 
 
+# ----------------------------------------------------------------- thinking
+def turn_contexts(path, metas) -> dict[int, dict]:
+    """Per line index: the later steps' calls and the final text of its turn (same file; a turn never
+    straddles the split)."""
+    turns: dict[str, list] = {}
+    for idx, (line, meta) in enumerate(zip(open(path), metas)):
+        try:
+            target = json.loads(line)["messages"][-1]
+        except (ValueError, KeyError, IndexError):
+            continue
+        turns.setdefault(str(meta.get("id", idx)).rsplit("-s", 1)[0], []).append((meta.get("step", 0), idx, target))
+    out = {}
+    for steps in turns.values():
+        steps.sort(key=lambda s: (s[0], s[1]))
+        final = next((t.get("content") or "" for _, _, t in steps if not t.get("tool_calls")), "")
+        for k, (_, idx, _t) in enumerate(steps):
+            out[idx] = {"later_calls": [c for _, _, t in steps[k + 1:] for c in thinking.calls_of(t)], "final": final}
+    return out
+
+
+def check_thinking(meta, msgs, ctx, injected, prev_thought, bad, where):
+    """The thinking checks for one example; returns the thought to compare the next THINK example with."""
+    think, text = meta.get("think"), meta.get("thought")
+    family = meta.get("family")
+    if not isinstance(think, bool):
+        bad("think:missing", where)
+        return prev_thought
+    if not think:
+        if text is not None:
+            bad("think:thought_without_think", where)
+        try:
+            if thinking.decide(meta, msgs):
+                bad("think:policy", f"{where} decide() says THINK ({thinking.step_kind(meta, msgs)})")
+        except Exception as exc:  # noqa: BLE001
+            bad("think:policy", f"{where} decide() failed: {exc!r}"[:160])
+        return prev_thought
+    if family in thinking.NEVER:
+        bad("think:never_family", f"{where} {family}")
+    try:
+        if not thinking.decide(meta, msgs):
+            bad("think:policy", f"{where} decide() says NO THINK ({thinking.step_kind(meta, msgs)})")
+    except Exception as exc:  # noqa: BLE001
+        bad("think:policy", f"{where} decide() failed: {exc!r}"[:160])
+    if not isinstance(text, str) or not text.strip():
+        bad("think:thought_missing", where)
+        return prev_thought
+    for err in thinking.check(meta, msgs, text, ctx):
+        key = ("think:too_long" if err.endswith(" words") else "think:noise" if err.startswith("noise") else
+               "think:copies_reply" if err.startswith("too close") else "think:thought_missing" if err == "empty"
+               else "think:date_mismatch")
+        bad(key, f"{where} {err}")
+    for payload in injected:
+        if payload.lower() in text.lower():
+            bad("think:injection_payload", f"{where} {payload[:12]}…")
+    if text == prev_thought:
+        bad("think:adjacent_duplicate", where)
+    return text
+
+
 # ----------------------------------------------------------------- per example
 AUTO = object()
 
@@ -276,6 +348,8 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
         samples.setdefault(key, where)
 
     metas = load_meta(path, meta_path, bad)
+    turn_ctx = turn_contexts(path, metas) if metas else {}
+    prev_thought = None
     n = 0
     for ln, line in enumerate(open(path), 1):
         n += 1
@@ -415,6 +489,9 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
                 bad("approve:denial_without_card", f"{where} {_name}")
         if denied_any and not msgs[-1].get("tool_calls") and claims_done(msgs[-1].get("content") or ""):
             bad("approve:denied_claims_success", f"{where} {(msgs[-1].get('content') or '')[:60]!r}")
+        # situational thinking (thinking.py), against the example's meta line
+        if metas:
+            prev_thought = check_thinking(meta, msgs, turn_ctx.get(ln - 1, {}), injected, prev_thought, bad, where)
         # the synthetic harness must never show through (class or stub names)
         if re.search(r"\bWorld\.t_\w+|\bt_[a-z_]+\(\)|synthetic world|lora-dataset harness", json.dumps(msgs)):
             bad("harness_leak", where)
@@ -466,10 +543,11 @@ def template_check(path, model_dirs, meta_path=AUTO):
     brev = _brev_render()
     metas = load_meta(path, meta_path)
     lens, targets, problems = {t: [] for t in tags}, {t: [] for t in tags}, Counter()
+    shapes = {t: Counter() for t in tags}
     for ln, line in enumerate(open(path)):
         ex = json.loads(line)
-        meta = metas[ln] if metas else {"id": f"line{ln + 1}", "family": "", "target_kind": "",
-                                        "chat_template_kwargs": {"enable_thinking": True}}
+        meta = metas[ln] if metas else {"id": f"line{ln + 1}", "family": "", "target_kind": "", "think": False,
+                                        "thought": None, "chat_template_kwargs": {"enable_thinking": True}}
         tools = ex["tools"] or None
         rows = []
         for tag, tok in zip(tags, toks):
@@ -488,8 +566,9 @@ def template_check(path, model_dirs, meta_path=AUTO):
             try:
                 r = brev.render(tok, ex, meta)
                 rows.append((tag, r["prompt"], r["completion"]))
+                shapes[tag][brev.row_shape(r)] += 1
             except Exception as exc:  # noqa: BLE001
-                problems[f"{tag}: render_error: {str(exc)[:80]}"] += 1
+                problems[f"{tag}: render_error: {str(exc).split(': ', 1)[-1][:80]}"] += 1
         for tag, prompt, completion in rows[1:]:
             if prompt != rows[0][1]:
                 problems[f"template:parity_prompt({rows[0][0]} vs {tag})"] += 1
@@ -500,7 +579,8 @@ def template_check(path, model_dirs, meta_path=AUTO):
         ls = sorted(lens[tag])
         if ls:
             stats[tag] = {"median_tokens": statistics.median(ls), "p90_tokens": ls[int(0.9 * len(ls))],
-                          "max_tokens": ls[-1], "total_tokens": sum(ls), "target_tokens": sum(targets[tag])}
+                          "max_tokens": ls[-1], "total_tokens": sum(ls), "target_tokens": sum(targets[tag]),
+                          "rendered_shapes": dict(shapes[tag])}
     return problems, stats
 
 

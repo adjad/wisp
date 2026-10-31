@@ -178,7 +178,8 @@ def cmd_preflight(a) -> int:
         labeled = sorted(len(c) for _, _, c in toks)
         print(f"{split}: {len(rows)} rows, {len(skipped)} over --max-len {a.max_len}, tokens max {lens[-1]} "
               f"median {lens[len(lens) // 2]}, labeled total {sum(labeled)} (median {labeled[len(labeled) // 2]}), "
-              f"with thought {sum('<|channel>thought' in r['prompt'][-20:] for r in rows)}, "
+              f"thought {sum(r['completion'].startswith('<|channel>thought') or (r['prompt'].endswith('<|channel>thought' + chr(10)) and not r['completion'].startswith(chr(10) + '<channel|>')) for r in rows)} / "
+              f"empty thought {sum(r['prompt'].endswith('<|channel>thought' + chr(10)) and r['completion'].startswith(chr(10) + '<channel|>') for r in rows)}, "
               f"bad stop token {len(bad_stop)}, decode mismatches {roundtrip}")
     print("PREFLIGHT OK" if not problems else f"PREFLIGHT FAILED ({problems} problems) - do not train")
     return 1 if problems else 0

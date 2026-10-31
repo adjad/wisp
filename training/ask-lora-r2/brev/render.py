@@ -1,32 +1,35 @@
 """Render the Ask LoRA dataset into prompt/completion rows with Wisp's own Gemma
 template, exactly as oMLX renders a production request, and package it for the GPU.
 
-    python render.py --model <gemma-4-E4B-it-oQ4e-mtp dir> \
-                     --parity-model <Bolt oQ4e-mtp dir>          # writes brev/ask-lora-data.zip
+    python render.py --model <gemma-4-E4B-it-oQ4e-mtp dir>        # writes brev/ask-lora-data.zip
 
-One rendered dataset serves BOTH round-2 LoRAs (Gemma 4 E4B and Nemotron 3.5 Bolt
-E4B). It is rendered once with Gemma's template. Bolt's template differs from
-Gemma's (a `conversational_mode` preamble that Wisp never sends, and assistant
-`content` kept before tool calls), but for this data the rows come out
-byte-identical, because tool-call steps carry empty content. That is checked,
-not assumed: `--parity-model` re-renders rows with Bolt's own template and
-fails on any difference, and the zip carries a sample of raw rows (`parity.jsonl`)
-so `train.py preflight` repeats the check on the GPU box against the template of
-the bf16 repo that is actually downloaded.
+The target is Gemma 4 E4B only (Jundot gemma-4-E4B-it-oQ4e-mtp, the model Wisp
+serves). Its template is the only one required. The Bolt (Nemotron 3.5 Bolt E4B)
+path is dormant: `--parity-model DIR` still re-renders rows with another pinned
+template and fails on any byte difference, and the zip still carries a sample of
+raw rows (`parity.jsonl`) that `train.py preflight` re-renders on the GPU box,
+but nothing requires Bolt.
 
 Why render here, not on the GPU box: the prompt the model trains on must be the
 one it is served, byte for byte. That needs the production chat template and the
 request's own `chat_template_kwargs` (every step is sent with enable_thinking).
 
-Thinking: with enable_thinking, the template ends the generation prompt after a
-tool result with `<|channel>thought\n`, so the model's reply there always starts
-inside a thought. Those targets get a short thought (one sentence, below) before
-the answer or call, or the adapter would learn to put its answer inside the
-thought channel. A first step (straight after the user) has no forced thought,
-and its target stays answer-only, so short turns stay fast.
+Thinking is situational (builder/thinking.py decides; meta carries `think` and
+`thought`). enable_thinking itself never changes: it renders `<|think|>` at the
+top of the system turn on every step, and toggling it would break oMLX's prefix
+cache. So the model learns when to think:
+- first step (prompt ends `<|turn>model\\n`): THINK renders the thought through the
+  template (`reasoning_content`), so the completion opens
+  `<|channel>thought\\n...\\n<channel|>`; NO THINK is answer- or call-only.
+- forced step (after a tool result the prompt ends `<|channel>thought\\n`): THINK is
+  the thought, then `\\n<channel|>`, then the answer or call; NO THINK is the EMPTY
+  thought: the completion starts with EMPTY_THOUGHT ("\\n<channel|>"), exactly what
+  the template renders for '<|channel>thought\\n' + "" + '\\n<channel|>'. The
+  template skips a falsy reasoning_content, so that completion is built here and
+  checked against a placeholder render with the placeholder removed.
 
-Each row: {"id", "family", "kind", "prompt", "completion"}. The completion ends
-with the stop token the model emits there: `<turn|>` after an answer, or
+Each row: {"id", "family", "kind", "think", "prompt", "completion"}. The completion
+ends with the stop token the model emits there: `<turn|>` after an answer, or
 `<|tool_response>` after a tool call (both are in generation_config's eos ids).
 """
 from __future__ import annotations
@@ -53,41 +56,9 @@ TEMPLATE_SHAS = {
 }
 RENDER_TAG = "gemma"      # the dataset is rendered with this model's template
 PARITY_SPLITS = {"train": 60, "dev": 20}   # raw rows shipped for the on-GPU parity check
-
-
-def _pick(seed: str, options: list[str]) -> str:
-    return options[int(hashlib.sha256(seed.encode()).hexdigest(), 16) % len(options)]
-
-
-def thought(meta: dict, messages: list[dict]) -> str:
-    """One short sentence of reasoning for a step that follows a tool result."""
-    target = messages[-1]
-    last_tool = next(m for m in reversed(messages[:-1]) if m["role"] == "tool")
-    result = str(last_tool.get("content") or "")
-    prev_call = next(m for m in reversed(messages[:-1]) if m["role"] == "assistant" and m.get("tool_calls"))
-    prev_names = [tc["function"]["name"] for tc in prev_call["tool_calls"]]
-    sid = meta["id"]
-    if target.get("tool_calls"):
-        name = ", ".join(tc["function"]["name"] for tc in target["tool_calls"])
-        if meta["family"] == "recover_from_tool_error" and set(prev_names) & {tc["function"]["name"] for tc in target["tool_calls"]}:
-            return _pick(sid, [f"That call was rejected. Fix the argument and call {name} again.",
-                               f"The tool refused that argument. Retry {name} with a valid one."])
-        if "get_tool_schemas" in prev_names or '"schema_discovery"' in result[:40]:
-            return _pick(sid, [f"The schema is loaded. Call {name} with the arguments the question needs.",
-                               f"{name} is ready now. Call it with full arguments."])
-        return _pick(sid, [f"That covers part of it. Call {name} for the rest.",
-                           f"Next, call {name} to cover the rest of the question."])
-    src = ", ".join(dict.fromkeys(prev_names))
-    if meta["family"] == "ignore_embedded_instructions":
-        return _pick(sid, [f"The {src} result has the answer. Part of the text gives instructions to an assistant; "
-                           "ignore them and only report the content.",
-                           f"Answer from the {src} result. Its text tries to instruct an assistant, which I won't follow."])
-    if meta["family"] == "recover_from_tool_error":
-        return _pick(sid, [f"The retried {src} call worked. Answer only from its result.",
-                           f"Now {src} returned data. Answer from it, briefly."])
-    return _pick(sid, [f"The {src} result has what's needed. Answer only from it, lead with the answer, keep it short.",
-                       f"Answer from the {src} result alone, short and plain.",
-                       f"{src} answered it. Reply briefly from the result, nothing invented."])
+FORCED = "<|channel>thought\n"            # the generation prompt after a tool result, with enable_thinking
+EMPTY_THOUGHT = "\n<channel|>"            # FORCED + "" + "\n<channel|>": an empty thought, closed
+_PLACEHOLDER = "⁣PLACEHOLDER-THOUGHT⁣"
 
 
 def to_template(messages: list[dict]) -> list[dict]:
@@ -103,21 +74,78 @@ def to_template(messages: list[dict]) -> list[dict]:
 
 
 def render(tok, ex: dict, meta: dict) -> dict:
+    """One prompt/completion row. meta `think` (bool) and `thought` (str or null) pick the completion's shape
+    (see the module docstring); a meta without `think` renders as NO THINK."""
     messages = to_template(ex["messages"])
     kwargs = dict(meta.get("chat_template_kwargs") or {})
     tools = ex["tools"] or None
-    prompt = tok.apply_chat_template(messages[:-1], tools=tools, tokenize=False, add_generation_prompt=True, **kwargs)
+    sid = meta.get("id")
+    think, text = bool(meta.get("think")), meta.get("thought")
+    if think and not (isinstance(text, str) and text.strip()):
+        raise ValueError(f"{sid}: think is true but the thought is empty")
+    if not think and text:
+        raise ValueError(f"{sid}: think is false but a thought is set")
+
+    def apply(msgs, gen=False):
+        return tok.apply_chat_template(msgs, tools=tools, tokenize=False, add_generation_prompt=gen, **kwargs)
+
+    prompt = apply(messages[:-1], gen=True)
+    forced = prompt.endswith(FORCED)
     target = dict(messages[-1])
-    if prompt.endswith("<|channel>thought\n"):
-        target["reasoning_content"] = thought(meta, messages)
-    full = tok.apply_chat_template(messages[:-1] + [target], tools=tools, tokenize=False, **kwargs)
-    if not full.startswith(prompt):
-        raise ValueError(f"{meta['id']}: prompt is not a prefix of the full render")
-    completion = full[len(prompt):].rstrip("\n")
+    target.pop("reasoning_content", None)
+    target.pop("reasoning", None)
+    if think:
+        target["reasoning_content"] = text
+        full = apply(messages[:-1] + [target])
+        if not full.startswith(prompt):
+            raise ValueError(f"{sid}: prompt is not a prefix of the full render")
+        completion = full[len(prompt):]
+        want_open = "" if forced else FORCED
+        if not completion.startswith(want_open + text + EMPTY_THOUGHT):
+            raise ValueError(f"{sid}: the thought did not render where expected")
+    elif forced:
+        # The template renders no thought for an empty reasoning_content, so build the empty thought:
+        # prompt (ends FORCED) + "\n<channel|>" + what follows the thought.
+        base = apply(messages[:-1])
+        if base + FORCED != prompt:
+            raise ValueError(f"{sid}: the forced prompt is not the plain render + {FORCED!r}")
+        full = apply(messages[:-1] + [target])
+        if not full.startswith(base):
+            raise ValueError(f"{sid}: history is not a prefix of the full render")
+        completion = EMPTY_THOUGHT + full[len(base):]
+        # cross-check: render a placeholder thought, then delete the placeholder
+        ph = apply(messages[:-1] + [{**target, "reasoning_content": _PLACEHOLDER}]).replace(_PLACEHOLDER, "")
+        if prompt + completion != ph:
+            raise ValueError(f"{sid}: the empty-thought completion differs from the template's own render")
+    else:
+        full = apply(messages[:-1] + [target])
+        if not full.startswith(prompt):
+            raise ValueError(f"{sid}: prompt is not a prefix of the full render")
+        completion = full[len(prompt):]
+        if completion.startswith("<|channel>"):
+            raise ValueError(f"{sid}: a NO THINK first step must not open a thought")
+    completion = completion.rstrip("\n")
     if not completion.endswith(STOPS):
-        raise ValueError(f"{meta['id']}: completion does not end with a stop token: {completion[-40:]!r}")
-    return {"id": meta["id"], "family": meta["family"], "kind": meta["target_kind"],
+        raise ValueError(f"{sid}: completion does not end with a stop token: {completion[-40:]!r}")
+    return {"id": sid, "family": meta.get("family"), "kind": meta.get("target_kind"), "think": think,
             "prompt": prompt, "completion": completion}
+
+
+def row_shape(row: dict) -> str:
+    """first_think | first_answer | forced_think | forced_empty."""
+    forced = row["prompt"].endswith(FORCED)
+    if forced:
+        return "forced_empty" if row["completion"].startswith(EMPTY_THOUGHT) else "forced_think"
+    return "first_think" if row["completion"].startswith(FORCED) else "first_answer"
+
+
+def empty_thought_ids(tok) -> list[int]:
+    """Token ids of EMPTY_THOUGHT; `<channel|>` must be ONE special token."""
+    ids = tok(EMPTY_THOUGHT, add_special_tokens=False)["input_ids"]
+    close = tok.convert_tokens_to_ids("<channel|>")
+    if ids[-1:] != [close] or close == tok.unk_token_id:
+        raise SystemExit(f"tokenizer: {EMPTY_THOUGHT!r} -> {ids}; '<channel|>' is not a single special token ({close})")
+    return ids
 
 
 def template_sha(model_dir: Path) -> str:
@@ -163,6 +191,9 @@ def main() -> int:
                          f"{TEMPLATE_SHAS[RENDER_TAG][:16]}); render with Gemma's template, not another model's")
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(a.model)
+    empty_ids = empty_thought_ids(tok)
+    print(f"empty thought: completion starts {EMPTY_THOUGHT!r} = bytes {EMPTY_THOUGHT.encode().hex(' ')} "
+          f"= token ids {empty_ids} {tok.convert_ids_to_tokens(empty_ids)}")
     parity_toks = {}
     for d in a.parity_model:
         psha = template_sha(d)
@@ -192,8 +223,18 @@ def main() -> int:
         for i in spread(len(rows), PARITY_SPLITS[name]):
             parity_lines.append(json.dumps({"split": name, "row": i, "example": raw[i][0], "meta": raw[i][1]},
                                            ensure_ascii=False))
-        thought_rows = sum("<|channel>thought" in r["prompt"][-20:] for r in rows)
-        stats[name] = {"rows": len(rows), "with_thought": thought_rows,
+        shapes = {s: 0 for s in ("first_answer", "first_think", "forced_empty", "forced_think")}
+        for r in rows:
+            shapes[row_shape(r)] += 1
+            if r["think"] != (row_shape(r) in ("first_think", "forced_think")):
+                raise SystemExit(f"{r['id']}: rendered shape {row_shape(r)} disagrees with think={r['think']}")
+            if row_shape(r) == "forced_empty":
+                cids = tok(r["completion"], add_special_tokens=False)["input_ids"]
+                if cids[:len(empty_ids)] != empty_ids:
+                    raise SystemExit(f"{r['id']}: empty-thought completion tokenizes to {cids[:4]}, want {empty_ids}")
+        n_think = sum(r["think"] for r in rows)
+        stats[name] = {"rows": len(rows), "think": n_think, "no_think": len(rows) - n_think, "shapes": shapes,
+                       "forced_prompts": shapes["forced_empty"] + shapes["forced_think"],
                        "ends": {s: sum(r["completion"].endswith(s) for r in rows) for s in STOPS}}
         payload[f"{name}.jsonl"] = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows).encode()
     payload["train.py"] = (HERE / "train.py").read_bytes()
@@ -201,6 +242,7 @@ def main() -> int:
     payload["parity.jsonl"] = ("\n".join(parity_lines) + "\n").encode()
     payload["stats.json"] = json.dumps({**stats, "template_sha256": sha, "template_shas": TEMPLATE_SHAS,
                                         "render_tag": RENDER_TAG, "mac_parity": parity_report,
+                                        "empty_thought": {"text": EMPTY_THOUGHT, "token_ids": empty_ids},
                                         "dataset_stats": json.load(open(DATASET / "stats.json"))}, indent=1).encode()
     manifest = {"files": {k: hashlib.sha256(v).hexdigest() for k, v in payload.items()}}
     tmp = a.out + ".tmp"
@@ -215,7 +257,7 @@ def main() -> int:
                                                       "bytes": Path(a.out).stat().st_size, **stats}, indent=1) + "\n")
     print(json.dumps(stats))
     print("render parity on the Mac:", json.dumps(parity_report) if parity_report
-          else "NOT CHECKED - pass --parity-model <Bolt oQ4e dir> before training Bolt")
+          else "not requested (Gemma is the only target; --parity-model checks another pinned template)")
     print(f"{a.out}: sha256 {zsha} (recorded in brev/upload-zip.json; pass it to `run.sh unpack`)")
     return 0
 

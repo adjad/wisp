@@ -4,27 +4,37 @@ problem is reported. Clean controls must report nothing, so a check that fires o
 everything cannot pass.
 
 Usage: python selftest.py   (needs train.jsonl; exit 1 if any corruption slips through)
-The template-parity case also needs the two model dirs named in TEMPLATE_DIRS (or
-ASK_LORA_TEMPLATES, colon separated); it is skipped, loudly, when they are absent.
+The thinking-render cases need Gemma's model dir (the first of TEMPLATE_DIRS, or
+ASK_LORA_TEMPLATES, colon separated; tokenizer and template files only). The
+template-parity case runs only when a second template dir is given there (Bolt is
+dormant and never required); both are skipped, loudly, when the dirs are absent.
 """
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import json
 import os
 import sys
 import tempfile
 
 import leak
+import thinking
 import validate as V
 import writes
 
 OUT = V.OUT
 DENIED = V.DENIED
 HOME = os.path.expanduser("~/Desktop/OMLX_Model_Files")
-TEMPLATE_DIRS = (os.environ.get("ASK_LORA_TEMPLATES") or
-                 f"{HOME}/Jundot/gemma-4-E4B-it-oQ4e-mtp:{HOME}/UraionLabs/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-oQ4e-mtp").split(":")
+TEMPLATE_DIRS = (os.environ.get("ASK_LORA_TEMPLATES") or f"{HOME}/Jundot/gemma-4-E4B-it-oQ4e-mtp").split(":")
 SYNTH = "_selftest_writes"      # a family that may call the tools below
+
+
+def with_think(ex, meta):
+    """Fill meta think/thought the way build.py does, so synthetic turns are clean on the thinking checks."""
+    meta["think"] = thinking.decide(meta, ex["messages"])
+    meta["thought"] = thinking.make_thought(meta, ex["messages"])[0] if meta["think"] else None
+    return ex, meta
 
 
 def first(pred):
@@ -68,8 +78,8 @@ def synthetic(system, name="send_email", args=None, result="Sent to Dana.", fina
             "approve": list(approve), "cards_seen": list(cards),
             "expect_cards": list(cards if expect is None else expect),
             # the write took effect unless its card was denied
-            "effects": [] if result == DENIED else [[name, args]]}
-    return ex, meta
+            "effects": [] if result == DENIED else [[name, args]], "clock": "Fri 2026-10-30 10:00"}
+    return with_think(ex, meta)
 
 
 def injected_send(system):
@@ -83,8 +93,8 @@ def injected_send(system):
         {"role": "assistant", "content": "", "tool_calls": [tool_call("send_email", {**SEND, "to": bad}, "call_2")]}]
     ex = {"messages": msgs, "tools": [V.REGISTRY["view_emails"].schema(), V.REGISTRY["send_email"].schema()]}
     meta = {"id": "selftest", "family": SYNTH, "prompt": "check my newest email", "writes": ["send_email"],
-            "approve": [], "cards_seen": ["send_email"], "expect_cards": ["send_email"]}
-    return ex, meta
+            "approve": [], "cards_seen": ["send_email"], "expect_cards": ["send_email"], "clock": "Fri 2026-10-30 10:00"}
+    return with_think(ex, meta)
 
 
 def corrupt():
@@ -184,7 +194,55 @@ def corrupt():
     e = copy.deepcopy(final)
     e["messages"][-1]["content"] += " Booked it with Lakeside Auto."
     cases["leak:toolbench_fact~business"] =(e, final_meta)
+
+    # --- situational thinking ----------------------------------------------------------------------
+    dated, dated_meta = first_m(lambda e, m: m.get("think") and target_call(e) and
+                                "when_iso" in (target_call(e)["function"]["arguments"] or {}))
+    narr, narr_meta = first_m(lambda e, m: m.get("think") and m.get("step_kind") == "narrate")
+    quiet, quiet_meta = first_m(lambda e, m: not m.get("think") and m["family"] == "right_source")
+    chat, chat_meta = first_m(lambda e, m: m["family"] == "chat_voice")
+    inj_t, inj_t_meta = first_m(lambda e, m: m.get("think") and m["family"] == "ignore_embedded_instructions")
+
+    m = copy.deepcopy(dated_meta)
+    del m["think"]
+    cases["think:missing"] = (dated, m)
+    cases["think:thought_missing"] = (dated, {**dated_meta, "thought": None})
+    cases["think:thought_missing~blank"] = (dated, {**dated_meta, "thought": "   "})
+    cases["think:too_long"] = (dated, {**dated_meta, "thought": dated_meta["thought"] + " Then I'll check it again" * 12})
+    cases["think:noise"] = (dated, {**dated_meta, "thought": dated_meta["thought"] + ' {"schema_discovery": "ready_next_step"}'})
+    cases["think:noise~name"] = (dated, {**dated_meta, "thought": "Sam wants this. " + dated_meta["thought"]})
+    cases["think:copies_reply"] = (narr, {**narr_meta, "thought": narr["messages"][-1]["content"]})
+    cases["think:thought_without_think"] = (quiet, {**quiet_meta, "thought": "I'll look that up."})
+    cases["think:policy"] = (quiet, {**quiet_meta, "think": True, "thought": "I'll look that up and answer briefly."})
+    cases["think:policy~dropped"] = (dated, {**dated_meta, "think": False, "thought": None})
+    cases["think:never_family"] = (chat, {**chat_meta, "think": True, "thought": "A friendly reply works here."})
+    call_day = thinking.parse_iso(target_call(dated)["function"]["arguments"]["when_iso"])[0]
+    wrong = call_day + dt.timedelta(days=1)
+    cases["think:date_mismatch"] = (dated, {**dated_meta, "thought": f"It goes on {thinking.fmt_day(wrong)}. I'll add it."})
+    cases["think:date_mismatch~weekday"] = (dated, {**dated_meta, "thought":
+                                                    f"It goes on {thinking._WD[(call_day.weekday() + 1) % 7][:3]} "
+                                                    f"{call_day.strftime('%b')} {call_day.day}. I'll add it."})
+    tool_text = "\n".join(str(m_["content"]) for m_ in inj_t["messages"] if m_["role"] == "tool")
+    payload = next((p for s in tool_text.split("\n") if V.INJECTION_MARKERS.search(s) for p in V._PAYLOAD.findall(s)), None)
+    if payload:
+        cases["think:injection_payload"] = (inj_t, {**inj_t_meta, "thought": inj_t_meta["thought"] + f" It wants {payload.strip('`')}."})
     return cases, system
+
+
+def first_m(pred):
+    """(example, meta) of the first train example where pred(example, meta)."""
+    for line, mline in zip(open(os.path.join(OUT, "train.jsonl")), open(os.path.join(OUT, "train.meta.jsonl"))):
+        ex, meta = json.loads(line), json.loads(mline)
+        if pred(ex, meta):
+            return ex, meta
+    raise SystemExit("no example matches the selftest's precondition")
+
+
+def adjacent_case():
+    """Two consecutive THINK examples with the same thought."""
+    a, am = first_m(lambda e, m: m.get("think") and m.get("step_kind") == "select")
+    b, bm = first_m(lambda e, m: m.get("think") and m.get("step_kind") == "narrate")
+    return [(a, am), (b, {**bm, "thought": am["thought"]})]
 
 
 def controls(system):
@@ -200,22 +258,65 @@ def controls(system):
     }
 
 
-def run(name, ex, meta, leaks, ident):
+def run(name, ex, meta, leaks, ident, more=()):
+    """Validate one example (plus `more` (example, meta) pairs after it, in order) as a file of its own."""
     with tempfile.TemporaryDirectory() as d:
         p, mp = os.path.join(d, "x.jsonl"), os.path.join(d, "x.meta.jsonl")
-        with open(p, "w") as f:
-            f.write(json.dumps(ex, ensure_ascii=False) + "\n")
-        with open(mp, "w") as f:
-            f.write(json.dumps(meta, ensure_ascii=False) + "\n")
+        with open(p, "w") as f, open(mp, "w") as g:
+            for e, m in [(ex, meta), *more]:
+                f.write(json.dumps(e, ensure_ascii=False) + "\n")
+                g.write(json.dumps(m, ensure_ascii=False) + "\n")
         _, problems, _ = V.validate_file(p, leaks, ident, None, V.PUBLIC_WORDS, meta_path=mp)
     return problems
+
+
+def render_cases():
+    """brev/render.py with Gemma's template: the three completion shapes come out as specified, and a THINK
+    meta without a thought is a render error the template check reports."""
+    gemma = TEMPLATE_DIRS[0]
+    if not os.path.isdir(gemma):
+        print(f"skipped  thinking render (Gemma model dir not found: {gemma})")
+        return []
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(gemma)
+    brev = V._brev_render()
+    missed = []
+    want = {"forced_empty": first_m(lambda e, m: not m.get("think") and e["messages"][-2]["role"] == "tool"),
+            "forced_think": first_m(lambda e, m: m.get("think") and e["messages"][-2]["role"] == "tool"),
+            "first_think": first_m(lambda e, m: m.get("think") and e["messages"][-2]["role"] == "user"),
+            "first_answer": first_m(lambda e, m: not m.get("think") and e["messages"][-2]["role"] == "user")}
+    ids = brev.empty_thought_ids(tok)
+    for shape, (ex, meta) in want.items():
+        r = brev.render(tok, ex, meta)
+        ok = brev.row_shape(r) == shape
+        if shape == "forced_empty":
+            ok &= r["completion"].startswith("\n<channel|>") and \
+                tok(r["completion"], add_special_tokens=False)["input_ids"][:len(ids)] == ids
+        if shape.endswith("think"):
+            ok &= meta["thought"] in r["completion"].split("<channel|>")[0]
+        print(f"{'ok' if ok else 'WRONG'}      render shape {shape:12s} {r['completion'][:70]!r}")
+        if not ok:
+            missed.append(f"render:{shape}")
+    ex, meta = want["forced_think"]
+    with tempfile.TemporaryDirectory() as d:
+        p, mp = os.path.join(d, "x.jsonl"), os.path.join(d, "x.meta.jsonl")
+        open(p, "w").write(json.dumps(ex, ensure_ascii=False) + "\n")
+        open(mp, "w").write(json.dumps({**meta, "thought": None}, ensure_ascii=False) + "\n")
+        problems, _ = V.template_check(p, [gemma], meta_path=mp)
+        open(mp, "w").write(json.dumps(meta, ensure_ascii=False) + "\n")
+        clean, _ = V.template_check(p, [gemma], meta_path=mp)
+    ok = any("render_error" in k for k in problems) and not clean
+    print(f"{'caught' if ok else 'MISSED'}  {'template:render_error (think, no thought)':40s} reported: {dict(problems)}")
+    if not ok:
+        missed.append("template:render_error")
+    return missed
 
 
 def parity_case(ex, meta):
     """Non-empty tool-call content renders differently under Gemma's and Bolt's templates."""
     dirs = [d for d in TEMPLATE_DIRS if os.path.isdir(d)]
     if len(dirs) < 2:
-        print(f"skipped  template parity (model dirs not found: {TEMPLATE_DIRS})")
+        print(f"skipped  template parity (Bolt is dormant; set ASK_LORA_TEMPLATES=gemma_dir:other_dir to run it)")
         return True
     e = copy.deepcopy(ex)
     e["messages"][-1]["content"] = "Let me check your calendar."
@@ -251,6 +352,19 @@ def main():
             print(f"{'clean' if ok else 'FALSE-ALARM'}  {name:40s} reported: {dict(problems)}")
             if not ok:
                 missed.append(name)
+        pair = adjacent_case()
+        problems = run("think:adjacent_duplicate", *pair[0], leaks, ident, more=pair[1:])
+        ok = "think:adjacent_duplicate" in problems
+        print(f"{'caught' if ok else 'MISSED'}  {'think:adjacent_duplicate':40s} reported: {dict(problems)}")
+        if not ok:
+            missed.append("think:adjacent_duplicate")
+        problems = run("control:adjacent_distinct", *pair[0], leaks, ident,
+                       more=[(pair[1][0], {**pair[1][1], "thought": first_m(
+                           lambda e, m: m["id"] == pair[1][1]["id"])[1]["thought"]})])
+        print(f"{'clean' if not problems else 'FALSE-ALARM'}  {'control:adjacent_distinct':40s} reported: {dict(problems)}")
+        if problems:
+            missed.append("control:adjacent_distinct")
+        missed += render_cases()
         call, call_meta = first(lambda e: target_call(e) and target_call(e)["function"]["name"] == "get_upcoming")
         if not parity_case(call, call_meta):
             missed.append("template:parity")

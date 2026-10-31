@@ -2,16 +2,17 @@
  "by_target": {
   "call": 720,
   "final": 833,
-  "load": 341
+  "load": 327
  },
- "code_head": "f1f143dfbb5dabdb71375441a8ed64dafd273d72",
- "examples": 1894,
+ "code_head": "2b06d0c4313383ff299609636da07ce4df23bea7",
+ "examples": 1880,
  "families": {
   "act_dont_ask": {
    "call": 37,
    "examples": 98,
    "final": 44,
    "load": 17,
+   "think": 72,
    "train": 90,
    "turns": 44,
    "valid": 8
@@ -21,6 +22,7 @@
    "examples": 88,
    "final": 37,
    "load": 14,
+   "think": 0,
    "train": 82,
    "turns": 37,
    "valid": 6
@@ -30,6 +32,7 @@
    "examples": 71,
    "final": 44,
    "load": 13,
+   "think": 0,
    "train": 63,
    "turns": 44,
    "valid": 8
@@ -37,6 +40,7 @@
   "chat_voice": {
    "examples": 90,
    "final": 90,
+   "think": 0,
    "train": 81,
    "turns": 90,
    "valid": 9
@@ -46,16 +50,18 @@
    "examples": 70,
    "final": 36,
    "load": 4,
+   "think": 0,
    "train": 63,
    "turns": 36,
    "valid": 7
   },
   "exact_args": {
    "call": 49,
-   "examples": 123,
+   "examples": 117,
    "final": 46,
-   "load": 28,
-   "train": 107,
+   "load": 22,
+   "think": 91,
+   "train": 101,
    "turns": 46,
    "valid": 16
   },
@@ -64,6 +70,7 @@
    "examples": 163,
    "final": 37,
    "load": 42,
+   "think": 94,
    "train": 147,
    "turns": 41,
    "valid": 16
@@ -73,6 +80,7 @@
    "examples": 86,
    "final": 37,
    "load": 12,
+   "think": 34,
    "train": 73,
    "turns": 37,
    "valid": 13
@@ -82,6 +90,7 @@
    "examples": 65,
    "final": 31,
    "load": 3,
+   "think": 31,
    "train": 57,
    "turns": 31,
    "valid": 8
@@ -90,6 +99,7 @@
    "call": 8,
    "examples": 93,
    "final": 85,
+   "think": 0,
    "train": 85,
    "turns": 85,
    "valid": 8
@@ -99,6 +109,7 @@
    "examples": 72,
    "final": 29,
    "load": 14,
+   "think": 29,
    "train": 64,
    "turns": 29,
    "valid": 8
@@ -108,25 +119,28 @@
    "examples": 62,
    "final": 27,
    "load": 8,
+   "think": 0,
    "train": 54,
    "turns": 27,
    "valid": 8
   },
   "recover_from_tool_error": {
    "call": 34,
-   "examples": 77,
+   "examples": 71,
    "final": 34,
-   "load": 9,
-   "train": 71,
+   "load": 3,
+   "think": 34,
+   "train": 65,
    "turns": 34,
    "valid": 6
   },
   "relay_receipt": {
    "call": 41,
-   "examples": 97,
+   "examples": 95,
    "final": 36,
-   "load": 20,
-   "train": 88,
+   "load": 18,
+   "think": 74,
+   "train": 86,
    "turns": 41,
    "valid": 9
   },
@@ -135,6 +149,7 @@
    "examples": 119,
    "final": 46,
    "load": 27,
+   "think": 0,
    "train": 109,
    "turns": 46,
    "valid": 10
@@ -144,6 +159,7 @@
    "examples": 105,
    "final": 42,
    "load": 21,
+   "think": 64,
    "train": 94,
    "turns": 42,
    "valid": 11
@@ -153,6 +169,7 @@
    "examples": 166,
    "final": 57,
    "load": 37,
+   "think": 85,
    "train": 151,
    "turns": 62,
    "valid": 15
@@ -162,6 +179,7 @@
    "examples": 150,
    "final": 42,
    "load": 47,
+   "think": 80,
    "train": 135,
    "turns": 42,
    "valid": 15
@@ -171,6 +189,7 @@
    "examples": 99,
    "final": 33,
    "load": 25,
+   "think": 0,
    "train": 94,
    "turns": 33,
    "valid": 5
@@ -178,7 +197,50 @@
  },
  "paraphrased_turns": 290,
  "service_head": "d7de0873189c319af2a64a20ca5ca6f5d09807f7",
- "train": 1708,
+ "thinking": {
+  "by_step_kind": {
+   "after_error": {
+    "think": 56,
+    "train_think": 48,
+    "valid_think": 8
+   },
+   "after_load": {
+    "no_think": 327,
+    "train_think": 0,
+    "valid_think": 0
+   },
+   "answer_first": {
+    "no_think": 203,
+    "think": 15,
+    "train_think": 13,
+    "valid_think": 2
+   },
+   "narrate": {
+    "no_think": 359,
+    "think": 247,
+    "train_think": 225,
+    "valid_think": 22
+   },
+   "next_call": {
+    "no_think": 8,
+    "think": 83,
+    "train_think": 73,
+    "valid_think": 10
+   },
+   "select": {
+    "no_think": 295,
+    "think": 287,
+    "train_think": 259,
+    "valid_think": 28
+   }
+  },
+  "no_think": 1192,
+  "think": 688,
+  "think_share": 0.366,
+  "train_think": 618,
+  "valid_think": 70
+ },
+ "train": 1694,
  "turns": 847,
  "valid": 186
 }

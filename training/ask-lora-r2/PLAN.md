@@ -1,10 +1,10 @@
-# Ask LoRA round 2: plan (2026-10-30)
+# Ask LoRA round 2: plan (2026-10-30, retargeted 2026-10-31)
 
-Round 2 trains two separate LoRAs from one shared dataset:
-- `gemma`: Jundot gemma-4-E4B-it-oQ4e-mtp, the current Wisp default.
-- `bolt`: NVIDIA Nemotron 3.5 Bolt E4B, an RL post-train of Gemma 4 E4B.
+Round 2 trains ONE LoRA for **Jundot gemma-4-E4B-it-oQ4e-mtp**, the current Wisp default. It is served with `enable_thinking: true` and Gemma's default sampling: temperature 1.0, top_p 0.95, top_k 64.
 
-It targets the model-side failures found by the real-life toolbench (#418). Round 1 (draft #412) was a reads-only Gemma dataset built at b8502786, and it was never trained, so this is the FIRST fine-tune for both models. Round 2 includes every round-1 family, rebuilt. Its committed data fails the live-schema check on current main (419 of 833 train rows), so every row is rebuilt here.
+Nemotron 3.5 Bolt E4B was dropped on 2026-10-31. It is text-only: no image, audio or video. Wisp needs Gemma's audio for voice Ask and its vision paths. The toolbench evidence below still covers both models, and the kit keeps Bolt's code paths dormant.
+
+It targets the model-side failures found by the real-life toolbench (#418). Round 1 (draft #412) was a reads-only Gemma dataset built at b8502786, and it was never trained, so this is the FIRST fine-tune of Gemma. Round 2 includes every round-1 family, rebuilt. Its committed data fails the live-schema check on current main (419 of 833 train rows), so every row is rebuilt here.
 
 **Status:** preparing the dataset. No GPU, Brev or local training step runs without a separate go-ahead from the user.
 
@@ -93,16 +93,34 @@ The round-1 families are rebuilt unchanged in intent: act_dont_promise, right_so
 
 **Target size:** about 900 rebuilt round-1 examples plus about 700–900 new write-family examples. Families are balanced to within 2×.
 
-## One dataset, two models
+## Situational thinking (on or off by situation)
 
-- The two models share the same tokenizer, markup and generation config.
-- Every row renders byte-identically under both chat templates, as long as tool-call steps carry empty content. The validator enforces that.
-- The data is rendered once.
-- `brev/` is parametrised by a model tag. Outputs are namespaced, so `run-both` trains gemma and then bolt in one GPU session.
+Production sends `enable_thinking: true` on every Ask step, and this plan keeps it that way. The flag renders `<|think|>` at the start of the system turn. Toggling it per step would change the first tokens of every prompt and throw away oMLX's prefix cache, at about 6.7k tokens per step.
 
-## Gate (per model, tuned vs untuned, both quantised with that model's own recipe)
+So the model learns when to think:
+- **On a first step,** Gemma's template lets the model open a thought itself.
+- **After a tool result,** the template opens one (`<|channel>thought\n`). A NO THINK example closes it empty and answers. That costs two tokens.
 
-Run `scripts/run_toolbench.py --models <id> --profile-as gemma-4-E4B-it-oQ4e-mtp --exclusive --trials 3` with Wisp quit. Each tuned model must meet all of these:
+**THINK:** a real thought of 1–3 sentences, at most 60 words, that never writes out the answer. Used for:
+- resolving a write: a relative date to a concrete date, the contact, update vs add, reminder vs event, draft vs send, read-before-write;
+- the step after a tool error, refusal or denial;
+- multi-source answers, counting, free/busy and date math;
+- results that carry instructions aimed at an assistant;
+- deciding to ask one clarifying question.
+
+**NO THINK:**
+- chat and knowledge;
+- obvious single reads;
+- narration over one clean read result;
+- the mechanical call right after a schema load.
+
+This also cuts the measured waste. Thinking is about 80% of chat output tokens, and on 230 of 839 corpus turns the narration thought was the answer written out twice.
+
+`builder/thinking.py` holds the policy and the thought generator. The validator re-checks the policy for every example, and checks that dates a thought states match the call's arguments.
+
+## Gate (tuned vs untuned Gemma, both quantised with the same recipe, both at temperature 1.0)
+
+The untuned baseline must be re-run at temperature 1.0, because the 2026-10-30 toolbench ran Gemma at 0.8. The toolbench parity check can't see temperature: oMLX's admin API answers 405, and `/v1/models/status` has no sampling fields. Run `scripts/run_toolbench.py --models gemma-4-E4B-it-oQ4e-mtp --exclusive --trials 3` with Wisp quit, once untuned and once tuned. The tuned model must meet all of these:
 
 - [ ] Pass rate gains at least 8 points, with a per-case sign test p < 0.05.
 - [ ] Write-needed cases gain at least 10 points.
@@ -111,4 +129,5 @@ Run `scripts/run_toolbench.py --models <id> --profile-as gemma-4-E4B-it-oQ4e-mtp
 - [ ] Third-person user references stay under 1% of trials.
 - [ ] The chat-quality check (`chateval`, blind pairwise) is no worse than untuned on warmth, variety and emoji use.
 - [ ] MTP draft acceptance drops by at most 5 points, and decode tok/s by at most 5%.
+- [ ] Thinking tokens per turn drop. Report the p50 and p90 of hidden-reasoning time, and of time to the first visible token, from `chateval` and the toolbench step timings.
 - [ ] Round 1's 1,040 Ask eval questions show no regression on knowledge_direct or concise_gentle.
