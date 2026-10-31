@@ -43,6 +43,8 @@ import service.tools.automation_tools  # noqa: F401 (raw AppleScript)
 import service.tools.doc_tools  # noqa: F401         (real .docx/.xlsx via python-docx/openpyxl)
 import service.tools.behavior_tools  # noqa: F401    (learned routines: describe/predict/correct)
 import service.tools.proactive_tools  # noqa: F401   (get_my_day_plan: the Brief's plan for today)
+from service.tools import retrieval_pins as _retrieval_pins  # noqa: E402
+_retrieval_pins.apply(REGISTRY)
 
 __all__ = ["Tool", "ToolOutcome", "REGISTRY", "tool_schemas", "get_tool",
            "is_tool_error", "classify_tool_outcome", "is_tool_routable",

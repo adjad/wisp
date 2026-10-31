@@ -64,3 +64,11 @@ def test_sharpened_descriptions_did_not_grow_the_schema_budget():
     # 40,605 characters across 93 built-in tools before this change.
     builtin = [t for t in REGISTRY.values() if t.category not in {"skill_tool", "mcp_read", "mcp_action"}]
     assert sum(len(t.description or "") for t in builtin) <= 40_605
+
+
+def test_retrieval_text_stays_pinned_so_rankings_do_not_move():
+    from service.tools.retrieval_pins import PINS
+    for name, text in PINS.items():
+        tool = REGISTRY[name]
+        assert tool.effective_retrieval_description == text
+        assert tool.description != text      # the model-facing text did change
