@@ -85,6 +85,17 @@ async def analyze(request: Request):
     return start(body.account or None)
 
 
+@router.post("/return")
+async def returned(request: Request):
+    """The notch opened. When the Brief went stale while Wisp was away, a
+    catch-up is owed (return_refresh); it never loads a model itself: opening
+    Ask prewarms it. {"updating": true} means the Brief now says so."""
+    await _body(request, Empty)
+    from service.proactive import return_refresh
+    return_refresh.arm("opened")
+    return {"ok": True, "updating": return_refresh.updating()}
+
+
 @router.post("/cards/{card_id}/fire")
 async def fire(card_id: str, request: Request):
     body = await _body(request, Fire)

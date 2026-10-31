@@ -26,6 +26,8 @@ IMPORTANT rules:
 - Background model work is resident-only (mail_gists._resident_reply,
   mail_memory's _stand_down, memory capture, the behavior phraser all stand down
   when the model isn't loaded), so parking pauses it with no change to any job.
+  Coming back after a park owes the Brief a catch-up (proactive/return_refresh),
+  which runs on the model the user's turn or intent loaded, never on a window.
   A batch window loads the model about once an hour so that work catches up,
   then parks it again. Background calls never extend a park timer: only the
   user's turns and intent do.
@@ -294,6 +296,8 @@ async def tick(client, now: float | None = None, *, pressure: str | None = None)
     if loaded and window is not None and min(_since_turn(now), _since_intent(now)) < now - window:
         _state.window_started = None   # the user came back during the window: theirs now
     if loaded and _state.window_started is None:
+        if _state.parked:
+            _note_unparked()           # someone is back: catch the Brief up if it went stale
         _state.parked = False          # a turn, intent or the switch loaded it again
     busy = idle.foreground_busy() or idle.in_flight(model) > 0 or held()
     enabled = save_memory()
@@ -326,6 +330,19 @@ async def tick(client, now: float | None = None, *, pressure: str | None = None)
         _state.window_started = now
         log.info("memory saver: batch window open for %s", model)
     return action
+
+
+def _note_unparked() -> None:
+    try:
+        from service.proactive import return_refresh
+        return_refresh.arm("unparked")
+    except Exception:  # noqa: BLE001 — the hourly idle refresh still catches up
+        pass
+
+
+def batch_window_open() -> bool:
+    """A batch window loaded the model for background work (nobody is here)."""
+    return _state.window_started is not None
 
 
 async def _load_shared(client, model: str) -> None:

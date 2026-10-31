@@ -954,6 +954,24 @@ async def _idle_tick() -> None:
         await _tick()              # in use: the ordinary incremental cycle as before
 
 
+async def _return_tick() -> None:
+    """The catch-up owed after a long absence (return_refresh); when the model
+    isn't resident for it yet, the tick that would have run anyway."""
+    global _next_tick_at
+    from service.proactive import return_refresh
+    outcome = await return_refresh.run(cycle=run_cycle, gists=_refresh_gists)
+    if outcome == "ran":
+        return
+    if outcome == "yielded":
+        _next_tick_at = time.time() + TICK_GAP_S
+        return
+    from service.proactive.store import store as default_store
+    if idle_refresh_due(time.time(), default_store()):
+        await _idle_tick()
+    elif time.time() >= _next_tick_at:
+        await _tick()
+
+
 async def _tick() -> None:
     global _next_tick_at, _rerun
     result = await run_cycle()
@@ -1020,11 +1038,17 @@ def schedule_tick() -> asyncio.Task | None:
     if _remote_background_paused():
         return None
     try:
+        from service.proactive import return_refresh
+        return_refresh.arm_on_launch()
+        catch_up = return_refresh.due()
+    except Exception:  # noqa: BLE001 — the hourly idle refresh still catches up
+        catch_up = False
+    try:
         from service.proactive.store import store as default_store
         refresh = idle_refresh_due(time.time(), default_store())
     except Exception:  # noqa: BLE001
         refresh = False
-    if not refresh and time.time() < _next_tick_at:
+    if not refresh and not catch_up and time.time() < _next_tick_at:
         return None
     if _foreground():
         _stood_down("a turn is in progress")
@@ -1038,7 +1062,7 @@ def schedule_tick() -> asyncio.Task | None:
             return None
     except Exception:  # noqa: BLE001
         pass
-    _task = asyncio.create_task(_idle_tick() if refresh else _tick())
+    _task = asyncio.create_task(_return_tick() if catch_up else _idle_tick() if refresh else _tick())
     return _task
 
 
@@ -1292,7 +1316,8 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     result = {"state": view_state, "as_of": state.get("as_of"), "progress": dict(_status["progress"]),
               "accounts": accounts, "owner": {"id": own, "label": sources.owner_label()}, "summary": summary, "cards": [_public(c) for c in cards],
               "todos": [_public(t) for t in todos], "threads": [{k: v for k, v in t.items() if k != "asks"} for t in threads],
-              "lede": _lede(cards, todos, summary, now, tz), "stats": _stats(state, cards, todos, account)}
+              "lede": _lede(cards, todos, summary, now, tz), "stats": _stats(state, cards, todos, account),
+              "updating": _updating()}
     if view_state == "unavailable":
         result["reason"] = "Wisp hasn't read your mail and texts yet. Tap Analyze now."
     # Why a waiting person did or didn't get a card ("you answered last",
@@ -1301,6 +1326,15 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
     if _status.get("error"):
         result["error"] = _status["error"]
     return result
+
+
+def _updating() -> bool:
+    """The Brief is being caught up after a long absence (return_refresh)."""
+    try:
+        from service.proactive import return_refresh
+        return return_refresh.updating()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def google_mail_status(now: float | None = None) -> tuple[list[str], list[str], dict[str, str]]:

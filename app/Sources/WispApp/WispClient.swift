@@ -854,6 +854,28 @@ final class WispClient {
         Task { _ = try? await URLSession.shared.data(for: req) }
     }
 
+    /// When the app last told the service the notch opened.
+    @MainActor private static var lastReturnNote: Date?
+
+    /// POST /assistant/proactive/return: the notch opened. When the Brief went
+    /// stale while Wisp was quit or its model parked, the service owes it a
+    /// catch-up and answers `updating` true, so the caller reads the day again
+    /// to show "Updating your Brief…". At most one request a minute; false on
+    /// any failure.
+    @MainActor func noteReturn(now: Date = Date()) async -> Bool {
+        if let last = Self.lastReturnNote, now.timeIntervalSince(last) < 60 { return false }
+        Self.lastReturnNote = now
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("assistant/proactive/return"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 5
+        req.httpBody = Data("{}".utf8)
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return (obj["updating"] as? Bool) == true
+    }
+
     private static func saveWhenAwayFlag(_ data: Data) -> Bool? {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let flag = obj["save_when_away"] as? NSNumber,
