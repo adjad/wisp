@@ -118,6 +118,19 @@ About 28% of steps think, and about 15% of final answers. This also cuts the mea
 
 `builder/thinking.py` holds the policy and the thought generator. The validator re-checks the policy for every example, and checks that dates a thought states match the call's arguments.
 
+## Untuned baseline at temperature 1.0 (2026-10-31, run 20261031-011715)
+
+The shipped Jundot quant, untuned, was run at Gemma's defaults (temperature 1.0, top_p 0.95, top_k 64) for 3 trials:
+
+| | temp 1.0 (this run) | temp 0.8 (20261030-011906 + 190651) |
+|---|---:|---:|
+| Pass rate | 657/1133 (58.0%) | 675/1134 (59.5%) |
+| Cases better | 39 | 52 (sign test p = 0.21, not significant) |
+| Unsafe-call trials | 14 | 12 |
+| Model seconds p50 / p90 | 7.55 / 17.31 | 7.66 / 16.90 |
+
+Temperature alone moves the score by noise only. The same failure clusters dominate: no_call 197, ungrounded_answer 175, wrong_tool 103. Compose (27%), followup (26%) and wisp (17%) stay the weakest categories. This run is a reference for the shipped quant. The strict gate below still compares the untuned bf16 and the merge, both re-quantised with the same recipe.
+
 ## Gate (tuned vs untuned Gemma, both quantised with the same recipe, both at temperature 1.0)
 
 The untuned baseline must be re-run at temperature 1.0, because the 2026-10-30 toolbench ran Gemma at 0.8. The toolbench parity check can't see temperature: oMLX's admin API answers 405, and `/v1/models/status` has no sampling fields. Run `scripts/run_toolbench.py --models gemma-4-E4B-it-oQ4e-mtp --exclusive --trials 3` with Wisp quit, once untuned and once tuned. The tuned model must meet all of these:
