@@ -4,7 +4,7 @@ Round 2 trains two separate LoRAs from one shared dataset:
 - `gemma`: Jundot gemma-4-E4B-it-oQ4e-mtp, the current Wisp default.
 - `bolt`: NVIDIA Nemotron 3.5 Bolt E4B, an RL post-train of Gemma 4 E4B.
 
-It targets the model-side failures found by the real-life toolbench (#418). Round 1 (draft #412) was reads-only and was built at b8502786. Its committed data fails the live-schema check on current main (419 of 833 train rows), so every row is rebuilt here.
+It targets the model-side failures found by the real-life toolbench (#418). Round 1 (draft #412) was a reads-only Gemma dataset built at b8502786, and it was never trained, so this is the FIRST fine-tune for both models. Round 2 includes every round-1 family, rebuilt. Its committed data fails the live-schema check on current main (419 of 833 train rows), so every row is rebuilt here.
 
 **Status:** preparing the dataset. No GPU, Brev or local training step runs without a separate go-ahead from the user.
 

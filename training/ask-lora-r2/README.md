@@ -1,6 +1,6 @@
 # Wisp Ask LoRA dataset, round 2 (Gemma 4 E4B and Nemotron 3.5 Bolt E4B), 2026-10-30
 
-**Round 2 status:** built and validated, not trained. Code head: origin/main 20ef528d (dev8).
+**Round 2 status:** built and validated, not trained. Round 1 was never trained on either model, so this is the first fine-tune for both, and it carries every round-1 family. Code head: origin/main 20ef528d (dev8).
 - **Size:** 1,804 examples (1,639 train, 165 valid) in 18 families. That is the 11 round-1 families, rebuilt on current main, plus 7 write families.
 - **Write families:** act_dont_ask, finish_the_write, stub_then_call, exact_args, right_write_tool, relay_receipt and safe_effects.
 - **Why:** these target the model-side toolbench failures. The plan, evidence and per-model gate are in [PLAN.md](PLAN.md).
