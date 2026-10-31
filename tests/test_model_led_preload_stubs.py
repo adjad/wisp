@@ -1,5 +1,6 @@
-"""Model-led preload + stub schemas: a call to a stub never executes, it is an
-implicit discovery. Synthetic tools and scripted clients only."""
+"""Model-led preload + stub schemas: a call to a stub is an implicit discovery
+unless its arguments already fit the real schema (registry.runnable_stub_call),
+in which case it runs as that call. Synthetic tools and scripted clients only."""
 import json
 
 from service.router.model_led import DISCOVERY_TOOL
@@ -59,7 +60,7 @@ def test_preload_does_not_consume_a_discovery_attempt(synthetic):
 
 def test_stub_call_never_executes_and_returns_receipt(synthetic):
     effects, _ = synthetic
-    client, events, _ = run([[call("view_emails")], "Synthetic answer."], model_led_preload=["get_upcoming"])
+    client, events, _ = run([[call("view_emails", guess=1)], "Synthetic answer."], model_led_preload=["get_upcoming"])
     assert effects == []
     assert not any(e["type"] == "tool_call" and e.get("name") == "view_emails" for e in events)
     [receipt] = receipts(client.requests[1])
@@ -70,7 +71,7 @@ def test_stub_call_never_executes_and_returns_receipt(synthetic):
 
 def test_next_round_offers_real_schema_for_stubbed_tool(synthetic):
     effects, _ = synthetic
-    client, _, _ = run([[call("view_emails")], [call("view_emails")], "Synthetic answer."],
+    client, _, _ = run([[call("view_emails", guess=1)], [call("view_emails")], "Synthetic answer."],
                        model_led_preload=["get_upcoming"])
     offered = by_name(client.requests[1])
     assert offered["view_emails"] == registry.get_tool("view_emails").schema()
@@ -82,7 +83,7 @@ def test_next_round_offers_real_schema_for_stubbed_tool(synthetic):
 
 def test_two_stub_calls_in_one_response_are_one_attempt_with_two_receipts(synthetic):
     effects, _ = synthetic
-    client, events, _ = run([[call("view_emails"), call("view_messages")], "Synthetic answer."])
+    client, events, _ = run([[call("view_emails", guess=1), call("view_messages", guess=1)], "Synthetic answer."])
     assert effects == []
     assert len(discoveries(events)) == 1
     assert set(discoveries(events)[0]["tools"]) == {"view_emails", "view_messages"}
@@ -97,7 +98,7 @@ def test_two_stub_calls_in_one_response_are_one_attempt_with_two_receipts(synthe
 
 def test_budget_exhaustion_removes_stubs_and_discovery(synthetic):
     assert MAX_DISCOVERIES == 2
-    client, events, _ = run([[call("view_emails")], [discover("calendar", "get_upcoming")], "Synthetic answer."])
+    client, events, _ = run([[call("view_emails", guess=1)], [discover("calendar", "get_upcoming")], "Synthetic answer."])
     assert [e["status"] for e in discoveries(events)] == ["ready_next_step", "ready_next_step"]
     assert DISCOVERY_TOOL in names(client.requests[1]) and "view_messages" in names(client.requests[1])
     assert names(client.requests[2]) == {"view_emails", "get_upcoming"}
@@ -115,7 +116,7 @@ def test_explicit_discovery_still_works_and_leaves_stubs(synthetic):
 
 def test_rejected_implicit_selection_executes_nothing(synthetic):
     effects, _ = synthetic
-    client, events, _ = run([[call("get_upcoming"), call("view_emails"), call("view_messages"), call("run_shell")],
+    client, events, _ = run([[call("get_upcoming", guess=1), call("view_emails", guess=1), call("view_messages", guess=1), call("run_shell")],
                              "Synthetic answer."])
     assert effects == []
     results = [m["content"] for m in client.requests[1]["messages"] if m.get("role") == "tool"]
@@ -175,7 +176,7 @@ def test_legacy_route_ignores_preload(synthetic):
 
 def test_sibling_call_to_not_yet_loaded_tool_does_not_execute(synthetic):
     effects, _ = synthetic
-    client, events, _ = run([[call("view_emails"), call("view_messages")], "Synthetic answer."],
+    client, events, _ = run([[call("view_emails", guess=1), call("view_messages", guess=1)], "Synthetic answer."],
                             model_led_preload=["get_upcoming"])
     assert effects == []
     assert not any(e["type"] == "tool_call" for e in events)
@@ -206,7 +207,7 @@ def test_stub_calls_are_matched_by_position_not_id(synthetic):
     """A streamed response can carry empty ids: a preloaded real call next to a
     stub call must still run, and the stub must still not."""
     effects, _ = synthetic
-    stub = {"id": "", "function": {"name": "view_emails", "arguments": "{}"}}
+    stub = {"id": "", "function": {"name": "view_emails", "arguments": '{"guess": 1}'}}
     real = {"id": "", "function": {"name": "get_upcoming", "arguments": '{"days": 1}'}}
     run([[stub, real], "Synthetic answer."], model_led_preload=["get_upcoming"])
     assert effects == [("get_upcoming", {"days": 1})]
@@ -215,7 +216,58 @@ def test_stub_calls_are_matched_by_position_not_id(synthetic):
 def test_preloaded_sibling_of_a_stub_call_runs_in_the_same_step(synthetic):
     # The preloaded tool was already admitted, so it runs; the stub only loads.
     effects, _ = synthetic
-    client, _, _ = run([[call("view_emails"), call("get_upcoming", days=2)], "Synthetic answer."],
+    client, _, _ = run([[call("view_emails", guess=1), call("get_upcoming", days=2)], "Synthetic answer."],
                        model_led_preload=["get_upcoming"])
     assert effects == [("get_upcoming", {"days": 2})]
     assert "view_emails" in names(client.requests[1])
+
+
+# --- a stub call whose arguments fit the real schema runs as that call -------
+
+def test_stub_read_with_fitting_arguments_runs_in_the_same_step(synthetic):
+    # Baseline 2026-10-31: wisp_capabilities() / get_weather(location=...) called
+    # as stubs, never repeated, and the answer was invented.
+    effects, _ = synthetic
+    client, events, _ = run([[call("get_upcoming", days=1)], "Synthetic agenda."])
+    assert effects == [("get_upcoming", {"days": 1})]
+    assert discoveries(events) == []
+    assert DISCOVERY_TOOL in names(client.requests[1])   # no attempt spent
+
+
+def test_stub_read_with_no_arguments_runs_when_the_schema_needs_none(synthetic):
+    effects, _ = synthetic
+    run([[call("view_emails")], "Synthetic answer."], model_led_preload=["get_upcoming"])
+    assert effects == [("view_emails", {})]
+
+
+def test_stub_call_with_unknown_arguments_loads_schema_and_names_the_real_ones(synthetic):
+    effects, _ = synthetic
+    client, _, _ = run([[call("get_upcoming", when="tomorrow")], "Synthetic answer."])
+    assert effects == []
+    [receipt] = receipts(client.requests[1])
+    assert receipt["not_run_yet"] == ["get_upcoming"]
+    assert "days: integer" in receipt["arguments"]["get_upcoming"]
+
+
+def test_stub_effect_with_no_arguments_never_runs(synthetic):
+    effects, _ = synthetic
+    _, register = synthetic
+    register("open_thing", "automation_tools", "app_control")
+    client, _, _ = run([[call("open_thing")], "Synthetic answer."])
+    assert effects == []
+    assert receipts(client.requests[1])[0]["not_run_yet"] == ["open_thing"]
+
+
+def test_stub_effect_with_fitting_arguments_still_goes_through_confirmation(synthetic):
+    effects, _ = synthetic
+    approval = Approval(allowed=False)
+    run([[call("write_file", path="/tmp/x.txt", content="hi")], "Synthetic answer."],
+        approval=approval)
+    assert effects == []                      # declined at the card
+    assert [a["tool"] for a in approval.calls] == ["write_file"]
+
+
+def test_forbidden_stub_with_fitting_arguments_does_not_run(synthetic):
+    effects, _ = synthetic
+    run([[call("view_emails")], "Synthetic answer."], forbidden_tools=frozenset({"view_emails"}))
+    assert effects == []

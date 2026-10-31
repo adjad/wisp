@@ -122,6 +122,11 @@ ASK_CORE_STUBS = frozenset({
     "collect_task_evidence", "lookup_contact", "set_timer", "system_status",
     "wisp_capabilities", "draft_email", "draft_message", "calculate", "world_time",
     "get_my_day_plan",
+    # Toolbench 2026-10-31: the immediate sends, forget, notes and free time were
+    # missing, so "tell him yes", "forget that I..." and "email dad" reached only
+    # draft_* or an invented memory.forget.
+    "send_email", "send_message", "schedule_send", "forget", "create_note", "find_free_time",
+    "wisp_status",
 })
 
 DAY_PLAN_TOOL = "get_my_day_plan"
@@ -279,6 +284,10 @@ _COMPOSE = re.compile(r"^\s*(?:please\s+)?(?:can you\s+|could you\s+)?(?:write|c
 # birthday message for my sister") is just the kind of text to write.
 _DESTINATION = re.compile(
     r"\b(?i:e-?mail|text|message|imessage|dm|note|letter|card)\s+(?i:to|for)\s+[A-Z][\w.'-]*"
+    # A channel noun addressed TO someone is sent, whatever the case: "an email
+    # to mom", "a message to the landlord" (toolbench 2026-10-31: these banned
+    # draft_email). A "note to my professor" is still only text to write.
+    r"|(?i:\b(?:e-?mail|text|message|imessage|dm)\s+to\s+(?:my\s+|the\s+|our\s+)?[a-z][\w.'-]*)"
     r"|(?i:\b(?:send|sent|reply|respond|forward|post\s+(?:it|this)|share)\b)"
     r"|(?i:\b(?:in|to|into)\s+(?:my\s+)?(?:notes?|notes app|a file|calendar|reminders?)\b)"
     r"|(?i:\b(?:save|file|document|doc|calendar|reminder|clipboard)\b)"
@@ -303,9 +312,9 @@ ASK_COMPOSE_HINT = (
 # A writing request that draws on the user's stored content keeps its reads:
 # "summary of my notes", "reply to Ed's email", "based on my calendar".
 _STORED_CONTENT = re.compile(
-    r"\b(?:my|our)\s+(?:notes?|e-?mails?|inbox|calendar|schedule|agenda|messages?|texts?|"
-    r"chats?|reminders?|to-?dos?|docs?|documents?|files?|folder|drafts?|meetings?|"
-    r"conversations?|browsing|history)\b"
+    r"\b(?:my|our)\s+(?:upcoming\s+|next\s+)?(?:notes?|e-?mails?|inbox|calendar|schedule|agenda|"
+    r"messages?|texts?|chats?|reminders?|to-?dos?|docs?|documents?|files?|folder|drafts?|"
+    r"meetings?|events?|plans?|conversations?|browsing|history)\b"
     r"|\b(?:based on|using|from|according to|summari[sz]e|summary of|recap of)\b"
     r"|\b(?:reply|respond|answer)\s+to\b"
     r"|\b[\w.-]+['’]s\s+(?:e-?mail|message|text|note|doc|document|post|invite)\b"

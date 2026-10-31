@@ -152,7 +152,9 @@ def test_schema_first_then_real_executor_arguments_and_receipts(synthetic):
 
 def test_same_response_schema_selection_does_not_admit_sibling_real_call(synthetic):
     effects, _ = synthetic
-    client, events, _ = run([[discover("calendar", "get_upcoming"), call("get_upcoming", days=1)],
+    # The sibling's arguments do not fit the schema, so only discovery could
+    # have admitted it (a fitting stub call runs: registry.runnable_stub_call).
+    client, events, _ = run([[discover("calendar", "get_upcoming"), call("get_upcoming", day=1)],
                            [call("get_upcoming", days=1)], "Synthetic agenda."])
     assert effects == [("get_upcoming", {"days": 1})]
     # The sibling named a tool offered only as a stub: it loads, it does not run.

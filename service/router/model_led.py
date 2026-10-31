@@ -75,6 +75,25 @@ class BuiltinCompletion(str):
         return self
 
 
+# Extension tools whose HOST runner (not the extension's prose) produces the
+# completion boundary: a skill command's process exit status, an MCP result's
+# isError flag. The module named here owns `authentic_completion_tool(tool)`,
+# which accepts only a runner that module built. Without this every skill
+# action (mac_lock_screen, mac_media...) and MCP write was refused on every
+# model-led turn: "This action has no supported completion contract".
+EXTENSION_COMPLETION_MODULES = {"skill_tool": "service.skills.tools", "mcp_action": "service.mcp"}
+
+
+def extension_completion_tool(tool) -> bool:
+    module = sys.modules.get(EXTENSION_COMPLETION_MODULES.get(getattr(tool, "category", ""), ""))
+    check = getattr(module, "authentic_completion_tool", None)
+    return bool(check and check(tool))
+
+
+def completion_authority(tool) -> bool:
+    return authoritative_builtin(tool) or extension_completion_tool(tool)
+
+
 def authoritative_builtin(tool) -> bool:
     module_name = BUILTIN_COMPLETION_MODULES.get(tool.name)
     module = sys.modules.get(module_name or "")
@@ -85,13 +104,13 @@ def authoritative_builtin(tool) -> bool:
 def builtin_completion_verified(tool, result) -> bool:
     if (type(result) is not BuiltinCompletion or result.tool_name != tool.name
             or result.phase != "mutation" or type(result.completion_code) is not int
-            or not authoritative_builtin(tool)):
+            or not completion_authority(tool)):
         return False
     return result.completion_code == 0
 
 
 def builtin_completion_outcome(tool, result, outcome):
-    if tool.name not in BUILTIN_COMPLETION_MODULES:
+    if tool.name not in BUILTIN_COMPLETION_MODULES and not extension_completion_tool(tool):
         return outcome
     from dataclasses import replace
     return replace(outcome, status="succeeded" if builtin_completion_verified(tool, result) else "failed",
@@ -172,7 +191,7 @@ def trusted_effect_receipt(tool, outcome, result=None) -> bool:
     Existing built-ins retain their typed/string success contracts. This is a
     tool completion receipt, not an independent physical-world readback.
     """
-    if tool.name in BUILTIN_COMPLETION_MODULES:
+    if tool.name in BUILTIN_COMPLETION_MODULES or extension_completion_tool(tool):
         return builtin_completion_verified(tool, result)
     if tool.name == "manage_timers" and outcome.status in {"succeeded", "no_match"}:
         low = outcome.text.strip().lower()
@@ -186,7 +205,7 @@ def trusted_effect_receipt(tool, outcome, result=None) -> bool:
 
 def has_effect_contract(tool, outcome) -> bool:
     return (outcome.effect != "read" or tool.name in EFFECT_RECEIPTS
-            or authoritative_builtin(tool))
+            or completion_authority(tool))
 
 
 def effectful_call(tool, args: dict) -> bool:
@@ -573,3 +592,29 @@ def continuation_requires_baseline(prompt: str, last_assistant: str | None) -> b
     if last_assistant and "?" in last_assistant:
         return bool(re.fullmatch(r"\s*(?:use |via |by |through )?(?:text|messages?|imessage|email|e-mail|mail)\s*[.!]?\s*", prompt, re.I))
     return False
+
+
+# The always-confirmed outbound categories (safety/policy._ALWAYS_CONFIRM_OUTBOUND
+# minus scheduled and network sends): their card is the user's authorization.
+OFFERED_SEND_CATEGORIES = frozenset({"messages_send", "email_send"})
+_SEND_OFFER = re.compile(
+    r"\b(?:i\s+can|i\s+could|should\s+i|shall\s+i|want\s+me\s+to|would\s+you\s+like\s+me\s+to|"
+    r"do\s+you\s+want\s+me\s+to|(?:send|text|email|message)\s+(?:it|that|this|them)\b[^?]*\b(?:through|via|by))\b"
+    r"[^?]*\b(?:text|send|message|e-?mail|imessage)\b[^?]*\?", re.I)
+_DECLINE = re.compile(r"\b(?:no|nope|cancel|stop|never\s*mind|don['’]?t|do\s+not|forget\s+it)\b", re.I)
+
+
+def continuation_send_exemption(prompt: str, last_assistant: str | None) -> frozenset[str]:
+    """Send categories a bare assent or channel answer may still reach, when it
+    answers the assistant's OWN send offer ("I can text her that if you'd
+    like?" -> "sure"; "Messages or email?" -> "messages"). Every other effect
+    stays forbidden under continuation_requires_baseline. Safe only because
+    these categories always show a confirmation card, under full access too:
+    the card, not the assent, authorizes the send. A decline never qualifies.
+    Toolbench 2026-10-31: fu_sure_after_offer, fu_channel_messages_bare."""
+    if not last_assistant or _DECLINE.search(prompt or ""):
+        return frozenset()
+    if not continuation_requires_baseline(prompt, last_assistant):
+        return frozenset()
+    return OFFERED_SEND_CATEGORIES if _SEND_OFFER.search(last_assistant) else frozenset()
+

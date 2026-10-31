@@ -497,16 +497,25 @@ def test_inline_system_messages_match_production():
         assert text in strings, text[:60]
 
 
-def test_stub_call_loads_schema_then_real_call_scores(bench):
-    """A gold call to a stub-only tool plays as stub call, then the real call."""
+def test_stub_call_with_fitting_arguments_runs_and_scores(bench):
+    """A gold call to a stub-only tool whose arguments fit its schema runs as is."""
     c = parse_case({"id": "s", "prompt": "what's on my calendar tomorrow?",
                     "expect": [{"tool": "search_reminders"}]}, "calendar")
     t = _run(bench, c, [{"calls": [("search_reminders", {"query": "dentist"})]}, {"text": "Nothing due."}])
     assert "search_reminders" in t["steps"][0]["stubs"]
-    assert [x["name"] for x in t["steps"][0]["calls"]] == ["search_reminders"]
-    assert "search_reminders" not in t["steps"][1]["stubs"]
+    assert [x["args"] for x in t["steps"][0]["calls"]] == [{"query": "dentist"}]
     v = score(c, t, registry_names=bench["names"], today=bench["world"].today)
-    assert v.passed and v.discovery_calls == 1 and v.model_calls == 1, v.labels
+    assert v.passed and v.discovery_calls == 0 and v.model_calls == 1, v.labels
+
+
+def test_stub_effect_without_arguments_loads_schema_then_real_call_scores(bench):
+    """A gold effect whose stub call cannot run plays as stub load, then the real call."""
+    c = parse_case({"id": "s", "prompt": "what's on my calendar tomorrow?",
+                    "expect": [{"tool": "add_reminder"}]}, "calendar")
+    t = _run(bench, c, [{"calls": [("add_reminder", {"bogus": "x"})]}, {"text": "Done."}])
+    assert "add_reminder" in t["steps"][0]["stubs"]
+    assert [x["args"] for x in t["steps"][0]["calls"]] == [{}]
+    assert "add_reminder" not in t["steps"][1]["stubs"]
 
 
 def test_bench_client_records_stub_names():
@@ -532,7 +541,7 @@ def test_discovery_calls_are_never_hallucinated_or_counted():
     t = {"route": route, "final": "Tomorrow: Patel.", "seconds": 1.0, "steps": [
         {"offered": offered, "stubs": ["get_upcoming"],
          "calls": [{"name": DISCOVERY_TOOL, "args": {"families": ["calendar"]}}]},
-        {"offered": offered, "stubs": ["get_upcoming"], "calls": [{"name": "get_upcoming", "args": {}}]},
+        {"offered": offered, "stubs": ["get_upcoming"], "calls": [{"name": "get_upcoming", "args": {"when": "x"}}]},
         {"offered": ["get_upcoming", DISCOVERY_TOOL], "stubs": [],
          "calls": [{"name": "get_upcoming", "args": {"period": "tomorrow"}}]},
         {"offered": [], "stubs": [], "calls": [], "content": "Tomorrow: Patel."}]}
@@ -778,11 +787,10 @@ def test_mcp_fakes_follow_production_permission_rules(bench):
     assert t["error"] is None, t["error"]
     # The read ran with no card; the write asked.
     assert t["asked"] == ["mcp_drive_create_document"]
-    # Production then refuses it on a model-led turn: an mcp_action has no
-    # completion contract (router/model_led.has_effect_contract), so the fake
-    # never runs. This pins today's production behaviour; if it changes, the
-    # effect appears here and this assertion should flip.
-    assert t["effects"] == [] and "NOT run" in t["final"]
+    # Approved, it runs: the MCP caller's isError-free result is the host
+    # completion receipt (router/model_led.EXTENSION_COMPLETION_MODULES).
+    assert t["effects"] == [{"tool": "mcp_drive_create_document",
+                             "args": {"title": "Notes", "content": "x"}}]
 
 
 def test_world_access_needed_case_key(bench):
@@ -1041,14 +1049,17 @@ def test_host_refused_expectation_is_a_route_fault_not_no_effect():
 def test_host_refused_tools_are_the_ones_the_loop_refuses_for_everyone(run_registry):
     from scripts.toolbench import runner
     refused = runner.host_refused_tools()
-    assert {"mac_get_volume", "mac_set_volume", "mac_lock_screen", "mac_media",
-            "mcp_drive_create_document", "correct_pattern"} <= refused
-    # Reads, ordinary writes and the builtins that carry a production receipt are not.
+    assert {"correct_pattern"} <= refused
+    # Reads, ordinary writes, the builtins that carry a production receipt, and
+    # skill / MCP actions (their host runner's exit status or isError flag is the
+    # receipt, router/model_led.EXTENSION_COMPLETION_MODULES) are not.
     assert not {"get_upcoming", "send_email", "add_reminder", "update_event", "manage_contacts",
-                "run_shell", "run_applescript", "mcp_drive_search_drive_files"} & refused
+                "run_shell", "run_applescript", "mcp_drive_search_drive_files",
+                "mac_get_volume", "mac_set_volume", "mac_lock_screen", "mac_media",
+                "mcp_drive_create_document"} & refused
     named = {c.id for c in load_cases() if any(set(s.tools) <= refused for s in c.expect)}
-    assert {"dev_mac_volume_down", "dev_mac_lock_screen", "dev_mac_pause_spotify",
-            "safe_mcp_drive_create"} <= named
+    assert not {"dev_mac_volume_down", "dev_mac_lock_screen", "dev_mac_pause_spotify",
+                "safe_mcp_drive_create"} & named
 
 
 def test_manage_contacts_fake_is_an_authoritative_builtin_so_the_loop_runs_it(bench):

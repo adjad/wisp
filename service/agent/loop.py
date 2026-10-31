@@ -618,7 +618,15 @@ def _clean_tool_name(name: str) -> str:
     bug.
     """
     name = (name or "").split("<|", 1)[0].strip()
-    return name.rsplit(".", 1)[-1] if name.startswith("functions.") else name
+    if name.startswith("functions."):
+        return name.rsplit(".", 1)[-1]
+    # A namespaced form of a registered tool ("memory.forget", "memory:forget":
+    # 19 toolbench trials on 2026-10-31) is that tool. Only the NAME is read
+    # this way; offer, policy and argument checks still decide the call.
+    if (match := re.fullmatch(r"[A-Za-z_][\w-]*[.:]([A-Za-z_]\w*)", name)) and get_tool(name) is None:
+        if get_tool(match[1]) is not None:
+            return match[1]
+    return name
 
 
 _STUCK_MESSAGE = (
@@ -4128,6 +4136,24 @@ async def run_agent(
         msgs.append({"role": "assistant", "content": msg.get("content") or "",
                      "tool_calls": tool_calls})
 
+        # A stub call whose arguments already fit the tool's real schema runs
+        # as that call (registry.runnable_stub_call); only the others become
+        # discovery below. Widening allowed_names here is limited to those
+        # exact admitted names, and every later guard still applies to them.
+        stub_runs: set[int] = set()
+        if discovery is not None and step_stubs:
+            from service.tools.registry import runnable_stub_call
+            for index, tc in enumerate(tool_calls):
+                stub_name = _clean_tool_name(tc["function"]["name"])
+                if (stub_name in step_stubs and stub_name not in forbidden_tools
+                        and runnable_stub_call(get_tool(stub_name),
+                                               _parse_args(tc["function"].get("arguments", "")))):
+                    stub_runs.add(index)
+                    allowed_names.add(stub_name)
+            if stub_runs:
+                audit("stub_call_runs", tools=sorted(
+                    {_clean_tool_name(tool_calls[i]["function"]["name"]) for i in stub_runs}))
+
         # BATCHED CONFIRMATION for calendar_write (cancel_event /
         # add_calendar_event). When a step proposes SEVERAL of these at once
         # — the shape a bulk "clear my calendar except X and Y" instruction
@@ -4209,10 +4235,22 @@ async def run_agent(
         # a sibling call to a just-loaded tool is still rejected this step.
         # Keyed by position: a streamed call can arrive with an empty or
         # duplicate id, and a real call must never be mistaken for a stub.
+        # A call to an admitted tool this step did not offer at all (neither a
+        # schema nor a stub: "send_message" when only draft_message was listed)
+        # is handled the same way while discovery remains: it never runs this
+        # step, its schema loads, and the receipt says to call it again. Over
+        # budget, or forbidden, it is still refused as unoffered below.
+        def _loads_unoffered(tool_name: str) -> bool:
+            return (capability_catalog is not None and tool_name not in allowed_names
+                    and tool_name in capability_catalog.tools
+                    and discovery.attempts < MAX_DISCOVERIES
+                    and not (forcing_first_step and tool_name in turn_tool_names))
         stub_results: dict[int, str] = {}
         stub_calls = [(index, _clean_tool_name(tc["function"]["name"]))
                       for index, tc in enumerate(tool_calls)
-                      if discovery is not None and _clean_tool_name(tc["function"]["name"]) in step_stubs]
+                      if discovery is not None and index not in stub_runs
+                      and (_clean_tool_name(tc["function"]["name"]) in step_stubs
+                           or _loads_unoffered(_clean_tool_name(tc["function"]["name"])))]
         if stub_calls:
             try:
                 capability_catalog = fresh_capability_catalog()
@@ -4233,6 +4271,11 @@ async def run_agent(
                     receipt["not_run_yet"] = loaded
                     receipt["next"] = (f"Nothing was read yet. Call {', '.join(loaded)} now with "
                                        "full arguments and answer only from its result.")
+                    # The call's arguments did not fit (else it would have run):
+                    # name the real ones, so the retry is not a second guess.
+                    from service.tools.registry import _arg_hint
+                    receipt["arguments"] = {n: _arg_hint(t) for n in loaded[:3]
+                                            if (t := get_tool(n)) is not None}
                     stub_result = json.dumps(receipt)
                 await emit({"type": "routing_discovery", "families": list(expansion.families),
                             "tools": tools, "status": "ready_next_step", "implicit": True})
@@ -4249,7 +4292,8 @@ async def run_agent(
             cid = tc.get("id", "")
             tool_executed = False  # the tool body ran (not denied/declined/refused)
             name = _clean_tool_name(tc["function"]["name"])
-            args = _parse_args(tc["function"].get("arguments", ""))
+            from service.tools.registry import unwrap_nested_args
+            args = unwrap_nested_args(get_tool(name), _parse_args(tc["function"].get("arguments", "")))
             if discovery is not None and name == DISCOVERY_TOOL:
                 # Do not widen this step's allowed_names. A sibling real call
                 # must not gain authority from a schema request in this batch.

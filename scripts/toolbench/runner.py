@@ -202,6 +202,7 @@ def install_fakes(world, *, seed: bool = True) -> set[str]:
     import service.tools  # noqa: F401  registers the roster
     from service import skills
     from service.mcp import TOOL_PARTS
+    from service.mcp import manager as mcp_manager
     from service.skills import tools as skill_tools
     from service.tools.registry import REGISTRY
     from scripts.toolbench import world as world_mod
@@ -210,6 +211,7 @@ def install_fakes(world, *, seed: bool = True) -> set[str]:
         _INSTALLED = {
             "registry": dict(REGISTRY), "tool_parts": dict(TOOL_PARTS),
             "skills": dict(skills._skills), "skill_registered": set(skill_tools._registered),
+            "mcp_registered": set(mcp_manager._registered),
             "attrs": {(m, a): getattr(importlib.import_module(m), a) for m, a in _PATCHED_ATTRS}}
     EXTRA_TOOLS = world_mod.register_extra_tools()
     import service.memory.identity as identity
@@ -226,6 +228,7 @@ def install_fakes(world, *, seed: bool = True) -> set[str]:
         raise RuntimeError(f"toolbench: real tool functions survived: {real}")
     world_mod.install_hooks(world)
     _install_authoritative_fakes()
+    _install_extension_fakes()
     _install_fake_outbox(world)
     if seed:
         world_mod.seed_memory(world)
@@ -248,6 +251,34 @@ def _install_authoritative_fakes() -> None:
         fn = REGISTRY[name].func
         fn.__module__ = module.__name__
         setattr(module, name, fn)
+
+
+def _install_extension_fakes() -> None:
+    """Give each world fake of a skill tool or MCP action the receipt its
+    production runner produces (router.model_led.EXTENSION_COMPLETION_MODULES):
+    a BuiltinCompletion with code 0 when it succeeded, marked as that module's
+    own runner. A fake's "(exit code N)" / "(error" result stays a plain failure."""
+    import service.mcp as mcp
+    from service.router.model_led import BuiltinCompletion
+    from service.skills import tools as skill_tools
+    from service.tools.registry import REGISTRY
+    for name, tool in list(REGISTRY.items()):
+        if tool.category == "skill_tool" and name in skill_tools._registered:
+            token = skill_tools._COMPLETION_TOKEN
+        elif tool.category == "mcp_action":
+            mcp.manager._registered.add(name)
+            token = mcp._COMPLETION_TOKEN
+        else:
+            continue
+        fake = tool.func
+
+        def run(*, _fake=fake, _name=name, **args):
+            out = _fake(**args)
+            if str(out).startswith(("(exit code", "(error", "(the MCP tool reported an error")):
+                return out
+            return BuiltinCompletion(str(out), tool_name=_name, completion_code=0)
+        run._wisp_completion, run._wisp_tool_name, run._toolbench_fake = token, name, True
+        REGISTRY[name] = replace(tool, func=run)
 
 
 def host_refused_tools() -> frozenset[str]:
@@ -298,6 +329,9 @@ def uninstall_fakes() -> None:
     skills._skills = _INSTALLED["skills"]
     skill_tools._registered.clear()
     skill_tools._registered.update(_INSTALLED["skill_registered"])
+    from service.mcp import manager as mcp_manager
+    mcp_manager._registered.clear()
+    mcp_manager._registered.update(_INSTALLED["mcp_registered"])
     for (mod, attr), value in _INSTALLED["attrs"].items():
         setattr(importlib.import_module(mod), attr, value)
     _INSTALLED, EXTRA_TOOLS = None, []
@@ -541,6 +575,12 @@ def scripted_client_class():
                 return entry
             entry = self._next(offered, already - self._stubbed)
             stubbed = {n for n, _ in (entry or {}).get("calls", ())} & stubs
+            # A stub call whose arguments fit the real schema runs as that call
+            # (registry.runnable_stub_call): the gold entry plays as is.
+            from service.tools.registry import get_tool, runnable_stub_call
+            if stubbed and all(runnable_stub_call(get_tool(n), a)
+                               for n, a in entry.get("calls", ()) if n in stubbed):
+                stubbed = set()
             if stubbed:
                 self._held, self._stubbed = entry, self._stubbed | stubbed
                 return {"think": entry.get("think", ""), "calls": [(n, {}) for n in sorted(stubbed)]}
@@ -967,7 +1007,8 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
                                     capability_question, compose_only, day_plan_question,
                                     knowledge_question, pure_writing)
     from service.router.model_led import (OPAQUE_OUTBOUND_TOOLS, PRIVATE_EGRESS_TOOLS,
-                                          continuation_requires_baseline, fresh_personal_obligation,
+                                          continuation_requires_baseline, continuation_send_exemption,
+                                          fresh_personal_obligation,
                                           memory_excluded, needs_effect_owner, opaque_effect,
                                           personal_communication_request, registry_specs)
     from service.router.router import RouteDecision, _scheduled_send_review, routing_guard_contract
@@ -1017,7 +1058,10 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
     # model_only never interprets an old owner, so task_owner_verdict stays "none".
     unresolved_block = bool(store.unresolved_action(sid))
     if continuation_requires_baseline(prompt, last_assistant) or unresolved_block:
-        forbidden |= frozenset(t.name for t in registry_specs(REGISTRY) if needs_effect_owner(t.category))
+        exempt = (frozenset() if unresolved_block
+                  else continuation_send_exemption(prompt, last_assistant))
+        forbidden |= frozenset(t.name for t in registry_specs(REGISTRY)
+                               if needs_effect_owner(t.category) and t.category not in exempt)
     decision = RouteDecision(
         role="agent", model=target.model, needs_tools=True,
         source="model_led", route_source="model_led_discovery",

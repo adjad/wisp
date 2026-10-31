@@ -86,7 +86,7 @@ def test_stub_load_then_stall_is_reprompted_and_reads_the_calendar(synthetic):
     load, nothing ran), then a "give me a moment" reply with no tool."""
     effects, _ = synthetic
     client, events, answer = run(
-        [[call("get_upcoming", period="tomorrow")], STALL,
+        [[call("get_upcoming", when="tomorrow")], STALL,
          [call("get_upcoming", period="tomorrow")], "Tomorrow: Office Hours 10–11 AM."],
         prompt="what is up for tommorow", ask_quality=True, model_led_preload=["view_emails"])
     # The stub call ran nothing and says so in its receipt.

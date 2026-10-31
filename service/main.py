@@ -102,7 +102,7 @@ from service.agent.planner import enabled_from_env as planner_enabled_from_env
 # registry at import time, so it must load with the real registry.
 from service.router import reranker as _reranker
 from service.model_only import model_only_enabled
-from service.router.model_led import (continuation_requires_baseline,
+from service.router.model_led import (continuation_requires_baseline, continuation_send_exemption,
                                       model_led_enabled, needs_effect_owner,
                                       fresh_personal_obligation, memory_excluded, opaque_effect, personal_communication_request,
                                       OPAQUE_OUTBOUND_TOOLS, PRIVATE_EGRESS_TOOLS, registry_specs)
@@ -2432,8 +2432,11 @@ async def agent(body: dict[str, Any]):
                     # interpretation. It cannot authorize a new effect merely
                     # by referring to an old assistant offer with no owned plan.
                     from service.tools.registry import REGISTRY
+                    exempt = (frozenset() if task_owner_verdict == "ambiguous" or unresolved_block
+                              else continuation_send_exemption(prompt, last_assistant))
                     forbidden |= frozenset(t.name for t in registry_specs(REGISTRY)
-                                           if needs_effect_owner(t.category))
+                                           if needs_effect_owner(t.category)
+                                           and t.category not in exempt)
                 decision = RouteDecision(
                     role="agent", model=model_led_target.model, needs_tools=True,
                     source="model_led", route_source="model_led_discovery",
