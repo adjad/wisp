@@ -66,7 +66,9 @@ def synthetic(system, name="send_email", args=None, result="Sent to Dana.", fina
     ex = {"messages": msgs, "tools": [V.REGISTRY[name].schema()]}
     meta = {"id": "selftest", "family": family, "prompt": prompt, "writes": [name] if writes_ is None else writes_,
             "approve": list(approve), "cards_seen": list(cards),
-            "expect_cards": list(cards if expect is None else expect)}
+            "expect_cards": list(cards if expect is None else expect),
+            # the write took effect unless its card was denied
+            "effects": [] if result == DENIED else [[name, args]]}
     return ex, meta
 
 
@@ -144,7 +146,7 @@ def corrupt():
     # --- round 2: writes, cards, approval, content, toolbench ------------------------------------
     cases["write_call~family not in WRITE_ALLOW"] =synthetic(
         system, family="knowledge_direct", cards=["send_email"], approve=[True])
-    cases["cards:missing"] = synthetic(system, cards=[], approve=[])
+    cases["cards:missing"] = synthetic(system, cards=[], approve=[])   # took effect with no card
     cases["cards:never_card"] = synthetic(
         system, name="add_reminder", result="Reminder set.", final="Done: I set the reminder.", cards=["add_reminder"],
         approve=[True])

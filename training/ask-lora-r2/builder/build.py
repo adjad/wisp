@@ -73,7 +73,7 @@ def _same_call(s_, r_) -> bool:
     if s_[0] != r_[0]:
         return False
     sent, ran = dict(s_[1]), dict(r_[1])
-    if s_[0] == "update_event" and "when_iso" in sent:
+    if s_[0] in ("update_event", "add_calendar_event") and "when_iso" in sent:
         from service.tools.assistant_tools import bind_calendar_local_start
         try:
             sent["when_iso"] = bind_calendar_local_start(sent["when_iso"])

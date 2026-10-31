@@ -50,6 +50,18 @@ from __future__ import annotations
 # Filled in as the round-2 write families land (family -> allowed write tools).
 WRITE_ALLOW: dict[str, frozenset[str]] = {
     "safe_effects": frozenset({"send_message", "send_email", "schedule_send", "remember", "forget"}),
+    "exact_args": frozenset({"add_calendar_event", "update_event", "add_reminder", "update_reminder",
+                             "create_note", "append_note", "send_message"}),
+    "right_write_tool": frozenset({"add_calendar_event", "update_event", "add_reminder", "draft_email", "send_email",
+                                   "send_message", "create_note", "append_note", "complete_reminder",
+                                   "clear_reminders"}),
+    "relay_receipt": frozenset({"add_calendar_event", "update_event", "add_reminder", "update_reminder",
+                                "complete_reminder", "send_message", "send_email", "create_note"}),
+    "act_dont_ask": frozenset({"add_reminder", "add_calendar_event", "send_message", "schedule_send", "create_note"}),
+    "finish_the_write": frozenset({"manage_contacts", "send_message", "update_event", "complete_reminder",
+                                   "update_reminder", "draft_email", "reply_to_email"}),
+    "stub_then_call": frozenset({"add_reminder", "update_reminder", "send_message", "send_email", "draft_email",
+                                 "create_note", "update_event"}),
 }
 
 # Tools that must ALWAYS show an approval card before running (decided Wisp

@@ -1,114 +1,177 @@
 {
  "by_target": {
-  "call": 344,
-  "final": 449,
-  "load": 127
+  "call": 720,
+  "final": 743,
+  "load": 341
  },
- "code_head": "753883e7cd031660219c18659b0242fe7eb6f890",
- "examples": 920,
+ "code_head": "e804331b64708af4e57fd86523dac1f1ff911815",
+ "examples": 1804,
  "families": {
-  "act_dont_promise": {
-   "call": 40,
-   "examples": 94,
-   "final": 40,
-   "load": 14,
-   "train": 86,
-   "turns": 40,
+  "act_dont_ask": {
+   "call": 37,
+   "examples": 98,
+   "final": 44,
+   "load": 17,
+   "train": 90,
+   "turns": 44,
    "valid": 8
+  },
+  "act_dont_promise": {
+   "call": 37,
+   "examples": 88,
+   "final": 37,
+   "load": 14,
+   "train": 82,
+   "turns": 37,
+   "valid": 6
   },
   "capability_honest": {
    "call": 14,
-   "examples": 72,
+   "examples": 71,
    "final": 44,
-   "load": 14,
-   "train": 66,
+   "load": 13,
+   "train": 63,
    "turns": 44,
-   "valid": 6
+   "valid": 8
   },
   "concise_gentle": {
-   "call": 31,
-   "examples": 71,
-   "final": 37,
-   "load": 3,
-   "train": 65,
-   "turns": 37,
+   "call": 30,
+   "examples": 70,
+   "final": 36,
+   "load": 4,
+   "train": 64,
+   "turns": 36,
    "valid": 6
+  },
+  "exact_args": {
+   "call": 49,
+   "examples": 123,
+   "final": 46,
+   "load": 28,
+   "train": 111,
+   "turns": 46,
+   "valid": 12
+  },
+  "finish_the_write": {
+   "call": 84,
+   "examples": 163,
+   "final": 37,
+   "load": 42,
+   "train": 147,
+   "turns": 41,
+   "valid": 16
   },
   "grounded_only": {
    "call": 37,
-   "examples": 87,
+   "examples": 86,
    "final": 37,
-   "load": 13,
-   "train": 80,
+   "load": 12,
+   "train": 77,
    "turns": 37,
-   "valid": 7
+   "valid": 9
   },
   "ignore_embedded_instructions": {
    "call": 31,
-   "examples": 67,
+   "examples": 65,
    "final": 31,
-   "load": 5,
-   "train": 61,
+   "load": 3,
+   "train": 59,
    "turns": 31,
    "valid": 6
   },
   "knowledge_direct": {
-   "call": 9,
-   "examples": 95,
-   "final": 86,
-   "train": 86,
-   "turns": 86,
-   "valid": 9
+   "call": 8,
+   "examples": 93,
+   "final": 85,
+   "train": 85,
+   "turns": 85,
+   "valid": 8
   },
   "multi_source": {
    "call": 29,
-   "examples": 70,
+   "examples": 72,
    "final": 29,
-   "load": 12,
-   "train": 63,
+   "load": 14,
+   "train": 64,
    "turns": 29,
-   "valid": 7
+   "valid": 8
   },
   "no_write_for_reads": {
    "call": 27,
    "examples": 62,
    "final": 27,
    "load": 8,
-   "train": 52,
+   "train": 58,
    "turns": 27,
-   "valid": 10
-  },
-  "recover_from_tool_error": {
-   "call": 37,
-   "examples": 83,
-   "final": 37,
-   "load": 9,
-   "train": 79,
-   "turns": 37,
    "valid": 4
   },
+  "recover_from_tool_error": {
+   "call": 34,
+   "examples": 77,
+   "final": 34,
+   "load": 9,
+   "train": 73,
+   "turns": 34,
+   "valid": 4
+  },
+  "relay_receipt": {
+   "call": 41,
+   "examples": 97,
+   "final": 36,
+   "load": 20,
+   "train": 87,
+   "turns": 41,
+   "valid": 10
+  },
   "right_source": {
-   "call": 47,
+   "call": 46,
    "examples": 119,
-   "final": 47,
-   "load": 25,
-   "train": 107,
-   "turns": 47,
-   "valid": 12
+   "final": 46,
+   "load": 27,
+   "train": 109,
+   "turns": 46,
+   "valid": 10
+  },
+  "right_write_tool": {
+   "call": 42,
+   "examples": 105,
+   "final": 42,
+   "load": 21,
+   "train": 96,
+   "turns": 42,
+   "valid": 9
+  },
+  "safe_effects": {
+   "call": 72,
+   "examples": 166,
+   "final": 57,
+   "load": 37,
+   "train": 150,
+   "turns": 62,
+   "valid": 16
+  },
+  "stub_then_call": {
+   "call": 61,
+   "examples": 150,
+   "final": 42,
+   "load": 47,
+   "train": 137,
+   "turns": 42,
+   "valid": 13
   },
   "weather_and_web": {
-   "call": 42,
-   "examples": 100,
-   "final": 34,
-   "load": 24,
-   "train": 88,
-   "turns": 34,
+   "call": 41,
+   "examples": 99,
+   "final": 33,
+   "load": 25,
+   "train": 87,
+   "turns": 33,
    "valid": 12
   }
  },
- "paraphrased_turns": 293,
- "service_head": "237fb5963118cf5d3635034169e7c84ddb5a6b72",
- "train": 833,
- "turns": 449,
- "valid": 87
+ "paraphrased_turns": 290,
+ "service_head": "d7de0873189c319af2a64a20ca5ca6f5d09807f7",
+ "train": 1639,
+ "turns": 757,
+ "valid": 165
 }

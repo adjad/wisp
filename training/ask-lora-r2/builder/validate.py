@@ -392,8 +392,11 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
             bad("meta:writes", f"{where} example {ran_writes} vs meta {meta.get('writes')}")
         if sorted(meta.get("expect_cards") or []) != sorted(cards):
             bad("cards:expect_mismatch", f"{where} expected {meta.get('expect_cards')} saw {cards}")
+        took_effect = {e[0] for e in meta.get("effects") or []}
         for name in sorted(set(names) & writes.ALWAYS_CARD):
-            if name not in cards:
+            # The loop may refuse a write before its card (e.g. a move onto a read-only
+            # calendar); that call has no effect and needs no card. One that took effect does.
+            if name not in cards and name in took_effect:
                 bad("cards:missing", f"{where} {name}")
         for name in sorted(set(cards) & writes.NEVER_CARD):
             bad("cards:never_card", f"{where} {name}")

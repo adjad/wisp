@@ -1,4 +1,15 @@
-# Wisp Ask LoRA dataset (Gemma 4 E4B), 2026-10-29
+# Wisp Ask LoRA dataset, round 2 (Gemma 4 E4B and Nemotron 3.5 Bolt E4B), 2026-10-30
+
+**Round 2 status:** built and validated, not trained. Code head: origin/main 20ef528d (dev8).
+- **Size:** 1,804 examples (1,639 train, 165 valid) in 18 families. That is the 11 round-1 families, rebuilt on current main, plus 7 write families.
+- **Write families:** act_dont_ask, finish_the_write, stub_then_call, exact_args, right_write_tool, relay_receipt and safe_effects.
+- **Why:** these target the model-side toolbench failures. The plan, evidence and per-model gate are in [PLAN.md](PLAN.md).
+- **Write turns:** approval cards are answered by script (`builder/writes.py` holds the contract and the host behaviours). The validator checks cards, denials, allowed writes per family, Gemma/Bolt render parity, and leaks against both the round-1 eval questions and the 378 toolbench prompts and fact values.
+- **Training:** one rendered dataset (`brev/ask-lora-data.zip`) trains both models. `brev/run.sh both` runs them back to back, but needs a pinned Bolt bf16 revision first (see `brev/README.md`).
+
+The round-1 description below still applies to the builder and to the reads-only families.
+
+## Round 1 (Gemma 4 E4B), 2026-10-29
 
 This is a LoRA training set for Wisp's local Ask model. It targets the model-side failures found by the 1,040-question Ask eval run on 2026-10-29. Code-side failures were fixed in code (dev8, #410) and have no data here.
 
