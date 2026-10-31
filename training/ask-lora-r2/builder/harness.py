@@ -134,7 +134,17 @@ class ToolError(Exception):
     """Raised by a world handler to make the stub fail like the real tool would."""
 
 
-CURRENT = {"world": None, "calls": []}
+CURRENT = {"world": None, "calls": [], "approve": [], "cards": []}
+
+# Production registers the bundled skills' tools (use_skill, mac_*) at startup
+# (main.lifespan -> skills.load()); TestClient skips the lifespan, so load them
+# here, before the stubs, or the offered tool lists differ from production's.
+from service import skills as _skills  # noqa: E402
+
+try:
+    _skills.load()
+except Exception:  # noqa: BLE001  (production tolerates a failed load the same way)
+    pass
 
 
 def _make_stub(name: str, original):
@@ -152,6 +162,100 @@ def _make_stub(name: str, original):
 
 for _name, _tool in REGISTRY.items():
     _tool.func = _make_stub(_name, _tool.func)
+
+# manage_contacts is an authoritative builtin (router.model_led.BUILTIN_COMPLETION_MODULES):
+# the loop accepts its BuiltinCompletion receipt only when the registered function IS the
+# module's own attribute. Point the module at the stub (as toolbench does).
+import service.tools.contacts_tools as _contacts_tools  # noqa: E402
+
+_contacts_tools.manage_contacts = REGISTRY["manage_contacts"].func
+
+
+def is_write(name: str, args: dict | None = None) -> bool:
+    """A tool production treats as an effect on a model-led turn (model_led.effectful_call)."""
+    from service.router.model_led import effectful_call
+    tool = REGISTRY.get(name)
+    return bool(tool and effectful_call(tool, args or {}))
+
+
+# --- the loop's own store lookups, pointed at the current world ------------------
+# Before an update_event card the loop calls assistant_tools.prepare_event_move, and
+# before a bulk reminder delete reminders_matching / past_due_matching, against the
+# real (empty) assistant store. Without these every move is refused and every
+# delete card is empty (toolbench world.install_hooks does the same).
+import service.tools.assistant_tools as _assistant_tools  # noqa: E402
+
+
+def _strip_refs(rows):
+    return [{k: v for k, v in r.items() if k != "_ref"} for r in rows]
+
+
+def _hook_prepare_event_move(args: dict) -> dict:
+    return CURRENT["world"].prepare_event_move(args)
+
+
+def _hook_reminders_matching(scope="all", query="", *, now=None, include_stale=False):
+    return _strip_refs(CURRENT["world"].reminder_rows(scope, query, include_stale=include_stale))
+
+
+def _hook_past_due_matching(query="", days=365):
+    return _strip_refs(CURRENT["world"].past_due_rows(query, days))
+
+
+_assistant_tools.prepare_event_move = _hook_prepare_event_move
+_assistant_tools.reminders_matching = _hook_reminders_matching
+_assistant_tools.past_due_matching = _hook_past_due_matching
+
+# --- the native-app channel the loop uses outside the registry -------------------
+# reply_to_email's pre-approval step (action_tools.prepare_reply_args) asks the Wisp
+# app to prepare (and discard) the reply. No app is connected here; answer it from
+# the world and refuse every other native request (nothing real may run).
+import service.tools.action_tools as _action_tools  # noqa: E402
+
+
+async def _fake_app_request(event_type: str, payload: dict, timeout: float = 0.0) -> dict:
+    world = CURRENT["world"]
+    if event_type == "prepare_email_reply" and world is not None:
+        return world.prepare_email_reply(payload)
+    return {"ok": False, "status": "not_attempted", "dispatch_started": False,
+            "error": "lora-dataset harness: no Wisp app is connected; nothing was done"}
+
+
+_action_tools.app_request = _fake_app_request
+
+
+# --- scripted approval cards -------------------------------------------------------
+class ScriptedApprover:
+    """Stand-in for service.agent.InteractiveApprover: raises the same `confirm`
+    event (so the stream shows the card) and answers it at once from the
+    scenario's `approve` list (one entry per card, in order; missing = Allow)
+    instead of waiting up to 300 s for POST /agent/approve."""
+
+    def __init__(self, emit, *a, **k):
+        self._emit = emit
+        self.request_id = k.get("request_id")
+
+    async def confirm(self, action: dict) -> bool:
+        from service.safety import grants
+        CURRENT["cards"].append(str(action.get("tool", "")))
+        await self._emit({
+            "type": "confirm",
+            "grantable": grants.is_grantable(action.get("tool", ""), action.get("args") or {}),
+            "scope_hint": grants.scope_for(action.get("tool", ""), action.get("args") or {}),
+            **({"request_id": self.request_id} if self.request_id else {}),
+            **action,
+        })
+        queue = CURRENT["approve"]
+        return bool(queue.pop(0)) if queue else True
+
+    def resolve(self, *a, **k) -> bool:
+        return False
+
+    def has_pending(self, *_a) -> bool:
+        return False
+
+
+main.InteractiveApprover = ScriptedApprover
 
 
 # --- scripted ideal model ------------------------------------------------------
@@ -272,14 +376,21 @@ main.TurnInferenceClient = lambda c, *a, **k: c
 _tc = TestClient(main.app)
 
 
-def run_scenario(prompt: str, steps, world, when: _dt.datetime, profile=PROFILE):
-    """Run one Ask turn through /agent. Returns (policy, events, final_text)."""
+def run_scenario(prompt: str, steps, world, when: _dt.datetime, profile=PROFILE, approve=None):
+    """Run one Ask turn through /agent. Returns (policy, events, final_text).
+
+    `approve` answers the turn's approval cards in order (a list of bools, or one
+    bool for every card; missing = Allow). Afterwards CURRENT["cards"] holds the
+    tool name of every card the host raised and CURRENT["calls"] every tool run."""
     set_clock(when)
     set_profile(profile)
     policy = ScriptedPolicy(steps)
     _client_holder["c"] = policy
     main.client = policy
-    CURRENT["world"], CURRENT["calls"] = world, []
+    CURRENT["world"], CURRENT["calls"], CURRENT["cards"] = world, [], []
+    if isinstance(approve, bool):
+        approve = [approve] * 64
+    CURRENT["approve"] = list(approve or [])
     response = _tc.post("/agent", json={"prompt": prompt, "debug": False})
     events = []
     for line in response.text.splitlines():

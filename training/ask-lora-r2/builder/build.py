@@ -51,6 +51,53 @@ def clean_history(messages):
     return out
 
 
+def _calls(responses, kinds) -> list[tuple[str, dict]]:
+    """(tool, args) of every scripted call in `responses` whose kind is in `kinds`."""
+    return [(c["function"]["name"], json.loads(c["function"]["arguments"]))
+            for r in responses if r["kind"] in kinds
+            for c in r["message"]["tool_calls"]]
+
+
+# Arguments the HOST adds or rewrites before a write runs, exactly as production
+# does: update_event's start is pinned to the Mac's UTC offset before the card
+# (assistant_tools.bind_calendar_local_start); a bulk delete is bound to the ids its
+# card listed; a reply is frozen to the envelope Mail prepared (prepare_reply_args).
+HOST_BOUND = {
+    "clear_reminders": {"expected_ids"},
+    "reply_to_email": {"expected_reply", "account", "reply_all"},
+}
+
+
+def _same_call(s_, r_) -> bool:
+    if s_[0] != r_[0]:
+        return False
+    sent, ran = dict(s_[1]), dict(r_[1])
+    if s_[0] == "update_event" and "when_iso" in sent:
+        from service.tools.assistant_tools import bind_calendar_local_start
+        try:
+            sent["when_iso"] = bind_calendar_local_start(sent["when_iso"])
+        except Exception:  # noqa: BLE001  (an invalid time never reaches the tool)
+            pass
+    if any(ran.get(k) != v for k, v in sent.items()):
+        return False
+    bound = HOST_BOUND.get(s_[0], set())
+    extra = {k: v for k, v in ran.items() if k not in sent and k not in bound}
+    return all(v in ("", None, False, "start", 0) for v in extra.values())
+
+
+def _match_ran(sent, ran) -> str | None:
+    """Every scripted call must run with its own arguments, in order. A WRITE may
+    legitimately not run at all (its card was denied, or the host refused it before
+    the card, e.g. a move the loop's prepare_event_move rejected); a read may not."""
+    j = 0
+    for s_ in sent:
+        if j < len(ran) and _same_call(s_, ran[j]):
+            j += 1
+        elif not H.is_write(*s_):
+            return f"read {s_[0]} did not run as scripted"
+    return None if j == len(ran) else f"{len(ran) - j} unscripted tool run(s)"
+
+
 def main(only=None):
     rng = random.Random(20261029)
     examples, metas, failures = [], [], []
@@ -67,38 +114,43 @@ def main(only=None):
             if leaked:
                 failures.append((sid, sc.prompt, f"leaks eval {q['id']} ({score:.2f}): {q['prompt']!r}"))
                 continue
+            # Round-2 scenario fields (writes.py); scen.Scenario may not declare them yet.
+            approve = getattr(sc, "approve", None)
+            expect_cards = getattr(sc, "expect_cards", None)
             try:
-                policy, events, final = H.run_scenario(sc.prompt, sc.steps, sc.world, sc.when, profile=sc.profile)
+                policy, events, final = H.run_scenario(sc.prompt, sc.steps, sc.world, sc.when, profile=sc.profile,
+                                                       approve=approve)
             except Exception as exc:  # noqa: BLE001
                 failures.append((sid, sc.prompt, f"harness: {exc!r}"))
                 continue
+            cards_seen = list(H.CURRENT["cards"])
             errs = [e for e in events if e.get("type") == "error"]
             want = sc.steps[-1].text if isinstance(sc.steps[-1], H.Final) else None
             if policy.idx != len(policy.steps) or errs or len(policy.requests) != len(policy.responses):
                 failures.append((sid, sc.prompt, f"incomplete: idx={policy.idx}/{len(policy.steps)} "
                                  f"reqs={len(policy.requests)} errs={errs[:1]} final={final!r:.120}"))
                 continue
-            if want is not None and (final or "").strip() != want.strip():
-                failures.append((sid, sc.prompt, f"final text changed by host: {final!r:.200} vs {want!r:.80}"))
-                continue
-            sent = [(c["function"]["name"], json.loads(c["function"]["arguments"]))
-                    for r in policy.responses if r["kind"] == "call"
-                    for c in r["message"]["tool_calls"]]
-            bad_sent = [(c["function"]["name"], json.loads(c["function"]["arguments"]))
-                        for r in policy.responses if r["kind"] == "bad"
-                        for c in r["message"]["tool_calls"]]
+            called = _calls(policy.responses, ("call", "bad"))
+            wrote = any(H.is_write(n, a) for n, a in called)
+            # The training target is always the scripted step. On a turn that called a
+            # write tool the host may show its own text instead (_verified_final:
+            # receipts, denial text, delivery checks); that is recorded, not trained.
+            # A read turn whose final the host changed still fails.
+            shown_final = None
+            if want is None or (final or "").strip() != want.strip():
+                if want is not None and not wrote:
+                    failures.append((sid, sc.prompt, f"final text changed by host: {final!r:.200} vs {want!r:.80}"))
+                    continue
+                if wrote:
+                    shown_final = final
+            sent = _calls(policy.responses, ("call",))
+            bad_sent = _calls(policy.responses, ("bad",))
             ran = [(n, a) for n, a in H.CURRENT["calls"] if (n, a) not in bad_sent]
-
-            def same(s_, r_):
-                if s_[0] != r_[0]:
-                    return False
-                if any(r_[1].get(k) != v for k, v in s_[1].items()):
-                    return False
-                extra = {k: v for k, v in r_[1].items() if k not in s_[1]}
-                return all(v in ("", None, False, "start", 0) for v in extra.values())
-            if len(sent) != len(ran) or not all(same(a, b) for a, b in zip(sent, ran)):
-                failures.append((sid, sc.prompt, f"host rewrote tool args: sent={sent} ran={ran}"))
+            problem = _match_ran(sent, ran)
+            if problem:
+                failures.append((sid, sc.prompt, f"host rewrote tool args: {problem} sent={sent} ran={ran}"))
                 continue
+            effects = [[t, a] for t, a in getattr(sc.world, "effects", [])]
             per_family_scen[family] += 1
             for i, (req, resp) in enumerate(zip(policy.requests, policy.responses)):
                 if resp["kind"] == "bad":
@@ -106,12 +158,15 @@ def main(only=None):
                 ex = {"messages": sanitize(clean_history(req["messages"])) + [target_message(resp)],
                       "tools": sanitize(copy.deepcopy(req.get("tools") or []))}
                 examples.append(ex)
+                writes = [n for n, a in _calls(policy.responses[:i + 1], ("call", "bad")) if H.is_write(n, a)]
                 metas.append({"id": f"{sid}-s{i}", "family": family, "paraphrase_of": sc.paraphrase_of,
                               "notes": sc.notes, "step": i, "steps_in_turn": len(policy.requests),
                               "target_kind": resp["kind"], "prompt": sc.prompt,
                               "clock": sc.when.strftime("%a %Y-%m-%d %H:%M"),
                               "tool_choice": req.get("tool_choice"),
-                              "chat_template_kwargs": req.get("chat_template_kwargs")})
+                              "chat_template_kwargs": req.get("chat_template_kwargs"),
+                              "writes": writes, "approve": approve, "expect_cards": expect_cards,
+                              "cards_seen": cards_seen, "shown_final": shown_final, "effects": effects})
     return examples, metas, failures, per_family_scen
 
 

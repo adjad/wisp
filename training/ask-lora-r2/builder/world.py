@@ -37,6 +37,11 @@ class Event:
     kind: str = "event"         # event | meeting | exam | assignment
     all_day: bool = False
     context: str = ""
+    # Round-2 move/cancel facts (never printed by the read tools):
+    invitees: int | None = 0            # None = Calendar hasn't synced the attendee count
+    organizer: bool | None = True       # None = unknown organizer
+    writable: bool = True               # False = read-only (subscribed/shared) calendar
+    series: str = ""                    # same non-empty value = occurrences of one repeating event
 
     @property
     def end(self):
@@ -61,6 +66,7 @@ class Email:
     person: bool = True          # from a person (vs newsletter/update)
     to: str = USER_EMAIL
     account: str = USER_EMAIL
+    message_id: str = ""         # round 2: printed by view_emails only when set (reply_to_email)
 
 
 @dataclass
@@ -98,6 +104,7 @@ class World:
     overrides: dict = field(default_factory=dict)     # tool -> callable(args) | str
     unavailable: set = field(default_factory=set)     # sources: calendar, reminders, mail, messages, notes
     status: dict = field(default_factory=dict)
+    effects: list = field(default_factory=list)       # round 2: (tool, args) of every write that took effect
 
     # ---------------------------------------------------------------- dispatch
     def handle(self, name: str, args: dict):
@@ -434,6 +441,7 @@ class World:
         for m in rows:
             blocks.append(f"Account: {m.account}\nFrom: {m.sender} <{m.addr}>\nTo: {m.to}\n"
                           f"Subject: {m.subject}\nDate: {m.when:%a %b %-d, %Y %-I:%M %p}\n"
+                          + (f"Message-ID: {m.message_id}\n" if m.message_id else "")
                           + ("Status: unread\n" if m.unread else "") + f"\n{m.body}")
         return head + cov + "\n\n---\n\n".join(blocks)
 
@@ -727,3 +735,545 @@ class World:
                 "your OK, read a bank balance, update itself, or schedule a reply inside an existing email thread "
                 "(scheduled sends are new emails or texts). Permissions: review them in Settings › Privacy & Access › "
                 "Permissions… (each source has its own Allow) and in System Settings › Privacy & Security.")
+
+    # =================================================================== writes
+    # Round 2. Each handler mutates the world and returns the production tool's
+    # exact receipt (assistant_tools, schedule_extras, notes_write, action_tools,
+    # contacts_tools on this branch) so the loop's verified-effect contract
+    # (registry.classify_tool_outcome / model_led.trusted_effect_receipt) accepts
+    # it. Refusals use the production wording. Pure production helpers
+    # (calendar_time_problem, calendar_interval_label, _reminder_due_time ...) are
+    # called directly; they read the harness's frozen clock.
+    def _effect(self, tool: str, args: dict) -> None:
+        self.effects.append((tool, {k: v for k, v in args.items() if v is not None}))
+
+    # ------------------------------------------------------------- calendar
+    def t_add_calendar_event(self, title, when_iso, duration_min=60, location=""):
+        if problem := AT.calendar_time_problem(when_iso):
+            return problem
+        when, _ = AT._calendar_local_start(when_iso)
+        if when.timestamp() < self.ts - 60:
+            return f"({when_iso} is in the past — not added)"
+        if (not isinstance(title, str) or not title.strip()
+                or type(duration_min) is not int or not 1 <= duration_min <= 10080):
+            return "(error: a title and duration of 1–10080 minutes are required; nothing changed.)"
+        interval = AT.calendar_interval_label(when_iso, duration_min)
+        start = dt.datetime.fromtimestamp(when.timestamp())
+        self.events.append(Event(title.strip(), start, duration_min, location or ""))
+        self._effect("add_calendar_event", {"title": title, "when_iso": when_iso,
+                                            "duration_min": duration_min, "location": location or None})
+        return f"Added “{title}” to your calendar for {interval}."
+
+    def move_plan(self, title="", when_iso="", duration_min=None, location="", new_title="",
+                  current_when_iso="") -> dict:
+        """assistant_tools.event_move_plan + store.calendar_move_target over the world's events."""
+        if (location or "").strip() or (new_title or "").strip():
+            return {"error": "Wisp can move an event to a new time, but it can't rename an "
+                             "event or change its location. Nothing was changed; edit that in Calendar."}
+        if problem := AT.calendar_time_problem(when_iso):
+            return {"error": problem}
+        when_ts = AT._calendar_local_start(when_iso)[0].timestamp()
+        if when_ts < self.ts - 60:
+            return {"error": f"({when_iso} is in the past — nothing was moved.)"}
+        if duration_min is not None and (type(duration_min) is not int or not 1 <= duration_min <= 10080):
+            return {"error": "(error: a new length must be 1–10080 minutes; nothing was moved.)"}
+        current = None
+        if (current_when_iso or "").strip():
+            if AT.calendar_time_problem(current_when_iso):
+                return {"error": "(error: the event's current start time is invalid; nothing was moved.)"}
+            current = AT._calendar_local_start(current_when_iso)[0].timestamp()
+        query = " ".join(str(title or "").split())
+        needle = query.casefold()
+        if not needle:
+            return {"error": "Which event should move?"}
+        live = sorted((e for e in self.events if not e.all_day and e.end > self.now), key=lambda e: e.start)
+        key = lambda e: " ".join(e.title.split()).casefold()  # noqa: E731
+        matches = [e for e in live if key(e) == needle] or [e for e in live if needle in key(e)]
+        if current is not None:
+            matches = [e for e in matches if abs(e.start.timestamp() - current) < 60]
+        if not matches:
+            return {"error": f"No upcoming Calendar event matches “{query}”."}
+        if len({e.series or id(e) for e in matches}) > 1:
+            listed = "; ".join(f"{e.title} ({e.start:%a %b %-d %-I:%M %p})" for e in matches[:5])
+            return {"error": f"Several events match “{query}”: {listed}. Which one?"}
+        e = matches[0]
+        if not e.writable:
+            return {"error": f"“{e.title}” is on a read-only calendar; Wisp can't change it from "
+                             "this Mac. Nothing was moved. Move it in Calendar if it is yours to move."}
+        if e.invitees is None:
+            return {"error": f"Wisp can't tell yet whether “{e.title}” has invitees (Calendar "
+                             "hasn't synced that); nothing was moved. Try again shortly or move it in Calendar."}
+        if e.organizer is not None and not e.organizer:
+            return {"error": f"Only the organizer can move “{e.title}”; nothing was moved. "
+                             "Ask them, or propose a new time in Calendar."}
+        if e.invitees and e.organizer is None:
+            return {"error": f"Wisp can't tell who organizes “{e.title}”, so it won't move an "
+                             "event with invitees; nothing was moved. Move it in Calendar."}
+        length = duration_min if duration_min is not None else e.minutes
+        if abs(when_ts - e.start.timestamp()) < 60 and duration_min is None:
+            return {"error": f"“{e.title}” already starts then; nothing was moved."}
+        return {"event": e, "when_ts": when_ts, "length_min": length, "recurring": len(matches) > 1,
+                "invitees": e.invitees}
+
+    def prepare_event_move(self, args: dict) -> dict:
+        """assistant_tools.prepare_event_move (the loop calls it before the card)."""
+        if problem := AT.calendar_time_problem(args.get("when_iso")):
+            return {"error": problem}
+        bound = {**args, "when_iso": AT.bind_calendar_local_start(args["when_iso"])}
+        plan = self.move_plan(bound.get("title", ""), bound["when_iso"], bound.get("duration_min"),
+                              bound.get("location", ""), bound.get("new_title", ""),
+                              bound.get("current_when_iso", ""))
+        if "error" in plan:
+            return {"error": plan["error"]}
+        e = plan["event"]
+        new = (AT.calendar_interval_label(bound["when_iso"], plan["length_min"]) if plan["length_min"]
+               else dt.datetime.fromtimestamp(plan["when_ts"]).strftime("%a %b %-d, %Y %-I:%M %p"))
+        once = " (this occurrence only)" if plan["recurring"] else ""
+        n = plan["invitees"]
+        notice = f" Its {n} invitee{'s' if n != 1 else ''} will be notified of the new time." if n else ""
+        return {"args": bound,
+                "binding": {"payload": {"invitee_count": n, "expected_title": e.title,
+                                        "expected_start_ts": e.start.timestamp(),
+                                        "when_ts": plan["when_ts"]},
+                            "title": e.title, "recurring": plan["recurring"]},
+                "preview": f"Move: {e.title} — from {e.start:%a %b %-d %-I:%M %p} to {new}{once}.{notice}"}
+
+    def t_update_event(self, title, when_iso, duration_min=None, current_when_iso="", location="",
+                       new_title=""):
+        plan = self.move_plan(title, when_iso, duration_min, location, new_title, current_when_iso)
+        if "error" in plan:
+            return plan["error"]
+        e = plan["event"]
+        e.start = dt.datetime.fromtimestamp(plan["when_ts"])
+        e.minutes = plan["length_min"]
+        self._effect("update_event", {"title": e.title, "when_iso": when_iso, "duration_min": duration_min})
+        once = " Only this occurrence moved." if plan["recurring"] else ""
+        notified = " Invitees were notified of the new time." if plan["invitees"] else ""
+        return f"Moved “{e.title}” to {e.start:%a %b %-d, %-I:%M %p}–{e.end:%-I:%M %p}.{once}{notified}"
+
+    def t_cancel_event(self, title):
+        q = str(title).lower().strip()
+        horizon = self.now + dt.timedelta(days=60)
+        matches = [("event", e, e.start) for e in self.events
+                   if e.end > self.now and e.start < horizon and q in e.title.lower()]
+        matches += [("reminder", r, r.due) for r in self.reminders
+                    if not r.done and r.due and self.now <= r.due < horizon and q in r.title.lower()]
+        if not matches:
+            matches = [("event", e, e.start) for e in self.past if q in e.title.lower()]
+            matches += [("reminder", r, r.due) for r in self.reminders
+                        if not r.done and r.due and q in r.title.lower()]
+        if not matches:
+            return f"Nothing upcoming or past matches “{title}”."
+        if len(matches) > 1:
+            lst = "; ".join(f"{x.title} ({when:%a %-I:%M %p})" for _k, x, when in matches[:5])
+            return f"Several items match “{title}”: {lst}. Which one? Please be more specific."
+        kind, item, _when = matches[0]
+        if kind == "event" and not item.writable:
+            return (f"“{item.title}” is on a read-only calendar; Wisp can't change it from this Mac. "
+                    "Nothing was cancelled. Cancel it in Calendar if it is yours to cancel.")
+        if kind == "event":
+            (self.events if item in self.events else self.past).remove(item)
+        else:
+            self.reminders.remove(item)
+        self._effect("cancel_event", {"title": item.title})
+        return f"Cancelled “{item.title}”."
+
+    # ------------------------------------------------------------ reminders
+    def t_add_reminder(self, title, when_iso, kind="reminder", all_day=False):
+        if type(all_day) is not bool or (all_day and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(when_iso))):
+            return '(error: all-day reminders require an explicit YYYY-MM-DD date; nothing was added.)'
+        try:
+            if all_day:
+                due = dt.datetime.combine(dt.date.fromisoformat(when_iso), dt.time())
+                ts, when_str = due.timestamp(), ""
+            else:
+                ts, when_str = AT._reminder_due_time(when_iso)
+        except (TypeError, ValueError, OverflowError, OSError):
+            return (f"(bad when_iso {when_iso!r} — use a valid, unambiguous local ISO "
+                    "time, e.g. 2026-07-13T16:00, or an explicit UTC offset; nothing was added.)")
+        if (dt.datetime.fromisoformat(when_iso).date() < self.now.date()) if all_day else ts < self.ts - 60:
+            return f"({when_iso} is in the past — not added)"
+        clean = title.strip() if isinstance(title, str) else ""
+        if not clean:
+            return "(error: a reminder title is required; nothing was added.)"
+        if not isinstance(kind, str) or kind not in {"reminder", "assignment", "exam", "meeting", "event"}:
+            return "(error: unsupported reminder kind; nothing was added.)"
+        if all_day:
+            when_str = dt.datetime.fromisoformat(when_iso).strftime('%a %b %-d, %Y') + ' (all day; no timed alarm)'
+        self.reminders.append(Reminder(clean, dt.datetime.fromtimestamp(ts)))
+        self._effect("add_reminder", {"title": clean, "when_iso": when_iso, "kind": kind, "all_day": all_day})
+        if "reminders" in self.unavailable:
+            return (f"Reminder set: “{clean}” — {when_str} in Wisp only; Apple Reminders was not changed "
+                    "(Wisp doesn't have Reminders access yet).")
+        return f"Reminder set: “{clean}” — {when_str} in Apple Reminders and Wisp."
+
+    def reminder_rows(self, scope="all", query="", *, include_stale=False) -> list[dict]:
+        """assistant_tools.reminders_matching: active DATED reminders in a scope, store-shaped."""
+        scope = (scope or "all").strip().lower()
+        if scope not in {"today", "tomorrow", "past_due", "upcoming", "all"}:
+            return []
+        needle = (query or "").strip().lower()
+        if needle in {"all", "*", "any", "everything", "reminder", "reminders", "my reminders", "tasks",
+                      "task", "to-dos", "todos", "to do", "todo", "due", "due soon", "upcoming", "overdue",
+                      "open", "pending", "incomplete"}:
+            needle = ""
+        today, rows = self.now.date(), []
+        for i, r in enumerate(self.reminders):
+            if r.done or r.due is None:
+                continue
+            d = r.due.date()
+            if ((scope == "today" and d != today) or (scope == "tomorrow" and d != today + dt.timedelta(days=1))
+                    or (scope == "past_due" and r.due >= self.now) or (scope == "upcoming" and r.due < self.now)):
+                continue
+            if needle and needle not in r.title.lower():
+                continue
+            rows.append({"id": f"rem-{i}", "title": r.title, "when_ts": r.due.timestamp(),
+                         "source": "reminders", "kind": "reminder", "status": "active", "_ref": r})
+        return rows
+
+    def past_due_rows(self, query="", days=365) -> list[dict]:
+        """assistant_tools.past_due_matching: past-due reminders and past events."""
+        days = max(1, min(int(days or 365), 3650))
+        cutoff, q = self.now - dt.timedelta(days=days), (query or "").lower().strip()
+        rows = [{"title": r.title, "when_ts": r.due.timestamp(), "_ref": r}
+                for r in self.reminders if not r.done and r.due and cutoff <= r.due < self.now]
+        rows += [{"title": e.title, "when_ts": e.start.timestamp(), "_ref": e}
+                 for e in self.past + [e for e in self.events if e.end <= self.now] if cutoff <= e.start < self.now]
+        if q:
+            rows = [r for r in rows if q in r["title"].lower()]
+        return sorted(rows, key=lambda r: -r["when_ts"])
+
+    def _when_label(self, t: dt.datetime) -> str:
+        return t.strftime('%a %b %-d at %-I:%M %p')
+
+    def t_complete_reminder(self, title, expected_id=""):
+        if not (title or "").strip():
+            return "(error: complete_reminder needs part of the reminder's `title`.)"
+        hits = self.reminder_rows("all", title, include_stale=True)
+        exact = [r for r in hits if " ".join(r["title"].split()).casefold() == " ".join(title.split()).casefold()]
+        hits = exact or hits
+        if expected_id:
+            hits = [r for r in hits if r["id"] == expected_id]
+        if not hits:
+            if expected_id:
+                return ("(error: the selected reminder changed before it could be completed; "
+                        "nothing was changed.)")
+            return (f"Nothing active matches {title!r}. "
+                    f"Ask me what's upcoming if you're not sure of the wording.")
+        if len(hits) > 1:
+            listed = "\n".join(f"  - {r['title']} ({dt.datetime.fromtimestamp(r['when_ts']):%a %b %-d %-I:%M %p})"
+                               for r in hits[:8])
+            return f"Several match {title!r} — which one?\n{listed}"
+        hits[0]["_ref"].done = True
+        self._effect("complete_reminder", {"title": hits[0]["title"]})
+        return f"Marked “{hits[0]['title']}” done."
+
+    def t_update_reminder(self, title="", when_iso="", day="", new_title="", expected_id=""):
+        if not when_iso and day not in {"today", "tomorrow"}:
+            return ("(error: pass when_iso, or day='today'/'tomorrow'; "
+                    "the reminder was not changed.)")
+        cands = self.reminder_rows("all", title or "", include_stale=True)
+        if expected_id:
+            cands = [c for c in cands if c["id"] == expected_id]
+            if not cands:
+                return ("(error: the selected reminder changed before it could be updated; "
+                        "nothing was changed.)")
+        if not cands:
+            return (f"Nothing active matches reminder {title!r}." if (title or "").strip()
+                    else "Nothing active matches the reminder correction.")
+        if (title or "").strip():
+            exact = [c for c in cands if " ".join(c["title"].split()).casefold() == " ".join(title.split()).casefold()]
+            cands = exact or cands
+            if len(cands) > 1:
+                choices = "; ".join(f"{c['title']} ({dt.datetime.fromtimestamp(c['when_ts']):%a %-I:%M %p})"
+                                    for c in cands[:5])
+                return f"Several reminders match “{title}”: {choices}. Which one?"
+        ref = cands[-1]["_ref"]
+        if when_iso:
+            try:
+                target = dt.datetime.fromisoformat(when_iso).replace(tzinfo=None)
+            except ValueError:
+                return f"(error: bad when_iso {when_iso!r} — use e.g. 2026-08-27T09:00)"
+        else:
+            base = dt.datetime.combine(self.now.date() + dt.timedelta(days=1 if day == "tomorrow" else 0), dt.time())
+            target = base.replace(hour=ref.due.hour, minute=ref.due.minute)
+        if target < self.now - dt.timedelta(seconds=60):
+            return (f"(error: preserving the old time would put the reminder in the past "
+                    f"({self._when_label(target)}); ask what time today to use. "
+                    "The reminder was not changed.)")
+        ref.due = target
+        if (new_title or "").strip():
+            ref.title = new_title.strip()
+        self._effect("update_reminder", {"title": ref.title, "when_iso": when_iso or None, "day": day or None})
+        return f"Reminder updated: “{ref.title}” — {self._when_label(target)}."
+
+    def t_clear_reminders(self, scope, query="", expected_ids=None):
+        normalized = (scope or "").strip().lower()
+        if normalized not in {"today", "tomorrow", "past_due", "upcoming", "all"}:
+            return ("(error: scope must be today, tomorrow, past_due, upcoming, "
+                    "or all — no reminders were deleted.)")
+        rows = self.reminder_rows(normalized, query or "", include_stale=True)
+        if expected_ids is not None and sorted(expected_ids) != sorted(r["id"] for r in rows):
+            return ("(error: the selected reminder set changed after preview; "
+                    "no reminders were deleted.)")
+        label = normalized.replace("_", " ")
+        if not rows:
+            return (f"No active reminders found for {label}" + (f" matching {query!r}" if query else "") + ".")
+        for r in rows:
+            self.reminders.remove(r["_ref"])
+        self._effect("clear_reminders", {"scope": normalized, "query": query or None})
+        return (f"Cleared {len(rows)} reminder(s) for {label}" + (f" matching {query!r}" if query else "") + ".")
+
+    # ---------------------------------------------------------------- notes
+    def t_create_note(self, title, body="", folder="", checklist=False):
+        title = (title or "").strip()
+        if not title:
+            return "(error: create_note needs a `title`.)"
+        if folder.strip() and folder.strip() not in {n.folder for n in self.notes} | {"Notes"}:
+            return (f"(There's no Notes folder called {folder!r}. "
+                    f"Leave `folder` out to use the default folder.)")
+        self.notes.append(Note(title, body or "", self.now, folder.strip() or "Notes"))
+        self._effect("create_note", {"title": title, "body": body or None, "folder": folder or None})
+        kind = "checklist" if checklist else "note"
+        return (f"Created the {kind} \"{title}\" in Notes."
+                f" (It won't show up in search_notes until the next daily sync.)")
+
+    def t_append_note(self, title, text):
+        title, text = (title or "").strip(), (text or "").strip()
+        if not title:
+            return "(error: append_note needs the `title` of the note to add to.)"
+        if not text:
+            return "(error: append_note needs `text` to add.)"
+        hits = [n for n in self.notes if title in n.title]
+        if not hits:
+            return f"No note has {title!r} in its title. Use create_note to start one."
+        if len(hits) > 1:
+            listed = "\n".join(f"  - {n.title}" for n in hits[:8])
+            return f"Several notes match {title!r} — which one?\n{listed}"
+        hits[0].body = (hits[0].body + "\n" + text).strip("\n")
+        hits[0].modified = self.now
+        self._effect("append_note", {"title": hits[0].title, "text": text})
+        return f"Added it to \"{hits[0].title}\"."
+
+    # ------------------------------------------------------------- contacts
+    def find_contacts(self, name: str) -> list[tuple[str, list[str]]]:
+        """imessage_tools.find_contacts order: exact, then whole word, then substring."""
+        q = (name or "").strip().lower()
+        if not q:
+            return []
+        names = list(self.contacts)
+        exact = [n for n in names if n.lower() == q]
+        word = [n for n in names if n.lower() != q and re.search(rf"\b{re.escape(q)}\b", n.lower())]
+        part = [n for n in names if n not in exact and n not in word and q in n.lower()]
+        return [(n, [h for h in self.contacts[n] if h]) for n in (exact or word or part)]
+
+    def resolve_recipient(self, name: str, *, want_email: bool = False) -> tuple[str, str]:
+        """action_tools._resolve_recipient: a contact NAME -> (handle, '') or ('', problem)."""
+        matches = self.find_contacts(name)
+        if not matches:
+            return "", (f"(no saved contact matches {name!r}, and it isn't a valid "
+                        "address. Ask the user for it — don't guess.)")
+        if len(matches) > 1:
+            return "", (f"({name!r} matches several contacts ({', '.join(m[0] for m in matches[:6])}). Ask the "
+                        "user which one they mean — do NOT pick one yourself.)")
+        who, handles = matches[0]
+        if want_email:
+            emails = [h for h in handles if "@" in h]
+            if not emails:
+                return "", (f"({who} has no email address saved in "
+                            "Contacts — only a phone number. Ask the user for it.)")
+            return emails[0], ""
+        preferred = ([h for h in handles if "@" not in h] or handles or [""])[0]
+        if not preferred:
+            return "", f"({who} has no usable handle saved in Contacts.)"
+        return preferred, ""
+
+    def t_manage_contacts(self, action, name, value=""):
+        from service.router.model_led import BuiltinCompletion
+
+        def done(text):
+            return BuiltinCompletion(text, tool_name="manage_contacts", completion_code=0)
+        a, who = (action or "").strip().lower(), (name or "").strip()
+        if not who:
+            return "(error: manage_contacts needs a `name`.)"
+        if a == "create":
+            self.contacts.setdefault(who, ("", ""))
+            self._effect("manage_contacts", {"action": a, "name": who})
+            return done(f"Created contact {who}.")
+        if a in ("add_phone", "add_email"):
+            if not (value or "").strip():
+                return f"(error: {a} needs `value`.)"
+            hits = [n for n in self.contacts if who.lower() in n.lower()]
+            if not hits:
+                return f"No contact matches {who!r}. Use action='create' to add one."
+            if len(hits) > 1:
+                return f"Several contacts match {who!r} — which one?\n" + "\n".join(f"  - {n}" for n in hits[:8])
+            phone, email = self.contacts[hits[0]]
+            self.contacts[hits[0]] = (value.strip(), email) if a == "add_phone" else (phone, value.strip())
+            self._effect("manage_contacts", {"action": a, "name": hits[0], "value": value.strip()})
+            label = "phone" if a == "add_phone" else "email"
+            return done(f"Added {label} to {hits[0]}.")
+        return f"(error: unknown action {a!r}. Use create, add_phone, or add_email.)"
+
+    # -------------------------------------------------------- mail / messages
+    _EMAIL_RE = re.compile(r"^[^@\s,;]+@[^@\s,;]+\.[^@\s,;]+$")
+
+    @staticmethod
+    def _split(value) -> list[str]:
+        return [p.strip() for p in re.split(r"[,;]", value or "") if p.strip()]
+
+    def _own_address(self, to: str, tool: str, confirmed) -> str | None:
+        addr = (to or "").strip().lower()
+        if not addr or confirmed or addr not in {e.lower() for e in H.USER_EMAILS}:
+            return None
+        return (f"(error: NOT sent — `{to}` is the USER'S OWN address, not a "
+                f"recipient. Their email address is in your prompt for ATTRIBUTION "
+                f"(telling their messages from other people's), never as a "
+                f"destination. If this is a MISTAKE, call `lookup_contact` with the "
+                f"person's NAME to get the real handle, then call {tool} again. If "
+                f"the user's own words just confirmed they genuinely mean to send "
+                f"to THEMSELVES, call {tool} again with confirmed_self_send=true — "
+                f"that is the only thing that changes on the retry; the same "
+                f"arguments without it will be blocked again.)")
+
+    def _emails_for(self, to: str) -> tuple[list[str], str]:
+        recipients = self._split(to)
+        if not recipients:
+            return [], "(no recipient — ask the user who this should go to)"
+        out = []
+        for r in recipients:
+            if self._EMAIL_RE.match(r):
+                out.append(r)
+                continue
+            handle, problem = self.resolve_recipient(r, want_email=True)
+            if problem:
+                return [], problem
+            out.append(handle)
+        return out, ""
+
+    def t_draft_email(self, to, subject, body, cc=""):
+        resolved, problem = self._emails_for(to)
+        if problem:
+            return problem
+        self._effect("draft_email", {"to": to, "subject": subject, "body": body, "cc": cc or None})
+        return (f"Draft opened in Mail to {', '.join(resolved)} — nothing has been "
+                "sent. Tell the user to review it and hit send.")
+
+    def t_send_email(self, to, subject, body, cc="", confirmed_self_send=False):
+        if msg := self._own_address(to, "send_email", confirmed_self_send):
+            return msg
+        resolved, problem = self._emails_for(to)
+        if problem:
+            return problem
+        bad = [r for r in self._split(cc) if not self._EMAIL_RE.match(r)]
+        if bad:
+            return (f"(not valid email addresses: {', '.join(bad)}. Don't guess an "
+                    "address — look it up in the user's mail or ask them for it.)")
+        self._effect("send_email", {"to": resolved, "subject": subject, "body": body, "cc": cc or None})
+        return f"Email sent to {', '.join(resolved)}."
+
+    def _email_by_id(self, message_id: str):
+        return next((m for m in self.emails if m.message_id and m.message_id == (message_id or "").strip()), None)
+
+    def prepare_email_reply(self, payload: dict) -> dict:
+        """The Wisp app's `prepare_email_reply` bridge answer (action_tools.prepare_reply_args)."""
+        m = self._email_by_id(payload.get("message_id", ""))
+        if m is None:
+            return {"ok": False, "error": "message not found"}
+        return {"ok": True, "reply": {
+            "message_id": m.message_id, "account": payload.get("account") or m.account,
+            "account_id": payload.get("account_id") or f"acct-{m.account}",
+            "from": H.USER_EMAILS[0], "to": [m.addr], "cc": [], "bcc": [],
+            "subject": m.subject if m.subject.lower().startswith("re:") else f"Re: {m.subject}",
+            "content": str(payload.get("body") or "")}}
+
+    def t_reply_to_email(self, message_id, body, reply_all=False, expected_reply=None, account=""):
+        from service.tasks.reply_contract import make_receipt, validate_envelope
+        m = self._email_by_id(message_id)
+        if m is None:
+            return f"(reply NOT sent: no email with id {message_id})"
+        envelope = validate_envelope(expected_reply)
+        if envelope is None:
+            return "(reply NOT sent: the reply was not prepared and approved in Mail)"
+        self._effect("reply_to_email", {"message_id": m.message_id, "body": body})
+        return make_receipt(envelope)
+
+    def t_draft_message(self, to, text):
+        from service.tools.registry import _literal_message_recipient, _prepared_message_draft
+        if type(to) is not str or type(text) is not str:
+            return "(error: Draft recipient and body must be strings.)"
+        to = to.strip(" ")
+        if not to or any(ord(c) < 32 or ord(c) == 127 for c in to):
+            return "(no recipient — ask the user who to text)"
+        if not text.strip():
+            return "(nothing to draft — the message body is empty)"
+        literal = _literal_message_recipient(to)
+        if literal is None:
+            handle, problem = self.resolve_recipient(to)
+            if problem:
+                return problem
+            literal = _literal_message_recipient(handle)
+        if literal is None:
+            return "(error: Choose one supported literal phone number or email address.)"
+        self._effect("draft_message", {"to": literal, "text": text})
+        return _prepared_message_draft(literal, text)
+
+    def t_send_message(self, to, text, confirmed_self_send=False):
+        if msg := self._own_address(to, "send_message", confirmed_self_send):
+            return msg
+        shown = (to or "").strip()
+        if not shown:
+            return "(no recipient — ask the user who to text)"
+        display = shown
+        if not (self._EMAIL_RE.match(shown) or re.fullmatch(r"[+()\-.\s\d]{7,}", shown)):
+            handle, problem = self.resolve_recipient(shown)
+            if problem:
+                return problem
+            display = f"{shown} ({handle})"
+        if not (text or "").strip():
+            return "(nothing to send — the message body is empty)"
+        self._effect("send_message", {"to": display, "text": text})
+        return f"Message sent to {display}."
+
+    def t_schedule_send(self, channel, to, when, body="", text="", subject=""):
+        from service.tools.timeranges import BadWhen, resolve_when
+        channel = (channel or "").strip().lower()
+        if channel not in ("email", "message"):
+            return "(channel must be 'email' or 'message')"
+        recipients = self._split(to)
+        if len(recipients) > 1:
+            return ("(NOT scheduled — schedule_send supports exactly one recipient. "
+                    "Schedule each recipient separately; nothing was queued.)")
+        msg = body or text or ""
+        if not msg.strip():
+            return "(nothing to send — pass `body` with the full message)"
+        try:
+            when_dt, _lbl = resolve_when(when)
+        except BadWhen as exc:
+            return str(exc)
+        if when_dt.replace(tzinfo=None) <= self.now:
+            return (f"(NOT scheduled — {when!r} resolves to {when_dt:%a %b %-d at %-I:%M %p}, which is in "
+                    "the past. Ask the user what time they actually meant, or send it now with "
+                    f"{'send_email' if channel == 'email' else 'send_message'}.)")
+        if not recipients:
+            return ("(no recipient — ask the user who this should go to)" if channel == "email"
+                    else "(no recipient — ask the user who to text)")
+        display = recipient = recipients[0]
+        if channel == "email" and not self._EMAIL_RE.match(recipient):
+            recipient, problem = self.resolve_recipient(recipient, want_email=True)
+            if problem:
+                return problem
+            display = f"{to} ({recipient})"
+        elif channel == "message" and not (self._EMAIL_RE.match(recipient)
+                                           or re.fullmatch(r"[+()\-.\s\d]{7,}", recipient)):
+            recipient, problem = self.resolve_recipient(recipient)
+            if problem:
+                return problem
+            display = f"{to} ({recipient})"
+        sid = f"{len(self.effects) + 1:012x}"
+        self._effect("schedule_send", {"channel": channel, "to": recipient, "when": when, "body": msg,
+                                       "subject": subject or None})
+        pretty = when_dt.strftime("%a %b %-d at %-I:%M %p")
+        return (f"Scheduled: {'email' if channel == 'email' else 'text'} to {display} "
+                f"on {pretty} (id {sid}). It sends automatically — Wisp needs to be "
+                "running at that time. Use cancel_scheduled_send to call it off.")

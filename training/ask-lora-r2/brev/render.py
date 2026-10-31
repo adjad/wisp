@@ -1,7 +1,18 @@
 """Render the Ask LoRA dataset into prompt/completion rows with Wisp's own Gemma
 template, exactly as oMLX renders a production request, and package it for the GPU.
 
-    python render.py --model <gemma-4-E4B-it-oQ4e-mtp dir>      # writes brev/ask-lora-data.zip
+    python render.py --model <gemma-4-E4B-it-oQ4e-mtp dir> \
+                     --parity-model <Bolt oQ4e-mtp dir>          # writes brev/ask-lora-data.zip
+
+One rendered dataset serves BOTH round-2 LoRAs (Gemma 4 E4B and Nemotron 3.5 Bolt
+E4B). It is rendered once with Gemma's template. Bolt's template differs from
+Gemma's (a `conversational_mode` preamble that Wisp never sends, and assistant
+`content` kept before tool calls), but for this data the rows come out
+byte-identical, because tool-call steps carry empty content. That is checked,
+not assumed: `--parity-model` re-renders rows with Bolt's own template and
+fails on any difference, and the zip carries a sample of raw rows (`parity.jsonl`)
+so `train.py preflight` repeats the check on the GPU box against the template of
+the bf16 repo that is actually downloaded.
 
 Why render here, not on the GPU box: the prompt the model trains on must be the
 one it is served, byte for byte. That needs the production chat template and the
@@ -30,8 +41,18 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 DATASET = HERE.parent
 STOPS = ("<turn|>", "<|tool_response>")
-# chat_template.jinja of google/gemma-4-E4B-it @ ee0ef602, identical to the oQ4e build Wisp serves
-TEMPLATE_SHA = "0a2c8073c878ab1d"
+# sha256 of chat_template.jinja per model.
+#  gemma: google/gemma-4-E4B-it @ ee0ef602 and Jundot's oQ4e build Wisp serves (identical, checked).
+#  bolt:  the local UraionLabs oQ4e build ONLY. The template of the bf16 repo that gets
+#         trained (nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16) has not been compared yet, so
+#         train.py preflight treats a different sha there as a warning and lets the
+#         render-parity check against the downloaded repo's own template decide.
+TEMPLATE_SHAS = {
+    "gemma": "0a2c8073c878ab1da004bee933a998606537bbb62016310352c7285c3f01c5b5",
+    "bolt": "35b7d0641b6fb4ee41c3bc623e85bdb7d583c40f6ae9f24514ae58a9d57119f3",
+}
+RENDER_TAG = "gemma"      # the dataset is rendered with this model's template
+PARITY_SPLITS = {"train": 60, "dev": 20}   # raw rows shipped for the on-GPU parity check
 
 
 def _pick(seed: str, options: list[str]) -> str:
@@ -99,28 +120,87 @@ def render(tok, ex: dict, meta: dict) -> dict:
             "prompt": prompt, "completion": completion}
 
 
+def template_sha(model_dir: Path) -> str:
+    return hashlib.sha256((Path(model_dir) / "chat_template.jinja").read_bytes()).hexdigest()
+
+
+def spread(n: int, k: int) -> list[int]:
+    """Up to k indices spread evenly over range(n); k <= 0 means all."""
+    if k <= 0 or k >= n:
+        return list(range(n))
+    return [i * n // k for i in range(k)]
+
+
+def parity_mismatches(tok, rendered: list[dict], raw: list[tuple[dict, dict]]) -> list[str]:
+    """Re-render `raw` (example, meta) pairs with `tok`'s own template and list the ids whose
+    prompt or completion differs from the already rendered rows."""
+    bad = []
+    for r, (ex, meta) in zip(rendered, raw):
+        try:
+            again = render(tok, ex, meta)
+        except ValueError as exc:
+            bad.append(f"{r['id']}: {exc}")
+            continue
+        if again["prompt"] != r["prompt"] or again["completion"] != r["completion"]:
+            bad.append(r["id"])
+    return bad
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--model", required=True, help="dir with Wisp's Gemma tokenizer + chat_template.jinja")
+    ap.add_argument("--model", required=True, help="dir with Wisp's Gemma tokenizer + chat_template.jinja (the render source)")
+    ap.add_argument("--parity-model", action="append", default=[], metavar="DIR",
+                    help="dir of the OTHER model's local build (e.g. the Bolt oQ4e); rows are re-rendered with its "
+                         "own template and must be byte-identical. Repeatable. Its sha must match a pinned one.")
+    ap.add_argument("--parity-rows", type=int, default=0,
+                    help="rows per split to check on the Mac (0 = all rows; tokenizer only, a few seconds)")
     ap.add_argument("--out", default=str(HERE / "ask-lora-data.zip"))
     a = ap.parse_args()
     tpl = Path(a.model) / "chat_template.jinja"
-    sha = hashlib.sha256(tpl.read_bytes()).hexdigest()
-    if not sha.startswith(TEMPLATE_SHA):
-        raise SystemExit(f"{tpl} is not the production Gemma 4 template (sha {sha[:16]})")
+    sha = template_sha(a.model)
+    if sha != TEMPLATE_SHAS[RENDER_TAG]:
+        raise SystemExit(f"{tpl} is not the production Gemma 4 template (sha {sha[:16]}, want "
+                         f"{TEMPLATE_SHAS[RENDER_TAG][:16]}); render with Gemma's template, not another model's")
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(a.model)
+    parity_toks = {}
+    for d in a.parity_model:
+        psha = template_sha(d)
+        tag = next((t for t, v in TEMPLATE_SHAS.items() if v == psha), None)
+        if tag is None or tag == RENDER_TAG:
+            raise SystemExit(f"{d}: template sha {psha[:16]} is not a pinned non-render model's "
+                             f"(pinned: {', '.join(f'{t}={v[:16]}' for t, v in TEMPLATE_SHAS.items())})")
+        parity_toks[tag] = AutoTokenizer.from_pretrained(d)
     payload: dict[str, bytes] = {}
     stats = {}
+    parity_lines: list[str] = []
+    parity_report: dict[str, dict] = {}
     for split, name in (("train", "train"), ("valid", "dev")):
-        rows = [render(tok, json.loads(e), json.loads(m)) for e, m in
-                zip(open(DATASET / f"{split}.jsonl"), open(DATASET / f"{split}.meta.jsonl"))]
+        raw = [(json.loads(e), json.loads(m)) for e, m in
+               zip(open(DATASET / f"{split}.jsonl"), open(DATASET / f"{split}.meta.jsonl"))]
+        rows = [render(tok, e, m) for e, m in raw]
+        for tag, ptok in parity_toks.items():
+            idx = spread(len(rows), a.parity_rows)
+            bad = parity_mismatches(ptok, [rows[i] for i in idx], [raw[i] for i in idx])
+            parity_report.setdefault(tag, {})[name] = {"checked": len(idx), "mismatches": len(bad)}
+            if bad:
+                raise SystemExit(f"render parity FAILED for {tag} on {name}: {len(bad)} of {len(idx)} rows differ "
+                                 f"under its template, e.g. {bad[:3]}. Do not train {tag} on this dataset; "
+                                 "look for assistant content before tool calls.")
+        # A spread sample of raw rows. train.py re-renders them on the GPU box with the
+        # downloaded repo's own template (render.py travels in the zip for that).
+        for i in spread(len(rows), PARITY_SPLITS[name]):
+            parity_lines.append(json.dumps({"split": name, "row": i, "example": raw[i][0], "meta": raw[i][1]},
+                                           ensure_ascii=False))
         thought_rows = sum("<|channel>thought" in r["prompt"][-20:] for r in rows)
         stats[name] = {"rows": len(rows), "with_thought": thought_rows,
                        "ends": {s: sum(r["completion"].endswith(s) for r in rows) for s in STOPS}}
         payload[f"{name}.jsonl"] = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows).encode()
     payload["train.py"] = (HERE / "train.py").read_bytes()
-    payload["stats.json"] = json.dumps({**stats, "template_sha256": sha,
+    payload["render.py"] = Path(__file__).read_bytes()      # train.py preflight re-renders parity.jsonl with it
+    payload["parity.jsonl"] = ("\n".join(parity_lines) + "\n").encode()
+    payload["stats.json"] = json.dumps({**stats, "template_sha256": sha, "template_shas": TEMPLATE_SHAS,
+                                        "render_tag": RENDER_TAG, "mac_parity": parity_report,
                                         "dataset_stats": json.load(open(DATASET / "stats.json"))}, indent=1).encode()
     manifest = {"files": {k: hashlib.sha256(v).hexdigest() for k, v in payload.items()}}
     tmp = a.out + ".tmp"
@@ -134,6 +214,8 @@ def main() -> int:
     (HERE / "upload-zip.json").write_text(json.dumps({"file": Path(a.out).name, "sha256": zsha,
                                                       "bytes": Path(a.out).stat().st_size, **stats}, indent=1) + "\n")
     print(json.dumps(stats))
+    print("render parity on the Mac:", json.dumps(parity_report) if parity_report
+          else "NOT CHECKED - pass --parity-model <Bolt oQ4e dir> before training Bolt")
     print(f"{a.out}: sha256 {zsha} (recorded in brev/upload-zip.json; pass it to `run.sh unpack`)")
     return 0
 

@@ -1,7 +1,10 @@
 """Local LoRA pilot on Apple silicon: measure s/iter, peak memory and the loss trend
-for the Ask LoRA, on Wisp's production Gemma weights (oQ4e, so this is QLoRA).
+for the Ask LoRA, on the local oQ4e build of either round-2 model (so this is QLoRA).
 
-    python pilot.py --model <dir> --data <unzipped brev/ask-lora-data.zip> --out <dir> [--iters 50]
+    python pilot.py --tag gemma|bolt --model <dir> --data <unzipped brev/ask-lora-data.zip> --out <dir> [--iters 50]
+
+Run it once per model: results land in <out>/<tag>. The Bolt build has 8-bit attention, so
+expect a higher peak than Gemma; compare the two peaks before assuming one number covers both.
 
 It uses the rows brev/render.py produced: the exact production prompts
 (enable_thinking, tools, short thoughts) plus completions. mlx-lm's own
@@ -20,8 +23,10 @@ it trains 50 single-row steps, not the full run.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import random
+import sys
 import time
 from pathlib import Path
 
@@ -72,6 +77,9 @@ def dev_loss(model, dev):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
+    ap.add_argument("--tag", required=True, choices=["gemma", "bolt"],
+                    help="which model --model is; its chat_template.jinja must match the pinned sha and "
+                         "results go to <out>/<tag> so the two pilots never overwrite each other")
     ap.add_argument("--model", required=True)
     ap.add_argument("--data", required=True)
     ap.add_argument("--out", required=True)
@@ -80,7 +88,14 @@ def main() -> int:
     ap.add_argument("--dev-rows", type=int, default=10)
     ap.add_argument("--seed", type=int, default=20261029)
     a = ap.parse_args()
-    out = Path(a.out)
+    # the rows were rendered with Gemma's template; the pilot model must be the local build of the tagged model
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "brev"))
+    from render import TEMPLATE_SHAS
+    sha = hashlib.sha256((Path(a.model) / "chat_template.jinja").read_bytes()).hexdigest()
+    if sha != TEMPLATE_SHAS[a.tag]:
+        raise SystemExit(f"--model {a.model} has template sha {sha[:16]}, not the {a.tag} build "
+                         f"({TEMPLATE_SHAS[a.tag][:16]}): wrong --tag or wrong directory")
+    out = Path(a.out) / a.tag
     out.mkdir(parents=True, exist_ok=True)
     logf = (out / "pilot.log.jsonl").open("w")
 
@@ -147,7 +162,7 @@ def main() -> int:
         {"fine_tune_type": "lora", "num_layers": n_layers, "lora_parameters": lora}, indent=1))
     mean_s = t_train / a.iters
     full_rows = 2 * len(train)
-    summary = {"iters": a.iters, "mean_s_per_iter": round(mean_s, 2), "tok_s": round(tokens / t_train),
+    summary = {"tag": a.tag, "iters": a.iters, "mean_s_per_iter": round(mean_s, 2), "tok_s": round(tokens / t_train),
                "mean_tokens_per_row": round(tokens / a.iters), "peak_gb": round(mx.get_peak_memory() / 2**30, 2),
                "dev_loss_before": round(base, 4), "dev_loss_after": round(after, 4),
                "projected_full_run_hours_2_epochs": round(full_rows * mean_s / 3600, 1),

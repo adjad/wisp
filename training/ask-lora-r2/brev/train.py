@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Wisp Ask LoRA trainer for Gemma 4 E4B on one NVIDIA GPU (48 GB class).
+"""Wisp Ask LoRA trainer for Gemma 4 E4B or Nemotron 3.5 Bolt E4B on one NVIDIA GPU (48 GB class).
+Bolt is an RL post-train of Gemma 4 E4B with the same architecture and tokenizer, so one script
+trains both; `--tag gemma|bolt` picks which (each run is a separate LoRA on the shared dataset).
 
-    python train.py preflight --data DIR --base DIR            # tokenizer only: template, lengths, stop tokens
-    python train.py smoke     --data DIR --base DIR --out DIR  # the longest rows: peak memory + speed
-    python train.py train     --data DIR --base DIR --out DIR [--resume DIR]
-    python train.py merge     --base DIR --adapter DIR --data DIR --out DIR
-    python train.py sample    --base DIR --adapter DIR --data DIR   # greedy decode of dev prompts, for a look
+    python train.py preflight --tag T --data DIR --base DIR            # template sha + render parity, lengths, stop tokens
+    python train.py smoke     --tag T --data DIR --base DIR --out DIR  # the longest rows: peak memory + speed
+    python train.py train     --tag T --data DIR --base DIR --out DIR [--resume DIR]
+    python train.py merge     --tag T --base DIR --adapter DIR --data DIR --out DIR
+    python train.py sample    --tag T --base DIR --adapter DIR --data DIR   # greedy decode of dev prompts, for a look
 
 Rows are prompt/completion strings rendered on the Mac by brev/render.py with
 Wisp's own chat template and each request's `chat_template_kwargs`, so the
@@ -54,7 +56,10 @@ from pathlib import Path
 
 STOP_IDS = {106, 50}             # <turn|>, <|tool_response>
 N_LAYERS = 42
-TEMPLATE_SHA = "0a2c8073c878ab1da004bee933a998606537bbb62016310352c7285c3f01c5b5"
+# Per-model template shas live in render.py (shipped in the data zip as render.py).
+# Gemma's pinned sha equals the HF bf16 repo's, so a mismatch fails. Bolt's is the local quant's;
+# the HF bf16 repo may differ, so there a mismatch warns and render parity decides.
+STRICT_SHA_TAGS = {"gemma"}
 # language-model attention + MLP only; the towers' ClippableLinear layers must not match
 TARGET_RE = r".*language_model.*\.(self_attn\.(q_proj|k_proj|v_proj|o_proj)|mlp\.(gate_proj|up_proj|down_proj))"
 
@@ -88,13 +93,77 @@ def tokenize(tok, rows: list[dict], max_len: int) -> tuple[list[tuple], list[str
     return out, skipped
 
 
-def cmd_preflight(a) -> int:
+def _load_render(data: Path):
+    """Import render.py from the unpacked data dir (it travels in the zip next to parity.jsonl)."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ask_render", Path(data) / "render.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _template_check(a, tok) -> int:
+    """Per-model template sha, then render parity against the downloaded repo's OWN template.
+
+    The pinned sha is that of the local oQ4e build. For Gemma it is also the HF bf16 repo's
+    (checked), so a different sha fails. For Bolt the bf16 repo's template was never compared
+    with the quant's, so a different sha only warns and the parity check decides. Parity is
+    the binding gate for both: sample rows are re-rendered from their raw messages with the
+    template the training run will actually load, and must equal the trained rows byte for byte."""
+    rd = _load_render(a.data)
+    want = rd.TEMPLATE_SHAS[a.tag]
     tpl = Path(a.base) / "chat_template.jinja"
-    if not tpl.is_file() or hashlib.sha256(tpl.read_bytes()).hexdigest() != TEMPLATE_SHA:
-        print("PREFLIGHT FAILED: the base's chat_template.jinja is not the template the data was rendered with")
+    if tpl.is_file():
+        got, where = hashlib.sha256(tpl.read_bytes()).hexdigest(), "chat_template.jinja"
+    elif getattr(tok, "chat_template", None):
+        got, where = hashlib.sha256(tok.chat_template.encode()).hexdigest(), "tokenizer_config.json (inline)"
+    else:
+        print("PREFLIGHT FAILED: the base has no chat template (no chat_template.jinja, none inline)")
+        return 1
+    print(f"template [{a.tag}] {where}: sha256 {got[:16]} (pinned for the local {a.tag} quant: {want[:16]})")
+    problems = 0
+    if got != want:
+        if a.tag in STRICT_SHA_TAGS:
+            print(f"PREFLIGHT FAILED: the {a.tag} base's template differs from the pinned one")
+            problems += 1
+        else:
+            print(f"WARNING: the downloaded {a.tag} repo's template differs from the local quant's. "
+                  f"Record sha {got} in the run notes; the parity check below decides whether the data fits it.")
+    rows = [json.loads(l) for l in (Path(a.data) / "parity.jsonl").read_text().splitlines() if l.strip()]
+    if not rows:
+        print("PREFLIGHT FAILED: parity.jsonl is empty")
+        return 1
+    by_split = {s: {r["id"]: r for r in load_rows(Path(a.data), s)} for s in ("train", "dev")}
+    done = [by_split[p["split"]][p["meta"]["id"]] for p in rows]
+    bad = rd.parity_mismatches(tok, done, [(p["example"], p["meta"]) for p in rows])
+    print(f"render parity vs the {a.tag} base's own template: {len(rows) - len(bad)}/{len(rows)} rows byte-identical")
+    if bad:
+        print(f"PREFLIGHT FAILED: {len(bad)} rows render differently under this template, e.g. {bad[:3]}")
+        problems += 1
+    return problems
+
+
+def _arch_check(a) -> int:
+    cfg = json.loads((Path(a.base) / "config.json").read_text())
+    layers = (cfg.get("text_config") or cfg).get("num_hidden_layers")
+    arch = cfg.get("architectures")
+    print(f"config: architectures {arch}, language layers {layers}")
+    if layers != N_LAYERS or arch != ["Gemma4ForConditionalGeneration"]:
+        print(f"PREFLIGHT FAILED: expected Gemma4ForConditionalGeneration with {N_LAYERS} layers "
+              "(the LoRA target regex, stop ids and the cache check assume it)")
+        return 1
+    return 0
+
+
+def cmd_preflight(a) -> int:
+    if not (Path(a.base) / "config.json").is_file():
+        print("PREFLIGHT FAILED: the base has no config.json")
         return 1
     from transformers import AutoTokenizer
     tok = AutoTokenizer.from_pretrained(a.base, local_files_only=True)
+    if _arch_check(a) + _template_check(a, tok):
+        print("PREFLIGHT FAILED: the base does not match the data - do not train")
+        return 1
     problems = 0
     for split in ("train", "dev"):
         rows = load_rows(Path(a.data), split)
@@ -471,7 +540,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["preflight", "smoke", "train", "merge", "sample"])
     ap.add_argument("--data", help="dir with train.jsonl and dev.jsonl (from ask-lora-data.zip)")
-    ap.add_argument("--base", required=True, help="google/gemma-4-E4B-it bf16 snapshot dir")
+    ap.add_argument("--tag", required=True, choices=["gemma", "bolt"],
+                    help="which model this run trains (run.sh passes it); selects the pinned template sha")
+    ap.add_argument("--base", required=True, help="bf16 snapshot dir of that model (Gemma 4 E4B-it or Nemotron 3.5 Bolt E4B)")
     ap.add_argument("--out")
     ap.add_argument("--adapter", help="merge/sample: adapter dir (e.g. OUT/best)")
     ap.add_argument("--resume", help="train: a step-NNNNN or oom-recovery dir")

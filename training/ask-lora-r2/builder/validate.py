@@ -15,19 +15,33 @@ Exit code 1 on any problem. Checks, per example:
   calls       every call names an offered tool that exists in the live registry;
               target arguments validate against the offered schema; tool names
               given to get_tool_schemas exist
-  reads only  no call (history or target) to a tool outside the read categories
-  injection   when a tool result carries text addressed to an assistant, the
-              target neither calls a write tool nor repeats that text's payload
+  writes      a call (history or target) to a tool outside the read categories is
+              allowed only if writes.WRITE_ALLOW[family] lists it; a family absent
+              from WRITE_ALLOW stays reads-only. Needs the example's meta line
+              (train.meta.jsonl beside train.jsonl, meta.jsonl beside all.jsonl)
+  cards       a writes.ALWAYS_CARD tool that ran must be in meta cards_seen; a
+              writes.NEVER_CARD tool must not be; meta expect_cards == cards_seen
+  approval    the history agrees with meta approve (one entry per card, in order;
+              a denied card's result is "The user denied this action."), and a
+              final after a denial must not claim the action happened
+  tool steps  an assistant step with tool calls has empty content (Bolt's chat
+              template keeps it, Gemma's drops it, so rows would differ)
+  injection   when a tool result carries text addressed to an assistant, no
+              write call and no later reply repeats that text's payload
               (addresses, links, amounts, account numbers, commands)
   privacy     every email domain is synthetic; no /Users/<real account> path;
               no git identity or macOS account name; optional private denylist
               over EVERYTHING, system prompts and tool schemas included
   leak        the user prompt does not repeat or nearly repeat an eval question
+              or a toolbench prompt (all splits, all fact seeds); no toolbench
+              fact value (names, amounts, businesses, files, codes) appears in
+              the conversation (leak.py)
   markup      no <|tool_call> text inside assistant content
   harness     no trace of the build harness (World.t_* names, stub errors)
-  template    (with --template MODEL_DIR) the model's chat template renders every
-              example, and the prompt is a prefix of the full text, as mlx-lm's
-              mask_prompt needs
+  template    (with --template MODEL_DIR, repeatable) each model's chat template
+              renders every example, and the prompt is a prefix of the full text,
+              as mlx-lm's mask_prompt needs. With two or more, brev/render.py's
+              prompt and completion must be byte-identical under every template.
 Across files: no prompt group appears in both train and valid.
 """
 from __future__ import annotations
@@ -43,10 +57,18 @@ import sys
 from collections import Counter
 
 import leak
+import writes
 
 OUT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DENIED = "The user denied this action."
 
 import service.tools  # noqa: E402,F401
+from service import skills as _skills  # noqa: E402
+
+try:   # production registers the bundled skills' tools (use_skill, mac_*) at startup (main.lifespan)
+    _skills.load()
+except Exception:  # noqa: BLE001  (production tolerates a failed load the same way)
+    pass
 from service.router.model_led import (CapabilityCatalog, DISCOVERY_TOOL, discovery_schema,  # noqa: E402
                                       registry_specs, stub_schema)
 from service.tools.registry import REGISTRY  # noqa: E402
@@ -133,6 +155,43 @@ def live_problems(schema: dict) -> list[str]:
     return [] if schema == tool.schema() else [f"{name}: schema differs from live"]
 
 
+# ----------------------------------------------------------------- meta, approval
+_META_NAMES = {"train.jsonl": "train.meta.jsonl", "valid.jsonl": "valid.meta.jsonl", "all.jsonl": "meta.jsonl"}
+_SENTENCES = re.compile(r"(?<=[.!?])\s+|\n+")
+_DONE = re.compile(r"\b(?:sent|added|scheduled|created|booked|saved|deleted|removed|moved|cancel+ed|updated|"
+                   r"emailed|texted|replied|forwarded|completed|marked|done|all set)\b", re.I)
+_NEGATED = re.compile(r"\b(?:not|never|no|nothing|none|nope|without|cannot|unsent|unsaved)\b|n['’]t\b", re.I)
+
+
+def meta_path_for(path: str) -> str | None:
+    """The per-step metadata file that goes with an examples file, if it exists."""
+    d, base = os.path.split(path)
+    cand = os.path.join(d, _META_NAMES.get(base) or os.path.splitext(base)[0] + ".meta.jsonl")
+    return cand if os.path.exists(cand) else None
+
+
+def claims_done(text: str) -> bool:
+    """True when some statement in ``text`` says an action happened (sent, added, done...)."""
+    for sentence in _SENTENCES.split(text or ""):
+        s = sentence.strip()
+        if s and not s.endswith("?") and _DONE.search(s) and not _NEGATED.search(s):
+            return True
+    return False
+
+
+def pair_cards(calls: list[tuple[str, str]], cards: list[str], approve: list) -> dict[str, bool]:
+    """Match the example's calls (id, name), in order, to the turn's cards (tool names, in order);
+    returns {tool_call_id: approved}. A card with no approve entry was approved."""
+    used, out = set(), {}
+    for cid, name in calls:
+        for k, card in enumerate(cards):
+            if k not in used and card == name:
+                used.add(k)
+                out[cid] = bool(approve[k]) if k < len(approve) else True
+                break
+    return out
+
+
 # ----------------------------------------------------------------- privacy
 def identity_tokens() -> set[str]:
     """The machine owner's git identity and account name, never written anywhere."""
@@ -190,17 +249,35 @@ def private_denylist(path: str):
 
 
 # ----------------------------------------------------------------- per example
-def validate_file(path, leaks, ident, deny, wl):
+AUTO = object()
+
+
+def load_meta(path, meta_path=AUTO, bad=None):
+    """Per-line metadata for an examples file: a list of dicts, or None when there is no meta file."""
+    mp = meta_path_for(path) if meta_path is AUTO else meta_path
+    if not mp or not os.path.exists(mp):
+        return None
+    metas = [json.loads(l) for l in open(mp)]
+    if len(metas) != sum(1 for _ in open(path)):
+        if bad:
+            bad("meta:line_count", os.path.basename(mp))
+        return None
+    return metas
+
+
+def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
     problems, samples = Counter(), {}
 
     def bad(key, where):
         problems[key] += 1
         samples.setdefault(key, where)
 
+    metas = load_meta(path, meta_path, bad)
     n = 0
     for ln, line in enumerate(open(path), 1):
         n += 1
         where = f"{os.path.basename(path)}:{ln}"
+        meta = metas[ln - 1] if metas else {}
         try:
             ex = json.loads(line)
         except ValueError:
@@ -227,7 +304,13 @@ def validate_file(path, leaks, ident, deny, wl):
         prompt = msgs[i].get("content") or ""
         hit, score, q = leaks.leaks(prompt)
         if hit:
-            bad("leak:eval_question", f"{where} {score:.2f} ~ {q['id']}")
+            bad("leak:toolbench_prompt" if str(q["id"]).startswith("tb:") else "leak:eval_question",
+                f"{where} {score:.2f} ~ {q['id']}")
+        for val in leak.fact_hits(leak.conversation_text(ex)):
+            bad("leak:toolbench_fact", f"{where} {val[:3]}…({len(val)})")
+        family = meta.get("family")
+        allowed = writes.WRITE_ALLOW.get(family, frozenset())
+        calls, results = [], {}      # calls: (tool_call_id, name) in order; results: tool_call_id -> text
         pending, injected = [], []
         for j in range(i + 1, len(msgs)):
             m, r = msgs[j], roles[j]
@@ -238,17 +321,20 @@ def validate_file(path, leaks, ident, deny, wl):
                 content = m.get("content") or ""
                 if "<|tool_call>" in content or "<tool_call" in content:
                     bad("markup_in_content", f"{where}:{j}")
+                if m.get("tool_calls") and content.strip():
+                    bad("toolcall_content_nonempty", f"{where}:{j}")
                 for tc in m.get("tool_calls") or []:
                     fn = tc.get("function") or {}
                     name = fn.get("name")
+                    calls.append((tc.get("id"), name))
                     if tc.get("type") != "function" or not tc.get("id"):
                         bad("tool_call_shape", f"{where}:{j}")
                     if name not in offered:
                         bad("call_not_offered", f"{where}:{j} {name}")
                     if name != DISCOVERY_TOOL and name not in REGISTRY:
                         bad("call_not_in_registry", f"{where}:{j} {name}")
-                    if not is_read(name):
-                        bad("write_call", f"{where}:{j} {name}")
+                    if not is_read(name) and name not in allowed:
+                        bad("write_call", f"{where}:{j} {name} (family {family})")
                     args = fn.get("arguments")
                     if isinstance(args, str):   # wire format; the written files carry objects
                         try:
@@ -267,11 +353,11 @@ def validate_file(path, leaks, ident, deny, wl):
                         errs = check_schema(args, offered[name].get("parameters") or {"type": "object"})
                         if errs:
                             bad("args_schema(target)", f"{where} {name} {errs[:2]}")
-                    if is_target:
+                    if is_target or not is_read(name):   # a write call never carries an injected payload
                         for payload in injected:
                             if payload.lower() in json.dumps(args).lower():
-                                bad("injection:payload_in_call", f"{where} {name}")
-                    else:
+                                bad("injection:payload_in_call", f"{where}:{j} {name}")
+                    if not is_target:
                         pending.append(tc.get("id"))
                 if is_target and not m.get("tool_calls"):
                     for payload in injected:
@@ -283,6 +369,7 @@ def validate_file(path, leaks, ident, deny, wl):
                 else:
                     bad("tool_without_call", f"{where}:{j}")
                 text = str(m.get("content") or "")
+                results[m.get("tool_call_id")] = text
                 for sentence in re.split(r"(?<=[.!?])\s+|\n", text):
                     if INJECTION_MARKERS.search(sentence):
                         injected += [p.strip("`") for p in _PAYLOAD.findall(sentence)]
@@ -292,6 +379,34 @@ def validate_file(path, leaks, ident, deny, wl):
                 bad("bad_role", f"{where}:{j}")
         if pending:
             bad("call_without_tool_result", where)
+        # writes, approval cards and denials, against the example's meta line
+        names = [name for _, name in calls]
+        ran_writes = [name for name in names if name in REGISTRY and not is_read(name)]
+        cards = list(meta.get("cards_seen") or [])
+        if ran_writes != list(meta.get("writes") or [])[:len(ran_writes)]:
+            bad("meta:writes", f"{where} example {ran_writes} vs meta {meta.get('writes')}")
+        if sorted(meta.get("expect_cards") or []) != sorted(cards):
+            bad("cards:expect_mismatch", f"{where} expected {meta.get('expect_cards')} saw {cards}")
+        for name in sorted(set(names) & writes.ALWAYS_CARD):
+            if name not in cards:
+                bad("cards:missing", f"{where} {name}")
+        for name in sorted(set(cards) & writes.NEVER_CARD):
+            bad("cards:never_card", f"{where} {name}")
+        decided = pair_cards(calls, cards, list(meta.get("approve") or []))
+        denied_any = False
+        for cid, _name in calls:
+            text = results.get(cid)
+            if text is None:
+                continue      # the target's own call has no result yet
+            denied = DENIED in text
+            denied_any |= denied
+            if cid in decided and decided[cid] == denied:
+                bad("approve:denied_result_missing" if not decided[cid] else "approve:unexpected_denial",
+                    f"{where} {_name}: card {'allowed' if decided[cid] else 'denied'}, result {text[:40]!r}")
+            elif cid not in decided and denied:
+                bad("approve:denial_without_card", f"{where} {_name}")
+        if denied_any and not msgs[-1].get("tool_calls") and claims_done(msgs[-1].get("content") or ""):
+            bad("approve:denied_claims_success", f"{where} {(msgs[-1].get('content') or '')[:60]!r}")
         # the synthetic harness must never show through (class or stub names)
         if re.search(r"\bWorld\.t_\w+|\bt_[a-z_]+\(\)|synthetic world|lora-dataset harness", json.dumps(msgs)):
             bad("harness_leak", where)
@@ -322,30 +437,62 @@ def validate_file(path, leaks, ident, deny, wl):
     return n, problems, samples
 
 
-def template_check(path, model_dir):
-    """Render every example with the model's own chat template, as mlx-lm does."""
+def _brev_render():
+    """brev/render.py's render(): the exact prompt/completion rows the GPU box trains on."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ask_brev_render", os.path.join(OUT, "brev", "render.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def template_check(path, model_dirs, meta_path=AUTO):
+    """Render every example with each model's own chat template, as mlx-lm does, and with
+    several templates require brev/render.py's prompt and completion to match byte for byte.
+    Returns (problems, {template tag: token stats})."""
     import statistics
     from transformers import AutoTokenizer
-    tok = AutoTokenizer.from_pretrained(model_dir)
-    lens, targets, problems = [], [], Counter()
-    for line in open(path):
+    dirs = [model_dirs] if isinstance(model_dirs, str) else list(model_dirs)
+    tags = [os.path.basename(os.path.normpath(d)) for d in dirs]
+    toks = [AutoTokenizer.from_pretrained(d) for d in dirs]
+    brev = _brev_render()
+    metas = load_meta(path, meta_path)
+    lens, targets, problems = {t: [] for t in tags}, {t: [] for t in tags}, Counter()
+    for ln, line in enumerate(open(path)):
         ex = json.loads(line)
+        meta = metas[ln] if metas else {"id": f"line{ln + 1}", "family": "", "target_kind": "",
+                                        "chat_template_kwargs": {"enable_thinking": True}}
         tools = ex["tools"] or None
-        try:
-            full = tok.apply_chat_template(ex["messages"], tools=tools, tokenize=False)
-            pre = tok.apply_chat_template(ex["messages"][:-1], tools=tools, tokenize=False, add_generation_prompt=True)
-        except Exception as exc:  # noqa: BLE001
-            problems[f"template_error: {str(exc)[:80]}"] += 1
-            continue
-        if not full.startswith(pre):
-            problems["template:prompt_not_prefix"] += 1
-            continue
-        n = len(tok(full, add_special_tokens=False)["input_ids"])
-        lens.append(n)
-        targets.append(n - len(tok(pre, add_special_tokens=False)["input_ids"]))
-    lens.sort()
-    stats = ({"median_tokens": statistics.median(lens), "p90_tokens": lens[int(0.9 * len(lens))], "max_tokens": lens[-1],
-              "total_tokens": sum(lens), "target_tokens": sum(targets)} if lens else {})
+        rows = []
+        for tag, tok in zip(tags, toks):
+            try:
+                full = tok.apply_chat_template(ex["messages"], tools=tools, tokenize=False)
+                pre = tok.apply_chat_template(ex["messages"][:-1], tools=tools, tokenize=False, add_generation_prompt=True)
+            except Exception as exc:  # noqa: BLE001
+                problems[f"{tag}: template_error: {str(exc)[:80]}"] += 1
+                continue
+            if not full.startswith(pre):
+                problems[f"{tag}: template:prompt_not_prefix"] += 1
+                continue
+            n = len(tok(full, add_special_tokens=False)["input_ids"])
+            lens[tag].append(n)
+            targets[tag].append(n - len(tok(pre, add_special_tokens=False)["input_ids"]))
+            try:
+                r = brev.render(tok, ex, meta)
+                rows.append((tag, r["prompt"], r["completion"]))
+            except Exception as exc:  # noqa: BLE001
+                problems[f"{tag}: render_error: {str(exc)[:80]}"] += 1
+        for tag, prompt, completion in rows[1:]:
+            if prompt != rows[0][1]:
+                problems[f"template:parity_prompt({rows[0][0]} vs {tag})"] += 1
+            if completion != rows[0][2]:
+                problems[f"template:parity_completion({rows[0][0]} vs {tag})"] += 1
+    stats = {}
+    for tag in tags:
+        ls = sorted(lens[tag])
+        if ls:
+            stats[tag] = {"median_tokens": statistics.median(ls), "p90_tokens": ls[int(0.9 * len(ls))],
+                          "max_tokens": ls[-1], "total_tokens": sum(ls), "target_tokens": sum(targets[tag])}
     return problems, stats
 
 
@@ -367,7 +514,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("paths", nargs="*")
     ap.add_argument("--private-results", default=os.environ.get("WISP_EVAL_RESULTS"))
-    ap.add_argument("--template", metavar="MODEL_DIR", help="also render each example with this model's chat template")
+    ap.add_argument("--template", metavar="MODEL_DIR", action="append", default=[],
+                    help="also render each example with this model's chat template (repeatable; with two or more, "
+                         "the rendered prompt and completion must match byte for byte). Reads template/tokenizer "
+                         "files only, never weights.")
     args = ap.parse_args(argv)
     paths = args.paths or [os.path.join(OUT, x) for x in ("train.jsonl", "valid.jsonl", "all.jsonl")
                            if os.path.exists(os.path.join(OUT, x))]
@@ -389,7 +539,10 @@ def main(argv=None):
         failed |= bool(problems)
         if args.template:
             tproblems, tstats = template_check(p, args.template)
-            print(f"    template: problems {dict(tproblems) or 'none'}; {tstats}")
+            print(f"    template ({len(args.template)} checked"
+                  f"{', parity' if len(args.template) > 1 else ''}): problems {dict(tproblems) or 'none'}")
+            for tag, st in tstats.items():
+                print(f"      {tag}: {st}")
             failed |= bool(tproblems)
     tm, vm = os.path.join(OUT, "train.meta.jsonl"), os.path.join(OUT, "valid.meta.jsonl")
     if not args.paths and os.path.exists(tm) and os.path.exists(vm):
