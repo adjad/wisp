@@ -87,7 +87,7 @@ def test_stub_load_then_stall_is_reprompted_and_reads_the_calendar(synthetic):
     effects, _ = synthetic
     client, events, answer = run(
         [[call("get_upcoming", when="tomorrow")], STALL,
-         [call("get_upcoming", period="tomorrow")], "Tomorrow: Office Hours 10–11 AM."],
+         [call("get_upcoming", period="tomorrow")], "Tomorrow: Workshop at 2 PM."],
         prompt="what is up for tommorow", ask_quality=True, model_led_preload=["view_emails"])
     # The stub call ran nothing and says so in its receipt.
     receipt = json.loads(tool_messages(client.requests[1])[-1]["content"])
@@ -96,7 +96,7 @@ def test_stub_load_then_stall_is_reprompted_and_reads_the_calendar(synthetic):
     # The stall was not the answer: a tool-required re-prompt followed.
     assert client.requests[2]["tool_choice"] == "required"
     assert executed(effects, "get_upcoming") == [{"period": "tomorrow"}]
-    assert answer == "Tomorrow: Office Hours 10–11 AM."
+    assert answer == "Tomorrow: Workshop at 2 PM."
     assert STALL not in [e.get("text") for e in events if e["type"] == "text"]
 
 
@@ -210,12 +210,12 @@ def test_plan_tomorrow_turn_uses_the_day_plan_for_tomorrow(synthetic):
     register("get_my_day_plan", "proactive_tools", parameters={"type": "object", "properties": {
         "day": {"type": "string", "enum": ["today", "tomorrow"]}}, "additionalProperties": False})
     client, _, answer = run(
-        [[call("get_my_day_plan", day="tomorrow")], "Tomorrow starts with Office Hours at 10 AM."],
+        [[call("get_my_day_plan", day="tomorrow")], "Tomorrow starts with the Workshop at 2 PM."],
         prompt="help me plan my day tommorow", ask_quality=True, model_led_preload=["get_my_day_plan"])
     assert executed(effects, "get_my_day_plan") == [{"day": "tomorrow"}]
     offered = {s["function"]["name"]: s for s in client.requests[0]["tools"]}
     assert "day" in offered["get_my_day_plan"]["function"]["parameters"]["properties"]
-    assert answer == "Tomorrow starts with Office Hours at 10 AM."
+    assert answer == "Tomorrow starts with the Workshop at 2 PM."
 
 
 # --- the "what is on my email and messages" turn -------------------------------------

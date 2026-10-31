@@ -341,6 +341,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_wisp_self_reference.py",
     "tests/test_followup_subject.py",
     "tests/test_intent_guard.py",
+    "tests/test_answer_grounding.py",
     # Ask eval fixes: spoken periods, tool-call markup, tool wording and head start;
     # fake model client, stubbed tools, private WISP_HOME.
     "tests/test_ask_eval_tool_wording.py",
