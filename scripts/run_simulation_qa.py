@@ -333,6 +333,14 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_model_only_quality.py",
     # Ask stall re-prompt, tomorrow typos and the day plan: fake model client, stubbed snapshot.
     "tests/test_ask_day_answers.py",
+    # Ask quality: code-failure fixes, tool-pair descriptions, the Wisp self-reference
+    # sheet, the follow-up subject record and intent hard stops; registry checks,
+    # fake model client, synthetic tools, private WISP_HOME.
+    "tests/test_ask_code_failures.py",
+    "tests/test_ask_tool_pair_descriptions.py",
+    "tests/test_wisp_self_reference.py",
+    "tests/test_followup_subject.py",
+    "tests/test_intent_guard.py",
     # Ask eval fixes: spoken periods, tool-call markup, tool wording and head start;
     # fake model client, stubbed tools, private WISP_HOME.
     "tests/test_ask_eval_tool_wording.py",
