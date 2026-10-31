@@ -1,0 +1,105 @@
+# Conversational prompts for the Gemma-vs-Bolt chat-quality eval (chat_eval.py).
+# No personal-data tool tasks: nothing here asks about the user's mail, calendar, files or contacts.
+# The pinned clock is 2026-10-30 08:30 (morning), so no prompt names a time of day other than morning.
+#
+# kinds
+#   single        one user message in a fresh session.
+#   conversation  turns sent in ONE session; each later turn carries the model's OWN earlier replies as
+#                 history (so the two models are judged on conversations they actually had).
+#   variety       the same question worded several ways, each in a FRESH session; measures how monotonous
+#                 the model's default answer is across wordings (judged as a set, plus objective overlap).
+#
+# Every unit is run `--samples` times (default 3) with a different seed per sample, the same seeds for every model.
+# 35 single + 2 variety + 3 conversation = 40 units, 52 model turns per sample.
+units:
+  # ---- small talk (5)
+  - {id: small_hey, category: small_talk, kind: single, prompt: "hey"}
+  - {id: small_morning, category: small_talk, kind: single, prompt: "good morning!"}
+  - {id: small_howgoing, category: small_talk, kind: single, prompt: "how's it going?"}
+  - {id: small_upto, category: small_talk, kind: single, prompt: "what are you up to?"}
+  - {id: small_there, category: small_talk, kind: single, prompt: "you there?"}
+
+  # ---- how was your day (3)
+  - {id: day_howwas, category: how_was_your_day, kind: single, prompt: "how was your day?"}
+  - {id: day_fun, category: how_was_your_day, kind: single, prompt: "did you do anything fun today?"}
+  - {id: day_best, category: how_was_your_day, kind: single, prompt: "what's been the best part of your day so far?"}
+
+  # ---- venting / stress: the right voice is gentle (6)
+  - {id: vent_work, category: venting, kind: single, prompt: "ugh i'm so stressed about work right now"}
+  - {id: vent_brain, category: venting, kind: single, prompt: "my brain won't switch off and i'm exhausted"}
+  - {id: vent_rough, category: venting, kind: single, prompt: "i had a really rough week and i just want to vent for a sec"}
+  - {id: vent_behind, category: venting, kind: single, prompt: "i feel like i'm falling behind on everything"}
+  - {id: vent_lonely, category: venting, kind: single, prompt: "i'm feeling kind of lonely today"}
+  - {id: vent_bombed, category: venting, kind: single, prompt: "i bombed a presentation yesterday and i can't stop thinking about it"}
+
+  # ---- jokes and playful banter (6)
+  - {id: joke_plain, category: banter, kind: single, prompt: "tell me a joke"}
+  - {id: joke_coffee, category: banter, kind: single, prompt: "give me a pun about coffee"}
+  - {id: banter_keys, category: banter, kind: single, prompt: "i lost my keys for the third time this week. roast me gently"}
+  - {id: banter_tired, category: banter, kind: single, prompt: "do you ever get tired of people asking you stuff?"}
+  - {id: banter_pineapple, category: banter, kind: single, prompt: "pineapple on pizza. yes or no? defend your answer"}
+  - {id: banter_rps, category: banter, kind: single, prompt: "rock paper scissors. i pick rock"}
+
+  # ---- recommendations (5)
+  - {id: rec_book, category: recommendations, kind: single, prompt: "recommend me a book for the weekend"}
+  - {id: rec_movie, category: recommendations, kind: single, prompt: "i want to watch something cozy tonight, any movie ideas?"}
+  - {id: rec_food, category: recommendations, kind: single, prompt: "what should i cook when i can't be bothered to cook?"}
+  - {id: rec_music, category: recommendations, kind: single, prompt: "suggest some music for a rainy afternoon"}
+  - {id: rec_game, category: recommendations, kind: single, prompt: "a board game for two people who hate losing?"}
+
+  # ---- opinions (4)
+  - {id: opin_morning, category: opinions, kind: single, prompt: "are you a morning person or a night owl? pick one"}
+  - {id: opin_paper, category: opinions, kind: single, prompt: "paper books or ebooks, what's your take?"}
+  - {id: opin_pets, category: opinions, kind: single, prompt: "cats or dogs?"}
+  - {id: opin_hotdog, category: opinions, kind: single, prompt: "is a hot dog a sandwich"}
+
+  # ---- celebrating good news (3)
+  - {id: win_job, category: celebrating, kind: single, prompt: "i got the job!!!"}
+  - {id: win_run, category: celebrating, kind: single, prompt: "i just finished my first half marathon"}
+  - {id: win_engaged, category: celebrating, kind: single, prompt: "my sister just got engaged and i'm so happy for her"}
+
+  # ---- tell me something interesting (3)
+  - {id: fact_plain, category: interesting, kind: single, prompt: "tell me something interesting"}
+  - {id: fact_ocean, category: interesting, kind: single, prompt: "fun fact about the ocean?"}
+  - {id: fact_unknown, category: interesting, kind: single, prompt: "teach me something i probably don't know"}
+
+  # ---- a boring question asked three ways, fresh session each (variety sets: 2)
+  - id: variety_relax
+    category: monotony
+    kind: variety
+    prompts:
+      - "what's a good way to relax in the evening?"
+      - "how can i wind down after a long day?"
+      - "any ideas for unwinding at night?"
+  - id: variety_focus
+    category: monotony
+    kind: variety
+    prompts:
+      - "how do i stay focused when i'm working?"
+      - "i keep getting distracted, any tips for concentrating?"
+      - "what helps you concentrate on a task?"
+
+  # ---- multi-turn conversations with the model's own history (3)
+  - id: conv_hobby
+    category: multi_turn
+    kind: conversation
+    turns:
+      - "i'm thinking about picking up a new hobby"
+      - "i like making things with my hands but i get bored easily"
+      - "ooh pottery sounds fun. is it expensive to start?"
+      - "okay i'm going to try a class this weekend!"
+  - id: conv_rough_day
+    category: multi_turn
+    kind: conversation
+    turns:
+      - "rough day"
+      - "my manager picked apart my report in front of everyone"
+      - "i know it's not a big deal but i keep replaying it"
+      - "thanks, that actually helped a bit"
+  - id: conv_repeat_dinner
+    category: monotony
+    kind: conversation
+    turns:
+      - "what should i have for dinner?"
+      - "hmm, what should i have for dinner though"
+      - "still undecided. dinner ideas?"

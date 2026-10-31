@@ -1,0 +1,266 @@
+"""Render the Ask LoRA dataset into prompt/completion rows with Wisp's own Gemma
+template, exactly as oMLX renders a production request, and package it for the GPU.
+
+    python render.py --model <gemma-4-E4B-it-oQ4e-mtp dir>        # writes brev/ask-lora-data.zip
+
+The target is Gemma 4 E4B only (Jundot gemma-4-E4B-it-oQ4e-mtp, the model Wisp
+serves). Its template is the only one required. The Bolt (Nemotron 3.5 Bolt E4B)
+path is dormant: `--parity-model DIR` still re-renders rows with another pinned
+template and fails on any byte difference, and the zip still carries a sample of
+raw rows (`parity.jsonl`) that `train.py preflight` re-renders on the GPU box,
+but nothing requires Bolt.
+
+Why render here, not on the GPU box: the prompt the model trains on must be the
+one it is served, byte for byte. That needs the production chat template and the
+request's own `chat_template_kwargs` (every step is sent with enable_thinking).
+
+Thinking is situational (builder/thinking.py decides; meta carries `think` and
+`thought`). enable_thinking itself never changes: it renders `<|think|>` at the
+top of the system turn on every step, and toggling it would break oMLX's prefix
+cache. So the model learns when to think:
+- first step (prompt ends `<|turn>model\\n`): THINK renders the thought through the
+  template (`reasoning_content`), so the completion opens
+  `<|channel>thought\\n...\\n<channel|>`; NO THINK is answer- or call-only.
+- forced step (after a tool result the prompt ends `<|channel>thought\\n`): THINK is
+  the thought, then `\\n<channel|>`, then the answer or call; NO THINK is the EMPTY
+  thought: the completion starts with EMPTY_THOUGHT ("\\n<channel|>"), exactly what
+  the template renders for '<|channel>thought\\n' + "" + '\\n<channel|>'. The
+  template skips a falsy reasoning_content, so that completion is built here and
+  checked against a placeholder render with the placeholder removed.
+
+Each row: {"id", "family", "kind", "think", "prompt", "completion"}. The completion
+ends with the stop token the model emits there: `<turn|>` after an answer, or
+`<|tool_response>` after a tool call (both are in generation_config's eos ids).
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import zipfile
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+DATASET = HERE.parent
+STOPS = ("<turn|>", "<|tool_response>")
+# sha256 of chat_template.jinja per model.
+#  gemma: google/gemma-4-E4B-it @ ee0ef602 and Jundot's oQ4e build Wisp serves (identical, checked).
+#  bolt:  the local UraionLabs oQ4e build ONLY. The template of the bf16 repo that gets
+#         trained (nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16) has not been compared yet, so
+#         train.py preflight treats a different sha there as a warning and lets the
+#         render-parity check against the downloaded repo's own template decide.
+TEMPLATE_SHAS = {
+    "gemma": "0a2c8073c878ab1da004bee933a998606537bbb62016310352c7285c3f01c5b5",
+    "bolt": "35b7d0641b6fb4ee41c3bc623e85bdb7d583c40f6ae9f24514ae58a9d57119f3",
+}
+RENDER_TAG = "gemma"      # the dataset is rendered with this model's template
+PARITY_SPLITS = {"train": 60, "dev": 20}   # raw rows shipped for the on-GPU parity check
+FORCED = "<|channel>thought\n"            # the generation prompt after a tool result, with enable_thinking
+EMPTY_THOUGHT = "\n<channel|>"            # FORCED + "" + "\n<channel|>": an empty thought, closed
+_PLACEHOLDER = "⁣PLACEHOLDER-THOUGHT⁣"
+
+
+def to_template(messages: list[dict]) -> list[dict]:
+    out = []
+    for m in messages:
+        m = dict(m)
+        if m.get("tool_calls"):
+            m["tool_calls"] = [{**tc, "function": {**tc["function"], "arguments": (
+                json.loads(tc["function"]["arguments"]) if isinstance(tc["function"]["arguments"], str)
+                else tc["function"]["arguments"])}} for tc in m["tool_calls"]]
+        out.append(m)
+    return out
+
+
+def render(tok, ex: dict, meta: dict) -> dict:
+    """One prompt/completion row. meta `think` (bool) and `thought` (str or null) pick the completion's shape
+    (see the module docstring); a meta without `think` renders as NO THINK."""
+    messages = to_template(ex["messages"])
+    kwargs = dict(meta.get("chat_template_kwargs") or {})
+    tools = ex["tools"] or None
+    sid = meta.get("id")
+    think, text = bool(meta.get("think")), meta.get("thought")
+    if think and not (isinstance(text, str) and text.strip()):
+        raise ValueError(f"{sid}: think is true but the thought is empty")
+    if not think and text:
+        raise ValueError(f"{sid}: think is false but a thought is set")
+
+    def apply(msgs, gen=False):
+        return tok.apply_chat_template(msgs, tools=tools, tokenize=False, add_generation_prompt=gen, **kwargs)
+
+    prompt = apply(messages[:-1], gen=True)
+    forced = prompt.endswith(FORCED)
+    target = dict(messages[-1])
+    target.pop("reasoning_content", None)
+    target.pop("reasoning", None)
+    if think:
+        target["reasoning_content"] = text
+        full = apply(messages[:-1] + [target])
+        if not full.startswith(prompt):
+            raise ValueError(f"{sid}: prompt is not a prefix of the full render")
+        completion = full[len(prompt):]
+        want_open = "" if forced else FORCED
+        if not completion.startswith(want_open + text + EMPTY_THOUGHT):
+            raise ValueError(f"{sid}: the thought did not render where expected")
+    elif forced:
+        # The template renders no thought for an empty reasoning_content, so build the empty thought:
+        # prompt (ends FORCED) + "\n<channel|>" + what follows the thought.
+        base = apply(messages[:-1])
+        if base + FORCED != prompt:
+            raise ValueError(f"{sid}: the forced prompt is not the plain render + {FORCED!r}")
+        full = apply(messages[:-1] + [target])
+        if not full.startswith(base):
+            raise ValueError(f"{sid}: history is not a prefix of the full render")
+        completion = EMPTY_THOUGHT + full[len(base):]
+        # cross-check: render a placeholder thought, then delete the placeholder
+        ph = apply(messages[:-1] + [{**target, "reasoning_content": _PLACEHOLDER}]).replace(_PLACEHOLDER, "")
+        if prompt + completion != ph:
+            raise ValueError(f"{sid}: the empty-thought completion differs from the template's own render")
+    else:
+        full = apply(messages[:-1] + [target])
+        if not full.startswith(prompt):
+            raise ValueError(f"{sid}: prompt is not a prefix of the full render")
+        completion = full[len(prompt):]
+        if completion.startswith("<|channel>"):
+            raise ValueError(f"{sid}: a NO THINK first step must not open a thought")
+    completion = completion.rstrip("\n")
+    if not completion.endswith(STOPS):
+        raise ValueError(f"{sid}: completion does not end with a stop token: {completion[-40:]!r}")
+    return {"id": sid, "family": meta.get("family"), "kind": meta.get("target_kind"), "think": think,
+            "prompt": prompt, "completion": completion}
+
+
+def row_shape(row: dict) -> str:
+    """first_think | first_answer | forced_think | forced_empty."""
+    forced = row["prompt"].endswith(FORCED)
+    if forced:
+        return "forced_empty" if row["completion"].startswith(EMPTY_THOUGHT) else "forced_think"
+    return "first_think" if row["completion"].startswith(FORCED) else "first_answer"
+
+
+def empty_thought_ids(tok) -> list[int]:
+    """Token ids of EMPTY_THOUGHT; `<channel|>` must be ONE special token."""
+    ids = tok(EMPTY_THOUGHT, add_special_tokens=False)["input_ids"]
+    close = tok.convert_tokens_to_ids("<channel|>")
+    if ids[-1:] != [close] or close == tok.unk_token_id:
+        raise SystemExit(f"tokenizer: {EMPTY_THOUGHT!r} -> {ids}; '<channel|>' is not a single special token ({close})")
+    return ids
+
+
+def template_sha(model_dir: Path) -> str:
+    return hashlib.sha256((Path(model_dir) / "chat_template.jinja").read_bytes()).hexdigest()
+
+
+def spread(n: int, k: int) -> list[int]:
+    """Up to k indices spread evenly over range(n); k <= 0 means all."""
+    if k <= 0 or k >= n:
+        return list(range(n))
+    return [i * n // k for i in range(k)]
+
+
+def parity_mismatches(tok, rendered: list[dict], raw: list[tuple[dict, dict]]) -> list[str]:
+    """Re-render `raw` (example, meta) pairs with `tok`'s own template and list the ids whose
+    prompt or completion differs from the already rendered rows."""
+    bad = []
+    for r, (ex, meta) in zip(rendered, raw):
+        try:
+            again = render(tok, ex, meta)
+        except ValueError as exc:
+            bad.append(f"{r['id']}: {exc}")
+            continue
+        if again["prompt"] != r["prompt"] or again["completion"] != r["completion"]:
+            bad.append(r["id"])
+    return bad
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--model", required=True, help="dir with Wisp's Gemma tokenizer + chat_template.jinja (the render source)")
+    ap.add_argument("--parity-model", action="append", default=[], metavar="DIR",
+                    help="dir of the OTHER model's local build (e.g. the Bolt oQ4e); rows are re-rendered with its "
+                         "own template and must be byte-identical. Repeatable. Its sha must match a pinned one.")
+    ap.add_argument("--parity-rows", type=int, default=0,
+                    help="rows per split to check on the Mac (0 = all rows; tokenizer only, a few seconds)")
+    ap.add_argument("--out", default=str(HERE / "ask-lora-data.zip"))
+    a = ap.parse_args()
+    tpl = Path(a.model) / "chat_template.jinja"
+    sha = template_sha(a.model)
+    if sha != TEMPLATE_SHAS[RENDER_TAG]:
+        raise SystemExit(f"{tpl} is not the production Gemma 4 template (sha {sha[:16]}, want "
+                         f"{TEMPLATE_SHAS[RENDER_TAG][:16]}); render with Gemma's template, not another model's")
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(a.model)
+    empty_ids = empty_thought_ids(tok)
+    print(f"empty thought: completion starts {EMPTY_THOUGHT!r} = bytes {EMPTY_THOUGHT.encode().hex(' ')} "
+          f"= token ids {empty_ids} {tok.convert_ids_to_tokens(empty_ids)}")
+    parity_toks = {}
+    for d in a.parity_model:
+        psha = template_sha(d)
+        tag = next((t for t, v in TEMPLATE_SHAS.items() if v == psha), None)
+        if tag is None or tag == RENDER_TAG:
+            raise SystemExit(f"{d}: template sha {psha[:16]} is not a pinned non-render model's "
+                             f"(pinned: {', '.join(f'{t}={v[:16]}' for t, v in TEMPLATE_SHAS.items())})")
+        parity_toks[tag] = AutoTokenizer.from_pretrained(d)
+    payload: dict[str, bytes] = {}
+    stats = {}
+    parity_lines: list[str] = []
+    parity_report: dict[str, dict] = {}
+    for split, name in (("train", "train"), ("valid", "dev")):
+        raw = [(json.loads(e), json.loads(m)) for e, m in
+               zip(open(DATASET / f"{split}.jsonl"), open(DATASET / f"{split}.meta.jsonl"))]
+        rows = [render(tok, e, m) for e, m in raw]
+        for tag, ptok in parity_toks.items():
+            idx = spread(len(rows), a.parity_rows)
+            bad = parity_mismatches(ptok, [rows[i] for i in idx], [raw[i] for i in idx])
+            parity_report.setdefault(tag, {})[name] = {"checked": len(idx), "mismatches": len(bad)}
+            if bad:
+                raise SystemExit(f"render parity FAILED for {tag} on {name}: {len(bad)} of {len(idx)} rows differ "
+                                 f"under its template, e.g. {bad[:3]}. Do not train {tag} on this dataset; "
+                                 "look for assistant content before tool calls.")
+        # A spread sample of raw rows. train.py re-renders them on the GPU box with the
+        # downloaded repo's own template (render.py travels in the zip for that).
+        for i in spread(len(rows), PARITY_SPLITS[name]):
+            parity_lines.append(json.dumps({"split": name, "row": i, "example": raw[i][0], "meta": raw[i][1]},
+                                           ensure_ascii=False))
+        shapes = {s: 0 for s in ("first_answer", "first_think", "forced_empty", "forced_think")}
+        for r in rows:
+            shapes[row_shape(r)] += 1
+            if r["think"] != (row_shape(r) in ("first_think", "forced_think")):
+                raise SystemExit(f"{r['id']}: rendered shape {row_shape(r)} disagrees with think={r['think']}")
+            if row_shape(r) == "forced_empty":
+                cids = tok(r["completion"], add_special_tokens=False)["input_ids"]
+                if cids[:len(empty_ids)] != empty_ids:
+                    raise SystemExit(f"{r['id']}: empty-thought completion tokenizes to {cids[:4]}, want {empty_ids}")
+        n_think = sum(r["think"] for r in rows)
+        stats[name] = {"rows": len(rows), "think": n_think, "no_think": len(rows) - n_think, "shapes": shapes,
+                       "forced_prompts": shapes["forced_empty"] + shapes["forced_think"],
+                       "ends": {s: sum(r["completion"].endswith(s) for r in rows) for s in STOPS}}
+        payload[f"{name}.jsonl"] = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows).encode()
+    payload["train.py"] = (HERE / "train.py").read_bytes()
+    payload["render.py"] = Path(__file__).read_bytes()      # train.py preflight re-renders parity.jsonl with it
+    payload["parity.jsonl"] = ("\n".join(parity_lines) + "\n").encode()
+    payload["stats.json"] = json.dumps({**stats, "template_sha256": sha, "template_shas": TEMPLATE_SHAS,
+                                        "render_tag": RENDER_TAG, "mac_parity": parity_report,
+                                        "empty_thought": {"text": EMPTY_THOUGHT, "token_ids": empty_ids},
+                                        "dataset_stats": json.load(open(DATASET / "stats.json"))}, indent=1).encode()
+    manifest = {"files": {k: hashlib.sha256(v).hexdigest() for k, v in payload.items()}}
+    tmp = a.out + ".tmp"
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+        for k in sorted(payload):
+            z.writestr(zipfile.ZipInfo(k, date_time=(2026, 10, 29, 0, 0, 0)), payload[k], zipfile.ZIP_DEFLATED)
+        z.writestr(zipfile.ZipInfo("MANIFEST.json", date_time=(2026, 10, 29, 0, 0, 0)),
+                   json.dumps(manifest, indent=1, sort_keys=True), zipfile.ZIP_DEFLATED)
+    os.replace(tmp, a.out)
+    zsha = hashlib.sha256(Path(a.out).read_bytes()).hexdigest()
+    (HERE / "upload-zip.json").write_text(json.dumps({"file": Path(a.out).name, "sha256": zsha,
+                                                      "bytes": Path(a.out).stat().st_size, **stats}, indent=1) + "\n")
+    print(json.dumps(stats))
+    print("render parity on the Mac:", json.dumps(parity_report) if parity_report
+          else "not requested (Gemma is the only target; --parity-model checks another pinned template)")
+    print(f"{a.out}: sha256 {zsha} (recorded in brev/upload-zip.json; pass it to `run.sh unpack`)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

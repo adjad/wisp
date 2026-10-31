@@ -1,0 +1,245 @@
+{
+ "by_target": {
+  "call": 746,
+  "final": 851,
+  "load": 338
+ },
+ "code_head": "3727837fb8e7e35888ba9cdd6b7d02ab67244b22",
+ "examples": 1935,
+ "families": {
+  "act_dont_ask": {
+   "call": 37,
+   "examples": 97,
+   "final": 44,
+   "load": 16,
+   "think": 44,
+   "train": 87,
+   "turns": 44,
+   "valid": 10
+  },
+  "act_dont_promise": {
+   "call": 40,
+   "examples": 94,
+   "final": 40,
+   "load": 14,
+   "think": 5,
+   "train": 86,
+   "turns": 40,
+   "valid": 8
+  },
+  "capability_honest": {
+   "call": 14,
+   "examples": 71,
+   "final": 44,
+   "load": 13,
+   "think": 0,
+   "train": 65,
+   "turns": 44,
+   "valid": 6
+  },
+  "chat_voice": {
+   "examples": 90,
+   "final": 90,
+   "think": 0,
+   "train": 81,
+   "turns": 90,
+   "valid": 9
+  },
+  "concise_gentle": {
+   "call": 31,
+   "examples": 72,
+   "final": 37,
+   "load": 4,
+   "think": 0,
+   "train": 66,
+   "turns": 37,
+   "valid": 6
+  },
+  "exact_args": {
+   "call": 50,
+   "examples": 122,
+   "final": 46,
+   "load": 26,
+   "think": 50,
+   "train": 107,
+   "turns": 46,
+   "valid": 15
+  },
+  "finish_the_write": {
+   "call": 83,
+   "examples": 165,
+   "final": 37,
+   "load": 45,
+   "think": 82,
+   "train": 148,
+   "turns": 41,
+   "valid": 17
+  },
+  "grounded_only": {
+   "call": 37,
+   "examples": 87,
+   "final": 37,
+   "load": 13,
+   "think": 9,
+   "train": 79,
+   "turns": 37,
+   "valid": 8
+  },
+  "ignore_embedded_instructions": {
+   "call": 39,
+   "examples": 80,
+   "final": 33,
+   "load": 8,
+   "think": 36,
+   "train": 74,
+   "turns": 33,
+   "valid": 6
+  },
+  "knowledge_direct": {
+   "call": 9,
+   "examples": 95,
+   "final": 86,
+   "think": 0,
+   "train": 85,
+   "turns": 86,
+   "valid": 10
+  },
+  "multi_source": {
+   "call": 29,
+   "examples": 72,
+   "final": 29,
+   "load": 14,
+   "think": 38,
+   "train": 66,
+   "turns": 29,
+   "valid": 6
+  },
+  "no_write_for_reads": {
+   "call": 27,
+   "examples": 61,
+   "final": 27,
+   "load": 7,
+   "think": 3,
+   "train": 55,
+   "turns": 27,
+   "valid": 6
+  },
+  "recover_from_tool_error": {
+   "call": 39,
+   "examples": 82,
+   "final": 43,
+   "think": 40,
+   "train": 74,
+   "turns": 43,
+   "valid": 8
+  },
+  "relay_receipt": {
+   "call": 41,
+   "examples": 93,
+   "final": 36,
+   "load": 16,
+   "think": 48,
+   "train": 82,
+   "turns": 41,
+   "valid": 11
+  },
+  "right_source": {
+   "call": 47,
+   "examples": 119,
+   "final": 47,
+   "load": 25,
+   "think": 16,
+   "train": 110,
+   "turns": 47,
+   "valid": 9
+  },
+  "right_write_tool": {
+   "call": 48,
+   "examples": 118,
+   "final": 42,
+   "load": 28,
+   "think": 48,
+   "train": 106,
+   "turns": 42,
+   "valid": 12
+  },
+  "safe_effects": {
+   "call": 72,
+   "examples": 166,
+   "final": 57,
+   "load": 37,
+   "think": 77,
+   "train": 150,
+   "turns": 62,
+   "valid": 16
+  },
+  "stub_then_call": {
+   "call": 61,
+   "examples": 150,
+   "final": 42,
+   "load": 47,
+   "think": 44,
+   "train": 136,
+   "turns": 42,
+   "valid": 14
+  },
+  "weather_and_web": {
+   "call": 42,
+   "examples": 101,
+   "final": 34,
+   "load": 25,
+   "think": 0,
+   "train": 86,
+   "turns": 34,
+   "valid": 15
+  }
+ },
+ "paraphrased_turns": 264,
+ "service_head": "d7de0873189c319af2a64a20ca5ca6f5d09807f7",
+ "thinking": {
+  "by_step_kind": {
+   "after_error": {
+    "think": 62,
+    "train_think": 57,
+    "valid_think": 5
+   },
+   "after_load": {
+    "no_think": 338,
+    "train_think": 0,
+    "valid_think": 0
+   },
+   "answer_first": {
+    "no_think": 203,
+    "think": 15,
+    "train_think": 15,
+    "valid_think": 0
+   },
+   "narrate": {
+    "no_think": 520,
+    "think": 100,
+    "train_think": 90,
+    "valid_think": 10
+   },
+   "next_call": {
+    "no_think": 14,
+    "think": 92,
+    "train_think": 81,
+    "valid_think": 11
+   },
+   "select": {
+    "no_think": 320,
+    "think": 271,
+    "train_think": 242,
+    "valid_think": 29
+   }
+  },
+  "no_think": 1395,
+  "think": 540,
+  "think_share": 0.279,
+  "train_think": 485,
+  "valid_think": 55
+ },
+ "train": 1743,
+ "turns": 865,
+ "valid": 192
+}
