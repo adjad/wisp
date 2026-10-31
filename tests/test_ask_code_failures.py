@@ -304,3 +304,11 @@ def test_similar_titles_share_a_word_stem():
     assert similar_titles("dentist thing", titles) == ["Dentist appointment"]
     assert similar_titles("watered the plants", titles) == ["Water the plants"]
     assert similar_titles("the one thing", titles) == []
+
+
+def test_stub_call_on_a_tool_free_step_never_runs(synthetic):
+    # test_conversation_authority_contract caught this: on an ask_direct step
+    # no stub was sent, so a call to one is not a stub call at all.
+    effects, _ = synthetic
+    run([[call("get_upcoming", days=1)], "Synthetic answer."], ask_quality=True, ask_direct=True)
+    assert effects == []

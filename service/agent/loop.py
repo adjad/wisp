@@ -4143,9 +4143,12 @@ async def run_agent(
         stub_runs: set[int] = set()
         if discovery is not None and step_stubs:
             from service.tools.registry import runnable_stub_call
+            # Only a stub this very step sent: a tool-free or forced step
+            # offered none, whatever the turn's stub list holds.
+            sent_now = {s["function"]["name"] for s in step_schemas}
             for index, tc in enumerate(tool_calls):
                 stub_name = _clean_tool_name(tc["function"]["name"])
-                if (stub_name in step_stubs and stub_name not in forbidden_tools
+                if (stub_name in step_stubs and stub_name in sent_now and stub_name not in forbidden_tools
                         and runnable_stub_call(get_tool(stub_name),
                                                _parse_args(tc["function"].get("arguments", "")))):
                     stub_runs.add(index)
