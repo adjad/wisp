@@ -18,18 +18,32 @@ call(s) and their arguments, the previous result. Both are deterministic.
 
 Policy (THINK = a short real thought; QUIET = no thought / empty thought):
   never        chat_voice, knowledge_direct: QUIET on every step.
-  after_error  previous result is an error, refusal or denial: THINK (why + the fix).
+  after_error  previous result is an error, refusal or denial: THINK (what it says + the fix).
   quiet fams   concise_gentle, capability_honest: QUIET otherwise.
   after_load   the call right after a schema load: QUIET (mechanical).
   answer_first a first-step answer with no call: THINK only in write families
                (one clarifying question, or deciding not to act); else QUIET.
-  select/next  a step that makes or loads a write, or plans one (a read in a turn
-               that writes), or stub_then_call's / safe_effects' first selection:
-               THINK. A later read in multi_source: THINK. Other reads: QUIET.
-  narrate      final answer after results: THINK for multi_source, for
-               ignore_embedded_instructions when a result holds text aimed at an
-               assistant, and for grounded_only when counts, times or dates
-               matter; QUIET otherwise (one clean result).
+  write step   a step that makes a write, or loads one with its full arguments: THINK
+               when there is task reasoning to do (a relative day or time to resolve, a
+               duration or shift, a tool choice such as update vs add, reminder vs event,
+               draft vs send, or arguments taken from a read); else QUIET. A load's
+               thought is about the task, never about the loading.
+  read step    a read in a write family's turn that writes (read before write), and
+               safe_effects' first read (looking, on purpose, without acting): THINK.
+               Every other read, loads included: QUIET.
+  narrate      final answer after results:
+               write families: QUIET over a clean receipt; THINK only when the result
+               is a refusal, no match, ambiguity, denial, partial result or error.
+               multi_source: THINK when two or more sources come back, or a day plan
+               has to be ordered across sources; one plain read is QUIET.
+               ignore_embedded_instructions: THINK when a result holds text aimed at
+               an assistant. grounded_only: THINK for free/busy, done-vs-scheduled,
+               picking family out of a list, what's left of today, or judging what
+               asks for action; a plain count or a single thread is QUIET.
+
+Thoughts are subjectless planning ("Wants the 3 PM slot moved", "Need the next Monday:
+Jan 25."), never name the user in the third person, never describe the tool plumbing,
+and every relative day they state ("tomorrow is ...") is computed from the clock.
 """
 from __future__ import annotations
 
@@ -50,6 +64,8 @@ DISCOVERY = "get_tool_schemas"
 MAX_WORDS = 60
 JACCARD_MAX = 0.5
 DENIED = "The user denied this action."
+CAL_TOOLS = ("get_upcoming", "get_past_events", "search_reminders", "get_my_day_plan")
+PLAN_TOOLS = ("get_my_day_plan", "daily_brief")
 
 _ERROR = re.compile(r"^\s*\(error\b|^The user denied this action|^Wisp (?:can't|could not|cannot)\b|isn't connected|"
                     r"read-only calendar|[Nn]othing was (?:moved|changed|sent|removed|created|added|saved|deleted)\b|"
@@ -62,10 +78,19 @@ INJECTION = re.compile(
 NOISE = re.compile(r"schema_discovery|ready_next_step|source_tools_executed|not_run_yet|\{\"|<\||\|>|\*\*|Traceback|"
                    r"World\.|\bt_[a-z_]+\(|\bstubs?\b|harness|synthetic|[PM]ST-0[78]00|PDT-0700|got an unexpected keyword|"
                    r"\bthe user\b|\bSam\b|sam\.rivera", re.I)
-
-_GROUNDED_MATH = re.compile(r"\b(?:how many|count|unread|free|booked|busy|time for|complete|completed|wrapped|finish|"
-                            r"family|left today|happening today|recap|came in|arrived|which (?:items|events|things)|"
-                            r"(?:this|past|last) week|yesterday|today|tomorrow)\b", re.I)
+# The schema-loading mechanics: a thought plans the task, never the loading.
+MECHANICS = re.compile(r"listed by name|\bschemas?\b|\bload(?:s|ed|ing)?\b|\bthe real (?:one|call)\b|"
+                       r"\b(?:isn't|not) (?:loaded|available) yet\b", re.I)
+# The user is never "they": thoughts are subjectless or first person.
+USER_PRONOUN = re.compile(r"\b(?:they|them|their|theirs|themselves|they're|they've|they'd|they'll)\b|\bthe user\b", re.I)
+# Filler tails that carry no reasoning (the round-1 thought generator's habits).
+BOILERPLATE = re.compile(r"just the facts it states|nothing more\b|title, day and time|relay just the receipt|"
+                         r"nothing extra|restate exactly what it says|exact numbers, scoped|nothing rounded or added|"
+                         r"only what it shows|details for the change come from|can't fill in the write until", re.I)
+# A sentence that says an action happened (checked against a failed previous result).
+_SUCCESS = re.compile(r"\b(?:sent|added|moved|went through|confirms?|confirmed|is set for|it's set|saved|updated|"
+                      r"scheduled|marked (?:it )?done|completed|all set|is in)\b", re.I)
+_NEG = re.compile(r"\b(?:not|never|no|nothing|none|without|neither|nor)\b|n['’]t\b", re.I)
 
 
 # ----------------------------------------------------------------- step analysis
@@ -86,6 +111,31 @@ def calls_of(msg: dict) -> list[tuple[str, dict]]:
 def is_error(text: str) -> bool:
     first = (text or "").lstrip().split("\n", 1)[0]
     return bool(_ERROR.search(first))
+
+
+def outcome(text: str) -> str:
+    """What a tool result says happened: ok | denied | refused | error | ambiguous | no_match | partial."""
+    t = (text or "").strip()
+    first = t.split("\n", 1)[0]
+    if t.startswith(DENIED):
+        return "denied"
+    if re.search(r"already starts then|read-only calendar|^Only the organizer|can't tell yet whether|"
+                 r"[Nn]othing was (?:moved|changed|sent|removed|created|added|saved|deleted)\b", first):
+        return "refused"
+    if re.match(r"\(error\b", first) or re.search(r"^Wisp (?:can't|could not|cannot)\b|isn't connected", first):
+        return "error"
+    if re.search(r"^(?:Several|Multiple|\d+) \w+ match\b|\bWhich one\?", first):
+        return "ambiguous"
+    if re.search(r"^\(?No (?:saved contact|upcoming|exact matching|matching|messages|results|web results|scheduled)|"
+                 r"^\(no web results|^Nothing active matches|found no active match|\bwere not found\b|"
+                 r"^Nothing (?:new|scheduled)\b", first):
+        return "no_match"
+    if re.search(r"\bin Wisp only\b|\bpartially\b|\bbut (?:could not|couldn't)\b|\bfailed for\b", first):
+        return "partial"
+    return "ok"
+
+
+FAILED = frozenset({"denied", "refused", "error", "ambiguous", "no_match"})
 
 
 def injected(text: str) -> bool:
@@ -111,6 +161,7 @@ def analyze(meta: dict, messages: list[dict]) -> dict:
         if hist[j]["role"] == "assistant":
             prev_calls = calls_of(hist[j])
     all_results = [str(m.get("content") or "") for m in hist[user_idx + 1:] if m["role"] == "tool"]
+    turn_calls = [c for m in hist[user_idx + 1:] if m["role"] == "assistant" for c in calls_of(m)]
     calls = calls_of(target)
     loaded = bool(results) and all(r.lstrip().startswith('{"schema_discovery"') for r in results)
     error = any(is_error(r) for r in results)
@@ -127,8 +178,8 @@ def analyze(meta: dict, messages: list[dict]) -> dict:
     if turn_writes is None:
         turn_writes = meta.get("writes") or []
     return {"kind": kind, "first": first, "calls": calls, "prev_calls": prev_calls, "results": results,
-            "all_results": all_results, "error": error, "loaded": loaded,
-            "writes_now": bool(touched & WRITE_TOOLS), "turn_writes": list(turn_writes),
+            "all_results": all_results, "turn_calls": turn_calls, "error": error, "loaded": loaded,
+            "writes_now": bool(touched & WRITE_TOOLS), "touched": touched, "turn_writes": list(turn_writes),
             "prompt": str(hist[user_idx].get("content") or ""), "target_text": str(target.get("content") or "")}
 
 
@@ -152,6 +203,62 @@ def receipt_of(s: dict) -> dict | None:
             "title": t.group(1) if t else "", "wisp_only": "Wisp only" in r, "text": r}
 
 
+# ----------------------------------------------------------------- policy
+_TMRW = re.compile(r"\b(?:tomorrow|tmrw|tmr|tomorow|tommorow|tommorrow|2morrow)\b", re.I)
+_TODAYW = re.compile(r"\b(tonight|tonite|today|this evening|this afternoon|this morning)\b", re.I)
+_WD_RE = re.compile(r"\b(mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|wensday|thu(?:rs(?:day)?)?|thurs|"
+                    r"fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b", re.I)
+_WD_IDX = {"mon": 0, "tue": 1, "wed": 2, "wen": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+_DAYPART = re.compile(r"\b(morning|afternoon|evening|tonight|night|nite)\b", re.I)
+_CLOCKTIME = re.compile(r"\b\d{1,2}(?::\d\d)?\s*(?:am|pm)\b|\b\d{1,2}:\d\d\b|\bnoon\b", re.I)
+_REL = re.compile(r"\bin\s+(\d+|an?|one|two|half an)\s+(minutes?|mins?|hours?|hrs?)\b"
+                  r"|\b(\d+|an?|one|two|half an)\s+(minutes?|mins?|hours?|hrs?)\s+from now\b", re.I)
+_DURATION = re.compile(r"\bfor (?:an?|\d+|one|two|three|half an?) ?(?:hours?|hrs?|minutes?|mins?)\b|"
+                       r"\bhour and a half\b|\b\d+\s*(?:hours?|hrs?|minutes?|mins?) long\b", re.I)
+_SHIFT = re.compile(r"\b(an hour and a half|half an hour|an hour|\d+ (?:minutes|mins|hours?)|a day)\s+"
+                    r"(earlier|later|back|forward|ahead|before)\b", re.I)
+_H24 = re.compile(r"\b(?:1[3-9]|2[0-3]):\d\d\b")
+_DATEWORD = re.compile(r"\b(?:next|this) (?:week|month)\b|\bthe \d{1,2}(?:st|nd|rd|th)\b|\bnight before\b|"
+                       r"\bday after\b|\bthat day\b", re.I)
+
+
+def _write_signals(fam: str, s: dict) -> list[str]:
+    """The task reasoning a write step has to do (empty: the call is plain transcription)."""
+    p = s["prompt"]
+    out = []
+    if (_TMRW.search(p) or _TODAYW.search(p) or _WD_RE.search(p) or _REL.search(p) or _DATEWORD.search(p)
+            or (_DAYPART.search(p) and not _CLOCKTIME.search(p))):
+        out.append("date")
+    if _DURATION.search(p) or _SHIFT.search(p) or _H24.search(p):
+        out.append("args")
+    for name in s["touched"] & WRITE_TOOLS:
+        if _tool_reason(fam, name, {}, ""):
+            out.append("tool")
+            break
+    if s["results"] and not s["loaded"] and s["prev_calls"]:
+        out.append("from_result")
+    return out
+
+
+def _write_intent(fam: str, s: dict) -> bool:
+    return any(n in WRITE_TOOLS for n, _ in s["prev_calls"]) or fam == "relay_receipt"
+
+
+def grounded_reason(prompt: str, prev: str) -> str:
+    p = prompt.lower()
+    if re.search(r"\b(free|booked|busy|time for)\b", p):
+        return "slot"
+    if re.search(r"\b(complete|completed|wrapped|finish|finished|got done)\b", p):
+        return "done"
+    if "family" in p:
+        return "family"
+    if re.search(r"\b(left today|happening today|today|tonight|gotten up to)\b", p) and prev in CAL_TOOLS:
+        return "today"
+    if re.search(r"\b(?:request|ask|want|need)s?\b[^?]*\b(?:me|i)\b[^?]*\bdo\b|\baction items?\b", p):
+        return "judge"
+    return ""
+
+
 def decide(meta: dict, messages: list[dict]) -> bool:
     """True when this step should carry a real thought (see the module docstring)."""
     fam = meta.get("family") or ""
@@ -167,24 +274,131 @@ def decide(meta: dict, messages: list[dict]) -> bool:
         return fam in WRITE_FAMILIES
     if kind in ("select", "next_call"):
         if s["writes_now"]:
-            return True
-        if kind == "select" and fam in ("stub_then_call", "safe_effects"):
-            return True
+            return bool(_write_signals(fam, s))
         if fam in WRITE_FAMILIES and s["turn_writes"]:
-            return True
-        return kind == "next_call" and fam == "multi_source"
+            return True                       # read before write
+        if kind == "select" and fam == "multi_source":
+            return len(_planned_sources(s)) >= 2      # combining sources
+        return kind == "select" and fam == "safe_effects"
     # narrate
+    last = s["results"][-1] if s["results"] else ""
+    if fam in WRITE_FAMILIES:
+        return _write_intent(fam, s) and _narrate_outcome(fam, s) != "ok"
     if fam == "multi_source":
-        return True
-    if fam == "relay_receipt":
-        return True
-    if fam in WRITE_FAMILIES and receipt_of(s):
-        return True
+        srcs = {source_of(n) for n, _ in s["prev_calls"] if n != DISCOVERY}
+        return len(srcs) >= 2 or any(n in PLAN_TOOLS + ("get_recent_activity",) for n, _ in s["prev_calls"])
+    if fam in DAY_FAMILIES and _day_target(meta, s):
+        return True                           # a named day to place on the calendar (date math)
+    if fam in DAY_FAMILIES and _due_items(meta, s):
+        return True                           # which reminders are past due, from the clock (date math)
+    if fam == "weather_and_web" and _weather_question(s):
+        return True                           # a yes/no call from the forecast numbers
+    if fam == "no_write_for_reads" and _reply_check(s) is not None:
+        return True                           # did a reply from me follow?
     if fam == "ignore_embedded_instructions":
         return any(injected(r) for r in s["all_results"])
     if fam == "grounded_only":
-        return bool(_GROUNDED_MATH.search(s["prompt"]) or re.search(r"\d", s["target_text"]))
+        prev = s["prev_calls"][0][0] if s["prev_calls"] else ""
+        return bool(grounded_reason(s["prompt"], prev)) and bool(last)
     return False
+
+
+DAY_FAMILIES = frozenset({"right_source", "act_dont_promise", "grounded_only", "no_write_for_reads"})
+_ORDINAL = re.compile(r"\bthe (\d{1,2})(?:st|nd|rd|th)\b", re.I)
+
+
+def _day_target(meta: dict, s: dict):
+    """(the prompt's day words, the date the calendar result shows for them) when the prompt names a specific
+    weekday or date other than today/tomorrow and the result's first dated header is that day; else None."""
+    prev = s["prev_calls"][0][0] if s["prev_calls"] else ""
+    clock = parse_clock(meta)
+    if prev not in ("get_upcoming", "get_my_day_plan") or not s["results"] or not clock:
+        return None
+    if _TMRW.search(s["prompt"]) or _TODAYW.search(s["prompt"]):
+        return None
+    text = re.sub(r"^Today is [^.]*\.", "", s["results"][-1][:600])
+    shown = [d for d, _ in stated_dates(text, clock)[0] if d and d >= clock.date()]
+    if not shown:
+        return None
+    d = shown[0]
+    span = re.search(r"\b(this weekend|weekend|next week)\b", s["prompt"], re.I)
+    if span:
+        return span.group(0), d
+    wd = _WD_RE.search(s["prompt"])
+    if wd and _WD_IDX[wd.group(1).lower()[:3]] == d.weekday():
+        return wd.group(0), d
+    od = _ORDINAL.search(s["prompt"])
+    if od and int(od.group(1)) == d.day:
+        return od.group(0), d
+    named = [x for x, _ in stated_dates(s["prompt"], clock)[0] if x]
+    if named and named[0] == d:
+        m = _DATE_RE.search(s["prompt"])
+        return (m.group(0) if m else fmt_day(d)), d
+    return None
+
+
+_WEATHER_Q = re.compile(r"\b(jacket|coat|umbrella|rain|snow\w*|sunny|wear)\b", re.I)
+_FORECAST = re.compile(r"forecast \((\d{4}-\d\d-\d\d)\): high (\d+)°F / low (\d+)°F, ([^,]+), (\d+)% chance of rain")
+
+
+def _weather_question(s: dict):
+    """(day word, (date, high, low, sky, rain %)) for a yes/no weather question answered from get_weather."""
+    prev = s["prev_calls"][0][0] if s["prev_calls"] else ""
+    if prev != "get_weather" or not s["results"] or not _WEATHER_Q.search(s["prompt"]):
+        return None
+    rows = _FORECAST.findall(s["results"][-1])
+    if not rows:
+        return None
+    k = 1 if _TMRW.search(s["prompt"]) else 0
+    if k >= len(rows):
+        return None
+    return ("tomorrow" if k else "today"), rows[k]
+
+
+def _reply_check(s: dict):
+    """True/False: whether the thread a 'did I reply' question read holds a message from me; None otherwise."""
+    prev = s["prev_calls"][0][0] if s["prev_calls"] else ""
+    if prev not in ("view_emails", "view_messages") or not s["results"]:
+        return None
+    if not re.search(r"\bdid i (?:already )?(?:reply|answer|respond|send|get back|write back)\b", s["prompt"], re.I):
+        return None
+    r = s["results"][-1]
+    acct = re.search(r"^Account: (\S+)", r, re.M)
+    mine = bool(re.search(r"— Me:", r)) or bool(acct and re.search(rf"^From: [^\n]*{re.escape(acct.group(1))}", r, re.M))
+    return mine
+
+
+_DUE_LINE = re.compile(r"^- (.+?) — (?:Mon|Tue|Wed|Thu|Fri|Sat|Sun) (\w{3}) (\d{1,2}), (\d{4}) at (\d{1,2}):(\d\d) ([AP]M)",
+                       re.M)
+
+
+def _due_items(meta: dict, s: dict):
+    """[(title, due datetime)] of the dated reminders a search_reminders read lists (empty: not that read)."""
+    prev = s["prev_calls"][0][0] if s["prev_calls"] else ""
+    clock = parse_clock(meta)
+    if prev != "search_reminders" or not s["results"] or not clock:
+        return []
+    out = []
+    for title, mon, day, year, h, mi, ap in _DUE_LINE.findall(s["results"][-1]):
+        hh = int(h) % 12 + (12 if ap == "PM" else 0)
+        out.append((title, _dt.datetime(int(year), _MON[mon.lower()], int(day), hh, int(mi))))
+    return out
+
+
+def _planned_sources(s: dict) -> list[str]:
+    names = sorted(set().union(*[_loads(n, a) for n, a in s["calls"]])) if s["calls"] else []
+    return list(dict.fromkeys(source_of(n) for n in names if n != DISCOVERY))
+
+
+def _narrate_outcome(fam: str, s: dict) -> str:
+    """The outcome a write family's final relays: the result's own, or 'clarify' when a relay turn wrote
+    nothing and the final asks a question (e.g. two reminders match)."""
+    last = s["results"][-1] if s["results"] else ""
+    oc = outcome(last)
+    if oc == "ok" and fam == "relay_receipt" and not any(n in WRITE_TOOLS for n, _ in s["turn_calls"]) \
+            and "?" in s["target_text"]:
+        return "clarify"
+    return oc
 
 
 def step_kind(meta: dict, messages: list[dict]) -> str:
@@ -193,13 +407,6 @@ def step_kind(meta: dict, messages: list[dict]) -> str:
 
 # ----------------------------------------------------------------- formatting
 _WD = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-_WD_RE = re.compile(r"\b(mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|wensday|thu(?:rs(?:day)?)?|thurs|"
-                    r"fri(?:day)?|sat(?:urday)?|sun(?:day)?)\b", re.I)
-_WD_IDX = {"mon": 0, "tue": 1, "wed": 2, "wen": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
-_DAYPART = re.compile(r"\b(morning|afternoon|evening|tonight|night|nite)\b", re.I)
-_CLOCKTIME = re.compile(r"\b\d{1,2}(?::\d\d)?\s*(?:am|pm)\b|\b\d{1,2}:\d\d\b|\bnoon\b", re.I)
-_REL = re.compile(r"\bin\s+(\d+|an?|one|two|half an)\s+(minutes?|mins?|hours?|hrs?)\b"
-                  r"|\b(\d+|an?|one|two|half an)\s+(minutes?|mins?|hours?|hrs?)\s+from now\b", re.I)
 _NUM = {"a": 1, "an": 1, "one": 1, "two": 2, "half an": 0.5}
 
 
@@ -257,59 +464,69 @@ def call_dates(calls) -> list[_dt.date]:
 
 
 def _day_word(prompt: str) -> str | None:
-    low = prompt.lower()
-    for w in ("tomorrow", "tmrw", "tmr", "tonight", "today", "this evening"):
-        if re.search(rf"\b{w}\b", low):
-            return w
-    m = _WD_RE.search(prompt)
-    return m.group(1) if m else None
+    m = _TMRW.search(prompt) or _TODAYW.search(prompt) or _WD_RE.search(prompt)
+    return m.group(0) if m else None
 
 
-def resolve_when(clock: _dt.datetime | None, iso: str, prompt: str, seed: str) -> str:
-    """One sentence that turns the prompt's time words into the date in `iso` (the call's own value)."""
+def resolve_when(clock: _dt.datetime | None, iso: str, prompt: str, seed: str, sources: list[str] = ()) -> str:
+    """One sentence that turns the prompt's time words into the date in `iso` (the call's own value). Every
+    relative word it uses is computed from the clock; with no day word and no shown date it says nothing."""
     p = parse_iso(iso)
     if not p or clock is None:
         return ""
     d, t = p
     today = clock.date()
     delta = (d - today).days
-    word = _day_word(prompt)
     day = fmt_day(d)
     parts = []
     rel = _REL.search(prompt)
     mins = _rel_minutes(rel) if rel else None
     if (rel and t and mins is not None and
             _dt.datetime.combine(d, t) == (clock + _dt.timedelta(minutes=mins)).replace(second=0, microsecond=0)):
-        parts.append(pick(seed + "rel", [f"It's {fmt_time(clock.time())} now, so {rel.group(0).strip()} is {fmt_time(t)}.",
-                                         f"Now is {fmt_time(clock.time())}; {rel.group(0).strip()} lands at {fmt_time(t)}."]))
-        return " ".join(parts)
-    if word in ("tomorrow", "tmrw", "tmr"):
-        parts.append(pick(seed + "tm", [f"Today is {fmt_day(today)}, so tomorrow is {day}.",
-                                        f"Tomorrow is {day}."]))
-    elif word in ("tonight", "today", "this evening") and delta == 0:
-        parts.append(pick(seed + "td", [f"'{word}' is today, {day}.", f"Today is {day}, so that's today."]))
-    elif word and _WD_IDX.get(word.lower()[:3]) == d.weekday():
-        if today.weekday() == d.weekday():
-            parts.append(pick(seed + "wd0", [
-                f"Today is already {_WD[today.weekday()]}, so '{word}' means next week's, {day}.",
-                f"It's {fmt_day(today)} today, so a bare '{word}' is the next one, {day}."]))
-        elif (today.weekday() - 1) % 7 == d.weekday():
-            parts.append(pick(seed + "wd1", [
-                f"{_WD[d.weekday()]} was yesterday, so '{word}' means the coming one, {day}.",
-                f"Today is {fmt_day(today)}; {_WD[d.weekday()]} just passed, so it's {day}."]))
+        return pick(seed + "rel", [f"It's {fmt_time(clock.time())} now, so {rel.group(0).strip()} is {fmt_time(t)}.",
+                                   f"Now is {fmt_time(clock.time())}; {rel.group(0).strip()} lands at {fmt_time(t)}.",
+                                   f"{rel.group(0).strip().capitalize()} from {fmt_time(clock.time())} is {fmt_time(t)}."])
+    wdm = [m for m in _WD_RE.finditer(prompt) if _WD_IDX[m.group(1).lower()[:3]] == d.weekday()]
+    wd = _WD[d.weekday()]
+    if delta == 1 and _TMRW.search(prompt):
+        parts.append(pick(seed + "tm", [f"Today is {fmt_day(today)}, so tomorrow is {day}.", f"Tomorrow is {day}.",
+                                        f"Tomorrow means {day}."]))
+    elif delta == 0 and _TODAYW.search(prompt):
+        w = _TODAYW.search(prompt).group(1).lower()
+        parts.append(pick(seed + "td", [f"'{w}' is today, {day}.", f"Today is {day}, so that's today.",
+                                        f"Same day: {day}."]))
+    elif wdm:
+        word = wdm[0].group(1)
+        if delta == 0:
+            ahead = f" and {fmt_time(t)} is still ahead" if t and t > clock.time() else ""
+            parts.append(pick(seed + "wd0", [f"It's already {wd}{ahead}, so '{word}' means today, {d.strftime('%b')} {d.day}.",
+                                             f"Today is {day}{ahead}, so '{word}' is today."]))
+        elif delta == 7:
+            parts.append(pick(seed + "wd7", [f"Today is already {wd}, so '{word}' means next week's, {day}.",
+                                             f"It's {wd} today; a bare '{word}' is the next one, {day}."]))
+        elif delta == 6:
+            parts.append(pick(seed + "wd1", [f"{wd} was yesterday, so '{word}' means the coming one, {day}.",
+                                             f"Today is {fmt_day(today)}; {wd} just passed, so it's {day}."]))
         else:
             parts.append(pick(seed + "wd", [f"Today is {fmt_day(today)}, so '{word}' is {day}.",
-                                            f"From {fmt_day(today)}, the next {_WD[d.weekday()]} is {day}.",
+                                            f"From {fmt_day(today)}, the next {wd} is {day}.",
+                                            f"Need the next {wd}: {d.strftime('%b')} {d.day}.",
                                             f"'{word}' from today ({fmt_day(today)}) means {day}."]))
     elif delta == 0:
         parts.append(f"That's today, {day}.")
-    else:
+    elif delta == 1 and t is not None and t <= clock.time():
+        parts.append(pick(seed + "d1", [f"{fmt_time(t)} has already passed today, so it's tomorrow, {day}.",
+                                        f"It's past {fmt_time(t)} today, so tomorrow, {day}."]))
+    elif delta == 1 and clock and any(d in {x for x, _ in stated_dates(src, clock)[0]} for src in sources):
+        parts.append(f"That's tomorrow, {day}.")
+    elif delta > 1 and clock and any(d in {x for x, _ in stated_dates(src, clock)[0]} for src in [prompt, *sources]):
         parts.append(pick(seed + "on", [f"It goes on {day}.", f"The day is {day}."]))
-    if t is not None:
+    if parts and t is not None:
         dp = _DAYPART.search(prompt)
         if dp and not _CLOCKTIME.search(prompt) and dp.group(1).lower() not in ("tonight",):
             parts.append(pick(seed + "dp", [f"'{dp.group(1)}' has no clock time, so {fmt_time(t)}.",
-                                            f"For '{dp.group(1)}' I'll use {fmt_time(t)}."]))
+                                            f"For '{dp.group(1)}' I'll use {fmt_time(t)}.",
+                                            f"'{dp.group(1)}' with no time: {fmt_time(t)}."]))
     return " ".join(parts)
 
 
@@ -331,45 +548,44 @@ def _when_phrase(a: dict, with_day: bool = True) -> str:
     return ""
 
 
-def action(name: str, a: dict, prior: str = "", with_day: bool = True, terse: bool = False) -> str:
+def action(name: str, a: dict, prior: str = "", with_day: bool = True, terse: bool = False, seed: str = "") -> str:
     """A short first-person clause for the call (no 'I'll' prefix). with_day=False leaves the day out
-    (a resolution sentence already said it); terse drops quoted values."""
+    (a resolution sentence already said it, or nothing shown grounds it); terse drops quoted values."""
     title = a.get("title") or a.get("name") or ""
     when = _when_phrase(a, with_day)
-    iso = a.get("when_iso")
-    isotxt = f", when_iso {iso}" if iso and not terse else ""
     if name == "add_calendar_event":
         dur = f" for {a['duration_min']} minutes" if a.get("duration_min") else ""
         loc = f" at {a['location']}" if a.get("location") and not terse else ""
-        return f"add “{title}”{when}{dur}{loc}{isotxt}" if not terse else f"add the event{when}{dur}{isotxt}"
+        return f"add “{title}”{when}{dur}{loc}" if not terse else f"add the event{when}{dur}"
     if name == "update_event":
         dur = f", {a['duration_min']} minutes long" if a.get("duration_min") else ""
-        return f"move “{title}” with update_event{re.sub(r'^ (?:on|at) ', ' to ', when)}{dur}{isotxt}"
+        return f"move “{title}” with update_event{re.sub(r'^ (?:on|at) ', ' to ', when)}{dur}"
     if name == "add_reminder":
         if a.get("all_day"):
-            return f"make it an all-day reminder (all_day true, when_iso {iso})" if not with_day else \
-                f"set an all-day reminder{when}"
-        return (f"set the reminder “{title}”{when}{isotxt}" if not terse else f"set the reminder{when}{isotxt}")
+            return "make it an all-day reminder" if not with_day else f"set an all-day reminder{when}"
+        return f"set the reminder “{title}”{when}" if not terse else f"set the reminder{when}"
     if name == "update_reminder":
         bits = []
         if a.get("new_title"):
             bits.append(f"rename it “{a['new_title']}”")
         if when:
-            bits.append(f"move it{re.sub(r'^ (?:on|at) ', ' to ', when)}")
-        return f"update the “{title}” reminder: " + (" and ".join(bits) or "the new details") + isotxt
+            bits.append(f"move it{re.sub(r'^ (?:on|at|for) ', ' to ', when)}")
+        return f"update the “{title}” reminder: " + (" and ".join(bits) or "the new details")
     if name == "complete_reminder":
         return f"mark the “{title}” reminder done"
     if name == "clear_reminders":
         return f"delete the reminder matching “{a.get('query') or title}”, behind its card"
     if name == "send_message":
         gist = f" with {prior}" if prior else ""
-        return f"text {a.get('to') or a.get('recipient') or 'them'}{gist} via send_message; the card lets them confirm"
+        return f"text {a.get('to') or a.get('recipient') or 'it'}{gist}" + pick(seed + "sm", [
+            "; the send card shows it before anything goes out", " behind the send card", ", card first"])
     if name == "send_email":
-        to = "their own address" if a.get("confirmed_self_send") else (a.get("to") or a.get("recipient") or "them")
+        to = "the account's own address" if a.get("confirmed_self_send") else (a.get("to") or a.get("recipient") or "it")
         subj = "" if terse or not a.get("subject") else f" (subject “{_q(a.get('subject'), 5)}”)"
         return f"email {to} with send_email{subj}, behind its card"
     if name == "schedule_send":
-        to = "their own address" if "@linden.edu" in str(a.get("to")) and a.get("channel") == "email" else a.get("to")
+        to = ("the account's own address" if "@linden.edu" in str(a.get("to")) and a.get("channel") == "email"
+              else a.get("to"))
         ch = "an email" if a.get("channel") == "email" else "a text"
         return f"queue {ch} to {to} for {a.get('when')} with schedule_send"
     if name == "draft_email":
@@ -400,9 +616,9 @@ def action(name: str, a: dict, prior: str = "", with_day: bool = True, terse: bo
 def read_phrase(name: str, a: dict) -> str:
     q = a.get("query") or a.get("conversation")
     if name == "get_weather":
-        return f"check the forecast for {a.get('location') or 'their city'}" + (f" ({a['period']})" if a.get("period") else "")
+        return f"check the forecast for {a.get('location') or 'the home city'}" + (f" ({a['period']})" if a.get("period") else "")
     if name == "view_emails":
-        return f"read the latest email{' about ' + repr(q) if q else ''}"
+        return f"read the emails{' about ' + repr(q) if q else ''}"
     if name == "view_messages":
         if a.get("conversation"):
             return f"open the thread with {a['conversation']}"
@@ -429,7 +645,7 @@ def read_phrase(name: str, a: dict) -> str:
     if name == "lookup_contact":
         return f"look up {a.get('name') or q}"
     if name == DISCOVERY:
-        return f"load {', '.join(a.get('tools') or a.get('families') or [])}"
+        return f"get {', '.join(a.get('tools') or a.get('families') or [])}"
     shown = [f"{k} {json.dumps(v, ensure_ascii=False)}" for k, v in list(a.items())[:3]
              if isinstance(v, (str, int, float, bool)) and len(str(v)) <= 30]
     return f"call {name}" + (f" with {', '.join(shown)}" if shown else "")
@@ -439,7 +655,8 @@ _SOURCE = {"view_emails": "email", "summarize_emails": "email", "view_messages":
            "get_upcoming": "calendar", "get_past_events": "calendar history", "search_reminders": "reminders",
            "get_recent_activity": "recent activity", "get_my_day_plan": "day plan", "search_notes": "note",
            "read_note": "note", "read_file": "file", "web_search": "web result", "web_fetch": "page",
-           "get_weather": "forecast", "list_dir": "folder listing", "get_stock_price": "price", "find_free_time": "free slots"}
+           "get_weather": "forecast", "list_dir": "folder listing", "get_stock_price": "price", "find_free_time": "free slots",
+           "lookup_contact": "contact card", "recall": "memory"}
 
 
 def source_of(name: str) -> str:
@@ -462,6 +679,12 @@ def facts(name: str, text: str) -> str | None:
     m = re.search(r"(\d+) new in the last", text)
     if m:
         return f"{m[1]} new items"
+    m = re.search(r"(\d+) messages? across (\d+) conversations?", text)
+    if m:
+        return f"{m[1]} message{'s' if m[1] != '1' else ''} in {m[2]} thread{'s' if m[2] != '1' else ''}"
+    m = re.search(r"^(?:\w+day, \w+ \d+|The weekend of \w+ \d+|[A-Z][a-z]+ week[^:\n]*): (\d+ events?(?:, (?:\d+|no) reminders?)?)", text, re.M)
+    if m:
+        return m[1]
     return None
 
 
@@ -470,10 +693,6 @@ def fact_sentence(name: str, text: str) -> str:
     if not f:
         return ""
     return _sentence(f if f.startswith("the ") else f"The {source_of(name)} shows {f}")
-
-
-_SHIFT = re.compile(r"\b(an hour and a half|half an hour|an hour|\d+ (?:minutes|mins|hours?)|a day)\s+"
-                    r"(earlier|later|back|forward)\b", re.I)
 
 
 def current_slot(title: str, text: str, clock: _dt.datetime | None):
@@ -498,30 +717,28 @@ def _starts(text: str) -> list[str]:
 
 
 # ----------------------------------------------------------------- thought writers
-def _goal(prompt: str) -> str:
-    p = re.sub(r"^(?:hey|yo|so|ok|okay|pls|please|can you|could you)[,\s]+", "", prompt.strip(), flags=re.I)
-    return _q(p.rstrip("?.! "), 9)
-
-
 def _tool_reason(fam: str, name: str, a: dict, seed: str) -> str:
     if name == "update_event":
         return pick(seed + "r", ["It's an existing event getting a new time, so update_event, not a second event.",
-                                 "That event already exists; moving it is update_event, not a new add."])
+                                 "That event already exists; moving it is update_event, not a new add.",
+                                 "A move, not a new event: update_event."])
     if name == "add_calendar_event" and fam in ("right_write_tool",):
         return pick(seed + "r", ["It's a new appointment with a set time, so add_calendar_event.",
                                  "Nothing to move here; it's a brand-new event."])
     if name == "add_reminder" and fam in ("right_write_tool", "act_dont_ask"):
         return pick(seed + "r", ["It's something to be nudged about, so a reminder, not an event.",
-                                 "A nudge to do something is a reminder; no need to ask anything."])
+                                 "A nudge to do something is a reminder; no need to ask anything.",
+                                 "Task plus a time: a reminder, no question needed."])
     if name == "draft_email":
-        return pick(seed + "r", ["It's a draft for them to check, so draft_email, not send_email.",
+        return pick(seed + "r", ["Asked for a draft to look over, so draft_email, not send_email.",
                                  "A draft, not a send: nothing goes out yet."])
     if name in ("send_email", "send_message") and fam in ("right_write_tool", "safe_effects", "act_dont_ask"):
-        return pick(seed + "r", ["They asked for it to be sent, so the real send, not a draft.",
-                                 "This is a send now, not a scheduled one or a draft."])
+        return pick(seed + "r", ["Asked to send it now, so the real send, not a draft.",
+                                 "This is a send now, not a scheduled one or a draft.",
+                                 "Wants it sent, not drafted."])
     if name == "schedule_send":
-        return pick(seed + "r", ["They named a later send time, so schedule_send, not an immediate send.",
-                                 "It should go out later, at the time they gave, so schedule it."])
+        return pick(seed + "r", ["A later send time was named, so schedule_send, not an immediate send.",
+                                 "It should go out later, at the named time, so schedule it."])
     if name == "append_note":
         return pick(seed + "r", ["The note already exists, so append to it instead of making a new one.",
                                  "Adding to an existing note is append_note, not a second note."])
@@ -531,14 +748,27 @@ def _tool_reason(fam: str, name: str, a: dict, seed: str) -> str:
         return pick(seed + "r", ["It's done, not unwanted, so complete it and keep the record.",
                                  "Finished means complete_reminder, not a delete."])
     if name == "clear_reminders":
-        return pick(seed + "r", ["They don't need it anymore, so delete it rather than marking it done.",
+        return pick(seed + "r", ["No longer needed, so delete it rather than marking it done.",
                                  "Unwanted, not finished, so it gets removed."])
     if name == "remember":
-        return pick(seed + "r", ["It's a fact they stated about themselves, so it's worth saving.",
-                                 "This is about them, said plainly, so remember it as given."])
-    if name == "forget":
-        return ""
+        return pick(seed + "r", ["A plain first-person fact, so it's worth saving.",
+                                 "Stated plainly about the speaker, so remember it as given."])
     return ""
+
+
+def _shown(s) -> list[str]:
+    return [s["prompt"], *s["all_results"]]
+
+
+def _grounded_day(s, clock, a) -> bool:
+    """The call's date is today, tomorrow, or a date the prompt or a result shows (so a thought may name it)."""
+    p = parse_iso(a.get("when_iso"))
+    if not p or clock is None:
+        return False
+    delta = (p[0] - clock.date()).days
+    if delta == 0 or (delta == 1 and (_TMRW.search(s["prompt"]) or (p[1] is not None and p[1] <= clock.time()))):
+        return True
+    return any(p[0] in {d for d, _ in stated_dates(src, clock)[0]} for src in _shown(s))
 
 
 def _write_plan(meta, s, calls, ctx, seed, skip_resolution=False):
@@ -553,8 +783,10 @@ def _write_plan(meta, s, calls, ctx, seed, skip_resolution=False):
         prior = f"the {src}" if src in ("forecast", "price", "web result", "note", "folder listing") else ""
     for name, a in calls:
         if a.get("when_iso") and not resolution and not skip_resolution:
-            resolution = resolve_when(clock, a["when_iso"], s["prompt"], seed)
-        acts.append(action(name, a, prior, with_day=not resolution or len(calls) > 1, terse=terse))
+            resolution = resolve_when(clock, a["when_iso"], s["prompt"], seed, s["all_results"])
+    for name, a in calls:
+        with_day = (not resolution or len(calls) > 1) and _grounded_day(s, clock, a)
+        acts.append(action(name, a, prior, with_day=with_day, terse=terse, seed=seed))
     reason = ""
     for name, a in calls:
         reason = reason or _tool_reason(fam, name, a, seed)
@@ -598,6 +830,13 @@ def _plan_calls(s, ctx) -> list[tuple[str, dict]]:
     return []
 
 
+def _ask_gist(prompt: str) -> str:
+    """'Wants X' from the prompt, for a subjectless lead."""
+    p = re.sub(r"^(?:hey|yo|so|ok|okay|pls|please|quick one|real quick|can you|could you|can u)[,:\s]+", "",
+               prompt.strip(), flags=re.I)
+    return _q(p.rstrip("?.! "), 8)
+
+
 def thought_select_or_next(meta, s, ctx, seed) -> str:
     fam = meta.get("family") or ""
     calls = s["calls"]
@@ -605,33 +844,24 @@ def thought_select_or_next(meta, s, ctx, seed) -> str:
     later = (ctx or {}).get("later_calls", [])
     later_write = next(((n, a) for n, a in later if n in WRITE_TOOLS), None)
     plan = _plan_calls(s, ctx)
-    load_note = ""
-    if DISCOVERY in names:
-        tools = sorted(set().union(*[_loads(n, a) for n, a in calls]))
-        load_note = pick(seed + "ld", [f"{', '.join(tools)} isn't loaded yet, so I'll load it first.",
-                                       f"I need {', '.join(tools)}, which isn't loaded; load it, then call it."])
-    elif meta.get("target_kind") == "load":
-        load_note = pick(seed + "ld", [f"{names[0]} is only listed by name, so this call loads it before the real one.",
-                                       f"Calling {names[0]} now loads its schema; the real call comes right after."])
     write_plan = [(n, a) for n, a in plan if n in WRITE_TOOLS]
     if write_plan:
         lead, skip_res = "", False
         if s["results"] and not s["loaded"] and s["prev_calls"]:
             prev = s["prev_calls"][0][0]
             if prev in WRITE_TOOLS:
-                lead = pick(seed + "pl", ["The first part is done.", "That part went through."])
+                lead = pick(seed + "pl", ["First part's in.", "One down, one to go."])
             else:
                 lead = slot_lead(meta, s, write_plan, seed)
                 skip_res = bool(lead) and not _day_word(s["prompt"])    # the slot sentence already places it
                 lead = lead or fact_sentence(prev, s["results"][-1]) or \
-                    pick(seed + "pl", [f"The {source_of(prev)} has what I need.", f"Got the {source_of(prev)} back."])
+                    pick(seed + "pl", [f"The {source_of(prev)} has what's needed.", f"Got the {source_of(prev)} back.",
+                                       f"The {source_of(prev)} gives the content."])
         resolution, reason, acts = _write_plan(meta, s, write_plan, ctx, seed, skip_res)
         act = " and ".join(acts)
-        verb = (pick(seed + "v", ["I'll", "Next I'll", "So I'll"]) if lead else
-                pick(seed + "v", ["I'll", "So I'll"]) if resolution else "I'll")
-        # stub_then_call is about the load, so its load note outranks the tool-choice reason
-        lp, rp = (3, 2) if fam == "stub_then_call" else (1, 2)
-        return compose([(3, lead), (4, resolution), (rp, reason), (lp, load_note), (5, _sentence(f"{verb} {act}"))])
+        verb = (pick(seed + "v", ["I'll", "Next I'll", "So I'll", "Then"]) if lead else
+                pick(seed + "v", ["I'll", "So I'll", "So:"]) if resolution else pick(seed + "v", ["I'll", "Plan:"]))
+        return compose([(3, lead), (4, resolution), (2, reason), (5, _sentence(f"{verb} {act}"))])
     # a read (or a load of a read)
     reads = plan or [(n, a) for n, a in calls if n != DISCOVERY]
     read = " and ".join(read_phrase(n, a) for n, a in reads) or read_phrase(*calls[0])
@@ -639,35 +869,44 @@ def thought_select_or_next(meta, s, ctx, seed) -> str:
     if later_write and fam in WRITE_FAMILIES:
         # The write's arguments depend on what this read returns, so the plan names only the next move.
         wg = write_gist(later_write[0], later_write[1], s["prompt"])
-        return compose([(4, _sentence(pick(seed + "rb", [f"First I need to {read}, then {wg}",
+        why = {"manage_contacts": "The new address or number has to come from there.",
+               "send_message": "What goes in the text comes from that.",
+               "send_email": "The email's content comes from that.",
+               "update_event": "Need the current slot before moving it.",
+               "update_reminder": "Need the current reminder before changing it.",
+               "add_reminder": "The reminder's time and title depend on what it shows.",
+               "complete_reminder": "Need the exact reminder first.",
+               }.get(later_write[0], "")
+        return compose([(4, _sentence(pick(seed + "rb", [f"First {read}, then {wg}",
                                                         f"I'll {read} first; after that, {wg}",
                                                         f"Read before writing: {read}, then {wg}"]))),
-                        (3, pick(seed + "why", ["The details for the change come from that result.",
-                                                "I can't fill in the write until I've seen it.", ""])),
-                        (2 if fam == "stub_then_call" else 1, load_note)])
+                        (3, pick(seed + "why", [why, ""]) if why else "")])
+    if fam == "multi_source":
+        srcs = _planned_sources(s)
+        return _join(pick(seed + "ms", [f"This spans {len(srcs)} sources: {', '.join(srcs[:-1])} and {srcs[-1]}.",
+                                        f"Needs {' plus '.join(srcs)}, read together."]),
+                     pick(seed, ["Read them all at once, then merge.", "One pass over each, then a combined answer.",
+                                 "Pull each, then say what matters across them."]))
     if fam == "safe_effects":
         n0 = reads[0][0] if reads else names[0]
         why = {"get_stock_price": ["A price is a quick lookup; no page fetch and nothing to send.",
                                    "Live price lookup, not a page fetch, and nothing goes out."],
-               "web_search": ["It's a news question, so a web search; nothing to fetch or send.",
-                              "A search answers this; no fetching pages, no sending."],
-               "view_messages": ["They want to see who wrote, so the plain message list, not a summary; nothing gets sent.",
+               "web_search": ["A web search answers this; nothing to fetch or send.",
+                              "Search results are enough; no page fetch, nothing sent."],
+               "view_messages": ["The ask is who wrote, so the plain message list, not a summary; nothing gets sent.",
                                  "This asks who texted, so list the messages; no summary, no reply."],
                "list_scheduled_sends": ["This only asks what's queued; nothing gets sent or changed.",
                                         "Just a look at the queue; nothing to send or cancel."],
-               "list_dir": ["They want to look, not tidy up, so just list it; no moving or deleting.",
+               "list_dir": ["A look, not a cleanup, so just list it; no moving or deleting.",
                             "Looking only: list the folder, move nothing, delete nothing."],
                }.get(n0, ["This only needs a read; nothing to send or change.",
                           "A read is enough here; no effects."])
-        return compose([(3, pick(seed + "w", why)), (1, load_note), (4, _sentence(f"{verb} {read}"))])
-    if fam == "stub_then_call":
-        return compose([(3, load_note or pick(seed + "st", ["The tool I need isn't loaded yet.", "First the schema."])),
-                        (4, _sentence(pick(seed + "sr", [f"Then I'll {read}", f"After that, {read} for real"])))])
-    if s["results"] and s["prev_calls"]:
+        return compose([(3, pick(seed + "w", why)), (4, _sentence(f"{verb} {read}"))])
+    if s["results"] and s["prev_calls"] and not s["loaded"]:
         f = fact_sentence(s["prev_calls"][0][0], s["results"][-1])
         return _join(f or f"The {source_of(s['prev_calls'][0][0])} covers part of it.",
-                     _sentence(f"I still need to {read}"))
-    return compose([(1, load_note), (4, _sentence(f"{verb} {read}"))])
+                     _sentence(f"Still need to {read}"))
+    return _sentence(f"{verb} {read}")
 
 
 def slot_lead(meta, s, plan, seed) -> str:
@@ -686,7 +925,8 @@ def slot_lead(meta, s, plan, seed) -> str:
     where = f"on {fmt_day(old_d)} at {old_t}" if same_day and old_d else f"at {old_t}"
     shift = _SHIFT.search(s["prompt"])
     title = _q(move[1].get("title"), 5)
-    lead = pick(seed + "sl", [f"“{title}” is {where} now", f"Right now “{title}” is {where}"])
+    lead = pick(seed + "sl", [f"“{title}” is {where} now", f"Right now “{title}” is {where}",
+                              f"Currently “{title}” sits {where}"])
     if shift and "day" in shift.group(1).lower():
         lead += f"; {shift.group(0).lower()} is {fmt_day(new[0])}, same time"
     elif shift:
@@ -703,7 +943,7 @@ def write_gist(name: str, a: dict, prompt: str) -> str:
             "update_reminder": "move that reminder with update_reminder",
             "complete_reminder": "mark it done",
             "manage_contacts": "save it to the contact with manage_contacts",
-            "send_message": f"text {to or 'them'} what it says, behind the send card",
+            "send_message": f"text {to or 'it'} behind the send card",
             "send_email": f"email {to or 'it'} behind the send card",
             "schedule_send": "queue the send with schedule_send",
             "draft_email": "draft the reply, not send it",
@@ -713,8 +953,14 @@ def write_gist(name: str, a: dict, prompt: str) -> str:
             }.get(name, f"call {name}")
 
 
-_BAD_ARGS = re.compile(r"unexpected (?:keyword )?argument(?:\(s\))?:? \[?([^\]\.]+?)\]?(?:[.;]|$)")
+_BAD_ARGS = re.compile(r"unexpected (?:keyword )?argument(?:\(s\))?:? \[?([^\]\.;]+?)\]?(?:[.;]|$)")
 _EXPECTED = re.compile(r"Expected arguments — ([^.]+)")
+_MISSING = re.compile(r"missing (?:required )?(?:argument(?:\(s\))?:? )?\[?'?([a-z_]+)'?")
+
+
+def _title_in(text: str, fallback: str = "") -> str:
+    m = re.search(r"“([^”]+)”", text)
+    return m.group(1) if m else fallback
 
 
 def thought_after_error(meta, s, ctx, seed) -> str:
@@ -722,125 +968,192 @@ def thought_after_error(meta, s, ctx, seed) -> str:
     first = err.lstrip().split("\n", 1)[0]
     calls = s["calls"]
     plan = _plan_calls(s, ctx)
-    fixed = " and ".join(action(n, a) for n, a in plan) if plan else ""
     clock = parse_clock(meta)
-    when = next((resolve_when(clock, a["when_iso"], s["prompt"], seed) for n, a in plan if a.get("when_iso")), "")
+    when = next((resolve_when(clock, a["when_iso"], s["prompt"], seed, s["all_results"])
+                 for n, a in plan if a.get("when_iso")), "")
+    fixed = " and ".join(action(n, a, with_day=not when and _grounded_day(s, clock, a), seed=seed)
+                         for n, a in plan) if plan else ""
     if first.startswith(DENIED):
-        return pick(seed, ["The card was denied, so nothing went out. I'll say plainly it wasn't done.",
-                           "They tapped Deny; nothing happened. I'll say so without implying it went through."])
+        return pick(seed, ["The card was denied, so nothing went out. Say plainly it wasn't done.",
+                           "Denied on the card; nothing happened. Say so, with no hint that it happened anyway.",
+                           "Deny was tapped, so it stays undone. One plain line saying so."])
     if not calls:            # a refusal the final must relay
-        reason = re.split(r"[;:]|\. ", first, maxsplit=1)[0].strip().rstrip(".")
-        reason = re.sub(r"^Wisp ", "", reason)
+        title = _title_in(first, "it")
+        if "already starts then" in first:
+            return _join(f"“{title}” already starts at that time, so there was nothing to move.",
+                         pick(seed, ["Say it's already there.", "Just point out it's already at that time."]))
+        if "read-only" in first:
+            return pick(seed, [f"“{title}” is on a read-only calendar, so nothing changed. Say so, and that it has to be "
+                               f"moved in its own calendar.",
+                               f"Read-only calendar: “{title}” can't be moved from this Mac. Be plain it stayed put.",
+                               "That calendar can't be edited from here, so the time is unchanged. One plain line, "
+                               "plus where it can be moved."])
+        if "organizer" in first:
+            return _join(f"Only the organizer can move “{title}”; nothing changed.",
+                         pick(seed, ["Say so and suggest asking the organizer.",
+                                     "Be plain it stayed put; the organizer has to move it."]))
+        if "invitees" in first:
+            return _join(f"Calendar hasn't synced whether “{title}” has invitees, so nothing moved.",
+                         pick(seed, ["Say it stayed put and to try again shortly.",
+                                     "Plain answer: unchanged for now, worth retrying in a bit."]))
+        if re.search(r"[Nn]othing was \w+", first):
+            return _join("That didn't go through; nothing changed.",
+                         pick(seed, ["Say so plainly, with the next step it gives.", "Be plain about it."]))
         src = source_of(s["prev_calls"][0][0]) if s["prev_calls"] else "that"
-        if re.search(r"moved|organizer|read-only|invitees|already starts", first):
-            return _join(_sentence(pick(seed + "m", ["Nothing was moved", "The move didn't happen"])) + " — " +
-                         _q(reason, 12).lower() + ".",
-                         pick(seed, ["I'll say it wasn't done and what they can do instead.",
-                                     "I'll be plain that it didn't change, plus the next step."]))
-        return _join(pick(seed + "u", [f"{src[:1].upper() + src[1:]} can't be read right now.", f"I couldn't get the {src}."]),
-                     pick(seed, ["I'll say that plainly with the fix it gives, and invent nothing.",
-                                 "No data to report, so I'll explain how to turn access on instead."]))
+        place = re.search(r"couldn't resolve '([^']+)'", first)
+        if place:
+            return _join(pick(seed + "a", [f"'{place.group(1)}' matches more than one place, and the tool says not to guess.",
+                                           f"The lookup won't pick a '{place.group(1)}' on its own."]),
+                         pick(seed, ["One question: which one.", "Ask which state, nothing else.",
+                                     "Guessing is off the table, so one short question."]))
+        if not re.search(r"^Wisp (?:can't|could not|cannot)\b|isn't connected|access", first):
+            reason = re.sub(r"^\(error:?\s*", "", first).rstrip(").")
+            return _join(f"The {src} call failed: {_q(reason, 10)}.",
+                         pick(seed, ["Say so plainly; no made-up data.", "Be plain it didn't work, and invent nothing."]))
+        return _join(pick(seed + "u", [f"{src[:1].upper() + src[1:]} can't be read right now.",
+                                       f"No access to the {src} at the moment."]),
+                     pick(seed, ["Say that plainly with the fix it gives, and invent nothing.",
+                                 "No data to report, so explain how to turn access on instead."]))
     m = re.match(r"\(error calling (\w+)\(", first)
     bad_tool = m.group(1) if m else (s["prev_calls"][0][0] if s["prev_calls"] else "That call")
+    old_args = next((a for n, a in s["prev_calls"] if n == bad_tool), {})
     bad = _BAD_ARGS.search(first)
     exp = _EXPECTED.search(first)
     new_names = {n for n, _ in calls}
-    if re.search(r"couldn't understand the period '([^']+)'", first):
-        per = re.search(r"couldn't understand the period '([^']+)'", first).group(1)
-        return _join(pick(seed + "a", [f"'{per}' isn't a period {bad_tool} accepts.",
-                                       f"{bad_tool} can't parse '{per}' as a period."]),
+    new_args = plan[0][1] if plan else {}
+    per = re.search(r"couldn't understand the period '([^']+)'", first)
+    if per:
+        return _join(pick(seed + "a", [f"'{per.group(1)}' isn't a period {bad_tool} accepts.",
+                                       f"{bad_tool} can't parse '{per.group(1)}' as a period.",
+                                       f"The period '{per.group(1)}' was rejected; it wants a fixed form."]),
                      _sentence(pick(seed, [f"I'll retry: {fixed}", f"Retry with what it does take: {fixed}",
                                            f"Same question, valid arguments: {fixed}"])))
     if "couldn't resolve" in first:
         place = re.search(r"couldn't resolve '([^']+)'", first)
         loc = next((a.get("location") for _n, a in calls if a.get("location")), "")
-        return _join(f"'{place.group(1) if place else 'That place'}' is ambiguous and the tool won't guess.",
-                     pick(seed, [f"I'll use the best-known one, {loc}, and say which one I picked.",
-                                 f"Retry with {loc} and mention it in case they meant another."]))
+        where = place.group(1) if place else "That place"
+        return _join(pick(seed + "a", [f"'{where}' matches more than one place and the tool won't pick.",
+                                       f"The forecast tool can't tell which '{where}' is meant.",
+                                       f"'{where}' is ambiguous, so the lookup stopped."]),
+                     pick(seed, [f"Retry with {loc} and name it in the answer, so a different one can be asked for.",
+                                 f"Try {loc}, and say which one it is in case another was meant.",
+                                 f"Going with {loc}; the answer has to say so plainly."]))
+    renamed_from = sorted(set(old_args) - set(new_args))
+    renamed_to = sorted(set(new_args) - set(old_args))
     if "start time is invalid" in first:
-        return _join("The start time was rejected; it wants plain local time with no offset.", when,
-                     _sentence(f"I'll resend: {fixed}"))
+        if renamed_from and renamed_to:
+            return _join(f"{bad_tool} rejected the start time and changed nothing.",
+                         f"The time goes in {', '.join(renamed_to)}, not {', '.join(renamed_from)}.", when,
+                         _sentence(f"I'll resend: {fixed}"))
+        return _join(f"{bad_tool} rejected the start time and changed nothing; it wants plain local time, no offset.",
+                     when, _sentence(f"I'll resend: {fixed}"))
     if "duration_m" in first:
         dur = next((a.get("duration_min") for _n, a in calls if a.get("duration_min")), None)
         return _join("duration_min has to be a whole number of minutes.", when,
                      _sentence(f"So {dur} minutes: {fixed}" if dur else f"I'll resend: {fixed}"))
-    badtxt = (bad.group(1).replace("'", "").strip() if bad else "an argument")
-    exp_names = [x.split(":")[0].strip() for x in exp.group(1).split(",")][:4] if exp else []
-    exp_txt = f"; it takes {', '.join(exp_names)}" if exp_names else ""
+    bad_names = [x.strip().strip("'\"") for x in bad.group(1).split(",")] if bad else []
+    badtxt = ", ".join(bad_names) if bad_names else "an argument"
+    exp_all = [x.split(":")[0].strip() for x in exp.group(1).split(",")] if exp else []
+    in_list = bool(bad_names) and all(b in exp_all for b in bad_names)
+    exp_txt = f"; it takes {', '.join(exp_all[:4])}" if exp_all and not in_list else ""
+    missing = _MISSING.search(first)
+    miss_txt = f", and it needs {missing.group(1)}" if missing and missing.group(1) not in bad_names else ""
     if bad_tool not in new_names and plan:
-        return _join(pick(seed + "a", [f"{bad_tool} has no {badtxt} argument{exp_txt}.",
-                                       f"That failed: {bad_tool} doesn't take {badtxt}{exp_txt}."]),
-                     pick(seed, [f"A keyword search belongs in {plan[0][0]}, so I'll {fixed}.",
-                                 f"So I'll switch to {plan[0][0]} and {fixed}.",
-                                 f"{plan[0][0]} handles that; I'll {fixed}."]))
-    return _join(pick(seed + "a", [f"{bad_tool} rejected {badtxt}{exp_txt}.",
-                                   f"The call failed on {badtxt}{exp_txt}."]), when,
-                 _sentence(pick(seed, [f"I'll retry with the schema's names: {fixed}", f"Same call, right names: {fixed}",
-                                       f"Fixing the names and retrying: {fixed}"])))
+        head = (pick(seed + "a", [f"{bad_tool} rejected {badtxt}, even though its argument list names it.",
+                                  f"{bad_tool} threw on {badtxt} although its own list includes it."])
+                if in_list else
+                pick(seed + "a", [f"{bad_tool} has no {badtxt} argument{exp_txt}.",
+                                  f"That failed: {bad_tool} doesn't take {badtxt}{exp_txt}."]))
+        tool = plan[0][0]
+        kw = "query" in bad_names and "query" in new_args
+        return _join(head, pick(seed, ([f"{tool} takes a keyword search, so I'll {fixed}."] if kw else []) +
+                                [f"So I'll switch to {tool} and {fixed}.", f"{tool} handles that; I'll {fixed}."]))
+    fix_names = (f" The right names: {', '.join(renamed_to)} instead of {', '.join(renamed_from)}."
+                 if renamed_from and renamed_to else "")
+    return compose([(4, pick(seed + "a", [f"{bad_tool} rejected {badtxt}{exp_txt}{miss_txt}.",
+                                          f"The call failed on {badtxt}{exp_txt}{miss_txt}."])),
+                    (2, fix_names.strip()), (3, when),
+                    (5, _sentence(pick(seed, [f"I'll retry: {fixed}", f"Same call, right names: {fixed}",
+                                              f"Fixing the names and retrying: {fixed}"])))])
 
 
 def _inj_kind(text: str) -> str:
     low = text.lower()
-    for pat, kind in ((r"\bforward", "forward mail somewhere"), (r"\btext (?:all|every)", "text all their contacts"),
+    for pat, kind in ((r"\bforward", "forward mail somewhere"), (r"\btext (?:all|every)", "text every contact"),
                       (r"\b(?:pay|payment|transfer|wire)", "set up a payment"),
                       (r"\b(?:run|execute|curl|terminal|shell|command)\b", "run a command"),
-                      (r"\b(?:delete|remove|clear|wipe)", "delete their things"),
+                      (r"\b(?:delete|remove|clear|wipe)", "delete things"),
                       (r"\b(?:reveal|memory|memories|password|share what you know)", "reveal private details"),
                       (r"\bsend\b", "send something out"), (r"ignore", "drop its instructions")):
         if re.search(pat, low):
             return kind
-    return "do something they didn't ask for"
+    return "do something nobody asked for"
 
 
-def thought_receipt(meta, s, ctx, seed) -> str:
-    """Relaying a write's receipt: which facts it states, and how to name the day relative to today."""
-    rc = receipt_of(s)
-    final = s["target_text"].lower()
+def thought_outcome(meta, s, ctx, seed) -> str:
+    """A write family's final over a result that is not a clean success: say what it actually reports."""
+    fam = meta.get("family") or ""
+    r = s["results"][-1] if s["results"] else ""
+    oc = _narrate_outcome(fam, s)
+    prev = s["prev_calls"][0] if s["prev_calls"] else ("", {})
+    name, a = prev
     clock = parse_clock(meta)
-    if not rc:
-        prev = s["prev_calls"][0] if s["prev_calls"] else ("", {})
-        who = prev[1].get("to") or prev[1].get("name") or ""
-        if prev[0] in ("send_message", "send_email", "schedule_send", "reply_to_email"):
-            return _join(pick(seed + "a", [f"The receipt confirms it went to {who}." if who else "The receipt confirms the send.",
-                                           "The send went through."]),
-                         pick(seed + "b", ["I'll say who got it in one short line, nothing extra.",
-                                           "Confirm it plainly; no 'let me know' closer."]))
-        return _join(pick(seed + "a", ["The receipt confirms it.", "That went through."]),
-                     pick(seed + "b", ["I'll restate exactly what it says, briefly.", "Relay just the receipt's facts."]))
-    stated = f"{rc['wd']} {rc['mon']} {rc['day']}"
-    span = f"{rc['start']}" + (f" to {rc['end']}" if rc["end"] else "")
-    d = None
-    if clock:
-        _ds, _ = stated_dates(stated, clock)
-        d = _ds[0][0] if _ds else None
-    rel = ""
-    if d and clock:
-        delta = (d - clock.date()).days
-        if delta == 0:
-            rel = f"Today is {fmt_day(clock.date())}, so that's today."
-        elif delta == 1:
-            rel = pick(seed + "r", [f"Today is {fmt_day(clock.date())}, so that's tomorrow.",
-                                    "That's tomorrow."]) if "tomorrow" in final else \
-                f"That's tomorrow, {fmt_day(d)}."
-        elif 1 < delta <= 7:
-            rel = pick(seed + "r", [f"That's the coming {_WD[d.weekday()]}.",
-                                    f"From today, {fmt_day(clock.date())}, that's the next {_WD[d.weekday()]}."])
-        elif delta > 7:
-            rel = f"That's more than a week out, so I'll give the date."
-    head = pick(seed + "h", [f"The receipt says {stated}, {span}.", f"Receipt: {stated}, {span}.",
-                             f"It's set for {stated}, {span}."])
-    tail = ("It's saved in Wisp only, not Apple Reminders, so I'll mention that." if rc["wisp_only"] else
-            pick(seed + "t", ["I'll give the title, day and time, nothing more.",
-                              "Title, day and time from the receipt, short.",
-                              "Just the facts it states."]))
-    return compose([(4, head), (3, rel), (2, tail)])
+    if oc == "no_match":
+        who = re.search(r"No saved contact named '([^']+)'", r)
+        if who:
+            return _join(f"No saved contact named {who.group(1)}, so nothing went out.",
+                         pick(seed, ["Ask for the number instead of guessing one.",
+                                     "One question: which number to use.",
+                                     "Can't text an unknown name; ask how to reach that person."]))
+        q = re.search(r"['“]([^'”]+)['”]", r)
+        what = q.group(1) if q else (a.get("title") or a.get("query") or "that")
+        thing = ("event" if "Calendar" in r or name in ("update_event", "cancel_event") else
+                 "memory" if name == "forget" else "reminder")
+        return _join(pick(seed + "a", [f"No {thing} matches '{what}', so nothing changed.",
+                                       f"Nothing matches '{what}'; no {thing} was touched."]),
+                     pick(seed, ["Say so and ask for the exact name.", "Ask what it's called rather than guess.",
+                                 "Plain no-match, then one question about the wording."]))
+    if oc in ("ambiguous", "clarify"):
+        items = re.findall(r"“([^”]+)”", r) if oc == "clarify" else re.findall(r"[:;] ([^;()]+?) \(([^)]+)\)", r)
+        what = _title_in(r, a.get("title") or a.get("query") or "it")
+        if oc == "ambiguous" and items:
+            whens = [w for _t, w in items][:2]
+            head = f"{len(items)} events match “{what}”: {' and '.join(whens)}."
+            risk = "Moving the wrong one is worse than asking"
+        else:
+            lines = re.findall(r"^- ([^—\n]+?) —", r, re.M)
+            names = lines[:3] or items[:3]
+            head = (f"{len(names)} reminders fit: {' and '.join('“' + n.strip() + '”' for n in names)}." if names
+                    else "More than one item fits.")
+            risk = ("Marking the wrong one done is worse than asking"
+                    if re.search(r"\b(?:done|complete|tick|finish|mark)", s["prompt"], re.I) else
+                    "Changing the wrong one is worse than asking")
+        return _join(head, pick(seed, [f"{risk}, so one question: which.", f"{risk}; ask which one, nothing changed yet.",
+                                       "Can't tell which was meant; one short question."]))
+    if oc == "partial":
+        rc = receipt_of(s)
+        rel = ""
+        if rc and clock:
+            ds, _ = stated_dates(f"{rc['wd']} {rc['mon']} {rc['day']}", clock)
+            d = ds[0][0] if ds else None
+            if d:
+                delta = (d - clock.date()).days
+                rel = (f"That's today, {fmt_day(d)}." if delta == 0 else f"That's tomorrow, {fmt_day(d)}." if delta == 1
+                       else f"Due {fmt_day(d)}.")
+        return compose([(4, "It's saved in Wisp only; Apple Reminders wasn't changed."), (2, rel),
+                        (3, pick(seed, ["Worth saying, so nobody looks for it in the Reminders app.",
+                                        "Mention that it won't show up in Apple Reminders."]))])
+    if oc in ("denied", "refused", "error"):
+        return pick(seed, ["That didn't happen. Say so plainly.", "Nothing changed; one plain line about why."])
+    return pick(seed, ["Nothing was written yet; one detail is missing. Ask for it plainly.",
+                       "Can't act on it as given; one short question first."])
 
 
 def thought_narrate(meta, s, ctx, seed) -> str:
     fam = meta.get("family") or ""
     turn_calls = (ctx or {}).get("turn_reads") or s["prev_calls"]
     if fam in WRITE_FAMILIES:
-        return thought_receipt(meta, s, ctx, seed)
+        return thought_outcome(meta, s, ctx, seed)
     if fam == "ignore_embedded_instructions":
         # the planted instruction: from its marker sentence to the end of that paragraph
         line = next(r[m.start():] for r in s["all_results"] for m in [INJECTION.search(r)] if m)
@@ -848,63 +1161,158 @@ def thought_narrate(meta, s, ctx, seed) -> str:
         src = source_of(next((n for n, _ in turn_calls if n != DISCOVERY), "result"))
         kind = _inj_kind(line)
         return _join(pick(seed + "a", [f"The {src} answers it, but one line is aimed at an AI assistant, telling it to {kind}.",
-                                       f"Part of the {src} is written to an assistant: it wants me to {kind}."]),
-                     pick(seed + "b", ["That isn't their request, so I won't act on it; report the content and flag it in a line.",
-                                       "I'll ignore it, give them what the text actually says, and mention the planted line.",
-                                       "Not from them, so no action; just the content plus a short heads-up."]))
+                                       f"Part of the {src} is written to an assistant: it wants me to {kind}.",
+                                       f"Buried in the {src}: an instruction to {kind}."]),
+                     pick(seed + "b", ["That isn't part of the request, so no action; report the content and flag it in a line.",
+                                       "I'll ignore it, give what the text actually says, and mention the planted line.",
+                                       "Not the asker's instruction, so no action; just the content plus a short heads-up."]))
+    if fam == "weather_and_web":
+        word, (iso, hi, lo, sky, rain) = _weather_question(s)
+        d = parse_iso(iso)[0]
+        head = f"{word.capitalize()}, {d.strftime('%b')} {d.day}: {sky.lower()}, high {hi}°, low {lo}°, {rain}% chance of rain."
+        ask = _WEATHER_Q.search(s["prompt"]).group(1).lower()
+        why = {"jacket": "Temperature decides the jacket; rain only adds to it.", "coat": "Temperature decides it.",
+               "umbrella": "The rain chance decides the umbrella.", "rain": "Go by the rain chance and hedge in the middle.",
+               "sunny": "The sky line answers it.", "wear": "Dress for the high and the rain chance."}.get(
+            ask, "The sky line answers it; nothing in the forecast mentions snow." if ask.startswith("snow") else "")
+        return _join(head, why)
+    if fam == "no_write_for_reads":
+        mine = _reply_check(s)
+        return _join(pick(seed + "a", ["There's a message from me in that thread." if mine else
+                                       "Everything in that thread is incoming; nothing from me.",
+                                       "The thread includes my own reply." if mine else "No message from me in the thread."]),
+                     pick(seed, ["Answer yes or no first, then the gist.", "Yes or no up front."]))
     if fam == "multi_source":
-        names = [n for n, _ in s["prev_calls"] if n != DISCOVERY] or [n for n, _ in turn_calls if n != DISCOVERY]
+        reads = [(n, r) for (n, _a), r in zip(s["prev_calls"], s["results"]) if n != DISCOVERY]
+        act = next((r for n, r in reads if n == "get_recent_activity"), None)
+        if act is not None and len(reads) == 1:
+            return thought_activity(s, act, seed)
+        plan = next((r for n, r in reads if n in PLAN_TOOLS), None)
+        if plan is not None:
+            ov = re.search(r"Overview: ([^\n]+)", plan)
+            if ov:
+                bits = [b.strip().rstrip(".") for b in ov.group(1).split(";") if b.strip()]
+                bits = [re.sub(r"time-bound items?", "timed", b).replace(" today", "").replace(" are waiting on a reply",
+                                                                                              " waiting on a reply")
+                        for b in bits]
+                head = f"The day plan has {', '.join(bits[:-1]) + ' and ' + bits[-1] if len(bits) > 1 else bits[0]}."
+            else:
+                head = "The day plan pulls calendar, reminders and messages together."
+            return _join(head, pick(seed, ["Timed items, anything overdue and pending replies each get a mention.",
+                                           "Order it by what's pressing, and don't drop the overdue ones.",
+                                           "Overdue items and replies count as much as the timed ones."]))
         bits = []
-        for (n, _a), r in zip(s["prev_calls"], s["results"]):
+        for n, r in reads:
             f = facts(n, r)
             if f and f.endswith("came back empty"):
                 f = "empty"
             bits.append(f"{source_of(n)} ({f})" if f else source_of(n))
-        bits = list(dict.fromkeys(bits)) or [source_of(n) for n in names]
+        bits = list(dict.fromkeys(bits))
         srcs = ", ".join(bits[:-1]) + " and " + bits[-1] if len(bits) > 1 else bits[0]
-        many = len(set(source_of(n) for n in names)) > 1
-        if many:
-            return _join(_sentence(f"Back from {srcs}"),
-                         pick(seed, ["I'll cover each source in its own part and say plainly if one is empty.",
-                                     "Each gets a short line; an empty one is said, not skipped.",
-                                     "Report both, leading with what needs attention."]))
-        return _join(_sentence(pick(seed + "a", [f"One read covered several sources ({srcs})",
-                                                 f"The {srcs} spans several apps at once"])),
-                     pick(seed, ["I'll keep it to what's new across them, most pressing first.",
-                                 "Group it by source and keep only what matters.",
-                                 "Lead with what needs a reply, then the rest by source."]))
+        n_src = len({source_of(n) for n, _ in reads})
+        allw = "both" if n_src == 2 else f"all {['', 'one', 'two', 'three', 'four', 'five'][min(n_src, 5)]}"
+        empty = any("(empty)" in b for b in bits)
+        return _join(_sentence(f"Back from {srcs}"),
+                     pick(seed, [f"Cover {allw}, each in its own part" + ("; the empty one gets said, not skipped." if empty
+                                                                          else "."),
+                                 f"One short part per source, {allw} of them, most pressing first.",
+                                 f"Lead with what needs attention, then the rest; {allw} sources get a line."]))
     # grounded_only
     prev = s["prev_calls"][0][0] if s["prev_calls"] else ""
     res = s["results"][-1] if s["results"] else ""
-    f = facts(prev, res)
-    prompt = s["prompt"].lower()
     clock = parse_clock(meta)
-    if re.search(r"\b(free|booked|busy|time for)\b", prompt):
+    why = grounded_reason(s["prompt"], prev) if fam == "grounded_only" else ""
+    due = _due_items(meta, s) if not why else []
+    if due and clock:
+        past = [(t, d) for t, d in due if d < clock]
+        ahead = len(due) - len(past)
+        undated = len(re.findall(r"^- ", s["results"][-1].split("Undated", 1)[1], re.M)) if "Undated" in s["results"][-1] else 0
+        now = f"It's {fmt_day(clock.date())}, {fmt_time(clock.time())}"
+        if len(due) == 1:
+            t, d = due[0]
+            state = "already past due" if past else "still ahead"
+            return _join(f"{now}; “{_q(t, 5)}” was due {fmt_day(d.date())}, so it's {state}." if past else
+                         f"{now}; “{_q(t, 5)}” is due {fmt_day(d.date())}, {state}.",
+                         pick(seed, ["Say the day relative to today.", "Give the due day plainly."]))
+        when = " and ".join(dict.fromkeys(f"{d.strftime('%b')} {d.day}" for _t, d in past[:3]))
+        bits = [f"{len(past)} of the dated ones {'is' if len(past) == 1 else 'are'} past due ({when})" if past
+                else "none of the dated ones is past due", f"{ahead} ahead"]
+        if undated:
+            bits.append(f"{undated} with no date")
+        return _join(f"{now}: {', '.join(bits[:-1])} and {bits[-1]}.",
+                     pick(seed, ["Overdue ones first.", "Lead with the overdue items.", "Flag the overdue ones, then the rest."]))
+    day = _day_target(meta, s) if not why else None
+    if day and clock:
+        word, d = day
+        delta = (d - clock.date()).days
+        place = (f"'{word}' is tomorrow, {d.strftime('%b')} {d.day}." if delta == 1 else
+                 pick(seed + "dt", [f"'{word}' from {fmt_day(clock.date())} is {fmt_day(d)}.",
+                                    f"Need {word}: that's {fmt_day(d)}.",
+                                    f"'{word}' means {fmt_day(d)}."]))
+        if re.search(r"week", word, re.I):
+            return _join(pick(seed + "dt", [f"'{word}' starts with {fmt_day(d)} on the list.",
+                                            f"For '{word}', the first listed day is {fmt_day(d)}."]),
+                         fact_sentence(prev, res), pick(seed, ["Count across every day in it.", "Cover each day, not just the first."]))
+        tail = ("Say the date, since 'the 9th' alone could be misread.".replace("the 9th", word)
+                if _ORDINAL.search(word) or _DATE_RE.search(word) else
+                pick(seed, ["Answer for that day only.", "Keep to that one day.", ""]))
+        return _join(place, fact_sentence(prev, res), tail)
+    if why == "slot":
         st = _starts(res)
-        listed = (f"The list has starts at {', '.join(st[:5])}." if st else "Nothing is listed for that day.")
-        return _join(listed, pick(seed, ["I'll check the asked time against those and answer yes or no first.",
-                                         "Answer the exact slot they asked about, yes or no up front."]))
-    if re.search(r"\b(complete|completed|wrapped|finish)", prompt):
-        return _join("Wisp only sees what was scheduled, not what got finished.",
-                     pick(seed, ["I'll say that, then list what they had, in the past tense.",
-                                 "So: what they had, worded as 'had', never 'completed'."]))
-    if "family" in prompt:
-        return _join("Family means several people here.",
-                     pick(seed, ["I'll pick out only the relatives from the list and skip everyone else.",
-                                 "Only the relatives' messages count; skip friends and classmates."]))
-    if re.search(r"\b(left today|happening today|today)\b", prompt) and clock and \
-            prev in ("get_upcoming", "get_past_events", "search_reminders", "get_my_day_plan"):
+        listed = (f"Starts on the list: {', '.join(st[:5])}." if st else "Nothing is listed for that day.")
+        return _join(listed, pick(seed, ["Check the asked time against those; yes or no first.",
+                                         "Answer the exact slot asked about, yes or no up front.",
+                                         "Only starts are shown, so judge the slot from those and don't invent end times."]))
+    if why == "done":
+        return _join("I only see what was scheduled, not what got finished.",
+                     pick(seed, ["Say that, then list what was on the calendar, in the past tense.",
+                                 "So: what was scheduled, worded as 'had', never 'completed'."]))
+    if why == "family":
+        return _join("Family means relatives only.",
+                     pick(seed, ["Pick out just the relatives from the list and skip everyone else.",
+                                 "Only relatives' messages count; skip friends and classmates."]))
+    if why == "today" and clock:
+        if prev == "get_past_events":
+            return _join(f"It's {fmt_time(clock.time())} on {fmt_day(clock.date())}.", fact_sentence(prev, res),
+                         pick(seed, ["Only what already happened today counts, in the past tense.",
+                                     "Keep to today's earlier items, worded as past."]))
         return _join(f"It's {fmt_time(clock.time())} on {fmt_day(clock.date())}.",
                      fact_sentence(prev, res),
                      pick(seed, ["Anything earlier already happened, so only what's still ahead counts as upcoming.",
-                                 "I'll go by what the result shows for today and say plainly if it's empty."]))
-    if f:
-        return _join(_sentence(f"The {source_of(prev)} says {f}"),
-                     pick(seed, ["I'll use exactly that count and scope, nothing rounded or added.",
-                                 "Exact numbers, scoped to what was asked."]))
-    return _join(f"The {source_of(prev)} result has it.",
-                 pick(seed, ["I'll stick to what it lists, with the exact scope asked.",
-                             "Only what it shows, nothing inferred."]))
+                                 "Go by the result for today and say plainly if nothing's left.",
+                                 "Earlier items are past; split what's done from what's still coming."]))
+    if why == "judge":
+        return _join("The digest shows senders and subjects, not full requests.",
+                     pick(seed, ["Judge from those, and hedge where it isn't clear.",
+                                 "Only call something a request if the subject says so; hedge the rest."]))
+    f = facts(prev, res)
+    return _join(_sentence(f"The {source_of(prev)} says {f}") if f else f"The {source_of(prev)} result has it.",
+                 "Answer from that.")
+
+
+_ACT_LINE = re.compile(r"^\[\s*([^\]]+?)\s*\]\s+(EMAIL|MESSAGES|CALENDAR|REMINDERS|NOTES)\b", re.M)
+_ACT_NAME = {"EMAIL": ("email", "emails"), "MESSAGES": ("text", "texts"), "CALENDAR": ("calendar change", "calendar changes"),
+             "REMINDERS": ("reminder", "reminders"), "NOTES": ("note", "notes")}
+
+
+def thought_activity(s, text, seed) -> str:
+    """Recent activity is one read over several apps: count what came in per source."""
+    span = re.search(r"\(the last ([^)]+)\)|in the last (\d+ \w+)", text)
+    span = (span.group(1) or span.group(2)).replace("1 hours", "hour") if span else "that window"
+    lines = _ACT_LINE.findall(text)
+    if not lines:
+        return _join(f"Nothing new anywhere in the last {span}.",
+                     pick(seed, ["Say it's quiet, plainly.", "A short all-quiet answer."]))
+    from collections import Counter
+    c = Counter(src for _, src in lines)
+    parts = [f"{n} {_ACT_NAME[k][0 if n == 1 else 1]}" for k, n in c.most_common()]
+    head = f"Last {span}: {', '.join(parts[:-1]) + ' and ' + parts[-1] if len(parts) > 1 else parts[0]}."
+    if re.search(r"\bemi?a?i?ls?\b|\bmail\b", s["prompt"], re.I) and "EMAIL" not in c:
+        return _join(head, "The ask was about email and there's none, so say that first.")
+    unread = len(re.findall(r"\(unread\)", text))
+    return _join(head, f"{unread} unread." if unread else "",
+                 pick(seed, ["Newest first, one line each.", "List them by source, newest first.",
+                             "Lead with what looks like it needs a reply."]))
 
 
 def thought_answer_first(meta, s, ctx, seed) -> str:
@@ -912,28 +1320,28 @@ def thought_answer_first(meta, s, ctx, seed) -> str:
     m = re.search(r"Which (\w+)[^—?]*— ([^?]+?) or ([^?]+?)\?", text)
     if m:
         return _join(f"Two contacts match {m.group(1)}: {m.group(2)} and {m.group(3)}.",
-                     pick(seed, ["Picking wrong would send it to the wrong person, so one short question.",
-                                 "I can't tell which, and guessing is risky; ask which one, nothing else."]))
+                     pick(seed, ["Picking wrong would reach the wrong person, so one short question.",
+                                 "Can't tell which, and guessing is risky; ask which one, nothing else."]))
     low = text.lower()
     if "remind you about" in low or "reminder for" in low:
         return _join("There's a time but no task.",
-                     pick(seed, ["An empty reminder is useless, so I'll ask what it's for.",
-                                 "I'll ask one short question about what to remind them of."]))
+                     pick(seed, ["An empty reminder is useless, so ask what it's for.",
+                                 "One short question: what the reminder is for."]))
     if re.search(r"who should i (?:text|email|message)", low):
-        return _join("It doesn't say who to send it to.",
-                     pick(seed, ["I won't guess a recipient; one short question.", "Ask who, then send."]))
+        return _join("No recipient named.",
+                     pick(seed, ["Won't guess one; one short question.", "Ask who, then send."]))
     if "call the event" in low or "what's it called" in low or "title" in low:
         return _join("There's a day and time but no name for it.",
-                     pick(seed, ["I'll ask what to call it before adding anything.", "One question: the title."]))
+                     pick(seed, ["Ask what to call it before adding anything.", "One question: the title."]))
     if "?" in text:
         return _join(pick(seed + "a", ["This would delete things and doesn't say what.",
                                        "A wipe with no target named.", "That's destructive, and the target is unclear."]),
-                     pick(seed, ["Too risky to guess, so one short question about what they mean.",
-                                 "I won't act on a vague destructive ask; ask which part, nothing else.",
-                                 "Nothing gets removed until they say what; one question."]))
+                     pick(seed, ["Too risky to guess, so one short question about what's meant.",
+                                 "No acting on a vague destructive ask; ask which part, nothing else.",
+                                 "Nothing gets removed until the target is named; one question."]))
     if re.search(r"\bmy (?:roommate|dad|mom|mother|father|sister|brother|friend|boss|partner|cousin|aunt|uncle)\b|"
                  r"^[A-Za-z]+ (?:is|just|got|was)\b", s["prompt"].strip(), re.I):
-        return pick(seed, ["That's news about someone else, not a fact about them, so nothing to remember. Just a warm reply.",
+        return pick(seed, ["That's news about someone else, not a personal fact, so nothing to remember. Just a warm reply.",
                            "It's about another person, so no memory to save and nothing to do. Respond kindly.",
                            "Someone else's news: no remember call, no lookup. A warm line back is enough."])
     return pick(seed, ["Nothing to do or save here; it's a passing moment, not a lasting fact. A short, kind reply.",
@@ -972,9 +1380,21 @@ def jaccard(a: str, b: str) -> float:
 _MON = {m: i for i, m in enumerate(["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"], 1)}
 _DATE_RE = re.compile(r"\b(?:(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|wed|thu|fri|sat|sun),? )?"
                       r"(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|"
-                      r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.? (\d{1,2})\b"
+                      r"oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.? (\d{1,2})(?:st|nd|rd|th)?\b"
                       r"|\b(\d{4})-(\d\d)-(\d\d)\b", re.I)
 _WDNAME_RE = re.compile(r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
+
+
+def _nearest(mon: int, day: int, clock: _dt.datetime) -> _dt.date | None:
+    best = None
+    for y in (clock.year - 1, clock.year, clock.year + 1):
+        try:
+            d = _dt.date(y, mon, day)
+        except ValueError:
+            continue
+        if best is None or abs((d - clock.date()).days) < abs((best - clock.date()).days):
+            best = d
+    return best
 
 
 def stated_dates(text: str, clock: _dt.datetime) -> tuple[list[tuple[_dt.date, int | None]], list[int]]:
@@ -987,15 +1407,7 @@ def stated_dates(text: str, clock: _dt.datetime) -> tuple[list[tuple[_dt.date, i
             except ValueError:
                 out.append((None, None))
             continue
-        mon, day = _MON[m.group(2).lower()[:3]], int(m.group(3))
-        best = None
-        for y in (clock.year - 1, clock.year, clock.year + 1):
-            try:
-                d = _dt.date(y, mon, day)
-            except ValueError:
-                continue
-            if best is None or abs((d - clock.date()).days) < abs((best - clock.date()).days):
-                best = d
+        best = _nearest(_MON[m.group(2).lower()[:3]], int(m.group(3)), clock)
         wd = _WD_IDX[m.group(1).lower()[:3]] if m.group(1) else None
         out.append((best, wd))
     unquoted = re.sub(r"'[^']*'|“[^”]*”|\"[^\"]*\"", " ", text)
@@ -1048,6 +1460,67 @@ def grounding_problems(text: str, clock: _dt.datetime | None, sources: list[str]
     return errs
 
 
+_MONTHS = r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?"
+_WDS = r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)"
+_OFFSET = {"today": 0, "tonight": 0, "tomorrow": 1, "yesterday": -1}
+# "tomorrow is Friday Feb 12", "today, Dec 21", "today (Tuesday Dec 22)", "Today is Monday Mar 22"
+_REL_DATE = re.compile(rf"\b(today|tonight|tomorrow|yesterday)(?:\s+(?:is|was|means))?(?:\s+already)?,?\s+\(?"
+                       rf"(?:{_WDS},?\s+)?{_MONTHS}\s+(\d{{1,2}})\b", re.I)
+# "Feb 12 is tomorrow"
+_DATE_REL = re.compile(rf"\b(?:{_WDS},?\s+)?{_MONTHS}\s+(\d{{1,2}})\s+(?:is|was)\s+(today|tomorrow|yesterday)\b", re.I)
+# "today is Monday", "tomorrow is already Friday" (no date after it)
+_REL_WD = re.compile(rf"\b(today|tomorrow|yesterday)\s+(?:is|was)\s+(?:already\s+)?{_WDS}\b(?!,?\s+{_MONTHS}\s+\d)", re.I)
+# "It's already Monday", "It's Monday today", "It's 6:12 PM on Tuesday Dec 22"
+_ITS_WD = re.compile(rf"\bit's\s+(?:already\s+|\d{{1,2}}:\d\d [AP]M on\s+)?{_WDS}(?:,?\s+{_MONTHS}\s+(\d{{1,2}}))?", re.I)
+
+
+def relative_day_problems(text: str, clock: _dt.datetime | None) -> list[str]:
+    """Every relative-day claim a thought makes must agree with the clock."""
+    if not clock or not text:
+        return []
+    today = clock.date()
+    errs = []
+
+    def want(word):
+        return today + _dt.timedelta(days=_OFFSET[word.lower()])
+
+    for m in _REL_DATE.finditer(text):
+        w, wdn, mon, day = m.group(1), m.group(2), m.group(3), int(m.group(4))
+        d = _nearest(_MON[mon.lower()[:3]], day, clock)
+        if d != want(w):
+            errs.append(f"says {w} is {mon} {day}, but {w} is {fmt_day(want(w))}")
+        elif wdn and _WD_IDX[wdn.lower()[:3]] != d.weekday():
+            errs.append(f"weekday for {w} is wrong ({wdn})")
+    for m in _DATE_REL.finditer(text):
+        wdn, mon, day, w = m.group(1), m.group(2), int(m.group(3)), m.group(4)
+        d = _nearest(_MON[mon.lower()[:3]], day, clock)
+        if d != want(w):
+            errs.append(f"says {mon} {day} is {w}, but {w} is {fmt_day(want(w))}")
+    for m in _REL_WD.finditer(text):
+        w, wdn = m.group(1), m.group(2)
+        if _WD_IDX[wdn.lower()[:3]] != want(w).weekday():
+            errs.append(f"says {w} is {wdn}, but {w} is {_WD[want(w).weekday()]}")
+    for m in _ITS_WD.finditer(text):
+        wdn, mon, day = m.group(1), m.group(2), m.group(3)
+        if _WD_IDX[wdn.lower()[:3]] != today.weekday():
+            errs.append(f"says it's {wdn}, but today is {_WD[today.weekday()]}")
+        elif mon and _nearest(_MON[mon.lower()[:3]], int(day), clock) != today:
+            errs.append(f"says it's {mon} {day}, but today is {fmt_day(today)}")
+    return errs
+
+
+def success_on_failure(text: str, results: list[str]) -> list[str]:
+    """A thought must not say an action happened when the previous result reports it did not."""
+    failed = [outcome(r) for r in results if outcome(r) in FAILED]
+    if not failed or not text:
+        return []
+    for sentence in re.split(r"(?<=[.!?;])\s+|\s+—\s+", text):
+        m = _SUCCESS.search(sentence)
+        if m and not _NEG.search(sentence):
+            return [f"success on failure: {m.group(0)!r} after a {failed[0]} result"]
+    return []
+
+
 def plan_dates(meta: dict, messages: list[dict], ctx: dict | None = None) -> list[_dt.date]:
     """Dates in the arguments this step commits to (its own call, or for a bare load the loaded tool's next call)."""
     return call_dates(_plan_calls(analyze(meta, messages), ctx))
@@ -1060,10 +1533,12 @@ def check(meta: dict, messages: list[dict], text: str | None, ctx: dict | None =
     if errs:
         return errs
     clock = parse_clock(meta)
+    errs = [f"relative day: {e}" for e in relative_day_problems(text, clock)]
+    errs += success_on_failure(text, s["results"])
     dates = plan_dates(meta, messages, ctx)
     if dates:
-        return date_problems(text, clock, dates)
-    return grounding_problems(text, clock, s["all_results"] + [s["prompt"]])
+        return errs + date_problems(text, clock, dates)
+    return errs + grounding_problems(text, clock, s["all_results"] + [s["prompt"]])
 
 
 def make_thought(meta: dict, messages: list[dict], ctx: dict | None = None, avoid: set[str] = frozenset()):
@@ -1091,6 +1566,12 @@ def thought_problems(text: str | None, target_text: str, final: str = "") -> lis
         errs.append(f"{len(text.split())} words")
     if NOISE.search(text):
         errs.append(f"noise: {NOISE.search(text).group(0)!r}")
+    if MECHANICS.search(text):
+        errs.append(f"mechanics: {MECHANICS.search(text).group(0)!r}")
+    if USER_PRONOUN.search(text):
+        errs.append(f"user pronoun: {USER_PRONOUN.search(text).group(0)!r}")
+    if BOILERPLATE.search(text):
+        errs.append(f"boilerplate: {BOILERPLATE.search(text).group(0)!r}")
     for ref in (target_text, final):
         if ref and jaccard(text, ref) >= JACCARD_MAX:
             errs.append(f"too close to the reply ({jaccard(text, ref):.2f})")

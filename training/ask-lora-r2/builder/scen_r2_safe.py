@@ -53,6 +53,24 @@ def P(rng, *options):
     return rng.choice(options)
 
 
+# Finals open with many different words: fin() draws among the candidates whose first
+# word this family has not yet used _CAP times.
+_FIRST: dict = {}
+_CAP = [3]
+
+
+def _fw(text):
+    words = text.replace("\u201c", "").replace('"', "").split()
+    return words[0].strip(",.:;!?'").lower() if words else ""
+
+
+def fin(rng, *opts):
+    ok = [o for o in opts if _FIRST.get(_fw(o), 0) < _CAP[0]]
+    o = rng.choice(ok or list(opts))
+    _FIRST[_fw(o)] = _FIRST.get(_fw(o), 0) + 1
+    return o
+
+
 # ----------------------------------------------------------------- shared data
 def _forecast_bits(wx, which):
     """('overcast', hi, lo, rain%) for tomorrow (index 1) or today (index 0)."""
@@ -125,9 +143,7 @@ def _fut(rng, lo=8, hi=16):
 # ================================================================== family
 def fam_safe_effects(rng):
     out = []
-
-    def ok():
-        return P(rng, "Done", "Sent", "All set", "Okay")
+    _FIRST.clear()
 
     def when_phrase(d, now):
         w = day_word(d, now)
@@ -146,11 +162,19 @@ def fam_safe_effects(rng):
         wx = w.weather["Portland,OR"]
         desc, hi, lo, rain = _forecast_bits(wx, which)
         if which == 0:
-            text = f"Today in Portland it's {wx['now_f']}° and {wx['desc'].lower()}, high of {hi}°."
-            reply = f"{ok()} — I texted {who} that it's {wx['now_f']}° and {wx['desc'].lower()} today."
+            n_, d_ = wx['now_f'], wx['desc'].lower()
+            text = f"Today in Portland it's {n_}° and {d_}, high of {hi}°."
+            reply = fin(rng, f"I texted {who} that it's {n_}° and {d_} today.",
+                        f"{who} now has today's weather: {n_}° and {d_}.",
+                        f"Texted {who} the current weather, {n_}° and {d_}.",
+                        f"Your text to {who} went out with today's weather, {n_}° and {d_}.",
+                        f"Today's weather, {n_}° and {d_}, went to {who} by text.")
         else:
             text = f"Tomorrow in Portland: {desc}, high {hi}° and low {lo}°."
-            reply = f"{ok()} — I texted {who} tomorrow's forecast: {desc}, high of {hi}°."
+            reply = fin(rng, f"I texted {who} tomorrow's forecast: {desc}, high of {hi}°.",
+                        f"{who} has tomorrow's forecast by text: {desc}, high of {hi}°.",
+                        f"Texted {who}: tomorrow will be {desc} with a high of {hi}°.",
+                        f"Tomorrow's forecast ({desc}, high of {hi}°) went to {who} by text.")
         out.append(_sc(prompt, now, w,
                        [[Call("get_weather", location="Portland,OR")], [Call("send_message", to=who, text=text)], Final(reply)],
                        "text a forecast: read the weather, then send_message behind a card (never schedule_send)",
@@ -177,10 +201,14 @@ def fam_safe_effects(rng):
         prompt = prompt.format(wd=wd)
         rows, label, _ = w.upcoming_rows(period=period, calendar_only=True)
         rows = sorted(rows, key=lambda r: r["when_ts"])
-        bits = [f"{r['title']} at {clock(ts(r))}" for r in rows[:3]]
+        bits = [f"{r['title']} at {clock(ts(r))}" for r in rows]
         day_label = "tomorrow" if period == "tomorrow" else wd.capitalize()
         text = f"{day_label} I've got " + join(bits) + "."
-        reply = f"{ok()} — I texted {who} your schedule for {day_label.lower() if period == 'tomorrow' else day_label}."
+        reply = fin(rng, f"I texted {who} your schedule for {day_label}, all {len(rows)} events.",
+                    f"{who} now has your {day_label} lineup: {len(rows)} events in all.",
+                    f"Texted {who} everything on your calendar for {day_label}.",
+                    f"Your schedule for {day_label} is with {who} now, all {len(rows)} events.",
+                    f"The {len(rows)} events on your {day_label} calendar went to {who} by text.")
         out.append(_sc(prompt, now, w,
                        [[Call("get_upcoming", period=period, calendar_only=True)], [Call("send_message", to=who, text=text)], Final(reply)],
                        "text the schedule: read the calendar, then send_message behind a card",
@@ -197,7 +225,10 @@ def fam_safe_effects(rng):
         text = f"{word} is at ${price:,.2f} right now, " + (f"up ${chg:.2f}" if chg >= 0 else f"down ${abs(chg):.2f}") + " on the day."
         steps = [[Call("get_stock_price", symbols=[word])], [Call("send_message", to=who, text=text)]]
         if approve == [True]:
-            steps.append(Final(f"{ok()} — I texted {who} that {word} is at ${price:,.2f}."))
+            steps.append(Final(fin(rng, f"I texted {who} that {word} is at ${price:,.2f}.",
+                                   f"Texted {who}: {word} is at ${price:,.2f}.",
+                                   f"Your text to {who} went out with {word} at ${price:,.2f}.",
+                                   f"{word} at ${price:,.2f} went to {who} by text.")))
         out.append(_sc(prompt, now, w, steps,
                        "text a stock price: get_stock_price (not web_fetch), then send_message behind a card",
                        cards=["send_message"], approve=approve))
@@ -212,24 +243,32 @@ def fam_safe_effects(rng):
     out.append(_sc("text carmen what the big news story is right now", now, w,
                    [[Call("web_search", query=q)],
                     [Call("send_message", to="Carmen", text="Big story today: the cross-river ferry is running again after a two-day pause for repairs.")],
-                    Final(f"{ok()} — I texted Carmen about the ferry running again after its two-day repair pause.")],
+                    Final(fin(rng, "I texted Carmen about the ferry running again after its two-day repair pause.",
+                              "Carmen has the news about the ferry service resuming after a two-day pause for repairs.",
+                              "Texted Carmen that the cross-river ferry is running again.",
+                              "The ferry news went to Carmen by text."))],
                    "text a news item: web_search, then send_message behind a card",
                    cards=["send_message"], approve=[True]))
     now, w = setup(rng, **_fut(rng))
     q = "gold price per ounce today"
     _web(w, q, [("Gold price today: spot per troy ounce", "https://www.metalsdesk.example/gold",
-                 "Spot gold traded near $2,418 per troy ounce on Friday, up 0.6% on the day."),
+                 "Spot gold is trading near $2,418 per troy ounce today, up 0.6% on the day."),
                 ("Gold edges higher", "https://www.marketpulse-news.example/gold-higher", "Gold edged higher as the dollar softened.")])
     out.append(_sc("message theo what gold is going for per ounce", now, w,
                    [[Call("web_search", query=q)],
                     [Call("send_message", to="Theo", text="Gold's around $2,418 an ounce today, up about 0.6%.")],
-                    Final(f"{ok()} — I texted Theo that gold is around $2,418 an ounce, up about 0.6%.")],
+                    Final(fin(rng, "I texted Theo that gold is around $2,418 an ounce, up about 0.6%.",
+                              "Theo has the gold price now: about $2,418 an ounce, up roughly 0.6%.",
+                              "Texted Theo: gold is near $2,418 an ounce today.",
+                              "The gold price went to Theo by text."))],
                    "text a price: web_search, then send_message behind a card",
                    cards=["send_message"], approve=[True]))
 
     # a text with a literal body: no read, still a card, still send_message
     for prompt, who, text, reply, approve in [
-        ("text mom that i'll call her after class", "Mom", "I'll call you after class!", "Done — I texted Mom that you'll call after class.", [True]),
+        ("text mom that i'll call her after class", "Mom", "I'll call you after class.",
+         fin(rng, "I texted Mom that you'll call her after class.", "Mom has your message about calling after class.",
+             "Texted Mom: you'll call after class.", "The note about calling after class went to Mom."), [True]),
         ("tell theo i'm leaving now, be there in 15", "Theo", "Leaving now, be there in 15.", None, [False]),
     ]:
         now, w = setup(rng)
@@ -245,14 +284,17 @@ def fam_safe_effects(rng):
     # (prompt, who, body, when, channel)
     for prompt, who, body, when, subject in [
         ("set up a text to maya for tomorrow at 7am: good luck on your exam!", "Maya", "Good luck on your exam!", "tomorrow at 7am", None),
-        ("send mom a text friday at 12pm saying happy friday, love you", "Mom", "Happy Friday, love you!", "friday at 12pm", None),
+        ("send mom a text friday at 12pm saying happy friday, love you", "Mom", "Happy Friday, love you.", "friday at 12pm", None),
     ]:
         now, w = setup(rng, **_fut(rng))
         dt_when, _ = resolve_when(when)
         pretty = f"{when_phrase(dt_when.date(), now)} at {clock(dt_when)}"
         out.append(_sc(prompt, now, w,
                        [[Call("schedule_send", channel="message", to=who, when=when, body=body)],
-                        Final(f"{ok()} — {who} will get it {pretty}.")],
+                        Final(fin(rng, f"Scheduled for {pretty}: your text to {who}.",
+                                  f"Your text to {who} is scheduled for {pretty}.",
+                                  f"Scheduled: the text to {who} goes out {pretty}.",
+                                  f"{who}'s text is scheduled for {pretty}."))],
                        "the user names a later send time: schedule_send behind a card",
                        cards=["schedule_send"], approve=[True]))
     now, w = setup(rng, hour=rng.randint(8, 16))
@@ -264,7 +306,8 @@ def fam_safe_effects(rng):
                    [[Call("get_weather", location="Portland,OR")],
                     [Call("schedule_send", channel="message", to="Theo", when=when,
                           body=f"Tomorrow in Portland: {desc}, high {hi}° and low {lo}°.")],
-                    Final(f"All set — Theo will get tomorrow's forecast tonight at {clock(dt_when)}.")],
+                    Final(fin(rng, f"Theo's forecast text is scheduled for tonight at {clock(dt_when)}.",
+                              f"Scheduled: tomorrow's forecast goes to Theo tonight at {clock(dt_when)}."))],
                    "read, then a named send time: schedule_send behind a card",
                    cards=["schedule_send"], approve=[True]))
     now, w = setup(rng, **_fut(rng))
@@ -272,15 +315,16 @@ def fam_safe_effects(rng):
     dt_when, _ = resolve_when(when)
     out.append(_sc("schedule an email to prof okafor for monday at 9am saying i'll bring the signed form", now, w,
                    [[Call("schedule_send", channel="email", to="Prof. Okafor", subject="Signed form", when=when,
-                          body="Hi Professor Okafor, I'll bring the signed form with me on Monday. Thank you!")],
-                    Final(f"Scheduled — Professor Okafor will get your email {when_phrase(dt_when.date(), now)} at {clock(dt_when)}.")],
+                          body="Hi Professor Okafor, I'll bring the signed form.")],
+                    Final(fin(rng, f"Your email to Professor Okafor is scheduled for {when_phrase(dt_when.date(), now)} at {clock(dt_when)}.",
+                              f"Scheduled: the signed-form email goes to Professor Okafor {when_phrase(dt_when.date(), now)} at {clock(dt_when)}."))],
                    "named send time, email: schedule_send behind a card",
                    cards=["schedule_send"], approve=[True]))
     now, w = setup(rng, **_fut(rng))
     when = "tomorrow at 6pm"
     dt_when, _ = resolve_when(when)
     out.append(_sc("set a text for carmen tomorrow at 6pm saying dinner is at 7", now, w,
-                   [[Call("schedule_send", channel="message", to="Carmen", when=when, body="Reminder: dinner is at 7!")]],
+                   [[Call("schedule_send", channel="message", to="Carmen", when=when, body="Dinner is at 7.")]],
                    "named send time but the card is declined: the turn ends at the call",
                    cards=["schedule_send"], approve=[False]))
 
@@ -295,7 +339,8 @@ def fam_safe_effects(rng):
                     [Call("send_email", to=OWN, subject="Tomorrow's forecast", confirmed_self_send=True,
                           body=f"Tomorrow in Portland: {desc}, high {hi}° and low {lo}°"
                                + (f", {rain}% chance of rain." if rain else ", no rain expected."))],
-                    Final("Sent — the forecast is in your inbox.")],
+                    Final(fin(rng, "I emailed you tomorrow's forecast.", "Tomorrow's forecast is in an email to you now.",
+                              "Emailed you the forecast for tomorrow.", "The forecast email to you is sent."))],
                    "email myself: read, then send_email to the user's own address behind a card (never schedule_send)",
                    cards=["send_email"], approve=[True]))
     now, w = setup(rng, weekday=rng.choice([0, 1, 2, 3]), **_fut(rng, 8, 15))
@@ -305,7 +350,9 @@ def fam_safe_effects(rng):
     out.append(_sc("email me what's on tomorrow so i have it on my phone", now, w,
                    [[Call("get_upcoming", period="tomorrow", calendar_only=True)],
                     [Call("send_email", to=OWN, subject="Tomorrow's events", body=body, confirmed_self_send=True)],
-                    Final(f"Sent — I emailed you tomorrow's {len(rows)} event{'s' if len(rows) != 1 else ''}.")],
+                    Final(fin(rng, f"I emailed you tomorrow's {len(rows)} event{'s' if len(rows) != 1 else ''}.",
+                              f"Tomorrow's {len(rows)} event{'s' if len(rows) != 1 else ''} are in an email to you now.",
+                              f"Emailed you your schedule for tomorrow.", f"Your calendar for tomorrow went to your inbox."))],
                    "email myself the schedule: read, then send_email behind a card",
                    cards=["send_email"], approve=[True]))
     now, w = setup(rng, **_fut(rng))
@@ -315,7 +362,9 @@ def fam_safe_effects(rng):
     out.append(_sc("send myself an email with all my open to-dos", now, w,
                    [[Call("search_reminders", query="", scope="all")],
                     [Call("send_email", to=OWN, subject="Open to-dos", body="Open to-dos:\n" + "\n".join(lines), confirmed_self_send=True)],
-                    Final(f"Sent — your {len(lines)} open to-dos are in your inbox.")],
+                    Final(fin(rng, f"Your {len(lines)} open to-dos are in an email to you now.",
+                              f"I emailed you the list of your {len(lines)} open to-dos.",
+                              f"Emailed you all {len(lines)} open to-dos.", f"All {len(lines)} open to-dos went to your inbox."))],
                    "email myself the to-dos: read Reminders, then send_email behind a card",
                    cards=["send_email"], approve=[True]))
     now, w = setup(rng, **_fut(rng))
@@ -324,7 +373,9 @@ def fam_safe_effects(rng):
                    [[Call("list_dir", path="~/Downloads")],
                     [Call("send_email", to=OWN, subject="Downloads folder", body="In Downloads:\n" + "\n".join(f"- {n}" for n in names),
                           confirmed_self_send=True)],
-                    Final(f"Sent — a list of the {len(names)} items in Downloads is in your inbox.")],
+                    Final(fin(rng, f"A list of the {len(names)} items in Downloads is in an email to you now.",
+                              f"I emailed you the {len(names)} file names in Downloads.",
+                              f"Downloads, all {len(names)} items, is in your email now."))],
                    "email myself a folder listing: list_dir, then send_email behind a card",
                    cards=["send_email"], approve=[True]))
     now, w = setup(rng, weekday=rng.choice([1, 2, 3]), hour=rng.randint(10, 14))
@@ -333,7 +384,8 @@ def fam_safe_effects(rng):
                    [[Call("get_stock_price", symbols=["Starbucks"])],
                     [Call("send_email", to=OWN, subject="Starbucks stock price", confirmed_self_send=True,
                           body=f"Starbucks (SBUX) is at ${price:,.2f} right now, " + (f"up ${chg:.2f}" if chg >= 0 else f"down ${abs(chg):.2f}") + " on the day.")],
-                    Final(f"Sent — Starbucks is at ${price:,.2f}, and that's in your inbox now.")],
+                    Final(fin(rng, f"Starbucks is at ${price:,.2f}, and I emailed that to you.",
+                              f"Emailed you the Starbucks price: ${price:,.2f}.", f"Starbucks at ${price:,.2f} is in an email to you."))],
                    "email myself a price: get_stock_price, then send_email behind a card",
                    cards=["send_email"], approve=[True]))
     now, w = setup(rng, **_fut(rng))
@@ -350,7 +402,8 @@ def fam_safe_effects(rng):
     out.append(_sc("email me my open to-dos tomorrow at 7:30am", now, w,
                    [[Call("search_reminders", query="", scope="all")],
                     [Call("schedule_send", channel="email", to=OWN, subject="Open to-dos", when=when, body="Open to-dos:\n" + "\n".join(lines))],
-                    Final(f"{ok()} — the email goes to you {when_phrase(dt_when.date(), now)} at {clock(dt_when)}.")],
+                    Final(fin(rng, f"Scheduled: your to-do list will reach you {when_phrase(dt_when.date(), now)} at {clock(dt_when)}.",
+                              f"The to-do email to you is set for {when_phrase(dt_when.date(), now)} at {clock(dt_when)}."))],
                    "email myself at a named time: schedule_send behind a card",
                    cards=["schedule_send"], approve=[True]))
 
@@ -379,7 +432,7 @@ def fam_safe_effects(rng):
          [("Harbor ferry resumes service after two-day pause", "https://www.portlandwire.example/ferry-resumes",
            "The cross-river ferry resumed service this morning after a two-day pause for repairs."),
           ("City council backs new bike lanes", "https://www.cityledger.example/bike-lanes", "Council approved funding for 12 miles of protected lanes.")],
-         "The lead story is the cross-river ferry running again after a two-day pause for repairs. The city council also approved funding for 12 miles of protected bike lanes."),
+         "Top story: the cross-river ferry is running again after a two-day pause for repairs. The city council also approved funding for 12 miles of protected bike lanes."),
     ]
     for prompt, query, hits, reply in lookups:
         now, w = setup(rng)
@@ -401,7 +454,7 @@ def fam_safe_effects(rng):
          "Hollis Dining Hall is open 7:30 AM to 8 PM on weekdays and 9 AM to 7 PM on weekends, and it's closed on university holidays."),
         ("can you read this page for me https://campusguide.example/laptop-advice", "https://campusguide.example/laptop-advice",
          "Choosing a laptop for college: check your department's requirements first. Engineering and CS students usually want 16 GB of RAM or more; most other majors do fine with 8 GB.",
-         "The page says to check your department's requirements first. CS and engineering students usually want 16 GB of RAM or more, while most other majors do fine with 8 GB."),
+         "According to the page, check your department's requirements first. CS and engineering students usually want 16 GB of RAM or more, while most other majors do fine with 8 GB."),
     ]:
         now, w = setup(rng)
         w.overrides["web_fetch"] = (lambda t: (lambda args: t))(page)
@@ -454,14 +507,14 @@ def fam_safe_effects(rng):
     now, w = setup(rng, hour=rng.randint(10, 20))
     w.messages = []
     out.append(_sc("did anybody text me today", now, w, [[Call("view_messages", period="today")],
-                                                         Final("No — nobody has texted you today.")],
+                                                         Final(fin(rng, "Nobody has texted you today.", "No texts have come in today."))],
                    "who texted me, empty: say so plainly, no write", cards=[]))
     # ---------------------------------------------------------------------------
     # 6. the send queue: list_scheduled_sends only when asked about later sends
     # ---------------------------------------------------------------------------
     now, w = setup(rng)
     out.append(_sc("do i have any texts or emails set to go out later", now, w,
-                   [[Call("list_scheduled_sends")], Final("No — nothing is queued to send later.")],
+                   [[Call("list_scheduled_sends")], Final(fin(rng, "Nothing is queued to send later.", "Your send queue is empty."))],
                    "asked about queued sends: list_scheduled_sends is the right read", cards=[]))
     now, w = setup(rng, hour=rng.randint(8, 16))
     when_dt = (dt.datetime.combine(now.date() + D(days=1), dt.time(7, 0)))
@@ -480,9 +533,11 @@ def fam_safe_effects(rng):
     # 7. forget only what was named; remember only what the user states about themself
     # ---------------------------------------------------------------------------
     for prompt, q, count, reply in [
-        ("forget that i prefer window seats", "window seats", 1, "Done — I've forgotten that you prefer window seats."),
-        ("please forget my shoe size", "shoe size", 1, "Done — I've forgotten your shoe size."),
-        ("forget the thing about my cat", "cat", 0, "I couldn't find a saved memory about a cat, so nothing was removed."),
+        ("forget that i prefer window seats", "window seats", 1, "That you prefer window seats is no longer saved."),
+        ("please forget my shoe size", "shoe size", 1, "Forgotten: your shoe size."),
+        ("forget the thing about my cat", "cat", 0, fin(rng, "I couldn't find a saved memory about a cat, so nothing was removed.",
+        "Nothing about a cat is saved, so there was nothing to remove.",
+        "No memory about a cat turned up, so nothing was removed.")),
     ]:
         now, w = setup(rng)
         _forget_world(w, count)
@@ -492,22 +547,22 @@ def fam_safe_effects(rng):
     _forget_world(w, 1)
     out.append(_sc("forget my locker number and that i like spicy food", now, w,
                    [[Call("forget", query="locker number"), Call("forget", query="spicy food")],
-                    Final("Done — I've forgotten both: your locker number and that you like spicy food.")],
+                    Final("Both are forgotten: your locker number and that you like spicy food.")],
                    "two named things: one forget call each, nothing broader", cards=[]))
 
     for prompt, fact, mid, reply in [
-        ("remember that i take my coffee black", "i take my coffee black", 31, "Got it — I'll remember that you take your coffee black."),
-        ("remember i'm allergic to shellfish", "i'm allergic to shellfish", 32, "Saved — you're allergic to shellfish."),
+        ("remember that i take my coffee black", "i take my coffee black", 31, "I'll remember that you take your coffee black."),
+        ("remember i'm allergic to shellfish", "i'm allergic to shellfish", 32, "Saved: you're allergic to shellfish."),
     ]:
         now, w = setup(rng)
         _remember_world(w, mid)
         out.append(_sc(prompt, now, w, [[Call("remember", fact=fact)], Final(reply)],
                        "remember a fact the user states about themself, verbatim", cards=[]))
     for prompt, reply in [
-        ("my roommate maya just got a job at a bakery!", "That's great news for Maya — a bakery job sounds like a lovely fit."),
-        ("carmen is moving to seattle in the spring", "That's a big change for Carmen — I hope the move goes smoothly."),
-        ("my dad just retired and he's thrilled", "That's wonderful — congratulations to your dad on retiring."),
-        ("ugh my commute was awful today", "That sounds draining — I hope the rest of your day is calmer."),
+        ("my roommate maya just got a job at a bakery!", "A bakery job sounds like a lovely fit for Maya. Congrats to her."),
+        ("carmen is moving to seattle in the spring", "Seattle in the spring is a big move for Carmen. I hope it goes smoothly."),
+        ("my dad just retired and he's thrilled", "Congratulations to your dad on retiring."),
+        ("ugh my commute was awful today", "That sounds draining. I hope the rest of your day is calmer."),
     ]:
         now, w = setup(rng)
         _remember_world(w, 40)
@@ -528,27 +583,29 @@ def fam_safe_effects(rng):
     out.append(_sc("can you take a look at what's piled up in downloads", now, w,
                    [[Call("list_dir", path="~/Downloads")],
                     Final(f"Downloads has {len(names)} items:\n" + "\n".join(f"- {n}" for n in names)
-                          + "\nI haven't moved anything — just say the word if you'd like help tidying up.")],
+                          + "\nNothing has been moved.")],
                    "look at Downloads: list_dir only, offer but do not organize", cards=[]))
     now, w = setup(rng)
     out.append(_sc("is the zoom installer still in downloads", now, w,
                    [[Call("list_dir", path="~/Downloads")],
-                    Final("Yes — Zoom.pkg (112MB) is still in your Downloads folder.")],
+                    Final(fin(rng, "Yes, Zoom.pkg is still in your Downloads folder.", "Zoom.pkg is still sitting in Downloads."))],
                    "check a file's presence: list_dir, no delete", cards=[]))
     now, w = setup(rng)
     out.append(_sc("where's my resume", now, w,
                    [[Call("find_files", query="resume")],
-                    Final("I found two: SamRivera_Resume_2026.pdf in Downloads and Resume_old.docx in Documents.")],
+                    Final(fin(rng, "I found two: SamRivera_Resume_2026.pdf in Downloads and Resume_old.docx in Documents.",
+                              "Two files match: SamRivera_Resume_2026.pdf in Downloads and Resume_old.docx in Documents.",
+                              "Resume files: SamRivera_Resume_2026.pdf in Downloads, plus Resume_old.docx in Documents."))],
                    "find a file: find_files, no move", cards=[]))
 
     # ---------------------------------------------------------------------------
     # 9. a bare "delete everything" is ambiguous: one short question, no call
     # ---------------------------------------------------------------------------
     for prompt, reply in [
-        ("erase it all", "Happy to help — what would you like cleared: your reminders, some files, your texts, or something else?"),
-        ("clear all", "What should I clear — your reminders, files, or something else? Tell me which and I'll take it from there."),
-        ("wipe it all", "Just to be sure: what do you want wiped — reminders, files, saved memories, or something else?"),
-        ("forget everything", "Which memory would you like me to forget? Tell me what it is and I'll remove just that one."),
+        ("erase it all", "What would you like cleared: your reminders, some files, your texts, or something else?"),
+        ("clear all", "Clear what, exactly? Your reminders, files, or something else?"),
+        ("wipe it all", "Just to be sure, what do you want wiped: reminders, files, saved memories, or something else?"),
+        ("forget everything", "Which memory should I forget? I only remove what you name."),
     ]:
         now, w = setup(rng)
         out.append(_sc(prompt, now, w, [Final(reply)],
@@ -581,7 +638,7 @@ def fam_safe_effects(rng):
                   Msg("Theo Park", "Theo Park", "Sure, tomorrow works!", now - D(hours=2), True)]
     out.append(_sc("did theo text me back", now, w,
                    [[Call("view_messages", conversation="Theo")],
-                    Final(f"Yes — Theo wrote “Sure, tomorrow works!” at {clock(now - D(hours=2))}.")],
+                    Final(fin(rng, f"Yes, Theo wrote “Sure, tomorrow works!” at {clock(now - D(hours=2))}.", f"Theo replied at {clock(now - D(hours=2))}: “Sure, tomorrow works!”"))],
                    "reply check: view_messages only, no send", cards=[]))
     now, w = setup(rng, weekday=rng.choice([0, 1, 2, 3]), hour=rng.randint(8, 15))
     rows, _, _ = w.upcoming_rows(period="tomorrow", calendar_only=True)
@@ -589,7 +646,9 @@ def fam_safe_effects(rng):
     first = rows[0]
     out.append(_sc("what time does my day start tomorrow", now, w,
                    [[Call("get_upcoming", period="tomorrow", calendar_only=True)],
-                    Final(f"Your day starts at {clock(ts(first))} with {first['title']}"
+                    Final(fin(rng, f"Your day starts at {clock(ts(first))} with {first['title']}",
+                              f"First up is {first['title']} at {clock(ts(first))}",
+                              f"Tomorrow begins at {clock(ts(first))} with {first['title']}")
                           + (f" in {first['location']}." if first.get("location") else "."))],
                    "schedule question: get_upcoming only, no calendar write", cards=[]))
 

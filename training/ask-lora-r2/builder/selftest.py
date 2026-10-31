@@ -222,6 +222,27 @@ def corrupt():
     cases["think:date_mismatch~weekday"] = (dated, {**dated_meta, "thought":
                                                     f"It goes on {thinking._WD[(call_day.weekday() + 1) % 7][:3]} "
                                                     f"{call_day.strftime('%b')} {call_day.day}. I'll add it."})
+    cases["think:mechanics"] = (dated, {**dated_meta, "thought": dated_meta["thought"] + " Calling it now loads its schema."})
+    cases["think:mechanics~listed"] = (dated, {**dated_meta, "thought": "It's only listed by name. " + dated_meta["thought"]})
+    cases["think:user_pronoun"] = (dated, {**dated_meta, "thought": "They want this done. " + dated_meta["thought"]})
+    cases["think:user_pronoun~card"] = (dated, {**dated_meta, "thought": dated_meta["thought"] + " The card lets them confirm."})
+    cases["think:boilerplate"] = (dated, {**dated_meta, "thought": dated_meta["thought"] + " Just the facts it states."})
+    cases["think:boilerplate~title"] = (dated, {**dated_meta, "thought": dated_meta["thought"] +
+                                                " Title, day and time from the receipt, short."})
+    today = thinking.parse_clock(dated_meta).date()
+    cases["think:relative_day"] = (dated, {**dated_meta, "thought": f"Tomorrow is {thinking.fmt_day(today)}. I'll add it."})
+    cases["think:relative_day~today"] = (dated, {**dated_meta, "thought":
+                                                 f"Today is {thinking._WD[(today.weekday() + 1) % 7]}, so I'll add it."})
+    fail, fail_meta = first_m(lambda e, m: m.get("think") and any(
+        thinking.outcome(r) in thinking.FAILED for r in thinking.analyze(m, e["messages"])["results"]))
+    cases["think:success_on_failure"] = (fail, {**fail_meta, "thought": "That went through. The receipt confirms it."})
+    cases["think:success_on_failure~sent"] = (fail, {**fail_meta, "thought": "Sent. Say who got it, briefly."})
+    e = copy.deepcopy(final)
+    e["messages"][-1]["content"] += " Moved it to on Saturday at 12:30 PM."
+    cases["final:template_glitch"] = (e, final_meta)
+    e = copy.deepcopy(final)
+    e["messages"][-1]["content"] += " You have 3 today emails."
+    cases["final:template_glitch~count"] = (e, final_meta)
     tool_text = "\n".join(str(m_["content"]) for m_ in inj_t["messages"] if m_["role"] == "tool")
     payload = next((p for s in tool_text.split("\n") if V.INJECTION_MARKERS.search(s) for p in V._PAYLOAD.findall(s)), None)
     if payload:
@@ -236,6 +257,22 @@ def first_m(pred):
         if pred(ex, meta):
             return ex, meta
     raise SystemExit("no example matches the selftest's precondition")
+
+
+def duplicate_finals_case(leaks, ident) -> list[str]:
+    """More than 3 byte-identical finals: a warning, never a problem; exactly 3: no warning."""
+    ex, meta = first_m(lambda e, m: not m.get("think") and not target_call(e) and m["family"] == "right_source")
+    missed = []
+    for n, want in ((4, True), (3, False)):
+        problems = run("dup", ex, meta, leaks, ident, more=[(ex, meta)] * (n - 1))
+        warned = bool(V.LAST_WARNINGS)
+        ok = warned == want and not problems
+        label = f"warn:duplicate_finals x{n}"
+        print(f"{('caught' if want else 'clean') if ok else 'MISSED'}  {label:40s} warnings: {V.LAST_WARNINGS[:1]} "
+              f"problems: {dict(problems)}")
+        if not ok:
+            missed.append(label)
+    return missed
 
 
 def adjacent_case():
@@ -364,6 +401,7 @@ def main():
         print(f"{'clean' if not problems else 'FALSE-ALARM'}  {'control:adjacent_distinct':40s} reported: {dict(problems)}")
         if problems:
             missed.append("control:adjacent_distinct")
+        missed += duplicate_finals_case(leaks, ident)
         missed += render_cases()
         call, call_meta = first(lambda e: target_call(e) and target_call(e)["function"]["name"] == "get_upcoming")
         if not parity_case(call, call_meta):

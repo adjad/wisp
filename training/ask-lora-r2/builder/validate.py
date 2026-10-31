@@ -48,7 +48,17 @@ Exit code 1 on any problem. Checks, per example:
               call, a date some tool result shows, or today); `think` equals
               thinking.decide() re-run on the example; chat_voice and
               knowledge_direct never think; two consecutive THINK examples
-              never share a thought
+              never share a thought. A thought must not describe the schema
+              loading (think:mechanics), call the user they/them/the user
+              (think:user_pronoun), carry a filler tail like "Just the facts
+              it states" (think:boilerplate), sound like a success ("sent",
+              "went through", "confirms") right after a refusal, no-match,
+              ambiguity, denial or error result (think:success_on_failure), or
+              make a "tomorrow is X" / "today is X" claim that disagrees with
+              the clock (think:relative_day)
+  finals      no template glitch in a final reply: "to on"/"for on" or
+              "N today emails" (final:template_glitch). Warns (does not fail)
+              when more than 3 finals in a file are byte-identical, listing them
   template    (with --template MODEL_DIR, repeatable) each model's chat template
               renders every example, and the prompt is a prefix of the full text,
               as mlx-lm's mask_prompt needs; brev/render.py renders the row (the
@@ -312,6 +322,11 @@ def check_thinking(meta, msgs, ctx, injected, prev_thought, bad, where):
         return prev_thought
     for err in thinking.check(meta, msgs, text, ctx):
         key = ("think:too_long" if err.endswith(" words") else "think:noise" if err.startswith("noise") else
+               "think:mechanics" if err.startswith("mechanics") else
+               "think:user_pronoun" if err.startswith("user pronoun") else
+               "think:boilerplate" if err.startswith("boilerplate") else
+               "think:success_on_failure" if err.startswith("success on failure") else
+               "think:relative_day" if err.startswith("relative day") else
                "think:copies_reply" if err.startswith("too close") else "think:thought_missing" if err == "empty"
                else "think:date_mismatch")
         bad(key, f"{where} {err}")
@@ -325,6 +340,10 @@ def check_thinking(meta, msgs, ctx, injected, prev_thought, bad, where):
 
 # ----------------------------------------------------------------- per example
 AUTO = object()
+# Template glitches a final must never carry ("Moved it to on Saturday", "You have 3 today emails").
+FINAL_GLITCH = re.compile(r"\b(?:to|for) on\b|\b\d+ (?:today|yesterday) emails?\b", re.I)
+DUP_FINALS_MAX = 3
+LAST_WARNINGS: list[str] = []     # validate_file's warnings for the last file (selftest reads them)
 
 
 def load_meta(path, meta_path=AUTO, bad=None):
@@ -350,6 +369,8 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
     metas = load_meta(path, meta_path, bad)
     turn_ctx = turn_contexts(path, metas) if metas else {}
     prev_thought = None
+    finals: dict[str, list[str]] = {}
+    LAST_WARNINGS.clear()
     n = 0
     for ln, line in enumerate(open(path), 1):
         n += 1
@@ -442,6 +463,10 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
                     for payload in injected:
                         if payload.lower() in content.lower():
                             bad("injection:payload_in_reply", f"{where} {payload[:12]}…")
+                    g = FINAL_GLITCH.search(content)
+                    if g:
+                        bad("final:template_glitch", f"{where} {meta.get('id', '')} {g.group(0)!r}")
+                    finals.setdefault(content, []).append(str(meta.get("id") or where))
             elif r == "tool":
                 if m.get("tool_call_id") in pending:
                     pending.remove(m["tool_call_id"])
@@ -519,6 +544,10 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
             for p in phrases:
                 if p in low:
                     bad("privacy:real_phrase", f"{where} {p[:3]}…({len(p)})")
+    for text, ids in sorted(finals.items(), key=lambda kv: -len(kv[1])):
+        if len(ids) > DUP_FINALS_MAX:
+            LAST_WARNINGS.append(f"{len(ids)} identical finals {text[:70]!r}: {', '.join(ids[:6])}"
+                                 f"{' …' if len(ids) > 6 else ''}")
     return n, problems, samples
 
 
@@ -624,6 +653,8 @@ def main(argv=None):
         print(f"{os.path.basename(p)}: {n} examples, problems: {dict(problems) or 'none'}")
         for k, v in list(samples.items())[:30]:
             print("   ", k, "->", v)
+        for w in LAST_WARNINGS:
+            print("    WARN", w)
         failed |= bool(problems)
         if args.template:
             tproblems, tstats = template_check(p, args.template)

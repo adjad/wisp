@@ -4,8 +4,8 @@
 # NVIDIA Nemotron 3.5 Bolt E4B ("bolt"; an RL post-train of Gemma 4 E4B, same architecture).
 #
 # Run once on the instance:
-#   MODELS=both BOLT_REV=<40-hex commit> bash vm-setup.sh     # or MODELS=gemma / MODELS=bolt
-#  - MODELS (default both): which bases to set up.
+#   bash vm-setup.sh     # Gemma (default); MODELS=bolt|both BOLT_REV=<40-hex commit> only if Bolt returns
+#  - MODELS (default gemma): which bases to set up. Bolt is dormant.
 #  - BOLT_REV: REQUIRED when bolt is included. Pin the exact commit of
 #    nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16 (HF > Files > History). It is unknown to this kit, so setup
 #    refuses to run without it. Override the repo with BOLT_REPO if it moved.
@@ -25,7 +25,7 @@ JHOME="$(getent passwd 1000 | cut -d: -f6 || true)"
 [ -n "$JHOME" ] || { JUSER="$(id -un)"; JHOME="$HOME"; }
 WORK="$JHOME/wisp"
 
-MODELS="${MODELS:-both}"
+MODELS="${MODELS:-gemma}"   # round 2 trains Gemma only (Bolt is text-only, dropped 2026-10-31)
 case "$MODELS" in
   gemma) TAGS="gemma" ;;
   bolt) TAGS="bolt" ;;

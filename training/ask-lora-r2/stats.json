@@ -1,31 +1,31 @@
 {
  "by_target": {
-  "call": 720,
-  "final": 833,
-  "load": 327
+  "call": 735,
+  "final": 843,
+  "load": 336
  },
- "code_head": "2b06d0c4313383ff299609636da07ce4df23bea7",
- "examples": 1880,
+ "code_head": "25c3a2894989ae34899f21908bf1a9958acd8661",
+ "examples": 1914,
  "families": {
   "act_dont_ask": {
    "call": 37,
-   "examples": 98,
+   "examples": 97,
    "final": 44,
-   "load": 17,
-   "think": 72,
-   "train": 90,
+   "load": 16,
+   "think": 44,
+   "train": 87,
    "turns": 44,
-   "valid": 8
+   "valid": 10
   },
   "act_dont_promise": {
-   "call": 37,
-   "examples": 88,
-   "final": 37,
+   "call": 40,
+   "examples": 94,
+   "final": 40,
    "load": 14,
-   "think": 0,
-   "train": 82,
-   "turns": 37,
-   "valid": 6
+   "think": 5,
+   "train": 86,
+   "turns": 40,
+   "valid": 8
   },
   "capability_honest": {
    "call": 14,
@@ -33,9 +33,9 @@
    "final": 44,
    "load": 13,
    "think": 0,
-   "train": 63,
+   "train": 65,
    "turns": 44,
-   "valid": 8
+   "valid": 6
   },
   "chat_voice": {
    "examples": 90,
@@ -46,121 +46,121 @@
    "valid": 9
   },
   "concise_gentle": {
-   "call": 30,
-   "examples": 70,
-   "final": 36,
+   "call": 31,
+   "examples": 72,
+   "final": 37,
    "load": 4,
    "think": 0,
-   "train": 63,
-   "turns": 36,
-   "valid": 7
+   "train": 66,
+   "turns": 37,
+   "valid": 6
   },
   "exact_args": {
-   "call": 49,
-   "examples": 117,
+   "call": 50,
+   "examples": 122,
    "final": 46,
-   "load": 22,
-   "think": 91,
-   "train": 101,
+   "load": 26,
+   "think": 50,
+   "train": 107,
    "turns": 46,
-   "valid": 16
+   "valid": 15
   },
   "finish_the_write": {
    "call": 84,
-   "examples": 163,
+   "examples": 167,
    "final": 37,
-   "load": 42,
-   "think": 94,
-   "train": 147,
+   "load": 46,
+   "think": 84,
+   "train": 150,
    "turns": 41,
-   "valid": 16
+   "valid": 17
   },
   "grounded_only": {
    "call": 37,
-   "examples": 86,
+   "examples": 87,
    "final": 37,
-   "load": 12,
-   "think": 34,
-   "train": 73,
+   "load": 13,
+   "think": 22,
+   "train": 79,
    "turns": 37,
-   "valid": 13
+   "valid": 8
   },
   "ignore_embedded_instructions": {
    "call": 31,
-   "examples": 65,
+   "examples": 66,
    "final": 31,
-   "load": 3,
+   "load": 4,
    "think": 31,
-   "train": 57,
+   "train": 60,
    "turns": 31,
-   "valid": 8
+   "valid": 6
   },
   "knowledge_direct": {
-   "call": 8,
-   "examples": 93,
-   "final": 85,
+   "call": 9,
+   "examples": 95,
+   "final": 86,
    "think": 0,
    "train": 85,
-   "turns": 85,
-   "valid": 8
+   "turns": 86,
+   "valid": 10
   },
   "multi_source": {
    "call": 29,
    "examples": 72,
    "final": 29,
    "load": 14,
-   "think": 29,
-   "train": 64,
+   "think": 38,
+   "train": 66,
    "turns": 29,
-   "valid": 8
+   "valid": 6
   },
   "no_write_for_reads": {
    "call": 27,
-   "examples": 62,
+   "examples": 61,
    "final": 27,
-   "load": 8,
-   "think": 0,
-   "train": 54,
+   "load": 7,
+   "think": 7,
+   "train": 55,
    "turns": 27,
-   "valid": 8
+   "valid": 6
   },
   "recover_from_tool_error": {
-   "call": 34,
-   "examples": 71,
-   "final": 34,
-   "load": 3,
-   "think": 34,
+   "call": 35,
+   "examples": 73,
+   "final": 37,
+   "load": 1,
+   "think": 37,
    "train": 65,
-   "turns": 34,
-   "valid": 6
+   "turns": 37,
+   "valid": 8
   },
   "relay_receipt": {
    "call": 41,
-   "examples": 95,
+   "examples": 93,
    "final": 36,
-   "load": 18,
-   "think": 74,
-   "train": 86,
+   "load": 16,
+   "think": 48,
+   "train": 84,
    "turns": 41,
    "valid": 9
   },
   "right_source": {
-   "call": 46,
+   "call": 47,
    "examples": 119,
-   "final": 46,
-   "load": 27,
-   "think": 0,
+   "final": 47,
+   "load": 25,
+   "think": 20,
    "train": 109,
-   "turns": 46,
+   "turns": 47,
    "valid": 10
   },
   "right_write_tool": {
-   "call": 42,
-   "examples": 105,
+   "call": 48,
+   "examples": 118,
    "final": 42,
-   "load": 21,
-   "think": 64,
-   "train": 94,
+   "load": 28,
+   "think": 48,
+   "train": 107,
    "turns": 42,
    "valid": 11
   },
@@ -169,78 +169,78 @@
    "examples": 166,
    "final": 57,
    "load": 37,
-   "think": 85,
-   "train": 151,
+   "think": 77,
+   "train": 150,
    "turns": 62,
-   "valid": 15
+   "valid": 16
   },
   "stub_then_call": {
    "call": 61,
    "examples": 150,
    "final": 42,
    "load": 47,
-   "think": 80,
-   "train": 135,
+   "think": 44,
+   "train": 136,
    "turns": 42,
-   "valid": 15
+   "valid": 14
   },
   "weather_and_web": {
-   "call": 41,
-   "examples": 99,
-   "final": 33,
+   "call": 42,
+   "examples": 101,
+   "final": 34,
    "load": 25,
-   "think": 0,
-   "train": 94,
-   "turns": 33,
-   "valid": 5
+   "think": 9,
+   "train": 86,
+   "turns": 34,
+   "valid": 15
   }
  },
- "paraphrased_turns": 290,
+ "paraphrased_turns": 264,
  "service_head": "d7de0873189c319af2a64a20ca5ca6f5d09807f7",
  "thinking": {
   "by_step_kind": {
    "after_error": {
-    "think": 56,
-    "train_think": 48,
-    "valid_think": 8
+    "think": 59,
+    "train_think": 54,
+    "valid_think": 5
    },
    "after_load": {
-    "no_think": 327,
+    "no_think": 336,
     "train_think": 0,
     "valid_think": 0
    },
    "answer_first": {
     "no_think": 203,
     "think": 15,
-    "train_think": 13,
-    "valid_think": 2
+    "train_think": 15,
+    "valid_think": 0
    },
    "narrate": {
-    "no_think": 359,
-    "think": 247,
-    "train_think": 225,
-    "valid_think": 22
+    "no_think": 486,
+    "think": 128,
+    "train_think": 117,
+    "valid_think": 11
    },
    "next_call": {
     "no_think": 8,
-    "think": 83,
-    "train_think": 73,
+    "think": 90,
+    "train_think": 80,
     "valid_think": 10
    },
    "select": {
-    "no_think": 295,
-    "think": 287,
-    "train_think": 259,
+    "no_think": 317,
+    "think": 272,
+    "train_think": 244,
     "valid_think": 28
    }
   },
-  "no_think": 1192,
-  "think": 688,
-  "think_share": 0.366,
-  "train_think": 618,
-  "valid_think": 70
+  "no_think": 1350,
+  "think": 564,
+  "think_share": 0.295,
+  "train_think": 510,
+  "valid_think": 54
  },
- "train": 1694,
- "turns": 847,
- "valid": 186
+ "train": 1724,
+ "turns": 857,
+ "valid": 190
 }

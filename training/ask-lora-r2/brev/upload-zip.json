@@ -1,37 +1,37 @@
 {
  "file": "ask-lora-data.zip",
- "sha256": "ae938e3f9d60dadd599fac7f9736abb0d8c46d1effc6fd8c55b392a007672c7b",
- "bytes": 6382419,
+ "sha256": "fd564d7fc1fe7bd143b5ae5f0865d85e74977468fdc5377eb4b1a239362d7102",
+ "bytes": 6493085,
  "train": {
-  "rows": 1694,
-  "think": 618,
-  "no_think": 1076,
+  "rows": 1724,
+  "think": 510,
+  "no_think": 1214,
   "shapes": {
-   "first_answer": 449,
-   "first_think": 272,
-   "forced_empty": 627,
-   "forced_think": 346
+   "first_answer": 468,
+   "first_think": 259,
+   "forced_empty": 746,
+   "forced_think": 251
   },
-  "forced_prompts": 973,
+  "forced_prompts": 997,
   "ends": {
-   "<turn|>": 752,
-   "<|tool_response>": 942
+   "<turn|>": 759,
+   "<|tool_response>": 965
   }
  },
  "dev": {
-  "rows": 186,
-  "think": 70,
-  "no_think": 116,
+  "rows": 190,
+  "think": 54,
+  "no_think": 136,
   "shapes": {
-   "first_answer": 49,
-   "first_think": 30,
-   "forced_empty": 67,
-   "forced_think": 40
+   "first_answer": 52,
+   "first_think": 28,
+   "forced_empty": 84,
+   "forced_think": 26
   },
-  "forced_prompts": 107,
+  "forced_prompts": 110,
   "ends": {
-   "<turn|>": 81,
-   "<|tool_response>": 105
+   "<turn|>": 84,
+   "<|tool_response>": 106
   }
  }
 }
