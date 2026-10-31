@@ -1002,10 +1002,11 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
     from service.config.endpoints import role_target
     from service.knowledge_intent import knowledge_envelope
     from service.memory import store
-    from service.model_only import (ASK_CAPABILITY_HINT, ASK_COMPOSE_HINT, ASK_DAY_PLAN_HINT,
+    from service.model_only import (ASK_COMPOSE_HINT, ASK_DAY_PLAN_HINT,
                                     ASK_KNOWLEDGE_HINT, ASK_STYLE_HINT, ask_forbidden_tools,
-                                    capability_question, compose_only, day_plan_question,
-                                    knowledge_question, pure_writing)
+                                    compose_only, day_plan_question,
+                                    knowledge_question, pure_writing, wisp_self_hint,
+                                    wisp_self_question)
     from service.router.model_led import (OPAQUE_OUTBOUND_TOOLS, PRIVATE_EGRESS_TOOLS,
                                           continuation_requires_baseline, continuation_send_exemption,
                                           fresh_personal_obligation,
@@ -1107,8 +1108,8 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
     hints: list[str] = ["style"]
     ask_preload, ask_stub_rank = M._ask_tool_rank(prompt)
     guidance.insert(0, ASK_STYLE_HINT)
-    if capability_question(prompt):
-        guidance.insert(1, ASK_CAPABILITY_HINT)
+    if wisp_self_question(prompt):
+        guidance.insert(1, wisp_self_hint())
         hints.append("capability")
     if day_plan_question(prompt):
         guidance.insert(1, ASK_DAY_PLAN_HINT)
@@ -1121,8 +1122,7 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
     if knowledge:
         guidance.insert(1, ASK_KNOWLEDGE_HINT)
         hints.append("knowledge")
-    ask_direct = bool((pure_writing(prompt) and compose_only(prompt)) or knowledge
-                      or capability_question(prompt))
+    ask_direct = bool((pure_writing(prompt) and compose_only(prompt)) or knowledge)
     guidance.append(M.MODEL_LED_UNTRUSTED_WEB_HINT)
     hints.append("untrusted_web")
     style_hint = "".join("\n" + g for g in guidance)

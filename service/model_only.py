@@ -229,9 +229,8 @@ ASK_STYLE_HINT = (
 # Appended for a capability question ("Can you send texts?"): the corpus and
 # sweep had the model deny real capabilities or ask "which email?".
 ASK_CAPABILITY_HINT = (
-    "This is a question about what you can do. Answer it directly from the "
-    "Capabilities list above, without calling a tool and without naming internal "
-    "tools: you can read and summarize the user's email, texts, calendar, reminders "
+    "This is a question about Wisp itself. Never name internal tools to the user. "
+    "In short: you can read and summarize the user's email, texts, calendar, reminders "
     "and notes; draft and send emails and texts (every send is shown to the user to "
     "confirm first); add reminders and calendar events; search the web, weather and "
     "stocks; and control Mac settings and apps. To open Wisp from any app press "
@@ -244,6 +243,67 @@ ASK_CAPABILITY_HINT = (
     "\"Disconnect & erase\" there removes the account and everything Wisp derived from "
     "it. Never say it cannot be done."
 )
+
+# Wisp's own reports, in the order a self-question should reach for them: each
+# is deterministic text written from live state (service/wisp_about.py,
+# misc_t1.wisp_status, wisp_mcp, wisp_skills), so the answer cannot drift.
+WISP_SELF_TOOLS = (
+    ("wisp_capabilities", "what you can do (no topic; pass the question as `query` for a "
+     "specific 'can you ...'), topic='identity' who you are, 'privacy' whether data stays on "
+     "this Mac, 'howto' how to use Wisp, voice, Google, settings"),
+    ("wisp_status", "topic='models' which model is answering and whether a cloud model is on, "
+     "'sync' when mail/messages/notes last synced, 'accounts' linked accounts, 'whats_new'"),
+    ("wisp_mcp", "connected MCP servers and whether they work"),
+    ("wisp_skills", "installed skills"),
+)
+_WISP_SELF = re.compile(
+    r"\b(?:who|what)\s+(?:exactly\s+)?are\s+(?:you|u)\b|\bwhat\s+is\s+wisp\b|\babout\s+yourself\b"
+    r"|\b(?:what|which)\s+(?:ai\s+|llm\s+|language\s+)?models?\s+(?:are\s+(?:you|u)|is\s+(?:wisp|answering|running|this))\b|\bare\s+you\s+(?:using\s+)?(?:the\s+)?cloud\b"
+    r"|\b(?:running|run)\s+(?:locally|on\s+(?:my|this)\s+mac)\b|\b(?:is|are)\s+my\s+(?:data|info\w*)\s+"
+    r"(?:private|safe|secure|local)\b|\bprivacy\b|\bon-device\b|\bmcp\b|\bskills?\s+do\s+i\s+have\b"
+    r"|\b(?:last|latest)\s+(?:sync|synced)\b|\bwhen\s+did\s+(?:my\s+)?\w+\s+(?:last\s+)?sync\b"
+    r"|\bhow\s+far\s+back\s+(?:can|do|does|will)\s+(?:you|u|wisp)\b|\bconnect\s+(?:my\s+)?(?:gmail|google)\b"
+    r"|\btalk\s+to\s+(?:you|u|wisp)\b|\bhow\s+do\s+i\s+use\s+(?:you|u|wisp|this)\b"
+    r"|\bwhat(?:'s|\s+is)\s+new\s+in\s+wisp\b|\b(?:about|use|using)\s+wisp\b|\bwisp(?:'s)?\s+settings\b"
+    r"|\bwhat\s+(?:else\s+)?(?:can|could)\s+(?:you|u)\s+do\b|\bwhat\s+(?:tools|capabilities)\b", re.I)
+_MEMORY_SELF = re.compile(r"\b(?:know|remember|learned)\s+about\s+me\b|\bwhat\s+do\s+(?:you|u)\s+know\b", re.I)
+
+
+def wisp_self_question(prompt: str) -> bool:
+    """A question about Wisp itself (what it can do, who/what it is, its model,
+    privacy, sync, MCP, skills, how to use it), not about the user's data or a
+    memory question ("what do you know about me" is recall/describe_me)."""
+    text = prompt or ""
+    if _MEMORY_SELF.search(text):
+        return False
+    return capability_question(text) or bool(_WISP_SELF.search(text))
+
+
+def wisp_self_hint() -> str:
+    """The capability sheet for a question about Wisp itself, built per turn:
+    the live identity line from wisp_about (local vs cloud read from settings),
+    Wisp's own report tools as registered and usable now, and the how-to facts
+    (ASK_CAPABILITY_HINT). tests/test_wisp_self_reference.py checks each fact
+    against the registry and wisp_about, so the sheet cannot drift."""
+    lines = ["ABOUT WISP (this question is about you, Wisp; the facts below come from this build):"]
+    try:
+        from service import wisp_about
+        lines.append("- " + wisp_about.identity().split("\n\n", 1)[0].replace("**", ""))
+    except Exception:  # noqa: BLE001 - say less rather than guess
+        pass
+    try:
+        from service.tools.registry import routable_tool_names
+        usable = routable_tool_names()
+    except Exception:  # noqa: BLE001
+        usable = set()
+    reports = [f"{name}: {what}" for name, what in WISP_SELF_TOOLS if name in usable]
+    if reports:
+        lines.append("- Answer from Wisp's own report, not from memory: call " + "; ".join(reports)
+                     + ". Its text is written for the user; pass it on in your words.")
+    lines.append("- Never call yourself GPT, Claude, Siri or another assistant, and never "
+                 "invent a setting, menu or shortcut.")
+    return "\n".join(lines) + "\n" + ASK_CAPABILITY_HINT
+
 
 ASK_KNOWLEDGE_HINT = (
     "GENERAL QUESTION: no personal data is involved, so answer from your own "
