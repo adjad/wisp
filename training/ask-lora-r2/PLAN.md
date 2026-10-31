@@ -78,7 +78,11 @@ Each family uses the Sam Rivera synthetic world. No prompt may match a toolbench
    - State what the receipt says: time, date, title and recipient.
    - When a card is denied, say it was not done.
    - When a write is refused, say so plainly.
-8. **`you_not_name`**: not a family. A validator rule on every final: never name the user in the third person, and address them as "you".
+8. **`chat_voice`** (added after the blind chat eval, a Gemma/Bolt tie at fun 2.4/2.3, variety 2.6, warmth 2.9/2.8):
+   - 90 hand-written casual replies of 1–4 sentences in plain prose, with no two sharing an opener.
+   - At most one emoji, on 7% of replies.
+   - No ritual closers and no tool calls for chat.
+9. **`you_not_name`**: not a family. A validator rule on every final: never name the user in the third person, and address them as "you".
 
 The round-1 families are rebuilt unchanged in intent: act_dont_promise, right_source, multi_source, grounded_only, knowledge_direct, concise_gentle, capability_honest, recover_from_tool_error, weather_and_web, no_write_for_reads and ignore_embedded_instructions.
 

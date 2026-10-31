@@ -1,21 +1,21 @@
 {
  "file": "ask-lora-data.zip",
- "sha256": "d28bf17e224f227a764c13f648c466b3e8fb87ea7c3024fe061fe5abc90d6c2d",
- "bytes": 6055792,
+ "sha256": "997d1930c1e0aca1ee642c976be995dcc1010e4e3234539417e67af5e730430c",
+ "bytes": 6307802,
  "train": {
-  "rows": 1639,
-  "with_thought": 983,
+  "rows": 1708,
+  "with_thought": 973,
   "ends": {
-   "<turn|>": 673,
-   "<|tool_response>": 966
+   "<turn|>": 752,
+   "<|tool_response>": 956
   }
  },
  "dev": {
-  "rows": 165,
-  "with_thought": 97,
+  "rows": 186,
+  "with_thought": 107,
   "ends": {
-   "<turn|>": 70,
-   "<|tool_response>": 95
+   "<turn|>": 81,
+   "<|tool_response>": 105
   }
  }
 }

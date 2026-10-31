@@ -1459,7 +1459,7 @@ FAMILIES = {
 import importlib as _importlib  # noqa: E402
 import writes as _writes  # noqa: E402
 
-for _mod in ("scen_r2_safe", "scen_r2_args", "scen_r2_act"):   # a module joins once its family is finished
+for _mod in ("scen_r2_safe", "scen_r2_args", "scen_r2_act", "scen_r2_chat"):   # a module joins once its family is finished
     if True:
         _m = _importlib.import_module(_mod)
         FAMILIES.update(_m.FAMILIES_R2)

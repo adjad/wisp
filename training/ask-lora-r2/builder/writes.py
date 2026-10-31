@@ -62,6 +62,7 @@ WRITE_ALLOW: dict[str, frozenset[str]] = {
                                    "update_reminder", "draft_email", "reply_to_email"}),
     "stub_then_call": frozenset({"add_reminder", "update_reminder", "send_message", "send_email", "draft_email",
                                  "create_note", "update_event"}),
+    "chat_voice": frozenset(),
 }
 
 # Tools that must ALWAYS show an approval card before running (decided Wisp

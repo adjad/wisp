@@ -1,10 +1,11 @@
 # Wisp Ask LoRA dataset, round 2 (Gemma 4 E4B and Nemotron 3.5 Bolt E4B), 2026-10-30
 
 **Round 2 status:** built and validated, not trained. Round 1 was never trained on either model, so this is the first fine-tune for both, and it carries every round-1 family. Code head: origin/main 20ef528d (dev8).
-- **Size:** 1,804 examples (1,639 train, 165 valid) in 18 families. That is the 11 round-1 families, rebuilt on current main, plus 7 write families.
+- **Size:** 1,894 examples (1,708 train, 186 valid) in 19 families. That is the 11 round-1 families, rebuilt on current main, plus 7 write families and `chat_voice`.
 - **Write families:** act_dont_ask, finish_the_write, stub_then_call, exact_args, right_write_tool, relay_receipt and safe_effects.
-- **Why:** these target the model-side toolbench failures. The plan, evidence and per-model gate are in [PLAN.md](PLAN.md).
-- **Write turns:** approval cards are answered by script (`builder/writes.py` holds the contract and the host behaviours). The validator checks cards, denials, allowed writes per family, Gemma/Bolt render parity, and leaks against both the round-1 eval questions and the 378 toolbench prompts and fact values.
+- **`chat_voice`:** 90 hand-written casual turns with a gentle, varied, short voice, at most one emoji, and no ritual closers or lookups for plain chat. It answers the blind chat eval, where both models scored about 2.4/5 on fun.
+- **Why:** the write families target the model-side toolbench failures. The plan, evidence and per-model gate are in [PLAN.md](PLAN.md).
+- **Write turns:** approval cards are answered by script (`builder/writes.py` holds the contract and the host behaviours). The validator checks cards, denials, allowed writes per family, Gemma/Bolt render parity, and leaks against the round-1 eval questions, the 378 toolbench prompts and fact values, and the chat-eval prompts (`chateval_prompts.yaml`).
 - **Training:** one rendered dataset (`brev/ask-lora-data.zip`) trains both models. `brev/run.sh both` runs them back to back, but needs a pinned Bolt bf16 revision first (see `brev/README.md`).
 
 The round-1 description below still applies to the builder and to the reads-only families.

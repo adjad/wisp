@@ -65,6 +65,24 @@ def load_eval(path: str | None = None) -> list[dict]:
     return out
 
 
+# ------------------------------------------------------------------ chat eval
+@lru_cache(maxsize=1)
+def load_chat(path: str | None = None) -> tuple[dict, ...]:
+    """Every user turn of the chat-quality eval (chateval_prompts.yaml, a copy of the
+    eval's prompts.yaml): single prompts, each wording of a variety set and each turn
+    of a conversation. Ids are ``chat:<unit id>[#n]``."""
+    import yaml
+    path = path or os.path.join(DATASET_DIR, "chateval_prompts.yaml")
+    with open(path) as f:
+        units = yaml.safe_load(f)["units"]
+    out = []
+    for u in units:
+        texts = [u["prompt"]] if "prompt" in u else list(u.get("prompts") or u.get("turns") or [])
+        for i, t in enumerate(texts):
+            out.append(_entry(f"chat:{u['id']}" + (f"#{i}" if len(texts) > 1 else ""), str(t)))
+    return tuple(out)
+
+
 # ------------------------------------------------------------------ toolbench
 def _toolbench():
     """(load_cases, make_facts, FACT_POOLS) from this checkout's scripts/toolbench."""
@@ -170,15 +188,18 @@ def fact_hits(text: str) -> list[str]:
 
 # ------------------------------------------------------------------ index
 class LeakIndex:
-    def __init__(self, questions: list[dict] | None = None, toolbench: bool | None = None):
+    def __init__(self, questions: list[dict] | None = None, toolbench: bool | None = None, chat: bool = False):
         """``questions`` defaults to the eval questions plus the toolbench prompts;
-        pass your own list to index just that (toolbench is then off unless asked)."""
+        pass your own list to index just that (toolbench and the chat eval are then off
+        unless asked; the chat eval's prompts are indexed whenever toolbench is)."""
         custom = questions is not None
         questions = list(questions) if custom else load_eval()
         if toolbench is None:
             toolbench = not custom
         if toolbench:
             questions += list(load_toolbench())
+        if toolbench or chat:
+            questions += list(load_chat())
         self.questions = questions
         self.by_fold: dict[str, dict] = {}
         for q in questions:
