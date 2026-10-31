@@ -142,7 +142,9 @@ def agenda_reply(rows, phrase: str, now: dt.datetime, rng, *, empty=None, lead=N
     else:
         opts = [f"You have {both} {phrase}"]
         if not phrase.startswith("in "):
-            opts.append(f"{bare[:1].upper() + bare[1:]} has {both}")
+            # a plural period ("the next few days") takes "have", a day or week takes "has"
+            verb = "have" if bare.rstrip().lower().endswith("s") and not bare.lower().endswith(("ss", "us")) else "has"
+            opts.append(f"{bare[:1].upper() + bare[1:]} {verb} {both}")
         head = rng.choice(opts)
     if len(live) >= 4:
         body = listing(head, [row_line(r, now, with_day=multi_day) for r in live])

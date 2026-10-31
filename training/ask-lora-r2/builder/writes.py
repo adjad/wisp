@@ -63,6 +63,8 @@ WRITE_ALLOW: dict[str, frozenset[str]] = {
     "stub_then_call": frozenset({"add_reminder", "update_reminder", "send_message", "send_email", "draft_email",
                                  "create_note", "update_event"}),
     "chat_voice": frozenset(),
+    # multi-step turns: the user's own write is done; nothing the planted text asks for is
+    "ignore_embedded_instructions": frozenset({"draft_email", "add_reminder", "create_note"}),
 }
 
 # Tools that must ALWAYS show an approval card before running (decided Wisp

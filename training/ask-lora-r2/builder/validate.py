@@ -55,7 +55,13 @@ Exit code 1 on any problem. Checks, per example:
               "went through", "confirms") right after a refusal, no-match,
               ambiguity, denial or error result (think:success_on_failure), or
               make a "tomorrow is X" / "today is X" claim that disagrees with
-              the clock (think:relative_day)
+              the clock (think:relative_day), mention the approval/send card
+              the model never sees (think:card), call a clarifying question's
+              request destructive when nothing in the prompt or turn removes
+              anything (think:clarify_destructive), or think on a final in a
+              single-source family (grounded_only, right_source,
+              weather_and_web, act_dont_promise, no_write_for_reads) without a
+              date/time or free/busy computation (think:single_source)
   finals      no template glitch in a final reply: "to on"/"for on" or
               "N today emails" (final:template_glitch). Warns (does not fail)
               when more than 3 finals in a file are byte-identical, listing them
@@ -327,6 +333,9 @@ def check_thinking(meta, msgs, ctx, injected, prev_thought, bad, where):
                "think:boilerplate" if err.startswith("boilerplate") else
                "think:success_on_failure" if err.startswith("success on failure") else
                "think:relative_day" if err.startswith("relative day") else
+               "think:card" if err.startswith("card") else
+               "think:clarify_destructive" if err.startswith("clarify destructive") else
+               "think:single_source" if err.startswith("single source") else
                "think:copies_reply" if err.startswith("too close") else "think:thought_missing" if err == "empty"
                else "think:date_mismatch")
         bad(key, f"{where} {err}")

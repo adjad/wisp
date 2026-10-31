@@ -1123,9 +1123,15 @@ def _relay_move(rng, i):
         newlen = rng.choice([30, 120])
         args["duration_min"] = newlen
     tw = t_txt(rng, new.hour, new.minute)
-    prompt = pick(rng, [f"move {ref} to {tw}{dp}",
-                        f"{ref} needs to start at {tw}{dp}" + (f" and run {dur_w(newlen)}" if variant == 2 else ""),
-                        f"i'd rather do {ref} at {tw}{dp}"])
+    # duration_min is sent only when the user gave a length: every wording of variant 2 says it.
+    if variant == 2:
+        prompt = pick(rng, [f"move {ref} to {tw}{dp} and let it run {dur_w(newlen)}",
+                            f"{ref} needs to start at {tw}{dp} and run {dur_w(newlen)}",
+                            f"i'd rather do {ref} at {tw}{dp}, {dur_w(newlen)} long"])
+    else:
+        prompt = pick(rng, [f"move {ref} to {tw}{dp}",
+                            f"{ref} needs to start at {tw}{dp}",
+                            f"i'd rather do {ref} at {tw}{dp}"])
     tail = ""
     if variant == 3:
         tail = " Invitees were notified of the new time."

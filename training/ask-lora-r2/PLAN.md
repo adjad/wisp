@@ -114,7 +114,7 @@ So the model learns when to think:
 - narration over one clean read result;
 - the mechanical call right after a schema load.
 
-This also cuts the measured waste. Thinking is about 80% of chat output tokens, and on 230 of 839 corpus turns the narration thought was the answer written out twice.
+About 28% of steps think, and about 15% of final answers. This also cuts the measured waste. Thinking is about 80% of chat output tokens, and on 230 of 839 corpus turns the narration thought was the answer written out twice.
 
 `builder/thinking.py` holds the policy and the thought generator. The validator re-checks the policy for every example, and checks that dates a thought states match the call's arguments.
 

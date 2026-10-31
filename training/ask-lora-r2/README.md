@@ -1,7 +1,7 @@
 # Wisp Ask LoRA dataset, round 2 (Gemma 4 E4B and Nemotron 3.5 Bolt E4B), 2026-10-30
 
 **Round 2 status (retargeted 2026-10-31):** Gemma 4 E4B MTP only (Bolt dropped: it is text-only), with situational thinking. Built and validated, not trained. Round 1 was never trained on either model, so this is the first fine-tune for both, and it carries every round-1 family. Code head: origin/main 20ef528d (dev8).
-- **Size:** 1,894 examples (1,708 train, 186 valid) in 19 families. That is the 11 round-1 families, rebuilt on current main, plus 7 write families and `chat_voice`.
+- **Size:** 1,935 examples (1,743 train, 192 valid) in 19 families, after an independent review and fix pass. That is the 11 round-1 families, rebuilt on current main, plus 7 write families and `chat_voice`.
 - **Write families:** act_dont_ask, finish_the_write, stub_then_call, exact_args, right_write_tool, relay_receipt and safe_effects.
 - **`chat_voice`:** 90 hand-written casual turns with a gentle, varied, short voice, at most one emoji, and no ritual closers or lookups for plain chat. It answers the blind chat eval, where both models scored about 2.4/5 on fun.
 - **Why:** the write families target the model-side toolbench failures. The plan, evidence and per-model gate are in [PLAN.md](PLAN.md).

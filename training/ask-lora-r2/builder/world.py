@@ -22,6 +22,16 @@ from service.tools.timeranges import BadPeriod, resolve_span
 USER_EMAIL = H.USER_EMAILS[0]
 
 
+def _size_bytes(size) -> float:
+    """'2.4 MB' / '310 KB' / 1234 -> bytes (list_dir sort='size')."""
+    if isinstance(size, (int, float)):
+        return float(size)
+    m = re.match(r"\s*([\d.]+)\s*([KMGT]?)B?", str(size), re.I)
+    if not m:
+        return 0.0
+    return float(m.group(1)) * {"": 1, "K": 1e3, "M": 1e6, "G": 1e9, "T": 1e12}[m.group(2).upper()]
+
+
 def short_clock(t: dt.datetime) -> str:
     """10 AM / 1:30 PM."""
     return t.strftime("%-I %p") if t.minute == 0 else t.strftime("%-I:%M %p")
@@ -92,6 +102,7 @@ class World:
     events: list = field(default_factory=list)
     reminders: list = field(default_factory=list)
     emails: list = field(default_factory=list)
+    sent_mail: list = field(default_factory=list)     # (to, subject, when) for view_emails(mailbox="sent")
     messages: list = field(default_factory=list)
     notes: list = field(default_factory=list)
     past: list = field(default_factory=list)          # past calendar events
@@ -266,12 +277,14 @@ class World:
                             + "\n".join(f"- {r.title}" for r in undated))
         return "\n".join(sections)
 
-    def t_find_free_time(self, days=3, period=None, minutes=30, day_start=9, day_end=18):
+    def t_find_free_time(self, days=3, period="", minutes=30, day_start=9, day_end=18):
         try:
             s, e, label = self._span(period or "today", True) if period else (
                 dt.datetime.combine(self.now.date(), dt.time()), None, "")
-        except BadPeriod as exc:
-            return f"(error: {exc})"
+        except BadPeriod:
+            # schedule_extras._availability_days: its own vocabulary, not resolve_span's text.
+            return ("(error: period must be today, tomorrow, a weekday (friday, next monday), "
+                    "this weekend, this/next week, this/next month, a date (nov 3) or YYYY-MM-DD.)")
         if not period:
             e = s + dt.timedelta(days=int(days))
         out = [f"{int(minutes)}-minute candidate slots, {int(day_start):02d}:00–{int(day_end):02d}:00 "
@@ -346,7 +359,9 @@ class World:
             lines += [f"- {r.title}" for r in undated[:3]]
         return "\n".join(lines)
 
-    def t_daily_brief(self, **kw):
+    def t_daily_brief(self, location="", days=1, include_activity=True, *, period="", account="", query="",
+                      reminder_days=7, include_overdue=None, include_undated=None, include_calendar=True,
+                      include_reminders=True, include_email=True, include_messages=True, include_weather=True):
         parts = [f"Good {'morning' if self.now.hour < 12 else 'afternoon' if self.now.hour < 17 else 'evening'} — "
                  f"{self.now:%A, %B %-d}.", "", "Schedule:", self.t_get_upcoming(period="today"), "",
                  "Reminders:", self.t_search_reminders(scope="all"), "", "Email:", self.t_summarize_emails(day="today")]
@@ -360,14 +375,20 @@ class World:
         s, e, label = self._span(p, False)
         return s, e, label
 
-    def t_summarize_emails(self, period=None, day=None, count=None, unread=None, account=None):
+    def t_summarize_emails(self, period=None, day=None, count=20, unread=False, account=None, query=None):
+        # Production hands a keyword query to view_emails with the same scope
+        # (summarize_emails: "any emails from my bank?" reached it with a query).
+        if query and str(query).strip():
+            return self.t_view_emails(query=str(query).strip(), day=day,
+                                      count=min(max(int(count or 5), 1), 20),
+                                      account=account, period=period, unread=unread)
         if "mail" in self.unavailable:
             return ("Mail isn't connected yet, so Wisp can't read your email. Open Mail and add an "
                     "account, or connect Google in Quick Settings.")
         try:
             s, e, label = self._mail_window(period, day)
         except BadPeriod as exc:
-            return f"(error: {exc})"
+            return str(exc)      # production returns the BadPeriod text as is, no "(error:" prefix
         rows = [m for m in self.emails if (s is None or s <= m.when < e) and m.when <= self.now]
         if unread:
             rows = [m for m in rows if m.unread]
@@ -408,15 +429,42 @@ class World:
                    f"Actual dates: {hi:%b %-d, %Y %-I:%M %p} to {lo:%b %-d, %Y %-I:%M %p}.")
         return head + "\n".join(out)
 
-    def t_view_emails(self, query=None, period=None, day=None, unread=None, count=5, account=None,
-                      strict_match=None):
+    def _sent_view(self, query, day, count, account, period):
+        """view_emails(mailbox='sent'): headers only, newest first (email_tools.sent_emails_view)."""
+        label = "the last 7 days"
+        s, e = self.now - dt.timedelta(days=7), self.now + dt.timedelta(seconds=1)
+        if period or day:
+            try:
+                s, e, label = self._mail_window(period, day)
+            except BadPeriod as exc:
+                return str(exc)
+        rows = [r for r in self.sent_mail if s <= r[2] < e]
+        if query:
+            q = str(query).lower()
+            rows = [r for r in rows if q in (r[0] + " " + r[1]).lower()]
+        rows.sort(key=lambda r: r[2], reverse=True)
+        if not rows:
+            what = f" matching “{query}”" if query else ""
+            return f"No sent mail{what} in {label} from Apple Mail."
+        shown = rows[:max(1, min(int(count or 5), 15))]
+        lines = [f"Sent mail, {label} ({len(rows)} found, newest first; headers only):"]
+        for to, subject, when in shown:
+            lines.append(f"- {when:%a %b %-d, %-I:%M %p} to {to}: {subject}")
+        if len(rows) > len(shown):
+            lines.append(f"(+{len(rows) - len(shown)} more; narrow it by person or day.)")
+        return "\n".join(lines)
+
+    def t_view_emails(self, query=None, period=None, day=None, unread=False, count=5, account=None,
+                      strict_match=False, mailbox=None):
+        if str(mailbox or "inbox").strip().lower() == "sent":
+            return self._sent_view(query, day, count, account, period)
         if "mail" in self.unavailable:
             return ("Mail isn't connected yet, so Wisp can't read your email. Open Mail and add an "
                     "account, or connect Google in Quick Settings.")
         try:
             s, e, label = self._mail_window(period, day)
         except BadPeriod as exc:
-            return f"(error: {exc})"
+            return str(exc)
         rows = [m for m in self.emails if (s is None or s <= m.when < e) and m.when <= self.now]
         if query:
             q = query.lower()
@@ -446,7 +494,7 @@ class World:
         return head + cov + "\n\n---\n\n".join(blocks)
 
     # ------------------------------------------------------------- messages
-    def t_summarize_messages(self, period=None, day=None, conversation=None, count=None, unread=None):
+    def t_summarize_messages(self, period=None, day=None, conversation=None, count=30, unread=False):
         if "messages" in self.unavailable:
             return ("Wisp can't read Messages yet: Full Disk Access is off for Wisp. Turn it on in System "
                     "Settings › Privacy & Security › Full Disk Access, then try again.")
@@ -454,7 +502,7 @@ class World:
             try:
                 s, e, label = self._span(period or day, False)
             except BadPeriod as exc:
-                return f"(error: {exc})"
+                return str(exc)
             head_label = f"messages from {label}"
         else:
             s, e = self.now - dt.timedelta(days=3), self.now + dt.timedelta(seconds=1)
@@ -480,7 +528,7 @@ class World:
             out.append("")
         return head + "\n".join(out).rstrip()
 
-    def t_view_messages(self, query=None, period=None, day=None, count=10, unread=None, conversation=None):
+    def t_view_messages(self, query=None, period=None, day=None, count=20, unread=False, conversation=None):
         if "messages" in self.unavailable:
             return ("Wisp can't read Messages yet: Full Disk Access is off for Wisp. Turn it on in System "
                     "Settings › Privacy & Security › Full Disk Access, then try again.")
@@ -490,7 +538,7 @@ class World:
             try:
                 s, e, label = self._span(period or day, False)
             except BadPeriod as exc:
-                return f"(error: {exc})"
+                return str(exc)
             rows = [m for m in rows if s <= m.when < e]
         if query:
             q = query.lower()
@@ -500,7 +548,7 @@ class World:
         if unread:
             rows = [m for m in rows if m.unread]
         rows.sort(key=lambda m: m.when, reverse=True)
-        rows = rows[:int(count or 10)]
+        rows = rows[:int(count or 20)]
         if not rows:
             return (f"No messages matching {query!r} were found in {label}." if query else "No messages found.")
         return "\n".join(f"[{m.when:%a %b %-d, %-I:%M %p}] {m.conv} — {m.sender}: {m.text}" for m in rows)
@@ -514,7 +562,7 @@ class World:
             try:
                 s, e, label = self._span(period or day, False)
             except BadPeriod as exc:
-                return f"(error: {exc})"
+                return str(exc)
             rows = [n for n in rows if s <= n.modified < e]
             if not rows:
                 return (f"No notes modified in {label} — but there are {len(self.notes)} more notes outside "
@@ -600,7 +648,7 @@ class World:
                 f"Disk: {st['free']} free of {st['total']} ({st['used']}% used)\nMemory: {st['mem']}% free\n"
                 f"CPU load: {st['load']}, across {st['cores']} cores\nUptime: {st['uptime']}")
 
-    def t_find_files(self, query, folder=None, kind=None, content=False):
+    def t_find_files(self, query, folder="", kind="", content=False, limit=15):
         hits = []
         for fold, entries in self.files.items():
             if folder and not fold.startswith(folder.rstrip("/")):
@@ -608,22 +656,35 @@ class World:
             for name, size in entries:
                 if query.lower() in name.lower() or (kind and name.lower().endswith("." + kind)):
                     hits.append(f"{fold}/{name}  ({size})")
+        hits = hits[:max(1, int(limit or 15))]
         return "\n".join(hits) if hits else f"No files matching {query!r} were found."
 
-    def t_list_dir(self, path, recursive=False, max_depth=3):
+    def t_list_dir(self, path, recursive=False, max_depth=3, details=False, sort="name"):
         entries = self.files.get(path.rstrip("/"))
         if entries is None:
             return f"(error: no such directory: {path})"
-        return "\n".join(sorted(n for n, _ in entries))
+        names = sorted(entries)
+        if sort == "size":
+            names = sorted(entries, key=lambda e: -_size_bytes(e[1]))
+        if details:
+            return "\n".join(f"{n}  ({sz})" for n, sz in names)
+        return "\n".join(n for n, _ in names)
 
     def t_clipboard_read(self):
         return self.status.get("clipboard", "(clipboard is empty)")
 
     # ------------------------------------------------------------- public / compute
     def t_get_weather(self, location, period="", include=None):
+        # Production's own location rules (web_tools.get_weather): a bare shared California
+        # name ("San Jose", "Santa Clara") is refused, anything else is sent to the provider.
+        from service.tools.ca_locations import normalize_weather_location
+        try:
+            normalize_weather_location(location.strip())
+        except ValueError as exc:
+            return f"(error: no unambiguous location — {exc}; do not guess one)"
         w = self.weather.get(location)
         if w is None:
-            return f"(error: no unambiguous location — I couldn't resolve {location!r}; do not guess one)"
+            return f"(error: weather lookup for {location!r} failed: HTTP 404. Check the spelling, or add the state/country — 'Paris,TX' rather than 'Paris')"
         out = [f"Weather for {w['label']} (asked for: {location})",
                f"  now: {w['now_f']}°F ({round((w['now_f'] - 32) * 5 / 9)}°C), {w['desc']}, feels like "
                f"{w['feels_f']}°F, humidity {w['hum']}%, wind {w['wind']} mph"]

@@ -237,6 +237,18 @@ def corrupt():
         thinking.outcome(r) in thinking.FAILED for r in thinking.analyze(m, e["messages"])["results"]))
     cases["think:success_on_failure"] = (fail, {**fail_meta, "thought": "That went through. The receipt confirms it."})
     cases["think:success_on_failure~sent"] = (fail, {**fail_meta, "thought": "Sent. Say who got it, briefly."})
+    cases["think:card"] = (dated, {**dated_meta, "thought": dated_meta["thought"] + " The send card shows it first."})
+    cases["think:card~behind"] = (dated, {**dated_meta, "thought": "I'll do it behind its card. " + dated_meta["thought"]})
+    clar, clar_meta = first_m(lambda e, m: m.get("think") and m.get("step_kind") == "answer_first" and
+                              m["family"] == "act_dont_ask" and not thinking.DESTRUCTIVE_ASK.search(m["prompt"]))
+    cases["think:clarify_destructive"] = (clar, {**clar_meta, "thought":
+                                                 "That's destructive, and the target is unclear. One question."})
+    cases["think:clarify_destructive~wipe"] = (clar, {**clar_meta, "thought": "A wipe with no target named; ask which."})
+    one, one_meta = first_m(lambda e, m: m.get("think") and m.get("step_kind") == "narrate" and
+                            m["family"] in thinking.SINGLE_SOURCE)
+    cases["think:single_source"] = (one, {**one_meta, "thought": "The calendar has the answer. Read it back plainly."})
+    cases["think:single_source~restate"] = (one, {**one_meta, "thought":
+                                                  "Sunny, high 60°, low 47°, 0% chance of rain. The sky line answers it."})
     e = copy.deepcopy(final)
     e["messages"][-1]["content"] += " Moved it to on Saturday at 12:30 PM."
     cases["final:template_glitch"] = (e, final_meta)

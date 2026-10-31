@@ -80,20 +80,18 @@ Replace these with `smoke`'s measured minutes per epoch and `df` as soon as they
 ```bash
 cd training/ask-lora-r2
 PY=<main checkout>/.venv/bin/python
-$PY brev/render.py \
-  --model        ~/Desktop/OMLX_Model_Files/Jundot/gemma-4-E4B-it-oQ4e-mtp \
-  --parity-model ~/Desktop/OMLX_Model_Files/UraionLabs/NVIDIA-Nemotron-3.5-Bolt-E4B-MLX-oQ4e-mtp
+$PY brev/render.py --model ~/Desktop/OMLX_Model_Files/Jundot/gemma-4-E4B-it-oQ4e-mtp
 ```
 
-It prints `render parity on the Mac: {"bolt": {"train": {..., "mismatches": 0}, ...}}`. Any mismatch aborts.
+It writes the zip and records its sha in `upload-zip.json`. Round 2 trains Gemma only. Add `--parity-model <dir>` only if Bolt returns.
 
-**Before renting the GPU, settle the Bolt base.** Open `nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16` on Hugging Face, pick the commit to train from (its commit history), copy the full 40-hex sha, and check whether the repo is gated or needs a licence click-through. UraionLabs lists OpenMDW-1.1; read the terms, including what they say about a fine-tuned derivative. Setup refuses to run for Bolt without `BOLT_REV`.
+**Only if Bolt returns (it is dropped, because it is text-only), settle the Bolt base first.** Open `nvidia/NVIDIA-Nemotron-3.5-Bolt-E4B-BF16` on Hugging Face, pick the commit to train from (its commit history), copy the full 40-hex sha, and check whether the repo is gated or needs a licence click-through. UraionLabs lists OpenMDW-1.1; read the terms, including what they say about a fine-tuned derivative. Setup refuses to run for Bolt without `BOLT_REV`.
 
 **On the Brev instance:**
 
 1. Start an instance with one 48 GB GPU, Ubuntu with a CUDA driver, and disk per the table above.
 2. Copy over `vm-setup.sh` and `ask-lora-data.zip` (`brev shell` / `scp`, or Jupyter's upload).
-3. Run `MODELS=both BOLT_REV=<sha> bash vm-setup.sh` (`MODELS=gemma` or `MODELS=bolt` for one). For a gated repo, `export HF_TOKEN=...` first.
+3. Run `bash vm-setup.sh`. It defaults to Gemma; use `MODELS=bolt|both BOLT_REV=<sha>` only if Bolt returns. For a gated repo, `export HF_TOKEN=...` first.
 
 Every later command names the model: `~/wisp/run.sh <gemma|bolt> <step>`.
 

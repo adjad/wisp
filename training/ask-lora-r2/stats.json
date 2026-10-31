@@ -1,11 +1,11 @@
 {
  "by_target": {
-  "call": 735,
-  "final": 843,
-  "load": 336
+  "call": 746,
+  "final": 851,
+  "load": 338
  },
- "code_head": "25c3a2894989ae34899f21908bf1a9958acd8661",
- "examples": 1914,
+ "code_head": "3727837fb8e7e35888ba9cdd6b7d02ab67244b22",
+ "examples": 1935,
  "families": {
   "act_dont_ask": {
    "call": 37,
@@ -66,12 +66,12 @@
    "valid": 15
   },
   "finish_the_write": {
-   "call": 84,
-   "examples": 167,
+   "call": 83,
+   "examples": 165,
    "final": 37,
-   "load": 46,
-   "think": 84,
-   "train": 150,
+   "load": 45,
+   "think": 82,
+   "train": 148,
    "turns": 41,
    "valid": 17
   },
@@ -80,19 +80,19 @@
    "examples": 87,
    "final": 37,
    "load": 13,
-   "think": 22,
+   "think": 9,
    "train": 79,
    "turns": 37,
    "valid": 8
   },
   "ignore_embedded_instructions": {
-   "call": 31,
-   "examples": 66,
-   "final": 31,
-   "load": 4,
-   "think": 31,
-   "train": 60,
-   "turns": 31,
+   "call": 39,
+   "examples": 80,
+   "final": 33,
+   "load": 8,
+   "think": 36,
+   "train": 74,
+   "turns": 33,
    "valid": 6
   },
   "knowledge_direct": {
@@ -119,19 +119,18 @@
    "examples": 61,
    "final": 27,
    "load": 7,
-   "think": 7,
+   "think": 3,
    "train": 55,
    "turns": 27,
    "valid": 6
   },
   "recover_from_tool_error": {
-   "call": 35,
-   "examples": 73,
-   "final": 37,
-   "load": 1,
-   "think": 37,
-   "train": 65,
-   "turns": 37,
+   "call": 39,
+   "examples": 82,
+   "final": 43,
+   "think": 40,
+   "train": 74,
+   "turns": 43,
    "valid": 8
   },
   "relay_receipt": {
@@ -140,19 +139,19 @@
    "final": 36,
    "load": 16,
    "think": 48,
-   "train": 84,
+   "train": 82,
    "turns": 41,
-   "valid": 9
+   "valid": 11
   },
   "right_source": {
    "call": 47,
    "examples": 119,
    "final": 47,
    "load": 25,
-   "think": 20,
-   "train": 109,
+   "think": 16,
+   "train": 110,
    "turns": 47,
-   "valid": 10
+   "valid": 9
   },
   "right_write_tool": {
    "call": 48,
@@ -160,9 +159,9 @@
    "final": 42,
    "load": 28,
    "think": 48,
-   "train": 107,
+   "train": 106,
    "turns": 42,
-   "valid": 11
+   "valid": 12
   },
   "safe_effects": {
    "call": 72,
@@ -189,7 +188,7 @@
    "examples": 101,
    "final": 34,
    "load": 25,
-   "think": 9,
+   "think": 0,
    "train": 86,
    "turns": 34,
    "valid": 15
@@ -200,12 +199,12 @@
  "thinking": {
   "by_step_kind": {
    "after_error": {
-    "think": 59,
-    "train_think": 54,
+    "think": 62,
+    "train_think": 57,
     "valid_think": 5
    },
    "after_load": {
-    "no_think": 336,
+    "no_think": 338,
     "train_think": 0,
     "valid_think": 0
    },
@@ -216,31 +215,31 @@
     "valid_think": 0
    },
    "narrate": {
-    "no_think": 486,
-    "think": 128,
-    "train_think": 117,
-    "valid_think": 11
-   },
-   "next_call": {
-    "no_think": 8,
-    "think": 90,
-    "train_think": 80,
+    "no_think": 520,
+    "think": 100,
+    "train_think": 90,
     "valid_think": 10
    },
+   "next_call": {
+    "no_think": 14,
+    "think": 92,
+    "train_think": 81,
+    "valid_think": 11
+   },
    "select": {
-    "no_think": 317,
-    "think": 272,
-    "train_think": 244,
-    "valid_think": 28
+    "no_think": 320,
+    "think": 271,
+    "train_think": 242,
+    "valid_think": 29
    }
   },
-  "no_think": 1350,
-  "think": 564,
-  "think_share": 0.295,
-  "train_think": 510,
-  "valid_think": 54
+  "no_think": 1395,
+  "think": 540,
+  "think_share": 0.279,
+  "train_think": 485,
+  "valid_think": 55
  },
- "train": 1724,
- "turns": 857,
- "valid": 190
+ "train": 1743,
+ "turns": 865,
+ "valid": 192
 }

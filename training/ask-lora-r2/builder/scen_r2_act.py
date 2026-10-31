@@ -897,6 +897,19 @@ def _move_event(i, denied=False):
         prompt = style(rng, ask.format(ev="the " + kw))
         read = Call("get_upcoming", query=kw, days=14, calendar_only=True)
         move = Call("update_event", title=title, when_iso=iso(new))
+        if "Nothing scheduled" in w.t_get_upcoming(query=kw, days=14, calendar_only=True):
+            # The user's words do not match any event title ("tutoring session" vs "Tutoring with Hana"
+            # is a miss for the search). Nothing was found, so nothing is moved: say so, invent nothing,
+            # and leave the (unmatched) event out of the world so the answer is true.
+            if denied:
+                return None
+            w.events = [e for e in w.events if e.title != title]
+            final = _pick(rng, [f"I couldn't find a {kw} on your calendar in the next two weeks, so I haven't moved anything. If it's listed under another name, tell me and I'll look again.",
+                                f"Nothing on your calendar in the next two weeks matches “{kw}”, so nothing has changed. What is it called there?",
+                                f"I don't see a {kw} coming up in the next two weeks, so I left your calendar alone. Tell me its title or day and I'll check again."])
+            return mk("finish_the_write", prompt, now, w, [[read], Final(final)],
+                      "the search finds nothing: no update_event, say so and ask for the name instead of guessing",
+                      approve=None, cards=[])
         if denied:
             return mk("finish_the_write", prompt, now, w, [[read], [move]],
                       "find the event, ask to move it; the card is denied so the turn ends at the call",
