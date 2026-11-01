@@ -78,7 +78,11 @@ def test_app_wires_cadence_and_wake_triggers_once():
     # not let them defeat the slow pace.
     assert ".wispAssistantChanged" in triggers
     assert "!self.model.collapsed" in triggers
-    assert triggers.count("refreshSoon(") == 2
+    # The third: the notch opening on a Brief that went stale while Wisp was away
+    # reads again once the service says it is catching up (return_refresh), so the
+    # Brief shows "Updating…" at once. Only on the service's yes, never per event.
+    assert "await self.client.noteReturn()" in triggers
+    assert triggers.count("refreshSoon(") == 3
 
 
 def test_no_second_thirty_second_day_poller():

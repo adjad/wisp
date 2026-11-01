@@ -138,6 +138,9 @@ struct NotchBriefView: View {
                     // day and the to-dos first, then the cards and mail and texts.
                     // It replaces the tiles and the Top 3.
                     if let contacts = BriefFix.contactsAccess() { accessRow(contacts) }
+                    // Back after a long absence: the cards below are from
+                    // before, and the refreshed ones replace them on their own.
+                    if proactive.updating && !proactive.isWorking { ProcessingRow(label: Self.updatingLabel) }
                     ProactiveBriefSection(proactive: proactive, model: model, today: today, actions: actions,
                                           events: restOfToday(plan),
                                           scrollCap: uncapped ? nil : Self.proactiveCap,
@@ -166,6 +169,8 @@ struct NotchBriefView: View {
             }
         }
     }
+
+    static let updatingLabel = "Updating your Brief…"
 
     /// The loading row's words: Wisp starting up on a cold launch, then a
     /// patient note if it takes a while; never a raw connection error.

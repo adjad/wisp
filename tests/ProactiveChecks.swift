@@ -68,6 +68,10 @@ struct ProactiveChecks {
          "threads":{"not":"a list"},"accounts":["x@y.z",5,""],"progress":{"done":"many"}}
         """)
         check(partial?.isWorking == true, "partial: working")
+        // Catching up after a long absence (return_refresh): only a real true counts.
+        check(full.updating == false && partial?.updating == false, "updating defaults to false")
+        check(decode(#"{"state":"ready","updating":true}"#)?.updating == true, "updating decodes")
+        check(decode(#"{"state":"ready","updating":"yes"}"#)?.updating == false, "a wrong-typed updating is false")
         check(partial?.cards.map(\.id) == ["ok", "3"] && partial?.cards[1].action == nil,
               "bad cards are skipped, a numeric id is kept, a bad action is dropped: \(partial?.cards.map(\.id) ?? [])")
         check(partial?.todos.map(\.id) == ["b"] && partial?.todos[0].dueTs == nil && partial?.todos[0].done == false,
