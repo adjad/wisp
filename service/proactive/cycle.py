@@ -730,6 +730,9 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         todos=[t for a in accounts for t in todos_by_account.get(a, [])],
         notes=[{k: n[k] for k in ("id", "title", "account", "who", "hash")} for n in notes],
         threads=_threads(survivors, now, tz), summaries=summaries, judged=judged, model=model_ok,
+        # When the model last read it: a rules-only cycle (the model parked) keeps
+        # as_of current, so return_refresh judges staleness by this instead.
+        **({"model_as_of": now} if model_ok else {}),
         # What handled.py needs to see the user answer a conversation themselves.
         seen={i["id"]: e for i in items if (i.get("account") or own) not in erased
               and (e := handled.seen_entry(i)) is not None},
