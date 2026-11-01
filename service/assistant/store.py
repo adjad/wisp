@@ -2617,6 +2617,14 @@ class AssistantStore:
                 "assistant_removed_suggestions ORDER BY removed_at DESC, evidence_id LIMIT ?)",
                 (self.REMOVED_SUGGESTIONS_KEPT,))
 
+    def restore_suggestions(self, evidence_ids) -> int:
+        """Undo Remove: these items may be suggested again. Returns how many
+        records were restored."""
+        with self._write_transaction():
+            return self._db.executemany(
+                "DELETE FROM assistant_removed_suggestions WHERE evidence_id=?",
+                [(i,) for i in set(evidence_ids)]).rowcount
+
     def removed_suggestions(self) -> set[str]:
         """The attention item ids whose suggested blocks the user removed."""
         with self.transaction(write=False) as db:
