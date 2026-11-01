@@ -49,6 +49,7 @@ import inspect
 import json
 import math
 import random
+import re
 import shutil
 import sys
 import time
@@ -465,6 +466,42 @@ def cmd_train(a) -> int:
     return 0
 
 
+def _restore_kv_shared(base: Path, out: Path, missing: set[str]) -> None:
+    """Copy the base's k_proj/v_proj/k_norm of E4B's KV-shared layers into the merged folder.
+
+    Those layers reuse an earlier layer's KV, so transformers (5.22) never builds these weights and
+    save_pretrained drops them. No LoRA reaches them, so the base values are exact; restoring them
+    keeps the merged folder's tensor layout equal to the base's for the like-for-like quantisation."""
+    if not missing:
+        return
+    cfg = json.load(open(base / "config.json"))
+    tc = cfg.get("text_config", cfg)
+    first = tc["num_hidden_layers"] - tc.get("num_kv_shared_layers", 0)
+    pat = re.compile(r"\.layers\.(\d+)\.self_attn\.(k_proj|v_proj|k_norm)\.weight$")
+    bad = [k for k in missing if not ((m := pat.search(k)) and int(m.group(1)) >= first)]
+    if bad:
+        return  # not the KV-sharing gap; the caller's name check fails loudly
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+    idx = base / "model.safetensors.index.json"
+    files = sorted(set(json.load(open(idx))["weight_map"].values())) if idx.exists() else \
+        [f.name for f in base.glob("*.safetensors")]
+    tensors = {}
+    for f in files:
+        with safe_open(str(base / f), "pt") as fh:
+            for k in missing & set(fh.keys()):
+                tensors[k] = fh.get_tensor(k).contiguous()
+    shard = "model-kv-shared.safetensors"
+    save_file(tensors, str(out / shard), metadata={"format": "pt"})
+    oidx = out / "model.safetensors.index.json"
+    data = json.load(open(oidx))
+    data["weight_map"].update({k: shard for k in tensors})
+    data.setdefault("metadata", {})["total_size"] = data.get("metadata", {}).get("total_size", 0) + \
+        sum(t.numel() * t.element_size() for t in tensors.values())
+    oidx.write_text(json.dumps(data, indent=2) + "\n")
+    print(f"restored {len(tensors)} KV-shared-layer tensors (layers {first}+) from the base into {shard}")
+
+
 def _base_keys(base: Path) -> set[str]:
     idx = base / "model.safetensors.index.json"
     if idx.exists():
@@ -513,6 +550,8 @@ def cmd_merge(a) -> int:
         if (Path(a.base) / f).exists():
             shutil.copy(Path(a.base) / f, out / f)
     want, got = _base_keys(Path(a.base)), _base_keys(out)
+    _restore_kv_shared(Path(a.base), out, want - got)
+    got = _base_keys(out)
     if want != got:
         print(f"missing {sorted(want - got)[:5]} … extra {sorted(got - want)[:5]} …")
         sys.exit(f"merged tensor names differ from the base ({len(want - got)} missing, {len(got - want)} extra)")
