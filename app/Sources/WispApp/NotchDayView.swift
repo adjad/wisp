@@ -49,6 +49,12 @@ struct NotchDayView: View {
     @State private var showWholeAgenda = false
     /// What ended in the last two hours, opened from its one-line summary.
     @State private var showEarlier = false
+    /// The last Remove, while its Undo bar shows: the ids it sent, so Undo brings
+    /// a grouped review back as one action.
+    @State private var lastRemoved: (ids: [String], notice: String)?
+    @State private var lastRemovedTask: Task<Void, Never>?
+    /// How long the Undo bar stays after Remove.
+    private static let removeUndoSeconds: UInt64 = 8
 
     init(model: OverlayModel, today: TodayModel) {
         self.model = model
@@ -75,6 +81,7 @@ struct NotchDayView: View {
                 Text(stale).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let removed = lastRemoved { removedRow(removed) }
             if !today.followsToday { otherDayRow }
             if today.isShowingCurrentDay {
                 CheckInSection(model: checkIn, day: today.day, timezone: today.timezone,
@@ -890,9 +897,52 @@ struct NotchDayView: View {
     private func remove(_ item: DayItem) {
         let ids = DayTimeline.removalIDs(item)
         guard !ids.isEmpty else { return }
+        let notice = DayTimeline.removedNotice(item)
         Task {
-            _ = await today.mutate("/assistant/today/workspace/suggestions/remove", method: "POST",
+            guard await today.mutate("/assistant/today/workspace/suggestions/remove", method: "POST",
+                                     body: ["evidence_ids": ids]) else { return }
+            lastRemoved = (ids, notice)
+            lastRemovedTask?.cancel()
+            lastRemovedTask = Task {
+                try? await Task.sleep(nanoseconds: Self.removeUndoSeconds * 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                lastRemoved = nil
+                model.onResize()
+            }
+            model.onResize()
+        }
+    }
+
+    /// Undo the last Remove: the same items, in one call, back into the plan.
+    private func undoRemove(_ ids: [String]) {
+        lastRemovedTask?.cancel()
+        lastRemoved = nil
+        Task {
+            _ = await today.mutate("/assistant/today/workspace/suggestions/restore", method: "POST",
                                    body: ["evidence_ids": ids])
+            model.onResize()
+        }
+    }
+
+    /// Everything Remove ever kept off the Day may be suggested again.
+    private func bringBackRemoved() {
+        lastRemovedTask?.cancel()
+        lastRemoved = nil
+        Task {
+            _ = await today.mutate("/assistant/today/workspace/suggestions/restore", method: "POST",
+                                   body: ["all": true])
+        }
+    }
+
+    private func removedRow(_ removed: (ids: [String], notice: String)) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(removed.notice).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            NotchChrome.small("Undo") { undoRemove(removed.ids) }
+                .disabled(today.busy)
+                .help("Puts it back on your day")
+                .accessibilityLabel("Undo: \(removed.notice)")
         }
     }
 
@@ -983,6 +1033,12 @@ struct NotchDayView: View {
                                                delayMinutes: 15)
                         }
                     }
+                }
+                if let removed = plan?.workspace?.removed_suggestions, removed > 0 {
+                    Button(removed == 1 ? "Bring back 1 removed suggestion" : "Bring back \(removed) removed suggestions") {
+                        bringBackRemoved()
+                    }
+                    .help("Wisp may suggest them again; your next plan includes them")
                 }
                 Button("Report a problem with this plan") { today.reportProblem() }
             } label: {

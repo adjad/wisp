@@ -748,12 +748,14 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     events |= {_event_key(r.get("title")) for r in (evidence.get("calendar", {}).get("records") or [])}
     events.discard("")
     suggested_titles = set()
+    removed_today = 0  # removed items that would otherwise be in today's attention
     for item in items:
         if item["source"] in {"calendar", "wisp"} or len(suggestions) >= MAX_SUGGESTIONS:
             continue
         if item["source"] == "behavior" and item.get("planning_duration") is None:
             continue
         if removed and item["id"] in removed:
+            removed_today += 1
             continue
         title = item["title"]
         title_key = title.casefold()
@@ -858,7 +860,8 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     proposal["tasks"] = state["tasks"]
     return dict(day=day, timezone=timezone, generated_at=now, attention=items[:MAX_ITEMS],
                 needs_you=needs_you(items[:MAX_ITEMS], now=now, day_end=hi, dismissed=dismissed),
-                attention_omitted=max(0, len(items) - MAX_ITEMS), source_coverage=coverage,
+                attention_omitted=max(0, len(items) - MAX_ITEMS), removed_suggestions=removed_today,
+                source_coverage=coverage,
                 behavior_detail=behavior_detail,
                 behavior_context=(dict(ready=True, generated_at=behavior["generated_at"],
                     evidence_checked_at=behavior["evidence_checked_at"],

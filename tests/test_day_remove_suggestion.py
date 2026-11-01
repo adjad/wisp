@@ -174,3 +174,71 @@ def test_a_page_cannot_remove_suggestions(day):
                                headers={"Origin": "https://example.com"})
     assert response.status_code == 403
     assert day.store.removed_suggestions() == set()
+
+
+# Undo and "Bring back removed suggestions" (Release Auditor note on rc1 batch 1:
+# Remove had no way back, and a grouped Review block hid every email at once).
+
+def test_the_plan_counts_todays_removed_suggestions():
+    assert run()["removed_suggestions"] == 0
+    assert run({TOPICS, LAB})["removed_suggestions"] == 2
+    assert run({key("email", "long-gone")})["removed_suggestions"] == 0, "only what today would suggest counts"
+
+
+def test_the_store_restores_some_or_all_removals(tmp_path):
+    store = AssistantStore(tmp_path / "assistant.db")
+    store.remove_suggestions([MIDTERM, TOPICS, LAB])
+    assert store.restore_suggestions([TOPICS, LAB, TOPICS]) == 2
+    assert store.removed_suggestions() == {MIDTERM}
+    assert store.restore_suggestions([STAT]) == 0
+    assert store.restore_suggestions() == 1 and store.removed_suggestions() == set()
+
+
+def test_undo_brings_a_grouped_review_back_in_one_call(day):
+    path = "/assistant/today/workspace/suggestions/"
+    assert day.client.post(path + "remove", json=dict(evidence_ids=[TOPICS, LAB])).status_code == 200
+    hidden = day.client.get("/assistant/today", params=dict(day=DAY, timezone=ZONE)).json()
+    assert not {TOPICS, LAB} & plan_ids(hidden) and hidden["workspace"]["removed_suggestions"] == 2
+
+    undone = day.client.post(path + "restore", json=dict(evidence_ids=[TOPICS, LAB]))
+    assert undone.status_code == 200 and undone.json() == {"ok": True, "restored": 2}
+    back = day.client.get("/assistant/today", params=dict(day=DAY, timezone=ZONE)).json()
+    grouped = [b for b in suggestions(back["workspace"]) if b.get("members")]
+    assert len(grouped) == 1 and {m["evidence_id"] for m in grouped[0]["members"]} == {TOPICS, LAB}
+    assert back["workspace"]["removed_suggestions"] == 0
+
+
+def test_bring_back_restores_every_removal(day):
+    path = "/assistant/today/workspace/suggestions/"
+    day.client.post(path + "remove", json=dict(evidence_ids=[MIDTERM]))
+    day.client.post(path + "remove", json=dict(evidence_ids=[TOPICS, LAB]))
+    restored = day.client.post(path + "restore", json=dict(all=True))
+    assert restored.status_code == 200 and restored.json() == {"ok": True, "restored": 3}
+    assert day.store.removed_suggestions() == set()
+    replanned = day.client.post("/assistant/today/replan", json=dict(
+        day=DAY, timezone=ZONE, revision=0, start_minute=540, end_minute=1200, not_before=None))
+    assert plan_ids(replanned.json()) == {MIDTERM, STAT, TOPICS, LAB}
+
+
+@pytest.mark.parametrize("body", [
+    dict(),
+    dict(all=False),
+    dict(evidence_ids=[MIDTERM], all=True),
+    dict(evidence_ids=[]),
+    dict(evidence_ids=["not an id"]),
+    dict(all="yes"),
+    dict(all=True, extra=True),
+])
+def test_malformed_restores_are_refused_and_change_nothing(day, body):
+    day.store.remove_suggestions([MIDTERM])
+    response = day.client.post("/assistant/today/workspace/suggestions/restore", json=body)
+    assert response.status_code == 422
+    assert day.store.removed_suggestions() == {MIDTERM}
+
+
+def test_a_page_cannot_restore_suggestions(day):
+    day.store.remove_suggestions([MIDTERM])
+    response = day.client.post("/assistant/today/workspace/suggestions/restore", json=dict(all=True),
+                               headers={"Origin": "https://example.com"})
+    assert response.status_code == 403
+    assert day.store.removed_suggestions() == {MIDTERM}

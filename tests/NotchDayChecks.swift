@@ -410,6 +410,9 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayTimeline.removalIDs(DayItem(id: "block:c", title: "Standup", detail: "", start: at(9), end: at(10),
                                          style: .calendar, evidenceID: "calendar:x")).isEmpty,
           "a calendar block is never removed as a suggestion")
+    check(DayTimeline.removedNotice(removeOne) == "Removed “PA 2” from your day", "Undo bar names what Remove took")
+    check(DayTimeline.removedNotice(removeGroup) == "Removed 2 emails from your day",
+          "Undo bar on a grouped review counts every email it brings back")
     check(DayTimeline.plannedTitle("Reply to Priya", review: true) == "Review: Reply to Priya"
           && DayTimeline.plannedTitle("PA 2", review: false) == "PA 2", "planned titles")
 
