@@ -192,6 +192,8 @@ async def run(*, now: float | None = None, store=None, cycle, gists, ready=None,
     """One catch-up attempt. Returns:
 
     - "idle": nothing owed, or backing off;
+    - "fresh": something else (the ordinary cycle, on the model) caught the
+      Brief up since it was owed; no longer owed;
     - "settling": the user arrived under SETTLE_S ago; tried again after;
     - "waiting": the model isn't resident (or a batch window / pressure);
     - "yielded": a turn started, it fell back to rules, or it ran past
@@ -201,6 +203,17 @@ async def run(*, now: float | None = None, store=None, cycle, gists, ready=None,
     now = time.time() if now is None else now
     if not due(now):
         return "idle"
+    store = _store(store)
+    try:
+        stale = is_stale(now, store.state())
+    except Exception:  # noqa: BLE001 — unreadable: try the catch-up as owed
+        stale = True
+    if not stale:
+        # While it settled or waited, a model-backed ordinary cycle already
+        # brought the Brief up to date: a forced one now would only repeat it.
+        _armed, _opened_at = None, None
+        _log("no longer owed: the Brief was caught up meanwhile")
+        return "fresh"
     since = (arrived or _arrived)(now)
     if since < SETTLE_S:
         _retry_at = now + (SETTLE_S - since)
@@ -210,10 +223,10 @@ async def run(*, now: float | None = None, store=None, cycle, gists, ready=None,
         return "waiting"
     if hold is None:
         from service.memory_saver import hold
-    store = _store(store)
     _running = True
     _log(f"regenerating the Brief ({_armed['reason']})")
-    deadline = time.monotonic() + RUN_MAX_S
+    started = time.monotonic()
+    deadline = started + RUN_MAX_S
     try:
         with hold():
             try:
@@ -237,8 +250,11 @@ async def run(*, now: float | None = None, store=None, cycle, gists, ready=None,
     finally:
         _running = False
         if _armed is not None:
-            # Whatever ended it (a turn, rules, a timeout, an error), back off.
-            _retry_at = max(_retry_at, now + YIELD_S)
+            # Whatever ended it (a turn, rules, a timeout, an error), back off
+            # from when it ENDED: a run longer than YIELD_S would otherwise end
+            # with its retry already due, and force cycle after cycle.
+            ended = now + (time.monotonic() - started)
+            _retry_at = max(_retry_at, ended + YIELD_S)
     try:
         await (announce or _announce)()
     except Exception:  # noqa: BLE001 — the app's next read shows it anyway

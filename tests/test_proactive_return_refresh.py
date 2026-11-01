@@ -136,7 +136,7 @@ def test_a_turn_wins_and_the_catch_up_stays_owed(store):
     assert R.pending() and rec.gists == 0 and rec.announced == 0
     assert "idle_refresh_at" not in store.state()
     assert not M.held()
-    assert not R.due(NOW + R.YIELD_S - 1) and R.due(NOW + R.YIELD_S)
+    assert not R.due(NOW + R.YIELD_S - 1) and R.due(NOW + R.YIELD_S + 1)
 
 
 def test_a_run_that_takes_too_long_lets_the_model_go(store, monkeypatch):
@@ -413,4 +413,39 @@ def test_an_error_after_the_cycle_still_backs_off(store, monkeypatch):
         run(Recorder(), store)
     assert R.pending() and not R.status()["running"] and not M.held()
     # Not a forced cycle on every tick.
-    assert not R.due(NOW + 30) and R.due(NOW + R.YIELD_S)
+    assert not R.due(NOW + 30) and R.due(NOW + R.YIELD_S + 1)
+
+
+# --- auditor notes (rc1 batch 2): back-off clock, fresh re-check --------------------
+
+def test_a_long_run_backs_off_from_when_it_ended_not_when_it_started(store, monkeypatch):
+    R.arm("opened", now=NOW, store=store)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(R.time, "monotonic", lambda: clock["t"])
+
+    async def long_turn_hit(**kwargs):
+        clock["t"] += R.YIELD_S + 300          # the cycle ran 7 minutes, then a turn won
+        return {"status": "yielded"}
+
+    rec = Recorder()
+    outcome = asyncio.run(R.run(now=NOW, store=store, cycle=long_turn_hit, gists=rec.refresh_gists,
+                                ready=_ready, announce=rec.announce, arrived=_long_ago))
+    assert outcome == "yielded" and R.pending()
+    ended = NOW + R.YIELD_S + 300
+    # Not due again the moment it ends (the old start-based retry was long past).
+    assert not R.due(ended) and not R.due(ended + R.YIELD_S - 1) and R.due(ended + R.YIELD_S)
+
+
+def test_a_brief_the_ordinary_cycle_caught_up_meanwhile_is_no_longer_owed(store):
+    R.arm("opened", now=NOW, store=store)
+    rec = Recorder()
+    assert run(rec, store, arrived=lambda now: 10.0) == "settling"
+    # While it settled, the ordinary cycle ran on the model.
+    store.save_state(as_of=NOW + 20, model_as_of=NOW + 20)
+    assert run(rec, store, now=NOW + R.SETTLE_S) == "fresh"
+    assert rec.cycles == [] and not R.pending() and not R.updating(NOW + R.SETTLE_S)
+    # A rules-only cycle meanwhile (as_of only) still leaves it owed.
+    R.arm("opened", now=NOW + 4 * 3600, store=store)
+    store.save_state(as_of=NOW + 4 * 3600 + 20)
+    assert run(rec, store, now=NOW + 4 * 3600 + R.SETTLE_S) == "ran"
+    assert rec.cycles == [{"force": True}]
