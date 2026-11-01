@@ -947,6 +947,13 @@ struct DayTimeline: Equatable {
         return members.isEmpty ? (item.evidenceID.map { [$0] } ?? []) : members
     }
 
+    /// The Undo bar's words after Remove. A grouped review says how many emails
+    /// went, since Undo brings them all back together.
+    static func removedNotice(_ item: DayItem) -> String {
+        item.members.count > 1 ? "Removed \(item.members.count) emails from your day"
+                               : "Removed “\(item.title)” from your day"
+    }
+
     /// The task Plan time makes from a need: "Review: …" for mail and texts.
     static func plannedTitle(_ title: String, review: Bool) -> String {
         review ? "Review: " + title : title
