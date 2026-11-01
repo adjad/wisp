@@ -275,7 +275,7 @@ enum SettingsQADriver {
         // closed Change engine menu, so the menu's own title is what renders.
         try require(text.localizedCaseInsensitiveContains("Built-in engine")
                     && text.localizedCaseInsensitiveContains("Change engine")
-                    && text.localizedCaseInsensitiveContains("both use memory"),
+                    && text.localizedCaseInsensitiveContains("both engines use memory"),
                     "Engine section is missing from rendered Settings window: \(text.prefix(300))")
         try await saveEmbeddedRenders(loader: loader)
 

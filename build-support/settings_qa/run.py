@@ -34,12 +34,14 @@ DISABLED_LOCAL = {
 }
 
 
-# Synthetic /engine response: the built-in engine running while the user's own oMLX also runs.
+# Synthetic /engine response: the built-in engine running while the user's own oMLX also
+# runs with a model loaded.
 ENGINE_FIXTURE = {
     "mode": "bundled", "configured_mode": "bundled", "bundled_available": True,
     "unsupported_reason": None, "running": True, "omlx_version": "0.7.1.dev1",
     "admin_url": "http://127.0.0.1:8791/admin", "external_omlx_installed": True,
     "restart_required": False, "external_engine_running": True,
+    "external_engine_loaded": True, "external_engine_model_bytes": 4_294_967_296,
 }
 
 
