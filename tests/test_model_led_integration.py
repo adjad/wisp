@@ -580,6 +580,35 @@ def test_opaque_outbound_always_confirms_in_model_led_even_with_full_access(synt
         assert [n for n, _ in effects] == [name]
 
 
+@pytest.mark.parametrize("name,category,family", [
+    ("mcp_synthetic_send_note", "mcp_action", "connected"),
+    ("skill_synthetic_do", "skill_tool", "skills")])
+@pytest.mark.parametrize("untrusted_read", [False, True])
+def test_skill_and_mcp_actions_always_confirm_in_model_led_even_with_full_access(
+        synthetic, monkeypatch, name, category, family, untrusted_read):
+    # Release Auditor P0 on rc1 batch 2: model-led routing left out
+    # OPAQUE_ACTION_CATEGORIES, so under full access (and a standing grant) a
+    # skill or MCP call, say one planted in a summarized email, ran with no card.
+    effects, register = synthetic
+    register(name, "automation_tools", category, parameters={"type": "object", "properties": {
+        "name": {"type": "string"}}})
+    monkeypatch.setitem(model_led.EFFECT_RECEIPTS, name, ("synthetic ",))
+    monkeypatch.setattr("service.safety.policy._FULL_ACCESS", True)
+    monkeypatch.setattr("service.safety.grants.check", lambda *args: "allow")
+    approval = Approval(False)
+    families, tools = [family], [name]
+    reads = []
+    if untrusted_read:
+        families, tools = ["email", family], ["view_emails", name]
+        reads = [[call("view_emails")]]
+    run([[call(DISCOVERY_TOOL, families=families, tools=tools)], *reads,
+         [call(name, name="fixture")], "Synthetic reply."],
+        prompt="summarize my latest email and run my fixture" if untrusted_read else "run my fixture",
+        approval=approval, **_owners())
+    assert [a["tool"] for a in approval.calls] == [name]
+    assert name not in [n for n, _ in effects]   # declined at the card, so it never ran
+
+
 def test_validated_shell_read_is_not_forced_to_confirm_by_opaque_rule(synthetic, monkeypatch):
     monkeypatch.setattr("service.safety.policy._FULL_ACCESS", True)
     approval = Approval(False)
