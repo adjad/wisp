@@ -81,6 +81,62 @@ struct ScreenLookChecks {
         check(first.contains("Screen Recording") && first.contains("reopen"), "first denial explains")
         check(later.contains("Settings") && later != first, "a later denial points at Settings")
 
+        // Private browsing is never captured silently.
+        func app(_ number: UInt32, _ owner: String, _ bundle: String, _ title: String = "Page",
+                 x: CGFloat = 0) -> ScreenLook.Window {
+            var w = ScreenLook.Window(number: number, ownerPID: Int32(number), ownerName: owner, title: title,
+                                      bounds: CGRect(x: x, y: 40, width: 900, height: 700), layer: 0, alpha: 1)
+            w.bundleID = bundle
+            return w
+        }
+        let notes = app(10, "Notes", "com.apple.Notes")
+        let safari = app(11, "Safari", "com.apple.Safari")
+        let chrome = app(12, "Google Chrome", "com.google.Chrome")
+        let renamedChrome = app(13, "Chrome Beta Thing", "com.google.Chrome.beta")
+        let unknownBrowser = app(14, "Foo Browser", "")
+        for browser in [safari, chrome, renamedChrome, unknownBrowser,
+                        app(15, "Arc", "company.thebrowser.Browser"), app(16, "Firefox", "org.mozilla.firefox"),
+                        app(17, "Microsoft Edge", "com.microsoft.edgemac"), app(18, "Brave Browser", "")] {
+            check(ScreenLook.isBrowser(browser), "\(browser.ownerName) is a browser")
+        }
+        check(!ScreenLook.isBrowser(notes), "Notes is not a browser")
+        check(ScreenLook.browserVerdict([notes], incognito: []) == .clear, "no browser: no extra tap")
+        check(ScreenLook.browserVerdict([], incognito: []) == .clear, "nothing in the capture")
+        if case .confirm(let text) = ScreenLook.browserVerdict([safari], incognito: []) {
+            check(text.contains("Safari") && text.contains("private") && text.contains("Look anyway"),
+                  "a browser window warns and asks for one more tap")
+        } else { check(false, "a Safari window needs a confirm tap (private Safari can't be detected)") }
+        if case .confirm(let text) = ScreenLook.browserVerdict([notes, chrome, safari, chrome], incognito: []) {
+            check(text.hasPrefix("Google Chrome and Safari"), "each browser named once, in order")
+        } else { check(false, "several browsers still need the tap") }
+        if case .refuse(let text) = ScreenLook.browserVerdict([notes, chrome], incognito: [12]) {
+            check(text.contains("private") && text.contains("Google Chrome"), "Chrome-reported incognito is refused")
+        } else { check(false, "an incognito window Chrome reports is refused") }
+        for title in ["Docs — Private Browsing", "New InPrivate tab - Microsoft Edge", "Incognito tab",
+                      "Page (Private)", "Mozilla Firefox Private Browsing"] {
+            if case .refuse = ScreenLook.browserVerdict([app(19, "Firefox", "org.mozilla.firefox", title)], incognito: []) {
+                check(true, "title marker refused")
+            } else { check(false, "a private title marker is refused: \(title)") }
+        }
+        if case .refuse = ScreenLook.browserVerdict([safari, chrome], incognito: [12]) {
+            check(true, "one private window refuses the whole capture")
+        } else { check(false, "a region or screen with a private window is refused") }
+        check(ScreenLook.browserVerdict([app(20, "Notes", "com.apple.Notes", "Incognito recipes")], incognito: []) == .clear,
+              "a non-browser title that mentions incognito is just a title")
+        check(!ScreenLook.privateTitle("Private equity news"), "the word private alone is not a marker")
+
+        // Incognito bounds from the browser map onto window-list windows.
+        check(ScreenLook.matchesIncognito(chrome, incognitoBounds: [CGRect(x: 1, y: 41, width: 899, height: 701)]),
+              "bounds within 2 pt match")
+        check(!ScreenLook.matchesIncognito(chrome, incognitoBounds: [CGRect(x: 400, y: 40, width: 900, height: 700)]),
+              "another window's bounds do not")
+
+        // A region or display capture checks every ordinary window it overlaps.
+        let left = app(21, "Safari", "com.apple.Safari", x: 0), right = app(22, "Notes", "com.apple.Notes", x: 2000)
+        let over = ScreenLook.windows([left, right, window(23, wisp, "Wisp")],
+                                      overlapping: CGRect(x: 100, y: 100, width: 200, height: 200), excludingPID: wisp)
+        check(over.map(\.number) == [21], "only overlapping, non-Wisp windows are checked")
+
         print("ScreenLookChecks: \(count) checks passed")
     }
 }

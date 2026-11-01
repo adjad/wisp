@@ -14,6 +14,11 @@ import Foundation
 ///  - Memory only, like every attachment (MediaAttachment): never written to disk.
 ///  - A window title is written by whoever made the page or file. It is shown and
 ///    sent as a plain, short label, never as an instruction.
+///  - Private browsing is never captured silently (browserVerdict). A browser
+///    window in the capture needs one extra tap after a warning, because a
+///    Safari private window, for one, can't be told apart. A window that is
+///    detectably private (a title marker, or a Chromium browser reporting it
+///    incognito) is refused outright.
 ///
 /// Pure logic, checked by tests/ScreenLookChecks.swift without the app. The
 /// capture itself is ScreenSnapshot (PageReader.swift); the drag is RegionPicker.
@@ -33,6 +38,8 @@ enum ScreenLook {
         let bounds: CGRect
         let layer: Int
         let alpha: Double
+        /// The owning app's bundle ID (from NSRunningApplication), when known.
+        var bundleID: String = ""
     }
 
     /// The window list's dictionaries as Windows, front to back (the order macOS gives).
@@ -111,6 +118,88 @@ enum ScreenLook {
               + "switch on Wisp, then quit and reopen Wisp."
             : "Wisp needs Screen Recording to look at your screen. Allow it in the window macOS shows, "
               + "then quit and reopen Wisp."
+    }
+
+    // MARK: - Private browsing
+
+    static let browserBundleIDs: Set<String> = [
+        "com.apple.Safari", "com.apple.SafariTechnologyPreview",
+        "com.google.Chrome", "com.google.Chrome.beta", "com.google.Chrome.dev", "com.google.Chrome.canary",
+        "org.chromium.Chromium", "company.thebrowser.Browser", "com.brave.Browser", "com.brave.Browser.beta",
+        "com.microsoft.edgemac", "com.microsoft.edgemac.Beta", "com.microsoft.edgemac.Dev",
+        "com.vivaldi.Vivaldi", "com.operasoftware.Opera", "com.operasoftware.OperaGX",
+        "org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition", "org.mozilla.nightly",
+        "org.torproject.torbrowser", "app.zen-browser.zen", "com.kagi.kagimacOS",
+        "com.duckduckgo.macos.browser", "ai.perplexity.comet", "com.openai.atlas",
+    ]
+    /// Owner names, for a browser whose bundle ID isn't known (or a renamed build).
+    static let browserNames: Set<String> = [
+        "safari", "safari technology preview", "google chrome", "chromium", "arc", "brave browser",
+        "microsoft edge", "vivaldi", "opera", "firefox", "firefox developer edition", "firefox nightly",
+        "tor browser", "zen", "zen browser", "orion", "duckduckgo", "comet", "chatgpt atlas",
+    ]
+    /// Chromium browsers whose AppleScript `mode` says "incognito" per window.
+    /// Asked only when Wisp already holds Automation for that browser; never prompts.
+    static let incognitoScriptable: Set<String> = [
+        "com.google.Chrome", "com.google.Chrome.beta", "com.google.Chrome.dev", "com.google.Chrome.canary",
+        "org.chromium.Chromium", "com.brave.Browser", "com.brave.Browser.beta",
+        "com.microsoft.edgemac", "com.microsoft.edgemac.Beta", "com.microsoft.edgemac.Dev",
+        "com.vivaldi.Vivaldi",
+    ]
+
+    static func isBrowser(_ window: Window) -> Bool {
+        browserBundleIDs.contains(window.bundleID) || browserNames.contains(window.ownerName.lowercased())
+            || window.ownerName.lowercased().hasSuffix(" browser")
+    }
+
+    /// Title words browsers put on private windows: Firefox and Tor "Private
+    /// Browsing", Edge "InPrivate", Chromium builds that show "Incognito".
+    /// Safari puts none in the title, so it is never detected this way.
+    static func privateTitle(_ title: String) -> Bool {
+        let lower = title.lowercased()
+        return ["private browsing", "inprivate", "incognito", "(private)", "private window"]
+            .contains { lower.contains($0) }
+    }
+
+    /// Whether a window's bounds are one a browser reported incognito (AppleScript
+    /// bounds are the same top-left global coordinates; 2 pt tolerance).
+    static func matchesIncognito(_ window: Window, incognitoBounds: [CGRect]) -> Bool {
+        incognitoBounds.contains { other in
+            abs(other.minX - window.bounds.minX) <= 2 && abs(other.minY - window.bounds.minY) <= 2
+                && abs(other.width - window.bounds.width) <= 2 && abs(other.height - window.bounds.height) <= 2
+        }
+    }
+
+    enum Verdict: Equatable {
+        case clear
+        /// Show this warning; capture only after the person taps Look anyway.
+        case confirm(String)
+        /// Never capture; say this.
+        case refuse(String)
+    }
+
+    /// What Look does with the windows a capture would include. `incognito` holds
+    /// the window numbers a browser itself reported private.
+    static func browserVerdict(_ windows: [Window], incognito: Set<UInt32>) -> Verdict {
+        let browsers = windows.filter(isBrowser)
+        if let hit = browsers.first(where: { incognito.contains($0.number) || privateTitle($0.title) }) {
+            let app = label(app: hit.ownerName, title: "") ?? "a browser"
+            return .refuse("That's a private browsing window in \(app). Wisp doesn't look at private windows.")
+        }
+        guard !browsers.isEmpty else { return .clear }
+        var apps: [String] = []
+        for window in browsers {
+            if let name = label(app: window.ownerName, title: ""), !apps.contains(name) { apps.append(name) }
+        }
+        let named = apps.isEmpty ? "A browser window" : apps.joined(separator: " and ")
+        return .confirm("\(named) will be in this picture. If it's a private or incognito window, "
+                        + "cancel: Wisp can't always tell. Look anyway?")
+    }
+
+    /// The windows a region or display capture would include (ordinary windows
+    /// that overlap it, not Wisp's own).
+    static func windows(_ windows: [Window], overlapping rect: CGRect, excludingPID: Int32) -> [Window] {
+        windows.filter { $0.ownerPID != excludingPID && $0.layer == 0 && $0.alpha > 0.01 && $0.bounds.intersects(rect) }
     }
 
     private static func plain(_ value: String) -> String {

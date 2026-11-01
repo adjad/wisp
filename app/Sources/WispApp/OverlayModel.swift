@@ -1321,17 +1321,56 @@ final class OverlayModel: ObservableObject {
         }
         cancelAttachmentRead()
         Task { [weak self] in
-            let jpeg = await Task.detached(priority: .userInitiated) { ScreenSnapshot.captureMainDisplayJPEG() }.value
-            guard let self else { return }
-            guard let jpeg else {
-                self.showTransientNotice("Wisp couldn't capture the screen.")
-                return
+            let verdict = await Task.detached(priority: .userInitiated) {
+                ScreenSnapshot.verdict(for: ScreenLook.windows(
+                    ScreenSnapshot.onScreenWindows(), overlapping: CGDisplayBounds(CGMainDisplayID()),
+                    excludingPID: ProcessInfo.processInfo.processIdentifier))
+            }.value
+            self?.afterBrowserCheck(verdict) { [weak self] in
+                Task { [weak self] in
+                    let jpeg = await Task.detached(priority: .userInitiated) { ScreenSnapshot.captureMainDisplayJPEG() }.value
+                    guard let self else { return }
+                    guard let jpeg else {
+                        self.showTransientNotice("Wisp couldn't capture the screen.")
+                        return
+                    }
+                    self.setAttachment(.image(jpeg: jpeg, source: .screen), name: "Screen")
+                }
             }
-            self.setAttachment(.image(jpeg: jpeg, source: .screen), name: "Screen")
         }
     }
 
     // MARK: - Look
+
+    /// A browser is in the capture (ScreenLook.browserVerdict): this warning shows
+    /// with Look anyway / Cancel, and nothing is captured until Look anyway.
+    @Published private(set) var lookWarning: String?
+    private var lookWarningAction: (() -> Void)?
+
+    /// Runs `capture` now, after the person's extra tap, or never.
+    private func afterBrowserCheck(_ verdict: ScreenLook.Verdict, capture: @escaping () -> Void) {
+        lookWarning = nil; lookWarningAction = nil
+        switch verdict {
+        case .clear: capture()
+        case .refuse(let message): showTransientNotice(message, duration: 6)
+        case .confirm(let message):
+            lookWarning = message
+            lookWarningAction = capture
+            onResize()
+        }
+    }
+
+    func confirmLookWarning() {
+        let action = lookWarningAction
+        lookWarning = nil; lookWarningAction = nil
+        onResize()
+        action?()
+    }
+
+    func cancelLookWarning() {
+        lookWarning = nil; lookWarningAction = nil
+        onResize()
+    }
 
     /// "Look" without Screen Recording: say how to turn it on, and open the same
     /// surface setup's Screen Recording row does (macOS's prompt the first time,
@@ -1351,20 +1390,36 @@ final class OverlayModel: ObservableObject {
         guard screenRecordingReadyForLook() else { return }
         cancelAttachmentRead()
         Task { [weak self] in
-            let shot = await Task.detached(priority: .userInitiated) {
-                ScreenSnapshot.captureFrontWindowJPEG(frontPID: frontPID)
+            let found = await Task.detached(priority: .userInitiated) { () -> (ScreenLook.Window, ScreenLook.Verdict)? in
+                guard let window = ScreenSnapshot.frontWindow(frontPID: frontPID) else { return nil }
+                return (window, ScreenSnapshot.verdict(for: [window]))
             }.value
             guard let self else { return }
-            guard let shot else {
+            guard let found else {
                 self.showTransientNotice("Wisp couldn't find a window to look at.")
                 return
             }
-            self.setAttachment(.image(jpeg: shot.jpeg, source: .screen), name: "Screen", screenLabel: shot.label)
+            let (window, verdict) = found
+            self.afterBrowserCheck(verdict) { [weak self] in
+                Task { [weak self] in
+                    let jpeg = await Task.detached(priority: .userInitiated) {
+                        ScreenSnapshot.captureWindowJPEG(window)
+                    }.value
+                    guard let self else { return }
+                    guard let jpeg else {
+                        self.showTransientNotice("Wisp couldn't capture that window.")
+                        return
+                    }
+                    self.setAttachment(.image(jpeg: jpeg, source: .screen), name: "Screen",
+                                       screenLabel: ScreenLook.label(app: window.ownerName, title: window.title))
+                }
+            }
         }
     }
 
-    /// The eye button's "Drag over part of the screen": the region picker, then
-    /// the same pending preview. Esc or a click cancels without a capture.
+    /// The eye button's "Drag over part of the screen": the region picker, the
+    /// browser check on every window the region overlaps, then the same pending
+    /// preview. Esc or a click cancels without a capture.
     func lookAtRegion() {
         guard screenRecordingReadyForLook() else { return }
         cancelAttachmentRead()
@@ -1373,16 +1428,25 @@ final class OverlayModel: ObservableObject {
         RegionPicker.pick { [weak self] rect in
             guard let rect else { return }
             Task { [weak self] in
-                let jpeg = await Task.detached(priority: .userInitiated) {
-                    ScreenSnapshot.captureRegionJPEG(rect)
+                let verdict = await Task.detached(priority: .userInitiated) {
+                    ScreenSnapshot.verdict(for: ScreenLook.windows(
+                        ScreenSnapshot.onScreenWindows(), overlapping: rect,
+                        excludingPID: ProcessInfo.processInfo.processIdentifier))
                 }.value
-                guard let self else { return }
-                guard let jpeg else {
-                    self.showTransientNotice("Wisp couldn't capture that part of the screen.")
-                    return
+                self?.afterBrowserCheck(verdict) { [weak self] in
+                    Task { [weak self] in
+                        let jpeg = await Task.detached(priority: .userInitiated) {
+                            ScreenSnapshot.captureRegionJPEG(rect)
+                        }.value
+                        guard let self else { return }
+                        guard let jpeg else {
+                            self.showTransientNotice("Wisp couldn't capture that part of the screen.")
+                            return
+                        }
+                        self.setAttachment(.image(jpeg: jpeg, source: .screen), name: "Screen",
+                                           screenLabel: ScreenLook.regionLabel(app: app))
+                    }
                 }
-                self.setAttachment(.image(jpeg: jpeg, source: .screen), name: "Screen",
-                                   screenLabel: ScreenLook.regionLabel(app: app))
             }
         }
     }

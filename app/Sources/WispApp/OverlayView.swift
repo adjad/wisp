@@ -321,6 +321,9 @@ struct OverlayView: View {
 
     // The Ask field (Research's prompt on that tab), its command list and the rule under it.
     @ViewBuilder private var promptArea: some View {
+        if let warning = model.lookWarning {
+            lookWarningBox(warning).padding(.top, 10)
+        }
         if model.attachmentIsScreen, let thumb = model.attachedThumbnail {
             screenPreview(thumb).padding(.top, 10)
         }
@@ -631,6 +634,25 @@ struct OverlayView: View {
             }
         }
         return false
+    }
+
+    /// A browser is in what Look would capture: nothing is captured until Look anyway.
+    private func lookWarningBox(_ warning: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(warning, systemImage: "eye.trianglebadge.exclamationmark")
+                .font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button("Cancel", action: model.cancelLookWarning).keyboardShortcut(.cancelAction)
+                Button("Look anyway", action: model.confirmLookWarning)
+            }
+            .font(.wisp(.footnote, weight: .medium))
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Theme.chipFill))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.chipStroke, lineWidth: 1))
+        .accessibilityElement(children: .contain)
     }
 
     /// Look: the window in front (also ⌥⇧L), or a part of the screen dragged over.
