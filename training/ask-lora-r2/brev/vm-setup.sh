@@ -20,9 +20,13 @@
 # Log: ~/wisp/setup.log. Done when ~/wisp/SETUP_DONE exists.
 set -uo pipefail
 
-JUSER="$(getent passwd 1000 | cut -d: -f1 || true)"
-JHOME="$(getent passwd 1000 | cut -d: -f6 || true)"
-[ -n "$JHOME" ] || { JUSER="$(id -un)"; JHOME="$HOME"; }
+# The invoking user, except as root (Jupyter's uid 1000). Some Brev hosts log in as a non-1000 user
+# (Hyperstack: shadeform, uid 1001), and uid 1000's home is not theirs to write.
+JUSER="$(id -un)"; JHOME="$HOME"
+if [ "$(id -u)" = 0 ]; then
+  U1000="$(getent passwd 1000 | cut -d: -f1 || true)"
+  [ -n "$U1000" ] && { JUSER="$U1000"; JHOME="$(getent passwd 1000 | cut -d: -f6)"; }
+fi
 WORK="$JHOME/wisp"
 
 MODELS="${MODELS:-gemma}"   # round 2 trains Gemma only (Bolt is text-only, dropped 2026-10-31)
