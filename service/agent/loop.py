@@ -3374,7 +3374,6 @@ async def run_agent(
     ask_expect_tool = False
     ask_reprompt_step = False
     ask_reprompted = False
-    ask_grounding_checked = False   # one grounding re-prompt per turn (service/agent/grounding.py)
     ask_reprompt_no_web = False
     ask_write_nudged = False
     ask_text_call_nudged = False
@@ -4021,26 +4020,6 @@ async def run_agent(
                         + "Call the tool that holds it now (calendar, email, messages, reminders, "
                         "notes or memory); if nothing holds it, say you don't know. Do not guess.")})
                     continue
-                if (not ask_grounding_checked and _step < max_steps - 1 and not test_mode
-                        and not pure_writing(memory_query)):
-                    # Check the answer against what this turn saw: a value no
-                    # tool result shows, or "I've set it" with nothing run.
-                    # One re-prompt with what did not match, then accept the
-                    # next answer as it comes; the text is never edited here.
-                    from service.agent.grounding import check as grounding_check
-                    from service.memory.subject import own_identity
-                    ask_grounding_checked = True
-                    correction = grounding_check(
-                        text, msgs, ran_tools=bool(attempted_tools), had_results=bool(clean_results),
-                        asks_action=asks_change, asks_personal=asks_personal_data(memory_query),
-                        own_names=own_identity()[0])
-                    if correction:
-                        audit("ask_grounding_reprompt", step=_step, correction=correction)
-                        if content_streamed:
-                            await emit({"type": "clear_answer"})
-                        msgs.append({"role": "assistant", "content": text})
-                        msgs.append({"role": "user", "content": correction})
-                        continue
             unmet = _unmet_group()
             candidates = _unmet_candidates(unmet)
             if unmet is not None and candidates and _step < max_steps - 1:

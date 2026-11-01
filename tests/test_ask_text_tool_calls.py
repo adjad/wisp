@@ -56,10 +56,10 @@ def test_a_personal_question_written_as_markup_is_reprompted_to_call_the_tool(sy
     effects, _ = synthetic
     client, _, answer = run(
         ['<|tool_call>call: calendar:get_upcoming{period:<|"|>tomorrow<|"|>}<tool_call|>',
-         [call("get_upcoming", period="tomorrow")], "Tomorrow: Workshop at 2 PM."],
+         [call("get_upcoming", period="tomorrow")], "Tomorrow: Office Hours 10–11 AM."],
         prompt="what do I have tomorrow?", ask_quality=True, model_led_preload=["get_upcoming"])
     assert client.requests[1]["tool_choice"] == "required"
-    assert answer == "Tomorrow: Workshop at 2 PM."
+    assert answer == "Tomorrow: Office Hours 10–11 AM."
 
 
 @pytest.mark.parametrize("ro,full", [(True, False), (False, False), (False, True)])
