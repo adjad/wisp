@@ -250,7 +250,9 @@ async def run() -> None:
         # only while nobody is waiting, never alongside a gist call. About
         # hourly, at the first tick the Mac has sat idle 10 min, it regenerates
         # the whole Brief (cards, then every gist) when something changed:
-        # cycle.idle_refresh.
+        # cycle.idle_refresh. Coming back to a stale Brief (a relaunch, an
+        # unpark, the notch opening) regenerates it once on the resident model:
+        # proactive/return_refresh.
         try:
             from service.proactive import cycle as proactive_cycle
             proactive_cycle.schedule_tick()

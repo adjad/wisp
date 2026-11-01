@@ -155,15 +155,31 @@ _REASONING_OPENER = re.compile(
 _MARKUP = re.compile(r"<\|tool_call>|<tool_call\|>|<\|\"\|>|\bcall:[A-Za-z_][\w.:-]*\s*\{")
 
 
+# Documented argument aliases a tool itself resolves (schedule_send: `text` is
+# an alias for `body`), so a case written against one name scores either.
+_ARG_ALIASES = {"schedule_send": {"body": "text"}}
+
+
 def _split_calls(traj: dict) -> tuple[list[dict], list[dict]]:
     """(model calls, discovery calls). Each model call keeps the names its
     step offered under "_offered" (None when the step did not record them)."""
+    from service.agent.loop import _clean_tool_name
+    from service.tools.registry import get_tool, runnable_stub_call
     model, discovery = [], []
     for s in traj.get("steps", ()):
         stubs = set(s.get("stubs") or ())
         offered = s.get("offered")
         for c in s.get("calls") or ():
-            if c["name"] == DISCOVERY_TOOL or c["name"] in stubs:
+            # The loop reads "memory.forget" as forget; score the call it ran.
+            c = {**c, "name": _clean_tool_name(c["name"])}
+            args = c.get("args") or {}
+            for key, alias in _ARG_ALIASES.get(c["name"], {}).items():
+                if key not in args and alias in args:
+                    c["args"] = args = {**args, key: args[alias]}
+            # A stub call whose arguments fit the real schema ran as that call
+            # (service/agent/loop.py, registry.runnable_stub_call).
+            if c["name"] == DISCOVERY_TOOL or (
+                    c["name"] in stubs and not runnable_stub_call(get_tool(c["name"]), c.get("args"))):
                 discovery.append(c)
             else:
                 model.append({**c, "_offered": offered})

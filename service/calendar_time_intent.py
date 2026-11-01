@@ -53,6 +53,11 @@ class CalendarTimeIntent:
                 'account': '', 'include_holidays': False, **self.calendar_args()}
 
 
+def named_event_kind(title: str) -> bool:
+    """True when a title names an event kind (review, appointment, class...)."""
+    return bool(_KIND.search(title or ""))
+
+
 def named_calendar_time(text: str) -> CalendarTimeIntent | None:
     """Return None for other owners; unsupported named envelopes clarify only."""
     # The established generic agenda owner already understands this complete

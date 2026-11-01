@@ -34,6 +34,16 @@ from service.tools.registry import REGISTRY, register
 # Tool names this module has registered, so a reload can retract tools whose
 # skill was uninstalled or disabled instead of leaving them callable forever.
 _registered: set[str] = set()
+# Marks a runner this module built; router.model_led trusts only those for a
+# completion receipt (authentic_completion_tool).
+_COMPLETION_TOKEN = object()
+
+
+def authentic_completion_tool(tool) -> bool:
+    """A registered skill tool whose function is this module's own runner."""
+    return (getattr(tool, "category", "") == "skill_tool" and tool.name in _registered
+            and getattr(tool.func, "_wisp_completion", None) is _COMPLETION_TOKEN
+            and getattr(tool.func, "_wisp_tool_name", None) == tool.name)
 
 _PLACEHOLDER_RE = re.compile(r"\{(\w+)\}")
 _TIMEOUT_S = 120
@@ -68,7 +78,7 @@ def _build_argv(template: str, args: dict) -> list[str] | str:
     return argv
 
 
-def _make_runner(skill_dir: Path, spec: dict):
+def _make_runner(skill_dir: Path, spec: dict, name: str = ""):
     template = str(spec.get("command") or "")
     script = str(spec.get("script") or "")
     read_scopes, _ = scopes.parse_scopes(spec.get("read_scopes"))
@@ -150,8 +160,13 @@ def _make_runner(skill_dir: Path, spec: dict):
                 return (f"(blocked by the sandbox — this tool tried to reach a "
                         f"file outside what it's allowed. {allowed})\n{text}")
             return f"(exit code {proc.returncode})\n{text}"
-        return text or "(done — no output)"
+        # The host-observed exit status 0 is the completion boundary, not the
+        # skill's own words (router.model_led.EXTENSION_COMPLETION_MODULES).
+        from service.router.model_led import BuiltinCompletion
+        return BuiltinCompletion(text or "(done — no output)", tool_name=name, completion_code=0)
 
+    run._wisp_completion = _COMPLETION_TOKEN
+    run._wisp_tool_name = name
     return run
 
 
@@ -190,7 +205,7 @@ def register_skill_tools(skills: dict) -> list[str]:
             description = (str(spec.get("description") or name)
                            + f" (from the '{skill.name}' skill)")
             register(name, description, schema, category="skill_tool")(
-                _make_runner(skill.path, spec))
+                _make_runner(skill.path, spec, name))
             _registered.add(name)
             added.append(name)
     return added

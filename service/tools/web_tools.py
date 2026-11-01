@@ -1201,8 +1201,7 @@ async def _one_history(query: str, period: str, *, exact_days: int | None = None
     "that header against what you're about to say before you describe a price "
     "as being from a particular time ago; never relabel the span the result "
     "actually covers as the one the user asked for. "
-    "For CRYPTO prices, use web_fetch's documented CoinGecko form instead — "
-    "this tool is equities/ETFs only.",
+    "Stocks/ETFs only; for crypto use web_search.",
     {"type": "object",
      "properties": {
          "symbols": {"type": "array", "items": {"type": "string"},
@@ -1588,11 +1587,10 @@ async def _weather_extras(extras: list[str], area: dict, name: str, country: str
 
 @register(
     "web_search",
-    "Search the public web and return structured results with real titles, URLs, "
-    "domains, and snippets. Use this when the user asks to search, research, "
-    "compare sources, find recent information, or asks a question whose answer "
-    "is not at a known URL. If web_fetch is available, call it on a relevant "
-    "result when snippets are insufficient. Never invent a URL or result.",
+    "Search the public web: real titles, URLs, domains and snippets. Use for 'search' / 'look "
+    "up', news, recent facts, crypto prices and anything not at a known URL. Stocks/ETFs: "
+    "get_stock_price. Weather: get_weather. Read a result with web_fetch only if the snippets "
+    "are not enough. Never invent a URL or result.",
     {"type": "object",
      "properties": {
          "query": {"type": "string", "description": "specific web search query"},
@@ -2584,13 +2582,11 @@ async def current_news(query: str, limit: int = 6) -> str:
 
 @register(
     "web_fetch",
-    "Fetch a URL over HTTP(S) and return its text (GET only, no auth/cookies) — "
-    "for live external data with no dedicated tool: crypto prices, sports "
-    "scores, news, any public page or API. TWO THINGS HAVE THEIR OWN TOOL AND "
-    "DO NOT BELONG HERE: stock/equity prices (`get_stock_price`) and weather "
-    "(`get_weather`). Both exist because hand-building the URL for them was "
-    "measured to get the wrong ticker and the wrong city. Known no-key "
-    "endpoints, use these exact forms:\n"
+    "Fetch a URL over HTTP(S) and return its text (GET only, no auth/cookies) "
+    "for a known page or API. Not for a lookup by topic (news, crypto or other "
+    "prices, facts: web_search first), stocks/ETFs (get_stock_price) or weather "
+    "(get_weather): hand-built URLs for those got the wrong ticker and city. "
+    "Known no-key endpoints, use these exact forms:\n"
     "  crypto   https://api.coingecko.com/api/v3/simple/price?ids=<coin>&vs_currencies=usd\n"
     "  news     https://news.google.com/rss/search?q=<topic>&hl=en-US&gl=US&ceid=US:en "
     "(q is required; use q=top stories for a generic ask)\n"

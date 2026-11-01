@@ -127,6 +127,7 @@ PROFILE_TESTS = {
         "tests/test_temporal_facts.py",
         "tests/test_daily_workspace.py",
         "tests/test_day_review_blocks.py",
+        "tests/test_day_remove_suggestion.py",
         "tests/test_brief_needs_you.py",
         "tests/test_day_timeline_event_fields.py",
         "tests/test_mail_gists.py",
@@ -295,6 +296,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_email_summary_dedupe.py",
     # Needs you Clear / Mark done over synthetic stores and a stubbed native outbox.
     "tests/test_needs_you_clear.py",
+    # Day Remove on a suggestion: kept out of Replan over a scratch store; nothing native.
+    "tests/test_day_remove_suggestion.py",
     # Messages read-failure reasons over module state and an inert ASGI app; no native reader.
     "tests/test_messages_read_failure.py",
     # Real ASGI modes over disposable pending owners and fully inert capabilities.
@@ -333,6 +336,14 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_model_only_quality.py",
     # Ask stall re-prompt, tomorrow typos and the day plan: fake model client, stubbed snapshot.
     "tests/test_ask_day_answers.py",
+    # Ask quality: code-failure fixes, tool-pair descriptions, the Wisp self-reference
+    # sheet, the follow-up subject record and intent hard stops; registry checks,
+    # fake model client, synthetic tools, private WISP_HOME.
+    "tests/test_ask_code_failures.py",
+    "tests/test_ask_tool_pair_descriptions.py",
+    "tests/test_wisp_self_reference.py",
+    "tests/test_followup_subject.py",
+    "tests/test_intent_guard.py",
     # Ask eval fixes: spoken periods, tool-call markup, tool wording and head start;
     # fake model client, stubbed tools, private WISP_HOME.
     "tests/test_ask_eval_tool_wording.py",
@@ -347,6 +358,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_proactive_deadlines.py",
     "tests/test_proactive_engine.py",
     "tests/test_proactive_idle_refresh.py",
+    "tests/test_proactive_return_refresh.py",
     "tests/test_proactive_mail_recall.py",
     "tests/test_proactive_past_week.py",
     "tests/test_proactive_quality.py",

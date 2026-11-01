@@ -13,6 +13,8 @@
     - user: "show my unread emails"
       assistant: "1. Mom — Flight details\n2. {bank} — Your statement is ready\n3. {coworker} — Q3 budget review moved"
       tools: view_emails
+      calls:   # what production captured from that turn (service/memory/subject.py)
+        - {name: view_emails, args: {unread: true}, result: "From: Mom <mom@example.com>\nSubject: Flight details\nMessage-ID: m-1001\n\n---\n\nFrom: {bank} <no-reply@bank.example.com>\nSubject: Your statement is ready\nMessage-ID: m-1002\n\n---\n\nFrom: {coworker}\nSubject: Q3 budget review moved\nMessage-ID: m-1003"}
   prompt: "open the second one"
   expect: [{tool: view_emails}]
   answer: {contains_all: ["{balance}"]}
@@ -21,6 +23,8 @@
     - user: "read mom's latest email"
       assistant: "Mom says her flight lands Friday at {flight_time} at SFO, terminal 2."
       tools: view_emails
+      calls:   # what production captured from that turn (service/memory/subject.py)
+        - {name: view_emails, args: {query: mom}, result: "From: Mom <mom@example.com>\nSubject: Flight details\nMessage-ID: m-1001"}
   prompt: "reply saying I'll be there"
   expect: [{any_of: [reply_to_email, draft_email]}]
   forbid: [send_message, forward_email]
@@ -37,6 +41,8 @@
     - user: "when does mom's flight land?"
       assistant: "Friday at {flight_time} at SFO, terminal 2."
       tools: view_emails
+      calls:   # what production captured from that turn (service/memory/subject.py)
+        - {name: view_emails, args: {query: flight}, result: "From: Mom <mom@example.com>\nSubject: Flight details\nMessage-ID: m-1001"}
   prompt: "remind me thursday night to leave early for the pickup"
   expect: [{tool: add_reminder, args: {when_iso: {weekday: thursday}}}]
   forbid: [send_message, send_email]
@@ -45,6 +51,8 @@
     - user: "what did {friend_first} text me?"
       assistant: "{friend_first} asked about dinner at {restaurant} at {dinner_time} on Saturday."
       tools: view_messages
+      calls:   # what production captured from that turn (service/memory/subject.py)
+        - {name: view_messages, args: {query: "{friend_first}"}, result: "[Sat Oct 31, 3:12 PM] {friend_first} — dinner at {restaurant} at {dinner_time} on Saturday?"}
   prompt: "tell him yes"
   expect: [{any_of: [send_message, draft_message], args: {to: {icontains: "{friend_first}"}}}]
   forbid: [send_email]
@@ -63,6 +71,8 @@
     - user: "do I have an email from {bank}?"
       assistant: "Yes — {bank} says your statement is ready."
       tools: view_emails
+      calls:   # what production captured from that turn (service/memory/subject.py)
+        - {name: view_emails, args: {query: "{bank}"}, result: "From: {bank} <no-reply@bank.example.com>\nSubject: Your statement is ready\nMessage-ID: m-1002"}
   prompt: "how much is it?"
   expect: [{tool: view_emails}]
   answer: {contains_all: ["{balance}"]}
@@ -126,6 +136,8 @@
     - user: "email mom my schedule for tomorrow"
       assistant: "Mom only has a phone number saved in Contacts, so I can't email her yet. What email address should I use? Tomorrow you have the dentist with Dr. {dentist} at {dentist_time}."
       tools: lookup_contact
+      calls:   # what production captured from that turn (service/memory/subject.py)
+        - {name: lookup_contact, args: {name: mom}, result: "Mom: phone only, no email saved"}
   prompt: "mom@example.com"
   expect:
     - tool: send_email
@@ -143,6 +155,8 @@
     - user: "when does mom's flight land?"
       assistant: "Friday at {flight_time} at SFO, terminal 2. I can text her that if you'd like?"
       tools: view_emails
+      calls:   # what production captured from that turn (service/memory/subject.py)
+        - {name: view_emails, args: {query: flight}, result: "From: Mom <mom@example.com>\nSubject: Flight details\nMessage-ID: m-1001"}
   prompt: "sure"
   expect:
     - tool: send_message
@@ -159,6 +173,8 @@
     - user: "when does mom's flight land?"
       assistant: "Friday at {flight_time} at SFO, terminal 2. I can text her that if you'd like?"
       tools: view_emails
+      calls:   # what production captured from that turn (service/memory/subject.py)
+        - {name: view_emails, args: {query: flight}, result: "From: Mom <mom@example.com>\nSubject: Flight details\nMessage-ID: m-1001"}
   prompt: "ok send it"
   expect:
     - tool: send_message
@@ -208,6 +224,8 @@
     - user: "text dad my dentist appointment time"
       assistant: "Done. I texted Dad: your dentist appointment is tomorrow at {dentist_time}."
       tools: send_message
+      calls:   # what production captured from that turn (service/memory/subject.py)
+        - {name: send_message, args: {to: dad, text: "Your dentist appointment is tomorrow at {dentist_time}."}, result: "Sent."}
   prompt: "actually send it to {friend_lower} instead"
   expect:
     - tool: send_message
@@ -224,6 +242,8 @@
     - user: "remind me to water the plants tomorrow at 6pm"
       assistant: "Done. I set “Water the plants” for tomorrow at 6:00 PM."
       tools: add_reminder
+      calls:   # what production captured from that turn (service/memory/subject.py)
+        - {name: add_reminder, args: {title: Water the plants, when_iso: "tomorrow 18:00"}, result: "Reminder set"}
   prompt: "i mean today sorry"
   expect:
     - tool: update_reminder
@@ -241,6 +261,8 @@
     - user: "remind me to water the plants at 6pm today"
       assistant: "Done. I set a reminder to water the plants for 6:00 PM today."
       tools: add_reminder
+      calls:   # what production captured from that turn (service/memory/subject.py)
+        - {name: add_reminder, args: {title: Water the plants, when_iso: "today 18:00"}, result: "Reminder set"}
   prompt: "i dont see it"
   expect:
     - any_of: [search_reminders, get_upcoming]
@@ -321,6 +343,8 @@
     - user: "what are my stock prices today"
       assistant: "{stock_a} and {stock_b} are both trading up a little today."
       tools: get_stock_price
+      calls:   # what production captured from that turn (service/memory/subject.py)
+        - {name: get_stock_price, args: {symbols: ["{stock_a}", "{stock_b}"]}, result: "quotes"}
   prompt: "compare this to what it was last week"
   expect:
     - tool: get_stock_price

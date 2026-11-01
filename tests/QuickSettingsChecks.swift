@@ -99,6 +99,20 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(QuickSettingsText.shortName("mlx-community/Qwen3.6-35B") == "Qwen3.6" && QuickSettingsText.shortName("-x") == "x",
           "short model names")
 
+    // The Models page's line about the user's own oMLX: only a loaded model warns
+    // about memory; an idle or silent server is plain information.
+    check(QuickSettingsText.otherEngine(running: false, loaded: true, modelBytes: 4 * gib) == nil, "no other engine, no line")
+    let idleOther = QuickSettingsText.otherEngine(running: true, loaded: false, modelBytes: nil)
+    check(idleOther?.warns == false && idleOther?.text.contains("no model loaded") == true
+          && idleOther?.text.contains("memory") == false, "an idle oMLX never claims memory")
+    let silentOther = QuickSettingsText.otherEngine(running: true, loaded: nil, modelBytes: nil)
+    check(silentOther?.warns == false && silentOther?.text.contains("memory") == false, "an unknown oMLX never claims memory")
+    let busyOther = QuickSettingsText.otherEngine(running: true, loaded: true, modelBytes: 4 * gib)
+    check(busyOther?.warns == true && busyOther?.text.contains("(4.0 GB)") == true
+          && busyOther?.text.contains("both engines use memory") == true, "a loaded oMLX warns with its size")
+    check(QuickSettingsText.otherEngine(running: true, loaded: true, modelBytes: nil)?.text.contains("GB") == false,
+          "an unmeasured model shows no size")
+
     // The service's reply.
     check(ModelMemory.parse(["available": false, "models": []]) == nil, "an unavailable engine is unknown")
     check(ModelMemory.parse(nil) == nil, "an unreadable reply is unknown")

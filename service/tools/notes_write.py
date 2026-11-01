@@ -54,10 +54,9 @@ def _err(p: subprocess.CompletedProcess) -> str | None:
 
 @register(
     "create_note",
-    "Create a NEW note in the user's Notes.app. Use this for 'take a note', "
-    "'jot this down', or starting a list — not write_file, which puts a text "
-    "file on disk where the user does not keep notes. Pass `checklist=true` to "
-    "format the body as a checklist, one item per line.",
+    "Create a NEW note in the user's Notes.app: 'take a note', 'jot this down', 'save this to "
+    "my notes', a list. Still a note when it mentions a day or time (not add_reminder), and "
+    "not remember or write_file. `checklist=true` formats one item per line.",
     {
         "type": "object",
         "properties": {

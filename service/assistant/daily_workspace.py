@@ -625,7 +625,7 @@ def needs_you(attention, *, now, day_end, dismissed=None):
 
 
 def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_windows=(), profile=None,
-           dismissed=None):
+           dismissed=None, removed=None):
     """Return explainable attention items and a proposed itinerary, all transient.
 
     ``evidence`` contains source-labelled records and explicit readiness/coverage.
@@ -633,6 +633,9 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     ``profile`` is the user's own profile (service/memory/profile.py) or None;
     an item naming one of its people is raised to the top with the reason said.
     ``dismissed`` is the user's cleared Needs you rows (store.needs_you_dismissals).
+    ``removed`` is the attention item ids whose suggested blocks the user removed
+    (store.removed_suggestions); those items are never suggested again, though
+    they stay in ``attention``.
     Its windows need current evidence, increasing bounds, >=0.65 recurrence strength,
     a named timezone, and a human-readable explanation. No percentage is shown:
     these scores are evidence strength, not calibrated forecast probabilities.
@@ -749,6 +752,8 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
         if item["source"] in {"calendar", "wisp"} or len(suggestions) >= MAX_SUGGESTIONS:
             continue
         if item["source"] == "behavior" and item.get("planning_duration") is None:
+            continue
+        if removed and item["id"] in removed:
             continue
         title = item["title"]
         title_key = title.casefold()
@@ -1173,6 +1178,8 @@ def workspace(store, day, timezone, *, now, behavior=None, ignored_windows=(), p
         state = {**state, "tasks": hide(state["tasks"], now)}
     evidence = collect_evidence(store, state, day, timezone, now=now)
     cleared = getattr(store, "needs_you_dismissals", None)
+    removed = getattr(store, "removed_suggestions", None)
     return assess(day, timezone, state, evidence, now=now, behavior=behavior,
                   ignored_windows=ignored_windows, profile=profile,
-                  dismissed=cleared() if cleared is not None else None)
+                  dismissed=cleared() if cleared is not None else None,
+                  removed=removed() if removed is not None else None)

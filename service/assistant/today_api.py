@@ -67,6 +67,15 @@ def cleared_needs():
         return None
 
 
+def removed_suggestions():
+    """The Day suggestions the user removed (daily_workspace_api); none from a store without them."""
+    read = getattr(assistant_store, "removed_suggestions", None)
+    try:
+        return read() if read is not None else None
+    except Exception:  # noqa: BLE001 - a failed read shows every suggestion, never no workspace
+        return None
+
+
 def live_access(sources: dict, now: float) -> dict:
     """The plan's source health with what the person can do about a source Wisp
     can't read (today.with_access), from this launch's reader reports. Never
@@ -104,7 +113,7 @@ def snapshot(day, timezone, *, debug=False):
                 # The people the user named in "Getting to know you" rise to the
                 # top of Needs you here too, as that screen promised.
                 profile=user_profile(),
-                dismissed=cleared_needs())
+                dismissed=cleared_needs(), removed=removed_suggestions())
         except Exception:
             # The original revisioned planner remains usable when an optional
             # source or private workspace settings are unavailable.

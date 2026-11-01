@@ -195,7 +195,7 @@ def test_model_led_cancel_scheduled_send_always_confirms(monkeypatch, full_acces
     approval = Approval(allowed=False)
     run([[discover("messages_contacts", "cancel_scheduled_send")],
          [call("cancel_scheduled_send", id="abcdefabcdef")],
-         "Not cancelled."], prompt="what's queued to send?", approval=approval,
+         "Not cancelled."], prompt="cancel what's queued to send", approval=approval,
         claim_effect=lambda tool, args: {"admitted": True}, finish_effect=lambda claim, ok: True)
     assert approval.calls, "cancel_scheduled_send ran without asking for confirmation"
     assert not any(name == "cancel_scheduled_send" for name, _ in effects)
@@ -232,13 +232,13 @@ def test_clear_reminders_runs_bound_to_the_items_its_card_showed(monkeypatch):
                                             "expected_ids": ["r-1", "r-2"]})]
 
 
-@pytest.mark.parametrize("name,category,args", [
-    ("cancel_scheduled_send", "assistant_write", {"id": "abcdefabcdef"}),
-    ("delete_knowledge", "fs_delete", {"record_id": "0" * 32}),
-    ("edit_knowledge", "fs_write", {"record_id": "0" * 32, "title": "t", "text": "x"}),
+@pytest.mark.parametrize("name,category,args,prompt", [
+    ("cancel_scheduled_send", "assistant_write", {"id": "abcdefabcdef"}, "cancel that send"),
+    ("delete_knowledge", "fs_delete", {"record_id": "0" * 32}, "delete that note"),
+    ("edit_knowledge", "fs_write", {"record_id": "0" * 32, "title": "t", "text": "x"}, "tidy that up"),
 ])
 def test_model_picked_exact_item_effects_confirm_despite_grant_and_full_access(
-        monkeypatch, name, category, args):
+        monkeypatch, name, category, args, prompt):
     """The legacy router ran these only for an ID the user typed. On a
     model-led turn neither full access nor a stored grant lifts the card, and
     none of them can be stored as an "always allow"."""
@@ -255,7 +255,7 @@ def test_model_picked_exact_item_effects_confirm_despite_grant_and_full_access(
     family = family_for(next(t for t in registry_specs(REGISTRY) if t.name == name))
     approval = Approval(allowed=False)
     run([[discover(family, name)], [call(name, **args)], "Not changed."],
-        prompt="tidy that up", approval=approval,
+        prompt=prompt, approval=approval,
         claim_effect=lambda tool, a: {"admitted": True}, finish_effect=lambda claim, ok: True)
     assert [c.get("tool") for c in approval.calls] == [name]
     assert not any(n == name for n, _ in effects)

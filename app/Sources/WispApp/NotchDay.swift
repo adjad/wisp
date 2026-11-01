@@ -939,6 +939,14 @@ struct DayTimeline: Equatable {
         return lines
     }
 
+    /// What Remove sends for a suggested block: every item a grouped review
+    /// covers, or the one item it came from. Nothing for any other block.
+    static func removalIDs(_ item: DayItem) -> [String] {
+        guard item.style == .suggested else { return [] }
+        let members = item.members.map(\.evidenceID)
+        return members.isEmpty ? (item.evidenceID.map { [$0] } ?? []) : members
+    }
+
     /// The task Plan time makes from a need: "Review: …" for mail and texts.
     static func plannedTitle(_ title: String, review: Bool) -> String {
         review ? "Review: " + title : title

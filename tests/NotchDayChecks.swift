@@ -399,6 +399,17 @@ func dayChecks(_ check: (Bool, String) -> Void) {
           && !DayTimeline.alreadyPlanned("Get doordash order", tasks: [(title: "Get doordash order", active: false)])
           && !DayTimeline.alreadyPlanned("Get doordash order", tasks: [(title: "Call the bank", active: true)]),
           "Plan time isn't offered twice for the same need")
+    // Remove on a suggested block sends the item it came from, or each item a review covers.
+    let removeOne = DayItem(id: "block:s", title: "PA 2", detail: "", start: at(14), end: at(15), style: .suggested,
+                         evidenceID: "reminders:aaa")
+    check(DayTimeline.removalIDs(removeOne) == ["reminders:aaa"], "Remove sends the suggestion's item")
+    let removeGroup = DayItem(id: "block:g", title: "Review 2 emails", detail: "", start: at(14), end: at(15), style: .suggested,
+                          evidenceID: "email:a", members: [DayMember(title: "A", evidenceID: "email:a"),
+                                                           DayMember(title: "B", evidenceID: "email:b")])
+    check(DayTimeline.removalIDs(removeGroup) == ["email:a", "email:b"], "Remove on a grouped review sends every email in it")
+    check(DayTimeline.removalIDs(DayItem(id: "block:c", title: "Standup", detail: "", start: at(9), end: at(10),
+                                         style: .calendar, evidenceID: "calendar:x")).isEmpty,
+          "a calendar block is never removed as a suggestion")
     check(DayTimeline.plannedTitle("Reply to Priya", review: true) == "Review: Reply to Priya"
           && DayTimeline.plannedTitle("PA 2", review: false) == "PA 2", "planned titles")
 
