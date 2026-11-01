@@ -148,3 +148,47 @@ def test_the_loop_refuses_a_stopped_call_before_its_card():
         assert any("send_message was NOT run" in r for r in results)
     finally:
         monkeypatch.undo()
+
+
+# --- stub calls that run directly (registry.runnable_stub_call) -------------
+# A name-only stub whose arguments already fit the real schema runs as that
+# call, so it must meet the same hard stops as a real-schema call: refused
+# before its card, never treated as mere discovery.
+
+def _stub_send(monkeypatch, prompt, approval):
+    from tests.test_model_led_integration import call, run
+    from tests.test_model_led_integration import synthetic as _synthetic
+    effects, register = _synthetic.__wrapped__(monkeypatch)
+    for name, category, props in (("send_message", "messages_send", ("to", "text")),
+                                  ("remember", "memory_write", ("fact",))):
+        register(name, "imessage_tools" if name == "send_message" else "memory_tools", category,
+                 parameters={"type": "object", "properties": {p: {"type": "string"} for p in props},
+                             "required": list(props)})
+    return effects, call, run
+
+
+@pytest.mark.parametrize("tool_call, prompt, why", [
+    (("send_message", {"to": "dad", "text": "hi"}), "did you send it?", "asked a question"),
+    (("remember", {"fact": "Sister is moving to Denver"}), "my sister is moving to denver",
+     "did not ask Wisp to remember"),
+])
+def test_a_stub_call_that_runs_directly_meets_the_hard_stops(monkeypatch, tool_call, prompt, why):
+    from tests.test_model_led_integration import Approval
+    name, args = tool_call
+    approval = Approval(True)
+    effects, call, run = _stub_send(monkeypatch, prompt, approval)
+    client, events, _ = run([[call(name, **args)], "I did not do that."], prompt=prompt, approval=approval)
+    stubbed = next(s for s in client.requests[0]["tools"] if s["function"]["name"] == name)
+    assert "description" not in stubbed["function"]          # it was offered as a stub only
+    assert approval.calls == [] and effects == []           # no card, no effect
+    [result] = [e["result"] for e in events if e.get("type") == "tool_result"]
+    assert f"{name} was NOT run" in result and why in result
+
+
+def test_a_requested_stub_call_still_reaches_its_card(monkeypatch):
+    from tests.test_model_led_integration import Approval
+    approval = Approval(False)
+    effects, call, run = _stub_send(monkeypatch, "text dad hi", approval)
+    run([[call("send_message", to="dad", text="hi")], "Not sent."], prompt="text dad hi", approval=approval)
+    assert [a["tool"] for a in approval.calls] == ["send_message"]
+    assert effects == []                                     # declined at the card
