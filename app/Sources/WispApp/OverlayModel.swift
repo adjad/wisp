@@ -1242,6 +1242,12 @@ final class OverlayModel: ObservableObject {
         setAttachment(.image(jpeg: jpeg, source: source), name: "Image")
     }
 
+    /// Start loading the vision encoder now: the person pressed Look, asked for
+    /// the screen, or began attaching a picture (#436 can call it on a Look press). Throttled and fire-and-forget.
+    func prewarmVision() {
+        client.prewarmEncoder(.vision)
+    }
+
     func cancelAttachmentRead() {
         attachmentReadID = UUID()
         attachmentReadTask?.cancel()
@@ -1320,18 +1326,11 @@ final class OverlayModel: ObservableObject {
     /// until the person presses send.
     var screenCommandAvailable: Bool { CGPreflightScreenCaptureAccess() }
 
-    /// Start loading the vision encoder now: the person pressed Look, asked for
-    /// the screen, or began attaching a picture. Throttled and fire-and-forget.
-    func prewarmVision() {
-        client.prewarmEncoder(.vision)
-    }
-
     func captureScreenForPreview() {
         guard CGPreflightScreenCaptureAccess() else {
             showTransientNotice("Screen Recording isn't on for Wisp. Turn it on in Settings › Privacy to use this.")
             return
         }
-        prewarmVision()
         cancelAttachmentRead()
         Task { [weak self] in
             let jpeg = await Task.detached(priority: .userInitiated) { ScreenSnapshot.captureMainDisplayJPEG() }.value
