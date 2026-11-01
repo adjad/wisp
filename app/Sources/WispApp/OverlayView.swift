@@ -550,9 +550,21 @@ struct OverlayView: View {
         !model.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.hasAttachment
     }
 
-    /// A `/screen` capture, large enough to read before it is sent: 240 pt wide,
-    /// at most 150 pt tall (aspect-fit), so the notch does not grow past one row of it.
+    /// A `/screen` or Look capture, large enough to read before it is sent: 240 pt
+    /// wide, at most 150 pt tall (aspect-fit), so the notch does not grow past one
+    /// row of it, with a "Wisp saw:" line naming what it shows.
     private func screenPreview(_ thumb: NSImage) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            screenPreviewImage(thumb)
+            Label(ScreenLook.chipText(label: model.attachedScreenLabel), systemImage: "eye")
+                .font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
+                .lineLimit(1).truncationMode(.middle)
+                .frame(maxWidth: 240, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func screenPreviewImage(_ thumb: NSImage) -> some View {
         ZStack(alignment: .topTrailing) {
             Image(nsImage: thumb)
                 .resizable().scaledToFit()
@@ -621,6 +633,19 @@ struct OverlayView: View {
         return false
     }
 
+    /// Look: the window in front (also ⌥⇧L), or a part of the screen dragged over.
+    /// Either becomes a preview with a "Wisp saw:" line; nothing is sent until send.
+    private var lookButton: some View {
+        Menu {
+            Button("Look at the front window  ⌥⇧L") { model.lookAtFrontWindow() }
+            Button("Drag over part of the screen…") { model.lookAtRegion() }
+        } label: {
+            Image(systemName: "eye").font(.wisp(size: 16)).foregroundStyle(Theme.textSecondary)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help("Look at your screen").accessibilityLabel("Look at your screen")
+    }
+
     private var inputRow: some View {
         HStack(spacing: 10) {
             TextField(model.voice.isActive ? model.voice.placeholder
@@ -657,6 +682,9 @@ struct OverlayView: View {
             }
             .buttonStyle(.plain).help("Attach a picture, a short clip, a PDF or a document")
             .accessibilityLabel("Attach a picture, clip or document")
+            if !model.researchMode {
+                lookButton
+            }
             if !model.researchMode {
                 VoiceMicButton(voice: model.voice, speaker: model.speaker, action: model.toggleVoice)
             }

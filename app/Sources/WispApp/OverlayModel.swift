@@ -158,6 +158,9 @@ final class OverlayModel: ObservableObject {
     // The pending attachment's preview and kind, for the chip. Memory only.
     @Published private(set) var attachedThumbnail: NSImage?
     @Published private(set) var attachedLabel = ""
+    /// What a screen capture shows ("Safari — Pricing"), for the "Wisp saw:" chip
+    /// and the reading. Nil for a whole-screen capture or any other attachment.
+    @Published private(set) var attachedScreenLabel: String?
     // The panel's tab. App-scoped, so it survives collapse.
     @Published var tab: NotchTab = .ask {
         didSet {
@@ -751,7 +754,7 @@ final class OverlayModel: ObservableObject {
         let submission = QueuedPrompt(text: prompt, image: attachedImage,
                                       imageName: attachedImageName, researchMode: researchMode,
                                       video: attachedVideo, imageSource: attachedSource,
-                                      document: attachedDocument)
+                                      document: attachedDocument, imageLabel: attachedScreenLabel)
         input = ""
         removeAttachment()
         if serviceStarting && !submission.researchMode {
@@ -851,6 +854,7 @@ final class OverlayModel: ObservableObject {
         phase = .routing
         let image = submission.image
         let imageSource = submission.imageSource
+        let imageLabel = submission.imageLabel
         let video = submission.video?.wire
         let document = submission.document?.wire
         let sid = sessionId   // continue the same conversation (empty -> server starts one)
@@ -858,6 +862,7 @@ final class OverlayModel: ObservableObject {
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             await self?.client.runAgent(prompt: prompt, image: image, imageSource: imageSource,
+                                        imageLabel: imageLabel,
                                         video: video, document: document, sessionId: sid,
                                         debug: wantsDebug) { ev in
                 Task { @MainActor in self?.handle(ev, dispatchID: dispatch.id) }
@@ -1255,12 +1260,13 @@ final class OverlayModel: ObservableObject {
 
     private func clearAttachmentState() {
         attachedImage = nil; attachedVideo = nil; attachedDocument = nil; attachedSource = nil
-        attachedImageName = nil; attachedThumbnail = nil; attachedLabel = ""
+        attachedImageName = nil; attachedThumbnail = nil; attachedLabel = ""; attachedScreenLabel = nil
     }
 
-    private func setAttachment(_ media: MediaAttachment.Pending, name: String) {
+    private func setAttachment(_ media: MediaAttachment.Pending, name: String, screenLabel: String? = nil) {
         clearAttachmentState()
         attachedImageName = name
+        attachedScreenLabel = media.isScreen ? screenLabel : nil
         attachedLabel = MediaAttachment.chipLabel(for: media)
         switch media {
         case .image(let jpeg, let source):
@@ -1291,6 +1297,7 @@ final class OverlayModel: ObservableObject {
         attachedVideo = prompt.video
         attachedDocument = prompt.document
         attachedSource = prompt.imageSource
+        attachedScreenLabel = prompt.imageLabel
         attachedImageName = prompt.imageName
         attachedLabel = prompt.video.map { "Clip · \(Int($0.seconds.rounded())) s — reads sampled frames + audio, not motion" }
             ?? prompt.document.map { DocumentAttachment.chipLabel(name: $0.name, scannedPages: $0.pages.count) }
@@ -1321,6 +1328,62 @@ final class OverlayModel: ObservableObject {
                 return
             }
             self.setAttachment(.image(jpeg: jpeg, source: .screen), name: "Screen")
+        }
+    }
+
+    // MARK: - Look
+
+    /// "Look" without Screen Recording: say how to turn it on, and open the same
+    /// surface setup's Screen Recording row does (macOS's prompt the first time,
+    /// its Settings page after). Nothing is captured. True when it is already on.
+    private func screenRecordingReadyForLook() -> Bool {
+        if CGPreflightScreenCaptureAccess() { return true }
+        let promptedBefore = UserDefaults.standard.bool(forKey: Permissions.screenRecordingPromptedKey)
+        showTransientNotice(ScreenLook.deniedNotice(promptedBefore: promptedBefore))
+        Permissions.requestScreenRecording()
+        return false
+    }
+
+    /// The notch's eye button or ⌥⇧L: capture the window the person is looking
+    /// at as a pending preview with a "Wisp saw:" chip. `frontPID` is the app in
+    /// front before Wisp's panel opened. Nothing is sent until they press send.
+    func lookAtFrontWindow(frontPID: pid_t? = NSWorkspace.shared.frontmostApplication?.processIdentifier) {
+        guard screenRecordingReadyForLook() else { return }
+        cancelAttachmentRead()
+        Task { [weak self] in
+            let shot = await Task.detached(priority: .userInitiated) {
+                ScreenSnapshot.captureFrontWindowJPEG(frontPID: frontPID)
+            }.value
+            guard let self else { return }
+            guard let shot else {
+                self.showTransientNotice("Wisp couldn't find a window to look at.")
+                return
+            }
+            self.setAttachment(.image(jpeg: shot.jpeg, source: .screen), name: "Screen", screenLabel: shot.label)
+        }
+    }
+
+    /// The eye button's "Drag over part of the screen": the region picker, then
+    /// the same pending preview. Esc or a click cancels without a capture.
+    func lookAtRegion() {
+        guard screenRecordingReadyForLook() else { return }
+        cancelAttachmentRead()
+        let front = NSWorkspace.shared.frontmostApplication
+        let app = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : front?.localizedName
+        RegionPicker.pick { [weak self] rect in
+            guard let rect else { return }
+            Task { [weak self] in
+                let jpeg = await Task.detached(priority: .userInitiated) {
+                    ScreenSnapshot.captureRegionJPEG(rect)
+                }.value
+                guard let self else { return }
+                guard let jpeg else {
+                    self.showTransientNotice("Wisp couldn't capture that part of the screen.")
+                    return
+                }
+                self.setAttachment(.image(jpeg: jpeg, source: .screen), name: "Screen",
+                                   screenLabel: ScreenLook.regionLabel(app: app))
+            }
         }
     }
 

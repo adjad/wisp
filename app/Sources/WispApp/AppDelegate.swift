@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKey: GlobalHotKey?
     private var searchHotKey: GlobalHotKey?
     private var voiceHotKey: GlobalHotKey?
+    private var lookHotKey: GlobalHotKey?
     // Hosted in an OverlayPanel — the SAME notch-fused reveal panel class the
     // chat assistant uses (see createSearchPanelIfNeeded), so Smart Search
     // gets identical chrome and animation rather than a separately-styled
@@ -381,6 +382,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // listens; pressed again while listening, it sends at once.
         voiceHotKey = GlobalHotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey | shiftKey)) { [weak self] in
             DispatchQueue.main.async { self?.askByVoice() }
+        }
+        // ⌥⇧L looks at the window in front: Ask opens with it as a preview to ask about.
+        lookHotKey = GlobalHotKey(keyCode: UInt32(kVK_ANSI_L), modifiers: UInt32(optionKey | shiftKey)) { [weak self] in
+            DispatchQueue.main.async { self?.lookAtScreen() }
         }
         // ⌘⇧F is Smart Search. Deliberately NOT ⌘F: Carbon would claim that
         // system-wide and break native find in every app on the machine,
@@ -1148,6 +1153,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             expand()
         }
         model.toggleVoice()
+    }
+
+    /// ⌥⇧L: the front app is read before Ask opens, so Wisp looks at what the
+    /// person was looking at, then Ask opens on the preview.
+    private func lookAtScreen() {
+        if holdUntilModelReady() { return }
+        let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        notchDocked = true
+        if presentation.desired != .chat {
+            model.prepareTab(byHover: false)
+            expand()
+        }
+        model.tab = .ask
+        model.lookAtFrontWindow(frontPID: front)
     }
 
     /// ⌥Space: what the menu-bar icon does. Each time it opens Ask, the setup

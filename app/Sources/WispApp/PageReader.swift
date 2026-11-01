@@ -326,4 +326,38 @@ enum ScreenSnapshot {
         else { return nil }
         return MediaAttachment.downscaleJPEG(image)
     }
+
+    /// "Look": the window the person is looking at (ScreenLook.frontWindow), as a
+    /// JPEG plus its "App — Title" label. `frontPID` is read before Wisp's panel
+    /// opens. Nil without Screen Recording or with no window to look at.
+    static func captureFrontWindowJPEG(frontPID: pid_t?) -> (jpeg: Data, label: String?)? {
+        guard CGPreflightScreenCaptureAccess() else { return nil }
+        let me = ProcessInfo.processInfo.processIdentifier
+        let infoList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? []
+        guard let window = ScreenLook.frontWindow(ScreenLook.windows(from: infoList), frontPID: frontPID,
+                                                  excludingPID: me),
+              let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.number),
+                                                  [.boundsIgnoreFraming, .nominalResolution]),
+              let jpeg = MediaAttachment.downscaleJPEG(image)
+        else { return nil }
+        return (jpeg, ScreenLook.label(app: window.ownerName, title: window.title))
+    }
+
+    /// "Look" at a dragged region, in global display coordinates, with Wisp's own
+    /// windows (the picker included) left out.
+    static func captureRegionJPEG(_ rect: CGRect) -> Data? {
+        guard CGPreflightScreenCaptureAccess(), !rect.isEmpty else { return nil }
+        let me = ProcessInfo.processInfo.processIdentifier
+        let infoList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+        let others = ScreenLook.windows(from: infoList).filter { $0.ownerPID != me }.map(\.number)
+        guard !others.isEmpty else { return nil }
+        var ids = others.map { UnsafeRawPointer(bitPattern: UInt($0)) }
+        let created: CFArray? = ids.withUnsafeMutableBufferPointer { CFArrayCreate(nil, $0.baseAddress, $0.count, nil) }
+        guard let array = created,
+              let image = CGImage(windowListFromArrayScreenBounds: rect, windowArray: array,
+                                  imageOption: [.boundsIgnoreFraming, .nominalResolution])
+        else { return nil }
+        return MediaAttachment.downscaleJPEG(image)
+    }
 }

@@ -101,6 +101,9 @@ PROFILE_TESTS = {
         "tests/test_voice_transcribe.py",
         # Image/video input: one dedicated vision call (stub client, synthetic media).
         "tests/test_vision.py",
+        # Pictures that lead to actions: the reading as untrusted data, every effect
+        # carded (stub vision client, scripted agent client, synthetic tools).
+        "tests/test_vision_actions.py",
         # Document input: text extracted in memory, one no-tools call (stub client, synthetic files).
         "tests/test_documents.py",
         "tests/test_corpus_prompts.py",
@@ -709,6 +712,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/chat-logic-contract": "native/chat-logic-compile",
     "native/chat-store-contract": "native/chat-store-compile",
     "native/notch-command-contract": "native/notch-command-compile",
+    "native/screen-look-contract": "native/screen-look-compile",
     "native/notch-tab-contract": "native/notch-tab-compile",
     "native/know-you-contract": "native/know-you-compile",
 }
@@ -989,6 +993,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     prompt_queue = str(build_dir / "prompt-queue")
     agent_send = str(build_dir / "agent-send")
     notch_command = str(build_dir / "notch-command")
+    screen_look = str(build_dir / "screen-look")
     notch_tab = str(build_dir / "notch-tab")
     know_you = str(build_dir / "know-you")
     chat_logic = str(build_dir / "chat-logic")
@@ -1125,6 +1130,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/notch-command-contract", [notch_command]),
+        (
+            "native/screen-look-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/ScreenLook.swift",
+                "tests/ScreenLookChecks.swift", "-o", screen_look,
+            ],
+        ),
+        ("native/screen-look-contract", [screen_look]),
         (
             "native/notch-tab-compile",
             [
