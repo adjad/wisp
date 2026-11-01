@@ -1,5 +1,6 @@
 // Contract for "Look" (app/Sources/WispApp/ScreenLook.swift): which window is
-// captured, what the chip says, drag regions and the permission-denied path.
+// captured, what the chip says, drag regions, the permission-denied path,
+// private browsing, password managers and the check right before capture.
 // Pure logic: never captures the screen, launches Wisp or contacts its service.
 import CoreGraphics
 import Foundation
@@ -135,6 +136,92 @@ struct ScreenLookChecks {
         let over = ScreenLook.windows([left, right, window(23, wisp, "Wisp")],
                                       overlapping: CGRect(x: 100, y: 100, width: 200, height: 200), excludingPID: wisp)
         check(over.map(\.number) == [21], "only overlapping, non-Wisp windows are checked")
+
+        // The warning says what Wisp can't detect.
+        if case .confirm(let text) = ScreenLook.browserVerdict([chrome], incognito: []) {
+            check(text.contains("Safari window is private") && text.contains("can't always tell"),
+                  "the warning names what can't be detected")
+        } else { check(false, "a Chrome window without Automation needs the tap") }
+        }
+
+        // Password managers are refused as the front window, whatever the person taps.
+        do {
+        func app(_ number: UInt32, _ owner: String, _ bundle: String, _ title: String = "Vault",
+                 x: CGFloat = 0, pid: Int32? = nil, layer: Int = 0) -> ScreenLook.Window {
+            var w = ScreenLook.Window(number: number, ownerPID: pid ?? Int32(number), ownerName: owner, title: title,
+                                      bounds: CGRect(x: x, y: 40, width: 900, height: 700), layer: layer, alpha: 1)
+            w.bundleID = bundle
+            return w
+        }
+        let onePassword = app(30, "1Password", "com.1password.1password")
+        for vault in [onePassword, app(31, "Bitwarden", ""), app(32, "Keychain Access", "com.apple.keychainaccess"),
+                      app(33, "KeePassXC", "org.keepassxc.keepassxc"), app(34, "Dashlane", ""),
+                      app(35, "LastPass", "com.lastpass.LastPass"), app(36, "Passwords", "com.apple.Passwords"),
+                      app(37, "System Settings", "com.apple.systempreferences", "Passwords")] {
+            check(ScreenLook.isSensitive(vault), "\(vault.ownerName) (\(vault.title)) is sensitive")
+            if case .refuse(let text) = ScreenLook.browserVerdict([vault], incognito: []) {
+                check(text.contains("passwords"), "a password manager is refused in plain words")
+            } else { check(false, "\(vault.ownerName) is refused outright, never warn-then-tap") }
+        }
+        check(!ScreenLook.isSensitive(app(38, "System Settings", "com.apple.systempreferences", "Wi-Fi")),
+              "other System Settings panes are fine")
+        check(!ScreenLook.isSensitive(app(39, "Notes", "com.apple.Notes", "passwords to change")),
+              "a note titled passwords is just a title")
+
+        // A region or screen capture leaves password managers and private windows
+        // out (never the whole capture refused), and warns for other browsers.
+        let me: Int32 = 1
+        let vaultPanel = app(40, "1Password", "com.1password.1password", "", pid: 30, layer: 25)
+        let incognitoChrome = app(41, "Google Chrome", "com.google.Chrome", "Page")
+        let firefoxPrivate = app(42, "Firefox", "org.mozilla.firefox", "Bank — Private Browsing")
+        let safari = app(43, "Safari", "com.apple.Safari", "Docs")
+        let notes = app(44, "Notes", "com.apple.Notes", "List")
+        let offRegion = app(45, "Google Chrome", "com.google.Chrome", "Elsewhere", x: 5000)
+        let mine = app(46, "Wisp", "", "Ask", pid: me)
+        let wallpaper = app(47, "Dock", "com.apple.dock", "Desktop", layer: -2147483623)
+        let rect = CGRect(x: 0, y: 0, width: 1200, height: 900)
+        let all = [mine, vaultPanel, onePassword, incognitoChrome, firefoxPrivate, safari, notes, offRegion, wallpaper]
+        let plan = ScreenLook.regionPlan(all, rect: rect, incognito: [41], excludingPID: me)
+        check(plan.include == [43, 44, 47], "only checked, overlapping, safe windows are drawn")
+        check(plan.leftOut == ["1Password", "a private Google Chrome window", "a private Firefox window"],
+              "what was left out, each once: \(plan.leftOut)")
+        if case .confirm(let text) = plan.verdict {
+            check(text.hasPrefix("Safari will be"), "a browser left in the region still needs the tap")
+        } else { check(false, "a region with a browser window needs the tap") }
+        check(ScreenLook.leftOutNotice(plan.leftOut) ==
+              "Wisp left 1Password and a private Google Chrome window and a private Firefox window out of the picture.",
+              "the notice says what was left out")
+        check(ScreenLook.leftOutNotice([]) == nil, "nothing left out, no notice")
+        let quiet = ScreenLook.regionPlan([notes, onePassword], rect: rect, incognito: [], excludingPID: me)
+        check(quiet.include == [44] && quiet.verdict == .clear, "no browser left: no tap, the vault still left out")
+        check(ScreenLook.regionPlan([onePassword], rect: rect, incognito: [], excludingPID: me).include.isEmpty,
+              "a region of only a password manager draws nothing")
+
+        // The check runs again right before the capture.
+        let warned = ScreenLook.regionPlan([safari, notes], rect: rect, incognito: [], excludingPID: me).verdict
+        check(ScreenLook.recheck(accepted: nil, now: .clear) == .proceed, "nothing to warn about: capture")
+        if case .confirm(let text) = warned {
+            check(ScreenLook.recheck(accepted: nil, now: warned) == .ask(text), "first time: ask")
+            check(ScreenLook.recheck(accepted: warned, now: warned) == .proceed, "the same warning, accepted: capture")
+            // A private window raised while the warning was up: left out of the region...
+            let raised = ScreenLook.regionPlan([incognitoChrome, safari, notes], rect: rect, incognito: [41],
+                                               excludingPID: me)
+            check(!raised.include.contains(41) && raised.leftOut == ["a private Google Chrome window"],
+                  "a private window raised during the warning is not in the region capture")
+            check(ScreenLook.recheck(accepted: warned, now: raised.verdict) == .proceed, "the rest still captures")
+            // ...and another browser raised meanwhile means a new warning.
+            let firefox = app(48, "Firefox", "org.mozilla.firefox", "Docs")
+            let more = ScreenLook.regionPlan([firefox, safari], rect: rect, incognito: [], excludingPID: me).verdict
+            if case .confirm(let newText) = more {
+                check(ScreenLook.recheck(accepted: warned, now: more) == .ask(newText), "a new browser asks again")
+            } else { check(false, "two browsers still warn") }
+            // The front window turning out private after the tap is refused.
+            let nowPrivate = ScreenLook.browserVerdict([incognitoChrome], incognito: [41])
+            if case .refuse(let reason) = nowPrivate {
+                check(ScreenLook.recheck(accepted: warned, now: nowPrivate) == .refuse(reason),
+                      "a refusal after the tap always wins")
+            } else { check(false, "Chrome-reported incognito is refused") }
+        } else { check(false, "a Safari window warns") }
         }
 
         print("ScreenLookChecks: \(count) checks passed")

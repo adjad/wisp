@@ -14,11 +14,14 @@ import Foundation
 ///  - Memory only, like every attachment (MediaAttachment): never written to disk.
 ///  - A window title is written by whoever made the page or file. It is shown and
 ///    sent as a plain, short label, never as an instruction.
-///  - Private browsing is never captured silently (browserVerdict). A browser
-///    window in the capture needs one extra tap after a warning, because a
-///    Safari private window, for one, can't be told apart. A window that is
-///    detectably private (a title marker, or a Chromium browser reporting it
-///    incognito) is refused outright.
+///  - Private browsing and password managers are never captured silently
+///    (browserVerdict, regionPlan). A password manager's window, or a window
+///    that is detectably private (a title marker, or a Chromium browser
+///    reporting it incognito), is refused as the front window and left out of
+///    a region or screen capture. Any other browser window needs one extra tap
+///    after a warning, because a Safari private window, for one, can't be told
+///    apart. The check runs again right before the capture (recheck), so a
+///    window raised while the warning was up is caught too.
 ///
 /// Pure logic, checked by tests/ScreenLookChecks.swift without the app. The
 /// capture itself is ScreenSnapshot (PageReader.swift); the drag is RegionPicker.
@@ -165,7 +168,51 @@ enum ScreenLook {
         }
     }
 
-    enum Verdict: Equatable {
+    // MARK: - Password managers
+
+    /// Apps that show passwords, keys and vault items. Look refuses their
+    /// windows outright and leaves them out of every region or screen capture,
+    /// whatever the person taps.
+    static let sensitiveBundleIDs: Set<String> = [
+        "com.1password.1password", "com.agilebits.onepassword7", "com.agilebits.onepassword-osx",
+        "com.agilebits.onepassword4", "com.bitwarden.desktop", "com.apple.keychainaccess",
+        "com.apple.Passwords", "com.dashlane.dashlanephonefinal", "com.dashlane.Dashlane",
+        "com.lastpass.LastPass", "com.lastpass.lastpassmacdesktop", "org.keepassxc.keepassxc",
+        "com.hicknhacksoftware.MacPass", "in.sinew.Enpass-Desktop", "me.proton.pass.electron",
+        "com.nordsec.nordpass", "com.markmcguill.strongbox.mac", "com.keepersecurity.passwordmanager",
+        "com.siber.roboform", "com.outercorner.Secrets",
+    ]
+    /// Owner names, for a build whose bundle ID isn't known.
+    static let sensitiveNames: Set<String> = [
+        "1password", "1password 7", "1password 8", "bitwarden", "keychain access", "passwords", "dashlane",
+        "lastpass", "keepassxc", "keepass", "macpass", "enpass", "proton pass", "nordpass", "strongbox",
+        "keeper password manager", "roboform", "secrets",
+    ]
+    static let systemSettingsBundleIDs: Set<String> = ["com.apple.systempreferences", "com.apple.Settings"]
+
+    /// A password manager's window, or System Settings showing its Passwords pane
+    /// (its window title is the pane's name).
+    static func isSensitive(_ window: Window) -> Bool {
+        passwordApp(window) || (isSystemSettings(window) && window.title.lowercased().contains("password"))
+    }
+
+    private static func passwordApp(_ window: Window) -> Bool {
+        sensitiveBundleIDs.contains(window.bundleID) || sensitiveNames.contains(window.ownerName.lowercased())
+    }
+
+    private static func isSystemSettings(_ window: Window) -> Bool {
+        let owner = window.ownerName.lowercased()
+        return systemSettingsBundleIDs.contains(window.bundleID)
+            || owner == "system settings" || owner == "system preferences"
+    }
+
+    /// A browser window that is detectably private: a title marker, or its
+    /// browser reported it incognito (`incognito` holds those window numbers).
+    static func isPrivate(_ window: Window, incognito: Set<UInt32>) -> Bool {
+        isBrowser(window) && (incognito.contains(window.number) || privateTitle(window.title))
+    }
+
+    enum Verdict: Equatable, Sendable {
         case clear
         /// Show this warning; capture only after the person taps Look anyway.
         case confirm(String)
@@ -173,28 +220,106 @@ enum ScreenLook {
         case refuse(String)
     }
 
+    /// The browser warning, and what it says Wisp can't detect.
+    static func browserWarning(_ windows: [Window]) -> Verdict {
+        var apps: [String] = []
+        for window in windows where isBrowser(window) {
+            if let name = label(app: window.ownerName, title: ""), !apps.contains(name) { apps.append(name) }
+        }
+        guard !windows.filter(isBrowser).isEmpty else { return .clear }
+        let named = apps.isEmpty ? "A browser window" : apps.joined(separator: " and ")
+        return .confirm("\(named) will be in this picture. Wisp can't tell when a Safari window is private, "
+                        + "and can't always tell for other browsers. If this is a private window, cancel. Look anyway?")
+    }
+
     /// What Look does with the windows a capture would include. `incognito` holds
-    /// the window numbers a browser itself reported private.
+    /// the window numbers a browser itself reported private. A password manager
+    /// or a detectably private window refuses the capture; any other browser
+    /// window needs the extra tap.
     static func browserVerdict(_ windows: [Window], incognito: Set<UInt32>) -> Verdict {
-        let browsers = windows.filter(isBrowser)
-        if let hit = browsers.first(where: { incognito.contains($0.number) || privateTitle($0.title) }) {
+        if let hit = windows.first(where: isSensitive) {
+            let app = label(app: hit.ownerName, title: "") ?? "That app"
+            return .refuse("\(app) holds passwords, so Wisp doesn't look at it.")
+        }
+        if let hit = windows.first(where: { isPrivate($0, incognito: incognito) }) {
             let app = label(app: hit.ownerName, title: "") ?? "a browser"
             return .refuse("That's a private browsing window in \(app). Wisp doesn't look at private windows.")
         }
-        guard !browsers.isEmpty else { return .clear }
-        var apps: [String] = []
-        for window in browsers {
-            if let name = label(app: window.ownerName, title: ""), !apps.contains(name) { apps.append(name) }
-        }
-        let named = apps.isEmpty ? "A browser window" : apps.joined(separator: " and ")
-        return .confirm("\(named) will be in this picture. If it's a private or incognito window, "
-                        + "cancel: Wisp can't always tell. Look anyway?")
+        return browserWarning(windows)
     }
 
     /// The windows a region or display capture would include (ordinary windows
     /// that overlap it, not Wisp's own).
     static func windows(_ windows: [Window], overlapping rect: CGRect, excludingPID: Int32) -> [Window] {
         windows.filter { $0.ownerPID != excludingPID && $0.layer == 0 && $0.alpha > 0.01 && $0.bounds.intersects(rect) }
+    }
+
+    /// What a region or display capture draws. Only windows that overlapped the
+    /// rectangle when it was checked are drawn (a window raised later is not in
+    /// the list, so it is never in the picture). Password-manager windows and
+    /// detectably private ones are left out rather than refusing the whole
+    /// capture; any browser window that stays needs the extra tap.
+    struct RegionPlan: Equatable {
+        /// Window numbers to draw, front to back.
+        var include: [UInt32]
+        /// What was left out, for the notice ("1Password", "a private Google Chrome window").
+        var leftOut: [String]
+        /// .clear or .confirm; never .refuse.
+        var verdict: Verdict
+    }
+
+    static func regionPlan(_ windows: [Window], rect: CGRect, incognito: Set<UInt32>,
+                           excludingPID: Int32) -> RegionPlan {
+        var include: [UInt32] = [], kept: [Window] = [], leftOut: [String] = []
+        // Every window of a password manager is left out, menus and panels too.
+        let sensitivePIDs = Set(windows.filter(passwordApp).map(\.ownerPID))
+        for window in windows where window.ownerPID != excludingPID && window.bounds.intersects(rect) {
+            let app = label(app: window.ownerName, title: "") ?? "an app"
+            var note: String?
+            if isSensitive(window) || sensitivePIDs.contains(window.ownerPID) { note = app }
+            else if isPrivate(window, incognito: incognito) { note = "a private \(app) window" }
+            if let note {
+                if !leftOut.contains(note) { leftOut.append(note) }
+                continue
+            }
+            include.append(window.number)
+            if window.layer == 0 && window.alpha > 0.01 { kept.append(window) }
+        }
+        return RegionPlan(include: include, leftOut: leftOut, verdict: browserWarning(kept))
+    }
+
+    /// The notice after a capture that left windows out.
+    static func leftOutNotice(_ leftOut: [String]) -> String? {
+        guard !leftOut.isEmpty else { return nil }
+        return "Wisp left \(leftOut.joined(separator: " and ")) out of the picture."
+    }
+
+    // MARK: - Check again right before capturing
+
+    enum Recheck: Equatable {
+        case proceed
+        case refuse(String)
+        /// The warning changed (another browser came up): ask again.
+        case ask(String)
+    }
+
+    /// The verdict is computed again right before the capture, in the same step.
+    /// `accepted` is the warning the person tapped Look anyway on (nil before
+    /// any tap). A refusal now always wins; a warning they haven't seen asks again.
+    static func recheck(accepted: Verdict?, now: Verdict) -> Recheck {
+        switch now {
+        case .clear: return .proceed
+        case .refuse(let message): return .refuse(message)
+        case .confirm(let message): return accepted == now ? .proceed : .ask(message)
+        }
+    }
+
+    /// What one Look attempt ended with.
+    enum Outcome: Sendable {
+        case captured(Data, label: String?, leftOut: [String])
+        case refused(String)
+        case ask(String)
+        case failed(String)
     }
 
     private static func plain(_ value: String) -> String {
