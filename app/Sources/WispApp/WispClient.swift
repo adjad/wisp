@@ -854,6 +854,28 @@ final class WispClient {
         Task { _ = try? await URLSession.shared.data(for: req) }
     }
 
+    /// The Ask model's encoders: audio hears a voice question, vision reads a
+    /// picture, a screen capture or a clip's frames.
+    enum Encoder: String { case audio, vision }
+
+    /// When the app last asked for each encoder early.
+    @MainActor private static var lastEncoderPrewarm: [Encoder: Date] = [:]
+
+    /// POST /encoders/prewarm: the mic just opened, or a picture or clip is being
+    /// attached, so the engine loads that encoder (about 1 s) while the person
+    /// is still talking or typing. Fire and forget, at most once every 30 s per
+    /// encoder; the clip or picture loads it anyway if this never lands.
+    @MainActor func prewarmEncoder(_ encoder: Encoder, now: Date = Date()) {
+        if let last = Self.lastEncoderPrewarm[encoder], now.timeIntervalSince(last) < 30 { return }
+        Self.lastEncoderPrewarm[encoder] = now
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("encoders/prewarm"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 5   // the endpoint returns at once; the load continues server-side
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["modality": encoder.rawValue])
+        Task { _ = try? await URLSession.shared.data(for: req) }
+    }
+
     /// When the app last told the service the notch opened.
     @MainActor private static var lastReturnNote: Date?
 

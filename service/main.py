@@ -1362,12 +1362,20 @@ async def models_memory() -> dict[str, Any]:
         status = await client.status()
     except Exception:
         return {"available": False, "models": []}
+    # The engine measures a model once, right after it loads. On Wisp's engine the
+    # Ask model's encoders were already released then, so any loaded since are added.
+    from service import encoders
+    towers = await encoders.status()
+    extra = towers["resident_bytes"] if towers and towers["on_demand"] else 0
+    ask_model = encoders.ask_model() if extra else None
     resident = []
     for row in status.get("models", []):
         if not isinstance(row, dict) or row.get("loaded") is not True or not isinstance(row.get("id"), str):
             continue
         size = row.get("actual_size")
         measured = isinstance(size, int) and not isinstance(size, bool) and size > 0
+        if measured and row["id"] == ask_model:
+            size += extra
         resident.append({"id": row["id"], "bytes": size if measured else None})
     return {"available": True, "models": resident}
 
@@ -1400,6 +1408,17 @@ async def prewarm_model() -> dict[str, Any]:
     parked model's ~5.9 s reload hides behind typing. Returns at once."""
     from service import memory_saver
     return {"status": await memory_saver.prewarm(client)}
+
+
+@app.post("/encoders/prewarm", dependencies=[Depends(native_only)])
+async def prewarm_encoder(body: dict[str, Any]) -> dict[str, Any]:
+    """The mic opened, or a picture or clip is being attached: start loading the
+    Ask model's audio or vision encoder now (service/encoders.py). Returns at once."""
+    from service import encoders
+    modality = body.get("modality")
+    if modality not in encoders.MODALITIES:
+        raise HTTPException(status_code=422, detail="modality must be audio or vision")
+    return {"status": await encoders.prewarm(modality)}
 
 
 @app.get("/idle_timeout")

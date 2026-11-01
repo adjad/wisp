@@ -13,8 +13,10 @@ from pathlib import Path
 import stat
 
 ROOT = Path(__file__).resolve().parent / "engine_guard"
-TARGETS = {"omlx/process_memory_enforcer.py", "omlx/engine_pool.py", "omlx/server.py"}
+TARGETS = {"omlx/process_memory_enforcer.py", "omlx/engine_pool.py", "omlx/server.py", "omlx/engine/vlm.py"}
 ADDITION = "omlx/wisp_guard.py"
+# Whole new engine files: installed path -> overlay source.
+ADDITIONS = {ADDITION: "proof.py", "omlx/wisp_encoders.py": "encoders.py"}
 
 
 class OverlayError(RuntimeError):
@@ -77,12 +79,14 @@ def _read(root, name):
 def _manifest(root):
     raw = _read(root, "manifest.json")
     m = _json(raw)
-    _require(set(m) == {"version", "id", "upstream_tree_sha256", "patches", "addition"})
-    _require(type(m["version"]) is int and m["version"] == 1 and m["id"] == "wisp-engine-guard-v1")
+    _require(set(m) == {"version", "id", "upstream_tree_sha256", "patches", "additions"})
+    _require(type(m["version"]) is int and m["version"] == 2 and m["id"] == "wisp-engine-overlay-v2")
     _require(isinstance(m["patches"], list) and len(m["patches"]) == len(TARGETS))
     _require({p["path"] for p in m["patches"]} == TARGETS)
-    a = m["addition"]
-    _require(set(a) == {"path", "source", "sha256"} and a["path"] == ADDITION and a["source"] == "proof.py")
+    _require(isinstance(m["additions"], list) and len(m["additions"]) == len(ADDITIONS))
+    for a in m["additions"]:
+        _require(set(a) == {"path", "source", "sha256"} and ADDITIONS.get(a["path"]) == a["source"])
+    _require({a["path"] for a in m["additions"]} == set(ADDITIONS))
     return m, _hash(raw)
 
 
@@ -113,11 +117,12 @@ def apply(engine, upstream_digest, *, root=ROOT):
         _require(_hash(data) == row["output_sha256"])
         ast.parse(text)
         planned.append((row["path"], data))
-    addition = _read(root, "proof.py")
-    _require(_hash(addition) == m["addition"]["sha256"])
-    _require(not os.path.lexists(Path(engine) / ADDITION))
-    ast.parse(addition)
-    planned.append((ADDITION, addition))
+    for a in m["additions"]:
+        addition = _read(root, a["source"])
+        _require(_hash(addition) == a["sha256"])
+        _require(not os.path.lexists(Path(engine) / a["path"]))
+        ast.parse(addition)
+        planned.append((a["path"], addition))
     for name, data in planned:
         target = Path(engine) / name
         mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else 0o644
@@ -135,7 +140,7 @@ def apply(engine, upstream_digest, *, root=ROOT):
 def verify(engine, receipt, *, root=ROOT):
     m, identity = _manifest(root)
     expected = {p["path"]: p["output_sha256"] for p in m["patches"]}
-    expected[ADDITION] = m["addition"]["sha256"]
+    expected.update({a["path"]: a["sha256"] for a in m["additions"]})
     _require(receipt == {"id": m["id"], "manifest_sha256": identity, "files": expected})
     for name, wanted in expected.items():
         _require(_hash(_read(engine, name)) == wanted)

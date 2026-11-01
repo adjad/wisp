@@ -1,7 +1,7 @@
 {
   "path": "omlx/server.py",
   "input_sha256": "76d160aadace9f22d1a5a3ba589f3a72f93e7f3e1d1cb9fe1d6e2b4a7b626183",
-  "output_sha256": "74e25a8f81517e7f5db6a9c4797a77848ec9910b4d81e54fba495ba72f27aea6",
+  "output_sha256": "754856a501f15d849e25066bb146979f5420fde6b35692471f874b807d4249de",
   "edits": [
     {
       "old": "logger = logging.getLogger(__name__)",
@@ -61,6 +61,16 @@
     {
       "old": "@app.post(\"/v1/models/{model_id}/unload\")\n",
       "new": "# Modified by Wisp: drop the GPU power cap now, even while capped requests\n# still run (they finish uncapped), so an app that starts using the GPU in the\n# middle of a capped request is not held under it. The cap is Mac-wide.\n@app.post(\"/v1/wisp/gpu-power/lift\")\nasync def wisp_lift_gpu_power(_: bool = Depends(verify_api_key)):\n    limiter = _server_state.gpu_power_limiter\n    if limiter is not None:\n        await limiter.close()\n    return {\"status\": \"ok\"}\n\n\n@app.post(\"/v1/models/{model_id}/unload\")\n",
+      "count": 1
+    },
+    {
+      "old": "from . import wisp_guard as _wisp_guard\n",
+      "new": "from . import wisp_guard as _wisp_guard\nfrom . import wisp_encoders as _wisp_encoders\n",
+      "count": 1
+    },
+    {
+      "old": "@app.post(\"/v1/models/{model_id}/load\")\n",
+      "new": "# Modified by Wisp: which encoder towers each loaded model holds, and\n# pre-warm/release one (omlx/wisp_encoders.py).\n@app.get(\"/v1/wisp/encoders\")\nasync def wisp_encoders_status(_: bool = Depends(verify_api_key)):\n    return _wisp_encoders.pool_status(_server_state.engine_pool)\n\n\n@app.post(\"/v1/wisp/encoders/{modality}/{action}\")\nasync def wisp_encoders_action(modality: str, action: str, request: FastAPIRequest,\n                               _: bool = Depends(verify_api_key)):\n    try:\n        body = await request.json()\n    except ValueError:\n        body = None\n    model = body.get(\"model\") if isinstance(body, dict) else None\n    if not isinstance(model, str) or not model:\n        return JSONResponse(status_code=422, content={\"error\": \"model_required\"})\n    status, content = await _wisp_encoders.act(\n        _server_state.engine_pool, resolve_model_id(model), modality, action)\n    return JSONResponse(status_code=status, content=content)\n\n\n@app.post(\"/v1/models/{model_id}/load\")\n",
       "count": 1
     }
   ]

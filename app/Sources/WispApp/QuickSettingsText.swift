@@ -25,6 +25,32 @@ struct ModelMemory: Equatable {
     }
 }
 
+/// The Ask model's audio and vision encoders on Wisp's own engine, from
+/// `/engine`'s `encoders`. Nil when the service can't say (the user's oMLX, an
+/// older engine, no answer). On demand, each loads when a clip or picture needs
+/// it and leaves memory after `idleSeconds` unused.
+struct EncoderResidency: Equatable {
+    struct Tower: Equatable { let name: String; let resident: Bool; let bytes: Int64? }
+    let onDemand: Bool
+    let idleSeconds: Double?
+    let towers: [Tower]
+
+    static func parse(_ value: Any?) -> EncoderResidency? {
+        guard let obj = value as? [String: Any],
+              let onDemand = obj["on_demand"] as? NSNumber, CFGetTypeID(onDemand) == CFBooleanGetTypeID(),
+              let rows = obj["towers"] as? [String: Any] else { return nil }
+        let idle = (obj["idle_release_s"] as? NSNumber).flatMap {
+            CFGetTypeID($0) == CFBooleanGetTypeID() || $0.doubleValue <= 0 ? nil : $0.doubleValue }
+        let towers = ["audio", "vision"].compactMap { name -> Tower? in
+            guard let row = rows[name] as? [String: Any], let state = row["state"] as? String else { return nil }
+            let number = row["bytes"] as? NSNumber
+            let bytes = number.flatMap { CFGetTypeID($0) == CFBooleanGetTypeID() || $0.int64Value <= 0 ? nil : $0.int64Value }
+            return Tower(name: name, resident: state == "resident" || state == "loading", bytes: bytes)
+        }
+        return EncoderResidency(onDemand: onDemand.boolValue, idleSeconds: idle, towers: towers)
+    }
+}
+
 /// Quick settings' one-line descriptions. Each keeps the states the service can
 /// be in (waiting for confirmation, not confirmed) instead of guessing "off".
 enum QuickSettingsText {
@@ -123,6 +149,24 @@ enum QuickSettingsText {
         case nil:
             return ("Your own oMLX is also running", false)
         }
+    }
+
+    /// The Models page's line about the voice (audio) and picture (vision) encoders.
+    static func encoders(_ residency: EncoderResidency?) -> String? {
+        guard let residency, !residency.towers.isEmpty else { return nil }
+        guard residency.onDemand else { return "Voice and picture encoders stay loaded with the model" }
+        let label = ["audio": "voice", "vision": "pictures"]
+        let loaded = residency.towers.filter(\.resident).map { tower in
+            (label[tower.name] ?? tower.name) + (tower.bytes.map { " \(megabytes($0)) MB" } ?? "")
+        }
+        let after = residency.idleSeconds.map { " after \(max(1, Int(($0 / 60).rounded()))) min unused" } ?? " when unused"
+        if loaded.isEmpty { return "Voice and picture encoders load when you use them; none in memory now" }
+        return "Encoders in memory: \(loaded.joined(separator: ", ")); they leave\(after)"
+    }
+
+    /// Whole MB (10^6 bytes), as the engine's tower sizes are small.
+    static func megabytes(_ bytes: Int64) -> String {
+        String(Int((Double(bytes) / 1_000_000).rounded()))
     }
 
     /// "Ling-3.0-tiny-oQ6e" → "Ling"; "org/Mellum-2.1" → "Mellum".
