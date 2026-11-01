@@ -1,7 +1,8 @@
 """Mac: oQ-quantize a Gemma 4 E4B bf16 folder with the installed oMLX and combine the shipped MTP head.
 
 The gate compares the untuned bf16 and the merged LoRA, both quantized by this script with one recipe
-(oQ level 4, enhanced, group 64, bfloat16) and both given the SAME MTP head: the one inside the shipped
+(the oMLX panel's oQ4e settings: enhanced, imatrix reuse off, strict off, group 64, bfloat16, not
+text-only, sensitivity measured on `--sensitivity`) and both given the SAME MTP head: the one inside the shipped
 `-mtp` build (`--mtp-from`), rebuilt byte-for-byte as a `gemma4_assistant` donor folder.
 
 Run it with oMLX's own Python under the heavy lock, with nothing else quantizing:
@@ -54,25 +55,34 @@ def main() -> int:
     ap.add_argument("--src", required=True, type=Path, help="bf16 Gemma 4 E4B folder (untuned or merged)")
     ap.add_argument("--out", required=True, type=Path, help="NEW output folder")
     ap.add_argument("--mtp-from", required=True, type=Path, help="shipped -mtp build whose head both builds get")
+    ap.add_argument("--sensitivity", type=Path, default=None,
+                    help="quantized variant for the layer-sensitivity pass (the panel's 'Sensitivity model')")
     ap.add_argument("--level", type=float, default=4)
     args = ap.parse_args()
     if args.out.exists():
         sys.exit(f"{args.out} exists - refusing to overwrite")
     from omlx import __version__ as omlx_version
-    from omlx.oq import combine_mtp_into_output, quantize_oq_streaming
+    from omlx.oq import combine_mtp_into_output, quantize_oq_streaming, validate_gemma4_assistant_pair
+
+    src_cfg = json.loads((args.src / "config.json").read_text())
+    asst_cfg = json.loads((args.mtp_from / "config.json").read_text())["text_config"]["mtp_assistant_config"]
+    validate_gemma4_assistant_pair(src_cfg, asst_cfg)
 
     t0 = time.time()
 
     def cb(phase, pct, detail="", meta=None):
         print(f"  [{time.time() - t0:6.0f}s] {pct:5.1f}% {phase} {detail}", flush=True)
 
-    quantize_oq_streaming(str(args.src), str(args.out), args.level, 64, cb, False, None, None, "",
-                          "bfloat16", False, True, enhanced=True)
+    sens = str(args.sensitivity) if args.sensitivity else ""
+    quantize_oq_streaming(str(args.src), str(args.out), args.level, 64, cb, False, None, None, sens,
+                          "bfloat16", False, True, enhanced=True, imatrix_reuse_cache=False,
+                          imatrix_strict=False)
     with tempfile.TemporaryDirectory(prefix="gemma4-mtp-donor-") as d:
         data_sha = build_donor(args.mtp_from, Path(d))
         combine_mtp_into_output(str(args.out), d)
     recipe = {"src": str(args.src), "omlx": omlx_version, "oq_level": args.level, "enhanced": True,
-              "group_size": 64, "dtype": "bfloat16", "mtp_from": str(args.mtp_from),
+              "imatrix_reuse_cache": False, "imatrix_strict": False, "text_only": False,
+              "sensitivity_model": sens, "group_size": 64, "dtype": "bfloat16", "mtp_from": str(args.mtp_from),
               "mtp_tensor_bytes_sha256": data_sha, "minutes": round((time.time() - t0) / 60, 1),
               "written": time.strftime("%FT%T%z")}
     (args.out / "wisp-quant-recipe.json").write_text(json.dumps(recipe, indent=1) + "\n")
