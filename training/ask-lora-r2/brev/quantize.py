@@ -50,6 +50,25 @@ def build_donor(mtp_from: Path, dest: Path) -> str:
     return hashlib.sha256(raw[8 + n:]).hexdigest()
 
 
+def patch_gemma4_audio_sanitize() -> None:
+    """oMLX 0.7.3rc1 bug: a bf16 Gemma 4 source too big to calibrate in RAM gets a 4-bit proxy, and the
+    proxy hands mlx_vlm's gemma4 sanitize an audio_config that is still a dict, so
+    `audio_config.subsampling_conv_channels` raises. Give it attribute access, in this process only."""
+    from types import SimpleNamespace
+
+    import mlx_vlm.models.gemma4.gemma4 as g4
+
+    orig = g4.Model.sanitize
+
+    def sanitize(self, weights):
+        ac = getattr(getattr(self, "config", None), "audio_config", None)
+        if isinstance(ac, dict):
+            self.config.audio_config = SimpleNamespace(**ac)
+        return orig(self, weights)
+
+    g4.Model.sanitize = sanitize
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--src", required=True, type=Path, help="bf16 Gemma 4 E4B folder (untuned or merged)")
@@ -67,6 +86,7 @@ def main() -> int:
     src_cfg = json.loads((args.src / "config.json").read_text())
     asst_cfg = json.loads((args.mtp_from / "config.json").read_text())["text_config"]["mtp_assistant_config"]
     validate_gemma4_assistant_pair(src_cfg, asst_cfg)
+    patch_gemma4_audio_sanitize()
 
     t0 = time.time()
 
