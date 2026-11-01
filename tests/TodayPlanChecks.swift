@@ -1217,6 +1217,7 @@ struct TodayPlanChecks {
                            "quote": "", "due_ts": 2000.0, "priority": 1, "reference": "reminders:native-id",
                            "suggested_minutes": 25, "needs_review": false]],
             "attention_omitted": 2, "removed_suggestions": ["email:a", 7, "reminders:b"],
+            "removed_suggestion_blocks": 1,
             "source_coverage": [["source": "notes", "ready": false, "detail": "Unavailable", "inspected": 0, "omitted": 3]],
             "behavior_detail": "Tentative supported evidence", "explanation": "Sources first",
             "proposed_plan": ["blocks": [["id": "busy", "title": "Likely busy", "start": 1000.0, "end": 2000.0,
@@ -1230,6 +1231,13 @@ struct TodayPlanChecks {
         check(enriched.workspace?.attention.first?.reference == "reminders:native-id" && enriched.workspace?.attention_omitted == 2)
         check(enriched.workspace?.removed_suggestions == ["email:a", "reminders:b"],
               "Day's ⋯ brings back exactly today's removed suggestions; a bad row is dropped")
+        check(enriched.workspace?.removed_suggestion_blocks == 1, "a grouped review's two emails are one removed block")
+        var older = object
+        var oldWorkspace = older["workspace"] as! [String: Any]
+        oldWorkspace["removed_suggestion_blocks"] = nil
+        older["workspace"] = oldWorkspace
+        let olderPlan = try JSONDecoder().decode(TodayPlan.self, from: JSONSerialization.data(withJSONObject: older))
+        check(olderPlan.workspace?.removed_suggestion_blocks == 2, "a service without block counts counts each id")
         let fallback = try JSONDecoder().decode(TodayPlan.self, from: original)
         check(fallback.displayBlocks.first?.title == "Saved calendar event" && fallback.workspace == nil)
 

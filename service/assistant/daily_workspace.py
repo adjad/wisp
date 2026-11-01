@@ -634,8 +634,9 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     an item naming one of its people is raised to the top with the reason said.
     ``dismissed`` is the user's cleared Needs you rows (store.needs_you_dismissals).
     ``removed`` is the attention item ids whose suggested blocks the user removed
-    (store.removed_suggestions); those items are never suggested again, though
-    they stay in ``attention``.
+    (store.removed_suggestion_times, or a plain set of ids); those items are never
+    suggested again, though they stay in ``attention``. With removal times, items
+    removed together count as one block in ``removed_suggestion_blocks``.
     Its windows need current evidence, increasing bounds, >=0.65 recurrence strength,
     a named timezone, and a human-readable explanation. No percentage is shown:
     these scores are evidence strength, not calibrated forecast probabilities.
@@ -865,6 +866,8 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     return dict(day=day, timezone=timezone, generated_at=now, attention=items[:MAX_ITEMS],
                 needs_you=needs_you(items[:MAX_ITEMS], now=now, day_end=hi, dismissed=dismissed),
                 attention_omitted=max(0, len(items) - MAX_ITEMS), removed_suggestions=removed_today,
+                removed_suggestion_blocks=len({removed.get(i, i) if isinstance(removed, dict) else i
+                                               for i in removed_today}),
                 source_coverage=coverage,
                 behavior_detail=behavior_detail,
                 behavior_context=(dict(ready=True, generated_at=behavior["generated_at"],
@@ -1185,7 +1188,7 @@ def workspace(store, day, timezone, *, now, behavior=None, ignored_windows=(), p
         state = {**state, "tasks": hide(state["tasks"], now)}
     evidence = collect_evidence(store, state, day, timezone, now=now)
     cleared = getattr(store, "needs_you_dismissals", None)
-    removed = getattr(store, "removed_suggestions", None)
+    removed = getattr(store, "removed_suggestion_times", None) or getattr(store, "removed_suggestions", None)
     return assess(day, timezone, state, evidence, now=now, behavior=behavior,
                   ignored_windows=ignored_windows, profile=profile,
                   dismissed=cleared() if cleared is not None else None,
