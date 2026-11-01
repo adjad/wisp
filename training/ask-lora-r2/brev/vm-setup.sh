@@ -318,6 +318,9 @@ echo "== installing torch, transformers, peft"
 # transformers>=5.5.2 fixes E4B's KV-shared layers under use_cache=False; Google's guide pins >=5.10.1.
 # peft>=0.19 needs torch>=2.7.
 pipi -U pip setuptools wheel packaging
+# torch from the CUDA 12.8 wheel index: PyPI's default (cu132 as of torch 2.15) needs a newer driver than
+# Brev's hosts ship (Hyperstack A6000: driver 570 = CUDA 12.8), and torch then silently runs without a GPU.
+pipi --index-url "${TORCH_INDEX:-https://download.pytorch.org/whl/cu128}" "torch>=2.7" || echo "ERROR: torch install failed"
 pipi "torch>=2.7" "transformers>=5.10.1,<6" "peft>=0.19.0" accelerate safetensors huggingface_hub hf_transfer \
   bitsandbytes sentencepiece || echo "ERROR: install failed"
 "$PY" -c "import torch,transformers,peft;print('torch',torch.__version__,'cuda',torch.version.cuda,'gpu',torch.cuda.is_available(),'transformers',transformers.__version__,'peft',peft.__version__)"

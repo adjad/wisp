@@ -205,7 +205,9 @@ def load_model(a, *, for_training: bool = True):
         kw["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4",
             bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_quant_storage=torch.bfloat16)
-    model = _model_class().from_pretrained(a.base, dtype=torch.bfloat16, attn_implementation="sdpa",
+    # transformers 5.22 refuses SDPA for Gemma4AudioModel; the frozen audio tower takes eager.
+    attn = {"": "sdpa", "text_config": "sdpa", "vision_config": "sdpa", "audio_config": "eager"}
+    model = _model_class().from_pretrained(a.base, dtype=torch.bfloat16, attn_implementation=attn,
                                            device_map={"": 0}, **kw)
     print(f"loaded {type(model).__name__} params={sum(p.numel() for p in model.parameters()) / 1e9:.2f}B "
           f"gpu_alloc={torch.cuda.memory_allocated() / 2**30:.1f}GiB qlora={bool(kw)}")
