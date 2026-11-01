@@ -82,11 +82,11 @@ def test_runner_reports_a_rejected_level_without_acting(loaded, monkeypatch) -> 
 
 
 @pytest.mark.parametrize("read_only,full_access,tier", [
-    (False, False, "CONFIRM"), (False, True, "ALLOW"), (True, False, "DENY")])
+    (False, False, "CONFIRM"), (False, True, "CONFIRM"), (True, False, "DENY")])
 def test_policy_tier_follows_the_access_mode(loaded, monkeypatch, tmp_path,
                                              read_only, full_access, tier) -> None:
-    # The skill's instructions must not promise a confirmation that full-access
-    # mode does not ask for; this pins what each mode actually does.
+    # Pins what each mode actually does. Skill tools ask even with full access
+    # (policy._ALWAYS_CONFIRM_EXTENSION, Release Auditor rc1 follow-up d).
     from service.safety import grants, policy
     monkeypatch.setattr(grants, "GRANTS_PATH", tmp_path / "grants.json")
     monkeypatch.setattr(grants, "_CACHE", {})

@@ -624,11 +624,15 @@ def test_every_workspace_write_asks_with_full_access_on(full_access, registered_
 
 
 def test_workspace_reads_with_full_access_on(full_access, registered_mcp):
+    # Every mcp_action asks, even with full access (policy._ALWAYS_CONFIRM_
+    # EXTENSION); only trusted_read_only tools (mcp_read) skip the card. The
+    # read/effect wording on the card still follows mcp_effect_word.
     reads = WORKSPACE_READS + ["get_drive_shareable_link"]
     names = registered_mcp("google_workspace", *reads)
-    asked = sorted(n.removeprefix("mcp_google_workspace_") for n in names
-                   if _tier(n) is policy.Tier.CONFIRM)
-    assert asked == sorted(set(WORKSPACE_READS_THAT_ASK) & set(reads)), asked
+    assert all(_tier(n) is policy.Tier.CONFIRM for n in names)
+    worded_as_effects = sorted(n.removeprefix("mcp_google_workspace_") for n in names
+                               if policy.mcp_effect_word(n) is not None)
+    assert worded_as_effects == sorted(set(WORKSPACE_READS_THAT_ASK) & set(reads)), worded_as_effects
 
 
 RE_REVIEW_WRITES = [
@@ -659,9 +663,10 @@ def test_names_from_the_re_review_ask(server, tool, full_access, registered_mcp)
     ("fs", "read_file"), ("chat", "get_messages"), ("notion", "query_database"),
     ("brave-search", "search"), ("db", "query_database"), ("docs", "list_pages"),
 ])
-def test_common_reads_stay_card_free(server, tool, full_access, registered_mcp):
+def test_common_reads_are_worded_as_reads_but_still_ask(server, tool, full_access, registered_mcp):
     (name,) = registered_mcp(server, tool)
-    assert _tier(name) is policy.Tier.ALLOW, name
+    assert policy.mcp_effect_word(name) is None, name
+    assert _tier(name) is policy.Tier.CONFIRM, name
 
 
 @pytest.mark.parametrize("server,tool", [("shop", "get_order_status"), ("blog", "get_post_by_id")])
@@ -703,7 +708,8 @@ def test_pre_freeze_names_ask(server, tool, full_access, registered_mcp):
                                          ("x", "search_orders"), ("x", "list_ordinals")])
 def test_a_query_with_an_object_still_reads(server, tool, full_access, registered_mcp):
     (name,) = registered_mcp(server, tool)
-    assert _tier(name) is policy.Tier.ALLOW, name
+    assert policy.mcp_effect_word(name) is None, name
+    assert _tier(name) is policy.Tier.CONFIRM, name
 
 
 def test_an_effect_word_past_the_64_character_cut_still_asks(full_access, registered_mcp):
