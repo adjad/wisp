@@ -69,7 +69,8 @@ def cleared_needs():
 
 def removed_suggestions():
     """The Day suggestions the user removed (daily_workspace_api); none from a store without them."""
-    read = getattr(assistant_store, "removed_suggestions", None)
+    read = (getattr(assistant_store, "removed_suggestion_times", None)
+            or getattr(assistant_store, "removed_suggestions", None))
     try:
         return read() if read is not None else None
     except Exception:  # noqa: BLE001 - a failed read shows every suggestion, never no workspace

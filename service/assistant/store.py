@@ -2605,9 +2605,11 @@ class AssistantStore:
 
     def remove_suggestions(self, evidence_ids) -> None:
         """Keep these attention items out of the Day's suggested blocks. Writes only
-        this table: nothing in Mail, Reminders or Messages changes."""
-        now = time.time()
+        this table: nothing in Mail, Reminders or Messages changes. Every call gets
+        a time later than any stored one, so its items read back as one block."""
         with self._write_transaction():
+            latest = self._db.execute("SELECT MAX(removed_at) FROM assistant_removed_suggestions").fetchone()[0]
+            now = time.time() if latest is None else max(time.time(), latest + 1e-3)
             self._db.executemany(
                 "INSERT INTO assistant_removed_suggestions(evidence_id,removed_at) VALUES (?,?) "
                 "ON CONFLICT(evidence_id) DO UPDATE SET removed_at=excluded.removed_at",
@@ -2624,6 +2626,13 @@ class AssistantStore:
             return self._db.executemany(
                 "DELETE FROM assistant_removed_suggestions WHERE evidence_id=?",
                 [(i,) for i in set(evidence_ids)]).rowcount
+
+    def removed_suggestion_times(self) -> dict[str, float]:
+        """{attention item id: when it was removed}. One Remove writes one time for
+        every item it covers, so equal times are one removed block."""
+        with self.transaction(write=False) as db:
+            return {r["evidence_id"]: r["removed_at"] for r in
+                    db.execute("SELECT evidence_id,removed_at FROM assistant_removed_suggestions")}
 
     def removed_suggestions(self) -> set[str]:
         """The attention item ids whose suggested blocks the user removed."""
