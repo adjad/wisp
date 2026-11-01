@@ -229,6 +229,14 @@ class RemoveSuggestion(BaseModel):
     evidence_ids: list[Annotated[str, Field(pattern=r"^[a-z_]{1,24}:[0-9a-f]{24}$")]] = Field(min_length=1, max_length=20)
 
 
+class RestoreSuggestion(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # Undo of one Remove sends the ids it removed (a grouped block's, together);
+    # "Bring back" sends the plan's removed_suggestions, at most one day's attention.
+    evidence_ids: list[Annotated[str, Field(pattern=r"^[a-z_]{1,24}:[0-9a-f]{24}$")]] = Field(
+        min_length=1, max_length=daily.MAX_ITEMS)
+
+
 def fail(exc):
     raise HTTPException(409 if isinstance(exc, RevisionConflict) else 422, str(exc)) from exc
 
@@ -260,6 +268,16 @@ async def remove_suggestion(body: RemoveSuggestion):
     from service.assistant.hub import hub
     await hub.publish({"type": "changed"})
     return {"ok": True, "removed": len(set(body.evidence_ids))}
+
+
+@router.post("/suggestions/restore")
+async def restore_suggestion(body: RestoreSuggestion):
+    """Undo Remove: the items may be suggested again from the next plan on."""
+    from service.assistant.store import assistant_store
+    restored = assistant_store.restore_suggestions(body.evidence_ids)
+    from service.assistant.hub import hub
+    await hub.publish({"type": "changed"})
+    return {"ok": True, "restored": restored}
 
 
 @router.get("/email")

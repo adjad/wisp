@@ -1913,7 +1913,7 @@ async def run_agent(
                 OPAQUE_ACTION_CATEGORIES, opaque_outbound_decision)
             if model_led_discovery:
                 dec = opaque_outbound_decision(
-                    tool.name, tool.category, args, dec,
+                    tool.name, tool.category, args, dec, categories=OPAQUE_ACTION_CATEGORIES,
                     reason="opaque outbound action chosen by the model: "
                            "confirmation is always required in model-led routing")
             else:

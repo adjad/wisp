@@ -947,6 +947,23 @@ struct DayTimeline: Equatable {
         return members.isEmpty ? (item.evidenceID.map { [$0] } ?? []) : members
     }
 
+    /// The Undo bar's words after Remove. A grouped review says how many emails
+    /// went, since Undo brings them all back together.
+    static func removedNotice(_ item: DayItem) -> String {
+        item.members.count > 1 ? "Removed \(item.members.count) emails from your day"
+                               : "Removed “\(item.title)” from your day"
+    }
+
+    /// The ⋯ entry that brings back today's removed suggestions, or nil when
+    /// there are none. It names only today's, which is all it restores.
+    static func bringBackLabel(_ removedToday: [String]) -> String? {
+        switch removedToday.count {
+        case 0: return nil
+        case 1: return "Bring back today's removed suggestion"
+        default: return "Bring back today's \(removedToday.count) removed suggestions"
+        }
+    }
+
     /// The task Plan time makes from a need: "Review: …" for mail and texts.
     static func plannedTitle(_ title: String, review: Bool) -> String {
         review ? "Review: " + title : title

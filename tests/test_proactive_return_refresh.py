@@ -56,20 +56,24 @@ def store(tmp_path, monkeypatch):
     R._reset_for_tests()
     monkeypatch.setattr(M, "_holds", 0)
     s = ProactiveStore(tmp_path)
-    s.save_state(as_of=NOW - 2 * 3600, timezone="UTC")
+    s.save_state(as_of=NOW - 2 * 3600, model_as_of=NOW - 2 * 3600, timezone="UTC")
     yield s
     R._reset_for_tests()
 
 
-def run(rec, store, now=NOW, ready=_ready):
-    return asyncio.run(R.run(now=now, store=store, cycle=rec.cycle, gists=rec.refresh_gists,
+def _long_ago(now):
+    return float("inf")
+
+
+def run(rec, store, now=NOW, ready=_ready, arrived=_long_ago):
+    return asyncio.run(R.run(now=now, store=store, cycle=rec.cycle, gists=rec.refresh_gists, arrived=arrived,
                              ready=ready, announce=rec.announce))
 
 
 # --- what counts as stale ----------------------------------------------------------
 
 def test_a_brief_read_recently_today_owes_nothing(store):
-    store.save_state(as_of=NOW - 10 * MIN)
+    store.save_state(as_of=NOW - 10 * MIN, model_as_of=NOW - 10 * MIN)
     assert not R.arm("launch", now=NOW, store=store)
     assert not R.pending()
 
@@ -87,7 +91,7 @@ def test_an_old_brief_is_owed_a_catch_up(store):
 
 def test_a_new_day_is_stale_even_minutes_later(store):
     midnight = 1_800_057_600.0                     # 2027-01-16 00:00 UTC
-    store.save_state(as_of=midnight - 10 * MIN)
+    store.save_state(as_of=midnight - 10 * MIN, model_as_of=midnight - 10 * MIN)
     assert R.arm("opened", now=midnight + 5 * MIN, store=store)
 
 
@@ -132,7 +136,7 @@ def test_a_turn_wins_and_the_catch_up_stays_owed(store):
     assert R.pending() and rec.gists == 0 and rec.announced == 0
     assert "idle_refresh_at" not in store.state()
     assert not M.held()
-    assert not R.due(NOW + R.YIELD_S - 1) and R.due(NOW + R.YIELD_S)
+    assert not R.due(NOW + R.YIELD_S - 1) and R.due(NOW + R.YIELD_S + 1)
 
 
 def test_a_run_that_takes_too_long_lets_the_model_go(store, monkeypatch):
@@ -187,7 +191,8 @@ def test_updating_shows_after_the_notch_opens_on_a_stale_brief_and_while_running
     async def nothing():
         return None
 
-    asyncio.run(R.run(now=NOW, store=store, cycle=cycle_, gists=nothing, ready=_ready, announce=nothing))
+    asyncio.run(R.run(now=NOW, store=store, cycle=cycle_, gists=nothing, ready=_ready, announce=nothing,
+                      arrived=_long_ago))
     assert seen == [True]
     assert not R.updating(NOW + 1)
 
@@ -261,7 +266,7 @@ def test_the_scheduler_tick_runs_the_catch_up_first_and_never_during_a_turn(stor
 
     monkeypatch.setattr(cycle, "_return_tick", fake_return_tick)
     # Nothing owed and nothing due: no task.
-    store.save_state(as_of=time_now())
+    store.save_state(as_of=time_now(), model_as_of=time_now())
     R._reset_for_tests()
 
     async def go():
@@ -272,7 +277,7 @@ def test_the_scheduler_tick_runs_the_catch_up_first_and_never_during_a_turn(stor
 
     assert asyncio.run(go()) is None and ran == []
     # Owed: the catch-up runs even though the ordinary tick isn't due.
-    store.save_state(as_of=time_now() - 3 * 3600)
+    store.save_state(as_of=time_now() - 3 * 3600, model_as_of=time_now() - 3 * 3600)
     R.arm("opened", store=store)
     monkeypatch.setattr(cycle, "_foreground", lambda: True)
     assert asyncio.run(go()) is None and ran == []                   # a turn: not now
@@ -286,7 +291,7 @@ def test_the_endpoint_arms_from_the_app_only(store, monkeypatch):
     from service.proactive import store as store_mod
     from service.proactive.api import router
     monkeypatch.setattr(store_mod, "store", lambda: store)
-    store.save_state(as_of=time_now() - 3 * 3600)
+    store.save_state(as_of=time_now() - 3 * 3600, model_as_of=time_now() - 3 * 3600)
     app = FastAPI()
     app.include_router(router)
     client = TestClient(app)
@@ -295,3 +300,152 @@ def test_the_endpoint_arms_from_the_app_only(store, monkeypatch):
     assert not R.pending()
     reply = client.post("/assistant/proactive/return", json={}).json()
     assert reply == {"ok": True, "updating": True} and R.pending()
+
+
+# --- auditor notes (rc1): parked staleness, arrival, budgets, back-off -----------------
+
+def _engine_cycle(model, **kw):
+    """The real cycle on the engine tests' fixture sources and a fake model."""
+    from tests import test_proactive_engine as E
+    return lambda **extra: cycle.run_cycle(
+        now=E.NOW, tz=E.TZ, reply_fn=model, collect=lambda n, z: list(E.items_fixture()),
+        schedule_fn=lambda n, z: E.SCHEDULE, resolve=lambda item: None, linked={E.JUDGE}, own=E.ME,
+        allowed=set(), freeze=E.fake_freeze, **kw, **extra)
+
+
+async def _parked(system, material, abort, tokens):
+    return None                       # resident_reply's "the model isn't loaded"
+
+
+def test_a_rules_only_cycle_while_parked_still_owes_the_catch_up(tmp_path):
+    from tests import test_proactive_engine as E
+    R._reset_for_tests()
+    s = ProactiveStore(tmp_path / "p")
+    s.save_state(as_of=E.NOW - 3 * 3600, model_as_of=E.NOW - 3 * 3600, timezone=E.TZ)
+    # The ordinary cycle runs every few minutes while the model is parked: by rule.
+    result = asyncio.run(_engine_cycle(_parked, store=s)(force=False))
+    assert result["status"] == "done" and result["model"] is False
+    assert s.state()["as_of"] == E.NOW                      # looks current...
+    assert s.state()["model_as_of"] == E.NOW - 3 * 3600      # ...but the model never read it
+    assert R.arm("unparked", now=E.NOW + 60, store=s)
+    # A cycle that did use the model clears it.
+    R._reset_for_tests()
+    asyncio.run(_engine_cycle(E.FakeModel(), store=s)(force=True))
+    assert s.state()["model_as_of"] == E.NOW
+    assert not R.arm("opened", now=E.NOW + 60, store=s)
+
+
+def test_a_catch_up_that_meets_a_live_turn_yields_and_stays_owed(store, monkeypatch):
+    from tests import test_proactive_engine as E
+    turn = {"on": False}
+    monkeypatch.setattr(cycle, "_foreground", lambda: turn["on"])
+    model = E.FakeModel()
+
+    async def reply(system, material, abort, tokens):
+        turn["on"] = True               # the user asks something after the first call
+        return await model(system, material, abort, tokens)
+
+    R.arm("opened", now=NOW, store=store)
+    rec = Recorder()
+    outcome = asyncio.run(R.run(now=NOW, store=store, cycle=_engine_cycle(reply, store=store),
+                                gists=rec.refresh_gists, ready=_ready, announce=rec.announce,
+                                arrived=_long_ago))
+    assert outcome == "yielded" and len(model.seen) == 1
+    assert R.pending() and rec.gists == 0 and rec.announced == 0 and not M.held()
+    assert "idle_refresh_at" not in store.state()
+
+
+def test_it_waits_until_the_user_has_settled(store, monkeypatch):
+    R.arm("opened", now=NOW, store=store)
+    rec = Recorder()
+    assert run(rec, store, arrived=lambda now: 10.0) == "settling"
+    assert rec.cycles == [] and not R.due(NOW + R.SETTLE_S - 11) and R.due(NOW + R.SETTLE_S - 10)
+    # Opening Ask counts as arriving, and so does a turn.
+    import time as _time
+    monkeypatch.setattr(M._state, "last_intent", _time.monotonic() - 5)
+    assert R._arrived(NOW + 3600) == pytest.approx(5, abs=1)
+    monkeypatch.setattr(M._state, "last_intent", None)
+    monkeypatch.setattr(idle, "_last_turn", _time.monotonic() - 20)
+    assert R._arrived(NOW + 3600) == pytest.approx(20, abs=1)
+    # The arm itself is an arrival: a launch waits SETTLE_S too.
+    monkeypatch.setattr(idle, "_last_turn", None)
+    assert R._arrived(NOW + 30) == pytest.approx(30)
+
+
+def test_the_overviews_share_the_run_budget(store, monkeypatch):
+    monkeypatch.setattr(R, "RUN_MAX_S", 0.2)
+    R.arm("opened", now=NOW, store=store)
+    rec = Recorder()
+    held = []
+
+    async def slow_gists():
+        held.append(M.held())
+        await asyncio.sleep(5)
+
+    outcome = asyncio.run(R.run(now=NOW, store=store, cycle=rec.cycle, gists=slow_gists, ready=_ready,
+                                announce=rec.announce, arrived=_long_ago))
+    # The cards are fresh, so it counts; the overviews keep their text, and the
+    # model is let go on time.
+    assert outcome == "ran" and held == [True] and not M.held() and not R.pending()
+
+
+def test_a_cycle_that_fell_back_to_rules_does_not_count(store):
+    R.arm("opened", now=NOW, store=store)
+
+    async def by_rule(**kwargs):
+        return {"status": "done", "model": False}
+
+    rec = Recorder()
+    outcome = asyncio.run(R.run(now=NOW, store=store, cycle=by_rule, gists=rec.refresh_gists, ready=_ready,
+                                announce=rec.announce, arrived=_long_ago))
+    assert outcome == "yielded" and R.pending() and rec.gists == 0
+    assert not R.due(NOW + R.YIELD_S - 1)
+
+
+def test_an_error_after_the_cycle_still_backs_off(store, monkeypatch):
+    R.arm("opened", now=NOW, store=store)
+
+    def broken(**values):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "save_state", broken)
+    with pytest.raises(OSError):
+        run(Recorder(), store)
+    assert R.pending() and not R.status()["running"] and not M.held()
+    # Not a forced cycle on every tick.
+    assert not R.due(NOW + 30) and R.due(NOW + R.YIELD_S + 1)
+
+
+# --- auditor notes (rc1 batch 2): back-off clock, fresh re-check --------------------
+
+def test_a_long_run_backs_off_from_when_it_ended_not_when_it_started(store, monkeypatch):
+    R.arm("opened", now=NOW, store=store)
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(R.time, "monotonic", lambda: clock["t"])
+
+    async def long_turn_hit(**kwargs):
+        clock["t"] += R.YIELD_S + 300          # the cycle ran 7 minutes, then a turn won
+        return {"status": "yielded"}
+
+    rec = Recorder()
+    outcome = asyncio.run(R.run(now=NOW, store=store, cycle=long_turn_hit, gists=rec.refresh_gists,
+                                ready=_ready, announce=rec.announce, arrived=_long_ago))
+    assert outcome == "yielded" and R.pending()
+    ended = NOW + R.YIELD_S + 300
+    # Not due again the moment it ends (the old start-based retry was long past).
+    assert not R.due(ended) and not R.due(ended + R.YIELD_S - 1) and R.due(ended + R.YIELD_S)
+
+
+def test_a_brief_the_ordinary_cycle_caught_up_meanwhile_is_no_longer_owed(store):
+    R.arm("opened", now=NOW, store=store)
+    rec = Recorder()
+    assert run(rec, store, arrived=lambda now: 10.0) == "settling"
+    # While it settled, the ordinary cycle ran on the model.
+    store.save_state(as_of=NOW + 20, model_as_of=NOW + 20)
+    assert run(rec, store, now=NOW + R.SETTLE_S) == "fresh"
+    assert rec.cycles == [] and not R.pending() and not R.updating(NOW + R.SETTLE_S)
+    # A rules-only cycle meanwhile (as_of only) still leaves it owed.
+    R.arm("opened", now=NOW + 4 * 3600, store=store)
+    store.save_state(as_of=NOW + 4 * 3600 + 20)
+    assert run(rec, store, now=NOW + 4 * 3600 + R.SETTLE_S) == "ran"
+    assert rec.cycles == [{"force": True}]
