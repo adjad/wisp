@@ -11,19 +11,25 @@ IMPORTANT rules:
 - "Coming back" is one of: the service starting (the app relaunched), the chat
   model resident again after Save memory parked it (a turn or intent loaded it,
   never a batch window), or the app's notch opening (POST /assistant/return).
-- Stale means the engine last read the sources (state "as_of") STALE_AFTER_S
-  ago or on an earlier local day. A Brief that was never built is the ordinary
-  cycle's job, not this one's.
+- Stale means the MODEL last read the sources (state "model_as_of")
+  STALE_AFTER_S ago or on an earlier local day. Not "as_of": while the model is
+  parked the ordinary cycle still runs every few minutes by rule and keeps
+  as_of current. A Brief that was never built is the ordinary cycle's job.
 - Arming never loads a model. The catch-up starts only while the chat model is
   already resident and no batch window is open, so it can't defeat Save memory:
   a launch or an unpark just waits for someone to open Wisp, and opening Ask
   already prewarms (memory_saver.prewarm). Memory pressure keeps it waiting too.
 - It runs from cycle.schedule_tick, so it is single-flight with the ordinary
   cycle and the gist calls, never starts while a turn is in flight, and stands
-  down when one starts (it stays armed and tries again). Its model calls go
+  down when one starts (it stays armed and tries again). It also waits until
+  the user's arrival (the arm, the notch opening, an intent, a turn) is
+  SETTLE_S old: someone who just opened Wisp is about to ask something, and a
+  cancelled request may not stop the engine generating. Its model calls go
   through cycle.resident_reply, under the Brief's Save power cap.
 - While it runs it keeps the model resident (memory_saver.hold), at most
-  RUN_MAX_S, so a park between two calls can't leave half the Brief by rule.
+  RUN_MAX_S for the cycle and the gists together, so a park between two calls
+  can't leave half the Brief by rule. A cycle that fell back to rules anyway
+  doesn't count. Whatever ends a run, a still-owed catch-up backs off.
 - A finished catch-up counts as the hour's idle refresh, and tells the app
   "changed" so an open notch shows it at once.
 - While it is running, or for UPDATING_FOR_S after the notch opened on a stale
@@ -42,8 +48,10 @@ STALE_AFTER_S = 45 * 60
 # How long the Brief says "Updating…" after the notch opened on a stale Brief,
 # if the catch-up hasn't been able to start (the model is still loading).
 UPDATING_FOR_S = 3 * 60
-# The longest a catch-up may hold the model.
+# The longest a catch-up may hold the model (cycle and gists together).
 RUN_MAX_S = 8 * 60
+# How long after the user arrives before a catch-up may start.
+SETTLE_S = 45
 # Waits before trying again: the model wasn't resident, or a turn started.
 WAIT_S = 60
 YIELD_S = 120
@@ -66,12 +74,19 @@ def _day(ts: float, tz: str) -> str:
         return datetime.fromtimestamp(ts).date().isoformat()
 
 
+def _stamp(value) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
 def is_stale(now: float, state: dict) -> bool:
-    """The Brief was last read STALE_AFTER_S ago or on an earlier local day.
-    Never built (no as_of) is not stale: the ordinary cycle builds it."""
-    as_of = state.get("as_of")
-    if not isinstance(as_of, (int, float)) or isinstance(as_of, bool):
+    """The model last read the Brief's sources STALE_AFTER_S ago or on an
+    earlier local day. Never built (no as_of) is not stale: the ordinary cycle
+    builds it. Built but never by the model (or before model_as_of existed) is."""
+    if _stamp(state.get("as_of")) is None:
         return False
+    as_of = _stamp(state.get("model_as_of"))
+    if as_of is None:
+        return True
     if now - as_of >= STALE_AFTER_S:
         return True
     tz = state.get("timezone") or "UTC"
@@ -136,6 +151,19 @@ def status() -> dict:
             "updating": updating()}
 
 
+def _arrived(now: float) -> float:
+    """Seconds since the user last showed up: the arm, the notch opening, an
+    intent (opening Ask) or a turn, whichever is latest."""
+    ages = [now - t for t in ((_armed or {}).get("at"), _opened_at) if t is not None]
+    try:
+        from service import idle, memory_saver
+        mono = time.monotonic()
+        ages += [mono - t for t in (memory_saver._state.last_intent, idle.last_turn()) if t is not None]
+    except Exception:  # noqa: BLE001 — unknown: the wall-clock marks decide
+        pass
+    return min(ages) if ages else float("inf")
+
+
 async def _model_ready() -> bool:
     """The chat model is resident, no batch window is open, and memory isn't
     tight: the only time a catch-up may start. Never loads anything."""
@@ -160,17 +188,23 @@ async def _announce() -> None:
 
 
 async def run(*, now: float | None = None, store=None, cycle, gists, ready=None, announce=None,
-              hold=None) -> str:
+              hold=None, arrived=None) -> str:
     """One catch-up attempt. Returns:
 
     - "idle": nothing owed, or backing off;
+    - "settling": the user arrived under SETTLE_S ago; tried again after;
     - "waiting": the model isn't resident (or a batch window / pressure);
-    - "yielded": a turn started, or it ran past RUN_MAX_S; still owed;
+    - "yielded": a turn started, it fell back to rules, or it ran past
+      RUN_MAX_S; still owed;
     - "ran": the Brief was regenerated, and is no longer owed."""
     global _armed, _running, _retry_at, _opened_at
     now = time.time() if now is None else now
     if not due(now):
         return "idle"
+    since = (arrived or _arrived)(now)
+    if since < SETTLE_S:
+        _retry_at = now + (SETTLE_S - since)
+        return "settling"
     if not await (ready or _model_ready)():
         _retry_at = now + WAIT_S
         return "waiting"
@@ -179,18 +213,21 @@ async def run(*, now: float | None = None, store=None, cycle, gists, ready=None,
     store = _store(store)
     _running = True
     _log(f"regenerating the Brief ({_armed['reason']})")
+    deadline = time.monotonic() + RUN_MAX_S
     try:
         with hold():
             try:
                 result = await asyncio.wait_for(cycle(force=True), RUN_MAX_S)
             except asyncio.TimeoutError:
                 result = {"status": "timeout"}
-            if not isinstance(result, dict) or result.get("status") != "done":
-                _retry_at = now + YIELD_S
+            if (not isinstance(result, dict) or result.get("status") != "done"
+                    or result.get("model") is False):
                 return "yielded"
             store.save_state(idle_refresh_at=now)
             try:
-                await gists()
+                await asyncio.wait_for(gists(), max(0.0, deadline - time.monotonic()))
+            except asyncio.TimeoutError:
+                _log("the overviews ran out of time; they keep their last text")
             except Exception:  # noqa: BLE001 — the cards are fresh; the overviews keep their text
                 import traceback
                 traceback.print_exc()
@@ -199,6 +236,9 @@ async def run(*, now: float | None = None, store=None, cycle, gists, ready=None,
         _armed, _opened_at = None, None
     finally:
         _running = False
+        if _armed is not None:
+            # Whatever ended it (a turn, rules, a timeout, an error), back off.
+            _retry_at = max(_retry_at, now + YIELD_S)
     try:
         await (announce or _announce)()
     except Exception:  # noqa: BLE001 — the app's next read shows it anyway
