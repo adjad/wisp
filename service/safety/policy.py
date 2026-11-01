@@ -1760,9 +1760,10 @@ def opaque_outbound_decision(tool: str, category: str, args: dict, decision: Dec
                              reason: str, categories: frozenset[str] = frozenset()) -> Decision:
     """Turn an ALLOW for an opaque outbound action into a CONFIRM.
 
-    Shared by both routes in agent/loop.py. Model-led routing applies it to
-    every call; legacy routing applies it (with OPAQUE_ACTION_CATEGORIES) once
-    the turn has read untrusted content. Full access and standing grants do
+    Shared by both routes in agent/loop.py, both passing
+    OPAQUE_ACTION_CATEGORIES (skill and MCP actions): model-led routing applies
+    it to every call, legacy routing once the turn has read untrusted content.
+    Left at the default, only OPAQUE_OUTBOUND_TOOLS are covered. Full access and standing grants do
     not cover an action whose real-world effect the host cannot inspect. A
     validated read-only shell command is not opaque and keeps its ALLOW.
     """
