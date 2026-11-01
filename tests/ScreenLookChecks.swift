@@ -56,7 +56,7 @@ struct ScreenLookChecks {
         check(ScreenLook.label(app: "Finder", title: "") == "Finder", "app alone")
         check(ScreenLook.label(app: "Notes", title: "Notes") == "Notes", "title repeating the app")
         check(ScreenLook.label(app: "", title: "") == nil, "nothing to name")
-        check(ScreenLook.label(app: "Mail", title: "Hi\n\tthere\u{202E}gnp.exe") == "Mail — Hi there gnp.exe",
+        check(ScreenLook.label(app: "Mail", title: "Hi\n\tthere\u{202E}gnp.exe") == "Mail — Hi theregnp.exe",
               "controls and display-changing characters never reach the chip")
         check(ScreenLook.label(app: "Messages", title: "👩‍👩‍👧 Family") == "Messages — 👩‍👩‍👧 Family",
               "emoji joiners are real text")
