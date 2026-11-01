@@ -743,6 +743,10 @@ struct NotchDayView: View {
                         }
                     }
                 }
+                if !DayTimeline.removalIDs(item).isEmpty {
+                    Button("Remove") { remove(item) }
+                        .help("Takes it off your day and Wisp won't suggest it again. The email or reminder stays.")
+                }
             case .task:
                 if let task = task(for: item) {
                     Button("15 minutes shorter") {
@@ -803,7 +807,7 @@ struct NotchDayView: View {
         ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
             switch entry {
             case .cancel:
-                Button(failure?.canRetry == true ? "Try cancelling again" : "Cancel event") {
+                Button(CheckInCancel.cancelLabel(inviteeCount: event.inviteeCount, retry: failure?.canRetry == true)) {
                     if movingEvent?.id == event.id { closeMove() }   // not moving what is being cancelled
                     checkIn.beginCancel(event, timezone: today.timezone.identifier, fromCard: false)
                 }
@@ -879,6 +883,17 @@ struct NotchDayView: View {
         guard let id = item.caughtID else { return }
         ignoredCaught.insert(id)
         IgnoredCaught.add(id)
+    }
+
+    /// Remove a suggestion: its items are never suggested again (by Replan or a
+    /// later plan). Only Wisp's record changes; the source stays in Needs you.
+    private func remove(_ item: DayItem) {
+        let ids = DayTimeline.removalIDs(item)
+        guard !ids.isEmpty else { return }
+        Task {
+            _ = await today.mutate("/assistant/today/workspace/suggestions/remove", method: "POST",
+                                   body: ["evidence_ids": ids])
+        }
     }
 
     private func notToday(_ item: DayItem) {
