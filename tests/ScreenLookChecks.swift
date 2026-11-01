@@ -76,12 +76,11 @@ struct ScreenLookChecks {
               == CGRect(x: 50, y: 600, width: 200, height: 300), "AppKit to display coordinates")
 
         // Without Screen Recording, Look explains how to turn it on and captures nothing.
-        let first = ScreenLook.deniedNotice(promptedBefore: false)
-        let later = ScreenLook.deniedNotice(promptedBefore: true)
-        check(first.contains("Screen Recording") && first.contains("reopen"), "first denial explains")
-        check(later.contains("Settings") && later != first, "a later denial points at Settings")
+        check(ScreenLook.deniedNotice.contains("Screen Recording") && ScreenLook.deniedNotice.contains("Permissions")
+              && ScreenLook.deniedNotice.contains("reopen"), "a denial says where to turn it on")
 
         // Private browsing is never captured silently.
+        do {
         func app(_ number: UInt32, _ owner: String, _ bundle: String, _ title: String = "Page",
                  x: CGFloat = 0) -> ScreenLook.Window {
             var w = ScreenLook.Window(number: number, ownerPID: Int32(number), ownerName: owner, title: title,
@@ -136,6 +135,7 @@ struct ScreenLookChecks {
         let over = ScreenLook.windows([left, right, window(23, wisp, "Wisp")],
                                       overlapping: CGRect(x: 100, y: 100, width: 200, height: 200), excludingPID: wisp)
         check(over.map(\.number) == [21], "only overlapping, non-Wisp windows are checked")
+        }
 
         print("ScreenLookChecks: \(count) checks passed")
     }

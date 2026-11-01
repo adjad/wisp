@@ -1372,14 +1372,14 @@ final class OverlayModel: ObservableObject {
         onResize()
     }
 
-    /// "Look" without Screen Recording: say how to turn it on, and open the same
-    /// surface setup's Screen Recording row does (macOS's prompt the first time,
-    /// its Settings page after). Nothing is captured. True when it is already on.
+    /// "Look" without Screen Recording: say how to turn it on and open setup's
+    /// Permissions page, whose Screen Recording row asks macOS. Wisp never shows
+    /// macOS's question itself from here (only a click on that row does; see
+    /// tests/test_onboarding_window.py). Nothing is captured. True when it is on.
     private func screenRecordingReadyForLook() -> Bool {
         if CGPreflightScreenCaptureAccess() { return true }
-        let promptedBefore = UserDefaults.standard.bool(forKey: Permissions.screenRecordingPromptedKey)
-        showTransientNotice(ScreenLook.deniedNotice(promptedBefore: promptedBefore))
-        Permissions.requestScreenRecording()
+        showTransientNotice(ScreenLook.deniedNotice, duration: 8)
+        NotificationCenter.default.post(name: .wispOpenPermissions, object: nil)
         return false
     }
 

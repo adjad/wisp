@@ -8,8 +8,8 @@ import Foundation
 ///
 /// Rules:
 ///  - Only on the person's own action, and only with Screen Recording already on.
-///    Without it, Look explains and opens the same permission surface as setup's
-///    Screen Recording row (Permissions.requestScreenRecording); nothing is captured.
+///    Without it, Look explains and opens setup's Permissions page, whose Screen
+///    Recording row is the only thing that asks macOS; nothing is captured.
 ///  - Wisp's own windows are never in the picture.
 ///  - Memory only, like every attachment (MediaAttachment): never written to disk.
 ///  - A window title is written by whoever made the page or file. It is shown and
@@ -110,15 +110,10 @@ enum ScreenLook {
         CGRect(x: rect.minX, y: primaryHeight - rect.maxY, width: rect.width, height: rect.height)
     }
 
-    /// What Look does without Screen Recording. The first time, macOS can ask;
-    /// after that only System Settings can turn it on, and Wisp must reopen.
-    static func deniedNotice(promptedBefore: Bool) -> String {
-        promptedBefore
-            ? "Wisp needs Screen Recording to look at your screen. In the Settings page that opened, "
-              + "switch on Wisp, then quit and reopen Wisp."
-            : "Wisp needs Screen Recording to look at your screen. Allow it in the window macOS shows, "
-              + "then quit and reopen Wisp."
-    }
+    /// What Look says without Screen Recording, as it opens setup's Permissions
+    /// page (whose Screen Recording row asks macOS). Nothing is captured.
+    static let deniedNotice = "Wisp needs Screen Recording to look at your screen. Turn it on with "
+        + "Screen Recording in the Permissions window that just opened, then quit and reopen Wisp."
 
     // MARK: - Private browsing
 

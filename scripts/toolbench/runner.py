@@ -1151,6 +1151,9 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
         style_hint=style_hint or None,
         public_web_synthesis=False,
         model_led_discovery=True,
+        # Text-only cases: no picture is ever attached here.
+        picture_reading=None,
+        picture_label=None,
         model_led_preload=ask_preload,
         ask_quality=True,
         ask_direct=ask_direct,
