@@ -1216,7 +1216,7 @@ struct TodayPlanChecks {
             "attention": [["id": "r", "source": "reminders", "title": "Assignment", "reason": "Due today",
                            "quote": "", "due_ts": 2000.0, "priority": 1, "reference": "reminders:native-id",
                            "suggested_minutes": 25, "needs_review": false]],
-            "attention_omitted": 2, "removed_suggestions": 3,
+            "attention_omitted": 2, "removed_suggestions": ["email:a", 7, "reminders:b"],
             "source_coverage": [["source": "notes", "ready": false, "detail": "Unavailable", "inspected": 0, "omitted": 3]],
             "behavior_detail": "Tentative supported evidence", "explanation": "Sources first",
             "proposed_plan": ["blocks": [["id": "busy", "title": "Likely busy", "start": 1000.0, "end": 2000.0,
@@ -1228,7 +1228,8 @@ struct TodayPlanChecks {
         check(enriched.displayBlocks.first?.pattern_id == "routine" && enriched.displayBlocks.first?.kind == "behavior")
         check(enriched.displayWarnings == ["Source incomplete"] && enriched.displayUnscheduled.first?.title == "Study")
         check(enriched.workspace?.attention.first?.reference == "reminders:native-id" && enriched.workspace?.attention_omitted == 2)
-        check(enriched.workspace?.removed_suggestions == 3, "Day's ⋯ offers to bring back today's removed suggestions")
+        check(enriched.workspace?.removed_suggestions == ["email:a", "reminders:b"],
+              "Day's ⋯ brings back exactly today's removed suggestions; a bad row is dropped")
         let fallback = try JSONDecoder().decode(TodayPlan.self, from: original)
         check(fallback.displayBlocks.first?.title == "Saved calendar event" && fallback.workspace == nil)
 

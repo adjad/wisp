@@ -2617,12 +2617,10 @@ class AssistantStore:
                 "assistant_removed_suggestions ORDER BY removed_at DESC, evidence_id LIMIT ?)",
                 (self.REMOVED_SUGGESTIONS_KEPT,))
 
-    def restore_suggestions(self, evidence_ids=None) -> int:
-        """Undo Remove: these items (every removed one when None) may be suggested
-        again. Returns how many records were restored."""
+    def restore_suggestions(self, evidence_ids) -> int:
+        """Undo Remove: these items may be suggested again. Returns how many
+        records were restored."""
         with self._write_transaction():
-            if evidence_ids is None:
-                return self._db.execute("DELETE FROM assistant_removed_suggestions").rowcount
             return self._db.executemany(
                 "DELETE FROM assistant_removed_suggestions WHERE evidence_id=?",
                 [(i,) for i in set(evidence_ids)]).rowcount

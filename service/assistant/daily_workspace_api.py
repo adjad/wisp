@@ -12,7 +12,7 @@ from ipaddress import ip_address
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from service.assistant import daily_workspace as daily
 from service.assistant.day_plan_email import EmailStore, SelfIdentity, address
@@ -232,16 +232,9 @@ class RemoveSuggestion(BaseModel):
 class RestoreSuggestion(BaseModel):
     model_config = ConfigDict(extra="forbid")
     # Undo of one Remove sends the ids it removed (a grouped block's, together);
-    # "Bring back removed suggestions" sends all=true instead.
-    evidence_ids: list[Annotated[str, Field(pattern=r"^[a-z_]{1,24}:[0-9a-f]{24}$")]] | None = Field(
-        default=None, min_length=1, max_length=20)
-    all: bool = Field(default=False, strict=True)
-
-    @model_validator(mode="after")
-    def one_target(self):
-        if (self.evidence_ids is None) == (not self.all):
-            raise ValueError("send evidence_ids or all=true, not both")
-        return self
+    # "Bring back" sends the plan's removed_suggestions, at most one day's attention.
+    evidence_ids: list[Annotated[str, Field(pattern=r"^[a-z_]{1,24}:[0-9a-f]{24}$")]] = Field(
+        min_length=1, max_length=daily.MAX_ITEMS)
 
 
 def fail(exc):
@@ -281,7 +274,7 @@ async def remove_suggestion(body: RemoveSuggestion):
 async def restore_suggestion(body: RestoreSuggestion):
     """Undo Remove: the items may be suggested again from the next plan on."""
     from service.assistant.store import assistant_store
-    restored = assistant_store.restore_suggestions(None if body.all else body.evidence_ids)
+    restored = assistant_store.restore_suggestions(body.evidence_ids)
     from service.assistant.hub import hub
     await hub.publish({"type": "changed"})
     return {"ok": True, "restored": restored}

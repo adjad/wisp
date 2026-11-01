@@ -68,9 +68,9 @@ struct DailyWorkspace: Decodable {
     /// and thread summaries for the Brief, timed to-dos for the Day. Absent from
     /// an older service; its decoding never fails the plan (ProactiveModels.swift).
     var proactive: ProactiveState? = nil
-    /// Today's items kept off the plan by Remove (daily_workspace.assess); 0 from
-    /// an older service. Above 0, the Day's ⋯ menu offers to bring them back.
-    var removed_suggestions: Int = 0
+    /// Today's items kept off the plan by Remove (daily_workspace.assess); empty
+    /// from an older service. The Day's ⋯ menu offers to bring back exactly these.
+    var removed_suggestions: [String] = []
 }
 
 extension DailyProposal {
@@ -107,7 +107,7 @@ extension DailyWorkspace {
         mail_summary = c.lenient(.mail_summary, DailyOverview.self)
         needs_you = c.lenient(.needs_you, DailyNeedsYou.self)
         proactive = c.lenient(.proactive, ProactiveState.self)
-        removed_suggestions = max(0, c.lenient(.removed_suggestions, Int.self) ?? 0)
+        removed_suggestions = c.lenient(.removed_suggestions, LossyList<String>.self)?.items ?? []
     }
 }
 

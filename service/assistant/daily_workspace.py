@@ -748,14 +748,18 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     events |= {_event_key(r.get("title")) for r in (evidence.get("calendar", {}).get("records") or [])}
     events.discard("")
     suggested_titles = set()
-    removed_today = 0  # removed items that would otherwise be in today's attention
+    # Today's attention items that Remove keeps off the plan, before the cap: the
+    # Day's "Bring back" restores exactly these, never another day's removals.
+    removed_today = []
     for item in items:
-        if item["source"] in {"calendar", "wisp"} or len(suggestions) >= MAX_SUGGESTIONS:
+        if item["source"] in {"calendar", "wisp"}:
             continue
         if item["source"] == "behavior" and item.get("planning_duration") is None:
             continue
         if removed and item["id"] in removed:
-            removed_today += 1
+            removed_today.append(item["id"])
+            continue
+        if len(suggestions) >= MAX_SUGGESTIONS:
             continue
         title = item["title"]
         title_key = title.casefold()
