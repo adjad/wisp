@@ -609,6 +609,63 @@ def test_skill_and_mcp_actions_always_confirm_in_model_led_even_with_full_access
     assert name not in [n for n, _ in effects]   # declined at the card, so it never ran
 
 
+@pytest.mark.parametrize("name,category,family", [
+    ("mcp_linear_get_issue", "mcp_action", "connected"),
+    ("skill_synthetic_do", "skill_tool", "skills")])
+@pytest.mark.parametrize("model_led_route", [True, False])
+def test_skill_and_mcp_actions_ask_with_full_access_and_no_grant_on_both_routes(
+        synthetic, monkeypatch, name, category, family, model_led_route):
+    # Release Auditor rc1 follow-ups d/e: a read-NAMED MCP tool and a skill tool,
+    # full access, no grant, no untrusted read. Both routes show the card
+    # (policy._ALWAYS_CONFIRM_EXTENSION); only trusted_read_only (mcp_read) skips it.
+    effects, register = synthetic
+    register(name, "automation_tools", category, parameters={"type": "object", "properties": {
+        "name": {"type": "string"}}})
+    monkeypatch.setitem(__import__("service.mcp", fromlist=["TOOL_PARTS"]).TOOL_PARTS,
+                        "mcp_linear_get_issue", "get_issue")
+    monkeypatch.setitem(model_led.EFFECT_RECEIPTS, name, ("synthetic ",))
+    monkeypatch.setattr("service.safety.policy._FULL_ACCESS", True)
+    approval = Approval(False)
+    script = ([[call(DISCOVERY_TOOL, families=[family], tools=[name])]] if model_led_route else []) + [
+        [call(name, name="fixture")], "Synthetic reply."]
+    run(script, prompt="run my fixture", approval=approval, model_led_discovery=model_led_route,
+        tools=[] if model_led_route else [name], **_owners())
+    assert [a["tool"] for a in approval.calls] == [name]
+    assert name not in [n for n, _ in effects]
+
+
+@pytest.mark.parametrize("name,category", [("mcp_linear_get_issue", "mcp_action"),
+                                           ("skill_synthetic_do", "skill_tool")])
+def test_skill_and_mcp_cards_offer_no_always_allow(synthetic, monkeypatch, name, category):
+    # Follow-up f: a grant can no longer skip these cards, so the card must not
+    # offer "Always allow" (the Mac, chat and iPhone cards all read `grantable`),
+    # an "always" answer sent anyway is a one-time answer, and no grant is stored.
+    from service.agent.approver import InteractiveApprover
+    from service.safety import grants
+    _, register = synthetic
+    register(name, "automation_tools", category)
+    monkeypatch.setitem(__import__("service.mcp", fromlist=["TOOL_PARTS"]).TOOL_PARTS,
+                        "mcp_linear_get_issue", "get_issue")
+    assert grants.is_grantable(name, {}) is False
+    stored = []
+    monkeypatch.setattr(grants, "grant", lambda *a, **k: stored.append((a, k)) or {"ok": True})
+    sent = []
+
+    async def emit(event):
+        sent.append(event)
+
+    async def ask():
+        approver = InteractiveApprover(emit, timeout=5)
+        task = asyncio.create_task(approver.confirm({"id": "c1", "tool": name, "args": {}}))
+        while not sent:
+            await asyncio.sleep(0)
+        approver.resolve("c1", True, scope="always")
+        return await task
+    assert asyncio.run(ask()) is True
+    assert sent[0]["type"] == "confirm" and sent[0]["grantable"] is False
+    assert stored == []
+
+
 def test_validated_shell_read_is_not_forced_to_confirm_by_opaque_rule(synthetic, monkeypatch):
     monkeypatch.setattr("service.safety.policy._FULL_ACCESS", True)
     approval = Approval(False)
