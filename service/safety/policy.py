@@ -1282,9 +1282,40 @@ def review_scope():
         _REVIEW.reset(token)
 
 
+# A picture turn (service/vision.py, "pictures that lead to actions"): the turn
+# carries a reading of an image, and text in an image can be planted by anyone.
+# Like a review run, only a local read runs without asking; everything else
+# (a write, a send, a web lookup, a skill or MCP action) asks, even under full
+# access or a standing grant, and its card offers no "Always allow"
+# (agent/approver.py). Set for the /agent request's own task only.
+_PICTURE: ContextVar[bool] = ContextVar("wisp_policy_picture_turn", default=False)
+# Local reads whose result stays on this Mac. web_read and mcp_read are left out:
+# a lookup can carry what the picture said to someone else.
+_PICTURE_UNCONFIRMED_CATEGORIES = {"compute", "wisp_admin"}
+_PICTURE_CONFIRMED_READS = {"mcp_read", "web_read"}
+PICTURE_TURN_REASON = ("this request includes a picture, and text in a picture is not your "
+                       "instruction, so anything Wisp would change, send or look up online "
+                       "is confirmed, even with full access")
+
+
+def picture_turn() -> bool:
+    return _PICTURE.get()
+
+
+def mark_picture_turn() -> None:
+    """Mark the CURRENT task's context as a picture turn. /agent calls it inside
+    the request's own runner task, so it ends with that request."""
+    _PICTURE.set(True)
+
+
+def _picture_unconfirmed(category: str) -> bool:
+    return ((str(category).endswith("_read") and category not in _PICTURE_CONFIRMED_READS)
+            or category in _PICTURE_UNCONFIRMED_CATEGORIES)
+
+
 def decide(category: str, args: dict, tool: str | None = None) -> Decision:
     """Return the policy decision for a tool action (see _decide). In a review
-    run, only reads run without asking."""
+    run, only reads run without asking; in a picture turn, only local reads."""
     if category == "shell" and len(shell_text(args)) > SHELL_TEXT_LIMIT:
         return _too_long_for_card(args)
     decision = _decide(category, args, tool)
@@ -1294,6 +1325,10 @@ def decide(category: str, args: dict, tool: str | None = None) -> Decision:
             and not ((str(category).endswith("_read") and category not in _REVIEW_UNTRUSTED_READS)
                      or category in _REVIEW_ALLOWED_CATEGORIES)):
         return Decision(Tier.CONFIRM, f"review run: Wisp would ask before {tool or category}")
+    if _PICTURE.get() and decision.tier is Tier.ALLOW and not _picture_unconfirmed(category):
+        if category == "shell" and len(shell_text(args)) > CARD_TEXT_LIMIT:
+            return _too_long_for_card(args)
+        return Decision(Tier.CONFIRM, PICTURE_TURN_REASON)
     return decision
 
 
