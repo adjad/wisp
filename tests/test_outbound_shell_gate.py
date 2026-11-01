@@ -19,6 +19,8 @@ client: nothing is sent, run or contacted.
 import pytest
 
 from service.safety import grants, policy
+
+_REAL_CHECK = grants.check   # the full_access fixture stubs it out
 from service.tools.action_tools import confirm_preview
 from tests.test_model_led_integration import (  # noqa: F401  (pytest fixture)
     DISCOVERY_TOOL, Approval, call, run, synthetic)
@@ -675,6 +677,34 @@ def test_reads_naming_an_effect_word_ask(server, tool, full_access, registered_m
     # ask, so get_post_by_id does too. Over-asking only adds a card.
     (name,) = registered_mcp(server, tool)
     assert _tier(name) is policy.Tier.CONFIRM
+
+
+@pytest.mark.parametrize("check_layer", ["real", "forced_allow"])
+@pytest.mark.parametrize("kind", ["skill", "mcp"])
+def test_a_stored_legacy_grant_does_not_skip_a_skill_or_mcp_card(
+        full_access, registered_mcp, monkeypatch, tmp_path, kind, check_layer):
+    # Auditor note on #433: decide() alone, full access, with an allow grant
+    # stored before skill/MCP actions became never-grantable. "real" runs the
+    # real grants.check over that stored rule; "forced_allow" makes check say
+    # "allow" anyway, so decide()'s own ALWAYS_CONFIRM_CATEGORIES gate is pinned.
+    from service.tools import registry
+    if kind == "mcp":
+        (name,) = registered_mcp("linear", "get_issue")
+        category = "mcp_action"
+    else:
+        name, category = "skill_synthetic_do", "skill_tool"
+        async def run(**args):
+            return "ran"
+        monkeypatch.setitem(registry.REGISTRY, name, registry.Tool(
+            name, "Synthetic skill tool", {"type": "object", "properties": {}}, category, run))
+    monkeypatch.setattr(grants, "GRANTS_PATH", tmp_path / "grants.json")
+    monkeypatch.setattr(grants, "_CACHE", {name: {"allow": [{"scope": ""}], "deny": []}})
+    if check_layer == "real":
+        monkeypatch.setattr(grants, "check", _REAL_CHECK)
+    else:
+        monkeypatch.setattr(grants, "check", lambda *args: "allow")
+    decision = policy.decide(category, {}, tool=name)
+    assert decision.tier is policy.Tier.CONFIRM, decision
 
 
 def test_an_unregistered_mcp_name_asks(full_access):
