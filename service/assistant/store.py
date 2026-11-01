@@ -1760,7 +1760,9 @@ class AssistantStore:
         if current_start is not None:
             matches = [r for r in matches if abs(r["when_ts"] - current_start) < 60]
         if not matches:
-            return {"error": f"No upcoming Calendar event matches “{query}”.", "needs_input": True}
+            from service.tools.title_match import near_miss_note
+            return {"error": f"No upcoming Calendar event matches “{query}”."
+                             + near_miss_note(query, [r["title"] for r in rows]), "needs_input": True}
         if len({r["source_id"] for r in matches}) > 1:
             listed = "; ".join(f"{r['title']} ({datetime.fromtimestamp(r['when_ts']):%a %b %-d %-I:%M %p})"
                                for r in matches[:5])

@@ -510,12 +510,11 @@ def _format_calendar_end_times(items: list[dict], *, now: float, window_label: s
 
 @register(
     "get_upcoming",
-    "Read the user's upcoming schedule — calendar events, meetings, Canvas "
-    "assignment/exam due dates, and reminders — from Wisp's local commitment "
-    "store. ALWAYS use this for questions about the calendar, schedule, "
-    "deadlines, what's due, or what's coming up. Pass `account` if the user "
-    "asks about a SPECIFIC linked calendar account and more than one is "
-    "linked. Do NOT script Calendar.app.",
+    "Read the user's upcoming calendar events, meetings, Canvas due dates and reminders from "
+    "Wisp's local store. Use for 'what's on my calendar/schedule', 'am I free', deadlines and "
+    "what's coming up; for 'what should I do today' or planning the day use get_my_day_plan. "
+    "Pass `account` for one linked calendar when several are linked. Do NOT script "
+    "Calendar.app.",
     {"type": "object",
      "properties": {
          "days": {"type": "integer",
@@ -728,8 +727,8 @@ def _reminder_due_time(when_iso: str) -> tuple[float, str]:
     "user at the right time and show a countdown. Use when the user asks to be "
     "reminded of something, asks for an alarm/nudge, or to track a deadline. "
     "This creates a Wisp notification and requests an Apple Reminders mirror, "
-    "not a ringing Clock alarm. A calendar appointment or saved memory is not "
-    "a reminder. Use all_day=true with a YYYY-MM-DD date for an explicitly "
+    "not a ringing Clock alarm. A calendar appointment (add_calendar_event), a "
+    "note (create_note) or a saved fact (remember) is not a reminder. Use all_day=true with a YYYY-MM-DD date for an explicitly "
     "all-day reminder; it has no timed alarm. Otherwise ask for an unspecified alert time.",
     {"type": "object",
      "properties": {
@@ -818,11 +817,12 @@ async def _add_local_reminder(title: str, ts: float, kind: str, when_str: str,
 
 @register(
     "update_reminder",
-    "Reschedule or rename an existing Wisp/Apple reminder. Match it by part "
-    "of its current title. For an immediate correction such as 'I mean today' "
-    "right after creating a reminder, omit title and the most recently created "
-    "reminder is updated. Supply either when_iso for an exact new time or day="
-    "'today'/'tomorrow' to keep its existing time of day on that date.",
+    "Reschedule or rename an existing Wisp/Apple reminder, matched by part of "
+    "its current title (no search_reminders first; a calendar event is "
+    "update_event). For an immediate correction such as 'I mean today' right "
+    "after creating one, omit title and the latest reminder is updated. Give "
+    "when_iso for an exact time, day='today'/'tomorrow' to keep its time of "
+    "day, or only new_title to rename it.",
     {"type": "object",
      "properties": {
          "title": {"type": "string",
@@ -843,8 +843,11 @@ async def _add_local_reminder(title: str, ts: float, kind: str, when_str: str,
 )
 async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
                           new_title: str = "", expected_id: str = "") -> str:
-    if not when_iso and day not in {"today", "tomorrow"}:
-        return ("(error: pass when_iso, or day='today'/'tomorrow'; "
+    # A rename alone keeps the reminder's time (toolbench 2026-10-31: "rename
+    # water the plants to water the garden" was refused as missing a time).
+    rename_only = not when_iso and day not in {"today", "tomorrow"} and bool(new_title.strip())
+    if not when_iso and day not in {"today", "tomorrow"} and not rename_only:
+        return ("(error: pass when_iso, or day='today'/'tomorrow', or new_title to rename; "
                 "the reminder was not changed.)")
 
     # Rescheduling a hidden overdue reminder by name is allowed (it un-hides it by moving
@@ -892,6 +895,8 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
             target = datetime.fromisoformat(when_iso)
         except ValueError:
             return f"(error: bad when_iso {when_iso!r} — use e.g. 2026-08-27T09:00)"
+    elif rename_only:
+        target = datetime.fromtimestamp(old_when)
     else:
         old_local = datetime.fromtimestamp(old_when)
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
@@ -903,7 +908,8 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
         from service.assistant.verified_reminders import due_timestamp
         new_when = due_timestamp({'all_day': True, 'due_date': target.date().isoformat()})
         target = datetime.fromtimestamp(new_when)
-    if ((target.date() < datetime.now().date()) if date_only else new_when < time.time() - 60):
+    if not rename_only and ((target.date() < datetime.now().date()) if date_only
+                            else new_when < time.time() - 60):
         return (f"(error: preserving the old time would put the reminder in the past "
                 f"({target:%a %b %-d at %-I:%M %p}); ask what time today to use. "
                 "The reminder was not changed.)")
@@ -1101,7 +1107,7 @@ def prepare_event_move(args: dict) -> dict:
 @register(
     "update_event",
     "Move an existing event in the user's macOS Calendar to a new time (reschedule "
-    "it). Matched by its title; pass `current_when_iso` only to pick one of several "
+    "it); a reminder is update_reminder. Matched by its title; pass `current_when_iso` only to pick one of several "
     "same-titled events. Only the time changes: notes, location, attendees, alerts "
     "and calendar are kept, and for a repeating event only that one occurrence moves. "
     "The length stays the same unless `duration_min` is given. Always confirmed. It "
@@ -1170,9 +1176,10 @@ async def update_event(title: str, when_iso: str, duration_min: int | None = Non
 
 @register(
     "cancel_event",
-    "Cancel or delete an upcoming event or reminder, matched by part of its "
-    "title. Removes real calendar events from macOS Calendar too. Use when the "
-    "user wants to cancel, delete, or remove something from their schedule.",
+    "Cancel or delete ONE upcoming event or reminder, matched by part of its title (no search "
+    "first); a real event is removed from macOS Calendar too. To move an event: "
+    "update_event. To finish a reminder: complete_reminder. To delete many reminders: "
+    "clear_reminders.",
     {"type": "object",
      "properties": {
          "title": {"type": "string",
@@ -1206,7 +1213,9 @@ async def cancel_event(title: str) -> str:
         matches = [c for c in assistant_store.history(days=365, include_stale=True)
                    if q in c["title"].lower()]
     if not matches:
-        return f"Nothing upcoming or past matches “{title}”."
+        from service.tools.title_match import near_miss_note
+        return f"Nothing upcoming or past matches “{title}”." + near_miss_note(
+            title, [c["title"] for c in assistant_store.upcoming(days=60)])
     if len(matches) > 1:
         lst = "; ".join(
             f"{c['title']} ({datetime.fromtimestamp(c['when_ts']).strftime('%a %-I:%M %p')})"
@@ -1487,14 +1496,13 @@ def _reminder_query_scope(query: str, scope: str) -> tuple[str, str, int | None]
 
 @register(
     "search_reminders",
-    "The user's to-dos, tasks and reminders: open, pending, overdue, due soon, "
-    "school or work tasks. Leave query empty to list them; set it only to words "
-    "from a reminder's title (never 'due', 'tasks' or a date). "
-    "Searches current Apple Reminders and retained Wisp-only reminder records "
-    "by title, including overdue items. Calendar events are excluded. A "
-    "Wisp-only record may be a historical mirror whose Apple copy was deleted; "
-    "show it separately for review, never call it a current Apple item. "
-    "Storage source labels do not identify who created a reminder.",
+    "The user's to-dos, tasks and reminders: open, pending, overdue, due soon. Leave query "
+    "empty to list them; set it only to words from a reminder's title (never 'due', 'tasks' "
+    "or a date). Searches Apple Reminders and retained Wisp-only records by title, overdue "
+    "included; calendar events are excluded. A Wisp-only record may mirror a deleted Apple "
+    "item: show it separately, never as a current Apple item. Source labels do not say who "
+    "created a reminder. Only to list or look up: update_reminder, complete_reminder and "
+    "cancel_event match by title themselves.",
     {"type": "object",
      "properties": {
          "query": {"type": "string", "description": "title words to match; empty lists every reminder in scope"},
@@ -1584,11 +1592,10 @@ async def search_reminders(query: str = "", scope: str = "all") -> str:
 
 @register(
     "clear_reminders",
-    "Delete active Wisp/Reminders.app reminders in one explicit time scope. "
-    "Use scope='today' for today's reminders, 'tomorrow' for tomorrow, "
-    "'past_due' for overdue reminders, 'upcoming' for future reminders, or "
-    "'all' only when the user explicitly asks for every reminder. Calendar "
-    "events are excluded. The user sees the exact list and confirms first.",
+    "Delete active Wisp/Reminders.app reminders in one explicit time scope: 'today', "
+    "'tomorrow', 'past_due' (overdue), 'upcoming' (future), or 'all' only when the user "
+    "explicitly asks for every reminder. Calendar events are excluded; timers and alarms are "
+    "manage_timers. The user sees the exact list and confirms first.",
     {"type": "object",
      "properties": {
          "scope": {"type": "string",

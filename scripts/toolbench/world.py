@@ -1433,7 +1433,9 @@ def make_fakes(w: World) -> dict:
         if current is not None:
             matches = [e for e in matches if abs((_ev_times(e)[0] - current).total_seconds()) < 60]
         if not matches:
-            return {"error": f"No upcoming Calendar event matches “{title}”."}
+            from service.tools.title_match import near_miss_note
+            return {"error": f"No upcoming Calendar event matches “{title}”."
+                             + near_miss_note(title, [e["title"] for e in live])}
         if len({e.get("series") or id(e) for e in matches}) > 1:
             listed = "; ".join(f"{e['title']} ({_ev_times(e)[0]:%a %b %-d %-I:%M %p})" for e in matches[:5])
             return {"error": f"Several events match “{title}”: {listed}. Which one?"}
@@ -1490,7 +1492,10 @@ def make_fakes(w: World) -> dict:
             matches += [("reminder", r, _rem_due(r) or datetime.combine(r["created"], dtime(0, 0)))
                         for r in w.reminders if q in r["title"].lower()]
         if not matches:
-            return f"Nothing upcoming or past matches “{title}”."
+            from service.tools.title_match import near_miss_note
+            return f"Nothing upcoming or past matches “{title}”." + near_miss_note(
+                title, [e["title"] for e in w.events if _ev_times(e)[1] > now]
+                + [r["title"] for r in w.reminders])
         if len(matches) > 1:
             lst = "; ".join(f"{(x['title'])} ({when:%a %-I:%M %p})" for _k, x, when in matches[:5])
             return f"Several items match “{title}”: {lst}. Which one? Please be more specific."
@@ -1588,8 +1593,10 @@ def make_fakes(w: World) -> dict:
         exact = [r for r in hits if " ".join(r["title"].split()).casefold() == " ".join(title.split()).casefold()]
         hits = exact or hits
         if not hits:
+            from service.tools.title_match import near_miss_note
             return (f"Nothing active matches {title!r}. "
-                    f"Ask me what's upcoming if you're not sure of the wording.")
+                    f"Ask me what's upcoming if you're not sure of the wording."
+                    + near_miss_note(title, [r["title"] for r in w.reminders]))
         if len(hits) > 1:
             listed = "\n".join(f"  - {r['title']} ({datetime.fromtimestamp(r['when_ts']):%a %b %-d %-I:%M %p})"
                                for r in hits[:8] if r["when_ts"] is not None)
@@ -1599,8 +1606,9 @@ def make_fakes(w: World) -> dict:
         return f"Marked “{hits[0]['title']}” done."
 
     def update_reminder(title=None, when_iso=None, day=None, new_title=None, expected_id=None, **_):
-        if not when_iso and day not in {"today", "tomorrow"}:
-            return ("(error: pass when_iso, or day='today'/'tomorrow'; "
+        rename_only = not when_iso and day not in {"today", "tomorrow"} and bool((new_title or "").strip())
+        if not when_iso and day not in {"today", "tomorrow"} and not rename_only:
+            return ("(error: pass when_iso, or day='today'/'tomorrow', or new_title to rename; "
                     "the reminder was not changed.)")
         # Dated reminders only: an undated one has no time to reschedule or keep.
         cands = [c for c in _rem_rows(w, "all", title or "", include_stale=True) if c["when_ts"] is not None]
@@ -1628,11 +1636,13 @@ def make_fakes(w: World) -> dict:
                 target = datetime.fromisoformat(when_iso).replace(tzinfo=None)
             except ValueError:
                 return f"(error: bad when_iso {when_iso!r} — use e.g. 2026-08-27T09:00)"
+        elif rename_only:
+            target = _rem_due(ref) or w.now
         else:
             old = _rem_due(ref) or w.now
             base = datetime.combine(w.today + timedelta(days=1 if day == "tomorrow" else 0), dtime(0, 0))
             target = base.replace(hour=old.hour, minute=old.minute)
-        if target < w.now - timedelta(seconds=60):
+        if not rename_only and target < w.now - timedelta(seconds=60):
             return (f"(error: preserving the old time would put the reminder in the past "
                     f"({target:%a %b %-d at %-I:%M %p}); ask what time today to use. "
                     "The reminder was not changed.)")

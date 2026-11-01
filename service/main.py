@@ -102,7 +102,7 @@ from service.agent.planner import enabled_from_env as planner_enabled_from_env
 # registry at import time, so it must load with the real registry.
 from service.router import reranker as _reranker
 from service.model_only import model_only_enabled
-from service.router.model_led import (continuation_requires_baseline,
+from service.router.model_led import (continuation_requires_baseline, continuation_send_exemption,
                                       model_led_enabled, needs_effect_owner,
                                       fresh_personal_obligation, memory_excluded, opaque_effect, personal_communication_request,
                                       OPAQUE_OUTBOUND_TOOLS, PRIVATE_EGRESS_TOOLS, registry_specs)
@@ -1728,6 +1728,11 @@ def _ask_tool_rank(prompt: str) -> tuple[list[str], list[str]]:
         if day_plan_question(prompt) and DAY_PLAN_TOOL in REGISTRY:
             # The Brief already ranked the day: one read instead of four.
             head = [DAY_PLAN_TOOL, *(n for n in head if n != DAY_PLAN_TOOL)]
+        from service.model_only import WISP_SELF_TOOLS, wisp_self_question
+        if wisp_self_question(prompt):
+            # Wisp's own reports lead: the answer is read, never recalled.
+            own = [n for n, _ in WISP_SELF_TOOLS if n in REGISTRY]
+            head = [*own, *(n for n in head if n not in own)]
         from service.model_only import mail_first
         if not writing and mail_first(prompt) and "view_emails" in REGISTRY:
             # "When is the W-9 due?" went to web_search; the answer was in mail.
@@ -2432,8 +2437,11 @@ async def agent(body: dict[str, Any]):
                     # interpretation. It cannot authorize a new effect merely
                     # by referring to an old assistant offer with no owned plan.
                     from service.tools.registry import REGISTRY
+                    exempt = (frozenset() if task_owner_verdict == "ambiguous" or unresolved_block
+                              else continuation_send_exemption(prompt, last_assistant))
                     forbidden |= frozenset(t.name for t in registry_specs(REGISTRY)
-                                           if needs_effect_owner(t.category))
+                                           if needs_effect_owner(t.category)
+                                           and t.category not in exempt)
                 decision = RouteDecision(
                     role="agent", model=model_led_target.model, needs_tools=True,
                     source="model_led", route_source="model_led_discovery",
@@ -2597,6 +2605,7 @@ async def agent(body: dict[str, Any]):
                 verified_results_only=(decision.verified_results_only or
                                        schedule_read),
             ))
+            subject_tools: list[str] = []
             if model_led_turn:
                 # Keep references/clarification history without promoting old
                 # assistant answers or summaries to current source evidence.
@@ -2605,6 +2614,13 @@ async def agent(body: dict[str, Any]):
                     "interpreting the request. Read current personal sources before "
                     "answering about today's messages/calendar. An old assistant "
                     "offer or claimed action is not an execution receipt.")})
+                if not test_mode:
+                    # What the last turns resolved, for "reply to her" / "move it"
+                    # (service/memory/subject.py): one line, not a longer history.
+                    from service.memory.subject import system_message as subject_message
+                    subject_msg, subject_tools = subject_message(store, sid)
+                    if subject_msg:
+                        messages.insert(1, subject_msg)
                 if task_owner_verdict != "none":
                     messages.insert(1, {"role": "system", "content": (
                         "An older task is still pending; this turn did not advance it. "
@@ -2723,12 +2739,13 @@ async def agent(body: dict[str, Any]):
                 # turn, so the answer-style hint is restored here instead.
                 ask_quality = model_only and model_led_turn
                 ask_preload, ask_stub_rank = _ask_tool_rank(prompt) if ask_quality else ([], [])
+                if ask_quality and subject_tools:
+                    ask_stub_rank = list(dict.fromkeys([*ask_stub_rank, *subject_tools]))
                 if ask_quality:
-                    from service.model_only import (ASK_CAPABILITY_HINT, ASK_STYLE_HINT,
-                                                    capability_question)
+                    from service.model_only import ASK_STYLE_HINT, wisp_self_hint, wisp_self_question
                     synthesis_guidance.insert(0, ASK_STYLE_HINT)
-                    if capability_question(prompt):
-                        synthesis_guidance.insert(1, ASK_CAPABILITY_HINT)
+                    if wisp_self_question(prompt):
+                        synthesis_guidance.insert(1, wisp_self_hint())
                     from service.model_only import ASK_DAY_PLAN_HINT, day_plan_question
                     if day_plan_question(prompt):
                         synthesis_guidance.insert(1, ASK_DAY_PLAN_HINT)
@@ -2744,16 +2761,16 @@ async def agent(body: dict[str, Any]):
                     ask_forbidden = ask_forbidden_tools(prompt, REGISTRY)
                     if pure_writing(prompt):
                         synthesis_guidance.insert(1, ASK_COMPOSE_HINT)
-                    from service.model_only import (ASK_KNOWLEDGE_HINT, capability_question,
-                                                    compose_only, knowledge_question)
+                    from service.model_only import ASK_KNOWLEDGE_HINT, compose_only, knowledge_question
                     knowledge = knowledge_question(prompt)
                     if knowledge:
                         synthesis_guidance.insert(1, ASK_KNOWLEDGE_HINT)
                     # One tool-free step: writing with no destination, general
                     # knowledge, and questions about what Wisp can do (their
                     # tool paths failed, refused or named internal tools).
-                    ask_direct = ((pure_writing(prompt) and compose_only(prompt)) or knowledge
-                                  or capability_question(prompt))
+                    # A question about Wisp itself keeps its tools: its answer
+                    # is read from Wisp's own reports (model_only.wisp_self_hint).
+                    ask_direct = bool((pure_writing(prompt) and compose_only(prompt)) or knowledge)
                 if model_led_turn and not synthesis_tool_names & {"web_search", "web_fetch"}:
                     # The web synthesis hint above carried this line, and it is
                     # only added for a routed web menu, which a model-led turn
@@ -2972,6 +2989,9 @@ async def agent(body: dict[str, Any]):
                 persist_user_turn()
                 store.add_turn(sid, "assistant", persisted_reply, tool_digest=digest)
                 assistant_reply_stored = True
+                if model_led_turn:
+                    from service.memory.subject import record_turn
+                    record_turn(store, sid, captured["tool_calls"], captured["tool_results"])
                 # Rolling conversation summaries contain prior user turns and
                 # are a local memory operation even when this turn used cloud
                 # inference. Never reuse the remote turn client here.

@@ -232,7 +232,7 @@ def _render_content(result: dict) -> str:
     if len(text) > _MAX_RESULT_CHARS:
         text = text[:_MAX_RESULT_CHARS] + "\n…[truncated]"
     if result.get("isError"):
-        return f"(the MCP tool reported an error)\n{text}"
+        return f"{_MCP_ERROR_PREFIX}\n{text}"
     return text
 
 
@@ -292,7 +292,7 @@ class MCPManager:
             REGISTRY[local] = Tool(
                 name=local, description=description, parameters=schema,
                 category=_category_for(spec, server.config),
-                func=_make_caller(server, spec["name"], schema),
+                func=_make_caller(server, spec["name"], schema, local),
             )
             self._registered.add(local)
             # From the untruncated name, so an effect word past the cut still counts.
@@ -376,7 +376,18 @@ def _category_for(spec: dict, config: dict | None = None) -> str:
     return "mcp_action"
 
 
-def _make_caller(server: MCPServer, remote_name: str, schema: dict | None = None):
+def authentic_completion_tool(tool) -> bool:
+    """A registered MCP action whose function is this module's own caller."""
+    return (getattr(tool, "category", "") == "mcp_action" and tool.name in manager._registered
+            and getattr(tool.func, "_wisp_completion", None) is _COMPLETION_TOKEN
+            and getattr(tool.func, "_wisp_tool_name", None) == tool.name)
+
+
+_COMPLETION_TOKEN = object()
+_MCP_ERROR_PREFIX = "(the MCP tool reported an error)"
+
+
+def _make_caller(server: MCPServer, remote_name: str, schema: dict | None = None, local: str = ""):
     async def call(**args) -> str:
         if not server.running:
             return (f"(the '{server.name}' MCP server isn't running"
@@ -389,11 +400,18 @@ def _make_caller(server: MCPServer, remote_name: str, schema: dict | None = None
                 return routed
             args = routed
         try:
-            return await server.call_tool(remote_name, args)
+            text = await server.call_tool(remote_name, args)
         except asyncio.TimeoutError:
             return f"(the '{server.name}' MCP server timed out running {remote_name})"
         except Exception as e:  # noqa: BLE001
             return f"(error from the '{server.name}' MCP server: {e})"
+        # A result without the protocol's isError flag is the completion
+        # boundary the host observed (router.model_led.EXTENSION_COMPLETION_MODULES).
+        from service.router.model_led import BuiltinCompletion
+        return BuiltinCompletion(text, tool_name=local,
+                                 completion_code=1 if text.startswith(_MCP_ERROR_PREFIX) else 0)
+    call._wisp_completion = _COMPLETION_TOKEN
+    call._wisp_tool_name = local
     return call
 
 

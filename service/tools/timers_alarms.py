@@ -316,10 +316,10 @@ def _set_sleep_timer(duration: str) -> str:
 
 @register(
     "manage_timers",
-    "List, check, or cancel running timers and alarms, or run the stopwatch. "
-    "action='list' for 'how long is left'; 'cancel' with a `label` or id to stop "
-    "one; 'cancel_all' to clear everything. The stopwatch counts UP: "
-    "'stopwatch_start', 'stopwatch_lap', 'stopwatch_read', 'stopwatch_stop'.",
+    "Timers, alarms and the stopwatch only (reminders: clear_reminders / cancel_event). "
+    "action='list' for 'how long is left'; 'cancel' with a `label` or id to stop one; "
+    "'cancel_all' to stop every timer. The stopwatch counts UP: 'stopwatch_start', "
+    "'stopwatch_lap', 'stopwatch_read', 'stopwatch_stop'.",
     {
         "type": "object",
         "properties": {

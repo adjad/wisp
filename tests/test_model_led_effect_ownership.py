@@ -368,7 +368,7 @@ def test_builtin_timer_receipt_is_not_mislabeled_as_uncertain(synthetic, owned_s
     registry.REGISTRY["set_timer"] = replace(tool, func=timer)
     store, sid = owned_store
     _, _, answer = run([[discover("automation", "set_timer")], [call("set_timer")], "Timer was set."],
-        approval=Approval(True),
+        prompt="set a timer for 10 minutes", approval=Approval(True),
         claim_effect=lambda t, a: store.claim_model_effect(sid, "one", t.name, a),
         finish_effect=lambda c, ok: store.finish_model_effect(sid, c, verified=ok))
     assert effects == [("set_timer", {})]
@@ -388,7 +388,7 @@ def test_exception_after_claim_cannot_release_retry_ownership(synthetic, owned_s
     registry.REGISTRY["write_file"] = replace(tool, func=cancelled)
     with pytest.raises(asyncio.CancelledError):
         run([[discover("files", "write_file")], [call("write_file", path="fixture", content="fixture")]],
-            approval=Approval(True),
+            prompt="write the fixture file", approval=Approval(True),
             claim_effect=lambda t, a: store.claim_model_effect(sid, "one", t.name, a),
             finish_effect=lambda c, ok: store.finish_model_effect(sid, c, verified=ok))
     assert store.pending_model_effects(sid)[0]["status"] == "uncertain"
