@@ -876,8 +876,12 @@ _PERSONAL_LOOKUPS = re.compile(
     r"|\bhow\s+long\s+(?:is|will|does)\s+my\s+(?:[\w'’-]+\s+)?(?:commute|drive|ride|meeting|flight)\b"
     r"|\bhow\s+long\s+is\s+(?:the\s+)?commute\b"
     rf"|\bhow(?:['’]s|\s+is|\s+does|\s+do)\s+(?:my\s+{_DAY_WORDS}|{_DATE_ANCHOR}|{_DAY_WORDS})\s+(?:look|looking|shaping)"
-    # "is my dentist tomorrow", "is my lunch today at noon"
-    rf"|\b(?:is|are|was|will)\s+my\s+(?:[\w'’-]+\s+){{0,2}}?{_DATE_ANCHOR}\b"
+    # "is my dentist tomorrow", "is my interview still on for Friday"
+    rf"|\b(?:is|are|was|will)\s+my\s+(?:[\w'’-]+\s+){{0,4}}?{_DATE_ANCHOR}\b"
+    # the state of one of the user's things: "Are my bills paid?", "Is my train delayed?"
+    r"|\b(?:is|are|was|were|does|did|has|have)\s+my\s+(?:[\w'’-]+\s+){0,2}?(?:been\s+)?(?:paid|pending|confirmed|"
+    r"approved|declined|charged|sent|delivered|delayed|cancell?ed|active|valid|expired|expiring|renewed|done|filed|"
+    r"booked|covered|processed|received|overdue|due|late|on\s+time|still\s+on|on\s+the\s+calendar)\b"
     # replies and updates from a person
     r"|\b(?:has|did|have)\s+(?!you\b|i\b|we\b|it\b)\w+\s+(?:replied|reply|responded|respond|texted|text|emailed|email|"
     r"called|call|messaged|message|gotten\s+back|got\s+back|answered|confirmed)\b"
@@ -909,7 +913,7 @@ _PERSONAL_LOOKUPS = re.compile(
 _FIRST_PERSON_ASK = re.compile(r"\b(?:do|did|am|have|was|were)\s+i\b", re.I)
 _FIRST_PERSON_CASUAL = re.compile(
     r"\b(?:should|would|could|ought|better|best|worth|normal|weird|okay|wrong|crazy|mistake|"
-    r"tips?|advice|ideas?|recommend\w*|suggest\w*|realistically|usually|generally|typically|"
+    r"tips?|advice|ideas?|recommend\w*|suggest\w*|realistically|generally|"
     r"in\s+general|if|look\s+(?:like|tired|good|old|young|fat|thin)|too\s+(?:old|young|late|early)|"
     r"overthinking|over-?reacting|being\s+(?:silly|dramatic|unreasonable|paranoid)|right\s+thing|"
     r"apolog\w*|sorry|vote|judge|"
@@ -919,7 +923,9 @@ _FIRST_PERSON_CASUAL = re.compile(
     r"bring|pick|leave|renew|sign|book|finish|return|check|show|attend|meet|see)\b)\w+"
     r"|\bdo\s+i\s+need\s+(?:a|an)\s+(?:visa|passport|vaccine|license|licence|permit)\b"
     r"|\bam\s+i\s+(?:a|an|the|too|really|being|right|smart|good|bad|ready|old|allowed)\b"
-    r"|\b(?:in|to)\s+(?:japan|france|europe|the\s+us|america|canada|mexico|china|india|general)\b", re.I)
+    # "Do I need to tip in Japan?", not "When do I fly to Japan?"
+    r"|\b(?:need|have\s+to|tip|allowed)\b[^?.!]{0,30}\b(?:in|to)\s+(?:japan|france|europe|the\s+us|america|"
+    r"canada|mexico|china|india|general)\b", re.I)
 
 
 _MY_LOOKUP = re.compile(
@@ -962,6 +968,9 @@ def asks_personal_data(prompt: str) -> bool:
                 or (_MY_LOOKUP.match(text) and not _MY_LOOKUP_OPINION.search(text))
                 or (_QUESTION.search(text) and _FIRST_PERSON_ASK.search(text)
                     and not _FIRST_PERSON_CASUAL.search(text))
+                # "Do I need to work Saturday?", "Do I have to fill out the form by Friday?"
+                or (re.search(r"\bdo\s+i\s+(?:need|have)\s+to\b", text, re.I)
+                    and re.search(_DATE_ANCHOR, text, re.I) and not re.search(r"\bshould\b", text, re.I))
                 or (_QUESTION.search(text) and not _ADVICE_LEAD.match(text) and _PLAN_ON_A_DAY.search(text)))
 
 

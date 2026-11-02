@@ -183,3 +183,16 @@ def test_first_person_lookups_stay_personal(prompt):
     "What do I say to cheer up a friend?"])
 def test_first_person_opinion_and_knowledge_is_not_personal(prompt):
     assert not mo.asks_personal_data(prompt)
+
+
+# Fourth audit (40ecc98f): the state of one of the user's things, a commitment
+# on a day, and travel to a place are lookups.
+@pytest.mark.parametrize("prompt", [
+    "Is my interview still on for Friday?", "Are my bills paid?", "Is my reservation confirmed?",
+    "Is my payment pending?", "Was my rent payment sent?", "Is my visa approved?", "Is my card declined?",
+    "Is my passport still valid?", "Is my train delayed?", "Do I need to work Saturday?",
+    "Do I have to take my pills tonight?", "Do I have to fill out the form by Friday?",
+    "When do I fly to Japan?", "Do I have a hotel in France booked?",
+    "How much do I usually spend on groceries?", "When do I usually meet with Priya?"])
+def test_status_commitments_and_travel_stay_personal(prompt):
+    assert mo.asks_personal_data(prompt)
