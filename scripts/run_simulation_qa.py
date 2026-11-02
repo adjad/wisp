@@ -339,6 +339,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_model_only_quality.py",
     # Ask stall re-prompt, tomorrow typos and the day plan: fake model client, stubbed snapshot.
     "tests/test_ask_day_answers.py",
+    # Ask stall nudge (one retry on a promise-only final): fake model client, synthetic tools.
+    "tests/test_ask_stall_guard.py",
     # Ask quality: code-failure fixes, tool-pair descriptions, the Wisp self-reference
     # sheet, the follow-up subject record and intent hard stops; registry checks,
     # fake model client, synthetic tools, private WISP_HOME.
