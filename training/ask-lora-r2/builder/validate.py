@@ -91,6 +91,7 @@ import writes
 # ASK_LORA_OUT points a later round (round 3: training/ask-lora-r3) at its own data dir.
 OUT = os.environ.get("ASK_LORA_OUT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DENIED = "The user denied this action."
+READ_ACTIONS = {"manage_timers": frozenset({"list", "stopwatch_read"})}
 
 import service.tools  # noqa: E402,F401
 from service import skills as _skills  # noqa: E402
@@ -422,7 +423,7 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
         family = meta.get("family")
         allowed = writes.WRITE_ALLOW.get(family, frozenset())
         calls, results = [], {}      # calls: (tool_call_id, name) in order; results: tool_call_id -> text
-        pending, injected = [], []
+        pending, injected, call_args = [], [], []
         for j in range(i + 1, len(msgs)):
             m, r = msgs[j], roles[j]
             is_target = j == len(msgs) - 1
@@ -438,6 +439,8 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
                     fn = tc.get("function") or {}
                     name = fn.get("name")
                     calls.append((tc.get("id"), name))
+                    _a = fn.get("arguments")
+                    call_args.append(json.loads(_a) if isinstance(_a, str) else (_a or {}))
                     if tc.get("type") != "function" or not tc.get("id"):
                         bad("tool_call_shape", f"{where}:{j}")
                     # Only the target step's offer list is stored; history calls were
@@ -499,7 +502,9 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
             bad("call_without_tool_result", where)
         # writes, approval cards and denials, against the example's meta line
         names = [name for _, name in calls]
-        ran_writes = [name for name in names if name in REGISTRY and not is_read(name)]
+        # manage_timers is one tool for reads and writes: list/stopwatch_read are reads (as build.py records them)
+        ran_writes = [name for (_, name), args in zip(calls, call_args) if name in REGISTRY and not is_read(name)
+                      and str((args or {}).get("action") or "list") not in READ_ACTIONS.get(name, ())]
         cards = list(meta.get("cards_seen") or [])
         if ran_writes != list(meta.get("writes") or [])[:len(ran_writes)]:
             bad("meta:writes", f"{where} example {ran_writes} vs meta {meta.get('writes')}")

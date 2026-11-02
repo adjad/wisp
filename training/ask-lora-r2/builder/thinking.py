@@ -571,7 +571,8 @@ def action(name: str, a: dict, prior: str = "", with_day: bool = True, terse: bo
         return f"mark the “{title}” reminder done"
     if name == "clear_reminders":
         if a.get("scope") and not (a.get("query") or a.get("title")):
-            return f"delete the {str(a['scope']).replace('_', ' ')} reminders"
+            scope = str(a["scope"]).replace("_", " ")
+            return "delete every reminder" if scope == "all" else f"delete the {scope} reminders"
         return f"delete the reminder matching “{a.get('query') or title}”"
     if name == "send_message":
         gist = f" with {prior}" if prior else ""
