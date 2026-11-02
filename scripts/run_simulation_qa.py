@@ -104,6 +104,9 @@ PROFILE_TESTS = {
         # Pictures that lead to actions: the reading as untrusted data, every effect
         # carded (stub vision client, scripted agent client, synthetic tools).
         "tests/test_vision_actions.py",
+        # Several distinct writes in one turn; only true repeats refused, a per-turn
+        # cap, picture turns still carded (scripted client, synthetic tools).
+        "tests/test_effect_dedupe.py",
         # Document input: text extracted in memory, one no-tools call (stub client, synthetic files).
         "tests/test_documents.py",
         "tests/test_corpus_prompts.py",
