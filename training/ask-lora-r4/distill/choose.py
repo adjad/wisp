@@ -51,7 +51,17 @@ STALL = re.compile(
     rf"\bI(?:\s+(?:could\s*not|couldn{_AP}t|can\s*not|cannot|can{_AP}t|wasn{_AP}t\s+able\s+to|was\s+not\s+able\s+to"
     rf"|am\s+(?:not\s+able|unable)\s+to|{_AP}m\s+(?:not\s+able|unable)\s+to)|{_AP}m\s+(?:not\s+able|unable)\s+to)"
     rf"\s+{_VERB}\b"
-    rf"|\bI\s+(?:do\s+not|don{_AP}t)\s+have\s+(?:any\s+)?access\b|\bI\s+have\s+no\s+access\b", re.I)
+    rf"|\bI\s+(?:do\s+not|don{_AP}t)\s+have\s+(?:any\s+)?access\b|\bI\s+have\s+no\s+access\b"
+    # capability refusals of a chat request ("I don't have the ability to play games", "I can't play games")
+    rf"|\bI\s+(?:do\s+not|don{_AP}t)\s+have\s+the\s+(?:ability|capability)\s+to\b"
+    rf"|\bI(?:\s+(?:can\s*not|cannot|can{_AP}t|am\s+(?:not\s+able|unable)\s+to)|{_AP}m\s+(?:not\s+able|unable)\s+to)"
+    rf"\s+(?:play|browse|search|check|tell\s+jokes|do\s+that)\b", re.I)
+# a single-turn chat reply that invents an earlier exchange: a running score, "as I said", "last time" (audit
+# chatstyle-3: prompts like "rock. your move" or "thanks, needed that" with no history)
+ANTECEDENT = re.compile(r"\bthe\s+score\s+(?:is|stands)\b|\b(?:one|two|three|\d)\s*(?:to|-)\s*(?:nothing|zero|one|two|\d)\b"
+                        r"\s+(?:to\s+(?:me|you)|lead)|\bas\s+(?:I|we)\s+(?:said|mentioned|discussed)\b|"
+                        r"\byou\s+(?:mentioned|said|told\s+me)\s+(?:earlier|before)\b|\blast\s+time\s+(?:we|you)\b|"
+                        r"\bour\s+(?:last|previous|earlier)\s+(?:chat|conversation|game|round)\b", re.I)
 
 EMOJI = re.compile("[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F000-\U0001F2FF\U00002B00-\U00002BFF"
                    "\U00002190-\U000021FF\U0000FE0F\U0000200D\U000020E3\U00002300-\U000023FF\U000025A0-\U000025FF"
@@ -147,6 +157,8 @@ def reject_reasons(rec: dict, row: dict) -> list[str]:
     if (tool_leak(content, tool_names(row)) or skill_leak(content, skill_names(row)) or "UNTRUSTED" in content
             or json_leak(content) or FINAL_LEAK_CALL.search(content)):
         out.append("leak")
+    if sum(m["role"] == "user" for m in row["messages"][:-1]) == 1 and ANTECEDENT.search(content):
+        out.append("antecedent")
     rc = (row["meta"] or {}).get(RECALL_KEY)
     if rc and recall_missing(content, rc):
         out.append("recall")

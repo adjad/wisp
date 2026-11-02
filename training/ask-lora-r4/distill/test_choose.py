@@ -122,6 +122,14 @@ def test_end_to_end():
 
 
 
+def test_capability_refusal_and_antecedent():
+    check("I'm sorry, I don't have the ability to play games, but I can help with your calendar!", "stall")
+    check("Honestly I can't play games, Sam.", "stall")
+    check("Scissors! The score is one to nothing.", "antecedent")
+    check("As I said, rest helps.", "antecedent")
+    ok("Rock beats scissors, so I win this round! 😊 Again?")
+
+
 def test_no_thought():
     check("A lovely reply.", "no_thought", reasoning="  ")
 
