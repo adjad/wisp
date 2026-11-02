@@ -1652,6 +1652,12 @@ def _managed_local_agent(client, target=None) -> bool:
                     == target.endpoint.base_url.rstrip("/"))
 
 
+# A picture turn whose request ends up off this Mac's managed engine (Super
+# Model cloud, a remote or unmanaged endpoint) never carries the reading.
+PICTURE_LOCAL_ONLY_NOTICE = ("Pictures are only read on your Mac's local model, so this one wasn't used. "
+                             "Nothing was done with it.")
+
+
 def _model_only_turn(get_client) -> bool:
     """model_only (on by default since 0.5.0-rc3) for THIS turn.
 
@@ -2587,6 +2593,17 @@ async def agent(body: dict[str, Any]):
                 decision.route_source = skill_turn
                 decision.reason = (f"{decision.reason}; "
                                    f"{'active skill' if active_skill else 'skill'} stays on this Mac")
+            if picture_reading is not None and (super_model_cloud or not target.endpoint.managed):
+                # A picture's reading never leaves this Mac. Say so, before any
+                # per-turn transport opens, instead of running the request
+                # without the picture it was about.
+                await emit({"type": "text", "text": PICTURE_LOCAL_ONLY_NOTICE})
+                await emit({"type": "done"})
+                if not test_mode:
+                    persist_user_turn()
+                    store.add_turn(sid, "assistant", PICTURE_LOCAL_ONLY_NOTICE)
+                    assistant_reply_stored = True
+                return
             if model_led_turn:
                 # Capture the admitted local target for every step/context budget.
                 # Existing owned-client cleanup closes this per-turn transport.

@@ -376,6 +376,21 @@ def test_an_unreadable_picture_ends_the_turn_in_plain_words(agent_env):
     assert texts and "can't see" in texts[-1] and events[-1]["type"] == "done"
 
 
+def test_off_this_macs_engine_the_picture_is_never_dropped_silently(agent_env, monkeypatch):
+    """A remote or unmanaged agent target never gets the reading, and the person
+    is told the picture wasn't used instead of the request running without it."""
+    from dataclasses import replace
+    agent_env.target = replace(agent_env.target,
+                               endpoint=replace(agent_env.target.endpoint, managed=False))
+    events = agent_env.request("add this to my calendar", image=url())
+    assert agent_env.agent_calls == []                               # nothing ran without the picture
+    texts = [e["text"] for e in events if e["type"] == "text"]
+    assert texts == [main.PICTURE_LOCAL_ONLY_NOTICE] and events[-1]["type"] == "done"
+    assert "local model" in texts[0] and "wasn't used" in texts[0]
+    blob = json.dumps(stored_turns(agent_env))
+    assert "Lunch Fri" not in blob and main.PICTURE_LOCAL_ONLY_NOTICE in blob
+
+
 def test_a_text_only_turn_never_touches_vision(agent_env, monkeypatch):
     def boom(*args, **kwargs):
         raise AssertionError("a text-only turn must never reach the vision model")
