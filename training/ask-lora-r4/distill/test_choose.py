@@ -23,7 +23,7 @@ def row(**meta):
 
 
 def why(content, **kw):
-    rec = {"id": "x-1", "k": 0, "content": content, "tool_calls": [], "finish_reason": "stop", **kw}
+    rec = {"id": "x-1", "k": 0, "content": content, "tool_calls": [], "finish_reason": "stop", "reasoning": "hm", **kw}
     return choose.reject_reasons(rec, row(**({"recall": kw.pop("recall")} if "recall" in kw else {})))
 
 
@@ -83,7 +83,7 @@ def test_no_false_leaks():
 
 def test_recall():
     r = row(recall=["Friday 3 pm", "Dr. Lee"])
-    rec = {"id": "x-1", "k": 0, "tool_calls": [], "finish_reason": "stop"}
+    rec = {"id": "x-1", "k": 0, "tool_calls": [], "finish_reason": "stop", "reasoning": "hm"}
     assert choose.reject_reasons({**rec, "content": "You see dr lee on friday, 3 pm."}, r) == []
     assert "recall" in choose.reject_reasons({**rec, "content": "You see Dr. Lee soon."}, r)
     assert "recall" in choose.reject_reasons({**rec, "content": "Friday 3 pm works."}, row(recall="Dr. Lee"))
@@ -122,13 +122,17 @@ def test_end_to_end():
 
 
 
+def test_no_thought():
+    check("A lovely reply.", "no_thought", reasoning="  ")
+
+
 def test_session_refs():
     hist = {"meta": {"id": "session_chat_r4-001-s0", "family": "session_chat_r4"},
             "messages": [{"role": "system", "content": SYS}, {"role": "user", "content": "ivy turns 7, party at cedar park"},
                          {"role": "assistant", "content": "A fossil dig suits a dinosaur fan."},
                          {"role": "user", "content": "what color did i say?"}, {"role": "assistant", "content": "s"}],
             "tools": TOOLS}
-    rec = {"id": hist["meta"]["id"], "k": 0, "tool_calls": [], "finish_reason": "stop"}
+    rec = {"id": hist["meta"]["id"], "k": 0, "tool_calls": [], "finish_reason": "stop", "reasoning": "hm"}
     rows = [json.loads(json.dumps(hist)) for _ in range(2)]
     rows[1]["meta"]["id"] = "session_chat_r4-002-s0"
     choose.apply_refs(rows, {"session_chat_r4-001-s0": {"kind": "rec_none", "ref": [], "absent": "color", "ok": []},

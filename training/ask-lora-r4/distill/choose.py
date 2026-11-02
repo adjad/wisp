@@ -138,6 +138,8 @@ def reject_reasons(rec: dict, row: dict) -> list[str]:
         out.append("empty")
     if rec.get("finish_reason") == "length":
         out.append("truncated")
+    if not (rec.get("reasoning") or "").strip():
+        out.append("no_thought")      # every distilled row keeps the base's own thinking (r3's thinking collapsed)
     if FINAL_GLITCH.search(content):
         out.append("glitch")
     if STALL.search(content) or CHAT_RECEIPT.search(content) or FINAL_LEAK_STALL.search(content):
@@ -264,6 +266,8 @@ def group_stats(rows: list[dict], samples: dict, chosen: dict) -> dict:
         "rejects_by_reason": dict(sorted(reasons.items(), key=lambda kv: -kv[1])),
         "first_sample_pass_rate": round(sum(not s["_reasons"] for s in firsts) / len(firsts), 3) if firsts else None,
         "chosen_shape": shape([chosen[i] for i in ids if i in chosen]),
+        # every base sample that wrote a text reply (rejected ones included): the style the targets must keep
+        "base_text_samples_shape": shape([s for s in recs if (s.get("content") or "").strip() and not s.get("error")]),
         "scripted_chars": scripted_chars([r for r in rows if r["meta"]["id"] in chosen]),
     }
 
@@ -321,11 +325,11 @@ def run(partial: str, raws: list[str], k: int | None = None, hash_check: bool = 
 
 def summary(stats: dict) -> str:
     def line(name, g):
-        s, c = g["chosen_shape"], g["scripted_chars"]
+        s, c, b = g["chosen_shape"], g["scripted_chars"], g["base_text_samples_shape"]
         return (f"{name:22} prompts {g['prompts']:4} samples {g['samples']:5} chosen {g['chosen']:4} "
-                f"first-pass {g['first_sample_pass_rate']}  chars p50 {s['chars']['p50']} (scripted {c['p50']})  "
-                f"emoji {s['emoji_share']} name {s['name_share']} ?end {s['question_end_share']} "
-                f"think {s['think_share']}")
+                f"first-pass {g['first_sample_pass_rate']}  chars p50 {s['chars']['p50']} (base {b['chars']['p50']}, "
+                f"scripted {c['p50']})  emoji {s['emoji_share']} (base {b['emoji_share']}) "
+                f"?end {s['question_end_share']} (base {b['question_end_share']}) think {s['think_share']}")
     out = [line(f, g) for f, g in stats["families"].items()] + [line("ALL", stats["overall"])]
     o = stats["overall"]
     out.append(f"rejects by reason: {o['rejects_by_reason']}")
