@@ -145,7 +145,7 @@ check)
   [ -f "$WORK/SETUP_DONE" ] && echo "setup: done" || echo "setup: NOT finished (tail ~/wisp/setup.log)"
   nvidia-smi --query-gpu=name,memory.used,memory.total,compute_cap,driver_version --format=csv,noheader
   echo "gpus: $(gpu_count)  (train launches torchrun with NPROC=${NPROC:-$(gpu_count)})"
-  "$PY" -c "import torch,transformers,peft;print('torch',torch.__version__,'cuda',torch.version.cuda,'cuda ok',torch.cuda.is_available(),'arches',torch.cuda.get_arch_list(),'transformers',transformers.__version__,'peft',peft.__version__)"
+  "$PY" -c "import torch,torchvision,transformers,peft;print('torch',torch.__version__,'torchvision',torchvision.__version__,'cuda',torch.version.cuda,'cuda ok',torch.cuda.is_available(),'arches',torch.cuda.get_arch_list(),'transformers',transformers.__version__,'peft',peft.__version__)"
   "$PY" -c "import transformers as t;print('multimodal class:', 'AutoModelForMultimodalLM' if hasattr(t,'AutoModelForMultimodalLM') else 'AutoModelForImageTextToText' if hasattr(t,'AutoModelForImageTextToText') else 'NONE')"
   [ -s "$TD/base_path" ] && echo "base: $(cat "$TD/base_path")" || echo "base: not downloaded (run: $TAG base)"
   [ -f "$UP/$DATA_ZIP" ] && echo "data zip: $(sha256sum "$UP/$DATA_ZIP" | cut -c1-64)  (compare with brev/upload-zip.json)" || echo "data zip: MISSING - upload $DATA_ZIP into ~/wisp/uploads"
@@ -461,9 +461,14 @@ done
 [ "$TORCH_OK" = 1 ] || echo "ERROR: no torch build ran on this GPU. Set TORCH_INDEX=<url> TORCH_SPEC='torch>=x' and re-run; a B300 needs a cu130 build and driver >= 580"
 pipi "torch>=2.7" "transformers>=5.10.1,<6" "peft>=0.19.0" accelerate safetensors huggingface_hub hf_transfer \
   sentencepiece numpy pillow || echo "ERROR: install failed"
+# Gemma 4's AutoProcessor loads its video processor, which needs torchvision. It
+# must come from the same wheel index as the torch build that passed above.
+# shellcheck disable=SC2086
+"$UV" pip install -q -p "$PY" --index-url "$IDX" $FLAGS torchvision \
+  || echo "ERROR: torchvision install failed (the vision preflight and image rows need it)"
 # QLoRA only (not used on a 48 GB / 288 GB card); Blackwell wheels can lag, so a failure here is not fatal
 pipi bitsandbytes || echo "WARN: bitsandbytes did not install (only --qlora needs it)"
-"$PY" -c "import torch,transformers,peft;print('torch',torch.__version__,'cuda',torch.version.cuda,'gpu',torch.cuda.is_available(),'gpus',torch.cuda.device_count(),'transformers',transformers.__version__,'peft',peft.__version__)"
+"$PY" -c "import torch,torchvision,transformers,peft;print('torch',torch.__version__,'torchvision',torchvision.__version__,'cuda',torch.version.cuda,'gpu',torch.cuda.is_available(),'gpus',torch.cuda.device_count(),'transformers',transformers.__version__,'peft',peft.__version__)"
 # multi-GPU needs NCCL to work between the GPUs: a tiny all-reduce on every GPU, so a broken fabric shows now, not mid-run
 if [ "${GPU_COUNT:-0}" -gt 1 ]; then
   cat > "$WORK/nccl_check.py" <<'PYN'
