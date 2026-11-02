@@ -176,19 +176,26 @@ enum ScreenLook {
     static let sensitiveBundleIDs: Set<String> = [
         "com.1password.1password", "com.agilebits.onepassword7", "com.agilebits.onepassword-osx",
         "com.agilebits.onepassword4", "com.bitwarden.desktop", "com.apple.keychainaccess",
-        "com.apple.Passwords", "com.dashlane.dashlanephonefinal", "com.dashlane.Dashlane",
-        "com.lastpass.LastPass", "com.lastpass.lastpassmacdesktop", "org.keepassxc.keepassxc",
-        "com.hicknhacksoftware.MacPass", "in.sinew.Enpass-Desktop", "me.proton.pass.electron",
+        "com.apple.passwords", "com.dashlane.dashlanephonefinal", "com.dashlane.dashlane",
+        "com.lastpass.lastpass", "com.lastpass.lastpassmacdesktop", "org.keepassxc.keepassxc",
+        "com.hicknhacksoftware.macpass", "in.sinew.enpass-desktop", "me.proton.pass.electron",
         "com.nordsec.nordpass", "com.markmcguill.strongbox.mac", "com.keepersecurity.passwordmanager",
-        "com.siber.roboform", "com.outercorner.Secrets",
+        "com.siber.roboform", "com.outercorner.secrets",
     ]
-    /// Owner names, for a build whose bundle ID isn't known.
+    /// Vendors that make only password products: any of their bundles (helpers,
+    /// launchers, mini windows) counts.
+    static let sensitiveBundlePrefixes: [String] = [
+        "com.1password.", "com.agilebits.", "com.bitwarden.", "com.lastpass.", "com.dashlane.",
+        "org.keepassxc.", "com.keepersecurity.", "com.siber.roboform", "me.proton.pass",
+    ]
+    /// Owner-name prefixes, lower-cased, for a build or helper whose bundle ID
+    /// isn't known ("1Password Helper", "KeePassXC-Browser").
     static let sensitiveNames: Set<String> = [
         "1password", "1password 7", "1password 8", "bitwarden", "keychain access", "passwords", "dashlane",
         "lastpass", "keepassxc", "keepass", "macpass", "enpass", "proton pass", "nordpass", "strongbox",
         "keeper password manager", "roboform", "secrets",
     ]
-    static let systemSettingsBundleIDs: Set<String> = ["com.apple.systempreferences", "com.apple.Settings"]
+    static let systemSettingsBundleIDs: Set<String> = ["com.apple.systempreferences", "com.apple.settings"]
 
     /// A password manager's window, or System Settings showing its Passwords pane
     /// (its window title is the pane's name).
@@ -197,12 +204,14 @@ enum ScreenLook {
     }
 
     private static func passwordApp(_ window: Window) -> Bool {
-        sensitiveBundleIDs.contains(window.bundleID) || sensitiveNames.contains(window.ownerName.lowercased())
+        let bundle = window.bundleID.lowercased(), owner = window.ownerName.lowercased()
+        return sensitiveBundleIDs.contains(bundle) || sensitiveBundlePrefixes.contains { bundle.hasPrefix($0) }
+            || sensitiveNames.contains { owner.hasPrefix($0) }
     }
 
     private static func isSystemSettings(_ window: Window) -> Bool {
         let owner = window.ownerName.lowercased()
-        return systemSettingsBundleIDs.contains(window.bundleID)
+        return systemSettingsBundleIDs.contains(window.bundleID.lowercased())
             || owner == "system settings" || owner == "system preferences"
     }
 

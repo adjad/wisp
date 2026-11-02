@@ -391,6 +391,32 @@ def test_off_this_macs_engine_the_picture_is_never_dropped_silently(agent_env, m
     assert "Lunch Fri" not in blob and main.PICTURE_LOCAL_ONLY_NOTICE in blob
 
 
+def test_a_super_model_cloud_route_never_gets_the_picture(agent_env, monkeypatch):
+    """The other half of the condition: a turn routed to the cloud Super Model
+    ends with the same notice. Not reachable today (a picture turn is model-led,
+    and model-led turns never go to Super Model); this pins the guard anyway."""
+    from dataclasses import replace
+    gate = iter([True])                                   # the picture gate sees model-only
+    monkeypatch.setattr(main, "_model_only_turn", lambda get_client: next(gate, False))
+    monkeypatch.setenv("WISP_MODEL_LED_ROUTING", "0")    # then the legacy route
+    monkeypatch.setattr(main, "cloud_super_model_enabled", lambda: True)
+
+    async def eligible(prompt, decision):
+        return True, "test"
+    monkeypatch.setattr(main, "cloud_super_model_eligible", eligible)
+    monkeypatch.setattr(main, "cloud_default_standalone", lambda decision: False)
+    monkeypatch.setattr(main, "prepare_cloud_standalone", lambda decision: None)
+    # A managed endpoint, so only the Super Model flag can trip the notice.
+    cloud = replace(agent_env.target, endpoint=replace(agent_env.target.endpoint, name="cloud"))
+    monkeypatch.setattr(main, "cloud_super_model_target", lambda role: cloud)
+    events = agent_env.request("add this to my calendar", image=url())
+    assert len(agent_env.stub.calls) == 1                            # read once, on this Mac
+    assert agent_env.agent_calls == []
+    texts = [e["text"] for e in events if e["type"] == "text"]
+    assert texts == [main.PICTURE_LOCAL_ONLY_NOTICE] and events[-1]["type"] == "done"
+    assert "Lunch Fri" not in json.dumps(stored_turns(agent_env))
+
+
 def test_a_text_only_turn_never_touches_vision(agent_env, monkeypatch):
     def boom(*args, **kwargs):
         raise AssertionError("a text-only turn must never reach the vision model")
