@@ -63,7 +63,7 @@ WRITE_FAMILIES = frozenset({"finish_the_write", "exact_args", "right_write_tool"
                             # round 3
                             "safe_restraint", "compose_r3", "followup_r3", "reminders_r3", "contacts_r3",
                             # round 4
-                            "gather_then_send_r4", "restraint_r4"})
+                            "gather_then_send_r4", "restraint_r4", "session_recall_r4", "instructions_r4"})
 WRITE_TOOLS = (frozenset().union(*_writes.WRITE_ALLOW.values()) | _writes.ALWAYS_CARD | _writes.NEVER_CARD
                | {"clear_reminders", "manage_contacts", "cancel_event", "reply_to_email"})
 DISCOVERY = "get_tool_schemas"
@@ -432,7 +432,11 @@ def picture_thought(meta: dict, s: dict, ctx: dict | None, seed: str) -> str:
     elif name == "create_note":
         parts.append((3, pick(seed + "c", [f"{thing} is text to keep, with nothing to schedule: a note.",
                                            f"Nothing here has a time, so a note holds it better than a reminder.",
-                                           f"Keep the {what}'s lines in a note under a clear title."])))
+                                           f"Keep the {what}'s lines in a note under a clear title."]
+                                     # round 4's larger mix puts two of these side by side: more phrasings
+                                     + (["No date or time to act on: this belongs in a note.",
+                                         "With no time attached, a note is the right home for it."]
+                                        if _os.environ.get("ASK_LORA_ROUND") == "4" else []))))
     elif name == "send_message":
         parts.append((3, pick(seed + "s", [f"It's a text thread, so the answer goes back by text to {a.get('to', 'that person')}, not by email.",
                                            f"The {what} is a conversation with {a.get('to', 'that person')}; reply on the same channel.",
@@ -2143,7 +2147,7 @@ def thought_extract(meta, s, ctx, seed) -> str:
     src = srcs[0] if len(srcs) == 1 else " and ".join([", ".join(srcs[:-1]), srcs[-1]])
     terse = bool((ctx or {}).get("terse"))
     no_match = all(outcome(r) == "no_match" or (facts(n, r) or "").endswith("came back empty") for n, r in reads)
-    segs = [] if no_match else _pick_segments(reads, final, s["prompt"], 2 if terse else 3)
+    segs = [] if no_match else _pick_segments(reads, final, s["prompt"], 2 if terse else 5)
     inj = any(injected(r) for _, r in reads)
     tail_inj = pick(seed + "i", ["One line in it is aimed at an assistant; not acting on it.",
                                  "A line there is written to an assistant, so it gets no action, only a mention.",
@@ -2162,7 +2166,9 @@ def thought_extract(meta, s, ctx, seed) -> str:
                 if final.rstrip().endswith("?") else
                 pick(seed + "p", ["Say that plainly.", "So the answer is a plain no.", "Say so, simply."]))
         return compose([(3, head), (2, tail_inj if inj else ""), (1, plan)])
-    lead = pick(seed, [f"From the {src}:", f"The {src} has", f"In the {src}:", f"Relevant in the {src}:"])
+    plural = src.endswith("s") or " and " in src
+    lead = pick(seed, [f"From the {src}:", f"The {src} {'have' if plural else 'has'}", f"In the {src}:",
+                       f"Relevant in the {src}:"])
     count = next((f for n, r in reads for f in [facts(n, r)] if f and not f.endswith("came back empty")), None)
     if count and all(_said(x, final) for x in re.findall(r"\d+", count)):
         segs = [count] + segs                     # the count the answer gives ("4 emails, 1 unread")

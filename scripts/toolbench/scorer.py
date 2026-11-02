@@ -226,13 +226,103 @@ def _match_expect(case: Case, calls: list[dict], today: date, *, effects: list[d
     return [], []
 
 
+# ---------------------------------------------------------------- answer shape
+# Instruction-following checks (cases/session.yaml): length caps, openers, list
+# format, language. Pure text rules, deliberately simple and a little lenient: a
+# check that fires means the answer plainly broke the instruction.
+
+_ALPHA = re.compile(r"[^\W\d_]+")
+_BULLET = re.compile(r"^\s*(?:[-*\u2022\u2023\u25aa\u2013]|\d{1,2}[.)])\s+\S")
+# Abbreviations whose period does not end a sentence.
+_ABBREV = re.compile(r"\b(?:dr|mr|mrs|ms|st|vs|etc|approx)\.|\b(?:e\.g|i\.e)\.", re.I)
+_CLOCK_DOTS = re.compile(r"\b([ap])\.m\.", re.I)
+_SENTENCE_END = re.compile(r"[.!?\u2026]+(?:[\"')\]\u201d\u2019*_]*)(?=\s|$)|\n+")
+_LEAD_NOISE = "*_\"'\u201c\u2018`#> \t\n"
+
+_ES_WORDS = frozenset(
+    "de la el los las un una unos unas y que en es por para con se su sus del al lo te tu tus mi mis "
+    "hay está están tienes tiene tengo hoy mañana pero como más muy sí ya son fue será "
+    "cita llamada correo mensaje recordatorio nada también día hora esta este esto ese esa "
+    "cuando donde qué quién tienes puedes quieres gracias claro vale listo hecho "
+    "ayer noche tarde semana minutos".split())
+_EN_WORDS = frozenset(
+    "the is are you your and of to in it that this for on with have has at be was will not from "
+    "tomorrow today there here what when where who would could should can i my just".split())
+
+
+def _words(text: str) -> list[str]:
+    """Whitespace-separated words ("3:30", "$1,284.17" and "12.6" are one word each)."""
+    return [w for w in (text or "").split() if re.search(r"\w", w)]
+
+
+def _sentences(text: str) -> list[str]:
+    t = _CLOCK_DOTS.sub(lambda m: m.group(1) + "m", _ABBREV.sub(lambda m: m.group(0).replace(".", ""), text or ""))
+    return [p for p in (x.strip() for x in _SENTENCE_END.split(t)) if re.search(r"\w", p)]
+
+
+def _bullet_lines(text: str) -> tuple[list[str], list[str]]:
+    lines = [ln for ln in (text or "").splitlines() if ln.strip()]
+    return [ln for ln in lines if _BULLET.match(ln)], lines
+
+
+def looks_spanish(text: str) -> bool:
+    """Spanish stopwords clearly outnumber English ones (numbers and times ignored)."""
+    toks = [w.lower() for w in _ALPHA.findall(text or "")]
+    if not toks:
+        return False
+    es = sum(w in _ES_WORDS for w in toks)
+    en = sum(w in _EN_WORDS for w in toks)
+    return es > en and es >= min(2, len(toks)) and es / len(toks) >= 0.25
+
+
+_CLOCK_SPACE = re.compile(r"(?<=\d)\s*([ap])\.?m\b\.?", re.I)
+
+
+def _fold(text: str) -> str:
+    """Lowercase for substring checks, tolerant of how a model writes the same thing: curly
+    apostrophes become straight ones and "6:40 PM" / "6:40 p.m." compare equal to "6:40pm"."""
+    t = (text or "").replace("\u2019", "'").replace("\u2018", "'").lower()
+    return _CLOCK_SPACE.sub(lambda m: m.group(1).lower() + "m", t)
+
+
 def _answer_problems(spec: dict, final: str) -> list[str]:
-    text = (final or "").lower()
-    out = [f"answer lacks {s!r}" for s in spec.get("contains_all", ()) if str(s).lower() not in text]
+    text = _fold(final)
+    out = [f"answer lacks {s!r}" for s in spec.get("contains_all", ()) if _fold(str(s)) not in text]
     anyof = spec.get("contains_any") or ()
-    if anyof and not any(str(s).lower() in text for s in anyof):
+    if anyof and not any(_fold(str(s)) in text for s in anyof):
         out.append(f"answer lacks any of {list(anyof)!r}")
-    out += [f"answer states {s!r}" for s in spec.get("not_contains", ()) if str(s).lower() in text]
+    out += [f"answer states {s!r}" for s in spec.get("not_contains", ()) if _fold(str(s)) in text]
+    # Shape of the answer (instruction following).
+    raw = final or ""
+    n_words = len(_words(raw))
+    if spec.get("max_words") is not None and n_words > int(spec["max_words"]):
+        out.append(f"answer has {n_words} words > {int(spec['max_words'])}")
+    if spec.get("min_words") is not None and n_words < int(spec["min_words"]):
+        out.append(f"answer has {n_words} words < {int(spec['min_words'])}")
+    if spec.get("max_sentences") is not None or spec.get("min_sentences") is not None:
+        n_sent = len(_sentences(raw))
+        if spec.get("max_sentences") is not None and n_sent > int(spec["max_sentences"]):
+            out.append(f"answer has {n_sent} sentences > {int(spec['max_sentences'])}")
+        if spec.get("min_sentences") is not None and n_sent < int(spec["min_sentences"]):
+            out.append(f"answer has {n_sent} sentences < {int(spec['min_sentences'])}")
+    openers = spec.get("starts_with_any") or ()
+    if openers:
+        head = raw.lstrip(_LEAD_NOISE).lower().replace("\u2019", "'")
+        # A whole word: "No, ..." and "No." open with No; "Nothing on Monday" and "Not sure" do not.
+        if not any(re.match(re.escape(str(o).lower()) + r"(?![\w'])", head) for o in openers):
+            out.append(f"answer does not start with any of {list(openers)!r}")
+    seen = raw.replace("\u2019", "'").replace("\u2018", "'")      # patterns are written with straight quotes
+    out += [f"answer lacks pattern {p!r}" for p in spec.get("regex_all", ())
+            if not re.search(str(p), seen, re.I | re.M)]
+    out += [f"answer matches forbidden pattern {p!r}" for p in spec.get("regex_none", ())
+            if re.search(str(p), seen, re.I | re.M)]
+    bullets, lines = _bullet_lines(raw)
+    if spec.get("no_bullets") and bullets:
+        out.append(f"answer has {len(bullets)} bulleted line(s)")
+    if spec.get("all_lines_bulleted") and (not lines or len(bullets) != len(lines)):
+        out.append("answer is not all bulleted lines")
+    if spec.get("language_es") and not looks_spanish(raw):
+        out.append("answer is not Spanish")
     return out
 
 

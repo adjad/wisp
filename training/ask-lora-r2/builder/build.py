@@ -227,7 +227,7 @@ def fix_adjacent(examples, metas, orders) -> list[str]:
     for i, m in enumerate(metas):
         turn_of[m["id"].rsplit("-s", 1)[0]].append(i)
     stuck = []
-    for _ in range(5):
+    for _ in range(20 if R3PLUS else 5):     # round 4's larger mix needs more passes: a fix in one order can break another
         changed = False
         for order in orders:
             seq = [i for i in order if metas[i].get("think")]
@@ -245,6 +245,11 @@ def fix_adjacent(examples, metas, orders) -> list[str]:
                 changed = True
         if not changed:
             break
+    if R3PLUS:   # whatever is still adjacent after the passes is stuck, not silently written
+        for order in orders:
+            seq = [i for i in order if metas[i].get("think")]
+            stuck += [f'{metas[b]["id"]}: still equals its neighbour' for a, b in zip(seq, seq[1:])
+                      if metas[a]["thought"] == metas[b]["thought"]]
     return sorted(set(stuck))
 
 

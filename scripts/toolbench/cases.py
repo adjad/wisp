@@ -15,6 +15,13 @@ One YAML file per category under cases/. Each entry:
         contains_all: ["1,284.17"]
         contains_any: []
         not_contains: []
+        # Shape checks (instruction following; cases/session.yaml). All optional:
+        max_words: 12                    # also min_words, max_sentences, min_sentences (ints)
+        starts_with_any: ["yes", "no"]   # case-insensitive, after leading quotes/markdown
+        regex_all: ["\\b3:30\\b"]        # re.search, case-insensitive, multiline; regex_none likewise
+        no_bullets: true                 # no "-", "*", "•" or "1." list lines
+        all_lines_bulleted: true         # every non-empty line is a bullet
+        language_es: true                # Spanish stopwords clearly outnumber English ones
       max_calls: 4                       # default len(expect) + 3
       confirm: [send_email]              # these may only take effect through a confirmation card
       no_confirm: [add_reminder]         # these must never raise a confirmation card
@@ -75,6 +82,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from fnmatch import fnmatchcase
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -141,7 +149,12 @@ SPLITS = ("gate", "dev", "voice")
 # Splits held out of every training set (shingle export).
 HELD_OUT_SPLITS = frozenset({"gate", "voice"})
 ACCESS = ("full", "default", "view")
-_ANSWER_KEYS = {"contains_all", "contains_any", "not_contains"}
+_ANSWER_KEYS = {"contains_all", "contains_any", "not_contains", "max_words", "max_sentences", "min_words", "min_sentences",
+                "starts_with_any", "regex_all", "regex_none", "no_bullets", "all_lines_bulleted",
+                "language_es"}
+_ANSWER_INTS = ("max_words", "max_sentences", "min_words", "min_sentences")
+_ANSWER_LISTS = ("contains_all", "contains_any", "not_contains", "starts_with_any", "regex_all", "regex_none")
+_ANSWER_FLAGS = ("no_bullets", "all_lines_bulleted", "language_es")
 
 # Decided confirmation behaviour (safety/policy.py). Names, not categories, so
 # loading cases needs no service import; tests/test_toolbench.py pins
@@ -163,6 +176,33 @@ def _step(raw: dict, where: str) -> Step:
     return Step(tools=tools, args=dict(raw.get("args") or {}))
 
 
+def _check_answer(answer: dict, where: str) -> None:
+    """Types of the `answer:` checks, and that every regex compiles (after fact binding)."""
+    for k in _ANSWER_INTS:
+        if k in answer and (isinstance(answer[k], bool) or not isinstance(answer[k], int) or answer[k] < 0):
+            raise ValueError(f"{where}: answer.{k} must be a non-negative integer")
+    for k in _ANSWER_LISTS:
+        if k in answer and not isinstance(answer[k], (list, tuple)):
+            raise ValueError(f"{where}: answer.{k} must be a list")
+    for k in _ANSWER_FLAGS:
+        if k in answer and not isinstance(answer[k], bool):
+            raise ValueError(f"{where}: answer.{k} must be true or false")
+    for k in ("regex_all", "regex_none"):
+        for pat in answer.get(k) or ():
+            try:
+                re.compile(str(pat))
+            except re.error as e:
+                raise ValueError(f"{where}: answer.{k} pattern {pat!r}: {e}") from None
+    if answer.get("max_words") is not None and answer.get("min_words") is not None \
+            and answer["min_words"] > answer["max_words"]:
+        raise ValueError(f"{where}: answer.min_words exceeds max_words")
+    if answer.get("max_sentences") is not None and answer.get("min_sentences") is not None \
+            and answer["min_sentences"] > answer["max_sentences"]:
+        raise ValueError(f"{where}: answer.min_sentences exceeds max_sentences")
+    if answer.get("no_bullets") and answer.get("all_lines_bulleted"):
+        raise ValueError(f"{where}: answer.no_bullets and all_lines_bulleted contradict")
+
+
 def parse_case(raw: dict, category: str) -> Case:
     where = f"{category}/{raw.get('id', '?')}"
     unknown = set(raw) - _CASE_KEYS
@@ -179,6 +219,7 @@ def parse_case(raw: dict, category: str) -> Case:
     answer = dict(raw.get("answer") or {})
     if set(answer) - _ANSWER_KEYS:
         raise ValueError(f"{where}: unknown answer keys {sorted(set(answer) - _ANSWER_KEYS)}")
+    _check_answer(answer, where)
     access = str(raw.get("access") or "full")
     if access not in ACCESS:
         raise ValueError(f"{where}: access must be one of {ACCESS}")
@@ -232,7 +273,9 @@ def load_cases(directory: Path = CASES_DIR) -> list[Case]:
 def select(cases: list[Case], *, only: str = "", ids: str = "", split: str = "") -> list[Case]:
     cats = {c.strip() for c in only.split(",") if c.strip()}
     want = {i.strip() for i in ids.split(",") if i.strip()}
-    return [c for c in cases if (not cats or c.category in cats) and (not want or c.id in want)
+    # An id with a wildcard is a shell-style pattern: --ids '*_pref_*' picks a family of cases.
+    return [c for c in cases if (not cats or c.category in cats)
+            and (not want or any(fnmatchcase(c.id, w) if re.search(r"[*?\[]", w) else c.id == w for w in want))
             and (not split or c.split == split)]
 
 
