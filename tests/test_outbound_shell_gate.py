@@ -707,6 +707,59 @@ def test_a_stored_legacy_grant_does_not_skip_a_skill_or_mcp_card(
     assert decision.tier is policy.Tier.CONFIRM, decision
 
 
+_CUT_OFF_SETTINGS = ["wifi", "bluetooth", "firewall", "airdrop", "voiceover"]
+_HARMLESS_OFF_SETTINGS = ["dark_mode", "auto_appearance", "low_power_mode", "do_not_disturb"]
+
+
+@pytest.mark.parametrize("check_layer", ["none", "real", "forced_allow"])
+@pytest.mark.parametrize("setting", [*_CUT_OFF_SETTINGS, "Wi-Fi", "bt", "brand_new_radio"])
+def test_switching_off_a_connection_or_device_asks_with_full_access(
+        full_access, monkeypatch, tmp_path, setting, check_layer):
+    # 2026-11-01 toolbench gate: "turn everything off" turned Wi-Fi off under
+    # full access with no card. A stored "always allow" for the setting (scope
+    # "wifi") cannot lift it either; an unknown setting fails closed.
+    from service.tools.system_extras import setting_key
+    monkeypatch.setattr(grants, "GRANTS_PATH", tmp_path / "grants.json")
+    monkeypatch.setattr(grants, "_CACHE", {"toggle_setting": {
+        "allow": [{"scope": setting_key(setting)}], "deny": []}})
+    if check_layer == "real":
+        monkeypatch.setattr(grants, "check", _REAL_CHECK)
+    elif check_layer == "forced_allow":
+        monkeypatch.setattr(grants, "check", lambda *args: "allow")
+    args = {"setting": setting, "on": False}
+    decision = policy.decide("system_write", args, tool="toggle_setting")
+    assert decision.tier is policy.Tier.CONFIRM, decision
+    assert "full access" in decision.reason
+    assert grants.is_grantable("toggle_setting", args) is False
+
+
+@pytest.mark.parametrize("setting", [*_CUT_OFF_SETTINGS, *_HARMLESS_OFF_SETTINGS])
+def test_switching_a_setting_on_stays_card_free_with_full_access(full_access, setting):
+    args = {"setting": setting, "on": True}
+    assert policy.decide("system_write", args, tool="toggle_setting").tier is policy.Tier.ALLOW
+    assert grants.is_grantable("toggle_setting", args) is True
+
+
+@pytest.mark.parametrize("setting", _HARMLESS_OFF_SETTINGS)
+def test_switching_off_a_look_or_quiet_setting_stays_card_free(full_access, setting):
+    # Light mode, notifications back, full performance: nothing disconnected.
+    args = {"setting": setting, "on": False}
+    assert policy.decide("system_write", args, tool="toggle_setting").tier is policy.Tier.ALLOW
+
+
+@pytest.mark.parametrize("on", [None, "false", 0, "true"])
+def test_a_toggle_whose_on_is_not_exactly_true_asks(full_access, on):
+    args = {"setting": "wifi"} if on is None else {"setting": "wifi", "on": on}
+    assert policy.decide("system_write", args, tool="toggle_setting").tier is policy.Tier.CONFIRM
+
+
+def test_switching_wifi_off_in_view_only_is_refused(full_access, monkeypatch):
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    monkeypatch.setattr(policy, "_READ_ONLY", True)
+    decision = policy.decide("system_write", {"setting": "wifi", "on": False}, tool="toggle_setting")
+    assert decision.tier is policy.Tier.DENY
+
+
 def test_an_unregistered_mcp_name_asks(full_access):
     # Without its registration the server boundary is unknown, so even a
     # read-looking name asks: "mcp_brave_search_pwn" must not read as a search.

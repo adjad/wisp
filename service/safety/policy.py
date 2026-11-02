@@ -939,6 +939,39 @@ ALWAYS_CONFIRM_CATEGORIES = frozenset(
     _ALWAYS_CONFIRM | _ALWAYS_CONFIRM_OUTBOUND | _ALWAYS_CONFIRM_CALENDAR
     | _ALWAYS_CONFIRM_TOOL_AUTHORING | _ALWAYS_CONFIRM_EXTENSION)
 
+# toggle_setting calls that switch something OFF the user may be relying on:
+# the network, wireless devices, a protection or an accessibility aid. Confirmed
+# in every mode, and a standing grant cannot lift them (grants.is_grantable).
+# Keyed on the call, not the category: turning the same setting ON stays on the
+# ordinary system_write rules.
+#
+# WHY THIS EXISTS (2026-11-01 toolbench gate). Under Full access the model read
+# an ambiguous "turn everything off" as toggle_setting(wifi, on=false) and ran
+# it with no card. Wi-Fi off can drop the very connection the user is talking
+# to Wisp over (the iPhone app, a remote session); Bluetooth off can take the
+# keyboard and mouse with it. Fails closed: any setting not listed as harmless
+# to switch off, and any `on` that is not exactly true, asks.
+_TOGGLE_OFF_CUTS = {"wifi": "Wi-Fi", "bluetooth": "Bluetooth", "firewall": "the firewall",
+                    "airdrop": "AirDrop", "voiceover": "VoiceOver"}
+# Switching these off only changes the look, or brings back notifications and
+# full performance: nothing is disconnected or left unprotected.
+_TOGGLE_OFF_HARMLESS = frozenset({"dark_mode", "auto_appearance", "low_power_mode",
+                                  "do_not_disturb"})
+
+
+def toggle_off_hit(tool: str | None, args: dict | None) -> str | None:
+    """What this toggle_setting call would cut off (for the card), or None."""
+    if tool != "toggle_setting" or not isinstance(args, dict):
+        return None
+    if args.get("on") is True:
+        return None
+    from service.tools.system_extras import setting_key
+    key = setting_key(str(args.get("setting", "")))
+    if key in _TOGGLE_OFF_HARMLESS:
+        return None
+    return _TOGGLE_OFF_CUTS.get(key, f"the {key or 'unnamed'} setting")
+
+
 # Tools confirmed on every call, in every mode, whatever their category says.
 # run_applescript is category "shell", but its text drives other apps: one line
 # sends an iMessage or a Mail message as the user, and `do shell script` is a
@@ -1534,6 +1567,10 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
                 else app_open_hit(args) if tool == "open_app" else None)
     secret = (credential_path_hit(args, tool, mutating=category != "fs_read")
               if category in ("fs_read", "fs_write", "fs_delete") else None)
+    # A Mac setting switched off that cuts the network, a device or a
+    # protection (_TOGGLE_OFF_CUTS). A grant on "wifi" was given for a call the
+    # user saw, not for every future Wi-Fi off.
+    cut_off = toggle_off_hit(tool, args)
 
     # A standing grant the user gave for this exact tool (and scope). Checked
     # after the floor and before the mode logic, so it can answer a repeat of a
@@ -1547,7 +1584,8 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
             return Decision(Tier.DENY, f"you blocked {tool} for this target")
         if (verdict == "allow" and category not in ALWAYS_CONFIRM_CATEGORIES
                 and tool not in ALWAYS_CONFIRM_TOOLS and not destructive
-                and not outbound and not secret and grants.is_grantable(tool, args)):
+                and not outbound and not secret and not cut_off
+                and grants.is_grantable(tool, args)):
             return Decision(Tier.ALLOW, f"you allowed {tool} for this target")
 
     # Irreversible and unbounded: always show the exact command, in every access
@@ -1588,6 +1626,12 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
         if read_only():
             return Decision(Tier.DENY, "view-only mode: keys and saved sign-ins are off limits")
         return Decision(Tier.CONFIRM, f"{secret} holds keys or saved sign-ins — always confirmed")
+
+    if cut_off:
+        if read_only():
+            return Decision(Tier.DENY, "view-only mode: system changes are disabled")
+        return Decision(Tier.CONFIRM, f"turns {cut_off} off, which can disconnect this Mac or "
+                        "its devices — confirmed even with full access")
 
     # Outbound messages sent as the user, to other people. Irreversible and
     # visible outside this machine, so they ask every single time — full_access

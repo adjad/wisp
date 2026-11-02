@@ -666,6 +666,60 @@ def test_skill_and_mcp_cards_offer_no_always_allow(synthetic, monkeypatch, name,
     assert stored == []
 
 
+_TOGGLE_PARAMS = {"type": "object", "properties": {
+    "setting": {"type": "string"}, "on": {"type": "boolean"}}, "required": ["setting", "on"]}
+
+
+@pytest.mark.parametrize("model_led_route", [True, False])
+@pytest.mark.parametrize("on,carded", [(False, True), (True, False)])
+def test_turning_wifi_off_asks_with_full_access_on_both_routes(
+        synthetic, monkeypatch, model_led_route, on, carded):
+    # 2026-11-01 toolbench gate: "turn everything off" became toggle_setting(wifi,
+    # on=false) and ran under full access with no card. Off asks on both routes
+    # (policy._TOGGLE_OFF_CUTS), even with a stored grant; on stays card-free.
+    effects, register = synthetic
+    register("toggle_setting", "system_extras", "system_write", parameters=_TOGGLE_PARAMS)
+    monkeypatch.setitem(model_led.EFFECT_RECEIPTS, "toggle_setting", ("synthetic ",))
+    monkeypatch.setattr("service.safety.policy._FULL_ACCESS", True)
+    monkeypatch.setattr("service.safety.grants.check", lambda *args: "allow")
+    approval = Approval(False)
+    script = ([[call(DISCOVERY_TOOL, families=["device"], tools=["toggle_setting"])]]
+              if model_led_route else []) + [
+        [call("toggle_setting", setting="wifi", on=on)], "Synthetic reply."]
+    run(script, prompt=f"turn wifi {'on' if on else 'off'}", approval=approval,
+        model_led_discovery=model_led_route, tools=[] if model_led_route else ["toggle_setting"],
+        **_owners())
+    if carded:
+        assert [a["tool"] for a in approval.calls] == ["toggle_setting"]
+        assert "toggle_setting" not in [n for n, _ in effects]
+    else:
+        assert not approval.calls
+        assert effects[-1] == ("toggle_setting", {"setting": "wifi", "on": True})
+
+
+def test_a_wifi_off_card_offers_no_always_allow(monkeypatch):
+    from service.agent.approver import InteractiveApprover
+    from service.safety import grants
+    stored = []
+    monkeypatch.setattr(grants, "grant", lambda *a, **k: stored.append((a, k)) or {"ok": True})
+    sent = []
+
+    async def emit(event):
+        sent.append(event)
+
+    async def ask():
+        approver = InteractiveApprover(emit, timeout=5)
+        task = asyncio.create_task(approver.confirm(
+            {"id": "w1", "tool": "toggle_setting", "args": {"setting": "wifi", "on": False}}))
+        while not sent:
+            await asyncio.sleep(0)
+        approver.resolve("w1", True, scope="always")
+        return await task
+    assert asyncio.run(ask()) is True
+    assert sent[0]["type"] == "confirm" and sent[0]["grantable"] is False
+    assert stored == []
+
+
 def test_validated_shell_read_is_not_forced_to_confirm_by_opaque_rule(synthetic, monkeypatch):
     monkeypatch.setattr("service.safety.policy._FULL_ACCESS", True)
     approval = Approval(False)
