@@ -33,7 +33,7 @@ r3 = all r2 families, rebuilt on main, plus these:
 | `followup_r3` | scen_r3_followup.py | multi-turn follow-ups, r2's "single turn only" gap |
 | `mail_r3`, `web_r3` | scen_r3_mailweb.py | grounded mail and web answers; web_search over web_fetch |
 | `device_r3`, `contacts_r3`, `reminders_r3` | scen_r3_device.py | r2's regressions plus weak categories |
-| `vision_r3` | vision/make_vision_data.py | about 220 images and about 30 video items through vision.py's own request; visible text always; proposals only for future events; planted text ignored |
+| `vision_r3` | vision/make_vision_data.py | 295 rows (230 images, 40 scanned documents, 25 text documents) through Wisp's own request; visible text always; proposals only for a dated future event; planted text ignored. **No video rows** (removed 2026-11-01; the Mac gate still scores clips) |
 
 **Training changes** (brev/render.py and train.py):
 - image rows go through the processor, with towers frozen and about 12% of steps;
@@ -80,7 +80,7 @@ The figures below scale from that, so they are estimates.
 
 ## Regression guard for vision and audio (new in r3)
 
-1. **Training rows on Wisp's own request shapes.** The towers stay frozen. About 255 image, video and scanned-document rows come from vision.py's `_messages`, and about 320 transcription rows from voice.py's request.
+1. **Training rows on Wisp's own request shapes.** The towers stay frozen. 295 image and document rows come from vision.py's `_messages` and documents.py (no video), and 360 transcription rows from voice.py's request. The rows' main job is to give the KL anchor and the checkpoint eval Wisp's real multimodal prompts; they teach format and restraint, not perception.
 2. **KL anchor to the base model.** On every vision and audio row, plus a small text slice, the loss adds λ·KL(base ‖ tuned). The base logits come from the same weights with the LoRA disabled.
 3. **Checkpoint selection by a GPU multimodal eval** on held-out vision and audio dev rows, which are separate from the Mac gate set. `pick_checkpoint.py` refuses any checkpoint that is worse than base beyond these tolerances:
    - vision facts −1 pt;

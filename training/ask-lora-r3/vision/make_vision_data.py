@@ -2894,6 +2894,10 @@ def rebalance_dev(rows, min_prop=12):
     return dropped
 
 
+# Video rows are excluded from r3 training (WISP_R3_VIDEO=1 brings them back).
+INCLUDE_VIDEO = os.environ.get("WISP_R3_VIDEO") == "1"
+
+
 def main():
     IMG_DIR.mkdir(exist_ok=True)
     for old in IMG_DIR.glob("*.jpg"):
@@ -3010,6 +3014,15 @@ def main():
     rows.extend(extras)
     dropped += rebalance_dev(rows, min_prop=0)   # only the (question, answer) dedupe against the extras' dev rows
     print("dropped train rows duplicating a dev (question, answer):", len(dropped))
+    if not INCLUDE_VIDEO:
+        # Video is out of r3's training (decided 2026-11-01). The rows are still generated so every other row's
+        # randomness is unchanged, then dropped with their frames. The Mac gate's video clips still measure it.
+        gone = [r for r in rows if r["kind"] == "video"]
+        rows = [r for r in rows if r["kind"] != "video"]
+        for r in gone:
+            for rel in r["images"]:
+                (HERE / rel).unlink(missing_ok=True)
+        print("video rows dropped:", len(gone))
     with (HERE / "vision_rows.jsonl").open("w") as f:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -3068,6 +3081,8 @@ def verify_production_shapes(rows):
             cov.setdefault(c, []).append(r)
     want = {"large": (8, lambda r: 2000 <= r["meta"]["side"] <= 3000), "long": (7, lambda r: 6 <= len(r["images"]) <= 8 and 25 <= r["meta"]["seconds"] <= 30),
             "pages4": (8, lambda r: len(r["images"]) == 4), "text": (25, lambda r: r["kind"] == "text_document")}
+    if not INCLUDE_VIDEO:
+        want.pop("long")          # long clips are video rows, excluded from r3 training
     for k, (_, ok) in want.items():
         got = cov.get(k, [])
         if not got or not all(ok(r) for r in got):

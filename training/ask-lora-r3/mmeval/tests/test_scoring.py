@@ -449,7 +449,8 @@ def test_documents_are_their_own_group():
     rows = _real_rows()
     m = S.aggregate_vision([S.score_vision_row(r, r["target"]) for r in rows])
     assert m["document_n"] == sum(r["kind"] == "document" for r in rows) > 0 and m["document_fact_recall"] == 1.0
-    assert m["by_kind"]["document"]["n"] == m["document_n"] and "video" in m["by_kind"]
+    # video is out of r3 training (vision rows carry none); the Mac gate still scores clips
+    assert m["by_kind"]["document"]["n"] == m["document_n"] and "video" not in m["by_kind"]
     docs = [r for r in rows if r["kind"] == "document"]
     broken = S.aggregate_vision([S.score_vision_row(r, "I can't tell.") for r in docs])
     assert broken["document_fact_recall"] < 0.5 and broken["by_kind"]["document"]["empty_replies"] == 0
