@@ -49,3 +49,30 @@ def test_remote_or_non_omlx_engine_is_unavailable_without_a_read(monkeypatch):
 def test_failed_status_read_is_unavailable(monkeypatch):
     _client(monkeypatch, error=RuntimeError("engine down"))
     assert asyncio.run(main.models_memory()) == {"available": False, "models": []}
+
+
+def _towers(monkeypatch, shown, model="gemma"):
+    from service import encoders
+    monkeypatch.setattr(encoders, "status", AsyncMock(return_value=shown))
+    monkeypatch.setattr(encoders, "ask_model", lambda: model)
+
+
+def test_resident_encoders_are_added_once_to_the_ask_model(monkeypatch):
+    """The engine measured the Ask model after its encoders were released
+    (tests/test_engine_guard_overlay.py), so only encoders loaded since are added."""
+    _client(monkeypatch, status={"models": [
+        {"id": "gemma", "loaded": True, "actual_size": 5_000_000_000},
+        {"id": "other", "loaded": True, "actual_size": 1_000},
+    ]})
+    _towers(monkeypatch, {"on_demand": True, "resident_bytes": 600_000_000})
+    assert asyncio.run(main.models_memory())["models"] == [
+        {"id": "gemma", "bytes": 5_600_000_000}, {"id": "other", "bytes": 1_000}]
+
+
+def test_released_or_resident_mode_encoders_add_nothing(monkeypatch):
+    _client(monkeypatch, status={"models": [{"id": "gemma", "loaded": True, "actual_size": 5_000_000_000}]})
+    for shown in ({"on_demand": True, "resident_bytes": 0},
+                  {"on_demand": False, "resident_bytes": 600_000_000},   # measured with them in
+                  None):                                                  # no answer
+        _towers(monkeypatch, shown)
+        assert asyncio.run(main.models_memory())["models"] == [{"id": "gemma", "bytes": 5_000_000_000}]

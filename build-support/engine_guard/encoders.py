@@ -178,10 +178,26 @@ class Encoders:
         except Exception as exc:  # noqa: BLE001 - anything unexpected keeps everything resident
             logger.warning("wisp encoders: lazy mode off (%s)", type(exc).__name__, exc_info=True)
             self.reason = f"error:{type(exc).__name__}"
-            for tower in self.towers.values():
-                tower.state = "resident"
+            self._restore()
         self.attach_ms = int((_now() - started) * 1000)
         return self.reason
+
+    def _restore(self):
+        """A release failed partway: put back every tower it touched. One that can't
+        be put back is "unavailable", and its requests fail (ensure) rather than run
+        on placeholder weights."""
+        for tower in self.towers.values():
+            if tower.state == "resident":
+                continue           # its release never began: the weights are untouched
+            try:
+                self._load(tower)
+            except BaseException as exc:  # noqa: BLE001 - fail closed for this tower only
+                tower.state = "unavailable"
+                tower.last_error = tower.last_error or type(exc).__name__
+                logger.warning("wisp encoders: %s could not be restored (%s)", tower.name, type(exc).__name__)
+
+    def broken(self):
+        return any(t.state == "unavailable" for t in self.towers.values())
 
     def _qualify(self):
         import mlx.core as mx
@@ -242,6 +258,9 @@ class Encoders:
     def ensure(self, modality):
         """Engine thread: make `modality` resident (no-op when it is, or off)."""
         if self.reason is not None:
+            tower = self.towers.get(modality)
+            if tower is not None and tower.state == "unavailable":
+                raise EncoderUnavailable("This model's encoder couldn't be restored. Reload the model.")
             return
         with self._lock:
             tower = self.towers.get(modality)
@@ -309,9 +328,9 @@ class Encoders:
         import mlx.core as mx
         model = self._model()
         tower = self.towers[name]
+        tower.state = "released"   # first: a placeholder write that fails partway still counts
         if model is not None:
             self._placeholders(model, tower)
-        tower.state = "released"
         gc.collect()
         mx.clear_cache()
 
@@ -398,7 +417,11 @@ async def attach(engine):
     except Exception as exc:  # noqa: BLE001 - executor trouble: keep everything resident
         encoders.reason = f"error:{type(exc).__name__}"
         return encoders
-    if reason is None:
+    if reason is not None and encoders.broken():
+        _install_gate(model, encoders)     # fail closed: refuse that encoder's requests
+        logger.warning("wisp encoders: %s unavailable for %s (%s)", ", ".join(
+            n for n, t in encoders.towers.items() if t.state == "unavailable"), engine._model_name, reason)
+    elif reason is None:
         _install_gate(model, encoders)
         encoders.start_idle()
         logger.info("wisp encoders: on demand for %s (%s)", engine._model_name,

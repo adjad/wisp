@@ -396,6 +396,76 @@ def test_unexpected_error_keeps_everything_resident(enc, checkpoint, executor, m
     assert model.tower_ready("audio") and model.tower_ready("vision")
 
 
+def _fail_second_release(enc, monkeypatch, *, midway=False):
+    """The first tower releases; the second raises (before or partway through its
+    placeholder write)."""
+    real = enc.Encoders._release
+    calls = []
+
+    def release(self, name):
+        calls.append(name)
+        if len(calls) == 1:
+            return real(self, name)
+        if midway:
+            model = self._model()
+            tower = self.towers[name]
+            tower.state = "released"
+            key = tower.keys[0]
+            model.load_weights([(key, enc_mx(enc).zeros((0,), dtype=tower.specs[key][1]))], strict=False)
+        raise MemoryError("placeholder write failed")
+
+    monkeypatch.setattr(enc.Encoders, "_release", release)
+    return calls
+
+
+def enc_mx(enc):
+    import mlx.core
+    return mlx.core
+
+
+@pytest.mark.parametrize("midway", [False, True])
+def test_a_release_failing_partway_puts_the_released_tower_back(enc, checkpoint, executor, monkeypatch, midway):
+    model, encoders = make(enc, checkpoint, executor)
+    calls = _fail_second_release(enc, monkeypatch, midway=midway)
+    assert encoders.prepare() == "error:MemoryError"
+    assert calls == ["audio", "vision"]
+    # Nothing is left on placeholders: both towers have their real weights again ...
+    assert model.tower_ready("audio") and model.tower_ready("vision")
+    assert {n: t["state"] for n, t in encoders.status()["towers"].items()} == {"audio": "resident",
+                                                                               "vision": "resident"}
+    # ... so a clip and a picture encode correctly with lazy mode off.
+    model.get_input_embeddings([1], "pixels", input_features="mel")
+    assert model.encoded == ["vision", "audio"]
+
+
+def test_a_tower_that_cannot_be_put_back_fails_its_requests(enc, checkpoint, executor, mx, monkeypatch):
+    engine = types.SimpleNamespace(_vlm_model=Model(), _model_name=str(checkpoint),
+                                   _engine=types.SimpleNamespace(_mlx_executor=executor), _loaded=True)
+    _fail_second_release(enc, monkeypatch)
+    real_load = enc.Encoders._load
+
+    def load(self, tower):
+        if self.reason is not None and tower.name == "audio":
+            raise OSError("disk")
+        return real_load(self, tower)
+
+    monkeypatch.setattr(enc.Encoders, "_load", load)
+    encoders = asyncio.run(enc.attach(engine))
+    model = engine._vlm_model
+    states = {n: t["state"] for n, t in encoders.status()["towers"].items()}
+    assert encoders.reason == "error:MemoryError" and states == {"audio": "unavailable", "vision": "resident"}
+    # A clip is refused instead of being heard through empty weights ...
+    with pytest.raises(enc.EncoderUnavailable):
+        model.get_input_embeddings([1], input_features="mel")
+    assert "audio" not in model.encoded
+    # ... while pictures (untouched) and text still work.
+    assert model.encode_image("pixels") == "features"
+    assert model.get_input_embeddings([1, 2]) == "embeds"
+    assert encoders._task is None                   # nothing to idle-release with lazy mode off
+    code, body = asyncio.run(enc.act(Pool({"m": types.SimpleNamespace(engine=engine)}), "m", "audio", "prewarm"))
+    assert code == 200 and body["supported"] is False and body["towers"]["audio"]["state"] == "unavailable"
+
+
 def test_attach_installs_no_gate_when_unsupported(enc, checkpoint, executor):
     engine = types.SimpleNamespace(_vlm_model=OtherModel(), _model_name=str(checkpoint),
                                    _engine=types.SimpleNamespace(_mlx_executor=executor), _loaded=True)
