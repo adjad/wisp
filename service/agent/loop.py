@@ -3515,7 +3515,8 @@ async def run_agent(
         the step that replaces a raw tool dump. With `direct`, the same step
         for a turn with no tool result (its steps came back empty, e.g. a call
         to a tool that was not offered, which oMLX drops). "" when it fails."""
-        from service.model_only import ASK_PROMPT_BUDGET, salvage_answer, strip_think
+        from service.model_only import (ASK_HISTORY_RESERVE, ASK_PROMPT_BUDGET,
+                                        salvage_answer, strip_think)
         nudge = {"role": "user", "content": (
             "Answer my last question directly now, briefly and helpfully, from what you "
             "know. Do not call any tool. If it needs my personal data you have not "
@@ -3527,7 +3528,9 @@ async def run_agent(
             fitted, _, out_tokens = _fit_window(
                 msgs + [nudge], [], 700, model, None,
                 protected_prefix_count=len(system_prefix),
-                context_window=int(ASK_PROMPT_BUDGET * ask_scale) + 700, min_output_tokens=400)
+                context_window=int((ASK_PROMPT_BUDGET + (ASK_HISTORY_RESERVE if _ask_has_history
+                                                         else 0)) * ask_scale) + 700,
+                min_output_tokens=400)
             answer, thought, _ = await _run_step(
                 client, model, fitted, [], "auto", min(out_tokens, 700), emit,
                 stream_content=False, temperature=temperature, no_thinking=True,

@@ -98,7 +98,9 @@ _DIGEST_ASSISTANT_CHARS = 200
 DIGEST_MAX_CHARS = 4800
 
 _SENTENCE = re.compile(r"(?<=[.!?])\s+")
-_MARKUP = re.compile(r"[*_`#>|]+|^\s*[-•]\s+", re.M)
+# Emphasis and code marks, and line-leading bullets, headings and quotes. Never
+# `_`, `#` or `|` inside a word: "blue_fox#42" is a fact to keep verbatim.
+_MARKUP = re.compile(r"\*\*|`+|^\s*(?:[-•*+>]|#{1,6})\s+", re.M)
 _SALIENT = re.compile(r"\d|(?<=[a-z,;:] )[A-Z][a-z]")
 
 
@@ -217,26 +219,27 @@ def build_messages(sid: str, max_tokens: int | None = None) -> list[dict]:
     if summary:
         budget -= estimate_tokens(summary)
 
-    # Walk newest -> oldest, keeping turns while they and the digest of
-    # everything older still fit. A turn that does not fit is condensed, and so
-    # is everything older than it (a gap in the middle would misorder the chat).
+    # Keep the longest run of newest turns that fits alongside the digest of
+    # everything older (a gap in the middle would misorder the chat); the
+    # newest turn is always kept. With no older turns there is no digest, so a
+    # chat that fits is sent exactly as before.
     window_lines = [digest_line(t["role"], t["content"]) for t in window]
-    kept: list[dict] = []
-    spent = 0
-    rest = len(window)
-    for turn in reversed(window):
-        msg = _render(turn)
-        cost = estimate_tokens(msg["content"])
-        older = lines + [line for line in window_lines[:rest - 1] if line]
-        digest_cost = estimate_tokens(digest_content(cap_digest(older))) if older else 0
-        if kept and spent + cost + digest_cost > budget:
+    costs = [estimate_tokens(_render(t)["content"]) for t in window]
+
+    def digest_cost(older: list[str]) -> int:
+        return estimate_tokens(digest_content(older)) if older else 0
+
+    split = len(window) - 1 if window else 0
+    for k in range(len(window)):
+        older = cap_digest(lines + [line for line in window_lines[:k] if line])
+        if sum(costs[k:]) + digest_cost(older) <= budget:
+            split = k
             break
-        spent += cost
-        kept.append(msg)
-        rest -= 1
-    kept.reverse()
-    lines += [line for line in window_lines[:rest] if line]
-    lines = cap_digest(lines)
+    kept = [_render(t) for t in window[split:]]
+    lines = cap_digest(lines + [line for line in window_lines[:split] if line])
+    # Past the newest turn alone, the digest gives way to the budget.
+    while lines and sum(costs[split:]) + digest_cost(lines) > budget:
+        lines = lines[1:]
 
     messages: list[dict] = []
     if summary:

@@ -213,3 +213,30 @@ def test_an_ask_turn_recalls_twenty_exchanges_back_before_and_after_a_tool(synth
         estimate = loop._est_tokens(request["tools"]) + prompt_tokens(request["messages"])
         assert estimate <= mo.ASK_PROMPT_BUDGET + mo.ASK_HISTORY_RESERVE + 200
     assert any(m.get("role") == "tool" for m in client.requests[1]["messages"])
+
+
+def test_a_chat_that_just_fits_is_not_condensed(chat):
+    store, sid = chat
+    for i in range(6):
+        store.add_turn(sid, "user" if i % 2 == 0 else "assistant", "x" * 76 + f" {i}")
+    total = tokens(context.build_messages(sid, max_tokens=100_000))
+    for slack in (0, 5, 20, 40):
+        messages = context.build_messages(sid, max_tokens=total + slack)
+        assert len(messages) == 6 and not any(context.is_digest(m) for m in messages)
+    # One token short: the oldest turn condenses, and the result still fits.
+    squeezed = context.build_messages(sid, max_tokens=total - 1)
+    assert context.is_digest(squeezed[0]) and tokens(squeezed) <= total - 1
+
+
+def test_the_digest_gives_way_when_only_the_newest_turn_fits(chat):
+    store, sid = chat
+    session.plant(store, sid)
+    newest = context.estimate_tokens(session.EXCHANGES[-1][1])
+    messages = context.build_messages(sid, max_tokens=newest + 60)
+    assert messages[-1]["content"] == session.EXCHANGES[-1][1]
+    assert tokens(messages) <= newest + 60
+
+
+def test_digest_keeps_identifiers_intact():
+    line = context.digest_line("user", "## wifi is blue_fox#42, mail jane_doe@x.com, a|b `code`")
+    assert line == "- User: wifi is blue_fox#42, mail jane_doe@x.com, a|b code"
