@@ -295,3 +295,20 @@ def test_a_style_set_in_chat_still_offers_getting_to_know_you(isolated_profile):
     assert P.status(P.load())["offer"] is True
     P.update({"about": "Nursing student"})
     assert P.status(P.load())["offer"] is False
+
+
+@pytest.mark.parametrize("text", [
+    "Be direct with Sam from now on", "Always be short with telemarketers",
+    "Make the meeting shorter from now on", "Going forward, keep standups brief",
+    "From now on, keep the notes short", "Always give detailed explanations of the math"])
+def test_a_style_for_someone_or_something_else_is_not_saved(text):
+    assert A.standing_style(text) == {}
+
+
+@pytest.mark.parametrize("text,patch", [
+    ("Always respond briefly", {"detail": "short"}),
+    ("From now on, answers should be short", {"detail": "short"}),
+    ("from now on make it shorter", {"detail": "short"}),
+    ("be direct with me from now on", {"tone": "direct"})])
+def test_more_ways_to_ask_for_a_standing_style(text, patch):
+    assert A.standing_style(text) == patch

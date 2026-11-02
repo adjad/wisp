@@ -134,3 +134,27 @@ def test_casual_questions_stay_knowledge_questions():
 
 def test_day_plan_hint_yields_to_the_users_own_length_or_format():
     assert "unless the user asked for another length or format" in mo.ASK_DAY_PLAN_HINT
+
+
+# Second audit of the narrowed guard (7734fb72): lookups the old "question +
+# my X" catch-all held, now held by a lookup lead with "my <thing>" behind it.
+@pytest.mark.parametrize("prompt", [
+    "Did my landlord write back?", "What did my boss say in the last email?", "How does my Thursday look?",
+    "Do I have any voicemails?", "Am I booked for lunch on Wednesday?", "Do I owe my roommate for groceries?",
+    "What did I say to Maya yesterday?", "What did Mom say?", "What time do I pick up the kids?",
+    "What day is my interview?", "How much is my electric bill?", "What am I doing tonight?",
+    "What's left on my list?", "Who is my dentist?", "How old is my dog?"])
+def test_lookup_leads_with_my_thing_stay_personal(prompt):
+    assert mo.asks_personal_data(prompt)
+
+
+@pytest.mark.parametrize("prompt", [
+    "What is my purpose?", "how much water should my dog drink", "who is the best guitarist ever",
+    "what did the romans eat", "how old is the universe", "what's my best option for dinner?",
+    "where should i take my mom for her birthday", "what do you think of my idea to learn rust"])
+def test_opinion_with_my_thing_is_not_personal(prompt):
+    assert not mo.asks_personal_data(prompt)
+
+
+def test_a_two_line_promise_to_check_is_a_stall():
+    assert mo.stall_reply("Hang on.\nChecking now.")

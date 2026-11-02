@@ -87,6 +87,8 @@ _DETAIL = {
         r"\b(?:keep|make|give|be|get|reply|respond|answer|stay|go)\b[^.!?]{0,30}?"
         r"\b(?:short|shorter|brief|briefer|concise|succinct|terse)\b",
         rf"\b(?:short|shorter|briefer|brief|concise|more concise|succinct) {_ANSWER_NOUN}\b",
+        rf"\b(?:reply|respond|answer|talk|write)\s+(?:more\s+)?(?:briefly|concisely|succinctly)\b",
+        rf"\b{_ANSWER_NOUN} (?:should|must|need to|have to) be (?:short|shorter|brief|concise)\b",
         # "keep it to one sentence" limits the answers; a bare "in one sentence"
         # belongs to one question ("tell me about X in one sentence"), so only
         # a clause that IS the limit counts ("in future, one or two sentences").
@@ -173,7 +175,9 @@ _NOT_FOR_WISP = re.compile(
     r"|\babout\b|\bregarding\b"
     r"|\ba (?:detailed|thorough|short|brief|long|full|quick|concise) "
     r"(?:answer|reply|response|explanation|summary)\b"
-    r"|\b(?:answer|explanation|summary|overview) (?:on|of)\b")
+    r"|\b(?:answers?|explanations?|summar(?:y|ies)|overviews?) (?:on|of)\b"
+    # someone named: "be direct with Sam", "always be short with telemarketers"
+    r"|\b(?:with|toward|towards) (?!me\b|us\b|you\b|no\b|less\b|fewer\b|more\b|lists?\b|bullets?\b|bullet\b|numbered\b|plain\b|prose\b|paragraphs?\b|short\b|shorter\b|brief\b|just\b|one\b|two\b|a\b|an\b|the\b|some\b|emojis?\b)\w+")
 # Words that lead into the instruction itself.
 _LEAD_FILLER = re.compile(
     r"^(?:please|kindly|hey|hi|ok|okay|so|also|and|then|just|thanks|thank you|well|now|oh|right|alright)\b")
@@ -184,7 +188,9 @@ _IMPERATIVE = re.compile(
 # Wisp named as the one addressed, or its answers named as the thing to change.
 _TARGETS_WISP = re.compile(
     r"\byou\b|\byou(?:'re|'ll|'ve|'d)\b|\byour (?:own )?(?:answers?|repl(?:y|ies)|responses?|messages?|"
-    r"explanations?|summar(?:y|ies)|voice|tone)\b|\b(?:with|to|for) me\b")
+    r"explanations?|summar(?:y|ies)|voice|tone)\b|\b(?:with|to|for) me\b"
+    # "answers should be short": the answers themselves as the subject
+    r"|^(?:the |all )?(?:answers?|repl(?:y|ies)|responses?)\b")
 # "I want more detail" / "I'd like shorter replies": a wish about the answers,
 # unlike "I want to be more direct" (about the person).
 _WISH = re.compile(r"\bi(?:'d| would)? (?:really |just )?(?:want|like|need|prefer)\b(?! to\b)")
@@ -215,6 +221,14 @@ def _only_style(core: str) -> bool:
     return not rest.strip()
 
 
+# What "keep" / "make" may act on: the answers themselves. "Make the meeting
+# shorter" and "keep standups brief" are about something else.
+_KEEP_OBJECT = re.compile(
+    r"^(?:keep|make|cut)\s+(?!(?:it|them|things|everything|stuff|answers?|repl(?:y|ies)|responses?|"
+    r"explanations?|your|my answers|the answers|it all|short|shorter|brief|briefer|concise|"
+    r"succinct|detailed|longer|thorough|things)\b)\w+")
+
+
 def _addresses_wisp(clause: str) -> bool:
     """`clause` is normalised. True only when it is an instruction to Wisp
     about its own answers: an imperative with no other subject, or an explicit
@@ -224,6 +238,8 @@ def _addresses_wisp(clause: str) -> bool:
     if _NOT_FOR_WISP.search(clause):
         return False
     core = _core(clause)
+    if _KEEP_OBJECT.match(core):
+        return False
     return bool(_IMPERATIVE.match(core) or _TARGETS_WISP.search(core)
                 or _WISH.search(core) or _only_style(core))
 

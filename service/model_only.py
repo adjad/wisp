@@ -187,7 +187,8 @@ _STALL_FILLER = re.compile(
     r"\b(?:give me (?:just )?(?:a|one) (?:moment|sec(?:ond)?|minute)|(?:one|just a) moment(?!\s+(?:in|of|when|that)\b)|"
     r"hang (?:on(?!\s+to\b)|tight)|bear with me|stand by(?=\s*(?:[.!,;]|$)))", re.I)
 _STALL_FILLER_MAX = 160
-_STALL_ACK = re.compile(r"^\s*(?:sure|okay|ok|of course|absolutely|got it|alright|yes|yep)\s*[.,!]*\s*$", re.I)
+_STALL_ACK = re.compile(r"^\s*(?:sure|okay|ok|of course|absolutely|got it|alright|yes|yep|on it|"
+                        r"(?:checking|looking|searching)(?: (?:now|on that|into it|that))?)\s*[.,!]*\s*$", re.I)
 
 
 # Gemma's tool-call markup written as plain text: what it does on a turn that
@@ -796,7 +797,7 @@ _PERSONAL = re.compile(
     r"|\bhave\s+i\s+(?:got|paid|replied|responded|sent|booked|missed)\b"
     r"|\b(?:anyone|anybody|someone)\s+(?:text|email|message|call|write)\w*\s+me\b"
     r"|\b(?:any|new|unread)\s+(?:texts?|emails?|messages?|mail)\b"
-    r"|\bwhat(?:['’]s| is| are)?\s+(?:on\s+)?my\b(?!\s+(?:best|thoughts?|options?|chances?|odds)\b)"
+    r"|\bwhat(?:['’]s| is| are)?\s+(?:on\s+)?my\b(?!\s+(?:best|thoughts?|options?|chances?|odds|purpose|meaning|problem)\b)"
     # "did mom text me?" — but not "my dad said cracking knuckles causes arthritis".
     r"|\b(?:mom|dad|mother|father)\s+(?:text|send|sent|email|call|messag)"
     r"|\b(?:reply|replied|respond|responded|text|texted|email|emailed|message|messaged|call|called|"
@@ -881,8 +882,29 @@ _PERSONAL_LOOKUPS = re.compile(
     r"|\b(?:has|did|have)\s+(?!you\b|i\b|we\b|it\b)\w+\s+(?:replied|reply|responded|respond|texted|text|emailed|email|"
     r"called|call|messaged|message|written|write|gotten\s+back|got\s+back|answered|confirmed)\b"
     r"|\bany\s+(?:word|news|updates?|replies|messages?|texts?|e-?mails?|mail)\s+from\b"
-    r"|\b(?:anything|is\s+there\s+anything)\s+(?:new\s+)?from\s+(?:my\s+)?\w+\b(?!\s+(?:the|a|an|that)\b)",
+    r"|\b(?:anything|is\s+there\s+anything)\s+(?:new\s+)?from\s+(?:my\s+)?\w+\b(?!\s+(?:the|a|an|that)\b)"
+    # "what did Mom say?", "what did I say to Maya yesterday?", "did my landlord write back?"
+    r"|\bwhat\s+did\s+(?!you\b)\w+\s+(?:say|send|write|tell)\b"
+    r"|\bdo\s+i\s+owe\s+(?:my\s+)?\w+\s+(?:for|money|anything|back)\b|\bam\s+i\s+booked\b"
+    r"|\bhow(?:['’]s|\s+is|\s+does)\s+my\s+\w+\s+look(?:ing)?\b"
+    r"|\b(?:did|has|have)\s+(?:my\s+)?(?!you\b|i\b|we\b|it\b)\w+\s+(?:write|written|wrote|get|gotten|got)\s+back\b"
+    rf"|\bwhat\s+am\s+i\s+(?:doing|up\s+to)\s+(?:\w+\s+){{0,2}}?{_DATE_ANCHOR}\b"
+    r"|\bwhat\s+time\s+do\s+i\s+(?:need\s+to\s+|have\s+to\s+)?\w+"
+    r"|\bdo\s+i\s+have\s+any\s+(?:new\s+|unread\s+|missed\s+)?(?:voicemails?|missed\s+calls?|calls?|invites?|"
+    r"packages?|deliveries|bills?|payments?|replies)\b",
     re.I)
+# A lookup lead with "my <thing>" close behind: "Who is my dentist?", "How old
+# is my dog?", "What day is my interview?", "How much is my electric bill?". The
+# catch-all main had ("any question with my X") also took "my phone keeps dying,
+# any tips?"; this one needs the lead and leaves opinion and advice alone ("what's
+# the best way to prepare for my exam", "how much water should my dog drink").
+_MY_LOOKUP = re.compile(
+    r"^\s*(?:so\s+|and\s+|hey\s+|ok\s+)?(?:what|when|where|which|who|whose|how\s+(?:much|many|old|long|far|big|heavy)"
+    r"|did|has|have)\b[^?.!]{0,40}?\bmy\s+[a-z]", re.I)
+_MY_LOOKUP_OPINION = re.compile(
+    r"\b(?:best|better|worst|good|great|nice|ideal|favou?rite|should|would|could|ought|recommend\w*|suggest\w*|"
+    r"tips?|ideas?|advice|way\s+to|ways\s+to|worth|purpose|meaning|point\s+of|why|wrong\s+with|"
+    r"opinion|think|thoughts?|feel|chances?|odds|options?|gift|present)\b", re.I)
 # "Is it going to rain during my coffee with Alex tomorrow?": a question that
 # puts one of the user's plans on a day. "my" alone is not enough ("my phone
 # keeps dying fast, any tips?"), and neither is a plan-less advice lead ("what
@@ -913,6 +935,7 @@ def asks_personal_data(prompt: str) -> bool:
     if _CHAT_TAIL.search(text) and not re.search(_DATE_ANCHOR, text, re.I):
         return False
     return bool(_PERSONAL.search(text) or _PERSONAL_LOOKUPS.search(text)
+                or (_MY_LOOKUP.match(text) and not _MY_LOOKUP_OPINION.search(text))
                 or (_QUESTION.search(text) and not _ADVICE_LEAD.match(text) and _PLAN_ON_A_DAY.search(text)))
 
 
