@@ -10,9 +10,12 @@
 #   10.x       (B200 sm_100, B300 sm_103)       -> cu130 wheels, which carry sm_103 kernels; they need driver >= 580.
 #                                                  A driver below 580 falls back to cu128 (sm_100 only: a B300 may
 #                                                  refuse to run it) and then to the nightly cu130 index.
-#   AMD        (MI355X gfx950, 288 GB/GPU)      -> ROCm wheels (arch from rocminfo): AMD's gfx950 index (torch 2.11.0
-#                                                  +rocm7.13.0, preview; only on gfx950), then PyTorch's rocm7.2 index,
-#                                                  then its nightly rocm7.2. torchvision comes from the same index.
+#   AMD        (MI355X gfx950, 288 GB/GPU)      -> ROCm wheels (arch from rocminfo): PyTorch's rocm7.2 index first
+#                                                  (torch 2.14.1+rocm7.2 measured good on gfx950), then its nightly,
+#                                                  then AMD's gfx950 preview index (torch 2.11.0+rocm7.13.0) LAST: on the
+#                                                  2026-11-02 MI355X run that build gave use_cache-dependent bf16 losses
+#                                                  on a Gemma 4 row with every attention path, eager included (fp32 and
+#                                                  the PyTorch build agreed). torchvision comes from the same index.
 #                                                  bitsandbytes is skipped (only --qlora needs it). Known gfx950 bug:
 #                                                  AOTriton SDPA gives wrong results for big head dims with scale=1.0
 #                                                  (ROCm/aotriton#246; Gemma 4 full-attention layers are 512 wide), so
@@ -518,14 +521,13 @@ CANDIDATES=()     # "index|extra uv flags|spec|torchvision spec"
 if [ -n "${TORCH_INDEX:-}" ]; then
   CANDIDATES=("${TORCH_INDEX}||${TORCH_SPEC:-torch>=2.7}|${TORCHVISION_SPEC:-torchvision}")
 elif [ "$GPU_VENDOR" = amd ]; then
-  # ROCm. AMD's own index carries the gfx950 (MI355X) preview build; its dependencies (numpy, sympy, ...) come from PyPI,
-  # and the exact +rocm pins only exist on AMD's index, so best-match across both is safe for torch itself.
+  # ROCm. PyTorch's own rocm7.2 build first: AMD's gfx950 preview build (2.11.0+rocm7.13.0) passed the kernel and SDPA
+  # probes but gave use_cache-dependent bf16 losses on a Gemma 4 row with every attention path (fp32 and this build agreed),
+  # so it is the last resort. Its dependencies come from PyPI; the exact +rocm pins only exist on AMD's index.
+  CANDIDATES+=("$WHL/rocm7.2||torch>=2.11|torchvision" "$WHL/nightly/rocm7.2|--prerelease=allow|torch|torchvision")
   if [ "$GPU_ARCH" = gfx950 ]; then
     CANDIDATES+=("$AMD_GFX950_IDX|--extra-index-url https://pypi.org/simple --index-strategy unsafe-best-match|torch==2.11.0+rocm7.13.0|torchvision==0.26.0+rocm7.13.0")
-  else
-    echo "NOTE: AMD arch '${GPU_ARCH:-unknown}' is not gfx950: skipping AMD's gfx950 preview index"
   fi
-  CANDIDATES+=("$WHL/rocm7.2||torch>=2.11|torchvision" "$WHL/nightly/rocm7.2|--prerelease=allow|torch|torchvision")
 elif [ "$CC_MAJOR" -ge 10 ] 2>/dev/null; then
   # Blackwell. sm_100 (B200) is in the cu128 wheels; sm_103 (B300, compute_cap 10.3) arrives with CUDA 12.9/13.0 wheels.
   echo "NOTE: Blackwell GPU ($GPU_CC): needs a torch build with sm_${GPU_CC/./} kernels; trying cu130 first"
