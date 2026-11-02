@@ -188,7 +188,18 @@ async def _status() -> dict[str, Any]:
         # Only about the other engine while Wisp runs on its own; null when unknown.
         "external_engine_loaded": external.loaded if bundled and external_running else None,
         "external_engine_model_bytes": external.model_bytes if bundled and external.loaded else None,
+        # The Ask model's audio/vision encoders on Wisp's own engine (loaded on
+        # demand); null on the user's oMLX, an older engine, or no answer.
+        "encoders": await _encoders() if bundled and running else None,
     }
+
+
+async def _encoders() -> dict[str, Any] | None:
+    from service import encoders
+    try:
+        return await encoders.status()
+    except Exception:  # noqa: BLE001 — display only
+        return None
 
 
 @router.get("")

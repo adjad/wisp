@@ -920,6 +920,13 @@ _TRIAGE_CATEGORIES = {"email_triage"}
 # create_tool actually writes and registers the result.
 _ALWAYS_CONFIRM_TOOL_AUTHORING = {"tool_authoring"}
 
+# Tools from an installed skill or a configured MCP server: what they do is
+# decided by text Wisp cannot inspect (OPAQUE_ACTION_CATEGORIES), so neither
+# full access nor a standing grant covers them, on either route. An MCP tool
+# the user listed in its server's `trusted_read_only` is category mcp_read and
+# is not covered here (service/mcp).
+_ALWAYS_CONFIRM_EXTENSION = {"mcp_action", "skill_tool"}
+
 
 # EVERY category that must be confirmed on every call. One definition, read by
 # both decide() (a standing grant cannot lift these) and grants (an allow rule
@@ -930,7 +937,40 @@ _ALWAYS_CONFIRM_TOOL_AUTHORING = {"tool_authoring"}
 # smaller set. A new tool in any of these categories is covered automatically.
 ALWAYS_CONFIRM_CATEGORIES = frozenset(
     _ALWAYS_CONFIRM | _ALWAYS_CONFIRM_OUTBOUND | _ALWAYS_CONFIRM_CALENDAR
-    | _ALWAYS_CONFIRM_TOOL_AUTHORING)
+    | _ALWAYS_CONFIRM_TOOL_AUTHORING | _ALWAYS_CONFIRM_EXTENSION)
+
+# toggle_setting calls that switch something OFF the user may be relying on:
+# the network, wireless devices, a protection or an accessibility aid. Confirmed
+# in every mode, and a standing grant cannot lift them (grants.is_grantable).
+# Keyed on the call, not the category: turning the same setting ON stays on the
+# ordinary system_write rules.
+#
+# WHY THIS EXISTS (2026-11-01 toolbench gate). Under Full access the model read
+# an ambiguous "turn everything off" as toggle_setting(wifi, on=false) and ran
+# it with no card. Wi-Fi off can drop the very connection the user is talking
+# to Wisp over (the iPhone app, a remote session); Bluetooth off can take the
+# keyboard and mouse with it. Fails closed: any setting not listed as harmless
+# to switch off, and any `on` that is not exactly true, asks.
+_TOGGLE_OFF_CUTS = {"wifi": "Wi-Fi", "bluetooth": "Bluetooth", "firewall": "the firewall",
+                    "airdrop": "AirDrop", "voiceover": "VoiceOver"}
+# Switching these off only changes the look, or brings back notifications and
+# full performance: nothing is disconnected or left unprotected.
+_TOGGLE_OFF_HARMLESS = frozenset({"dark_mode", "auto_appearance", "low_power_mode",
+                                  "do_not_disturb"})
+
+
+def toggle_off_hit(tool: str | None, args: dict | None) -> str | None:
+    """What this toggle_setting call would cut off (for the card), or None."""
+    if tool != "toggle_setting" or not isinstance(args, dict):
+        return None
+    if args.get("on") is True:
+        return None
+    from service.tools.system_extras import setting_key
+    key = setting_key(str(args.get("setting", "")))
+    if key in _TOGGLE_OFF_HARMLESS:
+        return None
+    return _TOGGLE_OFF_CUTS.get(key, f"the {key or 'unnamed'} setting")
+
 
 # Tools confirmed on every call, in every mode, whatever their category says.
 # run_applescript is category "shell", but its text drives other apps: one line
@@ -1275,9 +1315,40 @@ def review_scope():
         _REVIEW.reset(token)
 
 
+# A picture turn (service/vision.py, "pictures that lead to actions"): the turn
+# carries a reading of an image, and text in an image can be planted by anyone.
+# Like a review run, only a local read runs without asking; everything else
+# (a write, a send, a web lookup, a skill or MCP action) asks, even under full
+# access or a standing grant, and its card offers no "Always allow"
+# (agent/approver.py). Set for the /agent request's own task only.
+_PICTURE: ContextVar[bool] = ContextVar("wisp_policy_picture_turn", default=False)
+# Local reads whose result stays on this Mac. web_read and mcp_read are left out:
+# a lookup can carry what the picture said to someone else.
+_PICTURE_UNCONFIRMED_CATEGORIES = {"compute", "wisp_admin"}
+_PICTURE_CONFIRMED_READS = {"mcp_read", "web_read"}
+PICTURE_TURN_REASON = ("this request includes a picture, and text in a picture is not your "
+                       "instruction, so anything Wisp would change, send or look up online "
+                       "is confirmed, even with full access")
+
+
+def picture_turn() -> bool:
+    return _PICTURE.get()
+
+
+def mark_picture_turn() -> None:
+    """Mark the CURRENT task's context as a picture turn. /agent calls it inside
+    the request's own runner task, so it ends with that request."""
+    _PICTURE.set(True)
+
+
+def _picture_unconfirmed(category: str) -> bool:
+    return ((str(category).endswith("_read") and category not in _PICTURE_CONFIRMED_READS)
+            or category in _PICTURE_UNCONFIRMED_CATEGORIES)
+
+
 def decide(category: str, args: dict, tool: str | None = None) -> Decision:
     """Return the policy decision for a tool action (see _decide). In a review
-    run, only reads run without asking."""
+    run, only reads run without asking; in a picture turn, only local reads."""
     if category == "shell" and len(shell_text(args)) > SHELL_TEXT_LIMIT:
         return _too_long_for_card(args)
     decision = _decide(category, args, tool)
@@ -1287,6 +1358,10 @@ def decide(category: str, args: dict, tool: str | None = None) -> Decision:
             and not ((str(category).endswith("_read") and category not in _REVIEW_UNTRUSTED_READS)
                      or category in _REVIEW_ALLOWED_CATEGORIES)):
         return Decision(Tier.CONFIRM, f"review run: Wisp would ask before {tool or category}")
+    if _PICTURE.get() and decision.tier is Tier.ALLOW and not _picture_unconfirmed(category):
+        if category == "shell" and len(shell_text(args)) > CARD_TEXT_LIMIT:
+            return _too_long_for_card(args)
+        return Decision(Tier.CONFIRM, PICTURE_TURN_REASON)
     return decision
 
 
@@ -1492,6 +1567,10 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
                 else app_open_hit(args) if tool == "open_app" else None)
     secret = (credential_path_hit(args, tool, mutating=category != "fs_read")
               if category in ("fs_read", "fs_write", "fs_delete") else None)
+    # A Mac setting switched off that cuts the network, a device or a
+    # protection (_TOGGLE_OFF_CUTS). A grant on "wifi" was given for a call the
+    # user saw, not for every future Wi-Fi off.
+    cut_off = toggle_off_hit(tool, args)
 
     # A standing grant the user gave for this exact tool (and scope). Checked
     # after the floor and before the mode logic, so it can answer a repeat of a
@@ -1505,7 +1584,8 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
             return Decision(Tier.DENY, f"you blocked {tool} for this target")
         if (verdict == "allow" and category not in ALWAYS_CONFIRM_CATEGORIES
                 and tool not in ALWAYS_CONFIRM_TOOLS and not destructive
-                and not outbound and not secret and grants.is_grantable(tool, args)):
+                and not outbound and not secret and not cut_off
+                and grants.is_grantable(tool, args)):
             return Decision(Tier.ALLOW, f"you allowed {tool} for this target")
 
     # Irreversible and unbounded: always show the exact command, in every access
@@ -1547,6 +1627,12 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
             return Decision(Tier.DENY, "view-only mode: keys and saved sign-ins are off limits")
         return Decision(Tier.CONFIRM, f"{secret} holds keys or saved sign-ins — always confirmed")
 
+    if cut_off:
+        if read_only():
+            return Decision(Tier.DENY, "view-only mode: system changes are disabled")
+        return Decision(Tier.CONFIRM, f"turns {cut_off} off, which can disconnect this Mac or "
+                        "its devices — confirmed even with full access")
+
     # Outbound messages sent as the user, to other people. Irreversible and
     # visible outside this machine, so they ask every single time — full_access
     # speeds up operating YOUR machine, it shouldn't silently authorize speaking
@@ -1583,14 +1669,21 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
                         "installs a new tool that can run on this machine going "
                         "forward — review the code shown above before approving")
 
-    # An MCP action asks even under full access unless its name plainly only
-    # reads (mcp_effect_word). A grant above can still answer it.
-    if category == "mcp_action" and (word := mcp_effect_word(tool)):
+    # Skill and MCP actions ask in every mode, and a grant above cannot answer
+    # them (_ALWAYS_CONFIRM_EXTENSION). mcp_effect_word only words the card.
+    if category == "mcp_action":
         if read_only():
             return Decision(Tier.DENY, "view-only mode: MCP actions are disabled")
-        reason = (f"an MCP tool that can {word}" if " " in word
+        word = mcp_effect_word(tool)
+        reason = ("an MCP tool Wisp cannot see inside" if word is None
+                  else f"an MCP tool that can {word}" if " " in word
                   else f"an MCP tool that can {word} things outside Wisp")
         return Decision(Tier.CONFIRM, reason + " — confirmed even with full access")
+    if category == "skill_tool":
+        if read_only():
+            return Decision(Tier.DENY, "view-only mode: skill tools are disabled")
+        return Decision(Tier.CONFIRM, "a tool from an installed skill runs a command Wisp "
+                        "cannot see inside — confirmed even with full access")
 
     if _FULL_ACCESS:
         # Auto-allow everything else; the floor and every confirm above already ran.
@@ -1665,9 +1758,9 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
     # Tools from a configured MCP server (service/mcp). A server the user
     # pointed Wisp at is trusted enough to run, not trusted enough to decide
     # its own permissions — see _category_for for why only a read annotation
-    # can lower the tier, and never the reverse. Outside full access every
-    # mcp_action asks. Under full access only a plain lookup runs without a
-    # card (mcp_effect_word, above).
+    # can lower the tier, and never the reverse. Every mcp_action asks, in
+    # every mode (_ALWAYS_CONFIRM_EXTENSION, above, answers first); only a tool
+    # the user listed as trusted_read_only (mcp_read) runs without a card.
     if category == "mcp_read":
         return Decision(Tier.ALLOW, "read-only MCP tool")
     if category == "mcp_action":
@@ -1677,10 +1770,9 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
 
     # A tool contributed by an installed skill (service/skills/tools.py). It
     # runs a real command, and the skill file itself is just a folder someone
-    # dropped in, so outside full access it asks no matter what the skill
-    # claims about itself (under full access it runs, inside the skill
-    # sandbox). A user who trusts a specific skill tool can grant it standing
-    # approval; the skill can't grant that to itself.
+    # dropped in, so it asks in every mode no matter what the skill claims
+    # about itself (_ALWAYS_CONFIRM_EXTENSION, above, answers first); neither
+    # full access nor a standing grant covers it.
     if category == "skill_tool":
         if ro:
             return Decision(Tier.DENY, "view-only mode: skill tools are disabled")

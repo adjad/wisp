@@ -229,12 +229,16 @@ class RemoveSuggestion(BaseModel):
     evidence_ids: list[Annotated[str, Field(pattern=r"^[a-z_]{1,24}:[0-9a-f]{24}$")]] = Field(min_length=1, max_length=20)
 
 
+RESTORE_LIMIT = 500
+
+
 class RestoreSuggestion(BaseModel):
     model_config = ConfigDict(extra="forbid")
     # Undo of one Remove sends the ids it removed (a grouped block's, together);
-    # "Bring back" sends the plan's removed_suggestions, at most one day's attention.
+    # "Bring back" sends the plan's removed_suggestions: never more than the store
+    # keeps (AssistantStore.REMOVED_SUGGESTIONS_KEPT; a test holds them equal).
     evidence_ids: list[Annotated[str, Field(pattern=r"^[a-z_]{1,24}:[0-9a-f]{24}$")]] = Field(
-        min_length=1, max_length=daily.MAX_ITEMS)
+        min_length=1, max_length=RESTORE_LIMIT)
 
 
 def fail(exc):

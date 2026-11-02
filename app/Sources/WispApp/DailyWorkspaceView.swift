@@ -71,6 +71,9 @@ struct DailyWorkspace: Decodable {
     /// Today's items kept off the plan by Remove (daily_workspace.assess); empty
     /// from an older service. The Day's ⋯ menu offers to bring back exactly these.
     var removed_suggestions: [String] = []
+    /// How many removed blocks those ids are (a grouped review is one); the
+    /// id count from a service that doesn't send it.
+    var removed_suggestion_blocks: Int = 0
 }
 
 extension DailyProposal {
@@ -88,7 +91,8 @@ extension DailyProposal {
 extension DailyWorkspace {
     private enum CodingKeys: String, CodingKey {
         case attention, attention_omitted, source_coverage, behavior_detail, proposed_plan, explanation,
-             mail_overview, texts_overview, mail_summary, needs_you, proactive, removed_suggestions
+             mail_overview, texts_overview, mail_summary, needs_you, proactive, removed_suggestions,
+             removed_suggestion_blocks
     }
 
     /// Only the proposed plan is required (the Day draws from it). Every other
@@ -108,6 +112,8 @@ extension DailyWorkspace {
         needs_you = c.lenient(.needs_you, DailyNeedsYou.self)
         proactive = c.lenient(.proactive, ProactiveState.self)
         removed_suggestions = c.lenient(.removed_suggestions, LossyList<String>.self)?.items ?? []
+        removed_suggestion_blocks = removed_suggestions.isEmpty ? 0
+            : min(removed_suggestions.count, max(1, c.lenient(.removed_suggestion_blocks, Int.self) ?? removed_suggestions.count))
     }
 }
 

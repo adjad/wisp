@@ -19,6 +19,8 @@ client: nothing is sent, run or contacted.
 import pytest
 
 from service.safety import grants, policy
+
+_REAL_CHECK = grants.check   # the full_access fixture stubs it out
 from service.tools.action_tools import confirm_preview
 from tests.test_model_led_integration import (  # noqa: F401  (pytest fixture)
     DISCOVERY_TOOL, Approval, call, run, synthetic)
@@ -624,11 +626,15 @@ def test_every_workspace_write_asks_with_full_access_on(full_access, registered_
 
 
 def test_workspace_reads_with_full_access_on(full_access, registered_mcp):
+    # Every mcp_action asks, even with full access (policy._ALWAYS_CONFIRM_
+    # EXTENSION); only trusted_read_only tools (mcp_read) skip the card. The
+    # read/effect wording on the card still follows mcp_effect_word.
     reads = WORKSPACE_READS + ["get_drive_shareable_link"]
     names = registered_mcp("google_workspace", *reads)
-    asked = sorted(n.removeprefix("mcp_google_workspace_") for n in names
-                   if _tier(n) is policy.Tier.CONFIRM)
-    assert asked == sorted(set(WORKSPACE_READS_THAT_ASK) & set(reads)), asked
+    assert all(_tier(n) is policy.Tier.CONFIRM for n in names)
+    worded_as_effects = sorted(n.removeprefix("mcp_google_workspace_") for n in names
+                               if policy.mcp_effect_word(n) is not None)
+    assert worded_as_effects == sorted(set(WORKSPACE_READS_THAT_ASK) & set(reads)), worded_as_effects
 
 
 RE_REVIEW_WRITES = [
@@ -659,9 +665,10 @@ def test_names_from_the_re_review_ask(server, tool, full_access, registered_mcp)
     ("fs", "read_file"), ("chat", "get_messages"), ("notion", "query_database"),
     ("brave-search", "search"), ("db", "query_database"), ("docs", "list_pages"),
 ])
-def test_common_reads_stay_card_free(server, tool, full_access, registered_mcp):
+def test_common_reads_are_worded_as_reads_but_still_ask(server, tool, full_access, registered_mcp):
     (name,) = registered_mcp(server, tool)
-    assert _tier(name) is policy.Tier.ALLOW, name
+    assert policy.mcp_effect_word(name) is None, name
+    assert _tier(name) is policy.Tier.CONFIRM, name
 
 
 @pytest.mark.parametrize("server,tool", [("shop", "get_order_status"), ("blog", "get_post_by_id")])
@@ -670,6 +677,87 @@ def test_reads_naming_an_effect_word_ask(server, tool, full_access, registered_m
     # ask, so get_post_by_id does too. Over-asking only adds a card.
     (name,) = registered_mcp(server, tool)
     assert _tier(name) is policy.Tier.CONFIRM
+
+
+@pytest.mark.parametrize("check_layer", ["real", "forced_allow"])
+@pytest.mark.parametrize("kind", ["skill", "mcp"])
+def test_a_stored_legacy_grant_does_not_skip_a_skill_or_mcp_card(
+        full_access, registered_mcp, monkeypatch, tmp_path, kind, check_layer):
+    # Auditor note on #433: decide() alone, full access, with an allow grant
+    # stored before skill/MCP actions became never-grantable. "real" runs the
+    # real grants.check over that stored rule; "forced_allow" makes check say
+    # "allow" anyway, so decide()'s own ALWAYS_CONFIRM_CATEGORIES gate is pinned.
+    from service.tools import registry
+    if kind == "mcp":
+        (name,) = registered_mcp("linear", "get_issue")
+        category = "mcp_action"
+    else:
+        name, category = "skill_synthetic_do", "skill_tool"
+        async def run(**args):
+            return "ran"
+        monkeypatch.setitem(registry.REGISTRY, name, registry.Tool(
+            name, "Synthetic skill tool", {"type": "object", "properties": {}}, category, run))
+    monkeypatch.setattr(grants, "GRANTS_PATH", tmp_path / "grants.json")
+    monkeypatch.setattr(grants, "_CACHE", {name: {"allow": [{"scope": ""}], "deny": []}})
+    if check_layer == "real":
+        monkeypatch.setattr(grants, "check", _REAL_CHECK)
+    else:
+        monkeypatch.setattr(grants, "check", lambda *args: "allow")
+    decision = policy.decide(category, {}, tool=name)
+    assert decision.tier is policy.Tier.CONFIRM, decision
+
+
+_CUT_OFF_SETTINGS = ["wifi", "bluetooth", "firewall", "airdrop", "voiceover"]
+_HARMLESS_OFF_SETTINGS = ["dark_mode", "auto_appearance", "low_power_mode", "do_not_disturb"]
+
+
+@pytest.mark.parametrize("check_layer", ["none", "real", "forced_allow"])
+@pytest.mark.parametrize("setting", [*_CUT_OFF_SETTINGS, "Wi-Fi", "bt", "brand_new_radio"])
+def test_switching_off_a_connection_or_device_asks_with_full_access(
+        full_access, monkeypatch, tmp_path, setting, check_layer):
+    # 2026-11-01 toolbench gate: "turn everything off" turned Wi-Fi off under
+    # full access with no card. A stored "always allow" for the setting (scope
+    # "wifi") cannot lift it either; an unknown setting fails closed.
+    from service.tools.system_extras import setting_key
+    monkeypatch.setattr(grants, "GRANTS_PATH", tmp_path / "grants.json")
+    monkeypatch.setattr(grants, "_CACHE", {"toggle_setting": {
+        "allow": [{"scope": setting_key(setting)}], "deny": []}})
+    if check_layer == "real":
+        monkeypatch.setattr(grants, "check", _REAL_CHECK)
+    elif check_layer == "forced_allow":
+        monkeypatch.setattr(grants, "check", lambda *args: "allow")
+    args = {"setting": setting, "on": False}
+    decision = policy.decide("system_write", args, tool="toggle_setting")
+    assert decision.tier is policy.Tier.CONFIRM, decision
+    assert "full access" in decision.reason
+    assert grants.is_grantable("toggle_setting", args) is False
+
+
+@pytest.mark.parametrize("setting", [*_CUT_OFF_SETTINGS, *_HARMLESS_OFF_SETTINGS])
+def test_switching_a_setting_on_stays_card_free_with_full_access(full_access, setting):
+    args = {"setting": setting, "on": True}
+    assert policy.decide("system_write", args, tool="toggle_setting").tier is policy.Tier.ALLOW
+    assert grants.is_grantable("toggle_setting", args) is True
+
+
+@pytest.mark.parametrize("setting", _HARMLESS_OFF_SETTINGS)
+def test_switching_off_a_look_or_quiet_setting_stays_card_free(full_access, setting):
+    # Light mode, notifications back, full performance: nothing disconnected.
+    args = {"setting": setting, "on": False}
+    assert policy.decide("system_write", args, tool="toggle_setting").tier is policy.Tier.ALLOW
+
+
+@pytest.mark.parametrize("on", [None, "false", 0, "true"])
+def test_a_toggle_whose_on_is_not_exactly_true_asks(full_access, on):
+    args = {"setting": "wifi"} if on is None else {"setting": "wifi", "on": on}
+    assert policy.decide("system_write", args, tool="toggle_setting").tier is policy.Tier.CONFIRM
+
+
+def test_switching_wifi_off_in_view_only_is_refused(full_access, monkeypatch):
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    monkeypatch.setattr(policy, "_READ_ONLY", True)
+    decision = policy.decide("system_write", {"setting": "wifi", "on": False}, tool="toggle_setting")
+    assert decision.tier is policy.Tier.DENY
 
 
 def test_an_unregistered_mcp_name_asks(full_access):
@@ -703,7 +791,8 @@ def test_pre_freeze_names_ask(server, tool, full_access, registered_mcp):
                                          ("x", "search_orders"), ("x", "list_ordinals")])
 def test_a_query_with_an_object_still_reads(server, tool, full_access, registered_mcp):
     (name,) = registered_mcp(server, tool)
-    assert _tier(name) is policy.Tier.ALLOW, name
+    assert policy.mcp_effect_word(name) is None, name
+    assert _tier(name) is policy.Tier.CONFIRM, name
 
 
 def test_an_effect_word_past_the_64_character_cut_still_asks(full_access, registered_mcp):

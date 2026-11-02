@@ -413,10 +413,13 @@ func dayChecks(_ check: (Bool, String) -> Void) {
     check(DayTimeline.removedNotice(removeOne) == "Removed “PA 2” from your day", "Undo bar names what Remove took")
     check(DayTimeline.removedNotice(removeGroup) == "Removed 2 emails from your day",
           "Undo bar on a grouped review counts every email it brings back")
-    check(DayTimeline.bringBackLabel([]) == nil, "no Bring back entry when nothing today was removed")
-    check(DayTimeline.bringBackLabel(["email:a"]) == "Bring back today's removed suggestion"
-          && DayTimeline.bringBackLabel(["email:a", "email:b", "reminders:c"]) == "Bring back today's 3 removed suggestions",
-          "Bring back names only today's removals, which is all it restores")
+    check(DayTimeline.bringBackLabel(blocks: 0) == nil, "no Bring back entry when nothing today was removed")
+    check(DayTimeline.bringBackLabel(blocks: 1) == "Bring back today's removed suggestion"
+          && DayTimeline.bringBackLabel(blocks: 3) == "Bring back today's 3 removed suggestions",
+          "Bring back counts today's removed blocks, which is all it restores")
+    check(DayTimeline.undoFailedNotice(stillShowing: true).contains("Try Undo again")
+          && DayTimeline.undoFailedNotice(stillShowing: false).contains("Bring it back"),
+          "a failed Undo of an older Remove doesn't promise its gone Undo bar")
     check(DayTimeline.plannedTitle("Reply to Priya", review: true) == "Review: Reply to Priya"
           && DayTimeline.plannedTitle("PA 2", review: false) == "PA 2", "planned titles")
 

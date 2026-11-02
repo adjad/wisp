@@ -270,8 +270,11 @@ def test_switch_and_secrets() -> None:
               ("FAKE-PRIVATE-KEY", "FAKE-SETTINGS-CONTENTS", "FAKE-OVERLAY-SECRET", str(settings), "api_key")))
         expected = {"mode", "configured_mode", "bundled_available", "unsupported_reason", "running",
                     "omlx_version", "admin_url", "external_omlx_installed", "restart_required", "external_engine_running",
-                    "external_engine_loaded", "external_engine_model_bytes"}
+                    "external_engine_loaded", "external_engine_model_bytes", "encoders"}
         check("response exactly matches frozen fields", set(body(result)) == expected)
+        # Display only: the Ask model's encoder residency, null without a running bundled engine.
+        check("encoders is null or an object", body(result)["encoders"] is None
+              or isinstance(body(result)["encoders"], dict))
     with tempfile.TemporaryDirectory() as t:
         root = Path(t)
         engine = fixture(root)

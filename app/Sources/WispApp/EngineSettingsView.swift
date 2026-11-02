@@ -28,6 +28,7 @@ private struct EngineSettingsResponse {
     let externalEngineRunning: Bool
     let externalEngineLoaded: Bool?
     let externalEngineModelBytes: Int64?
+    let encoders: EncoderResidency?
 
     init?(object: [String: Any]) {
         let requiredKeys: Set<String> = [
@@ -36,7 +37,7 @@ private struct EngineSettingsResponse {
             "restart_required",
         ]
         let allowedKeys = requiredKeys.union(["external_engine_running", "external_engine_loaded",
-                                              "external_engine_model_bytes"])
+                                              "external_engine_model_bytes", "encoders"])
         guard requiredKeys.isSubset(of: Set(object.keys)),
               Set(object.keys).isSubset(of: allowedKeys),
               let modeString = object["mode"] as? String,
@@ -94,6 +95,8 @@ private struct EngineSettingsResponse {
         self.externalEngineRunning = externalEngineRunning
         self.externalEngineLoaded = loaded
         self.externalEngineModelBytes = modelBytes
+        // Display only: an absent or unreadable encoders row just hides its line.
+        self.encoders = EncoderResidency.parse(object["encoders"])
     }
 
     private static func boolean(_ value: Any?) -> Bool? {
@@ -247,6 +250,13 @@ struct EngineSettingsView: View {
                     Label("Restart Wisp to apply", systemImage: "arrow.clockwise")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+
+                if engine.mode == .bundled, let line = QuickSettingsText.encoders(engine.encoders) {
+                    Label(line, systemImage: "waveform.and.magnifyingglass")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
 
                 if engine.mode == .bundled,

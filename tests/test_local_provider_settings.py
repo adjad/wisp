@@ -963,6 +963,15 @@ def test_a_tool_registered_mid_turn_is_never_offered_or_run_on_the_external_app(
 def test_managed_authoring_still_offers_and_runs_the_fresh_tool(monkeypatch, tmp_path) -> None:
     # The same authoring turn on the managed model keeps working: the fresh tool is usable
     # in the same turn. The prompt triggers the ordinary expense skill so the turn is managed.
+    # A skill tool always asks, even with full access (policy._ALWAYS_CONFIRM_EXTENSION),
+    # so the card is answered here and must name the fresh tool.
+    from service.agent import approver as approver_module
+    asked = []
+
+    async def approve(self, action):
+        asked.append(action.get("tool"))
+        return True
+    monkeypatch.setattr(approver_module.InteractiveApprover, "confirm", approve)
     events, routed_event, external, managed = _run_skill_turn(
         monkeypatch, tmp_path, "build me a reusable tool for my expense report called late_skill_tool",
         authoring_stub=True, tools=_AUTHORING_TOOLS,
@@ -972,6 +981,7 @@ def test_managed_authoring_still_offers_and_runs_the_fresh_tool(monkeypatch, tmp
     assert routed_event["model"] == "managed-model" and external.requests == []
     assert "late_skill_tool" in managed.requests[1]["tools"], "managed authoring lost the same-turn tool"
     assert _LATE_TOOL_RESULT in _everything_sent(managed)
+    assert "late_skill_tool" in asked
 
 
 def test_authoring_on_the_external_app_works_for_ordinary_tools_after_the_rebuild(

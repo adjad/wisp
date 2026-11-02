@@ -12,6 +12,8 @@ struct QueuedPrompt: Equatable {
     var imageSource: String? = nil
     /// A document for this prompt (memory only, never persisted).
     var document: QueuedDocument? = nil
+    /// What a screen capture shows ("Safari — Pricing"); nil otherwise.
+    var imageLabel: String? = nil
 }
 
 extension QueuedPrompt {
