@@ -1,0 +1,305 @@
+{
+ "by_target": {
+  "call": 1603,
+  "final": 1754,
+  "load": 31
+ },
+ "code_head": "f70a96c88ecebe57bccae03b03fae315e1204e21",
+ "examples": 3388,
+ "families": {
+  "act_dont_ask": {
+   "call": 37,
+   "examples": 81,
+   "final": 44,
+   "think": 44,
+   "train": 73,
+   "turns": 44,
+   "valid": 8
+  },
+  "act_dont_promise": {
+   "call": 36,
+   "examples": 72,
+   "final": 36,
+   "think": 1,
+   "train": 66,
+   "turns": 36,
+   "valid": 6
+  },
+  "capability_honest": {
+   "call": 38,
+   "examples": 77,
+   "final": 39,
+   "think": 0,
+   "train": 69,
+   "turns": 39,
+   "valid": 8
+  },
+  "chat_voice_r3": {
+   "examples": 337,
+   "final": 337,
+   "think": 0,
+   "train": 303,
+   "turns": 337,
+   "valid": 34
+  },
+  "compose_r3": {
+   "call": 281,
+   "examples": 419,
+   "final": 135,
+   "load": 3,
+   "think": 268,
+   "train": 377,
+   "turns": 150,
+   "valid": 42
+  },
+  "concise_gentle": {
+   "call": 31,
+   "examples": 68,
+   "final": 37,
+   "think": 0,
+   "train": 62,
+   "turns": 37,
+   "valid": 6
+  },
+  "contacts_r3": {
+   "call": 77,
+   "examples": 134,
+   "final": 56,
+   "load": 1,
+   "think": 45,
+   "train": 119,
+   "turns": 56,
+   "valid": 15
+  },
+  "device_r3": {
+   "call": 64,
+   "examples": 125,
+   "final": 58,
+   "load": 3,
+   "think": 5,
+   "train": 113,
+   "turns": 66,
+   "valid": 12
+  },
+  "exact_args": {
+   "call": 45,
+   "examples": 91,
+   "final": 42,
+   "load": 4,
+   "think": 45,
+   "train": 82,
+   "turns": 42,
+   "valid": 9
+  },
+  "finish_the_write": {
+   "call": 83,
+   "examples": 121,
+   "final": 37,
+   "load": 1,
+   "think": 82,
+   "train": 108,
+   "turns": 41,
+   "valid": 13
+  },
+  "followup_r3": {
+   "call": 110,
+   "examples": 232,
+   "final": 120,
+   "load": 2,
+   "think": 46,
+   "train": 207,
+   "turns": 124,
+   "valid": 25
+  },
+  "grounded_only": {
+   "call": 37,
+   "examples": 75,
+   "final": 37,
+   "load": 1,
+   "think": 8,
+   "train": 67,
+   "turns": 37,
+   "valid": 8
+  },
+  "ignore_embedded_instructions": {
+   "call": 39,
+   "examples": 73,
+   "final": 33,
+   "load": 1,
+   "think": 36,
+   "train": 67,
+   "turns": 33,
+   "valid": 6
+  },
+  "knowledge_direct": {
+   "call": 9,
+   "examples": 95,
+   "final": 86,
+   "think": 0,
+   "train": 84,
+   "turns": 86,
+   "valid": 11
+  },
+  "mail_r3": {
+   "call": 85,
+   "examples": 167,
+   "final": 82,
+   "think": 0,
+   "train": 151,
+   "turns": 82,
+   "valid": 16
+  },
+  "multi_source": {
+   "call": 29,
+   "examples": 59,
+   "final": 29,
+   "load": 1,
+   "think": 44,
+   "train": 52,
+   "turns": 29,
+   "valid": 7
+  },
+  "no_write_for_reads": {
+   "call": 27,
+   "examples": 54,
+   "final": 27,
+   "think": 4,
+   "train": 48,
+   "turns": 27,
+   "valid": 6
+  },
+  "recover_from_tool_error": {
+   "call": 37,
+   "examples": 77,
+   "final": 40,
+   "think": 37,
+   "train": 69,
+   "turns": 40,
+   "valid": 8
+  },
+  "relay_receipt": {
+   "call": 35,
+   "examples": 68,
+   "final": 30,
+   "load": 3,
+   "think": 42,
+   "train": 61,
+   "turns": 35,
+   "valid": 7
+  },
+  "reminders_r3": {
+   "call": 60,
+   "examples": 122,
+   "final": 62,
+   "think": 41,
+   "train": 111,
+   "turns": 64,
+   "valid": 11
+  },
+  "right_source": {
+   "call": 44,
+   "examples": 89,
+   "final": 44,
+   "load": 1,
+   "think": 13,
+   "train": 78,
+   "turns": 44,
+   "valid": 11
+  },
+  "right_write_tool": {
+   "call": 41,
+   "examples": 81,
+   "final": 37,
+   "load": 3,
+   "think": 41,
+   "train": 71,
+   "turns": 37,
+   "valid": 10
+  },
+  "safe_effects": {
+   "call": 72,
+   "examples": 129,
+   "final": 57,
+   "think": 77,
+   "train": 116,
+   "turns": 62,
+   "valid": 13
+  },
+  "safe_restraint": {
+   "call": 171,
+   "examples": 323,
+   "final": 145,
+   "load": 7,
+   "think": 123,
+   "train": 289,
+   "turns": 149,
+   "valid": 34
+  },
+  "weather_and_web": {
+   "call": 42,
+   "examples": 76,
+   "final": 34,
+   "think": 0,
+   "train": 69,
+   "turns": 34,
+   "valid": 7
+  },
+  "web_r3": {
+   "call": 73,
+   "examples": 143,
+   "final": 70,
+   "think": 0,
+   "train": 129,
+   "turns": 70,
+   "valid": 14
+  }
+ },
+ "paraphrased_turns": 254,
+ "service_head": "4ed575edd8ce55218b25220425386db74495ba74",
+ "thinking": {
+  "by_step_kind": {
+   "after_error": {
+    "think": 72,
+    "train_think": 63,
+    "valid_think": 9
+   },
+   "after_load": {
+    "no_think": 31,
+    "train_think": 0,
+    "valid_think": 0
+   },
+   "answer_first": {
+    "no_think": 427,
+    "think": 56,
+    "train_think": 53,
+    "valid_think": 3
+   },
+   "narrate": {
+    "no_think": 1155,
+    "think": 90,
+    "train_think": 83,
+    "valid_think": 7
+   },
+   "next_call": {
+    "no_think": 25,
+    "think": 266,
+    "train_think": 240,
+    "valid_think": 26
+   },
+   "select": {
+    "no_think": 748,
+    "think": 518,
+    "train_think": 464,
+    "valid_think": 54
+   }
+  },
+  "no_think": 2386,
+  "think": 1002,
+  "think_share": 0.296,
+  "train_think": 903,
+  "valid_think": 99
+ },
+ "train": 3041,
+ "turns": 1801,
+ "valid": 347
+}

@@ -277,7 +277,7 @@ class Dev:
             return ("No Focus is turned on by hand right now. A scheduled or automatic Focus "
                     "(a set time, an app, Sleep) isn't recorded where Wisp can read it.")
         if sec in ("sound", "volume"):
-            return f"Output volume: {self.volume}%" + (", muted" if self.muted else "") + ". Input (microphone) volume: 72%."
+            return f"Output volume: {self.volume}%" + (", muted" if self.muted else ", not muted") + ". Input (microphone) volume: 72%."
         if sec != "overview":
             return (f"(error: unknown section {sec!r}. Use overview, battery, network, "
                     "bluetooth, focus, or sound.)")
@@ -458,10 +458,10 @@ def _vol_words(i):
 
 
 def _vol_rel(direction, i):
-    ups = ["make it a bit louder", "can you turn my volume up a little", "bump the sound up", "louder please",
-           "i can barely hear anything, turn it up"]
-    downs = ["a bit quieter please", "lower the volume a little", "bring the sound down", "quieter please",
-             "way too loud, turn it down"]
+    ups = ["make it 20 percent louder", "can you turn my volume up by 20", "bump the sound up 20 points", "20 louder please",
+           "i can barely hear anything, turn it up by 20"]
+    downs = ["20 percent quieter please", "lower the volume by 20", "bring the sound down 20 points", "20 quieter please",
+             "way too loud, turn it down by 20"]
 
     def make(rng):
         now, w, dev = dev_world(rng, volume=rng.choice([30, 40, 50, 60, 70]) if direction > 0 else
@@ -470,7 +470,7 @@ def _vol_rel(direction, i):
         prompt = A.style(rng, (ups if direction > 0 else downs)[i % 5])
         return _vend(prompt, now, w,
                      [[Call("system_status", section="sound")], [Call("mac_set_volume", level=new)]],
-                     "relative volume: read the level, then set about 20 away; the write follows the read",
+                     "relative volume: read the level, then set exactly the 20 the user asked for away; the write follows the read",
                      "mac_set_volume")
     return make
 
@@ -510,9 +510,9 @@ def _no_brightness(i):
     def make(rng):
         now, w, dev = dev_world(rng)
         prompt = A.style(rng, prompts[i % len(prompts)])
-        final = pick(rng, ["I can't change the screen brightness. The brightness keys on your keyboard, or Control Center, will do it.",
-                           "Brightness isn't something I can adjust from here. Your keyboard's brightness keys will.",
-                           "I can't reach the display brightness. The brightness keys or Control Center can change it."])
+        final = pick(rng, ["I can't change the screen brightness; I don't have a way to control it.",
+                           "Brightness isn't something I can adjust from here.",
+                           "I can't reach the display brightness, so I haven't changed it."])
         return mk("device_r3", prompt, now, w, [Final(final)],
                   "no brightness tool: say so plainly, no call and no shell guess")
     return make
@@ -921,8 +921,8 @@ def fam_device_r3(rng):
                      "I couldn't turn Do Not Disturb on: macOS only lets me do it through a Shortcut named “Wisp DND On” with a Set Focus action.",
                      "mute my notifications with dnd"),
         _toggle_fail("low_power_mode", True, "(Low Power Mode needs an admin password, so it can't be set from here.)",
-                     "I couldn't turn on Low Power Mode, since it needs an admin password. You can switch it in System Settings under Battery.",
-                     "Low Power Mode stays off: it needs an admin password, so it can't be set from here. System Settings has it under Battery.",
+                     "I couldn't turn on Low Power Mode, since it needs an admin password.",
+                     "Low Power Mode stays off: it needs an admin password, so it can't be set from here.",
                      "put the mac in low power mode")])
     fo([_vague_off(i) for i in range(4)])
     # timers
@@ -1145,7 +1145,7 @@ def _c_bday_none(i):
         install_birthdays(w, table)
         first = who.split()[0]
         prompt = A.style(rng, ["is {n}'s birthday saved anywhere", "what's {n}'s birthday"][i % 2].format(n=first.lower()))
-        final = pick(rng, [f"I don't see a birthday saved for {first} in your contacts.", f"{first} has no birthday on file in Contacts."])
+        final = pick(rng, [f"I don't see a birthday for {first} coming up in the next year.", f"None of {first}'s birthdays shows up in the year the tool covers."])
         return mk("contacts_r3", prompt, now, w, [[Call("contact_dates", days=366)], Final(final)],
                   "birthday not in the list: say it is not saved, no guess")
     return make
@@ -1243,8 +1243,8 @@ def _c_add_known(kind, i):
         old = w.contacts[who][0] if kind == "phone" else w.contacts[who][1]
         final = pick(rng, [f"Added {v} to {who}'s contact.", f"{who} has {v} saved now."])
         if old and kind == "phone":
-            final = pick(rng, [f"Added {v} to {who}'s contact. The old number is still there too.",
-                               f"Saved {v} for {who}; the earlier number stays on the card."])
+            final = pick(rng, [f"Added {v} to {who}'s contact.",
+                               f"Saved {v} for {who}."])
         return mk("contacts_r3", prompt, now, w,
                   [[Call("lookup_contact", name=first)], [Call("manage_contacts", action=action, name=who, value=v)], Final(final)],
                   f"{action} on a known contact; a number is added, the old one stays", must_see=[who])
@@ -1467,7 +1467,7 @@ def _r_pending(i):
         head = f"You have {len(dated) + len(und)} open reminders"
         parts = _bullet_or_prose(head, dated, now) if dated else head + "."
         if und:
-            parts += f" There's also {join([r.title for r in und])}, with no date."
+            parts += f"\n\nThere's also {join([r.title for r in und])}, with no date."
         prompt = A.style(rng, prompts[i % len(prompts)])
         return mk("reminders_r3", prompt, now, w, [[Call("search_reminders", scope="all")], Final(parts)],
                   "pending = search_reminders (never list_scheduled_sends); open ones only, a finished one never named")
@@ -1674,12 +1674,12 @@ def _r_clear(scope, i, deny=False):
                       f"clear_reminders scope {scope}; the card is denied, the turn ends at the call",
                       cards=["clear_reminders"], approve=[False], no_effect=True)
         if scope in ("today", "tomorrow"):
-            final = pick(rng, [f"Cleared {rm} for {scope_word}.", f"Done, {rm} deleted for {scope_word}; the rest are untouched.",
-                               f"I removed {rm} due {scope_word} and left everything else alone."])
+            final = pick(rng, [f"Cleared {rm} for {scope_word}.", f"Done, {rm} deleted for {scope_word}.",
+                               f"I removed {rm} due {scope_word}."])
         elif scope == "upcoming":
-            final = pick(rng, [f"Cleared the {n} upcoming reminders.", f"Done, {rm} ahead of you deleted; overdue ones are still there."])
+            final = pick(rng, [f"Cleared the {n} upcoming reminders.", f"Done, {rm} ahead of you deleted."])
         else:
-            final = pick(rng, [f"Cleared all {n} reminders.", f"Your reminder list is empty, {n} deleted."])
+            final = pick(rng, [f"Cleared all {n} reminders.", f"Cleared {n} reminder(s) for all."])
         return mk("reminders_r3", prompt, now, w, [[Call("clear_reminders", scope=scope)], Final(final)],
                   f"clear only the named scope: clear_reminders scope={scope}, behind a card",
                   cards=["clear_reminders"], approve=[True], must_see=["Cleared"])
@@ -1704,7 +1704,7 @@ def _r_clear_overdue(i):
             effect(w, "clear_past_reminders", query=args.get("query") or None, days=args.get("days"))
             return f"Cleared {len(rows)} past-due item(s)."
         w.overrides["clear_past_reminders"] = handler
-        final = pick(rng, [f"Cleared {n} past-due item{'s' if n != 1 else ''}; everything still ahead is untouched.",
+        final = pick(rng, [f"Cleared {n} past-due item{'s' if n != 1 else ''}.",
                            f"Done, {n} overdue item{'s' if n != 1 else ''} removed."])
         return mk("reminders_r3", A.style(rng, phrases[i % 3]), now, w, [[Call("clear_past_reminders", days=365)], Final(final)],
                   "overdue / old reminders: clear_past_reminders (one call, behind a card), not a loop of cancels",

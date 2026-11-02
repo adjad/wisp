@@ -748,8 +748,18 @@ def _tool_reason(fam: str, name: str, a: dict, seed: str) -> str:
         return pick(seed + "r", ["It's done, not unwanted, so complete it and keep the record.",
                                  "Finished means complete_reminder, not a delete."])
     if name == "clear_reminders":
-        return pick(seed + "r", ["No longer needed, so delete it rather than marking it done.",
-                                 "Unwanted, not finished, so it gets removed."])
+        sc = str(a.get("scope") or "").replace("_", " ")
+        q = a.get("query") or a.get("title")
+        if q:
+            return pick(seed + "r", [f"Only the one matching “{q}” was named, so only that one goes.",
+                                     f"Just “{q}” is being dropped; the other reminders stay."])
+        if sc == "all":
+            return pick(seed + "r", ["The whole list was named, so every reminder goes.",
+                                     "Everything was named, so this clears the full list."])
+        if sc in ("today", "tomorrow", "upcoming"):
+            return pick(seed + "r", [f"Only the {sc} ones were named, so the other reminders stay.",
+                                     f"Scope is {sc} only; nothing outside it is touched."])
+        return "Clearing reminders is a delete, so it only runs for what was named."
     if name == "remember":
         return pick(seed + "r", ["A plain first-person fact, so it's worth saving.",
                                  "Stated plainly about the speaker, so remember it as given."])
@@ -779,11 +789,25 @@ def _write_plan(meta, s, calls, ctx, seed, skip_resolution=False):
     resolution, acts = "", []
     prior = ""
     if s["results"] and s["prev_calls"] and not s["loaded"]:
-        src = source_of(s["prev_calls"][0][0])
-        prior = f"the {src}" if src in ("forecast", "price", "web result", "note", "folder listing") else ""
+        srcs = []
+        for pn, _pa in s["prev_calls"]:
+            if pn in ("lookup_contact", "recall", DISCOVERY):
+                continue
+            sv = source_of(pn)
+            if sv not in srcs:
+                srcs.append(sv)
+        if srcs and all(x in ("forecast", "price", "web result", "note", "folder listing") for x in srcs):
+            prior = "the " + (srcs[0] if len(srcs) == 1 else ", ".join(srcs[:-1]) + " and " + srcs[-1])
     for name, a in calls:
         if a.get("when_iso") and not resolution and not skip_resolution:
             resolution = resolve_when(clock, a["when_iso"], s["prompt"], seed, s["all_results"])
+    if not resolution and not skip_resolution:
+        for name, a in calls:
+            pw = parse_iso(a.get("when_iso")) if name == "update_event" else None
+            if pw and re.search(r"\bnext day\b|\b(?:a|one|1) day (?:later|after|forward|ahead)\b|\bfollowing day\b|\bday after\b",
+                                s["prompt"], re.I):
+                resolution = f"That's a one-day shift, from {_WD[(pw[0] - _dt.timedelta(days=1)).weekday()]} to {fmt_day(pw[0])}."
+                break
     for name, a in calls:
         with_day = (not resolution or len(calls) > 1) and _grounded_day(s, clock, a)
         acts.append(action(name, a, prior, with_day=with_day, terse=terse, seed=seed))
@@ -850,13 +874,19 @@ def thought_select_or_next(meta, s, ctx, seed) -> str:
         if s["results"] and not s["loaded"] and s["prev_calls"]:
             prev = s["prev_calls"][0][0]
             if prev in WRITE_TOOLS:
-                lead = pick(seed + "pl", ["First part's in.", "One down, one to go."])
+                last = str(s["results"][-1]) if s["results"] else ""
+                mc = re.match(r"Created contact (.+?)\.?\s*$", last)
+                mt = re.match(r"Timer '([^']+)'", last)
+                if mc:
+                    lead = f"{mc.group(1)}'s contact now exists."
+                elif prev == "manage_timers" and mt:
+                    lead = f"The timer list shows “{mt.group(1)}”."
+                else:
+                    lead = pick(seed + "pl", ["First part's in.", "One down, one to go."])
             else:
                 lead = slot_lead(meta, s, write_plan, seed)
                 skip_res = bool(lead) and not _day_word(s["prompt"])    # the slot sentence already places it
-                lead = lead or fact_sentence(prev, s["results"][-1]) or \
-                    pick(seed + "pl", [f"The {source_of(prev)} result has what's needed.", f"Got the {source_of(prev)} back.",
-                                       f"The {source_of(prev)} result gives the content."])
+                lead = lead or _read_lead(s, seed)
         resolution, reason, acts = _write_plan(meta, s, write_plan, ctx, seed, skip_res)
         act = " and ".join(acts)
         verb = (pick(seed + "v", ["I'll", "Next I'll", "So I'll", "Then"]) if lead else
@@ -877,6 +907,8 @@ def thought_select_or_next(meta, s, ctx, seed) -> str:
                "add_reminder": "The reminder's time and title depend on what it shows.",
                "complete_reminder": "Need the exact reminder first.",
                }.get(later_write[0], "")
+        if later_write[0] == "manage_contacts" and re.search(r"\(?\d{3}\)?[ -]\d{3}-\d{4}|\S@\w", s["prompt"]):
+            why = ""
         return compose([(4, _sentence(pick(seed + "rb", [f"First {read}, then {wg}",
                                                         f"I'll {read} first; after that, {wg}",
                                                         f"Read before writing: {read}, then {wg}"]))),
@@ -909,6 +941,40 @@ def thought_select_or_next(meta, s, ctx, seed) -> str:
     return _sentence(f"{verb} {read}")
 
 
+_PLAIN_SOURCE = {"get_weather": "forecast", "get_upcoming": "calendar", "daily_brief": "daily brief",
+                 "get_my_day_plan": "day plan", "search_reminders": "reminders", "get_stock_price": "price",
+                 "view_emails": "email", "view_messages": "texts"}
+
+
+def _read_lead(s, seed) -> str:
+    """The sentence naming what the earlier reads of this turn supplied for the write. Each read is paired
+    with its own result, so the source label and any count come from the tool that produced them."""
+    pairs = list(zip(s["prev_calls"], s["results"]))
+    body = [(n, r) for (n, _a), r in pairs if n not in ("lookup_contact", "recall", DISCOVERY)]
+    if not body:
+        return pick(seed + "pl", ["Got the contact back.", "The contact is found; the message comes from the request."])
+    if len(body) == 1:
+        n, r = body[0]
+        if n != "daily_brief":
+            f = fact_sentence(n, r)
+            if f:
+                return f
+        label = _PLAIN_SOURCE.get(n, source_of(n))
+        if label.endswith(" result"):
+            return pick(seed + "pl", [f"The {label} has what's needed.", f"Got the {label} back.",
+                                      f"The {label} gives the content."])
+        return pick(seed + "pl", [f"The {label} result has what's needed.", f"Got the {label} back.",
+                                  f"The {label} result gives the content."])
+    labels = []
+    for n, _r in body:
+        lb = re.sub(r" result$", "", _PLAIN_SOURCE.get(n, source_of(n)))
+        if lb not in labels:
+            labels.append(lb)
+    names = labels[0] if len(labels) == 1 else ", ".join(labels[:-1]) + " and " + labels[-1]
+    return _sentence(pick(seed + "pl", [f"The {names} results have what's needed", f"Got the {names} results back",
+                                        f"The {names} results give the content"]))
+
+
 def slot_lead(meta, s, plan, seed) -> str:
     """For a move after a read: where the item is now, and the shift asked for (both read off the result
     and the prompt; the day is only named when it stays the same)."""
@@ -925,9 +991,15 @@ def slot_lead(meta, s, plan, seed) -> str:
     where = f"on {fmt_day(old_d)} at {old_t}" if same_day and old_d else f"at {old_t}"
     shift = _SHIFT.search(s["prompt"])
     title = _q(move[1].get("title"), 5)
+    day_shift = re.search(r"\bnext day\b|\b(?:a|one|1) day (?:later|after|forward|ahead)\b|\bfollowing day\b|\bday after\b",
+                         s["prompt"], re.I)
+    if day_shift and old_d and not same_day:
+        where = f"on {fmt_day(old_d)} at {old_t}"
     lead = pick(seed + "sl", [f"“{title}” is {where} now", f"Right now “{title}” is {where}",
                               f"Currently “{title}” sits {where}"])
-    if shift and "day" in shift.group(1).lower():
+    if day_shift and old_d and not same_day:
+        lead += f"; one day later is {fmt_day(new[0])}, same time"
+    elif shift and "day" in shift.group(1).lower():
         lead += f"; {shift.group(0).lower()} is {fmt_day(new[0])}, same time"
     elif shift:
         lead += f"; {shift.group(0).lower()} makes it {fmt_time(new[1])}"
@@ -1023,7 +1095,14 @@ def thought_after_error(meta, s, ctx, seed) -> str:
         if re.search(r"[Nn]othing was \w+", first):
             return _join("That didn't go through; nothing changed.",
                          pick(seed, ["Say so plainly, with the next step it gives.", "Be plain about it."]))
-        src = source_of(s["prev_calls"][0][0]) if s["prev_calls"] else "that"
+        pairs = list(zip(s["prev_calls"], s["results"]))
+        bad_i = next((i for i, (_c, r) in enumerate(pairs) if is_error(r)), 0)
+        src = source_of(s["prev_calls"][bad_i][0]) if s["prev_calls"] else "that"
+        okay = []
+        for i, ((n, _a), r) in enumerate(pairs):
+            lb = source_of(n)
+            if i != bad_i and not is_error(r) and lb != src and lb not in okay:
+                okay.append(lb)
         place = _ambiguous_place(first, s)
         if place:
             return _join(pick(seed + "a", [f"'{place}' matches more than one place, and the tool says not to guess.",
@@ -1034,6 +1113,11 @@ def thought_after_error(meta, s, ctx, seed) -> str:
             reason = re.sub(r"^\(error:?\s*", "", first).rstrip(").")
             return _join(f"The {src} call failed: {_q(reason, 10)}.",
                          pick(seed, ["Say so plainly; no made-up data.", "Be plain it didn't work, and invent nothing."]))
+        if okay:
+            return _join(pick(seed + "u", [f"{src[:1].upper() + src[1:]} can't be read right now, but the {okay[0]} came back.",
+                                           f"The {src} failed; the {okay[0]} is fine."]),
+                         pick(seed, ["Report what came back, say plainly what didn't with the fix it gives, and invent nothing.",
+                                     "Give the working part, then explain how to turn access on for the other."]))
         return _join(pick(seed + "u", [f"{src[:1].upper() + src[1:]} can't be read right now.",
                                        f"No access to the {src} at the moment."]),
                      pick(seed, ["Say that plainly with the fix it gives, and invent nothing.",
@@ -1146,11 +1230,13 @@ def thought_outcome(meta, s, ctx, seed) -> str:
     clock = parse_clock(meta)
     if oc == "no_match":
         who = re.search(r"No saved contact named '([^']+)'", r)
+        asks = "?" in s["target_text"]
         if who:
             return _join(f"No saved contact named {who.group(1)}, so nothing went out.",
                          pick(seed, ["Ask for the number instead of guessing one.",
                                      "One question: which number to use.",
-                                     "Can't text an unknown name; ask how to reach that person."]))
+                                     "Can't text an unknown name; ask how to reach that person."]) if asks else
+                         pick(seed, ["Say so plainly; no number is guessed.", "Plain no-match; nothing was sent."]))
         q = re.search(r"['“]([^'”]+)['”]", r)
         what = q.group(1) if q else (a.get("title") or a.get("query") or "that")
         thing = ("event" if "Calendar" in r or name in ("update_event", "cancel_event") else
@@ -1158,7 +1244,8 @@ def thought_outcome(meta, s, ctx, seed) -> str:
         return _join(pick(seed + "a", [f"No {thing} matches '{what}', so nothing changed.",
                                        f"Nothing matches '{what}'; no {thing} was touched."]),
                      pick(seed, ["Say so and ask for the exact name.", "Ask what it's called rather than guess.",
-                                 "Plain no-match, then one question about the wording."]))
+                                 "Plain no-match, then one question about the wording."]) if asks else
+                     pick(seed, ["Say so plainly: no match, so nothing changed.", "Plain no-match; nothing was touched."]))
     if oc in ("ambiguous", "clarify"):
         items = re.findall(r"“([^”]+)”", r) if oc == "clarify" else re.findall(r"[:;] ([^;()]+?) \(([^)]+)\)", r)
         what = _title_in(r, a.get("title") or a.get("query") or "it")
@@ -1432,13 +1519,25 @@ def thought_answer_first(meta, s, ctx, seed) -> str:
                                        "Two readings are possible, and they'd do different things."]),
                      pick(seed, ["Ask for it plainly rather than guess.", "One short question first.",
                                  "Ask once, then act on the answer."]))
+    if re.search(r"\b(?:might|maybe|could be|pretty sure|apparently|i heard|someone told me|not sure|"
+                 r"thinking about|nobody'?s confirmed|hasn'?t confirmed|nothing firm|thinks)\b", prompt, re.I):
+        if re.search(r"\b(?:i'm|i am|i) (?:not sure|might|think i)\b", prompt, re.I):
+            return pick(seed, ["A maybe about their own plan, not a decision, so nothing to save or do. Keep it gentle.",
+                               "Still undecided, so there's nothing firm to store. A calm, short reply is enough."]
+                        ).replace("their own", "your own")
+        return pick(seed, ["Second-hand and unconfirmed, so nothing to save or act on. Say gently it's still open.",
+                           "A rumour or a maybe, not a settled fact, so no memory and no action. Keep the reply light.",
+                           "Nothing here is confirmed, so there's nothing to remember or do. Note that it's unsettled."])
+    if re.search(r"\b(?:tell me|let me know|say which|name (?:the|which))\b", low) and "?" not in text:
+        return pick(seed, ["Too broad to act on safely, so one question about what exactly is meant.",
+                           "The request doesn't say what it covers; ask which parts, and change nothing yet."])
     if re.search(r"\bmy (?:roommate|dad|mom|mother|father|sister|brother|friend|boss|partner|cousin|aunt|uncle)\b|"
                  r"^[A-Za-z]+ (?:is|just|got|was)\b", s["prompt"].strip(), re.I):
         return pick(seed, ["That's news about someone else, not a personal fact, so nothing to remember. Just a warm reply.",
                            "It's about another person, so no memory to save and nothing to do. Respond kindly.",
                            "Someone else's news: no remember call, no lookup. A warm line back is enough."])
     return pick(seed, ["Nothing to do or save here; it's a passing moment, not a lasting fact. A short, kind reply.",
-                       "No action and no memory needed, just a gentle answer to how the day went.",
+                       "No action and no memory needed; a short, gentle reply is enough.",
                        "A passing feeling, not something to store or act on. Answer gently."])
 
 
@@ -1644,7 +1743,17 @@ def single_source_problems(meta: dict, s: dict, text: str) -> list[str]:
 
 def plan_dates(meta: dict, messages: list[dict], ctx: dict | None = None) -> list[_dt.date]:
     """Dates in the arguments this step commits to (its own call, or for a bare load the loaded tool's next call)."""
-    return call_dates(_plan_calls(analyze(meta, messages), ctx))
+    s = analyze(meta, messages)
+    plan = _plan_calls(s, ctx)
+    out = call_dates(plan)
+    clock = parse_clock(meta)
+    # A move may state the item's current date, as the lookup shows it.
+    for n, a in plan:
+        if n in ("update_event", "update_reminder") and s["results"]:
+            slot = current_slot(a.get("title") or "", s["results"][-1], clock)
+            if slot and slot[0]:
+                out.append(slot[0])
+    return out
 
 
 def check(meta: dict, messages: list[dict], text: str | None, ctx: dict | None = None) -> list[str]:

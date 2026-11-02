@@ -109,38 +109,51 @@ class Src:
 WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 
 
-def src_weather(rng, w, now, which):
+def _an(n):
+    return "an" if str(n)[:1] == "8" or n in (11, 18) else "a"
+
+
+def _absdate(d):
+    return f"{d.strftime('%A')}, {d.strftime('%B')} {d.day}"
+
+
+def src_weather(rng, w, now, which, at=None):
     wx = w.weather["Portland,OR"]
     d = wx["days"][which]
     desc, hi, lo, rain = d[3].lower(), d[1], d[2], d[4]
     day = "Today" if which == 0 else "Tomorrow"
-    rain_t = f", with a {rain}% chance of rain" if rain else ", and it should stay dry"
+    rain_t = f", with {_an(rain)} {rain}% chance of rain" if rain else ", and it should stay dry"
     if which == 0:
         text = f"It's {wx['now_f']}° and {wx['desc'].lower()} in Portland right now, with a high of {hi}° today{rain_t}."
         short = f"today's weather, {wx['now_f']}° and {wx['desc'].lower()}"
     else:
-        text = f"Tomorrow in Portland looks {desc}, with a high of {hi}° and a low of {lo}°{rain_t}."
+        text = f"Tomorrow in Portland the forecast is {desc}, with a high of {hi}° and a low of {lo}°{rain_t}."
         short = f"tomorrow's forecast, {desc} with a high of {hi}°"
+        if at is not None:   # scheduled: name the day, it may be the delivery day itself
+            fd = _absdate(now + D(days=1))
+            text = f"The forecast for Portland on {fd} is {desc}, with a high of {hi}° and a low of {lo}°{rain_t}."
+            day = f"Forecast for {fd}"
     obj = "tomorrow's forecast" if which else "today's weather"
     clause = "what the weather will do tomorrow" if which else "how the weather is today"
-    return Src([Call("get_weather", location="Portland,OR")], text, text, f"{day}'s forecast", short, obj, clause, day)
+    return Src([Call("get_weather", location="Portland,OR")], text, text, day if at is not None and which else f"{day}'s forecast", short, obj, clause, day)
 
 
-def src_calendar(rng, w, now, period):
+def src_calendar(rng, w, now, period, at=None):
     rows, _, _ = w.upcoming_rows(period=period, calendar_only=True)
     rows = sorted(rows, key=lambda r: r["when_ts"])
+    if at is not None:   # scheduled: nothing that has passed by delivery time
+        rows = [r for r in rows if ts(r) >= at]
     if not (1 <= len(rows) <= 9):
         return None
     multi = period in ("this week", "next week")
     items = [f"{r['title']} {('on ' + ts(r).strftime('%A') + ' ') if multi else ''}at {clock(ts(r))}" for r in rows]
-    shown = items[:5]
-    more = f" and {len(items) - 5} more" if len(items) > 5 else ""
-    full = items[:7]
     lead = {"today": "Today I have", "tomorrow": "Tomorrow I have", "this week": "This week I have",
             "next week": "Next week I have"}.get(period, f"On {period.capitalize()} I have")
-    text = f"{lead} {join(shown)}{more}."
+    if at is not None and period == "tomorrow":
+        lead = f"On {_absdate(now + D(days=1))} I have"
+    text = f"{lead} {join(items)}."
     if len(items) >= 3:
-        lines = f"{lead}:\n" + "\n".join(f"- {it}" for it in full) + (f"\n- and {len(items) - 7} more" if len(items) > 7 else "")
+        lines = f"{lead}:\n" + "\n".join(f"- {it}" for it in items)
     else:
         lines = text
     label = period if period in ("today", "tomorrow", "this week", "next week") else period.capitalize()
@@ -150,8 +163,10 @@ def src_calendar(rng, w, now, period):
     clause = {"today": "what my day looks like", "tomorrow": "what i've got going on tomorrow",
               "this week": "what my week looks like", "next week": "what's coming up next week"}.get(
         period, f"what i have on {period}")
-    return Src([Call("get_upcoming", period=period, calendar_only=True)], text, lines,
-               {"today": "My day", "tomorrow": "My schedule for tomorrow", "this week": "My week"}.get(period, f"My {period.capitalize()}"),
+    subj = {"today": "My day", "tomorrow": "My schedule for tomorrow", "this week": "My week"}.get(period, f"My {period.capitalize()}")
+    if at is not None and period == "tomorrow":
+        subj = f"My schedule for {_absdate(now + D(days=1))}"
+    return Src([Call("get_upcoming", period=period, calendar_only=True)], text, lines, subj,
                short, obj, clause, lead)
 
 
@@ -195,15 +210,20 @@ def _move(chg):
     return f"up ${chg:.2f}" if chg >= 0 else f"down ${abs(chg):.2f}"
 
 
-def src_stock(rng, w, now, syms):
+def src_stock(rng, w, now, syms, at=None):
     q = stocks_world(w, rng, now, syms)
     names = [TICKS[s][1] for s in syms]
     parts = [f"{TICKS[s][1]} is at ${q[s][0]:,.2f}, {_move(q[s][1])} on the day" for s in syms]
     text = "; ".join(parts) + "." if len(parts) > 1 else parts[0] + "."
     text = text.replace("; ", ", and ") if len(parts) == 2 else text
+    if at is not None:   # scheduled: a quote is only true as of the time it was read
+        stamp = f"{clock(now - D(minutes=4))} on {now.strftime('%A, %B')} {now.day}"
+        parts = [f"{TICKS[s][1]} was at ${q[s][0]:,.2f}, {_move(q[s][1])} from the previous close" for s in syms]
+        text = f"As of {stamp}, " + (parts[0] if len(parts) == 1 else f"{parts[0]}, and {parts[1]}") + "."
     short = " and ".join(f"{TICKS[s][1]} at ${q[s][0]:,.2f}" for s in syms)
     nm = join(names)
-    return Src([Call("get_stock_price", symbols=list(syms))], text, "\n".join(f"- {p}" for p in parts) if len(parts) > 1 else text,
+    lines = text if len(parts) == 1 else (f"As of {stamp}:\n" if at is not None else "") + "\n".join(f"- {p}" for p in parts)
+    return Src([Call("get_stock_price", symbols=list(syms))], text, lines,
                f"{nm} stock price" + ("s" if len(syms) > 1 else ""), short,
                f"the {nm} share price" if len(syms) == 1 else f"the {join(names)} prices",
                f"where {nm} is trading" if len(syms) == 1 else f"how {nm} are doing today")
@@ -211,25 +231,25 @@ def src_stock(rng, w, now, syms):
 
 NOTES = [
     ("Potluck plan", "Saturday 6 PM at Carmen's place. Bring pasta salad and paper plates. Park behind the building.",
-     "The potluck is Saturday at 6 PM at Carmen's place. I'm bringing pasta salad and paper plates, and parking is behind the building.",
+     "The potluck is Saturday at 6 PM at Carmen's place. Bring pasta salad and paper plates, and park behind the building.",
      "the potluck plan", "potluck", ["carmen", "maya", "theo"]),
     ("Trip packing", "Leave Friday 7 AM. Tent, sleeping bag, camp stove, two headlamps, snacks.",
-     "We leave Friday at 7 AM. I'm packing the tent, sleeping bag, camp stove, two headlamps and snacks.",
+     "The plan is to leave Friday at 7 AM, and the packing list is the tent, sleeping bag, camp stove, two headlamps and snacks.",
      "the trip packing list", "packing", ["dad", "theo", "nadia"]),
     ("Study group", "Wednesday 4 PM, Hollis Library room 3. Chapters 6 to 8. Bring the practice exam.",
-     "Study group is Wednesday at 4 PM in Hollis Library room 3. We're covering chapters 6 to 8, and I'll bring the practice exam.",
+     "Study group is Wednesday at 4 PM in Hollis Library room 3. It covers chapters 6 to 8, and the practice exam should come along.",
      "the study group details", "study group", ["maya", "theo", "nadia", "priya"]),
     ("Grocery list", "Eggs, oat milk, spinach, rice, bananas, dish soap.",
-     "The grocery list so far is eggs, oat milk, spinach, rice, bananas and dish soap.",
+     "The grocery list is eggs, oat milk, spinach, rice, bananas and dish soap.",
      "the grocery list", "grocery", ["maya", "mom"]),
     ("Lasagna recipe", "Layer noodles, ricotta and sauce. Bake at 375 for 45 minutes, then rest 10 minutes.",
-     "For the lasagna, layer the noodles, ricotta and sauce, then bake at 375 for 45 minutes and let it rest for 10.",
+     "For the lasagna, layer the noodles, ricotta and sauce, bake at 375 for 45 minutes, then rest it for 10 minutes.",
      "the lasagna recipe", "lasagna", ["mom", "dad", "priya"]),
     ("Move-out checklist", "Return keys by Aug 30. Clean the oven. Photograph the walls. Forward the mail.",
-     "My move-out list: return the keys by Aug 30, clean the oven, photograph the walls and forward the mail.",
+     "The move-out list is to return the keys by Aug 30, clean the oven, photograph the walls and forward the mail.",
      "the move-out checklist", "move-out", ["dad", "mom", "maya"]),
     ("Book club picks", "November: Piranesi. December: Station Eleven. Meets the first Sunday at 2 PM.",
-     "Book club has Piranesi in November and Station Eleven in December. We meet the first Sunday at 2 PM.",
+     "Book club has Piranesi in November and Station Eleven in December. Book club meets the first Sunday at 2 PM.",
      "the book club picks", "book club", ["priya", "mom", "carmen"]),
 ]
 
@@ -258,17 +278,16 @@ MAILS = [
 def src_mail(rng, w, now, idx):
     sender, addr, subj, body, gist, short, key, clause = MAILS[idx]
     w.emails.insert(0, Email(sender, addr, subj, now - D(hours=rng.randint(3, 40)), body, True, True))
-    return Src([Call("view_emails", query=key, count=1)], gist, gist, subj, short, short.replace("the ", "the ", 1), clause)
+    subj_out = subj[5:] if subj.startswith("Your ") else subj
+    return Src([Call("view_emails", query=key, count=1)], gist, gist, subj_out, "a summary of " + short, short, clause)
 
 
 def src_todos(rng, w, now):
     due = sorted([r for r in w.reminders if r.due and not r.done], key=lambda r: r.due)
     und = [r for r in w.reminders if r.due is None and not r.done]
     titles = [r.title for r in (due + und)]
-    shown = titles[:4]
-    more = f", plus {len(titles) - 4} more" if len(titles) > 4 else ""
-    text = f"My open to-dos are {join(shown)}{more}."
-    lines = "Open to-dos:\n" + "\n".join(f"- {t}" for t in shown) + (f"\n- and {len(titles) - 4} more" if more else "")
+    text = f"My open to-dos are {join(titles)}."
+    lines = "Open to-dos:\n" + "\n".join(f"- {t}" for t in titles)
     return Src([Call("search_reminders", query="", scope="all")], text, lines, "My open to-dos",
                f"your {len(titles)} open to-dos", "my open to-dos", "what's still on my to-do list")
 
@@ -277,11 +296,11 @@ PRICE_WEB = [
     ("bitcoin price usd", [("Bitcoin price today", "https://www.coinwatch.example/bitcoin",
                             "Bitcoin (BTC) is trading near $71,950, up 1.2% over the last 24 hours."),
                            ("BTC/USD chart", "https://www.cryptoboard.example/btc-usd", "The 24-hour range is $70,610 to $72,240.")],
-     "Bitcoin is around $71,950 right now, up about 1.2% over the last day.", "the bitcoin price, about $71,950", "the bitcoin price",
+     "Bitcoin is around $71,950 right now, up about 1.2% over the last 24 hours.", "the bitcoin price, about $71,950", "the bitcoin price",
      "where bitcoin is right now"),
     ("ethereum price usd", [("Ethereum price live", "https://www.coinwatch.example/ethereum",
                              "Ethereum (ETH) is trading near $3,120, down 0.8% over the last 24 hours.")],
-     "Ethereum is near $3,120 right now, down about 0.8% since yesterday.", "the ethereum price, about $3,120", "the ethereum price",
+     "Ethereum is near $3,120 right now, down about 0.8% over the last 24 hours.", "the ethereum price, about $3,120", "the ethereum price",
      "what ethereum is trading at"),
     ("gold price per ounce today", [("Gold price today", "https://www.metalsdesk.example/gold",
                                      "Spot gold is trading near $2,418 per troy ounce today, up 0.6% on the day.")],
@@ -294,9 +313,15 @@ PRICE_WEB = [
 ]
 
 
-def src_web(rng, w, now, idx):
+def src_web(rng, w, now, idx, at=None):
     q, hits, gist, short, obj, clause = PRICE_WEB[idx]
     w.web[q] = hits
+    if at is not None:   # scheduled: say when the number was read, not "right now"
+        stamp = f"{clock(now)} on {now.strftime('%A, %B')} {now.day}"
+        gist = gist.replace(" right now,", ",").replace(" right now.", ".")
+        gist = gist.replace(" is around ", " was around ").replace(" is near ", " was near ").replace(" averages ", " averaged ")
+        gist = gist.replace(" is trading", " was trading")
+        gist = f"As of {stamp}, " + gist[0].lower() + gist[1:]
     return Src([Call("web_search", query=q)], gist, gist, cap1(obj), short, obj, clause)
 
 
@@ -305,7 +330,7 @@ def src_brief(rng, w, now):
     rows = sorted([r for r in rows if ts(r) >= now], key=lambda r: r["when_ts"])
     if not (1 <= len(rows) <= 6):
         return None
-    items = [f"{r['title']} at {clock(ts(r))}" for r in rows[:4]]
+    items = [f"{r['title']} at {clock(ts(r))}" for r in rows]
     n_rem = len([r for r in w.reminders if not r.done])
     text = f"Still ahead today: {join(items)}. I also have {n_rem} open to-dos."
     lines = "Still ahead today:\n" + "\n".join(f"- {i}" for i in items) + f"\nAnd {n_rem} open to-dos."
@@ -319,10 +344,12 @@ def src_digest(rng, w, now):
     people = [m for m in rows if m.person]
     if len(rows) < 2 or not people:
         return None
-    names = [m.sender for m in people][:3]
-    text = (f"I've had {len(rows)} emails today, and one is from {names[0]}." if len(people) == 1
-            else f"I've had {len(rows)} emails today, {len(people)} of them from people: {join(names)}.")
-    return Src([Call("summarize_emails", day="today")], text, text, "Inbox today", f"today's inbox, {len(rows)} emails",
+    if len(rows) > 6:
+        return None
+    each = [f"{m.sender} about {m.subject}" if m.person else m.sender for m in rows]
+    text = f"I've had {len(rows)} emails today: {join(each)}."
+    lines = f"Emails today ({len(rows)}):\n" + "\n".join(f"- {e}" for e in each)
+    return Src([Call("summarize_emails", day="today")], text, lines, "Inbox today", f"today's inbox, {len(rows)} emails",
                "a rundown of my inbox today", "what's come into my inbox today")
 
 
@@ -369,11 +396,19 @@ def ask_self(rng, src, i):
             f"put {src.obj} in an email to myself"][i % 6]
 
 
+def for_who(src, who):
+    """Address the recipient directly: the host of the potluck is 'your place' to the host."""
+    if who == "carmen":
+        for f in ("text", "lines"):
+            setattr(src, f, getattr(src, f).replace("Carmen's place", "your place"))
+    return src
+
+
 def greet(who):
     return f"Hi {PEOPLE[who][4]},"
 
 
-_LOWER_OK = {"Tomorrow", "Today", "This", "Next", "On", "It's", "The", "Still", "We", "For", "My", "I've", "Study", "Spring",
+_LOWER_OK = {"As", "Tomorrow", "Today", "This", "Next", "On", "It's", "The", "Still", "We", "For", "My", "I've", "Study", "Spring",
              "Regular", "Gold", "Library", "Flight", "Parking", "Book", "Professor", "Registration"}
 
 
@@ -399,7 +434,7 @@ def _sc(prompt, now, w, steps, notes, *, cards=(), approve=None):
 
 
 def pretty_when(when, now):
-    d, _ = resolve_when(when)
+    d, _ = resolve_when(when, now=now)
     delta = (d.date() - now.date()).days
     day = "tonight" if (delta == 0 and d.hour >= 18) else "today" if delta == 0 else "tomorrow" if delta == 1 else d.strftime("%A")
     return f"{day} at {clock(d)}"
@@ -451,23 +486,23 @@ def fam_compose_r3(rng):
         n[0] += 1
         return n[0]
 
-    def pick_src(kind, w, now, i):
+    def pick_src(kind, w, now, i, at=None):
         """A Src of the named kind, or None when the world has no data for it."""
         if kind == "wx_t":
-            return src_weather(rng, w, now, 1)
+            return src_weather(rng, w, now, 1, at)
         if kind == "wx_0":
             return src_weather(rng, w, now, 0)
         if kind.startswith("cal_"):
             p = kind[4:].replace("_", " ")
             if p == "wd":
                 p = WEEKDAYS[(now + D(days=2)).weekday()]
-            return src_calendar(rng, w, now, p)
+            return src_calendar(rng, w, now, p, at)
         if kind == "stock1":
             sym = rng.choice(["COST", "TSLA", "NKE", "SBUX", "ADBE", "INTC", "DIS", "MSFT"])
-            return src_stock(rng, w, now, [sym])
+            return src_stock(rng, w, now, [sym], at)
         if kind == "stock2":
             a, b = rng.sample(["CRM", "MSFT", "AMD", "COST", "TSLA", "DIS"], 2)
-            return src_stock(rng, w, now, [a, b])
+            return src_stock(rng, w, now, [a, b], at)
         if kind.startswith("note"):
             return src_note(rng, w, now, int(kind[4:]))
         if kind.startswith("mail"):
@@ -475,14 +510,14 @@ def fam_compose_r3(rng):
         if kind == "todos":
             return src_todos(rng, w, now)
         if kind.startswith("web"):
-            return src_web(rng, w, now, int(kind[3:]))
+            return src_web(rng, w, now, int(kind[3:]), at)
         if kind == "brief":
             return src_brief(rng, w, now)
         if kind == "digest":
             return src_digest(rng, w, now)
         raise KeyError(kind)
 
-    def mk(kind, hour=None, weekday=None, tries=40):
+    def mk(kind, hour=None, weekday=None, tries=40, when=None, who=None):
         """(now, world, src) for a source kind, resampling until the world has data."""
         for _ in range(tries):
             kw = {}
@@ -491,9 +526,10 @@ def fam_compose_r3(rng):
             if weekday is not None:
                 kw["weekday"] = weekday(rng) if callable(weekday) else weekday
             now, w = world(rng, **kw)
-            src = pick_src(kind, w, now, 0)
+            at = resolve_when(when, now=now)[0] if when else None
+            src = pick_src(kind, w, now, 0, at)
             if src is not None:
-                return now, w, src
+                return now, w, for_who(src, who)
         raise RuntimeError(f"no world for source {kind}")
 
     wk = lambda r: r.choice([0, 1, 2, 3])
@@ -508,7 +544,7 @@ def fam_compose_r3(rng):
                  ("mail0", "maya"), ("mail1", "theo"), ("mail3", "mom"), ("mail4", "nadia"), ("todos", "maya"), ("todos", "mom"),
                  ("web0", "theo"), ("web1", "nadia"), ("web2", "dad"), ("web3", "mom"), ("brief", "dad"), ("brief", "maya")]
     for i, (kind, who) in enumerate(text_plan):
-        now, w, src = mk(kind, hour=hrs, weekday=wk)
+        now, w, src = mk(kind, hour=hrs, weekday=wk, who=who)
         den = DEN(i)
         steps = [src.calls, [Call("send_message", to=to_name(who), text=text_body(who, src))]]
         if not den:
@@ -526,7 +562,7 @@ def fam_compose_r3(rng):
                   ("todos", "theo"), ("todos", "carmen"), ("web0", "dad"), ("web2", "maya"), ("web1", "priya"),
                   ("brief", "dad"), ("brief", "theo"), ("digest", "dad"), ("digest", "maya")]
     for i, (kind, who) in enumerate(email_plan):
-        now, w, src = mk(kind, hour=hrs, weekday=wk)
+        now, w, src = mk(kind, hour=hrs, weekday=wk, who=who)
         den = DEN(i + 2)
         steps = [src.calls, [Call("send_email", to=to_name(who), subject=src.subject, body=email_body(who, src))]]
         if not den:
@@ -542,7 +578,7 @@ def fam_compose_r3(rng):
                   ("mail3", "nadia"), ("todos", "maya"), ("web0", "nadia"), ("web2", "carmen"), ("cal_this_week", "nadia"), ("digest", "dad"),
                   ("cal_today", "carmen"), ("wx_0", "dad"), ("note4", "priya")]
     for i, (kind, who) in enumerate(draft_plan):
-        now, w, src = mk(kind, hour=hrs, weekday=wk)
+        now, w, src = mk(kind, hour=hrs, weekday=wk, who=who)
         out.append(_sc(styled(rng, ask_draft(rng, who, src, nxt())), now, w,
                        [src.calls, [Call("draft_email", to=to_name(who), subject=src.subject, body=email_body(who, src))],
                         Final(final_draft(rng, who, src))],
@@ -553,13 +589,13 @@ def fam_compose_r3(rng):
     sched_plan = [("wx_t", "mom", "message", "tomorrow at 7am"), ("cal_tomorrow", "dad", "message", "tonight at 9pm"),
                   ("cal_tomorrow", "maya", "message", "tonight at 8:30pm"), ("stock1", "theo", "message", "tomorrow at 9am"),
                   ("note2", "priya", "message", "tomorrow at 8am"), ("todos", "maya", "message", "tonight at 9pm"),
-                  ("cal_this_week", "dad", "email", "sunday at 6pm"), ("cal_tomorrow", "okafor", "email", "tomorrow at 7am"),
+                  ("cal_tomorrow", "dad", "email", "tonight at 9pm"), ("cal_tomorrow", "okafor", "email", "tomorrow at 7am"),
                   ("wx_t", "nadia", "email", "tonight at 9pm"), ("mail0", "carmen", "email", "tomorrow at 8am"),
                   ("note3", "maya", "email", "friday at 5pm"), ("web1", "theo", "message", "tomorrow at 10am"),
-                  ("stock2", "dad", "email", "monday at 8am"), ("brief", "priya", "message", "tonight at 9pm")]
+                  ("stock2", "dad", "email", "monday at 8am"), ("mail1", "priya", "message", "tonight at 9pm")]
     for i, (kind, who, chan, when) in enumerate(sched_plan):
         night = when.startswith("tonight")
-        now, w, src = mk(kind, hour=(lambda r: r.randint(8, 16)) if night else hrs, weekday=wk)
+        now, w, src = mk(kind, hour=(lambda r: r.randint(8, 16)) if night else hrs, weekday=wk, when=when, who=who)
         pw = pretty_when(when, now)
         den = (i == 5)
         if chan == "message":
@@ -586,11 +622,11 @@ def fam_compose_r3(rng):
     self_plan = [("cal_tomorrow", False), ("cal_today", False), ("wx_t", False), ("stock1", False), ("todos", False), ("note3", False),
                  ("note6", False), ("mail4", False), ("web0", False), ("cal_this_week", True), ("cal_tomorrow", True), ("wx_t", True)]
     for i, (kind, later) in enumerate(self_plan):
-        now, w, src = mk(kind, hour=(lambda r: r.randint(8, 15)), weekday=wk)
+        when = rng.choice(["tonight at 9pm", "tomorrow at 6:30am", "tonight at 8pm"]) if later else None
+        now, w, src = mk(kind, hour=(lambda r: r.randint(8, 15)), weekday=wk, when=when)
         body = src.lines
         den = (i == 7)
         if later:
-            when = rng.choice(["tonight at 9pm", "tomorrow at 6:30am", "tonight at 8pm"])
             pw = pretty_when(when, now)
             ask = [f"{when} email me {src.obj}", f"queue an email to my own address for {when}: {src.obj}",
                    f"remind me by email {when}: {src.obj}"][i % 3]
@@ -648,11 +684,13 @@ def fam_compose_r3(rng):
                        cards=[card], approve=[not den]))
 
     # ------------------------------------------------------------ 7. held tickers come from memory, then prices, then the text
+    # The saved memory names the holdings in the words recall is queried with, so recall returns them.
     for i, (who, syms, chan) in enumerate([("dad", ["AMD", "CRM"], "message"), ("mom", ["MSFT", "COST"], "message"),
                                            ("theo", ["TSLA", "DIS"], "message"), ("maya", ["AMD", "MSFT"], "email")]):
         now, w = world(rng, weekday=rng.choice([1, 2, 3]), hour=rng.randint(10, 14))
         q = stocks_world(w, rng, now, syms)
-        w.memories = [f"Sam holds {TICKS[syms[0]][1]} ({syms[0]}) and {TICKS[syms[1]][1]} ({syms[1]}) shares.",
+        hold = [TICKS[x][1] if TICKS[x][1] == x else f"{TICKS[x][1]} ({x})" for x in syms]
+        w.memories = [f"Sam's stock holdings: {hold[0]} and {hold[1]} shares.",
                       "Sam's home city: Portland, Oregon."]
         parts = [f"{TICKS[s][1]} is at ${q[s][0]:,.2f}, {_move(q[s][1])} on the day" for s in syms]
         txt = f"{parts[0]}, and {parts[1]}."
@@ -670,9 +708,20 @@ def fam_compose_r3(rng):
             write = Call("send_email", to=to_name(who), subject=src.subject, body=email_body(who, src))
             f_ = final_email(rng, who, src)
             card = "send_email"
-        out.append(_sc(styled(rng, ask), now, w, [[Call("recall", query="stocks shares")], src.calls, [write], Final(f_)],
+        out.append(_sc(styled(rng, ask), now, w, [[Call("recall", query="stock holdings")], src.calls, [write], Final(f_)],
                        "no tickers named: recall the held tickers, read both prices, then send the right channel",
                        cards=[card], approve=[True]))
+
+    # recall finds no holdings: ask one short question, never guess tickers, send nothing
+    for i, (who, ask) in enumerate([("dad", "text dad how my stocks are doing"), ("mom", "message mom a quick update on my shares"),
+                                    ("theo", "give theo my holdings update by text")]):
+        now, w = world(rng, weekday=rng.choice([1, 2, 3]), hour=rng.randint(10, 14))
+        w.memories = ["Sam's home city: Portland, Oregon."]
+        reply = fin(rng, "I don't have your holdings saved. Which stocks should I include?",
+                    "I can't find which stocks you hold. Which ones should I check for them?",
+                    "Nothing saved says which shares you own. Which tickers do you want me to send?")
+        out.append(_sc(styled(rng, ask), now, w, [[Call("recall", query="stock holdings")], Final(reply)],
+                       "no tickers named and recall finds no holdings: ask one short question, no guessed tickers, no send", cards=[]))
 
     # ------------------------------------------------------------ 8. a literal body: no gather, still resolve the contact and use the right channel
     literal = [("nadia", "text", "text nadia saying i'm five minutes out", "I'm five minutes out."),

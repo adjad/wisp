@@ -57,10 +57,22 @@ class Scenario:
 SCHOOL = re.compile(r"\b(OS|CS|MATH|PHIL|linear algebra|essay|problem set|lab|project|chapter|Okafor|spring classes|financial aid)\b", re.I)
 
 
+def dedupe_mail(w):
+    """One row per (sender, subject): a digest never shows (or counts) the same email twice."""
+    seen, keep = set(), []
+    for m in sorted(w.emails, key=lambda m: m.when, reverse=True):
+        k = (m.sender, m.subject)
+        if k not in seen:
+            seen.add(k)
+            keep.append(m)
+    w.emails = keep
+    return w
+
+
 def setup(rng, **kw):
     now = gen.random_now(rng, **{k: kw.pop(k) for k in ("hour", "weekday") if k in kw})
     H.set_clock(now)
-    return now, gen.make_world(now, rng, **kw)
+    return now, dedupe_mail(gen.make_world(now, rng, **kw))
 
 
 def memories_default(rng, *, birthday=True, city=True):
@@ -297,6 +309,7 @@ def email_scope_line(n, unread, label, rng=None):
 
 def inbox_reply(w, now, rng, *, label=None, rows=None, short=False):
     rows = rows if rows is not None else sorted([m for m in w.emails if m.when <= now], key=lambda m: m.when, reverse=True)
+    rows = rows[:20]      # the digest tool shows the newest 20 (count=20): every number below comes from those rows
     if not rows:
         return P(rng, "Your inbox is quiet, with no recent emails.", "There are no recent emails to show.")
     unread = sum(m.unread for m in rows)
@@ -677,12 +690,15 @@ def fam_grounded(rng):
               "what r my unread msgs in mail", "hey wisp, what are my unread messages in mail?"]:
         now, w = setup(rng)
         w.emails += gen.emails(now, rng, n_people=rng.randint(0, 3), n_news=rng.randint(4, 12))
-        rows = [m for m in w.emails if m.when <= now]
+        dedupe_mail(w)
+        rows = sorted([m for m in w.emails if m.when <= now], key=lambda m: m.when, reverse=True)
+        all_rows = rows
+        rows = rows[:20]        # the digest shows the newest 20; counts below are that digest's
         unread = sum(m.unread for m in rows)
         if "asking me" in p:
             people = [m for m in rows if m.person]
             if people:
-                items = [f"{m.sender} (“{m.subject}”)" for m in people[:4]]
+                items = [f"{m.sender} (“{m.subject}”)" for m in people]
                 reply = listing("From the subjects alone I can't tell for sure, but these come from people and may need "
                                 "something from you", items) + "\nThe rest are newsletters and updates."
             else:
@@ -695,19 +711,32 @@ def fam_grounded(rng):
                 reply = f"{unread} unread, out of the {len(rows)} most recent emails I can see."
         else:
             un = [m for m in rows if m.unread]
-            reply = f"{len(un)} unread among your {len(rows)} recent emails" + (
-                ":\n" + "\n".join(f"- {m.sender}: “{m.subject}”" for m in sorted(un, key=lambda m: m.when, reverse=True)[:5])
-                + (f"\n…and {len(un) - 5} more." if len(un) > 5 else "") if un else ".")
+            if not un:
+                reply = f"0 unread among your {len(rows)} recent emails."
+            else:
+                pu = [m for m in un if m.person]       # the digest shows subjects only for people
+                reply = f"{len(un)} unread among your {len(rows)} recent emails"
+                if pu:
+                    reply += ":\n" + "\n".join(f"- {m.sender}: “{m.subject}”" for m in pu)
+                    if len(un) > len(pu):
+                        reply += f"\n…and {len(un) - len(pu)} more from newsletters and updates."
+                else:
+                    reply += ", all from newsletters and updates."
         args = {"unread": True} if "unread msgs" in p or "unread messages" in p else {}
         if args:
-            un = sorted([m for m in rows if m.unread], key=lambda m: m.when, reverse=True)
+            un = [m for m in all_rows if m.unread][:20]
             if not un:
                 reply = "You have no unread emails in your recent inbox."
             else:
-                reply = listing(f"You have {plural(len(un), 'unread email')}",
-                                [f"{m.sender}: “{m.subject}”" if len(un) >= 4 else f"{m.sender} (“{m.subject}”)" for m in un[:5]])
-                if len(un) > 5:
-                    reply += f"\n…and {len(un) - 5} more."
+                pu = [m for m in un if m.person]
+                nw = [m for m in un if not m.person]
+                if pu:
+                    reply = listing(f"You have {plural(len(un), 'unread email')}, from people and newsletters",
+                                    [f"{m.sender}: “{m.subject}”" if len(pu) >= 4 else f"{m.sender} (“{m.subject}”)" for m in pu])
+                    if nw:
+                        reply += f"\n…and {plural(len(nw), 'newsletter or update', 'newsletters or updates')}."
+                else:
+                    reply = f"You have {plural(len(un), 'unread email')}, all newsletters and updates."
         out.append(Scenario("grounded_only", p, now, w, [[Call("summarize_emails", **args)], Final(reply)],
                             "read counts exactly as the digest states (N emails · M unread)"))
     for p in ["what did I finish this week?", "what did i finish this week?", "what did I finish yesterday?",
@@ -1000,6 +1029,7 @@ def fam_concise(rng):
               "give me the short version of my inbox"]:
         now, w = setup(rng)
         w.emails += gen.emails(now, rng, n_people=2, n_news=10)
+        dedupe_mail(w)
         args = {"day": "yesterday"} if "yesterday" in p else {}
         if args:
             s, e, _ = w._span("yesterday", False)
@@ -1030,7 +1060,13 @@ def fam_concise(rng):
             t = ts(r)
             loc = f" in {r['location']}" if r.get("location") else ""
             core = f"{r['title']}, {day_word(t.date(), now)} at {clock(t)}{loc}"
-            if "today" in p and t.date() != now.date():
+            sooner = ""
+            if "meeting" in p and nxt is not None and nxt is not r and ts(nxt).date() == now.date():
+                # one rule for "meeting": the next event of kind meeting; a class or event sooner today is named, not skipped
+                sooner = f" Sooner today, you have {nxt['title']} at {clock(ts(nxt))}."
+            if sooner:
+                reply = f"Your next meeting is {core}." + sooner
+            elif "today" in p and t.date() != now.date():
                 reply = f"Nothing else today. Next up is {core}."
             else:
                 reply = P(rng, core + ".", f"Next up is {core}.", f"Your next one is {core}.")
@@ -1096,87 +1132,121 @@ def fam_concise(rng):
 # =============================================================================
 # 7. capability_honest
 # =============================================================================
+# (prompt, wisp_capabilities mode, final, facts the final relies on: each must appear in that tool's text)
+# Every answer below states only what the tool text says. "report" is the Yes/No capability report for a
+# specific "can you ...?" question; the others are the tool's topics ("howto" also gets the question as its query).
 CAP = [
-    ("can you set reminders?", None, "Yes, just tell me what and when, like “remind me to call Mom at 6 tomorrow,” and I'll add it."),
-    ("can you remember things?", None, "Yes. Tell me something like “remember that my locker is 112” and I'll keep it. You can see or remove what I remember any time with /memory."),
-    ("can you send emails for me?", None, "Yes. I can draft and send emails and texts, but every send is shown to you first and only goes out when you confirm."),
-    ("can you make calendar events?", None, "Yes, I can add events and reminders to your calendar. Calendar changes are always shown to you to confirm first."),
-    ("how do I ask you by voice?", None, "Press ⌥⇧Space from any app, or click the mic in Ask, then just talk. I'll send your question when you pause."),
-    ("what's the keyboard shortcut to open you?", None, "⌥Space opens Ask from any app. For voice, use ⌥⇧Space."),
-    ("can you browse the web?", None, "Yes, I can search the web and check weather and stock prices for you."),
-    ("can you read my email?", None, "Yes. I can read and summarize your email, find a specific message, and draft replies. Sending always waits for your OK."),
-    ("can you read my messages?", None, "Yes, I can read and summarize your texts and find specific messages. I can also draft replies for you to approve."),
-    ("can you check my calendar?", None, "Yes, I can tell you what's coming up, find free time, and add events or reminders."),
-    ("can you read my notes?", None, "Yes, I can search your Notes and read them back to you."),
-    ("what can you do?", None, "I can read and summarize your email, texts, calendar, reminders and notes; draft and send emails and texts (you confirm every send); add reminders and calendar events; search the web, weather and stocks; and control Mac settings and apps. Open me any time with ⌥Space."),
-    ("how do I connect Gmail?", None, "Open the notch, then Quick Settings (the gear) › Google › Connect Google, and sign in in your browser. I read Gmail and Google Calendar read-only and build your to-dos in about a minute. “Disconnect & erase” in the same place removes the account and everything I derived from it."),
-    ("are you better than Siri?", None, "We do different things. I'm built around your own email, texts, calendar, reminders and notes, so I'm good at summarizing them, planning your day and drafting replies, and my AI runs on your Mac. Siri is great for quick device commands."),
-    ("can you help me with homework?", None, "Yes, I can explain concepts, walk through problems step by step, check your reasoning and help you plan study time. I'll help you understand it rather than just hand over answers."),
-    ("what are you?", None, "I'm Wisp, your assistant in your Mac's notch. I help with your calendar, reminders, email, texts and notes, and my AI runs right on your Mac. Open me with ⌥Space."),
-    ("what's your name?", None, "I'm Wisp, your assistant in your Mac's notch."),
-    ("how do I see my reminders in Wisp?", None, "Just ask me something like “what are my reminders?” or “what's due today?” Reminders due today also show on the Day tab, and the Brief includes today's to-dos."),
-    ("can you summarize a PDF?", None, "Yes, attach the PDF in Ask and tell me what you'd like to know. Word, Excel, PowerPoint and plain-text files work too."),
-    ("can you see my screen?", None, "Only when you ask: type /screen in Ask and I'll look at what's on your screen (it needs Screen Recording permission). I don't watch it in the background."),
-    ("what's the Day tab?", None, "Day is the tab next to Ask and Brief. It shows the rest of your day hour by hour: calendar events, tasks and reminders that are due."),
-    ("can you work offline?", None, "Mostly, yes. My AI runs on your Mac, so reading your mail, texts, calendar and notes works offline. Web searches, weather and stocks need the internet."),
-    ("what apps can you access?", None, "Mail, Messages, Calendar, Reminders and Notes (with your macOS permission), plus Gmail and Google Calendar if you connect Google. I can also open apps, change some Mac settings, and find and read your files."),
-    ("how do you work?", None, "I run an AI model locally on your Mac. When you ask something, I read what I need (your calendar, mail, texts, reminders or notes) and answer from what I find. Anything that sends or changes something waits for your OK."),
-    ("help", None, "I'm here. You could try things like “what's on my calendar tomorrow?”, “any new texts?”, “summarize my email” or “remind me to call Mom at 6.” Press ⌥Space to open me from anywhere."),
-    ("what permissions do you have?", None, "Only the ones you've granted. You can review them in Settings › Privacy & Access › Permissions…, where each source (Mail, Messages, Calendar, Reminders, Notes) has its own Allow, and in macOS System Settings › Privacy & Security."),
-    ("why is there an orange ! on the notch?", None, "The orange ! means setup isn't finished. Click the menu bar icon and choose Finish Setup… to get going."),
-    ("how do I start a new chat?", None, "In the Wisp window, press ⌘N to start a new chat."),
-    ("can you set timers?", None, "Yes, just say something like “set a timer for 20 minutes.”"),
-    ("what can't you do?", None, "I can't send anything without your OK, read a bank balance, or update myself, since new versions replace the app. I also can't schedule a reply inside an existing email thread; scheduled sends are new emails or texts."),
+    ("can you set reminders?", "report", "Yes, I can create reminders.", ["Yes — Create reminders"]),
+    ("can you remember things?", "overview", "Yes. Tell me something like “remember that my locker is 112” and I'll remember it.",
+     ["Remember what you tell me", "remember that my locker is 112"]),
+    ("can you send emails for me?", "report", "Yes, I can send email, and texts too. Each one needs your confirmation first.",
+     ["Yes — Send email (confirmation required)", "Yes — Send text messages (confirmation required)"]),
+    ("can you make calendar events?", "overview", "Yes, I can add calendar events and reminders. Before your calendar changes, I show it to you and wait for your OK.",
+     ["add reminders and calendar events", "your calendar changes, I show it to you and wait for your OK"]),
+    ("how do I ask you by voice?", "howto", "Press ⌥⇧Space from any app, or click the mic in Ask. I send your question when you pause and read the answer aloud.",
+     ["press **⌥⇧Space** from any app, or click the mic in Ask", "sends your question when you pause and reads the answer"]),
+    ("what's the keyboard shortcut to open you?", "howto", "Press ⌥Space from any app, or move the pointer to the notch.",
+     ["press **⌥Space** from any app, or move the pointer to the notch"]),
+    ("can you browse the web?", "overview", "I can search the web, and check the weather too.", ["Search the web, check the weather"]),
+    ("can you read my email?", "report", "Yes, I can read your Mail. Sending an email needs your confirmation.",
+     ["Yes — Read Mail", "Yes — Send email (confirmation required)"]),
+    ("can you read my messages?", "report", "Yes, I can read your Messages. Sending a text needs your confirmation.",
+     ["Yes — Read Messages", "Yes — Send text messages (confirmation required)"]),
+    ("can you check my calendar?", "report", "Yes, I can read your calendar and reminders, and move events to a new time once you confirm.",
+     ["Yes — Read calendar/reminders", "Yes — Move calendar events to a new time (confirmation required)"]),
+    ("can you read my notes?", "report", "Yes, I can search your Notes.", ["Yes — Search Notes"]),
+    ("what can you do?", "overview", "I can read and sum up your calendar, reminders, mail, messages and notes; draft and send emails and texts; add reminders and calendar events; and move events. I can also search the web, check the weather, do quick math, open apps, change Mac settings like Do Not Disturb, and remember what you tell me. Sends and calendar changes wait for your OK.",
+     ["Read and sum up your calendar, reminders, mail, messages and notes", "Draft and send emails and texts", "Search the web, check the weather and do quick math",
+      "Open apps and change Mac settings like Do Not Disturb", "Remember what you tell me"]),
+    ("how do I connect Gmail?", "howto", "Open Settings → Google and sign in. Then I'll read that account's Gmail and Calendar too.",
+     ["open **Settings → Google**, then sign in", "I'll read that account's Gmail and Calendar too"]),
+    ("are you better than Siri?", "overview", "I can't say who's better, but I work with your own calendar, reminders, mail, messages and notes, and my AI runs right here on this Mac.",
+     ["My AI runs right here on this Mac", "Read and sum up your calendar, reminders, mail, messages and notes"]),
+    ("can you help me with homework?", None, "Yes, I can help. What's the subject?", []),
+    ("what are you?", "identity", "I'm Wisp, your assistant in your Mac's notch. My AI runs on this Mac, so I can help with your calendar, reminders, mail, messages and notes without sending them to a server.",
+     ["I'm **Wisp**, your assistant in the Mac's notch", "without sending them to a server"]),
+    ("what's your name?", "identity", "I'm Wisp, your assistant in your Mac's notch.", ["I'm **Wisp**, your assistant in the Mac's notch"]),
+    ("how do I see my reminders in Wisp?", "howto", "Ask me about them, or open the Day tab next to Ask, which shows today's timeline of events and reminders.",
+     ["Day is today's timeline of events and reminders", "the tabs next to Ask"]),
+    ("what's the Day tab?", "howto", "Day is a tab next to Ask. It shows today's timeline of events and reminders.",
+     ["Day is today's timeline of events and reminders", "the tabs next to Ask"]),
+    ("what apps can you access?", "overview", "Mail, Messages, Calendar, Reminders and Notes are connected. I can also open apps, and if you connect Google in Settings → Google, I'll read its Gmail and Calendar too.",
+     ["Connected: Mail, Messages, Calendar, Reminders, Notes", "Open apps", "connect a Google account in **Settings → Google**"]),
+    ("how do you work?", "overview", "My AI runs right here on this Mac. I read and sum up your calendar, reminders, mail, messages and notes, and I show sends and calendar changes to you for your OK first.",
+     ["My AI runs right here on this Mac", "Read and sum up your calendar, reminders, mail, messages and notes", "your calendar changes, I show it to you and wait for your OK"]),
+    ("help", "howto", "I'm here. Press ⌥Space from any app, type your question in Ask and press Return, and type / to see shortcuts.",
+     ["press **⌥Space** from any app", "type your question and press Return. Type **/** to see shortcuts"]),
+    ("what permissions do you have?", "howto", "Only what you allow. Open Settings → Privacy & Access, choose Permissions…, and click Allow next to what you want. Screen Recording and Accessibility are under More Access… next to it.",
+     ["open **Settings → Privacy & Access**, choose **Permissions…**", "click **Allow** next to what you want", "**More Access…**"]),
+    ("how do I start a new chat?", "howto", "Press ⌘N to start a new chat.", ["**⌘N** starts a new chat"]),
+    ("what can't you do?", "report", "I can't schedule a reply inside an existing email thread; scheduled sends have to be new emails or texts. I also can't access a bank balance unless a dedicated banking tool is installed.",
+     ["No — schedule a reply inside an existing email thread", "No — access a bank balance unless a dedicated connected banking tool is installed"]),
+    ("how do I log in?", "howto", "You don't need to. Wisp has no account of its own. To read a Google account's Gmail and Calendar, connect it in Settings → Google.",
+     ["Wisp has no account of its own, so there's nothing to sign in to", "connect it in **Settings → Google**"]),
+    ("how do I update Wisp?", "howto", "Wisp doesn't update itself. Quit Wisp from the menu bar icon, then replace the Wisp app in your Applications folder with the new version.",
+     ["Wisp doesn't update itself", "quit Wisp from the menu bar icon, then replace the Wisp app in your Applications folder"]),
+    ("how do I quit Wisp?", "howto", "Choose Quit Wisp from the menu bar icon. Closing the panel with × leaves Wisp in the menu bar.",
+     ["To quit, choose **Quit Wisp** from the menu bar icon", "× closes the panel and Wisp stays in the menu bar"]),
+    ("how do I report a bug?", "howto", "Type /report, or choose Report a Problem… from the menu bar icon.",
+     ["Type **/report**, or choose **Report a Problem…** from the menu bar icon"]),
+    ("how do I change what you know about me?", "howto", "Type /about. You can also change or erase it in the Wisp window's Memory → About you.",
+     ["type **/about**", "Memory → About you"]),
+    ("is Gmail something you can read?", "overview", "Once you connect a Google account in Settings → Google, I'll read its Gmail and Calendar too.",
+     ["connect a Google account in **Settings → Google**", "I'll read its Gmail and Calendar too"]),
 ]
 
 CAP_TOOL = [
-    ("do you use the cloud?", "privacy", "No, by default my AI model runs right here on your Mac, and your mail, messages, calendar and notes stay on it. Only web searches, weather and stocks go online (plus Google, if you connect it). A cloud model is something you'd have to turn on yourself in Settings › Models."),
-    ("does my data leave my Mac?", "privacy", "Not by default. Your mail, messages, calendar, reminders and notes are read and kept on this Mac, and the AI runs locally. Web searches, weather and stocks do go online, as does Google if you've connected it."),
-    ("are you private?", "privacy", "My model runs on your Mac and your personal data stays on it. Nothing is sent to a server. The only things that go online are web lookups (search, weather, stocks) and Google, if you connect it."),
-    ("how do I reset Wisp?", "howto", "Type /resetwisp in Ask and confirm with Reset Wisp. It erases your chats, memories and settings and restarts setup, but keeps the downloaded model."),
-    ("how do I make you forget something?", "howto", "Type /memory (or open Memory in the Wisp window), find the item and click Forget. To change what you told me about yourself, use /about."),
-    ("how do I change my Brief time?", "howto", "Open quick settings (the gear, or /settings) and, under “Composed twice a day,” pick new Morning and Evening times."),
-    ("how do I use the Brief?", "howto", "Brief is the tab beside Ask. It sums up your day in a sentence and shows your calendar, mail, texts and what's coming soon, and it also arrives as a notification each morning and evening."),
-    ("how do I open the chat window?", "howto", "Click the menu bar icon and choose Open Wisp Window, or type /window in Ask. Closing it leaves me running in the notch."),
-    ("how do I give feedback?", "howto", "Type /report in Ask, or choose Report a Problem… from the menu bar icon. You'll see exactly what gets saved, and nothing is uploaded."),
-    ("how do I turn on full access?", "howto", "Open quick settings (the gear, or /settings) and switch on Full access. It's also in Settings › Privacy & Access. Sends, calendar changes and permanent deletes still always ask first."),
-    ("how do I change your settings?", "howto", "Click the gear in the notch (or type /settings) for quick settings, or press ⌘, for full Settings (General, Models, Google, Activity and Privacy)."),
-    ("what model are you running?", "models", "I'm running Gemma 4 E4B, locally on your Mac in Wisp's own engine. No cloud model is in use."),
-    ("how much memory do you use?", "models", "Right now my model is using about 5.1 GB of memory."),
-    ("who are you?", "identity", "I'm Wisp, your assistant in your Mac's notch. I help with your calendar, reminders, mail, messages and notes, and my AI runs on your Mac."),
+    ("do you use the cloud?", "privacy", "No. My AI runs on your Mac, and no cloud AI is used unless you turn one on in Settings. Only things like web searches, weather, stocks and research go online.",
+     ["My AI model runs here, on your Mac", "No cloud AI is used unless you turn one on", "web searches, weather, stocks and research"]),
+    ("does my data leave my Mac?", "privacy", "Not by default. Your mail, messages, calendar and notes are kept on this Mac, not on a server. Web searches, weather, stocks and research do go online.",
+     ["read and kept on this Mac, not on a server", "web searches, weather, stocks and research"]),
+    ("are you private?", "privacy", "Yes. My AI runs on your Mac, and your mail, messages, calendar and notes stay on it. Only web searches, weather, stocks and research go online, and you decide what I can read in System Settings → Privacy & Security.",
+     ["read and kept on this Mac, not on a server", "web searches, weather, stocks and research", "You decide what I can read, in System Settings → Privacy & Security"]),
+    ("can you work offline?", "privacy", "Partly. My AI runs on your Mac, but web searches, weather, stocks and research have to go online.",
+     ["My AI model runs here, on your Mac", "Some things have to go online: web searches, weather, stocks and research"]),
+    ("how do I make you forget something?", "howto", "Type /memory to see what I've saved, and delete what you want gone.", ["Type **/memory** to see or delete"]),
+    ("how do I use the Brief?", "howto", "Brief is a tab next to Ask. It shows your day at a glance.",
+     ["Brief is your day at a glance", "the tabs next to Ask"]),
+    ("how do I open the chat window?", "howto", "Press ⌘O to continue your chat in the Wisp window.", ["**⌘O** continues it in the Wisp window"]),
+    ("how do I give feedback?", "howto", "Type /report, or choose Report a Problem… from the menu bar icon.",
+     ["Type **/report**, or choose **Report a Problem…** from the menu bar icon"]),
+    ("what model are you running?", "models", "I'm running gemma-4-E4B-it-oQ4e-mtp, locally on your Mac in Wisp's bundled engine. Cloud is off.",
+     ["gemma-4-E4B-it-oQ4e-mtp, running locally in Wisp's bundled engine", "Cloud: off"]),
+    ("how much memory do you use?", "models", "Right now my model is using about 5.1 GB of memory.", ["using about 5.1 GB of memory"]),
+    ("who are you?", "identity", "I'm Wisp, your assistant in your Mac's notch. I help with your calendar, reminders, mail, messages and notes, and my AI runs on your Mac.",
+     ["I'm **Wisp**, your assistant in the Mac's notch", "My AI runs on this Mac"]),
 ]
 
 
 def ask_direct(p):
-    """Mirror of /agent's one-tool-free-step rule (main.py: ask_direct)."""
-    from service.model_only import capability_question, compose_only, knowledge_question, pure_writing
-    return bool((pure_writing(p) and compose_only(p)) or knowledge_question(p) or capability_question(p))
+    """Mirror of /agent's one-tool-free-step rule (main.py: ask_direct). A question about Wisp itself keeps
+    its tools, so only writing and general knowledge answer with none."""
+    from service.model_only import compose_only, knowledge_question, pure_writing
+    return bool((pure_writing(p) and compose_only(p)) or knowledge_question(p))
 
 
 def fam_capability(rng):
-    capability_question = ask_direct
     out = []
-    for p, _, a in CAP:
+    for p, mode, a, need in CAP + CAP_TOOL:
         now, w = setup(rng)
-        if capability_question(p):
-            steps = [Final(a)]
+        if mode is None:
+            steps = [Final(a)]          # plain ability question: nothing to look up
         else:
-            if p in ("can you help me with homework?",):
-                steps = [Final(a)]          # plain ability question: no lookup needed
+            if mode == "models":
+                call, text = Call("wisp_status", topic="models"), w.t_wisp_status(topic="models")
+            elif mode == "report":
+                call, text = Call("wisp_capabilities", query=p), w.t_wisp_capabilities(query=p)
+            elif mode == "howto":
+                call, text = Call("wisp_capabilities", topic="howto", query=p), w.t_wisp_capabilities(query=p, topic="howto")
             else:
-                topic = ("identity" if p in ("what are you?", "what's your name?") else
-                         "howto" if re.match(r"(how do i|what's the|why|help)", p, re.I) else "overview")
-                steps = [[Call("wisp_capabilities", topic=topic)], Final(a)]
-        out.append(Scenario("capability_honest", p, now, w, steps, "Wisp facts from the capability guidance; no tool names"))
-    for p, topic, a in CAP_TOOL:
-        now, w = setup(rng)
-        if capability_question(p):
-            steps = [Final(a)]
-        elif topic == "models":
-            steps = [[Call("wisp_status", topic="models")], Final(a)]
-        else:
-            steps = [[Call("wisp_capabilities", topic=topic)], Final(a)]
-        out.append(Scenario("capability_honest", p, now, w, steps, f"Wisp {topic} facts, grounded"))
+                call, text = Call("wisp_capabilities", topic=mode), w.t_wisp_capabilities(topic=mode)
+            missing = [n for n in need if n not in text]
+            assert not missing, (p, missing)      # the final may only state what this tool text says
+            steps = [[call], Final(a)]
+        sc = Scenario("capability_honest", p, now, w, steps, "Wisp facts only from the wisp_capabilities text; no tool names")
+        if mode is not None and ask_direct(sc.prompt):
+            continue      # the real turn offers no tools here, so a Wisp fact could only come from the weights
+        out.append(sc)
     return out
 
 
@@ -1463,7 +1533,8 @@ def fam_weather_web(rng):
                          f"Probably not, there's only {chance(d0[4])} today in Portland." if d0[4] else
                          "Probably not, no rain is expected today in Portland.")
             elif kind == "sunny":
-                reply = (f"Looks like it. Tomorrow is {d1[3].lower()} with a high of {d1[1]}°." if d1[3] in ("Sunny", "Partly cloudy") else
+                reply = (f"Yes. Tomorrow is sunny with a high of {d1[1]}°." if d1[3] == "Sunny" else
+                         f"Partly. Tomorrow is partly cloudy with a high of {d1[1]}°." if d1[3] == "Partly cloudy" else
                          f"Not really. Tomorrow's forecast is {d1[3].lower()}, with a high of {d1[1]}°" + (f" and {chance(d1[4])}." if d1[4] else "."))
             elif kind == "rain":
                 reply = (f"Yes, likely. There's {chance(d1[4])} tomorrow in Portland." if d1[4] >= 50 else
@@ -1536,34 +1607,38 @@ def fam_noread(rng):
                             "a question about a reminder reads; it never creates one"))
     for p in ["did I reply to Renata yet?", "did I already answer Dana's email?", "did I send Carmen the money?"]:
         now, w = setup(rng)
+        calls = None
         if "Renata" in p:
             e = Email("Renata Szabo", "rszabo@fernbrooklabs.com", "Fernbrook Labs — interview next steps", now - D(hours=30),
                       "Could you share three 45-minute slots next week for a technical interview?", False, True)
             w.emails.append(e)
             replied = rng.random() < 0.5
+            subj = "Re: Fernbrook Labs — interview next steps"
             if replied:
-                w.emails.append(Email("Sam Rivera", H.USER_EMAILS[0], "Re: Fernbrook Labs — interview next steps", now - D(hours=20),
-                                      "Thanks Renata! I'm free Monday 2–5, Tuesday after 1, or Wednesday morning.", False, True, to="rszabo@fernbrooklabs.com"))
-            call = Call("view_emails", query="Fernbrook")
-            reply = ("Yes, you replied yesterday with times for Monday afternoon, Tuesday after 1 and Wednesday morning."
-                     if replied else "Not yet. Renata's email asking for three interview slots next week doesn't have a reply from you.")
-            if replied and (now - D(hours=20)).date() == now.date():
-                reply = reply.replace("yesterday", "earlier today")
+                w.sent_mail.append(("rszabo@fernbrooklabs.com", subj, now - D(hours=20)))
+            calls = [Call("view_emails", query="Fernbrook"), Call("view_emails", query="Fernbrook", mailbox="sent")]
+            if replied:
+                day = "earlier today" if (now - D(hours=20)).date() == now.date() else "yesterday"
+                reply = f"Yes, your sent mail shows a reply to Renata, “{subj}”, {day}. I can only see the subject, not what you wrote."
+            else:
+                reply = ("Not that I can see. Renata's email asking for three interview slots next week is in your inbox, "
+                         "and I find no sent mail about Fernbrook from the last 7 days.")
         elif "Dana" in p:
             e = Email("Dana Whitfield", "dwhitfield@linden.edu", "Can you cover Saturday?", now - D(hours=26),
                       "Hi Sam, could you cover the Saturday 10–2 shift? Let me know by Thursday.", True, True)
             w.emails.append(e)
-            call = Call("view_emails", query="Dana")
-            reply = "Not yet. Dana asked if you can cover the Saturday 10–2 shift and wants to know by Thursday."
+            calls = [Call("view_emails", query="Dana"), Call("view_emails", query="Dana", mailbox="sent")]
+            reply = ("Not that I can see. Dana asked if you can cover the Saturday 10–2 shift and wants to know by Thursday, "
+                     "and a search of your sent mail for Dana finds nothing from the last 7 days.")
         else:
             w.messages.append(Msg("Carmen Rivera", "Carmen Rivera", "Can you send me $30 for Mom's gift?", now - D(hours=40)))
             sent = rng.random() < 0.5
             if sent:
                 w.messages.append(Msg("Carmen Rivera", "Me", "Just sent it!", now - D(hours=30)))
-            call = Call("view_messages", query="Carmen")
+            calls = [Call("view_messages", query="Carmen")]
             reply = ("It looks like it. You texted Carmen “Just sent it!” after she asked for the $30. I can't see payments themselves, though."
                      if sent else "I don't see it. Carmen asked for $30 for Mom's gift, and there's no reply from you in that chat. I can't see payment apps, though.")
-        out.append(Scenario("no_write_for_reads", p, now, w, [[call], Final(reply)], "checking a reply/send is a read, never a send/draft"))
+        out.append(Scenario("no_write_for_reads", p, now, w, [calls, Final(reply)], "checking a reply/send is a read, never a send/draft"))
     for p in ["what's on my clipboard?", "what did I copy"]:
         now, w = setup(rng)
         w.status["clipboard"] = rng.choice(["https://lindenlearn.edu/courses/cs162/project2", "Kerr Hall 204, 10:00 AM", "(clipboard is empty)"])

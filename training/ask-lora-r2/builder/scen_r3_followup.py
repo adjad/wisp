@@ -817,8 +817,9 @@ def event_detail(i):
             final = _pick(rng, [f"{title} is at {loc}.", f"It's at {loc}."])
         else:
             ask = rng.choice(["when does it end", "what time does that finish", "until when is it"])
-            end = start + D(minutes=mins)
-            final = _pick(rng, [f"It ends at {clock(end)}.", f"{title} runs until {clock(end)}."])
+            # the calendar read lists only the start time, so the end is not known: say so, state the start
+            final = _pick(rng, [f"Your calendar only shows when it starts, {clock(start)}, not when it ends.",
+                                f"I can only see the start, {clock(start)}. There's no end time on {title}."])
         return fu(style(rng, ask), now, w, [[Call("get_upcoming", query=title.split()[0], days=7)], Final(final)],
                   "'it' = the event just listed; re-read the calendar for the detail", hist)
     return make

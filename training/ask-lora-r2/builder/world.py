@@ -761,41 +761,125 @@ class World:
     def t_list_scheduled_sends(self, status="pending", count=20, id=None):
         return "No scheduled emails or texts are pending."
 
-    def t_wisp_capabilities(self, query=None, topic="overview"):
-        if topic == "privacy":
-            return ("Privacy: Wisp's AI model runs on this Mac (Gemma 4 E4B in Wisp's bundled engine). Mail, "
-                    "messages, calendar, reminders and notes are read and stored on this Mac and are not sent to "
-                    "a server. What does go online: web searches, weather, stocks and research, and Google "
-                    "fetches if Google is connected. Cloud models are off; turning one on is an explicit choice "
-                    "in Settings › Models. Reporting a problem uploads nothing.")
-        if topic == "identity":
-            return ("I'm Wisp, your assistant in the Mac's notch. I help with your calendar, reminders, mail, "
-                    "messages and notes, and my AI runs on your Mac. Open me with ⌥Space; Ask, Brief and Day "
-                    "are the tabs.")
+    # The production tool is service/wisp_about.py (topics) + misc_t1._capability_report (a specific
+    # "can you ...?" question). The texts below keep its wording for a Mac with every local source
+    # connected and Google sign-in offered; the howto matcher is its own keyword logic.
+    HOWTO = (
+        (r"open|start|launch|find|summon|shortcut|hotkey|notch",
+         "**Open Wisp**: press **⌥Space** from any app, or move the pointer to the notch."),
+        (r"voice|speak|talk|dictat|microphone|\bmic\b|siri|out loud|aloud|hands.free|say it",
+         "**Ask by voice**: press **⌥⇧Space** from any app, or click the mic in Ask (or in Brief and "
+         "Day to ask about your day). Wisp sends your question when you pause and reads the answer "
+         "aloud; choose when in Settings (the gear) → **Read answers aloud**. Your voice is turned "
+         "into text by my model on this Mac; I keep no recording and it never leaves your Mac. It needs a model "
+         "that can hear, like Gemma 4 E4B."),
+        (r"ask|talk|chat|use|question|type",
+         "**Ask**: type your question and press Return. Type **/** to see shortcuts. "
+         "**⌘N** starts a new chat; **⌘O** continues it in the Wisp window."),
+        (r"brief|day|summary|plan|schedule|today",
+         "**Brief and Day**: the tabs next to Ask. Brief is your day at a glance; Day is today's "
+         "timeline of events and reminders."),
+        (r"about me|know me|my name|profile|getting to know|tone|goals?|call me",
+         "**Tell Wisp about you**: type **/about**. Change or erase it any time in the Wisp "
+         "window's Memory → About you."),
+        (r"remember|memory|forget",
+         "**Memory**: say \"remember that…\" and I'll keep it. Type **/memory** to see or delete "
+         "what I've saved."),
+        (r"google|gmail|workspace|drive",
+         "**Connect Google**: open **Settings → Google**, then sign in. I'll read that account's "
+         "Gmail and Calendar too."),
+        (r"permission|access|allow|grant|privacy|calendar access|full disk",
+         "**Let Wisp read more**: open **Settings → Privacy & Access**, choose **Permissions…**, "
+         "and click **Allow** next to what you want. Screen Recording and Accessibility are under "
+         "**More Access…** next to it."),
+        (r"problem|bug|broken|wrong|report|feedback",
+         "**Something wrong?** Type **/report**, or choose **Report a Problem…** from the menu "
+         "bar icon."),
+        (r"log ?in|sign ?in|login|signin|password",
+         "**Signing in**: Wisp has no account of its own, so there's nothing to sign in to. "
+         "To read a Google account's Gmail and Calendar, connect it in **Settings → Google**."),
+        (r"log ?out|sign ?out|logout|signout",
+         "**Signing out**: Wisp has no account to sign out of. To stop reading a Google account, "
+         "choose **Disconnect & erase** in **Settings → Google**. That also removes the mail, "
+         "events and to-dos Wisp kept from it."),
+        (r"update (?:wisp|the app|this app|you)|upgrade|new version|latest version",
+         "**Updating Wisp**: Wisp doesn't update itself. To move to a new version, quit Wisp from "
+         "the menu bar icon, then replace the Wisp app in your Applications folder with the new one."),
+        (r"quit|close|stop|turn off",
+         "**Close or quit**: × closes the panel and Wisp stays in the menu bar. To quit, choose "
+         "**Quit Wisp** from the menu bar icon."),
+    )
+    GENERIC_HOWTO = r"\b(?:use|get(?:ting)? started|work|works|set ?up|begin|help)\b"
+
+    def _howto(self, query=""):
+        import re as _re
+        text = (query or "").lower()
+        specific = [step for keys, step in self.HOWTO
+                    if _re.search(rf"\b(?:{keys})", text) and not _re.search(self.GENERIC_HOWTO, text, _re.I)]
+        if specific:
+            return "\n".join(["- " + st for st in specific] + ["", 'Ask "how do I use Wisp?" for the whole guide.'])
+        return "\n".join(["**Getting started with Wisp**", ""] + ["- " + st for _, st in self.HOWTO])
+
+    _CONFIRM = "Before anything is sent, or your calendar changes, I show it to you and wait for your OK."
+
+    def _capability_report(self):
+        rows = ["Yes — Send text messages (confirmation required)", "Yes — Draft text messages",
+                "Yes — Send email (confirmation required)",
+                "Yes — Reply in an existing email thread (confirmation required)",
+                "Yes — Schedule a new email or text for later (confirmation required)",
+                "Yes — Create reminders",
+                "Yes — Move calendar events to a new time (confirmation required)",
+                "Yes — Read calendar/reminders", "Yes — Read browser history", "Yes — Read Mail",
+                "Yes — Read Messages", "Yes — Search Notes", "Yes — Read and organize local files",
+                "Yes — Change system settings (confirmation required)",
+                "No — schedule a reply inside an existing email thread (only new standalone emails and texts can be scheduled)",
+                "No — access a bank balance unless a dedicated connected banking tool is installed"]
+        return "Here's what Wisp can and can't do:\n" + "\n".join(rows)
+
+    def t_wisp_capabilities(self, query=None, topic=None):
+        import re as _re
+        topic = (topic or "").strip().lower()
         if topic == "howto":
-            return ("How to use Wisp:\n- Open Ask from any app: ⌥Space (or hover over the notch). Ask out loud: "
-                    "⌥⇧Space, or click the mic in Ask.\n- Brief: a tab beside Ask with your day in one sentence, a "
-                    "short summary and CAL / MAIL / TEXTS / SOON rows; it also arrives as a notification in the "
-                    "morning and evening. Change its times in quick settings (the gear, or /settings) under "
-                    "'Composed twice a day'.\n- Day: the rest of today, hour by hour.\n- Wisp window: menu bar icon › "
-                    "Open Wisp Window, ⌘O from the notch, or /window.\n- Memory: /memory shows what Wisp remembers; "
-                    "click Forget on an item to remove it. /about edits what you told Wisp about yourself.\n"
-                    "- Full access: quick settings or Settings › Privacy & Access. Sends, calendar changes and "
-                    "permanent deletes always ask first.\n- Reset everything: type /resetwisp in Ask and confirm "
-                    "Reset Wisp (erases chats, memories and settings; keeps the model).\n- Report a problem: /report, "
-                    "or the menu bar icon › Report a Problem… (nothing is uploaded).\n- Settings: ⌘, (General, "
-                    "Models, Google, Activity, Privacy). New chat in the Wisp window: ⌘N.\n- Screen: type /screen to have Wisp look "
-                    "at your screen (needs Screen Recording).\n- An orange ! on the notch or menu bar icon means setup was set "
-                    "aside; choose Finish Setup… from the menu bar icon.")
-        return ("Wisp can: read and summarize your email, texts, calendar, reminders and notes; draft and send "
-                "emails and texts (every send is shown to you to confirm first); add reminders and calendar "
-                "events; search the web, weather and stocks; find and read files (PDF, Word, Excel, PowerPoint); "
-                "remember things you tell it; set timers; and control Mac settings and apps. Sources it can read (with your macOS "
-                "permission): Mail, Messages, Calendar, Reminders, Notes, plus Gmail and Google Calendar if Google is connected. "
-                "The AI runs on this Mac, so reading local data works offline; web, weather and stocks need the internet. It cannot send anything without "
-                "your OK, read a bank balance, update itself, or schedule a reply inside an existing email thread "
-                "(scheduled sends are new emails or texts). Permissions: review them in Settings › Privacy & Access › "
-                "Permissions… (each source has its own Allow) and in System Settings › Privacy & Security.")
+            return self._howto(query)
+        if topic == "privacy":
+            return ("**Your data stays on this Mac.**\n\n"
+                    "- My AI model runs here, on your Mac. Your mail, messages, calendar, notes, and what you "
+                    "tell me are read and kept on this Mac, not on a server.\n"
+                    "- No cloud AI is used unless you turn one on in **Settings**.\n"
+                    "- Some things have to go online: web searches, weather, stocks and research. If you connect "
+                    "Google, I fetch that account's mail and calendar from Google.\n"
+                    "- " + self._CONFIRM + "\n"
+                    "- You decide what I can read, in System Settings → Privacy & Security.\n"
+                    "- To see or erase what I know about you: **/about** for Getting to know you, and "
+                    "**/memory** for things I've remembered.")
+        if topic == "identity":
+            return ("I'm **Wisp**, your assistant in the Mac's notch. My AI runs on this Mac, so I can help with "
+                    "your calendar, reminders, mail, messages and notes without sending them to a server.\n\n"
+                    "Open me any time with **⌥Space** or by moving the pointer to the notch. Ask me anything "
+                    "(press **⌥⇧Space** to ask out loud), check **Brief** for your day at a glance, or **Day** "
+                    "for today's timeline.\n\nAnd you're Sam: you told me in Getting to know you. Type **/about** "
+                    "to change it.\n\nAsk \"what can you do?\" for the full tour.")
+        general = not (query or "").strip() or _re.fullmatch(
+            r"\W*(?:(?:please|hey|hi|ok|okay|so|wisp)[,\s]+)*(?:what\s+(?:else\s+)?(?:can|could)\s+you\s+"
+            r"(?:do|help\s+(?:me\s+)?with)|what\s+are\s+you\s+able\s+to\s+do)[?.!\s]*", query or "", _re.I)
+        if topic == "overview" or general:
+            return ("**Hi, I'm Wisp.** My AI runs right here on this Mac.\n\n**What I can do**\n"
+                    "- Read and sum up your calendar, reminders, mail, messages and notes, and tell you what needs a reply.\n"
+                    "- Draft and send emails and texts; add reminders and calendar events; move events on your calendar. "
+                    + self._CONFIRM + "\n"
+                    "- Search the web, check the weather and do quick math.\n"
+                    "- Open apps and change Mac settings like Do Not Disturb or dark mode.\n"
+                    "- Remember what you tell me (\"remember that my locker is 112\").\n"
+                    "- Google: connect a Google account in **Settings → Google** and I'll read its Gmail and Calendar too.\n\n"
+                    "**Right now**\nConnected: Mail, Messages, Calendar, Reminders, Notes.\n\n**Try asking**\n"
+                    "- \"What's on my calendar tomorrow?\"\n- \"Any emails I need to reply to?\"\n"
+                    "- \"Remind me at 5pm to call Mom.\"\n\n**Where things are**\n"
+                    "- Press ⌥ Space to ask me from anywhere, or ⌥⇧Space to ask out loud.\n"
+                    "- Type / in Ask to see shortcuts, like /today and /report.\n"
+                    "- Brief and Day are the tabs next to Ask: a summary of what's new, and your plan for today.\n"
+                    "- Getting to know you (type /about) tells me your name and what matters to you, so my answers fit you better.\n\n"
+                    "Ask \"is my data private?\" or \"how do I use Wisp?\" any time.")
+        return self._capability_report()
 
     # =================================================================== writes
     # Round 2. Each handler mutates the world and returns the production tool's
