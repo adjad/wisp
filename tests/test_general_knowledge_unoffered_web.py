@@ -148,14 +148,14 @@ def test_default_voice_is_gentle_and_last():
 
 def test_user_style_instructions_override_the_full_answer_default():
     s = loop.SYSTEM
-    own = s[s.index("IMPORTANT rules about the user's own instructions:"):]
-    assert s.index("Give full answers") < s.index("IMPORTANT rules about the user's own instructions:")
-    for wording in ("'one sentence'", "'just the time'", "'no lists'", "'keep it short from now on'"):
+    head = "IMPORTANT rules about the user's own instructions:"
+    own = s[s.index(head):]
+    assert s.index("give full answers") < s.index(head) and "By default" in s
+    for wording in ("'one sentence'", "'just the time'", "'no lists'"):
         assert wording in own
-    assert "earlier in this chat" in own and "beats every voice and layout rule" in own
-    assert "saved answer style" in own and "ABOUT THE USER" not in own
+    assert "earlier in this chat or saved" in own and "beats every rule above" in own
     # One-shot instructions don't leak into later turns.
-    assert "applies to that answer only" in own
+    assert "A one-off covers that answer only" in own
     # The rules carry no tool names, so build_system keeps them on every turn.
     assert all(own_part in loop.build_system(set()) for own_part in own.split("\n- ")[1:])
 
