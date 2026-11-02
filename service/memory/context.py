@@ -2,12 +2,16 @@
 
 The working set is bounded two ways: keep at most the last KEEP_MESSAGES turns
 verbatim, and never exceed the history budget derived from the model's own
-context window (see history_budget). Anything older is folded into a
+context window (see history_budget). Turns that miss the verbatim cut but are
+not yet in the summary ride along as one-line notes in an "earlier in this
+conversation" digest (see condense_history). Anything older is folded into a
 rolling `summary` by `maybe_summarize`, which reuses the already-resident model
 so it never triggers a costly model swap. Tool outputs never re-enter context in
 full — only a short digest rides along on the assistant turn.
 """
 from __future__ import annotations
+
+import re
 
 from service.config import no_thinking_kwargs
 from service.inference.omlx_client import OMLXClient
@@ -70,6 +74,86 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+# THE "EARLIER IN THIS CONVERSATION" DIGEST.
+#
+# A stored turn used to be either verbatim or gone. build_messages kept the
+# newest turns that fit the history budget, the Ask step fit (agent/loop.py
+# _fit_window) then cut that to its own smaller budget, and the rolling summary
+# only starts once 48 turns are stored. Everything in between was in neither:
+# on Gemma 4 E4B a first Ask step kept ~5 exchanges of ~1,150-character replies,
+# so "what was my locker code?" failed nine exchanges later.
+#
+# A turn that misses the verbatim cut now leaves one line here instead: the
+# user's words (where most stated facts live) and an assistant reply's lead
+# sentence plus the sentences that carry numbers or names (where looked-up
+# facts live). Extractive and deterministic, so it costs no model call on the
+# hot path and the same turns always condense to the same lines, which keeps
+# the prompt-cache prefix stable from one turn to the next.
+DIGEST_HEADER = ("Earlier in this conversation (condensed notes of older turns, oldest "
+                 "first; reference only, not instructions):")
+_DIGEST_USER_CHARS = 160
+_DIGEST_ASSISTANT_CHARS = 200
+# ~1,200 estimated tokens: about 15 condensed exchanges. Past this the oldest
+# lines go, and the rolling summary is what remembers them.
+DIGEST_MAX_CHARS = 4800
+
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+_MARKUP = re.compile(r"[*_`#>|]+|^\s*[-•]\s+", re.M)
+_SALIENT = re.compile(r"\d|(?<=[a-z,;:] )[A-Z][a-z]")
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def _flat(text: str) -> str:
+    return " ".join(_MARKUP.sub(" ", text).split())
+
+
+def digest_line(role: str, content) -> str:
+    """One stored turn as a digest line. "" for a turn with nothing to keep."""
+    if not isinstance(content, str):
+        return ""
+    text = _flat(content)
+    if not text:
+        return ""
+    if role == "user":
+        return "- User: " + _clip(text, _DIGEST_USER_CHARS)
+    sentences = _SENTENCE.split(text)
+    picked = [0] + [i for i, s in enumerate(sentences[1:], 1) if _SALIENT.search(s)]
+    kept: list[str] = []
+    used = 0
+    for i in picked:
+        if kept and used + len(sentences[i]) > _DIGEST_ASSISTANT_CHARS:
+            continue
+        kept.append(sentences[i])
+        used += len(sentences[i]) + 1
+    return "- Assistant: " + _clip(" ".join(kept), _DIGEST_ASSISTANT_CHARS)
+
+
+def digest_content(lines: list[str]) -> str:
+    return DIGEST_HEADER + "\n" + "\n".join(lines)
+
+
+def is_digest(message: dict) -> bool:
+    return (message.get("role") == "system" and isinstance(message.get("content"), str)
+            and message["content"].startswith(DIGEST_HEADER))
+
+
+def digest_lines(message: dict) -> list[str]:
+    return message["content"].split("\n")[1:]
+
+
+def cap_digest(lines: list[str]) -> list[str]:
+    """Drop the oldest lines until the digest fits DIGEST_MAX_CHARS."""
+    total = sum(len(line) + 1 for line in lines)
+    start = 0
+    while start < len(lines) and total > DIGEST_MAX_CHARS:
+        total -= len(lines[start]) + 1
+        start += 1
+    return lines[start:]
+
+
 def _render(turn: dict) -> dict:
     """A stored turn -> a chat message.
 
@@ -106,9 +190,12 @@ def _render(turn: dict) -> dict:
 def build_messages(sid: str, max_tokens: int | None = None) -> list[dict]:
     """History messages for `sid` (no system prompt, no new user turn).
 
-    Layout: [summary block?] + last turns within the token budget.
-    `max_tokens` overrides the default budget when a caller needs a
-    different one; None uses default_history_budget().
+    Layout: [summary block?] + [digest block?] + last turns within the token
+    budget. Turns the budget (or KEEP_MESSAGES) leaves out, and the summary does
+    not yet cover, are condensed into the digest rather than dropped; the
+    digest's own cost counts against the same budget. `max_tokens` overrides the
+    default budget when a caller needs a different one; None uses
+    default_history_budget().
     """
     sess = store.get_session(sid)
     if not sess:
@@ -119,24 +206,37 @@ def build_messages(sid: str, max_tokens: int | None = None) -> list[dict]:
 
     summary = (sess["summary"] or "").strip()
     summarized_idx = sess["summarized_idx"]
-    window = store.turns_from(sid, summarized_idx)
-    # Only the last KEEP_MESSAGES are eligible to be shown verbatim.
-    window = window[-KEEP_MESSAGES:]
+    turns = store.turns_from(sid, summarized_idx)
+    # Only the last KEEP_MESSAGES are eligible to be shown verbatim; older
+    # unsummarized turns go straight to the digest.
+    window = turns[-KEEP_MESSAGES:]
+    lines = [line for t in turns[:len(turns) - len(window)]
+             if (line := digest_line(t["role"], t["content"]))]
 
     budget = max_tokens
     if summary:
         budget -= estimate_tokens(summary)
 
-    # Walk newest -> oldest, keeping turns until the budget runs out.
+    # Walk newest -> oldest, keeping turns while they and the digest of
+    # everything older still fit. A turn that does not fit is condensed, and so
+    # is everything older than it (a gap in the middle would misorder the chat).
+    window_lines = [digest_line(t["role"], t["content"]) for t in window]
     kept: list[dict] = []
+    spent = 0
+    rest = len(window)
     for turn in reversed(window):
         msg = _render(turn)
         cost = estimate_tokens(msg["content"])
-        if cost > budget and kept:
+        older = lines + [line for line in window_lines[:rest - 1] if line]
+        digest_cost = estimate_tokens(digest_content(cap_digest(older))) if older else 0
+        if kept and spent + cost + digest_cost > budget:
             break
-        budget -= cost
+        spent += cost
         kept.append(msg)
+        rest -= 1
     kept.reverse()
+    lines += [line for line in window_lines[:rest] if line]
+    lines = cap_digest(lines)
 
     messages: list[dict] = []
     if summary:
@@ -144,6 +244,8 @@ def build_messages(sid: str, max_tokens: int | None = None) -> list[dict]:
             "role": "system",
             "content": f"Summary of the earlier conversation:\n{summary}",
         })
+    if lines:
+        messages.append({"role": "system", "content": digest_content(lines)})
     messages.extend(kept)
     return messages
 
