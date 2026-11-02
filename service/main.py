@@ -2834,6 +2834,23 @@ async def agent(body: dict[str, Any]):
                     knowledge = knowledge_question(prompt)
                     if knowledge:
                         synthesis_guidance.insert(1, ASK_KNOWLEDGE_HINT)
+                    # "From now on keep answers short" has no tool route (remember
+                    # refuses it by design): the host saves a standing style to the
+                    # profile before the model runs, and echoes this chat's earlier
+                    # style instructions so history trimming cannot drop them.
+                    # Inserted last at index 1 so it sits right after
+                    # ASK_STYLE_HINT, ahead of the topic hints inserted above.
+                    if not test_mode:
+                        try:
+                            from service.memory.answer_style import apply_for_turn
+                            earlier_texts = store.recent_user_turns(sid, limit=40) if sess else []
+                            if persisted_user_idx is not None and earlier_texts:
+                                earlier_texts = earlier_texts[:-1]  # this turn, already stored
+                            answer_style_guidance = apply_for_turn(prompt, earlier_texts)
+                            if answer_style_guidance:
+                                synthesis_guidance.insert(1, answer_style_guidance)
+                        except Exception:  # noqa: BLE001
+                            pass  # a style note never breaks the turn
                     # One tool-free step: writing with no destination, general
                     # knowledge, and questions about what Wisp can do (their
                     # tool paths failed, refused or named internal tools).
