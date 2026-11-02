@@ -880,11 +880,13 @@ _PERSONAL_LOOKUPS = re.compile(
     rf"|\b(?:is|are|was|will)\s+my\s+(?:[\w'’-]+\s+){{0,2}}?{_DATE_ANCHOR}\b"
     # replies and updates from a person
     r"|\b(?:has|did|have)\s+(?!you\b|i\b|we\b|it\b)\w+\s+(?:replied|reply|responded|respond|texted|text|emailed|email|"
-    r"called|call|messaged|message|written|write|gotten\s+back|got\s+back|answered|confirmed)\b"
+    r"called|call|messaged|message|gotten\s+back|got\s+back|answered|confirmed)\b"
     r"|\bany\s+(?:word|news|updates?|replies|messages?|texts?|e-?mails?|mail)\s+from\b"
     r"|\b(?:anything|is\s+there\s+anything)\s+(?:new\s+)?from\s+(?:my\s+)?\w+\b(?!\s+(?:the|a|an|that)\b)"
     # "what did Mom say?", "what did I say to Maya yesterday?", "did my landlord write back?"
-    r"|\bwhat\s+did\s+(?!you\b)\w+\s+(?:say|send|write|tell)\b"
+    # Not "What did Einstein say about imagination?": family, "my X", or a recent channel.
+    r"|\bwhat\s+did\s+(?:mom|mum|dad|my\s+[\w'’-]+|i|he|she|they)\s+(?:say|send|write|tell)\b"
+    r"|\bwhat\s+did\s+(?!you\b)\w+\s+(?:say|send|write)\s+(?:in|on|last|yesterday|today|tonight|this|earlier|just)\b"
     r"|\bdo\s+i\s+owe\s+(?:my\s+)?\w+\s+(?:for|money|anything|back)\b|\bam\s+i\s+booked\b"
     r"|\bhow(?:['’]s|\s+is|\s+does)\s+my\s+\w+\s+look(?:ing)?\b"
     r"|\b(?:did|has|have)\s+(?:my\s+)?(?!you\b|i\b|we\b|it\b)\w+\s+(?:write|written|wrote|get|gotten|got)\s+back\b"
@@ -898,6 +900,28 @@ _PERSONAL_LOOKUPS = re.compile(
 # catch-all main had ("any question with my X") also took "my phone keeps dying,
 # any tips?"; this one needs the lead and leaves opinion and advice alone ("what's
 # the best way to prepare for my exam", "how much water should my dog drink").
+# A first-person question is about the user's own things ("Do I have a doctor's
+# appointment?", "When do I fly out?", "How much PTO do I have?", "Where do I
+# park?") unless it asks for an opinion, advice or a hypothetical: "should I
+# learn guitar or piano", "what do I do with overripe bananas", "am I
+# overthinking this", "do I need to peel ginger", "what do I do if my car
+# won't start". "should I" never counts.
+_FIRST_PERSON_ASK = re.compile(r"\b(?:do|did|am|have|was|were)\s+i\b", re.I)
+_FIRST_PERSON_CASUAL = re.compile(
+    r"\b(?:should|would|could|ought|better|best|worth|normal|weird|okay|wrong|crazy|mistake|"
+    r"tips?|advice|ideas?|recommend\w*|suggest\w*|realistically|usually|generally|typically|"
+    r"in\s+general|if|look\s+(?:like|tired|good|old|young|fat|thin)|too\s+(?:old|young|late|early)|"
+    r"overthinking|over-?reacting|being\s+(?:silly|dramatic|unreasonable|paranoid)|right\s+thing|"
+    r"apolog\w*|sorry|vote|judge|"
+    r"going\s+to\s+be\s+(?:ok|okay|alright|all\s+right|fine)|how\s+(?:do|can|should|would)\s+i)\b"
+    r"|\bwhat\s+do\s+i\s+(?:do|say|cook|make|eat|wear|watch|read|play)\s+(?:with|about|to|for|when|if)\b"
+    r"|\bdo\s+i\s+(?:need|have)\s+to\s+(?!(?:reply|respond|answer|pay|call|text|email|send|submit|be|go|"
+    r"bring|pick|leave|renew|sign|book|finish|return|check|show|attend|meet|see)\b)\w+"
+    r"|\bdo\s+i\s+need\s+(?:a|an)\s+(?:visa|passport|vaccine|license|licence|permit)\b"
+    r"|\bam\s+i\s+(?:a|an|the|too|really|being|right|smart|good|bad|ready|old|allowed)\b"
+    r"|\b(?:in|to)\s+(?:japan|france|europe|the\s+us|america|canada|mexico|china|india|general)\b", re.I)
+
+
 _MY_LOOKUP = re.compile(
     r"^\s*(?:so\s+|and\s+|hey\s+|ok\s+)?(?:what|when|where|which|who|whose|how\s+(?:much|many|old|long|far|big|heavy)"
     r"|did|has|have)\b[^?.!]{0,40}?\bmy\s+[a-z]", re.I)
@@ -936,6 +960,8 @@ def asks_personal_data(prompt: str) -> bool:
         return False
     return bool(_PERSONAL.search(text) or _PERSONAL_LOOKUPS.search(text)
                 or (_MY_LOOKUP.match(text) and not _MY_LOOKUP_OPINION.search(text))
+                or (_QUESTION.search(text) and _FIRST_PERSON_ASK.search(text)
+                    and not _FIRST_PERSON_CASUAL.search(text))
                 or (_QUESTION.search(text) and not _ADVICE_LEAD.match(text) and _PLAN_ON_A_DAY.search(text)))
 
 

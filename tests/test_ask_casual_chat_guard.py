@@ -158,3 +158,28 @@ def test_opinion_with_my_thing_is_not_personal(prompt):
 
 def test_a_two_line_promise_to_check_is_a_stall():
     assert mo.stall_reply("Hang on.\nChecking now.")
+
+
+# Third audit (9fe6a3c2): first-person lookups count unless they ask for an
+# opinion, advice or a hypothetical. These held on main and must keep holding.
+@pytest.mark.parametrize("prompt", [
+    "Do I have a doctor's appointment?", "What do I have coming up?", "What do I have scheduled?",
+    "Do I have a lunch with Sam?", "Do I need to reply to anyone?", "Where do I need to be at 3?",
+    "When do I fly out?", "When do I see the dentist?", "Do I work tomorrow?",
+    "What do I need to bring tomorrow?", "Where am I flying next week?",
+    "How much did I spend on Uber last week?", "How much PTO do I have?", "What do I owe Sam?",
+    "Where do I park?", "Which pharmacy do I use?", "What size shoe do I wear?",
+    "Did I already reply to Jordan?", "Was I supposed to call anyone today?",
+    "Am I meeting anyone this afternoon?", "Have I heard back from the landlord?"])
+def test_first_person_lookups_stay_personal(prompt):
+    assert mo.asks_personal_data(prompt)
+
+
+@pytest.mark.parametrize("prompt", [
+    "What did Einstein say about imagination?", "What did Plato say about justice?",
+    "What did Shakespeare write besides Hamlet?", "do i need to peel ginger before grating it",
+    "Am I overthinking this?", "Do I look tired in photos usually?", "Do I need a visa to visit Japan?",
+    "Was I wrong to say no to the party?", "Am I too old to learn piano?", "Do I need to tip in Japan?",
+    "What do I say to cheer up a friend?"])
+def test_first_person_opinion_and_knowledge_is_not_personal(prompt):
+    assert not mo.asks_personal_data(prompt)
