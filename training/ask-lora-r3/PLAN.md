@@ -53,6 +53,45 @@ r3 = all r2 families, rebuilt on main, plus these:
 - **Settings:** 6 generations at production sampling, beta 0.04, lr 5e-6, 1 epoch over about 1,500 prompts weighted towards safety.
 - **No rollout environment.** Gemma 4 has no vLLM, and multi-turn rollouts would be too slow.
 
+## Compute (A6000 hours on hand: ~150; 8× B300 node at $32/h)
+
+**Measured basis.** On the Hyperstack A6000, r2 trained 1,743 text rows for 2 epochs in 628 minutes:
+- 85.6 s per 8-row step, about 10.8 s per row-epoch;
+- 624 tok/s;
+- peak memory 21.6 GiB.
+
+The figures below scale from that, so they are estimates.
+
+| Job | A6000 | 8× B300 (estimate) | B300 cost |
+|---|---|---|---|
+| r3 SFT, 2 epochs: 2,990 text rows + ~12% vision + ~6% audio + KL anchor | ≈ 19–21 h | ≈ 1–1.5 h (DDP) | ≈ $32–48 |
+| Multimodal checkpoint eval (base + about 6 checkpoints, vision dev + audio dev) | ≈ 1–2 h | < 0.5 h | ≈ $16 |
+| GRPO: 1,500 prompts, 6 generations | ≈ 20–28 h | ≈ 2–4 h | ≈ $64–128 |
+| SFT sweep: 8 configs (lr, epochs, anchor λ), one per GPU | n/a | ≈ 5 h | ≈ $160 |
+
+**Recommendation:**
+- Run the main line on the A6000: SFT, checkpoint eval, GRPO, and one repair iteration. That's about 50–70 of the 150 hours, with no new spend.
+- Use the B300 node only for the one job where parallelism buys quality: the 8-config SFT sweep. Each GPU trains one config, and the multimodal checkpoint evaluator picks the winner. Budget about $160–200.
+
+**Blackwell risk:**
+- B300 needs a CUDA 12.8+ torch build with sm_100/sm_103 kernels.
+- Run `train.py smoke` there first, and stop if any kernel falls back or fails.
+- The r2 stack (torch 2.11.0+cu128, transformers 5.22.1, peft 0.21.2) is the starting pin.
+
+## Regression guard for vision and audio (new in r3)
+
+1. **Training rows on Wisp's own request shapes.** The towers stay frozen. About 255 image, video and scanned-document rows come from vision.py's `_messages`, and about 320 transcription rows from voice.py's request.
+2. **KL anchor to the base model.** On every vision and audio row, plus a small text slice, the loss adds λ·KL(base ‖ tuned). The base logits come from the same weights with the LoRA disabled.
+3. **Checkpoint selection by a GPU multimodal eval** on held-out vision and audio dev rows, which are separate from the Mac gate set. `pick_checkpoint.py` refuses any checkpoint that is worse than base beyond these tolerances:
+   - vision facts −1 pt;
+   - proposal F1 −2 pt;
+   - any new injection leak;
+   - more empty replies;
+   - audio WER +0.01;
+   - punctuation −2 pt.
+4. **GRPO** carries about 15% multimodal prompts with fact, proposal and WER rewards, plus a reference-model KL.
+5. **Mac gate** (`gate/`) on the 60-image, 2-video and 28-clip sets against the untuned model: no metric may be worse.
+
 ## Gate
 
 Same as r2, plus:

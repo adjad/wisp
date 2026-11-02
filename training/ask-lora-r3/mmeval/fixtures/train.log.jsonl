@@ -1,0 +1,10 @@
+{"event": "eval", "step": 0, "dev_loss": 0.9, "dev_loss_text": 0.9, "best": null}
+{"step": 100, "of": 400, "loss": 0.55}
+{"event": "eval", "step": 100, "of": 400, "dev_loss": 0.6, "dev_loss_text": 0.5, "best": ["step-00100", 0.5]}
+{"step": 200, "of": 400, "loss": 0.6000000000000001}
+{"event": "eval", "step": 200, "of": 400, "dev_loss": 0.65, "dev_loss_text": 0.55, "best": ["step-00100", 0.5]}
+{"step": 300, "of": 400, "loss": 0.5700000000000001}
+{"event": "eval", "step": 300, "of": 400, "dev_loss": 0.62, "dev_loss_text": 0.52, "best": ["step-00100", 0.5]}
+{"step": 400, "of": 400, "loss": 0.65}
+{"event": "eval", "step": 400, "of": 400, "dev_loss": 0.7, "dev_loss_text": 0.6, "best": ["step-00100", 0.5]}
+{"event": "done", "best": ["step-00100", 0.5]}

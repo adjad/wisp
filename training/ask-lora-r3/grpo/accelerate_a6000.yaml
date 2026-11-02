@@ -1,0 +1,20 @@
+# One RTX A6000 48 GB (sm_86, bf16, no FP8): no distribution, no DeepSpeed.
+#   accelerate launch --config_file accelerate_a6000.yaml grpo.py train --profile a6000 ...
+# (`python grpo.py train --profile a6000 ...` is the same thing; accelerate just supplies bf16 autocast.)
+compute_environment: LOCAL_MACHINE
+debug: false
+distributed_type: 'NO'
+downcast_bf16: 'no'
+enable_cpu_affinity: false
+gpu_ids: '0'
+machine_rank: 0
+main_training_function: main
+mixed_precision: bf16
+num_machines: 1
+num_processes: 1
+rdzv_backend: static
+same_network: true
+tpu_env: []
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false

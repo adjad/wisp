@@ -1,0 +1,20 @@
+# 8 x B300 with plain DDP: the fallback when DeepSpeed does not install or build for sm_103. Same batch shape
+# as the ZeRO-2 config (the LoRA gradients are ~60 MB, so the all-reduce is not the bottleneck either way).
+#   accelerate launch --config_file accelerate_b300x8_ddp.yaml grpo.py train --profile b300x8 ...
+compute_environment: LOCAL_MACHINE
+debug: false
+distributed_type: MULTI_GPU
+downcast_bf16: 'no'
+enable_cpu_affinity: false
+gpu_ids: all
+machine_rank: 0
+main_training_function: main
+mixed_precision: bf16
+num_machines: 1
+num_processes: 8
+rdzv_backend: static
+same_network: true
+tpu_env: []
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false

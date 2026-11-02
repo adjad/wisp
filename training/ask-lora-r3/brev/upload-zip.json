@@ -1,0 +1,64 @@
+{
+ "file": "ask-lora-data.zip",
+ "sha256": "28a5fa32065fd54a0a516590a07093de792522a6bc73d00f7fe369e1c0879126",
+ "bytes": 86232592,
+ "train": {
+  "rows": 3041,
+  "think": 903,
+  "no_think": 2138,
+  "shapes": {
+   "first_answer": 1056,
+   "first_think": 517,
+   "forced_empty": 1082,
+   "forced_think": 386
+  },
+  "forced_prompts": 1468,
+  "ends": {
+   "<turn|>": 1576,
+   "<|tool_response>": 1465
+  }
+ },
+ "dev": {
+  "rows": 347,
+  "think": 99,
+  "no_think": 248,
+  "shapes": {
+   "first_answer": 119,
+   "first_think": 57,
+   "forced_empty": 129,
+   "forced_think": 42
+  },
+  "forced_prompts": 171,
+  "ends": {
+   "<turn|>": 178,
+   "<|tool_response>": 169
+  }
+ },
+ "vision": {
+  "train": 290,
+  "dev": 41,
+  "images": 485,
+  "kinds": {
+   "image": 230,
+   "video": 36,
+   "document": 40,
+   "text_document": 25
+  }
+ },
+ "audio": {
+  "train": 296,
+  "dev": 64,
+  "clips": 360,
+  "kinds": {
+   "command": 74,
+   "injection": 51,
+   "long": 32,
+   "names": 26,
+   "no_speech": 48,
+   "non_english": 51,
+   "numbers": 78
+  },
+  "seconds": 2452.2,
+  "dev_transcripts_also_in_train": 0
+ }
+}

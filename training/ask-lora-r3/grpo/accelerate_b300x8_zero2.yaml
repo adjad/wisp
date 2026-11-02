@@ -1,0 +1,26 @@
+# 8 x B300 (crusoe-b300-spare), DeepSpeed ZeRO-2, bf16.
+#   accelerate launch --config_file accelerate_b300x8_zero2.yaml grpo.py train --profile b300x8 ...
+# One process per GPU. ZeRO-2 shards gradients and optimizer state; every rank keeps the full bf16 model, which is
+# what lets each rank run HF generate on its own copy with no weight gathering (ZeRO-3 would gather per layer
+# and make generation crawl). With a LoRA-only run the sharded state is tiny (~30M parameters), so ZeRO-2 buys
+# almost no memory over plain DDP here; use accelerate_b300x8_ddp.yaml if DeepSpeed will not build on this node.
+# Batch shape lives in ds_zero2_b300.json and must equal --micro-bs / --ppr / --G (grpo.py checks and stops if not).
+compute_environment: LOCAL_MACHINE
+debug: false
+deepspeed_config:
+  deepspeed_config_file: ds_zero2_b300.json
+  zero3_init_flag: false
+distributed_type: DEEPSPEED
+downcast_bf16: 'no'
+enable_cpu_affinity: false
+machine_rank: 0
+main_training_function: main
+mixed_precision: bf16
+num_machines: 1
+num_processes: 8
+rdzv_backend: static
+same_network: true
+tpu_env: []
+tpu_use_cluster: false
+tpu_use_sudo: false
+use_cpu: false

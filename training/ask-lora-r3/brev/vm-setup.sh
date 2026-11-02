@@ -1,5 +1,17 @@
 #!/bin/bash
-# Wisp Ask LoRA: Brev GPU instance setup (one NVIDIA GPU, 48 GB class: L40S, A6000, A100, H100).
+# Wisp Ask LoRA: Brev GPU instance setup (one NVIDIA GPU, 48 GB class: L40S, A6000, A100, H100;
+# or an 8x Blackwell node such as the B300 288 GiB: torchrun data parallel, see GPUs below).
+#
+# GPUs (r3). The torch wheel is chosen from the GPU's compute capability (nvidia-smi compute_cap):
+#   8.x / 9.x  (A6000 sm_86, A100, L40S, H100)  -> cu128 wheels (driver 570 = CUDA 12.8 is enough)
+#   10.x       (B200 sm_100, B300 sm_103)       -> cu130 wheels, which carry sm_103 kernels; they need driver >= 580.
+#                                                  A driver below 580 falls back to cu128 (sm_100 only: a B300 may
+#                                                  refuse to run it) and then to the nightly cu130 index.
+# Every candidate is VERIFIED by running a bf16 matmul and an SDPA call on the GPU, not just by import; the first that
+# passes is kept. Override with TORCH_INDEX=<url> (one candidate, still verified) and TORCH_SPEC='torch>=2.9'.
+# Several GPUs: `run.sh <tag> train` launches torchrun with NPROC processes (default: every GPU nvidia-smi lists;
+# NPROC=1 forces one). smoke, preflight and merge always use one GPU. The effective batch is --global-batch rows
+# per optimizer step whatever NPROC is (default 8): GLOBAL_BATCH=<n> LR=<lr> in the environment pass through.
 # Round 2 trains TWO separate LoRAs on one shared dataset: Gemma 4 E4B ("gemma") and
 # NVIDIA Nemotron 3.5 Bolt E4B ("bolt"; an RL post-train of Gemma 4 E4B, same architecture).
 #
@@ -75,6 +87,8 @@ cat > "$WORK/run.sh" <<'RUN'
 #!/bin/bash
 # Wisp Ask LoRA steps (two models, one dataset):
 #   ~/wisp/run.sh <gemma|bolt> <step> [args]      steps: check base unpack <sha256> preflight smoke train status sample merge package freebase
+#   (train: NPROC=<n> torchrun processes, default every GPU; GLOBAL_BATCH=<rows> LR=<lr> EXTRA_TRAIN_ARGS='--audio-weight 0.08 ...')
+#   ~/wisp/run.sh <gemma|bolt> sweep [file]       one training run per GPU (CUDA_VISIBLE_DEVICES=i, NPROC=1, own --out); then <tag> sweepstatus
 #   ~/wisp/run.sh <gemma|bolt> auto <hours>       unattended preflight..package for one model; then <tag> autostatus
 #   ~/wisp/run.sh both <hours-per-model> <sha256> gemma then bolt back to back, unattended; then bothstatus
 # Each model keeps its files under ~/wisp/<tag>/ (data, out, merged, adapter zip), so nothing is overwritten.
@@ -104,21 +118,34 @@ cfg() {   # per-model settings
 }
 base() { [ -s "$TD/base_path" ] || die "$TAG base not downloaded (run: $TAG base)"; cat "$TD/base_path"; }
 T() { "$PY" "$DATA/train.py" "$@" --tag "$TAG"; }
+gpu_count() { nvidia-smi -L 2>/dev/null | grep -c '^GPU' || true; }
+# The training launcher: torchrun (data parallel, NPROC processes) on a multi-GPU node, plain python on one GPU.
+# Everything else (preflight, smoke, merge, sample) stays single-process on GPU 0.
+launch_train() {
+  local n="${NPROC:-$(gpu_count)}"
+  if [ "${n:-1}" -gt 1 ]; then
+    "$WORK/venv/bin/torchrun" --standalone --nproc_per_node="$n" "$DATA/train.py" "$@"
+  else
+    "$PY" "$DATA/train.py" "$@"
+  fi
+}
+TRAIN_EXTRA=( ${GLOBAL_BATCH:+--global-batch "$GLOBAL_BATCH"} ${LR:+--lr "$LR"} ${EXTRA_TRAIN_ARGS:-} )
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 TAG="${1:-}"
 case "$TAG" in
   gemma|bolt) shift; STEP="${1:-help}"; cfg ;;
   both|bothstatus|_both) STEP="$TAG"; TAG="" ;;
-  *) sed -n '2,6p' "$0"; exit 1 ;;
+  *) sed -n '2,8p' "$0"; exit 1 ;;
 esac
 
 case "$STEP" in
 check)
   echo "model: $TAG  repo: $REPO @ $REV"
   [ -f "$WORK/SETUP_DONE" ] && echo "setup: done" || echo "setup: NOT finished (tail ~/wisp/setup.log)"
-  nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader
-  "$PY" -c "import torch,transformers,peft;print('torch',torch.__version__,'cuda ok',torch.cuda.is_available(),'transformers',transformers.__version__,'peft',peft.__version__)"
+  nvidia-smi --query-gpu=name,memory.used,memory.total,compute_cap,driver_version --format=csv,noheader
+  echo "gpus: $(gpu_count)  (train launches torchrun with NPROC=${NPROC:-$(gpu_count)})"
+  "$PY" -c "import torch,transformers,peft;print('torch',torch.__version__,'cuda',torch.version.cuda,'cuda ok',torch.cuda.is_available(),'arches',torch.cuda.get_arch_list(),'transformers',transformers.__version__,'peft',peft.__version__)"
   "$PY" -c "import transformers as t;print('multimodal class:', 'AutoModelForMultimodalLM' if hasattr(t,'AutoModelForMultimodalLM') else 'AutoModelForImageTextToText' if hasattr(t,'AutoModelForImageTextToText') else 'NONE')"
   [ -s "$TD/base_path" ] && echo "base: $(cat "$TD/base_path")" || echo "base: not downloaded (run: $TAG base)"
   [ -f "$UP/$DATA_ZIP" ] && echo "data zip: $(sha256sum "$UP/$DATA_ZIP" | cut -c1-64)  (compare with brev/upload-zip.json)" || echo "data zip: MISSING - upload $DATA_ZIP into ~/wisp/uploads"
@@ -155,12 +182,23 @@ import hashlib, json, shutil, sys, tempfile, zipfile
 from pathlib import Path
 archive, dest, want = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3].lower()
 names = {"train.jsonl", "dev.jsonl", "train.py", "render.py", "parity.jsonl", "stats.json", "MANIFEST.json"}
+optional = {"vision_train.jsonl", "vision_dev.jsonl", "audio_train.jsonl", "audio_dev.jsonl"}
 if hashlib.sha256(archive.read_bytes()).hexdigest() != want:
     sys.exit("archive sha256 does not match the one from upload-zip.json")
 with zipfile.ZipFile(archive) as z:
-    if {i.filename for i in z.infolist()} != names or any(i.is_dir() or "/" in i.filename for i in z.infolist()):
+    # r3: optional vision rows with their images under vision/, optional audio rows with their 16 kHz WAV clips
+    # under audio/ (safe names only, any depth, no "..").
+    import re
+    got = {i.filename for i in z.infolist()}
+    extra = got - names - optional
+    bad = [n for n in extra if ".." in n or not (
+        re.fullmatch(r"vision/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:png|jpe?g|webp)", n)
+        or re.fullmatch(r"audio/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.wav", n))]
+    if not names <= got or bad or any(i.is_dir() for i in z.infolist()):
         sys.exit("unexpected archive contents")
     files = json.loads(z.read("MANIFEST.json"))["files"]
+    if set(files) != got - {"MANIFEST.json"}:
+        sys.exit("MANIFEST does not list exactly the archive's files")
     for n, h in files.items():
         if hashlib.sha256(z.read(n)).hexdigest() != h:
             sys.exit(f"{n}: sha256 mismatch")
@@ -175,16 +213,63 @@ preflight) need "$DATA/train.jsonl" "$TAG unpack"; T preflight --data "$DATA" --
 smoke)
   need "$DATA/train.jsonl" "$TAG unpack"
   ( while sleep 2; do nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits; done ) > "$DATA/smoke-mem.txt" & M=$!
-  T smoke --data "$DATA" --base "$(base)" --out "$OUT" ${2:+--max-len "$2"} ${QLORA:+--qlora} 2>&1 | tee "$DATA/smoke.log"
+  CUDA_VISIBLE_DEVICES=0 T smoke --data "$DATA" --base "$(base)" --out "$OUT" ${2:+--max-len "$2"} ${QLORA:+--qlora} "${TRAIN_EXTRA[@]}" 2>&1 | tee "$DATA/smoke.log"
   rc=${PIPESTATUS[0]}; kill $M 2>/dev/null
   echo "nvidia-smi peak: $(sort -n "$DATA/smoke-mem.txt" | tail -1) MiB"; exit "$rc" ;;
 train)
   need "$DATA/train.jsonl" "$TAG unpack"
   if [ -f "$DATA/train.pid" ] && kill -0 "$(cat "$DATA/train.pid")" 2>/dev/null; then die "already running (pid $(cat "$DATA/train.pid"))"; fi
-  RES=""; [ -n "${2:-}" ] && RES="--resume $2"
-  nohup "$PY" "$DATA/train.py" train --tag "$TAG" --data "$DATA" --base "$(base)" --out "$OUT" $RES ${3:+--max-len "$3"} ${QLORA:+--qlora} \
-    > "$DATA/train.out" 2>&1 & echo $! > "$DATA/train.pid"
-  echo "training started (pid $!). Check with: ~/wisp/run.sh $TAG status" ;;
+  nohup "$0" "$TAG" _train "${2:-}" "${3:-}" > "$DATA/train.out" 2>&1 & echo $! > "$DATA/train.pid"
+  echo "training started (pid $!, ${NPROC:-$(gpu_count)} GPU process(es)). Check with: ~/wisp/run.sh $TAG status; adapters every --save-every steps land in $OUT/ckpt/step-NNNNN" ;;
+_train)
+  launch_train train --tag "$TAG" --data "$DATA" --base "$(base)" --out "$OUT" ${2:+--resume "$2"} ${3:+--max-len "$3"} \
+    ${QLORA:+--qlora} "${TRAIN_EXTRA[@]}" ;;
+sweep)
+  # One independent single-GPU run per config line, so a B300 node trains up to 8 configs at once. A config file has
+  # one run per line: "<name> <train.py flags>", e.g. "lr1e4 --lr 1e-4 --anchor-kl 0.5". Without a file the default
+  # grid below runs (8 lines = 8 GPUs). Every run gets its own pid, log, and OUT=$TD/sweep/<name> (so ckpt/ and best/ never
+  # collide); the multimodal GPU eval then picks the winner from the sweep/*/ckpt dirs.
+  need "$DATA/train.jsonl" "$TAG unpack"
+  CFG="${2:-$TD/sweep.txt}"
+  if [ ! -f "$CFG" ]; then
+    CFG="$TD/sweep.txt"
+    cat > "$CFG" <<'GRID'
+a_lr1e4_k05 --lr 1e-4 --epochs 2 --anchor-kl 0.5
+b_lr2e4_k05 --lr 2e-4 --epochs 2 --anchor-kl 0.5
+c_lr1e4_k10 --lr 1e-4 --epochs 2 --anchor-kl 1.0
+d_lr2e4_k10 --lr 2e-4 --epochs 2 --anchor-kl 1.0
+e_lr1e4_k05_e3 --lr 1e-4 --epochs 3 --anchor-kl 0.5
+f_lr2e4_k20 --lr 2e-4 --epochs 2 --anchor-kl 2.0
+g_lr1e4_k05_text --lr 1e-4 --epochs 2 --anchor-kl 0.5 --anchor-text-frac 0.1
+h_lr5e5_k05_e3 --lr 5e-5 --epochs 3 --anchor-kl 0.5
+GRID
+    echo "no config file given: wrote the default 8-run grid to $CFG"
+  fi
+  NG=$(gpu_count); mkdir -p "$TD/sweep"; i=0
+  while IFS= read -r line; do
+    [ -z "${line// }" ] && continue
+    case "$line" in \#*) continue ;; esac
+    name="${line%% *}"; args="${line#"$name"}"
+    [[ "$name" =~ ^[A-Za-z0-9_.-]+$ ]] || die "bad sweep run name '$name'"
+    [ "$i" -lt "${NG:-1}" ] || die "config $((i + 1)) ('$name') has no GPU: this node lists ${NG:-0}; trim $CFG"
+    R="$TD/sweep/$name"; mkdir -p "$R"
+    if [ -f "$R/pid" ] && kill -0 "$(cat "$R/pid")" 2>/dev/null; then die "sweep run $name already running (pid $(cat "$R/pid"))"; fi
+    # shellcheck disable=SC2086
+    CUDA_VISIBLE_DEVICES=$i nohup "$PY" "$DATA/train.py" train --tag "$TAG" --data "$DATA" --base "$(base)" --out "$R/out" \
+      ${QLORA:+--qlora} "${TRAIN_EXTRA[@]}" $args > "$R/train.out" 2>&1 & echo $! > "$R/pid"
+    echo "gpu $i: $name (pid $!)  flags:$args"
+    i=$((i + 1))
+  done < "$CFG"
+  echo "$i sweep run(s) started. Check with: ~/wisp/run.sh $TAG sweepstatus" ;;
+sweepstatus)
+  for R in "$TD"/sweep/*/; do
+    [ -d "$R" ] || continue
+    n=$(basename "$R"); st="not running"
+    [ -f "$R/pid" ] && kill -0 "$(cat "$R/pid")" 2>/dev/null && st="RUNNING pid $(cat "$R/pid")"
+    echo "== $n: $st"
+    [ -f "$R/out/train.log.jsonl" ] && { grep '"event": "eval"' "$R/out/train.log.jsonl" | tail -1; }
+    [ -f "$R/train.out" ] && grep -E "Error|FAIL|OOM|Traceback" "$R/train.out" | tail -2
+  done ;;
 status)
   if [ -f "$DATA/train.pid" ] && kill -0 "$(cat "$DATA/train.pid")" 2>/dev/null; then echo "RUNNING pid $(cat "$DATA/train.pid")"; else echo "not running"; fi
   nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader
@@ -255,17 +340,18 @@ _auto)
     say "[$TAG] smoke exit $rc (3 = memory tight, 4 = OOM); trying a shorter cap"
   done
   [ -n "$ML" ] || { say "STOP: [$TAG] no length cap passed smoke"; exit 1; }
-  EP=$("$PY" - "$OUT/smoke.json" "$END" <<'PY'
-import json, sys, time
+  # smoke timed ONE GPU; N data-parallel GPUs measured about 0.8 N x (row lengths vary, the slowest rank sets the pace)
+  EP=$(SPEEDUP="${SPEEDUP:-$(n=${NPROC:-$(gpu_count)}; [ "${n:-1}" -gt 1 ] && echo "$((n * 8 / 10))" || echo 1)}" "$PY" - "$OUT/smoke.json" "$END" <<'PY'
+import json, os, sys, time
 s = json.load(open(sys.argv[1])); end = float(sys.argv[2])
-per = (s["epoch_min"] + s["eval_min_per_epoch"]) * 1.15
+per = (s["epoch_min"] + s["eval_min_per_epoch"]) * 1.15 / max(1.0, float(os.environ.get("SPEEDUP") or 1))
 print(max(1, min(2, int(((end - time.time()) / 60 - 30) // per))))
 PY
 )
   STOP=$(( END - 30 * 60 ))
   say "[$TAG] training $EP epoch(s) at --max-len $ML; hard stop $(date -d "@$STOP" '+%T %Z')"
-  "$PY" "$DATA/train.py" train --tag "$TAG" --data "$DATA" --base "$(base)" --out "$OUT" --epochs "$EP" --max-len "$ML" \
-    --stop-at "$STOP" ${QLORA:+--qlora} >> "$DATA/train.out" 2>&1 || { say "STOP: [$TAG] training failed - tail of train.out:"; tail -5 "$DATA/train.out"; exit 1; }
+  launch_train train --tag "$TAG" --data "$DATA" --base "$(base)" --out "$OUT" --epochs "$EP" --max-len "$ML" \
+    --stop-at "$STOP" ${QLORA:+--qlora} "${TRAIN_EXTRA[@]}" >> "$DATA/train.out" 2>&1 || { say "STOP: [$TAG] training failed - tail of train.out:"; tail -5 "$DATA/train.out"; exit 1; }
   say "[$TAG] training done: $(grep -E '"event": "(done|stopped_at_deadline)"' "$OUT/train.log.jsonl" | tail -1)"
   "$0" "$TAG" sample > "$TD/sample.txt" 2>&1 || say "[$TAG] sample failed (non-fatal)"
   "$0" "$TAG" merge || { say "STOP: [$TAG] merge failed (adapter is in $OUT/best)"; exit 1; }
@@ -302,7 +388,7 @@ bothstatus)
   if [ -f "$WORK/both.pid" ] && kill -0 "$(cat "$WORK/both.pid")" 2>/dev/null; then echo "BOTH RUNNING (pid $(cat "$WORK/both.pid"))"; else echo "both not running"; fi
   [ -f "$WORK/both.log" ] && grep '^== ' "$WORK/both.log" | tail -12
   for t in gemma bolt; do [ -d "$WORK/$t/ask-lora-out" ] && { echo "-- $t"; "$0" "$t" status 2>/dev/null | tail -4; }; done ;;
-*) sed -n '2,6p' "$0" ;;
+*) sed -n '2,8p' "$0" ;;
 esac
 RUN
 chmod +x "$WORK/run.sh"
@@ -318,12 +404,81 @@ echo "== installing torch, transformers, peft"
 # transformers>=5.5.2 fixes E4B's KV-shared layers under use_cache=False; Google's guide pins >=5.10.1.
 # peft>=0.19 needs torch>=2.7.
 pipi -U pip setuptools wheel packaging
-# torch from the CUDA 12.8 wheel index: PyPI's default (cu132 as of torch 2.15) needs a newer driver than
-# Brev's hosts ship (Hyperstack A6000: driver 570 = CUDA 12.8), and torch then silently runs without a GPU.
-pipi --index-url "${TORCH_INDEX:-https://download.pytorch.org/whl/cu128}" "torch>=2.7" || echo "ERROR: torch install failed"
+
+# Which torch wheel? Decided by the GPU, then PROVEN on it (see the header). PyPI's default wheel (cu132 as of torch 2.15)
+# needs a newer driver than Brev's hosts ship (Hyperstack A6000: driver 570 = CUDA 12.8), and torch then silently runs
+# without a GPU, so the default is never used.
+GPU_CC="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | sort -u | head -1 | tr -d ' ')"
+DRV_MAJOR="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1)"
+GPU_COUNT="$(nvidia-smi -L 2>/dev/null | grep -c '^GPU' || true)"
+echo "gpus: ${GPU_COUNT:-0}  compute capability: ${GPU_CC:-unknown}  driver major: ${DRV_MAJOR:-unknown}"
+CC_MAJOR="${GPU_CC%%.*}"; CC_MAJOR="${CC_MAJOR:-0}"; DRV_MAJOR="${DRV_MAJOR:-0}"
+WHL="https://download.pytorch.org/whl"
+CANDIDATES=()     # "index|extra uv flags|spec"
+if [ -n "${TORCH_INDEX:-}" ]; then
+  CANDIDATES=("${TORCH_INDEX}||${TORCH_SPEC:-torch>=2.7}")
+elif [ "$CC_MAJOR" -ge 10 ] 2>/dev/null; then
+  # Blackwell. sm_100 (B200) is in the cu128 wheels; sm_103 (B300, compute_cap 10.3) arrives with CUDA 12.9/13.0 wheels.
+  echo "NOTE: Blackwell GPU ($GPU_CC): needs a torch build with sm_${GPU_CC/./} kernels; trying cu130 first"
+  if [ "$DRV_MAJOR" -ge 580 ]; then
+    CANDIDATES=("$WHL/cu130||torch>=2.9" "$WHL/cu128||torch>=2.8" "$WHL/nightly/cu130|--prerelease=allow|torch")
+  else
+    echo "WARN: driver $DRV_MAJOR is older than 580 (CUDA 13): cu130 wheels will not run. Ask for a newer driver image for a B300;"
+    echo "      falling back to cu128 (sm_100 SASS + PTX; may fail on sm_103, in which case the verification below says so)"
+    CANDIDATES=("$WHL/cu128||torch>=2.8" "$WHL/nightly/cu128|--prerelease=allow|torch")
+  fi
+else
+  # Ampere/Ada/Hopper (A6000 sm_86, A100, L40S, H100): cu128 runs on driver 570; cu126 for older hosts.
+  CANDIDATES=("$WHL/cu128||torch>=2.7" "$WHL/cu126||torch>=2.7")
+fi
+TORCH_OK=0
+for cand in "${CANDIDATES[@]}"; do
+  IFS='|' read -r IDX FLAGS SPEC <<< "$cand"
+  echo "== torch candidate: $SPEC from $IDX $FLAGS"
+  "$UV" pip uninstall -q -p "$PY" torch 2>/dev/null || true
+  # shellcheck disable=SC2086
+  if ! "$UV" pip install -q -p "$PY" --index-url "$IDX" $FLAGS "$SPEC"; then echo "install failed for $IDX"; continue; fi
+  if "$PY" - <<'PYV'
+import sys, torch
+if not torch.cuda.is_available():
+    sys.exit("torch.cuda.is_available() is False (driver too old for this wheel?)")
+n = torch.cuda.device_count()
+for i in range(n):
+    cc = torch.cuda.get_device_capability(i)
+    arch = f"sm_{cc[0]}{cc[1]}"
+    have = torch.cuda.get_arch_list()
+    # a real kernel launch: a missing sm_xxx image surfaces here as 'no kernel image is available'
+    x = torch.randn(256, 256, device=f"cuda:{i}", dtype=torch.bfloat16)
+    y = torch.nn.functional.scaled_dot_product_attention(x[None, None], x[None, None], x[None, None])
+    assert torch.isfinite((x @ x).float().sum() + y.float().sum()).item()
+    print(f"gpu {i}: {torch.cuda.get_device_name(i)} {arch} OK with torch {torch.__version__} cuda {torch.version.cuda}; wheel arches {have}")
+    if i == 0 and arch not in have:
+        print(f"note: {arch} is not in the wheel's arch list; it runs through PTX JIT (slower first launch, check speed in smoke)")
+PYV
+  then TORCH_OK=1; echo "== torch OK: $SPEC from $IDX"; break; fi
+  echo "WARN: this torch build does not run on this GPU; trying the next candidate"
+done
+[ "$TORCH_OK" = 1 ] || echo "ERROR: no torch build ran on this GPU. Set TORCH_INDEX=<url> TORCH_SPEC='torch>=x' and re-run; a B300 needs a cu130 build and driver >= 580"
 pipi "torch>=2.7" "transformers>=5.10.1,<6" "peft>=0.19.0" accelerate safetensors huggingface_hub hf_transfer \
-  bitsandbytes sentencepiece || echo "ERROR: install failed"
-"$PY" -c "import torch,transformers,peft;print('torch',torch.__version__,'cuda',torch.version.cuda,'gpu',torch.cuda.is_available(),'transformers',transformers.__version__,'peft',peft.__version__)"
+  sentencepiece numpy pillow || echo "ERROR: install failed"
+# QLoRA only (not used on a 48 GB / 288 GB card); Blackwell wheels can lag, so a failure here is not fatal
+pipi bitsandbytes || echo "WARN: bitsandbytes did not install (only --qlora needs it)"
+"$PY" -c "import torch,transformers,peft;print('torch',torch.__version__,'cuda',torch.version.cuda,'gpu',torch.cuda.is_available(),'gpus',torch.cuda.device_count(),'transformers',transformers.__version__,'peft',peft.__version__)"
+# multi-GPU needs NCCL to work between the GPUs: a tiny all-reduce on every GPU, so a broken fabric shows now, not mid-run
+if [ "${GPU_COUNT:-0}" -gt 1 ]; then
+  cat > "$WORK/nccl_check.py" <<'PYN'
+import os, torch, torch.distributed as dist
+dist.init_process_group("nccl")
+torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
+t = torch.ones(4, device="cuda") * (dist.get_rank() + 1)
+dist.all_reduce(t)
+if dist.get_rank() == 0:
+    print(f"NCCL all-reduce over {dist.get_world_size()} GPUs OK: {t.tolist()}")
+dist.destroy_process_group()
+PYN
+  "$WORK/venv/bin/torchrun" --standalone --nproc_per_node="$GPU_COUNT" "$WORK/nccl_check.py" 2>&1 | tail -3 \
+    || echo "WARN: multi-GPU NCCL check failed; train with NPROC=1 or fix NCCL"
+fi
 
 # A gated repo needs a token on the box; log in once so later `run.sh <tag> base` calls work too.
 if [ -n "${HF_TOKEN:-}" ]; then
