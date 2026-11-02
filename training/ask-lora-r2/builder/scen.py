@@ -1927,3 +1927,17 @@ for _mod in ("scen_r2_safe", "scen_r2_args", "scen_r2_act", "scen_r2_chat"):   #
         for _fam, _tools in _m.WRITE_ALLOW_R2.items():   # the validator reads writes.py only
             assert set(_tools) <= _writes.WRITE_ALLOW.get(_fam, frozenset()), \
                 f"{_mod}: list {_fam}'s write tools in writes.WRITE_ALLOW"
+
+# Round-3 families live in scen_r3_*.py (each exports FAMILIES_R3 and WRITE_ALLOW_R3) and
+# join only when ASK_LORA_ROUND=3, so the committed round-2 build is unchanged. A module
+# that is not written yet is skipped. Their write tools are merged into writes.WRITE_ALLOW
+# here for the build; validate.py reads writes.py, so list them there before validating.
+import os as _os  # noqa: E402
+
+if _os.environ.get("ASK_LORA_ROUND") == "3":
+    import glob as _glob
+    for _path in sorted(_glob.glob(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "scen_r3_*.py"))):
+        _m = _importlib.import_module(_os.path.basename(_path)[:-3])
+        FAMILIES.update(getattr(_m, "FAMILIES_R3", {}))
+        for _fam, _tools in getattr(_m, "WRITE_ALLOW_R3", {}).items():
+            _writes.WRITE_ALLOW[_fam] = _writes.WRITE_ALLOW.get(_fam, frozenset()) | frozenset(_tools)

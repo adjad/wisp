@@ -88,7 +88,8 @@ import leak
 import thinking
 import writes
 
-OUT =os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# ASK_LORA_OUT points a later round (round 3: training/ask-lora-r3) at its own data dir.
+OUT = os.environ.get("ASK_LORA_OUT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DENIED = "The user denied this action."
 
 import service.tools  # noqa: E402,F401

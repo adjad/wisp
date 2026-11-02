@@ -296,6 +296,10 @@ def _families(request) -> dict[str, str]:
     return out
 
 
+# Wisp main runs a name-only stub call with schema-valid arguments directly (#424).
+RUNNABLE_STUBS = True
+
+
 class ScriptedPolicy:
     managed = True
     endpoint_name = "omlx"
@@ -348,11 +352,16 @@ class ScriptedPolicy:
             load = Call("get_tool_schemas", families=fams[:3],
                         tools=sorted({c.name for c in missing}))
             return {"role": "assistant", "content": "", "tool_calls": [self._tc(load)]}, "load"
-        if stubs:
+        if stubs and (bad or not RUNNABLE_STUBS):
             # A stub call carries the step's own arguments, so a Bad step's stub load is
             # itself a bad call: history only, never a training target.
             return {"role": "assistant", "content": "",
                     "tool_calls": [self._tc(c) for c in stubs]}, "bad_load" if bad else "load"
+        if stubs:
+            # Since #424 (agent.loop.runnable_stub_call) a stub call whose arguments fit the
+            # real schema runs as a normal call, so the ideal step is that one call.
+            self.idx += 1
+            return {"role": "assistant", "content": "", "tool_calls": [self._tc(c) for c in calls]}, "call"
         assert len(full) == len(calls)
         self.idx += 1
         return ({"role": "assistant", "content": "", "tool_calls": [self._tc(c) for c in calls]},

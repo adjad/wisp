@@ -16,7 +16,8 @@ import leak
 import scen
 import thinking
 
-OUT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# ASK_LORA_OUT points a later round (round 3: training/ask-lora-r3) at its own data dir.
+OUT = os.environ.get("ASK_LORA_OUT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 # The production scaffold once quoted a few real-user details; since f6a72430
@@ -350,6 +351,6 @@ if __name__ == "__main__":
     if any(str(f[2]).startswith("thought:") for f in failures):
         sys.exit(1)
     else:
-        with open(os.path.join(OUT, "builder", "partial.jsonl"), "w") as f:
+        with open(os.path.join(OUT, "partial.jsonl") if os.environ.get("ASK_LORA_OUT") else os.path.join(OUT, "builder", "partial.jsonl"), "w") as f:
             for ex, m in zip(examples, metas):
                 f.write(json.dumps({"meta": m, **ex}, ensure_ascii=False) + "\n")
