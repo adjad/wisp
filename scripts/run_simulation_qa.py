@@ -337,6 +337,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_google_calendar_source.py",
     "tests/test_mcp_large_tool_list.py",
     "tests/test_model_only_quality.py",
+    # Long-chat recall digest and _fit_window condensing: scratch SessionStore,
+    # synthetic chat, scripted model client and synthetic tools; no model or network.
+    "tests/test_ask_history_recall.py",
     # Ask stall re-prompt, tomorrow typos and the day plan: fake model client, stubbed snapshot.
     "tests/test_ask_day_answers.py",
     # Ask quality: code-failure fixes, tool-pair descriptions, the Wisp self-reference
