@@ -585,9 +585,20 @@ final class OverlayModel: ObservableObject {
 
     private let client = WispClient()
     private var sessionId = ""
-    private var attachedImage: String?
-    private var attachedVideo: QueuedVideo?
-    private var attachedDocument: QueuedDocument?
+    // Each attachment kind warms the encoder that will read it (prewarmVision).
+    private var attachedImage: String? {
+        didSet { if attachedImage != nil { client.prewarmEncoder(.vision) } }
+    }
+    private var attachedVideo: QueuedVideo? {
+        didSet {
+            guard let attachedVideo else { return }
+            client.prewarmEncoder(.vision)
+            if attachedVideo.audio != nil { client.prewarmEncoder(.audio) }
+        }
+    }
+    private var attachedDocument: QueuedDocument? {
+        didSet { if attachedDocument?.pages.isEmpty == false { client.prewarmEncoder(.vision) } }
+    }
     private var attachedSource: String?
     private var attachmentReadTask: Task<Void, Never>?
     private var attachmentReadID = UUID()
@@ -1155,6 +1166,8 @@ final class OverlayModel: ObservableObject {
     /// sampled into frames + audio. Everything stays in memory.
     func loadAttachment(url: URL, source: MediaAttachment.Source = .file) {
         let kind = MediaAttachment.kind(of: url)
+        if kind != .other { prewarmVision() }     // before the read, not after it
+        if kind == .movie { client.prewarmEncoder(.audio) }
         guard kind != .other else {
             switch DocumentAttachment.kind(of: url) {
             case .legacyOffice:
@@ -1232,6 +1245,12 @@ final class OverlayModel: ObservableObject {
             return
         }
         setAttachment(.image(jpeg: jpeg, source: source), name: "Image")
+    }
+
+    /// Start loading the vision encoder now: the person pressed Look, asked for
+    /// the screen, or began attaching a picture (#436 can call it on a Look press). Throttled and fire-and-forget.
+    func prewarmVision() {
+        client.prewarmEncoder(.vision)
     }
 
     func cancelAttachmentRead() {

@@ -1151,6 +1151,7 @@ struct ChatComposer: View {
             return
         }
         attachNote = ""
+        WispClient().prewarmEncoder(.vision)
         let ext = url.pathExtension.lowercased()
         let name = url.lastPathComponent
         // Read and encode off the main actor; a 10 MB file would hitch the window.

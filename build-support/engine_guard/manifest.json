@@ -1,14 +1,14 @@
 {
-  "version": 1,
-  "id": "wisp-engine-guard-v1",
+  "version": 2,
+  "id": "wisp-engine-overlay-v2",
   "upstream_tree_sha256": "44617e1d99ef09ae4e7e443ffcc65c8c4fcab9b7b377b10ba8f4a3464fb8a55f",
   "patches": [
     {
-      "path": "omlx/process_memory_enforcer.py",
-      "input_sha256": "242834641aeb16450d57e062449221a066206a62d066d57c312be073d656ba19",
-      "output_sha256": "c8025c08bb264bd5a3cfb428eb9a7ea73089b6147255efeb67d06f8acc868bdb",
-      "patch": "process_memory_enforcer.py.patch.json",
-      "patch_sha256": "42b2484a0d2d9837ab59faf865bdc1a605a65495960b220c7e5e0ab41b3dd1a2"
+      "path": "omlx/engine/vlm.py",
+      "input_sha256": "acf2256f59b56eece462e20014f36c36d14902d7a780e6ac06b928ac68b36562",
+      "output_sha256": "82f1edd2475e31c61cb74b5bb689fe25d78806e81b5cb7750577fc821e4e9437",
+      "patch": "vlm.py.patch.json",
+      "patch_sha256": "e05719cdf908f2bd9a33d3e05ae5da55d718a8cb1d1a3db22d57c7db65748fb5"
     },
     {
       "path": "omlx/engine_pool.py",
@@ -18,16 +18,30 @@
       "patch_sha256": "6afc957b6f78c1d418fcdf45a58f2c3d118e942f2d7a8d25653c4658889d190b"
     },
     {
+      "path": "omlx/process_memory_enforcer.py",
+      "input_sha256": "242834641aeb16450d57e062449221a066206a62d066d57c312be073d656ba19",
+      "output_sha256": "c8025c08bb264bd5a3cfb428eb9a7ea73089b6147255efeb67d06f8acc868bdb",
+      "patch": "process_memory_enforcer.py.patch.json",
+      "patch_sha256": "42b2484a0d2d9837ab59faf865bdc1a605a65495960b220c7e5e0ab41b3dd1a2"
+    },
+    {
       "path": "omlx/server.py",
       "input_sha256": "76d160aadace9f22d1a5a3ba589f3a72f93e7f3e1d1cb9fe1d6e2b4a7b626183",
-      "output_sha256": "74e25a8f81517e7f5db6a9c4797a77848ec9910b4d81e54fba495ba72f27aea6",
+      "output_sha256": "754856a501f15d849e25066bb146979f5420fde6b35692471f874b807d4249de",
       "patch": "server.py.patch.json",
-      "patch_sha256": "8ef3b1889e17f12b308f5845fa977b1db0672d9d0b85d7a8d8832e23dbdf0a38"
+      "patch_sha256": "0cb8bf1f1cae11b4b9287d19e5f3841aced1f35285eebf31da6b424fba566d3f"
     }
   ],
-  "addition": {
-    "path": "omlx/wisp_guard.py",
-    "source": "proof.py",
-    "sha256": "867bed33159673164953f29f28aa1a8fc59cbed97df6cd6eda8ee9ce56282b9d"
-  }
+  "additions": [
+    {
+      "path": "omlx/wisp_guard.py",
+      "source": "proof.py",
+      "sha256": "867bed33159673164953f29f28aa1a8fc59cbed97df6cd6eda8ee9ce56282b9d"
+    },
+    {
+      "path": "omlx/wisp_encoders.py",
+      "source": "encoders.py",
+      "sha256": "6a4bb32b4b05691a9a302feb952df1e0a4be72a876e284c10bd8a7b544faebfa"
+    }
+  ]
 }

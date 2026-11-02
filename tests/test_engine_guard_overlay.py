@@ -42,10 +42,13 @@ class OverlayTests(unittest.TestCase):
             (self.root / name).write_bytes(raw)
             rows.append({k: patch[k] for k in ("path", "input_sha256", "output_sha256")} |
                         {"patch": name, "patch_sha256": sha(raw)})
-        addition = b"# synthetic proof, never executed\n"
-        (self.root / "proof.py").write_bytes(addition)
-        self.manifest = {"version": 1, "id": "wisp-engine-guard-v1", "upstream_tree_sha256": self.upstream,
-                         "patches": rows, "addition": {"path": overlay.ADDITION, "source": "proof.py", "sha256": sha(addition)}}
+        additions = []
+        for path, source in sorted(overlay.ADDITIONS.items()):
+            addition = f"# synthetic {source}, never executed\n".encode()
+            (self.root / source).write_bytes(addition)
+            additions.append({"path": path, "source": source, "sha256": sha(addition)})
+        self.manifest = {"version": 2, "id": "wisp-engine-overlay-v2", "upstream_tree_sha256": self.upstream,
+                         "patches": rows, "additions": additions}
         self.save()
 
     def save(self):
@@ -65,7 +68,7 @@ class OverlayTests(unittest.TestCase):
 
     def test_exact_application_and_receipt(self):
         receipt = self.apply()
-        self.assertEqual(set(receipt["files"]), overlay.TARGETS | {overlay.ADDITION})
+        self.assertEqual(set(receipt["files"]), overlay.TARGETS | set(overlay.ADDITIONS))
         self.assertEqual(receipt["manifest_sha256"], sha((self.root / "manifest.json").read_bytes()))
         overlay.verify(self.engine, receipt, root=self.root)
         for name, digest in receipt["files"].items():
@@ -100,6 +103,29 @@ class OverlayTests(unittest.TestCase):
 
     def test_addition_hash_must_match(self):
         (self.root / "proof.py").write_text("# not reviewed\n")
+        self.refuse_without_mutation()
+
+    def test_every_addition_hash_must_match(self):
+        (self.root / "encoders.py").write_text("# not reviewed\n")
+        self.refuse_without_mutation()
+
+    def test_second_added_file_cannot_overwrite_existing(self):
+        (self.engine / "omlx/wisp_encoders.py").write_text("# existing\n")
+        self.refuse_without_mutation()
+
+    def test_addition_source_cannot_be_redirected(self):
+        self.manifest["additions"][0]["source"] = self.manifest["additions"][1]["source"]
+        self.save()
+        self.refuse_without_mutation()
+
+    def test_missing_addition_refused(self):
+        self.manifest["additions"].pop()
+        self.save()
+        self.refuse_without_mutation()
+
+    def test_version_one_manifest_refused(self):
+        self.manifest["version"] = 1
+        self.save()
         self.refuse_without_mutation()
 
     def test_upstream_tree_is_independently_bound(self):
@@ -200,6 +226,35 @@ class PinnedEnforcerLoopTests(unittest.TestCase):
         self.assertEqual(len(limiter), 1)
         self.assertEqual(limiter[0]["count"], 1)
         self.assertIn("GpuPowerLimiter(base_path, release_delay_s=0.0)", limiter[0]["new"])
+
+
+class PinnedLazyEncoderPatchTests(unittest.TestCase):
+    """The shipped vlm.py/server.py edits that wire omlx/wisp_encoders.py."""
+
+    root = Path(__file__).resolve().parents[1] / "build-support" / "engine_guard"
+
+    def test_attach_runs_last_before_the_engine_is_marked_loaded(self):
+        patch = json.loads((self.root / "vlm.py.patch.json").read_text())
+        attach = [e for e in patch["edits"] if "_wisp_encoders.attach(self)" in e["new"]]
+        self.assertEqual(len(attach), 1)
+        body = attach[0]["new"]
+        # After the tokenizer's tool-calling injection (the last load step),
+        # before _loaded: no request can reach a model whose towers are mid-release.
+        self.assertLess(body.index("_inject_tool_calling"), body.index("_wisp_encoders.attach(self)"))
+        self.assertLess(body.index("_wisp_encoders.attach(self)"), body.index("self._loaded = True"))
+
+    def test_stop_detaches_first(self):
+        patch = json.loads((self.root / "vlm.py.patch.json").read_text())
+        stop = [e for e in patch["edits"] if "async def stop" in e["old"]]
+        self.assertEqual(len(stop), 1)
+        self.assertTrue(stop[0]["new"].rstrip().endswith("_wisp_encoders.detach(self)"))
+
+    def test_encoder_routes_require_the_api_key(self):
+        patch = json.loads((self.root / "server.py.patch.json").read_text())
+        routes = [e["new"] for e in patch["edits"] if "/v1/wisp/encoders" in e["new"]]
+        self.assertEqual(len(routes), 1)
+        for handler in routes[0].split("@app.")[1:3]:
+            self.assertIn("Depends(verify_api_key)", handler)
 
 
 if __name__ == "__main__":
