@@ -2783,6 +2783,7 @@ async def agent(body: dict[str, Any]):
                 if _is_stock_quote_only_prompt(prompt):
                     synthesis_tool_names.difference_update({"web_search", "web_fetch"})
                 synthesis_guidance = []
+                answer_style_guidance = ""
                 if synthesis_tool_names & {"web_search", "web_fetch"}:
                     synthesis_guidance.append(
                         "Summarize web evidence as clear, calm bullets. Open with a short "
@@ -2836,10 +2837,11 @@ async def agent(body: dict[str, Any]):
                         synthesis_guidance.insert(1, ASK_KNOWLEDGE_HINT)
                     # "From now on keep answers short" has no tool route (remember
                     # refuses it by design): the host saves a standing style to the
-                    # profile before the model runs, and echoes this chat's earlier
-                    # style instructions so history trimming cannot drop them.
-                    # Inserted last at index 1 so it sits right after
-                    # ASK_STYLE_HINT, ahead of the topic hints inserted above.
+                    # profile before the model runs, and builds canonical guidance
+                    # from this chat's earlier style instructions so history
+                    # trimming cannot drop them. It is appended as the LAST
+                    # synthesis_guidance item (below), after every other Ask hint,
+                    # so a later topic hint cannot out-rank the user's own rule.
                     if not test_mode:
                         try:
                             from service.memory.answer_style import apply_for_turn
@@ -2847,8 +2849,6 @@ async def agent(body: dict[str, Any]):
                             if persisted_user_idx is not None and earlier_texts:
                                 earlier_texts = earlier_texts[:-1]  # this turn, already stored
                             answer_style_guidance = apply_for_turn(prompt, earlier_texts)
-                            if answer_style_guidance:
-                                synthesis_guidance.insert(1, answer_style_guidance)
                         except Exception:  # noqa: BLE001
                             pass  # a style note never breaks the turn
                     # One tool-free step: writing with no destination, general
@@ -2862,6 +2862,8 @@ async def agent(body: dict[str, Any]):
                     # only added for a routed web menu, which a model-led turn
                     # never has; the model may still search (0.5.0-rc3 audit M3).
                     synthesis_guidance.append(MODEL_LED_UNTRUSTED_WEB_HINT)
+                if answer_style_guidance:
+                    synthesis_guidance.append(answer_style_guidance)  # last: wins by recency
                 style_hint = ((_LIGHT_READ_STYLE if is_light_read else "")
                              + ("\n" + _CLARIFY_CHANNEL_HINT if decision.clarify_channel else "")
                              + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else "")

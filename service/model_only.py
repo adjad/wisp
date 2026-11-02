@@ -166,7 +166,8 @@ ASK_DAY_PLAN_HINT = (
     "notes one by one unless it says the plan is unavailable. predict_my_day is "
     "learned habits only, never the plan. Answer as a short prioritized list: one "
     "lead line, then 3-6 bullets — time-bound items first (with times), then "
-    "overdue items, then people waiting on a reply, then suggestions and tasks. "
+    "overdue items, then people waiting on a reply, then suggestions and tasks, "
+    "unless the user asked for another length or format. "
     "No digests, no data-freshness caveats, no source labels."
 )
 
@@ -186,6 +187,7 @@ _STALL_FILLER = re.compile(
     r"\b(?:give me (?:just )?(?:a|one) (?:moment|sec(?:ond)?|minute)|(?:one|just a) moment(?!\s+(?:in|of|when|that)\b)|"
     r"hang (?:on(?!\s+to\b)|tight)|bear with me|stand by(?=\s*(?:[.!,;]|$)))", re.I)
 _STALL_FILLER_MAX = 160
+_STALL_ACK = re.compile(r"^\s*(?:sure|okay|ok|of course|absolutely|got it|alright|yes|yep)\s*[.,!]*\s*$", re.I)
 
 
 # Gemma's tool-call markup written as plain text: what it does on a turn that
@@ -210,8 +212,15 @@ def stall_reply(text: str) -> bool:
     text = (text or "").strip()
     if not text or len(text) > 300:
         return False
-    return bool(_STALL.search(text)
-                or (len(text) <= _STALL_FILLER_MAX and "\n" not in text and _STALL_FILLER.search(text)))
+    if _STALL.search(text):
+        return True
+    if len(text) > _STALL_FILLER_MAX:
+        return False
+    # A line or two that are each only a filler or an acknowledgement ("Sure!\nOne
+    # moment.") is a stall; a line with anything else in it is an answer.
+    lines = [line for line in text.splitlines() if line.strip()]
+    return bool(lines) and any(_STALL_FILLER.search(line) for line in lines) and all(
+        _STALL_FILLER.search(line) or _STALL_ACK.match(line) or _STALL.search(line) for line in lines)
 
 
 # Appended to a model-led turn's runtime prompt (the light-read style hint the
@@ -783,11 +792,11 @@ _PERSONAL = re.compile(
     rf"(?:\w+\s+){{0,3}}?(?:{_RECORD_NOUNS})\b)"
     rf"|\bdo\s+i\s+(?:have|got)\s+(?:[\w'’-]+\s+){{0,3}}?{_DATE_ANCHOR}\b"  # "what do I have tomorrow"
     r"|\bdid\s+i\s+(?:already\s+)?(?:pay|reply|respond|send|book|rsvp|miss|sign|submit|schedule|renew|text|email|call)\b"
-    r"|\bam\s+i\s+(?:free|busy|available|double-?booked)\b"
+    r"|\bam\s+i\s+(?:free|busy|available|double[- ]?booked)\b"
     r"|\bhave\s+i\s+(?:got|paid|replied|responded|sent|booked|missed)\b"
     r"|\b(?:anyone|anybody|someone)\s+(?:text|email|message|call|write)\w*\s+me\b"
     r"|\b(?:any|new|unread)\s+(?:texts?|emails?|messages?|mail)\b"
-    r"|\bwhat(?:['’]s| is| are)?\s+(?:on\s+)?my\b(?!\s+(?:best|thoughts?|options?|chances|odds)\b)"
+    r"|\bwhat(?:['’]s| is| are)?\s+(?:on\s+)?my\b(?!\s+(?:best|thoughts?|options?|chances?|odds)\b)"
     # "did mom text me?" — but not "my dad said cracking knuckles causes arthritis".
     r"|\b(?:mom|dad|mother|father)\s+(?:text|send|sent|email|call|messag)"
     r"|\b(?:reply|replied|respond|responded|text|texted|email|emailed|message|messaged|call|called|"
@@ -808,6 +817,71 @@ _PERSONAL = re.compile(
     r"|\b(?:is|are)\s+there\s+(?:a|an|any)\s+(?:meeting|event|email|message|text|reminder|appointment|class)"
     r"|\b(?:when|where|what time)\s+(?:is|was|are)\s+(?:the|my|our)\s+\w+.*\b(?:today|tomorrow|tonight|"
     r"this|next|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.I)
+# First-person and "my <time>" lookups that the narrowed _PERSONAL above does not
+# reach on its own: "who am I meeting tomorrow", "how busy am I this week", "did
+# I get a text from mom", "do I owe Sam money", "track my order", "summarize my
+# day", "am I going to be late for my 3pm", "what time is my lunch with Sam",
+# "how long is my commute". Each is led by a lookup word or names a record, so
+# "who am I to judge", "am I overthinking this" and "did I do the right thing"
+# stay chat.
+_CLOCK = r"(?:\d{1,2}(?::\d\d)?\s*(?:am|pm|a\.m\.|p\.m\.)|noon|midnight)"
+_PARCEL_NOUNS = (r"orders?|packages?|parcels?|deliver(?:y|ies)|shipments?|refunds?|claims?|payments?|reservations?|"
+                 r"bookings?|tickets?|luggage|flights?|rides?|returns?|applications?")
+_ARRIVING_NOUNS = (r"invoices?|bills?|statements?|receipts?|refunds?|payments?|che(?:que|ck)s?|packages?|parcels?|"
+                   r"orders?|shipments?|deliver(?:y|ies)|stuff|things|luggage|bags?|rides?|food|groceries|mail|"
+                   r"letters?|tickets?|passport|card")
+_ARRIVING_VERBS = (r"arriv\w*|come|came|coming|get\s+here|be\s+here|here|ship\w*|go\s+through|gone\s+through|"
+                   r"clear\w*|post(?:ed)?|show\s+up|land\w*|deliver\w*|been\s+(?:sent|received|paid|processed)")
+_DAY_WORDS = r"(?:day|week|weekend|morning|afternoon|evening|month|schedule|calendar)"
+_PERSONAL_LOOKUPS = re.compile(
+    # "my 3pm", "my 2pm", "my noon": a clock time after "my" is a calendar entry.
+    rf"\bmy\s+{_CLOCK}"
+    r"|\bwho\s+(?:am\s+i|do\s+i)\s+(?:meeting|seeing|having|owe|need\s+to\s+(?:call|text|email|reply|meet|see)|"
+    r"have\s+(?:a|an|any|to\s+(?:call|text|email|reply)))\b"
+    rf"|\bhow\s+busy\s+(?:am\s+i|is\s+(?:my\b|today|tonight|tomorrow|this\s+{_DAY_WORDS}|next\s+(?:week|month)|"
+    r"(?:mon|tues|wednes|thurs|fri|satur|sun)day))"
+    r"|\bam\s+i\s+(?:going\s+to\s+(?:be\s+late|make\s+it|miss|be\s+on\s+time)|late\s+for|running\s+late|on\s+time|"
+    r"meeting|seeing|supposed\s+to\s+(?:meet|see|be\s+at))\b"
+    r"|\bdid\s+i\s+(?:get|receive|miss)\s+(?:an?|any|the|my|that)\s+(?:[\w'’-]+\s+)?"
+    r"(?:texts?|e-?mails?|messages?|mail|calls?|voicemails?|invites?|invitations?|packages?|parcels?|repl(?:y|ies)|"
+    r"responses?|notifications?|alerts?|letters?)\b"
+    r"|\bdo\s+i\s+owe\s+(?:[\w'’]+\s+){0,2}?(?:money|(?:an?\s+)?(?:repl(?:y|ies)|text|call|e-?mail|response|payment|"
+    r"rent|taxes|tax|bill))\b"
+    r"|\bhow\s+much\s+(?:do\s+i|i)\s+owe\b"
+    r"|\bhow\s+many\s+(?:(?:unread|new|open|overdue|pending)\s+)?(?:e-?mails?|texts?|messages?|tasks?|reminders?|"
+    r"meetings?|events?|appointments?|notifications?|to-?dos?|invites?|calls?|voicemails?)\b"
+    r"[^?.!]{0,40}\b(?:do\s+i|have\s+i|did\s+i|i\s+(?:have|got)|are\s+(?:on|in|there|unread|waiting|left|due|open)|"
+    r"unread|overdue|today|tomorrow|this\s+(?:week|morning|afternoon)|my\b)"
+    r"|\bhow\s+many\s+(?:e-?mails?|texts?|messages?|tasks?|reminders?)\s+(?:are\s+)?(?:unread|overdue|due|open)\b"
+    # parcels and payments
+    rf"|\b(?:status\s+of|track(?:ing)?|where(?:['’]s|\s+is|\s+are))\s+(?:all\s+)?my\s+(?:[\w'’-]+\s+)?(?:{_PARCEL_NOUNS})\b"
+    r"|\bstatus\s+of\s+(?:the|that|this)\s+(?:orders?|packages?|parcels?|deliver(?:y|ies)|shipments?|refund|claim|payment|invoice)\b"
+    rf"|\b(?:did|has|have|will|when\s+will|when\s+does|when\s+do)\s+(?:all\s+)?(?:the|my|that|this|our|these|those)\s+"
+    rf"(?:[\w'’-]+\s+)?(?:{_ARRIVING_NOUNS})\s+(?:\w+\s+){{0,2}}?(?:{_ARRIVING_VERBS})\b"
+    r"|\b(?:when\s+(?:will|does|is)\s+(?:it|they)\s+(?:arrive|get\s+here|be\s+here|ship|come)|is\s+(?:it|they)\s+here\s+yet)\b"
+    # recaps of the day
+    rf"|\b(?:summari[sz]e|describe|recap|walk\s+me\s+through|run\s+through)\s+(?:for\s+me\s+)?my\s+(?:(?:whole|entire|upcoming)\s+)?{_DAY_WORDS}\b"
+    rf"|\b(?:rundown|summary|overview|recap|run-?through)\s+of\s+my\s+(?:(?:whole|entire|upcoming)\s+)?{_DAY_WORDS}\b"
+    # "what time is my lunch with Sam": a lookup lead, so any noun counts
+    r"|\bwhat\s+time\s+(?:is|are|does|do|was)\s+my\s+(?!body\b|favou?rite\b)\w+"
+    r"|\bwhat\s+time\s+(?:is|does)\s+(?:the|our)\s+(?:[\w'’-]+\s+)?(?:meeting|call|standup|stand-up|sync|interview|"
+    r"appointment|class|lecture|flight|dinner|lunch|event)\b"
+    r"|\bwhen(?:['’]s|\s+is|\s+are|\s+was|\s+does|\s+do)\s+my\s+(?!body\b|favou?rite\b)\w+"
+    rf"|\bwhat(?:['’]s|\s+is)\s+on\s+at\s+(?:\d|{_CLOCK})"
+    rf"|\bwhat\s+do\s+i\s+(?:have|got)\s+(?:at|by|before|after|around)\s+(?:\d|{_CLOCK})"
+    rf"|\bwhat\s+do\s+i\s+need\s+to\s+(?:do|get\s+done|finish)\s+(?:\w+\s+){{0,2}}?{_DATE_ANCHOR}\b"
+    r"|\bwhen\s+do\s+i\s+(?:need\s+to\s+|have\s+to\s+)?(?:leave|head\s+out|land|get\s+there|check\s+in)\b"
+    r"|\bhow\s+long\s+(?:is|will|does)\s+my\s+(?:[\w'’-]+\s+)?(?:commute|drive|ride|meeting|flight)\b"
+    r"|\bhow\s+long\s+is\s+(?:the\s+)?commute\b"
+    rf"|\bhow(?:['’]s|\s+is|\s+does|\s+do)\s+(?:my\s+{_DAY_WORDS}|{_DATE_ANCHOR}|{_DAY_WORDS})\s+(?:look|looking|shaping)"
+    # "is my dentist tomorrow", "is my lunch today at noon"
+    rf"|\b(?:is|are|was|will)\s+my\s+(?:[\w'’-]+\s+){{0,2}}?{_DATE_ANCHOR}\b"
+    # replies and updates from a person
+    r"|\b(?:has|did|have)\s+(?!you\b|i\b|we\b|it\b)\w+\s+(?:replied|reply|responded|respond|texted|text|emailed|email|"
+    r"called|call|messaged|message|written|write|gotten\s+back|got\s+back|answered|confirmed)\b"
+    r"|\bany\s+(?:word|news|updates?|replies|messages?|texts?|e-?mails?|mail)\s+from\b"
+    r"|\b(?:anything|is\s+there\s+anything)\s+(?:new\s+)?from\s+(?:my\s+)?\w+\b(?!\s+(?:the|a|an|that)\b)",
     re.I)
 # "Is it going to rain during my coffee with Alex tomorrow?": a question that
 # puts one of the user's plans on a day. "my" alone is not enough ("my phone
@@ -838,7 +912,7 @@ def asks_personal_data(prompt: str) -> bool:
         return False
     if _CHAT_TAIL.search(text) and not re.search(_DATE_ANCHOR, text, re.I):
         return False
-    return bool(_PERSONAL.search(text)
+    return bool(_PERSONAL.search(text) or _PERSONAL_LOOKUPS.search(text)
                 or (_QUESTION.search(text) and not _ADVICE_LEAD.match(text) and _PLAN_ON_A_DAY.search(text)))
 
 

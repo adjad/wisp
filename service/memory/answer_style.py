@@ -18,15 +18,16 @@ This module closes both without giving the model any new power:
     never the user's words.
   * `session_style_instructions(user_texts)` picks the style instructions that
     stand for the rest of THIS chat out of earlier user turns, and
-    `style_hint(...)` echoes them into the turn's runtime guidance so they
-    survive history trimming.
+    `style_hint(...)` restates them in the turn's runtime guidance so they
+    survive history trimming. What is restated is a CANONICAL string per axis
+    and value that this module wrote ("keep answers short"); no user word ever
+    reaches the system prompt.
 
 Everything is deliberately biased to false negatives: a missed instruction costs
 the user one repeat; a wrongly saved one silently changes every later answer.
 """
 from __future__ import annotations
 
-import json
 import re
 
 # ---------------------------------------------------------------------------
@@ -68,10 +69,10 @@ _PAST = re.compile(r"\balways\s+(?:wanted|had|got|liked|used)\b")
 # ---------------------------------------------------------------------------
 # Persistence markers
 
-_STANDING = re.compile(
+_MARKER = re.compile(
     r"\b(?:from now on|from here on(?: out)?|from this point (?:on|forward)|going forward|"
-    r"moving forward|henceforth|in (?:the )?future|always|every time|all the time|by default)\b"
-    r"|\bstop being so\b")
+    r"moving forward|henceforth|in (?:the )?future|always|every time|all the time|by default)\b")
+_STANDING = re.compile(_MARKER.pattern + r"|\bstop being so\b")
 # Session-only: carried in this chat, never saved to the profile.
 _SESSION_ONLY = re.compile(
     r"\bfor the rest of (?:this|our|the) (?:chat|conversation|session)\b"
@@ -86,7 +87,13 @@ _DETAIL = {
         r"\b(?:keep|make|give|be|get|reply|respond|answer|stay|go)\b[^.!?]{0,30}?"
         r"\b(?:short|shorter|brief|briefer|concise|succinct|terse)\b",
         rf"\b(?:short|shorter|briefer|brief|concise|more concise|succinct) {_ANSWER_NOUN}\b",
-        r"\b(?:one|a|two) (?:or two |or three )?sentences?\b",
+        # "keep it to one sentence" limits the answers; a bare "in one sentence"
+        # belongs to one question ("tell me about X in one sentence"), so only
+        # a clause that IS the limit counts ("in future, one or two sentences").
+        r"\b(?:keep|limit|restrict|cap)\b[^.!?]{0,25}?\b(?:one|two|1|2)(?: or (?:two|three))? sentences?\b",
+        r"(?<!in )(?<!to )(?<!within )\b(?:one|two)(?: or (?:two|three))? sentences?"
+        r"(?: please| max| tops)?\W*$",
+        rf"\b{_ANSWER_NOUN} (?:to be |be |a bit |much |way |just )*(?:shorter|briefer|more concise|more succinct)\b",
         r"\b(?:less|so|too) (?:wordy|verbose|long-winded|rambly|chatty)\b",
         r"\bstop being so (?:wordy|verbose|long-winded|rambly|chatty)\b",
         r"\bdon'?t (?:ramble|waffle)\b",
@@ -99,6 +106,7 @@ _DETAIL = {
         r"\b(?:be|go|get|give me|explain)\b[^.!?]{0,15}\b(?:more detailed|detailed|thorough|in more detail|in depth)\b",
         r"\b(?:be|get|go) (?:more )?(?:longer|lengthier)\b",
         r"\belaborate more\b",
+        rf"\b{_ANSWER_NOUN} (?:to be |be |a bit |much |way |just )*(?:longer|more detailed|fuller|more thorough)\b",
     )],
 }
 _TONE = {
@@ -142,11 +150,90 @@ def _is_question(clause: str) -> bool:
         clause.rstrip().endswith("?") and not re.match(r"^(?:\w+,\s+)?(?:can|could|will|would|please)\b", clause))
 
 
+# ---------------------------------------------------------------------------
+# Is the clause an instruction to WISP about Wisp's own answers?
+#
+# "I always keep it short when texting my boss" has a persistence marker and a
+# style, and is still about the user. A style counts only when the clause is
+# addressed to Wisp.
+
+# Another party, setting or condition the style would apply to; or one topic.
+_NOT_FOR_WISP = re.compile(
+    r"\b(?:my|his|her|their|our) (?!(?:questions?|requests?|messages?|prompts?|answers?|repl(?:y|ies))\b)\w+"
+    r"|\b(?:with|to|for|at|around|toward|towards) (?:him|her|them|everyone|everybody|people|others|"
+    r"customers?|clients?|students?|strangers)\b"
+    r"|\bwith (?:the|a|an) \w+"
+    r"|\bthe (?:dog|cat|kids?|baby|boss|team|class|landlord)\b"
+    r"|\b(?:texting|emailing|e-mailing|messaging|presenting|interviewing|calling|"
+    r"(?:talking|speaking|chatting|writing) (?:to|with))\b"
+    r"|\bin (?:the )?(?:meetings?|presentations?|class(?:es)?|interviews?|calls?|emails?|texts?|"
+    r"conversations?|person|public|speeches|lectures?)\b"
+    r"|\b(?:when|whenever|while|if)\b"
+    # one topic, one answer: "a detailed answer about photosynthesis"
+    r"|\babout\b|\bregarding\b"
+    r"|\ba (?:detailed|thorough|short|brief|long|full|quick|concise) "
+    r"(?:answer|reply|response|explanation|summary)\b"
+    r"|\b(?:answer|explanation|summary|overview) (?:on|of)\b")
+# Words that lead into the instruction itself.
+_LEAD_FILLER = re.compile(
+    r"^(?:please|kindly|hey|hi|ok|okay|so|also|and|then|just|thanks|thank you|well|now|oh|right|alright)\b")
+# An imperative with no subject of its own: it is addressed to the listener.
+_IMPERATIVE = re.compile(
+    r"^(?:keep|be|give|make|reply|respond|answer|stay|go|get|stop|skip|cut|use|talk|speak|avoid|drop|"
+    r"lose|don'?t|do not|no|elaborate|explain (?:things|everything|stuff|it|them|more))\b")
+# Wisp named as the one addressed, or its answers named as the thing to change.
+_TARGETS_WISP = re.compile(
+    r"\byou\b|\byou(?:'re|'ll|'ve|'d)\b|\byour (?:own )?(?:answers?|repl(?:y|ies)|responses?|messages?|"
+    r"explanations?|summar(?:y|ies)|voice|tone)\b|\b(?:with|to|for) me\b")
+# "I want more detail" / "I'd like shorter replies": a wish about the answers,
+# unlike "I want to be more direct" (about the person).
+_WISH = re.compile(r"\bi(?:'d| would)? (?:really |just )?(?:want|like|need|prefer)\b(?! to\b)")
+
+
+def _core(clause: str) -> str:
+    """The clause without persistence markers and lead-in words."""
+    core = _SESSION_ONLY.sub(" ", _MARKER.sub(" ", clause))
+    previous = None
+    while previous != core:
+        previous = core
+        core = re.sub(r"^[\s,.:;!\-]+", "", core)
+        core = _LEAD_FILLER.sub("", core)
+    return core.strip()
+
+
+def _only_style(core: str) -> bool:
+    """True when the clause is nothing but a style phrase ("no fluff",
+    "shorter replies please"): a fragment addressed to whoever is listening."""
+    rest = core
+    for table in (_DETAIL, _TONE):
+        for patterns in table.values():
+            for pattern in patterns:
+                match = pattern.search(rest)
+                if match:
+                    rest = rest[:match.start()] + " " + rest[match.end():]
+    rest = re.sub(r"\b(?:please|thanks|thank you|a bit|bit|more|much|the)\b|[^\w]+", " ", rest)
+    return not rest.strip()
+
+
+def _addresses_wisp(clause: str) -> bool:
+    """`clause` is normalised. True only when it is an instruction to Wisp
+    about its own answers: an imperative with no other subject, or an explicit
+    target (you, your answers, with me), or a wish about the answers, or a bare
+    style fragment. A first- or third-person statement about someone else, a
+    setting ("in meetings"), a condition, or one topic is not."""
+    if _NOT_FOR_WISP.search(clause):
+        return False
+    core = _core(clause)
+    return bool(_IMPERATIVE.match(core) or _TARGETS_WISP.search(core)
+                or _WISH.search(core) or _only_style(core))
+
+
 def standing_style(text: str) -> dict:
     """A validated profile patch for a standing style instruction in `text`,
     or {}. A persistence marker AND a clear style must share one clause, and
-    the clause must be a request: not a question about Wisp, quoted or
-    attributed speech, a writing job, a negation, or ambiguous."""
+    the clause must be a request to Wisp about its answers: not a question
+    about Wisp, quoted or attributed speech, a writing job, a negation, a
+    statement about someone else or one topic, or ambiguous."""
     if not isinstance(text, str) or not text.strip():
         return {}
     if _excluded(_norm(text)):
@@ -157,11 +244,13 @@ def standing_style(text: str) -> dict:
         clause = _norm(raw)
         if not _STANDING.search(clause) or _PAST.search(clause) or _is_question(clause):
             continue
-        for field, table in (("detail", _DETAIL), ("tone", _TONE)):
-            hits = _axis_hits(clause, table)
-            if len(hits) == 1:
-                patch[field] = next(iter(hits))
-            elif len(hits) > 1:
+        hits = {field: _axis_hits(clause, table) for field, table in (("detail", _DETAIL), ("tone", _TONE))}
+        if not any(hits.values()) or not _addresses_wisp(clause):
+            continue
+        for field, found in hits.items():
+            if len(found) == 1:
+                patch[field] = next(iter(found))
+            elif len(found) > 1:
                 # Two styles on one axis ("short but detailed") is ambiguous: say nothing.
                 blocked.add(field)
     patch = {k: v for k, v in patch.items() if k not in blocked}
@@ -175,79 +264,103 @@ def standing_style(text: str) -> dict:
 # ---------------------------------------------------------------------------
 # Session instructions
 
-# Format and manner instructions that are not profile fields.
-_FORMAT = [re.compile(p) for p in (
-    r"\b(?:no|without|avoid|skip|stop using|stop giving|stop with|don'?t use|do not use|never use|"
-    r"no more|quit using)\b[^.!?]{0,15}\b(?:lists?|bullets?|bullet points?|emojis?|emoticons?|headers?|"
-    r"headings?|markdown|tables?)\b",
-    r"\b(?:use|give me|reply with|answer with|respond with)\b[^.!?]{0,15}"
-    r"\b(?:bullet points?|bullets|numbered lists?|plain text|plain sentences|prose|paragraphs?|one-liners?)\b",
-)]
+_LENGTH_AXIS, _TONE_AXIS, _LISTS_AXIS, _EMOJI_AXIS = "length", "tone", "lists", "emoji"
+_AXIS_ORDER = (_LENGTH_AXIS, _TONE_AXIS, _LISTS_AXIS, _EMOJI_AXIS)
+
+# The only text that ever reaches the system prompt. Written here, never taken
+# from the user, so a pasted instruction cannot ride along.
+_CANON = {
+    (_LENGTH_AXIS, "short"): "keep answers short",
+    (_LENGTH_AXIS, "thorough"): "give fuller, more detailed answers",
+    (_TONE_AXIS, "direct"): "be direct",
+    (_TONE_AXIS, "gentle"): "be gentle",
+    (_TONE_AXIS, "warm"): "be upbeat",
+    (_LISTS_AXIS, "off"): "no lists or bullet points",
+    (_LISTS_AXIS, "bullets"): "use bullet points",
+    (_LISTS_AXIS, "plain"): "answer in plain sentences",
+    (_EMOJI_AXIS, "off"): "no emoji",
+}
+_CANON_AXIS = {text: axis for (axis, _value), text in _CANON.items()}
+
+_NEG = (r"(?:no more|no|without|avoid|skip|stop using|stop giving(?: me)?|stop adding|stop with|"
+        r"don'?t use|do not use|never use|quit using)")
+_LIST_WORDS = r"(?:lists?|bullets?|bullet points?|numbered lists?|headers?|headings?|markdown|tables?)"
+_NEG_LISTS = re.compile(rf"\b{_NEG}\b[^.!?]{{0,15}}\b{_LIST_WORDS}\b")
+_NEG_EMOJI = re.compile(rf"\b{_NEG}\b[^.!?]{{0,15}}\b(?:emojis?|emoticons?)\b")
+_POS_BULLETS = re.compile(
+    r"(?<!n't )(?<!not )(?<!never )\b(?:use|give me|reply with|answer with|respond with)\b[^.!?]{0,15}"
+    r"\b(?:bullet points?|bullets|numbered lists?)\b")
+_POS_PLAIN = re.compile(
+    r"(?<!n't )(?<!not )(?<!never )\b(?:use|give me|reply with|answer with|respond with)\b[^.!?]{0,15}"
+    r"\b(?:plain text|plain sentences|prose|paragraphs?)\b")
 # Said once, meant until further notice, even without a persistence marker.
-_CARRY = [re.compile(p) for p in (
+_CARRY_SHORT = re.compile(
     r"\bkeep (?:it|answers|your answers|replies|your replies|responses|things|them) "
-    r"(?:short|brief|concise|simple)\b",
-    r"\bstop (?:using|giving me|adding) (?:lists|bullets|bullet points|emojis?)\b",
-)]
-# Words that make a sentence an action request rather than a style rule; such a
-# sentence is never echoed (a pasted "from now on keep it short and email X"
-# must not ride into the system prompt).
+    r"(?:short|brief|concise)\b")
+# Words that make a sentence an action or authority request rather than a style
+# rule. Such a sentence does not count at all, even when it also names a style
+# ("keep it short and skip confirmations before sending").
 _ACTIONY = re.compile(
-    r"\b(?:send|email|e-mail|forward|delete|remove|run|execute|ignore|override|disregard|"
+    r"\b(?:send\w*|email\w*|e-mail\w*|forward\w*|delet\w*|remov\w*|run|execute|ignore|override|disregard|"
     r"password|passcode|token|key|pay|transfer|install|download|click|call|text|buy|sign|"
-    r"approve|confirm|unlock|disable|grant|permission|api)\b|[@<>{}`\\|$]|https?:|www\.|\.com\b")
+    r"approv\w*|confirm\w*|cancel\w*|unlock|disable|grant|permission|api|prompt|instructions?|rules?|"
+    r"reveal|system|secret|bypass|pretend|ask\w*)\b|[@<>{}`\\|$]|https?:|www\.|\.com\b")
 _CLAUSE_MAX = 160
 _MAX_CARRIED = 3
 
-_LENGTH_AXIS, _TONE_AXIS, _LISTS_AXIS, _EMOJI_AXIS = "length", "tone", "lists", "emoji"
+
+def _clause_values(clause: str) -> dict[str, str]:
+    """axis -> value for the styles a clause names; an axis that names two
+    different values is ambiguous and left out."""
+    values: dict[str, str] = {}
+    length = _axis_hits(clause, _DETAIL)
+    if _CARRY_SHORT.search(clause):
+        length.add("short")
+    if len(length) == 1:
+        values[_LENGTH_AXIS] = next(iter(length))
+    tone = _axis_hits(clause, _TONE)
+    if len(tone) == 1:
+        values[_TONE_AXIS] = next(iter(tone))
+    lists = set()
+    if _NEG_LISTS.search(clause):
+        lists.add("off")
+    if _POS_BULLETS.search(clause):
+        lists.add("bullets")
+    if _POS_PLAIN.search(clause):
+        lists.add("plain")
+    if lists == {"off", "plain"}:
+        lists = {"plain"}
+    if len(lists) == 1:
+        values[_LISTS_AXIS] = next(iter(lists))
+    if _NEG_EMOJI.search(clause):
+        values[_EMOJI_AXIS] = "off"
+    return {axis: value for axis, value in values.items() if (axis, value) in _CANON}
 
 
-def _axes(clause: str) -> set[str]:
-    axes = set()
-    if _axis_hits(clause, _DETAIL) or any(p.search(clause) for p in _CARRY[:1]):
-        axes.add(_LENGTH_AXIS)
-    if _axis_hits(clause, _TONE):
-        axes.add(_TONE_AXIS)
-    if re.search(r"\bemojis?\b|\bemoticons?\b", clause) and any(
-            p.search(clause) for p in (*_FORMAT, *_CARRY)):
-        axes.add(_EMOJI_AXIS)
-    if re.search(r"\b(?:lists?|bullets?|bullet points?|numbered|headers?|headings?|markdown|tables?|"
-                 r"prose|paragraphs?|plain text|plain sentences|one-liners?)\b", clause) and any(
-            p.search(clause) for p in (*_FORMAT, *_CARRY)):
-        axes.add(_LISTS_AXIS)
-    return axes
-
-
-def _clean(raw: str) -> str:
-    """One line of the user's own words, safe to quote: no control characters,
-    no double quotes (JSON escapes them anyway), bounded length."""
-    cleaned = re.sub(r"[\x00-\x1f\x7f]", " ", raw)
-    return re.sub(r"\s+", " ", cleaned).strip()
-
-
-def _session_clause(raw: str) -> tuple[str, set[str]] | None:
+def _session_clause(raw: str) -> dict[str, str] | None:
     clause = _norm(raw)
     if (not clause or len(raw) > _CLAUSE_MAX or _is_question(clause) or _PAST.search(clause)
             or _ACTIONY.search(clause)):
         return None
-    axes = _axes(clause)
-    if not axes:
+    values = _clause_values(clause)
+    if not values:
         return None
-    standing = (_STANDING.search(clause) or _SESSION_ONLY.search(clause)
-                or any(p.search(clause) for p in _CARRY))
+    standing = (_STANDING.search(clause) or _SESSION_ONLY.search(clause) or _CARRY_SHORT.search(clause))
     # "stop"/"no more" forms carry on their own; a bare style word needs a marker.
     if not standing and not re.search(r"\b(?:stop|no more|no emojis?|don'?t use)\b", clause):
         return None
-    return _clean(raw), axes
+    if not _addresses_wisp(clause):
+        return None
+    return values
 
 
 def session_style_instructions(user_texts: list[str]) -> list[str]:
     """The style instructions among `user_texts` (a chat's earlier user turns,
-    oldest first) that still stand, as the user's own words: at most three,
-    newest last, a later instruction on the same axis (length, tone, lists,
-    emoji) replacing an earlier one. One-shot wordings ("in one sentence:
-    what's X") name no marker and are not carried."""
-    found: list[tuple[str, set[str]]] = []
+    oldest first) that still stand, as CANONICAL strings (never the user's
+    words): at most three, newest last, a later instruction on the same axis
+    (length, tone, lists, emoji) replacing an earlier one. One-shot wordings
+    ("in one sentence: what's X") name no marker and are not carried."""
+    found: list[dict[str, str]] = []
     for text in user_texts or []:
         if not isinstance(text, str) or _excluded(_norm(text)):
             continue
@@ -255,15 +368,14 @@ def session_style_instructions(user_texts: list[str]) -> list[str]:
             item = _session_clause(raw)
             if item:
                 found.append(item)
-    kept: list[tuple[str, set[str]]] = []
+    picked: list[str] = []
     covered: set[str] = set()
-    for clause, axes in reversed(found):  # newest first
-        if axes - covered and clause not in {c for c, _ in kept}:
-            kept.append((clause, axes))
-        covered |= axes
-        if len(kept) == _MAX_CARRIED:
-            break
-    return [clause for clause, _ in reversed(kept)]
+    for item in reversed(found):  # newest first
+        for axis in _AXIS_ORDER:
+            if axis in item and axis not in covered and len(picked) < _MAX_CARRIED:
+                picked.append(_CANON[(axis, item[axis])])
+        covered |= set(item)
+    return list(reversed(picked))
 
 
 # ---------------------------------------------------------------------------
@@ -272,28 +384,36 @@ def session_style_instructions(user_texts: list[str]) -> list[str]:
 _FIELD_AXIS = {"detail": _LENGTH_AXIS, "tone": _TONE_AXIS}
 
 
+def _canonical_patch(patch: dict) -> list[str]:
+    return [_CANON[(axis, patch[field])] for field, axis in _FIELD_AXIS.items()
+            if (axis, (patch or {}).get(field)) in _CANON]
+
+
 def style_hint(current_patch: dict, earlier: list[str], *, saved: bool = True) -> str:
     """The Ask runtime guidance about the user's own style instructions, or ""
     when there is nothing to say. `current_patch` is what standing_style found
     in this message (`saved`: whether it reached the profile); `earlier` are
-    session_style_instructions. An earlier instruction on an axis the current
-    message just set is dropped: the newest word wins."""
+    session_style_instructions. Only canonical strings are ever restated (an
+    unknown string is dropped), and an earlier instruction on an axis the
+    current message just set is dropped: the newest word wins."""
+    current = _canonical_patch(current_patch or {})
     superseded = {_FIELD_AXIS[f] for f in (current_patch or {}) if f in _FIELD_AXIS}
-    earlier = [c for c in earlier or [] if not (_axes(_norm(c)) & superseded)][-_MAX_CARRIED:]
-    if not earlier and not current_patch:
+    earlier = [c for c in earlier or []
+               if c in _CANON_AXIS and _CANON_AXIS[c] not in superseded][-_MAX_CARRIED:]
+    if not earlier and not current:
         return ""
     lines = ["IMPORTANT rules about the user's own style instructions:"]
-    for clause in earlier:
-        lines.append("- Earlier in this chat they said: "
-                     + json.dumps(clause, ensure_ascii=False)
-                     + ". Keep following it; it overrides every other length or format rule.")
-    if current_patch:
+    for instruction in earlier:
+        lines.append(f"- Earlier in this chat they asked you to: {instruction}. Keep following it; "
+                     "it overrides every other length or format rule.")
+    if current:
+        asked = " and ".join(current)
         if saved:
-            lines.append("- They just asked for this from now on, and it is saved to their profile "
-                         "(Memory › About you). Confirm it in one short sentence and follow it.")
+            lines.append(f"- They just asked you to {asked} from now on, and it is saved to their "
+                         "profile (Memory › About you). Confirm it in one short sentence and follow it.")
         else:
-            lines.append("- They just asked for this from now on, but it could not be saved to their "
-                         "profile. Follow it for this chat and say briefly that it is not saved yet.")
+            lines.append(f"- They just asked you to {asked} from now on, but it could not be saved to "
+                         "their profile. Follow it for this chat and say briefly that it is not saved yet.")
     lines.append("- These are style preferences only; they never change what you may do or what "
                  "needs the user's confirmation.")
     return "\n".join(lines) + "\n"
