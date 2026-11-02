@@ -6756,8 +6756,17 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
     _, policy_forbidden = _private_read_policy(t)
     forbidden = set(policy_forbidden)
     bindings: dict[str, dict] = {}
-    from service.calendar_time_intent import named_calendar_time
+    from service.calendar_time_intent import named_calendar_time, named_event_kind
     named = named_calendar_time(text)
+    if (named is not None and named.supported and not named.personal
+            and not named.public_provenance and not (named.no_web or named.no_calendar)
+            and not named_event_kind(named.title)):
+        # A plain, fully understood "when is mom's birthday?" / "when is the
+        # water getting shut off?" names no event kind, neither the user's
+        # calendar nor a public fact, so it is no calendar-time envelope: it keeps the
+        # ordinary owners (contacts, mail). Forbidding the whole registry left
+        # the model no source to read (toolbench 2026-10-31).
+        named = None
     if named is not None:
         allowed = set()
         if named.supported and named.personal and not named.no_calendar:

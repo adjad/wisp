@@ -625,7 +625,7 @@ def needs_you(attention, *, now, day_end, dismissed=None):
 
 
 def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_windows=(), profile=None,
-           dismissed=None):
+           dismissed=None, removed=None):
     """Return explainable attention items and a proposed itinerary, all transient.
 
     ``evidence`` contains source-labelled records and explicit readiness/coverage.
@@ -633,6 +633,9 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     ``profile`` is the user's own profile (service/memory/profile.py) or None;
     an item naming one of its people is raised to the top with the reason said.
     ``dismissed`` is the user's cleared Needs you rows (store.needs_you_dismissals).
+    ``removed`` is the attention item ids whose suggested blocks the user removed
+    (store.removed_suggestions); those items are never suggested again, though
+    they stay in ``attention``.
     Its windows need current evidence, increasing bounds, >=0.65 recurrence strength,
     a named timezone, and a human-readable explanation. No percentage is shown:
     these scores are evidence strength, not calibrated forecast probabilities.
@@ -745,10 +748,18 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     events |= {_event_key(r.get("title")) for r in (evidence.get("calendar", {}).get("records") or [])}
     events.discard("")
     suggested_titles = set()
+    # Today's attention items that Remove keeps off the plan, before the cap: the
+    # Day's "Bring back" restores exactly these, never another day's removals.
+    removed_today = []
     for item in items:
-        if item["source"] in {"calendar", "wisp"} or len(suggestions) >= MAX_SUGGESTIONS:
+        if item["source"] in {"calendar", "wisp"}:
             continue
         if item["source"] == "behavior" and item.get("planning_duration") is None:
+            continue
+        if removed and item["id"] in removed:
+            removed_today.append(item["id"])
+            continue
+        if len(suggestions) >= MAX_SUGGESTIONS:
             continue
         title = item["title"]
         title_key = title.casefold()
@@ -853,7 +864,8 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     proposal["tasks"] = state["tasks"]
     return dict(day=day, timezone=timezone, generated_at=now, attention=items[:MAX_ITEMS],
                 needs_you=needs_you(items[:MAX_ITEMS], now=now, day_end=hi, dismissed=dismissed),
-                attention_omitted=max(0, len(items) - MAX_ITEMS), source_coverage=coverage,
+                attention_omitted=max(0, len(items) - MAX_ITEMS), removed_suggestions=removed_today,
+                source_coverage=coverage,
                 behavior_detail=behavior_detail,
                 behavior_context=(dict(ready=True, generated_at=behavior["generated_at"],
                     evidence_checked_at=behavior["evidence_checked_at"],
@@ -1173,6 +1185,8 @@ def workspace(store, day, timezone, *, now, behavior=None, ignored_windows=(), p
         state = {**state, "tasks": hide(state["tasks"], now)}
     evidence = collect_evidence(store, state, day, timezone, now=now)
     cleared = getattr(store, "needs_you_dismissals", None)
+    removed = getattr(store, "removed_suggestions", None)
     return assess(day, timezone, state, evidence, now=now, behavior=behavior,
                   ignored_windows=ignored_windows, profile=profile,
-                  dismissed=cleared() if cleared is not None else None)
+                  dismissed=cleared() if cleared is not None else None,
+                  removed=removed() if removed is not None else None)

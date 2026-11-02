@@ -49,6 +49,12 @@ struct NotchDayView: View {
     @State private var showWholeAgenda = false
     /// What ended in the last two hours, opened from its one-line summary.
     @State private var showEarlier = false
+    /// The last Remove, while its Undo bar shows: the ids it sent, so Undo brings
+    /// a grouped review back as one action.
+    @State private var lastRemoved: (ids: [String], notice: String)?
+    @State private var lastRemovedTask: Task<Void, Never>?
+    /// How long the Undo bar stays after Remove.
+    private static let removeUndoSeconds: UInt64 = 8
 
     init(model: OverlayModel, today: TodayModel) {
         self.model = model
@@ -75,6 +81,7 @@ struct NotchDayView: View {
                 Text(stale).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let removed = lastRemoved { removedRow(removed) }
             if !today.followsToday { otherDayRow }
             if today.isShowingCurrentDay {
                 CheckInSection(model: checkIn, day: today.day, timezone: today.timezone,
@@ -743,6 +750,10 @@ struct NotchDayView: View {
                         }
                     }
                 }
+                if !DayTimeline.removalIDs(item).isEmpty {
+                    Button("Remove") { remove(item) }
+                        .help("Takes it off your day and Wisp won't suggest it again. The email or reminder stays.")
+                }
             case .task:
                 if let task = task(for: item) {
                     Button("15 minutes shorter") {
@@ -803,7 +814,7 @@ struct NotchDayView: View {
         ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
             switch entry {
             case .cancel:
-                Button(failure?.canRetry == true ? "Try cancelling again" : "Cancel event") {
+                Button(CheckInCancel.cancelLabel(inviteeCount: event.inviteeCount, retry: failure?.canRetry == true)) {
                     if movingEvent?.id == event.id { closeMove() }   // not moving what is being cancelled
                     checkIn.beginCancel(event, timezone: today.timezone.identifier, fromCard: false)
                 }
@@ -879,6 +890,73 @@ struct NotchDayView: View {
         guard let id = item.caughtID else { return }
         ignoredCaught.insert(id)
         IgnoredCaught.add(id)
+    }
+
+    /// Remove a suggestion: its items are never suggested again (by Replan or a
+    /// later plan). Only Wisp's record changes; the source stays in Needs you.
+    private func remove(_ item: DayItem) {
+        let ids = DayTimeline.removalIDs(item)
+        guard !ids.isEmpty else { return }
+        let notice = DayTimeline.removedNotice(item)
+        Task {
+            guard await today.mutate("/assistant/today/workspace/suggestions/remove", method: "POST",
+                                     body: ["evidence_ids": ids]) else { return }
+            showUndo((ids, notice))
+        }
+    }
+
+    /// The Undo bar for a Remove, for removeUndoSeconds.
+    private func showUndo(_ removed: (ids: [String], notice: String)) {
+        lastRemoved = removed
+        lastRemovedTask?.cancel()
+        lastRemovedTask = Task {
+            try? await Task.sleep(nanoseconds: Self.removeUndoSeconds * 1_000_000_000)
+            guard !Task.isCancelled else { return }
+            lastRemoved = nil
+            model.onResize()
+        }
+        model.onResize()
+    }
+
+    /// Undo the last Remove: the same items, in one call, back into the plan.
+    /// The bar stays until the service says yes; if it doesn't, the bar comes
+    /// back for another try, under the day's error line.
+    private func undoRemove(_ removed: (ids: [String], notice: String)) {
+        lastRemovedTask?.cancel()
+        Task {
+            let restored = await today.mutate("/assistant/today/workspace/suggestions/restore", method: "POST",
+                                              body: ["evidence_ids": removed.ids])
+            if restored {
+                if lastRemoved?.ids == removed.ids { lastRemoved = nil }
+                model.onResize()
+            } else {
+                if today.error.isEmpty { today.error = "Couldn't undo that just now. Try Undo again." }
+                showUndo(removed)
+            }
+        }
+    }
+
+    /// Today's removed suggestions may be suggested again (only today's: the
+    /// ids the plan listed, never another day's).
+    private func bringBackRemoved(_ ids: [String]) {
+        lastRemovedTask?.cancel()
+        lastRemoved = nil
+        Task {
+            _ = await today.mutate("/assistant/today/workspace/suggestions/restore", method: "POST",
+                                   body: ["evidence_ids": ids])
+        }
+    }
+
+    private func removedRow(_ removed: (ids: [String], notice: String)) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(removed.notice).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            NotchChrome.small("Undo") { undoRemove(removed) }
+                .disabled(today.busy)
+                .help("Puts it back on your day")
+                .accessibilityLabel("Undo: \(removed.notice)")
+        }
     }
 
     private func notToday(_ item: DayItem) {
@@ -968,6 +1046,10 @@ struct NotchDayView: View {
                                                delayMinutes: 15)
                         }
                     }
+                }
+                if let removed = plan?.workspace?.removed_suggestions, let label = DayTimeline.bringBackLabel(removed) {
+                    Button(label) { bringBackRemoved(removed) }
+                        .help("Wisp may suggest them again, from this plan on")
                 }
                 Button("Report a problem with this plan") { today.reportProblem() }
             } label: {

@@ -482,6 +482,38 @@ def _validate_args(tool: Tool, args: dict) -> str | None:
             f"Expected arguments — {_arg_hint(tool)}. Call it again with corrected arguments.)")
 
 
+def unwrap_nested_args(tool: Tool | None, args: object) -> object:
+    """{"parameters": {...}} / {"arguments": {...}} -> the inner object, when the
+    tool has no argument of that name: a call-format slip (web_latch_bitcoin,
+    2026-10-31), not a choice of values. Nothing inside is changed."""
+    if (tool is not None and isinstance(args, dict) and len(args) == 1):
+        (key, inner), = args.items()
+        if (key in {"parameters", "arguments", "args"} and isinstance(inner, dict)
+                and key not in tool.parameters.get("properties", {})):
+            return inner
+    return args
+
+
+def runnable_stub_call(tool: Tool | None, args: object) -> bool:
+    """True when a call to a tool offered by NAME ONLY (a model-led stub) can
+    run as that call instead of only loading the schema: its arguments already
+    satisfy the registered schema exactly (known names, required present, types
+    and enums valid). An effect also needs at least one argument, so a bare
+    `open_app()` still loads its schema first. Every guard after the stub step
+    (policy, confirmation, safety stops, grants) still applies to the call.
+
+    Toolbench baseline 2026-10-31: 149 of 476 failures were a stub call the
+    model never repeated; it then told the user "Calculator is open" or "I
+    saved your gate code" though nothing ran."""
+    args = unwrap_nested_args(tool, args)
+    if tool is None or not isinstance(args, dict) or tool.unavailable_reason:
+        return False
+    if _validate_args(tool, args) is not None:
+        return False
+    from service.router.model_led import effectful_call
+    return bool(args) or not effectful_call(tool, args)
+
+
 def is_tool_error(result: str) -> bool:
     """True for a tool_result string produced by run_tool's own failure paths
     (bad args caught by `_validate_args`, or an exception from the tool

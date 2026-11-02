@@ -140,8 +140,18 @@ class SessionStore:
                 # Read-only, or another opener added it first.
                 if not any(k in str(e).lower() for k in ("readonly", "duplicate column")):
                     raise
+        if "subject" not in columns:
+            # The conversation's current subject (service/memory/subject.py):
+            # additive and nullable, an older Wisp ignores it.
+            try:
+                self._db.execute("ALTER TABLE sessions ADD COLUMN subject TEXT")
+            except sqlite3.OperationalError as e:
+                if not any(k in str(e).lower() for k in ("readonly", "duplicate column")):
+                    raise
         # A read-only opener of an older file may not have the column.
-        self._has_title = "title" in {row[1] for row in self._db.execute("PRAGMA table_info(sessions)")}
+        session_columns = {row[1] for row in self._db.execute("PRAGMA table_info(sessions)")}
+        self._has_title = "title" in session_columns
+        self._has_subject = "subject" in session_columns
         turn_columns = {row[1] for row in self._db.execute("PRAGMA table_info(turns)")}
         if "display_content" not in turn_columns:
             # Nullable/additive: old turns and their indices remain untouched.
@@ -180,6 +190,26 @@ class SessionStore:
             self._db.execute(
                 "UPDATE sessions SET pinned_role=?, pinned_model=? WHERE id=?",
                 (role, model, sid))
+            self._db.commit()
+
+    def session_subject(self, sid: str) -> dict | None:
+        """The session's current-subject record (service/memory/subject.py)."""
+        if not self._has_subject:
+            return None
+        with self._lock:
+            row = self._db.execute("SELECT subject FROM sessions WHERE id=?", (sid,)).fetchone()
+        try:
+            value = json.loads(row["subject"]) if row and row["subject"] else None
+        except (TypeError, ValueError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def set_session_subject(self, sid: str, record: dict | None) -> None:
+        if not self._has_subject:
+            return
+        with self._lock:
+            self._db.execute("UPDATE sessions SET subject=? WHERE id=?",
+                             (json.dumps(record, ensure_ascii=False) if record else None, sid))
             self._db.commit()
 
     def set_active_skill(self, sid: str, name: str | None) -> None:

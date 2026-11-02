@@ -109,6 +109,22 @@ enum QuickSettingsText {
         return ("\(name) · \(gigabytes(total)) GB in use · reloads on next ask", fraction)
     }
 
+    /// The Models page's line about the user's own oMLX while Wisp runs on its
+    /// built-in engine (nil shows none). Only a model it reports loaded is memory
+    /// in use; a running but empty server, or one that doesn't say, never warns.
+    static func otherEngine(running: Bool, loaded: Bool?, modelBytes: Int64?) -> (text: String, warns: Bool)? {
+        guard running else { return nil }
+        switch loaded {
+        case true?:
+            let size = modelBytes.map { " (\(gigabytes($0)) GB)" } ?? ""
+            return ("Your own oMLX also has a model loaded\(size); both engines use memory", true)
+        case false?:
+            return ("Your own oMLX is also running, with no model loaded", false)
+        case nil:
+            return ("Your own oMLX is also running", false)
+        }
+    }
+
     /// "Ling-3.0-tiny-oQ6e" → "Ling"; "org/Mellum-2.1" → "Mellum".
     static func shortName(_ id: String) -> String {
         let base = id.split(separator: "/").last.map(String.init) ?? id

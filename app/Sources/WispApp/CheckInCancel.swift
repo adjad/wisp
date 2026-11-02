@@ -82,6 +82,13 @@ enum CheckInCancel {
         }
     }
 
+    /// The Cancel entry's words. An event with no invitees is only the person's
+    /// own, so removing it reads as "Delete event"; with invitees Calendar tells
+    /// them, so it stays "Cancel event". Not synced yet (nil) never reads as none.
+    static func cancelLabel(inviteeCount: Int?, retry: Bool) -> String {
+        retry ? "Try cancelling again" : inviteeCount == 0 ? "Delete event" : "Cancel event"
+    }
+
     /// The body of POST /assistant/checkin/cancel_event, or nil when the row lacks
     /// what the service rejects without: the calendar id, the start the card
     /// showed, and a synced invitee count (null means not synced).

@@ -2177,17 +2177,13 @@ async def view_messages_impl(query: str | None = None, day: str | None = None,
 
 @register(
     "view_messages",
-    "Get the RAW, verbatim text of the user's messages — exact wording, not a "
-    "summary. Use this instead of summarize_messages when the user needs a "
-    "specific detail FROM a message: an order number, an address, a pickup "
-    "time, party details, a code someone sent, exact wording to quote back, "
-    "etc. Pass `query` to search for a keyword across sender/conversation and "
-    "text (e.g. 'birthday', 'pizza', a person's name); pass `period` for a "
-    "date RANGE ('this month', 'last week', 'this month and last month') or "
-    "`day` for one specific day; omit all for the most recent messages. Named "
-    "queries return no match rather than unrelated records. Use `conversation` "
-    "to select one person/group by current conversation identity. Pass `unread` "
-    "for unread-only records; unknown read state is disclosed, never guessed.",
+    "Get the RAW text of the user's messages, exact wording. Use for 'who texted me', 'did X "
+    "send ...', 'what did X say' and any detail from a message (order number, address, time, "
+    "a code, a quote). `query` searches sender, conversation and text; `period` a date RANGE "
+    "('this month', 'last week'); `day` one day; `conversation` one person or group; `unread` "
+    "unread-only (unknown read state is disclosed, never guessed). Omit all for the latest. "
+    "Named queries return no match rather than unrelated records. summarize_messages is only "
+    "for 'what matters' / a catch-up.",
     {"type": "object",
      "properties": {
          "query": {"type": "string",
@@ -2211,20 +2207,13 @@ async def view_messages(query: str | None = None, day: str | None = None,
 
 @register(
     "summarize_messages",
-    "Summarize important iMessage/SMS messages from the last three days, "
-    "grouped by conversation, including important read messages. Omit routine "
-    "chatter, promotions, standalone codes, and resolved items. Use for what "
-    "matters in the user's messages/texts/iMessage. For who messaged the user "
-    "or their latest messages, use view_messages instead: this digest leaves "
-    "routine messages out. Pass `period` for a "
-    "RANGE — 'this month', 'last month', 'this week', 'this month and last "
-    "month' — or `day` ('today', 'yesterday', 'YYYY-MM-DD') for ONE day; omit "
-    "both for the important three-day digest. Pass `conversation` for one named "
-    "person or group chat; an explicit chat summary includes that chat even "
-    "when it has no unread or broadly important messages. Summarized by the "
-    "fast local model. For explicit unread-only catchup, pass `unread=true`: "
-    "returns source-backed excerpts including routine unread replies, with "
-    "unknown read status and truncated coverage disclosed; never marks read.",
+    "Digest of the IMPORTANT iMessage/SMS from the last three days, grouped by chat. Routine "
+    "chatter, promotions, codes and resolved items are left out, so it cannot answer 'who "
+    "texted me' or 'did X send Y' - use view_messages instead. Use for 'what matters in my texts' or "
+    "a catch-up. `period` for a RANGE ('this month'), `day` for ONE day ('today', "
+    "'YYYY-MM-DD'); omit both for the three-day digest. `conversation` for one chat (included "
+    "even if nothing in it is important). `unread=true` for source-backed unread excerpts "
+    "with coverage disclosed; never marks read. Summarized by the local model.",
     {"type": "object",
      "properties": {
          "period": PERIOD_ARG,
@@ -2256,13 +2245,10 @@ async def summarize_messages(day: str | None = None, count: int = 30,
 
 @register(
     "lookup_contact",
-    "Look up a saved contact's phone number or email by their NAME — 'Mom', "
-    "'Dan', 'Dr. Patel'. Use this before send_message or send_email whenever "
-    "the user names a person instead of giving an address. Do NOT try to find "
-    "someone's number with view_messages: that tool replaces phone numbers "
-    "with contact names before you see them, so it can never show you a "
-    "number. If this returns nothing, say you couldn't find them in Contacts "
-    "and ask the user for the number — never guess one.",
+    "Look up a saved contact's phone or email by NAME ('Mom', 'Dr. Patel') when the user asks "
+    "for the number or address itself. Not a step before send_message, send_email or "
+    "schedule_send: they resolve names themselves. view_messages cannot show numbers. If "
+    "nothing is found, say so and ask; never guess one.",
     {"type": "object",
      "properties": {
          "name": {"type": "string", "description": "the contact's name, e.g. 'Mom'"},

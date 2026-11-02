@@ -46,6 +46,10 @@ struct ProactiveState: Decodable, Equatable {
     var uncheckedMail: UncheckedMail { UncheckedMail(unreadBy: mailUnreadBy, reasons: mailUnreadReasons) }
     /// The work behind the cards: what Wisp read, found and drafted.
     var stats: Stats? = nil
+    /// Wisp is catching the Brief up after a long absence (a relaunch, the
+    /// model coming back after Save memory, the notch opening on an old Brief;
+    /// service/proactive/return_refresh.py), so what shows is from before.
+    var updating = false
 
     struct Stats: Decodable, Equatable {
         var read: Int = 0
@@ -113,7 +117,7 @@ struct ProactiveState: Decodable, Equatable {
         self.threads = threads
     }
 
-    private enum Keys: String, CodingKey { case state, as_of, progress, accounts, summary, cards, todos, threads, lede, stats, owner, reason, unread, mail_read_by, mail_unread_by, mail_unread_reasons }
+    private enum Keys: String, CodingKey { case state, as_of, progress, accounts, summary, cards, todos, threads, lede, stats, owner, reason, unread, mail_read_by, mail_unread_by, mail_unread_reasons, updating }
     private enum OwnerKeys: String, CodingKey { case id, label }
     private enum StatsKeys: String, CodingKey { case read, found, drafted, filtered, as_of }
 
@@ -141,6 +145,7 @@ struct ProactiveState: Decodable, Equatable {
                           filtered: st.lenient(.filtered, Int.self) ?? 0, asOf: st.lenient(.as_of, Double.self))
         }
         summary = c.lenientString(.summary) ?? ""
+        updating = c.lenient(.updating, Bool.self) ?? false
         cards = c.lenient(.cards, LossyList<ProactiveCard>.self)?.items.filter { !$0.id.isEmpty } ?? []
         todos = c.lenient(.todos, LossyList<ProactiveTodo>.self)?.items.filter { !$0.id.isEmpty && !$0.title.isEmpty } ?? []
         threads = c.lenient(.threads, LossyList<ProactiveThread>.self)?.items.filter { !$0.id.isEmpty } ?? []

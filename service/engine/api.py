@@ -8,6 +8,7 @@ import logging
 import re
 import threading
 from contextlib import asynccontextmanager, contextmanager
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -81,14 +82,36 @@ from .downloads import router as downloads_router
 router.include_router(downloads_router)
 
 
-async def external_engine_running(*, port: int = 8000, timeout: float = 0.3,
-                                  deadline: float = 0.8,
-                                  transport: httpx.AsyncBaseTransport | None = None) -> bool:
+@dataclass(frozen=True)
+class ExternalEngine:
+    running: bool = False
+    # Whether it holds models, from its own /health pool counters; None when it
+    # doesn't report them (an older oMLX, or only /v1/models answered). A running
+    # process or a model list is never taken as memory in use.
+    loaded: bool | None = None
+    model_bytes: int | None = None
+
+
+def _pool_residency(payload: dict) -> tuple[bool | None, int | None]:
+    pool = payload.get("engine_pool")
+    if not isinstance(pool, dict):
+        return None, None
+    count, size = pool.get("loaded_count"), pool.get("current_model_memory")
+    if type(count) is not int or count < 0:
+        return None, None
+    measured = size if type(size) is int and size > 0 else None
+    return count > 0 or measured is not None, measured
+
+
+async def external_engine_probe(*, port: int = 8000, timeout: float = 0.3,
+                                deadline: float = 0.8,
+                                transport: httpx.AsyncBaseTransport | None = None) -> ExternalEngine:
     """Fixed loopback, no secrets, no redirects or proxy environment.
 
     Port injection is for tests only; it is never taken from an HTTP request or
     settings. A health JSON object or a valid model list proves availability,
-    not identity, and never authorizes inference traffic.
+    not identity, and never authorizes inference traffic. Read only: it never
+    loads or unloads anything on the other engine.
     """
     try:
         async with asyncio.timeout(deadline):
@@ -109,14 +132,19 @@ async def external_engine_running(*, port: int = 8000, timeout: float = 0.3,
                                 if isinstance(payload, dict):
                                     if path == "/health":
                                         if payload.get("status") in ("ok", "healthy", "running"):
-                                            return True
+                                            loaded, size = _pool_residency(payload)
+                                            return ExternalEngine(True, loaded, size)
                                     elif isinstance(payload.get("data"), list):
-                                        return True
+                                        return ExternalEngine(True)
                     except (httpx.HTTPError, OSError, ValueError, RecursionError):
                         continue
     except TimeoutError:
         pass
-    return False
+    return ExternalEngine()
+
+
+async def external_engine_running(**kwargs: Any) -> bool:
+    return (await external_engine_probe(**kwargs)).running
 
 
 def _omlx_version() -> str | None:
@@ -134,10 +162,11 @@ async def _status() -> dict[str, Any]:
     reason = mode.unsupported_reason()
     available = mode.engine_present() and reason is None
     configured = mode.configured_mode()
-    external_running = await external_engine_running()
+    external = await external_engine_probe()
+    external_running = external.running
     bundled = mode.is_bundled()
-    if bundled and external_running:
-        log.warning("An external engine is also running; two engines can consume extra memory")
+    if bundled and external.loaded:
+        log.warning("An external engine also has a model loaded; two engines can consume extra memory")
     # Observe the existing child without constructing a manager (which resolves
     # an API key) or starting a process. External status never reads ~/.omlx.
     child = runtime._manager
@@ -156,6 +185,9 @@ async def _status() -> dict[str, Any]:
         "external_omlx_installed": installed,
         "restart_required": configured is not None and configured != mode.MODE,
         "external_engine_running": bundled and external_running,
+        # Only about the other engine while Wisp runs on its own; null when unknown.
+        "external_engine_loaded": external.loaded if bundled and external_running else None,
+        "external_engine_model_bytes": external.model_bytes if bundled and external.loaded else None,
     }
 
 

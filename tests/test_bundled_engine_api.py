@@ -35,8 +35,9 @@ user_app_detected = mode.external_omlx_installed(present=lambda path: path == Pa
 # Replace the check after import with the same injected presence fact.
 api.mode.external_omlx_installed = lambda: options.get("installed", False)
 async def quiet():
-    return options.get("external_running", False)
-api.external_engine_running = quiet
+    return api.ExternalEngine(options.get("external_running", False), options.get("external_loaded"),
+                              options.get("external_bytes"))
+api.external_engine_probe = quiet
 log_text = io.StringIO()
 handler = logging.StreamHandler(log_text)
 api.log.addHandler(handler)
@@ -247,7 +248,8 @@ def test_switch_and_secrets() -> None:
         settings = home / "engine" / "base" / "settings.json"
         settings.write_text(json.dumps({"auth": {"api_key": "FAKE-PRIVATE-KEY"}, "secret": "FAKE-SETTINGS-CONTENTS"}))
         (home / "config.yaml").write_text("unrelated: FAKE-OVERLAY-SECRET\n")
-        result = probe(root, engine, external_running=True, operations=[
+        result = probe(root, engine, external_running=True, external_loaded=True,
+                       external_bytes=5_000_000_000, operations=[
             {"method": "GET", "path": "/engine"},
             {"method": "POST", "path": "/engine/mode", "json": {"mode": "external-omlx"}},
             {"method": "GET", "path": "/engine"},
@@ -258,14 +260,17 @@ def test_switch_and_secrets() -> None:
               and body(result, 1)["restart_required"] and body(result, 2)["restart_required"])
         check("switch back clears restart flag", not body(result, 3)["restart_required"])
         check("writer preserves unrelated overlay", result["overlay"]["unrelated"] == "FAKE-OVERLAY-SECRET")
-        check("status reports coexistence and warning", body(result)["external_engine_running"] is True and "two engines" in result["logs"])
+        check("status reports coexistence and warning", body(result)["external_engine_running"] is True
+              and body(result)["external_engine_loaded"] is True
+              and body(result)["external_engine_model_bytes"] == 5_000_000_000 and "two engines" in result["logs"])
         check("status reads provenance version", body(result)["omlx_version"] == "0.7.1.dev1")
         check("status does not construct manager", body(result)["running"] is False)
         emitted = json.dumps(result["responses"]) + result["logs"]
         check("responses/logs contain no key, key path or settings", not any(s in emitted for s in
               ("FAKE-PRIVATE-KEY", "FAKE-SETTINGS-CONTENTS", "FAKE-OVERLAY-SECRET", str(settings), "api_key")))
         expected = {"mode", "configured_mode", "bundled_available", "unsupported_reason", "running",
-                    "omlx_version", "admin_url", "external_omlx_installed", "restart_required", "external_engine_running"}
+                    "omlx_version", "admin_url", "external_omlx_installed", "restart_required", "external_engine_running",
+                    "external_engine_loaded", "external_engine_model_bytes"}
         check("response exactly matches frozen fields", set(body(result)) == expected)
     with tempfile.TemporaryDirectory() as t:
         root = Path(t)
@@ -295,6 +300,34 @@ def test_env_and_corrupt_overlay() -> None:
                   and (home / "config.yaml").read_text() == text)
         (home / "config.yaml").write_text("engine: null\n")
         check("null engine section has no stored mode", probe(root, engine)["mode"] == "bundled")
+
+
+def test_idle_external_engine_is_not_memory() -> None:
+    # The user's oMLX running with nothing loaded holds no model memory: no
+    # warning and no size. One that doesn't report its pool is unknown, and an
+    # external-mode Wisp says nothing about a second engine.
+    cases = [
+        ({"external_running": True, "external_loaded": False}, (True, False, None, False)),
+        ({"external_running": True, "external_loaded": None}, (True, None, None, False)),
+        ({"external_running": True, "external_loaded": True}, (True, True, None, True)),
+        ({"external_running": False}, (False, None, None, False)),
+    ]
+    for options, (running, loaded, size, warns) in cases:
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            result = probe(root, fixture(root), **options)
+            b = body(result)
+            check(f"bundled with external {options}", (b["external_engine_running"], b["external_engine_loaded"],
+                  b["external_engine_model_bytes"]) == (running, loaded, size)
+                  and ("two engines" in result["logs"]) == warns, (b, result["logs"]))
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        result = probe(root, fixture(root), env={"WISP_ENGINE_MODE": "external-omlx"},
+                       external_running=True, external_loaded=True, external_bytes=4)
+        b = body(result)
+        check("external mode reports no second engine", b["running"] is True and b["external_engine_running"] is False
+              and b["external_engine_loaded"] is None and b["external_engine_model_bytes"] is None
+              and "two engines" not in result["logs"])
 
 
 def test_concurrent_selection() -> None:
@@ -330,7 +363,8 @@ assert server.server_port not in {8000, 8765, 8791}
 thread = threading.Thread(target=server.serve_forever, daemon=True)
 thread.start()
 async def run():
-    healthy = await api.external_engine_running(port=server.server_port)
+    listed = await api.external_engine_probe(port=server.server_port)
+    healthy = listed.running
     redirected = []
     def redirect(request):
         redirected.append(str(request.url))
@@ -348,7 +382,21 @@ async def run():
     started = time.monotonic()
     stalled = await api.external_engine_running(port=server.server_port, deadline=0.1,
         transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=Drip())))
-    return {"healthy": healthy, "health": health, "seen": seen, "redirects": redirects,
+    def pool(value):
+        return api.external_engine_probe(port=server.server_port, transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"status": "healthy", "engine_pool": value})))
+    pools = {
+        "idle": await pool({"model_count": 3, "loaded_count": 0, "current_model_memory": 0}),
+        "loaded": await pool({"model_count": 3, "loaded_count": 1, "current_model_memory": 4_200_000_000}),
+        "loading": await pool({"loaded_count": 0, "current_model_memory": 7}),
+        "unmeasured": await pool({"loaded_count": 2, "current_model_memory": True}),
+        "absent": await pool(None),
+        "bad_count": await pool({"loaded_count": "1", "current_model_memory": 9}),
+        "negative": await pool({"loaded_count": -1}),
+    }
+    pools = {k: [v.running, v.loaded, v.model_bytes] for k, v in pools.items()}
+    pools["models_only"] = [listed.running, listed.loaded, listed.model_bytes]
+    return {"healthy": healthy, "health": health, "seen": seen, "pools": pools, "redirects": redirects,
             "redirected": redirected, "oversized": oversized, "stalled": stalled,
             "elapsed": time.monotonic()-started}
 try:
@@ -374,6 +422,14 @@ def test_credential_free_local_probe() -> None:
         result = json.loads(done.stdout.strip().splitlines()[-1])
         check("random-port stub detected via models fallback", result["healthy"] and [r[0] for r in result["seen"]] == ["/health", "/v1/models"])
         check("health endpoint detected", result["health"])
+        pools = result["pools"]
+        check("idle pool holds no model memory", pools["idle"] == [True, False, None], pools)
+        check("loaded pool reports its measured size", pools["loaded"] == [True, True, 4_200_000_000], pools)
+        check("model memory without a count is loaded", pools["loading"] == [True, True, 7], pools)
+        check("unmeasured size is loaded without bytes", pools["unmeasured"] == [True, True, None], pools)
+        check("missing or malformed pool is unknown", all(pools[k] == [True, None, None]
+              for k in ("absent", "bad_count", "negative")), pools)
+        check("a model list alone never means loaded", pools["models_only"] == [True, None, None], pools)
         check("probe sends no credentials", all(not {"authorization", "cookie", "x-api-key"} & {k.lower() for k in headers}
               for _, headers in result["seen"]))
         check("probe never follows redirects", not result["redirects"] and len(result["redirected"]) == 2
@@ -424,7 +480,7 @@ def main() -> int:
     skipped = 0
     for fn in (test_first_launch_and_stickiness, test_unsupported_and_validation,
                test_switch_and_secrets, test_env_and_corrupt_overlay, test_concurrent_selection,
-               test_credential_free_local_probe):
+               test_idle_external_engine_is_not_memory, test_credential_free_local_probe):
         print(fn.__name__)
         if fn is test_credential_free_local_probe and not sockets_allowed():
             skipped += 1

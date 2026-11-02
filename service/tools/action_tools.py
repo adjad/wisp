@@ -531,20 +531,15 @@ def _resolve_recipient(name: str, *, want_email: bool = False) -> tuple[str, str
 
 @register(
     "send_email",
-    "Send an email from the user's Mail account. Use when the user asks to "
-    "email someone; use reply_to_email for replies in an existing thread. "
-    "Put the complete recipient, subject and body in the tool arguments once; "
-    "the confirmation card displays them for approval. `to` accepts either an email "
-    "address or a saved contact's NAME ('Mom', 'Dan') — a name is resolved from "
-    "Contacts automatically, and `lookup_contact` will show you the address "
-    "first if you want to confirm it. Never invent an address; if it can't be "
-    "resolved you'll be told, and you should ask the user rather than guess. "
-    "Write the body as the user would send it — no placeholders like "
-    "[Your Name], no meta-commentary. If `to` is the USER'S OWN address, this "
-    "is refused once by default (it usually means an attribution address got "
-    "used as a destination by mistake) — if the user's own words in this "
-    "conversation just confirmed they genuinely want to email themselves, "
-    "call this again with confirmed_self_send=true.",
+    "Send an email NOW from the user's Mail. A plain 'email X ...' or 'send X an email' is a "
+    "send, not a draft: the confirmation card shows recipient, subject and body for approval. "
+    "Use draft_email only when they say draft / don't send / let me check it; reply_to_email "
+    "to answer a thread; schedule_send only when they name a later send time. `to`: an "
+    "address or a saved contact NAME ('Mom'), resolved automatically, so no lookup_contact "
+    "first; never invent an address, ask if it can't be resolved. Put the full subject and "
+    "body in the arguments once, in the user's voice, no placeholders. To the user's OWN "
+    "address it is refused once; retry with confirmed_self_send=true only if their own words "
+    "just confirmed it.",
     {"type": "object",
      "properties": {
          "to": {"type": "string",
@@ -612,23 +607,17 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
 
 @register(
     "schedule_send",
-    "Send an email or a text LATER, at a specific time. Use whenever the user "
-    "says when something should go out — 'text mom at 6', 'email the recruiter "
-    "Monday morning', 'send this tonight'. The user approves it once, now, on a "
-    "confirmation card showing the recipient, the message, and the delivery "
-    "time; it then sends by itself at that time with no further prompting, so "
-    "write the message exactly as it should arrive. ALWAYS show the full text "
-    "and repeat the time back to the user IN YOUR REPLY (the words they used, "
-    "or this tool's returned confirmation time — never a time you computed "
-    "yourself) BEFORE calling this. `channel` is 'email' or 'message'. `to` "
-    "accepts an address, a phone number, or a saved contact's NAME. Wisp must "
-    "be running at that time to send — say so if the time is far off or "
-    "overnight. This schedules only a NEW standalone email or text; it cannot "
-    "schedule a reply inside an existing email thread. For a scheduled reply "
-    "request, state that limitation before execution and call neither this tool "
-    "nor reply_to_email. If this tool's result says the time is in the past or "
-    "couldn't be understood, NOTHING was scheduled — say so plainly and ask "
-    "what time they meant; do not tell the user it was queued.",
+    "Send an email or text LATER, at a time the user names ('text mom at 6', 'email the "
+    "recruiter Monday', 'send this tonight'). If they say now, right away or give no time, "
+    "use send_message / send_email instead. The user approves once on a card showing "
+    "recipient, text and time; it then sends by itself, so write it exactly as it should "
+    "arrive. ALWAYS show the full text and repeat their time in your reply before calling "
+    "(their words or this tool's returned time, never one you computed). `channel`: 'email' "
+    "or 'message'. `to`: an address, phone or saved contact NAME. Wisp must be running then; "
+    "say so for far-off or overnight times. A NEW standalone email or text only: it cannot schedule a "
+    "reply in an email thread (say so and call neither this nor reply_to_email). If the "
+    "result says the time is past or unclear, NOTHING was scheduled; say so and ask what time "
+    "they meant.",
     {"type": "object",
      "properties": {
          "channel": {"type": "string", "enum": ["email", "message"],
@@ -975,13 +964,9 @@ async def prepare_reply_args(args: dict) -> tuple[dict | None, str]:
 
 @register(
     "draft_email",
-    "Open a NEW email in Mail with the recipient, subject, and body already "
-    "filled in — WITHOUT sending it. The user reviews it in Mail and clicks "
-    "send themselves. Use this whenever they want to look the message over "
-    "first ('draft an email to…', 'write it but don't send', 'let me check it "
-    "before it goes'). Prefer this over send_email when there's any doubt about "
-    "whether they want it sent immediately. `to` accepts an address or a saved "
-    "contact's NAME, same as send_email.",
+    "Open a NEW unsent email in Mail, filled in, for the user to review and send themselves. "
+    "Only when they say draft, write-but-don't-send or let me check it first; a plain 'email "
+    "X ...' is send_email. `to`: an address or a saved contact NAME.",
     {"type": "object",
      "properties": {
          "to": {"type": "string",
@@ -1164,19 +1149,14 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
 
 @register(
     "send_message",
-    "Send an iMessage/SMS from the user's Messages app. Use when the user asks "
-    "to text/message someone. Put the complete outgoing text in `text` once; "
-    "the confirmation card displays it and the recipient for approval. "
-    "`to` accepts a phone number, an "
-    "iMessage email address, or a saved contact's NAME ('Mom', 'Dan') — a name "
-    "is resolved from Contacts automatically. Do NOT use view_messages to hunt "
-    "for someone's number: it replaces numbers with contact names before you "
-    "see them, so it can never show you one. Use `lookup_contact` if you want "
-    "to confirm the number first. Keep it in the user's own voice: short, no "
-    "sign-off, no 'sent from my assistant'. If `to` is one of the USER'S OWN "
-    "email addresses (iMessage can use those as a handle), this is refused "
-    "once by default — if the user's own words just confirmed they genuinely "
-    "want to message themselves, call this again with confirmed_self_send=true.",
+    "Send an iMessage/SMS NOW from the user's Messages. For 'text/message/tell X ...', send "
+    "it: don't stop at a draft or a contact lookup (draft_message only if they say draft / "
+    "don't send; schedule_send only for a later time they name). If the text needs facts "
+    "(schedule, weather, a price), read them first, then call this in the same turn. `to`: a "
+    "phone, iMessage email or saved contact NAME, resolved automatically; view_messages never "
+    "shows numbers. Put the full text in `text` once, short, in the user's voice, no "
+    "sign-off; the confirmation card shows it. To the user's OWN address it is refused once; "
+    "retry with confirmed_self_send=true only if their own words just confirmed it.",
     {"type": "object",
      "properties": {
          "to": {"type": "string",

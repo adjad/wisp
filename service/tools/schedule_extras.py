@@ -446,8 +446,10 @@ async def complete_reminder(title: str, expected_id: str = "") -> str:
         if expected_id:
             return ("(error: the selected reminder changed before it could be completed; "
                     "nothing was changed.)")
+        from service.tools.title_match import near_miss_note
         return (f"Nothing active matches {title!r}. "
-                f"Ask me what's upcoming if you're not sure of the wording.")
+                f"Ask me what's upcoming if you're not sure of the wording."
+                + near_miss_note(title, [r.get("title") or "" for r in rows]))
     if len(hits) > 1:
         listed = "\n".join(f"  - {r['title']} ({_fmt_time(r['when_ts'])})" for r in hits[:8])
         return f"Several match {title!r} — which one?\n{listed}"

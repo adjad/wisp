@@ -1669,7 +1669,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dayRefreshObservers = [
             model.$collapsed.dropFirst().removeDuplicates().sink { [weak self] collapsed in
                 guard !collapsed else { return }
-                MainActor.assumeIsolated { self?.todayModel.refreshSoon(ifOlderThan: DayRefreshPace.wakeFloor) }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.todayModel.refreshSoon(ifOlderThan: DayRefreshPace.wakeFloor)
+                    // Back after a long absence: the service catches the Brief up
+                    // and says so; read again so "Updating your Brief…" shows now.
+                    Task { @MainActor [weak self] in
+                        guard let self, await self.client.noteReturn() else { return }
+                        self.todayModel.refreshSoon()
+                    }
+                }
             },
         ]
         // The service says "changed" after every source sync, even when nothing did,

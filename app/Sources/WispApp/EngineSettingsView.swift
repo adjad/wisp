@@ -26,6 +26,8 @@ private struct EngineSettingsResponse {
     let externalOmlxInstalled: Bool
     let restartRequired: Bool
     let externalEngineRunning: Bool
+    let externalEngineLoaded: Bool?
+    let externalEngineModelBytes: Int64?
 
     init?(object: [String: Any]) {
         let requiredKeys: Set<String> = [
@@ -33,7 +35,8 @@ private struct EngineSettingsResponse {
             "running", "omlx_version", "admin_url", "external_omlx_installed",
             "restart_required",
         ]
-        let allowedKeys = requiredKeys.union(["external_engine_running"])
+        let allowedKeys = requiredKeys.union(["external_engine_running", "external_engine_loaded",
+                                              "external_engine_model_bytes"])
         guard requiredKeys.isSubset(of: Set(object.keys)),
               Set(object.keys).isSubset(of: allowedKeys),
               let modeString = object["mode"] as? String,
@@ -48,6 +51,24 @@ private struct EngineSettingsResponse {
               let adminURL = Self.validatedAdminURL(rawAdminURL),
               let externalEngineRunning = object["external_engine_running"] == nil
                 ? false : Self.boolean(object["external_engine_running"]) else {
+            return nil
+        }
+        // Absent or null is unknown; anything else malformed refuses the reply.
+        let loaded: Bool?
+        if object["external_engine_loaded"] == nil || object["external_engine_loaded"] is NSNull {
+            loaded = nil
+        } else if let value = Self.boolean(object["external_engine_loaded"]) {
+            loaded = value
+        } else {
+            return nil
+        }
+        let modelBytes: Int64?
+        if object["external_engine_model_bytes"] == nil || object["external_engine_model_bytes"] is NSNull {
+            modelBytes = nil
+        } else if let number = object["external_engine_model_bytes"] as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(), number.int64Value > 0 {
+            modelBytes = number.int64Value
+        } else {
             return nil
         }
 
@@ -71,6 +92,8 @@ private struct EngineSettingsResponse {
         self.externalOmlxInstalled = externalOmlxInstalled
         self.restartRequired = restartRequired
         self.externalEngineRunning = externalEngineRunning
+        self.externalEngineLoaded = loaded
+        self.externalEngineModelBytes = modelBytes
     }
 
     private static func boolean(_ value: Any?) -> Bool? {
@@ -226,11 +249,13 @@ struct EngineSettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if engine.mode == .bundled && engine.externalEngineRunning {
-                    Label("Your own oMLX is also running; both use memory",
-                          systemImage: "exclamationmark.triangle.fill")
+                if engine.mode == .bundled,
+                   let other = QuickSettingsText.otherEngine(running: engine.externalEngineRunning,
+                                                             loaded: engine.externalEngineLoaded,
+                                                             modelBytes: engine.externalEngineModelBytes) {
+                    Label(other.text, systemImage: other.warns ? "exclamationmark.triangle.fill" : "info.circle")
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(other.warns ? Color.orange : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             } else if loader.isLoading {
