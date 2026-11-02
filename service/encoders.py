@@ -130,7 +130,7 @@ def display(row: dict[str, Any]) -> dict[str, Any]:
             continue
         state = tower.get("state")
         size = tower.get("bytes")
-        towers[name] = {"state": state if state in ("resident", "released", "loading") else "unknown",
+        towers[name] = {"state": state if state in ("resident", "released", "loading", "unavailable") else "unknown",
                         "bytes": size if type(size) is int and size >= 0 else None}
     on_demand = row.get("supported") is True
     idle_s = row.get("idle_release_s")

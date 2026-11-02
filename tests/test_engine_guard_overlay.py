@@ -256,6 +256,26 @@ class PinnedLazyEncoderPatchTests(unittest.TestCase):
         for handler in routes[0].split("@app.")[1:3]:
             self.assertIn("Depends(verify_api_key)", handler)
 
+    def test_the_engine_measures_a_model_after_its_encoders_are_released(self):
+        """/models/memory adds resident encoder bytes to the engine's `actual_size`.
+        That is right only while oMLX measures the model after `engine.start()`
+        returns, so after attach() has released the encoders (no double count)."""
+        source = Path(os.environ.get("WISP_ENGINE_SOURCE", "/Applications/oMLX.app/Contents/Resources"))
+        pool = source / "omlx" / "engine_pool.py"
+        if not pool.is_file():
+            self.skipTest(f"no upstream oMLX source at {source}")
+        text = pool.read_text()
+        start = text.index("    async def _load_engine(")
+        end = text.index("\n    async def ", start + 1)
+        body = text[start:end]
+        before = body.index("pre_load_memory = ")
+        started = body.index("await self._start_engine(engine)")
+        measured = body.index("entry.actual_size = observed_delta")
+        self.assertLess(before, started)
+        self.assertLess(started, measured)
+        starter = text[text.index("    async def _start_engine("):start]
+        self.assertIn("await engine.start()", starter)
+
 
 if __name__ == "__main__":
     unittest.main()

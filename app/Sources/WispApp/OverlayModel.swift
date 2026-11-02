@@ -1247,8 +1247,9 @@ final class OverlayModel: ObservableObject {
         setAttachment(.image(jpeg: jpeg, source: source), name: "Image")
     }
 
-    /// Start loading the vision encoder now: the person pressed Look, asked for
-    /// the screen, or began attaching a picture (#436 can call it on a Look press). Throttled and fire-and-forget.
+    /// Start loading the vision encoder now, as a picture, clip or scanned document
+    /// starts loading (loadAttachment). A screen capture warms it when it lands, through
+    /// `attachedImage`. Throttled and fire-and-forget.
     func prewarmVision() {
         client.prewarmEncoder(.vision)
     }
