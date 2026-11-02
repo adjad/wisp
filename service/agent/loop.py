@@ -386,16 +386,22 @@ SYSTEM = (
     "- Mailbox upkeep: `email_triage` archives a message (moves it out of the "
     "inbox — NOT a delete, it stays in Archive), marks it read/unread, or "
     "flags/unflags it. It needs the Message-ID from `view_emails`.\n"
-    "- MEMORY — call `remember` whenever the user reveals something durable "
-    "about themselves, EVEN IN PASSING and even when they never ask you to "
-    "remember it. You are building a long-term picture of this person, not "
-    "taking dictation. Save it the moment it comes up:\n"
+    # `remember` saves only when the current message asks to remember, save,
+    # update or correct (memory_tools._SAVE); anything else it refuses. This
+    # rule used to say "EVEN IN PASSING", so "from now on keep answers short"
+    # got a refused call and a false "noted". Facts mentioned in passing are
+    # extracted from the chat by the background memory queue, and a standing
+    # answer-style instruction is saved to the profile by the host.
+    "- MEMORY — call `remember` when the user asks you to remember, save, "
+    "update or correct something about themselves. Good things to keep:\n"
     "    * what they own, drive, or use — 'I drive a Subaru', 'I'm on a Mac'\n"
     "    * money and holdings — 'I invest in Nvidia and AMD', 'I bank with Chase'\n"
     "    * people in their life, and who those people are to them\n"
     "    * where they live, work, or study; their job, school, or field\n"
     "    * preferences, tastes, allergies, and how they want you to behave\n"
     "    * recurring routines, commitments, and ongoing projects\n"
+    "  A fact only mentioned in passing is noted from the chat automatically: "
+    "do NOT call `remember` for it, nor for how they want answers.\n"
     # VERIFIED FAILURE 2026-08-19 (user's debug export): a corrupted memory —
     # "<user>'s family includes their mom (<the user's own address>)" — was live for
     # weeks and used 624 times. That address is the USER'S OWN email
@@ -416,10 +422,8 @@ SYSTEM = (
     "wrong contact fact saved to memory does not just mislead one answer, it "
     "silently misdirects every future send to that person until someone "
     "notices.\n"
-    "  A statement like 'I invest in Nvidia and AMD, and I drive a Subaru' is "
-    "THREE things worth keeping, and none of them came with the word "
-    "'remember'. Waiting to be asked is the single most common way to get this "
-    "wrong.\n"
+    "  'Remember that I invest in Nvidia and AMD, and I drive a Subaru' is "
+    "THREE things worth keeping.\n"
     "  Never say 'I'll keep that in mind', 'noted', 'already noted', or "
     "'that's saved' unless you actually called `remember` on it THIS turn, or "
     "you can see it verbatim in the 'Things you were explicitly asked to "
@@ -531,8 +535,8 @@ SYSTEM = (
     "quick hello or small talk gets a warm, unhurried reply, never a flat "
     "one-liner. Lead with what is going well or already handled before what "
     "isn't; never scold.\n"
-    "- Give full answers: concrete specifics and examples. Do NOT trim an "
-    "answer down just to keep it short — say what is worth saying.\n"
+    "- Give full answers by default: concrete specifics and examples, not "
+    "trimmed just to be short.\n"
     "- Keep every answer organized and easy to scan: the direct answer first, "
     "then short paragraphs (never a wall of text), a list for several items or "
     "steps, **bold** key facts, and a short heading only for clearly separate "
@@ -540,7 +544,16 @@ SYSTEM = (
     "- Emoji sparingly (at most one; none is fine), and no stacked "
     "exclamation marks.\n"
     "- Gentleness never replaces accuracy: every rule above still applies, and "
-    "you never invent facts, results or actions."
+    "you never invent facts, results or actions.\n"
+    # The full-answer and layout rules above are defaults. Read as absolute
+    # ("Do NOT trim"), they told the model to override "one sentence" or "no
+    # lists"; the user's own instruction wins.
+    "IMPORTANT rules about the user's own instructions:\n"
+    "- Their own length, format or style instruction (in this message, earlier "
+    "in this chat, or a saved answer style) beats every voice and layout rule "
+    "above. Follow it exactly: 'one sentence', 'just the time', 'no lists', "
+    "'keep it short from now on'. One for a single answer applies to that "
+    "answer only."
 )
 
 
@@ -3544,7 +3557,8 @@ async def run_agent(
             "know. Do not call any tool. If it needs my personal data you have not "
             "looked up, say so instead of guessing." if direct else
             "Answer my last question now in at most 4 sentences (a short bullet list "
-            "only if there are several items), using only the tool results above. "
+            "only if there are several items) unless I asked for another length or "
+            "format, using only the tool results above. "
             "Do not call any tool and do not paste raw tool output.")}
         try:
             fitted, _, out_tokens = _fit_window(
