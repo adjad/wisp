@@ -171,7 +171,7 @@ def test_fit_sheds_digest_lines_before_the_digest_and_notes_go_last():
     assert kept[:-1] == lines[len(lines) - len(kept) + 1:] and len(kept) < 20
 
 
-def test_fit_drops_this_turns_tool_call_with_its_results_and_never_condenses_a_nudge():
+def test_fit_drops_a_tool_call_with_its_results_and_never_condenses_a_nudge():
     call1 = {"role": "assistant", "content": "", "tool_calls": [
         {"id": "c1", "type": "function", "function": {"name": "view_emails", "arguments": "{}"}}]}
     call2 = copy.deepcopy(call1)
@@ -187,9 +187,10 @@ def test_fit_drops_this_turns_tool_call_with_its_results_and_never_condenses_a_n
     for i, m in enumerate(out):
         if m.get("role") == "tool":
             assert out[i - 1].get("tool_calls"), "a tool result lost its call"
-    digest = text([m for m in out if context.is_digest(m)])
-    assert "what did Ruiz say?" in digest                   # the question condenses
-    assert "NUDGE" not in digest                           # a host nudge never does
+    # Earlier conversation still goes before this turn's own traffic, so the
+    # 8,000-character result takes the digest with it here; nothing malformed
+    # is left behind, and a host nudge never becomes a digest line.
+    assert "NUDGE" not in text([m for m in out if context.is_digest(m)])
     assert out[-1]["content"].startswith("NUDGE 2")
 
 
@@ -240,3 +241,86 @@ def test_the_digest_gives_way_when_only_the_newest_turn_fits(chat):
 def test_digest_keeps_identifiers_intact():
     line = context.digest_line("user", "## wifi is blue_fox#42, mail jane_doe@x.com, a|b `code`")
     assert line == "- User: wifi is blue_fox#42, mail jane_doe@x.com, a|b code"
+
+
+def _call(cid):
+    return {"role": "assistant", "content": "", "tool_calls": [
+        {"id": cid, "type": "function", "function": {"name": "get_upcoming", "arguments": "{}"}}]}
+
+
+def assert_well_formed(out):
+    """Every tool result follows its call, and every call keeps all its results."""
+    for i, m in enumerate(out):
+        if m.get("role") == "tool":
+            j = i
+            while out[j - 1].get("role") == "tool":
+                j -= 1
+            assert out[j - 1].get("tool_calls"), "a tool result lost its call"
+        if m.get("tool_calls"):
+            ids = {c["id"] for c in m["tool_calls"]}
+            got = set()
+            j = i + 1
+            while j < len(out) and out[j].get("role") == "tool":
+                got.add(out[j].get("tool_call_id"))
+                j += 1
+            assert got == ids or j == len(out), "a tool call lost a result"
+
+
+def test_a_nudge_after_tool_traffic_never_orphans_the_result():
+    # Release Auditor repro (PR #442 at 137fba8f).
+    msgs = [{"role": "system", "content": "S" * 400}, {"role": "system", "content": "now"},
+            {"role": "system", "content": "N" * 400},
+            {"role": "user", "content": "what is on my calendar?"},
+            _call("c1"), {"role": "tool", "tool_call_id": "c1", "content": "R" * 2400},
+            {"role": "user", "content": "Now answer in plain words."}]
+    out, _, _ = loop._fit_window(msgs, [], 100, "m", None, protected_prefix_count=2,
+                                 context_window=900, history_end=4)
+    assert_well_formed(out)
+    assert any(m.get("tool_calls") for m in out)
+
+
+def test_a_nudge_before_any_tool_call_is_never_condensed():
+    msgs = PREFIX + history_messages()[-6:] + [
+        {"role": "user", "content": "what did Ruiz say?"},
+        {"role": "assistant", "content": "Ruiz is a plumber."},
+        {"role": "user", "content": "NUDGE: look it up with a tool."}]
+    end = len(PREFIX) + 7
+    out, _, _ = loop._fit_window(msgs, [], 500, "m", None, protected_prefix_count=2,
+                                 context_window=prompt_tokens(PREFIX) + 560, history_end=end)
+    digest = text([m for m in out if context.is_digest(m)])
+    assert "- User: what did Ruiz say?" in digest           # the request condenses
+    assert "NUDGE" not in digest and "Ruiz is a plumber" not in digest
+    assert [m["content"] for m in out[-2:]] == ["Ruiz is a plumber.", "NUDGE: look it up with a tool."]
+
+
+def test_fitting_never_leaves_a_malformed_tool_transcript():
+    import random
+    rng = random.Random(442)
+    for _ in range(3000):
+        msgs = [{"role": "system", "content": "S" * rng.randint(10, 800)},
+                {"role": "system", "content": "now"}]
+        if rng.random() < 0.5:
+            msgs.append({"role": "system", "content": "note " * rng.randint(1, 80)})
+        for k in range(rng.randint(0, 6)):
+            msgs.append({"role": "user" if k % 2 == 0 else "assistant",
+                         "content": "h" * rng.randint(1, 900)})
+        msgs.append({"role": "user", "content": "the request"})
+        end = len(msgs)
+        for c in range(rng.randint(0, 3)):
+            calls = [f"c{c}_{n}" for n in range(rng.randint(1, 2))]
+            msgs.append({"role": "assistant", "content": "", "tool_calls": [
+                {"id": cid, "type": "function", "function": {"name": "t", "arguments": "{}"}}
+                for cid in calls]})
+            msgs += [{"role": "tool", "tool_call_id": cid, "content": "r" * rng.randint(1, 3000)}
+                     for cid in calls]
+            if rng.random() < 0.5:
+                msgs.append({"role": "user", "content": "NUDGE answer now"})
+        original = copy.deepcopy(msgs)
+        out, _, _ = loop._fit_window(msgs, [], rng.choice([100, 500, 2000]), "m", None,
+                                     protected_prefix_count=2,
+                                     context_window=rng.randint(300, 4000),
+                                     history_end=end if rng.random() < 0.7 else None,
+                                     min_output_tokens=1)
+        assert msgs == original
+        assert_well_formed(out)
+        assert "NUDGE" not in text([m for m in out if context.is_digest(m)])
