@@ -2009,7 +2009,9 @@ for _mod in ("scen_r2_safe", "scen_r2_args", "scen_r2_act", "scen_r2_chat"):   #
 # here for the build; validate.py reads writes.py, so list them there before validating.
 import os as _os  # noqa: E402
 
-if _os.environ.get("ASK_LORA_ROUND") == "3":
+# Round 4 keeps every round-3 family and adds scen_r4_*.py (FAMILIES_R4, WRITE_ALLOW_R4).
+_ROUND = _os.environ.get("ASK_LORA_ROUND")
+if _ROUND in ("3", "4"):
     # Replaced in round 3: r2's 90 terse chat replies (the likely source of r2's six chat
     # non-replies) give way to chat_voice_r3; stub_then_call builds nothing on main, where a
     # schema-valid stub call runs directly (#424), so it is dropped rather than left empty.
@@ -2021,3 +2023,12 @@ if _os.environ.get("ASK_LORA_ROUND") == "3":
         FAMILIES.update(getattr(_m, "FAMILIES_R3", {}))
         for _fam, _tools in getattr(_m, "WRITE_ALLOW_R3", {}).items():
             _writes.WRITE_ALLOW[_fam] = _writes.WRITE_ALLOW.get(_fam, frozenset()) | frozenset(_tools)
+    if _ROUND == "4":
+        for _path in sorted(_glob.glob(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "scen_r4_*.py"))):
+            _m = _importlib.import_module(_os.path.basename(_path)[:-3])
+            FAMILIES.update(getattr(_m, "FAMILIES_R4", {}))
+            for _fam, _tools in getattr(_m, "WRITE_ALLOW_R4", {}).items():
+                _writes.WRITE_ALLOW[_fam] = _writes.WRITE_ALLOW.get(_fam, frozenset()) | frozenset(_tools)
+        # chat_voice_r4 (longer, more engaging replies; the user, 2026-11-02) replaces r3's chat voice.
+        if "chat_voice_r4" in FAMILIES:
+            FAMILIES.pop("chat_voice_r3", None)

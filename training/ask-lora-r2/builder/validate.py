@@ -312,6 +312,8 @@ def check_thinking(meta, msgs, ctx, injected, prev_thought, bad, where):
     if not think:
         if text is not None:
             bad("think:thought_without_think", where)
+        if meta.get("extract_skipped") and thinking.ROUND4 and not thinking.decide_r3(meta, msgs):
+            return prev_thought      # round 4: no extraction passed check(), so the build kept this final QUIET
         try:
             if thinking.decide(meta, msgs):
                 bad("think:policy", f"{where} decide() says THINK ({thinking.step_kind(meta, msgs)})")
@@ -338,6 +340,7 @@ def check_thinking(meta, msgs, ctx, injected, prev_thought, bad, where):
                "think:card" if err.startswith("card") else
                "think:clarify_destructive" if err.startswith("clarify destructive") else
                "think:single_source" if err.startswith("single source") else
+               "think:facts_missing" if err.startswith("facts_missing") else
                "think:copies_reply" if err.startswith("too close") else "think:thought_missing" if err == "empty"
                else "think:date_mismatch")
         bad(key, f"{where} {err}")
@@ -354,6 +357,13 @@ AUTO = object()
 # Template glitches a final must never carry ("Moved it to on Saturday", "You have 3 today emails").
 FINAL_GLITCH = re.compile(r"\b(?:to|for) on\b|\b\d+ (?:today|yesterday) emails?\b", re.I)
 DUP_FINALS_MAX = 3
+# Round 4: internals a final must never show (PLAN.md D): JSON, the untrusted-content banner, source stalls,
+# call syntax; and in chat (no tool), receipt or refusal phrasing (r2's "I didn't send anything…" non-replies).
+FINAL_LEAK = re.compile(r"\{\"|\bUNTRUSTED\b|haven['’]t checked (?:a |any )?current|current personal source|"
+                        r"\b[a-z]+_[a-z_]+\(", re.I)
+CHAT_RECEIPT = re.compile(r"\b(?:didn['’]t|did not|won['’]t|haven['’]t) (?:send|sent|save|saved|add|added|set|"
+                          r"schedule|search|look)\w*\b|\bnothing (?:was|got) (?:sent|saved|added)\b|"
+                          r"couldn['’]t find any (?:web )?results", re.I)
 LAST_WARNINGS: list[str] = []     # validate_file's warnings for the last file (selftest reads them)
 
 
@@ -483,6 +493,15 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
                     g = FINAL_GLITCH.search(content)
                     if g:
                         bad("final:template_glitch", f"{where} {meta.get('id', '')} {g.group(0)!r}")
+                    if thinking.ROUND4:
+                        g = FINAL_LEAK.search(content) or next(
+                            (re.search(rf"\b{re.escape(t)}\b", content) for t in REGISTRY
+                             if "_" in t and re.search(rf"\b{re.escape(t)}\b", content)), None)
+                        if g:
+                            bad("final:leak", f"{where} {meta.get('id', '')} {g.group(0)!r}")
+                        if (family in thinking.NEVER or str(family).startswith("chat_")) and CHAT_RECEIPT.search(content):
+                            bad("final:chat_receipt", f"{where} {meta.get('id', '')} "
+                                f"{CHAT_RECEIPT.search(content).group(0)!r}")
                     finals.setdefault(content, []).append(str(meta.get("id") or where))
             elif r == "tool":
                 if m.get("tool_call_id") in pending:

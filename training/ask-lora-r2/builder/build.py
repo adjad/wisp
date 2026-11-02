@@ -18,6 +18,8 @@ import thinking
 
 # ASK_LORA_OUT points a later round (round 3: training/ask-lora-r3) at its own data dir.
 OUT = os.environ.get("ASK_LORA_OUT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Round 4 (training/ask-lora-r4) builds on round 3: every round-3 rule below holds for it too.
+R3PLUS = os.environ.get("ASK_LORA_ROUND") in ("3", "4")
 
 
 # The production scaffold once quoted a few real-user details; since f6a72430
@@ -119,7 +121,7 @@ def main(only=None):
             continue
         draw = rng.random()   # always drawn, so round-2 seeds stay as committed
         # Round 3: a family's seed depends on its name only, so adding a family never reshuffles another.
-        frng = random.Random(f"{family}-r3" if os.environ.get("ASK_LORA_ROUND") == "3" else f"{family}-{draw}")
+        frng = random.Random(f"{family}-r3" if R3PLUS else f"{family}-{draw}")
         scenarios = fn(frng)
         for k, sc in enumerate(scenarios):
             sid = f"{family}-{k:03d}"
@@ -143,7 +145,7 @@ def main(only=None):
                 failures.append((sid, sc.prompt, f"incomplete: idx={policy.idx}/{len(policy.steps)} "
                                  f"reqs={len(policy.requests)} errs={errs[:1]} final={final!r:.120}"))
                 continue
-            if os.environ.get("ASK_LORA_ROUND") == "3" and expect_cards is not None and list(expect_cards) != cards_seen:
+            if R3PLUS and expect_cards is not None and list(expect_cards) != cards_seen:
                 # The host refused or skipped a scripted write (e.g. intent_guard on a natural reschedule
                 # phrasing), so the scripted final would claim an effect that never happened: drop it.
                 failures.append((sid, sc.prompt, f"cards: expected {list(expect_cards)} saw {cards_seen}"))
@@ -208,8 +210,14 @@ def think_turn(exs: list[dict], ms: list[dict], failures: list) -> None:
         if m["think"]:
             t, errs = thinking.make_thought(m, ex["messages"], turn_context(exs, k))
             m["thought"] = t
-            if errs:
+            extract = thinking.ROUND4 and m["step_kind"] == "narrate" and not thinking.decide_r3(m, ex["messages"])
+            if errs and extract:
+                # Round 4: no extraction passes (nothing in the results the final states, or it would restate
+                # the reply): this final stays QUIET, as in round 3. Counted in stats.json.
+                m["think"], m["thought"], m["extract_skipped"] = False, None, errs[:2]
+            elif errs:
                 failures.append((m["id"], m["prompt"], f"thought: {errs} {t!r}"))
+            m["extract"] = bool(extract and m["think"])
 
 
 def fix_adjacent(examples, metas, orders) -> list[str]:
@@ -319,7 +327,11 @@ def write_stats(metas, train_idx, valid_idx):
         by_kind[m.get("step_kind")]["think" if m.get("think") else "no_think"] += 1
         by_kind[m.get("step_kind")][f"{split_of[i]}_think"] += bool(m.get("think"))
     n_think = sum(bool(m.get("think")) for m in metas)
+    extract_skips = Counter(str(e[0]).split(":")[0].split(" (")[0] for m in metas for e in [m.get("extract_skipped")] if e)
     thinking_stats = {"think": n_think, "no_think": len(metas) - n_think,
+                      "extract": sum(bool(m.get("extract")) for m in metas),
+                      "extract_skipped": sum(bool(m.get("extract_skipped")) for m in metas),
+                      "extract_skip_reasons": dict(extract_skips.most_common()),
                       "think_share": round(n_think / max(1, len(metas)), 3),
                       "train_think": sum(bool(metas[i].get("think")) for i in train_idx),
                       "valid_think": sum(bool(metas[i].get("think")) for i in valid_idx),
