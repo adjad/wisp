@@ -223,6 +223,13 @@ Snapshot Finder, Notes and one Chrome tab with `-i --compact`. Record snapshot
 tokens and latency, and whether refs survive a re-render. Decide on adoption
 from those numbers (D-10).
 
+**Probe status (2026-11-01): not run; skipped by the user.** The groundwork is done.
+v1.0.2 was fetched from npm with its install script disabled. Its macOS binaries
+match the package's checksums but are only ad-hoc signed, with no Developer ID; the
+vendoring review must account for that. `agent-desktop permissions` reported
+Accessibility denied for the host app, so no snapshot was taken. Running the probe
+needs Accessibility granted to the app that launches it. Until then D-10 stays open.
+
 **Vision-ask (local_0d7f2e75, PR #436):** with the private-window constraint
 dropped, "Look at my screen" needs no browser-specific refusal. Its capture
 stays untrusted (`screen` category), which is what matters for effects.
@@ -485,7 +492,7 @@ Effort is in focused builder-days, including tests and repair after review.
 | **D-7** | Retire Laya/Ling A14-C, A14Q and A14T formally? | **Yes.** Mark R2 §A14-C/A14Q/A14T superseded by this doc. |
 | **D-8** | Phase 3 at all? | **Not now.** Re-decide when the toolbench `browser` gate passes on the Ask model (Gemma, the Ask LoRA r2, or a successor). |
 | **D-9** | Private windows? | **Decided by the user (2026-11-01): no special handling.** |
-| **D-10** | Adopt agent-desktop as the Phase 2 action layer, or write the AX action code in Swift? | **Probe first.** If snapshot size and ref stability hold up, use it, vendored and pinned, for browsers and native apps, behind the Phase 2 card rules. Copy its snapshot-ref/`STALE_REF` contract into `browser_act` either way. |
+| **D-10** | Adopt agent-desktop as the Phase 2 action layer, or write the AX action code in Swift? | **Probe first** (not yet run; §3.1 has its status). If snapshot size and ref stability hold up, use it, vendored and pinned, for browsers and native apps, behind the Phase 2 card rules. Copy its snapshot-ref/`STALE_REF` contract into `browser_act` either way. |
 
 ## Appendix: evidence commands
 
