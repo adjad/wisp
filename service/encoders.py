@@ -34,7 +34,7 @@ log = logging.getLogger(__name__)
 
 MODALITIES = ("audio", "vision")
 _TIMEOUT_S = 20.0          # a cold tower is about 1 s; the engine thread may be mid-step
-_STATUS_TIMEOUT_S = 0.5
+_STATUS_TIMEOUT_S = 2.0   # one attributed call on Wisp's engine takes 0.55-0.97 s (measured)
 
 _tasks: dict[str, asyncio.Task] = {}
 _unsupported = False       # this run's engine has no encoder routes

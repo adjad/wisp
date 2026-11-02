@@ -1358,14 +1358,17 @@ async def models_memory() -> dict[str, Any]:
     """
     if not getattr(client, "managed", False) or not getattr(client.provider, "omlx_health", False):
         return {"available": False, "models": []}
+    # The engine measures a model once, right after it loads. On Wisp's engine the
+    # Ask model's encoders were already released then, so any loaded since are added.
+    # Both reads are attributed calls, so they run side by side.
+    from service import encoders
+    towers_read = asyncio.create_task(encoders.status())
     try:
         status = await client.status()
     except Exception:
+        towers_read.cancel()
         return {"available": False, "models": []}
-    # The engine measures a model once, right after it loads. On Wisp's engine the
-    # Ask model's encoders were already released then, so any loaded since are added.
-    from service import encoders
-    towers = await encoders.status()
+    towers = await towers_read
     extra = towers["resident_bytes"] if towers and towers["on_demand"] else 0
     ask_model = encoders.ask_model() if extra else None
     resident = []

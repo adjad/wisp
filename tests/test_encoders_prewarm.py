@@ -31,6 +31,7 @@ class Engine:
         self.posts = []
         self.during = []
         self.gate = None
+        self.delay = 0.0
 
     async def post(self, path, json=None, timeout=None):
         self.posts.append((path, json))
@@ -40,6 +41,8 @@ class Engine:
         return Response(self.answer)
 
     async def get(self, path):
+        if self.delay:
+            await asyncio.sleep(self.delay)
         return Response(self.answer, self.body)
 
 
@@ -207,6 +210,17 @@ def test_status_reads_the_ask_model_row(monkeypatch):
     assert shown["on_demand"] is True and shown["towers"]["audio"]["state"] == "released"
     monkeypatch.setattr(E, "_target", lambda: None)
     assert run(E.status()) is None
+
+
+def test_status_waits_out_the_engine_attribution_check(monkeypatch):
+    """Each call to Wisp's engine is attributed first, measured at 0.55-0.97 s on
+    the engine: a status read that gave up sooner would never show an encoder."""
+    body = {"models": {MODEL: {"supported": True, "towers": {"vision": {"state": "resident", "bytes": 7}}}}}
+    engine = Engine(body=body)
+    engine.delay = 1.0
+    monkeypatch.setattr(E, "_target", lambda: (Client(engine=engine), MODEL))
+    shown = run(E.status())
+    assert shown is not None and shown["resident_bytes"] == 7
 
 
 def test_the_endpoint_is_for_the_app_only(monkeypatch):
