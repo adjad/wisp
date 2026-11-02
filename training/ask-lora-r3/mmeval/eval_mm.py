@@ -57,10 +57,18 @@ def check_gpu(device: int) -> None:
     cap = torch.cuda.get_device_capability(device)
     name = torch.cuda.get_device_name(device)
     arch = torch.cuda.get_arch_list()
-    print(f"gpu {device}: {name} sm_{cap[0]}{cap[1]}; torch {torch.__version__} cuda {torch.version.cuda}; arch list {arch}")
-    sm = f"sm_{cap[0]}{cap[1]}"
-    same_major = [a for a in arch if a.startswith(f"sm_{cap[0]}") and int(a[3:]) <= int(sm[3:])]
-    if sm not in arch and not same_major and f"compute_{cap[0]}{cap[1]}" not in arch:
+    if torch.version.hip:
+        # ROCm: the arch is the gfx name (gcnArchName "gfx950:sramecc+:xnack-"), not an sm_ capability
+        gfx = torch.cuda.get_device_properties(device).gcnArchName.split(":")[0]
+        print(f"gpu {device}: {name} {gfx}; torch {torch.__version__} hip {torch.version.hip}; arch list {arch}")
+        if gfx not in arch:
+            die(f"this torch ({torch.__version__}, hip {torch.version.hip}) has no kernels for {name} ({gfx})")
+        cap = None
+    else:
+        print(f"gpu {device}: {name} sm_{cap[0]}{cap[1]}; torch {torch.__version__} cuda {torch.version.cuda}; arch list {arch}")
+    sm = f"sm_{cap[0]}{cap[1]}" if cap else ""
+    same_major = [a for a in arch if cap and a.startswith(f"sm_{cap[0]}") and int(a[3:]) <= int(sm[3:])]
+    if cap and sm not in arch and not same_major and f"compute_{cap[0]}{cap[1]}" not in arch:
         die(f"this torch ({torch.__version__}, cuda {torch.version.cuda}) has no kernels for {name} ({sm}); "
             f"install a build with {sm} (CUDA 12.8+/13) or run on the A6000")
     try:
@@ -140,7 +148,8 @@ def vision_inputs(tok, proc, row: dict, device: int):
             imgs.append(im.convert("RGB"))
     if prompt.count("<|image|>") != len(imgs):
         die(f"{row['id']}: {prompt.count('<|image|>')} image placeholders for {len(imgs)} images")
-    enc = proc(text=prompt, images=imgs, add_special_tokens=False, return_tensors="pt")
+    # text_document rows carry no image: the processor rejects images=[] ("0 images for 1 text")
+    enc = proc(text=prompt, images=imgs or None, add_special_tokens=False, return_tensors="pt")
     return _device_inputs(enc, device)
 
 
