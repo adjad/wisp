@@ -553,7 +553,7 @@ final class WispClient {
     // history. Omit it (empty) to start a fresh chat — the new id arrives in the
     // first `session` event. `testMode` asks the service to run a stateless dry
     // run where tool calls are reported but never executed.
-    func runAgent(prompt: String, image: String?, imageSource: String? = nil,
+    func runAgent(prompt: String, image: String?, imageSource: String? = nil, imageLabel: String? = nil,
                   video: [String: Any]? = nil, document: [String: Any]? = nil,
                   sessionId: String = "",
                   debug: Bool = false,
@@ -576,6 +576,7 @@ final class WispClient {
         if !testMode && !sessionId.isEmpty { body["session_id"] = sessionId }
         if let image { body["image"] = image }
         if image != nil, let imageSource { body["image_source"] = imageSource }
+        if image != nil, imageSource == "screen", let imageLabel { body["image_label"] = imageLabel }
         if let video { body["video"] = video }
         if let document { body["document"] = document }
         if let corpusCaseID {

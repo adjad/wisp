@@ -91,6 +91,7 @@ def main():
              "OnboardingFollowUpsChecks.swift"),
             ("voice-capture", ["VoiceCapture.swift"], "VoiceCaptureChecks.swift"),
             ("video-sampler", ["VideoSampler.swift"], "VideoSamplerChecks.swift"),
+            ("screen-look-ci", ["ScreenLook.swift"], "ScreenLookChecks.swift"),
             ("media-attachment", ["MediaAttachment.swift", "VideoSampler.swift", "DocumentAttachment.swift"],
              "MediaAttachmentChecks.swift"),
             ("document-attachment", ["DocumentAttachment.swift", "MediaAttachment.swift", "VideoSampler.swift"],

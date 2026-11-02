@@ -81,6 +81,11 @@ class InteractiveApprover:
                               "preview": str(action.get("preview") or "")[:400],
                               **({"request_id": self.request_id} if self.request_id else {})})
             return False
+        from service.safety.policy import picture_turn
+        if picture_turn():
+            # Text in a picture may have chosen this action: answer it once, never
+            # with a standing "Always allow" that later turns would honour.
+            action = {**action, "grantable": False}
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[action["id"]] = fut
         self._actions[action["id"]] = action

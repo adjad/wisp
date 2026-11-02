@@ -1671,6 +1671,12 @@ def _managed_local_agent(client, target=None) -> bool:
                     == target.endpoint.base_url.rstrip("/"))
 
 
+# A picture turn whose request ends up off this Mac's managed engine (Super
+# Model cloud, a remote or unmanaged endpoint) never carries the reading.
+PICTURE_LOCAL_ONLY_NOTICE = ("Pictures are only read on your Mac's local model, so this one wasn't used. "
+                             "Nothing was done with it.")
+
+
 def _model_only_turn(get_client) -> bool:
     """model_only (on by default since 0.5.0-rc3) for THIS turn.
 
@@ -1829,6 +1835,12 @@ async def agent(body: dict[str, Any]):
     vision_video = body.get("video") if isinstance(body.get("video"), dict) else None
     vision_document = body.get("document") if isinstance(body.get("document"), dict) else None
     vision_media = vision_image is not None or vision_video is not None or vision_document is not None
+    # Which app/window a screen capture came from ("Safari — Pricing"), for the
+    # reading only. A window title is written by others: data, never instructions.
+    picture_label = None
+    if vision_image is not None and body.get("image_source") == "screen":
+        from service.vision import clean_label
+        picture_label = clean_label(body.get("image_label"))
     stored_prompt = prompt
     if vision_media:
         marker = ("[document attached]" if vision_document is not None
@@ -2071,13 +2083,37 @@ async def agent(body: dict[str, Any]):
                 pass
 
         try:
-            if vision_media:
+            # A still image whose request asks Wisp to DO something ("add this to
+            # my calendar", "reply to this") is READ by one vision call, then the
+            # ordinary model-led turn continues with that reading as untrusted
+            # data (service/vision.py, "pictures that lead to actions"). Only the
+            # person's own words pick this path, and only when the turn will run
+            # model-led on this Mac's engine; otherwise the one-call answer below.
+            picture_reading: str | None = None
+            from service import vision
+            if (vision_image is not None and vision_video is None and vision_document is None
+                    and vision.wants_action(prompt)
+                    and _model_only_turn(lambda: globals().get("client"))):
+                await emit({"type": "status", "text": "Reading the picture…"})
+                picture_reading = await vision.read_turn(
+                    prompt, image=vision_image, label=picture_label, emit=emit)
+                if picture_reading is None:
+                    await emit({"type": "done"})
+                    if not test_mode:
+                        persist_user_turn()
+                        store.add_turn(sid, "assistant", "(Wisp couldn't read the attached picture.)")
+                        assistant_reply_stored = True
+                    return
+                # Every effect this request reaches is carded from here on
+                # (policy.decide, approver), in this request's task only.
+                from service.safety.policy import mark_picture_turn
+                mark_picture_turn()
+            elif vision_media:
                 if vision_document is not None:
                     from service import documents
                     vision_answer = await documents.run_turn(
                         prompt, document=vision_document, emit=emit, approver=approver, test_mode=test_mode)
                 else:
-                    from service import vision
                     vision_answer = await vision.run_turn(
                         prompt, image=None if vision_video is not None else vision_image,
                         video=vision_video, emit=emit, approver=approver, test_mode=test_mode)
@@ -2576,6 +2612,17 @@ async def agent(body: dict[str, Any]):
                 decision.route_source = skill_turn
                 decision.reason = (f"{decision.reason}; "
                                    f"{'active skill' if active_skill else 'skill'} stays on this Mac")
+            if picture_reading is not None and (super_model_cloud or not target.endpoint.managed):
+                # A picture's reading never leaves this Mac. Say so, before any
+                # per-turn transport opens, instead of running the request
+                # without the picture it was about.
+                await emit({"type": "text", "text": PICTURE_LOCAL_ONLY_NOTICE})
+                await emit({"type": "done"})
+                if not test_mode:
+                    persist_user_turn()
+                    store.add_turn(sid, "assistant", PICTURE_LOCAL_ONLY_NOTICE)
+                    assistant_reply_stored = True
+                return
             if model_led_turn:
                 # Capture the admitted local target for every step/context budget.
                 # Existing owned-client cleanup closes this per-turn transport.
@@ -2813,6 +2860,10 @@ async def agent(body: dict[str, Any]):
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
                                         model_led_discovery=model_led_turn,
+                                        # A picture's reading never leaves this Mac.
+                                        picture_reading=(picture_reading if not super_model_cloud
+                                                         and target.endpoint.managed else None),
+                                        picture_label=picture_label,
                                         model_led_preload=(ask_preload if ask_quality
                                                            else _model_led_preload(prompt)
                                                            if model_led_turn else ()),

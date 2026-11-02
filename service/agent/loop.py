@@ -1562,6 +1562,14 @@ async def run_agent(
     # ask_quality only: lexical rank beyond the preload. Name-only stubs are
     # limited to these plus model_only.ASK_CORE_STUBS (None = every tool).
     model_led_stub_rank: Sequence[str] | None = None,
+    # Host-only: the text reading of a picture attached to THIS request
+    # (service/vision.read_picture). Never from the HTTP body or the model. It
+    # enters the conversation as a host-made tool result right after the
+    # person's message, so every guard that reads "the user's own words" still
+    # sees only what they typed, and the turn starts as an untrusted, private
+    # read (see the latches below and policy.mark_picture_turn).
+    picture_reading: str | None = None,
+    picture_label: str | None = None,
     # This turn's access notes, from _access_notes_scoped; never passed by callers.
     _access_noted: list[dict] | None = None,
 ) -> str:
@@ -1736,8 +1744,9 @@ async def run_agent(
     # messages tools or carrying the identity block is not private content.
     private_at_start = False
     # In-turn latch: set by ANY private read made during this turn. The
-    # explicit-public-lookup exemption never covers it.
-    private_read_in_turn = False
+    # explicit-public-lookup exemption never covers it. A picture's reading is
+    # one already: a screenshot can show mail, messages or a bank page.
+    private_read_in_turn = bool(picture_reading)
     searched_in_turn = [False]
     confirmed_private_web: set[str] = set()
     typed_hosts: set[str] = set()
@@ -1938,7 +1947,8 @@ async def run_agent(
         return dec
 
     # Set once a tool runs whose result carries outside text (a file, page, mail...).
-    untrusted_read_in_turn = [False]
+    # A picture's reading is outside text from the start.
+    untrusted_read_in_turn = [bool(picture_reading)]
 
     # update_event: the exact occurrence each confirmation card showed, by the call's
     # fingerprint (see bind_event_move). Execution moves only that occurrence.
@@ -2442,6 +2452,15 @@ async def run_agent(
     system_prefix = [{"role": "system", "content": sys_content},
                      {"role": "system", "content": runtime_content}]
     msgs: list[dict] = system_prefix + messages
+    if picture_reading:
+        # The reading arrives the way any read does: a tool result (data), after
+        # a synthesized call so the chat template sees a well-formed exchange.
+        from service.vision import PICTURE_TOOL, picture_tool_result
+        msgs.append({"role": "assistant", "content": "", "tool_calls": [
+            {"id": "picture_0", "type": "function",
+             "function": {"name": PICTURE_TOOL, "arguments": "{}"}}]})
+        msgs.append({"role": "tool", "tool_call_id": "picture_0",
+                     "content": picture_tool_result(picture_reading, picture_label)})
     first_step_schemas = _admit(tool_schemas([force_first_tool])) if force_first_tool else schemas
 
     # the agent model turns run exclusive (no the summarizer co-residency attempt — verified it

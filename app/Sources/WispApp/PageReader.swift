@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon
 import PDFKit
 import Vision
 
@@ -305,24 +306,132 @@ enum PageReader {
     }
 }
 
-/// "Explain my screen": one capture of the main display with Wisp's own windows
-/// left out, downscaled to JPEG in memory (never written to disk). Callers check
+/// "Explain my screen" and "Look": captures with Wisp's own windows left out,
+/// downscaled to JPEG in memory (never written to disk). Callers check
 /// `CGPreflightScreenCaptureAccess()` first; this never asks for the permission.
 enum ScreenSnapshot {
-    static func captureMainDisplayJPEG() -> Data? {
-        guard CGPreflightScreenCaptureAccess() else { return nil }
-        let me = ProcessInfo.processInfo.processIdentifier
-        let infoList = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
-        let others = infoList.compactMap { info -> UInt32? in
-            guard let owner = info[kCGWindowOwnerPID as String] as? pid_t, owner != me,
-                  let number = info[kCGWindowNumber as String] as? UInt32 else { return nil }
-            return number
+    /// On-screen windows, front to back, each with its app's bundle ID.
+    /// With `includeDesktop`, the wallpaper, menu bar and Dock too.
+    static func onScreenWindows(includeDesktop: Bool = false) -> [ScreenLook.Window] {
+        let options: CGWindowListOption = includeDesktop ? [.optionOnScreenOnly] : [.optionOnScreenOnly, .excludeDesktopElements]
+        let infoList = CGWindowListCopyWindowInfo(options, kCGNullWindowID)
+            as? [[String: Any]] ?? []
+        var bundles: [Int32: String] = [:]
+        return ScreenLook.windows(from: infoList).map { window in
+            var window = window
+            if bundles[window.ownerPID] == nil {
+                bundles[window.ownerPID] = NSRunningApplication(processIdentifier: window.ownerPID)?.bundleIdentifier ?? ""
+            }
+            window.bundleID = bundles[window.ownerPID] ?? ""
+            return window
         }
-        guard !others.isEmpty else { return nil }
-        var ids = others.map { UnsafeRawPointer(bitPattern: UInt($0)) }
+    }
+
+    /// "Look": the window the person is looking at (ScreenLook.frontWindow).
+    /// `frontPID` is read before Wisp's panel opens.
+    static func frontWindow(frontPID: pid_t?) -> ScreenLook.Window? {
+        guard CGPreflightScreenCaptureAccess() else { return nil }
+        return ScreenLook.frontWindow(onScreenWindows(), frontPID: frontPID,
+                                      excludingPID: ProcessInfo.processInfo.processIdentifier)
+    }
+
+    static func captureWindowJPEG(_ window: ScreenLook.Window) -> Data? {
+        guard CGPreflightScreenCaptureAccess(),
+              let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.number),
+                                                  [.boundsIgnoreFraming, .nominalResolution])
+        else { return nil }
+        return MediaAttachment.downscaleJPEG(image)
+    }
+
+    /// The windows among `windows` that their own browser reports incognito.
+    /// Asked only of a running Chromium browser (ScreenLook.incognitoScriptable)
+    /// that Wisp already holds Automation for: never a prompt, never a launch,
+    /// two seconds at most. Anything unanswered is simply not known.
+    static func incognitoWindows(among windows: [ScreenLook.Window]) -> Set<UInt32> {
+        var found = Set<UInt32>()
+        let bundles = Set(windows.map(\.bundleID)).intersection(ScreenLook.incognitoScriptable)
+        for bundle in bundles where automationAllowed(bundle) {
+            let source = "with timeout of 2 seconds\ntell application id \"\(bundle)\" to get bounds of "
+                + "(every window whose mode is \"incognito\")\nend timeout"
+            guard let script = NSAppleScript(source: source) else { continue }
+            var error: NSDictionary?
+            let result = script.executeAndReturnError(&error)
+            guard error == nil, result.numberOfItems > 0 else { continue }
+            var rects: [CGRect] = []
+            for index in 1...result.numberOfItems {
+                guard let item = result.atIndex(index), item.numberOfItems == 4 else { continue }
+                let v = (1...4).map { CGFloat(item.atIndex($0)?.int32Value ?? 0) }
+                rects.append(CGRect(x: v[0], y: v[1], width: v[2] - v[0], height: v[3] - v[1]))
+            }
+            for window in windows where window.bundleID == bundle
+                && ScreenLook.matchesIncognito(window, incognitoBounds: rects) {
+                found.insert(window.number)
+            }
+        }
+        return found
+    }
+
+    /// True only when macOS already allows Wisp to script `bundleID` (never asks).
+    private static func automationAllowed(_ bundleID: String) -> Bool {
+        var target = AEAddressDesc()
+        let created = bundleID.withCString { pointer in
+            AECreateDesc(DescType(typeApplicationBundleID), pointer, strlen(pointer), &target)
+        }
+        guard created == noErr else { return false }
+        defer { AEDisposeDesc(&target) }
+        return AEDeterminePermissionToAutomateTarget(&target, AEEventClass(typeWildCard),
+                                                     AEEventID(typeWildCard), false) == noErr
+    }
+
+    /// One Look at a window, checked right before it is captured: the window is
+    /// looked up again (closed: nothing), its verdict computed now
+    /// (ScreenLook.recheck against the warning the person accepted, if any),
+    /// and only then captured, in this same step.
+    static func lookAtWindow(_ number: UInt32, accepted: ScreenLook.Verdict?) -> ScreenLook.Outcome {
+        guard CGPreflightScreenCaptureAccess() else { return .failed(ScreenLook.deniedNotice) }
+        guard let window = onScreenWindows().first(where: { $0.number == number }) else {
+            return .failed("That window isn't on screen anymore.")
+        }
+        let incognito = ScreenLook.isBrowser(window) ? incognitoWindows(among: [window]) : []
+        switch ScreenLook.recheck(accepted: accepted, now: ScreenLook.browserVerdict([window], incognito: incognito)) {
+        case .refuse(let message): return .refused(message)
+        case .ask(let message): return .ask(message)
+        case .proceed:
+            guard let jpeg = captureWindowJPEG(window) else { return .failed("Wisp couldn't capture that window.") }
+            return .captured(jpeg, label: ScreenLook.label(app: window.ownerName, title: window.title), leftOut: [])
+        }
+    }
+
+    /// One Look at a region (or the main display), checked right before it is
+    /// captured: one window list, the plan made from it (password managers and
+    /// detectably private windows left out), the recheck, then a capture that
+    /// draws only the plan's windows. A window raised after the list was read is
+    /// never drawn.
+    static func lookAtRegion(_ rect: CGRect, label: String?, accepted: ScreenLook.Verdict?) -> ScreenLook.Outcome {
+        guard CGPreflightScreenCaptureAccess() else { return .failed(ScreenLook.deniedNotice) }
+        let me = ProcessInfo.processInfo.processIdentifier
+        let windows = onScreenWindows(includeDesktop: true)
+        let incognito = incognitoWindows(among: windows.filter { ScreenLook.isBrowser($0) && $0.bounds.intersects(rect) })
+        let plan = ScreenLook.regionPlan(windows, rect: rect, incognito: incognito, excludingPID: me)
+        switch ScreenLook.recheck(accepted: accepted, now: plan.verdict) {
+        case .refuse(let message): return .refused(message)
+        case .ask(let message): return .ask(message)
+        case .proceed:
+            guard let jpeg = captureJPEG(rect, windows: plan.include) else {
+                return .failed("Wisp couldn't capture that part of the screen.")
+            }
+            return .captured(jpeg, label: label, leftOut: plan.leftOut)
+        }
+    }
+
+    /// The listed windows only, drawn within `rect` (global display coordinates).
+    private static func captureJPEG(_ rect: CGRect, windows: [UInt32]) -> Data? {
+        guard !rect.isEmpty, !windows.isEmpty else { return nil }
+        var ids = windows.map { UnsafeRawPointer(bitPattern: UInt($0)) }
         let created: CFArray? = ids.withUnsafeMutableBufferPointer { CFArrayCreate(nil, $0.baseAddress, $0.count, nil) }
         guard let array = created,
-              let image = CGImage(windowListFromArrayScreenBounds: CGDisplayBounds(CGMainDisplayID()), windowArray: array, imageOption: [.boundsIgnoreFraming, .nominalResolution])
+              let image = CGImage(windowListFromArrayScreenBounds: rect, windowArray: array,
+                                  imageOption: [.boundsIgnoreFraming, .nominalResolution])
         else { return nil }
         return MediaAttachment.downscaleJPEG(image)
     }
