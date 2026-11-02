@@ -16,8 +16,9 @@
 #   LOCK         heavy-lock directory                                 (default: /private/tmp/claude-$(id -u)/wisp-heavy.lock)
 #   OMLX_BASE    oMLX URL                                             (default: http://127.0.0.1:8000)
 #   OMLX_SETTINGS  oMLX per-model settings file                       (default: ~/.omlx/model_settings.json)
-#   CHATEVAL     path to chat_eval.py (not in the repo); stage skipped when unset
-#   CHAT_PROMPTS chat eval prompts                                    (default: training/ask-lora-r2/chateval_prompts.yaml)
+#   CHATEVAL     path to chat_eval.py          (default: training/ask-lora-r4/chateval/chat_eval.py when present)
+#   CHAT_PROMPTS chat eval prompts             (default: training/ask-lora-r4/chateval/prompts_r4.yaml when present,
+#                                                else training/ask-lora-r2/chateval_prompts.yaml)
 #   VISION_TEST_SET  which images: gate/vision/cases.json is built by make_images.py + make_images_more.py (60 cases)
 set -u
 A=${1:?usage: gate.sh <modelA> <modelB> [trials] [chat_samples]}
@@ -32,6 +33,10 @@ fi
 LOCK="${LOCK:-/private/tmp/claude-$(id -u)/wisp-heavy.lock}"
 OMLX_BASE="${OMLX_BASE:-http://127.0.0.1:8000}"; export OMLX_BASE
 SETTINGS="${OMLX_SETTINGS:-$HOME/.omlx/model_settings.json}"
+R4CHAT="$REPO/training/ask-lora-r4/chateval"
+if [ -f "$R4CHAT/chat_eval.py" ]; then
+  CHATEVAL="${CHATEVAL:-$R4CHAT/chat_eval.py}"; CHAT_PROMPTS="${CHAT_PROMPTS:-$R4CHAT/prompts_r4.yaml}"
+fi
 CHAT_PROMPTS="${CHAT_PROMPTS:-$REPO/training/ask-lora-r2/chateval_prompts.yaml}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT="${OUT:-$HERE/runs/${A}__${B}__$STAMP}"
@@ -82,6 +87,13 @@ if want chat; then
     (cd "$(dirname "$CHATEVAL")" && nice -n 5 "$PY" "$CHATEVAL" --repo "$REPO" --prompts "$CHAT_PROMPTS" \
        --models "$A,$B" --profile-as "$A" --samples "$SAMPLES" --out "$OUT/chateval")
     echo "== $(date) CHATEVAL EXIT $?"
+    # r4: blind pairs showing the WHOLE conversation to the judge, plus the per-conversation mechanical checks
+    JP="$(dirname "$CHATEVAL")/judge_pairs.py"
+    if [ -f "$JP" ]; then
+      "$PY" "$JP" build --replies "$OUT/chateval/replies.jsonl" --base "$A" --cand "$B" --out "$OUT/chateval/judge"
+      "$PY" "$JP" mech --replies "$OUT/chateval/replies.jsonl" --base "$A" --cand "$B" \
+        --json-out "$OUT/chateval/mech.json" | tee "$OUT/chateval/mech.txt"
+    fi
   else echo "== CHATEVAL skipped (set CHATEVAL=/path/to/chat_eval.py)"; fi
 fi
 if want mtp; then

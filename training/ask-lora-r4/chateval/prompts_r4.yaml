@@ -1,0 +1,374 @@
+# Ask LoRA r4 chat eval prompts (chat_eval.py, judge_pairs.py).
+# The first 40 units are the r2/r3 chat eval, unchanged (same ids, same text: training/ask-lora-r2/chateval_prompts.yaml),
+# so r2/r3 numbers stay comparable. Units 41-52 (mt_*) are new: multi-turn conversations of 8-9 user turns whose
+# later turns need memory or a standing instruction. Written fresh: the details they probe (names, numbers, objects)
+# appear in none of the builder's scen_*.py or the toolbench cases (test_chateval_r4.py enforces it).
+# No personal-data tool tasks: nothing here asks about the user's mail, calendar, files or contacts.
+# The pinned clock is 2026-10-30 08:30 (morning), so no prompt names a time of day other than morning.
+#
+# kinds
+#   single        one user message in a fresh session.
+#   conversation  turns sent in ONE session; each later turn carries the model's OWN earlier replies as
+#                 history (so the two models are judged on conversations they actually had).
+#   variety       the same question worded several ways, each in a FRESH session; measures how monotonous
+#                 the model's default answer is across wordings (judged as a set, plus objective overlap).
+#
+# Every unit is run `--samples` times (default 3) with a different seed per sample, the same seeds for every model.
+# 35 single + 2 variety + 15 conversation = 52 units; 152 model turns per sample (52 old + 100 new).
+#
+# Optional keys on a conversation (the old units have none):
+#   skill   recall | standing | emotional | casual_fact : what the conversation is mainly there to test.
+#   probe   the user-stated details (and unusual names) the conversation tests: grepped against the training
+#           builder and the toolbench so none of them was ever trained or benchmarked on.
+#   checks  mechanical checks scored from the replies, whatever the model said. `turn` is the 0-based index of
+#           the USER turn whose reply is checked. Types (chatlib.py documents them):
+#             contains   {turn, any|all|none: [terms]}                the reply has (or lacks) these
+#             recall     {turn, source_turn, any: [terms]}            the reply gives back a detail the USER said
+#                                                                     in turn `source_turn` (3-8 turns earlier)
+#             groups     {turn, groups: [[terms],..], min_groups}     the reply uses >= min_groups of the user's details
+#             forbid     {turns: all|[..], any: [phrases]}            invented context: none of these may appear
+#             standing   {rule, value, from_turn, to_turn}            a standing instruction, checked on EVERY reply
+#                                                                     from_turn..to_turn: max_sentences, max_words,
+#                                                                     min_words, no_question_end, no_bullets
+#             overlap    {turn, with_turn, min}                       the reply repeats an earlier reply of the model
+#             shorter    {turn, than_turn}                            the reply is shorter than that earlier reply
+units:
+  # ---- small talk (5)
+  - {id: small_hey, category: small_talk, kind: single, prompt: "hey"}
+  - {id: small_morning, category: small_talk, kind: single, prompt: "good morning!"}
+  - {id: small_howgoing, category: small_talk, kind: single, prompt: "how's it going?"}
+  - {id: small_upto, category: small_talk, kind: single, prompt: "what are you up to?"}
+  - {id: small_there, category: small_talk, kind: single, prompt: "you there?"}
+
+  # ---- how was your day (3)
+  - {id: day_howwas, category: how_was_your_day, kind: single, prompt: "how was your day?"}
+  - {id: day_fun, category: how_was_your_day, kind: single, prompt: "did you do anything fun today?"}
+  - {id: day_best, category: how_was_your_day, kind: single, prompt: "what's been the best part of your day so far?"}
+
+  # ---- venting / stress: the right voice is gentle (6)
+  - {id: vent_work, category: venting, kind: single, prompt: "ugh i'm so stressed about work right now"}
+  - {id: vent_brain, category: venting, kind: single, prompt: "my brain won't switch off and i'm exhausted"}
+  - {id: vent_rough, category: venting, kind: single, prompt: "i had a really rough week and i just want to vent for a sec"}
+  - {id: vent_behind, category: venting, kind: single, prompt: "i feel like i'm falling behind on everything"}
+  - {id: vent_lonely, category: venting, kind: single, prompt: "i'm feeling kind of lonely today"}
+  - {id: vent_bombed, category: venting, kind: single, prompt: "i bombed a presentation yesterday and i can't stop thinking about it"}
+
+  # ---- jokes and playful banter (6)
+  - {id: joke_plain, category: banter, kind: single, prompt: "tell me a joke"}
+  - {id: joke_coffee, category: banter, kind: single, prompt: "give me a pun about coffee"}
+  - {id: banter_keys, category: banter, kind: single, prompt: "i lost my keys for the third time this week. roast me gently"}
+  - {id: banter_tired, category: banter, kind: single, prompt: "do you ever get tired of people asking you stuff?"}
+  - {id: banter_pineapple, category: banter, kind: single, prompt: "pineapple on pizza. yes or no? defend your answer"}
+  - {id: banter_rps, category: banter, kind: single, prompt: "rock paper scissors. i pick rock"}
+
+  # ---- recommendations (5)
+  - {id: rec_book, category: recommendations, kind: single, prompt: "recommend me a book for the weekend"}
+  - {id: rec_movie, category: recommendations, kind: single, prompt: "i want to watch something cozy tonight, any movie ideas?"}
+  - {id: rec_food, category: recommendations, kind: single, prompt: "what should i cook when i can't be bothered to cook?"}
+  - {id: rec_music, category: recommendations, kind: single, prompt: "suggest some music for a rainy afternoon"}
+  - {id: rec_game, category: recommendations, kind: single, prompt: "a board game for two people who hate losing?"}
+
+  # ---- opinions (4)
+  - {id: opin_morning, category: opinions, kind: single, prompt: "are you a morning person or a night owl? pick one"}
+  - {id: opin_paper, category: opinions, kind: single, prompt: "paper books or ebooks, what's your take?"}
+  - {id: opin_pets, category: opinions, kind: single, prompt: "cats or dogs?"}
+  - {id: opin_hotdog, category: opinions, kind: single, prompt: "is a hot dog a sandwich"}
+
+  # ---- celebrating good news (3)
+  - {id: win_job, category: celebrating, kind: single, prompt: "i got the job!!!"}
+  - {id: win_run, category: celebrating, kind: single, prompt: "i just finished my first half marathon"}
+  - {id: win_engaged, category: celebrating, kind: single, prompt: "my sister just got engaged and i'm so happy for her"}
+
+  # ---- tell me something interesting (3)
+  - {id: fact_plain, category: interesting, kind: single, prompt: "tell me something interesting"}
+  - {id: fact_ocean, category: interesting, kind: single, prompt: "fun fact about the ocean?"}
+  - {id: fact_unknown, category: interesting, kind: single, prompt: "teach me something i probably don't know"}
+
+  # ---- a boring question asked three ways, fresh session each (variety sets: 2)
+  - id: variety_relax
+    category: monotony
+    kind: variety
+    prompts:
+      - "what's a good way to relax in the evening?"
+      - "how can i wind down after a long day?"
+      - "any ideas for unwinding at night?"
+  - id: variety_focus
+    category: monotony
+    kind: variety
+    prompts:
+      - "how do i stay focused when i'm working?"
+      - "i keep getting distracted, any tips for concentrating?"
+      - "what helps you concentrate on a task?"
+
+  # ---- multi-turn conversations with the model's own history (3)
+  - id: conv_hobby
+    category: multi_turn
+    kind: conversation
+    turns:
+      - "i'm thinking about picking up a new hobby"
+      - "i like making things with my hands but i get bored easily"
+      - "ooh pottery sounds fun. is it expensive to start?"
+      - "okay i'm going to try a class this weekend!"
+  - id: conv_rough_day
+    category: multi_turn
+    kind: conversation
+    turns:
+      - "rough day"
+      - "my manager picked apart my report in front of everyone"
+      - "i know it's not a big deal but i keep replaying it"
+      - "thanks, that actually helped a bit"
+  - id: conv_repeat_dinner
+    category: monotony
+    kind: conversation
+    turns:
+      - "what should i have for dinner?"
+      - "hmm, what should i have for dinner though"
+      - "still undecided. dinner ideas?"
+
+  # =====================================================================================================
+  # r4 multi-turn conversations (12). The model writes every assistant turn itself; checks only look at
+  # what the USER said (recall) or at the shape of the replies (standing instructions), so they hold
+  # whatever each model answered earlier.
+  # =====================================================================================================
+
+  # ---- recall: details the user gave 3-8 turns earlier (4)
+  - id: mt_recall_trip
+    category: multi_turn
+    kind: conversation
+    skill: recall
+    probe: [idris, ljubljana, "575"]
+    turns:
+      - "i'm trying to plan a long weekend away next month"
+      - "somewhere with mountains. Idris, my partner, hates flying so it has to be a train or a drive"
+      - "budget is around 575 dollars total for the two of us"
+      - "we're both obsessed with pastries, that's honestly half the point of going"
+      - "what's the best way to pack light for a weekend?"
+      - "random thought, what's the capital of Slovenia?"
+      - "ok so with everything i've told you so far, what kind of trip would suit us?"
+      - "what was the budget again? i lost track"
+    checks:
+      - {type: contains, turn: 5, any: [ljubljana]}
+      - {type: groups, turn: 6, sources: [1, 3], min_groups: 2, groups: [[mountain, alps, alpine, hik, lodge, cabin], [train, rail, drive, driving, road trip, scenic route], [pastr, bakery, bakeries, cafe, croissant]]}
+      - {type: recall, turn: 7, source_turn: 2, any: ["575"]}
+
+  - id: mt_recall_gift
+    category: multi_turn
+    kind: conversation
+    skill: recall
+    probe: [beekeeping, chrysanthemums, "130"]
+    turns:
+      - "i need help with a present for my mum, she's turning sixty in december"
+      - "she's obsessed with beekeeping, she's got four hives at the back of the garden"
+      - "careful though, she's allergic to chrysanthemums, even the smell sets her off"
+      - "i can spend about 130 pounds"
+      - "she already owns every beekeeping gadget known to man lol"
+      - "unrelated, what's the chemical symbol for gold? my brain just went there"
+      - "ok so what would you get her?"
+      - "which flower is she allergic to? i want to double check before i order anything"
+      - "and what was the budget again?"
+    checks:
+      - {type: contains, turn: 5, any: [au]}
+      - {type: groups, turn: 6, sources: [1, 4], min_groups: 1, groups: [[bee, hive, honey, wax, apiar]]}
+      - {type: recall, turn: 7, source_turn: 2, any: [chrysanthemum]}
+      - {type: recall, turn: 8, source_turn: 3, any: ["130"]}
+
+  - id: mt_recall_move
+    category: multi_turn
+    kind: conversation
+    skill: recall
+    probe: [calloway, "grandfather clock"]
+    turns:
+      - "i'm moving flats on saturday and i'm already dreading it"
+      - "the new place is on the fourth floor and there's no lift"
+      - "the worst part is my grandfather clock, it's an heirloom and it weighs a ton"
+      - "my brother Calloway is helping with the boxes but flat out refuses to touch the clock"
+      - "quick thing, how many centimetres are in an inch?"
+      - "should we hire movers just for the clock, or is that overkill?"
+      - "ok yeah, movers it is. what should we ask them before booking?"
+      - "what floor is the new place on again? i keep forgetting"
+      - "and who's helping with the boxes?"
+    checks:
+      - {type: contains, turn: 4, any: ["2.54"]}
+      - {type: groups, turn: 6, sources: [1, 2], min_groups: 1, groups: [[stair, floor, lift, elevator, fourth, flights], [clock, heirloom, grandfather]]}
+      - {type: recall, turn: 7, source_turn: 1, any: [fourth, "4th"]}
+      - {type: recall, turn: 8, source_turn: 3, any: [calloway]}
+
+  - id: mt_recall_self
+    category: multi_turn
+    kind: conversation
+    skill: recall
+    probe: [moss, bassoon, embouchure]
+    turns:
+      - "hey, from now on please go by Moss when you talk to me. it's my nickname"
+      - "i'm learning the bassoon as an adult, wish me luck"
+      - "my teacher says my embouchure is too tight"
+      - "any tips for relaxing the jaw while playing?"
+      - "can you say that last bit again but shorter?"
+      - "what was the very first thing i said to you in this chat?"
+      - "what nickname did we settle on?"
+      - "and which instrument was it again?"
+    checks:
+      - {type: overlap, turn: 4, with_turn: 3, min: 0.5}
+      - {type: shorter, turn: 4, than_turn: 3}
+      - {type: recall, turn: 5, source_turn: 0, any: [moss, nickname, go by, call you]}
+      - {type: recall, turn: 6, source_turn: 0, any: [moss]}
+      - {type: forbid, turns: [6, 7], any: [tess]}
+      - {type: recall, turn: 7, source_turn: 1, any: [bassoon]}
+
+  # ---- standing instructions: honoured on every later turn (4)
+  - id: mt_stand_onesentence
+    category: multi_turn
+    kind: conversation
+    skill: standing
+    probe: [greyhound]
+    turns:
+      - "hi! can you do me a favor"
+      - "from now on, keep every answer to one sentence. long replies overwhelm me"
+      - "what's a good way to start the morning?"
+      - "why does the moon look bigger near the horizon?"
+      - "i'm thinking of adopting a rescue greyhound"
+      - "why do onions make you cry?"
+      - "tell me a short bedtime story"
+      - "thanks, that was perfect"
+    checks:
+      - {type: standing, rule: max_sentences, value: 1, from_turn: 1, to_turn: 7}
+      - {type: groups, turn: 4, min_groups: 1, groups: [[greyhound, dog, adopt, rescue]]}
+
+  - id: mt_stand_noquestions
+    category: multi_turn
+    kind: conversation
+    skill: standing
+    probe: [bicycle]
+    turns:
+      - "ugh, i've got the worst writer's block"
+      - "my cover letter for a job at a bicycle repair co-op is going nowhere"
+      - "please stop asking me questions. i just want suggestions and answers"
+      - "i've rewritten the first line like twelve times"
+      - "i love fixing bikes but i have zero formal qualifications"
+      - "i'm scared they'll think i'm not serious enough"
+      - "what would be a good opening line?"
+      - "ok. i think i can actually do this"
+    checks:
+      - {type: standing, rule: no_question_end, from_turn: 2, to_turn: 7}
+      - {type: groups, turn: 6, sources: [1, 4], min_groups: 1, groups: [[bike, bicycle, cycl, repair, wrench, fix], [co-op, coop, cooperative, community]]}
+
+  - id: mt_stand_nolists
+    category: multi_turn
+    kind: conversation
+    skill: standing
+    probe: [highlands, bothies]
+    turns:
+      - "i'm going hiking in the scottish highlands for a week"
+      - "by the way, no bullet points or numbered lists with me, ever. just talk like a person"
+      - "what do you suggest i pack?"
+      - "how do i keep my feet dry?"
+      - "what are some good trail snacks?"
+      - "give me a quick comparison of camping versus staying in bothies"
+      - "can you break down the main safety risks for me?"
+      - "great, anything else i'd regret not knowing?"
+    checks:
+      - {type: standing, rule: no_bullets, from_turn: 1, to_turn: 7}
+      - {type: groups, turn: 3, sources: [0], min_groups: 1, groups: [[wet, rain, bog, boggy, damp, waterproof, gaiter, highland, scotland, scottish]]}
+
+  - id: mt_stand_lifted
+    category: multi_turn
+    kind: conversation
+    skill: standing
+    turns:
+      - "quick favor, keep your answers under twenty words for the next while"
+      - "why do leaves change colour in autumn?"
+      - "how do planes stay up?"
+      - "which planet is the biggest in our solar system?"
+      - "why do we yawn?"
+      - "ok you can go back to normal length now, thanks"
+      - "explain how a suspension bridge holds up so much weight"
+      - "and how is that different from a cable-stayed bridge?"
+    checks:
+      - {type: standing, rule: max_words, value: 20, from_turn: 0, to_turn: 4}
+      - {type: contains, turn: 3, any: [jupiter]}
+      - {type: standing, rule: min_words, value: 40, from_turn: 6, to_turn: 7}
+
+  # ---- an emotional thread continued without repeating or inventing (2)
+  - id: mt_emo_breakup
+    category: multi_turn
+    kind: conversation
+    skill: emotional
+    probe: [fenwick]
+    turns:
+      - "not a great day tbh"
+      - "me and Fenwick split up last week. we were together four years"
+      - "it's so quiet in the flat now"
+      - "i keep almost texting him and then i remember"
+      - "my friend says i should delete his number but i can't make myself do it"
+      - "sorry, i'm just rambling"
+      - "how long were we together again? i'm such a mess i can't keep track"
+      - "i think i'll go for a walk"
+      - "thanks for listening, really"
+    checks:
+      - {type: groups, turn: 4, min_groups: 1, groups: [[delete, number, block, contact, text, texting, urge]]}
+      - {type: recall, turn: 6, source_turn: 1, any: [four, "4 years", "4-year"]}
+      - {type: groups, turn: 7, min_groups: 1, groups: [[walk, air, outside, fresh, step out, sun]]}
+      - {type: forbid, turns: all, any: ["your dog", "your cat", "your kids", "your children", "your wife", "your husband", "your wedding", "your engagement", "your mum", "your mom", "your sister", "your brother", "your boss", "your job", "your apartment"]}
+
+  - id: mt_emo_pet
+    category: multi_turn
+    kind: conversation
+    skill: emotional
+    probe: [pickle]
+    turns:
+      - "i'm kind of a mess this morning"
+      - "my dog Pickle has surgery on thursday, it's his knee"
+      - "the vet says it's routine but he's twelve"
+      - "i can't stop thinking about the anesthesia part"
+      - "everyone keeps telling me he'll be fine and it's not helping"
+      - "roughly how long do dogs take to recover from knee surgery?"
+      - "ok. that's actually a bit comforting"
+      - "what day is the surgery again? i want to be sure before i tell work"
+      - "and what's his name, i want to write it on a card for the vet team"
+    checks:
+      - {type: contains, turn: 5, any: [week, month]}
+      - {type: recall, turn: 7, source_turn: 1, any: [thursday]}
+      - {type: recall, turn: 8, source_turn: 1, any: [pickle]}
+      - {type: forbid, turns: all, any: ["your wife", "your husband", "your kids", "your children", "your cat", "your boss", "your job"]}
+
+  # ---- a casual factual question in the middle of a chat, then back to the thread (2)
+  - id: mt_fact_plant
+    category: multi_turn
+    kind: conversation
+    skill: casual_fact
+    probe: ["fiddle-leaf"]
+    turns:
+      - "my fiddle-leaf fig keeps dropping its leaves and i'm getting worried"
+      - "i water it every saturday, always the same amount"
+      - "it's by a north-facing window, so not much direct sun"
+      - "totally unrelated, what temperature does water boil at in fahrenheit?"
+      - "ha ok. random one, how many continents are there?"
+      - "anyway, back to the fig. what do you think is going wrong?"
+      - "which way does the window face? i'm blanking on what i said"
+      - "so what's the one thing i should change first?"
+    checks:
+      - {type: contains, turn: 3, any: ["212"]}
+      - {type: contains, turn: 4, any: [seven, "7"]}
+      - {type: groups, turn: 5, sources: [1, 2], min_groups: 1, groups: [[light, sun, window, north, dim, bright], [water, overwater, soak, drain, soil, root]]}
+      - {type: recall, turn: 6, source_turn: 2, any: [north]}
+
+  - id: mt_fact_crochet
+    category: multi_turn
+    kind: conversation
+    skill: casual_fact
+    probe: [odalys, lavender, crochet]
+    turns:
+      - "i'm crocheting my first blanket, it's for my niece Odalys"
+      - "the yarn is a dusty lavender and it's really soft"
+      - "i've only done about ten rows and my edges are wonky"
+      - "quick tangent, how many ounces are in a pound?"
+      - "and how many centimetres are in a metre?"
+      - "ok back to the blanket. why do the edges keep going wonky?"
+      - "what colour is the yarn again? i'm trying to find a matching one"
+      - "and who's it for? i want to put a name on the tag"
+    checks:
+      - {type: contains, turn: 3, any: ["16", sixteen]}
+      - {type: contains, turn: 4, any: ["100", hundred]}
+      - {type: groups, turn: 5, min_groups: 1, groups: [[tension, stitch, turning chain, chain, count, edge]]}
+      - {type: recall, turn: 6, source_turn: 1, any: [lavender]}
+      - {type: recall, turn: 7, source_turn: 0, any: [odalys]}

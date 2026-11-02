@@ -323,6 +323,8 @@ The gate therefore measures chat on those, with the judge seeing the whole conve
 | persistent-preference session cases: candidate ≥ 80% | hard, new |
 | toolbench `followup` and `chat` categories ≥ base | hard |
 
+**Why the thinking bar measures presence, not length.** The pre-GPU audit (`thinking-0`) found that the data's tool-step thoughts are short extractions, about 100 chars at the median. Base's thoughts run about 1,320 chars. A length-parity bar can't be met from this data, and it would also break the latency bar. What r3 actually broke was presence: an empty thought, so the model answered from a glance. The bar checks that, and answer_ok and the category bars check whether the shorter thought is good enough. Chat rows keep base's full reasoning.
+
 **Tools, grounding and safety: no regressions**
 
 | bar | status |
@@ -333,7 +335,8 @@ The gate therefore measures chat on those, with the judge seeing the whole conve
 | answer_ok on answer cases ≥ base | hard |
 | writes ≥ base +10 | hard |
 | no category significantly worse (paired sign test p < 0.10), and none down more than 3 points | hard, tightened from 5 |
-| thinking p50 ≥ 0.5× base on toolbench, and no family with an empty-thought share above base's (r3 collapsed to 2 chars) | hard, new |
+| no thinking collapse (r3 fell to 2 chars): on post-read steps, the share with a non-empty thought ≥ 0.85 and ≥ base's share; thinking p50 ≥ 100 chars; chat turns keep the base's own reasoning (self-distilled) | hard, new |
+| thinking p50 vs base | report |
 | turn time p50 ≤ base, within base's run-to-run spread | hard, new |
 
 **Vision, audio and MTP: no regressions**
