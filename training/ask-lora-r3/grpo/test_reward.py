@@ -179,8 +179,11 @@ def test_ask_step():
 
 
 def test_no_call_when_call_was_ideal():
-    r = W.score(final("Let me see what is coming up."), read_label())
+    r = W.score(final("You have a few things coming up."), read_label())
     assert r.total == 0.0 and "no call" in r.flags
+    # the same miss phrased as a promise is a stall, and costs more than a plain miss
+    r = W.score(final("Let me see what is coming up."), read_label())
+    assert r.total == -1.0 and "no call" in r.flags and r.parts["stall"] == -1.0
 
 
 # ---- answers
@@ -214,6 +217,16 @@ def test_ritual_closer():
     assert r.parts["closer"] == -0.3 and r.total == 1.2
     assert W.score(final("Is there anything else?"), final_label()).parts["closer"] == -0.3
     assert W.score(final("Ethics is at 11 AM. Want me to add a reminder?"), final_label()).parts["closer"] == 0.0
+
+
+def test_stall_is_penalised():
+    # the reported failure: "Let me look into it" as the whole reply, no call, the turn ends
+    r = W.score(final("Let me look into it for you."), read_label())
+    assert r.parts["stall"] == -1.0 and r.total == -1.0 and "promised to act without acting" in r.flags
+    assert W.score(final("I'll check your calendar now."), read_label()).parts["stall"] == -1.0
+    # making the call is fine, and so is an ideal clarifying question or answer that mentions checking
+    assert W.score(calls(call("get_upcoming", days=2)), read_label()).parts["stall"] == 0.0
+    assert W.score(final("If you send me the link, I'll check it."), final_label()).parts["stall"] == 0.0
 
 
 def test_thinking_length():

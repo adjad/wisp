@@ -16,6 +16,7 @@ Reward (see README for the table):
     -1.0  a call when a final answer or a clarifying question was ideal
     -0.5  the user's name in the third person in the answer text
     -0.3  ritual closer ("Let me know if...", "anything else?")
+    -1.0  stall: a call was ideal, none was made, and the text promises to act ("Let me look into it", "I'll check")
     -0.005 per thinking word above 60 (cap -0.5)
     -1.0  malformed (bad tool-call syntax, unclosed thought, no stop token, leaked markup, empty)
 A malformed completion earns nothing else: its score is exactly -1.0.
@@ -54,6 +55,7 @@ COMPONENTS = {
     "restraint": ("needless_call",),
     "answer": ("facts",),
     "style": ("name", "closer", "thinking", "malformed"),
+    "stall": ("stall",),
     "vision": ("v_facts", "v_proposal", "v_invalid", "v_banned", "v_empty", "v_closer"),
     "audio": ("a_wer", "a_punct", "a_empty", "a_wrong", "a_dropped", "a_banned"),
 }
@@ -285,6 +287,18 @@ def ritual_closer(text: str) -> bool:
     return bool(_CLOSER.search(tail[0]))
 
 
+# A reply that only promises to act ends the turn with nothing done: the user has to ask again.
+_STALL = re.compile(
+    r"\b(let me (?:look|check|find|pull|see|search|get|grab|take a look|dig)|"
+    r"i(?:'| wi)ll (?:look|check|find|pull|search|get|grab|take a look|dig|see)|"
+    r"i'm (?:looking|checking|pulling|searching|grabbing)|one moment|give me a (?:moment|sec(?:ond)?)|hang on|"
+    r"looking (?:that|it|this) up)\b", re.I)
+
+
+def stall(text: str) -> bool:
+    return bool(_STALL.search(text or ""))
+
+
 def third_person_name(text: str, name: str) -> bool:
     return bool(name) and re.search(rf"\b{re.escape(name)}\b", text) is not None
 
@@ -344,6 +358,9 @@ def score(completion: str, label: dict) -> Result:
                 parts["args"] = 0.5
         elif not p.calls:
             flags.append("no call")
+            if stall(p.text):
+                parts["stall"] = -1.0
+                flags.append("promised to act without acting")
 
     if p.text and not p.calls:
         if third_person_name(p.text, label.get("user_name") or ""):
