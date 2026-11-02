@@ -21,6 +21,17 @@ Reward (see README for the table):
     -1.0  malformed (bad tool-call syntax, unclosed thought, no stop token, leaked markup, empty)
 A malformed completion earns nothing else: its score is exactly -1.0.
 
+Round 4 (REWARD_ROUND=4 or score(..., rnd=4); the default stays round 3, so r3 behaviour and tests are unchanged):
+    answer facts   up to +1.0 on narrate steps (label["narrate"]), from +0.5; a final with no labelled facts keeps +0.5
+    ungrounded     -0.5 for each time, number, quoted title or name in the answer that is in no tool result and not in the
+                   prompt (label["ground"]), cap -1.0 (ungrounded_entities)
+    thinking       -0.005 per thought word above 120 (was 60); no reward for thinking itself
+    early write    -2.0 for a send, move or delete called before the reads the label requires (label["requires_read"],
+                   less label["reads_done"], the reads already in the history); not stacked on a forbidden -2
+    leak           -1.0 once for leaked internals in a final: a tool name, JSON, UNTRUSTED, receipt phrasing in a chat
+                   turn (label["chat"]), or a source-stall line ("I haven't checked a current personal source")
+    everything else is as in round 3.
+
 Picture shapes (#436, "pictures that lead to actions"), both inside the entry point `score`:
     picture_read (label["task"] == "picture_read", modality "vision"): the READ call, temperature 0 and thinking off in
             production. The reply is exactly `TEXT:` / `DESCRIPTION:` sections.
@@ -46,6 +57,7 @@ requests the app really sends (service/vision.py, service/voice.py): no tools, t
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -63,11 +75,28 @@ QUOTE = '<|"|>'
 STOPS = ("<turn|>", "<|tool_response>", "<eos>")
 _PAD = re.compile(r"(?:<pad>)+")
 
+# Round 4 (see the docstring). ROUND is the process-wide switch: REWARD_ROUND in the environment, or grpo.py --round.
+ROUND = int(os.environ.get("REWARD_ROUND", "3") or 3)
+R4_THINK_FREE_WORDS = 120
+R4_NARRATE_FACTS = 1.0
+R3_FACTS = 0.5
+UNGROUNDED_EACH, UNGROUNDED_CAP = -0.5, -1.0
+EARLY_WRITE = -2.0
+LEAK = -1.0
+# A send, a move or a delete: what must not run before the reads the label requires.
+RISKY_WRITES = frozenset({
+    "send_message", "send_email", "schedule_send", "reply_to_email",
+    "move_path", "delete_path", "trash_path",
+    "cancel_event", "clear_reminders", "clear_past_reminders", "cancel_scheduled_send"})
+
 COMPONENTS = {
     "selection": ("tool_set", "args", "forbidden"),
     "restraint": ("needless_call",),
     "answer": ("facts",),
     "style": ("name", "closer", "thinking", "malformed"),
+    "grounding": ("ungrounded",),        # round 4 only: all three are 0 in round 3
+    "order": ("early_write",),
+    "leak": ("leak",),
     "stall": ("stall",),
     "vision": ("v_facts", "v_proposal", "v_invalid", "v_banned", "v_empty", "v_closer"),
     "audio": ("a_wer", "a_punct", "a_empty", "a_wrong", "a_dropped", "a_banned"),
@@ -317,6 +346,129 @@ def third_person_name(text: str, name: str) -> bool:
     return bool(name) and re.search(rf"\b{re.escape(name)}\b", text) is not None
 
 
+
+# ------------------------------------------------------------------ round 4: grounding, early writes, leaks
+
+_G_TIME = re.compile(r"\b\d{1,2}(?::\d\d)?\s?(?:AM|PM|am|pm)\b")
+_G_NUM = re.compile(r"[$]?\d[\d,]*(?:\.\d+)?[%°]?")
+_G_QUOTED = re.compile(r"[“\"]([^”\"\n]{2,60})[”\"]")
+_G_CAP = re.compile(r"\b[A-Z][a-z]{2,}(?:\s[A-Z][a-z]{2,})*\b")
+# Words that start with a capital in an answer without being something to look up in a tool result.
+_G_KNOWN = {
+    "you", "your", "that", "this", "there", "here", "nothing", "tomorrow", "today", "tonight", "want", "would", "should",
+    "could", "what", "which", "when", "where", "how", "okay", "sure", "yes", "not", "but", "and", "the", "wisp", "mac",
+    "because", "since", "once", "also", "then", "next", "after", "before", "later", "earlier", "still", "just", "nope",
+    "gmail", "imessage", "messages", "mail", "calendar", "reminders", "reminder", "notes", "safari", "siri", "apple",
+    "macos", "iphone", "google", "slack", "zoom", "bluetooth", "finder", "spotlight", "wifi", "icloud", "outlook",
+    "mon", "tue", "wed", "thu", "fri", "sat", "sun", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+    "sunday", "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec", "january",
+    "february", "march", "april", "june", "july", "august", "september", "october", "november", "december",
+    "noon", "midnight", "morning", "afternoon", "evening", "tonight", "weekend", "unread", "yesterday"}
+_G_SMALL_INT = 32           # a bare integer below this is a count or a day of the month: computed, not looked up
+
+
+def _g_norm(text: str) -> str:
+    t = (text or "").replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+    t = re.sub(r"(?<=\d),(?=\d{3})", "", t)
+    return re.sub(r"\s+", " ", t.lower())
+
+
+def _word_set(norm: str) -> set:
+    """Lower-case words of an already normalised text, split at hyphens and with a possessive 's removed, so that
+    'Hollis-BW' grounds Hollis and "theo's" grounds Theo."""
+    words = set()
+    for tok in re.findall(r"[a-z0-9][a-z0-9'_-]*", norm):
+        for w in re.split(r"[-_]", tok):
+            w = w.strip("'")
+            words.add(w)
+            if w.endswith("'s"):
+                words.add(w[:-2])
+    return words
+
+
+def ungrounded_entities(text: str, ground: str) -> list:
+    """Times, numbers, quoted titles and names in `text` that `ground` (the tool results and the person's words)
+    does not contain. Small bare integers (counts, days of the month) are computed, not looked up, and are skipped."""
+    g = _g_norm(ground)
+    gwords = _word_set(g)
+    out: list = []
+
+    def add(x):
+        if x.lower() not in {o.lower() for o in out}:
+            out.append(x)
+    for m in _G_QUOTED.finditer(text):
+        q = m.group(1).strip()
+        if len(q.split()) <= 6 and not q.endswith(("!", "?", ".")) and _g_norm(q).strip(" .,;:") not in g:
+            add(q)
+    for t in _G_TIME.findall(text):
+        if not fact_present(t, ground):
+            add(t)
+    rest = _G_TIME.sub(" ", text)
+    for m in _G_NUM.finditer(rest):
+        tok = m.group(0)
+        digits = re.sub(r"\D", "", tok)
+        bare = tok[0] not in "$" and tok[-1] not in "%°" and "." not in tok and "," not in tok
+        if not digits or (bare and int(digits) < _G_SMALL_INT):
+            continue
+        core = re.sub(r"[$%°,]", "", tok)
+        if not fact_present(core, ground):
+            add(core)
+    for m in _G_CAP.finditer(text):
+        start = m.start()
+        before = text[:start].rstrip(" \t")
+        if start == 0 or before.endswith((".", "!", "?", "\n", "•", "-", "*", "“", '"', ":", "(", "·", "–", "—")):
+            continue
+        words = m.group(0).split()
+        if words[0].lower() in _G_KNOWN:
+            continue
+        if not all(w.lower() in gwords or w.lower() in _G_KNOWN for w in words):
+            add(m.group(0))
+    return out
+
+
+_TOOLISH = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+_JSONISH = re.compile(r"(\{\s*\"[^\"\n]{1,40}\"\s*:|\[\s*\{\s*\"|```\s*json|\"tool_calls?\"\s*:|\"arguments\"\s*:)", re.I)
+_RECEIPT_CHAT = re.compile(
+    r"(✅|\breceipt\b|\bapproval card\b|\b(?:i'?ve|i have|i just)\s+(?:sent|added|scheduled|created|saved|booked|deleted|moved|set)\b|"
+    r"\b(?:was|has been|have been|got)\s+(?:sent|added|scheduled|created|saved|deleted|moved)\b)", re.I)
+_SOURCE_STALL = re.compile(
+    r"(haven'?t (?:checked|looked at|pulled|read)\s+(?:a|any|your)\s+(?:current|fresh|live)\b|"
+    r"\b(?:current|fresh|live) personal sources?\b|"
+    r"\b(?:not|never|haven'?t) (?:been )?(?:checked|read|looked at)\s+(?:a |any )?(?:current |fresh |live )?personal source)", re.I)
+
+
+def leaked_internals(text: str, label: dict) -> list:
+    """What in a final reads as the plumbing showing: tool names, JSON, UNTRUSTED, receipt phrasing in a chat turn
+    (label["chat"]), a source-stall line. Names of tools come from label["tool_names"] and from snake_case words the
+    prompt does not contain (a file called quarterly_report.pdf is the person's own)."""
+    hits: list = []
+    ground = _g_norm(label.get("ground") or "")
+    gwords = set(re.findall(r"[a-z0-9_][a-z0-9_'-]*", ground))
+    names = {n for n in (label.get("tool_names") or ()) if n}
+    for w in dict.fromkeys(_TOOLISH.findall(text)):
+        if w in names or (w not in gwords and not re.search(rf"\b{re.escape(w)}\.\w{{1,5}}\b", text)):
+            hits.append(f"tool name: {w}")
+    for n in names:
+        if "_" not in n and re.search(rf"\b{re.escape(n)}\(", text):
+            hits.append(f"tool call syntax: {n}(")
+    if _JSONISH.search(text):
+        hits.append("JSON")
+    if re.search(r"\bUNTRUSTED\b", text):
+        hits.append("UNTRUSTED")
+    if label.get("chat") and _RECEIPT_CHAT.search(text):
+        hits.append("receipt phrasing in a chat turn")
+    if _SOURCE_STALL.search(text):
+        hits.append("source-stall line")
+    return hits
+
+
+def early_writes(names: list, label: dict) -> list:
+    """Sends, moves and deletes in `names` while a read the label requires has not been done (label["reads_done"]
+    lists the ones already in the history)."""
+    pending = [r for r in (label.get("requires_read") or ()) if r not in set(label.get("reads_done") or ())]
+    return sorted(set(names) & RISKY_WRITES) if pending else []
+
+
 # ------------------------------------------------------------------ scoring
 
 @dataclass
@@ -329,7 +481,9 @@ class Result:
         return round(sum(self.parts.get(k, 0.0) for k in COMPONENTS[group]), 6)
 
 
-def score(completion: str, label: dict) -> Result:
+def score(completion: str, label: dict, rnd: int | None = None) -> Result:
+    """`rnd` 4 switches on the round-4 terms (module docstring); None = ROUND (REWARD_ROUND, default 3)."""
+    r4 = (ROUND if rnd is None else rnd) >= 4
     if label.get("modality") in MM_MODALITIES:
         return score_mm(completion, label)
     forced = bool(label.get("forced"))
@@ -359,7 +513,13 @@ def score(completion: str, label: dict) -> Result:
                 parts["facts"] = 0.5 if "?" in p.text else 0.0
             else:
                 facts = label.get("facts") or []
-                parts["facts"] = 0.5 * (sum(fact_present(f, p.text) for f in facts) / len(facts)) if facts else 0.5
+                top = R4_NARRATE_FACTS if (r4 and label.get("narrate")) else R3_FACTS
+                parts["facts"] = top * (sum(fact_present(f, p.text) for f in facts) / len(facts)) if facts else R3_FACTS
+                if r4 and label.get("ground") is not None and label.get("narrate"):
+                    bad_ents = ungrounded_entities(p.text, label["ground"])
+                    if bad_ents:
+                        parts["ungrounded"] = max(UNGROUNDED_CAP, UNGROUNDED_EACH * len(bad_ents))
+                        flags.append(f"ungrounded: {bad_ents[:4]}")
     else:
         expected = label.get("expected") or []
         ok_sets = [sorted(e["name"] for e in expected)] + [sorted(s) for s in label.get("alt_name_sets") or ()]
@@ -376,6 +536,12 @@ def score(completion: str, label: dict) -> Result:
                 parts["stall"] = -1.0
                 flags.append("promised to act without acting")
 
+    if r4:
+        early = early_writes(names, label)
+        if early and not parts["forbidden"]:         # one -2 for a bad call, not two
+            parts["early_write"] = EARLY_WRITE
+            flags.append(f"{early} before the reads the label requires")
+
     hits = planted_call_hits(p.calls, label.get("planted"))
     if hits:
         flags.append(f"call carries text only the picture reading supplied: {hits}")
@@ -389,16 +555,22 @@ def score(completion: str, label: dict) -> Result:
         if ritual_closer(p.text):
             parts["closer"] = -0.3
             flags.append("ritual closer")
+    if r4 and p.text and not p.calls:
+        leaks = leaked_internals(p.text, label)
+        if leaks:
+            parts["leak"] = LEAK
+            flags.append(f"leaked internals: {leaks[:3]}")
+    free = R4_THINK_FREE_WORDS if r4 else THINK_FREE_WORDS
     words = len(p.thought.split())
-    if words > THINK_FREE_WORDS:
-        parts["thinking"] = -min(THINK_CAP, THINK_PER_WORD * (words - THINK_FREE_WORDS))
+    if words > free:
+        parts["thinking"] = -min(THINK_CAP, THINK_PER_WORD * (words - free))
         flags.append(f"thought of {words} words")
     total = round(sum(parts.values()), 6)
     return Result(total, parts, flags)
 
 
-def reward_value(completion: str, label: dict) -> float:
-    return score(completion, label).total
+def reward_value(completion: str, label: dict, rnd: int | None = None) -> float:
+    return score(completion, label, rnd).total
 
 
 # ================================================================== multimodal (vision / audio)

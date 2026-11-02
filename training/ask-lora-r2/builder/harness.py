@@ -12,6 +12,7 @@ import boot  # noqa: F401  (WISP_HOME first)
 import copy
 import datetime as _dt
 import json
+import os
 import socket
 import time as _time
 
@@ -310,7 +311,9 @@ class ScriptedPolicy:
         self.requests: list[dict] = []
         self.responses: list[dict] = []   # {"message":..., "kind": call|load|final|bad}
         self.base_url = main.role_target("agent").endpoint.base_url
-        self.context_window = 32000
+        # Round 4 seeds sessions of up to ~10 earlier turns: use Gemma's real 16384 window, so the history
+        # budget (main._history_budget) trims a seeded session exactly as production would.
+        self.context_window = 16384 if os.environ.get("ASK_LORA_ROUND") == "4" else 32000
         self.target = self
         self._n = 0
 

@@ -1,0 +1,107 @@
+{
+ "round": 4,
+ "seed": 30303,
+ "validators": {
+  "problems": 0,
+  "banned_in_target_hits": 0,
+  "planted_token_hits": 0,
+  "mention_shape_failures": 0,
+  "eligible_rows_without_proposal": 0,
+  "injected_rows_whose_answer_has_no_number_name_or_date_(info_only)": 29,
+  "picture_read_rows_identical_to_round_3": true,
+  "picture_read_rows": 149
+ },
+ "eligible_rows": 189,
+ "round3": {
+  "answer_rows": 295,
+  "variant_rows": 0,
+  "image_rows": 230,
+  "image_rows_train": 202,
+  "proposal_rows": 65,
+  "proposal_rows_by_kind": {
+   "image": 44,
+   "document": 8,
+   "text_document": 13
+  },
+  "proposal_rows_by_split": {
+   "train": 53,
+   "dev": 12
+  },
+  "image_proposals_train": 36,
+  "image_proposals_dev": 8,
+  "proposal_policy": {
+   "None": 295
+  },
+  "injection_rows": 108,
+  "injection_rows_by_split": {
+   "train": 95,
+   "dev": 13
+  },
+  "injection_rows_by_kind": {
+   "image": 85,
+   "document": 13,
+   "text_document": 10
+  },
+  "injection_rows_whose_mention_names_the_action_or_payload": 96,
+  "negatives": {
+   "no_proposal_rows": 230,
+   "past_event_or_ticket": 9,
+   "wrong_day_weekday_only": 8,
+   "wrong_day_year_missing": 16,
+   "receipts": 20,
+   "invoices_and_documents": 11,
+   "whiteboards": 9,
+   "abstain": 23,
+   "injected_without_event": 79
+  }
+ },
+ "round4": {
+  "answer_rows": 453,
+  "variant_rows": 135,
+  "image_rows": 341,
+  "image_rows_train": 297,
+  "proposal_rows": 190,
+  "proposal_rows_by_kind": {
+   "image": 123,
+   "document": 26,
+   "text_document": 41
+  },
+  "proposal_rows_by_split": {
+   "train": 152,
+   "dev": 38
+  },
+  "image_proposals_train": 103,
+  "image_proposals_dev": 20,
+  "proposal_policy": {
+   "always": 189,
+   "abstain": 17,
+   "no_prop_year": 16,
+   "no_prop_weekday": 8,
+   "no_event": 215,
+   "ask_only_not_asked": 7,
+   "ask_only": 1
+  },
+  "injection_rows": 184,
+  "injection_rows_by_split": {
+   "train": 157,
+   "dev": 27
+  },
+  "injection_rows_by_kind": {
+   "image": 144,
+   "document": 18,
+   "text_document": 22
+  },
+  "injection_rows_whose_mention_names_the_action_or_payload": 0,
+  "negatives": {
+   "no_proposal_rows": 263,
+   "past_event_or_ticket": 9,
+   "wrong_day_weekday_only": 8,
+   "wrong_day_year_missing": 16,
+   "receipts": 20,
+   "invoices_and_documents": 12,
+   "whiteboards": 9,
+   "abstain": 34,
+   "injected_without_event": 103
+  }
+ }
+}

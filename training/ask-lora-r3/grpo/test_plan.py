@@ -195,3 +195,56 @@ def test_grpo_dev_ids_are_disjoint_from_sft_train_on_real_rows():
         assert dev_ids <= sft_dev_ids and train_ids <= sft_train, kind
         checked += 1
     assert checked, "no real rows files found"
+
+
+def test_r4_a6000_settings_and_estimate():
+    c = P.R4_A6000
+    assert (c["G"], c["beta"], c["lr"], c["epochs"], c["max_completion"]) == (6, 0.04, 5e-6, 1, 512)
+    assert 1400 <= c["prompts"] <= 1600 and c["prompts"] % 16 == 0
+    plan = P.PROFILES[c["profile"]]["plan"].validate()
+    assert (plan.G, plan.ppr, plan.micro_bs, P.PROFILES["a6000"]["lr"]) == (c["G"], c["ppr"], c["micro_bs"], c["lr"])
+    est = P.a6000_r4_estimate()
+    assert est["steps"] == plan.steps(c["prompts"]) == 372 and est["completions_per_step"] == 24
+    assert est["optimistic"]["total_h"] < est["middle"]["total_h"] < est["pessimistic"]["total_h"]
+    # longer round-4 completions cost more than round 3's, but the same order of magnitude (one epoch: tens of hours)
+    r3 = P.hours("a6000", c["prompts"], 1, 1)
+    r4 = P.hours("a6000", c["prompts"], 1, 1, rnd=4)
+    assert r3 < r4 < 2 * r3
+    assert 10 < est["optimistic"]["train_h"] and est["pessimistic"]["total_h"] < 40
+
+
+def test_r4_changes_nothing_in_round_3_estimates():
+    assert P.step_seconds("a6000", 1)["step"] == P.step_seconds("a6000", 1, 3)["step"]
+    assert P.step_seconds("b300x8", 0, 4)["step"] > P.step_seconds("b300x8", 0, 3)["step"]
+    assert "Round 4 GRPO on one" in P.report(1488, 1, 32.0, 4) and "Round 4 GRPO" not in P.report(1488, 1, 32.0)
+    assert "beta 0.04" in P.report_r4() and "1488 prompts" in P.report_r4()
+
+
+def test_grpo_round_switch(tmp=None):
+    import json
+    import tempfile
+    import grpo
+    import reward as W
+    old = W.ROUND
+
+    def run(rounds, flag=0):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "p.jsonl"
+            f.write_text("".join(json.dumps({"id": str(i), "prompt": "x", "label": json.dumps({"round": r} if r else {})}) + "\n"
+                                 for i, r in enumerate(rounds)))
+            a = grpo.build_parser().parse_args(["check", "--base", "x", "--prompts", str(f), "--round", str(flag)])
+            return grpo.resolve_round(a), a.max_completion
+    try:
+        W.ROUND = 3
+        assert run([0, 0]) == (3, 384)                       # unlabelled rows: round 3, the old cap
+        assert run([4, 4]) == (4, 512) and W.ROUND == 4      # labelled by export_prompts.py --round 4
+        W.ROUND = 3
+        assert run([0, 0], flag=4) == (4, 512)               # the flag alone
+        for bad in (lambda: run([4, 4], flag=3), lambda: run([4, 0])):
+            try:
+                bad()
+            except SystemExit:
+                continue
+            raise AssertionError("a round mix-up must exit")
+    finally:
+        W.ROUND = old

@@ -61,7 +61,9 @@ QUIET_FAMILIES = frozenset({"concise_gentle", "capability_honest"})
 WRITE_FAMILIES = frozenset({"finish_the_write", "exact_args", "right_write_tool", "safe_effects", "relay_receipt",
                             "act_dont_ask", "stub_then_call",
                             # round 3
-                            "safe_restraint", "compose_r3", "followup_r3", "reminders_r3", "contacts_r3"})
+                            "safe_restraint", "compose_r3", "followup_r3", "reminders_r3", "contacts_r3",
+                            # round 4
+                            "gather_then_send_r4", "restraint_r4"})
 WRITE_TOOLS = (frozenset().union(*_writes.WRITE_ALLOW.values()) | _writes.ALWAYS_CARD | _writes.NEVER_CARD
                | {"clear_reminders", "manage_contacts", "cancel_event", "reply_to_email"})
 DISCOVERY = "get_tool_schemas"

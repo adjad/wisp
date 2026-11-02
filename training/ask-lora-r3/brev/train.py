@@ -207,6 +207,13 @@ def load_optional_rows(data: Path, split: str) -> list[dict]:
 
 # ---- images: the processor's own expansion, reproduced without torch so a Mac can check it
 
+def spread_indices(n: int, k: int) -> list[int]:
+    """k indices spread evenly over range(n) (all of them when k <= 0 or k >= n): a deterministic subsample."""
+    if k <= 0 or k >= n:
+        return list(range(n))
+    return [i * n // k for i in range(k)]
+
+
 def soft_token_count(height: int, width: int, patch: int, pool: int, max_soft: int) -> int:
     """Image soft tokens for an image of this size: Gemma4's aspect-ratio-preserving resize
     (transformers' get_aspect_ratio_preserving_size), then patches // pool**2."""
@@ -1351,6 +1358,11 @@ def load_all(a, tok, *, vision: bool = True, audio: bool = True):
     counts = {"text": n, "vision": n, "audio": n} of TRAIN rows. A zero weight drops that modality entirely."""
     train, skipped = tokenize(tok, load_rows(Path(a.data), "train"), a.max_len)
     dev, _ = tokenize(tok, load_rows(Path(a.data), "dev"), a.max_len)
+    dev_max = getattr(a, "dev_text_max", 0) or 0
+    if dev_max and len(dev) > dev_max:      # one GPU: every periodic eval re-reads these, so cap the text dev rows
+        n_all = len(dev)
+        dev = [dev[i] for i in spread_indices(n_all, dev_max)]
+        print(f"--dev-text-max {dev_max}: evaluating {len(dev)} of {n_all} text dev rows (spread evenly through the file)")
     if skipped:
         print(f"skipping {len(skipped)} train rows over --max-len {a.max_len}")
     counts = {"text": len(train), "vision": 0, "audio": 0}
@@ -1877,6 +1889,10 @@ def main() -> int:
     ap.add_argument("--rank", type=int, default=16)
     ap.add_argument("--alpha", type=int, default=16)
     ap.add_argument("--eval-every", type=int, default=26, help="optimizer steps between dev evals (~4 per epoch)")
+    ap.add_argument("--dev-text-max", type=int, default=0,
+                    help="cap the TEXT dev rows every eval uses (a deterministic, evenly spread subsample; 0 = all). "
+                         "Image and audio dev rows are never cut. A dev eval costs about a third of a train token per "
+                         "row, so on one A6000 a 600-row text dev set is ~35 min per eval (a6000/README.md)")
     ap.add_argument("--qlora", action="store_true", help="4-bit NF4 base (for a 24 GB GPU); merge stays bf16")
     ap.add_argument("--overfit-steps", type=int, default=15, help="smoke: steps for the 2-row overfit check")
     ap.add_argument("--smoke-rows", type=int, default=8)

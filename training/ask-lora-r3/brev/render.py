@@ -567,6 +567,9 @@ def main() -> int:
                     help="r3: the audio agent's audio_rows.jsonl (clips are read relative to its folder); renders "
                          "audio_train.jsonl / audio_dev.jsonl and packs the clips under audio/")
     ap.add_argument("--out", default=str(HERE / "ask-lora-data.zip"))
+    ap.add_argument("--upload-json", metavar="PATH",
+                    help="where to record the zip's sha256 and stats (default: upload-zip.json next to this file, "
+                         "which a round other than r3 must not overwrite)")
     a = ap.parse_args()
     tpl = Path(a.model) / "chat_template.jinja"
     sha = template_sha(a.model)
@@ -674,12 +677,13 @@ def main() -> int:
                    json.dumps(manifest, indent=1, sort_keys=True), zipfile.ZIP_DEFLATED)
     os.replace(tmp, a.out)
     zsha = hashlib.sha256(Path(a.out).read_bytes()).hexdigest()
-    (HERE / "upload-zip.json").write_text(json.dumps({"file": Path(a.out).name, "sha256": zsha,
-                                                      "bytes": Path(a.out).stat().st_size, **stats}, indent=1) + "\n")
+    upload_json = Path(a.upload_json) if a.upload_json else HERE / "upload-zip.json"
+    upload_json.write_text(json.dumps({"file": Path(a.out).name, "sha256": zsha,
+                                       "bytes": Path(a.out).stat().st_size, **stats}, indent=1) + "\n")
     print(json.dumps(stats))
     print("render parity on the Mac:", json.dumps(parity_report) if parity_report
           else "not requested (Gemma is the only target; --parity-model checks another pinned template)")
-    print(f"{a.out}: sha256 {zsha} (recorded in brev/upload-zip.json; pass it to `run.sh unpack`)")
+    print(f"{a.out}: sha256 {zsha} (recorded in {upload_json}; pass it to `run.sh unpack`)")
     return 0
 
 

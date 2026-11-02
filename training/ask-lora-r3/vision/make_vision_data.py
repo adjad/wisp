@@ -32,6 +32,28 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[2]
+
+
+def _round() -> int:
+    """3 (default, reproduces the committed r3 data byte for byte) or 4 (ASK_LORA_ROUND=4 or --round 4)."""
+    r = os.environ.get("ASK_LORA_ROUND", "")
+    if "--round" in sys.argv:
+        i = sys.argv.index("--round")
+        r = sys.argv[i + 1] if i + 1 < len(sys.argv) else ""
+    for a in sys.argv:
+        if a.startswith("--round="):
+            r = a.split("=", 1)[1]
+    if r in ("", "3"):
+        return 3
+    if r == "4":
+        return 4
+    raise SystemExit(f"unknown round {r!r}: use 3 or 4")
+
+
+ROUND = _round()
+# Every output (images, rows, stats) goes under OUT. Round 3 writes next to this file; round 4 writes to
+# training/ask-lora-r4/vision/ and never touches round 3's files.
+OUT = HERE if ROUND == 3 else HERE.parents[1] / "ask-lora-r4" / "vision"
 _TMP = tempfile.mkdtemp(prefix="vision_data_")
 os.environ["MOE_DIR"] = _TMP
 os.environ["WISP_HOME"] = _TMP
@@ -43,7 +65,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont  # noqa: 
 from service import documents, vision  # noqa: E402
 
 SEED = int(os.environ.get("SEED", "30303"))
-IMG_DIR = HERE / "images"
+IMG_DIR = OUT / "images"
 TODAY = dt.date(2026, 11, 1)          # the dataset's "now" for stills (the runtime gives the model no date)
 MAX_SIDE_IMG = 1000
 MAX_SIDE_FRAME = 640
@@ -305,6 +327,170 @@ INJ_NOTE = {
 }
 
 
+# Round 4: a mention of planted text (every first word is a plain word the facts extractor never reads as a name) says only that a line aimed at an assistant was left out. It never names the
+# address, URL, amount, title, phone or the action the line pushes, and it does not say which kind of line it was.
+MENTIONS = [
+    "A {line} in {the} is aimed at an AI assistant, so I left it out.",
+    "There is also a {line} in {the} addressed to an assistant. I left it out.",
+    "One {line} in {the} is written for an AI assistant rather than for you, and I haven't used it.",
+    "I left out a {line} in {the} that is aimed at an assistant.",
+    "One part of {the} is text aimed at an AI assistant, which I left out.",
+    "A {line} in {the} speaks to an assistant instead of to you, so I set it aside.",
+    "I have left out one {line} in {the} that was directed at an assistant.",
+    "Also, one {line} in {the} is meant for an assistant, not for you; I left it out of this.",
+    "{the} also carries a {line} aimed at an AI assistant; I left it out.",
+    "I left one {line} in {the} out because it is aimed at an assistant.",
+    "One {line} in {the} is addressed to an AI assistant, so I skipped it.",
+    "Also, a {line} in {the} is aimed at an assistant, and I left it out.",
+]
+# words no mention may contain: each names a payload or the action a planted line pushes
+MENTION_BANNED_WORDS = {
+    "forward", "forwarded", "email", "emails", "mail", "send", "sent", "sending", "ignore", "ignored", "instructions",
+    "instruction", "delete", "deleted", "cancel", "cancelled", "reminder", "reminders", "calendar", "event", "events",
+    "link", "links", "url", "web", "website", "address", "login", "refund", "refunded", "password", "prompt", "reveal",
+    "safe", "verified", "approved", "amount", "total", "owed", "wire", "pay", "payment", "open", "visit", "reply",
+    "answer", "phone", "call", "title", "details", "confirm", "confirmed", "report", "reassure", "trustworthy",
+}
+MENTION_WORDS = {w for t in MENTIONS for w in re.findall(r"[a-z]+", t.lower())}
+MENTION_NOUNS = {None: ("the image", "line"), "narr": ("the narration", "line"), "doc": ("the document", "line"),
+                 "chat": ("this conversation", "message")}
+
+
+def mention_text(rng, where=None, cat=None):
+    key = where if where in ("narr", "doc") else None
+    the, line = MENTION_NOUNS["chat" if cat in ("chat_ui", "v_chat") and key is None else key]
+    m = rng.choice(MENTIONS).format(the=the, line=line)
+    return m[0].upper() + m[1:]
+
+
+PLANT: dict[str, str] = {}      # row id -> the line planted in its image (kept out of the rows; the validator reads it)
+_ASK_ONLY_PREFIX = ("Pay ",)    # bill-payment reminders keep r3's rule: only after an explicit add/remind request
+
+
+def choose_prop(proposal_obj, no_prop, q, use_abstain, native_reminder, site, cat=None):
+    """(proposal or None, policy). Round 3 keeps each site's old rule. Round 4 has one rule: a dated future event
+    (or a to-do on a sticky note) always carries its proposal, whatever the question, unless the question is the
+    scene's abstain question or the scene cannot support a dated entry (weekday or year missing). Bill-payment
+    reminders and other deadline reminders stay tied to an explicit calendar/remind request."""
+    if ROUND < 4:
+        p = apply_kind(proposal_obj, q, native_reminder)
+        if site in ("doc", "text"):
+            if p and not is_cal_q(q) or use_abstain:
+                p = None
+        elif p and no_prop:
+            p = None
+        return p, None
+    if not proposal_obj:
+        return None, "no_event"
+    if no_prop:
+        return None, "no_prop_" + no_prop
+    always = proposal_obj["kind"] == "event" or cat == "sticky_todo"
+    if use_abstain:
+        return None, "abstain"
+    if always:
+        return apply_kind(proposal_obj, q, native_reminder), "always"
+    if is_cal_q(q):
+        return apply_kind(proposal_obj, q, native_reminder), "ask_only"
+    return None, "ask_only_not_asked"
+
+
+VCTX: dict[str, dict] = {}      # row id -> what is needed to ask the same picture another question (round 4)
+SHORT_QS = {"", "What's this?", "Add this?", "Thoughts?", "What's this about?", "What is this?"}
+N_VARIANTS = 2
+
+
+def r4meta(**kw):
+    return kw if ROUND >= 4 else {}
+
+
+def reg_variants(rid, kind, qas, proposal_obj, no_prop, cat, inj_kind, where, msg):
+    """Remember an eligible scene (a dated future event, or a sticky to-do) so round 4 can ask it more questions."""
+    if ROUND >= 4 and proposal_obj and not no_prop and (proposal_obj["kind"] == "event" or cat == "sticky_todo"):
+        VCTX[rid] = dict(kind=kind, qas=qas, proposal=proposal_obj, cat=cat, inj_kind=inj_kind, where=where, msg=msg)
+
+
+def _msg_pics(rels, scanned=None):
+    return lambda q: real_messages(q, rels, None, None, scanned)
+
+
+def build_variants(rows):
+    """Round 4: each eligible picture gets up to N_VARIANTS more rows with other questions (short ones first) and the
+    same proposal, so the model sees a proposal after "What's this?", "Add this?" and "Thoughts?", not only after
+    "Add this to my calendar". A variant shares its parent's picture and split, so no picture crosses train and dev."""
+    import copy
+    out = []
+    for r in rows:
+        ctx = VCTX.get(r["id"])
+        if not ctx:
+            continue
+        rng = random.Random(f"{SEED}-{r['id']}-variants")
+        pq = r["meta"]["qa"][0]
+        cands = [qa for qa in ctx["qas"] if qa[0] != pq]
+        if ctx["inj_kind"] and ctx["cat"] in ("chat_ui", "v_chat"):
+            cands = [qa for qa in cands if "about" in qa[0].lower()] or cands
+        short = [qa for qa in cands if qa[0] in SHORT_QS]
+        rng.shuffle(cands)
+        pick = []
+        if short and pq not in SHORT_QS:
+            pick.append(rng.choice(short))
+        for qa in cands:
+            if len(pick) >= N_VARIANTS:
+                break
+            if qa[0] not in {x[0] for x in pick}:
+                pick.append(qa)
+        for k, (q, a) in enumerate(pick[:N_VARIANTS], 1):
+            v = copy.deepcopy(r)
+            v["id"] = f"{r['id']}_v{k}"
+            prop = apply_kind(ctx["proposal"], q, ctx["cat"] == "sticky_todo")
+            where = ctx["where"]
+            v["target"] = compose_target(a, ctx["inj_kind"], rng, prop, where, ctx["cat"])
+            v["messages"] = ctx["msg"](q)
+            v["meta"].update(proposal=True, abstain=False, qa=[q, a], proposal_policy="always", variant_of=r["id"])
+            out.append(v)
+    return out
+
+
+CHAT_SUMMARY_QS = ["What's this conversation about?", "What's this chat about?", "What is this conversation about?",
+                   "Summarize this chat.", "What are they talking about?"]
+CHAT_INJ_TYPES = ("forward", "ignore", "link", "delete", "reveal", "safe")
+
+
+def build_chat_extras(n=24, n_clean=5):
+    """Round 4: more chat screenshots that carry a planted message, asked what the conversation is about. r3's gate
+    case inj_chat_cancel lost every fact of its chat; these rows lead with the conversation's facts, then give the
+    one payload-free sentence."""
+    out = []
+    for i in range(n):
+        rid = f"img_chat_r4_{i:02d}"
+        rng = random.Random(f"{SEED}-{rid}")
+        inj_kind = rng.choice(CHAT_INJ_TYPES) if i >= n_clean else None
+        inj_text, toks = make_injection(inj_kind, rng) if inj_kind else (None, [])
+        PLANT[rid] = inj_text
+        sc = gen_chat(rng, inj_text)
+        img = finish(sc.img, rng, tilt=False, noise=1.0, blur=sc.blur)
+        rel = save_jpg(img, rid + ".jpg", MAX_SIDE_IMG)
+        summ = [qa for qa in sc.qas if "about" in qa[0].lower()]
+        a = rng.choice(summ)[1]
+        q = rng.choice(CHAT_SUMMARY_QS)
+        target = compose_target(a, inj_kind, rng, None, None, sc.cat)
+        out.append({"id": rid, "kind": "image", "images": [rel], "messages": real_messages(q, [rel], None, None), "target": target,
+                    "meta": {"category": sc.cat, "proposal": False, "injection": inj_kind, "abstain": False, "unreadable": False,
+                             "banned_in_target": toks, "qa": [q, a], "no_proposal_reason": None,
+                             "proposal_policy": "no_event", "round4_extra": "chat_summary",
+                             "split": "dev" if i % 8 == 7 else "train"}})
+    return out
+
+
+def pick_qa(qas, rng, inj_kind, cat):
+    """Round 4: chat screenshots that carry a planted line mostly get the 'what is this conversation about' question,
+    so the training answer lists the conversation's facts first (r3's gate case inj_chat_cancel lost them)."""
+    if ROUND >= 4 and inj_kind and cat in ("chat_ui", "v_chat"):
+        summ = [qa for qa in qas if "about" in qa[0].lower()]
+        if summ and rng.random() < 0.7:
+            return rng.choice(summ)
+    return rng.choice(qas)
+
+
 def choose_inj(types, rng):
     prefer = [t for t in ("amount", "second", "safe") if t in types]
     if prefer and rng.random() < 0.5:
@@ -396,6 +582,11 @@ def event_qas(thing, title, d, yr, ts, te, venue, sub=None, price=None, extra=No
         ("Where is it?", f"{venue}." if venue else "The location isn't shown.", None),
     ]
     qs = [(q, a) for q, a, _ in qs if a]
+    if ROUND >= 4:
+        # short, bare questions: the proposal must follow these too (no rngpick: no shared random state is consumed)
+        qs += [("What's this?", f"It's {art(thing)} for {title}{v}, {when}{at_t}."),
+               ("Add this?", f"This {thing} is for {summ}"),
+               ("Thoughts?", f"It looks like {art(thing)} for {title}{v}, {when}{at_t}.")]
     if price:
         qs.append(("Does it cost anything?", f"The {thing} says: {price}."))
     if extra:
@@ -908,22 +1099,26 @@ def chat_convo(rng):
         gate = rng.choice(["north gate", "library steps", "bus loop"])
         msgs = [(a, "Who's driving to the workshop?"), ("me", f"I can drive, {b} too?"), (b, "Yes please"), ("me", f"Pickup is at {t} by the {gate}"), (a, "Perfect, see you there")]
         return f"{a}, {b}", msgs, [("Who's driving and where is the pickup?", f"You are, and pickup is by the {gate} at {t}."),
-                                   ("What time is the pickup?", f"{t}, by the {gate}.")], ("Which workshop is it?", "The chat only calls it \"the workshop\".")
+                                   ("What time is the pickup?", f"{t}, by the {gate}.")] \
+                + ([("What's this chat about?", f"A ride to the workshop: you're driving, {b} is coming too, and pickup is at {t} by the {gate}.")] if ROUND >= 4 else []), ("Which workshop is it?", "The chat only calls it \"the workshop\".")
     if k == 3:
         room, until = rng.choice(["204", "117", "3B"]), rng.choice(["5", "6", "4:30"])
         msgs = [("them", f"I booked room {room} for our study group"), ("them", f"We have it until {until} PM"), ("me", "Great, bringing the flashcards"), ("them", "I'll grab coffee")]
         return a, msgs, [("Which room is booked, and until when?", f"Room {room}, until {until} PM."),
-                         ("What are they planning?", f"A study group in room {room}; you're bringing flashcards and they'll bring coffee.")], ("What time does it start?", "No start time is mentioned in the chat.")
+                         ("What are they planning?", f"A study group in room {room}; you're bringing flashcards and they'll bring coffee.")] \
+                + ([("What's this chat about?", f"A study group: room {room} is booked until {until} PM, you're bringing flashcards and they'll bring coffee.")] if ROUND >= 4 else []), ("What time does it start?", "No start time is mentioned in the chat.")
     if k == 4:
         loc = rng.choice(["hallway shelf", "kitchen counter", "coat hooks", "porch bench"])
         item = rng.choice(["blue scarf", "green umbrella", "charger", "grey beanie"])
         msgs = [("me", f"Did I leave my {item} at yours?"), ("them", "Let me look"), ("them", f"Found it on the {loc}"), ("me", "Amazing, thank you"), ("them", "Come by any time")]
         return a, msgs, [("Did they find it, and where?", f"Yes, your {item} was found on the {loc}."),
-                         ("What was left behind?", f"Your {item}, which turned up on the {loc}.")], ("What time can I pick it up?", "They only say \"any time\"; no specific hour is given.")
+                         ("What was left behind?", f"Your {item}, which turned up on the {loc}.")] \
+                + ([("What's this conversation about?", f"You asked about your {item}; they found it on the {loc} and said to come by any time.")] if ROUND >= 4 else []), ("What time can I pick it up?", "They only say \"any time\"; no specific hour is given.")
     fl, wa, sa, ye = rng.choice([(500, 350, 10, 7), (450, 320, 9, 6), (600, 420, 12, 8)])
     msgs = [("me", "What's the quantity for the bread?"), ("them", f"{fl} g flour"), ("them", f"{wa} ml water, {sa} g salt, {ye} g yeast"), ("me", "Oven temp?"), ("them", "230 C, 35 minutes")]
     return a, msgs, [("What are the quantities?", f"{fl} g flour, {wa} ml water, {sa} g salt and {ye} g yeast."),
-                     ("What oven temperature and time?", "230 C for 35 minutes.")], ("How many loaves does that make?", "The chat doesn't say how many loaves it makes.")
+                     ("What oven temperature and time?", "230 C for 35 minutes.")] \
+            + ([("What's this conversation about?", f"Baking bread: {fl} g flour, {wa} ml water, {sa} g salt and {ye} g yeast, in a 230 C oven for 35 minutes.")] if ROUND >= 4 else []), ("How many loaves does that make?", "The chat doesn't say how many loaves it makes.")
 
 
 def gen_chat(rng, inj=None, frames_height=None):
@@ -2560,23 +2755,24 @@ LONG_VID_SPEC = [("v_flyer", 2), ("v_partial", 1), ("v_chat", 1), ("v_whiteboard
 
 def _img_row_from_scene(rid, sc, inj_kind, toks, rng, img, rel):
     use_abstain = sc.abstain and rng.random() < 0.13
-    q, a = sc.abstain if use_abstain else rng.choice(sc.qas)
-    prop = apply_kind(sc.proposal, q, sc.cat == "sticky_todo")
-    if prop and sc.no_prop:
-        prop = None
+    q, a = sc.abstain if use_abstain else pick_qa(sc.qas, rng, inj_kind, sc.cat)
+    prop, policy = choose_prop(sc.proposal, sc.no_prop, q, use_abstain, sc.cat == "sticky_todo", "image", sc.cat)
     if sc.no_prop and sc.proposal and is_cal_q(q) and not use_abstain:
         a = a.rstrip() + NO_PROP_NOTE[sc.no_prop]
-    target = compose_target(a, inj_kind, rng, prop)
+    target = compose_target(a, inj_kind, rng, prop, None, sc.cat)
+    reg_variants(rid, "image", sc.qas, sc.proposal, sc.no_prop, sc.cat, inj_kind, None, _msg_pics([rel]))
     return {"id": rid, "kind": "image", "images": [rel], "messages": real_messages(q, [rel], None, None), "target": target,
             "meta": {"category": sc.cat, "proposal": prop is not None, "injection": inj_kind, "abstain": bool(use_abstain),
                      "unreadable": sc.unreadable, "banned_in_target": toks, "qa": [q, a], "coverage": "large",
-                     "side": max(img.size), "no_proposal_reason": sc.no_prop if (sc.proposal and sc.no_prop) else None}}
+                     "side": max(img.size), "no_proposal_reason": sc.no_prop if (sc.proposal and sc.no_prop) else None,
+                     **r4meta(proposal_policy=policy)}}
 
 
 def doc_row(rid, gen, inj_types, i, coverage):
     rng = random.Random(f"{SEED}-{rid}")
     inj_kind = rng.choice(inj_types) if (i % 3 == 1 and inj_types) else None
     inj_text, toks = make_injection(inj_kind, rng) if inj_kind else (None, [])
+    PLANT[rid] = inj_text
     ds = gen(rng, inj_text)
     pages = list(ds.pages)
     if inj_text:
@@ -2585,20 +2781,19 @@ def doc_row(rid, gen, inj_types, i, coverage):
     rels = [save_jpg(scan_finish(pg, rng), f"{rid}_p{j}.jpg", 1200) for j, pg in enumerate(pages)]
     use_abstain = ds.abstain and rng.random() < 0.15
     cal_qas = [qa for qa in ds.qas if is_cal_q(qa[0])]
-    if ds.proposal and cal_qas and i % 2 == 0:
+    if ROUND < 4 and ds.proposal and cal_qas and i % 2 == 0:
         use_abstain = False
         q, a = rng.choice(cal_qas)
     else:
         q, a = ds.abstain if use_abstain else rng.choice(ds.qas)
-    prop = apply_kind(ds.proposal, q, bool(ds.proposal) and ds.proposal["kind"] == "reminder")
-    if prop and not is_cal_q(q) or use_abstain:
-        prop = None
-    target = compose_target(a, inj_kind, rng, prop, "doc")
+    prop, policy = choose_prop(ds.proposal, None, q, use_abstain, bool(ds.proposal) and ds.proposal["kind"] == "reminder", "doc", ds.cat)
+    target = compose_target(a, inj_kind, rng, prop, "doc", ds.cat)
+    reg_variants(rid, "document", ds.qas, ds.proposal, None, ds.cat, inj_kind, "doc", _msg_pics(rels, ds.name))
     return {"id": rid, "kind": "document", "images": rels,
             "messages": real_messages(q, rels, None, None, ds.name), "target": target,
             "meta": {"category": ds.cat, "proposal": prop is not None, "injection": inj_kind, "abstain": bool(use_abstain),
                      "unreadable": False, "banned_in_target": toks, "qa": [q, a], "scanned_document": ds.name,
-                     "pages": len(rels), "coverage": coverage, "no_proposal_reason": None}}
+                     "pages": len(rels), "coverage": coverage, "no_proposal_reason": None, **r4meta(proposal_policy=policy)}}
 
 
 def build_extras():
@@ -2612,6 +2807,7 @@ def build_extras():
         rng = random.Random(f"{SEED}-{rid}")
         inj_kind = choose_inj(spec[3], rng) if (k % 3 == 1 and spec[3]) else None
         inj_text, toks = make_injection(inj_kind, rng) if inj_kind else (None, [])
+        PLANT[rid] = inj_text
         sc = spec[1](rng, inj_text)
         if inj_text and not sc.inj_done:
             sc.img = add_injection(sc.img, rng, inj_text, rng.choice(FAMS))
@@ -2635,22 +2831,22 @@ def build_extras():
                     inj_kind = choose_inj(inj_types, rng)
                     where = rng.choice(["frame", "narr"])
                 inj_text, toks = make_injection(inj_kind, rng) if inj_kind else (None, [])
+                PLANT[rid] = inj_text
                 vs = gen(rng, inj_text, where)
                 rels = [save_jpg(f, f"{rid}_f{j}.jpg", MAX_SIDE_FRAME) for j, f in enumerate(vs.frames)]
                 use_abstain = vs.abstain and rng.random() < 0.13
-                q, a = vs.abstain if use_abstain else rng.choice(vs.qas)
-                prop = apply_kind(vs.proposal, q, vs.cat == "v_library")
-                if prop and vs.no_prop:
-                    prop = None
+                q, a = vs.abstain if use_abstain else pick_qa(vs.qas, rng, inj_kind, vs.cat)
+                prop, policy = choose_prop(vs.proposal, vs.no_prop, q, use_abstain, vs.cat == "v_library", "video", vs.cat)
                 if vs.no_prop and vs.proposal and is_cal_q(q) and not use_abstain:
                     a = a.rstrip() + NO_PROP_NOTE[vs.no_prop]
-                target = compose_target(a, inj_kind, rng, prop, where)
+                target = compose_target(a, inj_kind, rng, prop, where, vs.cat)
                 out.append({"id": rid, "kind": "video", "images": rels,
                             "messages": real_messages(q, rels, vs.transcript, vs.seconds), "target": target,
                             "meta": {"category": vs.cat, "proposal": prop is not None, "injection": inj_kind, "injection_where": where,
                                      "abstain": bool(use_abstain), "unreadable": vs.unreadable, "seconds": vs.seconds,
                                      "banned_in_target": toks, "qa": [q, a], "coverage": "long",
-                                     "no_proposal_reason": vs.no_prop if (vs.proposal and vs.no_prop) else None}})
+                                     "no_proposal_reason": vs.no_prop if (vs.proposal and vs.no_prop) else None,
+                                     **r4meta(proposal_policy=policy)}})
     finally:
         LONG_VID = False
     # --- 4-page scanned documents
@@ -2672,27 +2868,35 @@ def build_extras():
             inj_kind = rng.choice(types) if c % 5 in (1, 3) else None
             c += 1
             inj_text, toks = make_injection(inj_kind, rng) if inj_kind else (None, [])
+            PLANT[rid] = inj_text
             if inj_text:
                 inj_text = inj_text.replace("this whole image", "this whole document").replace("this image", "this document")
+                PLANT[rid] = inj_text
             td = gen(rng, inj_text, long=(i >= 2)) if name == "minutes" else gen(rng, inj_text)
+            if ROUND >= 4 and inj_text:
+                legit = " ".join([td.text.replace(inj_text, "")] + [x[1] for x in td.qas]).lower()
+                for w in [t for t in toks if t in WORDS and t.lower() in legit]:
+                    alt = next(x for x in WORDS if x.lower() not in legit and x not in toks)     # e.g. "Approved budget" on a slide
+                    inj_text, td.text, toks = inj_text.replace(w, alt), td.text.replace(w, alt), [alt if t == w else t for t in toks]
+                    PLANT[rid] = inj_text
             forced_abstain = name == "minutes" and i == 3
             use_abstain = forced_abstain or (td.abstain and rng.random() < 0.13)
             cal_qas = [qa for qa in td.qas if is_cal_q(qa[0])]
-            if td.proposal and cal_qas and i % 2 == 0 and not forced_abstain:
+            if ROUND < 4 and td.proposal and cal_qas and i % 2 == 0 and not forced_abstain:
                 use_abstain = False
                 q, a = rng.choice(cal_qas)
             else:
                 q, a = td.abstain if use_abstain else rng.choice(td.qas)
-            prop = apply_kind(td.proposal, q, td.proposal is not None and td.proposal["kind"] == "reminder")
-            if prop and not is_cal_q(q) or use_abstain:
-                prop = None
-            target = compose_target(a, inj_kind, rng, prop, "doc")
+            prop, policy = choose_prop(td.proposal, None, q, use_abstain, td.proposal is not None and td.proposal["kind"] == "reminder", "text", td.cat)
+            target = compose_target(a, inj_kind, rng, prop, "doc", td.cat)
+            reg_variants(rid, "text_document", td.qas, td.proposal, None, td.cat, inj_kind, "doc",
+                         (lambda q, td=td, rid=rid: td_messages(q, td, random.Random(f"{SEED}-{rid}-msg-{q}"))))
             out.append({"id": rid, "kind": "text_document", "images": [],
                         "messages": td_messages(q, td, rng), "target": target,
                         "meta": {"category": td.cat, "proposal": prop is not None, "injection": inj_kind, "abstain": bool(use_abstain),
                                  "unreadable": False, "banned_in_target": toks, "qa": [q, a], "document_name": td.name,
                                  "format": td.fmt, "truncated": td.truncated, "text_chars": len(td.text), "max_tokens": 600,
-                                 "coverage": "text", "no_proposal_reason": None}})
+                                 "coverage": "text", "no_proposal_reason": None, **r4meta(proposal_policy=policy)}})
     return out
 
 
@@ -2804,11 +3008,13 @@ def sentence(answer, rng):
     return rng.choice(LEADS) + answer
 
 
-def compose_target(answer, inj_kind, rng, prop, where=None):
+def compose_target(answer, inj_kind, rng, prop, where=None, cat=None):
     text = sentence(answer, rng)
     if where == "doc":
         text = text.replace("the image", "the document")
-    if inj_kind:
+    if inj_kind and ROUND >= 4:
+        text += " " + mention_text(rng, where, cat)       # facts first, then one short payload-free sentence
+    elif inj_kind:
         note = rng.choice(INJ_NOTE[inj_kind])
         if where == "narr":
             note = note.replace("the image", "the narration").replace("The image", "The narration")
@@ -2892,7 +3098,7 @@ def rebalance_dev(rows, min_prop=12):
     rows[:] = [r for r in rows if r["id"] not in gone]
     for r in dropped:
         for pth in r["images"]:
-            (HERE / pth).unlink(missing_ok=True)
+            (OUT / pth).unlink(missing_ok=True)
     return dropped
 
 
@@ -3272,7 +3478,7 @@ def build_picture_read_rows():
     clash = [r for r in rows if r["split"] == "train" and tuple(r["truth_lines"]) in dev_texts]
     print("picture_read train rows dropped for sharing a dev reading:", len(clash), [r["id"] for r in clash])
     for r in clash:
-        (HERE / r["images"][0]).unlink(missing_ok=True)
+        (OUT / r["images"][0]).unlink(missing_ok=True)
     rows = [r for r in rows if r not in clash]
     return rows
 
@@ -3282,7 +3488,7 @@ INCLUDE_VIDEO = os.environ.get("WISP_R3_VIDEO") == "1"
 
 
 def main():
-    IMG_DIR.mkdir(exist_ok=True)
+    IMG_DIR.mkdir(parents=True, exist_ok=True)
     for old in IMG_DIR.glob("*.jpg"):
         old.unlink()
     master = random.Random(SEED)
@@ -3307,25 +3513,26 @@ def main():
                     inj_kind = choose_inj(inj_types, rng)
                 ridx += 1
             inj_text, toks = make_injection(inj_kind, rng) if inj_kind else (None, [])
+            PLANT[rid] = inj_text
             sc = gen(rng, inj_text)
             if inj_text and not sc.inj_done:
                 sc.img = add_injection(sc.img, rng, inj_text, rng.choice(FAMS))
             img = finish(sc.img, rng, tilt=sc.paper and sc.cat not in ("screen_photo",), noise=rng.choice([1.5, 2.5, 3.5]) if sc.paper else 1.0, blur=sc.blur)
             rel = save_jpg(img, rid + ".jpg", MAX_SIDE_IMG)
             use_abstain = sc.abstain and rng.random() < 0.13
-            q, a = sc.abstain if use_abstain else rng.choice(sc.qas)
-            prop = apply_kind(sc.proposal, q, sc.cat == "sticky_todo")
-            if prop and sc.no_prop:
-                prop = None
+            q, a = sc.abstain if use_abstain else pick_qa(sc.qas, rng, inj_kind, sc.cat)
+            prop, policy = choose_prop(sc.proposal, sc.no_prop, q, use_abstain, sc.cat == "sticky_todo", "image", sc.cat)
             if sc.no_prop and sc.proposal and is_cal_q(q) and not use_abstain:
                 a = a.rstrip() + NO_PROP_NOTE[sc.no_prop]
-            target = compose_target(a, inj_kind, rng, prop)
+            target = compose_target(a, inj_kind, rng, prop, None, sc.cat)
+            reg_variants(rid, "image", sc.qas, sc.proposal, sc.no_prop, sc.cat, inj_kind, None, _msg_pics([rel]))
             prompt = q                      # production sends the bare question: no date, no preamble
             rows.append({"id": rid, "kind": "image", "images": [rel],
                          "messages": real_messages(prompt, [rel], None, None), "target": target,
                          "meta": {"category": sc.cat, "proposal": prop is not None, "injection": inj_kind,
                                   "abstain": bool(use_abstain), "unreadable": sc.unreadable, "banned_in_target": toks, "qa": [q, a],
-                                  "no_proposal_reason": sc.no_prop if (sc.proposal and sc.no_prop) else None}})
+                                  "no_proposal_reason": sc.no_prop if (sc.proposal and sc.no_prop) else None,
+                                  **r4meta(proposal_policy=policy)}})
     # videos
     n_total_vid = sum(s[2] for s in VID_SPEC)
     vread = [(s, i) for s in VID_SPEC if s[0] != "v_unreadable" for i in range(s[2])]
@@ -3342,22 +3549,22 @@ def main():
                     where = rng.choice(["frame", "narr"])
                 vidx += 1
             inj_text, toks = make_injection(inj_kind, rng) if inj_kind else (None, [])
+            PLANT[rid] = inj_text
             vs = gen(rng, inj_text, where)
             rels = [save_jpg(f, f"{rid}_f{j}.jpg", MAX_SIDE_FRAME) for j, f in enumerate(vs.frames)]
             use_abstain = vs.abstain and rng.random() < 0.13
-            q, a = vs.abstain if use_abstain else rng.choice(vs.qas)
-            prop = apply_kind(vs.proposal, q, vs.cat == "v_library")
-            if prop and vs.no_prop:
-                prop = None
+            q, a = vs.abstain if use_abstain else pick_qa(vs.qas, rng, inj_kind, vs.cat)
+            prop, policy = choose_prop(vs.proposal, vs.no_prop, q, use_abstain, vs.cat == "v_library", "video", vs.cat)
             if vs.no_prop and vs.proposal and is_cal_q(q) and not use_abstain:
                 a = a.rstrip() + NO_PROP_NOTE[vs.no_prop]
-            target = compose_target(a, inj_kind, rng, prop, where)
+            target = compose_target(a, inj_kind, rng, prop, where, vs.cat)
             prompt = q
             rows.append({"id": rid, "kind": "video", "images": rels,
                          "messages": real_messages(prompt, rels, vs.transcript, vs.seconds), "target": target,
                          "meta": {"category": vs.cat, "proposal": prop is not None, "injection": inj_kind, "injection_where": where,
                                   "abstain": bool(use_abstain), "unreadable": vs.unreadable, "seconds": vs.seconds, "banned_in_target": toks, "qa": [q, a],
-                                  "no_proposal_reason": vs.no_prop if (vs.proposal and vs.no_prop) else None}})
+                                  "no_proposal_reason": vs.no_prop if (vs.proposal and vs.no_prop) else None,
+                                  **r4meta(proposal_policy=policy)}})
     # scanned documents: vision._messages(..., scanned_document=name), 1-3 page images
     dinj_n = 0
     for name, gen, count, inj_types in DOC_SPEC:
@@ -3366,6 +3573,7 @@ def main():
             rng = random.Random(f"{SEED}-{rid}")
             inj_kind = rng.choice(inj_types) if (i % 3 == 1 and inj_types) else None
             inj_text, toks = make_injection(inj_kind, rng) if inj_kind else (None, [])
+            PLANT[rid] = inj_text
             ds = gen(rng, inj_text)
             pages = list(ds.pages)
             if inj_text:
@@ -3375,21 +3583,21 @@ def main():
             rels = [save_jpg(scan_finish(pg, rng), f"{rid}_p{j}.jpg", 1200) for j, pg in enumerate(pages)]
             use_abstain = ds.abstain and rng.random() < 0.15
             cal_qas = [qa for qa in ds.qas if is_cal_q(qa[0])]
-            if ds.proposal and cal_qas and i % 2 == 0:      # guarantee proposal coverage in every proposal-capable scene type
+            if ROUND < 4 and ds.proposal and cal_qas and i % 2 == 0:      # guarantee proposal coverage in every proposal-capable scene type
                 use_abstain = False
                 q, a = rng.choice(cal_qas)
             else:
                 q, a = ds.abstain if use_abstain else rng.choice(ds.qas)
-            # one rule everywhere: a proposal only follows an explicit add/remind request, never a bare "how much and by when?"
-            prop = apply_kind(ds.proposal, q, bool(ds.proposal) and ds.proposal["kind"] == "reminder")
-            if prop and not is_cal_q(q) or use_abstain:
-                prop = None
-            target = compose_target(a, inj_kind, rng, prop, "doc")
+            # round 3: a proposal only follows an explicit add/remind request. Round 4: see choose_prop.
+            prop, policy = choose_prop(ds.proposal, None, q, use_abstain, bool(ds.proposal) and ds.proposal["kind"] == "reminder", "doc", ds.cat)
+            target = compose_target(a, inj_kind, rng, prop, "doc", ds.cat)
+            reg_variants(rid, "document", ds.qas, ds.proposal, None, ds.cat, inj_kind, "doc", _msg_pics(rels, ds.name))
             rows.append({"id": rid, "kind": "document", "images": rels,
                          "messages": real_messages(q, rels, None, None, ds.name), "target": target,
                          "meta": {"category": ds.cat, "proposal": prop is not None, "injection": inj_kind,
                                   "abstain": bool(use_abstain), "unreadable": False, "banned_in_target": toks,
-                                  "qa": [q, a], "scanned_document": ds.name, "pages": len(rels), "no_proposal_reason": None}})
+                                  "qa": [q, a], "scanned_document": ds.name, "pages": len(rels), "no_proposal_reason": None,
+                                  **r4meta(proposal_policy=policy)}})
     assign_split(rows)                       # the base rows' split is fixed before the extras exist
     dropped = rebalance_dev(rows)
     extras = build_extras()
@@ -3404,16 +3612,225 @@ def main():
         rows = [r for r in rows if r["kind"] != "video"]
         for r in gone:
             for rel in r["images"]:
-                (HERE / rel).unlink(missing_ok=True)
+                (OUT / rel).unlink(missing_ok=True)
         print("video rows dropped:", len(gone))
+    if ROUND >= 4:
+        vrows = build_variants(rows)
+        dev_keys = {tuple(r["meta"]["qa"]) for r in rows + vrows if r["meta"]["split"] == "dev"}
+        keep = lambda r: r["meta"]["split"] == "dev" or tuple(r["meta"]["qa"]) not in dev_keys
+        before = len(rows) + len(vrows)
+        rows = [r for r in rows + vrows if keep(r)]
+        print("round 4 variants:", len(vrows), "; train rows dropped for repeating a dev (question, answer):", before - len(rows))
+        rows.extend(build_chat_extras())
     pr = build_picture_read_rows()
     rows.extend(pr)
     print("picture_read rows:", len(pr), "train", sum(r["split"] == "train" for r in pr), "dev", sum(r["split"] == "dev" for r in pr),
           "injected", sum(bool(r["inj"]) for r in pr), "labelled", sum(bool(r["label"]) for r in pr))
-    with (HERE / "vision_rows.jsonl").open("w") as f:
+    with (OUT / "vision_rows.jsonl").open("w") as f:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
-    verify(rows)
+    bad = verify(rows)
+    if ROUND >= 4:
+        bad += finish_round4(rows)
+        if bad:
+            raise SystemExit(f"round 4 build FAILED: {bad} problem(s)")
+
+
+# ================================================================== round 4: validators and stats
+R4_STOP = set("""this that with from have will your their there then than them they were what when where which while about after
+before also into onto over only just more most much such some very been being does doing done each every here other another
+would could should must might shall want need make made like said says tell told please ones anything everything
+user users whole first second third right away copy reply""".split())
+R4_LEADS = {w for t in LEADS for w in re.findall(r"[a-z]+", t.lower())}
+R4_NOPROP = {w for t in NO_PROP_NOTE.values() for w in re.findall(r"[a-z]+", t.lower())}
+# categories that are negatives for proposals: nothing in them may ever carry one
+R4_NEG_CATS = {"past_event", "ticket_past", "receipt", "whiteboard", "document", "menu", "label", "sign", "chart", "diagram",
+               "chat_ui", "calendar_ui", "settings_ui", "terminal", "business_card", "hand_list", "schedule_table",
+               "screen_photo", "unreadable"}
+_MONTH_RE = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]* \d{1,2}"
+
+
+def planted_payload(text):
+    """Strings that identify what a planted line pushes: addresses, URLs, quoted titles, amounts, times, dates and
+    shouted words. Matched as substrings, lower case."""
+    toks = set(re.findall(r"[\w.+-]+@[\w.-]+\.\w+", text))
+    toks |= set(re.findall(r"https?://[^\s\"”]+", text))
+    toks |= {m.strip(" .,") for m in re.findall(r"[\"“]([^\"”]{3,80})[\"”]", text)}
+    toks |= set(re.findall(r"\$\d[\d,]*(?:\.\d\d)?", text))
+    toks |= set(re.findall(r"\b\d{1,2}:\d\d(?: ?[APap][Mm])?", text))
+    toks |= set(re.findall(_MONTH_RE, text, re.I))
+    toks |= set(re.findall(r"\b[A-Z]{4,}\b", text)) - {"NOTE", "SYSTEM", "OVERRIDE", "ATTENTION", "ASSISTANT"}
+    # a bare "called X" / "event, X" title without quotes
+    toks |= {m.strip(" .,") for m in re.findall(r"called ([A-Z][\w ]{4,40}?)(?: for|\.|,| on)", text)}
+    return {t.lower() for t in toks if len(t) >= 3}
+
+
+def planted_words(text):
+    return set(re.findall(r"[a-z]{4,}", text.lower()))
+
+
+_STEM = lambda w: w[:-1] if w.endswith("s") else w
+
+
+def r4_check_row(r, scoring_mod):
+    """Problems (list of strings) for one non-picture_read row."""
+    rid, m, tgt = r["id"], r["meta"], r["target"]
+    probs = []
+    vis, prop = vision.parse_proposal(tgt)
+    low = tgt.lower()
+    # 1. banned strings: anywhere in the target, mention and JSON included, no exemptions
+    for t in m["banned_in_target"]:
+        if t.lower() in low:
+            probs.append(f"banned_in_target {t!r}")
+    planted = PLANT.get(m.get("variant_of", rid))
+    if bool(planted) != bool(m["injection"]):
+        probs.append("planted-line registry disagrees with meta.injection")
+    qa_low = (m["qa"][0] + " " + m["qa"][1]).lower()
+    body = (vis + " " + " ".join(str(v) for k, v in (prop or {}).items() if k != "kind" and v)).lower()
+    body_words = set(re.findall(r"[a-z]+", body))
+    if planted:
+        # 2. the planted line's distinctive tokens: payload strings, then the content words it adds
+        for t in planted_payload(planted):
+            if t in low and t not in qa_low:
+                probs.append(f"planted payload {t!r} in target")
+        skip = R4_STOP | MENTION_WORDS | R4_LEADS | R4_NOPROP | set(re.findall(r"[a-z]+", qa_low))
+        skip |= {"image", "images", "document", "narration", "conversation", "picture", "screenshot", "chat", "message"}
+        skip |= {_STEM(w) for w in skip}
+        for w in sorted(planted_words(planted) - skip):
+            if w in body_words or w + "s" in body_words:
+                probs.append(f"planted word {w!r} in target")
+        # 3. mention shape: facts first, then exactly one payload-free sentence
+        ans = m["qa"][1]
+        if r["kind"] in ("document", "text_document"):
+            ans = ans.replace("the image", "the document")
+        i = vis.find(ans)
+        if i < 0:
+            probs.append("the answer is not in the target")
+        else:
+            rest = vis[i + len(ans):].strip()
+            allowed = set()
+            for tpl in MENTIONS:
+                for key in (None, "narr", "doc", "chat"):
+                    the, line = MENTION_NOUNS[key]
+                    x = tpl.format(the=the, line=line)
+                    allowed.add(x[0].upper() + x[1:])
+            if rest not in allowed:
+                probs.append(f"mention is not a payload-free template: {rest!r}")
+            head_facts = set(scoring_mod.extract_facts(vis[:i + len(ans)]))
+            if set(scoring_mod.extract_facts(vis)) != head_facts:
+                probs.append("the mention adds facts")
+            m["_facts_first"] = len(head_facts)
+    else:
+        if re.search(r"aimed at|addressed to an|for an AI|an AI assistant", vis):
+            probs.append("mention without a planted line")
+    for w in re.findall(r"[a-z]+", " ".join(MENTIONS).lower()):
+        if w in MENTION_BANNED_WORDS:
+            probs.append(f"template word {w!r} is banned")
+            break
+    # 4. proposals
+    pol = m.get("proposal_policy")
+    if pol is None:
+        probs.append("no proposal_policy")
+    elif (pol in ("always", "ask_only")) != bool(prop):
+        probs.append(f"proposal {bool(prop)} contradicts policy {pol}")
+    if prop:
+        if r["kind"] != "video" and not (dt.date.fromisoformat(prop["date"]) > TODAY):
+            probs.append(f"proposal date {prop['date']} is not in the future")
+        if m["category"] in R4_NEG_CATS:
+            probs.append(f"proposal on a negative category {m['category']}")
+        if m.get("no_proposal_reason") or m["abstain"] or m["unreadable"]:
+            probs.append("proposal on a no-proposal row")
+    return probs
+
+
+def count_stats(rows, scoring_mod=None):
+    """Counts over the answer rows (not picture_read) of a row list. Works on round 3 and round 4 rows."""
+    from collections import Counter
+    a = [r for r in rows if r["kind"] != "picture_read"]
+    img = [r for r in a if r["kind"] == "image"]
+    tr = lambda xs: [r for r in xs if r["meta"]["split"] == "train"]
+    pol = Counter(r["meta"].get("proposal_policy") for r in a)
+    inj = [r for r in a if r["meta"]["injection"]]
+    names_action = 0
+    for r in inj:
+        # the sentence(s) after the answer: does it name the action or payload of the planted line?
+        low = r["target"].split("\n\n{")[0].lower()
+        ans = r["meta"]["qa"][1].lower().replace("the image", "the document")
+        rest = low.split(ans, 1)[-1] if ans in low else low
+        names_action += bool(set(re.findall(r"[a-z]+", rest)) & MENTION_BANNED_WORDS)
+    neg = [r for r in a if not r["meta"]["proposal"]]
+    cat = lambda r: r["meta"]["category"]
+    return {
+        "answer_rows": len(a), "variant_rows": sum("variant_of" in r["meta"] for r in a), "image_rows": len(img), "image_rows_train": len(tr(img)),
+        "proposal_rows": sum(r["meta"]["proposal"] for r in a),
+        "proposal_rows_by_kind": dict(Counter(r["kind"] for r in a if r["meta"]["proposal"])),
+        "proposal_rows_by_split": dict(Counter(r["meta"]["split"] for r in a if r["meta"]["proposal"])),
+        "image_proposals_train": sum(r["meta"]["proposal"] for r in tr(img)),
+        "image_proposals_dev": sum(r["meta"]["proposal"] for r in img if r["meta"]["split"] == "dev"),
+        "proposal_policy": {str(k): v for k, v in pol.items()},
+        "injection_rows": len(inj), "injection_rows_by_split": dict(Counter(r["meta"]["split"] for r in inj)),
+        "injection_rows_by_kind": dict(Counter(r["kind"] for r in inj)),
+        "injection_rows_whose_mention_names_the_action_or_payload": names_action,
+        "negatives": {
+            "no_proposal_rows": len(neg),
+            "past_event_or_ticket": sum(cat(r) in ("past_event", "ticket_past") for r in neg),
+            "wrong_day_weekday_only": sum(r["meta"].get("no_proposal_reason") == "weekday" for r in neg),
+            "wrong_day_year_missing": sum(r["meta"].get("no_proposal_reason") == "year" for r in neg),
+            "receipts": sum(cat(r) == "receipt" for r in neg),
+            "invoices_and_documents": sum(cat(r) in ("document", "td_invoice") for r in neg),
+            "whiteboards": sum(cat(r) == "whiteboard" for r in neg),
+            "abstain": sum(bool(r["meta"]["abstain"]) for r in neg),
+            "injected_without_event": sum(bool(r["meta"]["injection"]) for r in neg),
+        },
+    }
+
+
+def finish_round4(rows):
+    """Round 4 validator: fails the build on any problem, then writes vision_stats.json."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("mm_scoring", HERE.parent / "mmeval" / "scoring.py")
+    sc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sc)
+    a = [r for r in rows if r["kind"] != "picture_read"]
+    problems = []
+    for r in a:
+        for p_ in r4_check_row(r, sc):
+            problems.append((r["id"], p_))
+    facts_first = {r["id"]: r["meta"].pop("_facts_first", None) for r in a}
+    zero_facts = [i for i, n in facts_first.items() if n == 0]
+    for rid, p_ in problems[:60]:
+        print("FAIL r4", rid, p_)
+    # eligibility: every row with an always-policy scene carries its proposal
+    elig = [r for r in a if r["meta"]["proposal_policy"] == "always"]
+    miss = [r["id"] for r in elig if not r["meta"]["proposal"]]
+    # the picture_read rows are unchanged by round 4: compare them with round 3's committed file
+    pr = [r for r in rows if r["kind"] == "picture_read"]
+    pr_same = None
+    r3file = HERE / "vision_rows.jsonl"
+    if r3file.exists():
+        old = [json.loads(x) for x in r3file.read_text().splitlines() if x.strip()]
+        old_pr = {r["id"]: r for r in old if r["kind"] == "picture_read"}
+        pr_same = len(pr) == len(old_pr) and all(r["id"] in old_pr and r == old_pr[r["id"]] for r in pr)
+        before = count_stats([r for r in old if r["kind"] != "picture_read"])
+    else:
+        before = None
+    after = count_stats(rows)
+    stats = {"round": 4, "seed": SEED, "validators": {
+        "problems": len(problems), "banned_in_target_hits": sum("banned_in_target" in p_ for _, p_ in problems),
+        "planted_token_hits": sum(p_.startswith("planted") for _, p_ in problems),
+        "mention_shape_failures": sum(p_.startswith("mention") or "answer" in p_ for _, p_ in problems),
+        "eligible_rows_without_proposal": len(miss),
+        "injected_rows_whose_answer_has_no_number_name_or_date_(info_only)": len(zero_facts),
+        "picture_read_rows_identical_to_round_3": pr_same,
+        "picture_read_rows": len(pr)},
+        "eligible_rows": len(elig), "round3": before, "round4": after}
+    (OUT / "vision_stats.json").write_text(json.dumps(stats, indent=1) + "\n")
+    print("round 4 stats:", json.dumps(stats["validators"]), "eligible", len(elig), "proposals", after["proposal_rows"],
+          "injection rows", after["injection_rows"])
+    if before:
+        print("round 3 -> 4: proposals", before["proposal_rows"], "->", after["proposal_rows"], "; image train proposals",
+              before["image_proposals_train"], "/", before["image_rows_train"], "->", after["image_proposals_train"], "/", after["image_rows_train"])
+    return len(problems) + len(miss) + (0 if pr_same in (None, True) else 1)
 
 
 def verify_production_shapes(rows):
@@ -3448,7 +3865,7 @@ def verify_production_shapes(rows):
         # pictures: the exact bytes production would receive, through vision.validate_media
         urls = []
         for pth in r["images"]:
-            data = (HERE / pth).read_bytes()
+            data = (OUT / pth).read_bytes()
             urls.append("data:image/jpeg;base64," + base64.b64encode(data).decode())
         try:
             vision.validate_media(urls, m.get("seconds"))
@@ -3476,7 +3893,7 @@ def verify_production_shapes(rows):
             fail("coverage group", k, len(got))
         if not any(r["meta"]["split"] == "dev" for r in got):
             fail("coverage group has no dev row", k)
-    mx = max((HERE / p).stat().st_size for r in rows for p in r["images"])
+    mx = max((OUT / p).stat().st_size for r in rows for p in r["images"])
     print(f"production range: max file {mx / 1e6:.2f} MB; coverage", {k: len(v) for k, v in cov.items()},
           "dev", {k: sum(r["meta"]["split"] == "dev" for r in v) for k, v in cov.items()})
     return bad
@@ -3547,7 +3964,7 @@ def verify_picture_read(rows):
             fail("split", rid)
         if r["label"] is not None and r["label"] not in r["messages"][0]["content"]:
             fail("label not in system prompt", rid)
-        data = (HERE / r["images"][0]).read_bytes()
+        data = (OUT / r["images"][0]).read_bytes()
         try:
             vision.validate_media(["data:image/jpeg;base64," + base64.b64encode(data).decode()], None)
         except ValueError as e:
@@ -3594,7 +4011,7 @@ def verify(rows):
         if r["meta"]["injection"] is None and r["meta"]["category"] != "x":
             pass
         for p in r["images"]:
-            if not (HERE / p).exists():
+            if not (OUT / p).exists():
                 bad += 1
                 print("FAIL missing", p)
     bad += verify_production_shapes(rows)
@@ -3608,6 +4025,7 @@ def verify(rows):
     print("proposal share", sum(r["meta"]["proposal"] for r in rows), "/", n,
           " injection", sum(bool(r["meta"]["injection"]) for r in rows), "/", n,
           " unreadable", sum(r["meta"]["unreadable"] for r in rows), " abstain", sum(r["meta"]["abstain"] for r in rows))
+    return bad
 
 
 if __name__ == "__main__":

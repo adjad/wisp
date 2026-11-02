@@ -127,6 +127,17 @@ ASSUMPTIONS = {
     "max_over_group": (1.8, "decode runs until the LONGEST of the G samples ends: ~1.8 x the mean length (capped)"),
     "mix": ({"text": 1265, "vision": 134, "audio": 89}, "measured: the exported mix on the r2-build test export (85/9/6 %)"),
 }
+# Round 4 (PLAN.md Stage 2) changes two estimates: the model thinks before it narrates (reward.py allows 120 free thought
+# words), so a text completion is a thought of ~60-120 words plus a 1-3 sentence answer, and the cap rises to 512; the mix
+# is the r4 export's (35% narrate, 20% compose/safety, 30% other text, 15% vision + audio incl. the picture reads).
+ASSUMPTIONS_R4 = {
+    "text_completion": (260, "assumed mean sampled completion tokens, text rows in round 4: ~90 thought words (~130 tokens) + answer/call"),
+    "text_cap": (512, "completion cap, text rows (grpo.py --max-completion default in round 4)"),
+    "mix": ({"text": 1265, "vision": 146, "audio": 77}, "the r3-data r4-mix test export: 85 / 9.8 / 5.2 % of 1,488 rows"),
+}
+# The r4 A6000 run: one 48 GB card, the settings README_R4 / grpo.py use. The profile itself is "a6000" (unchanged).
+R4_A6000 = dict(profile="a6000", G=6, ppr=4, micro_bs=3, beta=0.04, beta_mm=0.2, lr=5e-6, prompts=1488, epochs=1,
+                max_completion=512)
 HW = {
     "a6000": dict(name="1 x RTX A6000 48 GB (sm_86)", peak=154.8e12, mfu=(0.45, 0.35, 0.25), tok_s=(0.030, 0.040, 0.055),
                   opt_s=0.3, straggler=1.0, usd_h=None,
@@ -139,37 +150,78 @@ HW = {
 }
 
 
-def prompt_seconds(kind: str, G: int, peak: float, mfu: float, tok_s: float) -> float:
-    n = ASSUMPTIONS["n_eff"][0]
-    k = ASSUMPTIONS["flop_factor"][0]
-    P = ASSUMPTIONS[f"{kind}_prompt"][0]
-    C = ASSUMPTIONS[f"{kind}_completion"][0]
-    cap = {"text": 384, "vision": 400, "audio": 240}[kind]
+def assumptions(rnd: int = 3) -> dict:
+    return {**ASSUMPTIONS, **(ASSUMPTIONS_R4 if rnd >= 4 else {})}
+
+
+def prompt_seconds(kind: str, G: int, peak: float, mfu: float, tok_s: float, rnd: int = 3) -> float:
+    A = assumptions(rnd)
+    n = A["n_eff"][0]
+    k = A["flop_factor"][0]
+    P = A[f"{kind}_prompt"][0]
+    C = A[f"{kind}_completion"][0]
+    cap = {"text": A["text_cap"][0] if "text_cap" in A else 384, "vision": 400, "audio": 240}[kind]
     flops = k * n * (P + C) * G
-    steps = min(cap, ASSUMPTIONS["max_over_group"][0] * C)
+    steps = min(cap, A["max_over_group"][0] * C)
     return flops / (peak * mfu) + steps * tok_s
 
 
-def step_seconds(profile: str, case: int) -> dict:
+def step_seconds(profile: str, case: int, rnd: int = 3) -> dict:
     """Seconds for one optimizer step; case 0 = optimistic, 1 = middle, 2 = pessimistic."""
     hw, plan = HW[profile], PROFILES[profile]["plan"]
-    mix = ASSUMPTIONS["mix"][0]
+    mix = assumptions(rnd)["mix"][0]
     tot = sum(mix.values())
-    per_kind = {k: prompt_seconds(k, plan.G, hw["peak"], hw["mfu"][case], hw["tok_s"][case]) for k in mix}
+    per_kind = {k: prompt_seconds(k, plan.G, hw["peak"], hw["mfu"][case], hw["tok_s"][case], rnd) for k in mix}
     mean_prompt = sum(per_kind[k] * mix[k] / tot for k in mix)
     rank = plan.ppr * mean_prompt
     return {"per_kind": per_kind, "mean_prompt": mean_prompt, "rank_seconds": rank,
             "step": rank * hw["straggler"] + hw["opt_s"]}
 
 
-def hours(profile: str, rows: int, epochs: float, case: int) -> float:
+def hours(profile: str, rows: int, epochs: float, case: int, rnd: int = 3) -> float:
     plan = PROFILES[profile]["plan"]
-    return plan.steps(rows) * epochs * step_seconds(profile, case)["step"] / 3600.0
+    return plan.steps(rows) * epochs * step_seconds(profile, case, rnd)["step"] / 3600.0
 
 
-def report(rows: int, epochs: float, usd_h: float) -> str:
+def a6000_r4_estimate(guard_evals: int | None = None) -> dict:
+    """Hours for the round-4 GRPO epoch on one A6000 (R4_A6000): training steps plus the multimodal guard evals (every 25
+    steps; one eval is about 120 greedy short decodes on one GPU, ~4x the 8-GPU MM_EVAL_H). Setup is paid once."""
+    c = R4_A6000
+    plan = PROFILES[c["profile"]]["plan"]
+    steps = plan.steps(c["prompts"])
+    evals = guard_evals if guard_evals is not None else steps // 25 + 1
+    out = {"steps": steps, "evals": evals, "prompts_per_step": plan.prompts_per_step,
+           "completions_per_step": plan.completions_per_step}
+    for i, label in enumerate(("optimistic", "middle", "pessimistic")):
+        train = hours(c["profile"], c["prompts"], c["epochs"], i, rnd=4)
+        guard = evals * MM_EVAL_H * 4
+        out[label] = {"train_h": round(train, 2), "guard_h": round(guard, 2), "total_h": round(train + guard + SETUP_H, 2),
+                      "s_per_step": round(step_seconds(c["profile"], i, 4)["step"], 1)}
+    return out
+
+
+def report_r4(rows: int | None = None, epochs: float | None = None) -> str:
+    """The round-4 one-A6000 estimate, as README_R4.md quotes it."""
+    c = R4_A6000
+    rows, epochs = rows or c["prompts"], epochs or c["epochs"]
+    est = a6000_r4_estimate()
+    plan = PROFILES[c["profile"]]["plan"]
+    lines = [f"Round 4 GRPO on one {HW['a6000']['name']}: G={plan.G}, beta {c['beta']} (beta_mm {c['beta_mm']}), lr {c['lr']:g}, "
+             f"{rows} prompts, {epochs:g} epoch, max completion {c['max_completion']}.",
+             f"  {plan.ppr} prompts x G={plan.G} = {plan.completions_per_step} completions per step, micro_bs {plan.micro_bs}, "
+             f"grad-accum {plan.grad_accum}: {plan.steps(rows)} steps; {est['evals']} multimodal guard evals."]
+    for k, v in ASSUMPTIONS_R4.items():
+        lines.append(f"  {k} = {v[0]}   [{v[1]}]")
+    for label in ("optimistic", "middle", "pessimistic"):
+        v = est[label]
+        lines.append(f"  {label:11s} {v['s_per_step']:.0f} s/step -> train {hours('a6000', rows, epochs, ('optimistic', 'middle', 'pessimistic').index(label), 4):.1f} h "
+                     f"+ guard {v['guard_h']:.1f} h + setup {SETUP_H} h = {v['total_h']:.1f} h")
+    return "\n".join(lines)
+
+
+def report(rows: int, epochs: float, usd_h: float, rnd: int = 3) -> str:
     out = []
-    a = ASSUMPTIONS
+    a = assumptions(rnd)
     out.append("Assumptions (estimates, not measurements):")
     for k, (v, src) in a.items():
         out.append(f"  {k} = {v}   [{src}]")
@@ -180,14 +232,16 @@ def report(rows: int, epochs: float, usd_h: float) -> str:
                    f"{plan.completions_per_step} completions per step; micro_bs {plan.micro_bs}, grad-accum {plan.grad_accum}; "
                    f"{plan.steps(rows)} steps for {rows} rows")
         for i, label in enumerate(("optimistic", "middle", "pessimistic")):
-            s = step_seconds(p, i)
+            s = step_seconds(p, i, rnd)
             pk = s["per_kind"]
             out.append(f"  {label:11s} MFU {hw['mfu'][i]:.2f} decode {hw['tok_s'][i] * 1000:.0f} ms/tok: "
                        f"prompt seconds text {pk['text']:.1f} / vision {pk['vision']:.1f} / audio {pk['audio']:.1f}; "
                        f"mean {s['mean_prompt']:.1f} s x {plan.ppr} per rank x {hw['straggler']} + {hw['opt_s']} s "
-                       f"= {s['step']:.1f} s/step -> {hours(p, rows, epochs, i):.2f} h for {epochs:g} epoch(s)")
+                       f"= {s['step']:.1f} s/step -> {hours(p, rows, epochs, i, rnd):.2f} h for {epochs:g} epoch(s)")
     out.append("\nB300 cost at ${:.2f}/h for the whole node (billed per node-hour, whatever the GPUs do):".format(usd_h))
-    out.append(cost_table(rows, usd_h))
+    out.append(cost_table(rows, usd_h, rnd))
+    if rnd >= 4:
+        out.append("\n" + report_r4(rows, epochs))
     return "\n".join(out)
 
 
@@ -209,12 +263,12 @@ def runs(rows: int):
     ]
 
 
-def cost_table(rows: int, usd_h: float) -> str:
+def cost_table(rows: int, usd_h: float, rnd: int = 3) -> str:
     lines = ["| run | steps | optimistic h / $ | middle h / $ | pessimistic h / $ |", "|---|---|---|---|---|"]
     for label, steps, evals in runs(rows):
         cells = []
         for case in (0, 1, 2):
-            t = steps * step_seconds("b300x8", case)["step"] / 3600.0 + evals * MM_EVAL_H + SETUP_H
+            t = steps * step_seconds("b300x8", case, rnd)["step"] / 3600.0 + evals * MM_EVAL_H + SETUP_H
             cells.append(f"{t:.1f} h / ${t * usd_h:,.0f}")
         lines.append(f"| {label} | {steps} | " + " | ".join(cells) + " |")
     lines.append(f"(each run includes {SETUP_H} h setup and {MM_EVAL_H} h per mm-guard eval; setup is paid once per "
@@ -227,8 +281,9 @@ def main() -> int:
     ap.add_argument("--rows", type=int, default=1488)
     ap.add_argument("--epochs", type=float, default=1.0)
     ap.add_argument("--usd-per-hour", type=float, default=32.0)
+    ap.add_argument("--round", type=int, default=3, choices=(3, 4), help="4: the round-4 mix and completion length, plus the one-A6000 estimate")
     a = ap.parse_args()
-    print(report(a.rows, a.epochs, a.usd_per_hour))
+    print(report(a.rows, a.epochs, a.usd_per_hour, a.round))
     return 0
 
 

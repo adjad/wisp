@@ -319,6 +319,8 @@ def cmd_check(a) -> int:
         ideal = lab["ideal_completion"]
         res = W.score(ideal, lab)
         top = {"vision": 1.5, "audio": 1.25}.get(lab.get("modality"), 1.5 if lab["step"] in ("call", "load") else 1.0)
+        if W.ROUND >= 4 and lab.get("narrate") and lab.get("facts"):
+            top = 2.0               # tool set 1.0 + the answer facts, now up to 1.0
         if res.total < top - 0.31 or res.parts["malformed"] or res.parts["forbidden"] or res.parts["needless_call"]:
             below += 1
             low.append((r["id"], res.total, res.flags))
@@ -326,6 +328,22 @@ def cmd_check(a) -> int:
         lab = json.loads(r["label"])
         back = tok.decode(tok(lab["ideal_completion"], add_special_tokens=False)["input_ids"], skip_special_tokens=False)
         worst = max(worst, abs(W.score(lab["ideal_completion"], lab).total - W.score(back, lab).total))
+    if W.ROUND >= 4:
+        r4n = collections.Counter()
+        for r in rows:
+            lab = json.loads(r["label"])
+            if lab.get("modality", "text") != "text":
+                continue
+            res = W.score(lab["ideal_completion"], lab)
+            r4n["text"] += 1
+            r4n["narrate"] += bool(lab.get("narrate"))
+            r4n["with_requires_read"] += bool(lab.get("requires_read"))
+            for k in ("ungrounded", "leak", "early_write"):
+                r4n[f"ideal_{k}"] += res.parts[k] < 0
+        print(f"round 4 labels: {dict(r4n)}")
+        if r4n["ideal_early_write"] or r4n["ideal_leak"] > max(2, r4n["text"] // 100) or r4n["ideal_ungrounded"] > max(5, r4n["narrate"] // 25):
+            print("FAIL: ideal completions trip the round-4 terms (early writes, leaks or ungrounded facts) more than a handful of times")
+            problems += 1
     if below > max(3, len(rows) // 100):
         print(f"FAIL: {below} ideal completions score badly, e.g. {low[:3]}")
         problems += 1
@@ -498,7 +516,7 @@ def cmd_train(a) -> int:
         out.mkdir(parents=True, exist_ok=True)
         inner.print_trainable_parameters()
         info = {"torch": torch.__version__, "world": world, "plan": vars(plan), "lr": lr, "alpha": a.alpha, "beta": a.beta,
-                "beta_mm": a.beta_mm, "mm_ref": a.mm_ref, "prompts": len(rows), "forward_extra": extra,
+                "beta_mm": a.beta_mm, "mm_ref": a.mm_ref, "prompts": len(rows), "reward_round": W.ROUND, "max_completion": a.max_completion, "forward_extra": extra,
                 "prompts_sha256": hashlib.sha256(Path(a.prompts).read_bytes()).hexdigest(), "base": str(a.base),
                 "deepspeed": is_ds, "mm_floor": a.mm_floor, "started": time.strftime("%FT%TZ", time.gmtime())}
         import transformers, peft, accelerate
@@ -761,7 +779,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--mm-temperature", type=float, default=0.7, help="sampling temperature on vision/audio prompts (production decodes at 0)")
     ap.add_argument("--top-p", type=float, default=0.95)
     ap.add_argument("--top-k", type=int, default=64)
-    ap.add_argument("--max-completion", type=int, default=384)
+    ap.add_argument("--round", type=int, default=0, choices=(0, 3, 4),
+                    help="reward round: 4 switches on reward.py's round-4 terms (answer facts +1.0, ungrounded facts, thinking free to 120 "
+                         "words, writes before reads, leaked internals). 0 = whatever the prompt labels say (export_prompts.py --round 4 "
+                         "stamps label.round = 4), else REWARD_ROUND / 3. A flag that disagrees with the labels exits.")
+    ap.add_argument("--max-completion", type=int, default=0, help="completion cap in tokens (default 384; 512 in round 4: a thought of up to 120 words plus the answer)")
     ap.add_argument("--adv-floor", type=float, default=0.1, help="std floor in the advantage, text prompts")
     ap.add_argument("--adv-floor-mm", type=float, default=0.25, help="std floor in the advantage, vision/audio prompts")
     ap.add_argument("--mm-root", default=str(HERE / "mm"), help="folder holding vision/ and audio/ as export_prompts.py packed them")
@@ -780,9 +802,30 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+def resolve_round(a) -> int:
+    """Set reward.ROUND from --round, the prompt labels (label.round) or REWARD_ROUND, and refuse a mix-up: scoring
+    round-4 labels with round-3 rules (or the reverse) would train toward the wrong reward without any error."""
+    seen = set()
+    if a.prompts and Path(a.prompts).exists():
+        with open(a.prompts) as f:
+            for line in f:
+                if line.strip():
+                    seen.add(json.loads(json.loads(line)["label"]).get("round"))      # None = an r3 export (no stamp)
+    if len(seen) > 1:
+        sys.exit(f"{a.prompts}: rows carry different reward rounds {sorted(seen, key=str)} (None = unstamped)")
+    labelled = seen.pop() if seen else None
+    if a.round and labelled and a.round != labelled:
+        sys.exit(f"--round {a.round} but {a.prompts} was exported for round {labelled}")
+    W.ROUND = a.round or labelled or W.ROUND
+    if not a.max_completion:
+        a.max_completion = 512 if W.ROUND >= 4 else 384
+    return W.ROUND
+
+
 def main() -> int:
     ap = build_parser()
     a = ap.parse_args()
+    resolve_round(a)
     if a.cmd in ("check", "train") and not a.prompts:
         ap.error("--prompts is required")
     if a.cmd in ("train", "merge") and not a.out:

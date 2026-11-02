@@ -226,6 +226,14 @@ Builder: `training/ask-lora-r2/builder` with `ASK_LORA_ROUND=4`. Vision: `traini
   - A tool is used only when the person's own data is the point.
   - Add about 60 turns where r3 searched and then gave up, each with the direct reply.
 - Cap its share at ~8% of examples, so short chat replies don't set the length of every answer.
+- **Engaging, not terse (the user, 2026-11-02):** "I want the chatbot to be engaging to talk to."
+  - r3's chat replies came out at a median of 124 characters, shorter than its own training replies (median 171; only 37 of 337 ended in a question).
+  - `chat_voice_r4` replaces `chat_voice_r3`:
+    - the same categories, with replies at a median of ~250–350 characters, mostly 2–4 sentences;
+    - one concrete touch per reply;
+    - a natural follow-up on ~40%;
+    - extra care on multi-turn, the one category r3 lost (11–13).
+  - `chat_direct_r4` (recommendations, opinions, games, quick knowledge) uses the same length.
 - **New leak check:** no tool names, JSON, `UNTRUSTED`, receipt phrasing or source-stall lines ("I haven't checked a current personal source…") in any final.
 
 ### E. Vision (second priority)
@@ -299,6 +307,7 @@ The Mac gate has the same shape as r3's:
 | pass rate up, significant | hard |
 | no category down more than 5 points | hard |
 | chat eval: blind preference kept, 0 non-replies | hard |
+| chat eval: median reply ≥ 220 chars, and the judge rubric adds "engaging to talk to" | hard, new |
 | vision facts and proposals ≥ baseline; 0 new leaks | hard |
 | turn time p50 ≤ untuned; thinking p50 reported | report |
 

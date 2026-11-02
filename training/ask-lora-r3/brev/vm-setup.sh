@@ -24,7 +24,8 @@
 #                                                  loud WARN; train.py's smoke gate decides, expect --attn math).
 # Every candidate is VERIFIED by running a bf16 matmul and an SDPA call on the GPU, not just by import; the first that
 # passes is kept. Override with TORCH_INDEX=<url> (one candidate, still verified) and TORCH_SPEC='torch>=2.9'
-# (TORCHVISION_SPEC for the matching torchvision; GPU_ARCH=gfx950 skips the rocminfo detection).
+# (TORCHVISION_SPEC for the matching torchvision; GPU_ARCH=gfx950 skips the rocminfo detection; TRANSFORMERS_SPEC='transformers==5.22.1'
+# and PEFT_SPEC='peft==0.21.2' pin the rest of the stack, see ../../ask-lora-r4/a6000/README.md).
 # Several GPUs: `run.sh <tag> train` launches torchrun with NPROC processes (default: every GPU nvidia-smi / amd-smi lists;
 # NPROC=1 forces one). smoke, preflight and merge always use one GPU. The effective batch is --global-batch rows
 # per optimizer step whatever NPROC is (default 8): GLOBAL_BATCH=<n> LR=<lr> in the environment pass through.
@@ -634,7 +635,8 @@ fi
 [ "$TORCH_OK" = 1 ] || echo "ERROR: no torch build ran on this GPU. Set TORCH_INDEX=<url> TORCH_SPEC='torch>=x' and re-run; a B300 needs a cu130 build and driver >= 580"
 # torch is deliberately NOT in this line: it is already installed and verified, and naming it here could let the resolver
 # swap in PyPI's CUDA build (transformers / peft / accelerate are satisfied by the installed torch).
-pipi "transformers>=5.10.1,<6" "peft>=0.19.0" accelerate safetensors huggingface_hub hf_transfer \
+# TRANSFORMERS_SPEC / PEFT_SPEC pin the stack (round 4 on an A6000: transformers==5.22.1 peft==0.21.2, the r2 run's); unset = the ranges below.
+pipi "${TRANSFORMERS_SPEC:-transformers>=5.10.1,<6}" "${PEFT_SPEC:-peft>=0.19.0}" accelerate safetensors huggingface_hub hf_transfer \
   sentencepiece numpy pillow || echo "ERROR: install failed"
 # Gemma 4's AutoProcessor loads its video processor, which needs torchvision. It
 # must come from the same wheel index (and flags, and the matching spec) as the torch build that passed above.
@@ -649,6 +651,8 @@ else
   pipi bitsandbytes || echo "WARN: bitsandbytes did not install (only --qlora needs it)"
 fi
 "$PY" -c "import torch,torchvision,transformers,peft;print('torch',torch.__version__,'torchvision',torchvision.__version__,'cuda',torch.version.cuda,'hip',torch.version.hip,'gpu',torch.cuda.is_available(),'gpus',torch.cuda.device_count(),'transformers',transformers.__version__,'peft',peft.__version__)"
+# the exact stack this run used, for run-info and for rebuilding it later
+"$UV" pip freeze -p "$PY" > "$WORK/freeze.txt" 2>/dev/null && echo "pinned versions written to $WORK/freeze.txt ($(wc -l < "$WORK/freeze.txt") packages)"
 # no later install may have swapped the verified torch for a PyPI / CUDA build
 if GPU_VENDOR="$GPU_VENDOR" "$PY" - <<'PYA'
 import os, sys, torch

@@ -1008,3 +1008,266 @@ def test_describing_picture_text_is_not_answering():
     res = W.score(reading(READ_TRUTH, "An appointment card. It says you should call to confirm."), rlabel())
     assert res.parts["p_answered"] == 0.0 and res.total == 1.5, res
     assert W.score(reading(READ_TRUTH, "A card. Would you like me to add it?"), rlabel()).parts["p_answered"] == -0.5
+
+
+# =========================================================================== round 4
+# reward.score(..., rnd=4) / reward.ROUND = 4 (REWARD_ROUND=4, grpo.py --round 4): the r3 tests above run in round 3 and
+# are the proof that round 3 is unchanged; everything below passes rnd=4 explicitly, or sets W.ROUND and puts it back.
+
+import contextlib  # noqa: E402
+
+TOOL_RESULT = ("Tonight: Water plants reminder at 6 PM. Dinner with Ben Ortiz at 7:30 PM, Riverside Grill. "
+               "Report: /Users/sam/Documents/quarterly_report.pdf")
+GROUND = "what's on tonight\n" + TOOL_RESULT
+
+
+def n4(**kw):
+    """A narrate step label: a final after a tool result, facts from the ideal answer, the ground it may restate."""
+    return label(step="final", final=True, narrate=True, facts=["6 PM", "Water plants"], ground=GROUND, **kw)
+
+
+def r4(text, lab, thought=""):
+    return W.score((thought + "\n<channel|>" if thought is not None else "") + final(text), {**lab, "forced": True}, rnd=4)
+
+
+def r4_call(lab, *cs, thought=""):
+    return W.score(thought + "\n<channel|>" + calls(*cs), {**lab, "forced": True}, rnd=4)
+
+
+@contextlib.contextmanager
+def round_set(n):
+    old = W.ROUND
+    W.ROUND = n
+    try:
+        yield
+    finally:
+        W.ROUND = old
+
+
+def test_r4_round_switch_default_is_round_3():
+    assert W.ROUND == 3                                         # REWARD_ROUND unset in the test run
+    text = "You have Water plants at 6 PM."
+    lab = n4()
+    a = W.score(text + "<turn|>", dict(lab, forced=False))
+    assert a.parts["facts"] == 0.5 * 1.0 and a.total == 1.5      # the r3 ceiling for a final
+    with round_set(4):
+        b = W.score(text + "<turn|>", dict(lab, forced=False))
+    assert b.parts["facts"] == 1.0 and b.total == 2.0
+    assert W.score(text + "<turn|>", dict(lab, forced=False), rnd=4).total == 2.0   # the explicit argument works too
+    assert W.score(text + "<turn|>", dict(lab, forced=False), rnd=3).total == 1.5   # and wins over ROUND
+    with round_set(4):
+        assert W.score(text + "<turn|>", dict(lab, forced=False), rnd=3).total == 1.5
+        assert W.reward_value(text + "<turn|>", dict(lab, forced=False)) == 2.0
+
+
+def test_r4_new_terms_are_zero_in_round_3():
+    lab = n4(requires_read=["get_upcoming"], reads_done=[], chat=True, tool_names=["get_upcoming"])
+    bad = "At 9:45 PM, via get_upcoming: {\"a\": 1} UNTRUSTED. I haven't checked a current personal source."
+    res = W.score(bad + "<turn|>", dict(lab, forced=False))
+    assert res.parts["ungrounded"] == res.parts["leak"] == res.parts["early_write"] == 0.0
+
+
+# ---- 1. answer facts: up to +1.0 on narrate steps
+def test_r4_narrate_facts_pay_up_to_one():
+    full = r4("Water plants is at 6 PM.", n4())
+    assert full.parts["facts"] == 1.0 and full.total == 2.0
+    half = r4("Water plants is on your list.", n4())
+    assert half.parts["facts"] == 0.5 and half.total == 1.5
+    none = r4("Nothing scheduled tonight.", n4())
+    assert none.parts["facts"] == 0.0 and none.total == 1.0
+    assert full.total > half.total > none.total
+
+
+def test_r4_only_narrate_steps_get_the_larger_facts_term():
+    lab = final_label()                                           # a final that is not narrate: unchanged
+    res = r4("Your 11 AM is Ethics.", lab)
+    assert res.parts["facts"] == 0.5 and res.total == 1.5
+    res = r4("Hello there.", dict(n4(), facts=[]))                # no labelled facts: the r3 flat 0.5
+    assert res.parts["facts"] == 0.5
+    ask = W.score("Which one?<turn|>", {**label(step="ask", ask=True, narrate=True), "forced": False}, rnd=4)
+    assert ask.parts["facts"] == 0.5                              # an ask step keeps its question term
+
+
+# ---- 2. ungrounded facts
+def test_r4_ungrounded_time_number_name_and_quote_each_cost_half():
+    t = r4("Water plants is at 6 PM, and you also have a 9:45 PM call.", n4())
+    assert t.parts["ungrounded"] == -0.5 and "9:45 PM" in t.flags[0]
+    nm = r4("Water plants is at 6 PM, with Priya Nair.", n4())
+    assert nm.parts["ungrounded"] == -0.5
+    num = r4("Water plants is at 6 PM and dinner costs $48.50.", n4())
+    assert num.parts["ungrounded"] == -0.5
+    q = r4("Water plants is at 6 PM; there is also “Board review” tonight.", n4())
+    assert q.parts["ungrounded"] == -0.5
+
+
+def test_r4_ungrounded_is_capped_at_minus_one():
+    res = r4("Water plants is at 6 PM, a 9:45 PM call, a 10:30 PM call, $48.50 and Priya Nair.", n4())
+    assert res.parts["ungrounded"] == -1.0
+    assert res.total == round(1.0 + 1.0 - 1.0, 6)
+
+
+def test_r4_grounded_answers_pay_nothing_extra():
+    for text in ("Water plants at 6 PM, then dinner with Ben Ortiz at 7:30 PM.",
+                 "Dinner with Ben is at 7:30 PM at Riverside Grill.",           # first name, a place from the result
+                 "The 6 o'clock one is Water plants.",
+                 "You have 3 things tonight, and the 2nd is dinner.",             # small integers are counts, not facts
+                 "That is 18:00 for Water plants.",                               # a 24-hour clock reads the same
+                 "I found quarterly_report.pdf in your Documents."):              # a file the result lists is not a tool name
+        assert r4(text, n4()).parts["ungrounded"] == 0.0, text
+    # the person's own words ground too
+    lab = dict(n4(), ground="remind me about Priya Nair at 9:45 PM\n" + TOOL_RESULT)
+    assert r4("Priya Nair is on at 9:45 PM.", lab).parts["ungrounded"] == 0.0
+
+
+def test_r4_possessive_hyphenated_and_sentence_start_names_are_grounded():
+    lab = dict(n4(), ground="which network\nWi-Fi network: Linden-Student\ntheo's number is 555-0100 — Clipper Joe's")
+    for text in ("Connected to Linden-Student.", "Theo's number is 555-0100.", "Your haircut is at Clipper Joe's.",
+                 "Thanks for waiting. Linden is the network."):
+        assert ungrounded_names(text, lab) == [], text
+
+
+def ungrounded_names(text, lab):
+    return W.ungrounded_entities(text, lab["ground"])
+
+
+def test_r4_ungrounded_needs_a_ground_and_a_narrate_step():
+    lab = dict(n4())
+    del lab["ground"]
+    assert r4("It is at 9:45 PM with Priya Nair.", lab).parts["ungrounded"] == 0.0     # a chat/knowledge row has no ground
+    plain = dict(n4(), narrate=False)
+    assert r4("It is at 9:45 PM with Priya Nair.", plain).parts["ungrounded"] == 0.0
+    assert W.score("It is at 9:45 PM.<turn|>", dict(n4(), forced=False), rnd=3).parts["ungrounded"] == 0.0
+
+
+def test_r4_ungrounded_entities_helper():
+    assert W.ungrounded_entities("At 6 PM Ben Ortiz.", GROUND) == []
+    assert W.ungrounded_entities("At 7 PM, Ben Ortiz and Cleo Park, $12.", GROUND) == ["7 PM", "12", "Cleo Park"]   # times, numbers, names
+    assert W.ungrounded_entities("1,200 and 1200", "it cost 1,200") == []
+    assert W.ungrounded_entities("It is 12:00 PM", "meet at noon 12 PM") == []
+
+
+# ---- 3. thought length
+def test_r4_thought_is_free_to_120_words_then_half_a_cent_a_word():
+    def words(n):
+        return " ".join(["w"] * n)
+    ok = "Water plants is at 6 PM."
+    base = r4(ok, n4(), thought="").total
+    assert r4(ok, n4(), thought=words(120)).total == base                   # 120 words: free
+    r = r4(ok, n4(), thought=words(200))
+    assert r.parts["thinking"] == -0.4 and r.total == round(base - 0.4, 6)
+    assert r4(ok, n4(), thought=words(1000)).parts["thinking"] == -0.5      # still capped at 0.5
+    # round 3 charges from 60 words
+    r3 = W.score(words(100) + "\n<channel|>" + final(ok), dict(n4(), forced=True), rnd=3)
+    assert r3.parts["thinking"] == -0.2
+    assert r4(ok, n4(), thought=words(100)).parts["thinking"] == 0.0
+
+
+def test_r4_thinking_itself_earns_nothing():
+    ok = "Water plants is at 6 PM."
+    totals = {r4(ok, n4(), thought=" ".join(["w"] * k)).total for k in (0, 1, 30, 119, 120)}
+    assert len(totals) == 1
+
+
+# ---- 4. writes before reads
+def reads_label(**kw):
+    e = {"name": "lookup_contact", "args": {"contact": "Dad"}}
+    return label(expected=[e], key_args=[{"contact": "Dad"}], present_args=[[]], forbidden=["run_shell"],
+                 requires_read=["lookup_contact", "get_upcoming"], reads_done=[], **kw)
+
+
+def test_r4_send_move_delete_before_the_required_reads_cost_two():
+    for tool in ("send_message", "send_email", "schedule_send", "reply_to_email", "move_path", "delete_path", "trash_path"):
+        res = r4_call(reads_label(), call(tool, text="hi"))
+        assert res.parts["early_write"] == -2.0, tool
+        assert any("before the reads" in f for f in res.flags)
+    # the read alone is the right step
+    ok = r4_call(reads_label(), call("lookup_contact", contact="Dad"))
+    assert ok.parts["early_write"] == 0.0 and ok.total == 1.5
+    # a read next to the write does not excuse it: the write is decided before the result is known
+    both = r4_call(reads_label(), call("lookup_contact", contact="Dad"), call("send_message", to="Dad", text="hi"))
+    assert both.parts["early_write"] == -2.0
+
+
+def test_r4_the_write_is_fine_once_the_reads_are_in_the_history():
+    lab = reads_label()
+    lab["reads_done"] = ["lookup_contact"]
+    assert r4_call(lab, call("send_message", text="hi")).parts["early_write"] == -2.0     # get_upcoming still missing
+    lab["reads_done"] = ["lookup_contact", "get_upcoming"]
+    assert r4_call(lab, call("send_message", text="hi")).parts["early_write"] == 0.0
+    nolabel = reads_label()
+    del nolabel["requires_read"], nolabel["reads_done"]
+    assert r4_call(nolabel, call("send_message", text="hi")).parts["early_write"] == 0.0   # a label with no reads has no rule
+    empty = dict(reads_label(), requires_read=[])
+    assert r4_call(empty, call("send_message", text="hi")).parts["early_write"] == 0.0
+
+
+def test_r4_early_write_does_not_stack_on_forbidden_and_is_off_in_round_3():
+    lab = dict(reads_label(), forbidden=["send_message"])
+    res = r4_call(lab, call("send_message", text="hi"))
+    assert res.parts["forbidden"] == -2.0 and res.parts["early_write"] == 0.0
+    assert res.total == -2.0
+    r3 = W.score("\n<channel|>" + calls(call("send_message", text="hi")), {**reads_label(), "forced": True}, rnd=3)
+    assert r3.parts["early_write"] == 0.0
+    # a write that is not a send, move or delete is not this rule's business (a draft, a reminder)
+    assert r4_call(reads_label(), call("add_reminder", text="x")).parts["early_write"] == 0.0
+    assert "early_write" in W.COMPONENTS["order"]
+
+
+# ---- 5. leaked internals
+def test_r4_tool_names_json_untrusted_are_leaks():
+    lab = n4(tool_names=["summarize_emails", "read_file"])
+    for text in ("I ran summarize_emails and Water plants is at 6 PM.",
+                 "Water plants is at 6 PM. {\"events\": [\"Water plants\"]}",
+                 "```json\n{\"title\": \"Water plants\"}\n```",
+                 "UNTRUSTED CONTENT: Water plants is at 6 PM.",
+                 "I used read_file(path) for that, Water plants is at 6 PM.",
+                 "Water plants at 6 PM (via get_upcoming)."):          # a snake_case word the prompt does not contain
+        res = r4(text, lab)
+        assert res.parts["leak"] == -1.0, text
+        assert any("leaked" in f for f in res.flags)
+    clean = r4("Water plants is at 6 PM.", lab)
+    assert clean.parts["leak"] == 0.0 and clean.total == 2.0
+
+
+def test_r4_leak_costs_one_once_and_does_not_hit_files_or_ordinary_words():
+    res = r4("summarize_emails read_file UNTRUSTED {\"a\": 1} Water plants 6 PM.", n4(tool_names=["summarize_emails"]))
+    assert res.parts["leak"] == -1.0
+    assert r4("I found quarterly_report.pdf; Water plants is at 6 PM.", n4()).parts["leak"] == 0.0
+    assert r4("Water plants at 6 PM. Then it's a read of the notes.", n4()).parts["leak"] == 0.0
+    # tool-call answers are not finals: no leak term
+    assert r4_call(reads_label(), call("lookup_contact", contact="Dad")).parts["leak"] == 0.0
+
+
+def test_r4_receipt_phrasing_is_a_leak_only_in_a_chat_turn():
+    chat = label(step="final", final=True, chat=True, facts=[])
+    for text in ("I've sent that to Dad.", "✅ Done, added to your calendar.", "Your message was sent.",
+                 "Here is the receipt for it."):
+        assert r4(text, chat).parts["leak"] == -1.0, text
+    assert r4("That sounds like a lovely plan for the weekend.", chat).parts["leak"] == 0.0
+    write = label(step="final", final=True, narrate=True, facts=["6 PM"], ground="remind me at 6 PM", chat=False)
+    assert r4("I've added the reminder for 6 PM.", write).parts["leak"] == 0.0     # a write receipt after a write is right
+
+
+def test_r4_source_stall_lines_are_leaks():
+    for text in ("I haven't checked a current personal source, so I can't say.",
+                 "I haven't checked a current source for that.",
+                 "That needs a current personal source and I don't have one.",
+                 "I have not checked any current personal source for that."):
+        assert r4(text, n4()).parts["leak"] == -1.0, text
+    assert r4("No note mentions the lease.", n4()).parts["leak"] == 0.0
+
+
+def test_r4_totals_always_equal_the_parts():
+    for lab, text in ((n4(tool_names=["get_upcoming"]), "At 9:45 PM, get_upcoming says Water plants."),
+                      (n4(), "Water plants is at 6 PM. Let me know if you need anything."),
+                      (final_label(), "Your 11 AM is Ethics.")):
+        res = r4(text, lab, thought=" ".join(["w"] * 150))
+        assert abs(sum(res.parts.values()) - res.total) < 1e-9
+        assert abs(sum(res.component(g) for g in W.COMPONENTS) - res.total) < 1e-9
+    assert {"grounding", "order", "leak"} <= set(W.COMPONENTS)
+
+
+def test_r4_vision_and_audio_rows_ignore_round_4():
+    lab = {"modality": "audio", "reference": "call mom", "no_speech": False, "banned": []}
+    a, b = W.score("call mom<turn|>", lab, rnd=3), W.score("call mom<turn|>", lab, rnd=4)
+    assert a.total == b.total

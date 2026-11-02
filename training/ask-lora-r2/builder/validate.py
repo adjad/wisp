@@ -524,7 +524,9 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
         names = [name for _, name in calls]
         # manage_timers is one tool for reads and writes: list/stopwatch_read are reads (as build.py records them)
         ran_writes = [name for (_, name), args in zip(calls, call_args) if name in REGISTRY and not is_read(name)
-                      and str((args or {}).get("action") or "list") not in READ_ACTIONS.get(name, ())]
+                      and str((args or {}).get("action") or "list") not in READ_ACTIONS.get(name, ())
+                      # organize_files without confirm is the preview (a read); the confirm call moves files
+                      and not (name == "organize_files" and not (args or {}).get("confirm"))]
         cards = list(meta.get("cards_seen") or [])
         if ran_writes != list(meta.get("writes") or [])[:len(ran_writes)]:
             bad("meta:writes", f"{where} example {ran_writes} vs meta {meta.get('writes')}")

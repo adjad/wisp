@@ -46,6 +46,17 @@ Picture shapes (#436; reward.py "Picture shapes"), about --picture-share = 6.5% 
             inj_text means nothing is planted, so a card's own address is fine to use). A call carrying
             one scores -2.
 
+Round 4 (--round 4; the r3 export is unchanged without it): the same files, labels with the extra fields reward.py's round-4 terms
+read, and a different mix. The data paths are configurable (--build-dir / ASK_LORA_OUT, --vision-rows, --audio-rows; for round 4 the
+defaults are ../../ask-lora-r4/data and ../../ask-lora-r4/vision/vision_rows.jsonl, output in ../../ask-lora-r4/grpo/):
+    mix       ~35% narrate-after-read steps, ~20% compose and safety decision steps (COMPOSE_SAFETY_FAMILIES, with
+              safe_restraint, gather_then_send_r4, restraint_r4 and compose_r3 upweighted), ~30% other text, 15% vision and
+              audio (picture reads included; proposal and injection rows upweighted).
+    label     round 4; narrate (a final after a tool result); chat (a final with no tool result and no write in the turn);
+              ground (the person's words, the tool results and the earlier answers: what an answer may restate);
+              tool_names (every tool in the build); requires_read (the reads that precede the turn's first write in the
+              scripted turn, from the builder meta) and reads_done (those already in this step's history).
+
 Only steps of the SFT train split are used (valid ids are excluded unless --include-valid) so the SFT dev
 set stays a clean gate. Safety and restraint families are upweighted by sampling copies; ordering keeps
 similar prompt lengths together in groups of GROUP so a generation batch pads little.
@@ -96,6 +107,17 @@ VISION_WEIGHTS = {"injection": 2.0, "proposal": 1.5, "abstain": 1.5, "unreadable
 AUDIO_WEIGHTS = {"injection": 2.0, "no_speech": 2.0, "numbers": 1.5, "names": 1.5}
 SPOKEN_OBEYED = ["I can't", "I cannot", "I'm sorry", "Sure,", "Sure!", "Okay,", "Here is", "Here's"]
 CHAT_FAMILIES = {"chat_voice", "knowledge_direct", "concise_gentle"}   # a question there is conversation, not a clarification
+# Round 4 mix (PLAN.md, Stage 2): shares of all rows. The vision and audio share is --mm-share (0.15), picture reads included.
+R4_NARRATE_SHARE, R4_COMPOSE_SHARE = 0.35, 0.20
+R4_PICTURE_SHARE = 0.04         # of all rows; half READ calls (inside the 15% mm share), half picture-turn steps (inside "other")
+COMPOSE_SAFETY_FAMILIES = frozenset({
+    "safe_restraint", "gather_then_send_r4", "restraint_r4", "compose_r3",       # upweighted below
+    "safe_effects", "ignore_embedded_instructions", "no_write_for_reads", "reminders_r3"})   # the other r3 unsafe patterns
+R4_WEIGHTS = {"safe_restraint": 3.0, "gather_then_send_r4": 3.0, "restraint_r4": 3.0, "compose_r3": 2.5,
+              "safe_effects": 2.0, "ignore_embedded_instructions": 2.0, "no_write_for_reads": 2.0}
+R4_FACT_BONUS = 1.5             # a narrate row with labelled facts pays up to +1.0 for them: more signal than one without
+R4_VISION_WEIGHTS = {"injection": 2.5, "proposal": 2.5, "abstain": 1.5, "unreadable": 1.0}
+R4_PICTURE_READ_WEIGHTS = {"injection": 2.5, "plain": 1.0}
 _NOT_NAMES = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Monday", "Tuesday", "Wednesday", "Thursday",
               "Friday", "Saturday", "Sunday", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep",
               "Sept", "Oct", "Nov", "Dec", "January", "February", "March", "April", "June", "July", "August",
@@ -221,7 +243,7 @@ def usable_facts(facts: list[str]) -> bool:
     return bool(strong) or len(real) >= 2
 
 
-def classify(ex: dict, meta: dict) -> dict:
+def classify(ex: dict, meta: dict, rnd: int = 3, turns: dict | None = None, tool_names=()) -> dict:
     msgs, target = ex["messages"], ex["messages"][-1]
     hist = msgs[:-1]
     last_user = max((i for i, m in enumerate(hist) if m["role"] == "user"), default=-1)
@@ -262,7 +284,66 @@ def classify(ex: dict, meta: dict) -> dict:
     pic = picture_info(hist, meta)
     if pic is not None:
         label["picture_turn"], label["planted"] = True, pic
+    if rnd >= 4:
+        r4_fields(label, hist, meta, tool_result_seen, turns or {}, tool_names)
     return label
+
+
+# ------------------------------------------------------------------ round 4 labels
+
+def turn_key(meta: dict) -> str:
+    return meta["id"].rsplit("-s", 1)[0]
+
+
+def turn_reads(steps: list[tuple[int, list[str]]], turn_writes, writes_extra=()) -> list[str]:
+    """steps: (step index, names of the calls the scripted target makes at that step), any order. The reads that
+    precede the turn's first write: call names of the earlier steps that are not writes (nor tool discovery)."""
+    writes = set(turn_writes or ()) | set(writes_extra)
+    if not writes:
+        return []
+    ordered = sorted(steps)
+    first = next((i for i, names in ordered if writes & set(names)), None)
+    if first is None:
+        return []
+    out: list[str] = []
+    for i, names in ordered:
+        if i >= first:
+            break
+        for n in names:
+            if n != DISCOVERY and n not in WRITE_TOOLS and n not in writes and n not in out:
+                out.append(n)
+    return out
+
+
+def ground_text(hist: list[dict], limit: int = 40000) -> str:
+    """What an answer may restate: the person's words, the tool results, the arguments the model passed and its earlier
+    answers, plus the short system lines (the clock). The long rules prompt is left out."""
+    parts = []
+    for m in hist:
+        t = _msg_text(m)
+        if m["role"] == "system":
+            if len(t) < 3000:
+                parts.append(t)
+            continue
+        parts.append(t)
+        for tc in m.get("tool_calls") or ():
+            a = tc["function"].get("arguments")
+            parts.append(a if isinstance(a, str) else json.dumps(a, ensure_ascii=False))
+    return "\n".join(p for p in parts if p)[:limit]
+
+
+def r4_fields(label: dict, hist: list[dict], meta: dict, tool_result_seen: bool, turns: dict, tool_names) -> None:
+    label["round"] = 4
+    final = bool(label.get("final"))
+    label["narrate"] = final and tool_result_seen
+    label["chat"] = final and not tool_result_seen and not meta.get("turn_writes")
+    if label["narrate"]:
+        label["ground"] = ground_text(hist)
+    if final and tool_names:
+        label["tool_names"] = list(tool_names)
+    req = turn_reads(turns.get(turn_key(meta), []), meta.get("turn_writes"))
+    label["requires_read"] = req
+    label["reads_done"] = [r for r in req if r in set(called_names(hist))]
 
 
 PICTURE_TOOL = "read_attached_picture"
@@ -290,6 +371,51 @@ def picture_info(hist: list[dict], meta: dict):
     if reading is None:
         return None
     return W.planted_strings(reading, "\n".join(trusted), meta.get("inj_text"))
+
+
+def r4_bucket(it: dict) -> str:
+    """narrate (a final after a tool result) | compose (a decision step of a compose or safety family) | other."""
+    lab = it["label"]
+    if lab.get("narrate"):
+        return "narrate"
+    if it["family"] in COMPOSE_SAFETY_FAMILIES:
+        return "compose"
+    return "other"
+
+
+def r4_weight(it: dict) -> float:
+    w = R4_WEIGHTS.get(it["family"], WEIGHTS.get(it["family"], 1.0))
+    if it["label"].get("narrate") and it["label"].get("facts"):
+        w *= R4_FACT_BONUS
+    return w
+
+
+def r4_pick(items: list[dict], count: int, rng: random.Random) -> list[dict]:
+    """`count` rows by weight, no row more than MAX_COPIES times (a smaller pool gives fewer rows, never a flood of copies)."""
+    count = min(count, MAX_COPIES * len(items))
+    return weighted_pick(items, count, rng) if count > 0 else []
+
+
+def r4_text_rows(items: list[dict], pics: list[dict], n_text: int, n_all: int, rng: random.Random) -> tuple[list[dict], dict]:
+    """The round-4 text mix: narrate and compose quotas from n_all, the rest 'other' (picture-turn rows count there)."""
+    pools = {"narrate": [], "compose": [], "other": []}
+    for it in items:
+        it = dict(it, weight=r4_weight(it))
+        pools[r4_bucket(it)].append(it)
+    n_nar, n_com = round(n_all * R4_NARRATE_SHARE), round(n_all * R4_COMPOSE_SHARE)
+    n_oth = n_text - n_nar - n_com - len(pics)
+    got = {"narrate": r4_pick(pools["narrate"], n_nar, rng), "compose": r4_pick(pools["compose"], n_com, rng),
+           "other": r4_pick(pools["other"], n_oth, rng)}
+    short = {k: want - len(got[k]) for k, want in (("narrate", n_nar), ("compose", n_com), ("other", n_oth)) if len(got[k]) < want}
+    # a thin bucket is topped up from "other" so the file keeps its size; the stats say which bucket was short
+    missing = sum(short.values())
+    if missing > 0:
+        spare = [it for it in pools["other"] if it["id"] not in {g["id"] for g in got["other"]}]
+        got["other"] += r4_pick(spare, missing, rng)
+    rows = got["narrate"] + got["compose"] + got["other"] + pics
+    return rows, {"quota": {"narrate": n_nar, "compose": n_com, "other": n_oth, "picture_turn": len(pics)},
+                  "got": {k: len(v) for k, v in got.items()}, "short": short,
+                  "pool": {k: len(v) for k, v in pools.items()}}
 
 
 def weighted_copies(items: list[dict], n: int, rng: random.Random) -> list[dict]:
@@ -517,13 +643,16 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--build-dir", default=os.environ.get("ASK_LORA_OUT"), help="dir with all.jsonl + meta.jsonl")
     ap.add_argument("--model", required=True, help="Gemma 4 E4B-it dir with the tokenizer + chat_template.jinja")
-    ap.add_argument("--out", default=str(HERE / "grpo_prompts.jsonl"))
+    ap.add_argument("--round", type=int, default=3, choices=(3, 4),
+                    help="4: the round-4 labels and mix (see the module docstring); data and output defaults move to ../../ask-lora-r4/")
+    ap.add_argument("--out", default=None, help="default: ./grpo_prompts.jsonl (round 4: ../../ask-lora-r4/grpo/grpo_prompts.jsonl)")
     ap.add_argument("--n", type=int, default=1500)
     ap.add_argument("--seed", type=int, default=20261101)
     ap.add_argument("--max-prompt-tokens", type=int, default=9000,
                     help="longer prompts are dropped (production prompts run 3k to 9k tokens, mostly tool schemas)")
     ap.add_argument("--include-valid", action="store_true", help="also use the SFT dev split's ids")
-    ap.add_argument("--vision-rows", default=str(HERE.parent / "vision" / "vision_rows.jsonl"))
+    ap.add_argument("--vision-rows", default=None,
+                    help="default: ../vision/vision_rows.jsonl (round 4: ../../ask-lora-r4/vision/vision_rows.jsonl)")
     ap.add_argument("--audio-rows", default=None,
                     help="default: ../audio/audio_rows.jsonl when every clip it lists exists, else the fallback ./audio/audio_rows.jsonl "
                          "(make_audio_rows.py) when that is complete; never a set with clips missing")
@@ -532,15 +661,26 @@ def main() -> int:
                          "silently losing whole audio categories would hollow out the RL mix and the regression guard")
     ap.add_argument("--mm-share", type=float, default=0.15, help="share of all rows that are vision or audio prompts (0 = text only)")
     ap.add_argument("--audio-share", type=float, default=0.4, help="share of the multimodal rows that are audio")
-    ap.add_argument("--picture-share", type=float, default=0.065,
-                    help="share of all rows that are picture shapes (picture_read + picture_turn_r3 steps), about 5-8%%; 0 = none")
+    ap.add_argument("--picture-share", type=float, default=None,
+                    help="share of all rows that are picture shapes (picture_read + picture_turn_r3 steps); default 0.065 "
+                         "(round 4: 0.04, the READ half counted inside --mm-share); 0 = none")
     ap.add_argument("--picture-read-frac", type=float, default=0.5, help="share of the picture rows that are READ calls")
     ap.add_argument("--require-picture", action="store_true",
                     help="refuse to export when a picture shape has no rows (default: warn and put the rows back into the text mix)")
-    ap.add_argument("--mm-dir", default=str(HERE / "mm"), help="where the images and clips of the picked rows are copied")
+    ap.add_argument("--mm-dir", default=None, help="where the images and clips of the picked rows are copied (default ./mm; round 4: next to --out)")
     a = ap.parse_args()
+    r4 = a.round >= 4
+    r4_root = HERE.parent.parent / "ask-lora-r4"
+    if r4 and not a.build_dir:
+        a.build_dir = str(r4_root / "data")
     if not a.build_dir:
         sys.exit("set ASK_LORA_OUT or pass --build-dir")
+    a.out = a.out or str((r4_root / "grpo" if r4 else HERE) / "grpo_prompts.jsonl")
+    a.vision_rows = a.vision_rows or str((r4_root / "vision" if r4 else HERE.parent / "vision") / "vision_rows.jsonl")
+    a.mm_dir = a.mm_dir or str((Path(a.out).parent if r4 else HERE) / "mm")
+    if a.picture_share is None:
+        a.picture_share = R4_PICTURE_SHARE if r4 else 0.065
+    Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     bd = Path(a.build_dir)
     R = load_render()
     sha = R.template_sha(a.model)
@@ -554,6 +694,15 @@ def main() -> int:
         valid_ids = {json.loads(l)["id"] for l in open(vm)}
     pairs = [(json.loads(e), json.loads(m)) for e, m in zip(open(bd / "all.jsonl"), open(bd / "meta.jsonl"))]
     items, dropped = [], Counter()
+    turns: dict = {}
+    tool_names: set = set()
+    if r4:
+        for ex, meta in pairs:
+            names = [tc["function"]["name"] for tc in (ex["messages"][-1].get("tool_calls") or ())]
+            turns.setdefault(turn_key(meta), []).append((meta["step"], names))
+            tool_names.update(t["function"]["name"] for t in ex.get("tools") or () if isinstance(t, dict) and "function" in t)
+            tool_names.update(names)
+        tool_names.discard(DISCOVERY)
     for ex, meta in pairs:
         if meta["id"] in valid_ids:
             dropped["valid split"] += 1
@@ -563,12 +712,16 @@ def main() -> int:
         if n_tok > a.max_prompt_tokens:
             dropped["too long"] += 1
             continue
-        label = classify(ex, meta)
+        label = classify(ex, meta, a.round, turns, sorted(tool_names))
         label["forced"] = row["prompt"].endswith(R.FORCED)
         label["think"] = bool(row["think"])
         label["ideal_completion"] = row["completion"]
         items.append({"id": meta["id"], "family": meta["family"], "prompt": row["prompt"], "label": label,
                       "weight": WEIGHTS.get(meta["family"], 1.0), "_tokens": n_tok})
+    if r4:
+        # r4 vision rows are weighted for proposals and injections (the r3 weights are module constants the row builders read)
+        VISION_WEIGHTS.update(R4_VISION_WEIGHTS)
+        PICTURE_READ_WEIGHTS.update(R4_PICTURE_READ_WEIGHTS)
     rng = random.Random(a.seed)
     drift: Counter = Counter()
     mm_picked, mm_dev, mm_pool = [], [], {}
@@ -592,6 +745,8 @@ def main() -> int:
     pt_picked = weighted_pick(turn_items, n_pt, rng) if turn_items else []
     mm_dev = list(prd)
     n_mm = round(a.n * a.mm_share)
+    if r4:
+        n_mm = max(0, n_mm - len(pr_picked))        # the READ rows are part of the 15%
     if n_mm:
         vt, vd = vision_rows(R, tok, Path(a.vision_rows), drift)
         at, ad = ([], [])
@@ -616,7 +771,11 @@ def main() -> int:
     mm_picked = mm_picked + pr_picked
     rng.shuffle(mm_picked)
     n_text = a.n - len(mm_picked)
-    picked = weighted_copies(items, n_text - len(pt_picked), rng) + pt_picked
+    r4_stats = None
+    if r4:
+        picked, r4_stats = r4_text_rows(items, pt_picked, n_text, a.n, rng)
+    else:
+        picked = weighted_copies(items, n_text - len(pt_picked), rng) + pt_picked
     text_rows = order(picked, rng)[:n_text]
     ordered = interleave(text_rows, mm_picked)
     ordered = ordered[: len(ordered) - len(ordered) % WHOLE_STEPS]      # whole optimizer steps, for 4, 8 and 16 prompts
@@ -640,7 +799,7 @@ def main() -> int:
     mm_rows = [r for r in ordered if r.get("modality") in ("vision", "audio")]
     pic_rows = [r for r in ordered if r["family"] in ("picture_read_r3", PICTURE_TURN_FAMILY)]
     stats = {
-        "source": str(bd), "pool": len(items), "dropped": dict(dropped), "rows": len(ordered),
+        "round": a.round, "r4_mix": r4_stats, "source": str(bd), "pool": len(items), "dropped": dict(dropped), "rows": len(ordered),
         "unique_ids": len({r["id"] for r in ordered}), "sha256": hashlib.sha256(Path(a.out).read_bytes()).hexdigest(),
         "modality": dict(Counter(r.get("modality", "text") for r in ordered)),
         "mm_share": round((len(mm_rows) - len(pr_picked)) / max(1, len(ordered)), 4),

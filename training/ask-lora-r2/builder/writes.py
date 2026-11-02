@@ -82,11 +82,18 @@ WRITE_ALLOW: dict[str, frozenset[str]] = {
                                   "reply_to_email"}),
     "reminders_r3": frozenset({"add_reminder", "update_reminder", "complete_reminder", "cancel_event",
                                "clear_reminders", "clear_past_reminders", "add_calendar_event"}),
+    # Round 4 (scen_r4_*.py; loaded only under ASK_LORA_ROUND=4). Keep in step with each WRITE_ALLOW_R4.
+    "gather_then_send_r4": frozenset({"send_message", "send_email", "schedule_send", "draft_email"}),
+    "lookup_answers_r4": frozenset({"remember"}),
+    "restraint_r4": frozenset({"organize_files", "move_path", "cancel_event", "manage_timers", "update_event",
+                               "clear_past_reminders", "send_email", "send_message"}),
 }
 
 # Families whose examples carry earlier conversation turns (seeded sessions): the
 # validator reads the LAST user message as the prompt and allows earlier user turns.
-MULTITURN = frozenset({"followup_r3"})
+MULTITURN = frozenset({"followup_r3",
+                       # round 4: seeded sessions (restraint_r4's ruled-out follow-ups; the session families)
+                       "restraint_r4", "session_chat_r4", "session_recall_r4", "instructions_r4"})
 
 # Picture turns card EVERY effect (policy.mark_picture_turn), reminders included: NEVER_CARD does not apply.
 PICTURE_TURN = frozenset({"picture_turn_r3"})
