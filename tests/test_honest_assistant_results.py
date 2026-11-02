@@ -254,15 +254,19 @@ def test_missing_required_read_does_not_claim_the_whole_task_finished(monkeypatc
     assert 'Everything requested is complete' not in text
 
 
-def test_existing_duplicate_effect_guard_still_keeps_the_first_receipt(monkeypatch):
+def test_a_failed_second_write_keeps_the_first_receipt(monkeypatch):
+    # Two distinct reminders both run; the second fails, so the turn stops,
+    # and the stop message still says the first one was set.
     first = 'Reminder set: “Blue form” — tomorrow in Wisp only; Apple Reminders was not changed (denied).'
     second = '(error: Green form native outcome unknown; nothing was confirmed.)'
     text, _, _ = run_receipts(monkeypatch, [
         ('add_reminder', {'title': 'Blue form', 'when_iso': '2099-10-21T09:15'}, first),
         ('add_reminder', {'title': 'Green form', 'when_iso': '2099-10-21T09:15'}, second)],
         'Both reminders were created in Apple Reminders.', prompt='Remind me about the blue and green forms.',
-        expected_calls=[('add_reminder', {'title': 'Blue form', 'when_iso': '2099-10-21T09:15'})])
-    assert first in text and second not in text and 'Both reminders were created' not in text
+        expected_calls=[('add_reminder', {'title': 'Blue form', 'when_iso': '2099-10-21T09:15'}),
+                        ('add_reminder', {'title': 'Green form', 'when_iso': '2099-10-21T09:15'})])
+    assert text.startswith(first) and 'Green form native outcome unknown' in text
+    assert 'did not return a verified success' in text and 'Both reminders were created' not in text
 
 
 def test_earlier_reminder_success_is_not_current_turn_creation(monkeypatch):

@@ -2701,6 +2701,14 @@ async def run_agent(
         previews = {name for name, outcome in latest.items() if outcome.status == "preview"}
         return set(group or ()) - (attempted_tools - previews)
 
+    def _earlier_effect_receipts(text: str) -> str:
+        """Put the receipts of writes that already succeeded this turn before a
+        stop message: a later write failing or being declined must not hide
+        that the earlier ones happened."""
+        done = [outcome.text for name, outcome in tool_outcomes
+                if name in _EFFECT_TOOLS and outcome.status == "succeeded"]
+        return "\n".join([*dict.fromkeys(done), text]) if done else text
+
     def _reminder_update_receipts() -> str | None:
         """Project update-only effects; model prose is not an effect receipt."""
         actions = [(name, outcome) for name, outcome in tool_outcomes
@@ -3052,7 +3060,8 @@ async def run_agent(
                 if _name in _TERMINAL_OUTBOUND_DENIALS:
                     return await _finish_denied_outbound(emit)
                 response = (_reminder_update_receipts() or
-                            "The requested action was not completed because approval was denied.")
+                            _earlier_effect_receipts(
+                                "The requested action was not completed because approval was denied."))
                 await emit({"type": "text", "text": response})
                 await emit({"type": "done"})
                 return response
@@ -3066,7 +3075,8 @@ async def run_agent(
             failed_tools.add(_name)
             if _direct_outcome.effect != "read":
                 response = (_reminder_update_receipts() or
-                            "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(_result))
+                            _earlier_effect_receipts(
+                                "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(_result)))
                 await emit({"type": "text", "text": response})
                 await emit({"type": "done"})
                 return response
@@ -5013,7 +5023,8 @@ async def run_agent(
                     if name in _TERMINAL_OUTBOUND_DENIALS:
                         return await _finish_denied_outbound(emit)
                     response = (_reminder_update_receipts() or
-                                "The requested action was not completed because approval was denied.")
+                                _earlier_effect_receipts(
+                                    "The requested action was not completed because approval was denied."))
                     await emit({"type": "text", "text": response})
                     await emit({"type": "done"})
                     return response
@@ -5029,7 +5040,8 @@ async def run_agent(
                     # Retrying a write after an uncertain response can create
                     # duplicates; let the user correct the arguments first.
                     response = (_reminder_update_receipts() or
-                                "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(result))
+                                _earlier_effect_receipts(
+                                    "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(result)))
                     await emit({"type": "text", "text": response})
                     await emit({"type": "done"})
                     return response
