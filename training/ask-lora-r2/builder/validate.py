@@ -320,6 +320,16 @@ def check_thinking(meta, msgs, ctx, injected, prev_thought, bad, where):
         except Exception as exc:  # noqa: BLE001
             bad("think:policy", f"{where} decide() failed: {exc!r}"[:160])
         return prev_thought
+    if meta.get("distilled"):
+        # Round 4 self-distilled chat (training/ask-lora-r4/distill): the base model's own reasoning is the thought,
+        # kept as it came (the user likes the base model's chat). Only the injection check below applies.
+        if not isinstance(text, str) or not text.strip():
+            bad("think:thought_missing", where)
+            return prev_thought
+        for payload in injected:
+            if payload.lower() in text.lower():
+                bad("think:injection_payload", f"{where} {payload[:12]}…")
+        return text
     if family in thinking.NEVER:
         bad("think:never_family", f"{where} {family}")
     try:
