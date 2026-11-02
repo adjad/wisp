@@ -1178,3 +1178,285 @@ def test_history_without_calls_leaves_no_subject(bench):
     turn = runner.prepare_turn(bench["client"], "and tmrw?",
                                [{"user": "what's on today?", "assistant": "Nothing.", "tools": "get_upcoming"}])
     assert not any(m["content"].startswith("Current subject") for m in turn.messages if m["role"] == "system")
+
+
+# ------------------------------------------------- session cases (multi-turn, instruction following)
+
+def test_answer_shape_checks():
+    from scripts.toolbench.scorer import _answer_problems as problems, looks_spanish
+    assert problems({"max_words": 5}, "Tomorrow at 3:30 PM.") == []
+    assert problems({"max_words": 3}, "Tomorrow at 3:30 PM.")
+    assert problems({"min_words": 4}, "Tomorrow at 3:30 PM.") == []
+    assert problems({"min_words": 5}, "Tomorrow at 3:30 PM.")
+    assert problems({"max_sentences": 1}, "Dr. Patel is at 3:30 p.m. tomorrow, i.e. after lunch.") == []
+    assert problems({"max_sentences": 1}, "It is 12.6. That is right.")
+    assert problems({"max_sentences": 1}, "- one\n- two")                       # lines count
+    assert problems({"max_sentences": 2}, "Yes! Really? Truly.")
+    assert problems({"starts_with_any": ["Yes", "No"]}, '  **"yes**, it is') == []
+    assert problems({"starts_with_any": ["yes", "no"]}, "Maybe so")
+    assert problems({"regex_all": [r"\b3:30\b", "dentist"]}, "Your DENTIST is at 3:30") == []
+    assert problems({"regex_all": ["dentist"]}, "nothing here")
+    assert problems({"regex_none": [r"\?"]}, "Want me to?") and problems({"regex_none": [r"\?"]}, "Done.") == []
+    assert problems({"no_bullets": True}, "One sentence. Another one.") == []
+    for listy in ("- a\n- b", "* a", "• a", "1. a\n2. b", "  2) a"):
+        assert problems({"no_bullets": True}, listy), listy
+    assert problems({"no_bullets": True}, "-5 degrees and 3.5 inches") == []     # not a list marker
+    assert problems({"all_lines_bulleted": True}, "- a\n\n- b") == []
+    assert problems({"all_lines_bulleted": True}, "Here:\n- a\n- b")
+    assert problems({"all_lines_bulleted": True}, "")
+    assert looks_spanish("Mañana tienes la cita con el dentista a las 3:30 PM.")
+    assert looks_spanish("Es el Everest, la montaña más alta del mundo.")
+    assert not looks_spanish("Tomorrow you have the dentist at 3:30 PM.")
+    assert not looks_spanish("14") and not looks_spanish("")
+    assert problems({"language_es": True}, "Your dentist is tomorrow.")
+    # Existing checks are untouched, and shape checks add to them.
+    assert problems({"contains_all": ["x"], "max_words": 1}, "y z") == [
+        "answer lacks 'x'", "answer has 2 words > 1"]
+    v = score(case(no_tool=True, answer={"max_sentences": 1}), traj(final="One. Two."),
+              registry_names=NAMES, today=TODAY)
+    assert v.labels == ["ungrounded_answer"] and not v.answer_ok
+
+
+def test_answer_shape_validation_and_binding():
+    ok = parse_case({"id": "x", "prompt": "p", "answer": {
+        "max_words": 12, "min_words": 2, "max_sentences": 1, "starts_with_any": ["yes"],
+        "regex_all": [r"\b{dentist_time}\b", r"\d{4,}"], "regex_none": [r"\?"], "no_bullets": True,
+        "language_es": False}}, "cat")
+    b = ok.bind({"dentist_time": "3:30 PM"})
+    assert b.answer["regex_all"] == [r"\b3:30 PM\b", r"\d{4,}"] and b.answer["max_words"] == 12
+    for bad in ({"max_words": "12"}, {"max_words": True}, {"max_sentences": -1}, {"starts_with_any": "yes"},
+                {"regex_all": ["("]}, {"no_bullets": "yes"}, {"min_words": 9, "max_words": 3},
+                {"no_bullets": True, "all_lines_bulleted": True}, {"max_word": 3}):
+        with pytest.raises(ValueError):
+            parse_case({"id": "x", "prompt": "p", "answer": bad}, "cat")
+
+
+def _session_cases():
+    return [c for c in load_cases() if c.category == "session"]
+
+
+def test_session_cases_are_a_held_out_multi_turn_gate():
+    from scripts.toolbench.world import make_facts
+    cases = _session_cases()
+    gate = [c for c in cases if c.split == "gate"]
+    assert len(gate) >= 40
+    # The only non-gate cases are host-gap probes (follow-ups production strips every tool from).
+    assert all(c.id.endswith("_bare") for c in cases if c.split != "gate")
+    prefs = [c for c in cases if "_pref_" in c.id]
+    assert len(prefs) >= 12
+    for c in cases:
+        assert 3 <= len(c.history) <= 10, c.id
+        for facts in (make_facts(None), make_facts(4)):
+            b = c.bind(facts)
+            assert sum(len(t.get("user", "")) + len(t.get("assistant", "")) for t in b.history) < 9000, c.id
+            assert all(t.get("user") and t.get("assistant") for t in b.history), c.id
+        assert c.expect or c.no_tool or c.answer, c.id
+    # Held out: every history user turn is in the shingle export, not just the prompt.
+    from scripts.toolbench.cases import heldout_shingles
+    facts = make_facts(None)
+    exported = {item["full"] for item in heldout_shingles(cases, [facts])["items"]}
+    import hashlib
+    import re
+    for c in cases[:6]:
+        b = c.bind(facts)
+        for user in [b.prompt] + [t["user"] for t in b.history]:
+            tokens = re.findall(r"[a-z0-9']+", user.lower())
+            assert hashlib.sha1(" ".join(tokens).encode()).hexdigest()[:12] in exported, (c.id, user)
+
+
+def test_session_history_assistant_turns_obey_their_own_preference(run_registry):
+    """Earlier assistant turns are visible training/eval context: they must already honor the
+    preference they sit under, and never name a tool."""
+    import re
+    from scripts.toolbench.scorer import _bullet_lines, _sentences, looks_spanish
+    tool_word = re.compile(r"\b(?:" + "|".join(sorted(n for n in run_registry if "_" in n)) + r")\b")
+    for c in _session_cases():
+        for i, t in enumerate(c.history):
+            assert not tool_word.search(t["assistant"]), (c.id, t["assistant"])
+        if c.id.startswith(("sess_pref_onesent", "sess_pref_noq", "sess_pref_nobullets", "sess_pref_es")):
+            for t in c.history[1:]:
+                a = t["assistant"]
+                if "onesent" in c.id:
+                    assert len(_sentences(a)) <= 1, (c.id, a)
+                if "noq" in c.id:
+                    assert "?" not in a, (c.id, a)
+                if "nobullets" in c.id:
+                    assert not _bullet_lines(a)[0], (c.id, a)
+                if "_es_" in c.id:
+                    assert looks_spanish(a), (c.id, a)
+
+
+def test_runner_seeds_every_history_turn_oldest_first(bench):
+    """prepare_turn seeds ALL earlier exchanges through production's session store, so a fact nine
+    exchanges back reaches the request (the host trims it as production does, not before)."""
+    runner = bench["runner"]
+    case_obj = next(c for c in _session_cases() if c.id == "sess_user_fact_9").bind(bench["world"].facts)
+    turn = runner.prepare_turn(bench["client"], case_obj.prompt, case_obj.history)
+    from service.memory import store
+    stored = [(t["role"], t["content"]) for t in store.turns_from(turn.sid, 0)]
+    assert stored == [(role, t[role]) for t in case_obj.history for role in ("user", "assistant")]
+    convo = [m for m in turn.messages if m["role"] in ("user", "assistant")]
+    users = [m["content"] for m in convo if m["role"] == "user"]
+    assert users[-1] == case_obj.prompt
+    assert users[:-1] == [t["user"] for t in case_obj.history]          # all nine, oldest first
+    assistants = [m["content"] for m in convo if m["role"] == "assistant"]
+    assert assistants == [t["assistant"] for t in case_obj.history]
+    assert any("Pell" in u for u in users)                               # the recalled fact survived trimming
+
+
+def test_session_cases_score_gold_and_failing_turns_end_to_end(bench):
+    """A gold plan passes the session cases through the full runner (history seeded, tools faked);
+    the failure each case exists for does not."""
+    world = bench["world"]
+    cases = {c.id: c.bind(world.facts) for c in _session_cases()}
+    names, today = bench["names"], world.today
+
+    def verdict(cid, plan):
+        bench["client"]._held, bench["client"]._stubbed = None, frozenset()   # one scripted turn per call
+        t = _run(bench, cases[cid], plan)
+        assert t["error"] is None and not t["timeout"], t["error"]
+        return score(cases[cid], t, registry_names=names, today=today)
+
+    # Recalled from the conversation: no tool; a tool call or a denial fails.
+    assert verdict("sess_user_fact_3", [{"text": "You said you're collecting Gus from Mrs. Castellanos."}]).passed
+    v = verdict("sess_user_fact_3", [{"text": "Nothing has been said in our chats before."}])
+    assert v.labels == ["ungrounded_answer"]
+    # A detail the earlier reply never gave: the tool must run again.
+    bal = world.facts["balance"]
+    assert verdict("sess_reread_amount", [{"calls": [("view_emails", {"query": world.facts["bank"]})]},
+                                          {"text": f"The statement balance is ${bal}."}]).passed
+    v = verdict("sess_reread_amount", [{"text": "I haven't read an amount yet."}])
+    assert not v.passed and "no_call" in v.labels
+    # Persistent preference: one sentence survives a tool turn; a three-sentence reply does not.
+    plan = [{"calls": [("get_upcoming", {"period": "tomorrow"})]}]
+    ok = verdict("sess_pref_onesent_tool", plan + [{"text": f"Tomorrow you have the dentist at {world.facts['dentist_time']}."}])
+    assert ok.passed, ok.labels
+    bad = verdict("sess_pref_onesent_tool", plan + [{"text": "Tomorrow you have the dentist. Also a standup. Anything else?"}])
+    assert not bad.passed and not bad.answer_ok
+    # Exact-text send: the words go out verbatim and only through a confirmation card.
+    friend = world.facts["friend_first"]
+    send = [{"calls": [("send_message", {"to": friend, "text": "bring the folding chairs, not the stools"})]},
+            {"text": "Sent."}]
+    v = verdict("sess_send_exact_user", send)
+    assert v.passed, v.labels
+
+
+def test_gate_session_cases_are_winnable_by_the_host(bench):
+    """A gate case that expects a tool must reach a turn that offers tools: the host classes a
+    follow-up with no personal marker as general knowledge and runs it tool-free (ask_direct), which
+    no model can pass. Such probes live in the dev split (`*_bare`), never in the gate."""
+    runner, facts = bench["runner"], bench["world"].facts
+    for c in _session_cases():
+        b = c.bind(facts)
+        route = runner.prepare_turn(bench["client"], b.prompt, b.history).route
+        if b.expect:
+            assert (not route["ask_direct"]) == (c.split == "gate"), (c.id, route["hints"])
+            if c.split == "gate":
+                forbidden = set(route["forbidden_tools"])
+                assert not {t for step in b.expect for t in step.tools} <= forbidden, c.id
+
+
+def test_gate_no_tool_session_cases_do_not_trip_the_personal_data_reprompt(bench):
+    """loop.py re-prompts a tool-free answer to a prompt asks_personal_data() matches ("did I say ...")
+    and replaces the final with 'I don't have that' unless a source ran, so a conversation-recall case
+    phrased that way would be unwinnable without a tool. The gate phrases recall without that trigger;
+    sess_user_fact_said_4 keeps the 'did I say' form and allows a lookup instead."""
+    from service.model_only import asks_personal_data
+    facts = bench["world"].facts
+    for c in _session_cases():
+        if c.no_tool and c.split == "gate":
+            assert not asks_personal_data(c.bind(facts).prompt), c.id
+
+
+def test_select_ids_accepts_wildcards():
+    from scripts.toolbench.cases import select
+    cases = load_cases()
+    prefs = select(cases, only="session", ids="*_pref_*")
+    assert len(prefs) >= 12 and all("_pref_" in c.id for c in prefs)
+    assert {c.id for c in select(cases, ids="sess_user_fact_3,mem_recall")} == {"mem_recall", "sess_user_fact_3"}
+    assert select(cases, ids="no_such_*") == []
+
+
+# ------------------------------- session answer specs: the wrong answers they must catch (review fixes)
+
+def _session_problems(cid, text, seed=None):
+    from scripts.toolbench.scorer import _answer_problems
+    from scripts.toolbench.world import make_facts
+    c = next(c for c in _session_cases() if c.id == cid).bind(make_facts(seed))
+    return _answer_problems(c.answer, text)
+
+
+def test_answer_text_folding_and_whole_word_openers():
+    from scripts.toolbench.scorer import _answer_problems as problems
+    # "6:40 PM", "6:40 p.m." and "6:40pm" are one time; a curly apostrophe is a straight one.
+    for written in ("Friday at 6:40 PM.", "6:40 p.m.", "6:40pm", "6:40  PM"):
+        assert problems({"contains_all": ["6:40pm"]}, written) == [], written
+    assert problems({"contains_all": ["6:40pm"]}, "6:40 amazing") != []
+    assert problems({"contains_any": ["don't have"]}, "I don’t have it.") == []
+    assert problems({"regex_all": ["don't have"]}, "I don’t have it.") == []
+    # The opener is a whole word.
+    for bad in ("Nothing on Monday; it lands Friday.", "Not sure, it lands Friday", "Yesterday it moved"):
+        assert problems({"starts_with_any": ["no", "yes"]}, bad) != [], bad
+    for good in ("No, it lands Friday.", "No.", "no - Friday", "**Yes**, it did", "No—Friday"):
+        assert problems({"starts_with_any": ["no", "yes"]}, good) == [], good
+    assert problems({"min_sentences": 2}, "One only.") != [] and problems({"min_sentences": 2}, "One. Two.") == []
+
+
+def test_session_specs_reject_the_wrong_answers_reviewers_found():
+    # Every flight-time case accepts the natural way to write the time.
+    for seed in (None, 1, 2, 3):
+        from scripts.toolbench.world import make_facts
+        t = make_facts(seed)["flight_time"]
+        spaced = t[:-2] + " " + t[-2:].upper()
+        assert _session_problems("sess_cap_justtime", spaced, seed) == [], (seed, spaced)
+        assert _session_problems("sess_really_flight", f"Yes, Friday at {spaced}.", seed) == [], seed
+    # Honest "I don't have it" passes in several wordings, invented answers do not.
+    honest = ["I don't have a confirmation number for it.", "I don’t have a confirmation number.",
+              "There's no confirmation number in our chat.", "You haven't told me a confirmation number.",
+              "Nothing was said about a confirmation number, just the name and the time."]
+    for text in honest:
+        assert _session_problems("sess_never_6", text) == [], text
+    invented = ["Your confirmation number is BW-KX92AB. Let me know if you need anything else.",
+                "It is 55012. I didn't want to forget to tell you.", "Let me know the number and I will note it."]
+    for text in invented:
+        assert _session_problems("sess_never_6", text), text
+    for text in ("It's Green Thumb Nursery on Main Street, they're open until six. Let me know if you want directions.",
+                 "The nursery is Green Thumb Nursery.", "Call 415-555-0134."):
+        assert _session_problems("sess_never_3", text), text
+    assert _session_problems("sess_never_3", "I don't have the nursery's phone number, you haven't mentioned which one.") == []
+    for text in ("Your pottery class starts at 7 in the evening. Let me know if that changes.",
+                 "It starts at 18:30. I didn't want to forget to tell you.", "Class begins at 6pm."):
+        assert _session_problems("sess_never_9", text), text
+    assert _session_problems("sess_never_9", "I don't have a start time for it; you only said you started last month.") == []
+    # Recall of the FIRST question is not recall of any later one.
+    assert _session_problems("sess_first_ask_8", "The first thing you asked was how big a tank a goldfish needs.")
+    assert _session_problems("sess_first_ask_8", "You first asked what a good name for a goldfish was.") == []
+    assert _session_problems("sess_first_ask_5", "You asked for a buttermilk substitute with a tablespoon of lemon juice.")
+    assert _session_problems("sess_first_ask_5", "You first asked how many tablespoons are in a quarter cup.") == []
+    # The marathon distance in the history is not the converted answer.
+    assert _session_problems("sess_fix_unit", "10 miles is 16.1 km. A marathon is 26.2 miles.")
+    assert _session_problems("sess_fix_unit", "10 km is about 6.21 miles.") == []
+    # A bare three-sentence explanation is "back to the full answer"; a leftover one-liner is not.
+    assert _session_problems("sess_pref_lifted_onesent",
+                             "A heat pump moves heat instead of making it. It pulls warmth from the outside air "
+                             "and pumps it indoors. In summer the cycle runs backwards.") == []
+    assert _session_problems("sess_pref_lifted_onesent", "A heat pump moves heat from outside to inside.")
+    # The weather half needs the forecast, which only a read can supply.
+    assert _session_problems("sess_multi_cal_weather", "Tomorrow you have a dentist appointment. It will be sunny.")
+    assert _session_problems("sess_multi_cal_weather", "Tomorrow you have a dentist appointment, and the high is 74.") == []
+    # An opener of "No" is a word.
+    assert _session_problems("sess_yn_pref_no", "Nothing on Monday; it lands Friday.")
+    assert _session_problems("sess_yn_pref_no", "No, it lands Friday at 6:40 PM.") == []
+
+
+def test_long_session_cases_carry_realistic_history_volume():
+    """The `_long` cases exist because r3 failed recall and preferences under long assistant replies: 8
+    exchanges, 60+ word replies, 2,000+ characters, still inside the production budget."""
+    from scripts.toolbench.world import make_facts
+    longs = [c for c in _session_cases() if c.id.endswith("_long")]
+    assert len(longs) >= 7
+    assert any("_pref_" in c.id for c in longs) and any("fact" in c.id for c in longs)
+    for c in longs:
+        b = c.bind(make_facts(None))
+        total = sum(len(t["user"]) + len(t["assistant"]) for t in b.history)
+        assert 2000 <= total < 9000 and len(b.history) >= 7, (c.id, total)

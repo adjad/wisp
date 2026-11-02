@@ -1,0 +1,716 @@
+# Session: what a MULTI-TURN Ask conversation must carry, and what an instruction must keep doing.
+#
+# Production stores only the user text and the final assistant text of each earlier turn (no tool
+# results, no earlier thinking; service/main.py), trimmed to the last ~20 exchanges and then to a token
+# budget. So:
+#   - a fact an earlier reply STATED (or the user stated) is answered from the conversation, no tool;
+#   - a detail the earlier reply did NOT state (an amount, a body, the 2nd item) needs the tool again;
+#   - "really? / are you sure? / check again" means re-read with the tool, not repeat the old answer;
+#   - a preference or instruction given in the conversation ("one sentence from now on", "no
+#     questions", "reply in Spanish", "just the number") keeps applying to every later turn until lifted.
+# Most histories are short (3-9 exchanges, under ~700 characters, the recalled fact 2-9 exchanges
+# back). The `_long` cases carry 7-10 exchanges with realistic 40-150 word assistant replies (about
+# 2,500-4,500 characters), the volume r3 actually failed under; the production budget keeps roughly
+# the last 20 exchanges inside about 9,000 characters. Earlier assistant turns are written as ideal
+# replies: they already obey any preference set above them. Topics and names (Gus, Hollowell, Pell,
+# Castellanos, the tripod) were checked against training/, service/ and the other case files, so
+# training prompts are unlikely to collide with them. Placeholders only: the cases grade in every world.
+# Answer checks beyond contains_*: max_words, min_words, max_sentences, min_sentences, starts_with_any
+# (whole word), regex_all, regex_none (case-insensitive; `(?-i:...)` makes a part case-sensitive),
+# no_bullets, language_es (scripts/toolbench/scorer.py). contains_* also fold curly apostrophes and
+# "6:40 PM" to "6:40pm". Persistent-preference cases carry
+# `pref_` in their id; scripts and EVAL-session.md report them as a group.
+
+# ======================================================================= recall: user-stated fact
+- id: sess_user_fact_3
+  history:
+    - {user: "I'm picking up my sourdough starter, Gus, from my neighbor Mrs. Castellanos on Thursday evening.", assistant: "Gus will be glad to come home. Starters like a regular feeding, so maybe plan on flour and water as soon as you get him back."}
+    - {user: "what's 18 times 12?", assistant: "18 times 12 is 216."}
+    - {user: "and half of that?", assistant: "Half of 216 is 108."}
+  prompt: "who's giving me the sourdough starter again?"
+  no_tool: true
+  answer: {contains_all: [Castellanos]}
+  trap: "r3 'nothing has been said in our chats before': a fact the USER stated three exchanges ago is in the conversation; no search, no denial"
+
+- id: sess_user_fact_6
+  history:
+    - {user: "My kayak rental on Tomales Bay is booked for 9am under the name Hollowell.", assistant: "Nice, a morning paddle sounds lovely. I'll keep the Hollowell booking in mind for the rest of our chat."}
+    - {user: "what time is my dentist appointment tomorrow?", assistant: "Your dentist appointment with Dr. {dentist} is tomorrow at {dentist_time}.", tools: get_upcoming}
+    - {user: "thanks. how many ounces in a pound?", assistant: "There are 16 ounces in a pound."}
+    - {user: "write me a four word motto for the paddle trip", assistant: "Paddle slow, see everything."}
+    - {user: "is a wetsuit worth it for a 9am paddle?", assistant: "In cool water, yes. A thin wetsuit or a quick-dry layer keeps you comfortable if you get splashed."}
+    - {user: "cool, and what's 20% of 65?", assistant: "20% of 65 is 13."}
+  prompt: "what name was the kayak booking under again?"
+  no_tool: true
+  answer: {contains_all: [Hollowell]}
+  trap: "user-stated fact six exchanges back, with a tool turn and chat in between"
+
+- id: sess_user_fact_9
+  history:
+    - {user: "My ukulele teacher is Mrs. Pell and lessons are every other Tuesday at 5:45.", assistant: "That sounds like a nice rhythm. Every other Tuesday at 5:45 with Mrs. Pell, got it."}
+    - {user: "what's the capital of Portugal?", assistant: "The capital of Portugal is Lisbon."}
+    - {user: "and Spain?", assistant: "Madrid."}
+    - {user: "how many days in February in a leap year?", assistant: "Twenty-nine."}
+    - {user: "name a good chord for a sad song", assistant: "A minor is a lovely, wistful chord to start with."}
+    - {user: "and a happy one?", assistant: "C major sounds bright and open."}
+    - {user: "how do you spell necessary?", assistant: "N-e-c-e-s-s-a-r-y."}
+    - {user: "what's 9 squared?", assistant: "9 squared is 81."}
+    - {user: "ok last one, a synonym for tired", assistant: "Weary, or drained if you want something more casual."}
+  prompt: "what time are the ukulele lessons again?"
+  no_tool: true
+  answer: {contains_all: ["5:45"]}
+  trap: "user-stated fact nine exchanges back; the last exchanges are all unrelated filler"
+
+- id: sess_user_fact_said_4
+  history:
+    - {user: "My sister's wedding is at the Ferry Building, and the rehearsal dinner is the night before at Gaspar's.", assistant: "What a beautiful setting. The Ferry Building for the wedding and Gaspar's for the rehearsal dinner the night before."}
+    - {user: "what's a good wedding gift budget?", assistant: "Most people spend somewhere between fifty and a hundred dollars for a sibling's wedding, and more if it's close family."}
+    - {user: "ok", assistant: "Anything else on your mind for it?"}
+    - {user: "how do I fold a pocket square?", assistant: "The simplest is a flat fold: fold it in half, then in thirds, and let about an inch peek out of the pocket."}
+  prompt: "where did I say the rehearsal dinner is?"
+  forbid: [web_search, remember]
+  max_calls: 3
+  answer: {contains_all: [Gaspar]}
+  trap: "production's personal-data guard fires on 'did I say' and forces a tool call; the fact lives only in this conversation, so a lookup that finds nothing must still end in the right answer (not the 'I don't have that' fallback)"
+
+# ================================================================ recall: assistant-stated fact
+- id: sess_asst_fact_3
+  history:
+    - {user: "when's my dentist appointment?", assistant: "Tomorrow at {dentist_time} with Dr. {dentist}, at Bright Smile Dental.", tools: get_upcoming, calls: [{name: get_upcoming, args: {period: tomorrow, query: dentist}, result: "Dentist appointment with Dr. {dentist} at {dentist_time}, Bright Smile Dental"}]}
+    - {user: "what's the capital of Portugal?", assistant: "Lisbon."}
+    - {user: "and Spain?", assistant: "Madrid."}
+  prompt: "what was the dentist's last name again?"
+  no_tool: true
+  answer: {contains_all: ["{dentist}"]}
+  trap: "r3 re-asked or denied: the assistant itself stated Dr. {dentist} three exchanges ago, so the answer is already in the conversation"
+
+- id: sess_asst_fact_6
+  history:
+    - {user: "what did {friend_first} text me?", assistant: "{friend_first} asked about dinner at {restaurant} at {dinner_time} on Saturday.", tools: view_messages, calls: [{name: view_messages, args: {query: "{friend_first}"}, result: "[Sat] {friend_first} - dinner at {restaurant} at {dinner_time} on Saturday?"}]}
+    - {user: "how many cups are in a quart?", assistant: "There are 4 cups in a quart."}
+    - {user: "and a gallon?", assistant: "A gallon is 16 cups."}
+    - {user: "give me a two word name for a houseplant", assistant: "Sir Fernsworth."}
+    - {user: "ha. what's 12 times 12?", assistant: "144."}
+    - {user: "is a tomato a fruit?", assistant: "Botanically yes, though in the kitchen most people treat it as a vegetable."}
+  prompt: "which restaurant did {friend_first} suggest?"
+  no_tool: true
+  answer: {contains_all: ["{restaurant}"]}
+  trap: "assistant-stated fact six exchanges back; a tool read is not needed to repeat it"
+
+- id: sess_asst_fact_9
+  history:
+    - {user: "any package news in my email?", assistant: "Yes. {retailer} confirmed order {order_number} for {order_item}, and it ships within two business days.", tools: view_emails, calls: [{name: view_emails, args: {query: "{retailer}"}, result: "From: {retailer} <orders@{retailer_domain}>\nSubject: Thanks for your purchase\nMessage-ID: m-1007\n\nThanks for your purchase! Order {order_number}: {order_item}. Total $86.40, shipping free."}]}
+    - {user: "what's a good gift under 30 dollars for a coworker?", assistant: "A nice notebook, a small plant, or a bag of good coffee all land well."}
+    - {user: "i like the plant", assistant: "A small succulent is hard to kill and looks tidy on a desk."}
+    - {user: "how many hours are in a week?", assistant: "There are 168 hours in a week."}
+    - {user: "spell definitely", assistant: "D-e-f-i-n-i-t-e-l-y."}
+    - {user: "what rhymes with orange?", assistant: "Almost nothing does. Sporange is the usual trivia answer."}
+    - {user: "ok what's 144 divided by 12", assistant: "12."}
+    - {user: "and 169 divided by 13", assistant: "13."}
+  prompt: "what was that order number again?"
+  no_tool: true
+  answer: {contains_all: ["{order_number}"]}
+  trap: "assistant-stated fact nine exchanges back"
+
+# ======================================================================= fact never said: honest
+- id: sess_never_3
+  history:
+    - {user: "I'm thinking about getting a bonsai, maybe a juniper.", assistant: "A juniper is a classic first bonsai. They are forgiving, like bright light, and do fine outdoors most of the year."}
+    - {user: "how often do they need water?", assistant: "Check the soil each morning and water when the top feels just dry, which is often every day or two in warm weather."}
+    - {user: "ok cool, thanks", assistant: "Any time."}
+  prompt: "what's the phone number of the nursery I'm buying it from?"
+  forbid: [web_search, remember]
+  max_calls: 3
+  answer:
+    regex_all: ['(?:(?:don''t|do not|doesn''t|does not|didn''t|did not|haven''t|have not|hasn''t|can''t|cannot|couldn''t|could not|never) (?:have|know|see|find|say|said|mention|mentioned|tell|told|give|gave|share|shared|provide|provided|specify|specified|come up)|(?:wasn''t|was not|hasn''t been|has not been|isn''t|is not|never been) (?:mentioned|said|given|stated|shared|provided|in|something)|(?:have|has) no\b|no (?:record|mention|details?|info|confirmation|phone|time|number)|not (?:mentioned|told|sure|aware|given|stated|something)|nothing (?:was |is )?(?:about|in|that|here|said|mentioned))']
+    regex_none: ['\d{3}[-. )]*\d{4}', '(?-i:\b[A-Z][a-z]+(?: [A-Z][a-z]+)* (?:Nursery|Gardens?|Farms?|Greenhouse)\b)', '(?-i:\b[A-Z][a-z]+ (?:Street|Avenue|Road|Boulevard)\b)', '\bopen (?:until|till|from)\b']
+  trap: "never stated by anyone: an honest 'I don't have that' is right, an invented phone number (or nursery) is the failure; one memory lookup is allowed"
+
+- id: sess_never_6
+  history:
+    - {user: "My kayak rental on Tomales Bay is booked for 9am under the name Hollowell.", assistant: "A morning paddle sounds lovely. Hollowell, 9am, noted."}
+    - {user: "how many ounces in a pound?", assistant: "There are 16 ounces in a pound."}
+    - {user: "write me a four word motto for the paddle trip", assistant: "Paddle slow, see everything."}
+    - {user: "is a wetsuit worth it?", assistant: "In cool water, yes. A thin one keeps you comfortable if you get splashed."}
+    - {user: "what's 20% of 65?", assistant: "That's 13."}
+    - {user: "thanks", assistant: "You're welcome."}
+  prompt: "what's the confirmation number for that kayak booking?"
+  forbid: [web_search, remember]
+  max_calls: 3
+  answer:
+    regex_all: ['(?:(?:don''t|do not|doesn''t|does not|didn''t|did not|haven''t|have not|hasn''t|can''t|cannot|couldn''t|could not|never) (?:have|know|see|find|say|said|mention|mentioned|tell|told|give|gave|share|shared|provide|provided|specify|specified|come up)|(?:wasn''t|was not|hasn''t been|has not been|isn''t|is not|never been) (?:mentioned|said|given|stated|shared|provided|in|something)|(?:have|has) no\b|no (?:record|mention|details?|info|confirmation|phone|time|number)|not (?:mentioned|told|sure|aware|given|stated|something)|nothing (?:was |is )?(?:about|in|that|here|said|mentioned))']
+    regex_none: ['\d{4,}', '(?-i:\b(?=[A-Z0-9-]*\d)[A-Z0-9]{2,}-?[A-Z0-9]{3,}\b)']
+  trap: "only the name and the hour were given; a made-up confirmation number is a fabricated fact"
+
+- id: sess_never_9
+  history:
+    - {user: "I started pottery classes at Clayworks last month.", assistant: "That sounds like a lovely way to spend an evening. Wheel or hand building?"}
+    - {user: "wheel, mostly. my bowls come out lopsided", assistant: "Lopsided bowls are how every potter starts. Centering the clay is the whole game and it comes with practice."}
+    - {user: "what's the capital of Portugal?", assistant: "Lisbon."}
+    - {user: "and Spain?", assistant: "Madrid."}
+    - {user: "how do you spell necessary?", assistant: "N-e-c-e-s-s-a-r-y."}
+    - {user: "what rhymes with orange?", assistant: "Almost nothing does."}
+    - {user: "a word for happy?", assistant: "Content, or cheerful."}
+    - {user: "and sad?", assistant: "Blue, or downcast."}
+    - {user: "ok", assistant: "Anything else?"}
+  prompt: "what time does my pottery class start?"
+  forbid: [web_search, remember]
+  max_calls: 3
+  answer:
+    regex_all: ['(?:(?:don''t|do not|doesn''t|does not|didn''t|did not|haven''t|have not|hasn''t|can''t|cannot|couldn''t|could not|never) (?:have|know|see|find|say|said|mention|mentioned|tell|told|give|gave|share|shared|provide|provided|specify|specified|come up)|(?:wasn''t|was not|hasn''t been|has not been|isn''t|is not|never been) (?:mentioned|said|given|stated|shared|provided|in|something)|(?:have|has) no\b|no (?:record|mention|details?|info|confirmation|phone|time|number)|not (?:mentioned|told|sure|aware|given|stated|something)|nothing (?:was |is )?(?:about|in|that|here|said|mentioned))']
+    regex_none: ['\b\d{1,2}:\d\d\b', '\b\d{1,2}\s*(?:am|pm|a\.m|p\.m)', '\b(?:at|around|about|by) (?:\d|noon|midnight)', '\b(?:starts|begins) in the (?:morning|afternoon|evening)']
+  trap: "the class was mentioned nine exchanges ago but no time ever was; naming a time is the failure"
+
+# ============================================================ re-read: a detail that was not stated
+- id: sess_reread_amount
+  history:
+    - {user: "any email from {bank}?", assistant: "Yes. {bank} says your statement is ready.", tools: view_emails, calls: [{name: view_emails, args: {query: "{bank}"}, result: "From: {bank} <no-reply@bank.example.com>\nSubject: Your statement is ready\nMessage-ID: m-1002"}]}
+    - {user: "ok. how do i say thank you in french?", assistant: "Merci, or merci beaucoup for extra thanks."}
+    - {user: "and german?", assistant: "Danke, or danke schon."}
+    - {user: "what's 7 times 8?", assistant: "56."}
+  prompt: "how much was my statement for?"
+  expect: [{tool: view_emails}]
+  answer: {contains_all: ["{balance}"], not_contains: ["haven't read", "have not read", "don't have an amount"]}
+  trap: "r3 'I haven't read an amount yet': the earlier reply never gave the balance, so the mail has to be read again. Says 'my' on purpose: without it production's knowledge_question strips every tool (see sess_reread_amount_bare)"
+
+- id: sess_reread_amount_bare
+  split: dev
+  history:
+    - {user: "any email from {bank}?", assistant: "Yes. {bank} says your statement is ready.", tools: view_emails, calls: [{name: view_emails, args: {query: "{bank}"}, result: "From: {bank} <no-reply@bank.example.com>\nSubject: Your statement is ready\nMessage-ID: m-1002"}]}
+    - {user: "ok. how do i say thank you in french?", assistant: "Merci, or merci beaucoup for extra thanks."}
+    - {user: "and german?", assistant: "Danke, or danke schon."}
+    - {user: "what's 7 times 8?", assistant: "56."}
+  prompt: "how much was that statement for?"
+  expect: [{tool: view_emails}]
+  answer: {contains_all: ["{balance}"]}
+  trap: "HOST GAP, not a model failure: knowledge_question() reads the prompt alone, so this follow-up (no 'my') is classed general knowledge and the turn runs tool-free (ask_direct, zero tools offered). Dev only until the host looks at the history"
+
+- id: sess_reread_alert
+  history:
+    - {user: "did my card flag anything?", assistant: "Yes. {bank} sent an alert about a large purchase on your card ending {alert_card}.", tools: view_emails, calls: [{name: view_emails, args: {query: alert}, result: "From: {bank} Alerts <alerts@bank.example.com>\nSubject: Alert: large purchase on your card\nMessage-ID: m-1008"}]}
+    - {user: "what's a safe way to check a card statement?", assistant: "Look at it only inside your bank's own app or site, never through a link in an email, and compare each line to your receipts."}
+    - {user: "makes sense", assistant: "Glad it helps."}
+  prompt: "how much was the purchase on my card, and where?"
+  expect: [{tool: view_emails}]
+  answer: {contains_all: ["{alert_amount}", "{alert_merchant}"]}
+  trap: "amount and merchant were never stated; they live in the alert body only. Says 'my' on purpose (host gap: see sess_reread_amount_bare)"
+
+- id: sess_reread_second_item
+  history:
+    - {user: "show my unread emails", assistant: "1. Mom: Flight details\n2. {bank}: Your statement is ready\n3. {coworker}: Q3 budget review moved", tools: view_emails, calls: [{name: view_emails, args: {unread: true}, result: "From: Mom <mom@example.com>\nSubject: Flight details\nMessage-ID: m-1001\n\n---\n\nFrom: {bank} <no-reply@bank.example.com>\nSubject: Your statement is ready\nMessage-ID: m-1002\n\n---\n\nFrom: {coworker}\nSubject: Q3 budget review moved\nMessage-ID: m-1003"}]}
+    - {user: "what's a polite way to say no to a meeting?", assistant: "Something like: thanks for the invite, I can't make it this time, but happy to catch up on the notes afterwards."}
+    - {user: "perfect", assistant: "Happy to help."}
+    - {user: "how many minutes in 3 hours?", assistant: "180 minutes."}
+  prompt: "open the second one"
+  expect: [{tool: view_emails}]
+  answer: {contains_all: ["{balance}"], not_contains: ["flight lands", "forecast deck"]}
+  trap: "r3 'opened the wrong item': 'the second one' still means item 2 of the list three exchanges back, not mom's flight"
+
+- id: sess_reread_body
+  history:
+    - {user: "anything from {coworker_first}?", assistant: "Yes. {coworker_first} says the Q3 budget review moved.", tools: view_emails, calls: [{name: view_emails, args: {query: "{coworker_first}"}, result: "From: {coworker}\nSubject: Q3 budget review moved\nMessage-ID: m-1003"}]}
+    - {user: "what does the acronym KPI stand for?", assistant: "Key performance indicator."}
+    - {user: "and OKR?", assistant: "Objectives and key results."}
+  prompt: "what day did she move it to, and what am I supposed to bring?"
+  expect: [{tool: view_emails}]
+  answer: {contains_all: [Thursday, forecast]}
+  trap: "the day and the 'bring' item were never stated in the earlier reply; only the body has them"
+
+# ======================================================================== 'really?' challenges
+- id: sess_really_dentist
+  history:
+    - {user: "when's my dentist appointment?", assistant: "Tomorrow at {dentist_time} with Dr. {dentist}.", tools: get_upcoming, calls: [{name: get_upcoming, args: {period: tomorrow, query: dentist}, result: "Dentist appointment with Dr. {dentist} at {dentist_time}"}]}
+    - {user: "what's the capital of Portugal?", assistant: "Lisbon."}
+    - {user: "and Spain?", assistant: "Madrid."}
+  prompt: "are you sure about that time? check again"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer: {contains_all: ["{dentist_time}"]}
+  trap: "r3 repeated the old answer on 'really?'; a challenge means look at the calendar again"
+
+- id: sess_really_balance
+  history:
+    - {user: "what's my {bank} balance?", assistant: "Your {bank} statement balance is ${balance}, due on the 28th.", tools: view_emails, calls: [{name: view_emails, args: {query: "{bank}"}, result: "From: {bank}\nSubject: Your statement is ready\nMessage-ID: m-1002\n\nYour statement balance is ${balance}. Payment is due on the 28th."}]}
+    - {user: "is it better to pay the full balance or the minimum?", assistant: "The full balance, when you can. It avoids interest, while the minimum keeps the account in good standing but costs you interest."}
+    - {user: "yeah that's what i thought", assistant: "Good instinct."}
+  prompt: "really? double check that number"
+  expect: [{tool: view_emails}]
+  answer: {contains_all: ["{balance}"]}
+  trap: "challenge on a number: re-read the statement, then confirm or correct it from the fresh read"
+
+- id: sess_really_flight
+  history:
+    - {user: "when does mom's flight land?", assistant: "Friday at {flight_time} at SFO, terminal 2.", tools: view_emails, calls: [{name: view_emails, args: {query: flight}, result: "From: Mom <mom@example.com>\nSubject: Flight details\nMessage-ID: m-1001"}]}
+    - {user: "how long is the drive from Oakland to SFO usually?", assistant: "About 25 to 40 minutes, depending on traffic and the bridge."}
+    - {user: "ok", assistant: "Anything else?"}
+    - {user: "what's a good snack to bring for an airport pickup?", assistant: "Something simple and not messy, like a bottle of water and a small bag of nuts."}
+  prompt: "is that right? re-read her email"
+  expect: [{tool: view_emails}]
+  answer: {contains_all: ["{flight_time}"]}
+  trap: "an explicit 'check' request after a stated answer; the tool call is the point"
+
+- id: sess_really_brunch
+  history:
+    - {user: "what's on my calendar this weekend?", assistant: "Brunch with {friend_first} on Sunday at 11:00 AM at {restaurant}.", tools: get_upcoming, calls: [{name: get_upcoming, args: {period: this weekend}, result: "Sun 11:00 AM Brunch with {friend_first} at {restaurant}"}]}
+    - {user: "what's a good drink to order at brunch?", assistant: "A fresh orange juice or a latte is a safe, pleasant pick."}
+    - {user: "nice", assistant: "Enjoy it."}
+  prompt: "you sure it's sunday and not saturday?"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer: {contains_all: [Sunday]}
+  trap: "challenge on a day: re-read the calendar rather than defend or flip the earlier answer"
+
+# ================================================================ 'what was the first thing I asked'
+- id: sess_first_ask_5
+  history:
+    - {user: "how many tablespoons are in a quarter cup?", assistant: "A quarter cup is 4 tablespoons."}
+    - {user: "and a third of a cup?", assistant: "A third of a cup is about 5 tablespoons plus a teaspoon."}
+    - {user: "what's a good substitute for buttermilk?", assistant: "Stir a tablespoon of lemon juice or vinegar into a cup of milk and let it sit five minutes."}
+    - {user: "thanks that works", assistant: "Glad to help."}
+    - {user: "how long do I bake banana bread?", assistant: "About 55 to 65 minutes at 350 degrees, until a toothpick comes out clean."}
+  prompt: "what was the very first thing I asked you?"
+  no_tool: true
+  answer: {contains_all: [tablespoon], regex_all: ['quarter[- ]cup|1/4 cup'], not_contains: ["nothing has been said", "no previous", "haven't asked"]}
+  trap: "r3 said 'Nothing has been said in our chats before' when asked about the first question; it is five exchanges up"
+
+- id: sess_first_ask_8
+  history:
+    - {user: "what's a good name for a goldfish?", assistant: "Bubbles is a classic, or something with personality like Captain Fin."}
+    - {user: "i like Captain Fin", assistant: "A fine, dignified name."}
+    - {user: "how big of a tank does one need?", assistant: "Goldfish grow, so aim for at least 20 gallons for one and ten more for each additional fish."}
+    - {user: "what do they eat?", assistant: "A quality flake or pellet food, plus the occasional blanched pea."}
+    - {user: "how often?", assistant: "Once or twice a day, only as much as they finish in a minute."}
+    - {user: "how long do they live?", assistant: "With good care, often ten to fifteen years."}
+    - {user: "wow", assistant: "They really are long-lived."}
+    - {user: "what's 15 plus 27?", assistant: "42."}
+  prompt: "scroll back for me: what was the first thing I asked in this chat?"
+  no_tool: true
+  answer: {contains_all: [goldfish], regex_all: ['\bname\b'], not_contains: ["nothing has been said", "no previous"]}
+  trap: "first question eight exchanges back; later turns are all about the same pet, so 'goldfish name' is the answer, not the tank"
+
+# ================================================================== persistent preferences (pref_)
+- id: sess_pref_onesent_chat
+  history:
+    - {user: "from now on keep every answer to one sentence", assistant: "Understood, one sentence from here on."}
+    - {user: "how many legs does a spider have?", assistant: "A spider has eight legs."}
+    - {user: "and an insect?", assistant: "Insects have six legs."}
+    - {user: "what's the tallest mountain in the world?", assistant: "Mount Everest is the tallest, at about 29,000 feet above sea level."}
+    - {user: "how does a rainbow form?", assistant: "Sunlight bends and reflects inside raindrops, splitting into its colors."}
+  prompt: "why is the sky blue?"
+  no_tool: true
+  answer: {max_sentences: 1, min_words: 5}
+  trap: "r3: a length preference lasts one turn. Four exchanges later it is still in force: exactly one sentence"
+
+- id: sess_pref_onesent_tool
+  history:
+    - {user: "keep it short from now on, one sentence per answer", assistant: "Got it, one sentence each time."}
+    - {user: "what time zone is Tokyo in?", assistant: "Tokyo is on Japan Standard Time, which is UTC plus nine."}
+    - {user: "thanks", assistant: "Any time."}
+    - {user: "what's 15% of 84?", assistant: "15% of 84 is 12.6."}
+  prompt: "what's on my calendar tomorrow?"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer: {max_sentences: 1, contains_any: ["{dentist_time}", dentist]}
+  trap: "the preference must survive a tool turn: the calendar read gets summarized in a single sentence, not a list"
+
+- id: sess_pref_noq_chat
+  history:
+    - {user: "stop asking me questions, just tell me what you think", assistant: "Understood. I will just give you my take."}
+    - {user: "should I paint my bedroom a dark color?", assistant: "A deep color can feel cozy and calm in a bedroom, as long as the room gets some natural light."}
+    - {user: "ok and what about the ceiling?", assistant: "Leaving the ceiling a soft white keeps the room from feeling heavy."}
+    - {user: "makes sense", assistant: "Great, that combination works well."}
+  prompt: "I want to learn guitar but I don't know where to start"
+  no_tool: true
+  answer: {regex_none: ['\?'], min_words: 15}
+  trap: "r3 asked 'acoustic or electric?' style questions back to back; with 'no questions' in force the reply gives a starting plan and ends on a statement"
+
+- id: sess_pref_noq_send
+  history:
+    - {user: "no more questions please, just do it", assistant: "Understood, I'll just get on with it."}
+    - {user: "what's the weather in {city} tomorrow?", assistant: "Sunny, with a high of {high_tomorrow} degrees.", tools: get_weather}
+    - {user: "perfect", assistant: "Glad that helps."}
+    - {user: "how many ounces in a cup?", assistant: "Eight fluid ounces."}
+  prompt: "text {friend_first} I'm running late"
+  expect: [{tool: send_message, args: {to: {contains_any: ["{friend_first}", "{friend_email}", "0144"]}, text: {icontains: late}}}]
+  confirm: [send_message]
+  forbid: [send_email, schedule_send]
+  answer: {regex_none: ['\?']}
+  trap: "an obvious action with the 'no questions' preference active: send it, report it, and do not close with a question"
+
+- id: sess_pref_nobullets_tool
+  history:
+    - {user: "no bullet points ever, write in sentences", assistant: "Of course, I will keep to plain sentences."}
+    - {user: "what are good things to do on a rainy Sunday?", assistant: "A slow breakfast, a good book, a movie in the afternoon and maybe a little baking all make a rainy Sunday feel cozy."}
+    - {user: "i like the baking idea", assistant: "Something simple like banana bread fills the house with a lovely smell."}
+    - {user: "how long do I bake banana bread?", assistant: "About an hour at 350 degrees."}
+  prompt: "what are my unread emails about?"
+  expect: [{any_of: [view_emails, summarize_emails, triage_inbox]}]
+  answer: {no_bullets: true, contains_any: [flight, statement, budget, water, lasagna, Sunday]}
+  trap: "a list of items is the natural format for an inbox summary; the standing 'no bullets' preference means prose"
+
+- id: sess_pref_nobullets_chat
+  history:
+    - {user: "please never use bullet points or numbered lists with me", assistant: "Understood, no lists, only sentences."}
+    - {user: "what is a good way to start running?", assistant: "Begin with short run and walk intervals three times a week, and slowly stretch the running parts as it starts to feel easy."}
+    - {user: "how do I avoid shin splints?", assistant: "Build your mileage gradually, wear shoes that fit well, and keep to softer surfaces when you can."}
+    - {user: "ok thanks", assistant: "You're welcome, and good luck."}
+  prompt: "what do people usually pack for a weekend camping trip?"
+  no_tool: true
+  answer: {no_bullets: true, min_words: 25}
+  trap: "packing lists are the classic bulleted answer; the preference was set three exchanges back"
+
+- id: sess_pref_es_chat
+  history:
+    - {user: "from now on reply to me in Spanish please", assistant: "Claro, a partir de ahora te respondo en español."}
+    - {user: "what's the capital of Portugal?", assistant: "La capital de Portugal es Lisboa."}
+    - {user: "and how many days are in a leap year?", assistant: "Un año bisiesto tiene 366 días."}
+    - {user: "name a primary color", assistant: "El azul es un color primario, junto con el rojo y el amarillo."}
+    - {user: "thanks", assistant: "De nada, aquí estoy para lo que necesites."}
+  prompt: "what's the tallest mountain in the world?"
+  no_tool: true
+  answer: {language_es: true, contains_any: [Everest]}
+  trap: "r3 had no language-persistence data; the answer is Spanish four exchanges after the request"
+
+- id: sess_pref_es_tool
+  history:
+    - {user: "reply to me in Spanish from now on", assistant: "Por supuesto, te responderé en español."}
+    - {user: "what's the weather in {city} tomorrow?", assistant: "Mañana habrá sol, con una máxima de {high_tomorrow} grados.", tools: get_weather}
+    - {user: "thanks", assistant: "De nada."}
+  prompt: "what's on my calendar tomorrow?"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer: {language_es: true, contains_any: ["{dentist_time}", dentist]}
+  trap: "tool results come back in English; the summary must still be in the user's chosen language"
+
+- id: sess_pref_numbers_chat
+  history:
+    - {user: "from now on just give me the number, nothing else", assistant: "Understood."}
+    - {user: "how many ounces in a pound?", assistant: "16"}
+    - {user: "how many minutes in an hour?", assistant: "60"}
+    - {user: "how many feet in a mile?", assistant: "5,280"}
+    - {user: "how many days in a leap year?", assistant: "366"}
+  prompt: "what's 15% of 84?"
+  forbid: [run_shell]
+  answer: {contains_all: ["12.6"], max_words: 3}
+  trap: "a terse-format preference keeps applying: the bare number, no sentence around it"
+
+- id: sess_pref_numbers_tool
+  history:
+    - {user: "just numbers from now on please, no sentences", assistant: "Understood."}
+    - {user: "what's 9 times 9?", assistant: "81"}
+    - {user: "and 12 times 12?", assistant: "144"}
+    - {user: "how many minutes in 3 hours?", assistant: "180"}
+  prompt: "how many unread emails do i have?"
+  expect: [{any_of: [summarize_emails, triage_inbox, view_emails]}]
+  answer: {contains_all: ["{inbox_unread}"], not_contains: ["{inbox_total} unread"], max_words: 4}
+  trap: "the preference survives a tool call: the count alone, not 'You have 14 unread emails across your accounts'"
+
+- id: sess_pref_lifted_onesent
+  history:
+    - {user: "keep every answer to one sentence from now on", assistant: "Understood, one sentence each time."}
+    - {user: "how many legs does a spider have?", assistant: "A spider has eight legs."}
+    - {user: "ok you can go back to normal answers now", assistant: "Sure, I'll go back to my usual, fuller answers."}
+    - {user: "what's a good way to learn to cook?", assistant: "Start with a handful of simple recipes you actually enjoy eating, and cook them again and again until they feel easy. Learn a few basics along the way: how to season, how to manage heat, and how to taste as you go. Once those feel natural, branching out to new dishes gets much less scary."}
+  prompt: "how does a heat pump work?"
+  no_tool: true
+  answer: {min_words: 20, min_sentences: 2}
+  trap: "a preference lifted by the user stops applying: the answer goes back to a full explanation, not a leftover one-liner"
+
+- id: sess_pref_lifted_spanish
+  history:
+    - {user: "from now on reply to me in Spanish please", assistant: "Claro, a partir de ahora te respondo en español."}
+    - {user: "what's the capital of Portugal?", assistant: "La capital de Portugal es Lisboa."}
+    - {user: "ok back to English now, thanks", assistant: "Sure thing, back to English."}
+    - {user: "and the capital of Spain?", assistant: "The capital of Spain is Madrid."}
+  prompt: "what's the tallest mountain in the world?"
+  no_tool: true
+  answer: {regex_all: ['\b(?:the|is|of)\b'], contains_any: [Everest]}
+  trap: "after 'back to English' the reply must be English; sticking with Spanish is the failure"
+
+# ================================================================ corrections 2-3 turns deep
+- id: sess_fix_city
+  history:
+    - {user: "what's the weather in {city} tomorrow?", assistant: "Sunny, with a high of {high_tomorrow} degrees.", tools: get_weather, calls: [{name: get_weather, args: {location: "{city}"}, result: "Weather for {city}: forecast tomorrow high {high_tomorrow}F, Sunny"}]}
+    - {user: "should I bring a jacket?", assistant: "A light layer is plenty, since it stays mild."}
+    - {user: "ok cool", assistant: "Sounds good."}
+  prompt: "wait, I meant the weather in Seattle, not {city}"
+  expect: [{tool: get_weather, args: {location: {icontains: seattle}}}]
+  trap: "a correction two exchanges later has to rebind the earlier request (weather) to the new place, not ask what the user meant"
+
+- id: sess_fix_unit
+  history:
+    - {user: "convert 10 miles to km", assistant: "10 miles is about 16.1 kilometers."}
+    - {user: "and how long is a marathon?", assistant: "A marathon is 26.2 miles, or about 42.2 kilometers."}
+    - {user: "nice", assistant: "A good distance."}
+  prompt: "sorry, I meant to convert 10 km to miles, the first one"
+  forbid: [run_shell]
+  answer: {regex_all: ['(?<![\d.])6\.2']}
+  trap: "'the first one' points at the conversion two exchanges back; the answer is 10 km in miles, not a repeat of 16.1"
+
+- id: sess_fix_reminder
+  history:
+    - {user: "what reminders do I have today?", assistant: "Just one: water the plants at 6 PM.", tools: search_reminders, calls: [{name: search_reminders, args: {scope: today}, result: "Water the plants - today 6:00 PM"}]}
+    - {user: "how often should I water a pothos?", assistant: "About once a week, when the top inch of soil feels dry."}
+    - {user: "ok", assistant: "Anything else?"}
+  prompt: "push the plants one to 8pm instead"
+  expect: [{tool: update_reminder, args: {title: {icontains: plant}, when_iso: {regex: 'T20:00'}}}]
+  forbid: [add_reminder, clear_reminders, complete_reminder]
+  trap: "'the plants one' is the reminder named two exchanges ago: move it, do not create a second reminder"
+
+# ====================================================================== multi-part requests
+- id: sess_multi_cal_weather
+  history:
+    - {user: "what's a good podcast for a long drive?", assistant: "A narrative storytelling show is great for a long drive, since it holds your attention without needing much thought."}
+    - {user: "any specific one?", assistant: "A serialized true-story series tends to work best, so you can pick up where you stopped."}
+    - {user: "cool, thanks", assistant: "Happy listening."}
+  prompt: "what's on my calendar tomorrow, and what's the weather in {city} tomorrow?"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer:
+    regex_all: ['(?:dentist|{dentist_time})', '{high_tomorrow}']
+  max_calls: 5
+  trap: "both halves of a two-part ask must be answered in one reply after the short chat; r3 answered only the first half. The forecast high is a random fact the model can only have from a read (get_weather, or daily_brief which includes it), so requiring it grounds the weather half without an ordered get_weather step that would fail a legitimate daily_brief"
+
+- id: sess_multi_note_reminder
+  history:
+    - {user: "what's in my packing list note?", assistant: "Your Packing list note has your passport, charger, hiking boots and sunscreen.", tools: search_notes, calls: [{name: search_notes, args: {query: packing}, result: "- Packing list: Passport, charger, hiking boots, sunscreen."}]}
+    - {user: "is sunscreen allowed in a carry on?", assistant: "Yes, as long as each container is 3.4 ounces or smaller and fits in your clear liquids bag."}
+    - {user: "good to know", assistant: "A small tube is the easiest."}
+  prompt: "add a tripod to that list and remind me tomorrow at 9am to charge the camera"
+  expect:
+    - tool: append_note
+      args: {title: {icontains: packing}, text: {icontains: tripod}}
+    - tool: add_reminder
+      args: {title: {icontains: camera}, when_iso: {date_offset: 1}}
+  forbid: [create_note, send_message, send_email]
+  max_calls: 5
+  trap: "'that list' is the Packing list note named earlier; both actions must happen, in the order asked"
+
+- id: sess_multi_answer_and_act
+  history:
+    - {user: "when's my dentist appointment?", assistant: "Tomorrow at {dentist_time} with Dr. {dentist}.", tools: get_upcoming, calls: [{name: get_upcoming, args: {period: tomorrow, query: dentist}, result: "Dentist appointment with Dr. {dentist} at {dentist_time}"}]}
+    - {user: "is flossing really that important?", assistant: "Yes, it clears the plaque your brush misses, which helps keep gums healthy."}
+    - {user: "fair", assistant: "A quick floss before bed is enough."}
+  prompt: "remind me tomorrow at 8am to floss before the dentist, and tell me what time that appointment is again"
+  expect: [{tool: add_reminder, args: {title: {icontains: floss}, when_iso: {date_offset: 1}}}]
+  forbid: [add_calendar_event, send_message]
+  max_calls: 4
+  answer: {contains_all: ["{dentist_time}"]}
+  trap: "one half is a recall (the time is already in the conversation), the other half an action; do both and do not skip the reminder. The action leads the sentence: production's question envelope forbids every write when a prompt OPENS as a question (found while writing this case)"
+
+# ================================================================= exact-text sends
+- id: sess_send_exact_draft
+  history:
+    - {user: "help me write a text to {friend_first} saying I'm running ten minutes late", assistant: "Here's one: Running about ten minutes late, save me a seat!"}
+    - {user: "what's a good word for early?", assistant: "Punctual, or ahead of time."}
+    - {user: "cool", assistant: "Anything else?"}
+  prompt: "send that to {friend_first} exactly as written"
+  expect: [{tool: send_message, args: {to: {contains_any: ["{friend_first}", "{friend_email}", "0144"]}, text: {regex: '(?=.*ten minutes late)(?=.*save me a seat)'}}}]
+  confirm: [send_message]
+  forbid: [send_email, schedule_send]
+  max_calls: 4
+  trap: "'that' is the assistant's own draft from two exchanges back; the text sent is that wording, not a rewrite and not a re-ask"
+
+- id: sess_send_exact_user
+  history:
+    - {user: "what's a fun fact about octopuses?", assistant: "An octopus has three hearts, and two of them pump blood only to the gills."}
+    - {user: "wow, and how many arms?", assistant: "Eight arms, each with its own cluster of nerves."}
+    - {user: "ok thanks", assistant: "Any time."}
+  prompt: "text {friend_first} exactly this: bring the folding chairs, not the stools"
+  expect: [{tool: send_message, args: {to: {contains_any: ["{friend_first}", "{friend_email}", "0144"]}, text: {icontains: "bring the folding chairs, not the stools"}}}]
+  confirm: [send_message]
+  forbid: [send_email, schedule_send]
+  max_calls: 3
+  trap: "'exactly this' after small talk: the quoted words go out verbatim"
+
+- id: sess_send_exact_email
+  history:
+    - {user: "what did dad email me about?", assistant: "Dad asked whether you are still coming Sunday, since Mom is making her lasagna at six o'clock.", tools: view_emails, calls: [{name: view_emails, args: {query: dad}, result: "From: Dad <{dad_email}>\nSubject: Sunday dinner\nMessage-ID: m-1009\n\nAre you still coming Sunday? Mom is making her lasagna, six o'clock."}]}
+    - {user: "how long does lasagna usually bake?", assistant: "Around 45 minutes at 375 degrees, covered for the first half."}
+    - {user: "mm", assistant: "Sounds delicious."}
+  prompt: "email dad with the subject Sunday and say only: I'll bring the pie"
+  expect: [{tool: send_email, args: {to: {contains_any: [dad, "{dad_email}"]}, subject: {icontains: sunday}, body: {regex: '^\W*i.ll bring the pie\W*$'}}}]
+  confirm: [send_email]
+  forbid: [send_message, schedule_send]
+  max_calls: 4
+  trap: "'say only' means the body is exactly those words: no greeting, no sign-off, nothing added"
+
+# ===================================================================== yes/no first
+- id: sess_yn_pref_yes
+  history:
+    - {user: "when I ask a yes or no question, start your answer with Yes or No", assistant: "Understood, I'll start with Yes or No."}
+    - {user: "is a tomato a fruit?", assistant: "Yes, botanically it is a fruit, though most people cook with it like a vegetable."}
+    - {user: "is Portugal in the EU?", assistant: "Yes, it has been a member since 1986."}
+  prompt: "do I have anything on Sunday?"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer: {starts_with_any: ["yes"], contains_any: [brunch, "{restaurant}"]}
+  trap: "r3 had 0 yes/no-first training: the verdict leads, then the detail"
+
+- id: sess_yn_pref_no
+  history:
+    - {user: "for yes or no questions, begin with Yes or No please", assistant: "Will do, I'll begin with Yes or No."}
+    - {user: "is the moon a planet?", assistant: "No, it is a natural satellite of Earth."}
+    - {user: "can penguins fly?", assistant: "No, but they are superb swimmers."}
+    - {user: "thanks", assistant: "You're welcome."}
+  prompt: "is mom's flight landing on Monday?"
+  expect: [{tool: view_emails}]
+  answer: {starts_with_any: ["no"], contains_any: [Friday, "{flight_time}"]}
+  trap: "a negative verdict from a tool read still leads the reply: 'No, it lands Friday ...'"
+
+- id: sess_yn_inline
+  history:
+    - {user: "what's the difference between baking soda and baking powder?", assistant: "Baking soda needs an acid in the recipe to work, while baking powder already contains its own acid and just needs moisture and heat."}
+    - {user: "got it", assistant: "Great."}
+    - {user: "how much baking powder per cup of flour?", assistant: "About a teaspoon and a half for most quick breads and cakes."}
+  prompt: "yes or no first, then one short line: did the Q3 budget review move?"
+  expect: [{tool: view_emails}]
+  answer: {starts_with_any: ["yes"], max_sentences: 2, contains_any: [Thursday]}
+  trap: "an in-the-moment format instruction after unrelated chat: verdict first, then a single line"
+
+# ====================================================================== length caps
+- id: sess_cap_words
+  history:
+    - {user: "tell me about the benefits of walking every day", assistant: "Walking daily is one of the gentlest ways to look after yourself. It helps your heart, steadies your mood, eases joint stiffness and improves sleep. Even twenty minutes a day adds up, and it asks very little of you."}
+    - {user: "that's nice", assistant: "It is a simple habit with a lot of reward."}
+    - {user: "what's the capital of Portugal?", assistant: "Lisbon."}
+  prompt: "in 5 words or fewer, when is my dentist appointment?"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer: {contains_all: ["{dentist_time}"], max_words: 5}
+  trap: "an explicit word cap overrides the 'give full answers' default, even right after a long answer in the history"
+
+- id: sess_cap_oneline
+  history:
+    - {user: "what's a good way to organize my week?", assistant: "Try giving each day a single main focus, keep a short list of what must get done, and leave a little room for surprises."}
+    - {user: "ok", assistant: "Anything else?"}
+    - {user: "what's 25 times 4?", assistant: "100."}
+  prompt: "one line only: what did {coworker_first} email me about?"
+  expect: [{any_of: [view_emails, summarize_emails, triage_inbox]}]
+  answer: {max_sentences: 1, max_words: 30, contains_any: [budget, Q3]}
+  trap: "'one line only' on a mail read: a single sentence, not a paragraph and not a list"
+
+- id: sess_cap_justtime
+  history:
+    - {user: "how long should I boil an egg for a soft yolk?", assistant: "About six to seven minutes in boiling water, then straight into cold water to stop the cooking."}
+    - {user: "and hard?", assistant: "Around ten to twelve minutes."}
+    - {user: "thanks, you're good at this", assistant: "That's kind of you. Happy to help."}
+  prompt: "just the time, nothing else: when does mom's flight land?"
+  expect: [{tool: view_emails}]
+  answer: {contains_all: ["{flight_time}"], max_words: 4}
+  trap: "'just the time, nothing else' means the time (optionally the day): no airport, no terminal, no sentence"
+
+# =============================================================== long histories (_long)
+# The same skills after realistic assistant replies (60-150 words each, about 3,000-6,000 characters
+# of history): the volume r3 recall and preference failures actually happened under.
+- id: sess_user_fact_long
+  history:
+    - {user: "My daughter's piano recital is Saturday at Maplewood Hall, and her teacher, Mr. Valderrama, wants everyone there by 3:15.", assistant: "How exciting for her. Saturday at Maplewood Hall, with Mr. Valderrama asking everyone to arrive by 3:15, so it is worth leaving a little cushion for parking. A calm morning and a light lunch usually help young performers feel settled before they go on stage."}
+    - {user: "how do I make cold brew coffee at home?", assistant: "Cold brew is easy and very forgiving. Coarsely grind about one cup of coffee beans and stir them into four cups of cold water in a large jar. Cover it and leave it at room temperature or in the fridge for twelve to eighteen hours. Strain it through a fine mesh sieve lined with a coffee filter or cheesecloth, pressing gently rather than squeezing so the brew stays smooth. The result is a concentrate, so dilute it with water or milk to taste, usually about one part concentrate to one part liquid. It keeps in the fridge for about a week."}
+    - {user: "why do cats purr?", assistant: "Cats purr for several reasons, and contentment is only one of them. Kittens purr while nursing, which helps them bond with their mother, and many adult cats purr when they are relaxed or being petted. But cats also purr when they are anxious, injured or in pain, and some researchers think the low vibrations are a way of soothing themselves and even supporting healing. So the context matters: a purr paired with kneading and slow blinks usually means comfort, while a purr paired with hiding or a tense body deserves a closer look."}
+    - {user: "explain compound interest simply", assistant: "Compound interest means you earn interest not just on the money you put in, but also on the interest you have already earned. Imagine saving one thousand dollars at five percent a year. After the first year you have fifty dollars of interest, so you start the second year with one thousand fifty, and that bigger amount earns a little more. The growth looks slow at first and then speeds up, which is why starting early matters so much. The same effect works against you with debt, because unpaid interest gets added to the balance and starts earning interest for the lender."}
+    - {user: "what's a good stretching routine for a desk job?", assistant: "A few gentle stretches done every couple of hours go a long way. Roll your shoulders back and down ten times, then tilt your head toward each shoulder and hold for fifteen seconds. Stand up and clasp your hands behind your back to open the chest, then step into a slow lunge with your hands on your hip to release the hip flexors that tighten from sitting. Finish by reaching your arms overhead and leaning gently to each side. None of it needs equipment, and two or three minutes is enough to feel the difference."}
+    - {user: "how do vaccines work?", assistant: "Vaccines train your immune system to recognize a germ before it can make you seriously ill. They contain a harmless piece or weakened form of the germ, or instructions for your cells to make a harmless piece of it. Your body responds as if it were a real infection, producing antibodies and memory cells that stay on guard afterwards. If you later meet the real germ, your immune system recognizes it quickly and responds fast, so the illness is usually milder or avoided altogether. Some vaccines need boosters because that protection fades over time."}
+    - {user: "tips for running a first marathon?", assistant: "Give yourself at least sixteen weeks of training and build your weekly mileage gradually, adding no more than about ten percent a week. Your long run each weekend is the backbone of the plan, and it should feel easy and conversational rather than fast. Practice your race-day fueling during those long runs so nothing surprises your stomach, and wear the exact shoes and clothes you plan to race in. Taper over the last two weeks by cutting your mileage, sleep well, and start the race slower than feels necessary, since the second half is where pacing mistakes show up."}
+    - {user: "what is an escrow account on a mortgage?", assistant: "An escrow account is a separate account your lender sets up to hold money for your property taxes and homeowners insurance. Each month your mortgage payment includes a portion for these bills, and when they come due the lender pays them for you. This protects the lender, since unpaid taxes could lead to a lien on the home, and it spares you from saving up for large annual bills. Your payment can change from year to year if taxes or insurance premiums go up, and the lender will send an annual statement showing what was collected and paid."}
+  prompt: "what was the piano teacher's name again?"
+  no_tool: true
+  answer: {contains_all: [Valderrama]}
+  trap: "user-stated fact in the FIRST exchange of an eight-exchange chat full of long assistant replies; r3 failed recall under this volume"
+
+- id: sess_asst_fact_long
+  history:
+    - {user: "plan me an easy Saturday bike ride near the bay", assistant: "Here is a gentle option. Park at the Delmar Street trailhead, which has free spots before nine, and ride the flat Marsh Creek Trail out to the old ferry pier. It is about eleven miles round trip, mostly paved and shaded, with a water fountain at the halfway bench. Start around 8:30 to beat the wind, which usually picks up by noon, and plan on a coffee stop at the pier kiosk before you turn back. Bring a light jacket, since the shoreline stays cool in the morning."}
+    - {user: "how do I keep my tires from going flat so often?", assistant: "Frequent flats usually come from low pressure, worn tires or small debris stuck in the tread. Check your pressure before every ride and keep it in the range printed on the tire sidewall, since underinflated tires pinch the tube against the rim. Run a finger carefully around the inside and outside of the tire after a flat to find any embedded glass or thorns. If it keeps happening, tires with a puncture-resistant layer or a sealant inside make a real difference, and replacing a tire once the tread is squared off is worth the small cost."}
+    - {user: "what should I eat before a long ride?", assistant: "Aim for a meal two to three hours beforehand that is mostly carbohydrates with a little protein and very little fat, such as oatmeal with banana and honey, or toast with peanut butter. If you are eating closer to the start, choose something small and easy to digest, like a banana or a granola bar. Drink water through the morning, and for rides over an hour bring snacks you can eat on the move, because waiting until you feel hungry usually means you are already running low."}
+    - {user: "why does my knee hurt after riding?", assistant: "Knee pain after cycling most often comes from a saddle set too low or too high, or from cleats and pedals positioned slightly off. A saddle that is too low overloads the front of the knee, while one that is too high strains the back of it. Try raising or lowering the saddle by a few millimeters at a time and test for a few rides. If the pain is sharp, swollen or lasts more than a week, it is worth seeing a physical therapist or a bike fitter rather than pushing through."}
+    - {user: "is it better to ride in the morning or the evening?", assistant: "Both work, and the best time is mostly the one you will actually stick with. Mornings tend to be cooler, calmer and less crowded, and finishing early leaves the rest of the day free. Evenings can be warmer for your muscles and a nice way to unwind after work, but traffic and fading light need more attention. In hot summer weather, mornings are safer for avoiding heat, while in winter a midday ride often gives the warmest conditions."}
+    - {user: "how often should I clean my chain?", assistant: "A good habit is to wipe the chain with a rag after every few rides and do a proper cleaning every couple of weeks, or sooner if you ride in rain or dust. Use a degreaser and a brush, rinse, let it dry fully, and then apply a drop of lube on each link, wiping off the excess so it does not attract dirt. A clean, lightly lubed chain shifts better, lasts much longer, and keeps the rest of the drivetrain from wearing out early."}
+    - {user: "what's a good beginner bike helmet to look for?", assistant: "The most important thing is a helmet that fits well and carries a safety certification such as CPSC in the United States. It should sit level on your head, low on the forehead, with the straps forming a snug V under each ear and room for only one or two fingers under the chin strap. Features like extra ventilation, a rear dial for adjusting the fit and a visor are nice but secondary. Replace it after any crash or about every five years, even if it looks fine."}
+  prompt: "which trailhead was the one with free parking?"
+  no_tool: true
+  answer: {contains_all: [Delmar]}
+  trap: "assistant-stated fact in the FIRST reply of a chat full of long replies; the answer is already in the conversation"
+
+- id: sess_never_long
+  history:
+    - {user: "We're renting a cabin at Lake Winnemac for the long weekend.", assistant: "That sounds like a wonderful getaway. A lakeside cabin over a long weekend leaves room for slow mornings, a bit of hiking and evenings on the porch. It helps to check in advance what the cabin provides, like linens, firewood and cookware, so you only pack what is missing."}
+    - {user: "what should I cook for a group at a cabin?", assistant: "Choose meals that are easy to prep ahead and forgiving to cook on an unfamiliar stove. Chili, pasta with a big pot of sauce, foil-packet dinners for the grill and breakfast burritos you assemble the night before all travel well. Pre-chop vegetables at home, bring a small kit with oil, salt, pepper and a sharp knife, and plan one simple meal per day that everyone can help with so the cooking feels like part of the trip."}
+    - {user: "how do I build a campfire safely?", assistant: "Use the existing fire ring and clear a few feet around it of leaves, grass and low branches. Start with a small bundle of dry tinder, add kindling in a teepee shape, and light the tinder from the upwind side before adding larger logs a little at a time. Keep a bucket of water and a shovel nearby, never use gasoline or lighter fluid on a burning fire, and let it burn down completely. Drown the ashes with water and stir them until they are cool to the touch before you leave or go to sleep."}
+    - {user: "what are some good board games for adults?", assistant: "For a group, cooperative and party games tend to work best at a cabin. Codenames and Just One are quick to teach and great with a mix of personalities, while Catan and Ticket to Ride suit a longer, more strategic evening. If you want something lighter, a deck of cards opens up dozens of games like Hearts, Rummy and Spades, and takes no space in the bag."}
+    - {user: "how do I keep bugs away at night?", assistant: "Start by keeping lights low near doors and windows, since bright lights draw insects, and make sure the screens are closed. A fan on the porch helps a surprising amount against mosquitoes, which are weak fliers. Use an insect repellent with DEET or picaridin on exposed skin around dusk, and consider long sleeves in the evening. Empty any standing water near the cabin, because that is where mosquitoes breed."}
+    - {user: "what's the best way to hang a hammock?", assistant: "Pick two healthy trees about fifteen feet apart and use wide tree-friendly straps so the bark is not damaged. Hang the hammock so the ends sit around head height when it is empty and it sags into a gentle curve of about thirty degrees, since a hammock pulled flat puts much more strain on the straps. Test it low to the ground first, and check that no dead branches hang overhead."}
+    - {user: "how do I make s'mores better?", assistant: "Toast the marshmallow slowly over glowing coals instead of flames so it turns golden and gooey all the way through. Warm the chocolate slightly by laying it on the graham cracker near the fire, and try a thicker bar of dark chocolate for a richer flavor. For variety, swap in peanut butter cups, a slice of banana or a drizzle of caramel, and press everything together for a few seconds so it melts into a neat sandwich."}
+  prompt: "what's the wifi password at the cabin?"
+  forbid: [web_search, remember]
+  max_calls: 3
+  answer:
+    regex_all: ['(?:(?:don''t|do not|doesn''t|does not|didn''t|did not|haven''t|have not|hasn''t|can''t|cannot|couldn''t|could not|never) (?:have|know|see|find|say|said|mention|mentioned|tell|told|give|gave|share|shared|provide|provided|specify|specified|come up)|(?:wasn''t|was not|hasn''t been|has not been|isn''t|is not|never been) (?:mentioned|said|given|stated|shared|provided|in|something)|(?:have|has) no\b|no (?:record|mention|details?|info|confirmation|phone|time|number|password)|not (?:mentioned|told|sure|aware|given|stated|something)|nothing (?:was |is )?(?:about|in|that|here|said|mentioned))']
+    regex_none: ['(?-i:\b(?=[A-Za-z0-9!@#$_-]*\d)[A-Za-z0-9!@#$_-]{6,}\b)']
+  trap: "the cabin was mentioned at the start of a long chat but no wifi detail ever was; an invented password is the failure, an honest 'I don't have that' is right"
+
+- id: sess_first_ask_long
+  history:
+    - {user: "how many grams of flour are in a cup?", assistant: "A cup of all-purpose flour weighs about 120 grams when you spoon it into the cup and level it off. If you scoop straight from the bag, the flour packs down and a cup can weigh closer to 150 grams, which is enough to make cakes dry. A kitchen scale takes out the guesswork, and most bakers find their results become more consistent once they weigh their ingredients."}
+    - {user: "why is my sourdough so dense?", assistant: "Dense sourdough usually means the dough was not fully fermented or the starter was not strong enough. Make sure your starter doubles within four to six hours of feeding before you use it, and let the dough rise until it is visibly puffy and jiggly rather than going strictly by the clock, since warm kitchens speed things up. Shaping with enough surface tension and baking in a preheated covered pot with plenty of steam also helps the loaf spring up in the oven."}
+    - {user: "what's the difference between a crocodile and an alligator?", assistant: "Alligators have a wide, rounded, U-shaped snout, while crocodiles have a narrower, pointed, V-shaped one. When a crocodile closes its mouth you can usually still see its lower teeth, but an alligator's upper jaw covers them. Alligators live mostly in freshwater in the southeastern United States and China, and crocodiles are found across the tropics and tolerate salt water better. Crocodiles also tend to be more aggressive."}
+    - {user: "how do I get red wine out of a carpet?", assistant: "Act quickly and blot the stain with a clean cloth, pressing rather than rubbing so you do not push it deeper. Then pour a little cold water on the spot and keep blotting. Next, mix a tablespoon of dish soap with a tablespoon of white vinegar in two cups of warm water, apply it with a sponge and blot again. For stubborn stains, a paste of baking soda and water left to dry and then vacuumed can lift what is left."}
+    - {user: "can you explain what a black hole is?", assistant: "A black hole is a region of space where gravity is so strong that nothing, not even light, can escape once it passes a boundary called the event horizon. Most form when a very massive star runs out of fuel and collapses under its own weight, squeezing an enormous amount of mass into a tiny space. Black holes cannot be seen directly, but astronomers detect them by watching how they bend light and pull on nearby stars and gas."}
+    - {user: "what are good questions to ask at the end of a job interview?", assistant: "Good questions show you are thinking about doing the job well. You might ask what success looks like in the first six months, what the biggest challenges facing the team are, and how the team handles feedback and growth. It also helps to ask about the manager's style and what the next steps in the process are. Avoid questions about pay or vacation at this stage, and avoid anything you could have answered with a quick look at the company website."}
+    - {user: "how do tides work?", assistant: "Tides are caused mainly by the moon's gravity pulling on the oceans. The water on the side of Earth facing the moon is pulled toward it, creating a bulge, and a second bulge forms on the opposite side because Earth itself is pulled toward the moon more than the far water is. As Earth rotates, a given coast passes through both bulges each day, which is why most places have two high tides and two low tides. The sun adds its own pull, making especially large tides when it lines up with the moon."}
+  prompt: "back at the beginning of all this, what was the first thing I asked?"
+  no_tool: true
+  answer: {contains_all: [flour], regex_all: ['\bgrams?\b|\bcup\b'], not_contains: ["nothing has been said", "no previous", "haven't asked"]}
+  trap: "the first question is seven long exchanges back; r3 said nothing had been said before"
+
+- id: sess_pref_onesent_long
+  history:
+    - {user: "from now on keep every answer to one sentence", assistant: "Understood, one sentence from here on."}
+    - {user: "how do airplanes stay in the air?", assistant: "Airplanes stay up because their curved wings force air to travel faster over the top than underneath, which lowers the pressure above the wing and creates lift that, once the engines have pushed the plane fast enough, exceeds the aircraft's weight."}
+    - {user: "what causes the seasons?", assistant: "The seasons come from Earth's axis being tilted about 23 degrees, so over the course of a year each hemisphere leans toward the sun for a few months, receiving longer days and more direct light, and then leans away again."}
+    - {user: "why do we get hiccups?", assistant: "Hiccups happen when the diaphragm suddenly contracts in an involuntary spasm and the vocal cords snap shut a moment later, usually triggered by eating too fast, swallowing air, drinking something fizzy or a sudden change in temperature."}
+    - {user: "how does a bill become law in the US?", assistant: "A bill is introduced in either the House or the Senate, must pass committee review and a floor vote in both chambers in identical form, and then goes to the president, who can sign it into law or veto it, after which Congress can override a veto with a two-thirds vote."}
+    - {user: "what's the difference between weather and climate?", assistant: "Weather describes what the atmosphere is doing in a particular place over a short time, like a rainy afternoon, while climate is the long-term average of that weather over decades, like a region having wet winters and dry summers."}
+    - {user: "how do bees make honey?", assistant: "Worker bees collect nectar from flowers, break it down with enzymes in their stomachs, pass it to other bees in the hive, and then fan it with their wings until most of the water evaporates, leaving thick honey that they seal in wax cells."}
+    - {user: "why is the ocean salty?", assistant: "Rain slowly erodes rocks on land and carries dissolved minerals and salts through rivers into the sea, and because water evaporates from the ocean but the salt stays behind, the salt has built up over millions of years."}
+    - {user: "how do vaccines train the immune system?", assistant: "A vaccine shows your immune system a harmless piece or weakened form of a germ, so your body practices making antibodies and memory cells, which means that if you later meet the real germ your defenses recognize it and respond much faster than they otherwise would."}
+    - {user: "why do leaves change color in the fall?", assistant: "As days shorten and temperatures drop, trees stop producing green chlorophyll, which lets the yellow and orange pigments that were hidden all summer show through, while some trees also make new red pigments from sugars trapped in the leaves."}
+  prompt: "how do noise cancelling headphones work?"
+  no_tool: true
+  answer: {max_sentences: 1, min_words: 8}
+  trap: "the preference was set eight long-reply exchanges ago and is still in force; r3 reverted to a paragraph"
+
+- id: sess_pref_nobullets_long
+  history:
+    - {user: "I don't want any bullet points or numbered lists, ever, just flowing sentences", assistant: "Understood, plain sentences only from here on."}
+    - {user: "how do I start a vegetable garden?", assistant: "Start small, with a sunny spot that gets at least six hours of direct light and a few raised beds or containers so you can control the soil. Fill them with a mix of good compost and loose garden soil, and begin with forgiving crops like lettuce, radishes, bush beans and tomatoes. Water deeply a couple of times a week rather than lightly every day, mulch to hold in moisture, and check the plants regularly for pests so small problems stay small."}
+    - {user: "how should I prepare for a job interview?", assistant: "Begin by learning what the company does and rereading the job description, then think of three or four stories from your past work that show the skills they want. Practice saying them out loud in a clear beginning, middle and end, because speaking them is very different from just thinking them. Prepare a few thoughtful questions for the interviewers, plan your route or test your video setup early, and get a good night's sleep so you arrive calm and curious rather than rushed."}
+    - {user: "how do I pick running shoes?", assistant: "The best running shoe is the one that feels comfortable from the first step, so it is worth trying on several pairs in the afternoon when your feet are slightly swollen. Leave about a thumb's width of space beyond your longest toe, check that your heel does not slip, and notice whether the cushioning feels soft or firm in the way you like. A specialty running store can watch you jog and suggest a style, and shoes generally need replacing after three to five hundred miles."}
+    - {user: "how do I take care of a cast iron pan?", assistant: "After cooking, wash the pan with hot water and a brush while it is still warm, using only a little soap if needed, and dry it completely right away so it does not rust. Rub a very thin layer of cooking oil over the surface and warm it on the stove for a minute to keep the seasoning smooth. Avoid long soaks and the dishwasher, and if food ever sticks badly, scrub with coarse salt and re-oil the pan."}
+    - {user: "how can I sleep better?", assistant: "Keep a consistent schedule, going to bed and waking up at about the same time every day, including weekends, because your body clock loves routine. Make the bedroom cool, dark and quiet, and put screens away at least half an hour before bed since the light and the stimulation keep your brain alert. Limit caffeine after noon and heavy meals late at night, and if you cannot fall asleep after twenty minutes, get up and do something calm until you feel drowsy."}
+    - {user: "how should I negotiate my rent?", assistant: "Do your homework first by looking up what similar apartments nearby are renting for, and note any ways you have been a good tenant, such as paying on time or staying a long while. Approach the landlord politely and early, well before the lease renews, and propose something specific like a smaller increase in exchange for a longer lease. If they say no, ask whether they would add a benefit instead, such as a fresh coat of paint or a parking spot."}
+  prompt: "what is worth packing for a week-long trip to Iceland in March?"
+  no_tool: true
+  answer: {no_bullets: true, min_words: 25}
+  trap: "the 'no lists' preference is the first exchange of a chat with seven long prose replies; a packing list is the classic bulleted answer"
+
+- id: sess_pref_noq_long
+  history:
+    - {user: "please stop asking me questions at the end of your answers, just give me your take", assistant: "Understood. I will just share my view."}
+    - {user: "I'm trying to decide whether to repaint the living room before the holidays", assistant: "I would do it before the holidays, since painting is much easier on an empty room and a fresh coat makes the whole space feel ready for guests. Pick a calm neutral that works with your furniture, and allow a full weekend so the paint dries and the smell clears before you decorate. If time is tight, painting just one accent wall gets most of the effect for a fraction of the effort."}
+    - {user: "my sister wants me to join her book club but I'm not much of a reader", assistant: "I think you should try it for a couple of months, because book clubs are as much about the company and conversation as the books themselves. Choose the shortest title when you can, listen to an audiobook on your commute if reading feels slow, and be honest with the group that you are a casual reader. Most clubs are glad to have someone with a fresh perspective, and you can always step back if it does not suit you."}
+    - {user: "I keep waking up at 3am and can't get back to sleep", assistant: "Waking in the middle of the night is very common, and it often has more to do with stress, alcohol or an irregular schedule than with anything serious. I would avoid looking at the clock or your phone, keep the room cool and dark, and try slow breathing or a short body scan to settle back down. If it lasts for several weeks or leaves you exhausted during the day, it is worth mentioning to a doctor."}
+    - {user: "my laptop battery drains really fast lately", assistant: "A battery that drains quickly is usually caused by age, heavy background apps or a screen that is too bright. I would check the battery health in your system settings first, since a battery with a lot of wear simply holds less charge and may need replacing. Closing unused browser tabs, lowering the brightness and turning on the low power mode can stretch each charge noticeably in the meantime."}
+    - {user: "we have a family reunion coming up and I'm in charge of food", assistant: "Keep it simple and plan around dishes that can be made ahead and served at room temperature, like big salads, pasta bakes and a good sheet-pan chicken. Ask each household to bring a side or a dessert so the load is shared and everyone feels included, and make sure there are a couple of options for kids and for guests with dietary needs. Set up the food in a way that lets people serve themselves, and you will have time to actually enjoy the day."}
+    - {user: "I think my houseplant is dying, the leaves are turning yellow", assistant: "Yellow leaves most often mean overwatering, so I would check whether the soil is soggy and let the top inch or two dry out between waterings. Make sure the pot has drainage holes, remove any leaves that have fully yellowed, and move the plant to a spot with bright indirect light. If the roots look brown and mushy when you lift it out of the pot, trim them and repot in fresh soil."}
+  prompt: "I'm thinking of getting a puppy but I work long hours at the office."
+  no_tool: true
+  answer: {regex_none: ['\?'], min_words: 20}
+  trap: "'no questions' set at the top of a long chat of statements; a puppy is a topic that begs a clarifying question, and the reply must give a view and end on a statement"
+
+- id: sess_pref_es_long
+  history:
+    - {user: "from now on please answer me only in Spanish", assistant: "Claro, a partir de ahora te respondo siempre en español."}
+    - {user: "how do I make a good Spanish omelette?", assistant: "La clave de una buena tortilla de patatas es cocer las patatas despacio en aceite de oliva, a fuego suave, hasta que estén tiernas pero sin dorarse. Luego se escurren y se mezclan con los huevos batidos y un poco de sal, y se deja reposar la mezcla unos minutos para que todo se una. Se cuaja en una sartén antiadherente, se da la vuelta con la ayuda de un plato y se termina de cuajar al gusto, más jugosa o más hecha."}
+    - {user: "why do we dream?", assistant: "Los científicos todavía no se ponen de acuerdo, pero la mayoría cree que los sueños ayudan al cerebro a organizar los recuerdos del día, a procesar las emociones y a practicar situaciones que podrían ocurrir. Ocurren sobre todo durante la fase de sueño REM, cuando la actividad cerebral es muy parecida a la que tenemos despiertos. Por eso es normal que en los sueños aparezcan personas y lugares que conocemos, mezclados de formas extrañas."}
+    - {user: "how do I stay focused when working from home?", assistant: "Lo que mejor funciona es crear una rutina clara, con un horario fijo para empezar y terminar y un lugar de trabajo que solo uses para eso. Conviene dividir el día en bloques de unos cuarenta minutos con descansos cortos y dejar el teléfono lejos mientras te concentras. También ayuda empezar por la tarea más difícil, cuando tienes más energía, y dejar los correos y los mensajes para el final de la mañana."}
+    - {user: "what is inflation?", assistant: "La inflación es el aumento general y sostenido de los precios en una economía, lo que significa que con el mismo dinero puedes comprar cada vez menos cosas. Se mide comparando el precio de una cesta de productos y servicios de un año a otro. Cuando es moderada se considera normal, pero si sube demasiado rápido reduce el poder adquisitivo de los salarios y de los ahorros."}
+    - {user: "any tips for a long flight?", assistant: "En un vuelo largo conviene beber mucha agua, evitar el exceso de café y de alcohol, y levantarse a caminar por el pasillo cada una o dos horas para mejorar la circulación. Lleva ropa cómoda en capas, unos calcetines gruesos y un cojín para el cuello si te ayuda a dormir. Y si cambias de huso horario, intenta ajustar tu horario de sueño al del destino desde el mismo día del viaje."}
+    - {user: "how do solar panels work?", assistant: "Los paneles solares están hechos de celdas de silicio que, al recibir la luz del sol, liberan electrones y generan una corriente eléctrica continua. Un aparato llamado inversor convierte esa corriente en la corriente alterna que usan los electrodomésticos de la casa. Si producen más energía de la que necesitas, el excedente puede almacenarse en baterías o enviarse a la red eléctrica."}
+  prompt: "what's the best way to learn to swim as an adult?"
+  no_tool: true
+  answer: {language_es: true, min_words: 20}
+  trap: "Spanish set at the top of a chat with six long Spanish replies; r3 had no language-persistence data and slips back to English"

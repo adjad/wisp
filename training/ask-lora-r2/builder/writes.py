@@ -85,6 +85,9 @@ WRITE_ALLOW: dict[str, frozenset[str]] = {
     # Round 4 (scen_r4_*.py; loaded only under ASK_LORA_ROUND=4). Keep in step with each WRITE_ALLOW_R4.
     "gather_then_send_r4": frozenset({"send_message", "send_email", "schedule_send", "draft_email"}),
     "lookup_answers_r4": frozenset({"remember"}),
+    "session_recall_r4": frozenset({"add_reminder"}),
+    "instructions_r4": frozenset({"add_reminder", "add_calendar_event", "update_reminder", "update_event",
+                                  "complete_reminder", "send_message", "send_email", "draft_email", "clear_reminders"}),
     "restraint_r4": frozenset({"organize_files", "move_path", "cancel_event", "manage_timers", "update_event",
                                "clear_past_reminders", "send_email", "send_message"}),
 }
