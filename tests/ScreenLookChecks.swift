@@ -163,6 +163,19 @@ struct ScreenLookChecks {
                 check(text.contains("passwords"), "a password manager is refused in plain words")
             } else { check(false, "\(vault.ownerName) is refused outright, never warn-then-tap") }
         }
+        // Helpers, odd capitalization and unknown bundle IDs still count.
+        for helper in [app(50, "1Password Helper", ""), app(51, "1password", "COM.1PASSWORD.1PASSWORD"),
+                       app(52, "Mini", "com.1password.browser-helper"), app(53, "KeePassXC-Browser", ""),
+                       app(54, "Passwords", "com.apple.Passwords"), app(55, "BITWARDEN", ""),
+                       app(56, "Settings", "com.apple.Settings", "Passwords")] {
+            check(ScreenLook.isSensitive(helper), "\(helper.ownerName) / \(helper.bundleID) is sensitive")
+        }
+        let helperPlan = ScreenLook.regionPlan([app(57, "1Password Helper", "", pid: 99, layer: 25), app(58, "Notes", "com.apple.Notes")],
+                                               rect: CGRect(x: 0, y: 0, width: 1200, height: 900), incognito: [], excludingPID: 1)
+        check(helperPlan.include == [58] && helperPlan.leftOut == ["1Password Helper"],
+              "a password-manager helper with no bundle ID is left out of a region")
+        check(!ScreenLook.isSensitive(app(59, "Preview", "com.apple.Preview", "1Password export.pdf")),
+              "a document titled 1Password in another app is just a title")
         check(!ScreenLook.isSensitive(app(38, "System Settings", "com.apple.systempreferences", "Wi-Fi")),
               "other System Settings panes are fine")
         check(!ScreenLook.isSensitive(app(39, "Notes", "com.apple.Notes", "passwords to change")),
