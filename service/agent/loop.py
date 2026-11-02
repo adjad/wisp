@@ -1126,13 +1126,21 @@ def _est_tokens(obj) -> int:
 def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
                 model: str, force_first_tool: str | None, *,
                 protected_prefix_count: int = 1, context_window: int | None = None,
-                min_output_tokens: int = _MIN_OUTPUT_TOKENS):
+                min_output_tokens: int = _MIN_OUTPUT_TOKENS,
+                history_end: int | None = None):
     """Trim a request until prompt + output fits the model's context window.
 
     Order of sacrifice, LEAST VALUABLE FIRST:
       1. the OLDEST history turns — never the required system prefix (rules the model
          needs), never the last user message (the actual request), and never
-         the most recent tool result (what the current step is reasoning about)
+         the most recent tool result (what the current step is reasoning about).
+         A plain user/assistant turn before the request is CONDENSED, not
+         dropped: it leaves one line in the "earlier in this conversation"
+         digest (memory/context.py), which is how a fact stated twenty
+         exchanges ago is still in the request. Then the digest's oldest
+         lines; then the older context notes (system messages after the
+         prefix: host notes, the summary, the digest itself); then everything
+         else oldest-first
       2. TOOL SCHEMAS, from the end of the list
       3. the OUTPUT reservation, down to _MIN_OUTPUT_TOKENS
 
@@ -1159,8 +1167,16 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
 
     `protected_prefix_count` includes the current runtime system block when
     it is separate from the stable prompt. Only that explicit prefix is
-    protected: older system-role history summaries can still be evicted.
-    This is local bookkeeping, never an extra field on API messages.
+    protected: older system-role history summaries can still be evicted, after
+    the verbatim turns they summarize. The digest's oldest lines go before the
+    digest does. This is local bookkeeping, never an extra field on API
+    messages.
+
+    `history_end` is the index just past the request that opened this turn
+    (run_agent knows it: everything it appends comes after). Only messages
+    before it condense; this turn's later traffic (tool calls, results, host
+    nudges) is dropped, never written into the digest. Without it, condensing
+    stops at the first tool call or result.
     """
     from service.config import model_context_window
 
@@ -1209,15 +1225,90 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
             return False
         return True
 
+    from service.memory.context import (
+        cap_digest, digest_content, digest_line, digest_lines, is_digest)
+
+    def over() -> bool:
+        return overhead + max_tokens > window
+
+    def set_digest(at: int, lines: list[str]) -> None:
+        nonlocal overhead
+        overhead -= _msg_tokens(msgs[at])
+        msgs[at] = {"role": "system", "content": digest_content(lines)}
+        overhead += _msg_tokens(msgs[at])
+
+    first_traffic = next((j for j, m in enumerate(msgs)
+                          if m.get("tool_calls") or m.get("role") == "tool"), len(msgs))
+    boundary = min(history_end if history_end is not None else first_traffic, first_traffic)
+
+    def pop(at: int) -> None:
+        nonlocal overhead, last_user, boundary
+        overhead -= _msg_tokens(msgs[at])
+        msgs.pop(at)
+        if at < last_user:               # indices shifted under us
+            last_user -= 1
+        if at < boundary:
+            boundary -= 1
+
+    # 1a. Condense the conversation's earlier turns into the digest, oldest
+    # first. Never this turn's own traffic after its request (see history_end).
     i = 1
-    while overhead + max_tokens > window and i < len(msgs):
-        if droppable(i):
-            overhead -= _msg_tokens(msgs[i])
-            msgs.pop(i)
-            if i < last_user:            # indices shifted under us
-                last_user -= 1
+    while over() and i < min(boundary, last_user):
+        m = msgs[i]
+        if not droppable(i) or m.get("role") == "system":
+            i += 1
             continue
-        i += 1
+        line = (digest_line(m["role"], m.get("content"))
+                if m.get("role") in ("user", "assistant") else "")
+        pop(i)
+        if not line:
+            continue
+        at = next((j for j in range(protected_prefix_count, last_user) if is_digest(msgs[j])), None)
+        if at is None:
+            # A new digest sits where the condensed turn was: after any summary
+            # or context notes, before the turns still shown verbatim.
+            msgs.insert(i, {"role": "system", "content": digest_content([line])})
+            overhead += _msg_tokens(msgs[i])
+            last_user += 1
+            boundary += 1
+            i += 1
+        else:
+            set_digest(at, cap_digest(digest_lines(msgs[at]) + [line]))
+
+    # 1b. Then the digest's oldest lines, and only then the context notes
+    # (host notes such as "do not repeat these unverified sends", the summary,
+    # the digest itself), oldest first.
+    at = next((j for j in range(protected_prefix_count, last_user) if is_digest(msgs[j])), None)
+    while over() and at is not None and droppable(at) and len(digest_lines(msgs[at])) > 1:
+        set_digest(at, digest_lines(msgs[at])[1:])
+    i = 1
+    while over() and i < last_user:
+        if not droppable(i) or msgs[i].get("role") != "system":
+            i += 1
+            continue
+        pop(i)
+
+    # 1c. Then anything else droppable, oldest first (this turn's own traffic
+    # before the newest result). A tool call goes only together with all of
+    # its results, and never while one of them is protected: a result without
+    # its call, or a call missing a result, is a malformed transcript.
+    i = 1
+    while over() and i < len(msgs):
+        m = msgs[i]
+        if not droppable(i) or m.get("role") == "tool":
+            i += 1
+            continue
+        if m.get("tool_calls"):
+            end = i + 1
+            while end < len(msgs) and msgs[end].get("role") == "tool":
+                end += 1
+            if not all(droppable(j) for j in range(i + 1, end)):
+                i += 1
+                continue
+            for _ in range(end - i):
+                pop(i)
+            continue
+        pop(i)
 
     # 2. Drop tools from the end, keeping any forced one.
     while (overhead + max_tokens > window and len(schemas) > _MIN_TOOLS):
@@ -2452,6 +2543,9 @@ async def run_agent(
     system_prefix = [{"role": "system", "content": sys_content},
                      {"role": "system", "content": runtime_content}]
     msgs: list[dict] = system_prefix + messages
+    # Everything before this index is the conversation so far and the request;
+    # what the turn appends after it is never condensed into the digest.
+    turn_history_end = len(msgs)
     if picture_reading:
         # The reading arrives the way any read does: a tool result (data), after
         # a synthesized call so the chat template sees a well-formed exchange.
@@ -3409,17 +3503,24 @@ async def run_agent(
     # a tool-free direct step does not follow a tool result and may still drop it.
     _ask_after_tool_thinks = ask_quality and thinking_after_tool_required(model)
 
+    from service.memory.context import is_digest as _is_digest
+    _ask_has_history = any(isinstance(m, dict) and (m.get("role") == "assistant" or _is_digest(m))
+                           for m in messages)
+
     def _ask_window(offered, stubs, scale: float) -> int:
         """This step's fit window: the Ask prompt budget (scaled down after a
         guard refusal), never below what the protected prefix and the real
         schemas need, never above the model's own window."""
         from service.config import model_context_window
-        from service.model_only import ASK_PROMPT_BUDGET
+        from service.model_only import ASK_HISTORY_RESERVE, ASK_PROMPT_BUDGET
         real = [sch for sch in offered if sch["function"]["name"] not in stubs]
         floor = _est_tokens(msgs[:len(system_prefix)]) + _est_tokens(real) + 2500
         window = (getattr(getattr(client, "target", None), "context_window", None)
                   or model_context_window(model))
-        return min(window, max(int(ASK_PROMPT_BUDGET * scale), floor) + max_tokens)
+        # Earlier conversation gets its own room: without it a tool result
+        # evicted every earlier turn (see ASK_HISTORY_RESERVE).
+        reserve = int(ASK_HISTORY_RESERVE * scale) if _ask_has_history else 0
+        return min(window, max(int(ASK_PROMPT_BUDGET * scale), floor) + max_tokens + reserve)
 
     def _ask_results_text() -> str:
         from service.model_only import compact_results
@@ -3436,7 +3537,8 @@ async def run_agent(
         the step that replaces a raw tool dump. With `direct`, the same step
         for a turn with no tool result (its steps came back empty, e.g. a call
         to a tool that was not offered, which oMLX drops). "" when it fails."""
-        from service.model_only import ASK_PROMPT_BUDGET, salvage_answer, strip_think
+        from service.model_only import (ASK_HISTORY_RESERVE, ASK_PROMPT_BUDGET,
+                                        salvage_answer, strip_think)
         nudge = {"role": "user", "content": (
             "Answer my last question directly now, briefly and helpfully, from what you "
             "know. Do not call any tool. If it needs my personal data you have not "
@@ -3447,8 +3549,10 @@ async def run_agent(
         try:
             fitted, _, out_tokens = _fit_window(
                 msgs + [nudge], [], 700, model, None,
-                protected_prefix_count=len(system_prefix),
-                context_window=int(ASK_PROMPT_BUDGET * ask_scale) + 700, min_output_tokens=400)
+                protected_prefix_count=len(system_prefix), history_end=turn_history_end,
+                context_window=int((ASK_PROMPT_BUDGET + (ASK_HISTORY_RESERVE if _ask_has_history
+                                                         else 0)) * ask_scale) + 700,
+                min_output_tokens=400)
             answer, thought, _ = await _run_step(
                 client, model, fitted, [], "auto", min(out_tokens, 700), emit,
                 stream_content=False, temperature=temperature, no_thinking=True,
@@ -3738,7 +3842,7 @@ async def run_agent(
                 else getattr(getattr(client, "target", None), "context_window", None))
             step_msgs, step_schemas, step_max_tokens = _fit_window(
                 msgs, offered_schemas, max_tokens, model, forced_tool,
-                protected_prefix_count=len(system_prefix),
+                protected_prefix_count=len(system_prefix), history_end=turn_history_end,
                 context_window=step_context_window)
             # Keep enforcement in sync with what was actually offered — a tool
             # dropped to fit must be rejected if the model calls it anyway,
@@ -3751,7 +3855,7 @@ async def run_agent(
                 step_stubs = frozenset()
                 step_msgs, step_schemas, step_max_tokens = _fit_window(
                     msgs, offered_schemas, max_tokens, model, forced_tool,
-                    protected_prefix_count=len(system_prefix),
+                    protected_prefix_count=len(system_prefix), history_end=turn_history_end,
                     context_window=step_context_window)
             allowed_names = {s["function"]["name"] for s in step_schemas} - step_stubs
             if model_led_discovery and step_schemas != offered_schemas:
@@ -3811,7 +3915,7 @@ async def run_agent(
                     step_stubs = frozenset()
                     step_msgs, step_schemas, step_max_tokens = _fit_window(
                         msgs, offered_schemas, max_tokens, model, forced_tool,
-                        protected_prefix_count=len(system_prefix),
+                        protected_prefix_count=len(system_prefix), history_end=turn_history_end,
                         context_window=_ask_window(offered_schemas, step_stubs, ask_scale))
                     allowed_names = {s["function"]["name"] for s in step_schemas}
                     if step_schemas != offered_schemas:

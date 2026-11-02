@@ -105,6 +105,14 @@ def narration_thinking_enabled() -> bool:
 # first throttled (a 32k-token step) and far under the 38k step after which it
 # rejected everything. A first step is ~5k estimated tokens.
 ASK_PROMPT_BUDGET = 8000
+# Extra estimated tokens a step may spend on earlier conversation, on top of
+# ASK_PROMPT_BUDGET. Measured without it (scripts/measure_ask_history.py, Gemma
+# 4 E4B, 16,384 window): the system prompt and schemas take ~6,250 of the 8,000,
+# so a direct step kept 8 of 20 earlier exchanges and the step after a
+# 6,000-character tool result kept none. Sized to hold the condensed digest
+# (memory/context.DIGEST_MAX_CHARS, ~1,200) almost whole; the step stays
+# around 9k estimated tokens, far under the window and the guard's 32k.
+ASK_HISTORY_RESERVE = 1200
 # Per-result cap in the model's context (the general loop allows 12,000).
 ASK_TOOL_RESULT_CHARS = 6000
 # Calls to ONE tool per turn. The corpus raw dumps were turns that called
