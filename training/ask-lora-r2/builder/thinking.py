@@ -59,7 +59,9 @@ import writes as _writes
 NEVER = frozenset({"chat_voice", "knowledge_direct"})
 QUIET_FAMILIES = frozenset({"concise_gentle", "capability_honest"})
 WRITE_FAMILIES = frozenset({"finish_the_write", "exact_args", "right_write_tool", "safe_effects", "relay_receipt",
-                            "act_dont_ask", "stub_then_call"})
+                            "act_dont_ask", "stub_then_call",
+                            # round 3
+                            "safe_restraint", "compose_r3", "followup_r3", "reminders_r3", "contacts_r3"})
 WRITE_TOOLS = (frozenset().union(*_writes.WRITE_ALLOW.values()) | _writes.ALWAYS_CARD | _writes.NEVER_CARD
                | {"clear_reminders", "manage_contacts", "cancel_event", "reply_to_email"})
 DISCOVERY = "get_tool_schemas"
@@ -310,7 +312,7 @@ def narrate_reason(meta: dict, s: dict) -> str | None:
         if len(srcs) >= 2 or any(n in PLAN_TOOLS + ("get_recent_activity",) for n, _ in s["prev_calls"]):
             return "multi"
         return None
-    if fam == "ignore_embedded_instructions":
+    if fam in ("ignore_embedded_instructions", "safe_restraint"):
         return "inject" if any(injected(r) for r in s["all_results"]) else None
     last = s["results"][-1] if s["results"] else ""
     if not last:
@@ -568,6 +570,8 @@ def action(name: str, a: dict, prior: str = "", with_day: bool = True, terse: bo
     if name == "complete_reminder":
         return f"mark the “{title}” reminder done"
     if name == "clear_reminders":
+        if a.get("scope") and not (a.get("query") or a.get("title")):
+            return f"delete the {str(a['scope']).replace('_', ' ')} reminders"
         return f"delete the reminder matching “{a.get('query') or title}”"
     if name == "send_message":
         gist = f" with {prior}" if prior else ""
@@ -726,7 +730,8 @@ def _tool_reason(fam: str, name: str, a: dict, seed: str) -> str:
     if name == "draft_email":
         return pick(seed + "r", ["Asked for a draft to look over, so draft_email, not send_email.",
                                  "A draft, not a send: nothing goes out yet."])
-    if name in ("send_email", "send_message") and fam in ("right_write_tool", "safe_effects", "act_dont_ask"):
+    if name in ("send_email", "send_message") and fam in ("right_write_tool", "safe_effects", "act_dont_ask",
+                                                           "safe_restraint", "compose_r3"):
         return pick(seed + "r", ["Asked to send it now, so the real send, not a draft.",
                                  "This is a send now, not a scheduled one or a draft.",
                                  "Wants it sent, not drafted."])
@@ -1421,8 +1426,11 @@ def thought_answer_first(meta, s, ctx, seed) -> str:
                                  "No acting on a vague destructive ask; ask which part, nothing else.",
                                  "Nothing gets removed until the target is named; one question."]))
     if "?" in text:
-        return _join("One detail the request needs isn't there.",
-                     pick(seed, ["Ask for it plainly rather than guess.", "One short question first."]))
+        return _join(pick(seed + "a", ["One detail the request needs isn't there.",
+                                       "Something the request depends on is missing.",
+                                       "Two readings are possible, and they'd do different things."]),
+                     pick(seed, ["Ask for it plainly rather than guess.", "One short question first.",
+                                 "Ask once, then act on the answer."]))
     if re.search(r"\bmy (?:roommate|dad|mom|mother|father|sister|brother|friend|boss|partner|cousin|aunt|uncle)\b|"
                  r"^[A-Za-z]+ (?:is|just|got|was)\b", s["prompt"].strip(), re.I):
         return pick(seed, ["That's news about someone else, not a personal fact, so nothing to remember. Just a warm reply.",

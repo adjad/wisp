@@ -1935,6 +1935,11 @@ for _mod in ("scen_r2_safe", "scen_r2_args", "scen_r2_act", "scen_r2_chat"):   #
 import os as _os  # noqa: E402
 
 if _os.environ.get("ASK_LORA_ROUND") == "3":
+    # Replaced in round 3: r2's 90 terse chat replies (the likely source of r2's six chat
+    # non-replies) give way to chat_voice_r3; stub_then_call builds nothing on main, where a
+    # schema-valid stub call runs directly (#424), so it is dropped rather than left empty.
+    for _gone in ("chat_voice", "stub_then_call"):
+        FAMILIES.pop(_gone, None)
     import glob as _glob
     for _path in sorted(_glob.glob(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "scen_r3_*.py"))):
         _m = _importlib.import_module(_os.path.basename(_path)[:-3])

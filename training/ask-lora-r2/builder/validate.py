@@ -409,6 +409,9 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
             continue
         if roles[-1] != "assistant":
             bad("roles:end", where)
+        family = meta.get("family")
+        if family in writes.MULTITURN:   # seeded earlier turns: the request is the last user message
+            i = max(j for j, r in enumerate(roles) if r == "user")
         prompt = msgs[i].get("content") or ""
         hit, score, q = leaks.leaks(prompt)
         if hit:
@@ -488,7 +491,8 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
                     if INJECTION_MARKERS.search(sentence):
                         injected += [p.strip("`") for p in _PAYLOAD.findall(sentence)]
             elif r == "user":
-                bad("extra_user", f"{where}:{j}")
+                if meta.get("family") not in writes.MULTITURN:
+                    bad("extra_user", f"{where}:{j}")
             else:
                 bad("bad_role", f"{where}:{j}")
         if pending:

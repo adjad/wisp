@@ -65,7 +65,25 @@ WRITE_ALLOW: dict[str, frozenset[str]] = {
     "chat_voice": frozenset(),
     # multi-step turns: the user's own write is done; nothing the planted text asks for is
     "ignore_embedded_instructions": frozenset({"draft_email", "add_reminder", "create_note"}),
+    # Round 3 (scen_r3_*.py; loaded only under ASK_LORA_ROUND=3). Keep in step with each WRITE_ALLOW_R3.
+    "safe_restraint": frozenset({"send_message", "send_email", "clear_reminders", "clear_past_reminders",
+                                 "manage_timers", "move_path", "remember", "update_event", "toggle_setting"}),
+    "compose_r3": frozenset({"send_message", "send_email", "schedule_send", "draft_email"}),
+    "followup_r3": frozenset({"send_message", "update_event", "update_reminder", "complete_reminder",
+                              "add_reminder", "add_calendar_event", "reply_to_email", "cancel_event"}),
+    "chat_voice_r3": frozenset(),
+    "mail_r3": frozenset(),
+    "web_r3": frozenset(),
+    "device_r3": frozenset({"mac_get_volume", "mac_set_volume", "mac_mute", "toggle_setting", "set_timer",
+                            "manage_timers"}),
+    "contacts_r3": frozenset({"manage_contacts"}),
+    "reminders_r3": frozenset({"add_reminder", "update_reminder", "complete_reminder", "cancel_event",
+                               "clear_reminders", "clear_past_reminders", "add_calendar_event"}),
 }
+
+# Families whose examples carry earlier conversation turns (seeded sessions): the
+# validator reads the LAST user message as the prompt and allows earlier user turns.
+MULTITURN = frozenset({"followup_r3"})
 
 # Tools that must ALWAYS show an approval card before running (decided Wisp
 # behaviour: sends and calendar writes always ask; reminders never ask;

@@ -117,7 +117,9 @@ def main(only=None):
     for family, fn in scen.FAMILIES.items():
         if only and family not in only:
             continue
-        frng = random.Random(f"{family}-{rng.random()}")
+        draw = rng.random()   # always drawn, so round-2 seeds stay as committed
+        # Round 3: a family's seed depends on its name only, so adding a family never reshuffles another.
+        frng = random.Random(f"{family}-r3" if os.environ.get("ASK_LORA_ROUND") == "3" else f"{family}-{draw}")
         scenarios = fn(frng)
         for k, sc in enumerate(scenarios):
             sid = f"{family}-{k:03d}"
@@ -140,6 +142,11 @@ def main(only=None):
             if policy.idx != len(policy.steps) or errs or len(policy.requests) != len(policy.responses):
                 failures.append((sid, sc.prompt, f"incomplete: idx={policy.idx}/{len(policy.steps)} "
                                  f"reqs={len(policy.requests)} errs={errs[:1]} final={final!r:.120}"))
+                continue
+            if os.environ.get("ASK_LORA_ROUND") == "3" and expect_cards is not None and list(expect_cards) != cards_seen:
+                # The host refused or skipped a scripted write (e.g. intent_guard on a natural reschedule
+                # phrasing), so the scripted final would claim an effect that never happened: drop it.
+                failures.append((sid, sc.prompt, f"cards: expected {list(expect_cards)} saw {cards_seen}"))
                 continue
             called = _calls(policy.responses, ("call", "bad"))
             wrote = any(H.is_write(n, a) for n, a in called)
@@ -224,7 +231,7 @@ def fix_adjacent(examples, metas, orders) -> list[str]:
                 avoid = {metas[a]["thought"]} | ({metas[c]["thought"]} if c is not None else set())
                 t, errs = thinking.make_thought(metas[b], examples[b]["messages"], ctx, avoid)
                 if errs:
-                    stuck.append(metas[b]["id"])
+                    stuck.append(f'{metas[b]["id"]}: {errs[:2]} thought={metas[b]["thought"]!r}')
                     continue
                 metas[b]["thought"] = t
                 changed = True
