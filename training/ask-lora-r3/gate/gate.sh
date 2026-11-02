@@ -6,7 +6,8 @@
 #
 # <modelA>/<modelB> are oMLX model ids (folder names), e.g. gemma-4-E4B-it-oQ4e-mtp and the r3 build.
 # Needs: Wisp quit, oMLX running on $OMLX_BASE, and the heavy lock free (every Swift compile and every gate takes it).
-# Stages are skipped (not faked) when their input is missing; set ONLY=toolbench,chat,mtp,vision,video,audio to run some.
+# Stages are skipped (not faked) when their input is missing; set ONLY=toolbench,chat,mtp,vision,reading,pturns,video,audio to run some.
+# `reading` is the READ call behind pictures that lead to actions (vision/run_reading.py, through service.vision.read_picture).
 #
 # Env (all optional):
 #   REPO         the Wisp checkout whose service/ the checks import   (default: this script's repository)
@@ -34,7 +35,7 @@ SETTINGS="${OMLX_SETTINGS:-$HOME/.omlx/model_settings.json}"
 CHAT_PROMPTS="${CHAT_PROMPTS:-$REPO/training/ask-lora-r2/chateval_prompts.yaml}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT="${OUT:-$HERE/runs/${A}__${B}__$STAMP}"
-ONLY="${ONLY:-toolbench,chat,mtp,vision,video,audio}"
+ONLY="${ONLY:-toolbench,chat,mtp,vision,reading,pturns,video,audio}"
 want() { case ",$ONLY," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
 # Wisp must be quit: a live Wisp holds the engine and its backend ports.
@@ -96,6 +97,24 @@ if want vision; then
   "$PY" run_vision.py score "$OUT/vision/answers.jsonl" --a "$A" --b "$B" --repo "$REPO" --json-out "$OUT/vision/score.json" \
     > "$OUT/vision/score.txt" 2>&1; echo "== vision scored -> $OUT/vision/score.txt"
 fi
+if want reading; then
+  cd "$HERE/vision" || exit 2
+  [ -f cases.json ] || "$PY" make_images_more.py || exit 2
+  nice -n 5 "$PY" run_reading.py run --repo "$REPO" --models "$A,$B" --out "$OUT/reading"
+  echo "== $(date) READING EXIT $?"
+  "$PY" run_reading.py score "$OUT/reading/answers.jsonl" --a "$A" --b "$B" --json-out "$OUT/reading/score.json" \
+    > "$OUT/reading/score.txt" 2>&1; echo "== reading scored -> $OUT/reading/score.txt"
+fi
+if want pturns; then
+  # the Ask loop after a picture was read (picture_turn_r3 dev rows); skipped, not faked, when the dataset has none
+  if grep -qs '"family": "picture_turn_r3"' "$HERE/../data/valid.meta.jsonl"; then
+    cd "$HERE/vision" || exit 2
+    nice -n 5 "$PY" picture_turns.py run --models "$A,$B" --out "$OUT/pturns"
+    echo "== $(date) PICTURE TURNS EXIT $?"
+    "$PY" picture_turns.py score "$OUT/pturns/answers.jsonl" --a "$A" --b "$B" --json-out "$OUT/pturns/score.json" \
+      > "$OUT/pturns/score.txt" 2>&1; echo "== picture turns scored -> $OUT/pturns/score.txt"
+  else echo "== PICTURE TURNS skipped (no picture_turn_r3 rows in data/valid.meta.jsonl)"; fi
+fi
 if want video; then
   cd "$HERE/vision" || exit 2
   [ -f video/clips.json ] || "$PY" run_video.py make
@@ -111,6 +130,8 @@ if want audio; then
   echo "== audio scored -> $OUT/audio/score.txt"
 fi
 if want vision && want audio; then
-  "$PY" "$HERE/mm_gate.py" "$OUT/vision/score.json" "$OUT/audio/score.json" --a "$A" --b "$B" | tee "$OUT/multimodal-gate.txt"
+  READING_ARG=""; [ -f "$OUT/reading/score.json" ] && READING_ARG="--reading $OUT/reading/score.json"
+  PTURN_ARG=""; [ -f "$OUT/pturns/score.json" ] && PTURN_ARG="--picture-turns $OUT/pturns/score.json"
+  "$PY" "$HERE/mm_gate.py" "$OUT/vision/score.json" "$OUT/audio/score.json" --a "$A" --b "$B" $READING_ARG $PTURN_ARG | tee "$OUT/multimodal-gate.txt"
 fi
 echo "== done; results in $OUT"

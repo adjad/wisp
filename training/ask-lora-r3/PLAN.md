@@ -33,13 +33,16 @@ r3 = all r2 families, rebuilt on main, plus these:
 | `followup_r3` | scen_r3_followup.py | multi-turn follow-ups, r2's "single turn only" gap |
 | `mail_r3`, `web_r3` | scen_r3_mailweb.py | grounded mail and web answers; web_search over web_fetch |
 | `device_r3`, `contacts_r3`, `reminders_r3` | scen_r3_device.py | r2's regressions plus weak categories |
-| `vision_r3` | vision/make_vision_data.py | 295 rows (230 images, 40 scanned documents, 25 text documents) through Wisp's own request; visible text always; proposals only for a dated future event; planted text ignored. **No video rows** (removed 2026-11-01; the Mac gate still scores clips) |
+| `picture_turn_r3` | scen_r3_picture.py | rc1 batch 3 (#436): the Ask loop after a picture was read (the host's `read_attached_picture` call and UNTRUSTED reading). 234 examples: events, reminders, notes, replies on the right channel, past or unreadable or ambiguous pictures, about 25% with planted instructions ignored. Multi-item readings are left out while the loop runs each write tool once per turn |
+| `vision_r3` | vision/make_vision_data.py | 444 rows: 230 images, 40 scanned documents, 25 text documents, and 149 `picture_read` rows (129 train, 20 dev) on #436's reading call (TEXT/DESCRIPTION, temperature 0, thinking off, 45 with planted text copied, never obeyed). All through Wisp's own request; visible text always; proposals only for a dated future event; planted text ignored. **No video rows** (removed 2026-11-01; the Mac gate still scores clips) |
 
 **Training changes** (brev/render.py and train.py):
 - image rows go through the processor, with towers frozen and about 12% of steps;
 - chat rows are capped so r2's terseness doesn't recur.
 
 **Open question:** whether to keep 2 epochs at lr 2e-4, or 1.5 epochs. Decide from the dev loss of each family in `smoke`.
+
+**Data refresh (2026-11-01, on main 52134574 / rc1 batch 3):** text 3,618 examples (3,254 train, 364 valid), validator clean; render zip sha256 `61a389c9…` (brev/upload-zip.json). Switching off Wi-Fi, Bluetooth or AirDrop now expects its card (policy.toggle_off_hit). The checkpoint picker and the Mac gate score the reading format (format, text recall, planted text obeyed, empties); `gate/vision/picture_turns.py` scores picture turns offline.
 
 ## Stage 2: GRPO (grpo/)
 
@@ -50,6 +53,7 @@ r3 = all r2 families, rebuilt on main, plus these:
   - a penalty for calling when an answer or question was ideal;
   - the answer's facts must be present;
   - penalties for third-person naming, closers and a thought over 60 words.
+- **Pictures:** about 6.7% of prompts are picture readings and picture turns; obeying planted text scores −2.
 - **Settings:** 6 generations at production sampling, beta 0.04, lr 5e-6, 1 epoch over about 1,500 prompts weighted towards safety.
 - **No rollout environment.** Gemma 4 has no vLLM, and multi-turn rollouts would be too slow.
 
@@ -80,7 +84,7 @@ The figures below scale from that, so they are estimates.
 
 ## Regression guard for vision and audio (new in r3)
 
-1. **Training rows on Wisp's own request shapes.** The towers stay frozen. 295 image and document rows come from vision.py's `_messages` and documents.py (no video), and 360 transcription rows from voice.py's request. The rows' main job is to give the KL anchor and the checkpoint eval Wisp's real multimodal prompts; they teach format and restraint, not perception.
+1. **Training rows on Wisp's own request shapes.** The towers stay frozen. 295 image and document rows, plus 149 picture readings, come from vision.py's `_messages` and documents.py (no video), and 360 transcription rows from voice.py's request. The rows' main job is to give the KL anchor and the checkpoint eval Wisp's real multimodal prompts; they teach format and restraint, not perception.
 2. **KL anchor to the base model.** On every vision and audio row, plus a small text slice, the loss adds λ·KL(base ‖ tuned). The base logits come from the same weights with the LoRA disabled.
 3. **Checkpoint selection by a GPU multimodal eval** on held-out vision and audio dev rows, which are separate from the Mac gate set. `pick_checkpoint.py` refuses any checkpoint that is worse than base beyond these tolerances:
    - vision facts −1 pt;

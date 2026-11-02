@@ -528,6 +528,8 @@ SETTINGS = {
     "dark_mode": ("dark mode", ["dark mode"]),
     "voiceover": ("VoiceOver", ["voiceover", "the screen reader"]),
 }
+# Settings Wisp may switch off without asking (service/safety/policy._TOGGLE_OFF_HARMLESS).
+TOGGLE_OFF_HARMLESS = frozenset({"dark_mode", "auto_appearance", "low_power_mode", "do_not_disturb"})
 
 
 def _toggle(key, on, i):
@@ -556,8 +558,11 @@ def _toggle(key, on, i):
             state = "on" if on else "off"
             final = pick(rng, [f"{label} is {state} now.", f"Done, {label} is {state}.", f"{label} turned {state}.",
                                f"I switched {label} {state}."])
+        # Switching off a connection, protection or accessibility aid always asks
+        # (policy.toggle_off_hit, rc1 batch 3); the scripted card is allowed.
+        cards = ["toggle_setting"] if not on and key not in TOGGLE_OFF_HARMLESS else None
         return mk("device_r3", prompt, now, w, [[Call("toggle_setting", setting=key, on=on)], Final(final)],
-                  f"one named setting: toggle_setting {key} on={on}")
+                  f"one named setting: toggle_setting {key} on={on}", cards=cards)
     return make
 
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """GPU side: run the BASE model and every saved LoRA checkpoint on the held-out multimodal dev rows and score
 them (score_mm.py). transformers generate, greedy (= temperature 0), thinking off, batch 1, and the production
-request shapes: vision.py's system prompt + question (max_tokens 400) and voice.py's prompt with a 16 kHz mono
+request shapes: vision.py's system prompt + question (max_tokens 400), the READ call (picture_read rows, 700) and voice.py's prompt with a 16 kHz mono
 clip (max_tokens 240). One base load; each adapter is attached with peft and the base is run with the adapter
 disabled, so the comparison is on the same weights, same code path.
 
@@ -36,6 +36,7 @@ from pick_checkpoint import adapter_dirs, checkpoint_losses, read_log, run_root 
 
 STOP_IDS = {106, 50, 1}       # <turn|>, <|tool_response>, <eos>; train.py's sample uses the same set
 VISION_MAX_TOKENS = 400       # service/vision.py _MAX_TOKENS
+READING_MAX_TOKENS = S.READING_MAX_TOKENS  # service/vision.py READ_MAX_TOKENS (read_picture: TEXT + DESCRIPTION)
 TEXT_DOCUMENT_MAX_TOKENS = 600  # service/documents.py _MAX_TOKENS (answer_text: extracted .docx/.xlsx/.pptx text)
 AUDIO_MAX_TOKENS = 240        # service/voice.py _MAX_TOKENS
 SR = 16000
@@ -273,7 +274,7 @@ def main() -> int:
     (out / "run_info.json").write_text(json.dumps({
         "base": str(a.base), "ckpt_root": str(ckpt_root), "checkpoints": names, "vision_rows": len(vis),
         "audio_rows": len(aud), "vision_groups": R.vision_stats(vis), "when": time.strftime("%FT%T"), "decoding": "greedy, thinking off, batch 1",
-        "max_new_tokens": {"vision": VISION_MAX_TOKENS, "text_document": TEXT_DOCUMENT_MAX_TOKENS, "audio": AUDIO_MAX_TOKENS}}, indent=1))
+        "max_new_tokens": {"vision": VISION_MAX_TOKENS, "picture_read": READING_MAX_TOKENS, "text_document": TEXT_DOCUMENT_MAX_TOKENS, "audio": AUDIO_MAX_TOKENS}}, indent=1))
 
     def run_all(ckpt: str, m) -> None:
         for modality, rws, build, cap in (("vision", vis, vision_inputs, VISION_MAX_TOKENS),
@@ -287,7 +288,8 @@ def main() -> int:
                     enc = build(tok, proc, row, a.device)
                     if a.smoke and i == 0:
                         smoke_checks(tok, proc, enc, modality)
-                    rec["raw"] = generate(m, tok, enc, TEXT_DOCUMENT_MAX_TOKENS if row.get("kind") == "text_document" else cap)
+                    rec["raw"] = generate(m, tok, enc, READING_MAX_TOKENS if R.is_reading(row)
+                                          else TEXT_DOCUMENT_MAX_TOKENS if row.get("kind") == "text_document" else cap)
                 except Exception as e:  # noqa: BLE001 - recorded and scored as an error, never as an answer
                     rec["error"] = f"{type(e).__name__}: {e}"[:500]
                 rec["secs"] = round(time.monotonic() - t0, 2)

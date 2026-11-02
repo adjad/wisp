@@ -273,6 +273,8 @@ def decide(meta: dict, messages: list[dict]) -> bool:
         return False
     s = analyze(meta, messages)
     kind = s["kind"]
+    if fam in PICTURE_FAMILIES:
+        return picture_decide(s)
     if kind == "after_error":
         return True
     if fam in QUIET_FAMILIES or kind == "after_load":
@@ -291,6 +293,170 @@ def decide(meta: dict, messages: list[dict]) -> bool:
     if fam in WRITE_FAMILIES:
         return _write_intent(fam, s) and _narrate_outcome(fam, s) != "ok"
     return narrate_reason(meta, s) is not None
+
+
+# ----------------------------------------------------------------- picture turns (round 3)
+# picture_turn_r3: the person attached a still image and asked Wisp to DO something with it. The host
+# READS the picture (one vision call) and hands the reading to the agent loop as an UNTRUSTED
+# `read_attached_picture` tool result (service/vision.py). The first step after that result is where
+# the task is resolved (what the reading is, which tool, which day, whether a planted line is to be
+# skipped), so it THINKS; the call after a schema load, a later item of a multi-item list and a clean
+# receipt are mechanical (a final THINKS only to flag a planted instruction).
+PICTURE_FAMILIES = frozenset({"picture_turn_r3"})
+PICTURE_TOOL = "read_attached_picture"
+_PIC_HEAD = "UNTRUSTED CONTENT: Wisp's reading of"
+_PIC_WHAT = ("flyer", "poster", "invite", "ticket", "receipt", "to-do list", "sticky note", "whiteboard", "text thread",
+             "chat", "email", "notice", "schedule", "handwritten note", "web page", "list", "screenshot")
+
+
+def pic_reading(s: dict) -> str:
+    for r in s["all_results"]:
+        if r.startswith(_PIC_HEAD):
+            return r.split("\n\n", 1)[1] if "\n\n" in r else r
+    return ""
+
+
+def pic_first(s: dict) -> bool:
+    """The step straight after the picture's reading (a call, a load, or a plain reply)."""
+    return bool(s["prev_calls"]) and s["prev_calls"][0][0] == PICTURE_TOOL and len(s["prev_calls"]) == 1
+
+
+def pic_inj_lines(reading: str) -> list[str]:
+    return [l for l in reading.splitlines() if INJECTION.search(l)]
+
+
+def picture_decide(s: dict) -> bool:
+    kind = s["kind"]
+    if kind == "after_error":
+        return True
+    if kind == "after_load":
+        return False
+    if pic_first(s):
+        return True
+    if kind == "narrate":
+        return bool(pic_inj_lines(pic_reading(s)))
+    return False
+
+
+def _pic_inj_phrase(line: str) -> str:
+    low = line.lower()
+    for pat, phrase in ((r"\b(?:curl|run|terminal|shell|execute)\b", "run a command"),
+                        (r"https?://|\bopen\b|\blink\b", "open a link"),
+                        (r"turn off|wi-?fi|bluetooth|setting|disable", "change a setting"),
+                        (r"\bdelete|\bwipe|\bclear\b|mark every", "delete things"),
+                        (r"remember|everything you|owner|private", "reveal private details"),
+                        (r"\bpay\b|\$\d", "pay someone"),
+                        (r"\bforward", "forward mail to a stranger"),
+                        (r"\b(?:email|send|text)\b", "send something out")):
+        if re.search(pat, low):
+            return phrase
+    return "do something nobody asked for"
+
+
+def _pic_what(reading: str) -> str:
+    desc = reading.split("DESCRIPTION:", 1)[-1].lower().replace("invitation", "invite").replace("to do list", "to-do list")
+    return next((w for w in _PIC_WHAT if w in desc), "picture")
+
+
+def picture_thought(meta: dict, s: dict, ctx: dict | None, seed: str) -> str:
+    clock = parse_clock(meta)
+    reading = pic_reading(s)
+    what = _pic_what(reading)
+    thing = ("The " + what) if what != "picture" else "The picture"
+    inj = pic_inj_lines(reading)
+    phrase = _pic_inj_phrase(inj[0]) if inj else ""
+    skip = pick(seed + "k", [f"One line is aimed at an assistant, asking to {phrase}; that isn't the request, so leave it.",
+                             f"A line in it tells an assistant to {phrase}, which isn't from the person, so skip it.",
+                             f"It also carries an instruction to {phrase} that only the picture gives; don't act on it."]) if inj else ""
+    kind = s["kind"]
+    if kind == "after_error":
+        return pick(seed, ["That change was declined, so nothing was written. Say so plainly.",
+                           "Declined, so nothing changed; one honest line saying that."])
+    if pic_first(s) and not s["calls"]:         # a reply with no call: unreadable, past, unclear
+        today = clock.date() if clock else None
+        dates = [d for d, _ in stated_dates(reading, clock)[0] if d] if clock else []
+        text_part = reading.split("DESCRIPTION:", 1)[0]
+        if what in ("text thread", "chat", "email") and not dates and not _CLOCKTIME.search(text_part):
+            body = pick(seed + "a", [f"The {what} asks a question only the person can answer. Guessing a reply would mean inventing the person's answer; ask what to say.",
+                                     "What to say back is the person's call, and the request didn't say. One short question.",
+                                     "No answer was given, and inventing one would be wrong. Ask what the reply should say."])
+        elif "(none)" in text_part or text_part.count("[unreadable]") >= 2:
+            body = pick(seed + "u", ["Nothing legible came through, so there's nothing to act on. Say that and ask for a clearer picture or the details.",
+                                     "The text isn't readable enough to use. Guessing a title or time would be wrong; ask for a sharper picture.",
+                                     "Too little to go on from this picture. Say what couldn't be read and ask.",
+                                     "The reading came back with no usable text. Nothing to add yet; ask for a clearer shot or the details typed out.",
+                                     "Can't make out enough here to act on. Better to say so than to fill in a guess.",
+                                     "No legible details in the reading. Say nothing was added and ask what it says."])
+        elif dates and today and all(d < today for d in dates):
+            body = pick(seed + "p", [f"{thing} is dated before today, so adding it would put something in the past. Ask which date to use.",
+                                     "Its date has already gone by. Don't add it blindly; ask whether to use a later one.",
+                                     f"Every date on the {what} is behind us. One question about the right date first."])
+        elif not dates and not _CLOCKTIME.search(text_part) and not _WD_RE.search(text_part):
+            body = pick(seed + "x", [f"None of the entries on the {what} has a day or time. Ask when to remind rather than invent one.",
+                                     "Nothing in it says when anything is due, so a made-up time would be wrong; ask when."])
+        elif len(set(dates)) >= 2:
+            body = pick(seed + "t", [f"{thing} lists more than one date and doesn't say which counts. Ask rather than pick.",
+                                     "Two possible days and no way to tell which; one short question.",
+                                     "The picture leaves the day open between two choices. Ask which."])
+        else:
+            body = pick(seed + "m", [f"{thing} gives the day but no start time, and a made-up time would be wrong. Ask for it.",
+                                     "Something needed for the event is missing from the picture. One short question beats a guess.",
+                                     "The time isn't shown anywhere, so there's nothing honest to book. Ask what time."])
+        return _join(body, skip)
+    if kind == "narrate":                       # a clean receipt over a reading that had a planted line
+        return _join(pick(seed + "n", ["That went through as asked.", "The request itself is done.", "Everything the person asked is done."]),
+                     pick(seed + "q", [f"The picture also told an assistant to {phrase}; one short line saying it wasn't followed.",
+                                       f"Mention briefly that its instruction to {phrase} was ignored."]))
+    plan = _plan_calls(s, ctx)
+    name, a = plan[0] if plan else ("", {})
+    several = "one at a time" in (ctx or {}).get("final", "") or "one reminder per request" in (ctx or {}).get("final", "") \
+        or "one event per request" in (ctx or {}).get("final", "")
+    parts = []
+    if name == "add_calendar_event":
+        parts.append((3, pick(seed + "e", [f"{thing} describes an event with a day and a place, so it belongs on the calendar.",
+                                           f"A dated event in the {what}: add it to the calendar, not as a reminder.",
+                                           f"{thing} has the event's day and time; calendar event."])))
+    elif name == "add_reminder":
+        parts.append((3, pick(seed + "r", [f"{thing} is a set of things to do with due days, so reminders fit.",
+                                           f"Due days on the {what}: make reminders, not calendar events.",
+                                           f"Tasks with deadlines in the {what}; set a reminder for each."])))
+    elif name == "create_note":
+        parts.append((3, pick(seed + "c", [f"{thing} is text to keep, with nothing to schedule: a note.",
+                                           f"Nothing here has a time, so a note holds it better than a reminder.",
+                                           f"Keep the {what}'s lines in a note under a clear title."])))
+    elif name == "send_message":
+        parts.append((3, pick(seed + "s", [f"It's a text thread, so the answer goes back by text to {a.get('to', 'that person')}, not by email.",
+                                           f"The {what} is a conversation with {a.get('to', 'that person')}; reply on the same channel.",
+                                           "A text thread means a text reply, short and in the person's own voice."])))
+    elif name == "draft_email":
+        parts.append((3, pick(seed + "d", [f"It's an email, so the reply is a draft to its sender in Mail, left unsent for review.",
+                                           f"The {what} is a mail thread; open a reply draft instead of sending.",
+                                           "Email reply: draft it to the sender and keep it unsent."])))
+    elif name in ("view_emails", "reply_to_email"):
+        parts.append((3, pick(seed + "v", [f"It's an email, so find that message in the inbox to reply on its own thread.",
+                                           f"The {what} comes from a mail thread; look it up so the reply stays on it."])))
+    if several:
+        parts.append((2, pick(seed + "i", ["Several entries, but only one write goes in per request: take the first listed and name the rest.",
+                                           "More than one item on it; one per request, so start with the first and list what's left.",
+                                           "It has several items. Only one can be added at a time, so the first now and the others named."])))
+    p = parse_iso(a.get("when_iso")) if a else None
+    if p and clock:
+        d, t = p
+        delta = (d - clock.date()).days
+        if delta == 0:
+            when = f"The day it shows is today, {fmt_day(d)}."
+        elif delta == 1:
+            when = f"The day it shows is tomorrow, {fmt_day(d)}."
+        else:
+            when = pick(seed + "w", [f"Today is {fmt_day(clock.date())}, so the day it shows is {fmt_day(d)}.",
+                                     f"From {fmt_day(clock.date())}, the day it lists lands on {fmt_day(d)}.",
+                                     f"It lists a day that comes out as {fmt_day(d)}."])
+        parts.append((4, when))
+        if name == "add_reminder" and t == _dt.time(9, 0) and not _CLOCKTIME.search(reading.split("DESCRIPTION:", 1)[0]):
+            parts.append((2, pick(seed + "z", ["No clock time is shown, so use 9 AM.", "It gives only the day; 9 AM is the default."])))
+    if skip:
+        parts.append((5, skip))
+    return compose(parts)
 
 
 # Families whose finals narrate one source: a final here thinks only when it does real work on top of the
@@ -1547,7 +1713,9 @@ def thought(meta: dict, messages: list[dict], ctx: dict | None = None) -> str:
     s = analyze(meta, messages)
     seed = f"{meta.get('id')}|{(ctx or {}).get('salt', '')}"
     kind = s["kind"]
-    if kind == "after_error":
+    if (meta.get("family") or "") in PICTURE_FAMILIES:
+        out = picture_thought(meta, s, ctx, seed)
+    elif kind == "after_error":
         out = thought_after_error(meta, s, ctx, seed)
     elif kind == "answer_first":
         out = thought_answer_first(meta, s, ctx, seed)

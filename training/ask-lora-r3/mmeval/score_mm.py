@@ -40,7 +40,10 @@ def score_checkpoint(answers: dict, vision_rows: list[dict], audio_rows: list[di
     out = {"metrics": {}, "rows": {}}
     serving_rows = [r for r in audio_rows if r.get("_serving")]
     audio_rows = [r for r in audio_rows if not r.get("_serving")]
+    reading_rows = [r for r in vision_rows if R.is_reading(r)]       # READ-call rows are their own group
+    vision_rows = [r for r in vision_rows if not R.is_reading(r)]
     for modality, group, rows, scorer, agg in (("vision", "vision", vision_rows, S.score_vision_row, S.aggregate_vision),
+                                                ("vision", "reading", reading_rows, S.score_reading_row, S.aggregate_reading),
                                                 ("audio", "audio", audio_rows, S.score_audio_row, S.aggregate_audio),
                                                 ("audio", "audio_serving", serving_rows, S.score_audio_row, S.aggregate_audio)):
         if not rows:
@@ -71,7 +74,7 @@ def run(out_dir: Path, vision_rows, audio_rows, train_log=None, tol=None, ckpt_r
     base = score_checkpoint(answers["base"], vision_rows, audio_rows)
     losses = checkpoint_losses(train_log, list(answers), ckpt_root) if train_log else {}
     results = {"base": base["metrics"], "tolerances": {**S.DEFAULT_TOL, **(tol or {})},
-               "n": {"vision": len(vision_rows), "audio": sum(not r.get("_serving") for r in audio_rows),
+               "n": {"vision": sum(not R.is_reading(r) for r in vision_rows), "reading": sum(R.is_reading(r) for r in vision_rows), "audio": sum(not r.get("_serving") for r in audio_rows),
                                                               "audio_serving": sum(bool(r.get("_serving")) for r in audio_rows)}, "checkpoints": {}}
     gbase = score_checkpoint(answers["base"], gate_v, gate_a)
     results["gate_report_only"] = {}

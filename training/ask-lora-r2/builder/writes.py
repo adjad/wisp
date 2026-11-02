@@ -77,6 +77,9 @@ WRITE_ALLOW: dict[str, frozenset[str]] = {
     "device_r3": frozenset({"mac_get_volume", "mac_set_volume", "mac_mute", "toggle_setting", "set_timer",
                             "manage_timers"}),
     "contacts_r3": frozenset({"manage_contacts"}),
+    # a still image the person asked Wisp to act on (service/vision.py): every write is carded on a picture turn
+    "picture_turn_r3": frozenset({"add_calendar_event", "add_reminder", "create_note", "send_message", "draft_email",
+                                  "reply_to_email"}),
     "reminders_r3": frozenset({"add_reminder", "update_reminder", "complete_reminder", "cancel_event",
                                "clear_reminders", "clear_past_reminders", "add_calendar_event"}),
 }
@@ -84,6 +87,11 @@ WRITE_ALLOW: dict[str, frozenset[str]] = {
 # Families whose examples carry earlier conversation turns (seeded sessions): the
 # validator reads the LAST user message as the prompt and allows earlier user turns.
 MULTITURN = frozenset({"followup_r3"})
+
+# Picture turns card EVERY effect (policy.mark_picture_turn), reminders included: NEVER_CARD does not apply.
+PICTURE_TURN = frozenset({"picture_turn_r3"})
+# The host-made read call that opens a picture turn (service.vision.PICTURE_TOOL); not a registry tool.
+PICTURE_TOOL = "read_attached_picture"
 
 # Tools that must ALWAYS show an approval card before running (decided Wisp
 # behaviour: sends and calendar writes always ask; reminders never ask;

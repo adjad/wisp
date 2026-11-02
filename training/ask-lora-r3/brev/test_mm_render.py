@@ -347,6 +347,7 @@ def main() -> int:
     assert r3_train.epoch_order(100, 0, 0.12, 7, 1) == ref, "no vision rows: the r2 shuffle must be unchanged"
     assert r3_train.epoch_order(100, 5, 0.0, 7, 1) == ref, "--vision-weight 0: text order unchanged"
     text_document_checks(M, tok, r3_render, r3_train, work)
+    picture_read_checks(M, tok, r3_render, r3_train, work)
     audio_checks(M, tok, r3_render, r3_train, work, afile)
     sharding_checks(r3_train)
     print("ALL OK")
@@ -436,6 +437,100 @@ def text_document_checks(M, tok, rd, tr, work: Path) -> None:
     t2, sk = tr.tokenize(tok, out, 1500, mm)
     assert "td_frames8" in sk and all(len(p_) + len(c_) <= 1500 for _, p_, c_, _ in t2)
     print("text_document / 4-page / 8-frame checks OK; skipped at 1500:", sk)
+
+
+def picture_read_checks(M, tok, rd, tr, work: Path) -> None:
+    """kind 'picture_read' rows (#436's READ call): the request equals service/vision.py's, the render is thinking
+    OFF with the reading as the completion, tokenization/label mask hold, bad rows are refused, and the rows sit in the
+    vision pool (mix + base-anchor KL) with their own dev numbers."""
+    import types as _t
+    vsrc = HERE.parents[2] / "service" / "vision.py"
+    assert rd.READ_SYSTEM == ast_const(vsrc, "_READ_SYSTEM"), "render.READ_SYSTEM drifted from service/vision._READ_SYSTEM"
+    assert rd.READ_MAX_TOKENS == ast_const(vsrc, "READ_MAX_TOKENS") == 700
+    strings = {n.value for n in ast.walk(ast.parse(vsrc.read_text())) if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    assert rd.READ_USER_HEAD in strings and rd.READ_USER_TAIL in strings, "user-turn text drifted from vision._read"
+    assert 'chat_template_kwargs={"enable_thinking": False}' in vsrc.read_text() and "temperature=0" in vsrc.read_text()
+    real = HERE.parent / "vision" / "vision_rows.jsonl"
+    if not real.is_file():
+        print("picture_read: no vision_rows.jsonl yet, synthetic checks only")
+        return
+    loaded, files = rd.load_vision_rows(real)
+    pr = [r for r in loaded if r["kind"] == "picture_read"]
+    assert len(pr) >= 100, f"only {len(pr)} picture_read rows"
+    out = [rd.render_vision(tok, r, r["_rel"]) for r in pr]
+    n_dev = sum(rd.vision_is_dev(r["id"], r.get("meta")) for r in pr)
+    assert n_dev == sum(r["split"] == "dev" for r in pr) and 10 <= n_dev <= 40, n_dev
+    for r, o in zip(pr, out):
+        assert o["kind"] == "picture_read" and o["think"] is False and (o["temperature"], o["max_tokens"]) == (0, 700)
+        assert o["prompt"].count("<|image|>") == 1 and "<|think|>" not in o["prompt"] and o["prompt"].endswith("<|turn>model\n")
+        assert "You are Wisp's eyes." in o["prompt"] and "The person's request, for context only" in o["prompt"]
+        assert o["completion"].startswith("TEXT:\n") and "\nDESCRIPTION:\n" in o["completion"] and o["completion"].endswith("<turn|>")
+        assert len(tok(o["completion"], add_special_tokens=False).input_ids) < 700, o["id"]
+    labelled = [o for o in out if "a capture of the person's screen" in o["prompt"]]
+    assert 0 < len(labelled) < len(out)
+    # other vision rows render exactly as before: no sampling keys on them
+    other = [r for r in loaded if r["kind"] != "picture_read"][:5]
+    assert all("temperature" not in rd.render_vision(tok, r, r["_rel"]) for r in other)
+    # refusals
+    row = next(r for r in pr if not r["label"])
+    def refused(mut):
+        r = json.loads(json.dumps({k: v for k, v in row.items() if k != "_rel"}))
+        mut(r)
+        try:
+            rd.render_vision(tok, {**r, "_rel": row["_rel"]}, row["_rel"])
+        except ValueError:
+            return True
+        return False
+    assert refused(lambda r: r["messages"][0].update(content=r["messages"][0]["content"] + " Also be brief.")), "edited system turn accepted"
+    assert refused(lambda r: r["messages"][1]["content"][-1].update(text="Describe this image.")), "edited user text accepted"
+    assert refused(lambda r: r["messages"].pop(0)), "missing system turn accepted"
+    assert refused(lambda r: r.update(target="The picture shows a receipt.")), "free-text target accepted"
+    assert refused(lambda r: r["meta"].update(sampling={"temperature": 1.0})), "temperature 1 accepted"
+    assert refused(lambda r: r["meta"].update(chat_template_kwargs={"enable_thinking": True})), "thinking on accepted"
+    assert refused(lambda r: r["messages"][0].update(content=rd.READ_SYSTEM.format(what="a video"))), "unknown what accepted"
+    # tokenize a spread of them (one per generator family) through the real mm context
+    data = work / "pr_data"
+    pick, seen = [], set()
+    for r in pr:
+        if r["gen"] not in seen:
+            seen.add(r["gen"])
+            pick.append(r)
+    for r in pick:
+        for rel in r["_rel"]:
+            (data / rel).parent.mkdir(parents=True, exist_ok=True)
+            (data / rel).write_bytes(files[rel])
+    mm = tr.make_mm(tok, M, data)
+    rows_ = [o for o in out if o["id"] in {r["id"] for r in pick}]
+    toks, skipped = tr.tokenize(tok, rows_, 10240, mm)
+    assert not skipped and len(toks) == len(rows_) >= 20
+    longest = 0
+    for (rid, p, c, info), o in zip(toks, rows_):
+        ids, labels, types = tr.sequence(p, c, mm["image_id"])
+        assert info["modality"] == "image" and len(info["counts"]) == 1 and tr.is_read_row(rid)
+        assert labels[len(p):] == c and sum(l != -100 for l in labels) == len(c) and c[-1] in tr.STOP_IDS
+        assert p.count(mm["image_id"]) == info["counts"][0] == sum(types) and mm["image_id"] not in c
+        longest = max(longest, len(p) + len(c))
+    # anchored like every image row, and counted as a read row for the dev numbers
+    a = _t.SimpleNamespace(anchor_kl=0.5, anchor_text_frac=0.0, seed=1)
+    seen_kl = {}
+    class T:
+        def __add__(self, o): return self
+        __radd__ = __add__
+        def __rmul__(self, o): return self
+    old = tr.row_losses
+    tr.row_losses = lambda model, p_, c_, dev, mm=None, kl=False: (seen_kl.update(kl=kl) or {"ce": T(), "kl": T()})
+    try:
+        rid, p, c, info = toks[0]
+        _, _, anchored = tr.step_loss(None, rid, p, c, info, a, "cpu")
+        assert anchored and seen_kl["kl"], "picture_read rows must be KL-anchored"
+    finally:
+        tr.row_losses = old
+    assert tr.is_read_row("pr_receipt_00") and not tr.is_read_row("img_receipt_00") and not tr.is_read_row("fx_fact_1")
+    n_vis = sum(1 for r in loaded)
+    k = tr.vision_per_epoch(2990, n_vis, 0.12)
+    print(f"picture_read: {len(pr)} rows ({n_dev} dev, {len(labelled)} with a screen label), all render thinking-off "
+          f"with temperature 0 / max_tokens 700; {len(rows_)} tokenized, longest {longest} tokens; vision pool "
+          f"{n_vis} rows -> {k} rows/epoch at weight 0.12; bad rows refused: OK")
 
 
 def audio_checks(M, tok, rd, tr, work: Path, afile: Path) -> None:

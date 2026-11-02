@@ -1029,6 +1029,13 @@ def row_loss(model, p, c, dev, use_cache=False, mm=None):
     return r["ce"], r["acc"], r["kept"]
 
 
+READ_ID_PREFIX = "pr_"      # make_vision_data.py's picture_read ids (the "pictures that lead to actions" READ call)
+
+
+def is_read_row(rid: str) -> bool:
+    return str(rid).startswith(READ_ID_PREFIX)
+
+
 def evaluate(model, rows, dev, only_mm: bool = False) -> dict:
     """Dev metrics, sharded over ranks (every rank must call it). dev_loss is the mean CE over all rows scored;
     dev_loss_{text,vision,audio} split it by modality, dev_acc_* likewise, and image/audio rows also get
@@ -1038,13 +1045,18 @@ def evaluate(model, rows, dev, only_mm: bool = False) -> dict:
     kinds = ("text", "image", "audio")
     acc_ = {k: [0.0, 0.0, 0.0, 0.0] for k in kinds}      # sum CE, sum acc, sum KL, n
     exact = {k: 0.0 for k in kinds}
+    read = [0.0, 0.0, 0.0]                               # picture_read rows (ids "pr_*"): sum CE, sum KL, n
     with torch.no_grad():
         todo = [r for r in rows if not (only_mm and not r[3])]
-        for j, (_, p, c, mm) in enumerate(todo):
+        for j, (rid, p, c, mm) in enumerate(todo):
             if j % _DIST["world"] != _DIST["rank"]:
                 continue
             k = modality(mm)
             r = row_losses(model, p, c, dev, mm=mm, kl=bool(mm))
+            if k == "image" and is_read_row(rid):
+                read[0] += r["ce"].item()
+                read[1] += r["kl"].item() if r["kl"] is not None else 0.0
+                read[2] += 1
             a = acc_[k]
             a[0] += r["ce"].item()
             a[1] += r["acc"].item()
@@ -1058,6 +1070,7 @@ def evaluate(model, rows, dev, only_mm: bool = False) -> dict:
     for i, k in enumerate(kinds):
         acc_[k] = flat[4 * i:4 * i + 4]
         exact[k] = flat[12 + i]
+    read = reduce_sum(read, dev)
     set_train(model)
     n_all = sum(acc_[k][3] for k in kinds)
     if not n_all:
@@ -1076,6 +1089,9 @@ def evaluate(model, rows, dev, only_mm: bool = False) -> dict:
             res[f"dev_acc_{names[k]}"] = round(acc_[k][1] / acc_[k][3], 4)
             res[f"dev_exact_{names[k]}"] = f"{int(exact[k])}/{int(acc_[k][3])}"
             res[f"dev_kl_{names[k]}"] = round(acc_[k][2] / acc_[k][3], 5)
+    if read[2]:      # the READ call's own numbers (already inside dev_loss_vision / dev_kl_vision)
+        res["dev_loss_read"] = round(read[0] / read[2], 4)
+        res["dev_kl_read"] = round(read[1] / read[2], 5)
     return res
 
 
@@ -1101,6 +1117,10 @@ def load_all(a, tok, *, vision: bool = True, audio: bool = True):
         mt, mskip = tokenize(tok, t, a.max_len, mm, serving=(m == "audio"))
         md, _ = tokenize(tok, d, a.max_len, mm)
         counts_dev[m] = len(md)
+        if m == "vision":
+            n_read = sum(is_read_row(r[0]) for r in mt)
+            a._read_rows = n_read
+            print(f"vision pool: {len(mt)} train rows, {n_read} of them picture_read (the READ call; same mix, same base-anchor KL)")
         if mskip:
             print(f"skipping {len(mskip)} {m} rows over --max-len {a.max_len}: {mskip[:5]}")
         train, dev = train + mt, dev + md
@@ -1328,7 +1348,7 @@ def cmd_train(a) -> int:
         ev0 = evaluate(model, dev_rows, dev)     # the untuned reference every later checkpoint is held to
         state["ref"] = {k: ev0[k] for k in ("dev_loss_vision", "dev_loss_audio") if k in ev0}
         log(logf, event="eval", step=0, **ev0, best=None)
-    log(logf, event="start", rows=n_text, vision_pool=n_vis, audio_pool=n_aud, rows_per_epoch=per_epoch,
+    log(logf, event="start", rows=n_text, vision_pool=n_vis, read_rows=getattr(a, "_read_rows", 0), audio_pool=n_aud, rows_per_epoch=per_epoch,
         vision_weight=a.vision_weight, audio_weight=a.audio_weight, dev=len(dev_rows), epochs=a.epochs,
         global_batch=a.global_batch, world=world, local_batch=lb, steps=total, lr=a.lr, rank=a.rank, alpha=a.alpha,
         max_len=a.max_len, skipped=len(skipped), anchor_kl=a.anchor_kl, anchor_text_frac=a.anchor_text_frac,

@@ -89,7 +89,8 @@ def _real_audio():
 
 
 def _real_rows():
-    return R.load_jsonl(R3 / "vision" / "vision_rows.jsonl")
+    """The plain vision rows; picture_read (READ-call) rows are their own group, tested in test_reading.py."""
+    return [r for r in R.load_jsonl(R3 / "vision" / "vision_rows.jsonl") if not R.is_reading(r)]
 
 
 def test_dev_split_matches_render():

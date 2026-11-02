@@ -447,9 +447,10 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
                     # offered on their own step (get_tool_schemas drops out after loads).
                     if is_target and name not in offered:
                         bad("call_not_offered", f"{where}:{j} {name}")
-                    if name != DISCOVERY_TOOL and name not in REGISTRY:
+                    host_read = name == writes.PICTURE_TOOL and not is_target   # the host's own read call (picture turns)
+                    if name != DISCOVERY_TOOL and name not in REGISTRY and not host_read:
                         bad("call_not_in_registry", f"{where}:{j} {name}")
-                    if not is_read(name) and name not in allowed:
+                    if not is_read(name) and name not in allowed and not host_read:
                         bad("write_call", f"{where}:{j} {name} (family {family})")
                     args = fn.get("arguments")
                     if isinstance(args, str):   # wire format; the written files carry objects
@@ -517,7 +518,8 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
             if name not in cards and name in took_effect:
                 bad("cards:missing", f"{where} {name}")
         for name in sorted(set(cards) & writes.NEVER_CARD):
-            bad("cards:never_card", f"{where} {name}")
+            if family not in writes.PICTURE_TURN:     # a picture turn cards every effect
+                bad("cards:never_card", f"{where} {name}")
         decided = pair_cards(calls, cards, list(meta.get("approve") or []))
         denied_any = False
         for cid, _name in calls:

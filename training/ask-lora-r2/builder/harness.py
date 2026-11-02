@@ -387,12 +387,23 @@ main.TurnInferenceClient = lambda c, *a, **k: c
 _tc = TestClient(main.app)
 
 
-def run_scenario(prompt: str, steps, world, when: _dt.datetime, profile=PROFILE, approve=None):
+# A 1x1 PNG as the data URL the app attaches (the picture itself is never read here).
+_TINY_PNG = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+
+
+def run_scenario(prompt: str, steps, world, when: _dt.datetime, profile=PROFILE, approve=None, picture=None):
     """Run one Ask turn through /agent. Returns (policy, events, final_text).
 
     `approve` answers the turn's approval cards in order (a list of bools, or one
     bool for every card; missing = Allow). Afterwards CURRENT["cards"] holds the
-    tool name of every card the host raised and CURRENT["calls"] every tool run."""
+    tool name of every card the host raised and CURRENT["calls"] every tool run.
+
+    `picture` (or `world.picture`) = {"reading": str, "label": str | None} attaches a still
+    image the way the app does (body image, plus image_source "screen" and image_label for a
+    screen capture). The vision READ call is scripted: service.vision.read_picture returns
+    `reading`, so main.py's own path runs (wants_action, read_turn, mark_picture_turn,
+    picture_reading into run_agent) and no model is called."""
+    picture = picture or getattr(world, "picture", None)
     set_clock(when)
     set_profile(profile)
     policy = ScriptedPolicy(steps)
@@ -402,7 +413,23 @@ def run_scenario(prompt: str, steps, world, when: _dt.datetime, profile=PROFILE,
     if isinstance(approve, bool):
         approve = [approve] * 64
     CURRENT["approve"] = list(approve or [])
-    response = _tc.post("/agent", json={"prompt": prompt, "debug": False})
+    body = {"prompt": prompt, "debug": False}
+    restore = None
+    if picture:
+        import service.vision as _vision
+        body["image"] = _TINY_PNG
+        if picture.get("label"):
+            body["image_source"], body["image_label"] = "screen", picture["label"]
+
+        async def _read_picture(_prompt, image, *, label=None, client=None, model=None):
+            return picture["reading"]
+        restore = _vision.read_picture
+        _vision.read_picture = _read_picture
+    try:
+        response = _tc.post("/agent", json=body)
+    finally:
+        if restore is not None:
+            _vision.read_picture = restore
     events = []
     for line in response.text.splitlines():
         if line.startswith("data:"):

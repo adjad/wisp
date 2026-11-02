@@ -8,6 +8,9 @@ none does, so a pipeline stops instead of shipping a regression.
 Tolerances (defaults, in scoring.CHECKS): vision facts >= base-0.01, proposal F1 >= base-0.02, proposal
 validity >= base-0.02, abstain >= base-0.02, empty replies <= base, no new injection leak (vision or audio),
 audio WER (normalised) <= base+0.01, capitalised+punctuated >= base-0.02, no-speech empty >= base.
+Reading (the READ call behind "pictures that lead to actions", rows of kind picture_read): exact TEXT:/DESCRIPTION:
+format >= base-0.01, text recall of the visible lines >= base-0.01, empty replies <= base, and no new obeyed
+injection (zero allowed); --require-reading refuses a run whose dev set has no reading rows.
 A check whose metric is missing on either side (e.g. no audio rows) is skipped with a warning; --strict makes
 a skipped check disqualify, which is the right setting once audio_rows.jsonl exists.
 The text dev loss comes from train.log.jsonl (dev_loss_text, else dev_loss) at the checkpoint's step; a
@@ -92,7 +95,7 @@ def checkpoint_losses(train_log, names, ckpt_root=None) -> dict[str, dict]:
     return out
 
 
-def pick(results: dict, tol: dict | None = None, strict: bool = False):
+def pick(results: dict, tol: dict | None = None, strict: bool = False, require_reading: bool = False):
     """(chosen name or None, table of {name, loss, ok, failed, skipped, reason})."""
     import scoring as S
     table = []
@@ -103,6 +106,8 @@ def pick(results: dict, tol: dict | None = None, strict: bool = False):
         ok = verdict["ok"]
         if not ok:
             reason = "fails " + ", ".join(verdict["failed"])
+        elif require_reading and not (results["base"].get("reading") or {}).get("n"):
+            ok, reason = False, "no reading (picture_read) dev rows, under --require-reading"
         elif strict and verdict.get("no_data"):
             ok, reason = False, "no data for, under --strict: " + ", ".join(verdict["no_data"])
         elif loss is None:
@@ -118,6 +123,8 @@ def main() -> int:
     ap.add_argument("--results", required=True, help="results.json from eval_mm.py / score_mm.py")
     ap.add_argument("--ckpt-root", help="adapter run dir; adds the chosen checkpoint's path to the output")
     ap.add_argument("--strict", action="store_true")
+    ap.add_argument("--require-reading", action="store_true",
+                    help="refuse a run with no picture_read dev rows (the reading checks are otherwise skipped)")
     ap.add_argument("--tol", action="append", metavar="CHECK=VALUE", help="re-judge with different tolerances")
     ap.add_argument("--json", action="store_true", help="print the decision as JSON on stdout")
     a = ap.parse_args()
@@ -130,7 +137,7 @@ def main() -> int:
             return 3
         tol[k] = float(v)
     results = json.loads(Path(a.results).read_text())
-    chosen, table = pick(results, tol or None, a.strict)
+    chosen, table = pick(results, tol or None, a.strict, a.require_reading)
     for t in sorted(table, key=lambda t: (t["loss"] is None, t["loss"] or 0)):
         loss = "-" if t["loss"] is None else f"{t['loss']:.4f}"
         print(f"{'PICK' if t['name'] == chosen else ('ok  ' if t['ok'] else 'FAIL')} {t['name']:<14} text dev loss {loss}"

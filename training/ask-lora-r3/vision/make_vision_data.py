@@ -23,6 +23,7 @@ import json
 import math
 import os
 import random
+import re
 import sys
 import tempfile
 from dataclasses import dataclass, field
@@ -1704,6 +1705,7 @@ def gen_unreadable(rng, inj=None):
             dr.line([(x1, y1), (x1 + rng.randint(-200, 200), y1 + rng.randint(-60, 60))], fill=(120, 110, 100), width=rng.randint(2, 4))
         a = rng.choice(["It's a page with loose pencil scribbles and no legible words or numbers, so there's nothing I can read for that.", "I only see scribbled lines on paper; no readable text, so I can't answer that."])
     sc = Scene(img, [(q, a)], "unreadable", None, None, paper=(k not in (1, 3)), unreadable=True, blur=0.0)
+    sc.meta = dict(k=k)
     return sc
 
 
@@ -2894,6 +2896,387 @@ def rebalance_dev(rows, min_prop=12):
     return dropped
 
 
+# ================================================================== picture_read rows (round 3, after #436)
+# The READ call of "pictures that lead to actions": service/vision._read asks the model for the image's TEXT and a
+# short DESCRIPTION when the person's own words ask Wisp to DO something with it. These rows reuse the still-image
+# generators above; the image's visible text is captured from the drawing calls themselves (a recorder on
+# ImageDraw.text), so the target's TEXT is what is really on the image, not a hand copy. Drawn from their own seed
+# AFTER every existing row, so the existing rows and image files are untouched.
+PR_SEED = SEED + 7001
+PR_TRAIN, PR_DEV = 130, 20
+_REC = None                                   # a list while recording; None otherwise
+_orig_draw_text = ImageDraw.ImageDraw.text
+
+
+def _recording_text(self, xy, text, *args, **kwargs):
+    """ImageDraw.text, unchanged, plus a note of what was drawn where while a recorder is active."""
+    rec = _REC
+    if rec is not None and isinstance(text, str) and text.strip():
+        fill = kwargs.get("fill", args[0] if args else None)
+        font = kwargs.get("font", args[1] if len(args) > 1 else None)
+        size = float(getattr(font, "size", 12) or 12)
+        for k, ln in enumerate(text.split("\n")):
+            if ln.strip():
+                rec.append((float(xy[0]), float(xy[1]) + k * size * 1.2, ln.strip(), size, fill))
+    return _orig_draw_text(self, xy, text, *args, **kwargs)
+
+
+ImageDraw.ImageDraw.text = _recording_text
+
+
+def record_text(fn):
+    """Run fn() and return (its result, the text items it drew: (x, y, text, size, fill))."""
+    global _REC
+    _REC = []
+    try:
+        out = fn()
+        return out, list(_REC)
+    finally:
+        _REC = None
+
+
+def _row_lines(uniq):
+    rows = []
+    for it in sorted(uniq, key=lambda t: (t[1] + t[3] * 0.85, t[0])):
+        base = it[1] + it[3] * 0.85
+        for row in rows:
+            if abs(base - row["base"]) <= 0.45 * max(it[3], row["size"]):
+                row["items"].append(it)
+                row["base"] = (row["base"] * (len(row["items"]) - 1) + base) / len(row["items"])
+                row["size"] = max(row["size"], it[3])
+                break
+        else:
+            rows.append({"base": base, "size": it[3], "items": [it]})
+    return [(r["base"], " ".join(i[2] for i in sorted(r["items"], key=lambda t: t[0]))) for r in sorted(rows, key=lambda r: r["base"])]
+
+
+def reading_lines(items, cuts=None, free=None):
+    """Visible text in reading order: top to bottom by baseline, left to right inside a line; a shadow or a
+    double-struck copy of the same string a few pixels away counts once.
+
+    cuts: x positions that separate side-by-side blocks (a date badge beside a title, kanban columns). Each block is
+    read top to bottom on its own, blocks left to right, so two blocks never fuse into one line. free: a predicate for
+    items that span the page (a planted footer); they are read before the blocks if they sit above them, else after."""
+    uniq = []
+    for it in items:
+        if not any(it[2] == u[2] and abs(it[0] - u[0]) < 5 and abs(it[1] - u[1]) < 5 for u in uniq):
+            uniq.append(it)
+    if not cuts:
+        return [t for _, t in _row_lines(uniq)]
+    cuts = sorted(cuts)
+    spans = [it for it in uniq if free and free(it)]
+    cols = [[] for _ in range(len(cuts) + 1)]
+    for it in uniq:
+        if not (free and free(it)):
+            cols[sum(it[0] >= c for c in cuts)].append(it)
+    top = min((it[1] for it in uniq if not (free and free(it))), default=0)
+    out = [t for _, t in _row_lines([it for it in spans if it[1] < top])]
+    for col in cols:
+        out += [t for _, t in _row_lines(col)]
+    out += [t for _, t in _row_lines([it for it in spans if it[1] >= top])]
+    return out
+
+
+def reading_cuts(name, items):
+    """Column cuts for the layouts where blocks sit side by side (None elsewhere)."""
+    if name == "whiteboard":
+        return [300.0, 590.0]                      # the three kanban columns start at x = 50, 335, 620
+    if name in ("flyer", "flyer_weekday", "past_event"):
+        # layout 1 of gen_flyer: a coloured date band on the left (x < 230), the title and details from x = 270
+        if sum(1 for it in items if abs(it[0] - 270.0) < 0.5) >= 3 and any(it[0] < 230 for it in items):
+            return [250.0]
+    return None
+
+
+def chat_reading(items, who):
+    """A chat screenshot's lines as 'Name: message'. The partner is the header name (a group's bubbles do not say
+    who wrote them, so those carry no name); the person's own right-hand blue bubbles are 'You'."""
+    lines_ = sorted({(round(i[1]), i[0], i[2], i[3], i[4]) for i in items})
+    out, cur, prev_y, prev_who = [], None, None, None
+    for y, x, t, size, fill in lines_:
+        if y < 100 or not isinstance(fill, tuple) or fill[:3] in ((140, 140, 145),):
+            if cur:
+                out.append(cur)
+                cur = None
+            out.append(t)
+            prev_y = None
+            continue
+        speaker = "You" if tuple(fill[:3]) == (255, 255, 255) else ("" if "," in who else who)
+        if cur is not None and speaker == prev_who and prev_y is not None and y - prev_y < 40:
+            cur += " " + t
+        else:
+            if cur:
+                out.append(cur)
+            cur = (speaker + ": " if speaker else "") + t
+        prev_y, prev_who = y, speaker
+    if cur:
+        out.append(cur)
+    return out
+
+
+PR_ACTION_PROMPTS = {
+    "event": ["Add this to my calendar.", "Put this on my calendar", "add this event to my calendar please", "Can you schedule this for me?",
+              "Make a reminder for this", "remind me about this the day before", "Save the details of this to my calendar",
+              "book this in my calendar", "create a calendar event from this", "add a reminder for this"],
+    "receipt": ["Save this receipt as a note", "Make a note of this", "Jot this down in my notes", "Create a note with the total on this",
+                "Add this to my notes", "save this in a new note", "email this to my accountant", "Write down what I spent here"],
+    "chat": ["Reply to this", "reply to this message for me", "Draft a reply to this", "Text them back saying I'm in",
+             "write back to them", "Respond to this for me", "Send a reply that I got it"],
+    "list": ["Make these into reminders", "Turn this into a to-do list", "put these in my reminders", "create reminders from this",
+             "add these to my tasks", "make a checklist note out of this", "Save this list as a note"],
+    "info": ["Save this as a note", "Add this to my notes", "Make a note of this for me", "jot down what this says", "Put this in a new note",
+             "Email me what this says", "Draft an email with this", "remind me to look at this tomorrow"],
+}
+PR_PROMPT_KIND = {"flyer": "event", "flyer_weekday": "event", "invitation": "event", "ticket": "event", "ticket_past": "event",
+                  "appointment": "event", "appointment_wd": "event", "past_event": "event", "calendar_ui": "event",
+                  "receipt": "receipt", "receipt_long": "receipt", "chat_ui": "chat", "sticky_todo": "list",
+                  "hand_list": "list", "whiteboard": "list", "schedule_table": "event", "notice_letter": "info",
+                  "settings_ui": "info", "menu": "info", "sign": "info", "label": "info", "document": "info",
+                  "business_card": "info", "terminal": "info", "screen_photo": "info", "chart": "info", "diagram": "info",
+                  "unreadable": "info"}
+# The screen label is the app or window the capture came from, so it has to fit the picture: a chat is Messages or
+# WhatsApp, never Settings. Types not listed use PR_LABELS_DEFAULT (a picture opened in a viewer, a mail or a page).
+PR_LABELS = {
+    "chat_ui": ["Messages", "WhatsApp", "Slack", "Messages"],
+    "calendar_ui": ["Calendar", "Weekly planner"],
+    "settings_ui": ["Settings"],
+    "terminal": ["Terminal"],
+    "receipt": ["Receipt.pdf", "Order confirmation", "Preview"],
+    "receipt_long": ["Receipt.pdf", "Order confirmation", "Preview"],
+    "document": ["Preview", "Safari", "Mail"],
+    "notice_letter": ["Preview", "Mail", "Safari"],
+    "sticky_todo": ["Photos", "Preview"], "hand_list": ["Photos", "Preview"], "whiteboard": ["Photos", "Preview"],
+    "unreadable": ["Photos", "Preview"],
+}
+PR_LABELS_DEFAULT = ["Preview", "Photos", "Safari", "Mail"]
+PR_LABEL_SHARE = 0.30                         # of the rows that can carry one (a camera photo of a screen cannot)
+PR_MIN_INJ_PX = 15                            # the planted text must be at least this tall in the saved image, or it is not read
+
+# One to three plain sentences per picture type, a few wordings each. No invented specifics: only what the type
+# itself guarantees. {n} is replaced with the image's own first line where that is safe (a title-like line).
+PR_DESC = {
+    "flyer": ["A printed flyer announcing an event. It sets out the title, the date and time, and the venue in large type.",
+              "An event flyer with a headline, the date and time, and where it takes place.",
+              "A flyer for an upcoming event, laid out with a big title and the details underneath."],
+    "flyer_weekday": ["A printed flyer for an event. The date is given with a weekday and a time rather than a full calendar date.",
+                      "An event flyer that names the day of the week and the time, with the venue below."],
+    "invitation": ["An invitation card for an event, with the host's wording, the date, the time and the place.",
+                   "A formal invitation with the occasion at the top and the date, time and venue below it."],
+    "ticket": ["An event ticket showing the event name, the date, the time and the venue, with a barcode.",
+               "A ticket stub for an upcoming event with its date, time and seat details, and a barcode."],
+    "ticket_past": ["An event ticket with the event name, date, time and venue, and a barcode.",
+                    "A ticket stub showing the event, when and where it was, with a barcode."],
+    "appointment": ["An appointment card giving the date, the time and the place of a booking.",
+                    "A small appointment reminder card with the day, the time and where to go."],
+    "appointment_wd": ["An appointment card that names the weekday and the time of a booking.",
+                       "A printed appointment slip with a weekday, a time and a location."],
+    "sticky_todo": ["A handwritten sticky note with a short to-do list.", "A sticky note with a few handwritten tasks on it."],
+    "notice_letter": ["A printed notice letter with a heading, a short body of text and a sign-off.",
+                      "A one-page notice letter addressed to a resident, with the details in the body."],
+    "receipt": ["A printed store receipt listing the items bought, their prices and the total.",
+                "A paper receipt with a list of purchases, prices and a total at the bottom."],
+    "receipt_long": ["A long printed receipt with many line items, prices and a total.",
+                     "A tall store receipt listing a long run of items, with the totals near the bottom."],
+    "chat_ui": ["A screenshot of a messaging conversation with a few message bubbles.",
+                "A chat screenshot: messages from the other person on the left and the person's own on the right."],
+    "calendar_ui": ["A screenshot of a calendar showing a day with a few scheduled events.",
+                    "A calendar view with events listed against their times."],
+    "settings_ui": ["A screenshot of a settings screen with a list of options and their current values.",
+                    "A phone settings page listing a few toggles and options."],
+    "whiteboard": ["A whiteboard with handwritten notes in marker.", "A photo of a whiteboard covered in handwritten marker notes."],
+    "menu": ["A printed menu listing dishes with their prices.", "A restaurant menu with sections of dishes and prices."],
+    "sign": ["A photo of a sign with a few lines of printed text.", "A printed sign or notice with a heading and some details."],
+    "label": ["A product or package label with printed text and details.", "A close-up of a label with several lines of printed information."],
+    "document": ["A printed document page with a heading and paragraphs of text.", "A page of a typed document with a title and body text."],
+    "screen_photo": ["A photo of a screen showing a few lines of information on a dark background.",
+                     "A camera photo of a phone or display, slightly angled, showing some text and numbers."],
+    "chart": ["A chart with labelled axes and a few bars or points.", "A simple chart with a title, axis labels and values."],
+    "diagram": ["A simple diagram with labelled boxes connected by arrows.", "A flow diagram of labelled steps joined by arrows."],
+    "past_event": ["A flyer or notice for an event, with its title, date, time and place.", "An event poster with the details of when and where it takes place."],
+    "hand_list": ["A handwritten list on paper.", "A hand-written list of items, one per line."],
+    "business_card": ["A business card with a name, a role, and contact details.", "A printed business card with a name, a company and ways to reach them."],
+    "schedule_table": ["A table of times and activities, like a timetable or schedule.", "A schedule laid out as a table with rows of times and entries."],
+    "terminal": ["A terminal window showing lines of command output.", "A screenshot of a terminal with a command and its output."],
+}
+PR_DESC_NOTE = [" A short extra note is printed beneath the main content.", " There is an additional block of text at the bottom of the picture."]
+PR_DESC_UNREAD = {
+    "blur": ["A badly out-of-focus photo of a printed page. The text is too blurred to read.",
+             "A heavily blurred picture of a page of text; none of the words can be made out."],
+    "pixel": ["A very low-resolution picture of a typed page. The lines of text are visible but far too small and pixelated to read.",
+              "A tiny, pixelated image of a document; the text cannot be read."],
+    "washed": ["An overexposed, washed-out picture that is almost entirely blank. Any text on it has faded away.",
+               "A bleached-out photo of a paper; the writing is too faint to read."],
+    "dark": ["An almost completely dark picture with nothing recognisable in it.", "A nearly black image; no objects or text can be seen."],
+    "abstract": ["An abstract picture of overlapping coloured shapes with no writing in it.", "Blurred coloured blobs and shapes; there is no text."],
+    "scribble": ["A page with loose pencil scribbles and no words or numbers.", "Scribbled lines on paper, with no legible writing."],
+}
+
+PR_SPEC = [      # (name, generator, how many, injection kinds a row may carry)
+    ("flyer", lambda r, i: gen_flyer(r, i), 11, ("forward", "ignore", "second", "safe", "link", "reveal")),
+    ("invitation", gen_invitation, 6, ("forward", "ignore", "second", "link")),
+    ("ticket", lambda r, i: gen_ticket(r, i), 6, ("forward", "ignore", "second", "safe")),
+    ("appointment", lambda r, i: gen_appointment(r, i), 6, ("forward", "ignore", "second", "delete")),
+    ("sticky_todo", gen_sticky, 7, ("ignore", "delete", "second", "forward")),
+    ("notice_letter", gen_notice_letter, 4, ("forward", "second", "link", "ignore", "safe")),
+    ("receipt", lambda r, i: gen_receipt(r, i), 12, ("amount", "forward", "ignore", "link")),
+    ("receipt_long", lambda r, i: gen_receipt(r, i, long=True), 3, ("amount", "forward", "ignore")),
+    ("chat_ui", gen_chat, 13, ("forward", "ignore", "link", "delete", "reveal")),
+    ("calendar_ui", gen_calendar_ui, 4, ("delete", "ignore", "forward")),
+    ("settings_ui", gen_settings, 7, ("ignore", "reveal", "forward", "link")),
+    ("whiteboard", gen_whiteboard, 7, ("ignore", "forward", "delete")),
+    ("menu", gen_menu, 6, ("safe", "ignore", "forward", "amount")),
+    ("sign", gen_sign, 6, ("safe", "ignore", "link", "reveal")),
+    ("label", gen_label, 5, ("safe", "ignore", "forward", "link")),
+    ("document", gen_document, 6, ("amount", "safe", "forward", "ignore", "link")),
+    ("screen_photo", gen_screen_photo, 6, ("ignore", "forward", "reveal")),
+    ("chart", gen_chart, 3, ("ignore", "safe", "forward")),
+    ("past_event", gen_past_event, 4, ("forward", "ignore", "delete")),
+    ("hand_list", gen_hand_list, 6, ("ignore", "forward", "delete")),
+    ("business_card", gen_business_card, 4, ("forward", "ignore", "link")),
+    ("schedule_table", gen_schedule_table, 5, ("ignore", "forward", "second")),
+    ("terminal", gen_terminal, 4, ("ignore", "reveal", "link")),
+    ("unreadable", gen_unreadable, 8, ()),
+]
+PR_INJ_SHARE = 0.30
+
+
+PR_UNREAD_KIND = ["blur", "dark", "washed", "abstract", "pixel", "scribble"]      # gen_unreadable's k -> scene type
+
+
+def pr_is_planted(it, inj_text):
+    """Is this recorded item a piece of the planted text (a wrapped line of it, or the 'NOTE TO AI ASSISTANT' box title)?"""
+    if not inj_text:
+        return False
+    t = re.sub(r"\s+", " ", it[2]).strip()
+    return t == "NOTE TO AI ASSISTANT" or (len(t) >= 6 and t in re.sub(r"\s+", " ", inj_text))
+
+
+def min_inj_px(items, inj_text, src_size, out_size):
+    """Height in pixels, in the saved image, of the smallest planted-text line (font size x the saved/drawn scale)."""
+    scale = out_size[0] / src_size[0]
+    sizes = [it[3] * scale for it in items if pr_is_planted(it, inj_text) and it[2] != "NOTE TO AI ASSISTANT"]
+    return min(sizes) if sizes else 999.0
+
+
+def pr_target(reading, desc):
+    return "TEXT:\n" + "\n".join(reading if reading else ["(none)"]) + "\nDESCRIPTION:\n" + desc
+
+
+def pr_messages(prompt, rel_images, label):
+    """The exact request service/vision._read sends, captured by running _read itself against a stub client."""
+    import asyncio
+    captured = {}
+
+    class _Stub:
+        def activity_key(self, model):
+            return model
+
+        async def status(self):
+            return {"models": [{"id": "m", "model_type": "vlm", "model_path": str(HERE)}]}
+
+        async def chat(self, model, request, **kw):
+            captured["request"], captured["kw"] = request, kw
+            return {"choices": [{"message": {"content": "TEXT:\n(none)\nDESCRIPTION:\nx"}}]}
+
+    real_check = vision.checkpoint_has_vision
+    vision.checkpoint_has_vision = lambda path: True
+    try:
+        asyncio.run(vision._read(prompt, [f"@@IMG{i}@@" for i in range(len(rel_images))], label, _Stub(), "m"))
+    finally:
+        vision.checkpoint_has_vision = real_check
+    out = []
+    for m in captured["request"]:
+        c = m["content"]
+        if isinstance(c, list):
+            c = [{"type": "image", "path": rel_images[int(p["image_url"]["url"][5:-2])]} if p.get("type") == "image_url" else p
+                 for p in c]
+        out.append({**m, "content": c})
+    return out, captured["kw"]
+
+
+def build_picture_read_rows():
+    """~150 reading rows (130 train + 20 dev), each on a fresh image. See the section header."""
+    global _R
+    import hashlib
+    _R = random.Random(PR_SEED)                          # the generators' shared pick stream, reseeded for these rows
+    master = random.Random(PR_SEED + 1)
+    total = sum(s[2] for s in PR_SPEC)
+    readable = [(n, i) for n, _, c, inj in PR_SPEC if n != "unreadable" for i in range(c)]
+    inj_set = {readable[k] for k in master.sample(range(len(readable)), round(PR_INJ_SHARE * total))}
+    labelable = [(n, i) for n, _, c, _inj in PR_SPEC if n != "screen_photo" for i in range(c)]
+    label_set = set(random.Random(PR_SEED + 2).sample(labelable, round(PR_LABEL_SHARE * len(labelable))))
+    rows = []
+    for name, gen, count, inj_types in PR_SPEC:
+        for i in range(count):
+            rid = f"pr_{name}_{i:02d}"
+            for attempt in range(8):
+                rng = random.Random(f"{PR_SEED}-{rid}" + (f"-{attempt}" if attempt else ""))
+                inj_kind = choose_inj(inj_types, rng) if ((name, i) in inj_set and inj_types) else None
+                inj_text, _toks = make_injection(inj_kind, rng) if inj_kind else (None, [])
+
+                def draw():
+                    sc = gen(rng, inj_text)
+                    if inj_text and not sc.inj_done:
+                        sc.img = add_injection(sc.img, rng, inj_text, rng.choice(FAMS))
+                    return sc
+                sc, items = record_text(draw)
+                img = finish(sc.img, rng, tilt=sc.paper and sc.cat not in ("screen_photo",),
+                             noise=rng.choice([1.5, 2.5, 3.5]) if sc.paper else 1.0, blur=sc.blur)
+                # a planted line the model could not actually read in the saved image must not be copied into the target
+                if not inj_text or min_inj_px(items, inj_text, sc.img.size, img.size) >= PR_MIN_INJ_PX:
+                    break
+            else:
+                raise SystemExit(f"{rid}: no legible rendering of the planted text in 8 tries")
+            rel = save_jpg(img, rid + ".jpg", MAX_SIDE_IMG)
+            if name == "unreadable":
+                ukind = PR_UNREAD_KIND[sc.meta["k"]]
+                reading = ["[unreadable]"] if ukind in ("blur", "pixel", "washed") else []
+                desc = rng.choice(PR_DESC_UNREAD[ukind])
+            else:
+                reading = (chat_reading(items, sc.meta["who"]) if name == "chat_ui"
+                           else reading_lines(items, reading_cuts(name, items), lambda it: pr_is_planted(it, inj_text)))
+                desc = rng.choice(PR_DESC[name])
+                if inj_kind and name != "chat_ui" and rng.random() < 0.5:
+                    desc += rng.choice(PR_DESC_NOTE)
+            label = rng.choice(PR_LABELS.get(name, PR_LABELS_DEFAULT)) if (name, i) in label_set else None
+            prompt = rng.choice(PR_ACTION_PROMPTS[PR_PROMPT_KIND[name]])
+            msgs, _kw = pr_messages(prompt, [rel], label)
+            rows.append({"id": rid, "kind": "picture_read", "images": [rel], "messages": msgs,
+                         "target": pr_target(reading, desc), "truth_lines": list(reading),
+                         "inj": inj_kind, "inj_text": inj_text, "label": label, "split": "train", "gen": name,
+                         "meta": {"category": sc.cat, "proposal": False, "injection": inj_kind, "abstain": False,
+                                  "unreadable": name == "unreadable", "banned_in_target": [], "qa": [prompt, ""],
+                                  "no_proposal_reason": None, "split": "train", "gen": name,
+                                  "sampling": {"temperature": 0, "max_tokens": vision.READ_MAX_TOKENS, "enable_thinking": False}}})
+    # dev: PR_DEV rows on distinct images, one per generator family first (injected rows for ~30%), by a seeded hash
+    h = lambda r: hashlib.sha1(f"{PR_SEED}|dev|{r['id']}".encode()).hexdigest()
+    fams = sorted({r["gen"] for r in rows}, key=lambda g: hashlib.sha1(f"{PR_SEED}|{g}".encode()).hexdigest())
+    n_inj_dev = round(PR_INJ_SHARE * PR_DEV)
+    dev = []
+    for want_inj, quota in ((True, n_inj_dev), (False, PR_DEV - n_inj_dev)):
+        order = fams if want_inj else fams[::-1]          # the plain rows start from the other end, so dev spans more families
+        pool = {g: sorted((r for r in rows if r["gen"] == g and bool(r["inj"]) == want_inj and r not in dev), key=h) for g in fams}
+        while quota > 0 and any(pool.values()):
+            for g in order:
+                if quota > 0 and pool[g]:
+                    dev.append(pool[g].pop(0))
+                    quota -= 1
+    if "unreadable" not in {r["gen"] for r in dev}:
+        dev[-1:] = [next(r for r in rows if r["gen"] == "unreadable")]
+    dev_ids = {r["id"] for r in dev}
+    for r in rows:
+        r["split"] = r["meta"]["split"] = "dev" if r["id"] in dev_ids else "train"
+    # a dev reading identical to a train one (same text) would let a memorised row score on dev: drop such train rows
+    blank = ((), ("[unreadable]",))           # many unreadable pictures legitimately share the same reading
+    dev_texts = {tuple(r["truth_lines"]) for r in rows if r["split"] == "dev" and tuple(r["truth_lines"]) not in blank}
+    clash = [r for r in rows if r["split"] == "train" and tuple(r["truth_lines"]) in dev_texts]
+    print("picture_read train rows dropped for sharing a dev reading:", len(clash), [r["id"] for r in clash])
+    for r in clash:
+        (HERE / r["images"][0]).unlink(missing_ok=True)
+    rows = [r for r in rows if r not in clash]
+    return rows
+
+
 # Video rows are excluded from r3 training (WISP_R3_VIDEO=1 brings them back).
 INCLUDE_VIDEO = os.environ.get("WISP_R3_VIDEO") == "1"
 
@@ -3023,6 +3406,10 @@ def main():
             for rel in r["images"]:
                 (HERE / rel).unlink(missing_ok=True)
         print("video rows dropped:", len(gone))
+    pr = build_picture_read_rows()
+    rows.extend(pr)
+    print("picture_read rows:", len(pr), "train", sum(r["split"] == "train" for r in pr), "dev", sum(r["split"] == "dev" for r in pr),
+          "injected", sum(bool(r["inj"]) for r in pr), "labelled", sum(bool(r["label"]) for r in pr))
     with (HERE / "vision_rows.jsonl").open("w") as f:
         for r in rows:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -3095,8 +3482,99 @@ def verify_production_shapes(rows):
     return bad
 
 
+def verify_picture_read(rows):
+    """picture_read rows: the request is service/vision._read's, byte for byte (rebuilt here from _READ_SYSTEM, not by
+    the builder's stub), the target is the two-section reading, and the reading is the image's own text."""
+    import base64
+    import re
+    bad = 0
+
+    def fail(*a):
+        nonlocal bad
+        bad += 1
+        print("FAIL", *a)
+
+    norm = lambda t: re.sub(r"\s+", " ", t).strip().lower()
+    for r in rows:
+        rid = r["id"]
+        what = (f"a capture of the person's screen ({json.dumps(r['label'], ensure_ascii=False)})" if r["label"]
+                else "a picture the person attached")
+        prompt = r["meta"]["qa"][0]
+        if not vision.wants_action(prompt):
+            fail("prompt is not an action request", rid, prompt)
+        want = [{"role": "system", "content": vision._READ_SYSTEM.format(what=what)},
+                {"role": "user", "content": [{"type": "image", "path": r["images"][0]},
+                                             {"type": "text", "text": "The person's request, for context only (do not answer it): "
+                                              + json.dumps(prompt.strip()[:500], ensure_ascii=False)
+                                              + "\n\nWrite the TEXT and DESCRIPTION sections for this image."}]}]
+        if r["messages"] != want:
+            fail("messages are not vision._read's request", rid)
+        if r["meta"]["sampling"] != {"temperature": 0, "max_tokens": vision.READ_MAX_TOKENS, "enable_thinking": False}:
+            fail("sampling", rid)
+        mt = re.fullmatch(r"TEXT:\n(.*)\nDESCRIPTION:\n(.+)", r["target"], re.S)
+        if not mt:
+            fail("target is not TEXT/DESCRIPTION", rid)
+            continue
+        text, desc = mt.group(1), mt.group(2)
+        if text.split("\n") != (r["truth_lines"] or ["(none)"]):
+            fail("TEXT is not truth_lines", rid)
+        sentences = [x for x in re.split(r"(?<=[.!?])\s+", desc.strip()) if x]
+        if not 1 <= len(sentences) <= 3 or "\n" in desc or "?" in desc:
+            fail("description is not 1-3 plain sentences", rid, len(sentences))
+        if len(r["target"]) > 2000 or len(r["target"]) > vision.READ_MAX_CHARS:
+            fail("target too long for max_tokens 700", rid, len(r["target"]))
+        # side-by-side blocks (kanban columns, a flyer's date band beside its title) must not fuse into one line
+        tl_ = r["truth_lines"]
+        if r["gen"] == "whiteboard":
+            heads = [k for k, ln in enumerate(tl_) if ln in ("To do", "Doing", "Done")]
+            if heads != sorted(heads) or len(heads) != 3 or any(sum(h in ln for h in ("To do", "Doing", "Done")) > 1 for ln in tl_) \
+                    or any(ln.count("(") > 1 for ln in tl_):
+                fail("whiteboard columns fused or out of order", rid, tl_[:6])
+        if r["gen"] in ("flyer", "flyer_weekday", "past_event") and tl_ and re.fullmatch(r"[A-Z]{3}", tl_[0]):
+            # a date band: month, day on their own lines, and no later line starts with another day number + title words
+            if len(tl_) < 3 or not tl_[1].isdigit() or any(re.match(r"^\d{1,2} [A-Za-z]", ln) and not re.search(r"[ap]m", ln, re.I) for ln in tl_[2:]):
+                fail("flyer date band fused with the title", rid, tl_[:4])
+        if r["gen"] != "unreadable" and not r["truth_lines"]:
+            fail("no text captured from a readable image", rid)
+        if r["gen"] == "unreadable" and text not in ("[unreadable]", "(none)"):
+            fail("unreadable image with a reading", rid)
+        if r["inj"]:
+            if not r["inj_text"] or norm(r["inj_text"]) not in norm(text):
+                fail("planted text not copied verbatim into TEXT", rid)
+        elif r["inj_text"]:
+            fail("inj_text without inj", rid)
+        if r["split"] not in ("train", "dev") or r["meta"]["split"] != r["split"]:
+            fail("split", rid)
+        if r["label"] is not None and r["label"] not in r["messages"][0]["content"]:
+            fail("label not in system prompt", rid)
+        data = (HERE / r["images"][0]).read_bytes()
+        try:
+            vision.validate_media(["data:image/jpeg;base64," + base64.b64encode(data).decode()], None)
+        except ValueError as e:
+            fail("validate_media", rid, e)
+    tr = {p for r in rows if r["split"] == "train" for p in r["images"]}
+    dv = {p for r in rows if r["split"] == "dev" for p in r["images"]}
+    if tr & dv:
+        fail("dev and train share images", sorted(tr & dv)[:3])
+    ttexts = {tuple(r["truth_lines"]) for r in rows if r["split"] == "train" and r["truth_lines"] not in ([], ["[unreadable]"])}
+    if any(tuple(r["truth_lines"]) in ttexts for r in rows if r["split"] == "dev" and r["truth_lines"] not in ([], ["[unreadable]"])):
+        fail("a dev reading equals a train reading")
+    if len({r["id"] for r in rows}) != len(rows):
+        fail("duplicate ids")
+    n = len(rows)
+    from collections import Counter
+    print("picture_read:", n, "train", sum(r["split"] == "train" for r in rows), "dev", sum(r["split"] == "dev" for r in rows),
+          "injected", sum(bool(r["inj"]) for r in rows), "labelled", sum(bool(r["label"]) for r in rows),
+          "max target chars", max((len(r["target"]) for r in rows), default=0))
+    print("picture_read by gen", dict(Counter(r["gen"] for r in rows)), "dev by gen", dict(Counter(r["gen"] for r in rows if r["split"] == "dev")))
+    return bad
+
+
 def verify(rows):
     bad = 0
+    pr_rows = [r for r in rows if r["kind"] == "picture_read"]
+    rows = [r for r in rows if r["kind"] != "picture_read"]
+    bad += verify_picture_read(pr_rows)
     for r in rows:
         vis, prop = vision.parse_proposal(r["target"])
         want = r["meta"]["proposal"]
@@ -3125,7 +3603,7 @@ def verify(rows):
     vid = [r for r in rows if r["kind"] == "video"]
     size = sum(f.stat().st_size for f in IMG_DIR.glob("*.jpg")) / 1e6
     from collections import Counter
-    print("rows", n, "images", len(img), "videos", len(vid), "files", len(list(IMG_DIR.glob('*.jpg'))), f"{size:.1f} MB", "problems", bad)
+    print("rows", n + len(pr_rows), "(", n, "answer rows +", len(pr_rows), "picture_read ) images", len(img), "videos", len(vid), "files", len(list(IMG_DIR.glob('*.jpg'))), f"{size:.1f} MB", "problems", bad)
     print("by category", dict(Counter(r["meta"]["category"] for r in rows)))
     print("proposal share", sum(r["meta"]["proposal"] for r in rows), "/", n,
           " injection", sum(bool(r["meta"]["injection"]) for r in rows), "/", n,

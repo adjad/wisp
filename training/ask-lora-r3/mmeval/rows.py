@@ -102,9 +102,23 @@ def audio_is_dev(row: dict) -> bool:
     return int(hashlib.sha1(key.encode()).hexdigest(), 16) % VISION_DEV_MOD == 0
 
 
+def is_reading(row: dict) -> bool:
+    """A READ-call row (kind "picture_read": service/vision.py read_picture). Scored as its own `reading` group."""
+    return row.get("kind") == "picture_read"
+
+
+def split_meta(row: dict) -> dict:
+    """The meta that carries a row's split. Reading rows keep `split` at the top level (the contract); every
+    other row uses meta.split. When both exist, meta wins (it is what brev/render.py reads)."""
+    meta = row.get("meta") or {}
+    if "split" not in meta and row.get("split") in ("dev", "train"):
+        return {**meta, "split": row["split"]}
+    return meta
+
+
 def select_dev(rows: list[dict]) -> list[dict]:
     """The held-out vision rows: what render.py leaves out of vision_train."""
-    return [r for r in rows if vision_is_dev(r["id"], r.get("meta"))]
+    return [r for r in rows if vision_is_dev(r["id"], split_meta(r))]
 
 
 def load_vision_dev(path, split: str = "dev") -> list[dict]:
@@ -116,7 +130,7 @@ def kind_group(row: dict) -> str:
     """Reporting group of a vision row: image, video, document (scanned pages) or text_document (read as text).
     Documents are their own group, never folded into 'image' (same rule as scoring.kind_group)."""
     k = row.get("kind", "image")
-    return k if k in ("video", "document", "text_document") else "image"
+    return k if k in ("video", "document", "text_document", "picture_read") else "image"
 
 
 def vision_stats(rows: list[dict]) -> dict:
@@ -124,7 +138,7 @@ def vision_stats(rows: list[dict]) -> dict:
     counts: dict = {}
     for r in rows:
         counts[kind_group(r)] = counts.get(kind_group(r), 0) + 1
-    return {g: counts[g] for g in ("image", "video", "document", "text_document") if g in counts}
+    return {g: counts[g] for g in ("image", "video", "document", "text_document", "picture_read") if g in counts}
 
 
 def vision_from_cases(cases_json, image_suffix: str = ".png", prefix: str = "gate_") -> list[dict]:

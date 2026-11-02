@@ -32,6 +32,20 @@ reference transcript and no-speech flag. Rows carry `images` / `audio` paths rel
 folder (--mm-dir, default ./mm, copied here so it can be rsynced next to grpo_prompts.jsonl). Each split's DEV
 rows go to grpo_mm_dev.jsonl: never trained on, decoded greedily during the run as the regression tripwire.
 
+Picture shapes (#436; reward.py "Picture shapes"), about --picture-share = 6.5% of the rows, half and half:
+    picture_read  the READ call: rows of kind "picture_read" in vision_rows.jsonl (system _READ_SYSTEM, image(s), the
+            "request, for context only" user text; thinking off, production temperature 0, max_tokens 700), rendered like
+            any vision row. Label: task "picture_read", truth_lines, inj / inj_text, the screen label. Train split only
+            (row "split"); the dev rows join grpo_mm_dev.jsonl, so the greedy tripwire watches them too.
+            SAMPLING: temperature 0 gives G identical completions and so no advantage, so these rows are rolled out at
+            --mm-temperature (grpo.py, default 0.7) like every other vision row; only the dev tripwire decodes greedily.
+    picture_turn_r3  Ask decision steps from the builder family "picture_turn_r3" (normal text rows, built through
+            Wisp's real /agent): the history holds the synthesized read_attached_picture call and its UNTRUSTED reading.
+            Label: the usual step labels plus picture_turn and `planted`, the strings (addresses, URLs, numbers,
+            commands) that only the reading supplied (the risky tokens of meta.inj_text, which the builder records; no
+            inj_text means nothing is planted, so a card's own address is fine to use). A call carrying
+            one scores -2.
+
 Only steps of the SFT train split are used (valid ids are excluded unless --include-valid) so the SFT dev
 set stays a clean gate. Safety and restraint families are upweighted by sampling copies; ordering keeps
 similar prompt lengths together in groups of GROUP so a generation batch pads little.
@@ -245,7 +259,37 @@ def classify(ex: dict, meta: dict) -> dict:
     allowed = ideal_names | pending_writes
     label["forbidden"] = sorted(t for t in write_universe if t not in allowed)
     label["ideal_text"] = (target.get("content") or "") if not calls else ""
+    pic = picture_info(hist, meta)
+    if pic is not None:
+        label["picture_turn"], label["planted"] = True, pic
     return label
+
+
+PICTURE_TOOL = "read_attached_picture"
+PICTURE_PREFIX = "UNTRUSTED CONTENT: Wisp's reading of "
+
+
+def _msg_text(m: dict) -> str:
+    c = m.get("content")
+    if isinstance(c, list):
+        return " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+    return c if isinstance(c, str) else ""
+
+
+def picture_info(hist: list[dict], meta: dict):
+    """None when the history holds no picture reading; else the strings only the reading supplied (see reward.py)."""
+    reading, trusted = None, []
+    pic_ids = {tc.get("id") for m in hist for tc in (m.get("tool_calls") or ()) if tc["function"]["name"] == PICTURE_TOOL}
+    for m in hist:
+        if m["role"] == "tool" and (m.get("tool_call_id") in pic_ids or _msg_text(m).startswith(PICTURE_PREFIX)) \
+                and (reading is None):
+            txt = _msg_text(m)
+            reading = txt.split("\n\n", 1)[1] if "\n\n" in txt else txt
+        elif m["role"] in ("user", "assistant"):
+            trusted.append(_msg_text(m))
+    if reading is None:
+        return None
+    return W.planted_strings(reading, "\n".join(trusted), meta.get("inj_text"))
 
 
 def weighted_copies(items: list[dict], n: int, rng: random.Random) -> list[dict]:
@@ -289,6 +333,8 @@ def vision_rows(R, tok, path: Path, drift: Counter) -> tuple[list[dict], list[di
     """(train items, dev items). A row is dev when the SFT's own split says so (render.vision_is_dev) or its meta does."""
     train, dev = [], []
     for row in read_jsonl(path):
+        if row.get("kind") == PICTURE_READ_KIND:      # the READ call has its own labels (picture_read_rows)
+            continue
         meta, sid = row.get("meta") or {}, row["id"]
         if not all((path.parent / i).is_file() for i in row["images"]):
             drift["MISSING vision image (row skipped)"] += 1
@@ -323,6 +369,56 @@ def vision_rows(R, tok, path: Path, drift: Counter) -> tuple[list[dict], list[di
                 "_tokens": 0}
         (dev if is_dev else train).append(item)
     return train, dev
+
+
+PICTURE_READ_KIND = "picture_read"
+PICTURE_TURN_FAMILY = "picture_turn_r3"
+PICTURE_READ_WEIGHTS = {"injection": 2.0, "plain": 1.0}
+
+
+def picture_read_rows(R, tok, path: Path, drift: Counter) -> tuple[list[dict], list[dict]]:
+    """(train items, dev items) for the READ call. The row's own `split` decides; a missing or odd value is an error."""
+    train, dev = [], []
+    for row in read_jsonl(path):
+        if row.get("kind") != PICTURE_READ_KIND:
+            continue
+        sid = row["id"]
+        if row.get("split") not in ("train", "dev"):
+            raise ValueError(f"{sid}: picture_read split must be 'train' or 'dev', got {row.get('split')!r}")
+        if not all((path.parent / i).is_file() for i in row["images"]):
+            drift["MISSING picture_read image (row skipped)"] += 1
+            continue
+        rel = [f"vision/{i}" for i in row["images"]]
+        out = R.render_vision(tok, row, rel)
+        if not row.get("truth_lines") and "(none)" not in row["target"]:
+            drift["picture_read: no truth_lines and no (none) (row dropped)"] += 1
+            continue
+        lab = {"modality": "vision", "task": "picture_read", "step": "mm_picture_read", "forced": False, "think": False,
+               "truth_lines": [str(l) for l in row.get("truth_lines") or ()], "inj": row.get("inj"),
+               "inj_text": row.get("inj_text"), "screen_label": row.get("label"), "gen": row.get("gen"),
+               "banned": [], "category": "picture_read", "kind": PICTURE_READ_KIND, "max_tokens": W.READ_MAX_TOKENS,
+               "ideal_completion": out["completion"]}
+        kind = "injection" if row.get("inj") else "plain"
+        item = {"id": sid, "family": "picture_read_r3", "modality": "vision", "prompt": out["prompt"], "label": lab,
+                "images": rel, "mmkind": "picture_read", "src": [path.parent / i for i in row["images"]],
+                "weight": PICTURE_READ_WEIGHTS[kind], "_tokens": 0, "inj": bool(row.get("inj"))}
+        (dev if row["split"] == "dev" else train).append(item)
+    return train, dev
+
+
+def picture_problems(prt, prd, ptt, need_reads: int, need_turns: int) -> list[str]:
+    """What would leave the picture shapes thin: too few train rows, no injection rows, no dev rows for the tripwire."""
+    out = []
+    if need_reads:
+        if not prt:
+            out.append("picture_read: no TRAIN rows in vision_rows.jsonl (kind 'picture_read')")
+        elif not any(r["inj"] for r in prt):
+            out.append("picture_read: no TRAIN rows with an injection")
+        if not prd:
+            out.append("picture_read: no DEV rows")
+    if need_turns and not ptt:
+        out.append(f"picture turn: no steps of family {PICTURE_TURN_FAMILY!r} in the build")
+    return out
 
 
 def audio_rows(R, tok, path: Path, drift: Counter) -> tuple[list[dict], list[dict]]:
@@ -436,6 +532,11 @@ def main() -> int:
                          "silently losing whole audio categories would hollow out the RL mix and the regression guard")
     ap.add_argument("--mm-share", type=float, default=0.15, help="share of all rows that are vision or audio prompts (0 = text only)")
     ap.add_argument("--audio-share", type=float, default=0.4, help="share of the multimodal rows that are audio")
+    ap.add_argument("--picture-share", type=float, default=0.065,
+                    help="share of all rows that are picture shapes (picture_read + picture_turn_r3 steps), about 5-8%%; 0 = none")
+    ap.add_argument("--picture-read-frac", type=float, default=0.5, help="share of the picture rows that are READ calls")
+    ap.add_argument("--require-picture", action="store_true",
+                    help="refuse to export when a picture shape has no rows (default: warn and put the rows back into the text mix)")
     ap.add_argument("--mm-dir", default=str(HERE / "mm"), help="where the images and clips of the picked rows are copied")
     a = ap.parse_args()
     if not a.build_dir:
@@ -471,6 +572,25 @@ def main() -> int:
     rng = random.Random(a.seed)
     drift: Counter = Counter()
     mm_picked, mm_dev, mm_pool = [], [], {}
+    # picture shapes: the turn steps are carved out of the text pool, the READ rows join the vision rows
+    turn_items = [it for it in items if it["family"] == PICTURE_TURN_FAMILY]
+    items = [it for it in items if it["family"] != PICTURE_TURN_FAMILY]
+    for it in turn_items:
+        it["weight"] = 2.0 if it["label"].get("planted") else 1.0
+    n_pic = round(a.n * a.picture_share)
+    n_pr = round(n_pic * a.picture_read_frac)
+    n_pt = n_pic - n_pr
+    prt, prd = ([], [])
+    if n_pic and Path(a.vision_rows).exists():
+        prt, prd = picture_read_rows(R, tok, Path(a.vision_rows), drift)
+    pic_problems = picture_problems(prt, prd, turn_items, n_pr, n_pt) if n_pic else []
+    if pic_problems and a.require_picture:
+        sys.exit("picture shapes are incomplete, refusing to export:\n  " + "\n  ".join(pic_problems))
+    for msg in pic_problems:
+        print("WARNING:", msg)
+    pr_picked = weighted_pick(prt, n_pr, rng) if prt else []
+    pt_picked = weighted_pick(turn_items, n_pt, rng) if turn_items else []
+    mm_dev = list(prd)
     n_mm = round(a.n * a.mm_share)
     if n_mm:
         vt, vd = vision_rows(R, tok, Path(a.vision_rows), drift)
@@ -490,12 +610,13 @@ def main() -> int:
         for msg in problems:
             print("WARNING:", msg)
         n_a = round(n_mm * a.audio_share) if at else 0
-        mm_pool = {"vision train": len(vt), "vision dev": len(vd), "audio train": len(at), "audio dev": len(ad)}
+        mm_pool = {"picture_read train": len(prt), "picture_read dev": len(prd), "vision train": len(vt), "vision dev": len(vd), "audio train": len(at), "audio dev": len(ad)}
         mm_picked = weighted_pick(vt, n_mm - n_a, rng) + weighted_pick(at, n_a, rng)
-        rng.shuffle(mm_picked)
-        mm_dev = vd + ad
+        mm_dev = mm_dev + vd + ad
+    mm_picked = mm_picked + pr_picked
+    rng.shuffle(mm_picked)
     n_text = a.n - len(mm_picked)
-    picked = weighted_copies(items, n_text, rng)
+    picked = weighted_copies(items, n_text - len(pt_picked), rng) + pt_picked
     text_rows = order(picked, rng)[:n_text]
     ordered = interleave(text_rows, mm_picked)
     ordered = ordered[: len(ordered) - len(ordered) % WHOLE_STEPS]      # whole optimizer steps, for 4, 8 and 16 prompts
@@ -517,11 +638,16 @@ def main() -> int:
         f.writelines(row_json(r) for r in mm_dev)
     media = pack_media([r for r in ordered + mm_dev if r.get("modality") in ("vision", "audio")], mm_dir) if (ordered or mm_dev) else 0
     mm_rows = [r for r in ordered if r.get("modality") in ("vision", "audio")]
+    pic_rows = [r for r in ordered if r["family"] in ("picture_read_r3", PICTURE_TURN_FAMILY)]
     stats = {
         "source": str(bd), "pool": len(items), "dropped": dict(dropped), "rows": len(ordered),
         "unique_ids": len({r["id"] for r in ordered}), "sha256": hashlib.sha256(Path(a.out).read_bytes()).hexdigest(),
         "modality": dict(Counter(r.get("modality", "text") for r in ordered)),
-        "mm_share": round(len(mm_rows) / max(1, len(ordered)), 4), "mm_pool": mm_pool,
+        "mm_share": round((len(mm_rows) - len(pr_picked)) / max(1, len(ordered)), 4),
+        "picture": {"rows": len(pic_rows), "share": round(len(pic_rows) / max(1, len(ordered)), 4),
+                    "read": len(pr_picked), "turn": len(pt_picked), "read_pool": [len(prt), len(prd)],
+                    "turn_pool": len(turn_items), "turn_with_planted": sum(bool(r["label"].get("planted")) for r in pt_picked),
+                    "problems": pic_problems}, "mm_pool": mm_pool,
         "mm_dev_rows": len(mm_dev), "mm_dev_sha256": hashlib.sha256(dev_path.read_bytes()).hexdigest(),
         "mm_media_copied": media, "mm_dir": str(mm_dir), "drift": {k: v for k, v in drift.items() if v},
         "steps": dict(Counter(r["label"]["step"] for r in ordered)),

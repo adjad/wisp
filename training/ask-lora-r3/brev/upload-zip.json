@@ -1,47 +1,52 @@
 {
  "file": "ask-lora-data.zip",
- "sha256": "91d2b4988c37ab76714f93e134a0b66960f51b8c41ced8168b59976676a62fb4",
- "bytes": 82276701,
+ "sha256": "61a389c9afe61646b27055e4c5668fa5e4f205f26b42d936a81731c385536fd7",
+ "bytes": 89725906,
  "train": {
-  "rows": 3041,
-  "think": 903,
-  "no_think": 2138,
+  "rows": 3254,
+  "think": 1046,
+  "no_think": 2208,
   "shapes": {
-   "first_answer": 1056,
-   "first_think": 517,
-   "forced_empty": 1082,
-   "forced_think": 386
+   "first_answer": 1051,
+   "first_think": 522,
+   "forced_empty": 1157,
+   "forced_think": 524
   },
-  "forced_prompts": 1468,
+  "forced_prompts": 1681,
   "ends": {
-   "<turn|>": 1576,
-   "<|tool_response>": 1465
+   "<turn|>": 1679,
+   "<|tool_response>": 1575
   }
  },
  "dev": {
-  "rows": 347,
-  "think": 99,
-  "no_think": 248,
+  "rows": 364,
+  "think": 108,
+  "no_think": 256,
   "shapes": {
-   "first_answer": 119,
-   "first_think": 57,
-   "forced_empty": 129,
-   "forced_think": 42
+   "first_answer": 122,
+   "first_think": 52,
+   "forced_empty": 134,
+   "forced_think": 56
   },
-  "forced_prompts": 171,
+  "forced_prompts": 190,
   "ends": {
-   "<turn|>": 178,
-   "<|tool_response>": 169
+   "<turn|>": 189,
+   "<|tool_response>": 175
   }
  },
  "vision": {
-  "train": 258,
-  "dev": 37,
-  "images": 327,
+  "train": 387,
+  "dev": 57,
+  "images": 476,
   "kinds": {
    "image": 230,
    "document": 40,
-   "text_document": 25
+   "text_document": 25,
+   "picture_read": 149
+  },
+  "picture_read": {
+   "train": 129,
+   "dev": 20
   }
  },
  "audio": {
