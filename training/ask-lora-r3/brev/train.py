@@ -85,6 +85,17 @@ trainable set is ~tens of MB, some adapters get no gradient on a given row, and 
 by the global batch). Rank 0 alone logs, evaluates-and-writes, and saves; every rank joins each evaluation (dev
 rows are sharded) and every checkpoint barrier. --save-every N writes an adapter-only snapshot to
 OUT/ckpt/step-NNNNN (never pruned) plus OUT/ckpt/index.jsonl, for the GPU multimodal eval to choose from.
+
+Attention (AMD MI355X / ROCm). Every model-loading command takes `--attn sdpa|math|eager` (default $WISP_ATTN, else
+sdpa). Gemma 4's attention scale is 1.0 and its full-attention layers have head_dim 512, the corner where AOTriton's
+SDPA kernel on gfx950 once returned silently wrong bf16 results (ROCm/aotriton#246). `math` keeps the sdpa model but
+leaves only torch's math SDPA backend enabled; `eager` runs transformers' own matmul+softmax. Smoke first compares the
+configured attention against the math reference on the 3 longest text rows with >= 64 labeled tokens and 1 image
+row (pooled |dloss| <= max(0.02, 0.1/sqrt(n)), mean KL <= 0.05, argmax agreement >= 0.98 where the reference's top-2
+margin > 0.5, LoRA-gradient cosine >= 0.99 on one short row) and records it in smoke.json. On ROCm a mismatch, or an
+inconclusive run (OOM even on rows <= 4096 tokens), exits 8; train there refuses unless smoke.json holds a passing
+parity for the same attn and torch build (--skip-attn-parity overrides). On CUDA (A6000/B300) the check runs only on
+rows <= 4096 tokens and merely warns (--attn-parity-strict makes it fatal), so memory and verdicts are as before.
 """
 from __future__ import annotations
 
@@ -816,6 +827,244 @@ def _model_class():
     sys.exit("this transformers has no multimodal auto class - need >= 5.10.1")
 
 
+# ---- attention backend. Gemma 4 E4B's full-attention layers have head_dim 512 and every attention in the
+# model uses scale 1.0 (q/k are RMS-normed instead), the exact corner where AMD's AOTriton SDPA kernel on
+# gfx950 returned silently wrong bf16 results (ROCm/aotriton#246). Cache parity compares the SAME kernel with
+# itself, so it cannot see that; smoke compares the configured attention with the math reference instead.
+ATTN_CHOICES = ("sdpa", "math", "eager")
+# bf16 logits (softcap ~30) have a ulp of 0.06-0.125, so a correct fused kernel flips near-ties and moves a short
+# completion's loss by a few 1e-3; the known bug moves loss by >1 and top-1 by 30%+. Thresholds sit between.
+ATTN_LOSS_TOL = 0.02       # |pooled mean loss(configured) - loss(math)| over all labeled positions; floor of max(., 0.1/sqrt(n))
+ATTN_ROW_LOSS_MAX = 0.25   # and no single row may be off by more than this (a pooled mean could cancel two bad rows)
+ATTN_MARGIN = 0.5          # top-1 is only judged where the reference's top-2 logit margin exceeds this (> 4 bf16 ulps)
+ATTN_TOP1_MIN = 0.98       # agreement of the argmax on those confident positions, pooled over rows
+ATTN_KL_MAX = 0.05         # mean KL(math || configured) over labeled positions, nats
+ATTN_GRAD_COS_MIN = 0.99   # cosine of the LoRA gradients (configured vs math) on one short row
+ATTN_CAP_TOKENS = 4096     # CUDA / OOM-retry cap on a parity row's length (the math reference materializes L x L scores)
+ATTN_MIN_COMPLETION = 64   # parity rows prefer >= this many labeled tokens, so the statistics have positions to chew on
+EXIT_ATTN_PARITY = 8       # smoke: the attention kernel disagrees with the math reference (run.sh: >= 5 = pipeline)
+
+
+def resolve_attn(arg: str | None, env: dict | None = None) -> str:
+    """--attn, else $WISP_ATTN, else sdpa. Raises ValueError on anything else."""
+    env = os.environ if env is None else env
+    v = (arg or env.get("WISP_ATTN") or "sdpa").strip().lower()
+    if v not in ATTN_CHOICES:
+        raise ValueError(f"attn must be one of {'/'.join(ATTN_CHOICES)}, got {v!r}")
+    return v
+
+
+def attn_implementation(attn: str) -> dict:
+    """The per-sub-config attn_implementation for from_pretrained. sdpa and math load the same sdpa model
+    (math then restricts the backend, see restrict_sdpa_to_math); eager runs the language AND vision attention
+    in plain matmul+softmax (the vision tower is scale 1.0 too). The audio tower is always eager: transformers
+    5.22 refuses SDPA for Gemma4AudioModel."""
+    kind = "eager" if attn == "eager" else "sdpa"
+    return {"": kind, "text_config": kind, "vision_config": kind, "audio_config": "eager"}
+
+
+def restrict_sdpa_to_math(torch_mod=None) -> dict:
+    """Process-wide: only the math SDPA backend stays enabled, so no fused (flash / mem-efficient / cuDNN, i.e.
+    AOTriton on ROCm) kernel can run. Each switch is guarded since torch builds differ. Returns the flags now."""
+    t = torch_mod
+    if t is None:
+        import torch as t
+    cuda = t.backends.cuda
+    for name in ("enable_flash_sdp", "enable_mem_efficient_sdp", "enable_cudnn_sdp"):
+        if hasattr(cuda, name):
+            getattr(cuda, name)(False)
+    if hasattr(cuda, "enable_math_sdp"):
+        cuda.enable_math_sdp(True)
+    return {n: getattr(cuda, n)() for n in ("flash_sdp_enabled", "mem_efficient_sdp_enabled",
+                                             "cudnn_sdp_enabled", "math_sdp_enabled") if hasattr(cuda, n)}
+
+
+def parity_stats(ref_loss: float, got_loss: float, ref_logits, got_logits) -> dict:
+    """One row's agreement between a reference and a configured run. Logits are [C, V] tensors of the labeled
+    positions. Besides |dloss| and max |dlogit| it counts the positions where the reference's top-2 margin is
+    > ATTN_MARGIN (n_conf) and on how many of them the argmax agrees (conf_agree); a near-tie flipping is bf16
+    noise, a confident token flipping is not. `kl` = mean KL(reference || configured) over the positions."""
+    n = int(ref_logits.shape[0])
+    st = {"loss_ref": round(ref_loss, 5), "loss_got": round(got_loss, 5), "dloss": round(abs(got_loss - ref_loss), 5),
+          "max_dlogit": 0.0, "top1_agree": 0, "n_pos": n, "n_conf": 0, "conf_agree": 0, "kl": 0.0}
+    if not n:
+        return st
+    ref, got = ref_logits.float(), got_logits.float()
+    agree = got.argmax(-1) == ref.argmax(-1)
+    top2 = ref.topk(2, dim=-1).values
+    conf = (top2[:, 0] - top2[:, 1]) > ATTN_MARGIN
+    st.update(max_dlogit=round(float((got - ref).abs().max()), 4), top1_agree=int(agree.sum()),
+              n_conf=int(conf.sum()), conf_agree=int((agree & conf).sum()),
+              kl=0.0 if got_logits is ref_logits else round(max(0.0, kl_base_to_tuned(ref, got).item()), 6))   # >= 0 up to fp noise
+    return st
+
+
+def parity_verdict(rows: list[dict], grad_cos: float | None = None) -> dict:
+    """Pass when, over ALL rows pooled by labeled position: the mean-loss difference is within
+    max(ATTN_LOSS_TOL, 0.1/sqrt(n)) (no single row beyond ATTN_ROW_LOSS_MAX), the mean KL(math || configured)
+    is <= ATTN_KL_MAX, the argmax agrees on >= ATTN_TOP1_MIN of the confident positions (none confident = not
+    judged), and, when given, the LoRA-gradient cosine is >= ATTN_GRAD_COS_MIN. Pooling because a correct fused
+    kernel's bf16 noise is the same size as a short completion's whole signal."""
+    n = sum(r["n_pos"] for r in rows)
+    res = {"ok": False, "status": "fail", "rows": rows, "n_pos": n, "grad_cos": grad_cos, "reasons": []}
+    if not n:
+        res["reasons"].append("no labeled positions")
+        return res
+    d_pool = abs(sum(r["n_pos"] * (r["loss_got"] - r["loss_ref"]) for r in rows) / n)
+    tol = max(ATTN_LOSS_TOL, 0.1 / math.sqrt(n))
+    worst = max(r["dloss"] for r in rows)
+    kl = sum(r["n_pos"] * r["kl"] for r in rows) / n
+    n_conf = sum(r["n_conf"] for r in rows)
+    top1 = (sum(r["conf_agree"] for r in rows) / n_conf) if n_conf else None
+    res.update(dloss_pooled=round(d_pool, 5), loss_tol=round(tol, 5), worst_dloss=round(worst, 5), kl=round(kl, 6),
+               kl_max=ATTN_KL_MAX, n_conf=n_conf, top1=None if top1 is None else round(top1, 5), top1_min=ATTN_TOP1_MIN)
+    for bad, why in ((d_pool > tol, f"pooled |dloss| {d_pool:.4f} > {tol:.4f}"),
+                     (worst > ATTN_ROW_LOSS_MAX, f"a row's |dloss| {worst:.3f} > {ATTN_ROW_LOSS_MAX}"),
+                     (kl > ATTN_KL_MAX, f"mean KL {kl:.4f} > {ATTN_KL_MAX}"),
+                     (top1 is not None and top1 < ATTN_TOP1_MIN, f"confident top-1 agreement {top1} < {ATTN_TOP1_MIN}"),
+                     (grad_cos is not None and grad_cos < ATTN_GRAD_COS_MIN, f"LoRA grad cosine {grad_cos} < {ATTN_GRAD_COS_MIN}")):
+        if bad:
+            res["reasons"].append(why)
+    res["ok"] = not res["reasons"]
+    res["status"] = "pass" if res["ok"] else "fail"
+    return res
+
+
+def attn_parity_fatal(par: dict, attn: str, strict: bool) -> bool:
+    """Smoke exits 8 only for a fused (--attn sdpa) run that did not pass, and only when strict (ROCm or
+    --attn-parity-strict). math/eager are their own reference; CUDA merely warns. Inconclusive is not a pass."""
+    return attn == "sdpa" and strict and not par.get("ok")
+
+
+def pick_parity_rows(toks: list, vis: list, cap: int | None = None, n: int = 3) -> list:
+    """The rows attention parity runs on: the n longest text rows with >= ATTN_MIN_COMPLETION labeled tokens (topped
+    up from the longest remaining if fewer qualify), plus the longest image row. `cap` keeps rows of at most
+    that many tokens (all rows already fit --max-len, load_all drops the rest)."""
+    size = lambda t: len(t[1]) + len(t[2])
+    fit = lambda rows: [r for r in rows if cap is None or size(r) <= cap]
+    text = sorted(fit(toks), key=lambda t: (len(t[2]) >= ATTN_MIN_COMPLETION, size(t)), reverse=True)[:n]
+    return sorted(text, key=lambda t: -size(t)) + sorted(fit(vis), key=lambda t: -size(t))[:1]
+
+
+ATTN_RERUN = "re-run with --attn math (or WISP_ATTN=math) - slower but correct"
+ATTN_PARITY_FIX = ATTN_RERUN + ". Do not train on this kernel: a wrong attention output still gives a plausible-looking loss."
+
+
+def attn_parity_gate(smoke: dict | None, hip: str | None, attn: str, torch_version: str, skip: bool = False) -> str | None:
+    """None = train may start; else the refusal message. Only ROCm with the fused sdpa path needs a passing smoke
+    on this exact attn and torch build; CUDA (A6000/B300) and math/eager never refuse."""
+    if not hip or attn != "sdpa" or skip:
+        return None
+    if not smoke or "attn_parity" not in smoke:
+        return ("REFUSING TO TRAIN: ROCm + --attn sdpa needs OUT/smoke.json with an attention-parity pass (the fused "
+                "SDPA kernel can be silently wrong on gfx950). Run `smoke` first on this torch, or " + ATTN_RERUN
+                + ". Experts: --skip-attn-parity.")
+    if not smoke["attn_parity"].get("ok"):
+        return (f"REFUSING TO TRAIN: the attention-parity check in OUT/smoke.json FAILED or was inconclusive "
+                f"(status {smoke['attn_parity'].get('status')}); " + ATTN_PARITY_FIX)
+    if smoke.get("attn") != attn or smoke.get("torch") != torch_version:
+        return (f"REFUSING TO TRAIN: OUT/smoke.json checked attn={smoke.get('attn')} on torch {smoke.get('torch')}, but this run is "
+                f"attn={attn} on torch {torch_version}; re-run `smoke` here (or --skip-attn-parity).")
+    return None
+
+
+def _lora_grad(model, p, c, mm, dev):
+    """Flat float gradient of one row's CE wrt every trainable (LoRA) parameter, or None. At init B = 0, so only
+    B's gradient is nonzero, but it flows back through every attention layer, which is what is compared."""
+    import torch
+    model.zero_grad(set_to_none=True)
+    try:
+        row_loss(model, p, c, dev, False, mm)[0].backward()
+        gs = [q.grad.detach().float().flatten() for q in model.parameters() if q.requires_grad and q.grad is not None]
+        return torch.cat(gs) if gs else None
+    finally:
+        model.zero_grad(set_to_none=True)     # smoke's own backward passes accumulate into .grad later
+
+
+def grad_cosine(g1, g2) -> float | None:
+    """Cosine similarity of two flat gradients; None if either is missing or all zero (then nothing was compared)."""
+    if g1 is None or g2 is None:
+        return None
+    n1, n2 = float(g1.norm()), float(g2.norm())
+    return float(g1 @ g2) / (n1 * n2) if n1 > 0 and n2 > 0 else None
+
+
+def attention_parity(model, rows, attn: str, dev=0, grad_row=None) -> dict:
+    """Completion-only loss and logits of `rows` with the configured attention vs the math reference
+    (SDPBackend.MATH: plain matmul+softmax), model in eval, LoRA still untouched. Prints one line per row.
+    `grad_row` (one short row) also compares the LoRA gradients' cosine, since the backward kernels can be wrong
+    on their own. With --attn math/eager the configured run IS a reference, so there is nothing to compare
+    (reference=self)."""
+    import torch
+    import torch.nn.functional as F
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+    model.eval()
+
+    def run(p, c, mm):
+        logits, _ = _logits(model, p, c, dev, False, mm)
+        return F.cross_entropy(logits, torch.tensor(c, device=logits.device)).item(), logits
+
+    out = []
+    with torch.no_grad():
+        for rid, p, c, mm in rows:
+            got_loss, got = run(p, c, mm)
+            if attn == "sdpa":
+                with sdpa_kernel(SDPBackend.MATH):
+                    ref_loss, ref = run(p, c, mm)
+            else:
+                ref_loss, ref = got_loss, got
+            st = {"id": rid, "modality": modality(mm), "tokens": len(p) + len(c), **parity_stats(ref_loss, got_loss, ref, got)}
+            out.append(st)
+            print(f"  attention parity [{st['modality']}] {rid}: {st['tokens']} tokens, loss {st['loss_got']:.4f} vs math "
+                  f"{st['loss_ref']:.4f} (d {st['dloss']:.4f}), max dlogit {st['max_dlogit']:.3f}, KL {st['kl']:.5f}, "
+                  f"top-1 {st['conf_agree']}/{st['n_conf']} confident ({st['top1_agree']}/{st['n_pos']} all)")
+            del ref, got
+    cos = None
+    if attn == "sdpa" and grad_row is not None:
+        rid, p, c, mm = grad_row
+        g = _lora_grad(model, p, c, mm, dev)
+        with sdpa_kernel(SDPBackend.MATH):
+            cos = grad_cosine(g, _lora_grad(model, p, c, mm, dev))
+        del g
+        print(f"  attention parity [grad] {rid}: LoRA gradient cosine vs math {cos if cos is None else round(cos, 5)}")
+        if cos is None:                      # nothing flowed: cannot vouch for the backward kernel
+            cos = 0.0
+    v = parity_verdict(out, cos)
+    v["reference"] = "math" if attn == "sdpa" else "self"
+    return v
+
+
+def run_attention_parity(model, toks, vis, attn: str, strict: bool, dev=0, cap: int = ATTN_CAP_TOKENS) -> dict:
+    """attention_parity with the memory fallbacks. The math reference holds an L x L score matrix per head, so the
+    longest rows are risky: ROCm (strict) tries full length first, then rows <= `cap` tokens; CUDA goes straight
+    to `cap` (warn-only there, keep the A6000/B300 path's memory as it was). Still OOM = status "inconclusive",
+    which is never ok. A wrong-kernel verdict is separate: status "fail"."""
+    import gc
+    import torch
+    res = {"ok": False, "status": "inconclusive", "reason": "no parity row fits", "reference": "math" if attn == "sdpa" else "self",
+           "rows": []}
+    short = sorted(toks, key=lambda t: len(t[1]) + len(t[2]))[:1]     # the gradient check's row
+    try:
+        for c_ in ([None, cap] if strict else [cap]):
+            rows = pick_parity_rows(toks, vis, c_)
+            if not rows:
+                continue
+            try:
+                res = attention_parity(model, rows, attn, dev, short[0] if short else None)
+                res["cap_tokens"] = c_
+                break
+            except torch.cuda.OutOfMemoryError:
+                gc.collect()
+                torch.cuda.empty_cache()
+                res = {**res, "reason": f"oom (cap {c_})"}
+                print(f"  attention parity: out of memory with cap {c_}" + ("; retrying capped" if c_ is None else ""))
+    finally:
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    return res
+
+
 def load_model(a, *, for_training: bool = True):
     import torch
     from transformers import AutoTokenizer
@@ -828,12 +1077,14 @@ def load_model(a, *, for_training: bool = True):
         kw["quantization_config"] = BitsAndBytesConfig(
             load_in_4bit=True, bnb_4bit_use_double_quant=True, bnb_4bit_quant_type="nf4",
             bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_quant_storage=torch.bfloat16)
-    # transformers 5.22 refuses SDPA for Gemma4AudioModel; the frozen audio tower takes eager.
-    attn = {"": "sdpa", "text_config": "sdpa", "vision_config": "sdpa", "audio_config": "eager"}
+    attn = attn_implementation(getattr(a, "attn", "sdpa"))
+    if getattr(a, "attn", "sdpa") == "math":
+        flags = restrict_sdpa_to_math()
+        print(f"attn=math: SDPA restricted to the math backend {flags}")
     model = _model_class().from_pretrained(a.base, dtype=torch.bfloat16, attn_implementation=attn,
                                            device_map={"": _DIST["local"]}, **kw)
     print(f"loaded {type(model).__name__} params={sum(p.numel() for p in model.parameters()) / 1e9:.2f}B "
-          f"gpu_alloc={torch.cuda.memory_allocated() / 2**30:.1f}GiB qlora={bool(kw)} "
+          f"gpu_alloc={torch.cuda.memory_allocated() / 2**30:.1f}GiB qlora={bool(kw)} attn={getattr(a, 'attn', 'sdpa')} "
           f"rank={_DIST['rank']}/{_DIST['world']}")
     if not for_training:
         return tok, model
@@ -1158,7 +1409,8 @@ def cmd_smoke(a) -> int:
 
     Single GPU only (run it without torchrun, on the GPU you will train on). Writes OUT/smoke.json.
     Exit 0 = OK, 3 = memory tight, 4 = out of memory, 5 = KV-sharing bug, 6 = cannot overfit, 7 = the base
-    anchor is broken (KL not ~0 at init, or still 0 after the adapter moved).
+    anchor is broken (KL not ~0 at init, or still 0 after the adapter moved), 8 = the attention kernel
+    disagrees with the math reference (ROCm: use --attn math).
     The first row is excluded from the speed figure (CUDA warm-up)."""
     import torch
     if _DIST["world"] > 1:
@@ -1166,6 +1418,7 @@ def cmd_smoke(a) -> int:
         return 2
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
+    (out / "smoke.json").unlink(missing_ok=True)   # a stale pass from an older torch/attn must not satisfy train's ROCm gate
     if not _kl_selfcheck():
         print("SMOKE FAILED: the KL implementation disagrees with its python reference")
         return 7
@@ -1176,6 +1429,25 @@ def cmd_smoke(a) -> int:
     vis_train = [r for r in mm_train if r[3]["modality"] == "image"]
     aud_train = [r for r in mm_train if r[3]["modality"] == "audio"]
     dev = alldev
+    # 0. attention parity, before anything else: a wrong fused kernel would also trip the cache check below,
+    #    with a misleading "KV-sharing bug" message. Long rows weigh the long-context kernels most; one image
+    #    row covers the vision tower. Only ROCm (or --attn-parity-strict) fails on it: the A6000/B300 path just
+    #    warns, on rows <= 4096 tokens so the math reference's L x L scores stay out of its memory budget.
+    strict = bool(torch.version.hip) or a.attn_parity_strict
+    par = run_attention_parity(model, toks, vis_train, a.attn, strict)
+    meta = {"attn": a.attn, "attn_parity": par, "attn_parity_strict": strict, "torch": torch.__version__,
+            "hip": torch.version.hip}
+    print(f"  attention parity: {par['status']} (reference {par['reference']})"
+          + (f"; pooled |dloss| {par['dloss_pooled']:.4f} (<= {par['loss_tol']}), KL {par['kl']:.5f} (<= {par['kl_max']}), "
+             f"confident top-1 {par['top1']} (>= {par['top1_min']}), grad cos {par['grad_cos']}" if par["rows"] else "")
+          + (f"; {'; '.join(par['reasons'])}" if par.get("reasons") else f"; {par.get('reason', '')}" if not par["ok"] else ""))
+    if not par["ok"] and a.attn == "sdpa":
+        if attn_parity_fatal(par, a.attn, strict):
+            (out / "smoke.json").write_text(json.dumps({"max_len": a.max_len, "ok": False, "reason": "attn_parity", **meta}, indent=2))
+            print(f"SMOKE FAILED: --attn sdpa did not match the math reference ({par['status']}); {ATTN_PARITY_FIX}")
+            return EXIT_ATTN_PARITY
+        print(f"  WARNING (CUDA, not fatal): attention parity {par['status']} - the fused kernel differs from math more than "
+              f"expected; pass --attn-parity-strict to make this fatal")
     # 1. KV-sharing parity: E4B's shared layers read K/V through the cache, and
     #    old transformers broke them when use_cache=False. Loss must not depend on it.
     model.eval()
@@ -1208,9 +1480,10 @@ def cmd_smoke(a) -> int:
           f"vision rows in train: {len(vis_train)}, audio: {len(aud_train)}, dev: "
           f"{sum(bool(r[3]) for r in dev)} multimodal of {len(dev)}")
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=a.lr, fused=True)
+    torch.cuda.empty_cache()     # the parity / cache-parity passes' cached blocks must not inflate max_memory_reserved
     torch.cuda.reset_peak_memory_stats()
     total = torch.cuda.get_device_properties(0).total_memory / 2**30
-    res = {"max_len": a.max_len, "ok": False}
+    res = {"max_len": a.max_len, "ok": False, **meta}
     t0, timed = time.time(), 0
     try:
         for i, (rid, p, c, mm) in enumerate(worst):
@@ -1308,6 +1581,13 @@ def cmd_train(a) -> int:
     if is_main():
         out.mkdir(parents=True, exist_ok=True)
     barrier()
+    try:
+        smoke = json.loads((out / "smoke.json").read_text())
+    except (OSError, ValueError):
+        smoke = None
+    refusal = attn_parity_gate(smoke, torch.version.hip, a.attn, torch.__version__, a.skip_attn_parity)
+    if refusal:
+        sys.exit(refusal)
     logf = out / "train.log.jsonl"
     tok, model = load_model(a)
     train, dev_rows, counts, _ = load_all(a, tok)
@@ -1352,7 +1632,8 @@ def cmd_train(a) -> int:
         vision_weight=a.vision_weight, audio_weight=a.audio_weight, dev=len(dev_rows), epochs=a.epochs,
         global_batch=a.global_batch, world=world, local_batch=lb, steps=total, lr=a.lr, rank=a.rank, alpha=a.alpha,
         max_len=a.max_len, skipped=len(skipped), anchor_kl=a.anchor_kl, anchor_text_frac=a.anchor_text_frac,
-        mm_tol=a.mm_tol, mm_kl_max=a.mm_kl_max, audio_serving_frac=a.audio_serving_frac, save_every=a.save_every, ref=state["ref"])
+        mm_tol=a.mm_tol, mm_kl_max=a.mm_kl_max, audio_serving_frac=a.audio_serving_frac, save_every=a.save_every, ref=state["ref"],
+        attn=a.attn, torch=torch.__version__, hip=torch.version.hip)
 
     def save(tag: str) -> Path | None:
         d = out / tag
@@ -1628,7 +1909,20 @@ def main() -> int:
     ap.add_argument("--stop-at", type=float, default=0, help="train: unix time to stop at (saves + evals first)")
     ap.add_argument("--n", type=int, default=8, help="sample: how many dev prompts")
     ap.add_argument("--seed", type=int, default=20261029)
+    ap.add_argument("--attn", choices=ATTN_CHOICES, default=None,
+                    help="attention backend (default $WISP_ATTN, else sdpa). sdpa = torch's fused kernels; math = same model "
+                         "but SDPA restricted to the math backend (slower, the reference; use it if smoke's attention "
+                         "parity fails on ROCm); eager = transformers' plain matmul+softmax on the language and vision towers")
+    ap.add_argument("--attn-parity-strict", action="store_true",
+                    help="smoke: fail (exit 8) on an attention-parity mismatch even on CUDA (always strict on ROCm; on CUDA "
+                         "it is otherwise a warning on rows <= 4096 tokens)")
+    ap.add_argument("--skip-attn-parity", action="store_true",
+                    help="train: on ROCm with --attn sdpa, train without a passing attention-parity smoke.json (experts only)")
     a = ap.parse_args()
+    try:
+        a.attn = resolve_attn(a.attn)
+    except ValueError as exc:
+        ap.error(str(exc))
     if not 0 <= a.vision_weight < 1:
         ap.error("--vision-weight must be in [0, 1)")
     if not 0 <= a.audio_weight < 1 or a.vision_weight + a.audio_weight >= 1:

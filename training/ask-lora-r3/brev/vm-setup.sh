@@ -1,15 +1,28 @@
 #!/bin/bash
 # Wisp Ask LoRA: Brev GPU instance setup (one NVIDIA GPU, 48 GB class: L40S, A6000, A100, H100;
-# or an 8x Blackwell node such as the B300 288 GiB: torchrun data parallel, see GPUs below).
+# or an 8x Blackwell node such as the B300 288 GiB, or an 8x AMD Instinct MI355X node (ROCm):
+# torchrun data parallel, see GPUs below).
 #
-# GPUs (r3). The torch wheel is chosen from the GPU's compute capability (nvidia-smi compute_cap):
+# GPUs (r3). The vendor is detected first (GPU_VENDOR=nvidia|amd overrides; nvidia-smi works -> nvidia, else amd-smi /
+# rocm-smi / /dev/kfd -> amd) and saved in models.env for run.sh. On NVIDIA the torch wheel is chosen from the GPU's
+# compute capability (nvidia-smi compute_cap):
 #   8.x / 9.x  (A6000 sm_86, A100, L40S, H100)  -> cu128 wheels (driver 570 = CUDA 12.8 is enough)
 #   10.x       (B200 sm_100, B300 sm_103)       -> cu130 wheels, which carry sm_103 kernels; they need driver >= 580.
 #                                                  A driver below 580 falls back to cu128 (sm_100 only: a B300 may
 #                                                  refuse to run it) and then to the nightly cu130 index.
+#   AMD        (MI355X gfx950, 288 GB/GPU)      -> ROCm wheels (arch from rocminfo): AMD's gfx950 index (torch 2.11.0
+#                                                  +rocm7.13.0, preview; only on gfx950), then PyTorch's rocm7.2 index,
+#                                                  then its nightly rocm7.2. torchvision comes from the same index.
+#                                                  bitsandbytes is skipped (only --qlora needs it). Known gfx950 bug:
+#                                                  AOTriton SDPA gives wrong results for big head dims with scale=1.0
+#                                                  (ROCm/aotriton#246; Gemma 4 full-attention layers are 512 wide), so
+#                                                  setup runs an SDPA-vs-math probe that steers the candidate choice (a
+#                                                  candidate that fails it is skipped; if all fail the first is kept with a
+#                                                  loud WARN; train.py's smoke gate decides, expect --attn math).
 # Every candidate is VERIFIED by running a bf16 matmul and an SDPA call on the GPU, not just by import; the first that
-# passes is kept. Override with TORCH_INDEX=<url> (one candidate, still verified) and TORCH_SPEC='torch>=2.9'.
-# Several GPUs: `run.sh <tag> train` launches torchrun with NPROC processes (default: every GPU nvidia-smi lists;
+# passes is kept. Override with TORCH_INDEX=<url> (one candidate, still verified) and TORCH_SPEC='torch>=2.9'
+# (TORCHVISION_SPEC for the matching torchvision; GPU_ARCH=gfx950 skips the rocminfo detection).
+# Several GPUs: `run.sh <tag> train` launches torchrun with NPROC processes (default: every GPU nvidia-smi / amd-smi lists;
 # NPROC=1 forces one). smoke, preflight and merge always use one GPU. The effective batch is --global-batch rows
 # per optimizer step whatever NPROC is (default 8): GLOBAL_BATCH=<n> LR=<lr> in the environment pass through.
 # Round 2 trains TWO separate LoRAs on one shared dataset: Gemma 4 E4B ("gemma") and
@@ -67,7 +80,27 @@ echo "== setup start $(date -u +%FT%TZ) user=$JUSER work=$WORK models=$MODELS"
 GEMMA_REPO="google/gemma-4-E4B-it"
 GEMMA_REV="ee0ef6023621cff504d758262d4e04895a5af4a2"   # template/tokenizer identical to Wisp's Gemma oQ4e build
 
-nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || echo "WARN: nvidia-smi failed"
+# GPU vendor: nvidia if nvidia-smi works, else amd (ROCm) if amd-smi / rocm-smi / /dev/kfd exists. GPU_VENDOR=amd|nvidia overrides.
+if [ -z "${GPU_VENDOR:-}" ]; then
+  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then GPU_VENDOR=nvidia
+  elif command -v amd-smi >/dev/null 2>&1 || command -v rocm-smi >/dev/null 2>&1 || [ -e /dev/kfd ]; then GPU_VENDOR=amd
+  else GPU_VENDOR=none
+  fi
+fi
+case "$GPU_VENDOR" in
+  nvidia|amd|none) ;;
+  *) echo "FAIL: GPU_VENDOR must be nvidia or amd (got '$GPU_VENDOR')" >&2; exit 2 ;;
+esac
+echo "gpu vendor: $GPU_VENDOR"
+if [ "$GPU_VENDOR" = amd ]; then
+  { amd-smi static --asic 2>/dev/null || rocm-smi --showproductname 2>/dev/null; } | grep -iE 'market_name|card series|card model|target_graphics' | sort | uniq -c \
+    || echo "WARN: amd-smi / rocm-smi listed no GPU"
+elif [ "$GPU_VENDOR" = none ]; then
+  echo "WARN: no GPU tool found (nvidia-smi, amd-smi, rocm-smi, /dev/kfd); continuing on the NVIDIA path, expect the torch check to fail"
+  nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || echo "WARN: nvidia-smi failed"
+else
+  nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || echo "WARN: nvidia-smi failed"
+fi
 FREE_GB=$(df -BG --output=avail "$WORK" | tail -1 | tr -dc 0-9)
 # Estimates, not measurements: one model needs ~60 GB (base 16 + merged 16 + checkpoints + venv + data);
 # both without deleting a base in between ~100-150 GB.
@@ -81,6 +114,7 @@ cat > "$WORK/models.env" <<EOF
 MODELS="$MODELS"
 BOLT_REPO="$BOLT_REPO"
 BOLT_REV="$BOLT_REV"
+GPU_VENDOR="$GPU_VENDOR"
 EOF
 
 cat > "$WORK/run.sh" <<'RUN'
@@ -88,7 +122,7 @@ cat > "$WORK/run.sh" <<'RUN'
 # Wisp Ask LoRA steps (two models, one dataset):
 #   ~/wisp/run.sh <gemma|bolt> <step> [args]      steps: check base unpack <sha256> preflight smoke train status sample merge package freebase
 #   (train: NPROC=<n> torchrun processes, default every GPU; GLOBAL_BATCH=<rows> LR=<lr> EXTRA_TRAIN_ARGS='--audio-weight 0.08 ...')
-#   ~/wisp/run.sh <gemma|bolt> sweep [file]       one training run per GPU (CUDA_VISIBLE_DEVICES=i, NPROC=1, own --out); then <tag> sweepstatus
+#   ~/wisp/run.sh <gemma|bolt> sweep [file]       one training run per GPU (CUDA/HIP_VISIBLE_DEVICES=i, NPROC=1, own --out); then <tag> sweepstatus
 #   ~/wisp/run.sh <gemma|bolt> auto <hours>       unattended preflight..package for one model; then <tag> autostatus
 #   ~/wisp/run.sh both <hours-per-model> <sha256> gemma then bolt back to back, unattended; then bothstatus
 # Each model keeps its files under ~/wisp/<tag>/ (data, out, merged, adapter zip), so nothing is overwritten.
@@ -118,7 +152,48 @@ cfg() {   # per-model settings
 }
 base() { [ -s "$TD/base_path" ] || die "$TAG base not downloaded (run: $TAG base)"; cat "$TD/base_path"; }
 T() { "$PY" "$DATA/train.py" "$@" --tag "$TAG"; }
-gpu_count() { nvidia-smi -L 2>/dev/null | grep -c '^GPU' || true; }
+# GPU helpers: GPU_VENDOR (models.env) picks amd-smi / rocm-smi on AMD ROCm, nvidia-smi otherwise.
+is_amd() { [ "${GPU_VENDOR:-}" = amd ]; }
+gpu_count() {
+  if is_amd; then
+    local n=0
+    command -v amd-smi >/dev/null 2>&1 && n=$(amd-smi list 2>/dev/null | grep -c '^GPU' || true)
+    if [ "${n:-0}" -eq 0 ] && command -v rocm-smi >/dev/null 2>&1; then
+      n=$(rocm-smi --showid 2>/dev/null | grep -o '^GPU\[[0-9]*\]' | sort -u | wc -l | tr -d ' ')
+    fi
+    [ "${n:-0}" -gt 0 ] || n=$("$PY" -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo 0)
+    echo "${n:-0}"
+  else
+    nvidia-smi -L 2>/dev/null | grep -c '^GPU' || true
+  fi
+}
+gpu_info() {   # one line per GPU kind for `check`
+  if is_amd; then
+    { amd-smi static --asic --vram 2>/dev/null || rocm-smi --showproductname --showmeminfo vram 2>/dev/null; } \
+      | grep -iE 'market_name|card series|target_graphics|size|vram total memory' | sort | uniq -c | head -12
+    echo "arch: $(rocminfo 2>/dev/null | grep -oE -m1 'gfx[0-9a-f]+' | head -1)"
+  else
+    nvidia-smi --query-gpu=name,memory.used,memory.total,compute_cap,driver_version --format=csv,noheader
+  fi
+}
+gpu_mem_used_mib() {   # one number per GPU per call, for the smoke monitor
+  if is_amd; then
+    local m
+    m=$(rocm-smi --showmeminfo vram 2>/dev/null | awk '/VRAM Total Used Memory/ {printf "%d\n", $NF / 1048576}')
+    [ -n "$m" ] || m=$(amd-smi metric -m 2>/dev/null | awk '/USED_VRAM/ {print $2}')
+    [ -z "$m" ] || echo "$m"
+  else
+    nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits
+  fi
+}
+gpu_status() {   # utilization and memory for `status`
+  if is_amd; then
+    rocm-smi --showuse --showmeminfo vram 2>/dev/null | grep -E 'GPU use|VRAM Total (Used )?Memory' \
+      || amd-smi metric -u -m 2>/dev/null | grep -E '^GPU|GFX_ACTIVITY|USED_VRAM|TOTAL_VRAM'
+  else
+    nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader
+  fi
+}
 # The training launcher: torchrun (data parallel, NPROC processes) on a multi-GPU node, plain python on one GPU.
 # Everything else (preflight, smoke, merge, sample) stays single-process on GPU 0.
 launch_train() {
@@ -130,7 +205,7 @@ launch_train() {
   fi
 }
 TRAIN_EXTRA=( ${GLOBAL_BATCH:+--global-batch "$GLOBAL_BATCH"} ${LR:+--lr "$LR"} ${EXTRA_TRAIN_ARGS:-} )
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True PYTORCH_HIP_ALLOC_CONF=expandable_segments:True
 
 TAG="${1:-}"
 case "$TAG" in
@@ -143,9 +218,9 @@ case "$STEP" in
 check)
   echo "model: $TAG  repo: $REPO @ $REV"
   [ -f "$WORK/SETUP_DONE" ] && echo "setup: done" || echo "setup: NOT finished (tail ~/wisp/setup.log)"
-  nvidia-smi --query-gpu=name,memory.used,memory.total,compute_cap,driver_version --format=csv,noheader
+  echo "vendor: ${GPU_VENDOR:-nvidia}"; gpu_info
   echo "gpus: $(gpu_count)  (train launches torchrun with NPROC=${NPROC:-$(gpu_count)})"
-  "$PY" -c "import torch,torchvision,transformers,peft;print('torch',torch.__version__,'torchvision',torchvision.__version__,'cuda',torch.version.cuda,'cuda ok',torch.cuda.is_available(),'arches',torch.cuda.get_arch_list(),'transformers',transformers.__version__,'peft',peft.__version__)"
+  "$PY" -c "import torch,torchvision,transformers,peft;print('torch',torch.__version__,'torchvision',torchvision.__version__,'cuda',torch.version.cuda,'hip',torch.version.hip,'cuda ok',torch.cuda.is_available(),'arches',torch.cuda.get_arch_list(),'transformers',transformers.__version__,'peft',peft.__version__)"
   "$PY" -c "import transformers as t;print('multimodal class:', 'AutoModelForMultimodalLM' if hasattr(t,'AutoModelForMultimodalLM') else 'AutoModelForImageTextToText' if hasattr(t,'AutoModelForImageTextToText') else 'NONE')"
   [ -s "$TD/base_path" ] && echo "base: $(cat "$TD/base_path")" || echo "base: not downloaded (run: $TAG base)"
   [ -f "$UP/$DATA_ZIP" ] && echo "data zip: $(sha256sum "$UP/$DATA_ZIP" | cut -c1-64)  (compare with brev/upload-zip.json)" || echo "data zip: MISSING - upload $DATA_ZIP into ~/wisp/uploads"
@@ -212,10 +287,10 @@ PY
 preflight) need "$DATA/train.jsonl" "$TAG unpack"; T preflight --data "$DATA" --base "$(base)" ;;
 smoke)
   need "$DATA/train.jsonl" "$TAG unpack"
-  ( while sleep 2; do nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits; done ) > "$DATA/smoke-mem.txt" & M=$!
-  CUDA_VISIBLE_DEVICES=0 T smoke --data "$DATA" --base "$(base)" --out "$OUT" ${2:+--max-len "$2"} ${QLORA:+--qlora} "${TRAIN_EXTRA[@]}" 2>&1 | tee "$DATA/smoke.log"
+  ( while sleep 2; do gpu_mem_used_mib; done ) > "$DATA/smoke-mem.txt" & M=$!
+  CUDA_VISIBLE_DEVICES=0 HIP_VISIBLE_DEVICES=0 T smoke --data "$DATA" --base "$(base)" --out "$OUT" ${2:+--max-len "$2"} ${QLORA:+--qlora} "${TRAIN_EXTRA[@]}" 2>&1 | tee "$DATA/smoke.log"
   rc=${PIPESTATUS[0]}; kill $M 2>/dev/null
-  echo "nvidia-smi peak: $(sort -n "$DATA/smoke-mem.txt" | tail -1) MiB"; exit "$rc" ;;
+  echo "$(is_amd && echo amd-smi || echo nvidia-smi) peak: $(sort -n "$DATA/smoke-mem.txt" | tail -1) MiB"; exit "$rc" ;;
 train)
   need "$DATA/train.jsonl" "$TAG unpack"
   if [ -f "$DATA/train.pid" ] && kill -0 "$(cat "$DATA/train.pid")" 2>/dev/null; then die "already running (pid $(cat "$DATA/train.pid"))"; fi
@@ -253,9 +328,11 @@ GRID
     [[ "$name" =~ ^[A-Za-z0-9_.-]+$ ]] || die "bad sweep run name '$name'"
     [ "$i" -lt "${NG:-1}" ] || die "config $((i + 1)) ('$name') has no GPU: this node lists ${NG:-0}; trim $CFG"
     R="$TD/sweep/$name"; mkdir -p "$R"
+    # train.py reads <out>/smoke.json (the smoke gate), and a sweep run's --out is $R/out
+    mkdir -p "$R/out"; if [ -f "$OUT/smoke.json" ]; then cp "$OUT/smoke.json" "$R/out/"; fi
     if [ -f "$R/pid" ] && kill -0 "$(cat "$R/pid")" 2>/dev/null; then die "sweep run $name already running (pid $(cat "$R/pid"))"; fi
     # shellcheck disable=SC2086
-    CUDA_VISIBLE_DEVICES=$i nohup "$PY" "$DATA/train.py" train --tag "$TAG" --data "$DATA" --base "$(base)" --out "$R/out" \
+    CUDA_VISIBLE_DEVICES=$i HIP_VISIBLE_DEVICES=$i nohup "$PY" "$DATA/train.py" train --tag "$TAG" --data "$DATA" --base "$(base)" --out "$R/out" \
       ${QLORA:+--qlora} "${TRAIN_EXTRA[@]}" $args > "$R/train.out" 2>&1 & echo $! > "$R/pid"
     echo "gpu $i: $name (pid $!)  flags:$args"
     i=$((i + 1))
@@ -268,13 +345,13 @@ sweepstatus)
     [ -f "$R/pid" ] && kill -0 "$(cat "$R/pid")" 2>/dev/null && st="RUNNING pid $(cat "$R/pid")"
     echo "== $n: $st"
     [ -f "$R/out/train.log.jsonl" ] && { grep '"event": "eval"' "$R/out/train.log.jsonl" | tail -1; }
-    [ -f "$R/train.out" ] && grep -E "Error|FAIL|OOM|Traceback" "$R/train.out" | tail -2
+    [ -f "$R/train.out" ] && grep -E "Error|FAIL|OOM|Traceback|REFUSING" "$R/train.out" | tail -2
   done ;;
 status)
   if [ -f "$DATA/train.pid" ] && kill -0 "$(cat "$DATA/train.pid")" 2>/dev/null; then echo "RUNNING pid $(cat "$DATA/train.pid")"; else echo "not running"; fi
-  nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader
+  gpu_status
   [ -f "$OUT/train.log.jsonl" ] && { grep '"event": "eval"' "$OUT/train.log.jsonl" | tail -4; tail -1 "$OUT/train.log.jsonl"; }
-  [ -f "$DATA/train.out" ] && grep -E "Error|FAIL|OOM|Traceback" "$DATA/train.out" | tail -5 ;;
+  [ -f "$DATA/train.out" ] && grep -E "Error|FAIL|OOM|Traceback|REFUSING" "$DATA/train.out" | tail -5 ;;
 sample) need "$OUT/best/adapter_model.safetensors" "$TAG train"; T sample --base "$(base)" --adapter "$OUT/${2:-best}" --data "$DATA" ;;
 merge)
   need "$OUT/best/adapter_model.safetensors" "$TAG train"
@@ -408,81 +485,198 @@ pipi -U pip setuptools wheel packaging
 # Which torch wheel? Decided by the GPU, then PROVEN on it (see the header). PyPI's default wheel (cu132 as of torch 2.15)
 # needs a newer driver than Brev's hosts ship (Hyperstack A6000: driver 570 = CUDA 12.8), and torch then silently runs
 # without a GPU, so the default is never used.
-GPU_CC="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | sort -u | head -1 | tr -d ' ')"
-DRV_MAJOR="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1)"
-GPU_COUNT="$(nvidia-smi -L 2>/dev/null | grep -c '^GPU' || true)"
-echo "gpus: ${GPU_COUNT:-0}  compute capability: ${GPU_CC:-unknown}  driver major: ${DRV_MAJOR:-unknown}"
+gpu_count() {   # same logic as run.sh's; on AMD the torch fallback only works once torch is installed
+  if [ "$GPU_VENDOR" = amd ]; then
+    local n=0
+    command -v amd-smi >/dev/null 2>&1 && n=$(amd-smi list 2>/dev/null | grep -c '^GPU' || true)
+    if [ "${n:-0}" -eq 0 ] && command -v rocm-smi >/dev/null 2>&1; then
+      n=$(rocm-smi --showid 2>/dev/null | grep -o '^GPU\[[0-9]*\]' | sort -u | wc -l | tr -d ' ')
+    fi
+    [ "${n:-0}" -gt 0 ] || n=$("$PY" -c "import torch; print(torch.cuda.device_count())" 2>/dev/null || echo 0)
+    echo "${n:-0}"
+  else
+    nvidia-smi -L 2>/dev/null | grep -c '^GPU' || true
+  fi
+}
+GPU_ARCH="${GPU_ARCH:-}"
+if [ "$GPU_VENDOR" = amd ]; then
+  GPU_CC=""; DRV_MAJOR=""
+  [ -n "$GPU_ARCH" ] || GPU_ARCH="$(rocminfo 2>/dev/null | grep -oE -m1 'gfx[0-9a-f]+' | head -1 || true)"
+  [ -n "$GPU_ARCH" ] || GPU_ARCH="$(amd-smi static --asic 2>/dev/null | grep -oiE -m1 'gfx[0-9a-f]+' | head -1 || true)"
+  GPU_COUNT="$(gpu_count)"
+  echo "gpus: ${GPU_COUNT:-0}  amd arch: ${GPU_ARCH:-unknown}"
+else
+  GPU_CC="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | sort -u | head -1 | tr -d ' ')"
+  DRV_MAJOR="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 | cut -d. -f1)"
+  GPU_COUNT="$(gpu_count)"
+  echo "gpus: ${GPU_COUNT:-0}  compute capability: ${GPU_CC:-unknown}  driver major: ${DRV_MAJOR:-unknown}"
+fi
 CC_MAJOR="${GPU_CC%%.*}"; CC_MAJOR="${CC_MAJOR:-0}"; DRV_MAJOR="${DRV_MAJOR:-0}"
 WHL="https://download.pytorch.org/whl"
-CANDIDATES=()     # "index|extra uv flags|spec"
+AMD_GFX950_IDX="https://repo.amd.com/rocm/whl/gfx950-dcgpu/"
+CANDIDATES=()     # "index|extra uv flags|spec|torchvision spec"
 if [ -n "${TORCH_INDEX:-}" ]; then
-  CANDIDATES=("${TORCH_INDEX}||${TORCH_SPEC:-torch>=2.7}")
+  CANDIDATES=("${TORCH_INDEX}||${TORCH_SPEC:-torch>=2.7}|${TORCHVISION_SPEC:-torchvision}")
+elif [ "$GPU_VENDOR" = amd ]; then
+  # ROCm. AMD's own index carries the gfx950 (MI355X) preview build; its dependencies (numpy, sympy, ...) come from PyPI,
+  # and the exact +rocm pins only exist on AMD's index, so best-match across both is safe for torch itself.
+  if [ "$GPU_ARCH" = gfx950 ]; then
+    CANDIDATES+=("$AMD_GFX950_IDX|--extra-index-url https://pypi.org/simple --index-strategy unsafe-best-match|torch==2.11.0+rocm7.13.0|torchvision==0.26.0+rocm7.13.0")
+  else
+    echo "NOTE: AMD arch '${GPU_ARCH:-unknown}' is not gfx950: skipping AMD's gfx950 preview index"
+  fi
+  CANDIDATES+=("$WHL/rocm7.2||torch>=2.11|torchvision" "$WHL/nightly/rocm7.2|--prerelease=allow|torch|torchvision")
 elif [ "$CC_MAJOR" -ge 10 ] 2>/dev/null; then
   # Blackwell. sm_100 (B200) is in the cu128 wheels; sm_103 (B300, compute_cap 10.3) arrives with CUDA 12.9/13.0 wheels.
   echo "NOTE: Blackwell GPU ($GPU_CC): needs a torch build with sm_${GPU_CC/./} kernels; trying cu130 first"
   if [ "$DRV_MAJOR" -ge 580 ]; then
-    CANDIDATES=("$WHL/cu130||torch>=2.9" "$WHL/cu128||torch>=2.8" "$WHL/nightly/cu130|--prerelease=allow|torch")
+    CANDIDATES=("$WHL/cu130||torch>=2.9|torchvision" "$WHL/cu128||torch>=2.8|torchvision" "$WHL/nightly/cu130|--prerelease=allow|torch|torchvision")
   else
     echo "WARN: driver $DRV_MAJOR is older than 580 (CUDA 13): cu130 wheels will not run. Ask for a newer driver image for a B300;"
     echo "      falling back to cu128 (sm_100 SASS + PTX; may fail on sm_103, in which case the verification below says so)"
-    CANDIDATES=("$WHL/cu128||torch>=2.8" "$WHL/nightly/cu128|--prerelease=allow|torch")
+    CANDIDATES=("$WHL/cu128||torch>=2.8|torchvision" "$WHL/nightly/cu128|--prerelease=allow|torch|torchvision")
   fi
 else
   # Ampere/Ada/Hopper (A6000 sm_86, A100, L40S, H100): cu128 runs on driver 570; cu126 for older hosts.
-  CANDIDATES=("$WHL/cu128||torch>=2.7" "$WHL/cu126||torch>=2.7")
+  CANDIDATES=("$WHL/cu128||torch>=2.7|torchvision" "$WHL/cu126||torch>=2.7|torchvision")
 fi
-TORCH_OK=0
-for cand in "${CANDIDATES[@]}"; do
-  IFS='|' read -r IDX FLAGS SPEC <<< "$cand"
-  echo "== torch candidate: $SPEC from $IDX $FLAGS"
-  "$UV" pip uninstall -q -p "$PY" torch 2>/dev/null || true
-  # shellcheck disable=SC2086
-  if ! "$UV" pip install -q -p "$PY" --index-url "$IDX" $FLAGS "$SPEC"; then echo "install failed for $IDX"; continue; fi
-  if "$PY" - <<'PYV'
-import sys, torch
+# Exit codes of verify_torch: 0 = kernels run (and, on AMD, the SDPA probe is right), 3 = kernels run but the AMD SDPA probe
+# is WRONG (candidate-selection fallback, see below), anything else = this torch does not run on the GPU.
+verify_torch() {
+  GPU_VENDOR="$GPU_VENDOR" "$PY" - <<'PYV'
+import os, sys, torch
+hip = getattr(torch.version, "hip", None)   # set on ROCm builds, where torch.cuda.* is the HIP backend
+if os.environ.get("GPU_VENDOR") == "amd" and not hip:
+    sys.exit("this torch is not a ROCm build (torch.version.hip is None) but the GPU is AMD")
 if not torch.cuda.is_available():
     sys.exit("torch.cuda.is_available() is False (driver too old for this wheel?)")
 n = torch.cuda.device_count()
+probe_bad = False
 for i in range(n):
-    cc = torch.cuda.get_device_capability(i)
-    arch = f"sm_{cc[0]}{cc[1]}"
+    if hip:
+        arch = torch.cuda.get_device_properties(i).gcnArchName
+    else:
+        cc = torch.cuda.get_device_capability(i)
+        arch = f"sm_{cc[0]}{cc[1]}"
     have = torch.cuda.get_arch_list()
     # a real kernel launch: a missing sm_xxx image surfaces here as 'no kernel image is available'
     x = torch.randn(256, 256, device=f"cuda:{i}", dtype=torch.bfloat16)
     y = torch.nn.functional.scaled_dot_product_attention(x[None, None], x[None, None], x[None, None])
     assert torch.isfinite((x @ x).float().sum() + y.float().sum()).item()
-    print(f"gpu {i}: {torch.cuda.get_device_name(i)} {arch} OK with torch {torch.__version__} cuda {torch.version.cuda}; wheel arches {have}")
-    if i == 0 and arch not in have:
+    rt = f"hip {hip}" if hip else f"cuda {torch.version.cuda}"
+    print(f"gpu {i}: {torch.cuda.get_device_name(i)} {arch} OK with torch {torch.__version__} {rt}; wheel arches {have}")
+    if i == 0 and not hip and arch not in have:
         print(f"note: {arch} is not in the wheel's arch list; it runs through PTX JIT (slower first launch, check speed in smoke)")
+    if i == 0 and os.environ.get("GPU_VENDOR") == "amd":
+        # Gemma 4's full-attention layers are SDPA with head dim 512, scale=1.0 and a causal mask. gfx950's AOTriton kernel
+        # returns wrong values here (ROCm/aotriton#246) when the logits are large, so compare the default SDPA path with an
+        # fp32 math reference on big-logit inputs. Relative error: a correct bf16 flash kernel lands near 1e-2 in max abs
+        # error, a wrong one is O(1). train.py has the binding gate; this only steers the candidate choice.
+        try:
+            from torch.nn.attention import SDPBackend, sdpa_kernel
+            F = torch.nn.functional
+            g = torch.Generator(device=f"cuda:{i}").manual_seed(0)
+            q, k = (torch.randn(1, 8, 2048, 512, device=f"cuda:{i}", dtype=torch.bfloat16, generator=g) * 2 for _ in range(2))
+            v = torch.randn(1, 8, 2048, 512, device=f"cuda:{i}", dtype=torch.bfloat16, generator=g)
+            out = F.scaled_dot_product_attention(q, k, v, is_causal=True, scale=1.0)
+            with sdpa_kernel(SDPBackend.MATH):
+                ref = F.scaled_dot_product_attention(q.float(), k.float(), v.float(), is_causal=True, scale=1.0)
+            d = out.float() - ref
+            rel = (d.norm() / ref.norm()).item()
+            err_max, err_mean = d.abs().max().item(), d.abs().mean().item()
+            print(f"gpu {i}: SDPA probe (1,8,2048,512) bf16 scale=1.0 causal vs fp32 math: rel err {rel:.4g}, max abs {err_max:.4g}, mean abs {err_mean:.4g}")
+            if not rel < 0.02:   # also true for nan
+                probe_bad = True
+                print(f"WARN: SDPA probe FAILED on {arch} for Gemma 4's full-attention shape (rel err {rel:.4g} >= 0.02);")
+                print("WARN: likely the AOTriton bug ROCm/aotriton#246")
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARN: SDPA correctness probe could not run: {type(exc).__name__}: {exc}")
+sys.exit(3 if probe_bad else 0)
 PYV
-  then TORCH_OK=1; echo "== torch OK: $SPEC from $IDX"; break; fi
+}
+install_cand() {   # torch and torchvision are always replaced together
+  "$UV" pip uninstall -q -p "$PY" torch torchvision 2>/dev/null || true
+  # shellcheck disable=SC2086
+  "$UV" pip install -q -p "$PY" --index-url "$IDX" $FLAGS "$SPEC"
+}
+TORCH_OK=0
+PROBE_FALLBACK=""   # first candidate whose kernels run but whose SDPA probe is wrong (AMD only)
+for cand in "${CANDIDATES[@]}"; do
+  IFS='|' read -r IDX FLAGS SPEC TVSPEC <<< "$cand"
+  echo "== torch candidate: $SPEC (+ $TVSPEC) from $IDX $FLAGS"
+  if ! install_cand; then echo "install failed for $IDX"; continue; fi
+  verify_torch; vrc=$?
+  if [ "$vrc" = 0 ]; then TORCH_OK=1; echo "== torch OK: $SPEC from $IDX"; break; fi
+  if [ "$vrc" = 3 ]; then
+    echo "WARN: $SPEC from $IDX runs kernels but its SDPA is wrong for Gemma 4's attention shape; remembering it as a fallback, trying the next candidate"
+    [ -n "$PROBE_FALLBACK" ] || PROBE_FALLBACK="$cand"
+    continue
+  fi
   echo "WARN: this torch build does not run on this GPU; trying the next candidate"
 done
+if [ "$TORCH_OK" != 1 ] && [ -n "$PROBE_FALLBACK" ]; then
+  # no candidate passed the probe: keep the first one whose kernels ran (reinstall it, the loop may have replaced it)
+  IFS='|' read -r IDX FLAGS SPEC TVSPEC <<< "$PROBE_FALLBACK"
+  echo "== no candidate passed the SDPA probe; reinstalling the first kernel-passing one: $SPEC (+ $TVSPEC) from $IDX $FLAGS"
+  if install_cand; then verify_torch; vrc=$?; else vrc=1; fi
+  if [ "$vrc" = 0 ] || [ "$vrc" = 3 ]; then
+    TORCH_OK=1
+    echo "WARN: ##################################################################"
+    echo "WARN: SDPA output is WRONG on this GPU with every torch build tried (likely ROCm/aotriton#246)."
+    echo "WARN: keeping $SPEC from $IDX. train.py's smoke gate will decide; expect --attn math."
+    echo "WARN: ##################################################################"
+  else
+    echo "ERROR: reinstalling the fallback torch failed; set TORCH_INDEX=<url> TORCH_SPEC='torch>=x' and re-run"
+  fi
+fi
 [ "$TORCH_OK" = 1 ] || echo "ERROR: no torch build ran on this GPU. Set TORCH_INDEX=<url> TORCH_SPEC='torch>=x' and re-run; a B300 needs a cu130 build and driver >= 580"
-pipi "torch>=2.7" "transformers>=5.10.1,<6" "peft>=0.19.0" accelerate safetensors huggingface_hub hf_transfer \
+# torch is deliberately NOT in this line: it is already installed and verified, and naming it here could let the resolver
+# swap in PyPI's CUDA build (transformers / peft / accelerate are satisfied by the installed torch).
+pipi "transformers>=5.10.1,<6" "peft>=0.19.0" accelerate safetensors huggingface_hub hf_transfer \
   sentencepiece numpy pillow || echo "ERROR: install failed"
 # Gemma 4's AutoProcessor loads its video processor, which needs torchvision. It
-# must come from the same wheel index as the torch build that passed above.
+# must come from the same wheel index (and flags, and the matching spec) as the torch build that passed above.
 # shellcheck disable=SC2086
-"$UV" pip install -q -p "$PY" --index-url "$IDX" $FLAGS torchvision \
+"$UV" pip install -q -p "$PY" --index-url "$IDX" $FLAGS "${TVSPEC:-torchvision}" \
   || echo "ERROR: torchvision install failed (the vision preflight and image rows need it)"
-# QLoRA only (not used on a 48 GB / 288 GB card); Blackwell wheels can lag, so a failure here is not fatal
-pipi bitsandbytes || echo "WARN: bitsandbytes did not install (only --qlora needs it)"
-"$PY" -c "import torch,torchvision,transformers,peft;print('torch',torch.__version__,'torchvision',torchvision.__version__,'cuda',torch.version.cuda,'gpu',torch.cuda.is_available(),'gpus',torch.cuda.device_count(),'transformers',transformers.__version__,'peft',peft.__version__)"
-# multi-GPU needs NCCL to work between the GPUs: a tiny all-reduce on every GPU, so a broken fabric shows now, not mid-run
+# QLoRA only (not used on a 48 GB / 288 GB card); Blackwell wheels can lag, so a failure here is not fatal.
+# Skipped on ROCm: the PyPI wheel is CUDA-only.
+if [ "$GPU_VENDOR" = amd ]; then
+  echo "NOTE: skipping bitsandbytes on AMD ROCm (only --qlora needs it)"
+else
+  pipi bitsandbytes || echo "WARN: bitsandbytes did not install (only --qlora needs it)"
+fi
+"$PY" -c "import torch,torchvision,transformers,peft;print('torch',torch.__version__,'torchvision',torchvision.__version__,'cuda',torch.version.cuda,'hip',torch.version.hip,'gpu',torch.cuda.is_available(),'gpus',torch.cuda.device_count(),'transformers',transformers.__version__,'peft',peft.__version__)"
+# no later install may have swapped the verified torch for a PyPI / CUDA build
+if GPU_VENDOR="$GPU_VENDOR" "$PY" - <<'PYA'
+import os, sys, torch
+v = os.environ.get("GPU_VENDOR")
+hip, cuda = getattr(torch.version, "hip", None), torch.version.cuda
+ok = bool(hip) if v == "amd" else bool(cuda) if v == "nvidia" else True
+print(f"torch build check: vendor {v}, torch {torch.__version__}, hip {hip}, cuda {cuda}: {'OK' if ok else 'WRONG BUILD'}")
+try:   # informational: a PyPI triton swapped in on AMD would show here
+    import triton
+    print("triton", triton.__version__)
+except Exception as exc:  # noqa: BLE001
+    print(f"triton: not importable ({type(exc).__name__})")
+sys.exit(0 if ok else 1)
+PYA
+then :; else echo "ERROR: the installed torch is not the verified $GPU_VENDOR build (an install replaced it); fix with TORCH_INDEX=<url> TORCH_SPEC='torch>=x' and re-run"; fi
+# multi-GPU needs NCCL (RCCL on ROCm) to work between the GPUs: a tiny all-reduce on every GPU, so a broken fabric shows now, not mid-run
+if [ "$GPU_VENDOR" = amd ] && [ "${GPU_COUNT:-0}" -eq 0 ]; then GPU_COUNT="$(gpu_count)"; fi   # torch can count them now
 if [ "${GPU_COUNT:-0}" -gt 1 ]; then
   cat > "$WORK/nccl_check.py" <<'PYN'
 import os, torch, torch.distributed as dist
-dist.init_process_group("nccl")
+dist.init_process_group("nccl")   # RCCL on ROCm
 torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 t = torch.ones(4, device="cuda") * (dist.get_rank() + 1)
 dist.all_reduce(t)
 if dist.get_rank() == 0:
-    print(f"NCCL all-reduce over {dist.get_world_size()} GPUs OK: {t.tolist()}")
+    print(f"NCCL/RCCL all-reduce over {dist.get_world_size()} GPUs OK: {t.tolist()}")
 dist.destroy_process_group()
 PYN
   "$WORK/venv/bin/torchrun" --standalone --nproc_per_node="$GPU_COUNT" "$WORK/nccl_check.py" 2>&1 | tail -3 \
-    || echo "WARN: multi-GPU NCCL check failed; train with NPROC=1 or fix NCCL"
+    || echo "WARN: multi-GPU NCCL/RCCL check failed; train with NPROC=1 or fix NCCL/RCCL"
 fi
 
 # A gated repo needs a token on the box; log in once so later `run.sh <tag> base` calls work too.
