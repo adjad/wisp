@@ -196,3 +196,21 @@ def test_first_person_opinion_and_knowledge_is_not_personal(prompt):
     "How much do I usually spend on groceries?", "When do I usually meet with Priya?"])
 def test_status_commitments_and_travel_stay_personal(prompt):
     assert mo.asks_personal_data(prompt)
+
+
+# Fifth audit (605b1254): the state of one of the user's things is a lookup
+# unless the question judges it.
+@pytest.mark.parametrize("prompt", [
+    "Is my gym membership still active?", "Is my prescription ready?", "Are my test results back?",
+    "Is my paycheck deposited?", "Is my application submitted?", "Is my Uber on the way?",
+    "Is my health insurance still valid?", "Is my account locked?"])
+def test_the_state_of_my_things_stays_personal(prompt):
+    assert mo.asks_personal_data(prompt)
+
+
+@pytest.mark.parametrize("prompt", [
+    "Is my cat normal?", "Is my posture bad?", "is my dog too fat?", "Is my resume good enough?",
+    "Are my eyebrows even?", "Is my plant dying?", "Is my code readable?", "Is my car worth fixing?",
+    "Does my dog love me?", "Are my expectations realistic?", "Has my taste in music gotten worse?"])
+def test_judging_my_things_is_not_personal(prompt):
+    assert not mo.asks_personal_data(prompt)

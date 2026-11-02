@@ -928,13 +928,25 @@ _FIRST_PERSON_CASUAL = re.compile(
     r"canada|mexico|china|india|general)\b", re.I)
 
 
+# "Is my prescription ready?", "Are my test results back?", "Is my gym membership
+# still active?": the state of one of the user's things, unless the question
+# judges it ("Is my sleep schedule bad?", "Is my cat normal?").
+_MY_STATE = re.compile(r"^\s*(?:so\s+|and\s+|hey\s+|ok\s+)?(?:is|are|was|were|has|have|did|does)\s+my\s+[a-z]", re.I)
+_MY_STATE_JUDGED = re.compile(
+    r"\b(?:normal|bad|good|healthy|unhealthy|weird|strange|okay|ok|fine|enough|too|worth|safe|unsafe|smart|"
+    r"right|wrong|better|worse|best|worst|ugly|pretty|cute|fat|thin|overweight|underweight|dangerous|common|"
+    r"rare|possible|supposed\s+to|a\s+sign|considered|polite|rude|realistic|reasonable|toxic|healthy|harmful|"
+    r"bad\s+for|good\s+for|should|would|could|likely|strong|weak|even|dying|sick|ill|readable|lying|"
+    r"cheating|love|loves|like|likes|hate|hates|mad|angry|upset|attractive|gotten|getting|normal)\b", re.I)
+
+
 _MY_LOOKUP = re.compile(
     r"^\s*(?:so\s+|and\s+|hey\s+|ok\s+)?(?:what|when|where|which|who|whose|how\s+(?:much|many|old|long|far|big|heavy)"
     r"|did|has|have)\b[^?.!]{0,40}?\bmy\s+[a-z]", re.I)
 _MY_LOOKUP_OPINION = re.compile(
     r"\b(?:best|better|worst|good|great|nice|ideal|favou?rite|should|would|could|ought|recommend\w*|suggest\w*|"
     r"tips?|ideas?|advice|way\s+to|ways\s+to|worth|purpose|meaning|point\s+of|why|wrong\s+with|"
-    r"opinion|think|thoughts?|feel|chances?|odds|options?|gift|present)\b", re.I)
+    r"opinion|think|thoughts?|feel|chances?|odds|options?|gift|present|worse)\b", re.I)
 # "Is it going to rain during my coffee with Alex tomorrow?": a question that
 # puts one of the user's plans on a day. "my" alone is not enough ("my phone
 # keeps dying fast, any tips?"), and neither is a plan-less advice lead ("what
@@ -966,6 +978,8 @@ def asks_personal_data(prompt: str) -> bool:
         return False
     return bool(_PERSONAL.search(text) or _PERSONAL_LOOKUPS.search(text)
                 or (_MY_LOOKUP.match(text) and not _MY_LOOKUP_OPINION.search(text))
+                or (_MY_STATE.match(text) and not _MY_STATE_JUDGED.search(text)
+                    and not _MY_LOOKUP_OPINION.search(text))
                 or (_QUESTION.search(text) and _FIRST_PERSON_ASK.search(text)
                     and not _FIRST_PERSON_CASUAL.search(text))
                 # "Do I need to work Saturday?", "Do I have to fill out the form by Friday?"
