@@ -553,7 +553,7 @@ final class WispClient {
     // history. Omit it (empty) to start a fresh chat — the new id arrives in the
     // first `session` event. `testMode` asks the service to run a stateless dry
     // run where tool calls are reported but never executed.
-    func runAgent(prompt: String, image: String?, imageSource: String? = nil,
+    func runAgent(prompt: String, image: String?, imageSource: String? = nil, imageLabel: String? = nil,
                   video: [String: Any]? = nil, document: [String: Any]? = nil,
                   sessionId: String = "",
                   debug: Bool = false,
@@ -576,6 +576,7 @@ final class WispClient {
         if !testMode && !sessionId.isEmpty { body["session_id"] = sessionId }
         if let image { body["image"] = image }
         if image != nil, let imageSource { body["image_source"] = imageSource }
+        if image != nil, imageSource == "screen", let imageLabel { body["image_label"] = imageLabel }
         if let video { body["video"] = video }
         if let document { body["document"] = document }
         if let corpusCaseID {
@@ -851,6 +852,28 @@ final class WispClient {
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 5   // the endpoint returns at once; the load continues server-side
         req.httpBody = Data("{}".utf8)
+        Task { _ = try? await URLSession.shared.data(for: req) }
+    }
+
+    /// The Ask model's encoders: audio hears a voice question, vision reads a
+    /// picture, a screen capture or a clip's frames.
+    enum Encoder: String { case audio, vision }
+
+    /// When the app last asked for each encoder early.
+    @MainActor private static var lastEncoderPrewarm: [Encoder: Date] = [:]
+
+    /// POST /encoders/prewarm: the mic just opened, or a picture or clip is being
+    /// attached, so the engine loads that encoder (about 1 s) while the person
+    /// is still talking or typing. Fire and forget, at most once every 30 s per
+    /// encoder; the clip or picture loads it anyway if this never lands.
+    @MainActor func prewarmEncoder(_ encoder: Encoder, now: Date = Date()) {
+        if let last = Self.lastEncoderPrewarm[encoder], now.timeIntervalSince(last) < 30 { return }
+        Self.lastEncoderPrewarm[encoder] = now
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent("encoders/prewarm"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 5   // the endpoint returns at once; the load continues server-side
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["modality": encoder.rawValue])
         Task { _ = try? await URLSession.shared.data(for: req) }
     }
 

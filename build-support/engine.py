@@ -519,7 +519,7 @@ def stage(bundle: Path, app: Path, *, lock: dict | None, release: bool,
     except (guard_overlay.OverlayError, OSError, ValueError, SyntaxError) as exc:
         raise EngineBuildError("The pinned Wisp engine guard overlay could not be applied") from exc
     effective_pairs = sorted([(name, engine / name) for name, _ in pairs] +
-                             [(guard_overlay.ADDITION, engine / guard_overlay.ADDITION)])
+                             [(name, engine / name) for name in sorted(guard_overlay.ADDITIONS)])
     effective_digest = tree_digest(effective_pairs, links)
     minimum = minimum_macos(pairs, minos_reader)
     if lock is not None and minimum != lock["minimum_macos"]:

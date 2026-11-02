@@ -930,8 +930,10 @@ struct NotchDayView: View {
                 if lastRemoved?.ids == removed.ids { lastRemoved = nil }
                 model.onResize()
             } else {
-                if today.error.isEmpty { today.error = "Couldn't undo that just now. Try Undo again." }
-                showUndo(removed)
+                // A newer Remove's bar stays; only this Remove's own bar comes back.
+                let stillShowing = lastRemoved?.ids == removed.ids
+                if today.error.isEmpty { today.error = DayTimeline.undoFailedNotice(stillShowing: stillShowing) }
+                if stillShowing { showUndo(removed) }
             }
         }
     }
@@ -942,8 +944,9 @@ struct NotchDayView: View {
         lastRemovedTask?.cancel()
         lastRemoved = nil
         Task {
-            _ = await today.mutate("/assistant/today/workspace/suggestions/restore", method: "POST",
-                                   body: ["evidence_ids": ids])
+            let restored = await today.mutate("/assistant/today/workspace/suggestions/restore", method: "POST",
+                                              body: ["evidence_ids": ids])
+            if !restored && today.error.isEmpty { today.error = "Couldn't bring them back just now. Try again." }
         }
     }
 
@@ -1047,8 +1050,9 @@ struct NotchDayView: View {
                         }
                     }
                 }
-                if let removed = plan?.workspace?.removed_suggestions, let label = DayTimeline.bringBackLabel(removed) {
-                    Button(label) { bringBackRemoved(removed) }
+                if let workspace = plan?.workspace,
+                   let label = DayTimeline.bringBackLabel(blocks: workspace.removed_suggestion_blocks) {
+                    Button(label) { bringBackRemoved(workspace.removed_suggestions) }
                         .help("Wisp may suggest them again, from this plan on")
                 }
                 Button("Report a problem with this plan") { today.reportProblem() }

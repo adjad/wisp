@@ -81,8 +81,21 @@ class InteractiveApprover:
                               "preview": str(action.get("preview") or "")[:400],
                               **({"request_id": self.request_id} if self.request_id else {})})
             return False
+        from service.safety.policy import picture_turn
+        if picture_turn():
+            # Text in a picture may have chosen this action: answer it once, never
+            # with a standing "Always allow" that later turns would honour.
+            action = {**action, "grantable": False}
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._pending[action["id"]] = fut
+        # Argument-aware, not just name-based: run_shell is grantable in
+        # general but never for an irreversible bulk delete (see
+        # grants.is_grantable). Kept on the stored action so resolve() turns an
+        # "always" for a card that offered none into a one-time answer.
+        # An action can only narrow this (a picture-proposed write passes False).
+        grantable = (action.get("grantable", True) is not False
+                     and grants.is_grantable(action.get("tool", ""), action.get("args") or {}))
+        action = {**action, "grantable": grantable}
         self._actions[action["id"]] = action
         # `grantable` tells the card whether to offer an "Always allow" button
         # at all — sending mail/messages never gets one (grants._NEVER_GRANTABLE),
@@ -90,11 +103,6 @@ class InteractiveApprover:
         # not showing it.
         await self._emit({
             "type": "confirm",
-            # Argument-aware, not just name-based: run_shell is grantable in
-            # general but never for an irreversible bulk delete (see
-            # grants.is_grantable).
-            "grantable": grants.is_grantable(action.get("tool", ""),
-                                             action.get("args") or {}),
             "scope_hint": grants.scope_for(action.get("tool", ""), action.get("args") or {}),
             **({"request_id": self.request_id} if self.request_id else {}),
             **action,

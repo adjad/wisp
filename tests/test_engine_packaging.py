@@ -98,14 +98,16 @@ def stage(tmp: Path, app: Path, **kw):
 
 
 def fixture_overlay(root, digest):
-    write(root / engine.guard_overlay.ADDITION, "# synthetic overlay\n")
+    for name in engine.guard_overlay.ADDITIONS:
+        write(root / name, "# synthetic overlay\n")
     return {"synthetic_guard_overlay": True}
 
 
 def fixture_validate(bundle, expected):
     def check_fixture(root, receipt):
         assert receipt == {"synthetic_guard_overlay": True}
-        assert (root / engine.guard_overlay.ADDITION).read_text() == "# synthetic overlay\n"
+        for name in engine.guard_overlay.ADDITIONS:
+            assert (root / name).read_text() == "# synthetic overlay\n"
     with patch.object(engine.guard_overlay, "verify", side_effect=check_fixture):
         return engine.validate_structure(bundle, expected)
 

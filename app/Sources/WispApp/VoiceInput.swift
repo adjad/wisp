@@ -47,6 +47,8 @@ final class VoiceInput: ObservableObject {
 
     func start() {
         guard !isActive else { return }
+        // The audio encoder loads while the person speaks, not after the mic closes.
+        WispClient().prewarmEncoder(.audio)
         clearFailure?.cancel()
         needsMicrophoneAccess = false
         switch AVCaptureDevice.authorizationStatus(for: .audio) {

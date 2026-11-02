@@ -956,12 +956,20 @@ struct DayTimeline: Equatable {
 
     /// The ⋯ entry that brings back today's removed suggestions, or nil when
     /// there are none. It names only today's, which is all it restores.
-    static func bringBackLabel(_ removedToday: [String]) -> String? {
-        switch removedToday.count {
-        case 0: return nil
+    /// It counts removed blocks, so a grouped review of five emails is one.
+    static func bringBackLabel(blocks: Int) -> String? {
+        switch blocks {
+        case ..<1: return nil
         case 1: return "Bring back today's removed suggestion"
-        default: return "Bring back today's \(removedToday.count) removed suggestions"
+        default: return "Bring back today's \(blocks) removed suggestions"
         }
+    }
+
+    /// What a failed Undo says. Its bar comes back only while it is still the
+    /// newest Remove's; an older one points at Bring back instead.
+    static func undoFailedNotice(stillShowing: Bool) -> String {
+        stillShowing ? "Couldn't undo that just now. Try Undo again."
+                     : "Couldn't undo the earlier Remove. Bring it back from ⋯ below."
     }
 
     /// The task Plan time makes from a need: "Review: …" for mail and texts.

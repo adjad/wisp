@@ -113,6 +113,29 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(QuickSettingsText.otherEngine(running: true, loaded: true, modelBytes: nil)?.text.contains("GB") == false,
           "an unmeasured model shows no size")
 
+    // The Models page's encoder line (/engine's `encoders`).
+    check(EncoderResidency.parse(nil) == nil && EncoderResidency.parse(NSNull()) == nil
+          && EncoderResidency.parse(["on_demand": 1, "towers": [:]]) == nil, "an unreadable encoders row is unknown")
+    check(QuickSettingsText.encoders(nil) == nil, "no encoders row, no line")
+    let released = EncoderResidency.parse(["on_demand": true, "idle_release_s": 300, "towers": [
+        "audio": ["state": "released", "bytes": 611_900_000], "vision": ["state": "released", "bytes": 335_800_000]]])
+    check(released?.towers.count == 2 && released?.towers.allSatisfy { !$0.resident } == true, "both released")
+    check(QuickSettingsText.encoders(released)?.contains("none in memory now") == true, "released encoders say so")
+    let hearing = EncoderResidency.parse(["on_demand": true, "idle_release_s": 300, "towers": [
+        "audio": ["state": "resident", "bytes": 611_900_000], "vision": ["state": "released", "bytes": 335_800_000]]])
+    check(QuickSettingsText.encoders(hearing) == "Encoders in memory: voice 612 MB; they leave after 5 min unused",
+          "a resident encoder shows its size and when it leaves")
+    let loading = EncoderResidency.parse(["on_demand": true, "towers": [
+        "vision": ["state": "loading", "bytes": true]]])
+    check(QuickSettingsText.encoders(loading) == "Encoders in memory: pictures; they leave when unused",
+          "a loading encoder counts as in memory, a bad size shows none")
+    let resident = EncoderResidency.parse(["on_demand": false, "reason": "unsupported_model", "towers": [
+        "audio": ["state": "resident", "bytes": 5]]])
+    check(QuickSettingsText.encoders(resident) == "Voice and picture encoders stay loaded with the model",
+          "a model without on-demand encoders keeps them loaded")
+    check(QuickSettingsText.encoders(EncoderResidency.parse(["on_demand": false, "towers": [:]])) == nil,
+          "a model without encoders has no line")
+
     // The service's reply.
     check(ModelMemory.parse(["available": false, "models": []]) == nil, "an unavailable engine is unknown")
     check(ModelMemory.parse(nil) == nil, "an unreadable reply is unknown")

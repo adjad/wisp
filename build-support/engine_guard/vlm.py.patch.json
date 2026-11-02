@@ -1,0 +1,22 @@
+{
+  "path": "omlx/engine/vlm.py",
+  "input_sha256": "acf2256f59b56eece462e20014f36c36d14902d7a780e6ac06b928ac68b36562",
+  "output_sha256": "82f1edd2475e31c61cb74b5bb689fe25d78806e81b5cb7750577fc821e4e9437",
+  "edits": [
+    {
+      "old": "from ..patches.gemma4_audio import apply_gemma4_audio_patch\n",
+      "new": "from ..patches.gemma4_audio import apply_gemma4_audio_patch\n# Modified by Wisp: Gemma 4 audio/vision encoders load on demand.\nfrom .. import wisp_encoders as _wisp_encoders\n",
+      "count": 1
+    },
+    {
+      "old": "        # Inject mlx-lm tool calling support into VLM tokenizer\n        self._inject_tool_calling(self._tokenizer)\n\n        self._loaded = True\n",
+      "new": "        # Inject mlx-lm tool calling support into VLM tokenizer\n        self._inject_tool_calling(self._tokenizer)\n\n        # Modified by Wisp: after every load-time transform, release the\n        # encoders until a request or pre-warm needs them.\n        await _wisp_encoders.attach(self)\n        self._loaded = True\n",
+      "count": 1
+    },
+    {
+      "old": "    async def stop(self) -> None:\n        \"\"\"Stop the engine and cleanup resources.\"\"\"\n",
+      "new": "    async def stop(self) -> None:\n        \"\"\"Stop the engine and cleanup resources.\"\"\"\n        _wisp_encoders.detach(self)\n",
+      "count": 1
+    }
+  ]
+}

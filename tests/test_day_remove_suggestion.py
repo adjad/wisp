@@ -242,7 +242,6 @@ def test_bring_back_restores_only_todays_removals(day):
     dict(evidence_ids=[]),
     dict(evidence_ids=["not an id"]),
     dict(evidence_ids=[MIDTERM], extra=True),
-    dict(evidence_ids=[key("email", str(n)) for n in range(daily.MAX_ITEMS + 1)]),
 ])
 def test_malformed_restores_are_refused_and_change_nothing(day, body):
     day.store.remove_suggestions([MIDTERM])
@@ -257,3 +256,49 @@ def test_a_page_cannot_restore_suggestions(day):
                                headers={"Origin": "https://example.com"})
     assert response.status_code == 403
     assert day.store.removed_suggestions() == {MIDTERM}
+
+
+# rc1 batch 2 Auditor notes: Bring back must never ask for more than restore
+# accepts, and its count is of removed blocks, not emails.
+
+def test_restore_accepts_everything_the_store_can_hold():
+    from service.assistant import daily_workspace_api as api
+    assert api.RESTORE_LIMIT == AssistantStore.REMOVED_SUGGESTIONS_KEPT
+
+
+def test_bring_back_counts_removed_blocks_not_emails(day):
+    path = "/assistant/today/workspace/suggestions/"
+    day.client.post(path + "remove", json=dict(evidence_ids=[TOPICS, LAB]))
+    workspace = day.client.get("/assistant/today", params=dict(day=DAY, timezone=ZONE)).json()["workspace"]
+    assert sorted(workspace["removed_suggestions"]) == sorted([TOPICS, LAB])
+    assert workspace["removed_suggestion_blocks"] == 1, "one grouped review is one removed block"
+    day.client.post(path + "remove", json=dict(evidence_ids=[MIDTERM]))
+    workspace = day.client.get("/assistant/today", params=dict(day=DAY, timezone=ZONE)).json()["workspace"]
+    assert workspace["removed_suggestion_blocks"] == 2
+
+
+def test_a_plain_set_of_removals_counts_each_as_a_block():
+    assert run({TOPICS, LAB})["removed_suggestion_blocks"] == 2
+    assert run()["removed_suggestion_blocks"] == 0
+
+
+def test_bring_back_works_past_one_days_attention(day, monkeypatch):
+    # More removed items today than MAX_ITEMS: everything listed is restorable.
+    many = dict(EVIDENCE, email=dict(ready=True, detail="Synthetic", records=[
+        email(str(n), f"Question {n} about the project", f"Sender {n}") for n in range(daily.MAX_ITEMS + 20)]))
+    monkeypatch.setattr(daily, "collect_evidence", lambda *args, **kwargs: many)
+    ids = [key("email", str(n)) for n in range(daily.MAX_ITEMS + 20)]
+    day.store.remove_suggestions(ids)
+    listed = day.client.get("/assistant/today", params=dict(day=DAY, timezone=ZONE)).json()["workspace"]["removed_suggestions"]
+    assert len(listed) > daily.MAX_ITEMS
+    restored = day.client.post("/assistant/today/workspace/suggestions/restore", json=dict(evidence_ids=listed))
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["restored"] == len(listed)
+
+
+def test_restore_refuses_more_than_the_store_keeps(day):
+    from service.assistant import daily_workspace_api as api
+    day.store.remove_suggestions([MIDTERM])
+    too_many = [key("email", str(n)) for n in range(api.RESTORE_LIMIT + 1)]
+    response = day.client.post("/assistant/today/workspace/suggestions/restore", json=dict(evidence_ids=too_many))
+    assert response.status_code == 422 and day.store.removed_suggestions() == {MIDTERM}

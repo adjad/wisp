@@ -317,9 +317,14 @@ def is_grantable(tool: str, args: dict | None = None) -> bool:
     """
     if not _may_hold_allow(tool):
         return False
-    from service.safety.policy import is_destructive_shell, shell_grant_problem
+    from service.safety.policy import is_destructive_shell, shell_grant_problem, toggle_off_hit
     if tool == "run_shell":
         return shell_grant_problem(args or {}) is None
+    if args and toggle_off_hit(tool, args):
+        # Wi-Fi, Bluetooth... switched off: confirmed every time (policy._TOGGLE_OFF_CUTS).
+        # Empty args are the tool-wide grant(scoped=False), not a call; decide()
+        # still asks for every off call whatever is stored.
+        return False
     return not is_destructive_shell(str((args or {}).get("cmd", "")))
 
 

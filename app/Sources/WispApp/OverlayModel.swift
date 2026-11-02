@@ -158,6 +158,9 @@ final class OverlayModel: ObservableObject {
     // The pending attachment's preview and kind, for the chip. Memory only.
     @Published private(set) var attachedThumbnail: NSImage?
     @Published private(set) var attachedLabel = ""
+    /// What a screen capture shows ("Safari — Pricing"), for the "Wisp saw:" chip
+    /// and the reading. Nil for a whole-screen capture or any other attachment.
+    @Published private(set) var attachedScreenLabel: String?
     // The panel's tab. App-scoped, so it survives collapse.
     @Published var tab: NotchTab = .ask {
         didSet {
@@ -582,9 +585,20 @@ final class OverlayModel: ObservableObject {
 
     private let client = WispClient()
     private var sessionId = ""
-    private var attachedImage: String?
-    private var attachedVideo: QueuedVideo?
-    private var attachedDocument: QueuedDocument?
+    // Each attachment kind warms the encoder that will read it (prewarmVision).
+    private var attachedImage: String? {
+        didSet { if attachedImage != nil { client.prewarmEncoder(.vision) } }
+    }
+    private var attachedVideo: QueuedVideo? {
+        didSet {
+            guard let attachedVideo else { return }
+            client.prewarmEncoder(.vision)
+            if attachedVideo.audio != nil { client.prewarmEncoder(.audio) }
+        }
+    }
+    private var attachedDocument: QueuedDocument? {
+        didSet { if attachedDocument?.pages.isEmpty == false { client.prewarmEncoder(.vision) } }
+    }
     private var attachedSource: String?
     private var attachmentReadTask: Task<Void, Never>?
     private var attachmentReadID = UUID()
@@ -751,7 +765,7 @@ final class OverlayModel: ObservableObject {
         let submission = QueuedPrompt(text: prompt, image: attachedImage,
                                       imageName: attachedImageName, researchMode: researchMode,
                                       video: attachedVideo, imageSource: attachedSource,
-                                      document: attachedDocument)
+                                      document: attachedDocument, imageLabel: attachedScreenLabel)
         input = ""
         removeAttachment()
         if serviceStarting && !submission.researchMode {
@@ -851,6 +865,7 @@ final class OverlayModel: ObservableObject {
         phase = .routing
         let image = submission.image
         let imageSource = submission.imageSource
+        let imageLabel = submission.imageLabel
         let video = submission.video?.wire
         let document = submission.document?.wire
         let sid = sessionId   // continue the same conversation (empty -> server starts one)
@@ -858,6 +873,7 @@ final class OverlayModel: ObservableObject {
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             await self?.client.runAgent(prompt: prompt, image: image, imageSource: imageSource,
+                                        imageLabel: imageLabel,
                                         video: video, document: document, sessionId: sid,
                                         debug: wantsDebug) { ev in
                 Task { @MainActor in self?.handle(ev, dispatchID: dispatch.id) }
@@ -1150,6 +1166,8 @@ final class OverlayModel: ObservableObject {
     /// sampled into frames + audio. Everything stays in memory.
     func loadAttachment(url: URL, source: MediaAttachment.Source = .file) {
         let kind = MediaAttachment.kind(of: url)
+        if kind != .other { prewarmVision() }     // before the read, not after it
+        if kind == .movie { client.prewarmEncoder(.audio) }
         guard kind != .other else {
             switch DocumentAttachment.kind(of: url) {
             case .legacyOffice:
@@ -1229,6 +1247,13 @@ final class OverlayModel: ObservableObject {
         setAttachment(.image(jpeg: jpeg, source: source), name: "Image")
     }
 
+    /// Start loading the vision encoder now, as a picture, clip or scanned document
+    /// starts loading (loadAttachment). A screen capture warms it when it lands, through
+    /// `attachedImage`. Throttled and fire-and-forget.
+    func prewarmVision() {
+        client.prewarmEncoder(.vision)
+    }
+
     func cancelAttachmentRead() {
         attachmentReadID = UUID()
         attachmentReadTask?.cancel()
@@ -1255,12 +1280,13 @@ final class OverlayModel: ObservableObject {
 
     private func clearAttachmentState() {
         attachedImage = nil; attachedVideo = nil; attachedDocument = nil; attachedSource = nil
-        attachedImageName = nil; attachedThumbnail = nil; attachedLabel = ""
+        attachedImageName = nil; attachedThumbnail = nil; attachedLabel = ""; attachedScreenLabel = nil
     }
 
-    private func setAttachment(_ media: MediaAttachment.Pending, name: String) {
+    private func setAttachment(_ media: MediaAttachment.Pending, name: String, screenLabel: String? = nil) {
         clearAttachmentState()
         attachedImageName = name
+        attachedScreenLabel = media.isScreen ? screenLabel : nil
         attachedLabel = MediaAttachment.chipLabel(for: media)
         switch media {
         case .image(let jpeg, let source):
@@ -1291,6 +1317,7 @@ final class OverlayModel: ObservableObject {
         attachedVideo = prompt.video
         attachedDocument = prompt.document
         attachedSource = prompt.imageSource
+        attachedScreenLabel = prompt.imageLabel
         attachedImageName = prompt.imageName
         attachedLabel = prompt.video.map { "Clip · \(Int($0.seconds.rounded())) s — reads sampled frames + audio, not motion" }
             ?? prompt.document.map { DocumentAttachment.chipLabel(name: $0.name, scannedPages: $0.pages.count) }
@@ -1313,14 +1340,99 @@ final class OverlayModel: ObservableObject {
             return
         }
         cancelAttachmentRead()
+        let display = CGDisplayBounds(CGMainDisplayID())
+        look { accepted in ScreenSnapshot.lookAtRegion(display, label: nil, accepted: accepted) }
+    }
+
+    // MARK: - Look
+
+    /// A browser is in the capture (ScreenLook.browserVerdict): this warning shows
+    /// with Look anyway / Cancel, and nothing is captured until Look anyway.
+    @Published private(set) var lookWarning: String?
+    private var lookWarningAction: (() -> Void)?
+
+    /// One Look attempt off the main thread. `attempt` checks and captures in the
+    /// same step (ScreenSnapshot.lookAtWindow / lookAtRegion), so the verdict is
+    /// always the one from right before the capture: a window raised while the
+    /// warning was up is caught then. A warning the person hasn't seen yet shows,
+    /// and Look anyway runs the attempt again with that warning accepted.
+    private func look(accepted: ScreenLook.Verdict? = nil,
+                      _ attempt: @escaping @Sendable (ScreenLook.Verdict?) -> ScreenLook.Outcome) {
+        lookWarning = nil; lookWarningAction = nil
         Task { [weak self] in
-            let jpeg = await Task.detached(priority: .userInitiated) { ScreenSnapshot.captureMainDisplayJPEG() }.value
+            let outcome = await Task.detached(priority: .userInitiated) { attempt(accepted) }.value
             guard let self else { return }
-            guard let jpeg else {
-                self.showTransientNotice("Wisp couldn't capture the screen.")
+            switch outcome {
+            case .captured(let jpeg, let label, let leftOut):
+                self.setAttachment(.image(jpeg: jpeg, source: .screen), name: "Screen", screenLabel: label)
+                if let notice = ScreenLook.leftOutNotice(leftOut) { self.showTransientNotice(notice, duration: 6) }
+            case .refused(let message):
+                self.showTransientNotice(message, duration: 6)
+            case .failed(let message):
+                self.showTransientNotice(message)
+            case .ask(let message):
+                self.lookWarning = message
+                self.lookWarningAction = { [weak self] in self?.look(accepted: .confirm(message), attempt) }
+                self.onResize()
+            }
+        }
+    }
+
+    func confirmLookWarning() {
+        let action = lookWarningAction
+        lookWarning = nil; lookWarningAction = nil
+        onResize()
+        action?()
+    }
+
+    func cancelLookWarning() {
+        lookWarning = nil; lookWarningAction = nil
+        onResize()
+    }
+
+    /// "Look" without Screen Recording: say how to turn it on and open setup's
+    /// Permissions page, whose Screen Recording row asks macOS. Wisp never shows
+    /// macOS's question itself from here (only a click on that row does; see
+    /// tests/test_onboarding_window.py). Nothing is captured. True when it is on.
+    private func screenRecordingReadyForLook() -> Bool {
+        if CGPreflightScreenCaptureAccess() { return true }
+        showTransientNotice(ScreenLook.deniedNotice, duration: 8)
+        NotificationCenter.default.post(name: .wispOpenPermissions, object: nil)
+        return false
+    }
+
+    /// The notch's eye button or ⌥⇧L: capture the window the person is looking
+    /// at as a pending preview with a "Wisp saw:" chip. `frontPID` is the app in
+    /// front before Wisp's panel opened. Nothing is sent until they press send.
+    func lookAtFrontWindow(frontPID: pid_t? = NSWorkspace.shared.frontmostApplication?.processIdentifier) {
+        guard screenRecordingReadyForLook() else { return }
+        cancelAttachmentRead()
+        Task { [weak self] in
+            let number = await Task.detached(priority: .userInitiated) {
+                ScreenSnapshot.frontWindow(frontPID: frontPID)?.number
+            }.value
+            guard let self else { return }
+            guard let number else {
+                self.showTransientNotice("Wisp couldn't find a window to look at.")
                 return
             }
-            self.setAttachment(.image(jpeg: jpeg, source: .screen), name: "Screen")
+            self.look { accepted in ScreenSnapshot.lookAtWindow(number, accepted: accepted) }
+        }
+    }
+
+    /// The eye button's "Drag over part of the screen": the region picker, then
+    /// the same pending preview. Password managers and detectably private windows
+    /// are left out; any other browser window in the region needs the extra tap.
+    /// Esc or a click cancels without a capture.
+    func lookAtRegion() {
+        guard screenRecordingReadyForLook() else { return }
+        cancelAttachmentRead()
+        let front = NSWorkspace.shared.frontmostApplication
+        let app = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : front?.localizedName
+        let label = ScreenLook.regionLabel(app: app)
+        RegionPicker.pick { [weak self] rect in
+            guard let rect else { return }
+            self?.look { accepted in ScreenSnapshot.lookAtRegion(rect, label: label, accepted: accepted) }
         }
     }
 
