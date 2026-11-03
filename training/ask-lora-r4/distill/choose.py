@@ -315,6 +315,8 @@ def group_stats(rows: list[dict], samples: dict, chosen: dict) -> dict:
         "chosen": sum(1 for i in ids if i in chosen),
         "no_samples": [i for i in ids if not samples.get(i)],
         "no_pass": no_pass,
+        # rows that keep their scripted reply (think=False) because no base sample passed
+        "scripted_kept": {"count": len(no_pass), "ids": sorted(no_pass)},
         "rejects_by_reason": dict(sorted(reasons.items(), key=lambda kv: -kv[1])),
         "first_sample_pass_rate": round(sum(not s["_reasons"] for s in firsts) / len(firsts), 3) if firsts else None,
         "chosen_shape": shape([chosen[i] for i in ids if i in chosen]),
