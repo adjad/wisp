@@ -342,6 +342,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_ask_history_recall.py",
     # Ask stall re-prompt, tomorrow typos and the day plan: fake model client, stubbed snapshot.
     "tests/test_ask_day_answers.py",
+    # Brief items beside day/week and schedule answers: stubbed snapshot and
+    # store, fixture calendars, fake behavior engine; no model, source or network.
+    "tests/test_schedule_brief_items.py",
+    "tests/test_brief_in_schedule_tools.py",
     # Ask quality: code-failure fixes, tool-pair descriptions, the Wisp self-reference
     # sheet, the follow-up subject record and intent hard stops; registry checks,
     # fake model client, synthetic tools, private WISP_HOME.
