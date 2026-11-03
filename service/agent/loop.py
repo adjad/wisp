@@ -3556,6 +3556,7 @@ async def run_agent(
     ask_write_nudged = False
     ask_text_call_nudged = False
     ask_guard_retried = False
+    ask_stall_nudged = False
     ask_scale = 1.0
     ask_tool_calls: Counter = Counter()
     ask_blocked: set[str] = set()
@@ -4124,9 +4125,9 @@ async def run_agent(
         if not tool_calls:
             text = msg.get("content") or ""
             if ask_quality:
-                from service.model_only import (asks_personal_data, pure_writing, salvage_answer,
-                                                stall_reply, strip_text_tool_calls, strip_think,
-                                                text_tool_call)
+                from service.model_only import (asks_personal_data, promise_only_reply,
+                                                pure_writing, salvage_answer, stall_reply,
+                                                strip_text_tool_calls, strip_think, text_tool_call)
                 text = strip_think(text)
                 wrote_call = text_tool_call(text)
                 if wrote_call:
@@ -4183,7 +4184,8 @@ async def run_agent(
                 # "I'm checking your schedule now. Give me just a moment!" with
                 # nothing run is a promise, not an answer: the turn ended there
                 # (2026-10-29 dev7 export; only get_upcoming's schema had loaded).
-                stalled = not attempted_tools and (stall_reply(text) or (wrote_call and not text))
+                stalled = (not attempted_tools and not ask_stall_nudged
+                           and (stall_reply(text) or (wrote_call and not text)))
                 if (not ask_reprompted and (not attempted_tools or web_only)
                         and _step < max_steps - 1
                         and not _ask_capability_prompt and not test_mode
@@ -4208,6 +4210,23 @@ async def run_agent(
                          "That asks for my own current data, and no tool has been called yet. ")
                         + "Call the tool that holds it now (calendar, email, messages, reminders, "
                         "notes or memory); if nothing holds it, say you don't know. Do not guess.")})
+                    continue
+                if (not ask_stall_nudged and not ask_reprompted and not attempted_tools
+                        and step_schemas and choice != "none" and _step < max_steps - 1
+                        and not test_mode and not pure_writing(memory_query)
+                        and promise_only_reply(text)):
+                    # "I'll look up the best details on that for you right
+                    # now." with nothing called ends the turn on a promise
+                    # (toolbench: 0.3-0.8% of finals). One nudge, tool choice
+                    # left to the model; its next reply is accepted as is.
+                    ask_stall_nudged = True
+                    audit("ask_stall_nudge", step=_step)
+                    if content_streamed:
+                        await emit({"type": "clear_answer"})
+                    msgs.append({"role": "assistant", "content": text})
+                    msgs.append({"role": "user", "content": (
+                        "You said you would look, but nothing has run yet. Call the tool "
+                        "now, or answer from what you already have.")})
                     continue
             unmet = _unmet_group()
             candidates = _unmet_candidates(unmet)
