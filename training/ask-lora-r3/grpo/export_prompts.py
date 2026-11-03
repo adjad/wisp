@@ -61,6 +61,23 @@ defaults are ../../ask-lora-r4/data and ../../ask-lora-r4/vision/vision_rows.jso
               tool_names (every tool in the build); requires_read (the reads that precede the turn's first write in the
               scripted turn, from the builder meta) and reads_done (those already in this step's history).
 
+Round 5 (--round 5; RL-SCOPE.md C1, C5, C6, C6b, C7, C15; rounds 3 and 4 export byte-identically): the RL round after the r4 SFT.
+    labels    round 5 (the stamp is on every row, vision/audio included); clarify (the builder's meta.clarify; a build without the key falls
+              back to the trailing-"?" test and label.clarify_fallback says so; chat and session rows never ask); rl_kind (chat_anchor |
+              session_anchor | recall | recall_none | instruction | narrate | decision | select | call, one per text row, in the C6 order)
+              and ceiling (the 3.3 table; the export exits on a missing entry; vision/audio rows: rl_kind "mm", ceiling null);
+              facts only on narrate finals or from meta.facts; unsafe_reads, skill_names, tool_names on every text row; recall_refs /
+              recall_absent / recall_ok from the builder meta by session question kind; thread, qkind, banned; max_tokens on chat-anchor and
+              session rows (--chat-max-tokens, 1024; re-export at 1536).
+    mix       28% safety/compose, 28% narrate-with-facts, 12% session (max 2 copies), 6% chat anchors, 11% selection (picture turns inside),
+              15% vision/audio. Chat anchors are the meta.distilled rows of --anchor-build-dir (the spliced SFT build); fewer than the target exits.
+    dev       grpo_text_dev.jsonl (50 safety/compose, 40 narrate, 10 selection from the hash-split valid set minus --picker-dev; 24
+              recall_dev_r4 + 12 session_style_dev from --dev-build-dir; 30 distilled chat rows from the anchor build's valid side), its
+              smoke30 subset (15/5/2/8), grpo_text_dev.stats.json, and the .overlap.jsonl sidecars check_overlap.py reads. Every
+              disjointness failure exits non-zero.
+    checks    valid.meta.jsonl must exist; session_chat_r4 counts (54 recall / 14 never-said / 99 anchors, or --refs-crosscheck's) must match;
+              the stats record the DIST commit sha, choose.py's and the refs file's sha256, and (with --overlap-manifest) the overlap report's.
+
 Only steps of the SFT train split are used (valid ids are excluded unless --include-valid) so the SFT dev
 set stays a clean gate. Safety and restraint families are upweighted by sampling copies; ordering keeps
 similar prompt lengths together in groups of GROUP so a generation batch pads little.
@@ -307,7 +324,11 @@ def clarifying_question(text: str) -> bool:
     return text.strip().endswith("?") and len(text.split()) <= CLARIFY_MAX_WORDS
 
 
-def classify(ex: dict, meta: dict, rnd: int = 3, turns: dict | None = None, tool_names=()) -> dict:
+def classify(ex: dict, meta: dict, rnd: int = 3, turns: dict | None = None, tool_names=(), *, instruction_term: bool = False,
+             chat_max_tokens: int | None = None, allow_old_build: bool = False) -> dict:
+    """The reward label of one decision step. The keyword arguments only matter at round 5: instruction_term (the C17 term is
+    on, so an instruction final's ceiling is 1.5), chat_max_tokens (C5: label.max_tokens of chat and session rows) and
+    allow_old_build (a session_chat_r4 final with no meta.qkind becomes a session anchor instead of an error)."""
     msgs, target = ex["messages"], ex["messages"][-1]
     hist = msgs[:-1]
     last_user = max((i for i, m in enumerate(hist) if m["role"] == "user"), default=-1)
@@ -316,6 +337,7 @@ def classify(ex: dict, meta: dict, rnd: int = 3, turns: dict | None = None, tool
     label: dict = {"modality": "text", "user_name": USER_NAME, "final": False, "ask": False, "facts": [], "expected": [],
                    "key_args": [], "present_args": [], "alt_name_sets": []}
     ideal_names: set[str] = set()
+    fallback = False                # round 5: the clarify decision came from the trailing-"?" test (an old build)
     if calls:
         label["step"] = "load" if all(c["name"] == DISCOVERY for c in calls) else "call"
         for c in calls:
@@ -334,13 +356,16 @@ def classify(ex: dict, meta: dict, rnd: int = 3, turns: dict | None = None, tool
     else:
         text = (target.get("content") or "").strip()
         fam = meta.get("family")
-        asks = text.endswith("?") and not tool_result_seen and fam not in (R4_CHAT_FAMILIES if rnd >= 4 else CHAT_FAMILIES)
-        if asks and rnd >= 4 and fam in QUESTION_CHECK_FAMILIES and not clarifying_question(text):
-            asks = False
+        if rnd >= 5:
+            asks, fallback = r5_asks(text, meta, fam, tool_result_seen, anchor_row(meta, False))
+        else:
+            asks = text.endswith("?") and not tool_result_seen and fam not in (R4_CHAT_FAMILIES if rnd >= 4 else CHAT_FAMILIES)
+            if asks and rnd >= 4 and fam in QUESTION_CHECK_FAMILIES and not clarifying_question(text):
+                asks = False
         label["step"] = "ask" if asks else "final"
         label["final"], label["ask"] = not asks, asks
         if not asks:
-            label["facts"] = extract_facts(text)
+            label["facts"] = extract_facts(text) if rnd < 5 else r5_final_facts(text, meta, tool_result_seen)
     already = set(called_names(hist))
     pending_writes = set(meta.get("turn_writes") or ()) - already
     write_universe = (WRITE_TOOLS_R4 if rnd >= 4 else WRITE_TOOLS) | set(meta.get("writes") or ()) | set(meta.get("turn_writes") or ()) \
@@ -352,7 +377,10 @@ def classify(ex: dict, meta: dict, rnd: int = 3, turns: dict | None = None, tool
     if pic is not None:
         label["picture_turn"], label["planted"] = True, pic
     if rnd >= 4:
-        r4_fields(label, hist, meta, tool_result_seen, turns or {}, tool_names)
+        r4_fields(label, hist, meta, tool_result_seen, turns or {}, tool_names, rnd)
+    if rnd >= 5:
+        r5_fields(label, hist, meta, fallback=fallback, instruction_term=instruction_term,
+                  chat_max_tokens=chat_max_tokens, allow_old_build=allow_old_build)
     return label
 
 
@@ -515,32 +543,563 @@ def derive_constraints(earlier: list[str], current: str) -> list[dict]:
     return list(standing.values())
 
 
-def r4_fields(label: dict, hist: list[dict], meta: dict, tool_result_seen: bool, turns: dict, tool_names) -> None:
-    label["round"] = 4
+def r4_fields(label: dict, hist: list[dict], meta: dict, tool_result_seen: bool, turns: dict, tool_names, rnd: int = 4) -> None:
+    label["round"] = rnd                 # the stamp grpo.py's resolve_round checks against --round (round 5: C1)
     final = bool(label.get("final"))
     label["narrate"] = final and tool_result_seen
     label["chat"] = final and not tool_result_seen and not meta.get("turn_writes")
     label["post_read"] = tool_result_seen            # a step after a read in this turn: reward.py's thinking floor applies here
     fam = meta.get("family")
-    recall = final and fam == RECALL_FAMILY
+    recall = final and fam == RECALL_FAMILY and rnd < 5       # round 5: recall is scored from label.recall_refs, not from facts
     if recall:
         label["recall"] = True
         label["facts"] = recall_facts(label, hist)
         label["denial_ok"] = W.recall_denied(label.get("ideal_text") or "")      # an ideal that is itself a denial: reward.py skips the penalty
     if label["narrate"] or recall:
         label["ground"] = ground_text(hist)
-    if final and fam in DISTILLED_CHAT_FAMILIES and label["chat"] and (label.get("ideal_text") or "").strip():
+    if rnd < 5 and final and fam in DISTILLED_CHAT_FAMILIES and label["chat"] and (label.get("ideal_text") or "").strip():
         label["style"] = {"words": len(label["ideal_text"].split()), "emoji": W.has_emoji(label["ideal_text"])}
     if final and fam in INSTRUCTION_FAMILIES:
         cons = meta["constraints"] if isinstance(meta.get("constraints"), list) else \
             derive_constraints(user_texts(hist), last_user_text(hist))
         # a constraint the ideal answer itself breaks is a misreading of the prompt: it is dropped, never trained on
         label["constraints"] = [c for c in cons if W.constraint_ok(c, label.get("ideal_text") or "")]
-    if final and tool_names:
+    if tool_names and (final or rnd >= 5):        # round 5: every text row (the namespace strip needs it on call rows)
         label["tool_names"] = list(tool_names)
     req = turn_reads(turns.get(turn_key(meta), []), meta.get("turn_writes"))
     label["requires_read"] = req
     label["reads_done"] = [r for r in req if r in set(called_names(hist))]
+
+
+# ------------------------------------------------------------------ round 5 (RL-SCOPE C1, C5, C6, C6b, C7, C15)
+# Everything below is reached only with rnd >= 5 (classify) or --round 5 (main); rounds 3 and 4 never touch it.
+
+class BuilderMetaError(ValueError):
+    """A round-5 row whose builder meta is missing or inconsistent (C6/C7); main() collects these and exits non-zero."""
+
+
+# Session families of the round-5 mix: round 4's three plus followup_r3 (RL-SCOPE 4.1). A chat or session row never pays ask credit.
+# The two dev-only families (C6b) are session questions too; they must never reach grpo_prompts (build_text_dev checks).
+DEV_ONLY_FAMILIES = frozenset({"recall_dev_r4", "session_style_dev"})
+R5_SESSION_FAMILIES = SESSION_FAMILIES | {"followup_r3"} | DEV_ONLY_FAMILIES
+R5_CHAT_FAMILIES = R4_CHAT_FAMILIES | R5_SESSION_FAMILIES
+# Families whose distilled plain finals are the single-turn chat anchors (rows with meta.distilled in the spliced SFT build).
+R5_ANCHOR_FAMILIES = frozenset({"chat_voice_r4", "chat_direct_r4", "knowledge_direct", "concise_gentle"})
+# The session question kinds, defined once to match DIST/choose.py (RECALL_KINDS; rec_none is the never-said kind).
+RECALL_KINDS = frozenset({"rec_user", "rec_asst", "rec_both"})
+NONE_KIND = "rec_none"
+TEXT_RL_KINDS = ("chat_anchor", "session_anchor", "recall", "recall_none", "instruction", "narrate", "decision", "select", "call")
+# 4.1 round-5 mix, shares of all rows (the 15% vision/audio share is --mm-share); picture-turn rows count inside "select".
+R5_SHARES = {"safety": 0.28, "narrate": 0.28, "session": 0.12, "chat_anchor": 0.06, "select": 0.11}
+R5_SESSION_MAX_COPIES = 2
+_SKILL_LINE = re.compile(r"^- ([a-z0-9][a-z0-9-]*): ", re.M)
+
+
+def anchor_row(meta: dict, has_calls: bool) -> bool:
+    """A chat anchor: a distilled plain final of an anchor family (only the spliced SFT build has meta.distilled)."""
+    return (not has_calls) and bool(meta.get("distilled")) and meta.get("family") in R5_ANCHOR_FAMILIES
+
+
+def r5_asks(text: str, meta: dict, fam: str, tool_result_seen: bool, anchor: bool) -> tuple[bool, bool]:
+    """(asks, fallback). Round 5: a clarification is what the builder marked (meta.clarify); chat, session and anchor rows never
+    ask. A build without the key falls back to round 3's trailing-"?" test and says so (fallback True) so the count is logged."""
+    if anchor or fam in R5_CHAT_FAMILIES:
+        return False, False
+    if "clarify" in meta:
+        return bool(meta["clarify"]), False
+    return text.endswith("?") and not tool_result_seen, True
+
+
+def r5_final_facts(text: str, meta: dict, tool_result_seen: bool) -> list[str]:
+    """Facts exist only on narrate finals (extracted from the ideal reply) or from an explicit builder list (meta.facts)."""
+    explicit = [str(f) for f in meta.get("facts") or ()]
+    if explicit:
+        return explicit
+    return extract_facts(text) if tool_result_seen else []
+
+
+def skill_names_of(messages: list[dict]) -> list[str]:
+    """Names from the system prompt's 'Installed skills' listing, as DIST/choose.py skill_names reads it (first three messages)."""
+    sys_text = "\n".join(m["content"] for m in messages[:3] if m.get("role") == "system" and isinstance(m.get("content"), str))
+    if "Installed skills" not in sys_text:
+        return []
+    return sorted(set(_SKILL_LINE.findall(sys_text.split("Installed skills", 1)[1])))
+
+
+def selection_family(fam: str) -> bool:
+    """A selection scenario: not a safety/compose, chat or session family (picture_turn_r3 counts)."""
+    return fam not in COMPOSE_SAFETY_FAMILIES and fam not in R5_CHAT_FAMILIES
+
+
+def assign_rl_kind(label: dict, meta: dict, anchor: bool, allow_old_build: bool = False) -> str:
+    """Exactly one rl_kind per text step, in the C6 order: (1) chat anchor; (2) a session question final by meta.qkind
+    (recall / recall_none / session_anchor); (3) an instructions_r4 final; (4) a narrate final with labelled facts;
+    (5) a tool-call step: select for a selection scenario's first step, else call; (6) a selection scenario's final is
+    select, every remaining final decision."""
+    fam = meta.get("family")
+    step = label["step"]
+    if anchor:
+        return "chat_anchor"
+    if step in ("final", "ask"):
+        qk = meta.get("qkind")
+        if qk or fam == "session_chat_r4":
+            if not qk:
+                if allow_old_build:
+                    return "session_anchor"
+                raise BuilderMetaError(f"{meta.get('id')}: session_chat_r4 final without meta.qkind (C6 builder fields missing)")
+            return "recall" if qk in RECALL_KINDS else "recall_none" if qk == NONE_KIND else "session_anchor"
+        if fam == "instructions_r4":
+            return "instruction"
+        if label.get("narrate") and label.get("facts"):
+            return "narrate"
+        return "select" if selection_family(fam) else "decision"
+    return "select" if selection_family(fam) and meta.get("step") == 0 else "call"
+
+
+def ceiling_for(rl_kind: str, step: str, clarify: bool = False, instruction_term: bool = False) -> float:
+    """label.ceiling from the RL-SCOPE 3.3 ceiling table. No default: an unknown rl_kind is an error."""
+    if rl_kind not in TEXT_RL_KINDS:
+        raise KeyError(f"no ceiling entry for rl_kind {rl_kind!r}")
+    is_call = step in ("call", "load")
+    if rl_kind == "call":
+        if not is_call:
+            raise KeyError(f"rl_kind 'call' on a {step!r} step")
+        return 1.5
+    if clarify and not is_call:
+        return 1.5                                     # any final with meta.clarify: tool_set 1 + ask 0.5
+    if rl_kind == "select":
+        return 1.5 if is_call else 1.0
+    if rl_kind in ("narrate", "recall"):
+        return 2.0
+    if rl_kind == "recall_none":
+        return 1.5
+    if rl_kind == "instruction":
+        return 1.5 if instruction_term else 1.0
+    return 1.0                                         # chat_anchor, session_anchor, decision
+
+
+def r5_fields(label: dict, hist: list[dict], meta: dict, *, fallback: bool, instruction_term: bool,
+              chat_max_tokens: int | None, allow_old_build: bool) -> None:
+    """The round-5 label keys (RL-SCOPE C6/C7), read from the builder meta with .get(): old builds lack the fields."""
+    fam = meta.get("family")
+    is_call = label["step"] in ("call", "load")
+    anchor = anchor_row(meta, is_call)
+    label["clarify"] = bool(label["ask"])
+    if fallback:
+        label["clarify_fallback"] = True
+    label["unsafe_reads"] = sorted({str(t) for t in meta.get("unsafe_reads") or ()})
+    label["skill_names"] = skill_names_of(hist)
+    if meta.get("banned"):
+        label["banned"] = [str(b) for b in meta["banned"]]
+    for k in ("thread", "qkind"):
+        if meta.get(k):
+            label[k] = meta[k]
+    kind = assign_rl_kind(label, meta, anchor, allow_old_build)
+    label["rl_kind"] = kind
+    refs, absent, ok = [str(r) for r in meta.get("recall_refs") or ()], meta.get("recall_absent"), [str(r) for r in meta.get("recall_ok") or ()]
+    sid = meta.get("id")
+    if kind == "recall":
+        if not [r for r in refs if r.strip()]:
+            raise BuilderMetaError(f"{sid}: recall row (qkind {meta.get('qkind')!r}) with empty meta.recall_refs")
+        label["recall_refs"] = refs
+    elif kind == "recall_none":
+        if not absent:
+            raise BuilderMetaError(f"{sid}: never-said row without meta.recall_absent")
+        if refs:
+            raise BuilderMetaError(f"{sid}: never-said row with non-empty meta.recall_refs {refs!r}")
+        label["recall_refs"], label["recall_absent"], label["recall_ok"] = [], str(absent), ok
+    elif (refs or absent or ok) and label["step"] in ("final", "ask") and fam in R5_SESSION_FAMILIES:
+        raise BuilderMetaError(f"{sid}: {kind} row carries recall fields (recall_refs/recall_absent/recall_ok): a session anchor has none")
+    try:
+        label["ceiling"] = ceiling_for(kind, label["step"], label["clarify"], instruction_term)
+    except KeyError as e:
+        raise BuilderMetaError(f"{sid}: {e.args[0]}") from None
+    if label["final"] and fam in R5_SESSION_FAMILIES and kind != "session_anchor" and "ground" not in label:
+        label["ground"] = ground_text(hist)             # session rows: ungrounded is checked against the history plus tool results
+    if chat_max_tokens and (kind == "chat_anchor" or fam in R5_SESSION_FAMILIES):
+        label["max_tokens"] = int(chat_max_tokens)      # C5: grpo.py honours a per-row cap; --max-completion does not reach these rows
+
+
+def r5_label_problems(label: dict, modality: str = "text", instruction_term: bool = False) -> list[str]:
+    """What a round-5 row's label must have (the export exits non-zero on any): the stamp, rl_kind, a ceiling that matches the
+    table, tool_names on every text row, the recall fields by kind. Multimodal rows: rl_kind "mm" and ceiling null."""
+    out = []
+    if label.get("round") != 5:
+        out.append(f"label.round is {label.get('round')!r}, not 5")
+    if modality != "text":
+        if label.get("rl_kind") != "mm" or label.get("ceiling") is not None:
+            out.append("a multimodal row needs rl_kind 'mm' and ceiling null")
+        return out
+    kind = label.get("rl_kind")
+    if kind not in TEXT_RL_KINDS:
+        return out + [f"rl_kind {kind!r} has no ceiling entry"]
+    want = ceiling_for(kind, label.get("step"), bool(label.get("clarify")), instruction_term)
+    if label.get("ceiling") != want:
+        out.append(f"ceiling {label.get('ceiling')!r} does not match the table ({want}) for {kind}")
+    if not label.get("tool_names"):
+        out.append("label.tool_names missing (every round-5 text row needs it)")
+    for k, typ in (("unsafe_reads", list), ("skill_names", list), ("clarify", bool)):
+        if not isinstance(label.get(k), typ):
+            out.append(f"label.{k} missing")
+    if kind == "recall" and not label.get("recall_refs"):
+        out.append("recall row without recall_refs")
+    if kind == "recall_none" and (not label.get("recall_absent") or label.get("recall_refs")):
+        out.append("never-said row needs recall_absent and no recall_refs")
+    if kind not in ("recall", "recall_none") and any(label.get(k) for k in ("recall_refs", "recall_absent", "recall_ok")):
+        out.append(f"{kind} row carries recall fields")
+    if label.get("clarify") and (label.get("step") != "ask" or kind in ("chat_anchor", "session_anchor", "recall", "recall_none", "instruction")):
+        out.append("clarify on a row that cannot ask")
+    return out
+
+
+def r5_tie_reason(label: dict) -> str | None:
+    """Why no completion of this row could differ on any term (so it carries no signal), else None. Every text row has the hard
+    defects (leak, nonreply, needless_call, malformed, forbidden), so only a degenerate scripted target qualifies."""
+    if label.get("step") in ("final", "ask") and not (label.get("ideal_text") or "").strip():
+        return "empty scripted final"
+    return None
+
+
+def session_counts(metas: list[dict]) -> dict:
+    """Over a build's session_chat_r4 finals, counted before any split: recall (rec_user/rec_asst/rec_both), never-said
+    (rec_none) and session anchors (every other qkind), plus the finals with no qkind at all."""
+    c = {"recall": 0, "recall_none": 0, "session_anchor": 0, "no_qkind": 0}
+    for m in metas:
+        if m.get("family") != "session_chat_r4" or m.get("target_kind") not in (None, "final"):
+            continue
+        qk = m.get("qkind")
+        c["recall" if qk in RECALL_KINDS else "recall_none" if qk == NONE_KIND else "session_anchor" if qk else "no_qkind"] += 1
+    return c
+
+
+def session_count_problems(metas: list[dict], expected: dict | None) -> list[str]:
+    """Exit-worthy differences between the build's session_chat_r4 counts and the builder's (54 recall, 14 never-said, 99 anchors)."""
+    got = session_counts(metas)
+    if not sum(got.values()):
+        return []                                        # a build without session_chat_r4: nothing to count
+    out = []
+    if got["no_qkind"]:
+        out.append(f"{got['no_qkind']} session_chat_r4 finals have no meta.qkind (builder C6 fields missing)")
+    for k, v in (expected or {}).items():
+        if got[k] != v:
+            out.append(f"session_chat_r4 {k}: {got[k]} in the build, {v} expected")
+    return out
+
+
+def refs_crosscheck(metas: list[dict], refs: dict) -> list[str]:
+    """DIST/raw/session_chat.refs.json as a cross-check of the builder's meta (refs are seed-independent, keyed by id)."""
+    out = []
+    for m in metas:
+        r = refs.get(m.get("id"))
+        if m.get("family") != "session_chat_r4" or r is None:
+            continue
+        if r["kind"] in RECALL_KINDS and list(m.get("recall_refs") or ()) != list(r["ref"]):
+            out.append(f"{m['id']}: recall_refs {list(m.get('recall_refs') or ())!r} but refs.json has {list(r['ref'])!r}")
+        elif r["kind"] == NONE_KIND and (list(m.get("recall_refs") or ()) or m.get("recall_absent") != r["absent"]
+                                         or list(m.get("recall_ok") or ()) != list(r["ok"])):
+            out.append(f"{m['id']}: never-said fields differ from refs.json")
+        elif r["kind"] not in RECALL_KINDS | {NONE_KIND} and (m.get("recall_refs") or m.get("recall_absent") or m.get("recall_ok")):
+            out.append(f"{m['id']}: a {r['kind']} question carries recall fields")
+    return out
+
+
+def dist_record(dist_dir: Path) -> dict:
+    """Which DIST commit and file bytes the reward's choose.py import comes from (C7): git sha of the last commit touching it,
+    the file's sha256, and the sha256 of the refs file when there is one."""
+    import subprocess
+    rec: dict = {"dir": str(dist_dir), "commit": None, "choose_sha256": None, "refs_file": None, "refs_sha256": None}
+    ch = dist_dir / "choose.py"
+    if ch.is_file():
+        rec["choose_sha256"] = hashlib.sha256(ch.read_bytes()).hexdigest()
+        try:
+            out = subprocess.run(["git", "-C", str(dist_dir), "log", "-1", "--format=%H", "--", "choose.py"], capture_output=True,
+                                 text=True, timeout=30)
+            sha = out.stdout.strip()
+            rec["commit"] = sha if out.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else None
+        except (OSError, subprocess.SubprocessError):
+            pass
+    cands = sorted(dist_dir.glob("raw/*/session_chat.refs.json")) + sorted(dist_dir.glob("raw/session_chat.refs.json"))
+    if cands:
+        rec["refs_file"] = str(cands[-1])
+        rec["refs_sha256"] = hashlib.sha256(cands[-1].read_bytes()).hexdigest()
+    return rec
+
+
+_LEAK = None
+
+
+def leak_mod():
+    """The builder's leak.py (fold, LeakIndex), loaded by path under its own name so ask-lora-r2/builder never lands on sys.path."""
+    global _LEAK
+    if _LEAK is None:
+        path = HERE.parent.parent / "ask-lora-r2" / "builder" / "leak.py"
+        spec = importlib.util.spec_from_file_location("ask_lora_builder_leak", path)
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["ask_lora_builder_leak"] = mod
+        spec.loader.exec_module(mod)
+        _LEAK = mod
+    return _LEAK
+
+
+def user_turns(msgs: list[dict]) -> list[str]:
+    return [_msg_text(m) for m in msgs if m["role"] == "user"]
+
+
+def conversation_of(hist: list[dict]) -> str:
+    """The text of everything before the target except system prompts (leak.conversation_text's scope): user, assistant and tool
+    text plus call arguments. check_overlap runs the toolbench fact-value scan over it."""
+    parts = []
+    for m in hist:
+        if m.get("role") == "system":
+            continue
+        parts.append(_msg_text(m))
+        for tc in m.get("tool_calls") or ():
+            a = tc["function"].get("arguments")
+            parts.append(a if isinstance(a, str) else json.dumps(a, ensure_ascii=False))
+    return "\n".join(p for p in parts if p)
+
+
+# ---- the round-5 mix
+def apportion(total: int, shares: dict) -> dict:
+    """Integer quotas that sum to `total`, proportional to `shares` (largest remainder; ties by the shares' order)."""
+    s = sum(shares.values())
+    raw = {k: total * v / s for k, v in shares.items()}
+    out = {k: int(math.floor(x)) for k, x in raw.items()}
+    for k in sorted(raw, key=lambda k: raw[k] - out[k], reverse=True)[: total - sum(out.values())]:
+        out[k] += 1
+    return out
+
+
+def r5_bucket(it: dict) -> str:
+    lab, fam = it["label"], it["family"]
+    if lab.get("rl_kind") == "chat_anchor":
+        return "chat_anchor"
+    if fam in R5_SESSION_FAMILIES:
+        return "session"
+    if lab.get("rl_kind") == "narrate":
+        return "narrate"
+    if fam in COMPOSE_SAFETY_FAMILIES:
+        return "safety"
+    if lab.get("rl_kind") == "select":
+        return "select"
+    return "other"
+
+
+def r5_weight(it: dict) -> float:
+    """Draw weights inside a bucket. Session: the rows that carry the recall terms (and followup/session_recall re-reads) are drawn
+    ahead of the anchors and of instructions_r4, so the 176 instruction turns cannot crowd out the PG-bearing rows."""
+    kind, fam = it["label"].get("rl_kind"), it["family"]
+    if r5_bucket(it) == "session":
+        return 3.0 if kind in ("recall", "recall_none") else 2.0 if fam in ("followup_r3", "session_recall_r4") else \
+            0.5 if kind == "instruction" else 1.0
+    return R4_WEIGHTS.get(fam, WEIGHTS.get(fam, 1.0))
+
+
+def stratified_pick(items: list[dict], count: int, rng: random.Random, key) -> list[dict]:
+    """`count` rows spread evenly over key(item) strata (round robin, strata in sorted order, random rows inside each);
+    a second pass starts only when every stratum is used up, and no row is picked more than MAX_COPIES times."""
+    groups: dict = {}
+    for it in items:
+        groups.setdefault(key(it), []).append(it)
+    for g in groups.values():
+        rng.shuffle(g)
+    count = min(count, MAX_COPIES * len(items))
+    out: list[dict] = []
+    for p in range(MAX_COPIES):
+        queues = {k: list(g) for k, g in sorted(groups.items())}
+        while len(out) < count and any(queues.values()):
+            for k in sorted(queues):
+                if queues[k] and len(out) < count:
+                    out.append(dict(queues[k].pop(), copy=p))
+        if len(out) >= count:
+            break
+    return out
+
+
+def pick_anchors(anchors: list[dict], count: int, rng: random.Random) -> tuple[list[dict], dict]:
+    """The chat anchors: `count` distinct distilled rows drawn proportionally to family size (largest remainder), recorded per
+    family. Fewer rows than `count` is an error: the export must not fall back to scripted replies."""
+    if len(anchors) < count:
+        raise SystemExit(f"chat anchors: only {len(anchors)} meta.distilled rows of {sorted(R5_ANCHOR_FAMILIES)} in the anchor build, "
+                         f"the round-5 mix needs {count}")
+    fams: dict = {}
+    for it in anchors:
+        fams.setdefault(it["family"], []).append(it)
+    quota = apportion(count, {f: len(v) for f, v in sorted(fams.items())})
+    out = []
+    for f, v in sorted(fams.items()):
+        v = sorted(v, key=lambda it: it["id"])
+        rng.shuffle(v)
+        out += [dict(it, copy=0) for it in v[:quota[f]]]
+    return out, {f: quota[f] for f in sorted(quota) if quota[f]}
+
+
+def r5_text_rows(items: list[dict], pics: list[dict], anchors: list[dict], n_text: int, rng: random.Random) -> tuple[list[dict], dict]:
+    """The round-5 text mix (RL-SCOPE 4.1): safety/compose 28%, narrate-with-facts 28%, session 12%, chat anchors 6%, selection 11%
+    (picture-turn rows inside it), as shares of all rows; the quotas are apportioned over n_text. A short bucket is topped up from
+    the selection pool and reported; short anchors are an error (pick_anchors)."""
+    pools: dict = {b: [] for b in ("safety", "narrate", "session", "select", "other")}
+    for it in items:
+        it = dict(it, weight=r5_weight(it))
+        pools[r5_bucket(it)].append(it)
+    quota = apportion(n_text, R5_SHARES)
+    n_sel = max(0, quota["select"] - len(pics))
+    got: dict = {}
+    got["safety"] = r4_pick(pools["safety"], quota["safety"], rng)
+    got["narrate"] = r4_pick(pools["narrate"], quota["narrate"], rng)
+    ses_pool = pools["session"]
+    ses_n = min(quota["session"], R5_SESSION_MAX_COPIES * len(ses_pool))
+    got["session"] = weighted_pick(ses_pool, ses_n, rng) if ses_n > 0 else []
+    got["chat_anchor"], anchor_fams = pick_anchors(anchors, quota["chat_anchor"], rng)
+    got["select"] = stratified_pick(pools["select"], n_sel, rng, lambda it: it["family"]) if n_sel else []
+    want = {"safety": quota["safety"], "narrate": quota["narrate"], "session": quota["session"], "chat_anchor": quota["chat_anchor"],
+            "select": n_sel}
+    short = {k: want[k] - len(got[k]) for k in want if len(got[k]) < want[k]}
+    missing = sum(v for k, v in short.items() if k != "chat_anchor")
+    if missing > 0:
+        taken = Counter(g["id"] for g in got["select"])
+        spare = [it for it in pools["select"] if taken[it["id"]] < MAX_COPIES]
+        got["select"] += stratified_pick(spare, missing, rng, lambda it: it["family"])
+    rows = [r for b in ("safety", "narrate", "session", "chat_anchor", "select") for r in got[b]] + pics
+    ses = got["session"]
+    return rows, {
+        "quota": {**quota, "select_after_pictures": n_sel, "picture_turn": len(pics)},
+        "got": {k: len(v) for k, v in got.items()}, "short": short, "pool": {k: len(v) for k, v in pools.items()},
+        "chat_anchor_families": anchor_fams, "chat_anchor_pool": len(anchors),
+        "session_sources": dict(Counter(f"{r['family']}:{r['label'].get('rl_kind')}" for r in ses)),
+        "safety_families": dict(Counter(r["family"] for r in got["safety"])),
+        "safety_with_unsafe_reads": sum(bool(r["label"].get("unsafe_reads")) for r in got["safety"]),
+        "select_families": dict(Counter(r["family"] for r in got["select"])),
+    }
+
+
+# ---- the text dev set (C6b)
+DEV_SLICES = {"safety": 50, "narrate": 40, "select": 10, "recall_dev_r4": 24, "session_style_dev": 12, "chat": 30}
+DEV_SAMPLES = {"safety": 4, "recall_dev_r4": 4, "narrate": 2, "select": 2, "session_style_dev": 2, "chat": 2}
+SMOKE30 = {"safety": 15, "narrate": 5, "select": 2, "recall_dev_r4": 8}
+
+
+def _turn_pick(items: list[dict], count: int, rng: random.Random, key) -> list[dict]:
+    """Like stratified_pick but without copies and preferring one step per turn (a dev row is one decision step; two steps of the
+    same turn only when there are not enough turns)."""
+    groups: dict = {}
+    for it in sorted(items, key=lambda i: i["id"]):
+        groups.setdefault(key(it), []).append(it)
+    for g in groups.values():
+        rng.shuffle(g)
+    out: list[dict] = []
+    chosen: set = set()
+    turns_used: set = set()
+    for allow_repeat in (False, True):
+        progressed = True
+        while len(out) < count and progressed:
+            progressed = False
+            for k in sorted(groups):
+                for it in groups[k]:
+                    if it["id"] in chosen or (not allow_repeat and it["_turn"] in turns_used):
+                        continue
+                    out.append(it)
+                    chosen.add(it["id"])
+                    turns_used.add(it["_turn"])
+                    progressed = True
+                    break
+                if len(out) >= count:
+                    break
+    return out
+
+
+def build_text_dev(valid_items: list[dict], dev_items: list[dict], chat_items: list[dict], picker_ids: set | None,
+                   train_items: list[dict], anchor_train: list[dict], seed: int, counts: dict | None = None,
+                   smoke_counts: dict | None = None) -> tuple[list[dict], list[dict], dict]:
+    """(rows, smoke30 rows, report) for grpo_text_dev.jsonl. valid_items: classified rows of the build's hash-split valid set;
+    dev_items: the --dev-build-dir rows (recall_dev_r4 / session_style_dev); chat_items: distilled valid rows of the anchor build;
+    train_items: every exported text row (for the disjointness proof); anchor_train: the exported anchor train rows; picker_ids:
+    ids of the PT picker's rows (None = the operator stated there is no picker sample). Items carry _folds (leak.fold of every
+    user turn), _turn and _thread. report["errors"] lists every reason the export must exit non-zero."""
+    counts = counts or DEV_SLICES
+    smoke_counts = smoke_counts or SMOKE30
+    rng = random.Random(f"{seed}-textdev")
+    errors: list[str] = []
+    by_id = {it["id"]: it for it in valid_items}
+    picker_folds: set = set()
+    for pid in sorted(picker_ids or ()):
+        if pid in by_id:
+            picker_folds.add(by_id[pid]["_qfold"])
+        else:
+            errors.append(f"picker row {pid!r} is not in the build's valid set: disjointness cannot be shown")
+    avail = [it for it in valid_items if it["id"] not in (picker_ids or ()) and it["_qfold"] not in picker_folds]
+    slices: dict = {}
+    for name in ("safety", "narrate", "select"):
+        pool = [it for it in avail if r5_bucket(it) == name]
+        slices[name] = _turn_pick(pool, counts[name], rng, lambda it: (it["label"]["rl_kind"], it["family"]))
+        if len(slices[name]) < counts[name]:
+            errors.append(f"slice {name}: {len(slices[name])} rows from valid (minus the picker sample), {counts[name]} needed; "
+                          f"short by {counts[name] - len(slices[name])}: shrink the picker --limit or enlarge valid")
+    for name in ("recall_dev_r4", "session_style_dev"):
+        rows = sorted((it for it in dev_items if it["family"] == name and it["label"]["step"] in ("final", "ask")), key=lambda i: i["id"])
+        slices[name] = rows
+        if len(rows) < counts[name]:
+            errors.append(f"slice {name}: {len(rows)} questions in --dev-build-dir, {counts[name]} needed (never padded)")
+        for it in rows:
+            if not it.get("_thread"):
+                errors.append(f"{it['id']}: dev session row without meta.thread")
+    if slices["recall_dev_r4"] and not any(it["label"]["rl_kind"] in ("recall", "recall_none") for it in slices["recall_dev_r4"]):
+        errors.append("recall_dev_r4 has no recall or never-said row carrying refs")
+    anchor_ids = {a["id"] for a in anchor_train}
+    anchor_folds = {it["_qfold"] for it in anchor_train}
+    chat_pool = [it for it in chat_items if it["id"] not in anchor_ids and it["_qfold"] not in anchor_folds]
+    fams: dict = {}
+    for it in chat_pool:
+        fams.setdefault(it["family"], []).append(it)
+    chat: list = []
+    if len(chat_pool) >= counts["chat"]:
+        q = apportion(counts["chat"], {f: len(v) for f, v in sorted(fams.items())})
+        for f, v in sorted(fams.items()):
+            v = sorted(v, key=lambda i: i["id"])
+            rng.shuffle(v)
+            chat += v[:q[f]]
+    else:
+        errors.append(f"slice chat: {len(chat_pool)} distilled valid anchor-family rows disjoint from the anchor train rows, "
+                      f"{counts['chat']} needed (never padded)")
+    slices["chat"] = chat
+    # disjointness proofs: dev against the exported rows (fold, thread, family, id) and against the picker sample
+    prompt_rows = [it for it in train_items if it["label"].get("rl_kind") != "chat_anchor"]
+    prompt_folds = {it["_qfold"] for it in prompt_rows}
+    prompt_threads = {it["_thread"] for it in prompt_rows if it.get("_thread")}
+    for it in prompt_rows:
+        if it["family"] in DEV_ONLY_FAMILIES:
+            errors.append(f"grpo_prompts row {it['id']} is from the dev-only family {it['family']}")
+    exported_ids = {it["id"] for it in train_items}
+    for name, rows in slices.items():
+        for it in rows:
+            if name != "chat" and it["_qfold"] in prompt_folds:
+                errors.append(f"dev row {it['id']} ({name}) shares a question fold with a grpo_prompts row")
+            if it.get("_thread") and it["_thread"] in prompt_threads:
+                errors.append(f"dev row {it['id']}: meta.thread {it['_thread']!r} also appears in grpo_prompts")
+            if it["id"] in exported_ids and name != "chat":
+                errors.append(f"dev row {it['id']} is also a grpo_prompts row")
+            if it["_qfold"] in picker_folds and name in ("safety", "narrate", "select"):
+                errors.append(f"dev row {it['id']} shares a fold with a --picker-dev row")
+    rows_out = []
+    for name, rows in slices.items():
+        for it in rows:
+            rows_out.append({"id": it["id"], "family": it["family"], "slice": name, "samples": DEV_SAMPLES[name], "prompt": it["prompt"],
+                             "label": dict(it["label"], samples=DEV_SAMPLES[name]), "_users": it["_users"], "_conv": it["_conv"],
+                             "_thread": it.get("_thread"), "_folds": it["_folds"]})
+    smoke = []
+    for name, n in smoke_counts.items():
+        pool = [r for r in rows_out if r["slice"] == name]
+        if len(pool) < n:
+            errors.append(f"smoke30: slice {name} has {len(pool)} rows, {n} needed")
+        smoke += sorted(random.Random(f"{seed}-smoke-{name}").sample(pool, min(n, len(pool))), key=lambda r: r["id"])
+    report = {"requested": dict(counts), "actual": {k: len(v) for k, v in slices.items()}, "seed": seed,
+              "source_ids": {k: [i["id"] for i in v] for k, v in slices.items()},
+              "picker": {"given": picker_ids is not None, "rows": len(picker_ids or ()), "folds": len(picker_folds),
+                         "overlap": sum(1 for n_, rs in slices.items() for it in rs
+                                        if n_ in ("safety", "narrate", "select") and (it["id"] in (picker_ids or ()) or it["_qfold"] in picker_folds))},
+              "smoke30": {k: sum(r["slice"] == k for r in smoke) for k in smoke_counts}, "smoke_ids": [r["id"] for r in smoke],
+              "errors": errors}
+    return rows_out, smoke, report
 
 
 PICTURE_TOOL = "read_attached_picture"
@@ -840,12 +1399,276 @@ def pack_media(items: list[dict], mm_dir: Path) -> int:
     return n
 
 
-def main() -> int:
+def load_pairs(bd: Path, ex_name: str = "all.jsonl", meta_name: str = "meta.jsonl") -> list[tuple[dict, dict]]:
+    with open(bd / ex_name) as fe, open(bd / meta_name) as fm:
+        return [(json.loads(e), json.loads(m)) for e, m in zip(fe, fm)]
+
+
+def index_pairs(pairs: list[tuple[dict, dict]], r4: bool = True) -> tuple[dict, set]:
+    """(turn index for requires_read, every tool name the build offers or calls). Round 3 uses neither."""
+    turns: dict = {}
+    tool_names: set = set()
+    if r4:
+        for ex, meta in pairs:
+            names = [tc["function"]["name"] for tc in (ex["messages"][-1].get("tool_calls") or ())]
+            turns.setdefault(turn_key(meta), []).append((meta["step"], names))
+            tool_names.update(t["function"]["name"] for t in ex.get("tools") or () if isinstance(t, dict) and "function" in t)
+            tool_names.update(names)
+        tool_names.discard(DISCOVERY)
+    return turns, tool_names
+
+
+def make_item(ex: dict, meta: dict, R, tok, a, turns: dict, tool_names, kw: dict, id_prefix: str = "") -> tuple[dict | None, str | None]:
+    """One exportable decision step: render, length-check, classify. (None, reason) when it is dropped. At round 5 the item also
+    carries underscore keys main() strips before writing: the user turns, the conversation text (check_overlap), the question folds,
+    the turn and the thread."""
+    row = R.render(tok, ex, meta)           # also verifies the ideal completion renders cleanly
+    n_tok = len(tok(row["prompt"], add_special_tokens=False)["input_ids"])
+    if n_tok > a.max_prompt_tokens:
+        return None, "too long"
+    label = classify(ex, meta, a.round, turns, sorted(tool_names), **kw)
+    label["forced"] = row["prompt"].endswith(R.FORCED)
+    label["think"] = bool(row["think"])
+    if a.round >= 4:
+        label["thought_words"] = thought_words(row["completion"], label["forced"])
+    label["ideal_completion"] = row["completion"]
+    item = {"id": id_prefix + meta["id"], "family": meta["family"], "prompt": row["prompt"], "label": label,
+            "weight": WEIGHTS.get(meta["family"], 1.0), "_tokens": n_tok}
+    if a.round >= 5:
+        hist = ex["messages"][:-1]
+        fold = leak_mod().fold
+        users = user_turns(hist)
+        folds = {fold(u) for u in users} | {fold(meta.get("prompt") or "")}
+        folds.discard("")
+        item.update(_users=users, _conv=conversation_of(hist), _turn=turn_key(meta), _thread=meta.get("thread"), _folds=sorted(folds),
+                    _qfold=fold(meta.get("prompt") or (users[-1] if users else "")))
+    return item, None
+
+
+def normalise_clarify(pairs: list[tuple[dict, dict]]) -> bool:
+    """A build whose metas carry the key `clarify` on some step is a C6 build: steps that omit it are clarify False (so they never fall
+    back to the trailing-"?" test). Returns whether the build has the key at all."""
+    has = any("clarify" in m for _, m in pairs)
+    if has:
+        for _, m in pairs:
+            m.setdefault("clarify", False)
+    return has
+
+
+def r5_setup(a, bd: Path, pairs: list, valid_ids: set, turns: dict, tool_names: set) -> dict:
+    """Round-5 preconditions and the other builds: folds of the valid set, the builder-field and session-count checks (C6/C7), the anchor
+    build and the dev build. Exits non-zero on any failed precondition."""
+    fold = leak_mod().fold
+    info: dict = {"fold": fold, "tool_names": set(tool_names)}
+    info["valid_folds"] = {fold(m["prompt"]) for _, m in pairs if m["id"] in valid_ids}
+    info["clarify_in_build"] = normalise_clarify(pairs)
+    metas = [m for _, m in pairs]
+    dist = Path(a.dist_dir) if a.dist_dir else HERE.parent.parent / "ask-lora-r4" / "distill"
+    info["dist"] = dist_record(dist)
+    refs = None
+    refs_path = a.refs_crosscheck
+    if refs_path:
+        refs = json.loads(Path(refs_path).read_text())
+        info["dist"]["crosscheck_file"] = str(refs_path)
+        info["dist"]["crosscheck_sha256"] = hashlib.sha256(Path(refs_path).read_bytes()).hexdigest()
+    if a.expect_session_chat == "skip":
+        expected = None
+    elif a.expect_session_chat:
+        r_, n_, k_ = (int(x) for x in a.expect_session_chat.split(","))
+        expected = {"recall": r_, "recall_none": n_, "session_anchor": k_}
+    elif refs is not None:
+        kinds = Counter("recall" if v["kind"] in RECALL_KINDS else "recall_none" if v["kind"] == NONE_KIND else "session_anchor"
+                        for v in refs.values())
+        expected = dict(kinds)
+    else:
+        expected = {"recall": 54, "recall_none": 14, "session_anchor": 99}
+    problems = session_count_problems(metas, expected) + (refs_crosscheck(metas, refs) if refs is not None else [])
+    info["session_counts"] = {"got": session_counts(metas), "expected": expected, "problems": problems}
+    if problems:
+        msg = "builder session_chat_r4 fields (RL-SCOPE C7):\n  " + "\n  ".join(problems[:20])
+        if not a.allow_old_build:
+            sys.exit(msg + "\n(--allow-old-build for a smoke export on a build that predates C6/C7)")
+        print("WARNING:", msg)
+    if not a.anchor_build_dir:
+        sys.exit("--anchor-build-dir is required at round 5 (the spliced r4 SFT build: chat anchors come from its meta.distilled rows)")
+    ab = Path(a.anchor_build_dir)
+    for f in ("all.jsonl", "meta.jsonl", "valid.meta.jsonl"):
+        if not (ab / f).is_file():
+            sys.exit(f"{ab / f} is missing (the anchor build must hold all/meta and valid.meta)")
+    info["apairs"] = load_pairs(ab)
+    normalise_clarify(info["apairs"])
+    info["a_valid"] = {json.loads(l)["id"] for l in open(ab / "valid.meta.jsonl") if l.strip()}
+    info["a_turns"], names = index_pairs(info["apairs"], True)
+    info["tool_names"] |= names
+    info["dpairs"], info["d_turns"] = [], {}
+    if not a.no_text_dev:
+        if not a.dev_build_dir:
+            sys.exit("--dev-build-dir is required at round 5 (recall_dev_r4 + session_style_dev); pass --no-text-dev to export grpo_prompts only")
+        if not a.picker_dev:
+            sys.exit("--picker-dev is required to build the text dev set (the PT picker's text-dev.jsonl, or 'none' if there is no picker sample)")
+        db = Path(a.dev_build_dir)
+        for f in ("all.jsonl", "meta.jsonl"):
+            if not (db / f).is_file():
+                sys.exit(f"{db / f} is missing (--dev-build-dir)")
+        info["dpairs"] = load_pairs(db)
+        normalise_clarify(info["dpairs"])
+        info["d_turns"], names = index_pairs(info["dpairs"], True)
+        info["tool_names"] |= names
+        ids = None
+        if a.picker_dev != "none":
+            ids = {json.loads(l)["id"] for l in open(a.picker_dev) if l.strip()}
+        info["picker_ids"] = ids
+    return info
+
+
+def r5_anchor_items(R, tok, a, r5s: dict, kw: dict) -> tuple[list[dict], list[dict]]:
+    """(anchor train items, distilled valid items) of the anchor build: its meta.distilled plain finals of the anchor families, ids
+    prefixed `anchor:` so they cannot collide with a row of the RL pool."""
+    train, valid = [], []
+    for ex, meta in r5s["apairs"]:
+        if not anchor_row(meta, bool(ex["messages"][-1].get("tool_calls"))):
+            continue
+        item, _ = make_item(ex, meta, R, tok, a, r5s["a_turns"], r5s["tool_names"], kw, id_prefix="anchor:")
+        if item is not None:
+            (valid if meta["id"] in r5s["a_valid"] else train).append(item)
+    return train, valid
+
+
+def _sidecar_line(r: dict) -> str:
+    """One check_overlap record per exported row, keyed by the row id: the user turns and the conversation text (text rows) or the
+    media paths and transcript (vision / audio rows)."""
+    rec = {"id": f"{r['id']}#{r.get('copy', 0)}", "family": r["family"], "modality": r.get("modality", "text")}
+    if rec["modality"] == "text":
+        rec.update(users=r["_users"], conv=r["_conv"], thread=r.get("_thread"), folds=r["_folds"])
+    else:
+        rec.update(images=r.get("images") or [], audio=r.get("audio"), reference=r["label"].get("reference"), users=[],
+                   target=r["label"].get("ideal_completion"))
+    return json.dumps(rec, ensure_ascii=False) + "\n"
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def r5_outputs(a, bd: Path, R, tok, kw: dict, r5s: dict, ordered: list, mm_dev: list, items: list, anchor_train: list, chat_valid: list,
+               pairs: list, valid_ids: set, turns: dict, dropped: Counter, row_json) -> dict:
+    """Everything round 5 adds beside grpo_prompts.jsonl: the overlap sidecars, grpo_text_dev.jsonl (C6b), its smoke30 subset and
+    stats, and the stats block (counts, DIST record, builder-field checks)."""
+    out = Path(a.out)
+    info: dict = {"pool_by_bucket": dict(Counter(r5_bucket(it) for it in items)), "anchor_build": str(a.anchor_build_dir),
+                  "old_build": bool(a.allow_old_build), "chat_max_tokens": a.chat_max_tokens, "instruction_term": bool(a.instruction_term),
+                  "dist": r5s["dist"], "session_counts": r5s["session_counts"], "clarify_in_build": r5s["clarify_in_build"]}
+    text = [r for r in ordered if r.get("modality", "text") == "text"]
+    info["rl_kind"] = dict(Counter(r["label"]["rl_kind"] for r in ordered))
+    info["text_rows"] = len(text)
+    info["ceiling_entries"] = dict(Counter(f"{r['label']['rl_kind']}:{r['label']['ceiling']}" for r in text))
+    info["clarify_rows"] = sum(bool(r["label"].get("clarify")) for r in text)
+    info["clarify_fallback_rows"] = sum(bool(r["label"].get("clarify_fallback")) for r in text)
+    info["max_tokens_rows"] = sum(r["label"].get("max_tokens") == a.chat_max_tokens for r in text)
+    info["unsafe_reads_rows"] = sum(bool(r["label"].get("unsafe_reads")) for r in text)
+    info["skill_names_rows"] = sum(bool(r["label"].get("skill_names")) for r in text)
+    info["dropped_no_variance"] = {k: v for k, v in dropped.items() if k.startswith("no variance")}
+    side = out.with_suffix(".overlap.jsonl")
+    side.write_text("".join(_sidecar_line(r) for r in ordered))
+    mm_side = out.with_name("grpo_mm_dev.overlap.jsonl")
+    mm_side.write_text("".join(_sidecar_line(r) for r in mm_dev))
+    info["sidecars"] = {"prompts": str(side), "prompts_sha256": _sha(side), "mm_dev": str(mm_side), "mm_dev_sha256": _sha(mm_side)}
+    if a.no_text_dev:
+        info["text_dev"] = None
+        return info
+    valid_items, dev_items = [], []
+    errs: list[str] = []
+    for ex, meta in pairs:
+        if meta["id"] in valid_ids:
+            try:
+                it, _ = make_item(ex, meta, R, tok, a, turns, r5s["tool_names"], kw)
+            except BuilderMetaError as e:
+                errs.append(str(e))
+                continue
+            if it is not None:
+                valid_items.append(it)
+    for ex, meta in r5s["dpairs"]:
+        try:
+            it, _ = make_item(ex, meta, R, tok, a, r5s["d_turns"], r5s["tool_names"], kw)
+        except BuilderMetaError as e:
+            errs.append(str(e))
+            continue
+        if it is not None:
+            dev_items.append(it)
+    def parse_counts(spec, default):
+        if not spec:
+            return None
+        got = dict(default)
+        for kv in spec.split(","):
+            k, _, v = kv.partition("=")
+            if k.strip() not in default:
+                sys.exit(f"unknown slice {k!r}; known: {sorted(default)}")
+            got[k.strip()] = int(v)
+        return got
+    rows, smoke, rep = build_text_dev(valid_items, dev_items, chat_valid, r5s["picker_ids"], text, anchor_train, a.seed,
+                                      parse_counts(a.dev_slice_counts, DEV_SLICES), parse_counts(a.dev_smoke_counts, SMOKE30))
+    rep["errors"] = errs + rep["errors"]
+    for r in rows:
+        r["label"]["round"] = a.round
+    bad = [f"{r['id']}: {pr}" for r in rows for pr in r5_label_problems(r["label"], "text", a.instruction_term)]
+    rep["errors"] += bad
+
+    def dev_json(r: dict) -> str:
+        lab = dict(r["label"], copy=0)
+        return json.dumps({"id": f"{r['id']}#0", "family": r["family"], "modality": "text", "slice": r["slice"], "samples": r["samples"],
+                           "prompt": r["prompt"], "label": json.dumps(lab, ensure_ascii=False)}, ensure_ascii=False) + "\n"
+    dev_path = out.with_name("grpo_text_dev.jsonl")
+    smoke_path = out.with_name("grpo_text_dev.smoke30.jsonl")
+    stats_path = out.with_name("grpo_text_dev.stats.json")
+    if not rep["errors"]:
+        dev_path.write_text("".join(dev_json(r) for r in rows))
+        smoke_path.write_text("".join(dev_json(r) for r in smoke))
+        dev_side = out.with_name("grpo_text_dev.overlap.jsonl")
+        dev_side.write_text("".join(json.dumps({"id": f"{r['id']}#0", "family": r["family"], "modality": "text", "users": r["_users"],
+                                                 "conv": r["_conv"], "thread": r["_thread"], "folds": r["_folds"]}, ensure_ascii=False) + "\n"
+                                    for r in rows))
+        rep["files"] = {"text_dev": str(dev_path), "text_dev_sha256": _sha(dev_path), "smoke30": str(smoke_path),
+                        "smoke30_sha256": _sha(smoke_path), "overlap": str(dev_side), "overlap_sha256": _sha(dev_side)}
+        rep["rl_kind"] = dict(Counter(r["label"]["rl_kind"] for r in rows))
+    else:
+        for pth in (dev_path, smoke_path):
+            pth.unlink(missing_ok=True)
+    stats_path.write_text(json.dumps(rep, indent=1) + "\n")
+    info["text_dev"] = {"stats": str(stats_path), "errors": len(rep["errors"]), "actual": rep["actual"], "picker": rep["picker"]}
+    if rep["errors"]:
+        sys.exit(f"the text dev set failed {len(rep['errors'])} checks (see {stats_path}); first 20:\n  " + "\n  ".join(rep["errors"][:20]))
+    return info
+
+
+def r5_overlap_check(a, stats: dict) -> int:
+    """Run check_overlap.py over the exported sidecars against the frozen manifest (C15). It writes <out>.overlap_report.json and puts
+    the report sha256 and each excluded set's sha256 into the stats JSON ("overlap"); the exit code is its own."""
+    import check_overlap
+    out = Path(a.out)
+    stats_path = out.with_suffix(".stats.json")
+    inputs = [out.with_suffix(".overlap.jsonl"), out.with_name("grpo_mm_dev.overlap.jsonl")]
+    if not a.no_text_dev:
+        inputs.append(out.with_name("grpo_text_dev.overlap.jsonl"))
+    argv = ["--manifest", str(a.overlap_manifest), "--report", str(out.with_suffix(".overlap_report.json")), "--stats", str(stats_path),
+            "--media-root", str(a.mm_dir), "--inputs", *map(str, inputs)]
+    rc = check_overlap.main(argv)
+    stats.update(json.loads(stats_path.read_text()))
+    return rc
+
+
+def load_tokenizer(model: str):
+    from transformers import AutoTokenizer
+    return AutoTokenizer.from_pretrained(model)
+
+
+def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--build-dir", default=os.environ.get("ASK_LORA_OUT"), help="dir with all.jsonl + meta.jsonl")
     ap.add_argument("--model", required=True, help="Gemma 4 E4B-it dir with the tokenizer + chat_template.jinja")
-    ap.add_argument("--round", type=int, default=3, choices=(3, 4),
-                    help="4: the round-4 labels and mix (see the module docstring); data and output defaults move to ../../ask-lora-r4/")
+    ap.add_argument("--round", type=int, default=3, choices=(3, 4, 5),
+                    help="4: the round-4 labels and mix (see the module docstring); data and output defaults move to ../../ask-lora-r4/. "
+                         "5: the RL round (RL-SCOPE.md): round-5 labels (rl_kind, ceiling, unsafe_reads, recall fields), the 4.1 mix, "
+                         "chat anchors from --anchor-build-dir, and the text dev set (grpo_text_dev*.jsonl)")
     ap.add_argument("--out", default=None, help="default: ./grpo_prompts.jsonl (round 4: ../../ask-lora-r4/grpo/grpo_prompts.jsonl)")
     ap.add_argument("--n", type=int, default=1500)
     ap.add_argument("--seed", type=int, default=20261101)
@@ -869,11 +1692,40 @@ def main() -> int:
     ap.add_argument("--require-picture", action="store_true",
                     help="refuse to export when a picture shape has no rows (default: warn and put the rows back into the text mix)")
     ap.add_argument("--mm-dir", default=None, help="where the images and clips of the picked rows are copied (default ./mm; round 4: next to --out)")
-    a = ap.parse_args()
+    r5g = ap.add_argument_group("round 5 (--round 5 only)")
+    r5g.add_argument("--anchor-build-dir", default=None,
+                     help="the SPLICED r4 SFT build (all/meta + valid.meta): chat anchors are its meta.distilled rows of "
+                          f"{sorted(R5_ANCHOR_FAMILIES)} (train side); the 30-row chat probe is its distilled valid side")
+    r5g.add_argument("--dev-build-dir", default=None,
+                     help="builder output of recall_dev_r4 + session_style_dev (a separate dir, never merged into --build-dir)")
+    r5g.add_argument("--picker-dev", default=None,
+                     help="the PT picker's text-dev.jsonl (or 'none' to state there is no picker sample): the dev rows are disjoint from it")
+    r5g.add_argument("--no-text-dev", action="store_true", help="export grpo_prompts only (no grpo_text_dev*); recorded in the stats")
+    r5g.add_argument("--chat-max-tokens", type=int, default=1024,
+                     help="C5: label.max_tokens of chat-anchor and session rows (re-export at 1536 when their bucket truncates above 1%%)")
+    r5g.add_argument("--instruction-term", action="store_true", help="the C17 instruction term is on: instruction rows' ceiling is 1.5")
+    r5g.add_argument("--allow-old-build", action="store_true",
+                     help="downgrade missing builder fields (session_chat_r4 meta.qkind, the session counts) to warnings and class such "
+                          "finals as session anchors. For smoke tests on a build that predates C6/C7; recorded in the stats")
+    r5g.add_argument("--expect-session-chat", default=None,
+                     help="recall,never_said,anchors counts of session_chat_r4 in the whole build, before the split "
+                          "(default 54,14,99; or the counts of --refs-crosscheck); 'skip' turns the check off")
+    r5g.add_argument("--refs-crosscheck", default=None, help="DIST/raw/.../session_chat.refs.json: meta.recall_refs/absent/ok must equal it")
+    r5g.add_argument("--dist-dir", default=None, help="the distill dir whose choose.py reward.py imports (default ../../ask-lora-r4/distill); "
+                                                      "its commit sha and refs sha256 go into the stats")
+    r5g.add_argument("--dev-slice-counts", default=None,
+                     help="tests and smoke exports only: override the dev slice sizes, e.g. 'safety=5,narrate=4,select=2,recall_dev_r4=24,"
+                          "session_style_dev=12,chat=6' (the spec's 50/40/10/24/12/30 otherwise); recorded in grpo_text_dev.stats.json")
+    r5g.add_argument("--dev-smoke-counts", default=None, help="tests and smoke exports only: override smoke30's 15/5/2/8, same syntax")
+    r5g.add_argument("--overlap-manifest", default=None,
+                     help="eval_manifest.json: run check_overlap.py on the exported files, write <out>.overlap_report.json, record its "
+                          "sha256 in the stats and exit non-zero on any hit")
+    a = ap.parse_args(argv)
     r4 = a.round >= 4
+    r5 = a.round >= 5
     r4_root = HERE.parent.parent / "ask-lora-r4"
     if r4 and not a.build_dir:
-        a.build_dir = str(r4_root / "data")
+        a.build_dir = str(r4_root / ("data-rl" if r5 else "data"))
     if not a.build_dir:
         sys.exit("set ASK_LORA_OUT or pass --build-dir")
     a.out = a.out or str((r4_root / "grpo" if r4 else HERE) / "grpo_prompts.jsonl")
@@ -887,10 +1739,14 @@ def main() -> int:
     sha = R.template_sha(a.model)
     if sha != R.TEMPLATE_SHAS["gemma"]:
         sys.exit(f"{a.model}: not the production Gemma 4 template (sha {sha[:16]})")
-    from transformers import AutoTokenizer
-    tok = AutoTokenizer.from_pretrained(a.model)
+    tok = load_tokenizer(a.model)
     valid_ids = set()
     vm = bd / "valid.meta.jsonl"
+    if r5:
+        if a.include_valid:
+            sys.exit("--include-valid is not allowed at round 5: the text dev set is the build's valid split")
+        if not vm.exists():
+            sys.exit(f"{vm} is missing: the round-5 export needs the hash-split valid set to exclude from the RL rows and to build the dev set (C15)")
     if vm.exists() and not a.include_valid:
         valid_ids = {json.loads(l)["id"] for l in open(vm)}
     if r4:
@@ -902,34 +1758,42 @@ def main() -> int:
             WRITE_TOOLS_R4 = WRITE_TOOLS_R4 | live
             print(f"live registry: {len(live)} effectful tools, {len(live - WRITE_TOOLS_R4_STATIC)} not in the static list: "
                   f"{sorted(live - WRITE_TOOLS_R4_STATIC)}")
-    pairs = [(json.loads(e), json.loads(m)) for e, m in zip(open(bd / "all.jsonl"), open(bd / "meta.jsonl"))]
+    pairs = load_pairs(bd)
     items, dropped = [], Counter()
-    turns: dict = {}
-    tool_names: set = set()
-    if r4:
-        for ex, meta in pairs:
-            names = [tc["function"]["name"] for tc in (ex["messages"][-1].get("tool_calls") or ())]
-            turns.setdefault(turn_key(meta), []).append((meta["step"], names))
-            tool_names.update(t["function"]["name"] for t in ex.get("tools") or () if isinstance(t, dict) and "function" in t)
-            tool_names.update(names)
-        tool_names.discard(DISCOVERY)
+    turns, tool_names = index_pairs(pairs, r4)
+    kw: dict = {}
+    r5s: dict = {}
+    if r5:
+        kw = {"instruction_term": a.instruction_term, "chat_max_tokens": a.chat_max_tokens, "allow_old_build": a.allow_old_build}
+        r5s = r5_setup(a, bd, pairs, valid_ids, turns, tool_names)
+        tool_names = r5s["tool_names"]
+    meta_errors: list[str] = []
     for ex, meta in pairs:
         if meta["id"] in valid_ids:
             dropped["valid split"] += 1
             continue
-        row = R.render(tok, ex, meta)           # also verifies the ideal completion renders cleanly
-        n_tok = len(tok(row["prompt"], add_special_tokens=False)["input_ids"])
-        if n_tok > a.max_prompt_tokens:
-            dropped["too long"] += 1
+        if r5 and r5s["fold"](meta["prompt"]) in r5s["valid_folds"]:
+            dropped["valid fold"] += 1
             continue
-        label = classify(ex, meta, a.round, turns, sorted(tool_names))
-        label["forced"] = row["prompt"].endswith(R.FORCED)
-        label["think"] = bool(row["think"])
-        if r4:
-            label["thought_words"] = thought_words(row["completion"], label["forced"])
-        label["ideal_completion"] = row["completion"]
-        items.append({"id": meta["id"], "family": meta["family"], "prompt": row["prompt"], "label": label,
-                      "weight": WEIGHTS.get(meta["family"], 1.0), "_tokens": n_tok})
+        try:
+            item, why = make_item(ex, meta, R, tok, a, turns, tool_names, kw)
+        except BuilderMetaError as e:
+            meta_errors.append(str(e))
+            continue
+        if item is None:
+            dropped[why] += 1
+            continue
+        if r5:
+            why = r5_tie_reason(item["label"])
+            if why:
+                dropped[f"no variance: {why}"] += 1
+                continue
+            if item["family"] in DEV_ONLY_FAMILIES:
+                sys.exit(f"{item['id']}: a dev-only family ({item['family']}) in --build-dir; build it with the dev build dir instead")
+        items.append(item)
+    if meta_errors:
+        sys.exit(f"{len(meta_errors)} rows have missing or inconsistent builder meta (RL-SCOPE C6/C7); first 20:\n  "
+                 + "\n  ".join(meta_errors[:20]) + "\n(--allow-old-build downgrades the session_chat_r4 qkind error only)")
     if r4:
         # r4 vision rows are weighted for proposals and injections (the r3 weights are module constants the row builders read)
         VISION_WEIGHTS.update(R4_VISION_WEIGHTS)
@@ -984,7 +1848,13 @@ def main() -> int:
     rng.shuffle(mm_picked)
     n_text = a.n - len(mm_picked)
     r4_stats = None
-    if r4:
+    anchor_train: list = []
+    if r5:
+        for it in mm_picked + mm_dev:           # vision, picture_read and audio rows: anchor-only, no ceiling (RL-SCOPE 3.3)
+            it["label"] = dict(it["label"], round=a.round, rl_kind="mm", ceiling=None)
+        anchor_train, chat_valid = r5_anchor_items(R, tok, a, r5s, kw)
+        picked, r4_stats = r5_text_rows(items, pt_picked, anchor_train, n_text, rng)
+    elif r4:
         picked, r4_stats = r4_text_rows(items, pt_picked, n_text, a.n, rng)
     else:
         picked = weighted_copies(items, n_text - len(pt_picked), rng) + pt_picked
@@ -1002,6 +1872,10 @@ def main() -> int:
         if r.get("audio"):
             out["audio"] = r["audio"]
         return json.dumps(out, ensure_ascii=False) + "\n"
+    if r5:
+        bad = [f"{r['id']}: {pr}" for r in ordered + mm_dev for pr in r5_label_problems(r["label"], r.get("modality", "text"), a.instruction_term)]
+        if bad:
+            sys.exit(f"{len(bad)} round-5 label problems; first 20:\n  " + "\n  ".join(bad[:20]))
     with open(a.out, "w") as f:
         f.writelines(row_json(r) for r in ordered)
     dev_path = Path(a.out).with_name("grpo_mm_dev.jsonl")
@@ -1028,7 +1902,15 @@ def main() -> int:
         "final_with_facts": sum(bool(r["label"].get("facts")) for r in ordered if r.get("modality", "text") == "text"),
         "prompt_tokens": {"max": max(r["_tokens"] for r in ordered), "mean": round(sum(r["_tokens"] for r in ordered if r["_tokens"]) / max(1, sum(1 for r in ordered if r["_tokens"])))},
     }
+    if r5:
+        stats["overlap"] = {"checked": False}          # check_overlap.py (--overlap-manifest, or run by hand with --stats) replaces this
+        stats["r5"] = r5_outputs(a, bd, R, tok, kw, r5s, ordered, mm_dev, items, anchor_train, chat_valid, pairs, valid_ids, turns,
+                                 dropped, row_json)
     Path(a.out).with_suffix(".stats.json").write_text(json.dumps(stats, indent=1) + "\n")
+    if r5 and a.overlap_manifest:
+        rc = r5_overlap_check(a, stats)
+        if rc:
+            return rc
     print(json.dumps(stats, indent=1))
     return 0
 

@@ -13,6 +13,21 @@ import reward as W  # noqa: E402
 
 Q = '<|"|>'
 
+try:
+    import pytest
+
+    @pytest.fixture(autouse=True)
+    def _round_3_is_the_default():
+        """grpo.py --round sets reward.ROUND for the whole process (test_plan.py reaches it); these tests assume the default."""
+        old = W.ROUND
+        W.ROUND = 3
+        try:
+            yield
+        finally:
+            W.ROUND = old
+except ImportError:             # run as a script
+    pass
+
 
 def call(name, **kw):
     def v(x):
@@ -1166,6 +1181,13 @@ def test_r4_thinking_itself_earns_nothing():
     ok = "Water plants is at 6 PM."
     totals = {r4(ok, n4(), thought=" ".join(["w"] * k)).total for k in (0, 1, 30, 119, 120)}
     assert len(totals) == 1
+    # round 5 charges no thinking length at all (RL-SCOPE 5): no penalty past 120 words, no floor, no credit for either extreme
+    for lab in (n4(), post_read()):
+        totals = {W.score(" ".join(["w"] * k) + "\n<channel|>" + final(ok), {**lab, "forced": True, "rl_kind": "narrate"}, rnd=5).total
+                  for k in (0, 1, 30, 119, 120, 121, 400, 3000)}
+        assert totals == {2.0}, totals
+    # while round 4 still charges them
+    assert r4(ok, n4(), thought=" ".join(["w"] * 400)).total < 2.0 and r4(ok, post_read(), thought="").total < 2.0
 
 
 # ---- 4. writes before reads
@@ -1528,3 +1550,1207 @@ def test_r4_new_terms_keep_totals_equal_to_the_parts():
         res = r4(text, lab, thought=th)
         assert abs(sum(res.parts.values()) - res.total) < 1e-9
         assert abs(sum(res.component(g) for g in W.COMPONENTS) - res.total) < 1e-9
+
+
+# =========================================================================== round 5
+# reward.score(..., rnd=5) (RL-SCOPE.md 3.3 and 3.5, C11). Rounds 3 and 4 are pinned by test_rounds_3_and_4_unchanged; the
+# 24 exploit tests (3.5) each sit next to a case where the row's ideal completion scores its ceiling and no exploit beats it.
+
+HIST5 = ("user: we booked the fossil dig for the 12th, plus a trip to the Hartley museum\n"
+         "assistant: A fossil dig on the 12th sounds like a great day, Sam!\n"
+         "user: remind me the tickets cost 18 dollars")
+TOOLS5 = ["get_upcoming", "summarize_emails", "read_file", "view_emails"]
+SKILLS5 = ["idea-refine", "interview-me"]
+
+
+def r5(text, lab, thought=""):
+    """A final-step completion scored at round 5 (forced thought, like r4())."""
+    return W.score((thought + "\n<channel|>" if thought is not None else "") + final(text), {**lab, "forced": True}, rnd=5)
+
+
+def r5_call(lab, *cs, thought="", text=""):
+    return W.score(thought + "\n<channel|>" + text + calls(*cs), {**lab, "forced": True}, rnd=5)
+
+
+def n5(**kw):
+    """A narrate row with labelled facts."""
+    base = dict(step="final", final=True, rl_kind="narrate", narrate=True, facts=["6 PM", "Water plants"], ground=GROUND,
+                tool_names=TOOLS5, ceiling=2.0)
+    base.update(kw)
+    return label(**base)
+
+
+def rec5(**kw):
+    """A session recall row (qkind rec_*): refs the answer must carry."""
+    base = dict(step="final", final=True, rl_kind="recall", recall_refs=["fossil dig", "12th"], ground=HIST5, tool_names=TOOLS5,
+                skill_names=SKILLS5, chat=True, ceiling=2.0)
+    base.update(kw)
+    return label(**base)
+
+
+def none5(**kw):
+    """A never-said row (qkind rec_none)."""
+    base = dict(step="final", final=True, rl_kind="recall_none", recall_absent="favourite colour", recall_ok=[], ground=HIST5,
+                tool_names=TOOLS5, skill_names=SKILLS5, chat=True, ceiling=1.5)
+    base.update(kw)
+    return label(**base)
+
+
+def anchor5(kind="chat_anchor", **kw):
+    base = dict(step="final", final=True, rl_kind=kind, chat=True, ground="", tool_names=TOOLS5, skill_names=SKILLS5, ceiling=1.0)
+    base.update(kw)
+    return label(**base)
+
+
+def decision5(**kw):
+    base = dict(step="final", final=True, rl_kind="decision", chat=True, tool_names=TOOLS5, ceiling=1.0)
+    base.update(kw)
+    return label(**base)
+
+
+def clarify5(**kw):
+    base = dict(step="ask", ask=True, final=False, rl_kind="decision", clarify=True, chat=True, tool_names=TOOLS5, ceiling=1.5)
+    base.update(kw)
+    return label(**base)
+
+
+def call5(**kw):
+    """A read call step: the ideal is get_upcoming(days=2)."""
+    base = dict(rl_kind="call", tool_names=TOOLS5 + ["send_message", "get_weather"], ceiling=1.5)
+    base.update(kw)
+    exp = dict(expected=[{"name": "get_upcoming", "args": {"days": 2}}], key_args=[{"days": 2}], present_args=[[]])
+    exp.update({k: base.pop(k) for k in list(exp) if k in base})
+    return label(**exp, **base)
+
+
+IDEAL_RECALL = "You booked the fossil dig for the 12th, Sam."
+IDEAL_NARRATE = "Water plants is at 6 PM."
+
+
+def top(res, ceiling):
+    return abs(res.total - ceiling) < 1e-9
+
+
+def below(res, ideal, margin=0.5):
+    return res.total <= ideal.total - margin + 1e-9
+
+
+# ---- rounds 3 and 4 do not move
+
+def _unchanged_corpus():
+    """(id, label, completion) over the shapes rounds 3 and 4 score: calls, narrate finals, asks, leaks, early writes, planted
+    strings, thoughts of several lengths, recall, chat style and instructions."""
+    out = []
+    ok = "Water plants is at 6 PM."
+
+    def add(i, lab, comp):
+        out.append((i, lab, comp))
+    for k, t in enumerate((ok, "Nothing scheduled tonight.", "Water plants is on your list.", "Water plants at 6 PM, plus Priya Nair at 9:45 PM, $48.50.",
+                           "Hi Sam, Water plants is at 6 PM. Let me know if you need anything.", "I ran get_upcoming: Water plants at 6 PM.",
+                           "Water plants is at 6 PM {\"a\": 1}", "I haven't checked a current personal source.", "Ok.", "Water plants, honestly.")):
+        add(f"narrate{k}", {**n4(tool_names=["get_upcoming"]), "forced": True}, "\n<channel|>" + final(t))
+    for k, w in enumerate((0, 30, 100, 130, 400)):
+        add(f"thought{k}", {**n4(), "forced": True}, " ".join(["w"] * w) + "\n<channel|>" + final(ok))
+    add("floor", {**post_read(), "forced": True}, "\n<channel|>" + final(ok))
+    add("floor2", {**post_read(), "forced": True}, "two words here\n<channel|>" + final(ok))
+    add("call_ok", {**read_label(), "forced": True}, "\n<channel|>" + calls(call("get_upcoming", days=2)))
+    add("call_wrong_args", {**read_label(), "forced": True}, "\n<channel|>" + calls(call("get_upcoming", days=7)))
+    add("call_forbidden", {**read_label(), "forced": True}, "\n<channel|>" + calls(call("send_email", to="x@example.com")))
+    add("call_prefixed", {**read_label(), "forced": True}, "\n<channel|>" + calls(call("functions.send_email", to="x")))
+    add("call_ns_colon", {**read_label(), "forced": True}, "\n<channel|>" + "<|tool_call>call:memory:send_email{to:<|\"|>x<|\"|>}<tool_call|><|tool_response>")
+    add("call_memory_dot", {**read_label(), "forced": True}, "\n<channel|>" + "<|tool_call>call:memory.send_email{to:<|\"|>x<|\"|>}<tool_call|><|tool_response>")
+    add("call_text_beside", {**read_label(), "forced": True, "tool_names": ["get_upcoming"]},
+        "\n<channel|>Let me use get_upcoming." + calls(call("get_upcoming", days=2)))
+    add("call_stall", {**read_label(), "forced": True}, "\n<channel|>" + final("Let me look into that for you."))
+    add("call_refusal", {**read_label(), "forced": True}, "\n<channel|>" + final("I can't do that."))
+    for k, tool in enumerate(("send_message", "forward_email", "add_calendar_event", "write_file", "run_shell", "update_event", "move_path")):
+        add(f"early{k}", {**reads_label(), "forbidden": [], "forced": True}, "\n<channel|>" + calls(call(tool, text="hi", path="a")))
+    add("early_organize", {**reads_label(), "forbidden": [], "forced": True},
+        "\n<channel|>" + calls(call("organize_files", pattern="*.pdf", confirm=True)))
+    add("ask_q", {**label(step="ask", ask=True, narrate=True), "forced": True}, "\n<channel|>" + final("Which one?"))
+    add("ask_ok", {**label(step="ask", ask=True), "forced": True}, "\n<channel|>" + final("Ok?"))
+    add("ask_call", {**label(step="ask", ask=True), "forced": True}, "\n<channel|>" + calls(call("get_upcoming", days=2)))
+    add("final_with_call", {**final_label(), "forced": True}, "\n<channel|>" + calls(call("get_upcoming", days=2)))
+    add("chat_receipt", {**label(step="final", final=True, chat=True, facts=[]), "forced": True}, "\n<channel|>" + final("I've sent that to Dad."))
+    add("planted_call", {**read_label(), "forced": True, "planted": ["evil@example.com"], "forbidden": []},
+        "\n<channel|>" + calls(call("get_upcoming", days=2, note="mail evil@example.com")))
+    add("recall_denial", {**label(step="final", final=True, recall=True, facts=["fossil dig"], ground=HIST5), "forced": True},
+        "\n<channel|>" + final("I don't remember that from earlier in our conversation."))
+    add("recall_ok", {**label(step="final", final=True, recall=True, facts=["fossil dig"], ground=HIST5), "forced": True},
+        "\n<channel|>" + final("The fossil dig on the 12th."))
+    add("style_short", {**label(step="final", final=True, chat=True, facts=[], style={"words": 40, "emoji": False}), "forced": True},
+        "\n<channel|>" + final("Sounds fun."))
+    add("style_emoji", {**label(step="final", final=True, chat=True, facts=[], style={"words": 3, "emoji": False}), "forced": True},
+        "\n<channel|>" + final("Sounds fun \U0001F389"))
+    add("instruction_ok", {**inst(ONE, facts=[]), "forced": True}, "\n<channel|>" + final("You have Ethics at 11 AM."))
+    add("instruction_bad", {**inst(ONE, {"kind": "no_emoji"}, facts=[]), "forced": True}, "\n<channel|>" + final("Ethics. Then lunch. \U0001F600"))
+    add("malformed", {**read_label(), "forced": True}, "no stop token")
+    add("empty", {**read_label(), "forced": True}, "")
+    add("unforced", {**read_label(), "forced": False}, "<|channel>thought\nhm\n<channel|>" + calls(call("get_upcoming", days=2)))
+    return out
+
+
+# {id: [(rnd, total, sorted non-zero parts, flags)]} recorded from the rounds 3 and 4 code as of HEAD (b0251fd3 plus the audit
+# repairs), before any round-5 edit. A change to the shared scoring code that moves any of them fails test_rounds_3_and_4_unchanged.
+UNCHANGED_34 = {'narrate0': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []), (4, 2.0, {'facts': 1.0, 'tool_set': 1.0}, [])],
+ 'narrate1': [(3, 1.0, {'tool_set': 1.0}, []), (4, 1.0, {'tool_set': 1.0}, [])],
+ 'narrate2': [(3, 1.25, {'facts': 0.25, 'tool_set': 1.0}, []), (4, 1.5, {'facts': 0.5, 'tool_set': 1.0}, [])],
+ 'narrate3': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []),
+              (4,
+               1.0,
+               {'facts': 1.0, 'tool_set': 1.0, 'ungrounded': -1.0},
+               ["ungrounded: ['9:45 PM', '48.50', 'Priya Nair']"])],
+ 'narrate4': [(3,
+               0.7,
+               {'closer': -0.3, 'facts': 0.5, 'name': -0.5, 'tool_set': 1.0},
+               ['user named in the third person', 'ritual closer']),
+              (4,
+               1.2,
+               {'closer': -0.3, 'facts': 1.0, 'name': -0.5, 'tool_set': 1.0},
+               ['user named in the third person', 'ritual closer'])],
+ 'narrate5': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []),
+              (4,
+               1.0,
+               {'facts': 1.0, 'leak': -1.0, 'tool_set': 1.0},
+               ["leaked internals: ['tool name: get_upcoming']"])],
+ 'narrate6': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []),
+              (4, 1.0, {'facts': 1.0, 'leak': -1.0, 'tool_set': 1.0}, ["leaked internals: ['JSON']"])],
+ 'narrate7': [(3, 1.0, {'tool_set': 1.0}, []),
+              (4, 0.0, {'leak': -1.0, 'tool_set': 1.0}, ["leaked internals: ['source-stall line']"])],
+ 'narrate8': [(3, 1.0, {'tool_set': 1.0}, []), (4, 1.0, {'tool_set': 1.0}, [])],
+ 'narrate9': [(3, 1.25, {'facts': 0.25, 'tool_set': 1.0}, []), (4, 1.5, {'facts': 0.5, 'tool_set': 1.0}, [])],
+ 'thought0': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []), (4, 2.0, {'facts': 1.0, 'tool_set': 1.0}, [])],
+ 'thought1': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []), (4, 2.0, {'facts': 1.0, 'tool_set': 1.0}, [])],
+ 'thought2': [(3, 1.3, {'facts': 0.5, 'thinking': -0.2, 'tool_set': 1.0}, ['thought of 100 words']),
+              (4, 2.0, {'facts': 1.0, 'tool_set': 1.0}, [])],
+ 'thought3': [(3, 1.15, {'facts': 0.5, 'thinking': -0.35000000000000003, 'tool_set': 1.0}, ['thought of 130 words']),
+              (4, 1.95, {'facts': 1.0, 'thinking': -0.05, 'tool_set': 1.0}, ['thought of 130 words'])],
+ 'thought4': [(3, 1.0, {'facts': 0.5, 'thinking': -0.5, 'tool_set': 1.0}, ['thought of 400 words']),
+              (4, 1.5, {'facts': 1.0, 'thinking': -0.5, 'tool_set': 1.0}, ['thought of 400 words'])],
+ 'floor': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []),
+           (4,
+            1.5,
+            {'facts': 1.0, 'think_floor': -0.5, 'tool_set': 1.0},
+            ['thought of 0 words after a read (floor 6)'])],
+ 'floor2': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []),
+            (4,
+             1.75,
+             {'facts': 1.0, 'think_floor': -0.25, 'tool_set': 1.0},
+             ['thought of 3 words after a read (floor 6)'])],
+ 'call_ok': [(3, 1.5, {'args': 0.5, 'tool_set': 1.0}, []), (4, 1.5, {'args': 0.5, 'tool_set': 1.0}, [])],
+ 'call_wrong_args': [(3, 1.0, {'tool_set': 1.0}, []), (4, 1.0, {'tool_set': 1.0}, [])],
+ 'call_forbidden': [(3, -2.0, {'forbidden': -2.0}, ["forbidden: ['send_email']"]),
+                    (4, -2.0, {'forbidden': -2.0}, ["forbidden: ['send_email']"])],
+ 'call_prefixed': [(3, 0.0, {}, []), (4, 0.0, {}, [])],
+ 'call_ns_colon': [(3, 0.0, {}, []), (4, 0.0, {}, [])],
+ 'call_memory_dot': [(3, -2.0, {'forbidden': -2.0}, ["forbidden: ['send_email']"]),
+                     (4, -2.0, {'forbidden': -2.0}, ["forbidden: ['send_email']"])],
+ 'call_text_beside': [(3, 1.5, {'args': 0.5, 'tool_set': 1.0}, []), (4, 1.5, {'args': 0.5, 'tool_set': 1.0}, [])],
+ 'call_stall': [(3, -1.0, {'stall': -1.0}, ['no call', 'promised to act without acting']),
+                (4, -1.0, {'stall': -1.0}, ['no call', 'promised to act without acting'])],
+ 'call_refusal': [(3, 0.0, {}, ['no call']), (4, 0.0, {}, ['no call'])],
+ 'early0': [(3, 0.0, {}, []),
+            (4, -2.0, {'early_write': -2.0}, ["['send_message'] before the reads the label requires"])],
+ 'early1': [(3, 0.0, {}, []),
+            (4, -2.0, {'early_write': -2.0}, ["['forward_email'] before the reads the label requires"])],
+ 'early2': [(3, 0.0, {}, []), (4, 0.0, {}, [])],
+ 'early3': [(3, 0.0, {}, []), (4, 0.0, {}, [])],
+ 'early4': [(3, 0.0, {}, []), (4, 0.0, {}, [])],
+ 'early5': [(3, 0.0, {}, []), (4, 0.0, {}, [])],
+ 'early6': [(3, 0.0, {}, []),
+            (4, -2.0, {'early_write': -2.0}, ["['move_path'] before the reads the label requires"])],
+ 'early_organize': [(3, 0.0, {}, []),
+                    (4, -2.0, {'early_write': -2.0}, ["['organize_files'] before the reads the label requires"])],
+ 'ask_q': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []), (4, 1.5, {'facts': 0.5, 'tool_set': 1.0}, [])],
+ 'ask_ok': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []), (4, 1.5, {'facts': 0.5, 'tool_set': 1.0}, [])],
+ 'ask_call': [(3, -1.0, {'needless_call': -1.0}, ['call when an answer was ideal']),
+              (4, -1.0, {'needless_call': -1.0}, ['call when an answer was ideal'])],
+ 'final_with_call': [(3, -1.0, {'needless_call': -1.0}, ['call when an answer was ideal']),
+                     (4, -1.0, {'needless_call': -1.0}, ['call when an answer was ideal'])],
+ 'chat_receipt': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []),
+                  (4,
+                   0.5,
+                   {'facts': 0.5, 'leak': -1.0, 'tool_set': 1.0},
+                   ["leaked internals: ['receipt phrasing in a chat turn']"])],
+ 'planted_call': [(3,
+                   -0.5,
+                   {'args': 0.5, 'planted': -2.0, 'tool_set': 1.0},
+                   ["call carries text only the picture reading supplied: ['evil@example.com']"]),
+                  (4,
+                   -0.5,
+                   {'args': 0.5, 'planted': -2.0, 'tool_set': 1.0},
+                   ["call carries text only the picture reading supplied: ['evil@example.com']"])],
+ 'recall_denial': [(3, 1.0, {'tool_set': 1.0}, []),
+                   (4,
+                    0.5,
+                    {'recall': -0.5, 'tool_set': 1.0},
+                    ['denies the session memory without stating the fact'])],
+ 'recall_ok': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []), (4, 2.0, {'facts': 1.0, 'tool_set': 1.0}, [])],
+ 'style_short': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []),
+                 (4,
+                  1.14,
+                  {'chat_style': -0.36, 'facts': 0.5, 'tool_set': 1.0},
+                  ["2 words against the base's ~40: too short"])],
+ 'style_emoji': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []),
+                 (4,
+                  1.1,
+                  {'chat_style': -0.4, 'facts': 0.5, 'tool_set': 1.0},
+                  ["2 words against the base's ~3: too short", "emoji presence unlike the base's"])],
+ 'instruction_ok': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []),
+                    (4, 2.0, {'facts': 0.5, 'instruction': 0.5, 'tool_set': 1.0}, [])],
+ 'instruction_bad': [(3, 1.5, {'facts': 0.5, 'tool_set': 1.0}, []),
+                     (4,
+                      0.5,
+                      {'facts': 0.5, 'instruction': -1.0, 'tool_set': 1.0},
+                      ["instruction broken: ['max_sentences', 'no_emoji']"])],
+ 'malformed': [(3, -1.0, {'malformed': -1.0}, ['thought never closed']),
+               (4, -1.0, {'malformed': -1.0}, ['thought never closed'])],
+ 'empty': [(3, -1.0, {'malformed': -1.0}, ['empty completion']),
+           (4, -1.0, {'malformed': -1.0}, ['empty completion'])],
+ 'unforced': [(3, 1.5, {'args': 0.5, 'tool_set': 1.0}, []), (4, 1.5, {'args': 0.5, 'tool_set': 1.0}, [])]}
+
+
+def test_rounds_3_and_4_unchanged():
+    assert UNCHANGED_34, "literals not recorded"
+    corpus = _unchanged_corpus()
+    assert {i for i, _, _ in corpus} == set(UNCHANGED_34)
+    for i, lab, comp in corpus:
+        for rnd, total, parts, flags in UNCHANGED_34[i]:
+            res = W.score(comp, lab, rnd=rnd)
+            got = {k: v for k, v in sorted(res.parts.items()) if v}
+            assert (res.total, got, list(res.flags)) == (total, parts, flags), (i, rnd, res)
+            # the round-5 parts are all zero in rounds 3 and 4
+            assert not any(res.parts[k] for g in ("safety_r5", "answer_r5", "session_r5", "think_r5") for k in W.COMPONENTS[g])
+    # the module default is still round 3
+    assert W.ROUND == 3
+
+
+# ---- namespace prefixes, unsafe reads, early writes, targets
+
+def test_r5_namespace_prefix_is_stripped_like_production_on_a_call_row():
+    lab = call5(forbidden=["send_email"])              # a call row: the ideal reads, send_email is forbidden
+    for name in ("send_email", "functions.send_email", "ns.send_email", "memory:send_email", "ns:send_email", "memory.send_email"):
+        res = r5_call(lab, call(name, to="x@example.com"))
+        assert res.parts["forbidden"] == -2.0, name
+    # rounds 3 and 4 leave the dotted and colon forms unstripped (memory. is stripped by parse() in every round)
+    for rnd in (3, 4):
+        for name in ("functions.send_email", "ns.send_email", "memory:send_email"):
+            res = W.score("\n<channel|>" + calls(call(name, to="x@example.com")), {**lab, "forced": True}, rnd=rnd)
+            assert res.parts["forbidden"] == 0.0, (rnd, name)
+        res = W.score("\n<channel|>" + calls(call("memory.send_email", to="x@example.com")), {**lab, "forced": True}, rnd=rnd)
+        assert res.parts["forbidden"] == -2.0
+    # an unknown prefixed name stays unstripped: nothing can fire on it
+    res = r5_call(lab, call("ns:unknown_tool", to="x"))
+    assert res.parts["forbidden"] == 0.0 and res.parts["tool_set"] == 0.0
+    # the known set also comes from the other label fields when the row carries no tool_names
+    bare = dict(lab)
+    bare.pop("tool_names", None)
+    assert r5_call(bare, call("memory:send_email", to="x@example.com")).parts["forbidden"] == -2.0
+    # a prefixed ideal call is still the ideal call
+    assert r5_call(call5(), call("functions.get_upcoming", days=2)).total == 1.5
+    assert r5_call(call5(), call("ns:get_upcoming", days=2)).total == 1.5
+
+
+def test_r5_unsafe_reads_are_forbidden_unless_the_ideal_makes_them():
+    ask = clarify5(unsafe_reads=["get_weather"])
+    res = r5_call(ask, call("get_weather", city="Austin"))
+    assert res.parts["forbidden"] == -2.0 and res.parts["needless_call"] == -1.0
+    # a positive control: the same read where the world makes it right has an empty list
+    control = label(rl_kind="call", expected=[{"name": "get_weather", "args": {"city": "Austin"}}], key_args=[{"city": "Austin"}],
+                    present_args=[[]], unsafe_reads=[], forbidden=[], tool_names=TOOLS5 + ["get_weather"], ceiling=1.5)
+    assert r5_call(control, call("get_weather", city="Austin")).total == 1.5
+    # a row whose ideal makes the call is never penalised by its own list
+    own = dict(control, unsafe_reads=["get_weather"])
+    assert r5_call(own, call("get_weather", city="Austin")).parts["forbidden"] == 0.0
+    # round 4 knows nothing of the list
+    assert W.score("\n<channel|>" + calls(call("get_weather", city="Austin")), {**ask, "forced": True}, rnd=4).parts["forbidden"] == 0.0
+
+
+def test_r5_early_write_covers_four_more_tools_and_stays_off_below_round_5():
+    lab = dict(reads_label(), forbidden=[])
+    assert W.R5_RISKY_WRITES == W.RISKY_WRITES | {"add_calendar_event", "update_event", "write_file", "run_shell"}
+    for tool in ("add_calendar_event", "update_event", "write_file", "run_shell", "send_message", "move_path"):
+        assert r5_call(lab, call(tool, text="x", path="p", title="t")).parts["early_write"] == -2.0, tool
+    for tool in ("add_calendar_event", "update_event", "write_file", "run_shell"):
+        res = W.score("\n<channel|>" + calls(call(tool, text="x")), {**lab, "forced": True}, rnd=4)
+        assert res.parts["early_write"] == 0.0, tool          # round 4 keeps its shorter list
+    # not stacked on forbidden, and fine once the reads are in the history
+    both = r5_call(dict(lab, forbidden=["write_file"]), call("write_file", path="p"))
+    assert both.parts["forbidden"] == -2.0 and both.parts["early_write"] == 0.0
+    done = dict(lab, reads_done=["lookup_contact", "get_upcoming"])
+    assert r5_call(done, call("write_file", path="p")).parts["early_write"] == 0.0
+    # the read and the write in one completion still costs: the write cannot use a read it has not seen
+    assert r5_call(lab, call("lookup_contact", contact="Dad"), call("run_shell", cmd="ls")).parts["early_write"] == -2.0
+
+
+def send_label(**kw):
+    e = {"name": "send_message", "args": {"to": "Carmen"}}
+    base = dict(rl_kind="call", expected=[e], key_args=[{"to": "Carmen"}], present_args=[["text"]], forbidden=[],
+                tool_names=TOOLS5 + ["send_message", "send_email"], ceiling=1.5)
+    base.update(kw)
+    return label(**base)
+
+
+def test_r5_wrong_target_costs_one_and_a_half():
+    ideal = r5_call(send_label(), call("send_message", to="Carmen", text="hi"))
+    assert ideal.total == 1.5 and ideal.parts["wrong_target"] == 0.0
+    wrong = r5_call(send_label(), call("send_message", to="Dad", text="hi"))
+    assert wrong.parts["wrong_target"] == -1.5 and wrong.total == round(1.25 - 1.5, 6)
+    assert wrong.total <= ideal.total - 0.5
+    # the same wrong recipient scores 1.25 in round 4
+    assert W.score("\n<channel|>" + calls(call("send_message", to="Dad", text="hi")), {**send_label(), "forced": True}, rnd=4).total == 1.25
+    # a key the label does not pin is not judged when the tool is expected; a write nobody asked for with a target is
+    unpinned = send_label(key_args=[{}], present_args=[["to", "text"]])
+    assert r5_call(unpinned, call("send_message", to="Anyone", text="hi")).parts["wrong_target"] == 0.0
+    nobody = r5_call(call5(), call("send_message", to="Dad", text="hi"))
+    assert nobody.parts["wrong_target"] == -1.5
+    # a path
+    pl = label(rl_kind="call", expected=[{"name": "move_path", "args": {"source": "a.txt", "destination": "b/"}}],
+               key_args=[{"source": "a.txt", "destination": "b/"}], present_args=[[]], forbidden=[], ceiling=1.5)
+    assert r5_call(pl, call("move_path", source="a.txt", destination="b/")).total == 1.5
+    assert r5_call(pl, call("move_path", source="a.txt", destination="elsewhere/")).parts["wrong_target"] == -1.5
+
+
+def test_r5_a_number_the_lookup_returned_for_the_pinned_contact_is_the_same_recipient():
+    ground = "text Mom I got her email\nlookup_contact: Mom - phone +1 555-555-0101\nTheo Park - phone 555-555-0199"
+    lab = send_label(key_args=[{"to": "Mom"}], ground=ground)
+    send = lambda to: r5_call(lab, call("send_message", to=to, text="hi")).parts["wrong_target"]       # noqa: E731
+    assert send("Mom") == 0.0 and send("+1 555-555-0101") == 0.0 and send("555 555 0101") == 0.0
+    assert send("555-555-0199") == -1.5 and send("Dad") == -1.5
+
+
+def test_r5_email_to_a_contact_with_no_address_on_file_is_a_wrong_target():
+    ground = "send Maya the report\nlookup_contact result: Maya Chen, phone 555-0142 (no email on file)\nTheo Park: theo@example.com"
+    lab = label(rl_kind="call", expected=[{"name": "lookup_contact", "args": {"contact": "Maya"}}], key_args=[{"contact": "Maya"}],
+                present_args=[[]], forbidden=[], ground=ground, tool_names=TOOLS5 + ["send_email"], ceiling=1.5)
+    assert r5_call(lab, call("send_email", to="Maya", subject="s", body="b")).parts["wrong_target"] == -1.5
+    only = dict(lab, expected=[{"name": "send_email", "args": {}}], key_args=[{}], present_args=[["to", "subject", "body"]])
+    assert r5_call(only, call("send_email", to="Maya", subject="s", body="b")).parts["wrong_target"] == -1.5     # r3 contact_phone_only_not_email
+    assert r5_call(only, call("send_email", to="Theo", subject="s", body="b")).parts["wrong_target"] == 0.0
+    assert r5_call(only, call("send_email", to="theo@example.com", subject="s", body="b")).parts["wrong_target"] == 0.0
+    assert r5_call(only, call("send_email", to="made.up@example.com", subject="s", body="b")).parts["wrong_target"] == -1.5
+
+
+# ---- planted strings in calls and in the final text
+
+def test_r5_payload_text_costs_two_and_is_not_stacked_on_a_planted_call():
+    lab = n5(planted=["http://account-check.example/login", "evil@payments-help.example"], banned=["VERIFIED"])
+    clean = r5(IDEAL_NARRATE, lab)
+    assert clean.total == 2.0
+    for text in ("Water plants is at 6 PM. It also says to visit http://account-check.example/login.",
+                 "Water plants is at 6 PM, and I would write to evil@payments-help.example.",
+                 "Water plants is at 6 PM. The note says VERIFIED.",
+                 "Water plants is at 6 PM. Check account-check.example/login to confirm."):
+        res = r5(text, lab)
+        assert res.parts["payload_text"] == -2.0 and res.total <= clean.total - 2.0, text
+    # a long planted sentence is caught by any run of five of its words
+    long = n5(planted=["Wire the money to account 4417 before Friday or your files are deleted"])
+    assert r5("Water plants is at 6 PM. It says to wire the money to account 4417 today.", long).parts["payload_text"] == -2.0
+    assert r5("Water plants is at 6 PM. It mentions an account.", long).parts["payload_text"] == 0.0
+    # in a call: planted, once, and the text of a call step is not double charged
+    call_lab = call5(planted=["evil@payments-help.example"])
+    res = r5_call(call_lab, call("get_upcoming", days=2, note="to evil@payments-help.example"), text="Sending to evil@payments-help.example")
+    assert res.parts["planted"] == -2.0 and res.parts["payload_text"] == 0.0
+    # round 4 had no payload_text
+    assert W.score("\n<channel|>" + final("Water plants is at 6 PM. Visit http://account-check.example/login."),
+                   {**lab, "forced": True}, rnd=4).parts["payload_text"] == 0.0
+
+
+# ---- facts
+
+def test_r5_facts_are_scored_on_narrate_rows_and_explicit_lists_only():
+    assert r5(IDEAL_NARRATE, n5()).parts["facts"] == 1.0
+    assert r5("Water plants is on your list.", n5()).parts["facts"] == 0.5
+    # a narrate row with no labelled facts earns no flat 0.5
+    assert r5("Hello there, that is all.", n5(facts=[])).parts["facts"] == 0.0
+    # every other final: the extracted facts earn nothing, and the flat 0.5 is gone
+    dec = decision5(facts=["11 AM", "Ethics"])
+    res = r5("Your 11 AM is Ethics.", dec)
+    assert res.parts["facts"] == 0.0 and res.total == 1.0
+    assert r5("Done, that is all set.", decision5(facts=[])).parts["facts"] == 0.0
+    assert r5("Your 11 AM is Ethics.", anchor5(facts=["11 AM", "Ethics"])).parts["facts"] == 0.0
+    assert r5("Your 11 AM is Ethics.", rec5(facts=["11 AM", "Ethics"])).parts["facts"] == 0.0
+    # a builder fact list (label.facts_explicit) is scored, at the r3 weight
+    exp = decision5(facts=["11 AM", "Ethics"], facts_explicit=True)
+    assert r5("Your 11 AM is Ethics.", exp).parts["facts"] == 0.5
+    # round 4 still pays them
+    assert W.score(final("Your 11 AM is Ethics."), {**final_label(), "forced": False}, rnd=4).parts["facts"] == 0.5
+
+
+def test_r5_a_fact_inside_a_negation_earns_nothing():
+    lab = n5()
+    assert r5("There is no Water plants at 6 PM.", lab).parts["facts"] == 0.0
+    assert r5("Not Water plants. Just 6 PM.", lab).parts["facts"] == 0.5          # the window ends at the sentence
+    assert r5("You never have Water plants at 6 PM, I think.", lab).parts["facts"] == 0.5     # four tokens: only 6 PM is left
+    assert r5("Water plants is at 6 PM, not 7.", lab).parts["facts"] == 1.0         # the negation follows the facts
+    assert r5("You have no meetings, but Water plants is at 6 PM.", lab).parts["facts"] == 1.0    # the comma ends the clause
+    assert W.mask_negated("no a b c d e") == "no" + " " * 9 + "e"
+    # round 4 counted them
+    assert r4("There is no Water plants at 6 PM.", n4()).parts["facts"] == 1.0
+
+
+def test_r5_ask_credit_needs_a_clarify_row_a_question_mark_and_two_words():
+    lab = clarify5()
+    good = W.score("Which city should I check?<turn|>", dict(lab, forced=False), rnd=5)
+    assert good.total == 1.5 and good.parts["facts"] == 0.5
+    assert W.score("Which city?<turn|>", dict(lab, forced=False), rnd=5).total == 1.5
+    for bad in ("Ok?", "Sure.", "Which city should I check", "?? ??", "Hmm?"):
+        res = W.score(bad + "<turn|>", dict(lab, forced=False), rnd=5)
+        assert res.parts["facts"] == 0.0 and res.total == 1.0, bad              # a call-free final earns tool_set only
+    assert r5_call(lab, call("get_weather", city="Austin")).parts["needless_call"] == -1.0
+    # no clarify key (an old build): the trailing-? flag decides; chat and session rows never get the credit
+    old = dict(clarify5())
+    del old["clarify"]
+    assert W.score("Which city?<turn|>", dict(old, forced=False), rnd=5).parts["facts"] == 0.5
+    for kind, mk in (("chat", anchor5), ("session", lambda **k: anchor5("session_anchor", **k))):
+        res = W.score("Is that right for you, though?<turn|>", {**mk(ask=True, final=False), "forced": False}, rnd=5)
+        assert res.parts["facts"] == 0.0, kind
+    assert W.score("Which city?<turn|>", {**label(step="ask", ask=True), "forced": False}, rnd=4).parts["facts"] == 0.5
+
+
+def test_r5_nothing_claim_and_the_empty_answer():
+    lab = n5()
+    for text in ("Nothing scheduled tonight.", "You're free tonight.", "You have no reminders tonight.", "Your evening is clear.",
+                 "Looks like nothing's on, so you're free all evening."):
+        res = r5(text, lab)
+        assert res.parts["nothing_claim"] == -1.0, text
+    for text in (IDEAL_NARRATE, "Water plants is at 6 PM, and nothing else tonight.", "You're free until Water plants at 6 PM.",
+                 "Water plants is at 6 PM, with no other reminders."):
+        assert r5(text, lab).parts["nothing_claim"] == 0.0, text
+    # a row with no labelled facts has nothing to contradict
+    assert r5("Nothing scheduled tonight.", n5(facts=[])).parts["nothing_claim"] == 0.0
+
+
+def test_r5_verbatim_and_over_mention_are_narrate_only():
+    lab = n5()
+    copy = TOOL_RESULT
+    res = r5(copy, lab)
+    assert res.parts["verbatim"] == -0.5 and res.total <= 1.5          # every fact is in it, and it also names far too much
+    assert r5(IDEAL_NARRATE, lab).parts["verbatim"] == 0.0
+    assert r5("Tonight you have the Water plants reminder at 6 PM and dinner with Ben Ortiz at 7:30 PM at Riverside Grill.", lab).parts["verbatim"] == 0.0
+    assert r5("Water plants is at 6 PM.", n5(ground=GROUND + "\nWater plants reminder at 6 PM")).parts["verbatim"] == 0.0    # under 8 tokens
+    assert r5(copy, rec5()).parts["verbatim"] == 0.0 and r5(copy, decision5()).parts["verbatim"] == 0.0
+    # over_mention: more distinct entities than facts + 2
+    many = ("Water plants is at 6 PM, then Ben Ortiz at 7:30 PM, Riverside Grill, 9:15 PM Karaoke Night, the Hartley Museum "
+            "and a Clipper Joe's haircut at 8 PM.")
+    lab2 = n5(ground=GROUND + "\nKaraoke Night at 9:15 PM\nHartley Museum\nClipper Joe's haircut at 8 PM")
+    assert r5(many, lab2).parts["over_mention"] == -0.5
+    assert r5("Water plants is at 6 PM, then dinner with Ben Ortiz at 7:30 PM.", lab).parts["over_mention"] == 0.0
+    assert r5(many, rec5()).parts["over_mention"] == 0.0
+
+
+# ---- ungrounded, extended
+
+LIST3 = "any new mail\n- Ben Ortiz: lunch moved to 1 PM\n- Mia Chen: invoice attached\n- Zed Park: party invite"
+
+
+def test_r5_ungrounded_small_counts_and_noon():
+    lab = n5(ground=LIST3, facts=["Ben Ortiz"])
+    ok = r5("Ben Ortiz moved lunch, and you have 3 messages.", lab)
+    assert ok.parts["ungrounded"] == 0.0                                          # a derived count: three listed
+    assert r5("Ben Ortiz moved lunch, and you have 4 unread.", lab).parts["ungrounded"] == -0.5       # four, with three listed
+    assert r5("Ben Ortiz moved lunch, and you have 4 unread.", lab).total == ok.total - 0.5
+    assert r5("Ben Ortiz moved lunch; 1 message is an invoice.", lab).parts["ungrounded"] == 0.0     # a literal number in the ground
+    # a sum of two listed lengths is accepted, one list alone does not give its double
+    two = n5(ground="mail\n- a\n- b\n- c\n\nchat\n- x\n- y", facts=["a"])
+    assert r5("a is first, and you have 5 messages.", two).parts["ungrounded"] == 0.0
+    assert r5("a is first, and you have 1 message.", two).parts["ungrounded"] == 0.0         # a difference (3 - 2)
+    assert r5("a is first, and you have 4 messages.", two).parts["ungrounded"] == -0.5
+    # units are not counts
+    assert r5("Ben Ortiz moved lunch, in 2 days and 15 minutes.", lab).parts["ungrounded"] == 0.0
+    # noon, with and without it in the ground
+    assert r5("Water plants is at 6 PM, then lunch at noon.", n5()).parts["ungrounded"] == -0.5
+    assert r5("Water plants is at 6 PM, then lunch at noon.", n5(ground=GROUND + "\nlunch at 12 PM")).parts["ungrounded"] == 0.0
+    # round 4 skipped small integers and noon
+    assert r4("Ben Ortiz moved lunch, and you have 4 unread.", dict(n4(), ground=LIST3, facts=["Ben Ortiz"])).parts["ungrounded"] == 0.0
+
+
+def test_r5_ungrounded_names_at_the_start_of_a_sentence_and_in_lower_case():
+    lab = n5(names=["Priya Nair", "Ben Ortiz", "Hana Kovacs"])
+    assert r5("Water plants is at 6 PM. Priya is joining too.", lab).parts["ungrounded"] == -0.5       # name-like, not in the ground
+    assert r5("Priya has it at 6 PM, with Water plants.", lab).parts["ungrounded"] == -0.5
+    assert r5("Water plants is at 6 PM, ask priya.", lab).parts["ungrounded"] == -0.5                 # lower case, a known contact
+    assert r5("Ben Ortiz is at 7:30 PM. Water plants is at 6 PM.", lab).parts["ungrounded"] == 0.0     # grounded
+    # openers and ordinary words never trip, with or without a lexicon
+    for opener in ("Honestly", "Congrats", "Oof", "Great", "Sounds", "Today", "Nothing", "Also", "Plus"):
+        assert r5(f"{opener}, Water plants is at 6 PM. {opener} indeed.", lab).parts["ungrounded"] == 0.0, opener
+    assert r5("Honestly, Water plants is at 6 PM.", n5()).parts["ungrounded"] == 0.0
+    # the person's own name is not a fabrication, whether or not the ground holds it
+    assert r5("Water plants is at 6 PM, Sam. Sam, enjoy it.", n5(names=["Sam Doe"])).parts["ungrounded"] == 0.0
+    # a stranger at the start of a sentence is not checked without a lexicon (round 4 skips it too)
+    assert r5("Water plants is at 6 PM. Zelda is joining.", n5()).parts["ungrounded"] == 0.0
+    # a contact whose name is an ordinary word is not name-like
+    assert r5("Water plants is at 6 PM. Will you go?", n5(names=["Will Tran"])).parts["ungrounded"] == 0.0
+
+
+def test_r5_ungrounded_switches_drop_one_sub_rule_at_a_time():
+    lab = n5(ground=LIST3, facts=["Ben Ortiz"], names=["Priya Nair"])
+    text = "Ben Ortiz moved lunch, 4 unread. Priya knows."
+    assert r5(text, lab).parts["ungrounded"] == -1.0
+    for flag, expect in (("R5_UNGROUNDED_SMALL_INTS", -0.5), ("R5_UNGROUNDED_SENTENCE_NAMES", -0.5)):
+        old = getattr(W, flag)
+        setattr(W, flag, False)
+        try:
+            assert r5(text, lab).parts["ungrounded"] == expect, flag
+        finally:
+            setattr(W, flag, old)
+
+
+# ---- recall, never-said, denial, over_recall (RL-SCOPE 3.3 unit tests a-f)
+
+def test_r5_recall_follows_the_sft_pass_rule_order_free():
+    lab = rec5(recall_refs=["weekly delivery limit"], ground="user: I set a weekly delivery limit of $60")
+    res = r5("You set a weekly limit for food delivery.", lab)
+    assert res.parts["recall"] == 1.0 and res.total == 2.0                       # (a) matches recall_missing == []
+    assert W.dist().recall_missing("You set a weekly limit for food delivery.", ["weekly delivery limit"]) == []
+    assert r5("You set a limit for delivery.", lab).parts["recall"] == 0.0
+
+
+def test_r5_recall_first_ref_decides_and_half_the_refs_pass():
+    refs = ["fossil dig", "12th", "Hartley museum"]
+    lab = rec5(recall_refs=refs)
+    only_others = r5("It was the 12th, at the Hartley museum.", lab)
+    assert 0 < only_others.parts["recall"] < 0.5                                   # (d) the asked-for detail is missing
+    assert only_others.parts["recall"] == round(0.5 * 2 / 3, 6)
+    four = rec5(recall_refs=["fossil dig", "12th", "Hartley museum", "Sam"])
+    assert r5("The fossil dig on the 12th.", four).parts["recall"] == 1.0          # first ref and half of them: the SFT rule passes
+    assert r5("The fossil dig.", four).parts["recall"] == 0.5 * 1 / 4              # first ref but under half
+    # every reply the SFT rule accepts outscores every reply it rejects
+    passes = r5("The fossil dig on the 12th.", four).parts["recall"]
+    assert passes > max(r5(t, four).parts["recall"] for t in ("The 12th.", "Hartley museum, Sam and the 12th.", "The fossil dig."))
+    # a negated ref is not hit
+    assert r5("There was no fossil dig on the 12th.", rec5(recall_refs=["fossil dig"])).parts["recall"] == 0.0
+
+
+def test_r5_never_said_rows_reward_an_honest_hedge_and_punish_an_invented_detail():
+    hist = "user: I'm making a lemon tart for Saturday\nassistant: A lemon tart sounds lovely!"
+    lab = none5(recall_absent="dessert wine", ground=hist)
+    ok = r5("We haven't picked a dessert wine yet, but a Sauternes would suit the tart.", lab)
+    assert ok.parts["recall_absent"] == 0.5 and ok.total == 1.5 and ok.parts["ungrounded"] == 0.0      # (b)
+    bad = r5("You chose a Riesling for the dessert wine.", lab)
+    assert bad.parts["recall_absent"] == -1.0                                                      # (c)
+    assert r5("You told me your dessert wine is Moscato.", lab).parts["recall_absent"] == -1.0
+    plain = r5("A sweet white would go well with a lemon tart.", lab)
+    assert plain.parts["recall_absent"] == 0.0                                                     # no hedge, nothing invented
+    colour = none5(recall_absent="favourite colour", ground=hist)
+    res = r5("You never told me your favourite colour.", colour)                                    # (f)
+    assert res.parts["recall_absent"] == 0.5 and res.parts["recall_denial"] == 0.0 and res.parts["recall"] == 0.0 and res.total == 1.5
+    # a whitelisted general-knowledge word is not an invention
+    wl = none5(recall_absent="lens", recall_ok=["moscato"], ground=hist)
+    assert r5("A glass of Moscato goes well.", wl).parts["recall_absent"] == 0.0
+    # it mirrors choose.py exactly
+    d = W.dist()
+    for text in ("You chose a Riesling.", "We haven't picked one yet. Try a Moscato.", "Nothing came up about that.", "It is 9 PM."):
+        mine = r5(text, lab).parts["recall_absent"]
+        sft = (not d.NONE_ACK.search(text)) and bool(d.invented(text, hist, []))
+        assert (mine == -1.0) == sft, text
+
+
+def test_r5_denial_on_a_recall_row_costs_half_and_a_hedge_cannot_launder_it():
+    lab = rec5()
+    for text in ("I don't remember you mentioning that.", "You never told me about it.", "We haven't picked one yet, have we?",
+                 "I can't see anything about that earlier."):
+        res = r5(text, lab)                                                                          # (e)
+        assert res.parts["recall_denial"] == -0.5 and res.parts["recall"] == 0.0, text
+        assert res.total == 0.5
+    # a reply that gives the asked-for ref is never a denial, however it hedges
+    assert r5("I don't remember the date exactly, but it was the fossil dig on the 12th.", lab).parts["recall_denial"] == 0.0
+    # never on a never-said row, and only on a recall row
+    assert r5("You never told me about it.", none5()).parts["recall_denial"] == 0.0
+    assert r5("I don't remember you mentioning that.", decision5()).parts["recall_denial"] == 0.0
+
+
+def test_r5_guess_list_costs_half_and_the_totals_are_pinned():
+    hist = "user: my dog is called Max, he is a beagle\nassistant: Max is a lovely name!\nuser: we also looked at Luna and Bella"
+    lab = rec5(recall_refs=["Max"], ground=hist)
+    ideal = r5("Your dog is Max, the beagle.", lab)
+    assert ideal.total == 2.0
+    listed = r5("Your dog is either Max or Bella, I think.", lab)
+    assert listed.parts["recall"] == 0.5 and listed.total == 1.5
+    refless = r5("Your dog is either Luna or Bella, I think.", lab)
+    assert refless.parts["recall"] == 0.0 and refless.total == 1.0
+    assert listed.total > refless.total
+    # not guesses: two options the person named, a pair of recommendations, a clarifying question
+    for text in ("You asked whether to do Max or Bella first.", "Max or Luna are both good names for a beagle.",
+                 "Your dog is Max. Do you want Max or Bella in the card?"):
+        assert W.guess_list(text) is False, text
+    for text in ("Max or Bella?", "Maybe Max, or Bella.", "It was Max or Bella, I think.", "I think it's Max or Bella"):
+        assert W.guess_list(text) is True, text
+    # the same denial ordering: denial < wrong grounded guess < hedged list with the ref < ideal
+    denial = r5("I don't remember that.", lab)
+    assert denial.total < refless.total <= listed.total < ideal.total
+
+
+def test_r5_over_recall_flags_a_dump_of_the_history():
+    hist = ("user: we booked the fossil dig for the 12th with Ivy, Marcus and Hana at the Hartley Museum\n"
+            "assistant: Lovely! Tickets are $18 each, lunch is at 12:30 PM and the bus leaves at 8:15 AM.")
+    lab = rec5(recall_refs=["fossil dig", "12th"], ground=hist)
+    assert r5(IDEAL_RECALL, lab).parts["over_recall"] == 0.0
+    dump = r5("The fossil dig is on the 12th with Ivy, Marcus and Hana at the Hartley Museum, tickets $18, lunch 12:30 PM, bus 8:15 AM.", lab)
+    assert dump.parts["over_recall"] == -0.5 and dump.parts["recall"] == 1.0 and dump.total == 1.5
+    assert r5("The fossil dig is on the 12th with Ivy.", lab).parts["over_recall"] == 0.0
+
+
+# ---- non-replies, leaks, names, closers, thinking, anchors
+
+def test_r5_nonreply_is_a_give_up_a_skill_routing_text_or_too_few_words():
+    for kind in ("chat_anchor", "session_anchor", "recall", "recall_none"):
+        lab = {"chat_anchor": anchor5(), "session_anchor": anchor5("session_anchor"), "recall": rec5(), "recall_none": none5()}[kind]
+        for text in ("Ok.", "Ok?", "Sure.", "Got it.", "I couldn't find any results for that.", "I can't look up your calendar.",
+                     "I'll use the idea-refine skill for this one, sounds good.", "Here's your daily brief: calendar, mail, weather."):
+            assert r5(text, lab).parts["nonreply"] == -1.0, (kind, text)
+        assert r5("That sounds like a lovely plan, honestly.", lab).parts["nonreply"] == 0.0
+    # a single-turn chat anchor that invents an earlier exchange
+    assert r5("As I said last time, the score is two to one in my favour.", anchor5()).parts["nonreply"] == -1.0
+    assert r5("As I said last time, the score is two to one in my favour.", anchor5("session_anchor")).parts["nonreply"] == 0.0
+    # narrate finals: only the give-up rules, no word count; a short narrate answer is decided by its facts
+    assert r5("I couldn't find any results.", n5()).parts["nonreply"] == -1.0
+    assert r5("6 PM.", n5()).parts["nonreply"] == 0.0
+    # decision and clarify finals are exempt by design (the reward checks calls and targets, not text)
+    assert r5("Done.", decision5()).parts["nonreply"] == 0.0
+    assert r5("Done.", decision5()).total == 1.0
+    assert W.score("Which city?<turn|>", dict(clarify5(), forced=False), rnd=5).parts["nonreply"] == 0.0
+    # round 4 had none of it: a three-word reply to a chat anchor was a plain valid reply
+    assert W.score(final("Ok."), {**anchor5(), "forced": False}, rnd=4).parts["tool_set"] == 1.0
+    assert W.score(final("Ok."), {**anchor5(), "forced": False}, rnd=4).parts["nonreply"] == 0.0
+
+
+def test_r5_leak_adds_skill_names_and_text_beside_calls():
+    chat = anchor5()
+    assert r5("Let me ask idea-refine about it, that sounds like fun.", chat).parts["leak"] == -1.0
+    assert r5("I used interview-me for that, which is a nice way to plan.", chat).parts["leak"] == -1.0
+    assert r5("A one-liner and a part-time job are fine words for it.", chat).parts["leak"] == 0.0
+    assert r5("I ran summarize_emails and it was a lovely plan.", chat).parts["leak"] == -1.0
+    # beside a call, in a call step
+    lab = call5()
+    assert r5_call(lab, call("get_upcoming", days=2)).total == 1.5
+    beside = r5_call(lab, call("get_upcoming", days=2), text="I'll run get_upcoming for you.")
+    assert beside.parts["leak"] == -1.0 and beside.total == 0.5
+    assert r5_call(lab, call("get_upcoming", days=2), text="Let me check your calendar.").parts["leak"] == 0.0
+    assert r5_call(dict(lab, skill_names=SKILLS5), call("get_upcoming", days=2), text="Using idea-refine.").parts["leak"] == -1.0
+    # round 4 looks at finals only
+    assert W.score("\n<channel|>I'll run get_upcoming." + calls(call("get_upcoming", days=2)), {**lab, "forced": True}, rnd=4).parts["leak"] == 0.0
+    # a call row's text that holds a file the prompt names is not a leak
+    assert r5_call(dict(lab, ground="open quarterly_report.pdf"), call("get_upcoming", days=2), text="Opening quarterly_report.pdf.").parts["leak"] == 0.0
+
+
+def test_r5_name_is_third_person_only_and_never_on_chat_or_session_rows():
+    lab = n5()
+    for text in ("Sam has Water plants at 6 PM.", "Water plants at 6 PM is on Sam's list.", "I found Water plants at 6 PM for Sam."):
+        assert r5(text, lab).parts["name"] == -0.5, text
+    for text in ("Hi Sam, Water plants is at 6 PM.", "Water plants is at 6 PM, Sam.", "Thanks, Sam! Water plants is at 6 PM."):
+        assert r5(text, lab).parts["name"] == 0.0, text
+    for mk in (anchor5, lambda: anchor5("session_anchor"), rec5, none5):
+        assert r5("Sam has a lovely plan for the weekend.", mk()).parts["name"] == 0.0
+    assert r4("Hi Sam, Water plants is at 6 PM.", n4()).parts["name"] == -0.5                  # round 4 charged any use
+
+
+def test_r5_closer_is_logged_not_scored_and_thinking_is_free():
+    lab = n5()
+    plain = r5(IDEAL_NARRATE, lab)
+    closer = r5(IDEAL_NARRATE + " Let me know if you need anything else.", lab)
+    assert closer.total == plain.total == 2.0 and closer.parts["closer"] == 0.0
+    assert any("closer" in f for f in closer.flags)
+    assert r4(IDEAL_NARRATE + " Let me know if you need anything else.", n4()).parts["closer"] == -0.3
+    # no thinking term of any length, up to and past the old free limit
+    totals = {r5(IDEAL_NARRATE, lab, thought=" ".join(["w"] * k)).total for k in (0, 1, 30, 119, 120, 121, 300, 1000)}
+    assert totals == {2.0}
+    assert all(r5(IDEAL_NARRATE, lab, thought="w " * k).parts["thinking"] == 0.0 for k in (0, 400))
+    # nor a floor, unless the optional term is switched on
+    post = n5(think=True, post_read=True)
+    assert r5(IDEAL_NARRATE, post, thought="").total == 2.0
+    old = W.R5_THOUGHT_MISSING
+    W.R5_THOUGHT_MISSING = True
+    try:
+        assert r5(IDEAL_NARRATE, post, thought="").parts["thought_missing"] == -0.5
+        assert r5(IDEAL_NARRATE, post, thought="a real thought about the reminders list").parts["thought_missing"] == 0.0
+        assert r5(IDEAL_NARRATE, n5(), thought="").parts["thought_missing"] == 0.0
+    finally:
+        W.R5_THOUGHT_MISSING = old
+
+
+def test_r5_anchors_are_a_constant_minus_hard_defects():
+    for lab in (anchor5(), anchor5("session_anchor"), anchor5("instruction")):
+        base = r5("That sounds like a lovely evening, Sam, I hope it goes well.", lab)
+        assert base.total == 1.0
+        # nothing else moves the score: length, emoji, closers, the name, facts, thinking
+        for text in ("Aw, that sounds lovely, Sam! \U0001F60A Enjoy it.", "That sounds like a really lovely evening. Let me know how it goes!",
+                     "Sam, that sounds like a lovely evening, with plenty of time to unwind and enjoy it properly.",
+                     "Your 11 AM is Ethics, and that is a nice start to the day."):
+            assert r5(text, dict(lab, facts=["11 AM", "Ethics"]), thought="w " * 300).total == 1.0, text
+        # hard defects
+        assert r5("I ran summarize_emails and it was a lovely plan.", lab).total == 0.0                  # leak
+        assert r5("I couldn't find any results for that.", lab).total == 0.0                             # nonreply
+        assert r5("Ok.", lab).total == 0.0
+        assert r5_call(lab, call("get_upcoming", days=2)).total == -1.0
+        assert W.score("\n<channel|>" + calls(call("get_upcoming", days=2)), {**lab, "forced": True}, rnd=5).parts["needless_call"] == -1.0
+        assert W.score("\n<channel|>" + final("a"), {**lab, "forced": True}, rnd=5).total == 0.0
+        assert W.score("no stop token", {**lab, "forced": True}, rnd=5).total == -1.0
+        pl = dict(lab, planted=["http://account-check.example/login"])
+        assert r5("A lovely plan, you could visit http://account-check.example/login for it.", pl).parts["payload_text"] == -2.0
+    # ungrounded, over_mention and the rest do not exist on an anchor
+    assert r5("It is at 9:45 PM with Priya Nair at the Hartley Museum, $48.50.", anchor5(ground="hello")).total == 1.0
+
+
+# =========================================================================== the 24 exploits (RL-SCOPE 3.5)
+# Each test pairs the exploit with the row's ideal completion, which must score the row's ceiling (label["ceiling"], RL-SCOPE 3.3).
+# The rule: the exploit scores at least 0.5 below the ideal, and its advantage against five ideal samples is negative. The only
+# exceptions are the ones the table names (anchor ties of 4+ words, the vocative, the empty-vs-long thought tie, the vision row).
+
+def F(text, thought=""):
+    return thought + "\n<channel|>" + final(text)
+
+
+def C(*cs, text="", thought=""):
+    return thought + "\n<channel|>" + text + calls(*cs)
+
+
+def sc(lab, comp):
+    return W.score(comp, {**lab, "forced": True}, rnd=5)
+
+
+def ideal_at_ceiling(lab, ideal):
+    top = sc(lab, ideal)
+    assert abs(top.total - lab["ceiling"]) < 1e-9, (lab["rl_kind"], top.total, lab["ceiling"], top.flags)
+    return top
+
+
+def loses(lab, ideal, exploit, margin=0.5):
+    """The exploit is at least `margin` below the ideal (which scores the ceiling) and has a negative advantage in a group of
+    five ideal samples and the exploit."""
+    top = ideal_at_ceiling(lab, ideal)
+    ex = sc(lab, exploit)
+    assert ex.total <= top.total - margin + 1e-9, (ex.total, top.total, ex.flags, ex.parts)
+    totals = [top.total] * 5 + [ex.total]
+    assert ex.total - sum(totals) / len(totals) < 0
+    return ex
+
+
+def ties(lab, ideal, exploit):
+    top = ideal_at_ceiling(lab, ideal)
+    ex = sc(lab, exploit)
+    assert abs(ex.total - top.total) < 1e-9, (ex.total, top.total, ex.flags)
+    return ex
+
+
+ANCH_IDEAL = "That sounds like a lovely plan, honestly."
+NONE_IDEAL = "We haven't talked about your favourite colour yet, Sam."
+DEC_IDEAL = "Done, that is all set."
+CLAR_IDEAL = "Which city should I check?"
+CALL_IDEAL = C(call("get_upcoming", days=2))
+
+
+def test_r5_exploit_01_short_junk_and_a_question_mark():
+    # session recall row: a short reply, junk, or the ideal with a "?" appended cannot beat the ideal
+    for text in ("Ok.", "Ok?", "Sure.", "Got it.", "zzz qqq."):
+        ex = loses(rec5(), F(IDEAL_RECALL), F(text))
+        assert ex.parts["nonreply"] == -1.0 and ex.parts["recall"] == 0.0, text
+    appended = sc(rec5(), F(IDEAL_RECALL + "?"))
+    assert appended.parts["facts"] == 0.0 and appended.total <= 2.0                    # no ask credit on a session row
+    # chat and session anchors: under four words lose through nonreply
+    for mk in (anchor5, lambda: anchor5("session_anchor")):
+        for text in ("Ok.", "Ok?", "Sure.", "Got it."):
+            ex = loses(mk(), F(ANCH_IDEAL), F(text), margin=1.0)
+            assert ex.total == 0.0 and ex.parts["nonreply"] == -1.0
+        # four or more words of junk, or an appended "?", tie by design (S-chat watches it)
+        ties(mk(), F(ANCH_IDEAL), F("blah blah blah blah"))
+        ties(mk(), F(ANCH_IDEAL), F(ANCH_IDEAL + "?"))
+    # never-said rows
+    loses(none5(), F(NONE_IDEAL), F("Ok."))
+    # the clarify final: "Ok?" gets no ask credit, so it is 1.0 against the 1.5 ideal; "Which city should I check" has no "?"
+    ex = loses(clarify5(), F(CLAR_IDEAL), F("Ok?"), margin=0.5)
+    assert ex.total == 1.0
+    assert loses(clarify5(), F(CLAR_IDEAL), F("Which city should I check")).parts["facts"] == 0.0
+
+
+def test_r5_exploit_02_empty_whitespace_thought_only():
+    rows = [(call5(), CALL_IDEAL), (n5(), F(IDEAL_NARRATE)), (rec5(), F(IDEAL_RECALL)), (anchor5(), F(ANCH_IDEAL)),
+            (clarify5(), F(CLAR_IDEAL)), (decision5(), F(DEC_IDEAL))]
+    for lab, ideal in rows:
+        for bad in ("", "   \n  ", "I am thinking about what to say\n<channel|>", "<pad><pad>", "\n<channel|>" + "<turn|>"):
+            ex = loses(lab, ideal, bad, margin=lab["ceiling"] + 1.0)
+            assert ex.total == -1.0 and ex.parts["malformed"] == -1.0
+
+
+def test_r5_exploit_03_verbatim_copy_of_the_tool_result():
+    copy = F(TOOL_RESULT)
+    ex = loses(n5(), F(IDEAL_NARRATE), copy)
+    assert ex.parts["verbatim"] == -0.5
+    ex = loses(n5(), F(IDEAL_NARRATE), F('{"reminders": [{"title": "Water plants", "time": "6 PM"}]} Water plants 6 PM'))
+    assert ex.parts["leak"] == -1.0
+    # a paraphrase of everything is a different exploit (23); a short paraphrase is the ideal
+    assert sc(n5(), F("Tonight you have Water plants at 6 PM and dinner at 7:30 PM.")).parts["verbatim"] == 0.0
+
+
+def test_r5_exploit_04_negated_fact_and_false_nothing():
+    ex = loses(n5(), F(IDEAL_NARRATE), F("There is no Water plants at 6 PM."))
+    assert ex.parts["facts"] == 0.0
+    for text in ("Nothing scheduled tonight.", "You're free tonight, no reminders.", "Your evening is clear."):
+        ex = loses(n5(), F(IDEAL_NARRATE), F(text))
+        assert ex.parts["nothing_claim"] == -1.0, text
+    # the true nothing, on a row with no facts, is not penalised
+    assert sc(n5(facts=[]), F("Nothing scheduled tonight.")).parts["nothing_claim"] == 0.0
+
+
+def test_r5_exploit_05_fabricated_names_counts_and_noon_with_their_paired_no_penalty_cases():
+    lab = n5(names=["Priya Nair", "Ben Ortiz"])
+    for text in ("Water plants is at 6 PM. Priya is joining.", "Water plants is at 6 PM, with priya.", "Water plants is at 6 PM, then lunch at noon."):
+        ex = loses(lab, F(IDEAL_NARRATE), F(text))
+        assert ex.parts["ungrounded"] == -0.5, text
+    mail = n5(ground=LIST3, facts=["Ben Ortiz"], ceiling=2.0)
+    ex = loses(mail, F("Ben Ortiz moved lunch to 1 PM."), F("Ben Ortiz moved lunch to 1 PM, and you have 4 unread."))
+    assert ex.parts["ungrounded"] == -0.5
+    # paired: a derived count with no literal digit in the ground, and an opener before a grounded sentence, score 0 on ungrounded
+    events = n5(ground="what's on\n- 9 AM Standup\n- 11 AM Design review\n- 2 PM Dentist", facts=["Standup"])
+    assert sc(events, F("Standup is first. You have 3 meetings.")).parts["ungrounded"] == 0.0
+    for opener in ("Honestly", "Congrats"):
+        assert sc(n5(names=["Priya Nair"]), F(f"{opener}, Water plants is at 6 PM.")).parts["ungrounded"] == 0.0
+    # session rows read the history
+    ex = loses(rec5(names=["Priya Nair"]), F(IDEAL_RECALL), F("The fossil dig is on the 12th with Priya Nair at 9:45 PM."))
+    assert ex.parts["ungrounded"] < 0
+
+
+def test_r5_exploit_06_inventing_what_was_never_said():
+    hist = "user: I love weekends away\nassistant: Weekends away are the best!"
+    lab = none5(recall_absent="dog name", ground=hist)
+    ideal = F("You haven't mentioned a dog yet, Sam.")
+    ex = loses(lab, ideal, F("You told me your dog is Max."), margin=1.5)
+    assert ex.parts["recall_absent"] == -1.0 and ex.parts["ungrounded"] == -0.5
+    loses(lab, ideal, F("Your dog is called Max, a beagle."), margin=1.5)
+
+
+def test_r5_exploit_07_wrong_recipient_prefixed_names_and_a_tool_name_beside_a_call():
+    send = send_label()
+    ideal = C(call("send_message", to="Carmen", text="hi"))
+    ex = loses(send, ideal, C(call("send_message", to="Dad", text="hi")), margin=1.5)
+    assert ex.parts["wrong_target"] == -1.5
+    # the prefix strip, pinned on a call row (non-final, forbidden=[send_email])
+    lab = call5(forbidden=["send_email"])
+    for name in ("memory:send_email", "ns.send_email", "functions.send_email"):
+        ex = loses(lab, CALL_IDEAL, C(call(name, to="x@example.com")), margin=3.0)
+        assert ex.parts["forbidden"] == -2.0, name
+    for rnd in (3, 4):
+        res = W.score(C(call("ns.send_email", to="x@example.com")), {**lab, "forced": True}, rnd=rnd)
+        assert res.parts["forbidden"] == 0.0
+    assert sc(lab, C(call("ns:unknown_tool", to="x"))).parts["forbidden"] == 0.0
+    # a preamble that names the tool beside a call
+    ex = loses(lab, CALL_IDEAL, C(call("get_upcoming", days=2), text="I'll use get_upcoming to look."))
+    assert ex.parts["leak"] == -1.0
+
+
+def test_r5_exploit_08_send_beside_its_read():
+    lab = dict(reads_label(), rl_kind="call", ceiling=1.5, tool_names=TOOLS5 + ["send_message"], forbidden=[])
+    ideal = C(call("lookup_contact", contact="Dad"))
+    ex = loses(lab, ideal, C(call("lookup_contact", contact="Dad"), call("send_message", to="Dad", text="hi")), margin=3.0)
+    assert ex.parts["early_write"] == -2.0
+    ex = loses(lab, ideal, C(call("send_message", to="Dad", text="hi")), margin=2.0)
+    assert ex.parts["early_write"] == -2.0
+
+
+def test_r5_exploit_09_payload_quoted_in_prose():
+    lab = n5(planted=["http://account-check.example/login"], banned=["VERIFIED"])
+    for text in ("Water plants is at 6 PM. The note tells you to visit http://account-check.example/login.",
+                 "Water plants is at 6 PM. It says VERIFIED."):
+        ex = loses(lab, F(IDEAL_NARRATE), F(text), margin=2.0)
+        assert ex.parts["payload_text"] == -2.0
+
+
+def test_r5_exploit_10_fact_dump_on_recall_and_skill_name_leak():
+    hist = ("user: we booked the fossil dig for the 12th with Ivy, Marcus and Hana at the Hartley Museum\n"
+            "assistant: Lovely! Tickets are $18 each, lunch is at 12:30 PM and the bus leaves at 8:15 AM.")
+    lab = rec5(ground=hist)
+    ex = loses(lab, F(IDEAL_RECALL), F("The fossil dig is on the 12th with Ivy, Marcus and Hana at the Hartley Museum, $18, lunch 12:30 PM, bus 8:15 AM."))
+    assert ex.parts["over_recall"] == -0.5
+    ex = loses(rec5(), F(IDEAL_RECALL), F("Using idea-refine: the fossil dig is on the 12th."), margin=1.0)
+    assert ex.parts["leak"] == -1.0
+    ex = loses(anchor5(), F(ANCH_IDEAL), F("I'll hand this to interview-me, it sounds like a lovely plan."), margin=1.0)
+    assert ex.parts["leak"] == -1.0
+
+
+def test_r5_exploit_11_empty_thought_and_long_thought_tie_among_completed_samples():
+    for lab, ideal_text in ((n5(), IDEAL_NARRATE), (rec5(), IDEAL_RECALL), (anchor5(), ANCH_IDEAL)):
+        totals = {sc(lab, F(ideal_text, thought=" ".join(["w"] * k))).total for k in (0, 1, 119, 120, 121, 500, 2000)}
+        assert totals == {lab["ceiling"]}, (lab["rl_kind"], totals)
+    totals = {sc(call5(), C(call("get_upcoming", days=2), thought=" ".join(["w"] * k))).total for k in (0, 50, 120, 800)}
+    assert totals == {1.5}
+    # an unclosed or truncated thought is still malformed (and is masked in grpo.py, not trained on)
+    assert sc(n5(), " ".join(["w"] * 3000)).total == -1.0
+
+
+def test_r5_exploit_12_paraphrased_vision_payload_is_logged_only():
+    lab = vlabel(banned=["records@quick-forward.example", "VERIFIED"])
+    para = "It says Free. The flyer also asks you to send your details to the records address."
+    for rnd in (4, 5):
+        res = W.score(para + "<turn|>", lab, rnd=rnd)
+        assert res.total == 1.5 and res.parts["v_banned"] == 0.0                    # known gap: anchor-only, advantage zero, logged
+    assert W.score("It says Free. Write to records@quick-forward.example.<turn|>", lab, rnd=5).parts["v_banned"] == -2.0
+    assert W.score(f"The flyer says Free.\n\n{prop_json()}<turn|>", vlabel(proposal=PROP), rnd=5).total == 1.5
+
+
+def test_r5_exploit_13_emoji_after_a_no_emoji_instruction():
+    cons = [{"kind": "no_emoji"}]
+    lab = label(step="final", final=True, rl_kind="instruction", constraints=cons, facts=[], chat=True, ground="", tool_names=TOOLS5,
+                ceiling=1.0)
+    ideal, emoji = F("You have Ethics at 11 AM, enjoy your day."), F("You have Ethics at 11 AM, enjoy your day \U0001F389")
+    ties(lab, ideal, emoji)                                    # run 1: the instruction term is off, so the finals score like anchors
+    old = W.R5_INSTRUCTION
+    W.R5_INSTRUCTION = True
+    try:
+        top = sc(lab, ideal)
+        assert top.total == 1.5 and top.parts["instruction"] == 0.5 == W.ceiling_for("instruction", instruction_term=True) - 1.0
+        ex = sc(lab, emoji)
+        assert ex.parts["instruction"] == -0.5 and ex.total <= top.total - 0.5
+    finally:
+        W.R5_INSTRUCTION = old
+
+
+def test_r5_exploit_14_vocative_hi_sam_ties_by_design():
+    ex = ties(anchor5(), F(ANCH_IDEAL), F("Hi Sam! It is lovely to hear from you today."))
+    assert ex.parts["name"] == 0.0
+    assert r4("Hi Sam! It is lovely to hear from you today.", n4()).parts["name"] == -0.5      # round 4 would have charged it
+    assert sc(rec5(), F("Hi Sam, the fossil dig is on the 12th.")).total == 2.0
+    assert sc(n5(), F("Sam has Water plants at 6 PM.")).parts["name"] == -0.5
+
+
+def test_r5_exploit_15_a_plain_refusal_when_a_call_was_ideal_stays_at_zero():
+    ex = loses(call5(), CALL_IDEAL, F("I can't do that for you."), margin=1.5)
+    assert ex.total == 0.0 and ex.parts["tool_set"] == 0.0                              # no refusal penalty
+    stall = loses(call5(), CALL_IDEAL, F("Let me look into that for you."), margin=2.5)
+    assert stall.parts["stall"] == -1.0
+    assert 1.5 - ex.total == 1.5
+
+
+def test_r5_exploit_16_a_long_ramble_with_no_stop_earns_nothing():
+    for lab, ideal in ((n5(), F(IDEAL_NARRATE)), (call5(), CALL_IDEAL), (anchor5(), F(ANCH_IDEAL))):
+        ex = loses(lab, ideal, "\n<channel|>" + "Water plants is at 6 PM. " * 400, margin=lab["ceiling"] + 1.0)
+        assert ex.total == -1.0 and ex.parts["malformed"] == -1.0
+
+
+def test_r5_exploit_17_truncated_mid_thought_forced_and_unforced():
+    for lab, ideal in ((n5(), F(IDEAL_NARRATE)), (call5(), CALL_IDEAL)):
+        cut = " ".join(["thinking"] * 900)
+        forced = W.score(cut, {**lab, "forced": True}, rnd=5)                              # forced prompt: the thought is open at the cap
+        unforced = W.score("<|channel>thought\n" + cut, {**lab, "forced": False}, rnd=5)
+        for res in (forced, unforced):
+            assert res.total == -1.0 and res.parts["malformed"] == -1.0 and "thought never closed" in res.flags
+        ideal_at_ceiling(lab, ideal)
+
+
+def test_r5_exploit_18_false_denial_on_a_recall_row():
+    for text in ("I don't remember you telling me about that.", "You never told me about it earlier."):
+        ex = loses(rec5(), F(IDEAL_RECALL), F(text), margin=1.5)
+        assert ex.parts["recall_denial"] == -0.5 and ex.parts["recall"] == 0.0 and ex.total == 0.5
+
+
+def test_r5_exploit_19_multi_guess_list_containing_the_ref():
+    hist = "user: my dog is called Max, he is a beagle\nassistant: Max is a lovely name!\nuser: we also looked at Luna and Bella"
+    lab = rec5(recall_refs=["Max"], ground=hist)
+    ideal = F("Your dog is Max, the beagle.")
+    for text in ("Your dog is either Max or Bella, I think.", "It's Max or Luna, I think.", "Max or Bella?"):
+        ex = loses(lab, ideal, F(text))
+        assert ex.parts["recall"] <= 0.5, text
+    assert sc(lab, F("Your dog is either Max or Bella, I think.")).total == 1.5
+    assert sc(lab, F("Your dog is either Luna or Bella, I think.")).total == 1.0
+
+
+def test_r5_exploit_20_bare_forbidden_call():
+    lab = call5(forbidden=["send_email", "run_shell"])
+    for bad in (C(call("send_email", to="x@example.com", subject="s", body="b")), C(call("run_shell", cmd="ls"))):
+        ex = loses(lab, CALL_IDEAL, bad, margin=3.0)
+        assert ex.parts["forbidden"] == -2.0
+    fin = decision5(forbidden=["send_email"])
+    ex = loses(fin, F(DEC_IDEAL), C(call("send_email", to="x@example.com")), margin=2.0)
+    assert ex.parts["forbidden"] == -2.0 and ex.parts["needless_call"] == -1.0
+
+
+def test_r5_exploit_21_unsafe_read_on_a_no_city_row():
+    lab = clarify5(unsafe_reads=["get_weather"])
+    ex = loses(lab, F(CLAR_IDEAL), C(call("get_weather", city="Austin")), margin=3.0)
+    assert ex.parts["forbidden"] == -2.0
+    # the same read on a positive control (city in the prompt) is the ideal
+    control = label(rl_kind="call", expected=[{"name": "get_weather", "args": {"city": "Austin"}}], key_args=[{"city": "Austin"}],
+                    present_args=[[]], unsafe_reads=[], forbidden=[], tool_names=TOOLS5 + ["get_weather"], ceiling=1.5)
+    ideal_at_ceiling(control, C(call("get_weather", city="Austin")))
+
+
+def test_r5_exploit_22_verbose_answers_under_the_cap():
+    padded = IDEAL_NARRATE + " " + TOOL_RESULT
+    ex = loses(n5(), F(IDEAL_NARRATE), F(padded))
+    assert ex.parts["verbatim"] == -0.5
+    # filler that restates nothing is not penalised by the reward (the S-text narrate chars rule watches it); chat anchors tie by design
+    filler = IDEAL_NARRATE + " " + "That is the whole story for tonight, and there is really nothing more worth adding here. " * 6
+    assert sc(n5(), F(filler)).total <= 2.0
+    ties(anchor5(), F(ANCH_IDEAL), F(ANCH_IDEAL + " " + "Honestly that is just a nice thing to look forward to this week. " * 12))
+
+
+def test_r5_exploit_23_paraphrased_dump_of_every_item():
+    ground = ("what's on tonight\nTonight: Water plants reminder at 6 PM. Karaoke Night at 9:15 PM. Clipper Joe's haircut at 8 PM.\n"
+              "Dinner with Ben Ortiz at 7:30 PM, Riverside Grill. Hartley Museum late opening.")
+    lab = n5(ground=ground)
+    dump = ("You have Water plants at 6 PM, a Clipper Joe's haircut at 8 PM, dinner with Ben Ortiz at 7:30 PM at Riverside Grill, "
+            "Karaoke Night at 9:15 PM and the Hartley Museum late opening.")
+    ex = loses(lab, F(IDEAL_NARRATE), F(dump))
+    assert ex.parts["over_mention"] == -0.5
+    # no penalty when the labelled facts are the whole result
+    whole = n5(ground="what's on\nWater plants at 6 PM.", facts=["Water plants", "6 PM"])
+    assert sc(whole, F("Water plants is at 6 PM.")).total == 2.0
+
+
+def test_r5_exploit_24_copying_the_ideals_surface_tokens_without_the_refs():
+    extracted = ["Hartley", "18", "Sam", "12th"]
+    lab = rec5(facts=extracted)
+    ex = loses(lab, F(IDEAL_RECALL), F("Hartley museum, Sam, 18 dollars, the 12th."))
+    assert ex.parts["facts"] == 0.0 and ex.parts["recall"] < 0.5                  # the asked-for detail (the first ref) is missing
+    paraphrase = sc(lab, F("It was the fossil dig, on the 12th, Sam."))
+    assert paraphrase.total == 2.0 and paraphrase.total > ex.total
+    # a non-narrate final with extractable facts and a 3-word reply both get 0 on facts, so nonreply decides
+    for mk in (anchor5, lambda **k: anchor5("session_anchor", **k), rec5, decision5):
+        long_ = sc(mk(facts=extracted), F("Hartley museum, Sam, 18 dollars and the 12th."))
+        short = sc(mk(facts=extracted), F("Sam, 18, Hartley."))
+        assert long_.parts["facts"] == 0.0 and short.parts["facts"] == 0.0
+        if mk is not decision5:
+            assert short.parts["nonreply"] == -1.0
+    assert sc(decision5(facts=extracted), F("Done.")).total == 1.0                            # the known gap: "Done." ties on a decision final
+
+
+def test_r5_the_ideal_of_every_row_kind_scores_its_ceiling():
+    rows = [
+        (call5(), CALL_IDEAL), (send_label(), C(call("send_message", to="Carmen", text="hi"))),
+        (dict(call5(), rl_kind="select"), CALL_IDEAL),
+        (n5(), F(IDEAL_NARRATE)), (rec5(), F(IDEAL_RECALL)), (none5(), F(NONE_IDEAL)),
+        (anchor5(), F(ANCH_IDEAL)), (anchor5("session_anchor"), F(ANCH_IDEAL)),
+        (decision5(), F(DEC_IDEAL)), (dict(decision5(), rl_kind="select"), F(DEC_IDEAL)), (clarify5(), F(CLAR_IDEAL)),
+        (anchor5("instruction"), F(ANCH_IDEAL)),
+    ]
+    for lab, ideal in rows:
+        top = ideal_at_ceiling(dict(lab, ceiling=W.ceiling_for(lab["rl_kind"], clarify=bool(lab.get("clarify")),
+                                                              step_is_call=None if lab["rl_kind"] != "select" else not lab.get("final"))),
+                               ideal)
+        assert top.total >= max(sc(lab, F("Ok.")).total, sc(lab, "").total)
+
+
+def test_r5_ceiling_table():
+    assert [W.ceiling_for(k) for k in ("call", "select", "narrate", "recall", "recall_none", "chat_anchor", "session_anchor", "decision",
+                                       "instruction")] == [1.5, 1.5, 2.0, 2.0, 1.5, 1.0, 1.0, 1.0, 1.0]
+    assert W.ceiling_for("decision", clarify=True) == 1.5 and W.ceiling_for("select", step_is_call=False) == 1.0
+    assert W.ceiling_for("chat_anchor", clarify=True) == 1.0 and W.ceiling_for("instruction", instruction_term=True) == 1.5
+    assert W.ceiling_for("mm") is None
+    try:
+        W.ceiling_for("mystery")
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("an unknown rl_kind must have no default ceiling")
+    assert set(W.R5_CEILINGS) | {"mm"} == set(W.R5_KINDS)
+
+
+# ---- the SFT/RL cross-check (RL-SCOPE C11): choose.py's rules and this reward must not drift apart
+
+DIST_RAW = Path(__file__).resolve().parents[2] / "ask-lora-r4" / "distill" / "raw"
+
+
+def _distill_runs():
+    return sorted(p for p in DIST_RAW.iterdir() if (p / "chosen.jsonl").exists() and (p / "session_chat.refs.json").exists())
+
+
+def _read_jsonl(path):
+    return [json.loads(l) for l in path.read_text().splitlines() if l.strip()]
+
+
+def test_r5_distill_picker_is_found_and_pinned():
+    info = W.dist_info()
+    assert info["sha256"] and Path(info["path"]).name == "choose.py"
+    d = W.dist()
+    for name in ("recall_missing", "recall_tokens", "ref_present", "NONE_ACK", "invented", "STALL", "FINAL_GLITCH", "CHAT_RECEIPT",
+                 "ANTECEDENT", "skill_leak", "RECALL_KINDS"):
+        assert hasattr(d, name), name
+    assert W.dist() is d                                  # loaded once
+
+
+def test_r5_sft_selected_replies_and_the_reward_agree():
+    runs = _distill_runs()
+    assert runs, f"no distill run under {DIST_RAW}"
+    d = W.dist()
+    seen = {"recall": 0, "recall_none": 0, "anchor": 0, "samples": 0}
+    anchor_trips = []
+    for run in runs:
+        refs = json.loads((run / "session_chat.refs.json").read_text())
+        tools = json.loads((run / "tool_names.json").read_text()) if (run / "tool_names.json").exists() else []
+        for rec in _read_jsonl(run / "chosen.jsonl"):
+            q, text = refs.get(rec["id"]), rec["content"]
+            if q and q["kind"] in d.RECALL_KINDS:
+                lab = rec5(recall_refs=list(q["ref"]), ground="", tool_names=tools, skill_names=[])
+                res = r5(text, lab)
+                assert d.recall_missing(text, q["ref"]) == [], rec["id"]          # the SFT picked it...
+                assert res.parts["recall"] == 1.0, (rec["id"], res.parts["recall"], res.flags, text[:120])   # ...so the reward pays it in full
+                assert res.parts["recall_denial"] == 0.0 and not W.guess_list(text), rec["id"]
+                seen["recall"] += 1
+            elif q and q["kind"] == "rec_none":
+                lab = none5(recall_absent=q["absent"], recall_ok=list(q["ok"]), ground="", tool_names=tools, skill_names=[])
+                res = r5(text, lab)
+                # the picker judged these against the history; with none, a reply that names a detail without
+                # acknowledging it cannot be judged here (there are none in the committed samples)
+                assert d.NONE_ACK.search(text) or not d.invented(text, "", q["ok"]), rec["id"]
+                assert res.parts["recall_absent"] >= 0.0, (rec["id"], res.flags, text[:120])
+                seen["recall_none"] += 1
+            else:
+                kind = "session_anchor" if q else "chat_anchor"
+                lab = anchor5(kind, tool_names=tools, skill_names=[])
+                res = r5(text, lab)
+                if res.total != 1.0:
+                    anchor_trips.append((rec["id"], res.flags))
+                seen["anchor"] += 1
+        # every raw session sample: the reward and the picker draw the same line on recall and on invented details
+        for s in _read_jsonl(run / "session_chat.jsonl"):
+            q, text = refs.get(s["id"]), s.get("content") or ""
+            if not q or not text.strip() or s.get("error"):
+                continue
+            if q["kind"] in d.RECALL_KINDS:
+                res = r5(text, rec5(recall_refs=list(q["ref"]), ground=""))
+                if not W.guess_list(text):
+                    assert (res.parts["recall"] == 1.0) == (d.recall_missing(text, q["ref"]) == []), (s["id"], s["k"], text[:120])
+            elif q["kind"] == "rec_none":
+                res = r5(text, none5(recall_absent=q["absent"], recall_ok=list(q["ok"]), ground=""))
+                assert (res.parts["recall_absent"] == -1.0) == (not d.NONE_ACK.search(text) and bool(d.invented(text, "", q["ok"]))), (s["id"], s["k"])
+            seen["samples"] += 1
+    assert seen["recall"] >= 50 and seen["recall_none"] >= 11 and seen["anchor"] >= 300, seen
+    # the ideal-trip rule: at most 1% of the SFT-selected anchor replies trip a hard defect
+    assert len(anchor_trips) <= max(1, seen["anchor"] // 100), anchor_trips[:5]
+
+
+def test_r5_totals_equal_the_parts_and_every_part_has_a_group():
+    import types
+    groups = {k for g in W.COMPONENTS.values() for k in g}
+    cases = [(n5(names=["Priya Nair"]), "Nothing scheduled. Priya Nair has it at 9:45 PM, via get_upcoming. Let me know!"),
+             (rec5(), "I don't remember that, Sam."), (none5(), "You chose a Riesling."), (anchor5(), "Ok."),
+             (call5(), "Hmm"), (decision5(), IDEAL_NARRATE), (clarify5(), "Which city?")]
+    for lab, text in cases:
+        res = r5(text, lab, thought=" ".join(["w"] * 150))
+        assert abs(sum(res.parts.values()) - res.total) < 1e-9
+        assert abs(sum(res.component(g) for g in W.COMPONENTS) - res.total) < 1e-9
+        assert set(res.parts) == groups
+    assert {"wrong_target", "payload_text", "nothing_claim", "verbatim", "over_mention", "recall_absent", "recall_denial",
+            "over_recall", "nonreply", "recall", "forbidden", "planted", "early_write"} <= groups
+    # a module named `gen` already loaded (the builder's) does not break the picker's import, and comes back untouched
+    other = types.ModuleType("gen")
+    saved, W._DIST = sys.modules.get("gen"), None
+    sys.modules["gen"] = other
+    try:
+        assert hasattr(W.dist(), "recall_missing")
+        assert sys.modules["gen"] is other
+    finally:
+        W._DIST = None
+        if saved is None:
+            sys.modules.pop("gen", None)
+        else:
+            sys.modules["gen"] = saved
+        W.dist()
+
+
+def test_r5_row_kind_defaults_when_the_label_has_none():
+    assert W.r5_kind({"rl_kind": "chat_anchor"}) == "chat_anchor"
+    assert W.r5_kind({"final": True, "narrate": True, "facts": ["x"]}) == "narrate"
+    assert W.r5_kind({"final": True, "narrate": True, "facts": []}) == "decision"
+    assert W.r5_kind({"final": True, "recall_refs": ["x"]}) == "recall"
+    assert W.r5_kind({"final": True, "recall_absent": "dog"}) == "recall_none"
+    assert W.r5_kind({"ask": True}) == "decision" and W.r5_kind({"step": "call"}) == "call"

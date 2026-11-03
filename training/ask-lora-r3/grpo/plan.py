@@ -7,6 +7,10 @@ batch math and the advantage function from here; `python plan.py` prints the est
     python plan.py                       # both hardware options, 1 epoch over the exported prompts
     python plan.py --rows 1488 --epochs 2 --usd-per-hour 32
 
+Round 5 (RL-SCOPE) also puts here the torch-free pieces next to guard_problems: the small-n multimodal guard counts, the launch check, the
+ideal-at-top rule, truncation and the per-step bucket statistics, S-trunc/S-learn/S-grader, and the LoRA-layout and gradient checks. The text-probe
+metrics, S-* stop rules and their calibration are in probes.py.
+
 Everything in ASSUMPTIONS is an ESTIMATE, not a measurement: no GPU step of this kit has run. Replace the
 numbers from the first log lines of the smoke run (grpo.py writes seconds per phase) and re-run.
 """
@@ -14,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 from dataclasses import dataclass
 
 
@@ -97,6 +102,283 @@ def guard_problems(base: dict, now: dict, margins: dict | None = None) -> list[s
     for k in ("vision_empty", "vision_banned", "vision_invalid", "audio_wrong", "audio_dropped", "audio_banned", "malformed"):
         if now.get(k, 0) > base.get(k, 0):
             out.append(f"{k} {now.get(k, 0):g} > {base.get(k, 0):g}")
+    return out
+
+
+# ------------------------------------------------------------------ round 5: multimodal small-n counts (C13)
+
+# The three small-n guard counts RL-SCOPE C13 adds. Value = the sign of the BAD direction (+1: the count rising is bad).
+SMALL_N = {"proposals_right": -1, "proposals_spurious": +1, "vision_facts_total": -1}
+
+
+def mm_small_n(label: dict, parts: dict) -> dict:
+    """One scored vision row's contribution to the C13 counts (eval_mm sums these). Picture-read rows score no
+    proposal and no v_facts, so they add nothing."""
+    out = {"proposals_right": 0.0, "proposals_spurious": 0.0, "vision_facts_total": 0.0}
+    if label.get("modality") != "vision" or label.get("task") == "picture_read":
+        return out
+    out["vision_facts_total"] = float(parts.get("v_facts", 0.0))
+    due = label.get("proposal") is not None
+    prop = parts.get("v_proposal", 0.0)
+    if due and prop >= 0.5 - 1e-9:
+        out["proposals_right"] = 1.0                      # every proposal field matched (0.5 x fields hit / fields)
+    if not due and prop <= -1.0 + 1e-9:
+        out["proposals_spurious"] = 1.0
+    return out
+
+
+def small_n_problems(base: dict, now: dict, prev_soft: set | None = None) -> tuple[list[str], set]:
+    """The C13 counts against the step-0 reference (RL-SCOPE 4.4, 8.2 S-mm): a move of 1 row in the bad direction is
+    tolerated on a single eval; 2 or more trips at once; the same breach (even 1 row) at two consecutive cadence
+    checkpoints trips. Returns (problems, the keys that breached by 1 row now). A key missing from either dict is skipped."""
+    prev_soft = prev_soft or set()
+    problems, soft = [], set()
+    for k, sign in SMALL_N.items():
+        if k not in base or k not in now:
+            continue
+        worse = sign * (now[k] - base[k])
+        if worse >= 2.0 - 1e-9:
+            problems.append(f"{k} {now[k]:g} vs step 0 {base[k]:g} (moved {worse:g} rows the wrong way)")
+        elif worse >= 1.0 - 1e-9:
+            soft.add(k)
+            if k in prev_soft:
+                problems.append(f"{k} {now[k]:g} vs step 0 {base[k]:g}: the same 1-row breach at two consecutive checkpoints")
+    return problems, soft
+
+
+def small_n_floor_problems(floor: dict, now: dict) -> list[str]:
+    """The C13 counts against the untuned floor (--mm-floor): zero tolerance, like the existing counts. A floor file from before
+    C13 has none of the keys and is skipped."""
+    out = []
+    for k, sign in SMALL_N.items():
+        if k in floor and k in now and sign * (now[k] - floor[k]) > 1e-6:
+            out.append(f"{k} {now[k]:g} vs untuned {floor[k]:g}")
+    return out
+
+
+# ------------------------------------------------------------------ round 5: the launch checks (C13) and the ideal-at-top rule
+
+def train_arg_problems(a, dev_rows_exist: bool, rnd: int = 3) -> list[str]:
+    """What is wrong with a `train` command line, before torch and the model load (so the torch-free tests reach it).
+    `a` is the parsed namespace. --mm-floor is mandatory when multimodal dev rows exist (unless --no-guard); round 5 also needs
+    the text dev file, the untuned text floor and at least two SFT replicates (unless --no-text-probes)."""
+    out = []
+    if dev_rows_exist and not getattr(a, "no_guard", False) and not getattr(a, "mm_floor", None) and not getattr(a, "dry_run_grad", False):
+        out.append("--mm-floor is required: run `grpo.py mm-eval --base <UNTUNED Gemma> --mm-dev ...` (no adapter) and pass its "
+                   "JSON, or pass --no-guard to give up the multimodal tripwire. Without it a vision/audio regression already "
+                   "in the SFT would be accepted as the baseline.")
+    if rnd >= 5 and not getattr(a, "dry_run_grad", False) and not getattr(a, "no_text_probes", False):
+        if not getattr(a, "text_dev", None):
+            out.append("round 5 needs --text-dev (grpo_text_dev.jsonl or its smoke30 subset), or --no-text-probes to give up the S-* tripwires")
+        else:
+            if not getattr(a, "text_floor", None):
+                out.append("round 5 needs --text-floor (a `text-eval` run of the UNTUNED base on the same dev file)")
+            if len(getattr(a, "text_replicates", None) or []) < 2:
+                out.append("round 5 needs --text-replicates with at least two `text-eval` runs of the SFT (different --seed-offset)")
+    return out
+
+
+def ideal_top(lab: dict, rnd: int) -> tuple[float, float]:
+    """(score the ideal completion must reach, tolerance) for `grpo.py check`. Rounds 3 and 4: the historical table. Round 5:
+    the export's per-row `label.ceiling` on text rows, at top - 0.01 on non-call finals and top - 0.31 on calls."""
+    mod = lab.get("modality")
+    if rnd >= 5 and mod not in ("vision", "audio"):
+        if lab.get("ceiling") is None:
+            raise ValueError("a round-5 text row has no label.ceiling")
+        return float(lab["ceiling"]), (0.31 if lab.get("step") in ("call", "load") else 0.01)
+    top = {"vision": 1.5, "audio": 1.25}.get(mod, 1.5 if lab.get("step") in ("call", "load") else 1.0)
+    if rnd >= 4 and lab.get("narrate") and lab.get("facts"):
+        top = 2.0                        # tool set 1.0 + the answer facts, now up to 1.0
+    return top, 0.31
+
+
+# ------------------------------------------------------------------ round 5: truncation and the per-step logs (C10)
+
+def truncated(comp: list[int], stop_ids) -> bool:
+    """A completion with no stop id among its tokens ran into the cap (wherever the cut falls). A stop id emitted as the very
+    last allowed token is not truncation."""
+    return not any(t in stop_ids for t in comp)
+
+
+BUCKETS = ("call", "select", "narrate", "recall", "recall_none", "decision", "instruction", "chat_anchor", "session_anchor", "text", "mm")
+ANCHOR_KINDS = ("chat_anchor", "session_anchor")
+INFORMATIVE_TERMS = ("forbidden", "early_write", "planted", "payload_text", "wrong_target", "nothing_claim")
+BUCKET_STATS = ("groups", "samples", "trunc", "zv", "zv_pass", "zv_fail", "informative", "abs_adv", "adv_n", "pg_norm", "kl_norm", "norm_n")
+
+
+def bucket_of(label: dict, modality: str = "text") -> str:
+    """A prompt's log bucket: label.rl_kind on round-5 text rows ('text' on older exports), 'mm' for vision and audio."""
+    if modality != "text":
+        return "mm"
+    k = label.get("rl_kind")
+    return k if k in BUCKETS else "text"
+
+
+def bucket_keys() -> list[str]:
+    return [f"{b}/{s}" for b in BUCKETS for s in BUCKET_STATS]
+
+
+def group_flags(totals: list[float], parts_list: list[dict], ceiling: float | None, trunc: list[bool],
+                advs: list[float]) -> dict:
+    """The counters one prompt's group adds to its bucket: zero variance (split all-pass at the row's ceiling / all-fail below it),
+    informative (some but not all samples fire a verifier penalty), truncated samples, |A| sum."""
+    n = len(totals)
+    zv = (max(totals) - min(totals)) < 1e-9
+    at_top = ceiling is not None and min(totals) >= ceiling - 1e-6
+    fired = [any(p.get(k, 0.0) < 0 for k in INFORMATIVE_TERMS) for p in parts_list]
+    return {"groups": 1, "samples": n, "trunc": sum(trunc), "zv": int(zv), "zv_pass": int(zv and at_top),
+            "zv_fail": int(zv and not at_top), "informative": int(0 < sum(fired) < n),
+            "abs_adv": sum(abs(x) for x in advs), "adv_n": n}
+
+
+def bucket_log(tot: dict) -> dict:
+    """Shares per bucket from the rank-summed counters (a bucket with no groups this step is left out). Zero-variance shares
+    are over the bucket's groups; all-pass / all-fail are the two halves of that."""
+    out = {}
+    for b in BUCKETS:
+        g = tot.get(f"{b}/groups", 0.0)
+        if not g:
+            continue
+        d = {"groups": int(g), "samples": int(tot[f"{b}/samples"]), "trunc_share": round(tot[f"{b}/trunc"] / max(1.0, tot[f"{b}/samples"]), 4),
+             "zv_share": round(tot[f"{b}/zv"] / g, 4), "zv_pass": round(tot[f"{b}/zv_pass"] / g, 4),
+             "zv_fail": round(tot[f"{b}/zv_fail"] / g, 4), "informative_share": round(tot[f"{b}/informative"] / g, 4),
+             "mean_abs_adv": round(tot[f"{b}/abs_adv"] / max(1.0, tot[f"{b}/adv_n"]), 4)}
+        if tot.get(f"{b}/norm_n"):
+            n = tot[f"{b}/norm_n"]
+            pg, kl = tot[f"{b}/pg_norm"] / n, tot[f"{b}/kl_norm"] / n
+            d.update(pg_grad_norm=round(pg, 6), kl_grad_norm=round(kl, 6), pg_kl_ratio=round(pg / kl, 3) if kl > 0 else None)
+        out[b] = d
+    return out
+
+
+def trunc_problem(hist: list[tuple[int, int, int]], window_prompts: int = 40, limit: float = 0.05) -> str | None:
+    """S-trunc (patience 1, a logged number, not a sampled one): the truncated share of text completions over the last
+    `window_prompts` prompts. hist = per step (prompts, truncated, completions) over text rows, oldest first. Nothing fires
+    before a full window has been seen."""
+    prompts = trunc = n = 0
+    for p, t, c in reversed(hist):
+        prompts, trunc, n = prompts + p, trunc + t, n + c
+        if prompts >= window_prompts:
+            break
+    if prompts < window_prompts or not n:
+        return None
+    share = trunc / n
+    return f"S-trunc: {trunc} of {n} text completions ({share:.1%}) hit the cap over the last {prompts} prompts (limit {limit:.0%})" if share > limit else None
+
+
+def adjusted_reward(rows: list[dict], weights: dict) -> float | None:
+    """Composition-adjusted text reward (S-learn, S-grader, the lr bracket): per text row r / label.ceiling, averaged within each
+    rl_kind, then combined with FIXED export-share weights. Rows with no ceiling (multimodal) are left out. Each row is
+    {"kind", "ceiling", "reward"}."""
+    by: dict[str, list[float]] = {}
+    for r in rows:
+        if r.get("ceiling"):
+            by.setdefault(r["kind"], []).append(r["reward"] / r["ceiling"])
+    num = den = 0.0
+    for k, xs in by.items():
+        w = weights.get(k, 0.0)
+        num += w * sum(xs) / len(xs)
+        den += w
+    return num / den if den else None
+
+
+def s_learn_hard(adj_first: float | None, adj_last: float | None, delta: float, zv_fail: float, zv0_fail: float,
+                 zv_total: float, zv0_total: float, margin: float = 0.15) -> bool:
+    """S-learn hard stop at prompt 400 (RL-SCOPE 8.2): the adjusted reward over prompts 301-400 has not risen above prompts 1-100
+    by `delta` (null-calibrated) AND on PG-bearing text groups the all-fail zero-variance share is above its M6b baseline + 15
+    points, or the total zero-variance share is. A rising all-pass share is saturation (success), never a stop."""
+    if adj_first is None or adj_last is None:
+        return False
+    return (adj_last - adj_first) < delta and (zv_fail > zv0_fail + margin or zv_total > zv0_total + margin)
+
+
+def s_grader_trips(adj_ma: float | None, adj_first100: float | None, delta: float, facts_gain: float | None, facts_floor: float,
+                   recall_gain_points: float | None, unsafe_now: float | None, unsafe_m0: float | None) -> bool:
+    """S-grader (an overfitting check only): the 10-step moving average of adjusted train reward above its first-100-prompt mean
+    by `delta` while, over the last 2 evals, the facts-mean gain is below max(0.01, replicate SD) = facts_floor, the recall-hit gain
+    is below 5 points and the S-unsafe count is at least m0."""
+    if None in (adj_ma, adj_first100, facts_gain, recall_gain_points, unsafe_now, unsafe_m0):
+        return False
+    return (adj_ma - adj_first100) > delta and facts_gain < facts_floor and recall_gain_points < 5.0 and unsafe_now >= unsafe_m0
+
+
+# ------------------------------------------------------------------ round 5: the LoRA layout and the 1-step gradient check (C22)
+
+_ADAPTER_RE = re.compile(r"\.layers\.(\d+)\.(self_attn|mlp)\.(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)\.lora_A")
+ALWAYS_ADAPTED = ("q_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
+
+
+def lora_layout(names: list[str], n_layers: int, kv_first: int | None = None) -> dict:
+    """Check where the LoRA adapters landed. `names` = the module names ending '.lora_A'. q/o/gate/up/down must be on every
+    language layer and nothing may sit outside the language model; k_proj/v_proj exist only on layers that build their own
+    KV, so an adapter on a KV-shared layer (index >= kv_first, from config num_kv_shared_layers) could never get a gradient
+    and DDP with find_unused_parameters=False would fail on it. Returns {problems, warnings, per_layer, summary}."""
+    problems, warnings = [], []
+    per_layer: dict[int, set] = {}
+    outside = 0
+    for n in names:
+        m = _ADAPTER_RE.search(n)
+        if "language_model" not in n or not m:
+            outside += 1
+            continue
+        per_layer.setdefault(int(m.group(1)), set()).add(m.group(3))
+    if outside:
+        problems.append(f"{outside} adapters outside the language-model attention/MLP projections")
+    for proj in ALWAYS_ADAPTED:
+        have = sum(proj in per_layer.get(i, ()) for i in range(n_layers))
+        if have != n_layers:
+            problems.append(f"{proj} adapters on {have} of {n_layers} layers (want all)")
+    extra = sorted(i for i in per_layer if not 0 <= i < n_layers)
+    if extra:
+        problems.append(f"adapters on layers outside 0..{n_layers - 1}: {extra[:5]}")
+    kv = {p: sorted(i for i, s in per_layer.items() if p in s) for p in ("k_proj", "v_proj")}
+    if not kv["k_proj"] and not kv["v_proj"]:
+        problems.append("no k_proj/v_proj adapters at all (the target regex missed them)")
+    if kv_first is not None:
+        for p, layers in kv.items():
+            shared = [i for i in layers if i >= kv_first]
+            if shared:
+                problems.append(f"{p} adapter on KV-shared layers {shared[:5]} (>= {kv_first}): they get no gradient")
+    for i in range(n_layers):
+        s = per_layer.get(i, set())
+        if ("k_proj" in s) != ("v_proj" in s):
+            warnings.append(f"layer {i} has {'k_proj' if 'k_proj' in s else 'v_proj'} but not its pair")
+
+    def span(layers):
+        return f"{len(layers)}/{n_layers}" + (f" (layers {layers[0]}-{layers[-1]})" if layers else "")
+    summary = f"k_proj adapters on {span(kv['k_proj'])}, v_proj on {span(kv['v_proj'])}; q/o/gate/up/down on all {n_layers}" \
+        if not problems else "; ".join(problems)
+    return {"problems": problems, "warnings": warnings[:5], "per_layer": {i: sorted(s) for i, s in sorted(per_layer.items())},
+            "kv_layers": kv, "summary": summary}
+
+
+def kv_shared_first(config: dict) -> int | None:
+    """The first KV-shared layer index from a model config (text_config.num_hidden_layers - num_kv_shared_layers), else None."""
+    tc = config.get("text_config", config)
+    n, k = tc.get("num_hidden_layers"), tc.get("num_kv_shared_layers")
+    return n - k if isinstance(n, int) and isinstance(k, int) and k > 0 else None
+
+
+def grad_problems(stats: dict) -> list[str]:
+    """After one backward on a real row: every adapter parameter must hold a finite gradient, and every module's lora_B a non-zero one.
+    (lora_A's gradient is exactly zero at init, B = 0, so a zero there is expected.) stats = {param name: {"grad": bool, "norm": float,
+    "finite": bool}} over the trainable parameters."""
+    out = []
+    mods: dict[str, dict] = {}
+    for name, g in stats.items():
+        mod = name.split(".lora_")[0]
+        kind = "B" if ".lora_B." in name else "A" if ".lora_A." in name else "?"
+        mods.setdefault(mod, {})[kind] = g
+        if not g["grad"]:
+            out.append(f"{name}: no gradient")
+        elif not g["finite"]:
+            out.append(f"{name}: non-finite gradient")
+    for mod, d in mods.items():
+        b = d.get("B")
+        if b and b["grad"] and b["finite"] and not b["norm"] > 0:
+            out.append(f"{mod}: lora_B gradient is exactly zero (the module is not used by this forward)")
+        if "A" not in d or "B" not in d:
+            out.append(f"{mod}: missing its {'lora_A' if 'A' not in d else 'lora_B'} parameter")
     return out
 
 
@@ -281,7 +563,7 @@ def main() -> int:
     ap.add_argument("--rows", type=int, default=1488)
     ap.add_argument("--epochs", type=float, default=1.0)
     ap.add_argument("--usd-per-hour", type=float, default=32.0)
-    ap.add_argument("--round", type=int, default=3, choices=(3, 4), help="4: the round-4 mix and completion length, plus the one-A6000 estimate")
+    ap.add_argument("--round", type=int, default=3, choices=(3, 4, 5), help="4 (and 5, estimated like 4): the round-4 mix and completion length, plus the one-A6000 estimate")
     a = ap.parse_args()
     print(report(a.rows, a.epochs, a.usd_per_hour, a.round))
     return 0
