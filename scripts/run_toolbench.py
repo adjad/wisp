@@ -110,6 +110,7 @@ def _row(run_id, model, case, trial, traj, verdict, variant="default", profile_a
             "trial": trial, "no_tool": case.no_tool, "path": traj.get("path"),
             "route": traj.get("route"), "steps": steps, "final": traj.get("final", "")[:2000],
             "effects": traj.get("effects"), "asked": traj.get("asked"), "escapes": traj.get("escapes"),
+            "message_draft": traj.get("message_draft"),
             "error": traj.get("error"), "timeout": traj.get("timeout"), "v": verdict.to_dict()}
 
 

@@ -41,6 +41,7 @@ def traj_from_row(row: dict, meta: dict | None = None) -> dict:
     return {"route": row.get("route"), "steps": steps, "final": row.get("final") or "",
             "effects": row.get("effects") or [], "asked": row.get("asked") or [],
             "escapes": row.get("escapes"), "error": row.get("error"), "timeout": row.get("timeout"),
+            "message_draft": row.get("message_draft"),
             "access": row.get("access"), "path": row.get("path"),
             "seconds": v.get("seconds") or 0.0, "model_seconds": v.get("model_seconds") or 0.0,
             "guard_retries": v.get("guard_retries") or 0,
