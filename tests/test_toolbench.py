@@ -1202,3 +1202,10 @@ def test_msg_draft_friend_ends_in_the_draft_card(bench):
     assert t["final"] == "" and "verified completion receipt" not in repr(t)
     v = score(c, t, registry_names=bench["names"], today=bench["world"].today)
     assert v.passed, v.labels
+    # The stored row keeps the card, so a --report rescore still passes it.
+    import json
+    from scripts import run_toolbench
+    from scripts.toolbench.report import traj_from_row
+    row = json.loads(json.dumps(run_toolbench._row("r1", CANDIDATE, c, 1, t, v), default=str))
+    assert row["message_draft"] == t["message_draft"]
+    assert score(c, traj_from_row(row), registry_names=bench["names"], today=bench["world"].today).passed
