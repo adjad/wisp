@@ -50,6 +50,16 @@ def test_an_email_reply_reads_mail_and_an_unnamed_one_reads_both():
     assert preload[0] == "view_emails"
 
 
+@pytest.mark.parametrize("prompt", ["draft a reply saying thursday at 3 works", "draft a reply: i can cover it",
+                                    "write a reply saying thanks"])
+def test_a_bare_reply_is_still_a_destination(prompt):
+    # e9670897 regression: _REPLY_TO needs "to", so the bare noun dropped out
+    # of _DESTINATION and the r4 build lost draft_email after an email picture.
+    assert not mo.compose_only(prompt)
+    forbidden = mo.ask_forbidden_tools(prompt, REGISTRY)
+    assert not {"draft_message", "draft_email"} & forbidden
+
+
 @pytest.mark.parametrize("prompt", [
     "write an essay on the public response to the policy", "write a poem about the answer to life",
     "write a short thank-you note to my professor", "write me a haiku about answering machines",

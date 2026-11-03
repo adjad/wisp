@@ -435,7 +435,7 @@ _DESTINATION = re.compile(
     # to mom", "a message to the landlord" (toolbench 2026-10-31: these banned
     # draft_email). A "note to my professor" is still only text to write.
     r"|(?i:\b(?:e-?mail|text|message|imessage|dm)\s+to\s+(?:my\s+|the\s+|our\s+)?[a-z][\w.'-]*)"
-    r"|(?i:\b(?:send|sent|forward|post\s+(?:it|this)|share)\b)"
+    r"|(?i:\b(?:send|sent|reply|respond|forward|post\s+(?:it|this)|share)\b)"
     r"|(?i:" + _REPLY_TO + r")"
     r"|(?i:\b(?:in|to|into)\s+(?:my\s+)?(?:notes?|notes app|a file|calendar|reminders?)\b)"
     r"|(?i:\b(?:save|file|document|doc|calendar|reminder|clipboard)\b)"
