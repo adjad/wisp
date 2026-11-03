@@ -1,0 +1,8426 @@
+{
+ "overall": {
+  "prompts": 565,
+  "with_samples": 565,
+  "samples": 1688,
+  "chosen": 464,
+  "no_samples": [],
+  "no_pass": {
+   "chat_direct_r4-001-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-002-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-003-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-004-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-005-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-006-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-007-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-008-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-010-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-011-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-012-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-013-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-014-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-017-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-018-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-020-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-023-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-029-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-032-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-034-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-043-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-044-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-045-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-050-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-052-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-053-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-054-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-078-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-080-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-082-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-083-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_direct_r4-086-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "session_chat_r4-006-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "session_chat_r4-016-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "session_chat_r4-019-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "no_thought"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "session_chat_r4-032-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "session_chat_r4-040-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "session_chat_r4-044-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "session_chat_r4-055-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "session_chat_r4-063-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "session_chat_r4-068-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "leak"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "leak"
+     ]
+    }
+   ],
+   "session_chat_r4-070-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty",
+      "recall"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "no_thought"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "no_thought"
+     ]
+    }
+   ],
+   "session_chat_r4-092-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "recall"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "recall"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "recall"
+     ]
+    }
+   ],
+   "session_chat_r4-127-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "session_chat_r4-144-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "session_chat_r4-149-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "recall"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty",
+      "recall"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "recall"
+     ]
+    }
+   ],
+   "session_chat_r4-150-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "leak"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "leak"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "leak"
+     ]
+    }
+   ],
+   "session_chat_r4-152-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "stall",
+      "recall"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "stall",
+      "recall"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "stall",
+      "recall"
+     ]
+    }
+   ],
+   "session_chat_r4-157-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "no_thought"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "no_thought"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "no_thought"
+     ]
+    }
+   ],
+   "chat_voice_r4-002-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-006-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-058-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "leak"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "leak"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "leak"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "leak"
+     ]
+    }
+   ],
+   "chat_voice_r4-140-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-143-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-156-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-157-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-158-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-159-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-164-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-166-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-167-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "leak"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "leak"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "leak"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "leak"
+     ]
+    }
+   ],
+   "chat_voice_r4-171-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-172-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-173-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-175-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-179-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "leak"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "leak"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "leak"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-182-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-186-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-190-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-192-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-194-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-197-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-200-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-202-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-206-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-207-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-210-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-211-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "leak"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-212-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-213-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-214-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-215-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-218-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-219-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-220-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-222-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-224-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-225-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-227-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-231-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-232-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-235-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-237-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-239-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-240-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-245-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "leak"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-249-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-250-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-258-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-311-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ],
+   "chat_voice_r4-313-s0": [
+    {
+     "k": 0,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 1,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 2,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 3,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 4,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    },
+    {
+     "k": 5,
+     "reasons": [
+      "tool_call",
+      "empty"
+     ]
+    }
+   ]
+  },
+  "rejects_by_reason": {
+   "tool_call": 689,
+   "empty": 637,
+   "no_thought": 38,
+   "leak": 35,
+   "recall": 25,
+   "stall": 14,
+   "invented": 1
+  },
+  "first_sample_pass_rate": 0.687,
+  "chosen_shape": {
+   "chars": {
+    "p25": 177.8,
+    "p50": 343.0,
+    "p90": 1117.3
+   },
+   "sentences_p50": 4.0,
+   "question_end_share": 0.123,
+   "question_any_share": 0.254,
+   "emoji_share": 0.636,
+   "name_share": 0.235,
+   "think_share": 1.0,
+   "thought_words": {
+    "p50": 143.0,
+    "p90": 265.0
+   },
+   "completion_tokens": {
+    "p50": 318.0,
+    "p90": 646.5
+   }
+  },
+  "base_text_samples_shape": {
+   "chars": {
+    "p25": 171.5,
+    "p50": 304.0,
+    "p90": 1025.0
+   },
+   "sentences_p50": 4.0,
+   "question_end_share": 0.113,
+   "question_any_share": 0.214,
+   "emoji_share": 0.548,
+   "name_share": 0.218,
+   "think_share": 0.964,
+   "thought_words": {
+    "p50": 143.0,
+    "p90": 265.0
+   },
+   "completion_tokens": {
+    "p50": 309.0,
+    "p90": 621.0
+   }
+  },
+  "scripted_chars": {
+   "p25": 228.0,
+   "p50": 254.0,
+   "p90": 305.0,
+   "n": 464
+  },
+  "chosen_k": {
+   "0": 388,
+   "1": 45,
+   "2": 17,
+   "3": 4,
+   "4": 4,
+   "5": 6
+  }
+ },
+ "orphan_ids": [],
+ "families": {
+  "chat_direct_r4": {
+   "prompts": 87,
+   "with_samples": 87,
+   "samples": 320,
+   "chosen": 55,
+   "no_samples": [],
+   "no_pass": {
+    "chat_direct_r4-001-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-002-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-003-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-004-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-005-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-006-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-007-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-008-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-010-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-011-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-012-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-013-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-014-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-017-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-018-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-020-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-023-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-029-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-032-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-034-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-043-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-044-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-045-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-050-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-052-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-053-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-054-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-078-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-080-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-082-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-083-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_direct_r4-086-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ]
+   },
+   "rejects_by_reason": {
+    "tool_call": 230,
+    "empty": 221,
+    "leak": 4,
+    "stall": 3
+   },
+   "first_sample_pass_rate": 0.437,
+   "chosen_shape": {
+    "chars": {
+     "p25": 320.0,
+     "p50": 651.0,
+     "p90": 1417.6
+    },
+    "sentences_p50": 8.0,
+    "question_end_share": 0.2,
+    "question_any_share": 0.291,
+    "emoji_share": 0.836,
+    "name_share": 0.145,
+    "think_share": 1.0,
+    "thought_words": {
+     "p50": 143.0,
+     "p90": 279.2
+    },
+    "completion_tokens": {
+     "p50": 428.0,
+     "p90": 681.0
+    }
+   },
+   "base_text_samples_shape": {
+    "chars": {
+     "p25": 243.0,
+     "p50": 498.0,
+     "p90": 1405.8
+    },
+    "sentences_p50": 6.0,
+    "question_end_share": 0.212,
+    "question_any_share": 0.263,
+    "emoji_share": 0.778,
+    "name_share": 0.141,
+    "think_share": 1.0,
+    "thought_words": {
+     "p50": 152.0,
+     "p90": 298.4
+    },
+    "completion_tokens": {
+     "p50": 409.0,
+     "p90": 677.0
+    }
+   },
+   "scripted_chars": {
+    "p25": 217.0,
+    "p50": 259.0,
+    "p90": 301.0,
+    "n": 55
+   },
+   "chosen_k": {
+    "0": 38,
+    "1": 11,
+    "2": 1,
+    "3": 1,
+    "4": 1,
+    "5": 3
+   }
+  },
+  "chat_voice_r4": {
+   "prompts": 311,
+   "with_samples": 311,
+   "samples": 867,
+   "chosen": 259,
+   "no_samples": [],
+   "no_pass": {
+    "chat_voice_r4-002-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-006-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-058-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "leak"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "leak"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "leak"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "leak"
+      ]
+     }
+    ],
+    "chat_voice_r4-140-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-143-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-156-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-157-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-158-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-159-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-164-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-166-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-167-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "leak"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "leak"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "leak"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "leak"
+      ]
+     }
+    ],
+    "chat_voice_r4-171-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-172-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-173-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-175-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-179-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "leak"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "leak"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "leak"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-182-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-186-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-190-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-192-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-194-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-197-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-200-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-202-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-206-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-207-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-210-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-211-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "leak"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-212-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-213-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-214-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-215-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-218-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-219-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-220-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-222-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-224-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-225-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-227-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-231-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-232-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-235-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-237-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-239-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-240-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-245-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "leak"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-249-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-250-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-258-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-311-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "chat_voice_r4-313-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 3,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 4,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 5,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ]
+   },
+   "rejects_by_reason": {
+    "tool_call": 400,
+    "empty": 363,
+    "leak": 26,
+    "stall": 2
+   },
+   "first_sample_pass_rate": 0.711,
+   "chosen_shape": {
+    "chars": {
+     "p25": 181.0,
+     "p50": 341.0,
+     "p90": 1199.0
+    },
+    "sentences_p50": 4.0,
+    "question_end_share": 0.147,
+    "question_any_share": 0.344,
+    "emoji_share": 0.842,
+    "name_share": 0.336,
+    "think_share": 1.0,
+    "thought_words": {
+     "p50": 151.0,
+     "p90": 271.2
+    },
+    "completion_tokens": {
+     "p50": 328.0,
+     "p90": 679.8
+    }
+   },
+   "base_text_samples_shape": {
+    "chars": {
+     "p25": 172.0,
+     "p50": 323.0,
+     "p90": 1200.0
+    },
+    "sentences_p50": 4.0,
+    "question_end_share": 0.155,
+    "question_any_share": 0.329,
+    "emoji_share": 0.78,
+    "name_share": 0.349,
+    "think_share": 1.0,
+    "thought_words": {
+     "p50": 155.0,
+     "p90": 275.0
+    },
+    "completion_tokens": {
+     "p50": 344.0,
+     "p90": 673.4
+    }
+   },
+   "scripted_chars": {
+    "p25": 224.0,
+    "p50": 258.0,
+    "p90": 314.0,
+    "n": 259
+   },
+   "chosen_k": {
+    "0": 221,
+    "1": 19,
+    "2": 10,
+    "3": 3,
+    "4": 3,
+    "5": 3
+   }
+  },
+  "session_chat_r4": {
+   "prompts": 167,
+   "with_samples": 167,
+   "samples": 501,
+   "chosen": 150,
+   "no_samples": [],
+   "no_pass": {
+    "session_chat_r4-006-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "session_chat_r4-016-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "session_chat_r4-019-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "no_thought"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "session_chat_r4-032-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "session_chat_r4-040-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "session_chat_r4-044-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "session_chat_r4-055-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "session_chat_r4-063-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "session_chat_r4-068-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "leak"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "leak"
+      ]
+     }
+    ],
+    "session_chat_r4-070-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty",
+       "recall"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "no_thought"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "no_thought"
+      ]
+     }
+    ],
+    "session_chat_r4-092-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "recall"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "recall"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "recall"
+      ]
+     }
+    ],
+    "session_chat_r4-127-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "session_chat_r4-144-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "empty"
+      ]
+     }
+    ],
+    "session_chat_r4-149-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "recall"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "empty",
+       "recall"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "recall"
+      ]
+     }
+    ],
+    "session_chat_r4-150-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "tool_call",
+       "leak"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "tool_call",
+       "leak"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "tool_call",
+       "leak"
+      ]
+     }
+    ],
+    "session_chat_r4-152-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "stall",
+       "recall"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "stall",
+       "recall"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "stall",
+       "recall"
+      ]
+     }
+    ],
+    "session_chat_r4-157-s0": [
+     {
+      "k": 0,
+      "reasons": [
+       "no_thought"
+      ]
+     },
+     {
+      "k": 1,
+      "reasons": [
+       "no_thought"
+      ]
+     },
+     {
+      "k": 2,
+      "reasons": [
+       "no_thought"
+      ]
+     }
+    ]
+   },
+   "rejects_by_reason": {
+    "tool_call": 59,
+    "empty": 53,
+    "no_thought": 38,
+    "recall": 25,
+    "stall": 9,
+    "leak": 5,
+    "invented": 1
+   },
+   "first_sample_pass_rate": 0.772,
+   "chosen_shape": {
+    "chars": {
+     "p25": 152.8,
+     "p50": 273.0,
+     "p90": 747.9
+    },
+    "sentences_p50": 3.0,
+    "question_end_share": 0.053,
+    "question_any_share": 0.087,
+    "emoji_share": 0.207,
+    "name_share": 0.093,
+    "think_share": 1.0,
+    "thought_words": {
+     "p50": 128.0,
+     "p90": 237.8
+    },
+    "completion_tokens": {
+     "p50": 255.5,
+     "p90": 528.9
+    }
+   },
+   "base_text_samples_shape": {
+    "chars": {
+     "p25": 161.0,
+     "p50": 259.5,
+     "p90": 726.3
+    },
+    "sentences_p50": 3.0,
+    "question_end_share": 0.045,
+    "question_any_share": 0.074,
+    "emoji_share": 0.237,
+    "name_share": 0.087,
+    "think_share": 0.915,
+    "thought_words": {
+     "p50": 126.5,
+     "p90": 235.2
+    },
+    "completion_tokens": {
+     "p50": 245.0,
+     "p90": 513.6
+    }
+   },
+   "scripted_chars": {
+    "p25": 232.0,
+    "p50": 250.0,
+    "p90": 287.4,
+    "n": 150
+   },
+   "chosen_k": {
+    "0": 129,
+    "1": 15,
+    "2": 6
+   }
+  }
+ }
+}
