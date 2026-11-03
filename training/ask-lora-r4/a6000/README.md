@@ -17,7 +17,7 @@ r4's SFT (PLAN.md section F) on **one RTX A6000, 48 GB, sm_86** (the user's fina
 | | choice | why |
 |---|---|---|
 | micro-batch / accumulation | **1 row x 8** (`--global-batch 8`) | r3 = 8 GPUs x 1 row = 8 rows per optimizer step, so lr, schedule and noise match. A 6.5k-token row already fills the card: a bigger micro-batch would fit (about 28 GiB at 2) but is not faster, and `train.py` only has micro-batch 1 |
-| max length | **10,240** (train.py default) | r3's longest train row was 9,938 tokens (its smoke log), r4 adds roughly 100 tokens of thought. Over-cap rows are skipped and reported at load; `smoke` runs at the same cap, and `run_sft.sh train` refuses to start without a passing `smoke.json` and reuses its cap |
+| max length | **11,264** (`run_sft.sh` passes it to preflight and smoke; train.py's default stays 10,240) | r3's longest train row was 9,938 tokens (its smoke log); the final r4 build has two rows of about 10.9k (a long tool-error recovery and a long recall thread), so the cap is 11,264. Over-cap rows are skipped and reported at load; `smoke` runs at the same cap, and `run_sft.sh train` refuses to start without a passing `smoke.json` and reuses its cap |
 | gradient checkpointing | **on** (train.py always enables it, `use_reentrant=False`) | Not a knob here. Without it every layer's activations are stored; a rough per-layer count says that does not fit at 10k tokens (not measured) |
 | attention | **SDPA** (`--attn sdpa`), parity-checked in `smoke`, `math` as the fallback | see below |
 | precision | bf16 weights, fp32 LoRA/optimizer state, no QLoRA | 48 GB is plenty, and QLoRA changes the recipe |

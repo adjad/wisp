@@ -116,11 +116,14 @@ PYC
 unpack)
   need_setup; [ -n "${2:-}" ] || die "usage: $0 unpack <sha256 of ask-lora-data.zip>"
   "$RUN" $TAG unpack "$2" ;;
-preflight) need_setup; "$RUN" $TAG preflight ;;
+preflight)    # train.py's default cap is 10,240; preflight at the smoke's 11,264 so the two ~10.9k rows count as fitting
+  need_setup; B="$(ls -d "$WISP"/hf/gemma/models--google--gemma-4-E4B-it/snapshots/* | head -1)"
+  "$PY" "$DATA/train.py" preflight --data "$DATA" --base "$B" --max-len 11264 --tag $TAG ;;
 smoke)
   need_setup
   say "smoke: attention parity (sdpa vs math, strict), cache parity, anchor, 12 longest rows, 15-step overfit"
-  "$RUN" $TAG smoke 10240; rc=$?
+  # 11,264: the final r4 build has two rows of ~10.9k tokens (recover_from_tool_error-017-s2, session_recall_r4-230-s0)
+  "$RUN" $TAG smoke 11264; rc=$?
   case $rc in
     0) echo "smoke OK: read 'peak allocated' below 40 GiB and 'one epoch ~' in $DATA/smoke.log" ;;
     8) echo "smoke exit 8: --attn $ATTN disagrees with the math reference. Use ATTN=math (slower, ~31 GiB at 10k tokens; r3's MI355X fallback) and rerun." ;;
