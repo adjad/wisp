@@ -20,7 +20,7 @@ Wisp's Ask model is trained in two stages. Stage 1 (SFT) teaches it from written
 
 RL starts only if Stage 1 passes the tests it owns and you approve the cost. RL replaces Stage 1 only if it passes every bar against the untuned model, does not regress against Stage 1, and clearly beats it on a goal named in advance. Otherwise Stage 1 ships, but only if Stage 1 itself passes every bar; if neither does, nothing from this round ships and the untuned model stays.
 
-Nothing has run yet, so all costs are estimates. **The user moved all r4 training to one Brev L40 ($1.06/h) on 2026-11-02 (§9.1).** First a measurement stage on the L40 (about 16.5-23 h, about $18-24), then about 3.1-5 days and $80-127 in all on the L40. The 8-GPU node (about 5.7-9.2 hours, $180-295 more) stays an option only if the user asks for it. The A6000 figures below are the reference the L40 ones scale from. You decide two things before Stage 1 is built (whether to accept the new presence-based thinking bar, and any change to the category test), then the measurement spend, then the full run.
+Nothing has run yet, so all costs are estimates: first a measurement stage on one A6000 (about 19-23 h, about $11-14), then either about 3.6-5 days and $52-72 in all on the A6000, or about 5.7-9.2 hours and $180-295 more on an 8-GPU node. You decide two things before Stage 1 is built (whether to accept the new presence-based thinking bar, and any change to the category test), then the measurement spend, then the full run.
 
 ### Path abbreviations
 
@@ -68,7 +68,7 @@ Nothing has run yet, so all costs are estimates. **The user moved all r4 trainin
 | 13 | Reward source | **Verifiers only.** The LLM judge is used at the gate only. | Judge–human agreement is unmeasured. The r2 judge penalised the base traits the user wants kept. |
 | 14 | LoRA / lr | Fresh adapter on merged r4. r=16, **alpha 16** (`--alpha 16`; default 32 at `G:770`). All LM linears, towers frozen. **lr chosen by a short A6000 bracket {5e-6, 1e-5, 2e-5}** on fresh runs (§2.3; the node reuses that pick and does not re-bracket). 5% warmup, constant. ≤ 1 epoch. Probe and save every 200 prompts (A6000 50 steps, node 25). | Alpha matches the SFT scale (`brev/train.py:1890`). The step size (lr × alpha/r) has no reliable citation for this setup, so it is measured, not assumed. |
 | 15 | Data | Hash split (stratified, thread-level for session families), frozen exclusion manifest, overlap checker on the RL export **and the SFT build**. Export fails without `valid.meta.jsonl`. RL text pool rebuilt with a fresh seed tag. | The shared `Random(7)` split (`build.py:296`) moves r3-valid and gate picture-turn rows into train. |
-| 16 | Hardware order | **Superseded 2026-11-02: one L40 for E6a and E6b (§9.1), with the A6000's batch shape and lr (`--profile l40`).** Two cost stops (§8.1 E6a, E6b). A6000 measurement stage first: setup, floors, smoke and lr bracket (~19-23 h, ~$11-14). Then the user picks the full run: the A6000 (~86-120 h in all, ~$52-72) or 8× B300 (~5.7-9.2 h, ~$180-295 at an unverified $32/h, plus the sunk A6000 stage). **MI355X only after the ROCm changes.** All §9 estimates. | `G check` fails on ROCm (`G:390-402`), and attention is hard-coded SDPA (`G:131`). |
+| 16 | Hardware order | Two cost stops (§8.1 E6a, E6b). A6000 measurement stage first: setup, floors, smoke and lr bracket (~19-23 h, ~$11-14). Then the user picks the full run: the A6000 (~86-120 h in all, ~$52-72) or 8× B300 (~5.7-9.2 h, ~$180-295 at an unverified $32/h, plus the sunk A6000 stage). **MI355X only after the ROCm changes.** All §9 estimates. | `G check` fails on ROCm (`G:390-402`), and attention is hard-coded SDPA (`G:131`). |
 | 17 | Runs | Smoke, lr-bracket arms and full run are **separate fresh runs**. No first-look-then-`--resume`. | `--max-steps` shrinks the warmup (`G:526-528`, `:593`), resume skips `guard(0)` (`G:586-587`), and Adam state is not saved (`G:501`). |
 
 ---
@@ -691,25 +691,7 @@ S-learn and S-grader automation is C10b (Tier 2). Until it lands, the operator a
 
 All figures are **estimates**. No GRPO step has been timed.
 
-### 9.1 On the L40 (the user's card for all of r4, 2026-11-02: "Yes, L40 for all")
-
-One Brev L40: 48 GB (torch sees about 45 GiB with ECC on), sm_89, 72 GB host RAM, **$1.06/h**. Nothing has run on one. `PL` profile `l40` (`--profile l40` in `G`) reuses the A6000's plan, lr and accelerate config; `PL.HW["l40"]` scales the A6000 profile by the bf16 peak ratio (x1.17 optimistic, x1.10 middle, x1.0 pessimistic) and decode by the bandwidth ratio (864/768: /1.125, /1.06, /1.0), the same rule as `A6`'s `estimate.py`. Below, every A6000 line item from the table further down is scaled the same way: the low end by the optimistic ratios (training lines /1.17, decode lines /1.125, setup and merge unscaled), the high end with **no gain at all**, because r2 ran at about 10% of the A6000's peak and L40 hosts are passively cooled.
-
-| | L40 h | $ at $1.06/h | (A6000 reference) |
-|---|---|---|---|
-| **E6a**, measurement stage: setup + floors + three-arm lr bracket | **~16.5-22.6** | **~$18-24** | 19.0-22.6 h, $11-14 |
-| **E6b**, whole session including E6a (default: 9 probe evals) | **~75-120** (3.1-5 days) | **~$80-127** | 86-120 h, $52-72 |
-| budget variant, two-arm bracket chosen at E6a | ~63.5-104 | ~$67-110 | 73-104 h, $44-63 |
-| budget variant, three-arm bracket already spent | ~66.7-109 | ~$71-116 | 77-109 h, $46-65 |
-| all of r4: SFT stage 1 (35.3-56.1 h, `A6` README) + the default GRPO session | ~110-176 | ~$117-186 | |
-
-**Batch shape: unchanged.** The L40 has the same 48 GB as the A6000, and torch sees less of it (about 45.0 vs 47.9 GiB). So there is no room for a bigger G, more prompts per step or a larger micro-batch. `micro_bs 3` at G = 6 is still the unverified estimate (about 34 GiB plus generation KV), with `--micro-bs 2` as the fallback, now with about 3 GiB less headroom. G = 6 and 4 prompts per step stay, and so does the lr bracket. The 72 GB of host RAM covers the merge (16 GB bf16 base).
-
-**`G check` on the L40:** it used to need `sm_89` itself in torch's arch list. The cu128 wheels ship `sm_86` cubins, which an sm_89 card runs, so the check would have failed a working L40. It now accepts a same-major cubin of an equal or lower minor (`G.arch_ok`, tested).
-
-**Hours budget.** The "~150 A6000 hours on hand" below (r3's plan) were A6000 hours and do not carry over as L40 hours. If they were a dollar credit (about $90 at $0.60/h), that is about 85 L40 hours: SFT stage 1 plus E6a (about 52-79 h) fit in it, and E6b's remainder (about 58.6-97 h, about $62-103) would be new spend. If they were prepaid A6000 time, every L40 hour is new spend. Either way the limit is now dollars, not hours. **R27 changes:** a GRPO re-run is no longer impossible by hours. It is a separate cost decision of roughly $62-103 for the training part.
-
-The A6000 numbers that follow are unchanged and are the basis for the scaling above. After E6a, put the measured L40 s/step and decode time into `PL.HW["l40"]` and re-quote E6b from them.
+**Hardware (2026-11-02, user):** the r4 SFT moved to a Brev L40 ($1.06/h), and **E6a and E6b stay on the A6000** ("Ill keep RL to the a6000"), so every figure in this section stands. The GRPO kit's default `--profile a6000` is what runs. `PL` also carries an unused `l40` profile, and `G check` accepts a card that runs a lower-minor cubin of its major (`G.arch_ok`; an sm_86 card is unaffected). The "~150 A6000 hours on hand" now pay only for RL, because the SFT is no longer on the A6000. That leaves about 150 h against the 86-120 h default session, so the margin R27 described is bigger, but a full re-run still does not fit.
 
 **Training hours for one epoch, 1,488 rows.** "Rerun" means my rerun of `PL.hours` with `text_completion`/`text_cap` overridden to 330/768 and 400/1,024; scratch, not saved in the repo. Completion lengths are assumptions.
 
@@ -754,12 +736,12 @@ Totals are sums of the line items: A6000 0.75 + 6.9 + 11.3 + 38 + 1.1 + 20.0 + 6
   - r3 needed `--attn math` on gfx950 (`A6:29`).
 
   The MI355X rate is unverified (`PLAN:354`).
-- **A6000 hours on hand (superseded by §9.1 on the L40):** about 150 (`A6:74`). SFT is about 38-46 h (`A6:70`), leaving about 104-112 h. The default GRPO session (86-120 h) fits only at its low-to-middle end; the budget variant (73-104 h with the two-arm bracket) just meets the 104 h left after a 46 h SFT at its high end, with no margin; with the three-arm bracket already spent (77-109 h) it fits only at its low end. A re-run would not fit (R27). Plan B is node-only (§8.5), so A6000 hours do not limit it.
+- **A6000 hours on hand:** about 150 (`A6:74`). *Since 2026-11-02 the SFT runs on an L40, so these hours are all for RL (the note at the top of §9); the rest of this bullet is the earlier SFT-on-A6000 arithmetic.* SFT is about 38-46 h (`A6:70`), leaving about 104-112 h. The default GRPO session (86-120 h) fits only at its low-to-middle end; the budget variant (73-104 h with the two-arm bracket) just meets the 104 h left after a 46 h SFT at its high end, with no margin; with the three-arm bracket already spent (77-109 h) it fits only at its low end. A re-run would not fit (R27). Plan B is node-only (§8.5), so A6000 hours do not limit it.
 - **`PLAN:361-362` is stale.** "1.5-2.2 h on 8× B300", "$65-105" and "11-20 A6000 hours" are round-3 numbers (trainer research §10.1-2; `R4G:65` is correct for round 4). See P7.
 - **Mac side, $0:** export, checker and grader tests take about 2-3 h. The base-twice baseline (M-0b) is about 3-4 h per base run (estimate). The pre-OK informative-group measure (M6b) and the `heldout_safety` baselines (M1b, about 0.3 h per base-like model-run and 0.1 h for an r3-like one, estimate from `TB` timings) come before the cost OK. S-indep (M8a-M8b) adds up to 4 merges, quantisations and `heldout_safety` runs before the gates (time unverified). Merge, quantise and gate take about 7 h per gated candidate, with Wisp quit and the heavy lock held (`PLAN:364`).
 - **Memory.** The A6000 at `micro_bs 3` with G = 6 and cap 768-1,024 is unverified: about 34 GiB plus generation KV (trainer research §5). Fallback: `--micro-bs 2`, which divides G = 6.
 - **Lever not taken.** The prompt is 96% of text tokens (6,624 of 6,884, `PL:121`, `:134`). Computing the shared prefix once per group would cut prompt compute about G×, but it needs a new backward path (`A6:77`). Consider it only if the A6000 is chosen and the smoke confirms the calibrated speed.
-- **Recommendation (A6000 wording; on the L40 read §9.1's figures: E6a about 16.5-22.6 h, $18-24; E6b about 75-120 h, $80-127):**
+- **Recommendation:**
   - E6a: run the A6000 measurement stage first (setup, floors, smoke and lr bracket: about 19-23 h, about $11-14; the bracket alone is about $6.8-8.3; CUDA, no ROCm blockers). Put its s/step and measured decode time into `PL` and re-quote both $ lines.
   - E6b: then the user chooses: the A6000 at about 3.6-5 days and about $52-72 in all (or the budget variant: about $44-63 if E6a chose the two-arm bracket, about $46-65 if the three-arm bracket was run), or 8× B300 at about 5.7-9.2 h and about $180-295 plus the sunk A6000 stage. The $0.60/h A6000 rate, the $32/h node rate and B300 availability are all unverified.
 

@@ -73,7 +73,8 @@ class Plan:
 PROFILES = {
     # one 48 GB card: the old text-only batch (4 prompts x 6 completions); micro_bs 3 is the 48 GB estimate
     "a6000": dict(plan=Plan(world=1, G=6, ppr=4, micro_bs=3), lr=5e-6, accelerate="accelerate_a6000.yaml"),
-    # one L40 (the user's card for all of r4 since 2026-11-02): the A6000's batch, lr and single-GPU accelerate config. It has
+    # one L40, NOT used for r4 RL (the user keeps E6a/E6b on the A6000; only the SFT moved to an L40, 2026-11-02). The A6000's
+    # batch, lr and single-GPU accelerate config. It has
     # the same 48 GB, and torch sees less of it (~45 GiB with ECC on), so nothing grows: micro_bs 2 stays the fallback
     "l40": dict(plan=Plan(world=1, G=6, ppr=4, micro_bs=3), lr=5e-6, accelerate="accelerate_a6000.yaml"),
     # 8 x 288 GB: one prompt x 8 completions per GPU, the whole group in one forward/backward; lr x sqrt(64/24)
