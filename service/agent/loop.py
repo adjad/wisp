@@ -96,6 +96,41 @@ def _action_fingerprint(tool: str, args: dict) -> str:
                          separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
+# Effect calls the loop will run in one turn. "Make these into reminders" from
+# a picture or a list is several distinct writes; past this many, a turn is a
+# runaway, not a request.
+_MAX_EFFECT_CALLS_PER_TURN = 8
+# The arguments that name WHAT an effect acts on, for tools where a second call
+# on the same target in one turn is a repeat even when the rest differs: a
+# reworded second email to the same person, a flip-flopped setting, a delete
+# retried with a stale revision. Other effects compare all their arguments.
+_EFFECT_TARGET_ARGS = {
+    "send_message": ("to",), "send_email": ("to",), "schedule_send": ("channel", "to"),
+    "reply_to_email": ("message_id",), "forward_email": ("message_id", "to"),
+    "toggle_setting": ("setting",), "delete_knowledge": ("record_id",),
+}
+# Optimistic-concurrency tokens: they change after every write, so they never
+# make a second call a different action.
+_EFFECT_VOLATILE_ARGS = frozenset({"expected_revision", "expected_id", "expected_reply"})
+
+
+def _effect_duplicate_key(tool: str, args: dict) -> str:
+    """Fingerprint for refusing a repeated effect: the target arguments (or all
+    of them), with strings compared case- and whitespace-insensitively."""
+    def norm(value):
+        if isinstance(value, str):
+            return " ".join(value.split()).casefold()
+        if isinstance(value, dict):
+            return {k: norm(v) for k, v in value.items() if v not in (None, "")}
+        if isinstance(value, list):
+            return [norm(v) for v in value]
+        return value
+    keys = _EFFECT_TARGET_ARGS.get(tool)
+    picked = {k: v for k, v in (args or {}).items()
+              if (k in keys if keys else k not in _EFFECT_VOLATILE_ARGS)}
+    return _action_fingerprint(tool, norm(picked))
+
+
 SYSTEM = (
     "You are Wisp, a private assistant running locally on the user's Mac. "
     "You can use tools to inspect and operate the machine.\n"
@@ -2645,6 +2680,9 @@ async def run_agent(
     tool_outcomes: list[tuple[str, object]] = []
     fresh_personal_evidence = False
     completed_effects: dict[str, str] = {}
+    # Effects that succeeded (or were planned, in a dry run) this turn, keyed by
+    # _effect_duplicate_key. A distinct second write runs; a repeat does not.
+    effect_keys_done: set[str] = set()
     executed_strict_reads: dict[str, int] = {}
     # Reads that already succeeded this turn, keyed by tool and exact
     # arguments. An identical repeat returns a pointer to the earlier result
@@ -2733,6 +2771,9 @@ async def run_agent(
             contact_receipts.pop(key, None)
             if outcome.status == "succeeded" and not planned:
                 contact_receipts[key] = result
+        if (name in _EFFECT_TOOLS and args is not None
+                and outcome.status in {"succeeded", "planned"}):
+            effect_keys_done.add(_effect_duplicate_key(name, args))
         if outcome.status == "succeeded":
             if outcome.effect != "read" and args is not None:
                 completed_effects[_action_fingerprint(name, args)] = result
@@ -2767,6 +2808,14 @@ async def run_agent(
         # It must not exhaust the obligation's only eligible tool.
         previews = {name for name, outcome in latest.items() if outcome.status == "preview"}
         return set(group or ()) - (attempted_tools - previews)
+
+    def _earlier_effect_receipts(text: str) -> str:
+        """Put the receipts of writes that already succeeded this turn before a
+        stop message: a later write failing or being declined must not hide
+        that the earlier ones happened."""
+        done = [outcome.text for name, outcome in tool_outcomes
+                if name in _EFFECT_TOOLS and outcome.status == "succeeded"]
+        return "\n".join([*dict.fromkeys(done), text]) if done else text
 
     def _reminder_update_receipts() -> str | None:
         """Project update-only effects; model prose is not an effect receipt."""
@@ -3119,7 +3168,8 @@ async def run_agent(
                 if _name in _TERMINAL_OUTBOUND_DENIALS:
                     return await _finish_denied_outbound(emit)
                 response = (_reminder_update_receipts() or
-                            "The requested action was not completed because approval was denied.")
+                            _earlier_effect_receipts(
+                                "The requested action was not completed because approval was denied."))
                 await emit({"type": "text", "text": response})
                 await emit({"type": "done"})
                 return response
@@ -3133,7 +3183,8 @@ async def run_agent(
             failed_tools.add(_name)
             if _direct_outcome.effect != "read":
                 response = (_reminder_update_receipts() or
-                            "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(_result))
+                            _earlier_effect_receipts(
+                                "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(_result)))
                 await emit({"type": "text", "text": response})
                 await emit({"type": "done"})
                 return response
@@ -3505,6 +3556,7 @@ async def run_agent(
     ask_write_nudged = False
     ask_text_call_nudged = False
     ask_guard_retried = False
+    ask_stall_nudged = False
     ask_scale = 1.0
     ask_tool_calls: Counter = Counter()
     ask_blocked: set[str] = set()
@@ -4073,9 +4125,9 @@ async def run_agent(
         if not tool_calls:
             text = msg.get("content") or ""
             if ask_quality:
-                from service.model_only import (asks_personal_data, pure_writing, salvage_answer,
-                                                stall_reply, strip_text_tool_calls, strip_think,
-                                                text_tool_call)
+                from service.model_only import (asks_personal_data, promise_only_reply,
+                                                pure_writing, salvage_answer, stall_reply,
+                                                strip_text_tool_calls, strip_think, text_tool_call)
                 text = strip_think(text)
                 wrote_call = text_tool_call(text)
                 if wrote_call:
@@ -4132,7 +4184,8 @@ async def run_agent(
                 # "I'm checking your schedule now. Give me just a moment!" with
                 # nothing run is a promise, not an answer: the turn ended there
                 # (2026-10-29 dev7 export; only get_upcoming's schema had loaded).
-                stalled = not attempted_tools and (stall_reply(text) or (wrote_call and not text))
+                stalled = (not attempted_tools and not ask_stall_nudged
+                           and (stall_reply(text) or (wrote_call and not text)))
                 if (not ask_reprompted and (not attempted_tools or web_only)
                         and _step < max_steps - 1
                         and not _ask_capability_prompt and not test_mode
@@ -4157,6 +4210,23 @@ async def run_agent(
                          "That asks for my own current data, and no tool has been called yet. ")
                         + "Call the tool that holds it now (calendar, email, messages, reminders, "
                         "notes or memory); if nothing holds it, say you don't know. Do not guess.")})
+                    continue
+                if (not ask_stall_nudged and not ask_reprompted and not attempted_tools
+                        and step_schemas and choice != "none" and _step < max_steps - 1
+                        and not test_mode and not pure_writing(memory_query)
+                        and promise_only_reply(text)):
+                    # "I'll look up the best details on that for you right
+                    # now." with nothing called ends the turn on a promise
+                    # (toolbench: 0.3-0.8% of finals). One nudge, tool choice
+                    # left to the model; its next reply is accepted as is.
+                    ask_stall_nudged = True
+                    audit("ask_stall_nudge", step=_step)
+                    if content_streamed:
+                        await emit({"type": "clear_answer"})
+                    msgs.append({"role": "assistant", "content": text})
+                    msgs.append({"role": "user", "content": (
+                        "You said you would look, but nothing has run yet. Call the tool "
+                        "now, or answer from what you already have.")})
                     continue
             unmet = _unmet_group()
             candidates = _unmet_candidates(unmet)
@@ -4567,10 +4637,24 @@ async def run_agent(
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 continue
 
-            if name in _EFFECT_TOOLS and name in tools_answered:
-                result = (f"({name} already succeeded earlier this turn; it was NOT run "
-                          "again. Narrate the existing result instead of duplicating the action.)")
+            if name in _EFFECT_TOOLS and _effect_duplicate_key(name, args) in effect_keys_done:
+                # Only a true repeat: the same tool on the same target or with
+                # equivalent arguments. A different reminder, event or setting
+                # in the same turn is its own action and runs (with its own
+                # card wherever one is due).
+                result = (f"({name} already succeeded earlier this turn with these arguments; "
+                          "it was NOT run again. Narrate the existing result instead of "
+                          "duplicating the action.)")
                 audit("reject_duplicate_effect", tool=name, args=args)
+                prev_step_refusals += 1
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
+            if name in _EFFECT_TOOLS and len(effect_keys_done) >= _MAX_EFFECT_CALLS_PER_TURN:
+                result = (f"({name} was NOT run: this request already made "
+                          f"{len(effect_keys_done)} changes, the most one request may make. "
+                          "Tell the user which items were done and which were not.)")
+                audit("reject_effect_cap", tool=name, args=args)
                 prev_step_refusals += 1
                 await emit({"type": "tool_result", "id": cid, "result": result})
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
@@ -4751,6 +4835,8 @@ async def run_agent(
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 _record_outcome(name, result, planned=True)
                 tools_answered.add(name)
+                if name in _EFFECT_TOOLS:
+                    effect_keys_done.add(_effect_duplicate_key(name, args))
                 if restricted[0] is not None:
                     # A dry run's planned lookup stands in for the real one.
                     restricted_ran[0] = True
@@ -4786,6 +4872,17 @@ async def run_agent(
             if fingerprint in completed_effects:
                 result = ('Already completed in this turn; not executed again.\n'
                           + completed_effects[fingerprint])
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
+            if name in _EFFECT_TOOLS and _effect_duplicate_key(name, args) in effect_keys_done:
+                # The same repeat check, on the arguments as bound: a send to
+                # "Sam" became Sam's verified address only just above.
+                result = (f"({name} already succeeded earlier this turn with these arguments; "
+                          "it was NOT run again. Narrate the existing result instead of "
+                          "duplicating the action.)")
+                audit("reject_duplicate_effect", tool=name, args=args)
+                prev_step_refusals += 1
                 await emit({"type": "tool_result", "id": cid, "result": result})
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 continue
@@ -5064,7 +5161,8 @@ async def run_agent(
                     if name in _TERMINAL_OUTBOUND_DENIALS:
                         return await _finish_denied_outbound(emit)
                     response = (_reminder_update_receipts() or
-                                "The requested action was not completed because approval was denied.")
+                                _earlier_effect_receipts(
+                                    "The requested action was not completed because approval was denied."))
                     await emit({"type": "text", "text": response})
                     await emit({"type": "done"})
                     return response
@@ -5080,7 +5178,8 @@ async def run_agent(
                     # Retrying a write after an uncertain response can create
                     # duplicates; let the user correct the arguments first.
                     response = (_reminder_update_receipts() or
-                                "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(result))
+                                _earlier_effect_receipts(
+                                    "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(result)))
                     await emit({"type": "text", "text": response})
                     await emit({"type": "done"})
                     return response

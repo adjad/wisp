@@ -138,6 +138,11 @@ ASK_CORE_STUBS = frozenset({
 })
 
 DAY_PLAN_TOOL = "get_my_day_plan"
+_WHEN = (r"(?:today|tonight|tomorrow|(?:this|next)\s+(?:week(?:end)?|month)|the\s+week(?:end)?"
+         r"|(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b")
+# "and saturday?", "what about friday", "how about this week", "I mean this week"
+_DAY_FOLLOWUP = re.compile(r"(?:and|what\s+about|how\s+about|i\s+mean|same\s+for)\s+(?:for\s+|on\s+)?"
+                           + _WHEN + r"\s*\??$", re.I)
 _DAY_PLAN = re.compile(
     r"\bwhat\s+(?:should|do|must|can)\s+i\s+(?:do|focus on|work on|tackle|get done|prioriti[sz]e)\b"
     r"|\bwhat(?:['’]?s| is)\s+on\s+my\s+(?:plate|list|agenda|to-?do)"
@@ -145,14 +150,28 @@ _DAY_PLAN = re.compile(
     r"|\bplan\s+(?:out\s+)?my\s+day\b|\bwhat\s+am\s+i\s+(?:forgetting|missing)\b"
     r"|\banything\s+i\s+should\s+(?:know|do|handle)\b|\bwhat(?:['’]?s| does| is)\s+my\s+day\b"
     r"|\bmy\s+(?:to-?do|todo)s?(?:\s+list)?\b|\bwhat(?:['’]?s| is)\s+next\s+for\s+me\b"
-    r"|\bhow\s+(?:does|is)\s+my\s+day\b|\bwhere\s+should\s+i\s+start\b",
+    r"|\bhow\s+(?:does|is)\s+my\s+day\b|\bwhere\s+should\s+i\s+start\b"
+    # Time-scoped "what's going on" questions: the Brief holds what mail,
+    # texts and notes add to the calendar (2026-11-02: "what is my plan for
+    # saturday" missed a family lunch from a text). "what's up" alone is a
+    # greeting, so it counts only with a time.
+    r"|\bwhat(?:['’]?s| is| are)\s+coming\s+up\b|\banything\s+(?:coming\s+up|due|planned)\b"
+    r"|\banything\s+i\s+(?:need|have)\s+to\s+(?:do|get done|handle)\b"
+    r"|\bwhat\s+do\s+i\s+have\s+(?:due|going on|coming up|planned|on|for|this|next|today|tomorrow|tonight)\b"
+    r"|\bmy\s+plans?\s+(?:for|on|this|next|today|tomorrow|tonight)\b"
+    r"|\bwhat(?:['’]?s| is)\s+(?:up|on|going\s+on|happening|planned)\s+(?:for\s+|on\s+)?" + _WHEN,
     re.I)
 
 
-def day_plan_question(prompt: str) -> bool:
-    """"What should I do today?" and its paraphrases: one get_my_day_plan read
-    answers it better than four separate source reads."""
-    return bool(_DAY_PLAN.search(normalize_day_words(prompt)))
+def day_plan_question(prompt: str, previous: str = "") -> bool:
+    """"What should I do today?", "what's on friday?" and their paraphrases:
+    one get_my_day_plan read answers it better than four separate source
+    reads. A bare follow-up ("and saturday?") counts when the previous user
+    prompt was one."""
+    if _DAY_PLAN.search(normalize_day_words(prompt)):
+        return True
+    return bool(previous and _DAY_FOLLOWUP.match(normalize_day_words(prompt).strip())
+                and _DAY_PLAN.search(normalize_day_words(previous)))
 
 
 # Misspellings of "tomorrow" seen in real prompts ("what is up for tommorow"
@@ -169,8 +188,10 @@ def normalize_day_words(prompt: str) -> str:
 
 
 ASK_DAY_PLAN_HINT = (
-    "DAY PLAN: call get_my_day_plan once and answer from it (day='tomorrow' when "
-    "the user asks about tomorrow); do not read the calendar, mail, messages and "
+    "DAY PLAN: call get_my_day_plan once for the day or range asked about (day='tomorrow', "
+    "a weekday like 'saturday', a date, or 'this_week') and answer from it, including the "
+    "items it found in email and texts; for a follow-up like 'and friday?' call it again "
+    "for that day; do not read the calendar, mail, messages and "
     "notes one by one unless it says the plan is unavailable. predict_my_day is "
     "learned habits only, never the plan. Answer as a short prioritized list: one "
     "lead line, then 3-6 bullets — time-bound items first (with times), then "
@@ -231,6 +252,27 @@ def stall_reply(text: str) -> bool:
     return bool(lines) and any(_STALL_FILLER.search(line) for line in lines) and all(
         _STALL_FILLER.search(line) or _STALL_ACK.match(line) or _STALL.search(line) for line in lines)
 
+
+
+# The Ask LoRA r3 reward's stall phrases (training/ask-lora-r3/grpo/reward.py
+# `_STALL`, act_dont_promise), plus "I am …" and curly apostrophes. Unanchored,
+# unlike _STALL above: the toolbench misses were multi-sentence ("It looks like
+# you're curious about RAM! I'll look up the best details on that for you right
+# now.", "I'm looking up the schedule for you now. … I'll check the public web").
+_PROMISE = re.compile(
+    r"\b(let me (?:look|check|find|pull|see|search|get|grab|take a look|dig)|"
+    r"i(?:'| wi)ll (?:look|check|find|pull|search|get|grab|take a look|dig|see)|"
+    r"i(?:'m| am) (?:looking|checking|pulling|searching|grabbing)|one moment|give me a (?:moment|sec(?:ond)?)|hang on|"
+    r"looking (?:that|it|this) up)\b", re.I)
+
+
+def promise_only_reply(text: str) -> bool:
+    """A reply that promises to look something up instead of answering. Never a
+    question back to the user ("Which city? Once I have it, I'll check.") and
+    never a long answer that only mentions a follow-up."""
+    text = (text or "").strip().replace("\u2019", "'")
+    return (bool(text) and len(text) <= 400 and "?" not in text
+            and bool(_PROMISE.search(text)))
 
 # Appended to a model-led turn's runtime prompt (the light-read style hint the
 # legacy router sets is never set on a model-led turn).

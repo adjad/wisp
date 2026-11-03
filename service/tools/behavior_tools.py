@@ -179,7 +179,7 @@ def describe_me(subject: str | None = None) -> str:
     "Predict the user's day from their learned routines only: likely activities (gym, lunch), "
     "contacts they usually talk to, meetings likely to be cancelled, and conflicts with habits. "
     "Each prediction has a probability and a 'because'. It does NOT list the calendar, reminders "
-    "or to-dos: for 'what's tomorrow' use get_upcoming, for 'plan my day' get_my_day_plan. Use for "
+    "or to-dos (only dated Brief items from email and texts, listed apart): for 'what's tomorrow' use get_upcoming, for 'plan my day' get_my_day_plan. Use for "
     "'predict my day', 'what will tomorrow look like'. Read-only.",
     {"type": "object", "properties": {
         "day": {"type": "string", "enum": ["today", "tomorrow"], "description": "today or tomorrow (default)"},
@@ -196,10 +196,15 @@ def predict_my_day(day: str = "tomorrow") -> str:
     if day not in {"today", "tomorrow"}:
         day = "tomorrow"
     preds = behavior_runtime.predictions_for(runtime, day)
-    start, _ = behavior_runtime.day_bounds(day, runtime.clock())
+    start, end = behavior_runtime.day_bounds(day, runtime.clock())
     label = ("Today" if day == "today" else "Tomorrow") + datetime.fromtimestamp(start).strftime(" (%A, %B %-d)")
+    # What mail and texts say is planned that day is not a learned routine,
+    # but a prediction that leaves it out reads as a complete day.
+    from service.tools.proactive_tools import brief_block
+    brief = brief_block(runtime.clock(), start=start, end=end, note="not learned routines")
+    brief = "\n\n" + brief if brief else ""
     if not preds:
-        return f"{label}: I don't have enough learned routine to predict anything specific yet."
+        return f"{label}: I don't have enough learned routine to predict anything specific yet." + brief
     names = {"activity": "likely", "cancel_risk": "may be cancelled", "contact": "possible contact window",
              "habit_conflict": "conflicts with a habit", "usage": "you usually ask Wisp about this"}
     lines = [f"{label}, based on your learned routines (probabilities, not commitments):"]
@@ -209,7 +214,7 @@ def predict_my_day(day: str = "tomorrow") -> str:
         if p.because:
             line += f": {p.because}"
         lines.append(line)
-    return "\n".join(lines)
+    return "\n".join(lines) + brief
 
 
 @register(
