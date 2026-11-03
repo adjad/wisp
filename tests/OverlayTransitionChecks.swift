@@ -303,6 +303,7 @@ struct OverlayTransitionChecks {
         await AppDelegate.checkSetupCardHoldsAsk()
         await AppDelegate.checkInlineReportHoldsOpen()
         await chatArchiveChecks()
+        await AppDelegate.checkMenuExportsDebugLog()
         #endif
         if ProcessInfo.processInfo.environment["WISP_MOTION_NATIVE_CHECK"] == "1" {
             await nativeChecks()
