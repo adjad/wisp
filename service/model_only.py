@@ -140,9 +140,11 @@ ASK_CORE_STUBS = frozenset({
 DAY_PLAN_TOOL = "get_my_day_plan"
 _WHEN = (r"(?:today|tonight|tomorrow|(?:this|next)\s+(?:week(?:end)?|month)|the\s+week(?:end)?"
          r"|(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b")
-# "and saturday?", "what about friday", "how about this week", "I mean this week"
-_DAY_FOLLOWUP = re.compile(r"(?:and|what\s+about|how\s+about|i\s+mean|same\s+for)\s+(?:for\s+|on\s+)?"
-                           + _WHEN + r"\s*\??$", re.I)
+# "and saturday?", "what about friday", "I mean this week", and corrections:
+# "actually saturday", "no, friday", "i meant tomorrow", "no wait, saturday"
+_DAY_FOLLOWUP = re.compile(r"(?:(?:no|nah|sorry|oops)[\s,]+)?(?:wait[\s,]+)?"
+                           r"(?:(?:and|what\s+about|how\s+about|i\s+mean[t]?|same\s+for|actually)[\s,]+)?"
+                           r"(?:for\s+|on\s+)?" + _WHEN + r"\s*[?.!]?$", re.I)
 _DAY_PLAN = re.compile(
     r"\bwhat\s+(?:should|do|must|can)\s+i\s+(?:do|focus on|work on|tackle|get done|prioriti[sz]e)\b"
     r"|\bwhat(?:['’]?s| is)\s+on\s+my\s+(?:plate|list|agenda|to-?do)"
@@ -412,6 +414,17 @@ def web_degradation_hint(tool: str, result: str) -> str:
             "specifics such as scores, dates or prices that are not in the results above.)")
 
 
+# Replying is a destination and draws on the message replied to, in any form:
+# "draft a message responding to trishe" read nothing and drafted nothing
+# (2026-11-02 r3). The verbs need only "to"; the nouns ("a response to", "an
+# answer to") need a person or a message after it, so "the public response to
+# the policy" stays plain writing.
+_REPLY_TO = (r"(?:\b(?:repl(?:y|ies|ied|ying)|respon(?:d|ds|ded|ding))\s+to\b"
+             r"|\b(?:response|answer|reply)\s+to\s+(?:[\w.-]+['’]s\b|(?:my|his|her|their|the|this|that|"
+             r"your)\s+(?:e-?mail|message|text|dm|thread|note|invite|post)\b|(?:my\s+)?(?:mom|mum|dad|"
+             r"mother|father|sister|brother|boss|manager|professor|prof|teacher|landlord|roommate|"
+             r"friend|wife|husband|partner|girlfriend|boyfriend)\b|(?-i:[A-Z][\w.'-]*)\b|(?:him|her|them)\b)"
+             r"|\banswer(?:ing)?\s+(?:him|her|them)\b)")
 _COMPOSE = re.compile(r"^\s*(?:please\s+)?(?:can you\s+|could you\s+)?(?:write|compose|draft|come up with)\b", re.I)
 # A destination is somewhere the text goes: a named recipient ("an email to
 # Priya"), a send/reply verb, or a place it is saved. The noun alone ("a
@@ -422,7 +435,8 @@ _DESTINATION = re.compile(
     # to mom", "a message to the landlord" (toolbench 2026-10-31: these banned
     # draft_email). A "note to my professor" is still only text to write.
     r"|(?i:\b(?:e-?mail|text|message|imessage|dm)\s+to\s+(?:my\s+|the\s+|our\s+)?[a-z][\w.'-]*)"
-    r"|(?i:\b(?:send|sent|reply|respond|forward|post\s+(?:it|this)|share)\b)"
+    r"|(?i:\b(?:send|sent|forward|post\s+(?:it|this)|share)\b)"
+    r"|(?i:" + _REPLY_TO + r")"
     r"|(?i:\b(?:in|to|into)\s+(?:my\s+)?(?:notes?|notes app|a file|calendar|reminders?)\b)"
     r"|(?i:\b(?:save|file|document|doc|calendar|reminder|clipboard)\b)"
     r"|\b(?i:text|e-?mail|message)\s+[A-Z][\w.'-]*")
@@ -450,7 +464,7 @@ _STORED_CONTENT = re.compile(
     r"messages?|texts?|chats?|reminders?|to-?dos?|docs?|documents?|files?|folder|drafts?|"
     r"meetings?|events?|plans?|conversations?|browsing|history)\b"
     r"|\b(?:based on|using|from|according to|summari[sz]e|summary of|recap of)\b"
-    r"|\b(?:reply|respond|answer)\s+to\b"
+    r"|" + _REPLY_TO +
     r"|\b[\w.-]+['’]s\s+(?:e-?mail|message|text|note|doc|document|post|invite)\b"
     r"|\bthe\s+(?:doc|document|file|attachment|e-?mail|thread|message|text|note|"
     r"meeting|call|invite|spreadsheet|pdf|deck)\b"
@@ -461,6 +475,20 @@ _STORED_CONTENT = re.compile(
 _WRITING = re.compile(
     r"^\s*(?:please\s+)?(?:can you\s+|could you\s+|would you\s+)?(?:help me\s+)?"
     r"(?:write|compose|draft|come up with|pen)\b", re.I)
+
+
+def reply_reads(prompt: str) -> list[str]:
+    """The conversation a reply draft answers is read first: "draft a message
+    responding to trishe" needs her thread before draft_message. An email
+    reply reads mail, a text or message reply reads Messages, otherwise both."""
+    text = prompt or ""
+    if not (_WRITING.match(text) or _COMPOSE.match(text)) or not re.search(_REPLY_TO, text, re.I):
+        return []
+    if re.search(r"\be-?mails?\b", text, re.I):
+        return ["view_emails"]
+    if re.search(r"\b(?:text|message|imessage|dm|chat|group)s?\b", text, re.I):
+        return ["view_messages"]
+    return ["view_messages", "view_emails"]
 
 
 def pure_writing(prompt: str) -> bool:

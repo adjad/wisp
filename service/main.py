@@ -1779,6 +1779,10 @@ def _ask_tool_rank(prompt: str, previous: str = "") -> tuple[list[str], list[str
                                  ("search_reminders", reminders_first(prompt))):
                 if wanted and lead in REGISTRY:
                     head = [lead, *(n for n in head if n != lead)]
+        from service.model_only import reply_reads
+        if lead_reads := [n for n in reply_reads(prompt) if n in REGISTRY]:
+            # A reply draft reads the conversation it answers before drafting.
+            head = [*lead_reads, *(n for n in head if n not in lead_reads)]
         preload = head[:ASK_PRELOAD]
         try:
             ranked = _reranker.ranked_lexical_candidates(text, writing=writing,
