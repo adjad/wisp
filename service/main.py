@@ -1724,7 +1724,15 @@ def _model_led_preload(prompt: str) -> list[str]:
     except Exception:  # noqa: BLE001 — a missing head start must never fail the turn
         return []
 
-def _ask_tool_rank(prompt: str) -> tuple[list[str], list[str]]:
+def _previous_user_text(messages: list[dict], current: dict) -> str:
+    """The user's last prompt before this turn, for a bare follow-up ("and saturday?")."""
+    for message in reversed(messages):
+        if message is not current and message.get("role") == "user" and isinstance(message.get("content"), str):
+            return message["content"]
+    return ""
+
+
+def _ask_tool_rank(prompt: str, previous: str = "") -> tuple[list[str], list[str]]:
     """Model-only Ask head start: (preload, stub rank). The preload is
     _model_led_preload's shortlist cut to ASK_PRELOAD real schemas; the stub
     rank is the next ASK_STUBS lexical candidates, offered by name only
@@ -1753,7 +1761,7 @@ def _ask_tool_rank(prompt: str) -> tuple[list[str], list[str]]:
             return reads + [n for n in names if n not in reads]
         head = reads_first(_model_led_preload(prompt))
         from service.model_only import DAY_PLAN_TOOL, day_plan_question
-        if day_plan_question(prompt) and DAY_PLAN_TOOL in REGISTRY:
+        if day_plan_question(prompt, previous) and DAY_PLAN_TOOL in REGISTRY:
             # The Brief already ranked the day: one read instead of four.
             head = [DAY_PLAN_TOOL, *(n for n in head if n != DAY_PLAN_TOOL)]
         from service.model_only import WISP_SELF_TOOLS, wisp_self_question
@@ -2808,7 +2816,8 @@ async def agent(body: dict[str, Any]):
                 # Model-only Ask: no router sets light_read on a model-led
                 # turn, so the answer-style hint is restored here instead.
                 ask_quality = model_only and model_led_turn
-                ask_preload, ask_stub_rank = _ask_tool_rank(prompt) if ask_quality else ([], [])
+                previous_prompt = _previous_user_text(messages, user_msg) if ask_quality else ""
+                ask_preload, ask_stub_rank = _ask_tool_rank(prompt, previous_prompt) if ask_quality else ([], [])
                 if ask_quality and subject_tools:
                     ask_stub_rank = list(dict.fromkeys([*ask_stub_rank, *subject_tools]))
                 if ask_quality:
@@ -2817,7 +2826,7 @@ async def agent(body: dict[str, Any]):
                     if wisp_self_question(prompt):
                         synthesis_guidance.insert(1, wisp_self_hint())
                     from service.model_only import ASK_DAY_PLAN_HINT, day_plan_question
-                    if day_plan_question(prompt):
+                    if day_plan_question(prompt, previous_prompt):
                         synthesis_guidance.insert(1, ASK_DAY_PLAN_HINT)
                 ask_forbidden: frozenset[str] = frozenset()
                 ask_direct = False

@@ -499,7 +499,8 @@ async def complete_commitment(row: dict, store=None) -> tuple[bool, str]:
     "time for a call', or picking a slot for something. Looks at the same "
     "commitments get_upcoming reports. Requires fresh, complete Calendar coverage "
     "and real event ends; pinned Wisp Today tasks also block time. Reminders "
-    "without duration are deadlines, not busy intervals.",
+    "without duration are deadlines, not busy intervals; dated Brief items from "
+    "email and texts are shown, not counted as busy.",
     {
         "type": "object",
         "properties": {
@@ -707,10 +708,21 @@ def _availability_result(options, period, timezone, now):
         "All active Calendar entries count as busy, including tentative or response-unknown entries; "
         "attendee responses/free-busy flags and other people's availability are unverified. "
         "These are candidate times; a Calendar event or reminder has not been created.")
+    # Dated Brief items (a family lunch from a text, a due time from mail)
+    # are shown, never counted as busy: they have no duration, most carry a
+    # date only, a due time is a deadline, and model-read message text must
+    # not open or close the user's calendar time.
+    from service.tools.proactive_tools import brief_block
+    first = dt.datetime.combine(target_days[0], dt.time(), zone).timestamp()
+    last = dt.datetime.combine(target_days[-1] + dt.timedelta(days=1), dt.time(), zone).timestamp()
+    brief = brief_block(now.timestamp(), start=max(first, now.timestamp()), end=last, zone=zone,
+                        note="shown for context, not counted as busy")
+    brief = "\n\n" + brief if brief else ""
     if not out:
-        return f"No matches: No gaps of {minutes}+ minutes in {scope} between {start_h}:00 and {end_h}:00 ({timezone})." + qualification
+        return (f"No matches: No gaps of {minutes}+ minutes in {scope} between {start_h}:00 and {end_h}:00 ({timezone})."
+                + qualification + brief)
     heading = f"{minutes}-minute candidate slots" if period else f"Free for {minutes}+ minutes"
-    return f"{heading}, {start_h}:00–{end_h}:00 ({timezone}):\n" + "\n".join(out) + qualification
+    return f"{heading}, {start_h}:00–{end_h}:00 ({timezone}):\n" + "\n".join(out) + qualification + brief
 
 
 def _legacy_find_free_time(days: int = 3, minutes: int = 30,
