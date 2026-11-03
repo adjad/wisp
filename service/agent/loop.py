@@ -2149,7 +2149,10 @@ async def run_agent(
                     pass
             raise
         if claim is not None:
-            outcome = classify_tool_outcome(tool.name, str(result))
+            # Classify the result object itself: typed receipts (a prepared
+            # message draft, an outbound-unknown marker) are str subclasses,
+            # and str() would reduce them to text no receipt check accepts.
+            outcome = classify_tool_outcome(tool.name, result)
             # Unknown extension actions default to 'read' in the legacy outcome
             # classifier. That default is not a verified mutation receipt.
             from service.router.model_led import trusted_effect_receipt
