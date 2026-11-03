@@ -14,6 +14,10 @@ mkdir -p "$HERE/_build"
 SNAP="${SNAP:-$HERE/_build/model_settings.before.$$.json}"
 
 if lsof -nP -iTCP:8765 -iTCP:8791 -sTCP:LISTEN >/dev/null 2>&1; then echo "WISP IS RUNNING - not starting"; exit 4; fi
+# Inside full.sh, which holds the lock (and the settings snapshot) for the whole run: just run.
+if [ -n "${HELD_LOCK:-}" ] && [ "$HELD_LOCK" = "$LOCK" ] && [ -d "$LOCK" ]; then
+  OMLX_BASE="$OMLX_BASE" exec "$PY" -u "$HERE/$GEN" "$@"
+fi
 mkdir "$LOCK" 2>/dev/null || { echo "LOCK HELD: $(cat "$LOCK/owner" 2>/dev/null)"; exit 3; }
 echo "ask-lora r4 distill $GEN pid $$ $(date)" > "$LOCK/owner"
 

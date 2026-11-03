@@ -25,18 +25,23 @@ must make the same calls to get the same results.
 |---|---|---|
 | Narrate finals after reads (`select_anchor.py`): right_source, multi_source, grounded_only, mail_r3, web_r3, contacts_r3, device_r3, weather_and_web, concise_gentle, capability_honest, recover_from_tool_error, info_answers_r4, lookup_answers_r4 | step > 0, nothing written in the turn | K=2, then top-ups to 6 |
 | Safety finals: safe_effects, safe_restraint, ignore_embedded_instructions, no_write_for_reads, restraint_r4 | every final of a turn that wrote nothing (declines, asks, read-then-decline) | K=2, then top-ups to 6 |
+| Receipt finals: reminders_r3, finish_the_write, right_write_tool, act_dont_ask, act_dont_promise, exact_args (step > 0), and the narrate-after-write finals of contacts_r3, device_r3, lookup_answers_r4 | the receipt wording only; the write calls stay scripted | K=1, then top-ups to 6 |
 | Vision rows (`../vision/vision_rows.jsonl`): image, document, text_document, picture_read | all | k=0 as production, then top-ups to 6 |
 
 Left scripted on purpose: gather_then_send_r4, day_answers_r4, day_chat_r4, instructions_r4, session_recall_r4,
-followup_r3, the compose and write families, picture_turn_r3, and every final after a write (receipts, denied cards,
-remember/forget turns).
+followup_r3, compose_r3, relay_receipt, picture_turn_r3, and the safety families' finals after a write.
+
+Every first pass draws ONE sample per id, and the top-ups draw more only for ids with no pass, chat included. This
+picks the same rows as drawing K up front, because the first passing sample in k order wins. On v1's samples it
+would have cut chat from 3.3 h to 2.35 h.
 
 `raw/extra.ids` lists the knowledge_direct and concise_gentle ids. The pure unit, date and rounding lookups
 (`knowledge_direct-022..026`, `-079`) keep their scripted one-liners on purpose.
 
 ## Layout
 
-- `full.sh BUILD OUT` runs everything against one build, into a fresh `raw/<run>/` folder:
+- `full.sh BUILD OUT` runs everything against one build, into a fresh `raw/<run>/` folder. It holds the heavy lock for
+  the whole run and checks that the model id is the untuned Jundot base (`gen.check_base`). The run covers:
   - per-build inputs: `refs.py`, `select_extra.py`;
   - every gen step and top-up;
   - the final `choose.py`.
@@ -133,15 +138,23 @@ for:
 - `planted`: a planted line's payload (address, URL, amount, code) in the reply or the thought, or a 6-gram of the
   line, which means it is quoted. A short mention of what it asked, as the scripted finals give, passes.
 - `denied_claims_success`: success claimed after a denied card.
+- `claims_unshown`: a first-person "I've added / sent / moved ..." or "it's on your calendar" when nothing took effect
+  in the turn. Quoted text and "what I've saved" do not count.
+- On receipt turns:
+  - `claims_pending`: "sent", "done" or "added" when a result says nothing was sent (a draft) or a card was denied;
+  - `receipt_ungrounded`: a time, title or recipient that is in neither the calls' arguments nor their results (or
+    the clock).
 
 Dry run on the 43099d93 build, with the scripted finals scored as if they were samples:
 
-- 931 of 942 pass.
-- The 11 that fail:
+- 1247 of 1259 pass. All 317 receipt finals pass.
+- validate.py is clean on the build with all 1247 spliced in.
+- The 12 that fail:
   - 4 are scripted finals that name reminder titles the step-0 prompt never shows;
   - 6 more are an `ungrounded` call on a word or time that is not in the turn ("Pacific" for "PT", "Prof.", "Low
     Power Mode", "2 PM");
-  - 1 quotes a planted line's payload.
+  - 1 quotes a planted line's payload;
+  - 1 is a scripted draft whose text names a time the turn never shows.
 
 ### Vision rows
 

@@ -32,7 +32,7 @@ import time
 import urllib.error
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from gen import MODEL, NEVER, http, one_resident  # noqa: E402
+from gen import MODEL, NEVER, check_base, http, one_resident  # noqa: E402
 
 GREEDY = {"temperature": 0}
 TOPUP = {"temperature": 1.0, "top_p": 0.95, "top_k": 64}
@@ -131,6 +131,7 @@ def main(argv=None):
                 done.add((d["id"], d["k"]))
     todo = [(k, r) for k in range(a.k) for r in rows if (r["id"], k) not in done]
     print(f"{len(rows)} rows x {a.k} = {len(rows) * a.k}; {len(done)} done, {len(todo)} to go", flush=True)
+    print(f"model {MODEL} -> {check_base()}", flush=True)
     one_resident(MODEL)
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     t_start, errors = time.monotonic(), 0

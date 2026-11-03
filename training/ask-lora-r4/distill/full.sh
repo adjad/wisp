@@ -7,9 +7,12 @@
 #     extra rows (select_extra.py)     K=2, top-ups to 6
 #     anchor finals (select_anchor.py) K=2, top-ups to 6           meta.distill_kind "anchor_final"
 #     vision rows (../vision)          k=0 greedy as production, top-ups k=1..5 sampled, thinking off
-# CHAT_K0 / SC_K0 / EXTRA_K0 / ANCHOR_K0 override the first-pass K (1 = draw one, top up only the failures: the
-# chosen rows are the same, since choose.py takes the first passing sample in k order).
-# Each gen step goes through run.sh (heavy lock, oMLX settings restored on exit). Launch detached:
+# The first pass draws ONE sample per id (CHAT_K0 / SC_K0 / EXTRA_K0 / ANCHOR_K0, default 1) and the top-ups draw
+# more only for ids with no passing sample: the chosen rows are the same as drawing K up front, since choose.py takes
+# the first passing sample in k order.
+# The heavy lock is held for the WHOLE run: full.sh waits for it to be free, takes it once, snapshots oMLX's
+# settings, and on any exit restores them, reloads oMLX and releases the lock. The gen steps (run.sh, HELD_LOCK set)
+# only refuse while Wisp is listening. Launch detached:
 #   nohup python3 -c "import os; os.setsid(); os.execv('./full.sh', ['./full.sh', BUILD, OUT])" > _build/full.log 2>&1 &
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -18,11 +21,32 @@ PY="${PY:-$HOME/Desktop/MOE_Project/.venv/bin/python}"
 LOCK="${LOCK:-/private/tmp/claude-$(id -u)/wisp-heavy.lock}"
 VROWS="${VROWS:-$HERE/../vision/vision_rows.jsonl}"
 BUILD="$1"; OUT="$2"; P="$BUILD/partial.jsonl"
-CHAT_K0="${CHAT_K0:-2}"; SC_K0="${SC_K0:-3}"; EXTRA_K0="${EXTRA_K0:-2}"; ANCHOR_K0="${ANCHOR_K0:-2}"
+CHAT_K0="${CHAT_K0:-1}"; SC_K0="${SC_K0:-1}"; EXTRA_K0="${EXTRA_K0:-1}"; ANCHOR_K0="${ANCHOR_K0:-1}"
+OMLX_BASE="${OMLX_BASE:-http://127.0.0.1:8000}"
+SETTINGS="${OMLX_SETTINGS:-$HOME/.omlx/model_settings.json}"
+SNAP="$HERE/_build/model_settings.before.full.$$.json"
 ANCHOR_FAMS=right_source,multi_source,grounded_only,mail_r3,web_r3,contacts_r3,device_r3,weather_and_web,concise_gentle,capability_honest,recover_from_tool_error,info_answers_r4,lookup_answers_r4,safe_effects,safe_restraint,ignore_embedded_instructions,no_write_for_reads,restraint_r4
-mkdir -p "$OUT"
+mkdir -p "$OUT" "$HERE/_build"
+if lsof -nP -iTCP:8765 -iTCP:8791 -sTCP:LISTEN >/dev/null 2>&1; then echo "WISP IS RUNNING - not starting"; exit 4; fi
+"$PY" -c "import gen; print('model', gen.MODEL, '->', gen.check_base())" || exit 5
+# wait for the lock (another gate or build may hold it), then take it for the whole run; any other mkdir failure aborts
+while [ -d "$LOCK" ]; do echo "== $(date) lock held: $(cat "$LOCK/owner" 2>/dev/null)"; sleep 60; done
+mkdir "$LOCK" || exit 3
+echo "ask-lora r4 distill full.sh pid $$ $(date) (whole run: chat, anchors, vision)" > "$LOCK/owner"
+cp "$SETTINGS" "$SNAP" || { echo "cannot snapshot $SETTINGS"; rm -rf "$LOCK"; exit 2; }
+restore() {
+  cp "$SNAP" "$SETTINGS"
+  curl -s -m60 -X POST "$OMLX_BASE/admin/api/reload" >/dev/null
+  echo "== $(date) oMLX settings restored and reloaded"
+  rm -rf "$LOCK"
+  echo "== lock released"
+}
+trap restore EXIT
+trap 'exit 130' INT TERM HUP
+export HELD_LOCK="$LOCK"
+echo "== $(date) started"
 wait_free() {
-  while pgrep -f "distill/[a-z_]*gen[.]py" >/dev/null || [ -d "$LOCK" ]; do sleep 20; done
+  while pgrep -f "distill/[a-z_]*gen[.]py" >/dev/null; do sleep 20; done
 }
 step() {
   echo "== $(date) $*"

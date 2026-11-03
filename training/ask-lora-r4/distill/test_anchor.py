@@ -75,6 +75,32 @@ def test_rounding_and_dotted_numbers():
     assert why("You're on Rivera-5G and your local IP is 10.24.8.113.", r) == []
 
 
+def receipt_row(result, scripted, effects=True):
+    r = row(scripted=scripted, result=result)
+    r["meta"] = {**r["meta"], "id": "exact_args-001-s1", "family": "exact_args", "turn_writes": ["add_reminder"],
+                 "writes": ["add_reminder"],
+                 "effects": [["add_reminder", {"title": "Check the lab results"}]] if effects else []}
+    r["messages"][3]["tool_calls"][0]["function"] = {
+        "name": "add_reminder", "arguments": "{\"title\": \"Check the lab results\", \"when_iso\": \"2026-10-29T21:00\"}"}
+    return r
+
+
+def test_receipt_rules():
+    done = "Reminder set: “Check the lab results” — Thu Oct 29 at 9:00 PM in Apple Reminders and Wisp."
+    r = receipt_row(done, "I'll remind you tonight at 9 PM to check the lab results.")
+    assert why("Done! I'll remind you at 9 PM tonight to check the lab results 😊", r) == []
+    assert "receipt_ungrounded" in why("Set for 8 PM: check the lab results.", r)
+    assert "receipt_ungrounded" in why("I'll remind you at 9 PM to check the lab results with Priya Patel.", r)
+    draft = "Draft opened in Mail to maya.chen@example.com — nothing has been sent."
+    r = receipt_row(draft, "I drafted it to Maya in Mail. Nothing has been sent.")
+    assert why("I drafted it to Maya in Mail; nothing has been sent yet.", r) == []
+    assert "claims_pending" in why("Sent it to Maya!", r)
+    # a read turn that claims an action: nothing took effect
+    assert "claims_unshown" in why("I've added Saturday 10 AM to 2 PM to your calendar for Dana.")
+    assert why("Dana's rules: dishes done the same day. Her reply was “Are you done?” at 10 AM.",
+               row(scripted="ok", result=MAIL + " Dishes done the same day. Are you done?")) == []
+
+
 def test_select_anchor():
     base = {"family": "mail_r3", "target_kind": "final", "step": 1, "turn_writes": [], "writes": []}
     assert select_anchor.is_anchor(base)
@@ -83,6 +109,9 @@ def test_select_anchor():
     assert not select_anchor.is_anchor({**base, "turn_writes": ["remember"]})      # remember/forget turns stay
     assert select_anchor.is_anchor({**base, "family": "restraint_r4", "step": 0})   # a decline or an ask
     assert not select_anchor.is_anchor({**base, "family": "gather_then_send_r4"})
+    assert select_anchor.anchor_set({**base, "family": "exact_args", "turn_writes": ["add_reminder"]}) == "receipt"
+    assert select_anchor.anchor_set({**base, "turn_writes": ["remember"], "family": "lookup_answers_r4"}) == "receipt"
+    assert select_anchor.anchor_set({**base, "family": "safe_effects", "turn_writes": ["send_message"]}) is None
 
 
 # ------------------------------------------------------------------ vision

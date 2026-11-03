@@ -188,6 +188,18 @@ ABSENCE = re.compile(rf"\bnothing\b|\bnone\b|\bno\s+(?:new\s+|unread\s+|other\s+
                      rf"\bI\s+(?:do\s+not|don{_AP}t)\s+(?:have|see)\b|\bthere\s+(?:is|are)\s+no\b|"
                      rf"\bthere\s+(?:isn{_AP}t|aren{_AP}t)\s+any\b|\bno\s+sign\s+of\b|\b(?:couldn{_AP}t|didn{_AP}t)\s+find\b",
                      re.I)
+# a first-person claim that something was done ("I've added", "it's on your calendar"): a defect when the turn shows
+# no effect at all
+CLAIM_DONE = re.compile(rf"(?<!what )(?<!that )(?<!which )\bI(?:{_AP}ve|\s+have|\s+just)?\s+(?:sent|added|scheduled|created|"
+                        r"booked|saved|deleted|removed|moved|cancel+ed|updated|emailed|texted|replied|forwarded|marked|"
+                        r"turned|switched|remembered|stored|cleared)\b|\b(?:is|are)\s+(?:now\s+)?on\s+your\s+calendar\b|"
+                        r"\ball\s+set\b", re.I)
+QUOTED = re.compile(r"[“\"][^”\"\n]*[”\"]")
+# a result that leaves the action unfinished: a draft, nothing sent, a denied card
+PENDING = re.compile(r"nothing has been sent|not (?:been )?sent|\bdraft (?:opened|saved|created)|awaiting|"
+                     r"waiting for (?:your )?approval|needs your approval|The user denied this action", re.I)
+SENT_DONE = re.compile(r"\b(?:sent|done|added|emailed|texted|forwarded|replied|scheduled|booked|all set)\b", re.I)
+CLOCK_LINE = re.compile(r"The current date and time is [^\n]+")
 # the user spoken of in the third person: "Sam's", "Sam has", "the user"
 THIRD_PERSON = re.compile(rf"\b{USER_NAME}{_AP}s\b|\b{USER_NAME}\s+(?:has|is|was|had|needs|wants|asked|said|will)\b|"
                           r"\bthe user\b", re.I)
@@ -276,6 +288,22 @@ def anchor_reasons(content: str, reasoning: str, row: dict) -> list[str]:
             break
     if any(thinking.DENIED in r for r in results) and claims_done(content):
         out.append("denied_claims_success")
+    meta = row["meta"]
+    effects = meta.get("effects") or []
+    if not effects and any(CLAIM_DONE.search(s) and not _NEGATED.search(s)
+                           for s in re.split(r"(?<=[.!?])\s+|\n+", QUOTED.sub(" ", content))):
+        out.append("claims_unshown")         # says it acted, but nothing took effect this turn
+    if meta.get("turn_writes"):
+        if any(PENDING.search(r) for r in results) and any(
+                SENT_DONE.search(s) and not _NEGATED.search(s) and not s.strip().endswith("?")
+                for s in re.split(r"(?<=[.!?])\s+|\n+", content)):
+            out.append("claims_pending")     # a draft or a denied card, told as sent / done / added
+        # a receipt restates only what the call and its result hold: times, titles, recipients
+        args = [tc["function"].get("arguments") for m in hist for tc in m.get("tool_calls") or ()]
+        strict = "\n".join(CLOCK_LINE.findall(system_text(row)) + results +
+                           [a if isinstance(a, str) else json.dumps(a, ensure_ascii=False) for a in args])
+        if ungrounded(content, strict):
+            out.append("receipt_ungrounded")
     return out
 
 

@@ -33,6 +33,29 @@ MODEL = "gemma-4-E4B-it-oQ4e-mtp"
 SAMPLING = {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "max_tokens": 3000}
 # Models that must never be loaded for this (feedback: no Ling, no embedder).
 NEVER = ("ling", "embed", "rerank")
+BASE_ORG = "Jundot"          # the untuned base's folder in oMLX's model dir; tuned models (r3, ...) carry other ids
+OMLX_SETTINGS = os.path.expanduser("~/.omlx/settings.json")
+
+
+def check_base(model: str = MODEL) -> str:
+    """The folder `model` loads from, or exit: it must be the one folder of that name under oMLX's model dirs, and it
+    must sit in Jundot/. Only the model-dir keys of oMLX's settings are read."""
+    try:
+        cfg = json.load(open(OMLX_SETTINGS)).get("model") or {}
+    except (OSError, ValueError) as exc:
+        sys.exit(f"cannot read oMLX's model dirs: {exc!r}")
+    roots = cfg.get("model_dirs") or [cfg.get("model_dir")]
+    hits = []
+    for root in filter(None, roots):
+        for sub in [root] + [os.path.join(root, d) for d in sorted(os.listdir(root))
+                             if os.path.isdir(os.path.join(root, d))]:
+            cand = os.path.join(sub, model)
+            if os.path.isdir(cand):
+                hits.append(os.path.realpath(cand))
+    hits = sorted(set(hits))
+    if len(hits) != 1 or os.path.basename(os.path.dirname(hits[0])) != BASE_ORG:
+        sys.exit(f"{model} must be exactly one folder under {BASE_ORG}/ in oMLX's model dirs; found {hits}")
+    return hits[0]
 
 
 def wire_messages(messages: list[dict]) -> list[dict]:
@@ -137,6 +160,7 @@ def main(argv=None):
                 done.add((d["id"], d["k"]))
     todo = [(k, r) for k in range(a.k) for r in rows if (r["meta"]["id"], k) not in done]
     print(f"{len(rows)} prompts x {a.k} = {len(rows) * a.k}; {len(done)} done, {len(todo)} to go", flush=True)
+    print(f"model {MODEL} -> {check_base()}", flush=True)
     one_resident(MODEL)
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
     t_start, errors = time.monotonic(), 0
