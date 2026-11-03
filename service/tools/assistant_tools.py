@@ -1529,7 +1529,8 @@ def _reminder_query_scope(query: str, scope: str) -> tuple[str, str, int | None]
     "or a date). Searches Apple Reminders and retained Wisp-only records by title, overdue "
     "included; calendar events are excluded. A Wisp-only record may mirror a deleted Apple "
     "item: show it separately, never as a current Apple item. Source labels do not say who "
-    "created a reminder. Only to list or look up: update_reminder, complete_reminder and "
+    "created a reminder. Brief to-dos from email, texts and notes are listed apart; they are not "
+    "reminders. Only to list or look up: update_reminder, complete_reminder and "
     "cancel_event match by title themselves.",
     {"type": "object",
      "properties": {
@@ -1544,6 +1545,31 @@ def _reminder_query_scope(query: str, scope: str) -> tuple[str, str, int | None]
              "what does my reminder say"],
 )
 async def search_reminders(query: str = "", scope: str = "all") -> str:
+    text = await _search_reminders(query, scope)
+    brief = _reminders_brief(query, scope)
+    return text + ("\n\n" + brief if brief else "")
+
+
+def _reminders_brief(query: str, scope: str) -> str:
+    """The Brief's open to-dos from mail, texts and notes in the same scope.
+    They are not reminders: listed apart, and no reminder tool changes them."""
+    from service.tools import proactive_tools
+    query, scope, horizon = _reminder_query_scope(query, scope)
+    now = time.time()
+    today_start, today_end = _local_day_bounds(now)
+    window = {"start": now, "end": now + (horizon or 14) * 86400}
+    if scope in ("today", "tomorrow"):
+        bounds = (today_start, today_end) if scope == "today" else _local_day_bounds(today_end + 1)
+        window = {"start": max(bounds[0], today_start), "end": bounds[1]}
+    elif scope == "past_due":
+        window = {"overdue_before": today_start}
+    elif scope == "all":
+        window = {"start": now, "end": now + 60 * 86400, "overdue_before": today_start, "undated": True}
+    return proactive_tools.brief_block(now, query=query, note="not reminders; reminder tools cannot change them",
+                                       **window)
+
+
+async def _search_reminders(query: str, scope: str) -> str:
     query, scope, horizon = _reminder_query_scope(query, scope)
     from service.assistant.sync_status import ensure_sources
     readiness = await ensure_sources(("reminders",), timeout_seconds=4.0)
