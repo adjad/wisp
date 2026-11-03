@@ -268,6 +268,18 @@ Builder: `training/ask-lora-r2/builder` with `ASK_LORA_ROUND=4`. Vision: `traini
 
 ## Stage 2: GRPO on merged r4 (`training/ask-lora-r3/grpo`, adapted)
 
+> **Superseded on 2026-11-02 by `RL-SCOPE.md`, which the user approved.** RL-SCOPE §2.3 and §4.1 replace this section's prompt mix and settings. The changes:
+> - reward round 5;
+> - alpha 16;
+> - an lr bracket;
+> - chat and session anchors;
+> - anchor-only multimodal rows;
+> - no thinking term;
+> - at most 1 epoch;
+> - the U0, E1–E6b and X1–X2 rules, the three-way ship rule, and the §8.2 in-run probes.
+>
+> The text below is kept for history.
+
 **Reward changes in `reward.py`:**
 
 | term | r3 | r4 |
@@ -322,6 +334,15 @@ The gate therefore measures chat on those, with the judge seeing the whole conve
 | toolbench `session` cases (training/ask-lora-r4/EVAL-session.md): candidate ≥ base +10 points | hard, new |
 | persistent-preference session cases: candidate ≥ 80% | hard, new |
 | toolbench `followup` and `chat` categories ≥ base | hard |
+| **the user's own blind rating** (added 2026-11-02 after the r3 live test: "monotonous and boring", although r3 won the judge 87–43): the user rates about 20 whole-conversation pairs from the chat eval, r4 against the untuned base, in random A/B order. r4 is preferred or tied in ≥ 50% of them and clearly worse in ≤ 3. A judge win alone never passes chat | hard, new; precondition for the chat verdict |
+
+**The user's sources: no regressions, and the r3 misses fixed** (added 2026-11-02; the user's rule: "all of my sources should be considered… use the brief tab info as a source itself")
+
+| bar | status |
+|---|---|
+| toolbench `brief` gate cases. These are day and week questions in broad phrasings whose answer must name the Brief items from texts, mail and notes; "and friday?" follow-ups that must re-read; and draft-after-read. Candidate ≥ base, and r4 passes the majority | hard, new |
+| unchecked absence claims: a final that says "nothing", "none" or "I don't have" with no read in that turn. The count is ≤ base's, and the aim is 0 | hard, new |
+| **private real-use eval.** It is built from the user's own Wisp debug exports and the tester's, as replay cases against a frozen world rebuilt from the recorded tool results. It is stored only under `~/.moe/evals/private-real-use/`, never in the repo, training data or on the A6000, and leak-checked against the training build. Candidate ≥ base | hard, new |
 
 **Why the thinking bar measures presence, not length.** The pre-GPU audit (`thinking-0`) found that the data's tool-step thoughts are short extractions, about 100 chars at the median. Base's thoughts run about 1,320 chars. A length-parity bar can't be met from this data, and it would also break the latency bar. What r3 actually broke was presence: an empty thought, so the model answered from a glance. The bar checks that, and answer_ok and the category bars check whether the shorter thought is good enough. Chat rows keep base's full reasoning.
 
@@ -352,28 +373,73 @@ The gate therefore measures chat on those, with the judge seeing the whole conve
 
 Before any GPU spend, the r4 data and the GRPO reward are checked against every failure r2 and r3 hit (see "Pre-GPU audit").
 
+## Pre-GPU audit
+
+- **r4 SFT data, three independent recheck rounds**, each by a reviewer that didn't build it, with skeptic verification of every finding:
+  - `audit_confirmed.json`, 26 findings, repaired in 43099d93;
+  - a recheck of the frozen build: six dimensions; it found the stale service snapshot and the short long-chat histories;
+  - per-owner rechecks after each repair round.
+- **GRPO reward, round 5:**
+  - the RL-SCOPE §3.5 exploit suite, with each exploit run on real rows of its kind;
+  - the ideal-at-ceiling check over the whole real build;
+  - rounds 3 and 4 proven byte-identical.
+- RL-SCOPE U0 and E1–E6b set the RL entry rules. The user approved them on 2026-11-02.
+
+## How the r4 data stays the same where r4 doesn't mean to change it
+
+r2 and r3 drifted where they weren't meant to change anything: day −18, notes −13, safety −7, vision proposals. r4 anchors those families to the untuned base itself.
+- **What is base-anchored.** In every family r4 is not deliberately changing, the final step's target is the base's own output (reply plus thought), filtered only for real defects:
+  - ungrounded facts;
+  - false absence;
+  - planted text;
+  - third person or tool names;
+  - an empty thought;
+  - truncation;
+  - receipts claiming an action that didn't happen.
+- **What it covers:**
+  - single- and multi-source read narration;
+  - mail, web, contacts, device and weather answers;
+  - safety declines;
+  - write-receipt wording;
+  - vision answers, at production's thinking-off, temperature 0 setting;
+  - single-turn chat.
+- **What isn't distilled:** tool-call steps stay scripted, because the base must make the same calls to see the same results.
+- **Expected share:** about 29% of all rows, and about half of all finals.
+- **Deliberately changed, and so scripted:**
+  - the day and Brief families, sends and gathers, instructions, session recall and follow-ups;
+  - day_chat_r4, the user's multi-step Brief and draft-after-read pattern.
+- **Writes:** no new write-heavy data. Writes already gained 15–16 points, and that is where unsafe calls crept in.
+
+## Checkpoint choice: by behaviour, not dev loss
+
+r3's lowest-loss checkpoint was the one that had stopped thinking. `a6000/pick_text.py` picks by behaviour instead.
+- **Stage 1, on the A6000, about 8.75 h / $5.25:**
+  - 8 checkpoints are saved, and the untuned base runs once as a pseudo-checkpoint on the same dev steps and seeds;
+  - a checkpoint is out if:
+    - its post-read thought share is < 0.85 or below base;
+    - its thought p50 is < 100 chars;
+    - its median reply is < 0.8× base;
+    - its unsafe-call or unchecked-absence rate on the safety and absence slices (3 samples each) is above base;
+    - it fails mmeval.
+- **Stage 2, on the Mac, about 2.8 h:**
+  - the top 2 by selection and facts are quantised;
+  - they run on the private real-use eval and a 60-case toolbench subset;
+  - more passes wins, and a tie goes to the earlier checkpoint.
+
 ## Compute and cost (estimates; nothing booked)
 
-All figures assume the 8-GPU node rate used in the r3 plans, $32/h per node. The MI355X rate should be confirmed before booking.
+The user chose the Brev A6000 for every GPU step on 2026-11-02. The user starts the instance at each step. Rates assume $0.60/h, which is to be confirmed.
 
 | step | where | time | cost |
 |---|---|---|---|
-| r4 data build, validator, render | Mac | ~1–2 h | $0 |
-| r4 SFT: setup ~0.75 h, train ~1 h (r3: 992 steps in 47 min; prompts dominate, so longer thoughts add little), text and mm pickers ~0.75 h | 8× MI355X | 2.5–3.5 h | $80–110 |
-| merge, quantize (oQ4e-mtp), Mac gate | Mac | ~7 h, Wisp quit | $0 |
-| GRPO, 1 epoch, ~1,500 prompts (`plan.py`: 1.5–2.2 h on 8× B300; ×1.3–1.5 for ROCm math attention) | 8× MI355X | 2–3.3 h | $65–105 |
-| or the same epoch on one A6000 | Brev A6000 | 11–20 h | from the existing A6000 hours |
-| optional control arm: GRPO on untuned, same session | 8× MI355X | +1.3–2.5 h | +$40–80 |
-| merge, quantize, Mac gate of the GRPO model | Mac | ~7 h | $0 |
+| data build, validator, render; base self-distill of chat, anchors, receipts and vision (Wisp quit, overnight) | Mac | ~1–2 h + ~6.5 h | $0 |
+| r4 SFT on one A6000: setup, train (2 epochs, effective batch 8, max length 10,240), and the stage-1 behaviour picker (8 checkpoints + base) | A6000 | ~42–50 h | ~$25–30 |
+| stage-2 picker (top 2), merge, quantise to oQ4e-mtp, then the Mac gate including the user's blind rating | Mac | ~10 h, Wisp quit | $0 |
+| E6a, the RL measurement stage (RL-SCOPE §9: setup, floors, smoke, lr bracket {5e-6, 1e-5, 2e-5}); only if the SFT passes the bars only SFT can fix | A6000 | ~19–23 h | ~$11–14 |
+| E6b, the full GRPO run at round 5 (re-quoted after E6a; must fit the remaining A6000 hours, no re-run fits) | A6000 | ~3.6–5 days | ~$52–72 |
+| merge, quantise, Mac gate of the GRPO model | Mac | ~10 h | $0 |
 
-**Total GPU cost:**
-
-| plan | cost |
-|---|---|
-| SFT + GRPO on an 8-GPU node | **~$145–215** |
-| with the control arm | ~$185–295 |
-| SFT on the node, GRPO on the A6000 | ~$80–110 plus 11–20 A6000 hours |
-
-Two cost-saving options:
-- Running SFT and GRPO in one node session saves the second ~0.75 h setup. But GRPO should start only after the r4 Mac gate passes its text bars, so two sessions is the safer default.
-- If r4 SFT alone passes every bar, GRPO is optional.
+**Ship rule (RL-SCOPE, user-approved):**
+1. GRPO ships only if it passes every bar against base, has no regression against the SFT, and shows a significant gain named in advance.
+2. Otherwise the SFT ships, if it passed every bar.
+3. Otherwise the untuned model stays.
