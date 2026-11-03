@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pack r4 for the Brev GPU (an L40 since 2026-11-02; the A6000 profile still works): the SFT data zip, the mmeval zip and the text-picker zip. Runs on the Mac.
+"""Pack r4 for the Brev A6000 (the L40 profile still works): the SFT data zip, the mmeval zip and the text-picker zip. Runs on the Mac.
 
     PY=~/Desktop/MOE_Project/.venv/bin/python
     $PY training/ask-lora-r4/a6000/pack_r4.py --model ~/Desktop/OMLX_Model_Files/Jundot/gemma-4-E4B-it-oQ4e-mtp
@@ -167,7 +167,7 @@ def main() -> int:
     ap.add_argument("--out-dir", default=str(HERE / "out"))
     ap.add_argument("--check-only", action="store_true", help="validate the inputs and stop")
     ap.add_argument("--no-estimate", action="store_true", help="skip the exact token count (slow: tokenizes every row)")
-    ap.add_argument("--gpu", default="l40", help="card profile in estimate.GPUS (l40 or a6000)")
+    ap.add_argument("--gpu", default="a6000", help="card profile in estimate.GPUS (a6000 or l40)")
     ap.add_argument("--usd-per-hour", type=float, help="default: the card's planning rate in estimate.GPUS")
     a = ap.parse_args()
 

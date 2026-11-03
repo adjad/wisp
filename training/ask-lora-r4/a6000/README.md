@@ -1,6 +1,6 @@
-# Ask LoRA r4 SFT on one 48 GB NVIDIA card on Brev: an L40 (the A6000 profile still works)
+# Ask LoRA r4 SFT on one NVIDIA RTX A6000 on Brev (an L40 also works)
 
-r4's SFT (PLAN.md section F) on **one NVIDIA L40, 48 GB, sm_89** (the user switched from the RTX A6000 on 2026-11-02; the folder keeps its `a6000/` name so paths in other notes stay valid), instead of r3's 8x MI355X node. The recipe is r3's: LoRA r16 (alpha 16) on the language model only, vision and audio towers frozen, bf16, 2 epochs, effective batch 8, lr 2e-4, base-anchor KL on image and audio rows. Only the hardware path, the data and the checkpoint picker change. The picker chooses by **behaviour**, not dev loss (r3's lowest-loss checkpoint was the one that had stopped thinking), in two stages: stage 1 on the GPU box (generate, hard gates, top 2), stage 2 on the Mac (quantise the top 2, run the private eval and a 60-case toolbench subset, keep the one that passes more).
+r4's SFT (PLAN.md section F) on **one RTX A6000, 48 GB, sm_86** (the user's final choice on 2026-11-03, on price: the L40 was estimated ~10% faster for ~60% more; the kit still runs on an L40, see below), instead of r3's 8x MI355X node. The recipe is r3's: LoRA r16 (alpha 16) on the language model only, vision and audio towers frozen, bf16, 2 epochs, effective batch 8, lr 2e-4, base-anchor KL on image and audio rows. Only the hardware path, the data and the checkpoint picker change. The picker chooses by **behaviour**, not dev loss (r3's lowest-loss checkpoint was the one that had stopped thinking), in two stages: stage 1 on the GPU box (generate, hard gates, top 2), stage 2 on the Mac (quantise the top 2, run the private eval and a 60-case toolbench subset, keep the one that passes more).
 
 **Prep only.** No GPU, Brev or token was touched. Verified on the Mac: `test_pick_text.py` (44 tests), `ask-lora-r3/brev/test_attn_parity.py`, `test_mm_render.py`, `bash -n` on the scripts, and a full `pack_r4.py` dry run on r3's data into a temp dir (r3's own `upload-zip.json` untouched). Not verified: everything that needs the GPU (list at the bottom).
 
@@ -48,7 +48,7 @@ Measured pieces: weights **14.8 GiB** (7.94B parameters in bf16; the `gpu_alloc`
 
 ## Time and cost (estimates; the anchor is r2's measured A6000 run)
 
-### On the L40 (the card the user chose, 2026-11-02)
+### The L40 comparison (considered 2026-11-02, not chosen)
 
 Nothing has run on an L40. `estimate.py --gpu l40` (the default) scales the measured A6000 run by spec ratios: training speed x1.17 (the bf16 tensor peak, ~181 vs ~155 TFLOPS) / x1.10 / x1.0, decode by the bandwidth ratio (864 vs 768 GB/s) / 1.06 / 1.0. The pessimistic case assumes no gain at all, because r2 ran at about 10% of the card's peak (the peak is not what bounds it) and L40 hosts are passively cooled and can throttle. Memory: the L40 has ECC on, so torch sees about **45.0 GiB** instead of 47.9; the estimated peak is about 22 GiB with SDPA (31 with math attention), so the fit is the same. sm_89 runs the cu128 wheels' sm_86 kernels; `check` warns if the torch build has none it can use.
 
@@ -130,7 +130,7 @@ Also upload `ask-lora-r3/brev/vm-setup.sh` and `run_sft.sh`.
 
 ### On the Brev instance
 
-Instance: one L40 48 GB (or an A6000), Ubuntu with a CUDA 12.8-capable driver (570+; `check` prints it), about 100 GB disk (base 16 + merged 16 + venv + zips + about 1 GB of adapters). Put everything in `~/wisp/uploads` (`mkdir -p` first), run `run_sft.sh` from anywhere. Run long steps under `nohup` or tmux.
+Instance: one A6000 48 GB (or an L40), Ubuntu with a CUDA 12.8-capable driver (570+; `check` prints it), about 100 GB disk (base 16 + merged 16 + venv + zips + about 1 GB of adapters). Put everything in `~/wisp/uploads` (`mkdir -p` first), run `run_sft.sh` from anywhere. Run long steps under `nohup` or tmux.
 
 | # | command | does | expect |
 |---|---|---|---|
@@ -138,7 +138,7 @@ Instance: one L40 48 GB (or an A6000), Ubuntu with a CUDA 12.8-capable driver (5
 | 2 | `bash run_sft.sh check` | GPU, versions against the pins, zips present | all `ok`; L40: sm_89, about 45.0 GiB (ECC on), `profile: ... --gpu l40`; A6000: sm_86, 47-48 GiB |
 | 3 | `bash run_sft.sh unpack <sha>` | verifies and unpacks the data zip | `unpacked N verified files` |
 | 4 | `bash run_sft.sh preflight` | template sha, render parity, lengths, stop tokens, vision and audio processors | `PREFLIGHT OK` |
-| 5 | `bash run_sft.sh smoke` | strict attention parity, cache parity, anchor, the 12 longest rows, a 15-step overfit | exit 0, peak around 22 GiB, "one epoch ~ N min". If tok/s is far from 686 (L40 middle; 624 on an A6000), rerun `estimate.py` before committing |
+| 5 | `bash run_sft.sh smoke` | strict attention parity, cache parity, anchor, the 12 longest rows, a 15-step overfit | exit 0, peak around 22 GiB, "one epoch ~ N min". If tok/s is far from 624 (A6000; 686 is the L40 middle), rerun `estimate.py` before committing |
 | 6 | `bash run_sft.sh train` then `status` | background run, 2 epochs, 8 rows per step | `status` shows step, ETA, peak, evals |
 | 7 | `bash run_sft.sh unzip-pickers` | unpacks mmeval and picker code into `~/wisp/mmeval` | |
 | 8 | `nohup bash run_sft.sh pick > ~/wisp/gemma/pick.out 2>&1 &` | **stage 1**: candidates, mmeval, text generations for the base and every candidate, gates, decision | `TOP (stage 2 candidates, best first):` two adapter dirs, or exit 2 |

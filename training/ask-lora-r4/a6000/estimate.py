@@ -3,8 +3,8 @@
 Pure python.
 
     python estimate.py                                   # the r4 planning table (5,500-6,500 text examples)
-    python estimate.py --train-rows 5400 --mean-tokens 6650 --gpu l40 --usd-per-hour 1.00
-    python estimate.py --gpu a6000                       # the old A6000 table
+    python estimate.py --train-rows 6098 --mean-tokens 6650 --gpu a6000 --usd-per-hour 0.60
+    python estimate.py --gpu l40                         # the L40 comparison
     python estimate.py --zip out/ask-lora-data.zip --tokenizer <gemma dir>   # exact token counts from the packed zip
 
 EVERYTHING HERE IS AN ESTIMATE. The one measured anchor is r2's A6000 run (Hyperstack, SDPA, checkpointing on):
@@ -52,7 +52,7 @@ GPUS = {
     "l40": dict(name="L40 48 GB (sm_89, ECC on)", train_tok_s=(round(700 * 1.17), round(A6000_TRAIN_TOK_S * 1.10), 520),
                 decode_s=(round(DECODE_S[0] / 1.125, 4), round(DECODE_S[1] / 1.06, 4), DECODE_S[2]), card_gib=45.0, usd_h=1.06),
 }
-DEFAULT_GPU = "l40"              # the user's choice on 2026-11-02, replacing the A6000
+DEFAULT_GPU = "a6000"            # the user's final choice (2026-11-03), on price: the L40 was ~10% faster for ~60% more
 
 
 # ---- memory (GiB). Measured: weights 14.8 GiB (7.94B params, bf16; the r3 smoke log's `gpu_alloc`), 34,881,536 trainable LoRA

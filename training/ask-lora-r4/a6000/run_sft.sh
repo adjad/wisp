@@ -1,5 +1,5 @@
 #!/bin/bash
-# r4 SFT on ONE 48 GB NVIDIA card on Brev, an L40 (sm_89; the user's choice, 2026-11-02) or an RTX A6000 (sm_86): the whole
+# r4 SFT on ONE 48 GB NVIDIA card on Brev, an RTX A6000 (sm_86; the user's choice, 2026-11-03) or an L40 (sm_89): the whole
 # flow from a fresh instance to a picked checkpoint.
 # A thin layer over ~/wisp/run.sh (written by ../../ask-lora-r3/brev/vm-setup.sh). README.md next to this file explains every step.
 #

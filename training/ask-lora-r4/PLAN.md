@@ -428,12 +428,12 @@ r3's lowest-loss checkpoint was the one that had stopped thinking. `a6000/pick_t
 
 ## Compute and cost (estimates; nothing booked)
 
-The user chose the Brev A6000 for every GPU step on 2026-11-02, then switched **the SFT (stage 1) to a Brev L40** the same day. **RL (E6a, E6b) stays on the A6000** (the user: "Ill keep RL to the a6000"), at the A6000 quotes below. The SFT kit (`a6000/`, despite its name) targets the L40 (sm_89); the GRPO kit stays A6000-compatible (sm_86, `--profile a6000`). The user starts the instance at each step. The L40 is $1.06/h (48 GB VRAM, 72 GB host RAM); the A6000 was $0.60/h. `a6000/estimate.py --gpu l40 --usd-per-hour <rate>` re-quotes. Nothing has run on an L40, so its hours are the measured A6000 run scaled by spec ratios (`a6000/README.md`).
+The user chose the Brev A6000 for every GPU step on 2026-11-02, briefly moved the SFT to a Brev L40, and on 2026-11-03 **moved it back to the A6000 on price** ("Yes, use the A6000"; the L40 was estimated ~10% faster for ~60% more, and its speed is unmeasured). **Every r4 GPU step (SFT, E6a, E6b) is on one A6000.** The kit keeps an L40 profile (`estimate.py --gpu l40`). The user starts the instance at each step. The A6000 rate is $0.60/h, to be confirmed in Brev's picker (Hyperstack lists $0.50/h); the L40 was $1.06/h. `a6000/estimate.py --gpu l40 --usd-per-hour <rate>` re-quotes. Nothing has run on an L40, so its hours are the measured A6000 run scaled by spec ratios (`a6000/README.md`).
 
 | step | where | time | cost |
 |---|---|---|---|
 | data build, validator, render; base self-distill of chat, anchors, receipts and vision (Wisp quit, overnight) | Mac | ~1–2 h + ~6.5 h | $0 |
-| r4 SFT on one L40: setup, train (2 epochs, effective batch 8, max length 10,240), and the stage-1 behaviour picker (8 checkpoints + base) | L40 | ~40–45 h middle (33–59 h optimistic–pessimistic) | ~$42–48 middle ($35–63); the A6000 quote the user approved was ~$25–30 |
+| r4 SFT on one A6000: setup, train (2 epochs, effective batch 8, max length 10,240, 6,098 train rows in the final build), and the stage-1 behaviour picker (8 checkpoints + base) | A6000 | ~51 h middle (45–61 h) | ~$30 ($27–37) at $0.60/h |
 | stage-2 picker (top 2), merge, quantise to oQ4e-mtp, then the Mac gate including the user's blind rating | Mac | ~10 h, Wisp quit | $0 |
 | E6a, the RL measurement stage (RL-SCOPE §9: setup, floors, smoke, lr bracket {5e-6, 1e-5, 2e-5}); only if the SFT passes the bars only SFT can fix | A6000 | ~19–23 h | ~$11–14 |
 | E6b, the full GRPO run at round 5 (re-quoted after E6a; must fit the remaining A6000 hours, no re-run fits) | A6000 | ~3.6–5 days | ~$52–72 |

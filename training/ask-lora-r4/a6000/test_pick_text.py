@@ -888,7 +888,7 @@ def test_memory_arithmetic_fits_with_margin():
 
 def test_l40_profile_is_between_measured_and_spec():
     l40, a6 = E.GPUS["l40"], E.GPUS["a6000"]
-    assert E.DEFAULT_GPU == "l40" and E.CARD_GIB == l40["card_gib"] < a6["card_gib"]
+    assert E.DEFAULT_GPU == "a6000" and E.CARD_GIB == l40["card_gib"] < a6["card_gib"]
     assert l40["train_tok_s"][2] == a6["train_tok_s"][2]                    # pessimistic: no gain over the A6000 at all
     assert a6["train_tok_s"][1] < l40["train_tok_s"][1] < a6["train_tok_s"][1] * 1.18
     assert all(x <= y for x, y in zip(l40["decode_s"], a6["decode_s"]))
