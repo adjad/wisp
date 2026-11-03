@@ -1111,8 +1111,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         // Kept short: the window, Settings, and setup while it is unfinished.
         // Everything else has a home in Settings: model and engine in Models,
-        // Permissions… and More Access… in Privacy, the chat debug log in
-        // General. Getting to know you is /about or Memory › About you.
+        // Permissions… and More Access… in Privacy. The chat debug log is in
+        // General too, and here for a tester sending one in. Getting to know
+        // you is /about or Memory › About you.
         menu.addItem(withTitle: "Open Wisp Window", action: #selector(openChat), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         setupMenuItem = menu.addItem(withTitle: "Finish Setup…", action: #selector(openSetupFromMenu), keyEquivalent: "")
@@ -1124,15 +1125,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         changeSetupMenuItem?.isHidden = true
         menu.addItem(.separator())
         menu.addItem(withTitle: "Report a Problem…", action: #selector(reportProblem), keyEquivalent: "")
+        menu.addItem(withTitle: Self.exportDebugLogTitle, action: #selector(exportDebugLogFromMenu), keyEquivalent: "")
+            .toolTip = SettingsView.debugLogPrivacyLine
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Wisp", action: #selector(quit), keyEquivalent: "q")
         for item in menu.items { item.target = self }
         // Attach the menu only on right-click; left-click toggles the panel.
-        statusItem.menu = nil
+        statusItem?.menu = nil
         rightClickMenu = menu
     }
 
     private var rightClickMenu: NSMenu?
+    static let exportDebugLogTitle = "Export Chat Debug Log…"
+
+    /// The same all-chats export as Settings › General's button: it posts the one
+    /// notification both use, so the alert and the Finder reveal are the same.
+    @objc private func exportDebugLogFromMenu() {
+        NotificationCenter.default.post(name: .wispExportDebugLog, object: nil)
+    }
     private var changeSetupMenuItem: NSMenuItem?
 
     /// The setup window again at Permissions, for someone already set up. It never
@@ -1957,22 +1967,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openAssistant()
     }
 
-    // Settings › General's Export Chat Debug Log…: writes the notch's conversation
-    // (every turn's model, route decision, timing, tok/s, tool calls, and any
-    // errors) to ~/Downloads as JSON + a readable .txt companion, then reveals
+    // Settings › General's Export Chat Debug Log…: writes every chat since Wisp
+    // opened, the open one last (every turn's model, route decision, timing,
+    // tok/s, tool calls, and any errors) to ~/Downloads as JSON + a readable .txt companion, then reveals
     // them in Finder. No-ops with a brief alert if there's no conversation yet.
     // Debug metadata is tracked for every turn whether or not Debug Mode is on
     // (see OverlayModel.applyDebugFields).
     private func exportDebugLog() {
-        guard let url = model.exportDebugLog() else {
-            let alert = NSAlert()
+        let alert = NSAlert()
+        switch model.exportDebugLog() {
+        case .nothing:
             alert.messageText = "Nothing to export yet"
             alert.informativeText = "Start a conversation in Wisp first, then export its debug log."
             alert.alertStyle = .informational
             alert.runModal()
-            return
+        case .failed(let reason):
+            alert.messageText = "Couldn't save the chat debug log"
+            alert.informativeText = reason
+            alert.alertStyle = .warning
+            alert.runModal()
+        case .saved(let url):
+            alert.messageText = "Chat debug log saved to Downloads"
+            alert.informativeText = SettingsView.debugLogPrivacyLine
+            alert.alertStyle = .informational
+            alert.runModal()
+            NSWorkspace.shared.activateFileViewerSelecting([url])
         }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     /// Quit Wisp after the engine and its helpers have stopped. Every quit request
@@ -2600,6 +2620,27 @@ extension AppDelegate {
         precondition(model.holdsOpen, "Today's report holds the panel open on the Day tab")
         delegate.todayModel.report.close()
         print("PASS: AppDelegate inline reports: one at a time, under their reply, holding the panel while open")
+    }
+
+    /// The menu bar's drop-down offers the chat debug export, through the same
+    /// notification as Settings › General's button.
+    static func checkMenuExportsDebugLog() {
+        let delegate = AppDelegate()
+        delegate.buildMenu()
+        guard let item = delegate.rightClickMenu?.items.first(where: { $0.title == exportDebugLogTitle }) else {
+            preconditionFailure("The menu bar menu has Export Chat Debug Log…")
+        }
+        precondition(item.target === delegate && item.action == #selector(exportDebugLogFromMenu),
+                     "The item runs the delegate's export action")
+        precondition(item.toolTip == SettingsView.debugLogPrivacyLine, "The item says to check the log before sharing")
+        var posted = 0
+        let observer = NotificationCenter.default.addObserver(forName: .wispExportDebugLog, object: nil, queue: nil) { _ in
+            posted += 1
+        }
+        _ = delegate.perform(item.action!, with: item)
+        NotificationCenter.default.removeObserver(observer)
+        precondition(posted == 1, "Choosing it posts the Settings button's export notification")
+        print("PASS: the menu bar menu exports the chat debug log like Settings")
     }
 
     static func checkMenuHoldsCollapse() async {

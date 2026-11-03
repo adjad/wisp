@@ -227,6 +227,7 @@ final class OverlayModel: ObservableObject {
     // Set by the app delegate: ask the backend manager to start the service again.
     var onRetryService: () -> Void = {}
     private var startFailureObserver: NSObjectProtocol?
+    private var archiveForgetObserver: NSObjectProtocol?
 
     /// Retry from the service-down card or status line: forget the recorded
     /// failure (a new start may fix it) and start the service again.
@@ -289,6 +290,24 @@ final class OverlayModel: ObservableObject {
                 self.serviceReachable = false
                 self.serviceStartFailure = reason.isEmpty ? "Wisp's service stopped while starting." : reason
             }
+        }
+        archiveForgetObserver = NotificationCenter.default.addObserver(
+            forName: .wispForgetChatDebugArchive, object: nil, queue: .main) { [weak self] note in
+            let id = note.userInfo?["session_id"] as? String
+            MainActor.assumeIsolated { self?.forgetArchivedChats(sessionId: id) }
+        }
+    }
+
+    /// A deleted chat (by id) or a forget with no one chat to match (nil): the
+    /// debug log's memory of it goes, the open chat's included when it matches.
+    /// The chat open here stays on screen.
+    func forgetArchivedChats(sessionId: String?) {
+        if let sessionId {
+            chatArchive.remove(sessionId: sessionId)
+            if !sessionId.isEmpty && sessionId == self.sessionId { liveChatForgotten = true }
+        } else {
+            chatArchive.removeAll()
+            liveChatForgotten = true
         }
     }
     /// True while the panel retracts into the bar: the content fades out at
@@ -585,6 +604,12 @@ final class OverlayModel: ObservableObject {
 
     private let client = WispClient()
     private var sessionId = ""
+    /// Every chat left since Wisp opened, full detail, for Export Chat Debug Log….
+    /// Memory only (ChatDebugArchive).
+    private(set) var chatArchive = ChatDebugArchive<Turn>()
+    /// The chat open here was deleted or forgotten: it stays on screen, but is
+    /// neither archived nor exported. A new chat starts clear (reset).
+    private(set) var liveChatForgotten = false
     // Each attachment kind warms the encoder that will read it (prewarmVision).
     private var attachedImage: String? {
         didSet { if attachedImage != nil { client.prewarmEncoder(.vision) } }
@@ -896,10 +921,60 @@ final class OverlayModel: ObservableObject {
                                      approved: false, scope: "once", requestId: abandoned.requestId)
             }
         }
+        archiveCurrentChat()
         sessionId = ""
         reset()
         // The chat just left belongs in the switcher now.
         refreshRecentChats()
+    }
+
+    /// Keep the chat being left, with every turn's debug detail, for the export.
+    private func archiveCurrentChat() {
+        guard !liveChatForgotten else { return }
+        chatArchive.archive(sessionId: sessionId, startedAt: turns.compactMap(\.startedAt).min(),
+                            turns: turns, bytes: Self.debugBytes(turns))
+    }
+
+    /// Take a chat left earlier back out of the archive to continue it here, its
+    /// turns as they were. False when it was never left in this launch.
+    private func restoreArchivedChat(_ id: String) -> Bool {
+        guard let kept = chatArchive.take(sessionId: id) else { return false }
+        turns = kept.turns
+        return true
+    }
+
+    /// Roughly what a turn holds in memory, for the archive's size limit.
+    static func debugBytes(_ turns: [Turn]) -> Int {
+        var total = 0
+        for t in turns {
+            total += t.text.utf8.count + t.reasoningText.utf8.count
+            total += t.errorDetail?.utf8.count ?? 0
+            for line in t.activity { total += line.utf8.count }
+            for tc in t.toolCalls {
+                total += tc.argsJSON.utf8.count + tc.result.utf8.count
+                for record in tc.debugRecords { total += record.json.utf8.count }
+            }
+            for io in t.rawIO { total += io.requestJSON.utf8.count + io.responseJSON.utf8.count }
+        }
+        return total
+    }
+
+    /// Saved history around a chat's archived turns (and any asked while it
+    /// loaded): each saved turn the archive still has is kept in its full detail,
+    /// in order, and saved turns it lacks (asked in the Chat window, say) come in
+    /// where they fall. Turns only kept here go before the next one matched.
+    static func merging(history: [Turn], into local: [Turn]) -> [Turn] {
+        var merged: [Turn] = []
+        var next = 0
+        for saved in history {
+            if let match = local[next...].firstIndex(where: { $0.role == saved.role && $0.text == saved.text }) {
+                merged += local[next...match]
+                next = match + 1
+            } else {
+                merged.append(saved)
+            }
+        }
+        return merged + local[next...]
     }
 
     /// Saved history followed by the turns asked here while it loaded. A load that
@@ -1016,7 +1091,9 @@ final class OverlayModel: ObservableObject {
         newChat()
         sessionId = brief.sessionId
         reopenedChatTitle = "Daily summary"
-        turns = [Turn(role: "user", text: "Daily summary"), Turn(role: "assistant", text: brief.text)]
+        if !restoreArchivedChat(brief.sessionId) {
+            turns = [Turn(role: "user", text: "Daily summary"), Turn(role: "assistant", text: brief.text)]
+        }
         tab = .ask
         onResize()
     }
@@ -1064,6 +1141,9 @@ final class OverlayModel: ObservableObject {
         sessionId = target
         reopenedChatTitle = summary.title
         recentChats.removeAll { $0.id == target }
+        // Left earlier in this launch: it comes back whole, tool results and all.
+        let restored = restoreArchivedChat(target)
+        if restored { onResize() }
         Task { [weak self] in
             guard let self else { return }
             let rows = await self.client.chatTurns(id: target)
@@ -1080,7 +1160,8 @@ final class OverlayModel: ObservableObject {
                 Turn(role: message.role == .user ? "user" : "assistant", text: message.text,
                      activity: message.tools.map { "\($0.name) — used" })
             }
-            self.turns = Self.joining(history: history, before: self.turns)
+            self.turns = restored ? Self.merging(history: history, into: self.turns)
+                                  : Self.joining(history: history, before: self.turns)
             self.onResize()
         }
     }
@@ -1467,6 +1548,7 @@ final class OverlayModel: ObservableObject {
         clearAttachmentState(); messageDraft = nil; phase = .idle
         collapsed = false; turns = []
         reopenedChatTitle = nil
+        liveChatForgotten = false
     }
 
     /// Leave the inline Research surface without cancelling its persisted job.
@@ -1484,9 +1566,9 @@ final class OverlayModel: ObservableObject {
         completeSubmission(dispatchID)
     }
 
-    // Writes the full current conversation — every turn's text, model, route
-    // decision, timing, token rate, tool calls, and any errors — to disk as
-    // both a complete JSON file and a human-readable companion transcript.
+    // Writes every chat since Wisp opened (the archive, then the open one) —
+    // every turn's text, model, route decision, timing, token rate, tool
+    // calls, and any errors — to disk as both a complete JSON file and a human-readable companion transcript.
     // Debug metadata is tracked unconditionally (see applyDebugFields), not
     // just while Debug Mode is on, so this captures the whole session even if
     // Debug Mode was only switched on partway through. Returns the JSON file's
@@ -1536,73 +1618,127 @@ final class OverlayModel: ObservableObject {
         report.open(key: Self.reportKey(for: turn), metadata: metadata, details: details)
     }
 
-    func exportDebugLog() -> URL? {
-        guard !turns.isEmpty else { return nil }
+    enum DebugLogExport {
+        case nothing
+        case saved(URL)
+        case failed(String)
+    }
+
+    /// Writes the export to Downloads, readable only by this user. A failed write
+    /// removes what it wrote and says why; it never reports a file as saved.
+    func exportDebugLog(to directory: URL? = nil) -> DebugLogExport {
+        guard let export = debugExport() else { return .nothing }
+        let dir = directory ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+        // Milliseconds and a short random suffix: two exports in one second never collide.
+        let stamp = DateFormatter(); stamp.dateFormat = "yyyy-MM-dd_HH-mm-ss-SSS"
+        let base = "wisp-debug-\(stamp.string(from: Date()))-\(UUID().uuidString.prefix(6).lowercased())"
+        let jsonURL = dir.appendingPathComponent("\(base).json")
+        let textURL = dir.appendingPathComponent("\(base).txt")
+        var created: [URL] = []
+        do {
+            try Self.writePrivate(export.json, to: jsonURL); created.append(jsonURL)
+            try Self.writePrivate(Data(export.text.utf8), to: textURL); created.append(textURL)
+        } catch {
+            // Only what this export created; a file already there was never opened.
+            for url in created { try? FileManager.default.removeItem(at: url) }
+            return .failed(error.localizedDescription)
+        }
+        return .saved(jsonURL)
+    }
+
+    /// A new file with mode 0600, never one already there.
+    static func writePrivate(_ data: Data, to url: URL) throws {
+        let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        do {
+            try handle.write(contentsOf: data)
+            try handle.synchronize()
+        } catch {
+            // This call created it, so a half-written file is this call's to remove.
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
+    }
+
+    /// The export's .json and .txt: every chat left since Wisp opened (the archive,
+    /// oldest first), then the open chat. Nil when there is nothing to export yet.
+    func debugExport(now: Date = Date()) -> (json: Data, text: String)? {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        func rounded(_ v: Double) -> Double { (v * 100).rounded() / 100 }
-
-        func turnJSON(_ t: Turn) -> [String: Any] {
-            var d: [String: Any] = ["role": t.role, "text": t.text]
-            if let traceID = t.traceID { d["trace_id"] = traceID }
-            if t.isError { d["is_error"] = true }
-            if let detail = t.errorDetail { d["error_detail"] = detail }
-            if !t.activity.isEmpty { d["activity_log"] = t.activity }
-            if let m = t.model { d["model"] = m }
-            if let r = t.routeRole { d["route_role"] = r }
-            if let r = t.routeReason { d["route_reason"] = r }
-            if let r = t.routeSource { d["route_source"] = r }
-            if let n = t.neededTools { d["needed_tools"] = n }
-            if let tps = t.tokPerSec { d["tok_per_sec"] = tps }
-            if let s = t.startedAt { d["started_at"] = iso.string(from: s) }
-            if let f = t.firstTokenAt { d["first_token_at"] = iso.string(from: f) }
-            if let fin = t.finishedAt { d["finished_at"] = iso.string(from: fin) }
-            if let ttft = t.timeToFirstTokenSec { d["time_to_first_token_sec"] = rounded(ttft) }
-            if let dur = t.durationSec { d["duration_sec"] = rounded(dur) }
-            if t.heartbeatCount > 0 { d["heartbeats"] = t.heartbeatCount }
-            if !t.reasoningText.isEmpty { d["reasoning"] = t.reasoningText }
-            if !t.toolCalls.isEmpty {
-                d["tool_calls"] = t.toolCalls.map { tc -> [String: Any] in
-                    var td: [String: Any] = ["name": tc.name, "args": tc.argsJSON, "decision": tc.decision,
-                                             "decision_reason": tc.decisionReason, "result": tc.result]
-                    if !tc.debugRecords.isEmpty {
-                        // What the tool itself saw/sent internally — e.g. the
-                        // real emails/messages fed to summarize_emails's own
-                        // synthesis call, or create_tool's own code-generation
-                        // request. See service/debug_capture.py.
-                        td["debug"] = tc.debugRecords.map { Self.parsedJSON($0.json) }
-                    }
-                    return td
-                }
-            }
-            if !t.rawIO.isEmpty {
-                // Parsed back into real JSON objects (not left as strings) so
-                // the exported .json is directly queryable/greppable, e.g.
-                // with jq — mirrors how every other field here is native JSON.
-                d["raw_model_io"] = t.rawIO.map { io -> [String: Any] in
-                    ["model": io.model,
-                     "request": Self.parsedJSON(io.requestJSON),
-                     "response": Self.parsedJSON(io.responseJSON)]
-                }
-            }
-            return d
+        let clock = DateFormatter(); clock.dateFormat = "HH:mm:ss"
+        func chat(_ id: String, _ startedAt: Date?, _ turns: [Turn], current: Bool) -> ChatDebugExport.Chat {
+            ChatDebugExport.Chat(sessionId: id, startedAt: startedAt, current: current,
+                                 turns: turns.map { Self.debugJSON($0, iso: iso) },
+                                 transcript: Self.debugTranscript(turns, clock: clock))
         }
-
-        let payload: [String: Any] = [
-            "exported_at": iso.string(from: Date()),
-            "session_id": sessionId,
-            "turn_count": turns.count,
-            "turns": turns.map(turnJSON),
-        ]
+        var chats = chatArchive.chats.map { chat($0.sessionId, $0.startedAt, $0.turns, current: false) }
+        if !turns.isEmpty && !liveChatForgotten {
+            chats.append(chat(sessionId, turns.compactMap(\.startedAt).min(), turns, current: true))
+        }
+        guard !chats.isEmpty else { return nil }
+        let payload = ChatDebugExport.payload(chats: chats, currentSessionId: liveChatForgotten ? "" : sessionId,
+                                              droppedChats: chatArchive.droppedChats,
+                                              droppedTurns: chatArchive.droppedTurns, exportedAt: now, iso: iso)
         guard JSONSerialization.isValidJSONObject(payload), let jsonData = try? JSONSerialization.data(
             withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) else { return nil }
+        // Human-readable companion — same data, laid out to actually read, one section per chat.
+        let text = ChatDebugExport.text(chats: chats, droppedChats: chatArchive.droppedChats,
+                                        droppedTurns: chatArchive.droppedTurns, exportedAt: now, iso: iso)
+        return (jsonData, text)
+    }
 
-        // Human-readable companion — same data, laid out to actually read.
-        let clock = DateFormatter(); clock.dateFormat = "HH:mm:ss"
-        var text = "Wisp debug export\n"
-        text += "Exported: \(iso.string(from: Date()))\n"
-        text += "Session: \(sessionId)\n"
-        text += String(repeating: "=", count: 70) + "\n\n"
+    private static func debugJSON(_ t: Turn, iso: ISO8601DateFormatter) -> [String: Any] {
+        func rounded(_ v: Double) -> Double { (v * 100).rounded() / 100 }
+        var d: [String: Any] = ["role": t.role, "text": t.text]
+        if let traceID = t.traceID { d["trace_id"] = traceID }
+        if t.isError { d["is_error"] = true }
+        if let detail = t.errorDetail { d["error_detail"] = detail }
+        if !t.activity.isEmpty { d["activity_log"] = t.activity }
+        if let m = t.model { d["model"] = m }
+        if let r = t.routeRole { d["route_role"] = r }
+        if let r = t.routeReason { d["route_reason"] = r }
+        if let r = t.routeSource { d["route_source"] = r }
+        if let n = t.neededTools { d["needed_tools"] = n }
+        if let tps = t.tokPerSec { d["tok_per_sec"] = tps }
+        if let s = t.startedAt { d["started_at"] = iso.string(from: s) }
+        if let f = t.firstTokenAt { d["first_token_at"] = iso.string(from: f) }
+        if let fin = t.finishedAt { d["finished_at"] = iso.string(from: fin) }
+        if let ttft = t.timeToFirstTokenSec { d["time_to_first_token_sec"] = rounded(ttft) }
+        if let dur = t.durationSec { d["duration_sec"] = rounded(dur) }
+        if t.heartbeatCount > 0 { d["heartbeats"] = t.heartbeatCount }
+        if !t.reasoningText.isEmpty { d["reasoning"] = t.reasoningText }
+        if !t.toolCalls.isEmpty {
+            d["tool_calls"] = t.toolCalls.map { tc -> [String: Any] in
+                var td: [String: Any] = ["name": tc.name, "args": tc.argsJSON, "decision": tc.decision,
+                                         "decision_reason": tc.decisionReason, "result": tc.result]
+                if !tc.debugRecords.isEmpty {
+                    // What the tool itself saw/sent internally — e.g. the
+                    // real emails/messages fed to summarize_emails's own
+                    // synthesis call, or create_tool's own code-generation
+                    // request. See service/debug_capture.py.
+                    td["debug"] = tc.debugRecords.map { Self.parsedJSON($0.json) }
+                }
+                return td
+            }
+        }
+        if !t.rawIO.isEmpty {
+            // Parsed back into real JSON objects (not left as strings) so
+            // the exported .json is directly queryable/greppable, e.g.
+            // with jq — mirrors how every other field here is native JSON.
+            d["raw_model_io"] = t.rawIO.map { io -> [String: Any] in
+                ["model": io.model,
+                 "request": Self.parsedJSON(io.requestJSON),
+                 "response": Self.parsedJSON(io.responseJSON)]
+            }
+        }
+        return d
+    }
+
+    /// One chat's turns as the export's readable text (its header is ChatDebugExport's).
+    private static func debugTranscript(_ turns: [Turn], clock: DateFormatter) -> String {
+        var text = ""
         for t in turns {
             if t.role == "user" {
                 let ts = t.startedAt.map { "[\(clock.string(from: $0))] " } ?? ""
@@ -1645,16 +1781,7 @@ final class OverlayModel: ObservableObject {
             }
             text += "\n\(t.text)\n\n"
         }
-
-        let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser
-        let stamp = DateFormatter(); stamp.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let base = "wisp-debug-\(stamp.string(from: Date()))"
-        let jsonURL = dir.appendingPathComponent("\(base).json")
-        let textURL = dir.appendingPathComponent("\(base).txt")
-        try? jsonData.write(to: jsonURL)
-        try? text.write(to: textURL, atomically: true, encoding: .utf8)
-        return jsonURL
+        return text
     }
 
     private func handle(_ ev: WispClient.Event, dispatchID: UInt64) {
