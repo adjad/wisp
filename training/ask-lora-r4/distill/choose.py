@@ -341,13 +341,19 @@ def run(partial: str, raws: list[str], k: int | None = None, hash_check: bool = 
     for p in refs:
         apply_refs(all_rows, json.load(open(p)))
     by_id = {r["meta"]["id"]: r for r in all_rows}
+    cur = {i: request_hash(r["messages"][:-1], r.get("tools")) for i, r in by_id.items()}
+    recs = [rec for path in raws for rec in read_jsonl(path)
+            if rec.get("id") in by_id and (k is None or rec["k"] < k)]
+    # An id regenerated after its prompt changed (a separate raw file, same k values) keeps only the samples drawn
+    # for the current prompt; ids with no fresh sample keep theirs, so the stale_hash reject still reports them.
+    fresh = {rec["id"] for rec in recs if rec.get("request_hash") == cur[rec["id"]]}
+    if hash_check:
+        recs = [rec for rec in recs if rec["id"] not in fresh or rec.get("request_hash") == cur[rec["id"]]]
     got = {}                                  # (id, k) -> record; a good record beats an error, then first wins
-    for path in raws:
-        for rec in read_jsonl(path):
-            key = (rec.get("id"), rec.get("k"))
-            if rec.get("id") in by_id and (k is None or rec["k"] < k):
-                if key not in got or (got[key].get("error") and not rec.get("error")):
-                    got[key] = rec
+    for rec in recs:
+        key = (rec["id"], rec["k"])
+        if key not in got or (got[key].get("error") and not rec.get("error")):
+            got[key] = rec
     orphans = sorted({i for i, _ in got} - set(by_id))
     fams = {r["family"] for r in got.values()} | {by_id[i]["meta"]["family"] for i, _ in got}
     rows = [r for r in all_rows if r["meta"]["family"] in fams]
@@ -357,7 +363,7 @@ def run(partial: str, raws: list[str], k: int | None = None, hash_check: bool = 
         rec = dict(rec)
         rec["_reasons"] = reject_reasons(rec, row)
         if (hash_check and rec.get("request_hash") and not rec.get("error")
-                and rec["request_hash"] != request_hash(row["messages"][:-1], row.get("tools"))):
+                and rec["request_hash"] != cur[i]):
             rec["_reasons"].append("stale_hash")
         samples[i].append(rec)
     chosen = {}

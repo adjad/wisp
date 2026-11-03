@@ -9,7 +9,7 @@ PY="${PY:-$HOME/Desktop/MOE_Project/.venv/bin/python}"
 PARTIAL="$1"; RAW="$2"; FAMS="$3"; K0="$4"; KMAX="$5"
 WORK="${TMPDIR:-/tmp}/r4-distill-topup.$$"; mkdir -p "$WORK"
 for ((k = K0; k < KMAX; k++)); do
-  "$PY" "$HERE/choose.py" --partial "$PARTIAL" --raw "$RAW" --tool-names "$HERE/raw/tool_names.json" ${REFS:+--refs "$REFS"} --out-chosen "$WORK/chosen.jsonl" \
+  "$PY" "$HERE/choose.py" --partial "$PARTIAL" --raw "$RAW" ${TOOL_NAMES:+--tool-names "$TOOL_NAMES"} ${REFS:+--refs "$REFS"} --out-chosen "$WORK/chosen.jsonl" \
     --out-stats "$WORK/stats.json" >/dev/null || exit 1
   "$PY" - "$WORK/stats.json" "$FAMS" > "$WORK/ids.txt" <<'PY'
 import json, sys
