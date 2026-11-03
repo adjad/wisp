@@ -570,3 +570,36 @@ def test_user_resolution_lifts_a_legacy_typed_task_with_a_consumed_claim(owned_s
     assert store.resolve_model_effects(sid) == 0
     assert store._db.execute("SELECT status FROM workflows WHERE id=?", (idle.id,)).fetchone()[0] != "completed"
     assert store.claim_model_effect(sid, "new", "send_message", {"to": "A"}, outbound=True)["admitted"]
+
+
+DRAFT_MESSAGE = registry.get_tool("draft_message")
+
+
+def test_model_led_message_draft_ends_in_draft_card_not_failure(synthetic, owned_store):
+    # The prepared-draft receipt is a typed str subclass; the claim settlement
+    # must classify the object itself, not str(result), or every draft fails.
+    assert DRAFT_MESSAGE is not None and not DRAFT_MESSAGE.unavailable_reason
+    registry.REGISTRY["draft_message"] = DRAFT_MESSAGE
+    family = family_for(registry_specs({"draft_message": DRAFT_MESSAGE})[0])
+    store, sid = owned_store
+    _, events, answer = run(
+        [[discover(family, "draft_message")],
+         [call("draft_message", to="+15550100123", text="7 works for me")],
+         "Synthetic prose that must not replace the card."],
+        prompt="draft a text to +15550100123 saying 7 works for me", approval=Approval(True),
+        claim_effect=lambda t, a: store.claim_model_effect(sid, "one", t.name, a, outbound=True),
+        finish_effect=lambda c, ok: store.finish_model_effect(sid, c, verified=ok))
+    drafts = [e for e in events if e.get("type") == "message_draft"]
+    assert drafts == [{"type": "message_draft", "to": "+15550100123", "text": "7 works for me"}]
+    assert answer == ""
+    assert not any("verified completion receipt" in str(e.get("result", "")) + str(e.get("text", ""))
+                   for e in events)
+    assert not store.pending_model_effects(sid)
+
+
+def test_message_draft_outcome_keeps_the_receipt_type():
+    from service.tools.registry import _prepared_message_draft, classify_tool_outcome
+    draft = _prepared_message_draft("+15550100123", "7 works for me")
+    assert classify_tool_outcome("draft_message", draft).status == "succeeded"
+    # The plain text of the receipt is not itself a receipt.
+    assert classify_tool_outcome("draft_message", str(draft)).status == "failed"

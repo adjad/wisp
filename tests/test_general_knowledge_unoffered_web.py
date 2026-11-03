@@ -139,5 +139,29 @@ def test_default_voice_is_gentle_and_last():
     assert "Gentleness never replaces accuracy" in s[voice:]
     # Answers stay organized: the direct answer first, no wall of text.
     assert "organized and easy to scan" in s[voice:] and "wall of text" in s[voice:]
-    # Nothing but the voice rules follows the voice header.
-    assert s[voice:].count("\n- ") == 4
+    # Nothing but the voice rules, then the user's-own-instructions rules that
+    # override them, follows the voice header.
+    own = s.index("IMPORTANT rules about the user's own instructions:")
+    assert own > voice and s[voice:own].count("\n- ") == 4
+    assert s[own:].count("\n- ") == 1 and "`" not in s[voice:]
+
+
+def test_user_style_instructions_override_the_full_answer_default():
+    s = loop.SYSTEM
+    head = "IMPORTANT rules about the user's own instructions:"
+    own = s[s.index(head):]
+    assert s.index("give full answers") < s.index(head) and "By default" in s
+    for wording in ("'one sentence'", "'just the time'", "'no lists'"):
+        assert wording in own
+    assert "earlier in this chat or saved" in own and "beats every rule above" in own
+    # One-shot instructions don't leak into later turns.
+    assert "A one-off covers that answer only" in own
+    # The rules carry no tool names, so build_system keeps them on every turn.
+    assert all(own_part in loop.build_system(set()) for own_part in own.split("\n- ")[1:])
+
+
+def test_memory_rule_matches_the_explicit_remember_gate():
+    s = loop.SYSTEM
+    assert "EVEN IN PASSING" not in s and "none of them came with the word" not in s
+    assert "call `remember` when the user asks you to remember, save" in s
+    assert "do NOT call `remember` for it, nor for how they want answers" in s

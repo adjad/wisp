@@ -1223,6 +1223,11 @@ async def run_case(client, model: str, case, world, *, timeout: float, max_steps
             async def emit(ev):
                 if ev.get("type") == "text":
                     shown.append(str(ev.get("text") or ""))
+                elif ev.get("type") == "message_draft":
+                    # The editable draft card IS the turn's answer: production
+                    # ends the turn on it with no assistant prose.
+                    traj["message_draft"] = {"to": str(ev.get("to") or ""),
+                                             "text": str(ev.get("text") or "")}
 
             agent_emit = (M._answer_prefixed(emit, M.UNRESOLVED_ACTION_NOTICE + "\n\n")
                           if turn.unresolved_block else emit)

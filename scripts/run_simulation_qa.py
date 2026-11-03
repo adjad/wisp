@@ -337,6 +337,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_google_calendar_source.py",
     "tests/test_mcp_large_tool_list.py",
     "tests/test_model_only_quality.py",
+    # Long-chat recall digest and _fit_window condensing: scratch SessionStore,
+    # synthetic chat, scripted model client and synthetic tools; no model or network.
+    "tests/test_ask_history_recall.py",
     # Ask stall re-prompt, tomorrow typos and the day plan: fake model client, stubbed snapshot.
     "tests/test_ask_day_answers.py",
     # Ask quality: code-failure fixes, tool-pair descriptions, the Wisp self-reference
@@ -352,6 +355,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_ask_eval_tool_wording.py",
     "tests/test_ask_text_tool_calls.py",
     "tests/test_timeranges_spoken_days.py",
+    # Ask chat routing: the personal-data guard and stalls (pure regex checks),
+    # and standing answer styles saved to an isolated profile file.
+    "tests/test_ask_casual_chat_guard.py",
+    "tests/test_answer_style.py",
     # Public-fact web lookups with private context: scripted model, fake web tools.
     "tests/test_public_fact_lookups.py",
     "tests/test_proactive_accounts.py",
