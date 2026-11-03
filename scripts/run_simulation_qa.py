@@ -734,6 +734,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/chat-store-contract": "native/chat-store-compile",
     "native/notch-command-contract": "native/notch-command-compile",
     "native/screen-look-contract": "native/screen-look-compile",
+    "native/read-aloud-voice-contract": "native/read-aloud-voice-compile",
     "native/notch-tab-contract": "native/notch-tab-compile",
     "native/know-you-contract": "native/know-you-compile",
 }
@@ -1015,6 +1016,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     agent_send = str(build_dir / "agent-send")
     notch_command = str(build_dir / "notch-command")
     screen_look = str(build_dir / "screen-look")
+    read_aloud_voice = str(build_dir / "read-aloud-voice")
     notch_tab = str(build_dir / "notch-tab")
     know_you = str(build_dir / "know-you")
     chat_logic = str(build_dir / "chat-logic")
@@ -1161,6 +1163,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/screen-look-contract", [screen_look]),
+        (
+            "native/read-aloud-voice-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/ReadAloudVoice.swift",
+                "tests/ReadAloudVoiceChecks.swift", "-o", read_aloud_voice,
+            ],
+        ),
+        ("native/read-aloud-voice-contract", [read_aloud_voice]),
         (
             "native/notch-tab-compile",
             [

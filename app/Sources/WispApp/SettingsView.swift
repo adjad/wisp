@@ -2051,6 +2051,11 @@ struct SettingsView: View {
                 }
                 }
 
+                if selectedPane == "general" {
+                ReadAloudVoiceSettings()
+                Divider()
+                }
+
                 // Occasional, technical knobs — memory management — that
                 // most people set once and forget, as opposed to Models
                 // (tuned often) or Automation (watched periodically).

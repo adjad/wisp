@@ -114,7 +114,7 @@ struct QuickSettingsView: View {
     /// menu: the panel is non-activating, so no popup.
     private var voiceRepliesRow: some View {
         row("Read answers aloud",
-            help: "Wisp speaks its answer with your Mac's voice (System Settings › Accessibility › Spoken Content). Ask by voice with the mic or ⌥⇧Space.") {
+            help: "Wisp speaks its answer with one of your Mac's voices; choose it in All settings › General › Voice. Ask by voice with the mic or ⌥⇧Space.") {
             Text(voiceReplies == .afterVoice ? "When you ask by voice (⌥⇧Space)" : voiceReplies == .always ? "Every answer" : "Never")
         } control: {
             HStack(spacing: 6) {
