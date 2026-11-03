@@ -2105,7 +2105,11 @@ def _recall_thought(s, ctx, seed) -> str:
     if _RECAP_FINAL.search(final):
         return pick(seed, ["Asking whether it came up; the earlier turns are right here, so check those, no lookup.",
                            "Checking the chat so far for it. Every earlier turn is in view, so no lookup.",
-                           "Whether it came up is in the earlier turns; check those, no lookup."])
+                           "Whether it came up is in the earlier turns; check those, no lookup."]
+                    + (["Did this come up earlier? The whole chat is above, so look back through it rather than looking anything up.",
+                        "This asks about our own conversation. Scan the earlier turns for it; no tool needed.",
+                        "Only the chat so far can say whether that was mentioned, and it is all here. Check it, no lookup."]
+                       if ROUND4 else []))
     if field >= 4:
         return ""                               # a rephrase for variety: the generic line, never a cut-off quote
     all_h = "\n".join(t for _r, t in hist)
