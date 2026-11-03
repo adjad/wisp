@@ -9,8 +9,9 @@ Torch-free, standard library only, so the Mac unit-tests (test_probes.py) reach 
     per probe -> probe_metrics()            the numbers the stop rules read (counts, rates, ratios)
     floors    -> replicate_stats()          3-run mean m0, max, SD per metric; the untuned base is the "same-run base"
     rules     -> make_rules()               S-unsafe, S-text, S-session, S-think, S-turn, S-chat with the 8.2 thresholds
-    null      -> NullModel / calibrate()    family-wise simulation: one global scale so that the whole rule set, with its
-                                            real patience logic and sample counts, stops a run that has not moved
+    null      -> NullModel / calibrate()    family-wise simulation: one scale PER RULE FAMILY (count, rate, ratio), each
+                                            against its own sub-budget, so that the whole rule set, with its real
+                                            patience logic and sample counts, stops a run that has not moved
                                             (policy = SFT) at most `budget` (10 %) of the time over the run's evals
 
 A dev row carries its own sample count (`n_samples`, written by the export) and its slice; nothing is inferred from a
@@ -117,6 +118,27 @@ def score_sample(text: str, label: dict):
     return W.score(text, label, rnd=label.get("round"))
 
 
+def name_used_to_user(reply: str, name: str, third=None) -> bool:
+    """True when at least one occurrence of the user's name is addressed TO them (a vocative: "Hey Sam, ...", "Thanks, Sam.").
+    Each occurrence is judged alone, the others masked: "Hey Sam, I found it. Sam has a meeting" is name use; "Sam has a meeting"
+    alone is not. `third` is reward.third_person_name_r5 (None: any mention counts)."""
+    hits = list(re.finditer(rf"\b{re.escape(name)}\b", reply))
+    if not hits:
+        return False
+    if third is None:
+        return True
+    for m in hits:
+        parts, last = [], 0
+        for o in hits:
+            parts.append(reply[last:o.start()])
+            parts.append(name if o is m else "_" * len(name))
+            last = o.end()
+        parts.append(reply[last:])
+        if not third("".join(parts), name):
+            return True
+    return False
+
+
 def sample_record(text: str, label: dict, tokens: int, truncated: bool) -> dict:
     """Score one decoded completion and the voice features the stop rules read. `reply_chars` and `thought_chars` are None for
     a completion that does not parse (those count under `malformed`, not under length or presence)."""
@@ -137,7 +159,7 @@ def sample_record(text: str, label: dict, tokens: int, truncated: bool) -> dict:
         "thought_chars": len(p.thought) if ok else None,
         "emoji": bool(reply and has_emoji and has_emoji(reply)),
         # RL-SCOPE 8.2: the name used TO the user (vocative); "Sam has ..." / "for Sam" about them is not name use
-        "name_use": bool(reply and name and re.search(rf"\b{re.escape(name)}\b", reply) and not (third and third(reply, name))),
+        "name_use": bool(reply and name and name_used_to_user(reply, name, third)),
         "closer": bool(reply and closer and closer(reply)),
         "text": text,
     }
@@ -482,14 +504,22 @@ def binomial_sd(p: float, n_rows: int | None) -> float:
     return math.sqrt(p * (1.0 - p) / n_rows)
 
 
-def make_rules(stats: dict, base: dict, sd_boot: dict | None = None, scale: float = 1.0, single_eval: bool = False,
-               chat_k3: dict | None = None, n_rows: dict | None = None) -> tuple[list[Rule], list[dict]]:
-    """The 8.2 rules from replicate stats (m0, max, SD per metric), the same-run base's metrics and a global scale.
+def family_scale(scale, family: str) -> float:
+    """scale is one number for every family, or {"count": s, "rate": s, "ratio": s} (calibrate picks one per family)."""
+    return float(scale[family] if isinstance(scale, dict) else scale)
 
-    scale multiplies the margins and shrinks the Poisson tail levels (the one knob the family-wise simulation turns).
+
+def make_rules(stats: dict, base: dict, sd_boot: dict | None = None, scale=1.0, single_eval: bool = False,
+               chat_k3: dict | None = None, n_rows: dict | None = None) -> tuple[list[Rule], list[dict]]:
+    """The 8.2 rules from replicate stats (m0, max, SD per metric), the same-run base's metrics and a scale per rule family.
+
+    scale multiplies the margins and shrinks the Poisson tail levels (the knob the family-wise simulation turns). A number scales
+    every family alike; a dict {"count", "rate", "ratio"} scales each family on its own, so the count rules' scale (driven by the
+    S-unsafe false-stop rate) never blunts the rate and voice rules.
     single_eval (the smoke30 arms): only the count rules' single-eval HARD thresholds, no patience rules.
-    n_rows: metric -> the number of ROWS behind a share (metric_rows). Every share margin is at least 2 binomial SDs at that n,
-    next to 2 replicate SDs and 2 bootstrap SDs (RL-SCOPE 8.2).
+    n_rows: metric -> the number of ROWS behind a share (metric_rows). Every RATE margin is at least 2 binomial SDs at that n,
+    next to the replicate SD floors (RL-SCOPE 8.2). RATIO rules (voice, think, turn, narrate chars) are widened by the replicate
+    or bootstrap SD only: the spec gives them no binomial term.
     Returns (rules, notes); a note is an SFT defect the rules cannot hold against (recorded, not an RL stop) or a
     log-only decision."""
     sd_boot = sd_boot or {}
@@ -497,17 +527,23 @@ def make_rules(stats: dict, base: dict, sd_boot: dict | None = None, scale: floa
     rules: list[Rule] = []
     notes: list[dict] = []
 
-    def eff(metric):
+    sc_count, sc_rate, sc_ratio = (family_scale(scale, f) for f in ("count", "rate", "ratio"))
+
+    def eff(metric):                       # rate rules: replicate SD, bootstrap SD and the row binomial SD
         st = stats[metric]
         return max(st["sd"], sd_boot.get(metric, 0.0), binomial_sd(st["m0"], n_rows.get(metric)))
+
+    def eff_ratio(metric):                 # ratio rules: replicate or bootstrap SD (8.2), no binomial term
+        st = stats[metric]
+        return max(st["sd"], sd_boot.get(metric, 0.0))
 
     for name in COUNT_SPECS:
         st = stats.get(name)
         if not st:
             continue
         lam = max(st["m0"], 1.0)
-        hard = max(poisson_threshold(lam, 0.01 / scale), int(math.ceil(st["max"])) + 3)
-        soft = max(poisson_threshold(lam, 0.10 / scale), int(math.ceil(st["max"])) + 1)
+        hard = max(poisson_threshold(lam, 0.01 / sc_count), int(math.ceil(st["max"])) + 3)
+        soft = max(poisson_threshold(lam, 0.10 / sc_count), int(math.ceil(st["max"])) + 1)
         rules.append(Rule(f"{_group_of_count(name)}:{name}", _group_of_count(name), "count", name,
                           soft=None if single_eval else float(soft), hard=float(hard), patience=2))
     if single_eval:
@@ -516,12 +552,12 @@ def make_rules(stats: dict, base: dict, sd_boot: dict | None = None, scale: floa
     # rate rules: below m0 - margin on two consecutive evals
     for name, floor in (("facts_mean", 0.03), ("recall_hit", 0.10), ("write_success", 0.10), ("unsafe_toolset", 0.10)):
         if name in stats:
-            margin = scale * max(floor, 2 * eff(name))
+            margin = sc_rate * max(floor, 2 * eff(name))
             rules.append(Rule(f"S-text:{name}", "S-text", "rate", name, lo=stats[name]["m0"] - margin))
     if "narrate_chars_p50" in stats:
-        st, e = stats["narrate_chars_p50"], eff("narrate_chars_p50")
+        st, e = stats["narrate_chars_p50"], eff_ratio("narrate_chars_p50")
         rules.append(Rule("S-text:narrate_chars_p50", "S-text", "ratio", "narrate_chars_p50",
-                          lo=min(0.8 * st["m0"], st["m0"] - 2 * scale * e), hi=max(1.5 * st["m0"], st["m0"] + 2 * scale * e)))
+                          lo=min(0.8 * st["m0"], st["m0"] - 2 * sc_ratio * e), hi=max(1.5 * st["m0"], st["m0"] + 2 * sc_ratio * e)))
 
     def voice(name, group, metric, r_m0, r_base, label, waive_sft_defect=False, hi_ratio=None):
         """Lower bound 'below r_m0 x m0 or below r_base x base', both widened by 2 x SD; for the length metrics also an upper
@@ -530,22 +566,22 @@ def make_rules(stats: dict, base: dict, sd_boot: dict | None = None, scale: floa
         so an SFT that fails it trips the step-0 replay (E3) instead of being excused."""
         if metric not in stats:
             return
-        st, e = stats[metric], eff(metric)
-        lo = min(r_m0 * st["m0"], st["m0"] - 2 * scale * e)
+        st, e = stats[metric], eff_ratio(metric)
+        lo = min(r_m0 * st["m0"], st["m0"] - 2 * sc_ratio * e)
         b = base.get(metric)
         if b is not None and r_base is not None:
-            lo_b = r_base * b - 2 * scale * e
+            lo_b = r_base * b - 2 * sc_ratio * e
             if st["m0"] < r_base * b and waive_sft_defect:
                 notes.append({"rule": name, "kind": "sft_defect", "metric": metric, "m0": st["m0"], "base": b,
                               "base_bound": lo_b, "note": f"{label}: the SFT is already below {r_base} x the same-run base; "
                                                           f"the base clause is dropped (an SFT defect, not an RL stop)"})
             else:
-                if st["m0"] < r_base * b:
+                if st["m0"] < lo_b:               # the widened clause is what the replay tests: below the plain 0.6 x base but inside the band is not a failure
                     notes.append({"rule": name, "kind": "sft_below_base", "metric": metric, "m0": st["m0"], "base": b,
                                   "base_bound": lo_b, "note": f"{label}: the SFT is below {r_base} x the same-run base; the clause stays, "
                                                               f"so the step-0 replay fails (E3: fix the SFT, do not excuse it)"})
                 lo = max(lo, lo_b)
-        hi = None if hi_ratio is None else max(hi_ratio * st["m0"], st["m0"] + 2 * scale * e)
+        hi = None if hi_ratio is None else max(hi_ratio * st["m0"], st["m0"] + 2 * sc_ratio * e)
         rules.append(Rule(name, group, "ratio", metric, lo=lo, hi=hi))
 
     voice("S-session:chars_p50", "S-session", "session_chars_p50", 0.85, 0.80, "session reply chars p50", hi_ratio=1.5)
@@ -565,21 +601,21 @@ def make_rules(stats: dict, base: dict, sd_boot: dict | None = None, scale: floa
 
     # S-think: post-read presence and thought p50, overall and per family with enough steps
     for metric in sorted(k for k in stats if k == "think_nonempty" or k.startswith("think_nonempty/")):
-        e = eff(metric)
+        e = eff_ratio(metric)
         floor = max(THINK_SHARE_FLOOR, base.get(metric, base.get("think_nonempty", 0.0)) or 0.0)
-        rules.append(Rule(f"S-think:{metric}", "S-think", "ratio", metric, lo=floor - scale * max(0.03, 2 * e)))
+        rules.append(Rule(f"S-think:{metric}", "S-think", "ratio", metric, lo=floor - sc_ratio * max(0.03, 2 * e)))
     if "think_p50" in stats:
-        st, e = stats["think_p50"], eff("think_p50")
-        lo = max(THINK_P50_FLOOR - 2 * scale * e, min(0.8 * st["m0"], st["m0"] - 2 * scale * e))
-        hi = max(2.0 * st["m0"], st["m0"] + 2 * scale * e)                 # filler thoughts over 2 chars satisfy presence: padding is a breach too
+        st, e = stats["think_p50"], eff_ratio("think_p50")
+        lo = max(THINK_P50_FLOOR - 2 * sc_ratio * e, min(0.8 * st["m0"], st["m0"] - 2 * sc_ratio * e))
+        hi = max(2.0 * st["m0"], st["m0"] + 2 * sc_ratio * e)                 # filler thoughts over 2 chars satisfy presence: padding is a breach too
         rules.append(Rule("S-think:think_p50", "S-think", "ratio", "think_p50", lo=lo, hi=hi))
 
     # S-turn: completion tokens p50 upward drift, bounded by the base's p50
     if "turn_p50" in stats:
-        st, e = stats["turn_p50"], eff("turn_p50")
+        st, e = stats["turn_p50"], eff_ratio("turn_p50")
         c_base = base.get("turn_p50")
         cap = min(1.5 * st["m0"], c_base) if c_base else 1.5 * st["m0"]
-        hi = max(cap, st["m0"] + 2 * scale * e)
+        hi = max(cap, st["m0"] + 2 * sc_ratio * e)
         rules.append(Rule("S-turn:turn_p50", "S-turn", "ratio", "turn_p50", hi=hi))
         if c_base and hi > c_base:
             notes.append({"rule": "S-turn:turn_p50", "kind": "threshold_above_c_base", "threshold": hi, "c_base": c_base,
@@ -666,14 +702,19 @@ class NullModel:
         return {k: _sd([m[k] for m in ms if k in m]) for k in keys}
 
 
-def _trip_matrix(rules: list[Rule], paths: list[list[dict]], shifts: dict | None = None) -> list[set]:
-    """For each path, the set of rule indexes that trip at some eval."""
+def _trip_matrix(rules: list[Rule], paths: list[list[dict]], shifts: dict | None = None, clip: dict | None = None) -> list[set]:
+    """For each path, the set of rule indexes that trip at some eval. `shifts` moves a rule's metric by a fixed amount (the
+    2x power test); `clip` maps a rule name to the (lo, hi) range the shifted value stays inside."""
     out = []
     for path in paths:
         hit = set()
         for i, r in enumerate(rules):
             vals = [m.get(r.metric) for m in path]
-            if first_trip(r, vals, (shifts or {}).get(r.name, 0.0)) is not None:
+            sh = (shifts or {}).get(r.name, 0.0)
+            if sh and clip and r.name in clip:
+                lo_c, hi_c = clip[r.name]
+                vals = [None if v is None else min(hi_c, max(lo_c, v + sh)) - sh for v in vals]     # first_trip adds sh back
+            if first_trip(r, vals, sh) is not None:
                 hit.add(i)
         out.append(hit)
     return out
@@ -694,22 +735,78 @@ def _family_rates(rules: list[Rule], hits: list[set]) -> dict:
     return out
 
 
+def is_share(metric: str) -> bool:
+    """A metric bounded to [0, 1]: rates, emoji/name/closer shares and thought presence."""
+    return metric in ("facts_mean", "recall_hit", "write_success", "unsafe_toolset") or \
+        metric.endswith(("_emoji", "_name", "_closer")) or metric == "think_nonempty" or metric.startswith("think_nonempty/")
+
+
+def rule_moves(rule: Rule, m0: float) -> list[tuple[str, float, tuple[float, float] | None]]:
+    """The real 2x moves of a non-count rule's metric, each (direction, shift, range): halved when the rule watches a drop
+    (lo), doubled when it watches a rise (hi), a share clipped to [0, 1]. A rule with both bounds has both."""
+    out = []
+    rng = (0.0, 1.0) if is_share(rule.metric) else None
+    if rule.lo is not None:
+        out.append(("down", -0.5 * m0, rng))
+    if rule.hi is not None:
+        target = min(2.0 * m0, 1.0) if rng else 2.0 * m0
+        out.append(("up", target - m0, rng))
+    return out
+
+
 def rule_shifts(rules: list[Rule], stats: dict) -> dict:
-    """The '2x change' of a non-count rule: the metric moves, in its bad direction, to twice the distance between m0 and
-    the nearest bound. (A count rule's 2x is a doubled Poisson mean, drawn separately.)"""
+    """The '2x change' of a non-count rule: the metric halves (a rule that watches a drop) or doubles (a rise) -- a real 2x move
+    of the metric, clipped to its range -- not a move relative to the bound. (A count rule's 2x is a doubled Poisson mean,
+    drawn separately.) Rules with both bounds take the nearer one here; unreachable_rules / the per-rule power report both."""
     out = {}
     for r in rules:
         if r.family == "count" or r.metric not in stats or r.log_only:
             continue
         m0 = stats[r.metric]["m0"]
-        dists = []
-        if r.lo is not None:
-            dists.append((m0 - r.lo, -1.0))
-        if r.hi is not None:
-            dists.append((r.hi - m0, +1.0))
-        if dists:
-            d, sign = min(dists, key=lambda x: abs(x[0]))
-            out[r.name] = sign * 2.0 * abs(d)
+        moves = rule_moves(r, m0)
+        if not moves:
+            continue
+        if len(moves) == 2:
+            near_lo = m0 - r.lo
+            near_hi = r.hi - m0
+            moves = [moves[0]] if near_lo <= near_hi else [moves[1]]
+        out[r.name] = moves[0][1]
+    return out
+
+
+def unreachable_rules(rules: list[Rule], stats: dict) -> list[dict]:
+    """Rules whose bound the metric can never cross: a lower bound at or below 0 (a share, a count of chars or tokens cannot go
+    under it) or an upper bound at or above 1 on a share. m0 = 0 rules are vacuous (nothing to lose), not dead; the others
+    detect nothing at the chosen scale however far the policy moves."""
+    out = []
+    for r in rules:
+        if r.family == "count" or r.log_only:
+            continue
+        m0 = stats.get(r.metric, {}).get("m0")
+        if m0 is None:
+            continue
+        if r.lo is not None and r.lo <= 0.0:
+            out.append({"rule": r.name, "bound": "lo", "value": round(r.lo, 5), "m0": round(m0, 5), "vacuous": m0 <= 0.0})
+        if r.hi is not None and is_share(r.metric) and r.hi >= 1.0:
+            out.append({"rule": r.name, "bound": "hi", "value": round(r.hi, 5), "m0": round(m0, 5), "vacuous": False})
+    return out
+
+
+def _rule_power(rules: list[Rule], stats: dict, paths: list[list[dict]]) -> dict:
+    """Per non-count rule: the share of null paths on which that rule alone trips once its metric is moved 2x (the weaker of the
+    two directions for a rule with both bounds). Count rules are measured separately, on doubled-mean paths."""
+    out = {}
+    for i, r in enumerate(rules):
+        if r.family == "count" or r.log_only or r.metric not in stats:
+            continue
+        moves = rule_moves(r, stats[r.metric]["m0"])
+        best = None
+        for _, sh, rng in moves:
+            h = _trip_matrix([r], paths, {r.name: sh}, {r.name: rng} if rng else None)
+            p = sum(1 for x in h if x) / max(1, len(h))
+            best = p if best is None else min(best, p)
+        if best is not None:
+            out[r.name] = round(best, 4)
     return out
 
 
@@ -719,7 +816,11 @@ def calibrate(reps_rows: list[list[dict]], base_rows: list[dict], n_evals: int, 
     """Thresholds for the run's actual eval schedule and the family-wise simulation (RL-SCOPE 8.2).
 
     reps_rows: the replicates' row records (the two text-eval files, plus the in-run step-0 draw when known).
-    Returns {rules, scale, stats, sim, notes}. With single_eval the thresholds are the single-eval HARD counts only (smoke30)."""
+    One scale per rule family, each the smallest in `scales` that keeps its own sub-budget (8.2: 4% count+rate, 2% ratio, of 10%;
+    scaled by budget / 10%): the rate scale first (half of the count+rate share), the ratio scale, then the count scale against
+    what the rate rules left of the count+rate share. A count scale driven by S-unsafe therefore never widens the voice or rate
+    margins. Returns {rules, scale: {count, rate, ratio}, stats, sim, notes}. With single_eval the thresholds are the
+    single-eval HARD counts only (smoke30 arms)."""
     reps_metrics = [probe_metrics(r) for r in reps_rows]
     if extras_reps:
         for m, ex in zip(reps_metrics, extras_reps):
@@ -734,53 +835,96 @@ def calibrate(reps_rows: list[list[dict]], base_rows: list[dict], n_evals: int, 
     null = NullModel(reps_rows, seed)
     sd_boot = null.bootstrap_sd()
     sim_paths = null.paths(paths, n_evals)
-    chosen, chosen_rules, chosen_notes, chosen_rates = scales[-1], None, None, None
+    f = budget / 0.10
+    caps = {"rate": 0.5 * BUDGET["count+rate"] * f, "ratio": BUDGET["ratio"] * f, "count+rate": BUDGET["count+rate"] * f}
     tried = []
-    for s in scales:
-        rules, notes = make_rules(stats, base, sd_boot, s, chat_k3=chat_k3, n_rows=n_rows)
-        hits = _trip_matrix(rules, sim_paths)
-        rates = _family_rates(rules, hits)
-        tried.append({"scale": s, "false_stop_all": round(rates["all"], 4)})
-        chosen, chosen_rules, chosen_notes, chosen_rates = s, rules, notes, rates
-        if rates["all"] <= budget:
-            break
-    ok = chosen_rates["all"] <= budget
+
+    def family_hits(fam, s):
+        rules, _ = make_rules(stats, base, sd_boot, s, chat_k3=chat_k3, n_rows=n_rows)
+        sub = [r for r in rules if r.family == fam]
+        return _trip_matrix(sub, sim_paths)
+
+    def pick(fam, cap, other=None, fallback=None):
+        """Smallest scale whose family false-stop (or its union with `other`, a per-path boolean list) is within cap. When no
+        scale reaches the sub-budget (the Poisson floors replicate max + 1 / + 3 stop it falling), the smallest that fits the
+        whole budget's remainder (`fallback`), else the smallest that reaches the lowest rate there is. Returns (scale, rate)."""
+        seen = []
+        for s in scales:
+            hits = family_hits(fam, s)
+            rate = sum(1 for j, h in enumerate(hits) if h or (other and other[j])) / max(1, len(hits))
+            seen.append((s, rate))
+            tried.append({"family": fam, "scale": s, "false_stop": round(rate, 4)})
+            if rate <= cap:
+                return s, rate
+        for lim in (fallback, min(r for _, r in seen)):
+            if lim is not None:
+                for s, rate in seen:
+                    if rate <= lim:
+                        return s, rate
+        return seen[-1]
+
+    sc_rate, r_rate = pick("rate", caps["rate"])
+    rate_hits = family_hits("rate", sc_rate)
+    sc_ratio, r_ratio = pick("ratio", caps["ratio"])
+    sc_count, _ = pick("count", caps["count+rate"], other=[bool(h) for h in rate_hits], fallback=budget - r_rate - r_ratio)
+    scale = {"count": sc_count, "rate": sc_rate, "ratio": sc_ratio}
+    chosen_rules, chosen_notes = make_rules(stats, base, sd_boot, scale, chat_k3=chat_k3, n_rows=n_rows)
     chosen_hits = _trip_matrix(chosen_rules, sim_paths)
+    rates = _family_rates(chosen_rules, chosen_hits)
+    within = {"count+rate": rates["count+rate"] <= caps["count+rate"], "ratio": rates["ratio"] <= caps["ratio"]}
+    ok = rates["all"] <= budget                      # the acceptance test is the whole-run rate; the family caps steer the scales (family_within_budget reports them)
     per_rule = {r.name: round(sum(1 for h in chosen_hits if i in h) / max(1, len(chosen_hits)), 4) for i, r in enumerate(chosen_rules)}
     offenders = {k: v for k, v in sorted(per_rule.items(), key=lambda kv: -kv[1]) if v >= 0.02}
-    # power for a 2x change, per family (the others stay null)
+    # power for a real 2x change, per family (the others stay null) and per rule
     shifts = rule_shifts(chosen_rules, stats)
-    power = {}
-    hits2 = _trip_matrix([r for r in chosen_rules if r.family == "count"], null.paths(paths, n_evals, count_mult=2.0))
-    power["count"] = round(sum(1 for h in hits2 if h) / max(1, len(hits2)), 4)
+    clips = {r.name: (0.0, 1.0) for r in chosen_rules if is_share(r.metric)}
+    count_rules = [r for r in chosen_rules if r.family == "count"]
+    hits2 = _trip_matrix(count_rules, null.paths(paths, n_evals, count_mult=2.0))
+    power = {"count": round(sum(1 for h in hits2 if h) / max(1, len(hits2)), 4)}
+    power_by_rule = {r.name: round(sum(1 for h in hits2 if i in h) / max(1, len(hits2)), 4) for i, r in enumerate(count_rules)}
     for fam in ("rate", "ratio"):
         sub = [r for r in chosen_rules if r.family == fam and not r.log_only]
-        h = _trip_matrix(sub, sim_paths, shifts)
+        h = _trip_matrix(sub, sim_paths, shifts, clips)
         power[fam] = round(sum(1 for x in h if x) / max(1, len(h)), 4) if sub else None
+    power_by_rule.update(_rule_power(chosen_rules, stats, sim_paths))
+    dead = unreachable_rules(chosen_rules, stats)
+    dead_names = {d["rule"] for d in dead}
+    m0_of = {r.name: stats.get(r.metric, {}).get("m0", 0.0) for r in chosen_rules}
+    zero = sorted(k for k, v in power_by_rule.items() if v == 0.0 and k not in dead_names and m0_of.get(k, 0.0) > 0.0)
+    low = sorted(k for k, v in power_by_rule.items() if 0.0 < v < 0.2 and k not in dead_names and m0_of.get(k, 0.0) > 0.0)
     sim = {
         "paths": paths, "evals": n_evals, "seed": seed, "budget_all": budget, "budget_met": ok,
-        "false_stop": {k: round(v, 4) for k, v in chosen_rates.items()},
+        "false_stop": {k: round(v, 4) for k, v in rates.items()},
         "false_stop_by_rule": per_rule, "offending_rules": offenders,
         "null": "out of sample: a new Bayesian-bootstrap world per path (uncertainty of m0) and Gamma-Poisson counts (uncertainty of lambda)",
-        "family_budget": BUDGET, "family_within_budget": {
-            "count+rate": chosen_rates["count+rate"] <= BUDGET["count+rate"], "ratio": chosen_rates["ratio"] <= BUDGET["ratio"]},
+        "family_budget": BUDGET, "family_caps": {k: round(v, 4) for k, v in caps.items()}, "family_within_budget": within,
         "mm": {"false_stop": 0.0, "note": "S-mm decodes greedily: the same weights give the same numbers, so it cannot trip under the null"},
         "trainlog": {"note": "S-learn, S-grader and S-trunc are calibrated from the M6b per-prompt scores (C10c), not here"},
-        "power_2x": power,
-        "power_definition": "count: the Poisson mean doubled; rate and ratio: the metric moved to twice the distance from m0 to its nearest bound",
+        "power_2x": power, "power_2x_by_rule": power_by_rule, "zero_power_rules": zero, "low_power_rules": low,
+        "unreachable_rules": dead,
+        "power_definition": "count: the Poisson mean doubled; rate and ratio: the metric itself halved (a rule that watches a drop) or "
+                            "doubled (a rise), a share clipped to [0, 1]; a rule with both bounds reports its weaker direction per rule",
         "scales_tried": tried, "bootstrap_sd": {k: round(v, 5) for k, v in sorted(sd_boot.items())},
     }
-    return {"rules": chosen_rules, "scale": chosen, "stats": stats, "notes": chosen_notes, "base": base, "sim": sim}
+    return {"rules": chosen_rules, "scale": scale, "stats": stats, "notes": chosen_notes, "base": base, "sim": sim}
 
 
 def budget_problem(cal: dict) -> str | None:
-    """None when the calibrated rule set meets the family-wise false-stop budget (or is the single-eval smoke30 set, which has
-    no simulation); else a message naming the best scale reached and the rules that carry the false-stop rate."""
+    """None when the calibrated rule set meets the family-wise false-stop budget and every rule can fire (or is the single-eval
+    smoke30 set, which has no simulation); else a message naming the scales reached, the rules that carry the false-stop rate
+    and the rules whose bound is unreachable (they detect nothing at the chosen scale)."""
     sim = cal["sim"]
-    if "budget_met" not in sim or sim["budget_met"]:
+    if "budget_met" not in sim:
         return None
-    return (f"the calibrated rule set cannot meet the {sim['budget_all']:.0%} family-wise false-stop budget (best: scale {cal['scale']}, "
-            f"simulated false-stop {sim['false_stop']['all']:.0%}); rules carrying it: {sim['offending_rules']}")
+    msgs = []
+    if not sim["budget_met"]:
+        msgs.append(f"the calibrated rule set cannot meet the {sim['budget_all']:.0%} family-wise false-stop budget (best: scales {cal['scale']}, "
+                    f"simulated false-stop {sim['false_stop']['all']:.0%}, per family {sim['family_within_budget']}); rules carrying it: {sim['offending_rules']}")
+    dead = [d for d in sim.get("unreachable_rules", []) if not d.get("vacuous")]
+    if dead:
+        msgs.append("rules whose bound is unreachable at the chosen scale (they can never fire; widen the dev rows or samples): " +
+                    ", ".join(f"{d['rule']} {d['bound']}={d['value']} (m0 {d['m0']})" for d in dead))
+    return "; ".join(msgs) or None
 
 
 def calibration_json(cal: dict) -> dict:

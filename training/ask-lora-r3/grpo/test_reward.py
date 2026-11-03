@@ -1982,7 +1982,7 @@ def test_r5_facts_are_scored_on_narrate_rows_and_explicit_lists_only():
 def test_r5_a_fact_inside_a_negation_earns_nothing():
     lab = n5()
     assert r5("There is no Water plants at 6 PM.", lab).parts["facts"] == 0.0
-    assert r5("Not Water plants. Just 6 PM.", lab).parts["facts"] == 0.5          # the window ends at the sentence
+    assert r5("Not Water plants. It is at 6 PM.", lab).parts["facts"] == 0.5          # the window ends at the sentence
     assert r5("You never have Water plants at 6 PM, I think.", lab).parts["facts"] == 0.5     # four tokens: only 6 PM is left
     assert r5("Water plants is at 6 PM, not 7.", lab).parts["facts"] == 1.0         # the negation follows the facts
     assert r5("You have no meetings, but Water plants is at 6 PM.", lab).parts["facts"] == 1.0    # the comma ends the clause
@@ -2583,9 +2583,7 @@ def test_r5_exploit_22_verbose_answers_under_the_cap():
     padded = IDEAL_NARRATE + " " + TOOL_RESULT
     ex = loses(n5(), F(IDEAL_NARRATE), F(padded))
     assert ex.parts["verbatim"] == -0.5
-    # filler that restates nothing is not penalised by the reward (the S-text narrate chars rule watches it); chat anchors tie by design
-    filler = IDEAL_NARRATE + " " + "That is the whole story for tonight, and there is really nothing more worth adding here. " * 6
-    assert sc(n5(), F(filler)).total <= 2.0
+    # padding of this size is judged by test_r5_exploit_22_filler_around_correct_facts_loses_half_a_point; chat anchors tie by design
     ties(anchor5(), F(ANCH_IDEAL), F(ANCH_IDEAL + " " + "Honestly that is just a nice thing to look forward to this week. " * 12))
 
 
@@ -2928,7 +2926,8 @@ def test_r5_nonreply_and_ungrounded_skip_what_the_ideal_itself_does():
     assert r5(ideal, lab).parts["nonreply"] == 0.0
     assert r5(ideal, n5(facts=[])).parts["nonreply"] == -1.0     # without the ideal the give-up rule fires, as it should on any other row
     ok = inst5(rl_kind="instruction", ideal_text="Yes.")
-    assert r5("Yes.", ok).total == 1.0 and r5("Ok.", ok).total == 1.0           # a one-word ideal: the short answer is the right one
+    assert r5("Yes.", ok).total == 1.0 and r5("Yes, it is.", ok).total == 1.0   # a one-word ideal: the short answer is the right one
+    assert r5("Ok.", ok).parts["nonreply"] == -1.0                               # ... and no other short reply ties it (X5)
     assert r5("Ok.", inst5(rl_kind="instruction", ideal_text="Sure, the meeting is at six this evening.")).parts["nonreply"] == -1.0
     # an entity the ideal states (and the ground does not) is the row's own
     lab = n5(ideal_text="Water plants is at 6 PM, 12 PM works too.", ground="what's on\nWater plants at 6 PM", facts=["Water plants"])
@@ -3056,3 +3055,160 @@ def test_r5_the_replies_that_scored_below_their_ceiling_in_the_first_pass_now_re
             finally:
                 W.R5_IDEAL_RELATIVE = old
             assert abs(res.total - lab["ceiling"]) < 1e-9, (kind, relative, res.total, res.flags, text[:60])
+
+
+# ---- second repair round: hedge-then-fabricate, name lexicon, counts, fact lists, contractions, receipts, short replies
+
+LEMON = "user: I'm making a lemon tart for Saturday\nassistant: A lemon tart sounds lovely!"
+HEDGE = "We haven't talked about that yet, Sam"
+
+
+def test_r5_wrapping_a_fabrication_in_like_usually_or_often_does_not_make_it_an_offer():
+    lab = none5(ground=LEMON, ideal_text=NONE_IDEAL)
+    ideal_at_ceiling(lab, F(NONE_IDEAL))
+    for fab in (HEDGE + ", but your dog is Max, like you said, and your wife is Priya Nair.",
+                HEDGE + ", but your dog Max is usually the one you walk at 6:45 PM.",
+                HEDGE + ". You often say your wife Priya Nair is at 9:45 PM.",
+                HEDGE + ", but typically your dog Max sleeps at 10 PM.",
+                HEDGE + ", but generally your dog is Max.",
+                HEDGE + ", but you could try Max or Rex, or it might be 9:45 PM.",            # the time is a claim, the names an offer
+                HEDGE + ", but you would say your dog is Max and your wife is Priya."):
+        ex = loses(lab, F(NONE_IDEAL), F(fab), margin=1.0)
+        assert ex.parts["recall_absent"] == -1.0, fab
+    # a lower-case name, a sentence that starts with the name, and a fabrication written before the acknowledgement
+    for fab in (HEDGE + ", but your dog is max.", HEDGE + ", but your wife is priya.", HEDGE + ". Max is your dog.",
+                HEDGE + ". Priya Nair is your wife.", "Your dog is Max and your wife is Priya Nair, but we haven't talked about the meeting yet.",
+                HEDGE + ". You could try the 14 November slot."):                                # a date is a claim wherever it stands
+        assert loses(lab, F(NONE_IDEAL), F(fab), margin=1.0).parts["recall_absent"] == -1.0, fab
+    assert r5("Your dog is max.", lab).parts["recall_absent"] == -1.0                              # and with no hedge at all
+    # real offers stay at the ceiling: the names are not about the person, and a size or a temperature is not a time
+    for ok in (HEDGE + ", but a Sauternes would suit the tart.", HEDGE + ", but typically a Sauternes would suit the tart.",
+               "We haven't picked a dessert wine yet, but since you're making a lemon tart, a sweet wine such as a Moscato or a Sauternes "
+               "would pair well, served at 10 to 12 degrees.", HEDGE + ". If you want, I could suggest a Riesling for Saturday."):
+        assert r5(ok, lab).parts["recall_absent"] == 0.5, ok
+
+
+def test_r5_the_scripted_never_said_forms_count_as_an_acknowledgement():
+    lab = none5(ground=LEMON)
+    for text in ("No wine has come up yet, only the lemon tart for Saturday.", "No streaming service has been named yet.",
+                 "Nobody has settled on a wine yet. So far it is just the lemon tart.", "His favourite spot has not come up, only the tart.",
+                 "No venue has been named yet."):
+        assert W.recall_hedge(text), text
+        assert r5(text, lab).parts["recall_absent"] == 0.5, text
+    for text in ("We have not got as far as the lens.", "I haven't named a garden center in this chat.", "I didn't recommend a particular program."):
+        assert W.recall_hedge(text), text
+    assert not W.recall_hedge("No problem, the tart has been set for Saturday.")
+    assert W.ack_match("Your dog is Max.") is None
+
+
+def test_r5_a_fabricated_name_is_caught_without_a_label_lexicon_and_after_an_imperative():
+    base = "Water plants is at 6 PM."
+    lab = n5(ideal_text=base)
+    ideal_at_ceiling(lab, F(base))
+    for fab in (base + " Also priya nair is joining.", base + " Water plants, with priya.", base + " Ask Anil about it.",
+                base + " Call Anil.", base + " Honestly Dana said hello.", base + " Text Zelda Moss."):
+        assert loses(lab, F(base), F(fab)).parts["ungrounded"] < 0, fab
+    # a name the ground holds, the person's own name and ordinary openers are not fabrications
+    grounded = n5(ground=GROUND + "\nAnil Novak: (971) 555-0117", ideal_text=base)
+    for ok in (base + " Ask Anil about it.", base + " Thanks Sam.", base + " Honestly that is a nice plan.", base + " Call me later."):
+        assert r5(ok, grounded).parts["ungrounded"] == 0.0, ok
+    # a word that is also a name (will, mark, grace) is not read as one
+    assert r5(base + " Will you go? Mark the date.", lab).parts["ungrounded"] == 0.0
+
+
+def test_r5_small_counts_need_a_written_quantity_a_list_length_or_a_named_filter():
+    plain = "Downloads:\na.pdf\nb.png\nc.zip\nd.docx\ne.txt\nf.csv\ng.dmg\nh.pkg"
+    lab = n5(ground="what's in downloads\n" + plain + "\nbackup at 7 tonight, call by 9", facts=["Downloads"], tool_results=[plain])
+    assert r5("Downloads has 8 items.", lab).parts["ungrounded"] == 0.0
+    for text in ("Downloads has 7 items.", "Downloads has 7 items waiting.", "Downloads has 6 items.", "Downloads has 10 items.",
+                 "Downloads has 17 items."):            # line counts are not added to each other; an hour in the ground is not a quantity
+        assert r5(text, lab).parts["ungrounded"] == -0.5, text
+    # a count the sentence derives by a named filter, inside the list, is fair; the same number with no filter is not
+    todo = "- Pay rent: overdue\n- Call Mom: due Fri\n- Water the plants\n- Laundry\n- Email Dana"
+    lab = n5(ground="what's open\n" + todo, facts=["Mom"], tool_results=[todo])
+    assert r5("Mom is on the list. You have 5 open tasks, 2 overdue.", lab).parts["ungrounded"] == 0.0
+    assert r5("Mom is on the list. There are 4 items waiting.", lab).parts["ungrounded"] == -0.5
+    assert r5("Mom is on the list. There are 9 items waiting.", lab).parts["ungrounded"] == -0.5
+    # a day of the month is not a count; a quote of the ground is not invented
+    cal = n5(ground="what's on\nSunday, November 8: free from 9:45 AM; Study group moved to 7 tonight", facts=["9:45 AM"])
+    assert r5("On Sunday, November 8 you're free from 9:45 AM, and the study group moved to 7 tonight.", cal).parts["ungrounded"] == 0.0
+    # a double or half needs a split or a round trip, a sum a total
+    money = n5(ground="budget is around $80, split with Kenji\nit is 45 km each way\nlunch $120, tip $15", facts=["Kenji"])
+    assert r5("Kenji and you each put in $40.", money).parts["ungrounded"] == 0.0
+    assert r5("The ride is 90 km there and back.", money).parts["ungrounded"] == 0.0
+    assert r5("Lunch and tip come to $135 in total.", money).parts["ungrounded"] == 0.0
+    assert r5("Kenji owes $40.", money).parts["ungrounded"] == -0.5
+    assert r5("The ride is 90 km.", money).parts["ungrounded"] == -0.5
+    assert r5("You owe $135.", money).parts["ungrounded"] == -0.5
+
+
+def test_r5_a_list_of_the_facts_loses_the_facts_term_unless_the_ideal_is_that_list():
+    ideal = "Water plants is at 6 PM, then dinner with Ben Ortiz at 7:30 PM."
+    lab = n5(facts=["Water plants", "6 PM", "Ben Ortiz", "7:30 PM"], ideal_text=ideal)
+    ideal_at_ceiling(lab, F(ideal))
+    for dump in ("Here is what I found: Water plants, 6 PM, Ben Ortiz, 7:30 PM. Anything else you need?", "Water plants, 6 PM, Ben Ortiz, 7:30 PM",
+                 "Water plants: 6 PM; Ben Ortiz: 7:30 PM", "Here is what I found: Water plants 6 PM Ben Ortiz 7:30 PM."):
+        ex = loses(lab, F(ideal), F(dump), margin=1.0)
+        assert ex.parts["facts"] <= 0.0, dump
+    # a short answer with words around its facts is not a list; neither is a list the ideal itself writes
+    for ok in ("You have Water plants at 6 PM and Ben Ortiz at 7:30 PM.", "Water plants is 6 PM; Ben Ortiz is 7:30 PM, tonight."):
+        assert sc(lab, F(ok)).parts["facts"] == 1.0, ok
+    one = n5(facts=["5 PM"], ideal_text="Your dentist is at 5 PM.", ground="when is the dentist\nDentist at 5 PM")
+    ideal_at_ceiling(one, F("Your dentist is at 5 PM."))
+    loses(one, F("Your dentist is at 5 PM."), F("5 PM."), margin=1.0)
+    loses(one, F("Your dentist is at 5 PM."), F("Here is what I found: 5 PM. Anything else you need?"), margin=1.0)
+    terse = n5(facts=["5 PM"], ideal_text="5 PM.", ground="when is the dentist\nDentist at 5 PM")
+    ideal_at_ceiling(terse, F("5 PM."))
+    agenda = ("Tomorrow has 2 events:\n- 11 AM: PHIL 110 Intro to Ethics\n- 4 PM: Library help desk shift")
+    lab = n5(facts=["11 AM", "4 PM"], ideal_text=agenda, ground="what's on\n" + agenda)
+    ideal_at_ceiling(lab, F(agenda))
+    loses(lab, F(agenda), F("11 AM, 4 PM"), margin=0.5)
+
+
+def test_r5_contractions_and_other_negators_blank_the_fact_they_negate():
+    lab = n5(facts=["5 PM"], ideal_text="Your dentist is at 5 PM.", ground="when is the dentist\nDentist at 5 PM")
+    ideal_at_ceiling(lab, F("Your dentist is at 5 PM."))
+    for neg in ("You don't have 5 PM.", "5 PM isn't scheduled.", "You didn't get 5 PM.", "Without 5 PM.", "None of it is 5 PM.",
+                "Neither 5 PM nor 6 PM.", "5 PM wasn't on the list.", "You can't make 5 PM.", "There is no 5 PM."):
+        ex = loses(lab, F("Your dentist is at 5 PM."), F(neg), margin=1.0)
+        assert ex.parts["facts"] <= 0.0, neg
+    # a negation in another clause leaves the fact alone
+    assert W.fact_present("5 PM", W.mask_negated("Your dentist is at 5 PM, and I don't see anything else."))
+    assert W.fact_present("5 PM", W.mask_negated("It isn't far, the dentist is at 5 PM."))
+    assert not W.fact_present("5 PM", W.mask_negated("Dentist at 5 PM doesn't change."))
+
+
+def test_r5_a_negated_receipt_does_not_launder_a_tool_name():
+    base = decision5(ideal_text="I can't send that, Sam.", tool_names=TOOLS5 + ["send_email"])
+    ideal_at_ceiling(base, F("I can't send that, Sam. Nothing was sent."))
+    for fab in ("I can't send that, Sam. Not send_email was sent.", "I can't send that, Sam. Never get_upcoming was sent, nothing was sent.",
+                "I can't send that, Sam. No send_email was sent."):
+        assert sc(base, F(fab)).parts["leak"] == -1.0, fab
+    for ok in ("I can't send that, Sam. Nothing was sent.", "I can't send that, Sam. No email was sent.", "Nothing has been deleted."):
+        assert sc(base, F(ok)).parts["leak"] == 0.0, ok
+
+
+def test_r5_a_short_ideal_licenses_its_own_short_answer_not_ok():
+    for ideal in ("4 PM", "Yes.", "No.", "Maya Chen"):
+        lab = inst5(ideal_text=ideal, facts=[])
+        ideal_at_ceiling(lab, F(ideal))
+        assert sc(lab, F("Ok.")).parts["nonreply"] == -1.0, ideal
+        assert sc(lab, F("Ok?")).parts["nonreply"] == -1.0, ideal
+    assert sc(inst5(ideal_text="4 PM", facts=[]), F("It is 4 PM.")).total == 1.0
+    anchor = anchor5(ideal_text="Ottawa.")
+    ideal_at_ceiling(anchor, F("Ottawa."))
+    assert sc(anchor, F("Ok.")).parts["nonreply"] == -1.0 and sc(anchor, F("It is Ottawa.")).total == 1.0
+    sess = anchor5("session_anchor", ideal_text="Yes.")
+    ideal_at_ceiling(sess, F("Yes."))
+    assert sc(sess, F("Ok.")).total < 1.0
+
+
+def test_r5_pasting_the_tool_result_after_a_good_answer_loses_the_verbatim_term():
+    res = ("Tonight: Water plants reminder at 6 PM. Dinner with Ben Ortiz at 7:30 PM, Riverside Grill. Karaoke Night at 9:15 PM at the "
+           "Riverside Grill, with Theo Park and friends from the climbing gym who are all coming along later.")
+    lab = n5(ground="what's on\n" + res, tool_results=[res], facts=["Water plants", "6 PM"], ideal_text=IDEAL_NARRATE)
+    ex = loses(lab, F(IDEAL_NARRATE), F(IDEAL_NARRATE + " " + res))
+    assert ex.parts["verbatim"] == -0.5
+    # a row whose ideal copies a stretch itself is not charged for that stretch
+    copy = "Tonight: Water plants reminder at 6 PM. Dinner with Ben Ortiz at 7:30 PM, Riverside Grill."
+    ideal_at_ceiling(dict(lab, ideal_text=copy), F(copy))

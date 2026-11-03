@@ -433,6 +433,16 @@ def test_mm_small_n_counts_per_vision_row():
     assert P.mm_small_n({"modality": "audio"}, {"v_facts": 1.0})["vision_facts_total"] == 0.0
 
 
+def test_the_ideal_trip_bar_is_an_exact_one_percent_per_rl_kind():
+    """RL-SCOPE: at most 1% of the rows of any rl_kind. The old max(1, n // 100) let 1 row in 14 (7%) through."""
+    assert P.kind_trip_problems({"recall_none": 1}, {"recall_none": 14}) == {"recall_none": "1/14"}
+    assert P.kind_trip_problems({"narrate": 1}, {"narrate": 100}) == {}                    # exactly 1%
+    assert P.kind_trip_problems({"narrate": 2}, {"narrate": 100}) == {"narrate": "2/100"}
+    assert P.kind_trip_problems({"narrate": 14}, {"narrate": 1479}) == {}                  # 0.95%
+    assert P.kind_trip_problems({"narrate": 15}, {"narrate": 1479}) == {"narrate": "15/1479"}
+    assert P.kind_trip_problems({}, {"narrate": 10}) == {} and P.kind_trip_problems({"decision": 0}, {"decision": 3}) == {}
+
+
 def test_ideal_top_is_the_old_table_in_rounds_3_and_4_and_the_ceiling_in_round_5():
     for lab, r3, r4 in (({"modality": "vision"}, 1.5, 1.5), ({"modality": "audio"}, 1.25, 1.25), ({"step": "call"}, 1.5, 1.5),
                         ({"step": "load"}, 1.5, 1.5), ({"step": "final"}, 1.0, 1.0),

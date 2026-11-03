@@ -80,6 +80,13 @@ Round 5 (--round 5; RL-SCOPE.md C1, C5, C6, C6b, C7, C15; rounds 3 and 4 export 
               exits, writing grpo_prompts.ideal_trip.json, when more than --ideal-trip-pct (1) of a kind's ideals trip one term.
               Narrate facts are only those the ideal states outside a negation window; instruction, session, recall and anchor finals carry
               no facts and are not narrate rows; a decision/select final with meta.facts gets label.facts_explicit and a ceiling of 1.5.
+    ties      the pool's finals are also scored with "Ok." and "Done." in the ideal's place (r5.trivial_ties per rl_kind): the export exits
+              when one ties or beats the ideal on more than --ideal-trip-pct of the narrate, recall or never-said rows (and of the
+              instruction rows with --instruction-term); anchors, decisions and selections are constant-scored by design and only counted.
+              A tied row of those kinds is dropped (counted in the stats). An instruction row left with no mechanical constraint cannot earn the C17 term: its ceiling stays 1.0.
+    safety    every safety pattern (builder meta.pattern) has at least --safety-min-rows (10) rows in the pool and in the export; a build
+              whose safety rows carry no meta.pattern exits unless --allow-old-build. The text dev set also exits on a picker row that
+              has no prompt text (the same-id/different-prompt check needs it).
     checks    valid.meta.jsonl must exist; session_chat_r4 counts (54 recall / 14 never-said / 99 anchors, or --refs-crosscheck's) must match;
               the stats record the DIST commit sha, choose.py's and the refs file's sha256, and (with --overlap-manifest) the overlap report's.
 
@@ -332,7 +339,7 @@ def clarifying_question(text: str) -> bool:
 def classify(ex: dict, meta: dict, rnd: int = 3, turns: dict | None = None, tool_names=(), *, instruction_term: bool = False,
              chat_max_tokens: int | None = None, allow_old_build: bool = False, names=()) -> dict:
     """The reward label of one decision step. The keyword arguments only matter at round 5: instruction_term (the C17 term is
-    on, so an instruction final's ceiling is 1.5), chat_max_tokens (C5: label.max_tokens of chat and session rows) and
+    on, so an instruction final that has a mechanical constraint has a ceiling of 1.5; one left with none cannot earn the term and stays at 1.0), chat_max_tokens (C5: label.max_tokens of chat and session rows) and
     allow_old_build (a session_chat_r4 final with no meta.qkind becomes a session anchor instead of an error), names (the build's
     person-name lexicon, world_names(): label.names on a final that has a ground, for reward.py's ungrounded name checks)."""
     msgs, target = ex["messages"], ex["messages"][-1]
@@ -605,6 +612,7 @@ R5_SESSION_MAX_COPIES = 2
 R5_NARRATE_FAMILIES = frozenset({"day_answers_r4", "info_answers_r4", "lookup_answers_r4"})
 # Kinds whose reward never reads labelled facts: the row's final is scored by recall refs, ask/no-ask, or a constant (RL-SCOPE 3.3).
 R5_NO_FACT_KINDS = frozenset({"chat_anchor", "session_anchor", "instruction", "recall", "recall_none"})
+R5_INSTRUCTION_CREDIT = 0.5           # reward.INSTRUCTION_MET: the C17 term's credit on a final that meets its constraints
 R5_EXPLICIT_FACTS_CREDIT = 0.5        # reward.R5_EXPLICIT_FACTS: a decision/select final whose builder supplied meta.facts
 R5_SAFETY_MIN_ROWS = 10               # RL-SCOPE 4.1: every safety pattern has at least this many rows (family-level proxy, see stats)
 IDEAL_TRIP_PCT = 1.0                  # RL-SCOPE 3.5: fail when more than this share of a kind's ideals trip a penalising term
@@ -682,7 +690,15 @@ def assign_rl_kind(label: dict, meta: dict, anchor: bool, allow_old_build: bool 
 
 def ceiling_for(rl_kind: str, step: str, clarify: bool = False, instruction_term: bool = False, facts_explicit: bool = False) -> float:
     """label.ceiling from the RL-SCOPE 3.3 ceiling table. No default: an unknown rl_kind is an error. facts_explicit (a decision or
-    select final whose builder supplied meta.facts, scored by reward.py at R5_EXPLICIT_FACTS) adds that credit to the 1.0."""
+    select final whose builder supplied meta.facts, scored by reward.py at R5_EXPLICIT_FACTS) adds that credit to the 1.0.
+    instruction_term: reward.py's C17 term pays R5_INSTRUCTION_CREDIT on ANY non-asking final that has label.constraints (the
+    instruction rows, but also the session_recall_r4 / session_chat_r4 finals the constraint derivation reaches), so the callers pass
+    `instruction_term and bool(label.constraints)` and the credit is added here whatever the rl_kind."""
+    credit = R5_INSTRUCTION_CREDIT if instruction_term and step not in ("call", "load") and not clarify else 0.0
+    return _base_ceiling(rl_kind, step, clarify, facts_explicit) + credit
+
+
+def _base_ceiling(rl_kind: str, step: str, clarify: bool, facts_explicit: bool) -> float:
     if rl_kind not in TEXT_RL_KINDS:
         raise KeyError(f"no ceiling entry for rl_kind {rl_kind!r}")
     is_call = step in ("call", "load")
@@ -702,9 +718,7 @@ def ceiling_for(rl_kind: str, step: str, clarify: bool = False, instruction_term
         return 2.0
     if rl_kind == "recall_none":
         return 1.5
-    if rl_kind == "instruction":
-        return 1.5 if instruction_term else 1.0
-    return 1.0                                         # chat_anchor, session_anchor, decision
+    return 1.0                                         # chat_anchor, session_anchor, decision, instruction
 
 
 def r5_fields(label: dict, hist: list[dict], meta: dict, *, fallback: bool, instruction_term: bool,
@@ -757,7 +771,8 @@ def r5_fields(label: dict, hist: list[dict], meta: dict, *, fallback: bool, inst
     elif (refs or absent or ok) and label["step"] in ("final", "ask") and fam in R5_SESSION_FAMILIES:
         raise BuilderMetaError(f"{sid}: {kind} row carries recall fields (recall_refs/recall_absent/recall_ok): a session anchor has none")
     try:
-        label["ceiling"] = ceiling_for(kind, label["step"], label["clarify"], instruction_term, bool(label.get("facts_explicit")))
+        label["ceiling"] = ceiling_for(kind, label["step"], label["clarify"], instruction_term and bool(label.get("constraints")),
+                                       bool(label.get("facts_explicit")))
     except KeyError as e:
         raise BuilderMetaError(f"{sid}: {e.args[0]}") from None
     if label["final"] and fam in R5_SESSION_FAMILIES and kind != "session_anchor" and "ground" not in label:
@@ -814,7 +829,8 @@ def r5_label_problems(label: dict, modality: str = "text", instruction_term: boo
     if kind not in TEXT_RL_KINDS:
         return out + [f"rl_kind {kind!r} has no ceiling entry"]
     try:
-        want = ceiling_for(kind, label.get("step"), bool(label.get("clarify")), instruction_term, bool(label.get("facts_explicit")))
+        want = ceiling_for(kind, label.get("step"), bool(label.get("clarify")), instruction_term and bool(label.get("constraints")),
+                           bool(label.get("facts_explicit")))
     except KeyError as e:
         return out + [e.args[0]]
     if kind in R5_NO_FACT_KINDS and label.get("step") in ("final", "ask") and (label.get("narrate") or label.get("facts")):
@@ -1111,7 +1127,10 @@ def build_text_dev(valid_items: list[dict], dev_items: list[dict], chat_items: l
         if pid in by_id:
             picker_folds.add(by_id[pid]["_qfold"])
             seen = (picker_prompts or {}).get(pid)
-            if seen is not None and seen != by_id[pid]["prompt"]:
+            if picker_prompts is not None and seen is None:
+                errors.append(f"picker row {pid!r} has no prompt text: the same-id/different-prompt check (a re-seeded build) cannot be "
+                              "made, so the id match alone proves no disjointness")
+            elif seen is not None and seen != by_id[pid]["prompt"]:
                 errors.append(f"picker row {pid!r} has the same id as a valid row of this build but a different prompt: the picker saw "
                               "another instance (a re-seeded build), so the id match proves no disjointness")
         else:
@@ -1532,8 +1551,70 @@ def ideal_trip_problems(trip: dict, pct: float = IDEAL_TRIP_PCT) -> list[str]:
     return out
 
 
+TRIVIAL_PROBES = ("Ok.", "Done.")      # the RL-SCOPE 3.5 trivial-reply exploits (#1, X5/X6): a reply that says nothing about the row
+R5_TIE_STRICT_KINDS = frozenset({"narrate", "recall", "recall_none"})      # a trivial reply must lose to the ideal on these (instruction: with the C17 term)
+
+
+def trivial_ties(label: dict) -> list[str]:
+    """Round 5: the trivial replies ("Ok.", "Done.") that score at least as high as the row's own ideal final, scored by reward.py in the
+    ideal's own completion shell (the ideal text swapped for the probe, so a forced thought channel is kept). RL-SCOPE 3.5: every
+    exploit must score strictly below the ideal on the same row; a tie means the row cannot teach that. An ideal that is not a
+    plain final, or whose text is not found in its completion, has no probe."""
+    ideal, comp = (label.get("ideal_text") or ""), label.get("ideal_completion") or ""
+    if label.get("step") not in ("final", "ask") or not ideal.strip() or ideal not in comp:
+        return []
+    top = W.score(comp, label, 5).total
+    return [p for p in TRIVIAL_PROBES if W.score(comp.replace(ideal, p, 1), label, 5).total >= top - 1e-9]
+
+
+def tie_probe(label: dict, ties: dict) -> list[str]:
+    """Count one pool final into the per-rl_kind ledger of trivial-reply ties (stats r5.trivial_ties); returns the probes that tie."""
+    rec = ties.setdefault(label["rl_kind"], {"rows": 0, "tied": 0, "by_probe": Counter()})
+    rec["rows"] += 1
+    got = trivial_ties(label)
+    if got:
+        rec["tied"] += 1
+        rec["by_probe"].update(got)
+    return got
+
+
+def tie_problems(ties: dict, pct: float = IDEAL_TRIP_PCT, instruction_term: bool = False) -> list[str]:
+    """Kinds where a trivial reply ties the ideal on more than `pct` percent of the rows and must not: narrate, recall and never-said
+    always; instruction only with the C17 term (without it an instruction final is a constant, so a tie is by design). Anchors,
+    decisions and selections are constant or call-scored by design and are only counted."""
+    strict = R5_TIE_STRICT_KINDS | ({"instruction"} if instruction_term else frozenset())
+    out = []
+    for kind, rec in sorted(ties.items()):
+        if kind in strict and rec["tied"] > 1 and 100.0 * rec["tied"] / rec["rows"] > pct:
+            out.append(f"{kind}: {rec['tied']} of {rec['rows']} ideals ({100.0 * rec['tied'] / rec['rows']:.1f}%) are tied or beaten by "
+                       f"{'/'.join(sorted(rec['by_probe']))} (limit {pct:g}%)")
+    return out
+
+
+def safety_pattern_report(rows: list[dict]) -> dict:
+    """The safety rows (r5_bucket "safety") of `rows` by builder meta.pattern: {"rows", "with_pattern", "counts"}."""
+    safety = [r for r in rows if r5_bucket(r) == "safety"]
+    counts = Counter(r.get("_pattern") for r in safety if r.get("_pattern"))
+    return {"rows": len(safety), "with_pattern": sum(counts.values()), "counts": dict(sorted(counts.items()))}
+
+
+def safety_pattern_problems(rep: dict, minimum: int, where: str, allow_old_build: bool = False) -> list[str]:
+    """RL-SCOPE 4.1: every safety pattern has at least `minimum` rows. A build whose safety rows carry no meta.pattern cannot show it
+    (an error; a warning with --allow-old-build); a mix of rows with and without it is an error."""
+    if not rep["rows"] or minimum <= 0:
+        return []
+    if rep["with_pattern"] == 0:
+        return [] if allow_old_build else [f"{where}: none of the {rep['rows']} safety rows carries meta.pattern, so the {minimum}-rows-per-pattern "
+                                              "minimum cannot be shown (builder field; --allow-old-build for a smoke export)"]
+    out = []
+    if rep["with_pattern"] < rep["rows"]:
+        out.append(f"{where}: {rep['rows'] - rep['with_pattern']} of {rep['rows']} safety rows have no meta.pattern")
+    out += [f"{where}: safety pattern {k!r} has {n} rows, {minimum} needed" for k, n in rep["counts"].items() if n < minimum]
+    return out
+
+
 def make_item(ex: dict, meta: dict, R, tok, a, turns: dict, tool_names, kw: dict, id_prefix: str = "",
-              trip: dict | None = None) -> tuple[dict | None, str | None]:
+              trip: dict | None = None, ties: dict | None = None) -> tuple[dict | None, str | None]:
     """One exportable decision step: render, length-check, classify. (None, reason) when it is dropped. At round 5 the item also
     carries underscore keys main() strips before writing: the user turns, the conversation text (check_overlap), the question folds,
     the turn and the thread."""
@@ -1556,6 +1637,9 @@ def make_item(ex: dict, meta: dict, R, tok, a, turns: dict, tool_names, kw: dict
             rec["tripped"] += 1
             rec["by_term"].update(terms)
             return None, "ideal trips " + ",".join(terms)
+        if ties is not None and label.get("step") in ("final", "ask"):
+            if tie_probe(label, ties) and label["rl_kind"] in (R5_TIE_STRICT_KINDS | ({"instruction"} if a.instruction_term else frozenset())):
+                return None, "trivial reply ties the ideal"      # no variance: "Ok." scores what the ideal scores, the row teaches nothing
     item = {"id": id_prefix + meta["id"], "family": meta["family"], "prompt": row["prompt"], "label": label,
             "weight": WEIGHTS.get(meta["family"], 1.0), "_tokens": n_tok}
     if a.round >= 5:
@@ -1565,7 +1649,7 @@ def make_item(ex: dict, meta: dict, R, tok, a, turns: dict, tool_names, kw: dict
         folds = {fold(u) for u in users} | {fold(meta.get("prompt") or "")}
         folds.discard("")
         item.update(_users=users, _conv=conversation_of(hist), _turn=turn_key(meta), _thread=meta.get("thread"), _folds=sorted(folds),
-                    _qfold=fold(meta.get("prompt") or (users[-1] if users else "")))
+                    _qfold=fold(meta.get("prompt") or (users[-1] if users else "")), _pattern=meta.get("pattern"))
     return item, None
 
 
@@ -1586,6 +1670,7 @@ def r5_setup(a, bd: Path, pairs: list, valid_ids: set, turns: dict, tool_names: 
     info: dict = {"fold": fold, "tool_names": set(tool_names)}
     info["valid_folds"] = {fold(m["prompt"]) for _, m in pairs if m["id"] in valid_ids}
     info["trip"] = {}
+    info["ties"] = {}
     info["clarify_in_build"] = normalise_clarify(pairs)
     metas = [m for _, m in pairs]
     dist = Path(a.dist_dir) if a.dist_dir else HERE.parent.parent / "ask-lora-r4" / "distill"
@@ -1644,7 +1729,7 @@ def r5_setup(a, bd: Path, pairs: list, valid_ids: set, turns: dict, tool_names: 
             for l in open(a.picker_dev):
                 if l.strip():
                     row = json.loads(l)
-                    prompts[row["id"]] = row.get("prompt") if isinstance(row.get("prompt"), str) else None
+                    prompts[row["id"]] = row["prompt"] if isinstance(row.get("prompt"), str) and row["prompt"].strip() else None
             ids = set(prompts)
         elif not a.allow_no_picker:
             sys.exit("--picker-dev none: the text dev set cannot be shown disjoint from the PT picker sample. Pass the picker's "
@@ -1666,7 +1751,7 @@ def r5_anchor_items(R, tok, a, r5s: dict, kw: dict) -> tuple[list[dict], list[di
         if not anchor_row(meta, has_calls, ex["messages"][:-1]):
             skipped["history holds a tool message"] += 1          # a distilled anchor-family row that is not a single-turn chat reply
             continue
-        item, _ = make_item(ex, meta, R, tok, a, r5s["a_turns"], r5s["tool_names"], kw, id_prefix="anchor:", trip=r5s.get("trip"))
+        item, _ = make_item(ex, meta, R, tok, a, r5s["a_turns"], r5s["tool_names"], kw, id_prefix="anchor:", trip=r5s.get("trip"), ties=r5s.get("ties"))
         if item is not None:
             (valid if meta["id"] in r5s["a_valid"] else train).append(item)
     return train, valid
@@ -1706,10 +1791,14 @@ def r5_outputs(a, bd: Path, R, tok, kw: dict, r5s: dict, ordered: list, mm_dev: 
     info["unsafe_reads_rows"] = sum(bool(r["label"].get("unsafe_reads")) for r in text)
     info["skill_names_rows"] = sum(bool(r["label"].get("skill_names")) for r in text)
     info["dropped_no_variance"] = {k: v for k, v in dropped.items() if k.startswith("no variance")}
+    info["dropped_trivial_tie"] = {k: v for k, v in dropped.items() if k.startswith("trivial reply")}
     info["dropped_ideal_trip"] = {k: v for k, v in dropped.items() if k.startswith("ideal trips")}
     info["ideal_trip_pct_limit"] = a.ideal_trip_pct
     info["ideal_trip"] = {k: {"rows": v["rows"], "tripped": v["tripped"], "share_pct": round(100.0 * v["tripped"] / max(1, v["rows"]), 2),
                               "by_term": dict(v["by_term"])} for k, v in sorted(r5s["trip"].items())}
+    info["trivial_ties"] = {k: {"rows": v["rows"], "tied": v["tied"], "share_pct": round(100.0 * v["tied"] / max(1, v["rows"]), 2),
+                                "by_probe": dict(v["by_probe"])} for k, v in sorted(r5s["ties"].items())}
+    info["safety_patterns"] = dict(r5s.get("safety_patterns") or {}, minimum=a.safety_min_rows)
     info["anchor_skipped"] = dict(r5s.get("anchor_skipped") or {})
     info["clarify_dropped_rows"] = dict(Counter(it["family"] for it in items if it["label"].get("clarify_dropped")))
     info["facts_ignored_rows"] = dict(Counter(it["family"] for it in items if it["label"].get("facts_ignored")))
@@ -1858,6 +1947,9 @@ def main(argv: list[str] | None = None) -> int:
     r5g.add_argument("--ideal-trip-pct", type=float, default=IDEAL_TRIP_PCT,
                      help="exit when more than this percent of a kind's ideal completions trip one penalising term of reward.py (RL-SCOPE "
                           "3.5, default 1). Rows whose ideal trips are dropped from the export either way and counted in the stats")
+    r5g.add_argument("--safety-min-rows", type=int, default=R5_SAFETY_MIN_ROWS,
+                     help="RL-SCOPE 4.1: every safety pattern (builder meta.pattern) has at least this many rows, in the pool and in the "
+                          "export (default 10; 0 turns the check off). A build with no meta.pattern exits unless --allow-old-build")
     r5g.add_argument("--allow-no-picker", action="store_true",
                      help="accept --picker-dev none (no PT picker sample exists). Without it the dev set's disjointness from the picker "
                           "cannot be shown and the export exits")
@@ -1937,7 +2029,7 @@ def main(argv: list[str] | None = None) -> int:
             sys.exit(f"{meta['id']}: a distilled anchor-family row ({meta.get('family')}) in --build-dir. Chat anchors come only from "
                      "--anchor-build-dir (the spliced SFT build); --build-dir must be the re-seeded RL pool, which has no meta.distilled rows")
         try:
-            item, why = make_item(ex, meta, R, tok, a, turns, tool_names, kw, trip=r5s.get("trip"))
+            item, why = make_item(ex, meta, R, tok, a, turns, tool_names, kw, trip=r5s.get("trip"), ties=r5s.get("ties"))
         except BuilderMetaError as e:
             meta_errors.append(str(e))
             continue
@@ -2021,7 +2113,21 @@ def main(argv: list[str] | None = None) -> int:
                 indent=1) + "\n")
             sys.exit("ideal completions trip penalising terms of reward.py above the limit (RL-SCOPE 3.5); reward and labels must be "
                      "fixed, not the rows hidden:\n  " + "\n  ".join(trip_errors) + f"\n(counts: {Path(a.out).with_suffix('.ideal_trip.json')})")
+        tie_errors = tie_problems(r5s["ties"], a.ideal_trip_pct, a.instruction_term)
+        if tie_errors:
+            sys.exit("a trivial reply ('Ok.' / 'Done.') is tied with or beats the ideal final above the limit (RL-SCOPE 3.5: every exploit must "
+                     "score strictly below the ideal on the same row); the reward must separate them:\n  " + "\n  ".join(tie_errors))
+        pool_rep = safety_pattern_report(items)
+        pat_errors = safety_pattern_problems(pool_rep, a.safety_min_rows, "pool", a.allow_old_build)
+        r5s["safety_patterns"] = {"pool": pool_rep}
         picked, r4_stats = r5_text_rows(items, pt_picked, anchor_train, n_text, rng)
+        picked_rep = safety_pattern_report(picked)
+        r5s["safety_patterns"]["picked"] = picked_rep
+        pat_errors += safety_pattern_problems(picked_rep, a.safety_min_rows, "export", a.allow_old_build)
+        if pat_errors:
+            sys.exit("safety patterns (RL-SCOPE 4.1: at least --safety-min-rows rows per pattern):\n  " + "\n  ".join(pat_errors[:20]))
+        if not pool_rep["with_pattern"] and pool_rep["rows"]:
+            print("WARNING: no safety row carries meta.pattern (--allow-old-build): the per-pattern minimum was not checked")
     elif r4:
         picked, r4_stats = r4_text_rows(items, pt_picked, n_text, a.n, rng)
     else:

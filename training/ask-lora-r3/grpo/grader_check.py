@@ -72,10 +72,14 @@ def fingerprint() -> dict:
             "grader_check.py": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
 
 
-def gate_record(fp: dict) -> Path:
+DEFAULT_GATE_DIR = HERE / "grader_check.gate.d"
+
+
+def gate_record(fp: dict, default: bool = False) -> Path:
     """The single-read record of one frozen reward: GRADER_CHECK_GATE_DIR (default grader_check.gate.d beside this script) holds one file
-    per (reward.py, choose.py) hash pair, wherever the transcripts or the --once-file are."""
-    d = Path(os.environ.get("GRADER_CHECK_GATE_DIR") or HERE / "grader_check.gate.d")
+    per (reward.py, choose.py) hash pair, wherever the transcripts or the --once-file are. `default=True` is the record in the default
+    directory whatever the variable says: a gate read that used the variable still has to find (and refuses on) a default-directory record."""
+    d = Path(os.environ.get("GRADER_CHECK_GATE_DIR") or DEFAULT_GATE_DIR) if not default else DEFAULT_GATE_DIR
     return d / f"{fp['reward.py'][:16]}-{(fp.get('choose.py') or 'none')[:16]}.json"
 
 
@@ -228,9 +232,8 @@ def map_trial(case, row: dict) -> dict:
         steps.append(("final", res))
         if modelled:
             p = res.parts
-            masked = R.mask_negated(final_text)
-            free = R._negated_in_ideal(facts + anyof, lab["ideal_text"])
-            seen = lambda f: R.fact_present(f, final_text if f in free else masked)         # noqa: E731
+            ideal_text = lab["ideal_text"]
+            seen = lambda f: R.facts_stated([f], final_text, ideal_text)[0]         # noqa: E731
             stated = (all(seen(f) for f in facts) if facts else True) and (any(seen(f) for f in anyof) if anyof else True)
             answer_ok = stated and not (p["nothing_claim"] or p["nonreply"] or p["leak"] or p["payload_text"])
     elif modelled:
@@ -431,13 +434,19 @@ def main(argv=None) -> int:
         # the record is keyed on the frozen reward (gate_record), so naming a different --once-file does not buy a second read; the file
         # beside --frozen (or --once-file) is kept as a second, human-visible copy and also blocks
         once = [gate_record(fp), Path(a.once_file) if a.once_file else Path(a.frozen).with_name("grader_check.gate.json")]
-        seen = next((o for o in once if o.exists()), None)
+        override = os.environ.get("GRADER_CHECK_GATE_DIR")
+        if override:
+            # the variable moves the registry (the tests use it); it never hides a read already recorded in the default one, and it is said aloud
+            print(f"note: GRADER_CHECK_GATE_DIR={override} moves the single-read record away from {DEFAULT_GATE_DIR}; a read recorded there "
+                  f"still refuses, and this read is logged in the report", file=sys.stderr)
+        seen = next((o for o in once + ([gate_record(fp, default=True)] if override else []) if o.exists()), None)
         if seen is not None:
             print(f"refused: the gate was already read for this frozen reward ({seen}); a reward change after seeing it contaminates the "
                   f"gate for reward design. Record: {seen.read_text()[:400]}", file=sys.stderr)
             return 3
         started = json.dumps({"started": time.strftime("%Y-%m-%dT%H:%M:%S"), "fingerprint": fp, "toolbench": str(a.toolbench),
-                              "toolbench_sha256": _sha_of(Path(a.toolbench).expanduser()), "result": None}, indent=1)
+                              "toolbench_sha256": _sha_of(Path(a.toolbench).expanduser()), "result": None,
+                              "gate_dir_override": override or None}, indent=1)
         for o in once:
             o.parent.mkdir(parents=True, exist_ok=True)
             o.write_text(started)                                           # written before the transcripts are read
@@ -453,6 +462,8 @@ def main(argv=None) -> int:
         report = compare(rows, cases, a.models.split(",") if a.models else None)
         report["split"], report["fingerprint"] = a.split, fp
         report["toolbench"] = str(a.toolbench)
+        if a.split == "gate":
+            report["gate_dir_override"] = os.environ.get("GRADER_CHECK_GATE_DIR") or None
     except Exception as exc:       # noqa: BLE001
         for o in once:
             o.write_text(json.dumps({"started": None, "fingerprint": fp, "toolbench": str(a.toolbench), "result": "error",

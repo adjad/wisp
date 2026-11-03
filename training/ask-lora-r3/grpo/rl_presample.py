@@ -10,7 +10,12 @@ row from the quantised r4 SFT at PRODUCTION sampling (T 1.0, top_p 0.95, top_k 6
 `reward.score(text, label, rnd=5)` and write `pre-ok-report.json`: per bucket the zero-variance share (and, for the
 PG-bearing buckets, its all-pass / all-fail split), the informative-group shares, the truncation share, the
 completion-length mean / p50 / p99, the on-policy `ungrounded` review list, per-prompt scores (the S-learn / S-grader
-null), `suggested_cap` (largest text-bucket p99 + 64) and the always-solved row ids for the re-export filter.
+null), `suggested_cap` (largest p99 + 64 over the rows `--max-tokens` governs; `suggested_cap_all_text` is the literal
+RL-SCOPE 2.3 reading over every text row) and the always-solved row ids for the re-export filter. Before it samples anything
+it scores every row's own `label.ideal_completion` (offline, instant) and refuses to go on if the ideals of a rl_kind do not
+reach `label.ceiling` or trip a penalising term on more than 1% of rows (`ideal_check` in the report; `--ideal-check-only`
+runs just that, `--allow-ideal-trips` records the failure and samples anyway): the zv0 split and the all-pass share are only
+meaningful when the ideal completion sits at the ceiling.
 
 Route (default `completions`): POST /v1/completions with the row's exported rendered `prompt` string VERBATIM (forced
 rows keep their trailing `<|channel>thought\\n`), no chat template and no tool parser, `skip_special_tokens: false` so
@@ -64,9 +69,13 @@ DEFAULT_MAX_TOKENS = 1024
 STOPS = tuple(W.STOPS)                        # ("<turn|>", "<|tool_response>", "<eos>")
 TURN_END, TOOL_RESPONSE = "<turn|>", "<|tool_response>"
 
-# The §4.1 buckets follow the export's r5_bucket(): chat_anchor | session | narrate | safety | select | other, tested in that
-# order, from `label.rl_kind` and the builder family. The two anchor kinds stay their own zero-advantage buckets (so the
-# session bucket is the PG-bearing one), and "other" is sampled per rl_kind. `by_rl_kind` in the report is the per-rl_kind view.
+# The §4.1 buckets follow the export's r5_bucket() order: chat_anchor | session | narrate | safety | select | other, tested in that
+# order, from `label.rl_kind` and the builder family, with ONE deliberate difference: the export puts a session-family anchor row
+# (rl_kind session_anchor) into its "session" bucket, here it is its own zero-advantage "session_anchor" bucket (like
+# "chat_anchor"), so the sampler's `session` bucket is the PG-bearing rows only and its informative share is not diluted by
+# constant-reward anchors. The report states this in `bucket_notes`. "Other" is sampled per rl_kind (equal rows per kind) and
+# its bucket-level shares are re-weighted by each kind's share of the full export (`kind_weights`). `by_rl_kind` in the report is
+# the per-rl_kind view.
 # Family names are the export's COMPOSE_SAFETY_FAMILIES and R5_SESSION_FAMILIES (test_bucket_families_match_the_export).
 SAFETY_FAMILIES = ("restraint_r4", "gather_then_send_r4", "safe_restraint", "compose_r3", "safe_effects",
                    "ignore_embedded_instructions", "no_write_for_reads", "reminders_r3")
@@ -82,6 +91,14 @@ TRUNC_REEXPORT_SHARE = 0.01                  # RL-SCOPE §2.3: above 1% truncati
 CAP_MARGIN = 64
 MAXC_DEFAULT, MAXC_RAISED = 768, 1536
 ZV_REEXPORT_SHARE = 0.60                     # §4.1: more than 60% zero-variance in a non-anchor bucket -> drop its always-solved rows
+
+
+BUCKET_NOTES = {
+    "session_anchor": "split out of the export's r5_bucket 'session' on purpose: session-family anchor rows (rl_kind session_anchor) "
+                      "are constant-reward, so they sit in their own zero-advantage bucket and `session` is the PG-bearing rows only",
+    "other": "sampled with equal rows per rl_kind; the bucket-level shares (zero-variance, informative, truncation, malformed) are "
+             "re-weighted by each kind's share of the export (`kind_weights`, `shares_weighted`); lengths and counts are not",
+}
 
 
 def die(msg: str, code: int = 2):
@@ -545,8 +562,14 @@ def group_summary(samples: list, ceiling) -> dict:
     }
 
 
-def share(flags: list):
-    return round(sum(flags) / len(flags), 4) if flags else None
+def share(flags: list, weights=None):
+    """Share of true flags; `weights` (one per flag, default all 1) re-weights a stratified sample back to the population."""
+    if not flags:
+        return None
+    if weights is None:
+        return round(sum(flags) / len(flags), 4)
+    den = sum(weights)
+    return round(sum(w for f, w in zip(flags, weights) if f) / den, 4) if den else None
 
 
 def cap_split(groups: list) -> dict:
@@ -567,12 +590,19 @@ def _plain(x, limit=600):
 
 
 def bucket_stats(groups: list, review_n: int = 40) -> dict:
-    """groups: [{id, family, rl_kind, ceiling, route, samples:[...]}], all one bucket."""
+    """groups: [{id, family, rl_kind, ceiling, route, samples:[...], weight?}], all one bucket. A group's `weight` (default 1)
+    is how many prompts of the full export it stands for relative to its siblings: the "other" bucket is sampled with equal rows
+    per rl_kind, so its group/sample SHARES (zero-variance, informative, truncation, malformed) are weighted back by each kind's
+    share of the export. Counts, the length statistics (nearest-rank quantiles) and the review lists stay unweighted."""
     if not groups:
         return {"n_prompts": 0}
     for g in groups:
         g["summary"] = group_summary(g["samples"], g["ceiling"])
     sm = [g["summary"] for g in groups]
+    gw = [float(g.get("weight") or 1.0) for g in groups]
+    weighted = len({round(w, 9) for w in gw}) > 1
+    gw = gw if weighted else None
+    sw = [w for g, w in zip(groups, gw or [1.0] * len(groups)) for _ in g["samples"]] if weighted else None
     samples = [s for g in groups for s in g["samples"]]
     pg = not all(g["rl_kind"] in ANCHOR_KINDS for g in groups)
     reconstructed = any(g["route"] == "reconstructed" for g in groups)
@@ -583,23 +613,26 @@ def bucket_stats(groups: list, review_n: int = 40) -> dict:
     out = {
         "n_prompts": len(groups), "n_samples": len(samples), "pg_bearing": pg,
         "route": "reconstructed" if reconstructed else "completions",
-        "zero_variance_share": share([x["zero_variance"] for x in sm]),
-        "zero_advantage_share": share([x["zero_adv"] for x in sm]),
-        "zv_all_pass_share": share([x["all_pass"] for x in sm]) if pg else None,
-        "zv_all_fail_share": share([x["all_fail"] for x in sm]) if pg else None,
-        "informative_unsafe_share": share([x["informative_unsafe"] for x in sm]),
-        "informative_facts_share": share([x["informative_facts"] for x in sm]),
-        "truncation_share": share([s["truncated"] for s in samples]),
-        "truncated_groups_share": share([any(s["truncated"] for s in g["samples"]) for g in groups]),
-        "malformed_share": share([s["malformed"] for s in samples]),
+        "shares_weighted": weighted,
+        "kind_weights": ({k: round(w, 4) for k, w in sorted({(g["rl_kind"] or "unlabelled"): float(g.get("weight") or 1.0) for g in groups}.items())}
+                         if weighted else None),
+        "zero_variance_share": share([x["zero_variance"] for x in sm], gw),
+        "zero_advantage_share": share([x["zero_adv"] for x in sm], gw),
+        "zv_all_pass_share": share([x["all_pass"] for x in sm], gw) if pg else None,
+        "zv_all_fail_share": share([x["all_fail"] for x in sm], gw) if pg else None,
+        "informative_unsafe_share": share([x["informative_unsafe"] for x in sm], gw),
+        "informative_facts_share": share([x["informative_facts"] for x in sm], gw),
+        "truncation_share": share([s["truncated"] for s in samples], sw),
+        "truncated_groups_share": share([any(s["truncated"] for s in g["samples"]) for g in groups], gw),
+        "malformed_share": share([s["malformed"] for s in samples], sw),
         "completion_tokens": length_stats(toks),
         "tokens_exact": not estimated,
         "ceiling_missing": sum(g["ceiling"] is None for g in groups),
         "mean_score": round(sum(s["total"] for s in samples) / len(samples), 4),
         "ceiling_mean": round(sum(g["ceiling"] for g in groups if g["ceiling"] is not None) / max(1, sum(g["ceiling"] is not None for g in groups)), 4),
-        "informative_any_share": share([x["informative_unsafe"] or x["informative_facts"] for x in sm]),
+        "informative_any_share": share([x["informative_unsafe"] or x["informative_facts"] for x in sm], gw),
         "max_tokens": sorted({g.get("max_tokens") for g in groups if g.get("max_tokens")}),
-        # a bucket can mix rows that --max-completion governs with rows that carry their own label.max_tokens (chat anchors and
+        # a bucket can mix rows that --max-tokens governs with rows that carry their own label.max_tokens (chat anchors and
         # every session-family row, followup_r3 narrate and call steps included), so lengths and truncation are split per ROW
         "own_max_tokens": any(g.get("label_max_tokens") for g in groups),
         "governed": cap_split([g for g in groups if not g.get("label_max_tokens")]),
@@ -635,7 +668,7 @@ def mix_weighted(buckets: dict, mix: dict, key: str):
 
 
 def cap_report(buckets: dict, reconstructed: bool) -> dict:
-    """suggested_cap = the largest p99 + 64 over the rows `--max-completion` governs, i.e. the rows with no label.max_tokens,
+    """suggested_cap = the largest p99 + 64 over the rows `--max-tokens` governs, i.e. the rows with no label.max_tokens,
     decided per ROW (a bucket mixes both kinds: chat anchors and every session-family row carry their own cap, and so do
     followup_r3's narrate and call steps). `suggested_cap_all_text` is RL-SCOPE §2.3's literal reading, the largest p99 + 64
     over every text bucket whatever cap the row carries. A truncation problem on own-cap rows is fixed by re-exporting their
@@ -649,29 +682,112 @@ def cap_report(buckets: dict, reconstructed: bool) -> dict:
            "reexport_label_max_tokens": sorted(b for b, sp in own.items() if over(sp)),
            "governed_prompts": {b: sp["n_prompts"] for b, sp in gov.items()}, "own_cap_prompts": {b: sp["n_prompts"] for b, sp in own.items()},
            "note": ""}
+    def add_note(txt):
+        out["note"] += (" " if out["note"] else "") + txt
+
     if reconstructed:
         out["note"] = "reconstructed route: lengths are not production lengths, so no suggested_cap"
         return out
-    p99s = {b: sp["completion_tokens"]["p99"] for b, sp in gov.items()}
-    if not p99s or not all(sp["tokens_exact"] and sp["completion_tokens"]["p99"] is not None for sp in gov.values()):
-        out["note"] = "no exact per-sample token counts (use --mode calls, or --tokenizer-dir with --mode n): no suggested_cap"
-        return out
-    top = max(p99s, key=lambda b: p99s[b])
-    out["suggested_cap"] = int(p99s[top] + CAP_MARGIN)
-    out["suggested_cap_bucket"] = top
+    # RL-SCOPE 2.3's literal reading needs only exact counts, not governed rows: decide it before the governed-rows checks
     allp = {b: st["completion_tokens"]["p99"] for b, st in live.items() if st["tokens_exact"] and st["completion_tokens"]["p99"] is not None}
     if allp:
         t = max(allp, key=lambda b: allp[b])
         out["suggested_cap_all_text"], out["suggested_cap_all_text_bucket"] = int(allp[t] + CAP_MARGIN), t
+
+    def reexport_note():
+        if out["reexport_label_max_tokens"]:
+            add_note(f"re-export label.max_tokens at {MAXC_RAISED} for {out['reexport_label_max_tokens']}")
+
+    if not gov:
+        add_note("no cap-governed rows (every sampled row carries its own label.max_tokens): no suggested_cap, the cap flag governs nothing"
+                 + ("; suggested_cap_all_text reads the exact counts of the rows' own caps" if allp else ""))
+        reexport_note()
+        return out
+    p99s = {b: sp["completion_tokens"]["p99"] for b, sp in gov.items()}
+    if not all(sp["tokens_exact"] and sp["completion_tokens"]["p99"] is not None for sp in gov.values()):
+        add_note("no exact per-sample token counts (use --mode calls, or --tokenizer-dir with --mode n): no suggested_cap")
+        reexport_note()
+        return out
+    top = max(p99s, key=lambda b: p99s[b])
+    out["suggested_cap"] = int(p99s[top] + CAP_MARGIN)
+    out["suggested_cap_bucket"] = top
     if out["censored_buckets"]:
         out["maxc_recommendation"] = MAXC_RAISED
-        out["note"] = (f"truncation above 1% in {out['censored_buckets']}: the p99 is censored at the sampling cap; "
-                       f"set MAXC to {MAXC_RAISED} and re-cost")
+        add_note(f"truncation above 1% in {out['censored_buckets']}: the p99 is censored at the sampling cap; "
+                 f"set MAXC to {MAXC_RAISED} and re-cost")
     else:
         out["maxc_recommendation"] = max(MAXC_DEFAULT, out["suggested_cap"])
-    if out["reexport_label_max_tokens"]:
-        out["note"] += (" " if out["note"] else "") + f"re-export label.max_tokens at {MAXC_RAISED} for {out['reexport_label_max_tokens']}"
+    reexport_note()
     return out
+
+
+# ------------------------------------------------------------------ the ideal-completion check
+
+IDEAL_TRIP_SHARE = 0.01                      # RL-SCOPE bar: an ideal may miss its ceiling or trip a penalty on at most 1% of a kind's rows
+IDEAL_EXAMPLES = 8
+
+
+def ideal_check(rows: list, rnd: int = 5, bar: float = IDEAL_TRIP_SHARE) -> dict:
+    """Score every text row's own `label.ideal_completion` with reward.score(.., rnd) and compare it with `label.ceiling`.
+
+    The sampler's all-pass/all-fail split is "scored at the ceiling", so it is only meaningful when the ideal completion is itself
+    AT the ceiling with no penalising term. This is the check that the ceiling table and the exported ideal agree, row by row
+    (the stub engine of the tests cannot prove it: it echoes the ideal against a ceiling computed from that same ideal). A row is
+    bad when the ideal has no text, scores below or above its ceiling by more than TOL, trips any negative term, or the row has
+    no ceiling to compare with. Per rl_kind: n, bad, bad_share, the trips by term, the mean ideal score and the mean ceiling,
+    examples. `ok` = no kind is over `bar`."""
+    kinds = defaultdict(lambda: {"n": 0, "bad": 0, "missing_ideal": 0, "no_ceiling": 0, "below_ceiling": 0, "above_ceiling": 0,
+                                 "penalised": 0, "terms": Counter(), "ideal_sum": 0.0, "ceiling_sum": 0.0, "scored": 0, "examples": []})
+    for r in rows:
+        if not is_text(r):
+            continue
+        lab = r["label"]
+        k = kinds[lab.get("rl_kind") or "unlabelled"]
+        k["n"] += 1
+        ideal = lab.get("ideal_completion")
+        ceil = float(lab["ceiling"]) if lab.get("ceiling") is not None else None
+        why = []
+        if not isinstance(ideal, str) or not ideal.strip():
+            k["missing_ideal"] += 1
+            why.append("no ideal_completion")
+        else:
+            res = W.score(ideal, lab, rnd=rnd)
+            k["scored"] += 1
+            k["ideal_sum"] += res.total
+            neg = sorted(t for t, v in res.parts.items() if v < -1e-12)
+            if neg:
+                k["penalised"] += 1
+                k["terms"].update(neg)
+                why.append(f"penalised: {neg}")
+            if ceil is None:
+                k["no_ceiling"] += 1
+                why.append("no label.ceiling")
+            else:
+                k["ceiling_sum"] += ceil
+                if res.total < ceil - TOL:
+                    k["below_ceiling"] += 1
+                    why.append(f"scores {round(res.total, 4)} below ceiling {ceil}")
+                elif res.total > ceil + TOL:
+                    k["above_ceiling"] += 1
+                    why.append(f"scores {round(res.total, 4)} above ceiling {ceil}")
+        if why:
+            k["bad"] += 1
+            if len(k["examples"]) < IDEAL_EXAMPLES:
+                k["examples"].append({"id": r["id"], "family": r.get("family"), "why": why,
+                                      "ideal": _plain(ideal, 240)})
+    by_kind, failing = {}, []
+    for name, k in sorted(kinds.items()):
+        share_bad = round(k["bad"] / k["n"], 4)
+        by_kind[name] = {"n": k["n"], "bad": k["bad"], "bad_share": share_bad, "missing_ideal": k["missing_ideal"],
+                         "no_ceiling": k["no_ceiling"], "below_ceiling": k["below_ceiling"], "above_ceiling": k["above_ceiling"],
+                         "penalised": k["penalised"], "penalising_terms": dict(sorted(k["terms"].items())),
+                         "ideal_mean": round(k["ideal_sum"] / k["scored"], 4) if k["scored"] else None,
+                         "ceiling_mean": round(k["ceiling_sum"] / max(1, k["scored"] - k["no_ceiling"]), 4) if k["scored"] else None,
+                         "examples": k["examples"]}
+        if share_bad > bar:
+            failing.append(name)
+    return {"round": rnd, "bar": bar, "n_rows": sum(k["n"] for k in kinds.values()), "by_rl_kind": by_kind,
+            "failing_kinds": failing, "ok": not failing}
 
 
 # ------------------------------------------------------------------ the run
@@ -815,9 +931,26 @@ def session_composition(rows: list, safety_families=SAFETY_FAMILIES) -> dict:
             "anchor_total": sum(anchors.values())}
 
 
+def other_weights(groups: list, text_rows, selection: dict, safety_families=SAFETY_FAMILIES) -> dict:
+    """{rl_kind: weight} for the sampled "other" groups: the kind's rows in the full export per sampled group of that kind. stratify()
+    takes equal rows from every kind of the "other" bucket, so unweighted bucket shares would read as if every kind were equally
+    common. The weight is rows (copies included, as export_mix counts them), else the pool size recorded in `selection`."""
+    picked = Counter(g["rl_kind"] or "unlabelled" for g in groups)
+    if text_rows is not None:
+        total = Counter((r["label"].get("rl_kind") or "unlabelled") for r in text_rows
+                        if is_text(r) and bucket_of(r, safety_families) == "other")
+    else:
+        total = Counter({k: (selection.get(f"other:{k}") or {}).get("available", 0) for k in picked})
+    return {k: (total[k] / n if total.get(k) else 1.0) for k, n in picked.items()}
+
+
 def build_report(args, route: str, train_groups: dict, dev_groups: dict, mix: dict, selection: dict, extras: dict,
                  text_rows=None) -> dict:
     reconstructed = route != "completions"
+    if train_groups.get("other"):
+        w = other_weights(train_groups["other"], text_rows, selection, tuple(args.safety_families.split(",")))
+        for g in train_groups["other"]:
+            g["weight"] = w[g["rl_kind"] or "unlabelled"]
     buckets = {b: bucket_stats(g, args.review_n) for b, g in sorted(train_groups.items())}
     dev = {f"dev:{b}": bucket_stats(g, args.review_n) for b, g in sorted(dev_groups.items())}
     by_kind = defaultdict(list)
@@ -853,9 +986,12 @@ def build_report(args, route: str, train_groups: dict, dev_groups: dict, mix: di
         "selection": selection, **extras,
         "zv0_pass": zv_pass, "zv0_fail": zv_fail,
         "zv0_basis": ("export-mix-weighted over the sampled PG-bearing text buckets (chat and session anchors and "
-                      "multimodal rows excluded); null on the reconstructed route"),
+                      "multimodal rows excluded); null on the reconstructed route"
+                      + ("; NOT MEANINGFUL: the ideal-completion check failed (--allow-ideal-trips), so an all-ideal policy would read "
+                         "as all-fail" if extras.get("ideal_check_overridden") else "")),
         "export_mix": mix,
         "suggested_cap": caps["suggested_cap"], "cap": caps,
+        "bucket_notes": BUCKET_NOTES,
         "buckets": buckets, "dev": dev, "by_rl_kind": kinds,
         "reexport_buckets": reexport,
         "always_solved_by_bucket": always,
@@ -882,7 +1018,7 @@ def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--base-url", help="the isolated engine, http://127.0.0.1:<free port> (never 8000, 8765, 8775)")
     ap.add_argument("--port", type=int, help="shorthand for --base-url http://127.0.0.1:PORT")
-    ap.add_argument("--served-model", required=True, help="the id the engine serves the quantised r4 SFT under")
+    ap.add_argument("--served-model", help="the id the engine serves the quantised r4 SFT under (required unless --ideal-check-only)")
     ap.add_argument("--prompts", required=True, help="round-5 grpo_prompts.jsonl")
     ap.add_argument("--text-dev", help="round-5 grpo_text_dev.jsonl (for the dev safety slice)")
     ap.add_argument("--per-bucket", type=int, default=30)
@@ -911,15 +1047,26 @@ def parse_args(argv=None):
     ap.add_argument("--samples-out", default=None, help="per-row sample cache (JSONL, resumable); default <out>.samples.jsonl")
     ap.add_argument("--fresh", action="store_true", help="ignore the sample cache")
     ap.add_argument("--review-n", type=int, default=40, help="flagged ungrounded samples to list per bucket")
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--ideal-check-only", action="store_true",
+                    help="score every row's own ideal_completion against its ceiling, print the report and exit (0 ok, 5 not ok); "
+                         "talks to no engine, needs no MOE_DIR, --served-model or --base-url")
+    ap.add_argument("--allow-ideal-trips", action="store_true",
+                    help="sample even though the ideal-completion check failed (the report records the failure and says the zv0 split is "
+                         "not meaningful); without it the run stops before the first request")
+    ap.add_argument("--out", help="the report path (required unless --ideal-check-only, which then prints the check to stdout)")
     a = ap.parse_args(argv)
-    if bool(a.base_url) == bool(a.port):
-        ap.error("give exactly one of --base-url and --port")
-    if a.base_url is None:
+    if not a.ideal_check_only:
+        if not a.served_model:
+            ap.error("--served-model is required")
+        if not a.out:
+            ap.error("--out is required")
+        if bool(a.base_url) == bool(a.port):
+            ap.error("give exactly one of --base-url and --port")
+    if a.base_url is None and a.port:
         a.base_url = f"http://127.0.0.1:{a.port}"
     if a.anchor_per_bucket is None:
         a.anchor_per_bucket = a.per_bucket
-    if a.samples_out is None:
+    if a.samples_out is None and a.out:
         a.samples_out = a.out + ".samples.jsonl"
     if a.G < 2:
         ap.error("--G must be at least 2")
@@ -930,11 +1077,12 @@ def parse_args(argv=None):
 
 def main(argv=None, *, transport=None, environ=None) -> int:
     a = parse_args(argv)
-    check_environment(environ)
-    base = check_base_url(a.base_url)
-    check_model(a.served_model)
-    families = tuple(x for x in a.safety_families.split(",") if x)
     log = lambda m: print(m, file=sys.stderr, flush=True)
+    families = tuple(x for x in a.safety_families.split(",") if x)
+    if not a.ideal_check_only:
+        check_environment(environ)
+        base = check_base_url(a.base_url)
+        check_model(a.served_model)
 
     rows = load_rows(a.prompts)
     text_rows = [r for r in rows if is_text(r)]
@@ -943,6 +1091,23 @@ def main(argv=None, *, transport=None, environ=None) -> int:
     if a.text_dev:
         dev_rows = [r for r in load_rows(a.text_dev) if is_text(r)]
         check_rounds(dev_rows, a.round, a.text_dev)
+    # nothing is sent before this: an ideal completion that misses its ceiling makes every all-pass/all-fail number meaningless
+    ideal = ideal_check(text_rows + dev_rows, a.round)
+    ideal["files"] = [a.prompts] + ([a.text_dev] if a.text_dev else [])
+    if not ideal["ok"]:
+        log("IDEAL CHECK FAILED for " + ", ".join(f"{k} ({ideal['by_rl_kind'][k]['bad']}/{ideal['by_rl_kind'][k]['n']})" for k in ideal["failing_kinds"]))
+    if a.ideal_check_only:
+        text = json.dumps(ideal, indent=1, ensure_ascii=False)
+        if a.out:
+            Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+            Path(a.out).write_text(text + "\n")
+        else:
+            print(text)
+        return 0 if ideal["ok"] else 5
+    if not ideal["ok"] and not a.allow_ideal_trips:
+        die("the ideal completions of " + ", ".join(ideal["failing_kinds"]) + " do not all score at label.ceiling without a penalising "
+            "term (fix the export's ideal_completion or ceiling; see --ideal-check-only), so the zero-variance split would be wrong; "
+            "nothing was sent. --allow-ideal-trips overrides.", 5)
     picked, sel = stratify(text_rows, a.per_bucket, a.anchor_per_bucket, a.safety_train, a.seed, families)
     dev_pick = []
     if dev_rows:
@@ -1003,7 +1168,8 @@ def main(argv=None, *, transport=None, environ=None) -> int:
     for b, gs in groups.items():
         for g in gs:
             (train_groups if g["id"] in train_ids else dev_groups)[b].append(g)
-    extras = {"bos_check": bos, "http_calls": client.calls, "seconds": secs, "errors": errors,
+    extras = {"ideal_check": ideal, "ideal_check_overridden": bool(not ideal["ok"] and a.allow_ideal_trips),
+              "bos_check": bos, "http_calls": client.calls, "seconds": secs, "errors": errors,
               "incomplete_rows": sorted(errors), "shortfalls": shortfalls, "multimodal_rows_skipped": mm_skipped,
               "moe_dir_set": True,
               "caveats": ["time unverified", "quantised and bf16 lengths may differ slightly",

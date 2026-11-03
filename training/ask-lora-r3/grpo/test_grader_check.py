@@ -174,9 +174,18 @@ def test_the_gate_is_a_single_confirmation_per_frozen_reward(monkeypatch):
         (d / "stale.json").write_text(json.dumps(stale))
         rc, _, err = run(*base, "--split", "gate", "--final-once", "--frozen", str(d / "stale.json"), "--cases-dir", str(d / "gcases"))
         assert rc == 2 and "changed since the freeze" in err
-        rc, out, _ = run(*base, "--split", "gate", "--final-once", "--frozen", str(frozen), "--cases-dir", str(d / "gcases"))
+        # a read recorded in the DEFAULT registry still refuses when the variable points elsewhere, and the override is said aloud
+        monkeypatch.setattr(G, "DEFAULT_GATE_DIR", d / "default_registry")
+        planted = G.gate_record(G.fingerprint(), default=True)
+        planted.parent.mkdir(parents=True)
+        planted.write_text("{}")
+        rc, _, err = run(*base, "--split", "gate", "--final-once", "--frozen", str(frozen), "--cases-dir", str(d / "gcases"))
+        assert rc == 3 and "already read" in err and "GRADER_CHECK_GATE_DIR" in err
+        planted.unlink()
+        rc, out, err = run(*base, "--split", "gate", "--final-once", "--frozen", str(frozen), "--cases-dir", str(d / "gcases"))
         once = d / "grader_check.gate.json"
         assert rc in (0, 1) and once.exists() and json.loads(once.read_text())["result"] in ("PASS", "FAIL")
+        assert "moves the single-read record" in err and json.loads(once.read_text())["report"]["gate_dir_override"] == str(d / "registry")
         rc, _, err = run(*base, "--split", "gate", "--final-once", "--frozen", str(frozen), "--cases-dir", str(d / "gcases"))
         assert rc == 3 and "already read" in err                                    # the second read is refused
         # naming another --once-file, or copying the transcripts elsewhere, does not buy a second read of the same frozen reward

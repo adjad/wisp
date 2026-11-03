@@ -558,8 +558,8 @@ def cmd_check(a) -> int:
         if r4n["ideal_early_write"] or r4n["ideal_leak"] > max(2, r4n["text"] // 100) or r4n["ideal_ungrounded"] > max(5, r4n["narrate"] // 25):
             print("FAIL: ideal completions trip the round-4 terms (early writes, leaks or ungrounded facts) more than a handful of times")
             problems += 1
-    if W.ROUND >= 5:                       # RL-SCOPE bar: at most 1% of the rows of any rl_kind (and at least 1 row of slack)
-        over = {k: f"{below_kind[k]}/{kind_n[k]}" for k in below_kind if below_kind[k] > max(1, kind_n[k] // 100)}
+    if W.ROUND >= 5:                       # RL-SCOPE bar: ideals below their ceiling on at most 1% of the rows of any rl_kind (exact: 1 row in 14 is 7%)
+        over = P.kind_trip_problems(below_kind, kind_n)
         if over:
             print(f"FAIL: ideal completions below their ceiling on more than 1% of an rl_kind: {over}")
             problems += 1
@@ -893,6 +893,9 @@ def cmd_train(a) -> int:
             for n in cal["notes"]:
                 accelerator.print(f"probe note [{n['rule']}] {n['note']}")
             sim = cal["sim"]
+            if sim.get("zero_power_rules") or sim.get("low_power_rules"):         # a rule that cannot see a real 2x move is a hole, not a guard
+                accelerator.print(f"WARNING: rules with zero power for a 2x move of their metric: {sim.get('zero_power_rules')}; "
+                                  f"under 20% power: {sim.get('low_power_rules')} (power_2x_by_rule in grpo-run-info.json)")
             accelerator.print("probe rules: " + (f"{len(cal['rules'])} rules at scale {cal['scale']}, simulated false-stop {sim.get('false_stop')}, 2x power {sim.get('power_2x')}"
                                                  if "false_stop" in sim else f"{len(cal['rules'])} single-eval HARD count rules ({sim.get('skipped')})"))
         trips = tracker.observe(metrics)

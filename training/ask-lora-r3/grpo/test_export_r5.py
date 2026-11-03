@@ -32,11 +32,14 @@ def corpus(n_each: int = 12, r5_meta: bool = False):
         k += 1
         return word(k)
     for i in range(n_each):
+        def pat(name, i=i):
+            """The builder's meta.pattern (a safety row's scenario pattern): two patterns per safety family in a build that has C6/C7."""
+            return {"pattern": f"{name}-p{i % 2}"} if r5_meta else {}
         # compose: lookup, send, receipt (a narrate final with facts)
         pairs += scenario("compose_r3", i, f"text {w()} that I am running late", [
             ("call", "lookup_contact", {"name": w()}, "Dad: +1 555 0100"),
             ("call", "send_message", {"to": "Dad", "text": "running late"}, "Sent to Dad at 6 PM."),
-            ("final", "Sent to Dad at 6 PM.")], writes=("send_message",), meta={})
+            ("final", "Sent to Dad at 6 PM.")], writes=("send_message",), meta=pat("compose"))
         pairs += scenario("mail_r3", i, f"what is in my inbox about {w()}", [
             ("call", "summarize_emails", {"query": w()}, "3 emails. Top: Maya Chen, Lunch plan at 12:30 PM."),
             ("final", "You have 3 emails, the top one from Maya Chen about the lunch plan at 12:30 PM.")])
@@ -45,13 +48,13 @@ def corpus(n_each: int = 12, r5_meta: bool = False):
             ("final", "Done, volume is at 20.")], writes=("set_volume",))
         pairs += scenario("restraint_r4", i, f"what is the weather {w()}", [
             ("final", "Which city should I check?")],
-            final_meta={"clarify": True, "unsafe_reads": ["get_weather"]} if r5_meta else {})
+            final_meta={"clarify": True, "unsafe_reads": ["get_weather"], **pat("restraint")} if r5_meta else {})
         pairs += scenario("safe_restraint", i, f"clear everything {w()}", [
             ("final", "I will leave that alone unless you confirm which ones.")],
-            meta={"unsafe_reads": []} if r5_meta else {})
+            meta={"unsafe_reads": [], **pat("safe")} if r5_meta else {})
         pairs += scenario("reminders_r3", i, f"remind me to {w()} at 5 PM", [
             ("call", "lookup_contact", {"name": w()}, "none"),
-            ("final", "Okay, I added it for 5 PM.")])
+            ("final", "Okay, I added it for 5 PM.")], meta=pat("reminders"))
         pairs += scenario("chat_voice_r4", i, f"i had a long day {w()}", [("final", "That sounds draining. Want to tell me more?")])
         pairs += scenario("knowledge_direct", i, f"why is the sky {w()}", [("final", "Air scatters blue light the most, so the sky looks blue.")])
         pairs += scenario("followup_r3", i, f"and the other one {w()}", [("call", "get_upcoming", {"days": 1}, "Dentist at 9 AM"),
@@ -228,7 +231,7 @@ def r5_argv(w, out=None, n=96, extra=()):
     out = out or w["tmp"] / "out5" / "grpo_prompts.jsonl"
     return ["--build-dir", str(w["build"]), "--model", "x", "--round", "5", "--out", str(out), "--n", str(n), "--mm-share", "0",
             "--picture-share", "0", "--anchor-build-dir", str(w["anchor"]), "--dev-build-dir", str(w["dev"]), "--picker-dev", "none", "--allow-no-picker",
-            "--dist-dir", str(w["tmp"] / "no-dist"), "--expect-session-chat", "skip", "--dev-slice-counts", COUNTS,
+            "--dist-dir", str(w["tmp"] / "no-dist"), "--expect-session-chat", "skip", "--safety-min-rows", "1", "--dev-slice-counts", COUNTS,
             "--dev-smoke-counts", SMOKE, *extra]
 
 
@@ -366,7 +369,12 @@ def test_rl_kind_order_and_ceiling_for_every_kind():
         assert (lab["rl_kind"], lab["ceiling"]) == (kind, ceiling), (pairs[i][1]["id"], lab["rl_kind"], lab["ceiling"])
         assert X.r5_label_problems(lab) == [], (pairs[i][1]["id"], X.r5_label_problems(lab))
     # the C17 instruction term lifts the instruction ceiling
-    assert labs(scenario("instructions_r4", 1, "why do onions make you cry", [("final", "A gas stings.")]), instruction_term=True)[0]["ceiling"] == 1.5
+    rule = [("keep every reply to one sentence from here on", "Okay, one sentence from now on.")]
+    on = labs(scenario("instructions_r4", 1, "why do onions make you cry", [("final", "A gas stings.")], earlier=rule), instruction_term=True)[0]
+    assert on["constraints"] and on["ceiling"] == 1.5 and X.r5_label_problems(on, instruction_term=True) == []
+    # a row left with no mechanical constraint cannot earn the term (reward.py needs label.constraints): its ceiling stays 1.0
+    none = labs(scenario("instructions_r4", 3, "why do onions make you cry", [("final", "A gas stings.")]), instruction_term=True)[0]
+    assert not none["constraints"] and none["ceiling"] == 1.0 and X.r5_label_problems(none, instruction_term=True) == []
     # the order: an instructions_r4 final that is also a narrate-with-facts final is an instruction (3 before 4)
     both = scenario("instructions_r4", 2, "what is up", [("call", "get_upcoming", {}, "Dentist 9 AM"), ("final", "The dentist is at 9 AM.")])
     assert labs(both)[1]["rl_kind"] == "instruction"
@@ -1225,3 +1233,148 @@ def test_tool_results_and_the_world_names_ride_with_a_final_for_the_reward():
     chat = labs(scenario("chat_voice_r4", 1, "hi hi", [("final", "Hello.")]), names=["Ben Ortiz"])[0]
     assert "names" not in chat and "tool_results" not in chat
     assert X.world_names([]) == []
+
+
+# =========================================================================== owner-fix round 2: patterns, picker prompts, trivial ties
+def test_safety_pattern_minimum_helpers():
+    rows = [{"family": "compose_r3", "label": {"rl_kind": "call"}, "_pattern": "p%d" % (i % 2)} for i in range(14)] \
+        + [{"family": "mail_r3", "label": {"rl_kind": "narrate"}, "_pattern": None}]          # not a safety row: ignored
+    rep = X.safety_pattern_report(rows)
+    assert rep == {"rows": 14, "with_pattern": 14, "counts": {"p0": 7, "p1": 7}}
+    assert X.safety_pattern_problems(rep, 7, "pool") == []
+    assert X.safety_pattern_problems(rep, 8, "pool") == ["pool: safety pattern 'p0' has 7 rows, 8 needed", "pool: safety pattern 'p1' has 7 rows, 8 needed"]
+    assert X.safety_pattern_problems(rep, 0, "pool") == []                                       # 0 turns the check off
+    # a build with no pattern key cannot show the minimum: an error, a warning only with --allow-old-build
+    bare = X.safety_pattern_report([dict(r, _pattern=None) for r in rows])
+    assert "carries meta.pattern" in X.safety_pattern_problems(bare, 10, "pool")[0] and X.safety_pattern_problems(bare, 10, "pool", True) == []
+    # some rows with and some without is a builder defect even with --allow-old-build
+    mixed = X.safety_pattern_report(rows[:-1][:10] + [dict(rows[0], _pattern=None)])
+    assert "1 of 11 safety rows have no meta.pattern" in X.safety_pattern_problems(mixed, 1, "pool", True)[0]
+    assert X.R5_SAFETY_MIN_ROWS == 10
+
+
+def test_export_enforces_the_safety_pattern_minimum_in_the_pool_and_the_export(tmp_path):
+    w = r5_world(tmp_path)
+    assert F.run_main(r5_argv(w)) == 0
+    st = json.loads((w["tmp"] / "out5" / "grpo_prompts.stats.json").read_text())["r5"]["safety_patterns"]
+    assert st["minimum"] == 1 and set(st["pool"]["counts"]) == set(st["picked"]["counts"]) and len(st["pool"]["counts"]) == 8
+    assert st["pool"]["rows"] == st["pool"]["with_pattern"] and st["picked"]["rows"] == sum(st["picked"]["counts"].values())
+    argv = r5_argv(w)
+    argv[argv.index("--safety-min-rows") + 1] = "50"
+    with pytest.raises(SystemExit, match=r"pool: safety pattern '\w+-p\d' has \d+ rows, 50 needed"):
+        F.run_main(argv)
+    # the pool can satisfy a minimum the sampled export does not: the export itself is checked too
+    pool_min = min(st["pool"]["counts"].values())
+    argv[argv.index("--safety-min-rows") + 1] = str(pool_min)
+    try:
+        F.run_main(argv)
+    except SystemExit as e:
+        assert str(e).startswith("safety patterns") and "export: safety pattern" in str(e) and "pool:" not in str(e)
+    # a build whose safety rows carry no meta.pattern
+    old = r5_world(tmp_path / "old")
+    pairs = [(e, {k: v for k, v in m.items() if k != "pattern"}) for e, m in old["pairs"]]
+    F.write_build(old["build"], pairs, old["valid"])
+    with pytest.raises(SystemExit, match="none of the .* safety rows carries meta.pattern"):
+        F.run_main(r5_argv(old))
+    assert F.run_main(r5_argv(old, old["tmp"] / "oo" / "g.jsonl", extra=("--allow-old-build",))) == 0
+    sp = json.loads((old["tmp"] / "oo" / "g.stats.json").read_text())["r5"]["safety_patterns"]
+    assert sp["pool"]["with_pattern"] == 0 and sp["pool"]["rows"] > 0
+    off = r5_argv(old, old["tmp"] / "off" / "g.jsonl")
+    off[off.index("--safety-min-rows") + 1] = "0"
+    assert F.run_main(off) == 0                                                                   # 0 turns the check off
+
+
+def test_text_dev_exits_on_a_picker_row_without_a_prompt(tmp_path):
+    w = r5_world(tmp_path)
+    assert F.run_main(r5_argv(w)) == 0
+    free = sorted({r["id"].rsplit("#", 1)[0] for r in dev_rows(w) if r["slice"] in ("safety", "narrate", "select")})
+    picker = tmp_path / "picker.jsonl"
+    argv = r5_argv(w, w["tmp"] / "outq" / "grpo_prompts.jsonl")
+    argv[argv.index("--picker-dev") + 1] = str(picker)
+    for bad in ({"id": free[0], "family": "x"}, {"id": free[0], "prompt": ""}, {"id": free[0], "prompt": None}, {"id": free[0], "prompt": 7}):
+        picker.write_text(json.dumps(bad) + "\n")
+        with pytest.raises(SystemExit, match="text dev set failed"):
+            F.run_main(argv)
+        assert "has no prompt text" in (w["tmp"] / "outq" / "grpo_text_dev.stats.json").read_text()
+    # build_text_dev called without any picker prompts (no picker file) is unchanged
+    assert F.run_main(r5_argv(w, w["tmp"] / "outr" / "grpo_prompts.jsonl")) == 0
+
+
+def tie_label(kind, text, **kw):
+    return dict({"step": "final", "rl_kind": kind, "ideal_text": text, "ideal_completion": "\n<channel|>" + text + "<turn|>", "forced": True,
+                 "final": True, "ask": False, "facts": [], "expected": [], "forbidden": [], "narrate": False, "chat": True,
+                 "tool_names": ["send_message"], "modality": "text", "user_name": "Sam", "ceiling": 1.0}, **kw)
+
+
+def test_trivial_ties_probe_the_ideal_final_with_ok_and_done(monkeypatch):
+    # a constant-scored kind: a bare "Ok." scores exactly the ideal's 1.0 (by design), a tool-less non-final has no probe
+    lab = tie_label("session_anchor", "That sounds like a lovely plan for the weekend.")
+    assert X.trivial_ties(lab) == []                    # "Ok." has fewer than 4 words: nonreply -1 on a session row whose ideal is longer
+    assert "Ok." in X.trivial_ties(dict(lab, ideal_text="Ok.", ideal_completion="\n<channel|>Ok.<turn|>"))                # a one-word ideal: it ties itself
+    assert X.trivial_ties(dict(lab, step="call")) == [] and X.trivial_ties(dict(lab, ideal_text="")) == []
+    assert X.trivial_ties(dict(lab, ideal_completion="no such text")) == []
+    ties: dict = {}
+    X.tie_probe(lab, ties)
+    X.tie_probe(dict(lab, ideal_text="Ok.", ideal_completion="\n<channel|>Ok.<turn|>"), ties)
+    assert ties["session_anchor"]["rows"] == 2 and ties["session_anchor"]["tied"] == 1 and ties["session_anchor"]["by_probe"]["Ok."] == 1
+    # only narrate / recall / never-said fail the export (instruction too with the C17 term); anchors and decisions are only counted
+    big = {k: {"rows": 100, "tied": 5, "by_probe": Counter({"Ok.": 5})} for k in ("narrate", "chat_anchor", "decision", "instruction")}
+    assert [p.split(":")[0] for p in X.tie_problems(big)] == ["narrate"]
+    assert [p.split(":")[0] for p in X.tie_problems(big, instruction_term=True)] == ["instruction", "narrate"]
+    assert X.tie_problems({"narrate": {"rows": 100, "tied": 1, "by_probe": Counter({"Ok.": 1})}}) == []                  # one row is not a rate
+    assert X.tie_problems(big, 10.0, True) == []
+
+
+def test_export_counts_trivial_ties_and_exits_when_a_narrate_ideal_is_tied(tmp_path, monkeypatch):
+    w = r5_world(tmp_path)
+    assert F.run_main(r5_argv(w)) == 0
+    st = json.loads((w["tmp"] / "out5" / "grpo_prompts.stats.json").read_text())["r5"]["trivial_ties"]
+    assert st["narrate"]["rows"] > 20 and st["narrate"]["tied"] == 0 and "decision" in st and "chat_anchor" in st
+    real = X.trivial_ties
+    monkeypatch.setattr(X, "trivial_ties", lambda lab: ["Ok."] if lab["rl_kind"] == "narrate" else real(lab))
+    with pytest.raises(SystemExit, match=r"narrate: \d+ of \d+ ideals .* are tied or beaten by Ok\. \(limit 1%\)"):
+        F.run_main(r5_argv(w))
+    # one tied narrate row is below the limit: dropped as "no variance" and counted, the export goes on
+    seen = {"n": 0}
+
+    def first_narrate(lab):
+        if lab["rl_kind"] == "narrate" and not seen["n"]:
+            seen["n"] = 1
+            return ["Ok."]
+        return real(lab)
+    monkeypatch.setattr(X, "trivial_ties", first_narrate)
+    assert F.run_main(r5_argv(w, w["tmp"] / "outu" / "grpo_prompts.jsonl")) == 0
+    one = json.loads((w["tmp"] / "outu" / "grpo_prompts.stats.json").read_text())
+    assert one["dropped"]["trivial reply ties the ideal"] == 1 and one["r5"]["dropped_trivial_tie"] == {"trivial reply ties the ideal": 1}
+    assert one["r5"]["trivial_ties"]["narrate"]["tied"] == 1
+    monkeypatch.setattr(X, "trivial_ties", lambda lab: ["Ok."] if lab["rl_kind"] in ("chat_anchor", "decision") else real(lab))
+    assert F.run_main(r5_argv(w, w["tmp"] / "outt" / "grpo_prompts.jsonl")) == 0                         # by design: counted, not fatal
+    st = json.loads((w["tmp"] / "outt" / "grpo_prompts.stats.json").read_text())["r5"]["trivial_ties"]
+    assert st["chat_anchor"]["tied"] == st["chat_anchor"]["rows"] > 0
+
+
+def test_instruction_term_ceiling_follows_the_constraints_through_the_reward(tmp_path, monkeypatch):
+    # with the C17 term on, an instruction ideal scores 1.5 only with a mechanical constraint; the export must label the others 1.0
+    monkeypatch.setattr(X.W, "R5_INSTRUCTION", True)
+    w = r5_world(tmp_path)
+    assert F.run_main(r5_argv(w, extra=("--instruction-term",))) == 0
+    st = json.loads((w["tmp"] / "out5" / "grpo_prompts.stats.json").read_text())["r5"]
+    assert st["dropped_ideal_trip"] == {} and st["instruction_term"] is True
+    ceilings = {l["ceiling"] for _, l in text_rows(w["tmp"] / "out5" / "grpo_prompts.jsonl") if l["rl_kind"] == "instruction"}
+    assert ceilings and ceilings <= {1.0, 1.5}, ceilings
+
+
+def test_the_instruction_credit_rides_on_any_final_with_constraints_not_only_instruction_rows():
+    t = X.ceiling_for
+    # reward.py pays the C17 term on every non-asking final that has label.constraints; the callers pass term-and-constraints
+    assert [t(k, "final", instruction_term=True) for k in ("instruction", "decision", "select", "narrate", "recall", "recall_none", "session_anchor")] \
+        == [1.5, 1.5, 1.5, 2.5, 2.5, 2.0, 1.5]
+    assert t("decision", "final", facts_explicit=True, instruction_term=True) == 2.0
+    assert t("call", "call", instruction_term=True) == 1.5 and t("select", "call", instruction_term=True) == 1.5       # no credit on a call
+    assert t("decision", "ask", clarify=True, instruction_term=True) == 1.5                                           # nor on a clarifying ask
+    rule = [("keep every reply to one sentence from here on", "Okay, one sentence from now on.")]
+    row = scenario("session_recall_r4", 5, "what was my parking spot", [("final", "You parked on level 3, spot 42.")], earlier=rule)
+    on, off = labs(row, instruction_term=True)[0], labs(row)[0]
+    assert on["rl_kind"] == "decision" and on["constraints"] and (on["ceiling"], off["ceiling"]) == (1.5, 1.0)
+    assert X.r5_label_problems(on, instruction_term=True) == [] and X.r5_label_problems(off) == []
+    assert "does not match the table" in X.r5_label_problems(on)[0]                                               # a stale ceiling is caught

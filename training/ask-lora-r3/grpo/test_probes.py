@@ -346,7 +346,7 @@ def test_calibration_hits_the_false_stop_budget_and_reports_power():
     assert out["scale"] == cal["scale"] and any(r["metric"] == "unsafe" for r in out["rules"])
     # the schedule matters: the same rules over fewer evals cannot false-stop more
     five = PR.calibrate(reps, base, n_evals=5, paths=250, seed=7)
-    assert five["sim"]["false_stop"]["all"] <= 0.10 and five["scale"] <= cal["scale"] + 1e-9
+    assert five["sim"]["false_stop"]["all"] <= 0.10 and all(five["scale"][k] <= cal["scale"][k] + 1e-9 for k in ("count", "rate", "ratio"))
 
 
 def test_a_two_times_unsafe_count_is_detected_far_more_often_than_a_null_run_false_stops():
@@ -599,6 +599,87 @@ def test_name_use_means_the_name_used_to_the_user_not_about_them():
     assert not PR.sample_record("Sam has two meetings today.<turn|>", lab, 12, False)["name_use"]
     assert not PR.sample_record("I told Sam's team about it.<turn|>", lab, 12, False)["name_use"]
     assert not PR.sample_record("Two meetings today.<turn|>", lab, 12, False)["name_use"]
+
+
+def test_name_use_is_true_when_any_occurrence_is_a_vocative():
+    """'Hey Sam, I found it. Sam has a meeting at 3' addresses the user once: name use. Only third-person mentions: not."""
+    lab = {"step": "final", "forced": False, "round": 5, "user_name": "Sam", "final": True, "facts": [], "expected": [], "forbidden": []}
+    for txt in ("Hey Sam, I found it. Sam has a meeting at 3.", "Good morning, Sam. Sam has 2 events.", "Sam has two. Thanks, Sam."):
+        assert PR.sample_record(txt + "<turn|>", lab, 12, False)["name_use"], txt
+    for txt in ("Sam has a meeting. Sam's team is in at 3.", "I'll tell Sam about it, and Sam said yes."):
+        assert not PR.sample_record(txt + "<turn|>", lab, 12, False)["name_use"], txt
+    assert PR.name_used_to_user("Sam ate", "Sam") and not PR.name_used_to_user("no name", "Sam")
+
+
+def test_the_sft_below_base_note_fires_only_when_the_step_0_replay_would_fail():
+    """The clause is widened by 2 SDs: an m0 under 0.6 x base but inside the widened bound passes the replay, so no note."""
+    st = {"chat_emoji": {"m0": 0.30, "max": 0.35, "min": 0.25, "sd": 0.05, "n": 3}}
+    rules, notes = PR.make_rules(st, {"chat_emoji": 0.55})                   # 0.6 x 0.55 = 0.33 > m0, but 0.33 - 0.10 = 0.23 < m0
+    assert not notes and PR.replay(rules, [{"chat_emoji": 0.30}, {"chat_emoji": 0.30}]) == []
+    rules, notes = PR.make_rules(st, {"chat_emoji": 0.80})                   # 0.48 - 0.10 = 0.38 > m0: the replay fails and the note says so
+    assert [n["kind"] for n in notes] == ["sft_below_base"]
+    assert PR.replay(rules, [{"chat_emoji": 0.30}, {"chat_emoji": 0.30}])
+
+
+def test_each_family_has_its_own_scale_and_a_count_scale_never_blunts_the_voice_and_rate_rules():
+    """The S-unsafe count rule drove one global scale to 3.2 and left the voice/rate rules unable to fire. Now the count scale
+    moves the count thresholds only."""
+    reps = [synthetic_rows(random.Random(5 + i), unsafe_p=0.01) for i in range(3)]
+    cal = PR.calibrate(reps, synthetic_rows(random.Random(6)), n_evals=9, paths=250, seed=7)
+    sc = cal["scale"]
+    assert set(sc) == {"count", "rate", "ratio"} and sc["count"] > sc["ratio"] and sc["count"] > sc["rate"]
+    stats = cal["stats"]
+    even, _ = PR.make_rules(stats, cal["base"], None, sc["count"])           # the old behaviour: the count scale on everything
+    mine = {r.name: r for r in cal["rules"]}
+    for r in even:
+        if r.family != "count":
+            assert mine[r.name].lo is None or r.lo is None or mine[r.name].lo >= r.lo - 1e-12, r.name
+    sim = cal["sim"]
+    assert sim["power_2x"]["rate"] > 0.9 and sim["power_2x"]["ratio"] > 0.9, sim["power_2x"]
+    assert not [d for d in sim["unreachable_rules"] if not d["vacuous"]] and PR.budget_problem(cal) is None
+    json.dumps(PR.calibration_json(cal))
+
+
+def test_ratio_rules_carry_no_binomial_sd():
+    """8.2 widens the ratio rules by replicate or bootstrap SD only: the row binomial term belongs to the rate rules."""
+    reps = [synthetic_rows(random.Random(30 + i)) for i in range(3)]
+    stats = {k: dict(v, sd=0.0) for k, v in stats_of(reps).items()}
+    n_rows = PR.metric_rows(reps[0])
+    with_n, _ = PR.make_rules(stats, {}, n_rows=n_rows)
+    without, _ = PR.make_rules(stats, {})
+    a, b = {r.name: r for r in with_n}, {r.name: r for r in without}
+    for name, r in a.items():
+        if r.family == "ratio":
+            assert (r.lo, r.hi) == (b[name].lo, b[name].hi), name
+        if name == "S-text:write_success":
+            assert r.lo < b[name].lo                                         # the rate rule still widens
+
+
+def test_a_rule_whose_bound_cannot_be_crossed_fails_the_budget_check_and_power_is_a_real_2x_move():
+    st = {"chat_emoji": {"m0": 0.30, "max": 0.5, "min": 0.1, "sd": 0.20, "n": 3}, "chat_name": {"m0": 0.0, "max": 0.0, "min": 0.0, "sd": 0.0, "n": 3},
+          "facts_mean": {"m0": 0.8, "max": 0.8, "min": 0.8, "sd": 0.0, "n": 3}, "chat_chars_p50": {"m0": 200.0, "max": 200.0, "min": 200.0, "sd": 0.0, "n": 3}}
+    rules, _ = PR.make_rules(st, {})
+    dead = {d["rule"]: d for d in PR.unreachable_rules(rules, st)}
+    assert dead["S-chat:emoji"]["vacuous"] is False and dead["S-chat:name"]["vacuous"] is True       # m0 = 0: nothing to lose
+    assert "S-text:facts_mean" not in dead and "S-chat:chars_p50" not in dead
+    cal = {"sim": {"budget_met": True, "budget_all": 0.1, "unreachable_rules": list(dead.values())}, "scale": {}}
+    msg = PR.budget_problem(cal)
+    assert msg and "S-chat:emoji" in msg and "S-chat:name" not in msg
+    by = {r.name: r for r in rules}
+    shifts = PR.rule_shifts(rules, st)
+    assert abs(shifts["S-text:facts_mean"] + 0.4) < 1e-9 and abs(shifts["S-chat:emoji"] + 0.15) < 1e-9      # halved, not "twice the distance to the bound"
+    moves = dict((d, sh) for d, sh, _ in PR.rule_moves(by["S-chat:chars_p50"], 200.0))
+    assert moves == {"down": -100.0, "up": 200.0}
+    share_hi = PR.Rule("x", "g", "ratio", "chat_emoji", hi=0.9)
+    assert abs(PR.rule_moves(share_hi, 0.8)[0][1] - 0.2) < 1e-9 and 0.8 + PR.rule_moves(share_hi, 0.8)[0][1] <= 1.0   # doubling a share is clipped to 1
+
+
+def test_zero_power_rules_are_reported():
+    reps = [synthetic_rows(random.Random(40 + i), unsafe_p=0.02) for i in range(3)]
+    cal = PR.calibrate(reps, synthetic_rows(random.Random(41)), n_evals=9, paths=150, seed=3)
+    sim = cal["sim"]
+    assert isinstance(sim["zero_power_rules"], list) and sim["power_2x_by_rule"]["S-text:facts_mean"] > 0.9
+    assert all(0.0 <= v <= 1.0 for v in sim["power_2x_by_rule"].values())
 
 
 def test_budget_problem_names_the_rules_that_carry_the_false_stop_rate():

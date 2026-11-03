@@ -840,6 +840,141 @@ def _serve(stub):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 
+# ------------------------------------------------------------------ verifier round 2: weights, notes, cap note, the ideal check
+
+def test_other_bucket_shares_are_weighted_by_each_kinds_share_of_the_export():
+    """stratify() takes equal rows per rl_kind, so an unweighted bucket-level share over-counts the rare kinds."""
+    easy = [grp(f"c{i}", "call", 1.5, [smp(1.5)] * 4) for i in range(3)]                      # all pass
+    hard = [grp(f"d{i}", "decision", 1.0, [smp(1.0), smp(0.0)] * 2) for i in range(3)]        # informative
+    flat = S.bucket_stats(easy + hard)
+    assert flat["zero_variance_share"] == 0.5 and flat["shares_weighted"] is False and flat["kind_weights"] is None
+    for g in easy:
+        g["weight"] = 9.0                                                                       # 'call' is 90% of the bucket's rows
+    for g in hard:
+        g["weight"] = 1.0
+    w = S.bucket_stats(easy + hard)
+    assert w["shares_weighted"] and w["kind_weights"] == {"call": 9.0, "decision": 1.0}
+    assert w["zero_variance_share"] == 0.9 and w["zv_all_pass_share"] == 0.9 and w["zv_all_fail_share"] == 0.0
+    assert w["over_60_zero_variance"] and not flat["over_60_zero_variance"]                    # the weighted share decides the re-export
+    assert w["n_prompts"] == 6 and w["n_samples"] == 24                                         # counts stay unweighted
+
+
+def test_other_weights_come_from_the_full_export_rows_and_feed_the_report(tmp_path):
+    pool = [parsed_row(call_row(f"c{i}#{k}", family="misc_r3")) for i in range(8) for k in range(2)] + \
+           [parsed_row(call_row(f"d{i}#0", family="misc_r3", kind="decision")) for i in range(2)]
+    picked, sel = S.stratify(pool, 2, 2, 5, seed=0)
+    groups = [grp(r["id"], r["label"]["rl_kind"], 1.0, [smp(1.0)] * 3) for r in picked]
+    w = S.other_weights(groups, pool, sel)
+    assert w == {"call": 16 / 2, "decision": 2 / 2}                                            # rows (copies counted), per sampled group
+    assert S.other_weights(groups, None, sel) == {"call": 8 / 2, "decision": 2 / 2}            # else the deduplicated pool sizes
+    rows = [call_row(f"c{i}#0", family="misc_r3") for i in range(6)] + [call_row(f"d{i}#0", family="misc_r3", kind="decision") for i in range(2)]
+    p = write_jsonl(tmp_path / "p.jsonl", rows)
+    ideal_of = {parsed_row(r)["prompt"]: label_of(r)["ideal_completion"] for r in rows}
+    wrong = call("get_upcoming", days=9) + "<|tool_response>"
+    state = {"n": 0}
+
+    def reply(body):                      # decisions: half the samples wrong (informative); calls: always the ideal
+        if "d0" in body["prompt"] or "d1" in body["prompt"]:
+            state["n"] += 1
+            return (wrong if state["n"] % 2 else ideal_of[body["prompt"]]), "stop"
+        return ideal_of[body["prompt"]], "stop"
+    assert run(base_argv(tmp_path, p, ["--per-bucket", "2", "--G", "4"]), Stub(reply)) == 0
+    rep = json.loads((tmp_path / "pre-ok-report.json").read_text())
+    other = rep["buckets"]["other"]
+    assert other["shares_weighted"] and other["kind_weights"]["call"] == 3.0 and other["kind_weights"]["decision"] == 1.0
+    assert other["zero_variance_share"] == 0.75          # 3 of 4 weighted: the 2 sampled calls count 3x each, the decisions 1x each
+    assert rep["by_rl_kind"]["call"]["zero_variance_share"] == 1.0
+    assert "r5_bucket" in rep["bucket_notes"]["session_anchor"] and "kind_weights" in rep["bucket_notes"]["other"]
+
+
+def test_session_anchor_is_its_own_bucket_but_a_session_pg_row_is_session():
+    anchor = {"family": "session_chat_r4", "label": {"rl_kind": "session_anchor"}}
+    pg = {"family": "session_chat_r4", "label": {"rl_kind": "recall"}}
+    assert S.bucket_of(anchor) == "session_anchor" and S.bucket_of(pg) == "session"
+    assert not S.bucket_stats([grp("a", "session_anchor", 1.0, [smp(1.0)] * 3)])["pg_bearing"]
+
+
+def test_cap_report_with_only_own_cap_rows_says_so_and_still_reads_the_exact_counts():
+    own = S.bucket_stats([grp(f"h{i}", "chat_anchor", 1.0, [smp(1.0, tokens=1500)] * 3, own=1024) for i in range(2)])
+    cap = S.cap_report({"chat_anchor": own}, False)
+    assert cap["suggested_cap"] is None and cap["suggested_cap_all_text"] == 1500 + 64 and cap["suggested_cap_all_text_bucket"] == "chat_anchor"
+    assert "no cap-governed rows" in cap["note"] and "no exact per-sample token counts" not in cap["note"]
+    assert cap["governed_prompts"] == {} and cap["own_cap_prompts"] == {"chat_anchor": 2}
+    # inexact counts: the old note still applies, and nothing is invented
+    inexact = S.bucket_stats([grp("a", "narrate", 2.0, [smp(2.0, tokens=None, exact=False)] * 3)])
+    c2 = S.cap_report({"narrate": inexact}, False)
+    assert c2["suggested_cap"] is None and c2["suggested_cap_all_text"] is None and "no exact per-sample token counts" in c2["note"]
+    # a bucket with governed rows keeps both caps
+    gov = S.bucket_stats([grp("n0", "narrate", 2.0, [smp(2.0, tokens=300)] * 3)])
+    c3 = S.cap_report({"narrate": gov, "chat_anchor": own}, False)
+    assert c3["suggested_cap"] == 364 and c3["suggested_cap_all_text"] == 1564
+
+
+def exported_style_row(rid, ideal, ceiling, kind="call", family="gather_then_send_r4", **label_kw):
+    """A row whose ceiling comes from the TABLE (as the export writes it), not from scoring the ideal: the way a bad ideal shows."""
+    label = lab(rl_kind=kind, ideal_completion=ideal, ceiling=ceiling, **label_kw)
+    return {"id": rid, "family": family, "prompt": f"{BOS}<|turn>user\nq {rid}<turn|>\n<|turn>model\n", "label": json.dumps(label), "modality": "text"}
+
+
+def test_ideal_check_catches_an_ideal_that_misses_the_table_ceiling():
+    """The audit's finding: call:send_message{} (empty args) against a 1.5 call ceiling scored 1.0 and no stub could tell."""
+    exp = {"expected": [{"name": "get_upcoming", "args": {"days": 2}}], "key_args": [{"days": 2}], "present_args": [[]]}
+    good = exported_style_row("g#0", call("get_upcoming", days=2) + "<|tool_response>", 1.5, **exp)
+    empty = exported_style_row("e#0", call("get_upcoming") + "<|tool_response>", 1.5, **exp)
+    rep = S.ideal_check([parsed_row(good), parsed_row(empty)])
+    k = rep["by_rl_kind"]["call"]
+    assert not rep["ok"] and rep["failing_kinds"] == ["call"] and (k["n"], k["bad"], k["below_ceiling"]) == (2, 1, 1)
+    assert k["examples"][0]["id"] == "e#0" and "below ceiling 1.5" in k["examples"][0]["why"][0] and k["ideal_mean"] == 1.25
+    assert S.ideal_check([parsed_row(good)])["ok"]
+
+
+def test_ideal_check_counts_penalised_ideals_missing_ideals_and_ceilings_above():
+    final = {"step": "final", "final": True}
+    pen = exported_style_row("p#0", call("send_email", to="a@b.co") + "<|tool_response>", 1.5, family="restraint_r4",
+                             expected=[{"name": "get_upcoming", "args": {}}], key_args=[{}], present_args=[[]])
+    ok = exported_style_row("k#0", "Your Ethics class is at 11 AM.<turn|>", 1.0, kind="decision", family="restraint_r4", **final)
+    nope = exported_style_row("n#0", "", 1.0, kind="decision", family="restraint_r4", **final)
+    over = exported_style_row("o#0", "Your Ethics class is at 11 AM.<turn|>", 0.5, kind="decision", family="restraint_r4", **final)
+    nocl = parsed_row(exported_style_row("c#0", "Your Ethics class is at 11 AM.<turn|>", 1.0, kind="decision", **final))
+    nocl["label"].pop("ceiling")
+    rep = S.ideal_check([parsed_row(r) for r in (pen, ok, nope, over)] + [nocl])
+    k = rep["by_rl_kind"]["decision"]
+    assert k["n"] == 4 and k["missing_ideal"] == 1 and k["above_ceiling"] == 1 and k["no_ceiling"] == 1 and k["bad"] == 3
+    c = rep["by_rl_kind"]["call"]
+    assert c["n"] == 1 and c["penalised"] == 1 and "forbidden" in c["penalising_terms"] and c["below_ceiling"] == 1
+    # the bar is a share per kind: 1 bad in 200 is within 1%
+    many = [parsed_row(ok)] * 199 + [parsed_row(nope)]
+    assert S.ideal_check(many)["ok"] and not S.ideal_check(many, bar=0.001)["ok"]
+
+
+def test_ideal_check_gates_the_run_before_any_request_and_can_be_overridden(tmp_path, capsys):
+    exp = {"expected": [{"name": "get_upcoming", "args": {"days": 2}}], "key_args": [{"days": 2}], "present_args": [[]]}
+    bad = exported_style_row("e#0", call("get_upcoming") + "<|tool_response>", 1.5, **exp)
+    good = exported_style_row("g#0", call("get_upcoming", days=2) + "<|tool_response>", 1.5, **exp)
+    p = write_jsonl(tmp_path / "p.jsonl", [bad, good])
+    ideal_of = {parsed_row(r)["prompt"]: label_of(r)["ideal_completion"] for r in (bad, good)}
+    stub = Stub(lambda body: (ideal_of[body["prompt"]], "stop"))
+    with pytest.raises(SystemExit) as e:
+        run(base_argv(tmp_path, p), stub)
+    assert e.value.code == 5 and stub.requests == []                                             # nothing was sent, not even /v1/models
+    assert not (tmp_path / "pre-ok-report.json").exists()
+    # offline mode: no engine, no MOE_DIR, no served model
+    out = tmp_path / "ic.json"
+    assert S.main(["--prompts", p, "--ideal-check-only", "--out", str(out)], environ={}) == 5
+    assert json.loads(out.read_text())["failing_kinds"] == ["call"]
+    assert S.main(["--prompts", write_jsonl(tmp_path / "g.jsonl", [good]), "--ideal-check-only"], environ={}) == 0
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+    # the override samples, records the failure, and says the zv0 split is not meaningful
+    assert run(base_argv(tmp_path, p, ["--allow-ideal-trips"]), stub) == 0
+    rep = json.loads((tmp_path / "pre-ok-report.json").read_text())
+    assert rep["ideal_check"]["ok"] is False and rep["ideal_check_overridden"] is True and "NOT MEANINGFUL" in rep["zv0_basis"]
+    # a clean run records the check and no caveat
+    stub2 = Stub(lambda body: (ideal_of[body["prompt"]], "stop"))
+    assert run(base_argv(tmp_path, write_jsonl(tmp_path / "g2.jsonl", [good])), stub2) == 0
+    rep2 = json.loads((tmp_path / "pre-ok-report.json").read_text())
+    assert rep2["ideal_check"]["ok"] and rep2["ideal_check_overridden"] is False and "NOT MEANINGFUL" not in rep2["zv0_basis"]
+
+
 
 def test_real_http_round_trip_sends_the_prompt_unmodified():
     row = parsed_row(forced_row("f1"))

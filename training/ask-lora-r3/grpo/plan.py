@@ -208,6 +208,14 @@ def ideal_top(lab: dict, rnd: int) -> tuple[float, float]:
     return top, 0.31
 
 
+def kind_trip_problems(tripped: dict, totals: dict, limit: float = 0.01) -> dict:
+    """RL-SCOPE bar: an ideal completion may trip a penalising term, or miss its ceiling, on at most `limit` (1%) of the rows of
+    any rl_kind. Exact, in integers: a kind of 14 rows tolerates none (one row is 7%), a kind of 100 tolerates one. Returns
+    {kind: 'tripped/total'} for the kinds over the limit."""
+    pct = round(limit * 100)
+    return {k: f"{n}/{totals.get(k, 0)}" for k, n in tripped.items() if n * 100 > pct * totals.get(k, 0)}
+
+
 # ------------------------------------------------------------------ round 5: truncation and the per-step logs (C10)
 
 def truncated(comp: list[int], stop_ids) -> bool:
