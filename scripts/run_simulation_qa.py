@@ -730,6 +730,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/reminders-policy-contract": "native/reminders-policy-compile",
     "native/calendar-move-contract": "native/calendar-move-compile",
     "native/checkin-cancel-contract": "native/checkin-cancel-compile",
+    "native/privacy-relaunch-contract": "native/privacy-relaunch-compile",
     "native/chat-logic-contract": "native/chat-logic-compile",
     "native/chat-store-contract": "native/chat-store-compile",
     "native/chat-debug-archive-contract": "native/chat-debug-archive-compile",
@@ -1026,6 +1027,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     reminders_policy = str(build_dir / "reminders-policy")
     calendar_move = str(build_dir / "calendar-move")
     checkin_cancel = str(build_dir / "checkin-cancel")
+    privacy_relaunch = str(build_dir / "privacy-relaunch")
     settings_response = str(build_dir / "settings-response")
     port_guard = str(build_dir / "port-guard")
     backend_trust = str(build_dir / "backend-trust")
@@ -1289,6 +1291,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/checkin-cancel-contract", [checkin_cancel]),
+        (
+            "native/privacy-relaunch-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/PrivacyRelaunch.swift",
+                "tests/PrivacyRelaunchChecks.swift", "-o", privacy_relaunch,
+            ],
+        ),
+        ("native/privacy-relaunch-contract", [privacy_relaunch]),
         (
             "native/settings-response-compile",
             [

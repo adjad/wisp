@@ -96,6 +96,7 @@ final class VoiceInput: ObservableObject {
 
     func openMicrophoneSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+            PrivacyRelaunch.notePaneOpened()
             NSWorkspace.shared.open(url)
         }
     }
