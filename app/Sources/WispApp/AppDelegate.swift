@@ -1957,9 +1957,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         openAssistant()
     }
 
-    // Settings › General's Export Chat Debug Log…: writes the notch's conversation
-    // (every turn's model, route decision, timing, tok/s, tool calls, and any
-    // errors) to ~/Downloads as JSON + a readable .txt companion, then reveals
+    // Settings › General's Export Chat Debug Log…: writes every chat since Wisp
+    // opened, the open one last (every turn's model, route decision, timing,
+    // tok/s, tool calls, and any errors) to ~/Downloads as JSON + a readable .txt companion, then reveals
     // them in Finder. No-ops with a brief alert if there's no conversation yet.
     // Debug metadata is tracked for every turn whether or not Debug Mode is on
     // (see OverlayModel.applyDebugFields).

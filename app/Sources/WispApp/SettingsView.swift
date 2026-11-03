@@ -5,7 +5,7 @@ import ServiceManagement
 import SwiftUI
 
 extension Notification.Name {
-    /// Settings › General's Export Chat Debug Log…: AppDelegate writes the notch's conversation.
+    /// Settings › General's Export Chat Debug Log…: AppDelegate writes every chat since Wisp opened.
     static let wispExportDebugLog = Notification.Name("WispExportDebugLog")
 }
 
@@ -2105,8 +2105,9 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Chat debug log")
                                     .font(.system(size: 14, weight: .medium))
-                                Text("Saves the notch's conversation to Downloads, with each turn's "
-                                     + "model, route, timing, tool calls and errors.")
+                                Text("Saves every chat since Wisp opened to Downloads, with each turn's "
+                                     + "model, route, timing, tool calls and errors. "
+                                     + "Full model input and output needs Debug Mode on.")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
