@@ -61,7 +61,17 @@ Exit code 1 on any problem. Checks, per example:
               anything (think:clarify_destructive), or think on a final in a
               single-source family (grounded_only, right_source,
               weather_and_web, act_dont_promise, no_write_for_reads) without a
-              date/time or free/busy computation (think:single_source)
+              date/time or free/busy computation (think:single_source).
+              Round 4 extraction thoughts (a final after a read, and the facts part
+              of an ignore_embedded_instructions thought) also pass: facts_missing
+              (a time, amount or quoted title the thought lists reaches the final),
+              facts_unlisted (the reverse: a time, amount, quoted title, month-day
+              date or H:MM the final states and a tool result also shows is in the
+              thought, or the thought ends "plus N more"), fragment (every ';' piece
+              is one contiguous run of a tool-result line, with no repeated piece,
+              and no lone AM/PM in any thought), banner (no Mail cache/freshness
+              text in any thought) and ellipsis (no piece cut with "…" unless the
+              result itself has one)
   finals      no template glitch in a final reply: "to on"/"for on" or
               "N today emails" (final:template_glitch). Warns (does not fail)
               when more than 3 finals in a file are byte-identical, listing them
@@ -351,6 +361,10 @@ def check_thinking(meta, msgs, ctx, injected, prev_thought, bad, where):
                "think:clarify_destructive" if err.startswith("clarify destructive") else
                "think:single_source" if err.startswith("single source") else
                "think:facts_missing" if err.startswith("facts_missing") else
+               "think:facts_unlisted" if err.startswith("facts_unlisted") else
+               "think:fragment" if err.startswith("fragment") else
+               "think:banner" if err.startswith("banner") else
+               "think:ellipsis" if err.startswith("ellipsis") else
                "think:planted_line" if err.startswith("planted line") else
                "think:copies_reply" if err.startswith("too close") else "think:thought_missing" if err == "empty"
                else "think:date_mismatch")

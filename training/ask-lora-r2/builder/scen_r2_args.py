@@ -627,7 +627,7 @@ def _update_event_exact(rng, i):
         h, m = rng.choice([(9, 0), (11, 30), (14, 0), (16, 0), (18, 30)])
         new = at(day, h, m)
         prompt = pick(rng, [f"reschedule {ref} for {wd_txt(rng, wd)} at {t_txt(rng, h, m)}",
-                            f"can {ref} happen {wd_txt(rng, wd)} {t_txt(rng, h, m)} instead?",
+                            f"can {ref} be moved to {wd_txt(rng, wd)} {t_txt(rng, h, m)} instead?",
                             f"shift {ref} to {wd_txt(rng, wd)} {t_txt(rng, h, m)}"])
         steps = [[Call("update_event", title=key, when_iso=iso(new))]]
         final = move_final(rng, title, f"{day:%A, %b %-d}", span_txt(new, mins))
@@ -639,7 +639,7 @@ def _update_event_exact(rng, i):
             new = new + D(hours=1)
         newlen = rng.choice([30, 90, 120])
         prompt = pick(rng, [f"{ref} starts at {t_txt(rng, new.hour, new.minute)} now and runs {dur_w(newlen)}",
-                            f"make {ref} start at {t_txt(rng, new.hour, new.minute)} and last {dur_w(newlen)}"])
+                            f"change {ref} to start at {t_txt(rng, new.hour, new.minute)} and last {dur_w(newlen)}"])
         steps = [[Call("get_upcoming", days=14, query=key, calendar_only=True)],
                  [Call("update_event", title=key, when_iso=iso(new), duration_min=newlen)]]
         final = move_final(rng, title, dlabel(day, now), span_txt(new, newlen))
@@ -663,7 +663,7 @@ def _update_event_exact(rng, i):
         if new == old2:
             new = new + D(hours=1)
         prompt = pick(rng, [f"move the {old2:%A} {key.lower()} to {t_txt(rng, h, m)}",
-                            f"{ref} on {old2:%A} should start at {t_txt(rng, h, m)} instead"])
+                            f"{ref} on {old2:%A} should be moved to {t_txt(rng, h, m)} instead"])
         steps = [[Call("get_upcoming", days=14, query=key, calendar_only=True)],
                  [Call("update_event", title=key, when_iso=iso(new), current_when_iso=iso(old2))]]
         final = fin(rng, f"The {old2:%A} {title} now starts at {clock(new)}. The other one is unchanged.",
@@ -674,7 +674,7 @@ def _update_event_exact(rng, i):
         h, m = rng.choice([(10, 0), (13, 30), (16, 0)])
         new = at(d0, h, m)
         ordinal = f"{d0.day}{'th' if 11 <= d0.day % 100 <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(d0.day % 10, 'th')}"
-        prompt = pick(rng, [f"{ref} needs to go to {d0:%B} {ordinal} at {t_txt(rng, h, m)}",
+        prompt = pick(rng, [f"{ref} needs to be moved to {d0:%B} {ordinal} at {t_txt(rng, h, m)}",
                             f"put {ref} on the {ordinal} at {t_txt(rng, h, m)} rather than where it is"])
         steps = [[Call("update_event", title=key, when_iso=iso(new))]]
         final = move_final(rng, title, f"{d0:%A, %b %-d}", span_txt(new, mins))
@@ -719,8 +719,8 @@ def _bad_retry(rng, i):
         add_event(w, title, old, 60, loc)
         new = at(old.date(), 15, 0)
         mins_new = rng.choice([45, 90])
-        prompt = pick(rng, [f"{ref} on {old:%A} should be at 3pm and run {dur_w(mins_new)}",
-                            f"make {ref} on {old:%A} start at 3pm, {dur_w(mins_new)} long"])
+        prompt = pick(rng, [f"{ref} on {old:%A} should be moved to 3pm and run {dur_w(mins_new)}",
+                            f"change {ref} on {old:%A} to start at 3pm, {dur_w(mins_new)} long"])
         steps = [Bad(Call("update_event", title=key, when_iso=iso(new), minutes=mins_new)),
                  [Call("update_event", title=key, when_iso=iso(new), duration_min=mins_new)]]
         final = move_final(rng, title, dlabel(new.date(), now), span_txt(new, mins_new))
@@ -813,10 +813,10 @@ def _move_vs_new(rng, i):
         read_first = new.date() == old.date() and (i // 2) % 2 == 1
         dp = "" if read_first else " " + on_d(rng, new.date(), now)
         tw = t_txt(rng, new.hour, new.minute)
-        prompt = pick(rng, [f"{ref} got pushed to {tw}{dp}, update it",
-                            f"i need {ref} at {tw}{dp} instead of when it's set",
+        prompt = pick(rng, [f"{ref} got moved to {tw}{dp}, update it",
+                            f"i need {ref} moved to {tw}{dp} instead of when it's set",
                             f"the time for {ref} changed, make it {tw}{dp}",
-                            f"{ref}: {tw}{dp} now, not the old time"])
+                            f"{ref}: move it to {tw}{dp}, not the old time"])
         final = move_final(rng, title, dlabel(new.date(), now), span_txt(new, 60))
         steps = ([[Call("get_upcoming", days=14, query=key, calendar_only=True)]] if read_first else []) + \
                 [[Call("update_event", title=key, when_iso=iso(new))]]
@@ -1126,12 +1126,12 @@ def _relay_move(rng, i):
     # duration_min is sent only when the user gave a length: every wording of variant 2 says it.
     if variant == 2:
         prompt = pick(rng, [f"move {ref} to {tw}{dp} and let it run {dur_w(newlen)}",
-                            f"{ref} needs to start at {tw}{dp} and run {dur_w(newlen)}",
-                            f"i'd rather do {ref} at {tw}{dp}, {dur_w(newlen)} long"])
+                            f"{ref} needs to be moved to {tw}{dp} and run {dur_w(newlen)}",
+                            f"i'd rather move {ref} to {tw}{dp}, {dur_w(newlen)} long"])
     else:
         prompt = pick(rng, [f"move {ref} to {tw}{dp}",
-                            f"{ref} needs to start at {tw}{dp}",
-                            f"i'd rather do {ref} at {tw}{dp}"])
+                            f"{ref} needs to be moved to {tw}{dp}",
+                            f"i'd rather move {ref} to {tw}{dp}"])
     tail = ""
     if variant == 3:
         tail = " Invitees were notified of the new time."
@@ -1187,7 +1187,7 @@ def _relay_move_refused(rng, i):
         add_event(w, title, old, 60, loc)
         thing = pick(rng, [("my pottery thing", "Pottery"), ("the rock climbing session", "Rock climbing"),
                            ("my piano slot", "Piano"), ("the book club", "Book club")])
-        prompt = pick(rng, [f"move {thing[0]} to {t_txt(rng, new.hour)}{dp}", f"{thing[0]} should be at {t_txt(rng, new.hour)}{dp}"])
+        prompt = pick(rng, [f"move {thing[0]} to {t_txt(rng, new.hour)}{dp}", f"{thing[0]} should be moved to {t_txt(rng, new.hour)}{dp}"])
         args = {"title": thing[1], "when_iso": iso(new)}
         final = fin(rng, "I don't see an upcoming event with that name, so nothing was moved. Which event did you mean?",
                     "Nothing upcoming matches that, so I haven't changed anything. Can you tell me the event's exact name?",
@@ -1208,7 +1208,7 @@ def _relay_move_refused(rng, i):
                  "several match: asks which, nothing moved (precard refusal)", cards=[])
     if variant == 5:   # no-op: already starts then
         add_event(w, title, old, 60, loc)
-        prompt = pick(rng, [f"move {ref} to {t_txt(rng, old.hour)} on {old:%A}", f"set {ref} for {t_txt(rng, old.hour)} {old:%A}"])
+        prompt = pick(rng, [f"move {ref} to {t_txt(rng, old.hour)} on {old:%A}", f"switch {ref} to {t_txt(rng, old.hour)} {old:%A}"])
         final = fin(rng, f"{title} already starts at {clock(old)} on {old:%A}, so nothing needed to move.",
                     f"It's already at {clock(old)} on {old:%A}, so I left {title} alone.",
                     f"Nothing changed: {title} is already set for {clock(old)} on {old:%A}.",
@@ -1217,7 +1217,7 @@ def _relay_move_refused(rng, i):
                  "already at that time: nothing moved (precard refusal)", cards=[])
     add_event(w, title, old, 60, loc, **kw)
     tw = t_txt(rng, new.hour)
-    prompt = pick(rng, [f"move {ref} to {tw}{dp}", f"{ref} should be at {tw}{dp} instead"])
+    prompt = pick(rng, [f"move {ref} to {tw}{dp}", f"{ref} should be moved to {tw}{dp} instead"])
     if variant == 0:
         final = fin(rng, f"I couldn't move {title}. It's on a read-only calendar, so Wisp can't change it. You can move it in Calendar.",
                     f"{title} is on a read-only calendar, so it wasn't moved. You'd need to change it in Calendar.",
@@ -1323,7 +1323,7 @@ def _relay_retry(rng, i):
         add_event(w, title, old, 60, loc)
         new = at(old.date(), 13)
         mins_new = rng.choice([45, 90])
-        prompt = f"{ref} moves to 1pm on {old:%A} and runs {dur_w(mins_new)}"
+        prompt = f"move {ref} to 1pm on {old:%A} and let it run {dur_w(mins_new)}"
         steps = [Bad(Call("update_event", title=key, when_iso=iso(new), duration=f"{mins_new} minutes")),
                  [Call("update_event", title=key, when_iso=iso(new), duration_min=mins_new)]]
         final = move_final(rng, title, dlabel(new.date(), now), span_txt(new, mins_new))

@@ -17,9 +17,11 @@ numbers from the first log lines of the smoke run (grpo.py writes seconds per ph
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import re
 from dataclasses import dataclass
+from pathlib import Path
 
 
 # ------------------------------------------------------------------ batch math
@@ -146,12 +148,15 @@ def small_n_problems(base: dict, now: dict, prev_soft: set | None = None) -> tup
     return problems, soft
 
 
-def small_n_floor_problems(floor: dict, now: dict) -> list[str]:
+def small_n_floor_problems(floor: dict, now: dict, strict: bool = False) -> list[str]:
     """The C13 counts against the untuned floor (--mm-floor): zero tolerance, like the existing counts. A floor file from before
-    C13 has none of the keys and is skipped."""
+    C13 has none of the keys: skipped by default (rounds 3 and 4), an error with strict=True (round 5: the floor is then no floor)."""
     out = []
     for k, sign in SMALL_N.items():
-        if k in floor and k in now and sign * (now[k] - floor[k]) > 1e-6:
+        if k in now and k not in floor:
+            if strict:
+                out.append(f"--mm-floor has no {k}: it predates C13; re-run `grpo.py mm-eval` of the UNTUNED base with the round-5 code")
+        elif k in floor and k in now and sign * (now[k] - floor[k]) > 1e-6:
             out.append(f"{k} {now[k]:g} vs untuned {floor[k]:g}")
     return out
 
@@ -167,6 +172,16 @@ def train_arg_problems(a, dev_rows_exist: bool, rnd: int = 3) -> list[str]:
         out.append("--mm-floor is required: run `grpo.py mm-eval --base <UNTUNED Gemma> --mm-dev ...` (no adapter) and pass its "
                    "JSON, or pass --no-guard to give up the multimodal tripwire. Without it a vision/audio regression already "
                    "in the SFT would be accepted as the baseline.")
+    floor_path = getattr(a, "mm_floor", None)
+    if rnd >= 5 and dev_rows_exist and floor_path and not getattr(a, "no_guard", False) and not getattr(a, "dry_run_grad", False):
+        try:
+            floor = json.loads(Path(floor_path).read_text())
+        except (OSError, ValueError) as exc:
+            out.append(f"--mm-floor {floor_path} is not readable JSON: {exc}")
+        else:
+            missing = [k for k in SMALL_N if k not in floor]
+            if missing:
+                out.append(f"--mm-floor lacks the C13 counts {missing}: re-run `grpo.py mm-eval` of the UNTUNED base with the round-5 code")
     if rnd >= 5 and not getattr(a, "dry_run_grad", False) and not getattr(a, "no_text_probes", False):
         if not getattr(a, "text_dev", None):
             out.append("round 5 needs --text-dev (grpo_text_dev.jsonl or its smoke30 subset), or --no-text-probes to give up the S-* tripwires")
@@ -180,12 +195,13 @@ def train_arg_problems(a, dev_rows_exist: bool, rnd: int = 3) -> list[str]:
 
 def ideal_top(lab: dict, rnd: int) -> tuple[float, float]:
     """(score the ideal completion must reach, tolerance) for `grpo.py check`. Rounds 3 and 4: the historical table. Round 5:
-    the export's per-row `label.ceiling` on text rows, at top - 0.01 on non-call finals and top - 0.31 on calls."""
+    the export's per-row `label.ceiling` on text rows, at top - 0.01 on every step (a call or load ideal is scored by the same
+    reward and must reach its ceiling too: the old 0.31 slack on calls would let a mislabelled ceiling through)."""
     mod = lab.get("modality")
     if rnd >= 5 and mod not in ("vision", "audio"):
         if lab.get("ceiling") is None:
             raise ValueError("a round-5 text row has no label.ceiling")
-        return float(lab["ceiling"]), (0.31 if lab.get("step") in ("call", "load") else 0.01)
+        return float(lab["ceiling"]), 0.01
     top = {"vision": 1.5, "audio": 1.25}.get(mod, 1.5 if lab.get("step") in ("call", "load") else 1.0)
     if rnd >= 4 and lab.get("narrate") and lab.get("facts"):
         top = 2.0                        # tool set 1.0 + the answer facts, now up to 1.0
@@ -203,7 +219,11 @@ def truncated(comp: list[int], stop_ids) -> bool:
 BUCKETS = ("call", "select", "narrate", "recall", "recall_none", "decision", "instruction", "chat_anchor", "session_anchor", "text", "mm")
 ANCHOR_KINDS = ("chat_anchor", "session_anchor")
 INFORMATIVE_TERMS = ("forbidden", "early_write", "planted", "payload_text", "wrong_target", "nothing_claim")
-BUCKET_STATS = ("groups", "samples", "trunc", "zv", "zv_pass", "zv_fail", "informative", "abs_adv", "adv_n", "pg_norm", "kl_norm", "norm_n")
+BUCKET_STATS = ("groups", "samples", "trunc", "zv", "zv_pass", "zv_fail", "informative", "abs_adv", "adv_n", "pg_norm", "kl_norm", "norm_n",
+                "kl_sum", "tok")
+MM_STAT_BUCKETS = ("mm_vision", "mm_audio", "mm_picture_read")
+# the counters (and the log) keep the three multimodal classes apart: their |A|, k3 and zero-variance behave differently
+STAT_BUCKETS = tuple(b for b in BUCKETS if b != "mm") + MM_STAT_BUCKETS
 
 
 def bucket_of(label: dict, modality: str = "text") -> str:
@@ -214,8 +234,18 @@ def bucket_of(label: dict, modality: str = "text") -> str:
     return k if k in BUCKETS else "text"
 
 
+def stat_bucket_of(label: dict, modality: str = "text") -> str:
+    """The bucket a prompt's counters go to: bucket_of for text rows, and for multimodal rows mm_vision / mm_audio / mm_picture_read
+    (picture_read is a vision row whose label.kind or label.task says so)."""
+    if modality == "text":
+        return bucket_of(label, modality)
+    if modality == "audio":
+        return "mm_audio"
+    return "mm_picture_read" if "picture_read" in (label.get("kind"), label.get("task")) else "mm_vision"
+
+
 def bucket_keys() -> list[str]:
-    return [f"{b}/{s}" for b in BUCKETS for s in BUCKET_STATS]
+    return [f"{b}/{s}" for b in STAT_BUCKETS for s in BUCKET_STATS]
 
 
 def group_flags(totals: list[float], parts_list: list[dict], ceiling: float | None, trunc: list[bool],
@@ -235,7 +265,7 @@ def bucket_log(tot: dict) -> dict:
     """Shares per bucket from the rank-summed counters (a bucket with no groups this step is left out). Zero-variance shares
     are over the bucket's groups; all-pass / all-fail are the two halves of that."""
     out = {}
-    for b in BUCKETS:
+    for b in STAT_BUCKETS:
         g = tot.get(f"{b}/groups", 0.0)
         if not g:
             continue
@@ -243,6 +273,8 @@ def bucket_log(tot: dict) -> dict:
              "zv_share": round(tot[f"{b}/zv"] / g, 4), "zv_pass": round(tot[f"{b}/zv_pass"] / g, 4),
              "zv_fail": round(tot[f"{b}/zv_fail"] / g, 4), "informative_share": round(tot[f"{b}/informative"] / g, 4),
              "mean_abs_adv": round(tot[f"{b}/abs_adv"] / max(1.0, tot[f"{b}/adv_n"]), 4)}
+        if tot.get(f"{b}/tok"):
+            d["k3"] = round(tot[f"{b}/kl_sum"] / tot[f"{b}/tok"], 6)                 # mean per-token k3 of this bucket's completions
         if tot.get(f"{b}/norm_n"):
             n = tot[f"{b}/norm_n"]
             pg, kl = tot[f"{b}/pg_norm"] / n, tot[f"{b}/kl_norm"] / n
@@ -282,6 +314,52 @@ def adjusted_reward(rows: list[dict], weights: dict) -> float | None:
     return num / den if den else None
 
 
+def window_steps(lo_prompt: int, hi_prompt: int, prompts_per_step: int) -> tuple[int, int]:
+    """Slice indexes (first, last) into a per-step list for the steps lying wholly inside prompts lo_prompt+1 .. hi_prompt
+    (step i covers prompts i*ppst+1 .. (i+1)*ppst). Prompts 301-400 at 8 prompts a step is steps 38..49, not 37..49."""
+    ppst = max(1, prompts_per_step)
+    return -(-lo_prompt // ppst), hi_prompt // ppst
+
+
+def weighted_zv(hist: list[dict], weights: dict) -> tuple[float, float]:
+    """(all-fail share, total zero-variance share) over PG-bearing text groups in a window of steps, in the export mix: per bucket
+    the share of its groups, then the buckets combined with the FIXED export-share weights (the same composition as the M6b
+    baselines zv0_fail / zv0_total). hist = per step {bucket: (groups, zv_fail, zv)}. A bucket with no groups in the window
+    drops out and the remaining weights renormalise."""
+    g: dict[str, list[float]] = {}
+    for step in hist:
+        for b, (n, zf, z) in step.items():
+            acc = g.setdefault(b, [0.0, 0.0, 0.0])
+            acc[0] += n
+            acc[1] += zf
+            acc[2] += z
+    num_f = num_t = den = 0.0
+    for b, (n, zf, z) in g.items():
+        w = weights.get(b, 0.0)
+        if n and w:
+            num_f += w * zf / n
+            num_t += w * z / n
+            den += w
+    return (num_f / den, num_t / den) if den else (0.0, 0.0)
+
+
+def s_learn_soft(adj_first: float | None, adj_second: float | None, bands: dict, now: dict) -> dict:
+    """The S-learn soft check at 200 prompts (logged, never a stop): did a probe target move up beyond its replicate band
+    (primary), or did the adjusted reward rise? bands = {metric: (m0, band)}, now = the latest probe's metrics."""
+    moved = {}
+    for k, (m0, band) in bands.items():
+        if k in now:
+            moved[k] = {"now": round(now[k], 4), "m0": round(m0, 4), "band": round(band, 4), "up": bool(now[k] - m0 > band)}
+    gain = None if adj_first is None or adj_second is None else adj_second - adj_first
+    return {"adj_first100": adj_first, "adj_101_200": adj_second, "adj_gain": gain, "targets": moved,
+            "any_target_up": any(v["up"] for v in moved.values())}
+
+
+def parse_steps(spec: str | None) -> set:
+    """'1,5,20' -> {1, 5, 20} (1-based step numbers)."""
+    return {int(x) for x in str(spec or "").replace(" ", "").split(",") if x}
+
+
 def s_learn_hard(adj_first: float | None, adj_last: float | None, delta: float, zv_fail: float, zv0_fail: float,
                  zv_total: float, zv0_total: float, margin: float = 0.15) -> bool:
     """S-learn hard stop at prompt 400 (RL-SCOPE 8.2): the adjusted reward over prompts 301-400 has not risen above prompts 1-100
@@ -308,11 +386,29 @@ _ADAPTER_RE = re.compile(r"\.layers\.(\d+)\.(self_attn|mlp)\.(q_proj|k_proj|v_pr
 ALWAYS_ADAPTED = ("q_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
 
 
+def _ranges(layers: list[int]) -> str:
+    """[0,1,2,4,5] -> '0-2,4-5': gaps stay visible."""
+    out, i = [], 0
+    ls = sorted(layers)
+    while i < len(ls):
+        j = i
+        while j + 1 < len(ls) and ls[j + 1] == ls[j] + 1:
+            j += 1
+        out.append(str(ls[i]) if i == j else f"{ls[i]}-{ls[j]}")
+        i = j + 1
+    return ",".join(out)
+
+
+LAYOUT_REMEDY = ("fix TARGET_RE in grpo.py so it matches every language layer's q/o/gate/up/down and k/v on layers that build their own KV; "
+                 "check num_kv_shared_layers in the base's config.json and that load_policy returns the multimodal class (towers frozen)")
+
+
 def lora_layout(names: list[str], n_layers: int, kv_first: int | None = None) -> dict:
     """Check where the LoRA adapters landed. `names` = the module names ending '.lora_A'. q/o/gate/up/down must be on every
     language layer and nothing may sit outside the language model; k_proj/v_proj exist only on layers that build their own
     KV, so an adapter on a KV-shared layer (index >= kv_first, from config num_kv_shared_layers) could never get a gradient
-    and DDP with find_unused_parameters=False would fail on it. Returns {problems, warnings, per_layer, summary}."""
+    and DDP with find_unused_parameters=False would fail on it. With kv_first known, every layer below it must carry k_proj
+    (a gap there is a layer the regex missed). Returns {problems, warnings, per_layer, summary}; the summary shows gaps as ranges."""
     problems, warnings = [], []
     per_layer: dict[int, set] = {}
     outside = 0
@@ -339,17 +435,20 @@ def lora_layout(names: list[str], n_layers: int, kv_first: int | None = None) ->
             shared = [i for i in layers if i >= kv_first]
             if shared:
                 problems.append(f"{p} adapter on KV-shared layers {shared[:5]} (>= {kv_first}): they get no gradient")
+        gap = [i for i in range(min(kv_first, n_layers)) if "k_proj" not in per_layer.get(i, ())]
+        if gap and kv["k_proj"]:
+            problems.append(f"k_proj adapter missing on non-shared layers {_ranges(gap)} (< {kv_first}): they build their own KV")
     for i in range(n_layers):
         s = per_layer.get(i, set())
         if ("k_proj" in s) != ("v_proj" in s):
             warnings.append(f"layer {i} has {'k_proj' if 'k_proj' in s else 'v_proj'} but not its pair")
 
     def span(layers):
-        return f"{len(layers)}/{n_layers}" + (f" (layers {layers[0]}-{layers[-1]})" if layers else "")
+        return f"{len(layers)}/{n_layers}" + (f" (layers {_ranges(layers)})" if layers else "")
     summary = f"k_proj adapters on {span(kv['k_proj'])}, v_proj on {span(kv['v_proj'])}; q/o/gate/up/down on all {n_layers}" \
         if not problems else "; ".join(problems)
     return {"problems": problems, "warnings": warnings[:5], "per_layer": {i: sorted(s) for i, s in sorted(per_layer.items())},
-            "kv_layers": kv, "summary": summary}
+            "kv_layers": kv, "summary": summary, "remedy": LAYOUT_REMEDY if problems else None}
 
 
 def kv_shared_first(config: dict) -> int | None:

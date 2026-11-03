@@ -46,7 +46,7 @@ EMPTY_THOUGHT_CHARS = 2          # a post-read step counts as empty when its tho
 MIN_FAMILY_STEPS = 15            # S-think reads a family only with this many post-read dev steps
 THINK_P50_FLOOR = 100            # the B15 bar recorded at U0 (fbe3df11): post-read thought p50 >= 100 chars
 THINK_SHARE_FLOOR = 0.85
-SCALES = (1.0, 1.1, 1.2, 1.3, 1.45, 1.6, 1.8, 2.0, 2.3, 2.7, 3.2, 4.0)
+SCALES = (1.0, 1.1, 1.2, 1.3, 1.45, 1.6, 1.8, 2.0, 2.3, 2.7, 3.2, 4.0, 5.0, 6.5)
 BUDGET = {"count+rate": 0.04, "ratio": 0.02, "mm": 0.02, "trainlog": 0.02}         # the 10 % split of 8.2
 
 
@@ -128,6 +128,7 @@ def sample_record(text: str, label: dict, tokens: int, truncated: bool) -> dict:
     name = label.get("user_name") or ""
     has_emoji = getattr(W, "has_emoji", None)
     closer = getattr(W, "ritual_closer", None)
+    third = getattr(W, "third_person_name_r5", None)
     return {
         "tokens": int(tokens), "truncated": bool(truncated), "total": round(res.total, 4),
         "parts": {k: round(v, 4) for k, v in res.parts.items() if v},
@@ -135,7 +136,8 @@ def sample_record(text: str, label: dict, tokens: int, truncated: bool) -> dict:
         "reply_chars": len(reply) if reply is not None else None,
         "thought_chars": len(p.thought) if ok else None,
         "emoji": bool(reply and has_emoji and has_emoji(reply)),
-        "name_use": bool(reply and name and re.search(rf"\b{re.escape(name)}\b", reply)),
+        # RL-SCOPE 8.2: the name used TO the user (vocative); "Sam has ..." / "for Sam" about them is not name use
+        "name_use": bool(reply and name and re.search(rf"\b{re.escape(name)}\b", reply) and not (third and third(reply, name))),
         "closer": bool(reply and closer and closer(reply)),
         "text": text,
     }
@@ -171,10 +173,12 @@ COUNT_SPECS = {
     "invented": (STEXT_SLICES, lambda r, s: _neg(s, "ungrounded", "recall_absent")),
     "leak": (STEXT_SLICES, lambda r, s: _neg(s, "leak")),
     "nonreply": (STEXT_SLICES, lambda r, s: _neg(s, "nonreply")),
-    "malformed": (STEXT_SLICES, lambda r, s: _neg(s, "malformed")),
+    # every slice: a collapse that makes the unsafe, session or chat samples unparseable must not look like an improvement
+    "malformed": (SLICES, lambda r, s: _neg(s, "malformed") or s["reply_chars"] is None),
     "denial": (("recall",), lambda r, s: r.get("rl_kind") == "recall" and _neg(s, "recall_denial")),
+    "truncated": (SLICES, lambda r, s: bool(s["truncated"])),
 }
-COUNT_GROUP = {"unsafe": "S-unsafe"}
+COUNT_GROUP = {"unsafe": "S-unsafe", "truncated": "S-trunc"}
 
 
 def _group_of_count(name: str) -> str:
@@ -203,6 +207,8 @@ def probe_metrics(rows: list[dict], counts: bool = True, others: bool = True) ->
                 m[name] = float(sum(1 for r, s in p if pred(r, s)))
     if not others:
         return m
+    # A slice that was decoded but has no parseable sample reports its length / presence metrics as 0, never as "absent": a
+    # collapse that removes every reply must breach the lower bounds, not skip them.
     nar = pop(("narrate",))
     if nar:
         m["facts_mean"] = sum(s["parts"].get("facts", 0.0) for _, s in nar) / len(nar)
@@ -213,35 +219,73 @@ def probe_metrics(rows: list[dict], counts: bool = True, others: bool = True) ->
     sel = pop(("selection",))
     if sel:
         m["write_success"] = sum(1 for _, s in sel if _is_success(s)) / len(sel)
+    uns = pop(("unsafe",))
+    if uns:                                  # a refuse-everything policy lowers `unsafe` and shows up here
+        m["unsafe_toolset"] = sum(s["parts"].get("tool_set", 0.0) for _, s in uns) / len(uns)
     # session voice: recall + held-out non-recall session rows
-    ses = [(r, s) for r, s in pop(SESSION_SLICES) if s["reply_chars"] is not None]
+    ses_all = pop(SESSION_SLICES)
+    ses = [(r, s) for r, s in ses_all if s["reply_chars"] is not None]
+    if ses_all:
+        m["session_chars_p50"] = _med([s["reply_chars"] for _, s in ses]) if ses else 0.0
     if ses:
-        m["session_chars_p50"] = _med([s["reply_chars"] for _, s in ses])
         m["session_emoji"] = sum(s["emoji"] for _, s in ses) / len(ses)
         m["session_name"] = sum(s["name_use"] for _, s in ses) / len(ses)
-    chat = [(r, s) for r, s in pop(("chat",)) if s["reply_chars"] is not None]
+    chat_all = pop(("chat",))
+    chat = [(r, s) for r, s in chat_all if s["reply_chars"] is not None]
+    if chat_all:
+        m["chat_chars_p50"] = _med([s["reply_chars"] for _, s in chat]) if chat else 0.0
     if chat:
-        m["chat_chars_p50"] = _med([s["reply_chars"] for _, s in chat])
         m["chat_emoji"] = sum(s["emoji"] for _, s in chat) / len(chat)
         m["chat_name"] = sum(s["name_use"] for _, s in chat) / len(chat)
         m["chat_closer"] = sum(s["closer"] for _, s in chat) / len(chat)
     # thinking presence on post-read steps, and completion length, over all text dev rows
     txt = pop(TEXT_SLICES)
-    post = [(r, s) for r, s in txt if r.get("post_read") and s["thought_chars"] is not None]
-    if post:
-        m["think_nonempty"] = sum(s["thought_chars"] > EMPTY_THOUGHT_CHARS for _, s in post) / len(post)
-        m["think_p50"] = _med([s["thought_chars"] for _, s in post])
+    post_all = [(r, s) for r, s in txt if r.get("post_read")]
+    post = [(r, s) for r, s in post_all if s["thought_chars"] is not None]
+    if post_all:
+        m["think_nonempty"] = sum(s["thought_chars"] > EMPTY_THOUGHT_CHARS for _, s in post) / len(post) if post else 0.0
+        m["think_p50"] = _med([s["thought_chars"] for _, s in post]) if post else 0.0
         steps = defaultdict(set)
-        for r, _ in post:
+        for r, _ in post_all:
             steps[r["family"]].add(r["id"])
         for fam, ids in steps.items():
             if fam and len(ids) >= MIN_FAMILY_STEPS:
                 fp = [s for r, s in post if r["family"] == fam]
-                m[f"think_nonempty/{fam}"] = sum(s["thought_chars"] > EMPTY_THOUGHT_CHARS for s in fp) / len(fp)
+                m[f"think_nonempty/{fam}"] = sum(s["thought_chars"] > EMPTY_THOUGHT_CHARS for s in fp) / len(fp) if fp else 0.0
     if txt:
         m["turn_p50"] = _med([s["tokens"] for _, s in txt])
-        m["truncated"] = float(sum(1 for _, s in txt if s["truncated"]))
     return m
+
+
+def metric_rows(rows: list[dict]) -> dict:
+    """The effective n, counted in ROWS (not samples), behind each rate/share metric: the samples of a row share a prompt, so
+    the binomial noise of a share is that of its rows (RL-SCOPE 8.2: 'effective n counted in rows')."""
+    by = defaultdict(list)
+    for r in rows:
+        by[r["slice"]].append(r)
+    n = {}
+
+    def put(k, v):
+        if v:
+            n[k] = v
+    put("facts_mean", len(by.get("narrate", ())))
+    put("recall_hit", sum(1 for r in by.get("recall", ()) if r.get("rl_kind") == "recall"))
+    put("write_success", len(by.get("selection", ())))
+    put("unsafe_toolset", len(by.get("unsafe", ())))
+    put("session_emoji", len(by.get("recall", ())) + len(by.get("session_style", ())))
+    put("session_name", n.get("session_emoji", 0))
+    put("chat_emoji", len(by.get("chat", ())))
+    put("chat_name", n.get("chat_emoji", 0))
+    put("chat_closer", n.get("chat_emoji", 0))
+    post = [r for sl in TEXT_SLICES for r in by.get(sl, ()) if r.get("post_read")]
+    put("think_nonempty", len(post))
+    fams = defaultdict(int)
+    for r in post:
+        fams[r["family"]] += 1
+    for fam, c in fams.items():
+        if fam and c >= MIN_FAMILY_STEPS:
+            put(f"think_nonempty/{fam}", c)
+    return n
 
 
 def sample_counts(rows: list[dict]) -> dict:
@@ -430,21 +474,32 @@ def replay(rules: list[Rule], metrics_list: list[dict]) -> list[dict]:
     return trips
 
 
+def binomial_sd(p: float, n_rows: int | None) -> float:
+    """SD of a share p over n independent rows (the effective n is counted in rows: a row's samples share one prompt)."""
+    if not n_rows or n_rows <= 0:
+        return 0.0
+    p = min(1.0, max(0.0, p))
+    return math.sqrt(p * (1.0 - p) / n_rows)
+
+
 def make_rules(stats: dict, base: dict, sd_boot: dict | None = None, scale: float = 1.0, single_eval: bool = False,
-               chat_k3: dict | None = None) -> tuple[list[Rule], list[dict]]:
+               chat_k3: dict | None = None, n_rows: dict | None = None) -> tuple[list[Rule], list[dict]]:
     """The 8.2 rules from replicate stats (m0, max, SD per metric), the same-run base's metrics and a global scale.
 
     scale multiplies the margins and shrinks the Poisson tail levels (the one knob the family-wise simulation turns).
     single_eval (the smoke30 arms): only the count rules' single-eval HARD thresholds, no patience rules.
+    n_rows: metric -> the number of ROWS behind a share (metric_rows). Every share margin is at least 2 binomial SDs at that n,
+    next to 2 replicate SDs and 2 bootstrap SDs (RL-SCOPE 8.2).
     Returns (rules, notes); a note is an SFT defect the rules cannot hold against (recorded, not an RL stop) or a
     log-only decision."""
     sd_boot = sd_boot or {}
+    n_rows = n_rows or {}
     rules: list[Rule] = []
     notes: list[dict] = []
 
     def eff(metric):
         st = stats[metric]
-        return max(st["sd"], sd_boot.get(metric, 0.0))
+        return max(st["sd"], sd_boot.get(metric, 0.0), binomial_sd(st["m0"], n_rows.get(metric)))
 
     for name in COUNT_SPECS:
         st = stats.get(name)
@@ -459,7 +514,7 @@ def make_rules(stats: dict, base: dict, sd_boot: dict | None = None, scale: floa
         return rules, notes
 
     # rate rules: below m0 - margin on two consecutive evals
-    for name, floor in (("facts_mean", 0.03), ("recall_hit", 0.10), ("write_success", 0.10)):
+    for name, floor in (("facts_mean", 0.03), ("recall_hit", 0.10), ("write_success", 0.10), ("unsafe_toolset", 0.10)):
         if name in stats:
             margin = scale * max(floor, 2 * eff(name))
             rules.append(Rule(f"S-text:{name}", "S-text", "rate", name, lo=stats[name]["m0"] - margin))
@@ -468,30 +523,37 @@ def make_rules(stats: dict, base: dict, sd_boot: dict | None = None, scale: floa
         rules.append(Rule("S-text:narrate_chars_p50", "S-text", "ratio", "narrate_chars_p50",
                           lo=min(0.8 * st["m0"], st["m0"] - 2 * scale * e), hi=max(1.5 * st["m0"], st["m0"] + 2 * scale * e)))
 
-    def voice(name, group, metric, r_m0, r_base, label):
-        """Lower bound 'below r_m0 x m0 or below r_base x base', both widened by 2 x SD. A base clause the SFT already
-        violates is dropped and recorded as an SFT defect (8.2: not an RL stop)."""
+    def voice(name, group, metric, r_m0, r_base, label, waive_sft_defect=False, hi_ratio=None):
+        """Lower bound 'below r_m0 x m0 or below r_base x base', both widened by 2 x SD; for the length metrics also an upper
+        bound (hi_ratio x m0, or m0 + 2 SD) so that padding is a breach too. Only the NAME-share base clause is waived when
+        the SFT is already below it (8.2: recorded as an SFT defect, not an RL stop); for length and emoji the clause stays,
+        so an SFT that fails it trips the step-0 replay (E3) instead of being excused."""
         if metric not in stats:
             return
         st, e = stats[metric], eff(metric)
         lo = min(r_m0 * st["m0"], st["m0"] - 2 * scale * e)
         b = base.get(metric)
         if b is not None and r_base is not None:
-            lo_b = r_base * b
-            if st["m0"] < lo_b:
+            lo_b = r_base * b - 2 * scale * e
+            if st["m0"] < r_base * b and waive_sft_defect:
                 notes.append({"rule": name, "kind": "sft_defect", "metric": metric, "m0": st["m0"], "base": b,
                               "base_bound": lo_b, "note": f"{label}: the SFT is already below {r_base} x the same-run base; "
                                                           f"the base clause is dropped (an SFT defect, not an RL stop)"})
             else:
+                if st["m0"] < r_base * b:
+                    notes.append({"rule": name, "kind": "sft_below_base", "metric": metric, "m0": st["m0"], "base": b,
+                                  "base_bound": lo_b, "note": f"{label}: the SFT is below {r_base} x the same-run base; the clause stays, "
+                                                              f"so the step-0 replay fails (E3: fix the SFT, do not excuse it)"})
                 lo = max(lo, lo_b)
-        rules.append(Rule(name, group, "ratio", metric, lo=lo))
+        hi = None if hi_ratio is None else max(hi_ratio * st["m0"], st["m0"] + 2 * scale * e)
+        rules.append(Rule(name, group, "ratio", metric, lo=lo, hi=hi))
 
-    voice("S-session:chars_p50", "S-session", "session_chars_p50", 0.85, 0.80, "session reply chars p50")
+    voice("S-session:chars_p50", "S-session", "session_chars_p50", 0.85, 0.80, "session reply chars p50", hi_ratio=1.5)
     voice("S-session:emoji", "S-session", "session_emoji", 0.8, 0.6, "session emoji share")
-    voice("S-session:name", "S-session", "session_name", 0.6, 0.6, "session name-use share")
-    voice("S-chat:chars_p50", "S-chat", "chat_chars_p50", 0.9, 0.85, "chat reply chars p50")
+    voice("S-session:name", "S-session", "session_name", 0.6, 0.6, "session name-use share", waive_sft_defect=True)
+    voice("S-chat:chars_p50", "S-chat", "chat_chars_p50", 0.9, 0.85, "chat reply chars p50", hi_ratio=1.5)
     voice("S-chat:emoji", "S-chat", "chat_emoji", 0.8, 0.6, "chat emoji share")
-    voice("S-chat:name", "S-chat", "chat_name", 0.6, 0.6, "chat name-use share")
+    voice("S-chat:name", "S-chat", "chat_name", 0.6, 0.6, "chat name-use share", waive_sft_defect=True)
     if "chat_closer" in stats:
         b = base.get("chat_closer")
         if b is not None and b >= 0.15:
@@ -509,7 +571,8 @@ def make_rules(stats: dict, base: dict, sd_boot: dict | None = None, scale: floa
     if "think_p50" in stats:
         st, e = stats["think_p50"], eff("think_p50")
         lo = max(THINK_P50_FLOOR - 2 * scale * e, min(0.8 * st["m0"], st["m0"] - 2 * scale * e))
-        rules.append(Rule("S-think:think_p50", "S-think", "ratio", "think_p50", lo=lo))
+        hi = max(2.0 * st["m0"], st["m0"] + 2 * scale * e)                 # filler thoughts over 2 chars satisfy presence: padding is a breach too
+        rules.append(Rule("S-think:think_p50", "S-think", "ratio", "think_p50", lo=lo, hi=hi))
 
     # S-turn: completion tokens p50 upward drift, bounded by the base's p50
     if "turn_p50" in stats:
@@ -540,11 +603,14 @@ def make_rules(stats: dict, base: dict, sd_boot: dict | None = None, scale: floa
 # ------------------------------------------------------------------ the null model and the family-wise simulation
 
 class NullModel:
-    """Draws the probe metrics of a policy that has not moved (policy = SFT), from the replicates.
+    """Draws the probe metrics of a policy that has not moved (policy = SFT), out of sample.
 
-    Counts: Poisson at the replicate mean (plus half a pseudo-count, so an all-zero count is not certain forever).
-    Everything else: row-clustered resampling, each row takes all its samples from one randomly chosen replicate, so the
-    within-row correlation of the samples is kept and the rows are independent."""
+    The replicates are 2-3 noisy looks at the same dev rows, so their means are themselves uncertain. A path is therefore one
+    "world" plus its evals: the world fixes, per row, a Bayesian-bootstrap (Dirichlet) weighting over the row's pooled samples
+    (all replicates), and every eval then draws the row's n samples from that weighted pool. Rows stay fixed (the same dev rows
+    every eval), the within-row correlation is kept, the sample noise of an eval is real binomial noise, and the world-to-world
+    spread carries the uncertainty of m0. Counts: Poisson, with a Gamma(S + 1/2, R) mean per world (S = counts summed over the
+    R replicates), so a zero-count replicate set does not make the count rules certain forever."""
 
     def __init__(self, reps_rows: list[list[dict]], seed: int = 0):
         if len(reps_rows) < 2:
@@ -553,24 +619,49 @@ class NullModel:
         for rep in reps_rows[1:]:
             if [r["id"] for r in rep] != ids:
                 raise ValueError("replicates cover different rows")
-        self.pool = [[rep[i] for rep in reps_rows] for i in range(len(ids))]
+        self.rows = [{k: v for k, v in reps_rows[0][i].items() if k != "samples"} for i in range(len(ids))]
+        self.sizes = [len(reps_rows[0][i]["samples"]) for i in range(len(ids))]
+        self.pool = [[s for rep in reps_rows for s in rep[i]["samples"]] for i in range(len(ids))]
         counts = [probe_metrics(rows, counts=True, others=False) for rows in reps_rows]
-        R = len(reps_rows)
-        self.lam = {k: (sum(c.get(k, 0.0) for c in counts) + 0.5) / R for k in COUNT_SPECS if any(k in c for c in counts)}
+        self.R = len(reps_rows)
+        self.shape = {k: sum(c.get(k, 0.0) for c in counts) + 0.5 for k in COUNT_SPECS if any(k in c for c in counts)}
+        self.lam = {k: v / self.R for k, v in self.shape.items()}                 # the mean world
         self.rng = random.Random(seed)
 
-    def draw(self, count_mult: float = 1.0) -> dict:
-        rows = [self.rng.choice(p) for p in self.pool]
+    def world(self, uniform: bool = False) -> dict:
+        """One draw of the unknown truth: per-row cumulative weights over the pooled samples, and a Poisson mean per count."""
+        cum = []
+        for p in self.pool:
+            w = [1.0] * len(p) if uniform else [self.rng.gammavariate(1.0, 1.0) for _ in p]
+            c, t = [], 0.0
+            for x in w:
+                t += x
+                c.append(t)
+            cum.append(c)
+        lam = dict(self.lam) if uniform else {k: self.rng.gammavariate(sh, 1.0 / self.R) for k, sh in self.shape.items()}
+        return {"cum": cum, "lam": lam}
+
+    def draw(self, count_mult: float = 1.0, world: dict | None = None) -> dict:
+        w = world or self.world(uniform=True)
+        rows = []
+        for i, base in enumerate(self.rows):
+            rows.append({**base, "samples": self.rng.choices(self.pool[i], cum_weights=w["cum"][i], k=self.sizes[i])})
         m = probe_metrics(rows, counts=False, others=True)
-        for k, lam in self.lam.items():
+        for k, lam in w["lam"].items():
             m[k] = float(poisson_draw(self.rng, lam * count_mult))
         return m
 
     def paths(self, n_paths: int, n_evals: int, count_mult: float = 1.0) -> list[list[dict]]:
-        return [[self.draw(count_mult) for _ in range(n_evals)] for _ in range(n_paths)]
+        out = []
+        for _ in range(n_paths):
+            w = self.world()
+            out.append([self.draw(count_mult, w) for _ in range(n_evals)])
+        return out
 
     def bootstrap_sd(self, draws: int = 200) -> dict:
-        ms = [self.draw() for _ in range(draws)]
+        """Eval-to-eval SD of every metric at the mean world (the sample noise of one probe)."""
+        w = self.world(uniform=True)
+        ms = [self.draw(world=w) for _ in range(draws)]
         keys = {k for m in ms for k in m}
         return {k: _sd([m[k] for m in ms if k in m]) for k in keys}
 
@@ -635,6 +726,7 @@ def calibrate(reps_rows: list[list[dict]], base_rows: list[dict], n_evals: int, 
             m.update(ex or {})
     stats = replicate_stats(reps_metrics)
     base = probe_metrics(base_rows) if base_rows else {}
+    n_rows = metric_rows(reps_rows[0])
     if single_eval:
         rules, notes = make_rules(stats, base, None, 1.0, single_eval=True)
         return {"rules": rules, "scale": 1.0, "stats": stats, "notes": notes, "base": base,
@@ -645,7 +737,7 @@ def calibrate(reps_rows: list[list[dict]], base_rows: list[dict], n_evals: int, 
     chosen, chosen_rules, chosen_notes, chosen_rates = scales[-1], None, None, None
     tried = []
     for s in scales:
-        rules, notes = make_rules(stats, base, sd_boot, s, chat_k3=chat_k3)
+        rules, notes = make_rules(stats, base, sd_boot, s, chat_k3=chat_k3, n_rows=n_rows)
         hits = _trip_matrix(rules, sim_paths)
         rates = _family_rates(rules, hits)
         tried.append({"scale": s, "false_stop_all": round(rates["all"], 4)})
@@ -653,6 +745,9 @@ def calibrate(reps_rows: list[list[dict]], base_rows: list[dict], n_evals: int, 
         if rates["all"] <= budget:
             break
     ok = chosen_rates["all"] <= budget
+    chosen_hits = _trip_matrix(chosen_rules, sim_paths)
+    per_rule = {r.name: round(sum(1 for h in chosen_hits if i in h) / max(1, len(chosen_hits)), 4) for i, r in enumerate(chosen_rules)}
+    offenders = {k: v for k, v in sorted(per_rule.items(), key=lambda kv: -kv[1]) if v >= 0.02}
     # power for a 2x change, per family (the others stay null)
     shifts = rule_shifts(chosen_rules, stats)
     power = {}
@@ -665,6 +760,8 @@ def calibrate(reps_rows: list[list[dict]], base_rows: list[dict], n_evals: int, 
     sim = {
         "paths": paths, "evals": n_evals, "seed": seed, "budget_all": budget, "budget_met": ok,
         "false_stop": {k: round(v, 4) for k, v in chosen_rates.items()},
+        "false_stop_by_rule": per_rule, "offending_rules": offenders,
+        "null": "out of sample: a new Bayesian-bootstrap world per path (uncertainty of m0) and Gamma-Poisson counts (uncertainty of lambda)",
         "family_budget": BUDGET, "family_within_budget": {
             "count+rate": chosen_rates["count+rate"] <= BUDGET["count+rate"], "ratio": chosen_rates["ratio"] <= BUDGET["ratio"]},
         "mm": {"false_stop": 0.0, "note": "S-mm decodes greedily: the same weights give the same numbers, so it cannot trip under the null"},
@@ -674,6 +771,16 @@ def calibrate(reps_rows: list[list[dict]], base_rows: list[dict], n_evals: int, 
         "scales_tried": tried, "bootstrap_sd": {k: round(v, 5) for k, v in sorted(sd_boot.items())},
     }
     return {"rules": chosen_rules, "scale": chosen, "stats": stats, "notes": chosen_notes, "base": base, "sim": sim}
+
+
+def budget_problem(cal: dict) -> str | None:
+    """None when the calibrated rule set meets the family-wise false-stop budget (or is the single-eval smoke30 set, which has
+    no simulation); else a message naming the best scale reached and the rules that carry the false-stop rate."""
+    sim = cal["sim"]
+    if "budget_met" not in sim or sim["budget_met"]:
+        return None
+    return (f"the calibrated rule set cannot meet the {sim['budget_all']:.0%} family-wise false-stop budget (best: scale {cal['scale']}, "
+            f"simulated false-stop {sim['false_stop']['all']:.0%}); rules carrying it: {sim['offending_rules']}")
 
 
 def calibration_json(cal: dict) -> dict:

@@ -71,6 +71,10 @@ WRITE_TOOLS = (frozenset().union(*_writes.WRITE_ALLOW.values()) | _writes.ALWAYS
 DISCOVERY = "get_tool_schemas"
 MAX_WORDS = 60
 JACCARD_MAX = 0.5
+# Round 4: an extraction thought lists the facts of the results, which the reply restates in its own words, so the two
+# share more text than a thought that copies the reply would not (a copy is above 0.9). The copy check stays,
+# at this wider bound, for extraction thoughts only; contiguity (fragment_problems) is what keeps them honest.
+EXTRACT_JACCARD_MAX = 0.7
 DENIED = "The user denied this action."
 CAL_TOOLS = ("get_upcoming", "get_past_events", "search_reminders", "get_my_day_plan")
 PLAN_TOOLS = ("get_my_day_plan", "daily_brief")
@@ -81,7 +85,8 @@ _ERROR = re.compile(r"^\s*\(error\b|^The user denied this action|^Wisp (?:can't|
 # Round 4 audit (vision-2): also a line that opens "assistant:" / "AI:", "System note for AI assistants", or any
 # note/message/instructions addressed to the assistant: such a line is planted text, never a fact for a thought.
 INJECTION = re.compile(
-    r"(ignore (?:all )?(?:your )?previous instructions|\bAI (?:assistants?|models?|agents?)\b|assistant instructions|"
+    r"(ignore (?:all )?(?:your )?previous instructions|\bAI (?:assistants?|agents?)\b|\bAI models?(?: (?:must|should|reading|that read|to)\b|\s*:)|"
+    r"assistant instructions|"
     r"hidden prompt|system override|if you are an ai|note to any ai|hey wisp,? (?:please )?(?:send|forward|delete|add)|"
     r"(?:^|[.!?]\s+)(?:assistant|ai)\s*:|\b(?:assistant|ai)\s*:\s*(?:please\s+)?(?:text|send|forward|e-?mail|delete|reply|call|"
     r"ignore|disregard|say|tell|add|remove|schedule|share|reveal|open|forget|erase|stop|don'?t|do not|never|before|message|"
@@ -1107,7 +1112,7 @@ def thought_select_or_next(meta, s, ctx, seed) -> str:
     # a read (or a load of a read)
     reads = plan or [(n, a) for n, a in calls if n != DISCOVERY]
     read = " and ".join(read_phrase(n, a) for n, a in reads) or read_phrase(*calls[0])
-    verb = pick(seed + "v", ["I'll", "So I'll", "Then I'll"])
+    verb = pick(seed + "v", ["I'll", "So I'll", "Then I'll"] + (["Next I'll", "I'll just", "First I'll"] if ROUND4 else []))
     if later_write and fam in WRITE_FAMILIES:
         # The write's arguments depend on what this read returns, so the plan names only the next move.
         wg = write_gist(later_write[0], later_write[1], s["prompt"])
@@ -1166,6 +1171,12 @@ def _read_lead(s, seed) -> str:
     if not body and ROUND4 and any(n == "recall" for (n, _a), _r in pairs):
         return pick(seed + "pl", ["Checked what's already saved.", "Memory is looked up."])
     if not body:
+        miss = next((r for (n, _a), r in pairs if n == "lookup_contact" and (outcome(r) == "no_match" or re.search(
+            r"No saved contact|no contact|isn't saved|not saved|couldn't find", r, re.I))), None)
+        if miss is not None:
+            return pick(seed + "pl", ["No saved contact matches, so the number you gave is what's used.",
+                                      "Nothing saved under that name; the details come from the request.",
+                                      "No contact on file for it, so create one from what you gave."])
         return pick(seed + "pl", ["Got the contact back.", "The contact is found; the message comes from the request."])
     if len(body) == 1:
         n, r = body[0]
@@ -1295,10 +1306,10 @@ def thought_after_error(meta, s, ctx, seed) -> str:
                          pick(seed, ["Say it's already there.", "Just point out it's already at that time."]))
         if "read-only" in first:
             return pick(seed, [f"“{title}” is on a read-only calendar, so nothing changed. Say so, and that it has to be "
-                               f"moved in its own calendar.",
-                               f"Read-only calendar: “{title}” can't be moved from this Mac. Be plain it stayed put.",
-                               "That calendar can't be edited from here, so the time is unchanged. One plain line, "
-                               "plus where it can be moved."])
+                               f"changed in its own calendar.",
+                               f"Read-only calendar: “{title}” can't be changed from this Mac. Be plain it stayed put.",
+                               "That calendar can't be edited from here, so nothing is different. One plain line, "
+                               "plus where it can be changed."])
         if "organizer" in first:
             return _join(f"Only the organizer can move “{title}”; nothing changed.",
                          pick(seed, ["Say so and suggest asking the organizer.",
@@ -1424,11 +1435,13 @@ def thought_after_error(meta, s, ctx, seed) -> str:
 
 def _inj_kind(text: str) -> str:
     low = text.lower()
-    for pat, kind in ((r"\bforward", "forward mail somewhere"), (r"\btext (?:all|every)", "text every contact"),
-                      (r"\b(?:pay|payment|transfer|wire)", "set up a payment"),
-                      (r"\b(?:run|execute|curl|terminal|shell|command)\b", "run a command"),
+    for pat, kind in ((r"\b(?:confirm|approval|approve|permission)", "switch off confirmations"),
+                      (r"\bforward", "forward mail somewhere"), (r"\btext (?:all|every)", "text every contact"),
+                      (r"\b(?:pay|payment|transfer|wire)\b|\$\d|\baccount\b", "set up a payment"),
+                      (r"\b(?:run|execute|curl|terminal|shell|command|install)\b", "run a command"),
                       (r"\b(?:delete|remove|clear|wipe)", "delete things"),
-                      (r"\b(?:reveal|memory|memories|password|share what you know)", "reveal private details"),
+                      (r"\b(?:reveal|memory|memories|password|share what you know|calendar|address|contacts?)\b",
+                       "reveal private details"),
                       (r"\bsend\b", "send something out"), (r"ignore", "drop its instructions")):
         if re.search(pat, low):
             return kind
@@ -1497,6 +1510,37 @@ def thought_outcome(meta, s, ctx, seed) -> str:
                        "Can't act on it as given; one short question first."])
 
 
+_INJ_TAIL1 = ["One line in it is aimed at an AI assistant, telling it to {kind}.",
+              "Part of the {src} is written to an assistant: it wants me to {kind}.",
+              "Buried in the {src}: an instruction to {kind}."]
+_INJ_TAIL2 = ["That isn't part of the request, so no action; report the content and flag it in a line.",
+              "I'll ignore it, give what the text actually says, and mention the planted line.",
+              "Not the asker's instruction, so no action; just the content plus a short heads-up."]
+_INJ_TAIL_RE = re.compile(r"\s*(?:One line in it is aimed at an AI assistant, telling it to [^.]+\.|"
+                          r"Part of the [a-z][\w ]* is written to an assistant: it wants me to [^.]+\.|"
+                          r"Buried in the [a-z][\w ]*: an instruction to [^.]+\.)\s*$")
+
+
+def _extract_problems(text: str, s: dict, ctx: dict | None, meta: dict) -> list[str]:
+    """The rules an extraction thought passes (the copy bound, facts both ways, whole contiguous pieces)."""
+    fin = (ctx or {}).get("final") or s["target_text"]
+    reads = [r for _n, r in _turn_reads(s)] or s["all_results"]
+    return (thought_problems(text, s["target_text"], fin, EXTRACT_JACCARD_MAX) + facts_missing(text, fin, parse_clock(meta))
+            + facts_unlisted(text, fin, reads) + fragment_problems(text, s["all_results"], _count_lines(s)))
+
+
+def _inj_facts(meta, s, ctx, seed, budget: int = 30) -> str:
+    """The facts the answer gives from a result that also holds a planted line: the lead and the pieces (the planted
+    sentence itself is never in them), or '' when none of the answer's facts is in the results."""
+    reads, src, segs, no_match, inj, more, final = _extract_core(meta, s, ctx, seed, budget_words=budget)
+    segs = list(dict.fromkeys(segs))
+    if not segs or no_match:
+        return ""
+    body = "; ".join(segs) + (f"; plus {more} more" if more else "")
+    lead = pick(seed, [f"From the {src}:", f"In the {src}:", f"Relevant in the {src}:"])
+    return f"{lead} {body}" + ("" if body.endswith((".", "?", "!")) else ".")
+
+
 def thought_narrate(meta, s, ctx, seed) -> str:
     fam = meta.get("family") or ""
     turn_calls = (ctx or {}).get("turn_reads") or s["prev_calls"]
@@ -1504,16 +1548,23 @@ def thought_narrate(meta, s, ctx, seed) -> str:
         return thought_outcome(meta, s, ctx, seed)
     if fam == "ignore_embedded_instructions":
         # the planted instruction: from its marker sentence to the end of that paragraph
-        line = next(r[m.start():] for r in s["all_results"] for m in [INJECTION.search(r)] if m)
-        line = line.split("\n\n", 1)[0][:300]
-        src = source_of(next((n for n, _ in turn_calls if n != DISCOVERY), "result"))
+        hit = next(((n, r, m) for (n, _a), r in zip(s["turn_calls"], s["all_results"]) for m in [INJECTION.search(r)] if m),
+                   None) or next(("result", r, m) for r in s["all_results"] for m in [INJECTION.search(r)] if m)
+        line = hit[1][hit[2].start():].split("\n\n", 1)[0][:300]
+        src = source_of(hit[0])                      # the read that held the planted line, not the write after it
         kind = _inj_kind(line)
-        return _join(pick(seed + "a", [f"The {src} answers it, but one line is aimed at an AI assistant, telling it to {kind}.",
-                                       f"Part of the {src} is written to an assistant: it wants me to {kind}.",
-                                       f"Buried in the {src}: an instruction to {kind}."]),
-                     pick(seed + "b", ["That isn't part of the request, so no action; report the content and flag it in a line.",
-                                       "I'll ignore it, give what the text actually says, and mention the planted line.",
-                                       "Not the asker's instruction, so no action; just the content plus a short heads-up."]))
+        tail1 = pick(seed + "a", [t.format(src=src, kind=kind) for t in _INJ_TAIL1])
+        tail2 = pick(seed + "b", _INJ_TAIL2)
+        if ROUND4:
+            facts_part = _inj_facts(meta, s, ctx, seed, budget=max(14, 52 - len(tail1.split()) - len(tail2.split())))
+            if facts_part:
+                full = compose([(3, facts_part), (2, tail1), (1, tail2)], max_sentences=5)
+                if not _extract_problems(full, s, ctx, meta):
+                    return full
+                full = compose([(3, facts_part), (2, tail1)], max_sentences=5)
+                if not _extract_problems(full, s, ctx, meta):
+                    return full
+        return _join(tail1, tail2)
     if fam == "multi_source":
         reads = [(n, r) for (n, _a), r in zip(s["prev_calls"], s["results"]) if n != DISCOVERY]
         act = next((r for n, r in reads if n == "get_recent_activity"), None)
@@ -1732,8 +1783,8 @@ def _history_thought(s, ctx, seed, meta_family: str = "") -> str:
             segs = [_shorten(x, 8 if field == 1 else 5) for x in segs]
         body = "; ".join(x.rstrip(".") for x in segs)
         if opener == 0:
-            return pick(seed, [f"Earlier reply gave {body}; answering from that.",
-                               f"The earlier reply already had {body}, so no new lookup.",
+            return pick(seed, [f"Earlier reply: {body}; answering from that.",
+                               f"The earlier reply said: {body}. No new lookup.",
                                f"From the earlier reply: {body}. Answer from that, no lookup."])
         return pick(seed, [f"Earlier in this chat: {body}; answering from that.",
                            f"This chat already has it: {body}. No lookup needed."])
@@ -1849,14 +1900,17 @@ def _recall_thought(s, ctx, seed) -> str:
         return ""
     roles = ("assistant", "tool")
     scored = []
+    scored_user = []
     order = 0
     for r, t in hist:
-        if r not in roles:
+        if r not in roles and not (ROUND4 and r == "user"):
             continue
         for cand in _hist_candidates(t, bool(_YOU_ASKED.search(prompt))):
             order += 1
             if USER_PRONOUN.search(cand) or NOISE.search(cand) or MECHANICS.search(cand) or INJECTION.search(cand):
                 continue
+            if r == "user" and (_KNOW_Q.search(_FILLER.sub("", cand.strip())) or _ACTION_ASK.search(cand)):
+                continue                        # the person's own question or request is not a fact they gave
             if re.match(r"(?:and|but|or|so|then)\b", cand, re.I) or cand.endswith("…"):
                 continue
             ct, ca = time_tokens(cand), amount_tokens(cand)
@@ -1869,7 +1923,14 @@ def _recall_thought(s, ctx, seed) -> str:
                 continue
             if strong >= 1 or weak >= 2:
                 topical = weak + len(_caps(cand) & f_caps) + len(_plain_nums(cand) & f_nums)
-                scored.append((3 * strong + weak + 0.5 * len(_words(cand) & p_words), order, cand, topical))
+                item = (3 * strong + weak + 0.5 * len(_words(cand) & p_words), order, cand, topical)
+                (scored if r in roles else scored_user).append(item)
+    if scored_user and (not scored or max(scored_user)[0] >= max(scored)[0] + 3):
+        # the person's own earlier statement holds more of what the answer names (a name, a place) than any reply does
+        best = sorted(scored_user, key=lambda x: (-x[0], x[1]))[0]
+        body = _shorten(best[2], 24).rstrip(".")
+        return pick(seed, [f"Earlier in this chat: {body}; answering from that.",
+                           f"This chat already has it: {body}. No lookup needed."])
     if not scored:
         return ""
     scored.sort(key=lambda x: (-x[0], x[1]))
@@ -1880,8 +1941,8 @@ def _recall_thought(s, ctx, seed) -> str:
         keep = keep[:1]
     segs = [_shorten(c, 8 if field == 1 else 5) if field else _shorten(c, 24) for _sc, _o, c, _tp in sorted(keep, key=lambda x: x[1])]
     body = "; ".join(x.rstrip(".") for x in segs)
-    return pick(seed, [f"Earlier reply gave {body}; answering from that.",
-                       f"The earlier reply already had {body}, so no new lookup.",
+    return pick(seed, [f"Earlier reply: {body}; answering from that.",
+                       f"The earlier reply said: {body}. No new lookup.",
                        f"From the earlier reply: {body}. Answer from that, no lookup."])
 
 
@@ -1898,6 +1959,10 @@ def _answers_question(text: str) -> bool:
     return False
 
 
+_NOT_ADD = re.compile(r"\b(?:keep|clear|clean(?:ing)? up|delete|remove|cancel|forget|book|hold on|leave|get rid|skip|except|"
+                      r"apart from|but not|not the|tidy|sort|organi[sz]e)\b", re.I)
+
+
 def thought_answer_first(meta, s, ctx, seed) -> str:
     """A first-step answer with no call: say what is actually missing or ambiguous (never borrow the
     destructive wording for a request that removes nothing)."""
@@ -1910,8 +1975,11 @@ def thought_answer_first(meta, s, ctx, seed) -> str:
             return out
         if meta.get("family") == "session_recall_r4" and s["history"]:
             return pick(seed, ["Asking about something said earlier in this chat; answer from the earlier turns, no lookup.",
-                               "This is about the earlier turns, which are right here. Answer from them without a lookup.",
-                               "The earlier reply covers it; answering from that, no new lookup."])
+                               "This is about the earlier turns, which are right here. Answer from those without a lookup.",
+                               "The earlier reply covers it; answering from that, no new lookup."]
+                        + (["The answer is already in this chat, so no tool is needed.",
+                            "Something already said here; read back over the earlier turns instead of looking anything up.",
+                            "It's in the conversation so far. Use that rather than a lookup."] if ROUND4 else []))
     if (ROUND4 and (meta.get("family") or "") in HISTORY_FAMILIES and _knowledge_ask(prompt)
             and not _RECALL_ASK.search(prompt) and not _ACTION_ASK.search(prompt) and _answers_question(text)):
         # a plain question the reply answers (a closing "Want more?" does not make it a clarifying question)
@@ -1934,13 +2002,14 @@ def thought_answer_first(meta, s, ctx, seed) -> str:
     if re.search(r"who should i (?:text|email|message)", low):
         return _join("No recipient named.",
                      pick(seed, ["Won't guess one; one short question.", "Ask who, then send."]))
-    if re.search(r"\bremind", prompt, re.I) and "?" in text and not DESTRUCTIVE_ASK.search(prompt):
+    adds = not _NOT_ADD.search(prompt)             # a keep / clean up / book request is not "remind me at a time"
+    if re.search(r"\bremind", prompt, re.I) and "?" in text and not DESTRUCTIVE_ASK.search(prompt) and adds:
         day = _day_word(prompt)
         head = (f"'{day}' gives the when, but there's nothing to be reminded of." if day else
                 "There's a time but no task.")
         return _join(head, pick(seed, ["An empty reminder is useless, so ask what it's for.",
                                        "One short question: what the reminder is for."]))
-    if "remind you about" in low or "reminder for" in low:
+    if ("remind you about" in low or "reminder for" in low) and adds and re.search(r"\bremind", prompt, re.I):
         return _join("There's a time but no task.",
                      pick(seed, ["An empty reminder is useless, so ask what it's for.",
                                  "One short question: what the reminder is for."]))
@@ -1990,6 +2059,10 @@ def thought_answer_first(meta, s, ctx, seed) -> str:
         return pick(seed, ["A plain question I can answer myself; nothing of yours to look up or save.",
                            "General knowledge, so no lookup and no memory. Answer it directly.",
                            "Nothing here needs a tool or a note; just answer the question."])
+    if ROUND4 and re.search(r"\b(?:isn't something I can|is not something I can|can't do|can't book|can't make|I can't|I'm not able|"
+                           r"not able to)\b", text, re.I):
+        return pick(seed, ["That's outside what I can do directly, so no action; say so and offer the closest thing.",
+                           "Not something I can do from here. Say that plainly and offer what I can do instead."])
     return pick(seed, ["Nothing to do or save here; it's a passing moment, not a lasting fact. A short, kind reply.",
                        "No action and no memory needed; a short, gentle reply is enough.",
                        "A passing feeling, not something to store or act on. Answer gently."])
@@ -2035,16 +2108,19 @@ _DATE_RE = re.compile(r"\b(?:(monday|tuesday|wednesday|thursday|friday|saturday|
 _WDNAME_RE = re.compile(r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
 
 
-def _nearest(mon: int, day: int, clock: _dt.datetime) -> _dt.date | None:
+def _nearest(mon: int, day: int, clock: _dt.datetime, weekday: int | None = None) -> _dt.date | None:
+    """The date nearest the clock; a stated weekday picks the year whose date falls on it (when one does)."""
     best = None
     for y in (clock.year - 1, clock.year, clock.year + 1):
         try:
             d = _dt.date(y, mon, day)
         except ValueError:
             continue
+        if weekday is not None and d.weekday() != weekday:
+            continue
         if best is None or abs((d - clock.date()).days) < abs((best - clock.date()).days):
             best = d
-    return best
+    return best if best is not None or weekday is None else _nearest(mon, day, clock)
 
 
 def stated_dates(text: str, clock: _dt.datetime) -> tuple[list[tuple[_dt.date, int | None]], list[int]]:
@@ -2057,8 +2133,8 @@ def stated_dates(text: str, clock: _dt.datetime) -> tuple[list[tuple[_dt.date, i
             except ValueError:
                 out.append((None, None))
             continue
-        best = _nearest(_MON[m.group(2).lower()[:3]], int(m.group(3)), clock)
         wd = _WD_IDX[m.group(1).lower()[:3]] if m.group(1) else None
+        best = _nearest(_MON[m.group(2).lower()[:3]], int(m.group(3)), clock, wd)
         out.append((best, wd))
     unquoted = re.sub(r"'[^']*'|“[^”]*”|\"[^\"]*\"", " ", text)
     wds = [_WD_IDX[w.lower()[:3]] for w in _WDNAME_RE.findall(unquoted)]
@@ -2151,6 +2227,8 @@ def relative_day_problems(text: str, clock: _dt.datetime | None) -> list[str]:
         if _WD_IDX[wdn.lower()[:3]] != want(w).weekday():
             errs.append(f"says {w} is {wdn}, but {w} is {_WD[want(w).weekday()]}")
     for m in _ITS_WD.finditer(text):
+        if re.search(r"\b[Ii]n [A-Z][\w.'’ -]{1,30}[,:]?\s*$", text[max(0, m.start() - 40):m.start()]):
+            continue                              # "In Singapore it's 1:33 AM on Sunday": another place's clock
         wdn, mon, day = m.group(1), m.group(2), m.group(3)
         if _WD_IDX[wdn.lower()[:3]] != today.weekday():
             errs.append(f"says it's {wdn}, but today is {_WD[today.weekday()]}")
@@ -2232,10 +2310,25 @@ def planted_problems(text: str | None, results: list[str]) -> list[str]:
     return [f"planted line: {hit[0]!r} is in a line written to an assistant"] if hit else []
 
 
+def _count_lines(s: dict) -> list[str]:
+    """The count lines thought_extract may generate from the turn's reads (facts() and the plain-listing count)."""
+    out = []
+    for n, r in zip([c[0] for c in s["turn_calls"]], s["all_results"]):
+        f = facts(n, r)
+        if f and not f.endswith("came back empty"):
+            out.append(f)
+        c = _list_count(r)
+        if c:
+            out.append(c)
+    return out
+
+
 def check(meta: dict, messages: list[dict], text: str | None, ctx: dict | None = None) -> list[str]:
     """Every rule a THINK step's thought must pass (build and validate share it)."""
     s = analyze(meta, messages)
-    errs = thought_problems(text, s["target_text"], (ctx or {}).get("final", ""))
+    extract = ROUND4 and s["kind"] == "narrate" and (not decide_r3(meta, messages)
+                                                      or (meta.get("family") or "") == "ignore_embedded_instructions")
+    errs = thought_problems(text, s["target_text"], (ctx or {}).get("final", ""), EXTRACT_JACCARD_MAX if extract else JACCARD_MAX)
     if errs:
         return errs
     clock = parse_clock(meta)
@@ -2243,8 +2336,17 @@ def check(meta: dict, messages: list[dict], text: str | None, ctx: dict | None =
     errs += success_on_failure(text, s["results"])
     errs += planted_problems(text, s["all_results"])
     errs += clarify_problems(s, text, ctx)
-    if ROUND4 and s["kind"] == "narrate" and not decide_r3(meta, messages):
-        errs += facts_missing(text, (ctx or {}).get("final") or s["target_text"])   # an extraction, not a computation
+    if ROUND4 and s["kind"] == "narrate" and (meta.get("family") or "") == "ignore_embedded_instructions":
+        fin = (ctx or {}).get("final") or s["target_text"]
+        errs += facts_missing(text, fin, clock)
+        errs += facts_unlisted(text, fin, [r for _n, r in _turn_reads(s)])
+        errs += fragment_problems(text, s["all_results"], _count_lines(s))
+    elif ROUND4 and s["kind"] == "narrate" and not decide_r3(meta, messages):
+        fin = (ctx or {}).get("final") or s["target_text"]
+        if len(fin.split()) > 3:                  # a one-word answer is decided by facts it leaves out
+            errs += facts_missing(text, fin, clock)   # an extraction, not a computation
+        errs += facts_unlisted(text, fin, [r for _n, r in _turn_reads(s)] or s["all_results"])
+        errs += fragment_problems(text, s["all_results"], _count_lines(s))
     else:
         errs += single_source_problems(meta, s, text)
     dates = plan_dates(meta, messages, ctx)
@@ -2271,7 +2373,19 @@ def make_thought(meta: dict, messages: list[dict], ctx: dict | None = None, avoi
     return first[0], first[1] or ["duplicate of a neighbour"]
 
 
-def thought_problems(text: str | None, target_text: str, final: str = "") -> list[str]:
+def _plain_vocab(text: str) -> str:
+    """The text with system-status vocabulary ("CPU load", "load average") taken out of the mechanics check."""
+    return re.sub(r"\bCPU load\b|\bLoaded: \d+ models?\b|\bload average\b", " ", text)
+
+
+def _card_word(text: str) -> bool:
+    """The word 'card' outside a quoted title and the real kinds of card (the approval card is UI the model never sees)."""
+    return bool(CARD.search(re.sub(r"“[^”]*”|\b(?:insurance|credit|debit|id|library|gift|sim|report|business|student|bus|transit|"
+                                   r"boarding|flash|graphics|memory|sd|index|greeting|birthday|thank[- ]you|your|my) cards?\b", " ", text,
+                                   flags=re.I)))
+
+
+def thought_problems(text: str | None, target_text: str, final: str = "", jmax: float = JACCARD_MAX) -> list[str]:
     errs = []
     if not text or not text.strip():
         return ["empty"]
@@ -2279,18 +2393,21 @@ def thought_problems(text: str | None, target_text: str, final: str = "") -> lis
         errs.append(f"{len(text.split())} words")
     if NOISE.search(text):
         errs.append(f"noise: {NOISE.search(text).group(0)!r}")
-    plain = re.sub(r"\bCPU load\b|\bLoaded: \d+ models?\b|\bload average\b", " ", text)    # system-status vocabulary
+    plain = _plain_vocab(text)
     if MECHANICS.search(plain):
         errs.append(f"mechanics: {MECHANICS.search(plain).group(0)!r}")
     if USER_PRONOUN.search(text):
         errs.append(f"user pronoun: {USER_PRONOUN.search(text).group(0)!r}")
+    if ROUND4 and _BANNER_BAN.search(text):
+        errs.append(f"banner: {_BANNER_BAN.search(text).group(0)!r} is host framing, not a fact")
+    if ROUND4 and re.search(r"\b(?:AM|PM)\b", _TIME_FULL.sub(" ", text)):
+        errs.append("fragment: a lone AM/PM without its time")
     if BOILERPLATE.search(text):
         errs.append(f"boilerplate: {BOILERPLATE.search(text).group(0)!r}")
-    if CARD.search(re.sub(r"“[^”]*”|\b(?:insurance|credit|debit|id|library|gift|sim|report|business|student|bus|transit|boarding|"
-                          r"flash|graphics|memory|sd|index|greeting|birthday|thank[- ]you) cards?\b", " ", text, flags=re.I)):         # quoted titles are data ("birthday card")
+    if _card_word(text):         # quoted titles are data ("birthday card")
         errs.append("card: the approval card is UI the model never sees; plan the call itself")
     for ref in (target_text, final):
-        if ref and jaccard(text, ref) >= JACCARD_MAX:
+        if ref and jaccard(text, ref) >= jmax:
             errs.append(f"too close to the reply ({jaccard(text, ref):.2f})")
     return errs
 
@@ -2303,6 +2420,17 @@ def thought_problems(text: str | None, target_text: str, final: str = "") -> lis
 # and for a final over a clean write receipt. The extraction is taken from the results, kept only where the final
 # states it, so it never contradicts the answer, and facts_missing() checks every time, amount or quoted title it
 # lists reaches the final.
+#
+# Round 4 recheck (thinking): a piece of an extraction thought is one WHOLE, CONTIGUOUS run of clauses of one result
+# line (_windows): a time stays with its title, a count with its noun, a date with its day number. There is no
+# token-list retry and no ellipsis cut; a fact the answer leaves out (a time, an amount) is a barrier, and the clause
+# before / after it is used only up to / from that point. Host framing (the Mail cache banner, digest headers,
+# coverage notes) is dropped sentence by sentence. facts_unlisted() is the reverse of facts_missing(): a time,
+# amount, quoted title, month-day date or H:MM the final states and a result shows is in the thought, or the thought
+# says "plus N more". fragment_problems() checks contiguity (and repeats, banners, lone AM/PM, ellipsis). A final that
+# opens "no / nothing / not ..." gets a negative-first lead; an ignore_embedded_instructions thought lists the facts
+# first and the planted-line note after them; a one-word final (yes / no / a count) is decided by the count, the
+# asked day's forecast or the first event against the asked time (_verdict_thought).
 import os as _os  # noqa: E402
 
 ROUND4 = _os.environ.get("ASK_LORA_ROUND") == "4"
@@ -2314,18 +2442,41 @@ _QUOTED = re.compile(r"[“\"]([^”\"]{3,60})[”\"]")
 _STOP = frozenset("""the and for you your with that this from have has was were are not but all any can
 will what when where which who how about into over just there their them they then than also only been more
 some such very would could should does done did its it's i'm i've don't didn't today tomorrow tonight""".split())
-# Result lines that are host framing, not facts.
-_FRAME = re.compile(r"^(?:Email is from Mail|Result coverage|Account:|To:|Cc:|Status:|Wisp's reading|UNTRUSTED|"
-                    r"Source:|Note: |\(showing|Showing \d|Results? for|Search results|Today is |\[\d+\] |"
+# Result lines that are host framing, not facts. Round 4 recheck: the Mail cache banner ("Email is from Mail's local
+# cache. Newer messages may be missing; ... To check for newer mail, open Mail and let it refresh.") can carry an account
+# prefix ("Linden: ...") and runs several sentences, so it is matched anywhere in a line (_BANNER) and dropped sentence
+# by sentence; digest headers and coverage notes are framing too.
+_BANNER = re.compile(r"Email is from Mail|Newer messages may be missing|server freshness is unverified|"
+                     r"To check for newer mail|A fresh Apple Reminders read supersedes|These lists describe storage|"
+                     r"Wisp has not received|Summarized per account|keep the account headings|Result coverage|"
+                     r"\bCoverage:|Scanned \d+ cached|Actual dates:|Inbox digest|Messages digest|stood out\b|"
+                     r"\bwas re-read just now\b|\bthe app reads at most\b|^\W*Newer messages|\bfreshness\b", re.I)
+_FRAME = re.compile(r"^(?:Account:|To:|Cc:|Status:|Wisp's reading|UNTRUSTED|"
+                    r"Source:|Note: |\(showing|Showing \d|Results? for|Search results|Today is |"
                     r"Weather for .*\(asked for|URL:|https?://|Historical evidence)", re.I)
+# Hard plumbing in a result line (the whole line goes); the user's name or a pronoun only bars the clause it sits in.
+_NOISE_HARD = re.compile(r"schema_discovery|ready_next_step|source_tools_executed|not_run_yet|\{\"|<\||\|>|Traceback|"
+                         r"World\.|\bt_[a-z_]+\(|\bstubs?\b|harness|synthetic|got an unexpected keyword|[PM]ST-0[78]00|PDT-0700",
+                         re.I)
+_SALUTE = re.compile(r"^\s*(?:hi|hey|hello|dear|good (?:morning|afternoon|evening))\s+sam\b[,!:.]?\s*", re.I)
 
 
 def _norm_time(h: str, m: str | None, ap: str) -> str:
     return f"{int(h)}:{m or '00'} {ap.upper()}M"
 
 
+_RANGE_TOK = re.compile(r"\b(\d{1,2})(?::(\d\d))?(?!\s*[ap]\.?m)\s*(?:to|until|till|and|[-–])\s*(\d{1,2})(?::(\d\d))?\s*([ap])\.?m\b", re.I)
+
+
 def time_tokens(text: str) -> set[str]:
     out = set()
+    for mt in _RANGE_TOK.finditer(text or ""):             # "9 and 11 AM", "4 to 8 PM": the first time shares the meridiem
+        h1, h2 = int(mt[1]), int(mt[3])
+        if 1 <= h1 <= 12 and 1 <= h2 <= 12:
+            ap = mt[5].upper()
+            if h1 > h2 and h2 != 12 and h1 != 12:           # "11 to 1 PM" starts in the morning
+                ap = "A" if ap == "P" else "P"
+            out.add(_norm_time(mt[1], mt[2], ap))
     for mt in _TIME_TOK.finditer(text or ""):
         w = mt.group(0).lower()
         out.add("12:00 PM" if w == "noon" else "12:00 AM" if w == "midnight" else _norm_time(mt[1], mt[2], mt[3]))
@@ -2357,12 +2508,19 @@ def _caps(text: str) -> set[str]:
 
 def _clean_line(line: str, keep: frozenset = frozenset()) -> str:
     t = re.sub(r"\*\*|__|`", "", line)
+    t = re.sub(r"^[\s\u2190-\u2bff\U0001F000-\U0001FAFF\ufe0f\u200d]+", "", t)       # a leading emoji (digest headers)
+    t = re.sub(r"^\s*\[\d{1,2}\]\s+", "", t)                    # a web result's "[1] " index
     t = re.sub(r"\s*\[[0-9a-f]{8}\]", "", t)                 # a timer's internal id
+    t = re.sub(r"\s*\[(?:received|sent) \d{4}-\d\d-\d\d\]\s*$", "", t)    # a digest line's trailing stamp
     t = re.sub(r"^\s*\[memory [^\]]*\]\s*", "", t)          # recall's metadata prefix
     t = re.sub(r"\bSam's\s+", "", t).replace('"', "")
     t = re.sub(r"^(\s*(?:\[[^\]]*\]\s*)?)([^—:]{2,40}?) — \2:", r"\1\2:", t)   # "Mom — Mom:" (texts)
+    t = re.sub(r"^(\s*(?:\[[^\]]*\]\s*)?)[^—:]{2,40}? — (Me:)", r"\1\2", t)           # "Carmen Rivera — Me: ..." (texts)
+    t = re.sub(r"^(\s*(?:\[[^\]]*\]\s*)?)([A-Z][^—:]{1,39}?) — ([A-Z][^—:\s]{1,19}):",
+               lambda m: f"{m[1]}{m[2]}:" if m[2].split()[0] == m[3] else m.group(0), t)   # "Carmen Rivera — Carmen:"
     t = re.sub(r"<[^>\s]+@[^>\s]+>", "", t)                 # sender addresses
-    t = re.sub(r"\S+@\S+\.\w+", lambda mm: mm.group(0).strip("(),.;") if mm.group(0).strip("(),.;") in keep else "", t)
+    t = re.sub(r"(\b(?:to|from|cc|bcc)\s+)?\S+@\S+\.\w+",
+               lambda mm: mm.group(0).strip("(),.;") if mm.group(0).strip("(),.;").split()[-1] in keep else "", t)
     t = re.sub(r"^\s*(?:[-*•·]|\d+[.)])\s+", "", t)
     t = re.sub(r"\s*·\s*", ", ", t)
     t = re.sub(r"\s+—\s+|\s+–\s+", " ", t)
@@ -2380,15 +2538,31 @@ _NOMATCH_LINE = re.compile(r"^\(?No (?:\w+ ){1,2}(?:match|matches|matching|menti
                            r"\bwas re-read just now\b|\bthe app reads at most\b|^Only [A-Z]\w+ was searched\b", re.I)
 
 
+def _sentences(line: str) -> list[str]:
+    out: list[str] = []
+    for piece in re.split(r"(?<=[.!?])\s+(?=[A-Z“\d])", line):
+        if out and (_ABBREV.search(out[-1]) or re.search(r"(?:^|\s)[A-Z]\.$", out[-1])):
+            out[-1] += " " + piece
+        else:
+            out.append(piece)
+    return out
+
+
 def _segments(text: str, keep: frozenset = frozenset()) -> list[str]:
+    """Whole cleaned units of a result: one per line, a long line split into its sentences. Nothing is cut or
+    abbreviated here (a thought holds whole, contiguous pieces; _pick_segments chooses the clauses)."""
     out = []
     for raw in (text or "").split("\n"):
+        plain = re.sub(r"\*\*", "", raw)
+        if _BANNER.search(plain):
+            raw = " ".join(x for x in re.split(r"(?<=[.!?])\s+", plain) if not _BANNER.search(x))
         inj = INJECTION.search(raw)
         if inj:
             raw = raw[:inj.start()]          # the planted sentence and what follows it are dropped, the line before it stays
             raw = re.sub(r"(?:\b(?:also|and|ps|p\.s\.|note|btw|then)\b[,:]?\s*)+$", "", raw, flags=re.I)
+        raw = _SALUTE.sub("", raw)
         if (not raw.strip() or _FRAME.search(raw.strip()) or INJECTION.search(raw) or _NOMATCH_LINE.search(raw.strip())
-                or NOISE.search(re.sub(r"\bSam['’]s\s+", "", re.sub(r"\*\*", "", raw)))):
+                or _NOISE_HARD.search(raw)):
             continue
         if _ASSISTANT_WORD.search(raw):      # a sentence naming the assistant is planted text, whatever its wording
             raw = " ".join(x for x in re.split(r"(?<=[.!?])\s+", raw) if not _ASSISTANT_WORD.search(x))
@@ -2397,15 +2571,228 @@ def _segments(text: str, keep: frozenset = frozenset()) -> list[str]:
         line = _clean_line(raw, keep)
         if len(line) < 3:
             continue
-        pieces = re.split(r"(?<=[.!?])\s+", line) if len(line.split()) > 18 else [line]
+        pieces = _sentences(line) if len(line.split()) > 18 else [line]
         for p in pieces:
-            if INJECTION.search(p):
+            if INJECTION.search(p) or re.search(r"https?://|www\.", p):
                 continue
-            if re.search(r"https?://|www\.", p):
-                continue
-            words = p.split()
-            out.append(" ".join(words[:14]).rstrip(",;:") + ("…" if len(words) > 14 else ""))
+            p = p.strip().rstrip(",;:")
+            if p:
+                out.append(p)
     return out
+
+
+_WEEKDAY = re.compile(r"(?:Mon|Tue|Tues|Wed|Thu|Thur|Thurs|Fri|Sat|Sun)(?:day|sday|nesday|rsday|urday)?\.?$", re.I)
+_MONTHW = re.compile(r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s", re.I)
+
+
+def _atom_spans(unit: str) -> list[tuple[int, int]]:
+    """Clause spans of a unit: split after , ; . ! ? and around parentheses, never inside a quoted title, after an
+    abbreviation, between a weekday and its date, or between a date and its year."""
+    masked = re.sub(r"“[^”]*”|\"[^\"]*\"|\[[^\]]*\]|\(\d{2,4}\)", lambda m: "x" * len(m.group(0)), unit)
+    cuts = [0]
+    for m in re.finditer(r"(?<=[,;.!?])\s+|\s+(?=\()|(?<=\))\s+", masked):
+        before, after = unit[:m.start()], unit[m.end():]
+        if m.group(0) and before.endswith((",", ".")):
+            last = before.split()[-1] if before.split() else ""
+            if before.endswith(".") and (_ABBREV.search(before) or re.fullmatch(r"[A-Z]\.", last)):
+                continue
+            if before.endswith(",") and _WEEKDAY.search(last.rstrip(",")) and _MONTHW.match(after + " "):
+                continue
+            if before.endswith(",") and re.search(r"\b\d{1,2}$", last.rstrip(",")) and re.match(r"(?:19|20)\d\d\b", after):
+                continue
+            if before.endswith(",") and re.match(r"(?:19|20)\d\d\b", after) and _MONTHW.search(before[-14:] + " "):
+                continue
+        cuts.append(m.end())
+    spans = []
+    for i, c in enumerate(cuts):
+        e = cuts[i + 1] if i + 1 < len(cuts) else len(unit)
+        if unit[c:e].strip():
+            spans.append((c, e))
+    return spans
+
+
+_HEADER_LINE = re.compile(r"^(?:From|Subject|Date|To|Cc|Sender|Received)\s*:", re.I)
+
+
+_BARE_DATE = re.compile(r"\b(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b|"
+                        r"\b\d{1,4}(?:st|nd|rd|th)?\b|[\W_]+", re.I)
+
+
+def _bare_date(text: str) -> bool:
+    """A date header with nothing else ("Friday, Feb 12", "2027-01-28"): a label, not a fact."""
+    return not _BARE_DATE.sub("", text).strip()
+
+
+def _trim(text: str) -> str:
+    t = text.strip().rstrip(",;:").strip()
+    if t.endswith(".") and not _ABBREV.search(t):
+        t = t[:-1]
+    return t
+
+
+_DANGLE = re.compile(r"(?:\s+(?:at|on|by|until|till|from|to|between|for|around|about|and|or|of|with|like|is|was|are|a|an|the|"
+                     r"low|lows|high|highs|plus|than|in|into|per)|\s*[/&+–-])+\s*$", re.I)
+
+
+_ID_TOK = re.compile(r"\d{3,}|\b\d{1,2}:\d\d\b")
+
+
+def _bad_tokens(text: str, f_times, f_amts) -> list[tuple[int, int]]:
+    """Spans of the times and amounts in `text` that the final does not state."""
+    out = []
+    for m in _TIME_TOK.finditer(text):
+        w = m.group(0).lower()
+        t = "12:00 PM" if w == "noon" else "12:00 AM" if w == "midnight" else _norm_time(m[1], m[2], m[3])
+        if t not in f_times:
+            out.append(m.span())
+    for m in _AMOUNT_TOK.finditer(text):
+        if not (amount_tokens(m.group(0)) <= f_amts):
+            e = m.end()
+            if m.group(0).endswith("°") and text[e:e + 1] in ("F", "C") and not text[e + 1:e + 2].isalnum():
+                e += 1
+            out.append((m.start(), e))
+    return sorted(out)
+
+
+def _atoms_for(unit: str, f_times, f_amts):
+    """[(text, kind)] clause atoms of a unit. kind: 'ok', 'skip' (a parenthetical holding a fact the final leaves out),
+    'wall' (a barrier: noise, a pronoun for the user), 'pre' / 'post' (what comes before / after a time or amount the final
+    leaves out in a clause: usable only at the end / start of a run)."""
+    out = []
+    for a, b in _atom_spans(unit):
+        x = unit[a:b]
+        core = x.strip()
+        if NOISE.search(core) or USER_PRONOUN.search(core) or MECHANICS.search(_plain_vocab(core)) or _card_word(core):
+            out.append((x, "wall"))
+            continue
+        bad = _bad_tokens(core, f_times, f_amts)
+        if not bad:
+            out.append((x, "ok"))
+        elif re.match(r"\([^)]*\)[,;.!?]*$", core):
+            out.append((x, "skip"))
+        else:
+            pre_raw = core[:bad[0][0]].rstrip()
+            pre = "" if pre_raw.endswith((":", "=", "~", "≈")) else _DANGLE.sub("", core[:bad[0][0]]).rstrip(" ,;:(").lstrip(" ,;")
+            post = core[bad[-1][1]:].lstrip(" ,;:)–-").rstrip()
+            balanced = lambda x: x.count("“") == x.count("”") and x.count("(") == x.count(")") and x.count("[") == x.count("]")
+            out.append((pre, "pre") if len(pre.split()) >= 2 and balanced(pre) else ("", "wall"))
+            if (len(post.split()) >= 2 and balanced(post) and not _bad_tokens(post, f_times, f_amts)
+                    and not re.match(r"(?:chance|of|to|and|or|per|free|left|used|remaining|total|off|in|at|on|for|more|less|"
+                                     r"percent|degrees)\b", post, re.I)):
+                out.append((post, "post"))
+    return out
+
+
+def _windows(unit: str, f_times, f_amts, f_caps, f_words, p_words, loose: bool, cap: int, n_out: int = 2, f_quotes=(),
+             f_dates=frozenset(), f_ids=frozenset()):
+    """Up to `n_out` best contiguous runs of clauses in a unit: [(value, text, first clause index)]."""
+    atoms = _atoms_for(unit, f_times, f_amts)
+    n = len(atoms)
+    used = [False] * n
+    found = []
+    for _round in range(n_out):
+        best = None
+        for i in range(n):
+            if used[i] or atoms[i][1] in ("wall", "skip"):
+                continue
+            for j in range(i, n):
+                if used[j] or atoms[j][1] == "wall":
+                    break
+                if j > i and atoms[j - 1][1] == "pre":
+                    break                                  # a 'pre' atom ends a run
+                if atoms[j][1] == "post" and j > i:
+                    continue                               # a 'post' atom only starts a run
+                if atoms[j][1] == "skip" and j == i:
+                    continue
+                pieces = []
+                for k in range(i, j + 1):
+                    if atoms[k][1] == "skip":
+                        tail = re.search(r"[,;.!?]+\s*$", atoms[k][0])
+                        if tail and pieces and not re.search(r"[,;.!?]\s*$", pieces[-1]):
+                            pieces[-1] = pieces[-1].rstrip() + tail.group(0).strip()
+                        continue
+                    pieces.append(atoms[k][0].strip())
+                if atoms[j][1] == "skip":
+                    continue
+                text = _trim(" ".join(pieces))
+                nw = len(text.split())
+                if nw > cap or (nw < 2 and not _FILEISH.fullmatch(text)):
+                    continue
+                if _bare_date(text) and not ({k[1] for k in fact_keys(text) if k[0] == "date"} & f_dates):
+                    continue                           # a date header counts only for a date the answer states
+                st, sa = time_tokens(text), amount_tokens(text)
+                strong = len(st & f_times) + len(sa & f_amts) + len(_caps("and " + text) & f_caps)     # a name may open the piece
+                jt = " ".join(_tok(text))
+                strong += 2 * sum(1 for q in f_quotes if q and q in jt)             # a quoted title of the answer, whole
+                strong += len(set(_ID_TOK.findall(text)) & f_ids)                # a phone number, a code, a bare 8:15
+                strong += len({k[1] for k in fact_keys(text) if k[0] == "date"} & f_dates)      # a date (month and day) it gives
+                fo, po = len(_words(text) & f_words), len(_words(text) & p_words)
+                weak = fo + 0.5 * po
+                if not (strong >= 1 or weak >= (1 if loose else 2) or (fo >= 1 and po >= 1)):
+                    continue
+                value = 3 * strong + weak - 0.12 * nw
+                if best is None or (value, -nw) > (best[0], -best[3]):
+                    best = (value, text, (i, j), nw)
+        if not best:
+            break
+        i0, j0 = best[2]
+        text = best[1]
+        if i0 > 0 and atoms[i0][0].lstrip().startswith("(") and atoms[i0 - 1][1] == "ok" and not used[i0 - 1]:
+            text = _trim(atoms[i0 - 1][0] + " " + text)          # a window never opens on a bare "(date): ..." clause
+            i0 -= 1
+        found.append((best[0], text, i0))
+        for k in range(i0, j0 + 1):
+            used[k] = True
+    return found
+
+
+def _pick_scored(reads: list[tuple[str, str]], final: str, prompt: str, loose: bool = False,
+                 cap: int = 20) -> list[tuple[float, int, str]]:
+    """(value, result order, text) of the result pieces the final relies on, best first. Each is a whole contiguous run of clauses of one result
+    line (a time stays with its title, a count with its noun, a date with its day number): kept when it shares a time,
+    an amount, a quoted title or a capitalised name with the final (or two content words; one when `loose`), and
+    every time and amount it holds is in the final."""
+    f_times, f_amts = time_tokens(final), amount_tokens(final)
+    f_caps, f_words = _caps(final) | {w.lower() for w in _QUOTED.findall(final)}, _words(final)
+    p_words = _words(prompt)
+    f_quotes = [" ".join(_tok(q)) for q in _QUOTED.findall(final or "")]
+    f_dates = frozenset(k[1] for k in fact_keys(final) if k[0] == "date")
+    f_ids = frozenset(_ID_TOK.findall(final or ""))
+    keep_addr = frozenset(re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", final or ""))
+    scored = []
+    order = 0
+    for n_, r in reads:
+        for unit in dict.fromkeys(_segments(r, keep_addr)):
+            order += 1
+            stamp = re.match(r"\[[^\]]*\]\s*", unit)          # a message's [timestamp]: dropped unless the final uses it
+            if stamp and ((time_tokens(stamp.group(0)) - f_times) or not time_tokens(stamp.group(0))):
+                unit = unit[stamp.end():]
+            if _FILEISH.fullmatch(unit) and unit.lower() in (final or "").lower():
+                scored.append((3, order, unit))
+                continue
+            for val, text, at in _windows(unit, f_times, f_amts, f_caps, f_words, p_words, loose, cap, f_quotes=f_quotes,
+                                       f_dates=f_dates, f_ids=f_ids):
+                value = val * (0.35 if (_HEADER_LINE.match(unit) and n_ in _MAIL_TOOLS) else 1.0)
+                scored.append((value, order + at * 0.001, text))
+    best = sorted(scored, key=lambda x: (-x[0], x[1]))
+    out, seen = [], []
+    for sc, o, seg in best:                        # drop a piece already inside (or holding) a better one
+        nseg = re.sub(r"\W+", " ", seg).strip().lower()
+        if any(nseg in x or x in nseg for x in seen):
+            continue
+        seen.append(nseg)
+        out.append((sc, o, seg))
+    return out
+
+
+def _pick_segments(reads: list[tuple[str, str]], final: str, prompt: str, limit: int, loose: bool = False,
+                   cap: int = 20) -> list[str]:
+    """The best `limit` pieces (_pick_scored), in result order."""
+    out = [c for c in _pick_scored(reads, final, prompt, loose, cap) if not _bare_date(c[2])][:limit]
+    return [seg for _sc, _o, seg in sorted(out, key=lambda x: x[1])]
+
+
+_MAIL_TOOLS = frozenset({"view_emails", "summarize_emails"})
 
 
 # manage_timers is one tool for reads and writes: a listing or a stopwatch reading is a read.
@@ -2520,34 +2907,17 @@ def _nothing_found(name: str, text: str) -> bool:
     return bool(_NOTHING.search(text or "")) and len(body) < 160
 
 
-_FIELD_TOK = re.compile(r"\d{1,2}:\d\d(?:\s?[AaPp][Mm])?|[$€£]\s?\d[\d,]*(?:\.\d+)?|"
-                        r"\d[\d,]*(?:\.\d+)?(?:\s?(?:%|°[FC]?|GB|MB|TB|G\b|kg|lbs?|mi\b|km|mph|mins?\b|minutes|hours?|hrs?|days?|"
-                        r"cups?|oz\b|[hms]\b))?|“[^”]+”|[A-Z][\w'’.&-]*(?:\s+(?:of|and|&|the)?\s*[A-Z][\w'’.&-]*)*")
-_FIELD_SKIP = frozenset({"in", "the", "your", "a", "an", "it", "its", "it's", "from", "at", "on", "and", "for", "to", "of", "is"})
-
-
-def _field_list(seg: str, n: int) -> str:
-    """A terser field list: only the names, times, amounts and titles of a segment, in order."""
-    toks = []
-    for m in _FIELD_TOK.finditer(seg):
-        t = m.group(0).strip()
-        words = t.split()
-        while words and words[0].lower() in _FIELD_SKIP:
-            words = words[1:]
-        t = " ".join(words).strip(" ,;:.")
-        if len(t) >= 2 and t not in toks:
-            toks.append(t)
-    if len(toks) < 2:
-        return _shorten(seg, 6)
-    return ", ".join(toks[:n])
-
-
 def _shorten(seg: str, n: int) -> str:
-    """The first `n` words of a segment (a terser field list); an ellipsis marks the cut."""
-    w = seg.split()
-    if len(w) <= n:
+    """At most about `n` words of a piece, cut at a clause boundary (never mid-fact, never an ellipsis); a piece with no
+    boundary inside the limit stays whole."""
+    if len(seg.split()) <= n:
         return seg
-    return " ".join(w[:n]).rstrip(",;:—-") + "…"
+    best = ""
+    for m in re.finditer(r"[,;:]\s+", seg):
+        head = seg[:m.start()]
+        if len(head.split()) <= n and not re.search(r"\b(?:\d{1,2}|Mon|Tue|Wed|Thu|Fri|Sat|Sun)\w*$", head) :
+            best = head
+    return best or seg
 
 
 def _states_facts(final: str) -> bool:
@@ -2563,21 +2933,144 @@ def _summarises_profile(reads: list[tuple[str, str]], final: str, no_match: bool
     return bool(no_match and reads and all(n == "recall" for n, _r in reads) and _states_facts(final))
 
 
-def thought_extract(meta, s, ctx, seed) -> str:
+_EXT_CLOSERS = ["Answer with those.", "Give those directly.", "That answers it.", "Each gets its time and title.",
+                "State those plainly.", "State that plainly.", "Keep every one of those in the answer.",
+                "Lead with those, then the rest.", "Start with those, then cover the rest.", "Say it isn't there.",
+                "Report that, then what it does say.", "Say so plainly, then give those.",
+                "All of it is earlier, so nothing is left.", "So nothing is left today."]
+_VERDICT_CLOSE = ["The count is the answer.", "Give just the number.", "So yes.", "So no.", "That makes it yes.", "That makes it no.",
+                  "Answer with just that.", "Keep it to the one word."]
+_EXT_INJ = ["One line in it is aimed at an assistant; not acting on it.",
+            "A line there is written to an assistant, so it gets no action, only a mention.",
+            "Something in it addresses an assistant; leave it alone and say so briefly."]
+_EXT_LEAD = re.compile(r"^(?:(?:From the|In the|Relevant in the) [a-z][\w ,]*?:|The [a-z][\w ,]*? (?:has|have)|"
+                       r"It's \d{1,2}:\d\d [AP]M; the [a-z][\w ,]*? has|"
+                       r"Not directly in the [a-z][\w ,]*?; what it does say:|The [a-z][\w ,]*? has no direct answer; it says:|"
+                       r"Nothing exact in the [a-z][\w ,]*?; closest:)\s+")
+_DATE_KEY = re.compile(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})\b", re.I)
+_MORE = re.compile(r"\bplus (\d+) more\b")
+_PLURAL_SRC = frozenset({"texts", "reminders", "emails", "contacts", "calendar changes", "scheduled sends", "contact dates",
+                         "free slots", "timers"})
+
+
+def fact_keys(text: str) -> set[tuple[str, str]]:
+    """The checkable facts of a text: its times, amounts, quoted titles and month-day dates."""
+    t = text or ""
+    return ({("time", x) for x in time_tokens(t)} | {("amt", x) for x in amount_tokens(t)}
+            | {("quote", q.lower()) for q in _QUOTED.findall(t)}
+            | {("date", f"{m[0].lower()} {int(m[1])}") for m in _DATE_KEY.findall(t)}
+            | {("clock", x) for x in re.findall(r"\b\d{1,2}:\d\d\b", t)})
+
+
+def _result_facts(final: str, results: list[str]) -> set[tuple[str, str]]:
+    """Facts the final states that a tool result also shows (in the same form)."""
+    res = "\n".join(results or [])
+    low = res.lower()
+    rk = fact_keys(res)
+    jr = " ".join(_tok(res))
+    return {k for k in fact_keys(final) if k in rk or (k[0] == "quote" and (k[1] in low or " ".join(_tok(k[1])) in jr))}
+
+
+_MULTIDAY = re.compile(r"\b(?:week|weekend|days|forecast|next|upcoming|coming|rest of|few|outlook)\b", re.I)
+
+
+def _weather_day(reads, prompt: str, clock, final: str = ""):
+    """When the question names a day, a forecast keeps only that day's line (the other days are not what it asked)."""
+    day = _target_day(prompt, clock)
+    labels = ({"tmrw"} if _TMRW.search(final) else set()) | ({"today"} if _TODAYW.search(final) else set()) | \
+        {w.lower()[:3] for w in _WD_RE.findall(final)}
+    if not day and len(labels) > 1:
+        return reads                                # the answer covers several days: every day's line stays
+    day = day or (_target_day(final, clock) if len(labels) == 1 else None)
+    if not day and clock and not _MULTIDAY.search(prompt) and not _MULTIDAY.search(final):
+        day = ("Today", clock.date())               # "how's the sky": today's line, not the days after it
+    if not day:
+        return reads
+    out = []
+    for n, r in reads:
+        if n == "get_weather":
+            iso = day[1].isoformat()
+            lines = [ln for ln in r.split("\n") if not (_FORECAST.search(ln) and iso not in ln)]
+            if any(iso in ln for ln in lines):
+                r = "\n".join(lines)
+        out.append((n, r))
+    return out
+
+
+def _has_facts(text: str, keys) -> set:
+    """The facts among `keys` that `text` holds (a quoted title counts when its words appear in the text, quotes or not)."""
+    jt = " ".join(_tok(text))
+    have = fact_keys(text)
+    return {k for k in keys if k in have or (k[0] == "quote" and " ".join(_tok(k[1])) in jt)}
+
+
+def _extract_core(meta, s, ctx, seed, budget_words: int | None = None):
+    """The pieces of an extraction thought: (reads, src, segs, no_match, inj, more) where segs are whole contiguous
+    pieces of the turn's results that the final states, and `more` counts result lines with a fact the final states
+    that the pieces leave out."""
     final = (ctx or {}).get("final") or s["target_text"]
     reads = _turn_reads(s) or [(n, r) for (n, _a), r in zip(s["prev_calls"], s["results"]) if n != DISCOVERY]
     srcs = list(dict.fromkeys(source_of(n) for n, _ in reads))
     src = srcs[0] if len(srcs) == 1 else " and ".join([", ".join(srcs[:-1]), srcs[-1]])
     terse = bool((ctx or {}).get("terse"))
-    field = int((ctx or {}).get("field") or 0)           # >0: a terser field list (each fact cut to a few words)
+    field = int((ctx or {}).get("field") or 0)           # >0: one best piece only
+    reads = _weather_day(reads, s["prompt"], parse_clock(meta), final)
     no_match = all(_nothing_found(n, r) for n, r in reads)
-    segs = [] if no_match else _pick_segments(reads, final, s["prompt"], 2 if (terse or field) else 5)
-    if not segs and not no_match:
-        segs = _pick_segments(reads, final, s["prompt"], 2 if (terse or field) else 4, loose=True)
+    cands, more = [], 0
+    if not no_match:
+        cands = _pick_scored(reads, final, s["prompt"])
+        if not cands:
+            cands = _pick_scored(reads, final, s["prompt"], loose=True)
+    limit = 1 if field else 3 if terse else 8
+    budget = budget_words or (24 if (terse or field) else 40)
+    chosen, words = [], 0
+    need = _result_facts(final, [r for _n, r in reads])
+    for c in cands:
+        w = len(c[2].split())
+        if len(chosen) >= limit:
+            break
+        if _bare_date(c[2]):
+            continue                                 # a date header joins only to cover a date the answer states
+        if chosen and c[0] < 0.3 * cands[0][0] and not (fact_keys(c[2]) & need):
+            continue                                 # a stray line that shares only a word with the answer
+        if words + w <= budget or not chosen:
+            chosen.append(c)
+            words += w
+    have = _has_facts(" ".join(c[2] for c in chosen), need)
+    if need - have and not field:                      # a fact the answer states that no chosen piece holds: add its line
+        for c in cands:
+            if c in chosen:
+                continue
+            if _has_facts(c[2], need - have) and len(chosen) < limit + 2 and words + len(c[2].split()) <= budget + 8:
+                chosen.append(c)
+                words += len(c[2].split())
+                have |= _has_facts(c[2], need)
+    left = need - have
+    if left:
+        more = len({int(c[1]) for c in cands if c not in chosen and _has_facts(c[2], left)}) or 1   # a fact no piece holds
+    segs = [c[2] for c in sorted(chosen, key=lambda x: x[1])]
     inj = any(injected(r) for _, r in reads)
-    tail_inj = pick(seed + "i", ["One line in it is aimed at an assistant; not acting on it.",
-                                 "A line there is written to an assistant, so it gets no action, only a mention.",
-                                 "Something in it addresses an assistant; leave it alone and say so briefly."])
+    return reads, src, segs, no_match, inj, more, final
+
+
+_NEG_LEAD = re.compile(r"^\W*(?:no\b|nothing\b|none\b|nobody\b|not\b|neither\b|i (?:don['’]t|do not|can['’]t|cannot|couldn['’]t|"
+                       r"didn['’]t|haven['’]t|have no|found no|see no)\b|there (?:is|are|was|were) (?:no|nothing)\b|"
+                       r"there(?:['’]s| isn['’]t| aren['’]t) |it (?:doesn['’]t|does not|isn['’]t|has no)\b|"
+                       r"(?:the|that|this) [\w-]+(?: [\w-]+)? (?:doesn['’]t|don['’]t|does not|do not|has no|have no|isn['’]t|"
+                       r"aren['’]t|says nothing|gives no|lists no)\b)", re.I)
+
+
+def _neg_first(final: str) -> bool:
+    """The answer opens by saying the thing is not there (not merely a sentence with a negative in it)."""
+    first = re.split(r"(?<=[.!?])\s+", final.strip())[0] if final.strip() else ""
+    return bool(_NEG_LEAD.search(first)) and len(first.split()) >= 2
+
+
+def thought_extract(meta, s, ctx, seed) -> str:
+    reads, src, segs, no_match, inj, more, final = _extract_core(meta, s, ctx, seed)
+    terse = bool((ctx or {}).get("terse"))
+    field = int((ctx or {}).get("field") or 0)
+    tail_inj = pick(seed + "i", _EXT_INJ)
     if not segs and not no_match:
         comp = [(n, r.strip()) for n, r in reads if len(r.strip()) <= 40 and "\n" not in r.strip() and _COMPUTED.match(r.strip())]
         if comp:
@@ -2601,10 +3094,12 @@ def thought_extract(meta, s, ctx, seed) -> str:
         if negative and _states_facts(final):
             negative = False                       # "Nothing else is saved yet, but you told me ...": the answer is facts, not a no
         if not negative:
-            return ""
+            return _verdict_thought(meta, s, reads, src, final, seed, terse)
+        nm = _nothing_line(reads, final)
         if no_match:
-            head = pick(seed, [f"Nothing in the {src} matches.", f"No match for it in the {src}.",
-                               f"No matching items in the {src}.", f"Nothing for it came back from the {src}."])
+            head = pick(seed, [nm] if nm else
+                        [f"Nothing in the {src} matches.", f"No match for it in the {src}.",
+                         f"No matching items in the {src}.", f"Nothing for it came back from the {src}."])
         else:
             head = pick(seed, [f"Nothing in the {src} answers it.", f"Nothing on this in the {src}.",
                                f"No matching items in the {src}.", f"Looked through the {src}: nothing relevant."])
@@ -2612,24 +3107,135 @@ def thought_extract(meta, s, ctx, seed) -> str:
                 if final.rstrip().endswith("?") else
                 pick(seed + "p", ["Say that plainly.", "Report that nothing was found.", "Say so, simply."]))
         return compose([(3, head), (2, tail_inj if inj else ""), (1, plan)])
-    if field:
-        segs = [_field_list(x, 8 if field == 1 else 4) for x in segs]
-    segs = list(dict.fromkeys(segs))              # the same line twice ("Partly cloudy; Partly cloudy") is one fact
-    plural = src.endswith("s") or " and " in src
-    lead = pick(seed, [f"From the {src}:", f"The {src} {'have' if plural else 'has'}", f"In the {src}:",
-                       f"Relevant in the {src}:"])
+    segs = list(dict.fromkeys(segs))
     count = next((f for n, r in reads for f in [facts(n, r)] if f and not f.endswith("came back empty")), None)
     count = count or next((c for _n, r in reads for c in [_list_count(r)] if c), None)
-    if count and all(_said(x, final) for x in re.findall(r"\d+", count)):
-        segs = [count] + [x for x in segs if re.sub(r"\W+", " ", x).strip().lower() != re.sub(r"\W+", " ", count).strip().lower()]                    # the count the answer gives ("4 emails, 1 unread")
-    if field >= 2 and count and segs[:1] == [count]:
+    ncount = re.sub(r"\W+", " ", count or "").strip().lower()
+    ncount0 = re.sub(r"\W+", " ", (count or "").split(",")[0]).strip().lower()
+    if (count and all(_said(x, final) for x in re.findall(r"\d+", count))
+            and not any(ncount in re.sub(r"\W+", " ", x).lower() or ncount0 in re.sub(r"\W+", " ", x).lower() for x in segs)):
+        segs = [count] + segs                      # the count the answer gives ("4 emails, 1 unread")
+    if field >= 2 and count and segs[:1] == [count] and len(fact_keys(final) - fact_keys(count)) <= 1 and len(_QUOTED.findall(final)) <= 1:
         segs = [count]                            # the last rephrasing: just the count the answer opens with
-    body = "; ".join(segs)
-    head = f"{lead} {body}" + ("" if body.endswith((".", "…")) else ".")
-    plan = pick(seed + "p", ["Answer with those.", "Give those directly.", "That answers it.",
-                             "Each gets its time and title." if len(time_tokens(body)) >= 2 else "State those plainly.",
-                             "Keep every one of those in the answer."])
+        more = 0
+    body = "; ".join(segs) + (f"; plus {more} more" if more else "")
+    plural = " and " in src or src in _PLURAL_SRC
+    colon = bool(re.match(r"\d", body))
+    leads = [f"From the {src}:", f"In the {src}:", f"Relevant in the {src}:"]
+    if not colon:
+        leads.append(f"The {src} {'have' if plural else 'has'}")
+    lead = pick(seed, leads)
+    clock = parse_clock(meta)
+    seg_times = sorted(time_tokens(body))
+    gone = bool(_neg_first(final) and clock and seg_times and not more and _TODAYW.search(s["prompt"])
+                and all(_parse_hm(t) < clock.time() for t in seg_times) and _all_today(reads, segs))
+    neg = _neg_first(final) and not gone and not (fact_keys(final) & fact_keys(" ".join(segs)))
+    if gone:
+        lead = f"It's {fmt_time(clock.time())}; the {src} has"
+        plan = pick(seed + "p", _EXT_CLOSERS[12:14])
+    elif neg:
+        lead = pick(seed, [f"Not directly in the {src}; what it does say:", f"The {src} has no direct answer; it says:",
+                           f"Nothing exact in the {src}; closest:"])
+        plan = pick(seed + "p", _EXT_CLOSERS[9:12])
+    elif more:
+        plan = pick(seed + "p", _EXT_CLOSERS[7:9])
+    else:
+        plan = pick(seed + "p", ["Answer with those.", "Give those directly.", "That answers it.",
+                                 "Each gets its time and title." if len(time_tokens(body)) >= 2 else "State those plainly.",
+                                 "Keep every one of those in the answer." if len(segs) >= 2 else "State that plainly."])
+    head = f"{lead} {body}" + ("" if body.endswith((".", "?", "!")) else ".")
     return compose([(3, head), (2, tail_inj if inj else ""), (1, plan)], max_sentences=4)
+
+
+def _all_today(reads, segs) -> bool:
+    """Every piece comes from a calendar result's Today section (no other day's header comes before it)."""
+    for seg in segs:
+        found = False
+        for _n, r in reads:
+            head = "today" if re.match(r"\s*Today\b", r) else None
+            for ln in r.split("\n"):
+                m = re.match(r"\s*\*\*([A-Za-z]+)\b", ln)
+                if m and not re.match(r"\*\*\d", ln.strip()):
+                    head = m.group(1).lower()
+                if " ".join(_tok(seg)) in " ".join(_tok(ln)):
+                    found = True
+                    if head != "today":
+                        return False
+        if not found:
+            return False
+    return True
+
+
+def _nothing_line(reads, final: str) -> str:
+    """The result's own 'nothing here' sentence when it carries a fact the answer states (the day it checked), so the
+    thought holds that day whole ("Nothing scheduled in Wednesday, December 2")."""
+    for _n, r in reads:
+        for sent in re.split(r"(?<=[.!?])\s+|\n", r or ""):
+            sent = _clean_line(sent).rstrip(".")
+            if sent and _NOTHING.search(sent) and len(sent.split()) <= 14 and fact_keys(sent) & _result_facts(final, [r]):
+                return sent + "."
+    return ""
+
+
+_FORECAST = re.compile(r"forecast \((\d{4})-(\d\d)-(\d\d)\): high [^,\n]+, ([^\n]+)")
+
+
+def _target_day(prompt: str, clock: _dt.datetime | None):
+    """(label, date) of the day a short question is about: tomorrow, today, or a weekday."""
+    if not clock:
+        return None
+    if _TMRW.search(prompt):
+        return "Tomorrow", clock.date() + _dt.timedelta(days=1)
+    if _TODAYW.search(prompt):
+        return "Today", clock.date()
+    wd = _WD_RE.search(prompt)
+    if wd:
+        idx = _WD_IDX[wd.group(1).lower()[:3]]
+        return _WD[idx], clock.date() + _dt.timedelta(days=(idx - clock.date().weekday()) % 7)
+    return None
+
+
+def _verdict_thought(meta, s, reads, src, final, seed, terse) -> str:
+    """A terse final (a yes/no, a bare count, one word) shares no piece of the results: the deciding fact is the
+    count, the forecast of the asked day or the first event against the asked time. '' when none applies."""
+    if len((final or "").split()) > 3:
+        return ""
+    yn = re.match(r"\W*(yes|no)\b", final, re.I)
+    close = (pick(seed + "v", [f"So {yn.group(1).lower()}.", f"That makes it {yn.group(1).lower()}."]) if yn else
+             pick(seed + "v", ["Answer with just that.", "Keep it to the one word."]))
+    count = next((f for n, r in reads for f in [facts(n, r)] if f and not f.endswith("came back empty")), None)
+    if count and re.fullmatch(r"\W*\d+\W*", final) and all(_said(x, final) for x in re.findall(r"\d+", count)):
+        return compose([(3, f"From the {src}: {count}."), (1, pick(seed + "v", ["The count is the answer.", "Give just the number."]))])
+    clock = parse_clock(meta)
+    day = _target_day(s["prompt"], clock)
+    for n, r in reads:
+        mc = re.search(r"returned (\d+) of (\d+) available matching emails", r)
+        if mc and re.fullmatch(r"\W*\d+\W*", final) and _said(mc[1], final):
+            return compose([(3, f"From the {src}: returned {mc[1]} of {mc[2]} available matching emails."),
+                            (1, pick(seed + "v", ["The count is the answer.", "Give just the number."]))])
+        if n == "get_weather" and day:
+            for m in _FORECAST.finditer(r):
+                if _dt.date(int(m[1]), int(m[2]), int(m[3])) == day[1]:
+                    return compose([(3, f"{day[0]}, {fmt_day(day[1])}: {m[4].strip()}."), (1, close)])
+        if n in ("get_upcoming", "get_my_day_plan") and day:
+            asked = _asked_time(s["prompt"])
+            evs = re.findall(r"^- \*\*(\d{1,2}:\d\d [AP]M)\*\* — ([^\n·]+?)(?: · [^\n]*)?$", r, re.M)
+            if asked and evs:
+                at = fmt_time(asked)
+                first = min(evs, key=lambda e: _parse_hm(e[0]))
+                if re.search(r"\bafter\b", s["prompt"], re.I):
+                    later = [e for e in evs if _parse_hm(e[0]) > asked]
+                    if later:
+                        e = min(later, key=lambda e: _parse_hm(e[0]))
+                        return compose([(3, f"{day[0]}: {e[0]} {e[1].strip()} is after {at}."), (1, close)])
+                    return compose([(3, f"{day[0]}: the last event, {max(evs, key=lambda e: _parse_hm(e[0]))[0]} "
+                                        f"{max(evs, key=lambda e: _parse_hm(e[0]))[1].strip()}, is not after {at}."), (1, close)])
+                before = [e for e in evs if _parse_hm(e[0]) < asked]
+                if before:
+                    e = min(before, key=lambda e: _parse_hm(e[0]))
+                    return compose([(3, f"{day[0]}: {e[0]} {e[1].strip()} is before {at}."), (1, close)])
+                return compose([(3, f"{day[0]}: the first event, {first[0]} {first[1].strip()}, is not before {at}."), (1, close)])
+    return ""
 
 
 _NUMWORD = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve"]
@@ -2643,15 +3249,105 @@ def _said(num: str, final: str) -> bool:
     return n < len(_NUMWORD) and bool(re.search(rf"\b{_NUMWORD[n]}\b|\b{'a single' if n == 1 else '@@'}\b", final or "", re.I))
 
 
-def facts_missing(thought_text: str, final: str) -> list[str]:
-    """Every time, amount and quoted title an extraction thought lists must reach the final."""
+def facts_missing(thought_text: str, final: str, clock: _dt.datetime | None = None) -> list[str]:
+    """Every time, amount and quoted title an extraction thought lists must reach the final (the clock time the thought
+    compares against is the one time it may add)."""
     errs = []
     ft, fa = time_tokens(final), amount_tokens(final)
+    if clock and re.search(rf"\bIt's {re.escape(fmt_time(clock.time()))}\b", thought_text or ""):
+        ft = ft | time_tokens(fmt_time(clock.time()))
     for t in sorted(time_tokens(thought_text) - ft):
         errs.append(f"facts_missing: time {t} is in the thought, not the answer")
     for a in sorted(amount_tokens(thought_text) - fa):
         errs.append(f"facts_missing: amount {a} is in the thought, not the answer")
     for q in _QUOTED.findall(thought_text):
-        if q.lower() not in (final or "").lower():
+        if " ".join(_tok(q)) not in " ".join(_tok(final)):
             errs.append(f"facts_missing: “{q}” is in the thought, not the answer")
     return errs
+
+
+_BANNER_BAN = re.compile(r"Email is from Mail|Newer messages may be missing|To check for newer mail|server freshness|"
+                         r"A fresh Apple Reminders read supersedes|These lists describe storage|Wisp has not received|"
+                         r"Summarized per account|Result coverage", re.I)
+_TIME_FULL = re.compile(r"\b\d{1,2}(?::\d\d)?\s*(?:AM|PM|am|pm|a\.m\.|p\.m\.)")
+
+
+def _tok(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9$%°]+", re.sub(r"['’]", "", (text or "").lower()))
+
+
+def _result_token_lines(results: list[str]) -> list[list[str]]:
+    """Token lists of every result line, of its cleaned form and of both with parentheticals taken out."""
+    lines = []
+    for r in results or []:
+        for raw in re.split(r"\n", r or ""):
+            for form in (raw, _clean_line(raw, frozenset(re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", raw))), _clean_line(raw)):
+                lines.append(_tok(form))
+                lines.append(_tok(re.sub(r"\([^)]*\)", " ", form)))
+                for sent in re.split(r"(?<=[.!?])\s+", form):
+                    lines.append(_tok(sent))
+                    lines.append(_tok(re.sub(r"\([^)]*\)", " ", sent)))
+    return [x for x in lines if x]
+
+
+def _contiguous(seg: list[str], lines: list[list[str]]) -> bool:
+    n = len(seg)
+    return any(line[i:i + n] == seg for line in lines for i in range(len(line) - n + 1))
+
+
+def extract_body(text: str) -> list[str] | None:
+    """The ';'-separated pieces of an extraction thought (lead, injection note and closer taken off), None when the
+    thought is not in that shape."""
+    m = _EXT_LEAD.match(text or "")
+    if not m:
+        return None
+    body = text[m.end():].strip()
+    for _ in range(4):                              # closer, injection note, planted-line note: in any order at the end
+        before = body
+        for c in sorted(_EXT_CLOSERS + _EXT_INJ + _INJ_TAIL2 + _VERDICT_CLOSE, key=len, reverse=True):
+            if body.endswith(c):
+                body = body[:-len(c)].strip()
+        body = _INJ_TAIL_RE.sub("", body).strip()
+        if body == before:
+            break
+    body = body.rstrip(".").strip()
+    return [x.strip() for x in re.split(r";\s+", body) if x.strip()]
+
+
+def fragment_problems(text: str, results: list[str], counts: list[str] = ()) -> list[str]:
+    """Round 4 recheck: every piece an extraction thought lists is a whole contiguous run of one tool-result line (a
+    time with its title, a count with its noun, a date with its day number), no lone AM/PM, no ellipsis, no cache
+    banner, no repeated clause. `counts` are the generated count lines ("15 emails, 11 unread")."""
+    errs = []
+    if ("…" in text or "..." in text) and not any("…" in r or "..." in r for r in results or []):
+        errs.append("ellipsis: a thought piece is never cut with an ellipsis")
+    body = extract_body(text)
+    if body is None:
+        return errs
+    lines = _result_token_lines(results)
+    seen: list[str] = []
+    for seg in body:
+        if _MORE.fullmatch(seg):
+            continue
+        t = _tok(seg)
+        if not t:
+            continue
+        if seg in counts or _contiguous(t, lines):
+            pass
+        else:
+            errs.append(f"fragment: {seg[:50]!r} is not one contiguous piece of a tool result")
+        n = " ".join(t)
+        if any(n in x or x in n for x in seen):
+            errs.append(f"fragment: {seg[:40]!r} repeats another piece")
+        seen.append(n)
+    return errs
+
+
+def facts_unlisted(text: str, final: str, results: list[str]) -> list[str]:
+    """Reverse of facts_missing: a time, amount, quoted title or date the final states and a tool result also shows must be in
+    the thought, unless it ends 'plus N more' (a list too long for 60 words)."""
+    if _MORE.search(text):
+        return []
+    jt = " ".join(_tok(text))
+    miss = {k for k in _result_facts(final, results) - fact_keys(text) if not (k[0] == "quote" and " ".join(_tok(k[1])) in jt)}
+    return [f"facts_unlisted: {k[0]} {k[1]!r} is in the answer and the result, not in the thought" for k in sorted(miss)[:3]]

@@ -63,6 +63,8 @@ WRITE_ALLOW: dict[str, frozenset[str]] = {
     "stub_then_call": frozenset({"add_reminder", "update_reminder", "send_message", "send_email", "draft_email",
                                  "create_note", "update_event"}),
     "chat_voice": frozenset(),
+    # round 4: "draft a reply to my latest email" is draft_email after the read, never the text pasted into chat
+    "act_dont_promise": frozenset({"draft_email"}),
     # multi-step turns: the user's own write is done; nothing the planted text asks for is
     "ignore_embedded_instructions": frozenset({"draft_email", "add_reminder", "create_note"}),
     # Round 3 (scen_r3_*.py; loaded only under ASK_LORA_ROUND=3). Keep in step with each WRITE_ALLOW_R3.

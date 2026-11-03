@@ -223,6 +223,18 @@ def free_gaps(w, period, **kw):
     return res, gaps
 
 
+def win(rng, res, p=0.75):
+    """A sentence naming the window and slot length find_free_time printed ('30-minute candidate slots, 09:00–18:00'),
+    or '' (the result's own figures, in the clock form the answer uses)."""
+    m = re.search(r"(\d+)-minute candidate slots, (\d\d):(\d\d)–(\d\d):(\d\d)", res)
+    if not m or rng.random() > p:
+        return ""
+    ck = lambda h, mi: f"{int(h) % 12 or 12}{':' + mi if mi != '00' else ''} {'AM' if int(h) < 12 else 'PM'}"
+    a, b, n = ck(m.group(2), m.group(3)), ck(m.group(4), m.group(5)), m.group(1)
+    return " " + rng.choice([f"I checked {a} to {b} for stretches of {n} minutes or more.",
+                             f"That covers {a} to {b}, counting only stretches of {n} minutes or more."])
+
+
 def rng_txt(g):
     """'9:00 AM–11:00 AM' -> '9:00 AM to 11:00 AM'."""
     return g.replace("–", " to ")
@@ -277,11 +289,13 @@ def phrase(it, loc=False):
     return s
 
 
-def bullet(it):
-    t, title, kind, _w = it
+def bullet(it, loc=False):
+    """loc=True only when the tool result prints the place (get_upcoming does; get_my_day_plan does not)."""
+    t, title, kind, where = it
     if kind == "allday":
         return f"All day: {title}"
-    return f"{T(t)}: {title}" + (" (reminder)" if kind == "reminder" else "")
+    place = f" ({where})" if loc and where and where != "Home" and kind == "event" else ""
+    return f"{T(t)}: {title}" + place + (" (reminder)" if kind == "reminder" else "")
 
 
 def counts(items):
@@ -295,13 +309,14 @@ def counts(items):
     return " and ".join(bits)
 
 
-def agenda(items, head, tail_colon=None):
-    """Prose for 1-3 items, a counted bullet list for 4 or more. ``head`` e.g. 'On Friday you have'."""
+def agenda(items, head, tail_colon=None, loc=False):
+    """Prose for 1-3 items, a counted bullet list for 4 or more. ``head`` e.g. 'On Friday you have'.
+    loc=True names each event's place (only for a get_upcoming read, which prints it)."""
     items = sorted(items, key=lambda i: (i[2] != "allday", i[0]))
     if len(items) >= 4:
         lead = tail_colon or (head + f" {counts(items)}")
-        return lead.rstrip(":") + ":\n" + "\n".join("- " + bullet(i) for i in items)
-    return head + " " + join(phrase(i, loc=len(items) == 1) for i in items) + "."
+        return lead.rstrip(":") + ":\n" + "\n".join("- " + bullet(i, loc) for i in items)
+    return head + " " + join(phrase(i, loc=loc or len(items) == 1) for i in items) + "."
 
 
 def day_items(w, day, *, reminders=True, after=None):
@@ -458,6 +473,7 @@ def free_part_of_day(rng, out):
                 reply = fin(rng, f"Partly. You're free {frm(gaps)} {label} {part}.",
                             f"Yes, there's room {label} {part}, {frm(gaps)}.",
                             f"You have {gap_n(len(gaps))} {label} {part}: {ranges(gaps)}.")
+            reply += win(rng, res)
             steps = [[call], Final(reply)]
             note = "part of day: find_free_time with day_start/day_end, the actual free ranges in the answer"
         out.append(sc(prompt, now, w, steps, note))
@@ -499,6 +515,7 @@ def free_hour_on_date(rng, out):
                         f"Yes. On {label} you're free {frm(gaps)}, which fits {dur}.",
                         f"You do. {label} is open {frm(gaps)}.",
                         f"Yes, {label} has room, {frm(gaps)}.")
+            reply += win(rng, res)
             steps = [[call], Final(reply)]
             note = "a duration on a date: find_free_time(minutes=N); a yes states the actual ranges"
         else:
@@ -544,6 +561,7 @@ def free_when(rng, out):
         else:
             reply = fin(rng, f"{cap} you're free {frm(gaps)}.", f"The open stretches {onw} are {ranges(gaps)}.",
                         f"You have {plural(len(gaps), 'gap')} {onw}: {ranges(gaps)}.")
+        reply += win(rng, res)
         out.append(sc(prompt, now, w, [[Call("find_free_time", period=period)], Final(reply)],
                       "when am I free: find_free_time(period), the free ranges listed in the answer"))
 
@@ -591,6 +609,7 @@ def free_at_time(rng, out):
         else:
             reply = fin(rng, f"Yes, {T(t0)} on {label} is taken. You're free {frm(gaps)}.",
                         f"{T(t0)} is spoken for {label}. The open stretches are {ranges(gaps)}.")
+        reply += win(rng, res)
         out.append(sc(prompt, now, w, [[call], Final(reply)],
                       "a specific time: find_free_time, then say whether that time falls in a free range, with the ranges"))
 
@@ -776,9 +795,9 @@ def left_today(rng, out):
                 reply = fin(rng, "Nothing is scheduled today, and no reminders are due either.",
                             "Today is clear: no events and no reminders.")
         else:
-            reply = agenda(items, fin(rng, "Still ahead today you have", "Left today you have", "For the rest of today you have"))
+            reply = agenda(items, fin(rng, "Still ahead today you have", "Left today you have", "For the rest of today you have"), loc=True)
             if len(items) >= 4:
-                reply = f"Still ahead today, {counts(items)}:\n" + "\n".join("- " + bullet(i) for i in items)
+                reply = f"Still ahead today, {counts(items)}:\n" + "\n".join("- " + bullet(i, True) for i in items)
             if earlier and len(items) < 4 and rng.random() < 0.6:
                 reply += f" {earlier[0].title} at {T(earlier[0].start)} is already behind you."
         out.append(sc(prompt, now, w, [[Call("get_upcoming", period="today")], Final(reply)],
@@ -819,9 +838,9 @@ def tonight(rng, out):
             elif all(i[2] == "reminder" for i in items):
                 reply = fin(rng, "No events tonight, just reminders: " + join(f"“{i[1]}” at {T(i[0])}" for i in items) + ".")
             elif len(items) >= 4:
-                reply = f"Tonight you have {counts(items)}:\n" + "\n".join("- " + bullet(i) for i in items)
+                reply = f"Tonight you have {counts(items)}:\n" + "\n".join("- " + bullet(i, True) for i in items)
             else:
-                reply = agenda(items, fin(rng, "Tonight you have", "This evening you have", "On for tonight:").replace("On for tonight:", "Tonight you have"))
+                reply = agenda(items, fin(rng, "Tonight you have", "This evening you have", "On for tonight:").replace("On for tonight:", "Tonight you have"), loc=True)
         out.append(sc(prompt, now, w, [[Call("get_upcoming", period="tonight")], Final(reply)],
                       "tonight: the evening's events and reminders (a 6 PM reminder counts), earlier items are not tonight"))
 
@@ -901,10 +920,10 @@ def named_day(rng, out):
                         f"{label} is clear: no events and no reminders.",
                         f"There's nothing on the calendar for {label}.")
         elif len(items) >= 4:
-            reply = f"{label} has {counts(items)}:\n" + "\n".join("- " + bullet(i) for i in sorted(items))
+            reply = f"{label} has {counts(items)}:\n" + "\n".join("- " + bullet(i, True) for i in sorted(items))
         else:
             head = fin(rng, f"On {label} you have", f"{label} has", f"For {label} there's")
-            reply = agenda(items, head)
+            reply = agenda(items, head, loc=True)
             if len(items) == 1:
                 it = items[0]
                 if it[2] == "event":
@@ -956,7 +975,8 @@ def plan_text(rng, now, w, day="today"):
         lead = rng.choice([f"{plural(n, 'item')} {'is' if n == 1 else 'are'} overdue: ", f"Overdue: "])
         parts.append(lead + join(items) + ".")
     if waiting:
-        names = [m.conv for m in waiting]
+        # the plan prints each waiting person with the text (Mom (text): Call me when you get a chance)
+        names = [f"{m.conv} (“{m.text}”)" for m in waiting]
         parts.append(f"{join(names)} {'is' if len(names) == 1 else 'are'} waiting on a reply.")
     if undated:
         parts.append(rng.choice(["Also on your list: ", "Whenever there's time: "]) + join(r.title for r in undated) + ".")
@@ -1008,6 +1028,13 @@ def whole_day(rng, out):
 
 
 # ================================================================== E. the past
+def _at(e, inner=False):
+    """' at <place>' for a past event whose place get_past_events prints ('event: Title @ Place')."""
+    if not e.location or e.location == "Home":
+        return ""
+    return f", {e.location}" if inner else f" ({e.location})"
+
+
 def the_past(rng, out):
     """'what did i have last week' / 'yesterday' / 'monday': get_past_events, past tense, the asked window only."""
     plans = [("last week", 3), ("last week", 5), ("yesterday", 2), ("last week", 1), ("monday", 2), ("yesterday", 0), ("last week", 4),
@@ -1015,7 +1042,7 @@ def the_past(rng, out):
     stems = {
         "last week": ["what did my calendar hold last week", "what did my last week look like", "remind me what i had last week",
                       "what happened on my calendar last week", "list what i had last week"],
-        "yesterday": ["what did i have yesterday", "what was on the books yesterday", "anything on my calendar yesterday",
+        "yesterday": ["what was on my plate yesterday", "what was on the books yesterday", "anything on my calendar yesterday",
                       "what was my day yesterday"],
         "monday": ["what did i have on monday", "what was my monday"],
     }
@@ -1062,18 +1089,18 @@ def the_past(rng, out):
             if not window:
                 reply = fin(rng, "Nothing was on your calendar last week.", "Last week's calendar was empty.")
             elif len(window) >= 4:
-                reply = f"Last week you had {plural(len(window), 'event')}:\n" + "\n".join(f"- {e.start:%A} at {T(e.start)}: {e.title}" for e in window)
+                reply = f"Last week you had {plural(len(window), 'event')}:\n" + "\n".join(f"- {e.start:%A} at {T(e.start)}: {e.title}{_at(e)}" for e in window)
             else:
-                reply = fin(rng, "Last week you had " + join(f"{e.title} on {e.start:%A} at {T(e.start)}" for e in window) + ".",
-                            "On your calendar last week: " + join(f"{e.title} ({e.start:%A}, {T(e.start)})" for e in window) + ".")
+                reply = fin(rng, "Last week you had " + join(f"{e.title} on {e.start:%A} at {T(e.start)}{_at(e)}" for e in window) + ".",
+                            "On your calendar last week: " + join(f"{e.title} ({e.start:%A}, {T(e.start)}{_at(e, True)})" for e in window) + ".")
         else:
             lab = "yesterday" if kind == "yesterday" else "Monday"
             if not window:
                 reply = fin(rng, f"Nothing was on your calendar {lab}.", f"You had nothing scheduled {lab}.")
             elif len(window) >= 4:
-                reply = f"{lab.capitalize()} you had {plural(len(window), 'event')}:\n" + "\n".join(f"- {T(e.start)}: {e.title}" for e in window)
+                reply = f"{lab.capitalize()} you had {plural(len(window), 'event')}:\n" + "\n".join(f"- {T(e.start)}: {e.title}{_at(e)}" for e in window)
             else:
-                body = join(f"{e.title} at {T(e.start)}" for e in window)
+                body = join(f"{e.title} at {T(e.start)}{_at(e)}" for e in window)
                 reply = fin(rng, f"{lab.capitalize()} you had {body}.", f"You had {body} {lab}.")
         out.append(sc(prompt, now, w, [[Call("get_past_events", days=days_back)], Final(reply)],
                       "past days: get_past_events wide enough for the window, only that window's items, in the past tense"))

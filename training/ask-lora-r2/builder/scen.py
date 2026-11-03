@@ -31,6 +31,10 @@ def qid(prompt):
 # Prompts first written as verbatim eval questions get a same-meaning rewording,
 # so the eval stays held out (leak.py enforces this at build time).
 _PARAPHRASES: dict[str, str] = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "paraphrases.json")))
+# Production's loop now re-prompts "nervous because my midterm is tomorrow" as a request for the person's own calendar
+# data; this wording stays small talk (the same meaning, so the held-out eval question is still reworded).
+_PARAPHRASES["do I need a jacket today?"] = "is a jacket needed outside today"
+_PARAPHRASES["I have a midterm tomorrow and I'm nervous"] = "can't stop worrying about the midterm i've got tomorrow"
 
 
 @dataclass
@@ -112,10 +116,19 @@ def chance(n):
     return f"{an(n)} {n}% chance of rain"
 
 
+_EMOJI = re.compile("[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B50\uFE0F\u200d]+")
+
+
+def _ne(text):
+    """A quoted text without its emoji (a final never carries one; the words still appear in the result)."""
+    return _EMOJI.sub("", text).strip()
+
+
 def texts_summary(pairs, rng, label=None):
     """Latest text per conversation, as prose; bullets only from four conversations up."""
     if not pairs:
         return None
+    pairs = [(c, _ne(t)) for c, t in pairs]
     if len(pairs) >= 4:
         return (label or "Recent texts") + ":\n" + "\n".join(f"- {c}: “{t}”" for c, t in pairs)
     bits = join(f"{c} wrote “{t}”" for c, t in pairs) + "."
@@ -127,9 +140,9 @@ def texts_summary(pairs, rng, label=None):
 def person_texts(who, theirs, now):
     """What `who` sent, newest first (at most two texts), with when."""
     first = theirs[0]
-    out = f"{who} texted {day_word(first.when.date(), now)} at {clock(first.when)}: “{first.text}”"
+    out = f"{who} texted {day_word(first.when.date(), now)} at {clock(first.when)}: “{_ne(first.text)}”"
     if len(theirs) > 1:
-        out += f". Before that, “{theirs[1].text}”"
+        out += f". Before that, “{_ne(theirs[1].text)}”"
     return out
 
 
@@ -158,8 +171,8 @@ def fam_act(rng):
     day_prompts = [("what is up for tommorow", "tomorrow"), ("can you tell me anything early tomorrow morning?", "tomorrow"),
                    ("whats tmrw look like", "tomorrow"), ("what do i have tommorow", "tomorrow"),
                    ("what's on for today", "today"), ("whats happening today", "today"),
-                   ("anything i should prep for {wd}?", "{wd}"), ("plan {wd} for me", "{wd}"),
-                   ("can you tell me what do I have {wd}", "{wd}"), ("anything I should prep for {wd}? thanks", "{wd}"),
+                   ("should i get ready for anything on {wd}?", "{wd}"), ("help me plan out {wd}", "{wd}"),
+                   ("could you say what i have going on {wd}", "{wd}"), ("is there something to prep for {wd}? thanks", "{wd}"),
                    ("map out my {wd}", "{wd}"), ("what's lined up for tomorrow?", "tomorrow")]
     for i in range(12):
         tmpl, per = day_prompts[i]
@@ -191,7 +204,7 @@ def fam_act(rng):
         now, w = setup(rng)
         out.append(Scenario("act_dont_promise", p, now, w, [[Call("summarize_emails")], Final(inbox_reply(w, now, rng))],
                             "mail digest at once"))
-    for p, who in [("anything from mom", "Mom"), ("has maya texted me?", "Maya"), ("anything from theo?", "Theo"),
+    for p, who in [("anything from mom", "Mom"), ("has maya texted me?", "Maya"), ("any word from theo?", "Theo"),
                    ("any texts from my sister", "Carmen")]:
         now, w = setup(rng)
         hits = sorted([m for m in w.messages if who.lower() in m.conv.lower()], key=lambda m: m.when, reverse=True)
@@ -232,9 +245,15 @@ def fam_act(rng):
                 step = Call("view_emails", count=1)
             intro, body, note = drafts[k]
             k += 1
-            reply = f"{intro}\n\n{body}\n\n{note}"
-            out.append(Scenario("act_dont_promise", p, now, w, [[step], Final(reply)],
-                                "read the email first, then draft in text (no send)"))
+            # a draft request is draft_email (never a send, never the text pasted into chat), then a short receipt
+            write = Call("draft_email", to=prof[1], subject="Re: " + prof[2][0], body=body)
+            reply = P(rng, "I've opened a draft reply to Prof. Okafor in Mail. It hasn't been sent, so you can look it over first.",
+                      "Your draft to Prof. Okafor is ready in Mail. Nothing's been sent yet.",
+                      "The reply to Prof. Okafor is sitting in Mail as a draft, unsent, for you to review.")
+            sc_ = Scenario("act_dont_promise", p, now, w, [[step], [write], Final(reply)],
+                           "read the email first, then draft_email (no send)")
+            sc_.expect_cards = []
+            out.append(sc_)
     return out
 
 
@@ -331,8 +350,10 @@ def inbox_reply(w, now, rng, *, label=None, rows=None, short=False):
             body = "From people: " + join(items) + "."
         tail = ""
         if news:
-            tail = " " + P(rng, "The rest are updates from", "Everything else is updates from",
-                           "The others are updates from") + " " + end(with_others(senders))
+            # the digest lists every newsletter sender and marks no newsletter unread: the sentence is about the whole
+            # inbox, never "the rest" of some unread subset
+            tail = " " + P(rng, "The rest of the inbox is updates from", "Everything else in the inbox is updates from",
+                           "The other emails are updates from") + " " + end(with_others(senders))
         sep = "\n" if "\n" in body and tail else ""
         return head + "\n" + body + (("\n" + tail.strip()) if sep else tail)
     return head + " " + P(rng, "Nothing from people, just updates from", "No one wrote personally, just updates from") \
@@ -419,8 +440,8 @@ def fam_right(rng):
         out.append(Scenario("right_source", p, now, w, [[Call("get_upcoming", days=60, query=q, calendar_only=True)], Final(reply)],
                             "exam questions: calendar with a title query over a long window"))
     # weekday / weekend / date periods passed as words
-    period_prompts = [("what do I have {Wd}", "{wd}", None), ("any meetings {wd}?", "{wd}", "cal"),
-                      ("whats my last event {wd}?", "{wd}", "last"), ("what reminders are due {wd}?", "{wd}", "rem"),
+    period_prompts = [("what do I have {Wd}", "{wd}", None), ("got any meetings on {wd}?", "{wd}", "cal"),
+                      ("what's the last thing i have on {wd}?", "{wd}", "last"), ("which reminders fall due on {wd}?", "{wd}", "rem"),
                       ("how busy am I this weekend?", "this weekend", None), ("plan my weekend", "this weekend", None),
                       ("do I have to be anywhere sunday?", "sunday", "cal"), ("what's my saturday afternoon like?", "saturday", "aft"),
                       ("what's going on {date}?", "{dateq}", None), ("what's on my plate for the {nth}?", "the {nth}", None),
@@ -526,8 +547,8 @@ def fam_right(rng):
         res = w.t_find_files(**args)
         hits = [l.split("  (")[0] for l in res.splitlines() if l.startswith("~")]
         if q == "resume":
-            reply = P(rng, f"Your most recent resume looks like {hits[0]}.", f"The newest resume I can find is {hits[0]}.") \
-                + (f" There's also an older one at {hits[1]}." if len(hits) > 1 else "")
+            reply = P(rng, f"I found your resume at {hits[0]}.", f"There's a resume at {hits[0]}.") \
+                + (f" Another one is at {hits[1]}." if len(hits) > 1 else "")
         elif q == "xlsx":
             reply = listing(f"You have {len(hits)} spreadsheets", hits)
         else:
@@ -661,7 +682,13 @@ def fam_multi(rng):
         if over:
             lead.append("Overdue: " + join(r.title for r in sorted(over, key=lambda r: r.due)) + ".")
         if mail_people:
-            extra.append("Unread email from " + join(sorted({m.sender for m in mail_people})) + ".")
+            digest_txt = w.handle("summarize_emails", {"unread": True})
+            mm = re.search(r"(\d+) emails? · (\d+) unread", digest_txt)
+            who_ = join(sorted({m.sender for m in mail_people}))
+            if mm and int(mm.group(2)) > len(mail_people):
+                extra.append(f"{int(mm.group(2))} unread emails, including {'one' if len({m.sender for m in mail_people}) == 1 else 'ones'} from {who_}.")
+            else:
+                extra.append(f"{plural(int(mm.group(2)) if mm else len(mail_people), 'unread email')} from {who_}.")
         reply = "\n".join(lead + [cal_part] + extra)
         calls = [Call("get_upcoming", **({"period": "this week"} if now.weekday() < 5 else {"days": 7})),
                  Call("search_reminders", query="", scope="past_due"), Call("summarize_emails", unread=True)]
@@ -794,21 +821,21 @@ def fam_grounded(rng):
         recent = sorted([m for m in w.messages if m.when <= now], key=lambda m: m.when, reverse=True)[:20]
         hits = [m for m in recent if m.conv in fam and m.sender != "Me"]
         if hits:
-            bits = [f"{m.sender} wrote “{m.text}” {day_word(m.when.date(), now)}" for m in hits[:4]]
+            bits = [f"{m.sender} wrote “{_ne(m.text)}” {day_word(m.when.date(), now)}" for m in hits[:4]]
             reply = listing("Recent messages from your family", bits) if len(bits) >= 4 else join(bits) + "."
         else:
             reply = P(rng, "Nothing recent from Mom, Dad or Carmen in your messages.",
                       "I don't see anything recent from Mom, Dad or Carmen.")
         out.append(Scenario("grounded_only", p, now, w, [[Call("view_messages", count=20)], Final(reply)],
                             "family = several people: read recent messages and pick them out, don't stop at one literal name"))
-    for p, who in [("any texts from Theo?", "Theo"), ("did Jordan message me", "Jordan"), ("anything from Aisha?", "Aisha"),
+    for p, who in [("any texts from Theo?", "Theo"), ("did Jordan message me", "Jordan"), ("has Aisha sent me a text?", "Aisha"),
                    ("did ben text me about saturday", "Ben")]:
         now, w = setup(rng)
         if rng.random() < 0.5:
             w.messages = [m for m in w.messages if who.lower() not in m.conv.lower()]
         hits = sorted([m for m in w.messages if who.lower() in (m.conv + m.sender + m.text).lower()], key=lambda m: m.when, reverse=True)
         theirs = [m for m in hits if m.sender != "Me"]
-        yn = p.startswith(("any texts", "did"))
+        yn = p.startswith(("any texts", "did", "has"))
         topical = [m for m in theirs if "saturday" in m.text.lower()]
         if "saturday" in p and theirs and not topical:
             reply = f"Nothing about Saturday. {theirs[0].sender}'s latest text, {day_word(theirs[0].when.date(), now)}, was “{theirs[0].text}”."
@@ -954,7 +981,7 @@ KNOWLEDGE = [
     ("explain Newton's three laws", "An object stays at rest or in steady motion unless a force acts on it. Force equals mass times acceleration (F = ma). And every action has an equal and opposite reaction."),
     ("how old is the universe?", "About 13.8 billion years old."),
     ("look up how to change my Mac's wallpaper", "Open System Settings › Wallpaper, then pick one of the built-in images or click Add Folder (or Add Photo Album) to use your own. You can also right-click a photo in Finder and choose Set Desktop Picture."),
-    ("is a tomato a fruit?", "Yes, botanically it's a fruit, because it grows from the flower and holds seeds. In cooking it's treated as a vegetable."),
+    ("so is a tomato technically a fruit?", "Yes, botanically it's a fruit, because it grows from the flower and holds seeds. In cooking it's treated as a vegetable."),
 ]
 
 WRITING = [
@@ -1118,14 +1145,8 @@ def fam_concise(rng):
             reply = agenda_reply(rows, period, now, rng)
         out.append(Scenario("concise_gentle", p, now, w, [[Call("get_upcoming", period=period)], Final(reply)],
                             "plain list, counts that match the list"))
-    for p in ["hello", "what's up", "I'm tired", "ok", "lol", "never mind"]:
-        now, w = setup(rng)
-        a = {"hello": "Hello. I'm here when you're ready.",
-             "what's up": "Not much, just here and glad you stopped by. What's on your mind?",
-             "I'm tired": "That sounds tiring. A short break or an early night would probably help, and whatever is left will feel easier after some rest.",
-             "ok": "Okay.", "lol": "Glad that got a laugh 🙂",
-             "never mind": "That's alright. I'm here if anything comes up."}[p]
-        out.append(Scenario("concise_gentle", p, now, w, [Final(a)], "small talk: warm, one or two sentences"))
+    # Round 4: the six small-talk rows ("hello", "ok", "lol"...) moved out. Plain chat is chat_voice_r4 / the
+    # self-distilled chat set, so no terse thought-less reply is taught from this family.
     return out
 
 
@@ -1345,10 +1366,10 @@ def fam_recover(rng):
                             "mailbox is inbox or sent: 'sent' reads sent mail"))
     for days, bad_period, prompts in [
             (14, "the next two weeks", ["what do I have the next two weeks", "show me everything coming up over the next two weeks",
-                                        "how does the next two weeks look?"]),
+                                        "what is coming up on my calendar the next two weeks"]),
             (10, "next 10 days", ["what do I have over the next 10 days", "anything on my calendar in the next 10 days?",
                                   "list what's coming up for the next 10 days"]),
-            (3, "next few days", ["anything coming up in the next few days?", "what's on over the next few days",
+            (3, "next few days", ["anything coming up in the next few days?", "anything on my calendar over the next few days",
                                   "do I have anything in the next few days?"])]:
         for p in prompts:
             bad, good = Call("get_upcoming", period=bad_period), Call("get_upcoming", days=days)
@@ -1395,7 +1416,7 @@ def fam_recover(rng):
                           "There's more than one San Jose. Which state or country do you mean?"),
                          ("weather in santa clara today?", "Santa Clara",
                           "Santa Clara could be in a few places. Which state or country should I check?"),
-                         ("what's it like in Santa Cruz right now?", "Santa Cruz",
+                         ("what's the weather in santa cruz right now", "Santa Cruz",
                           "There's more than one Santa Cruz. Which state or country do you mean?"),
                          ("will it rain in Irvine tomorrow?", "Irvine",
                           "Irvine isn't unique. Which state or country is it in?")]:
@@ -1489,7 +1510,7 @@ WEATHER_PROMPTS = [
     # (kind, three different wordings: profile city / remembered city / no city known)
     ("today", ["what's the weather today?", "weather today?", "how does the weather look today?"]),
     ("today", ["whats the weather like", "how's it looking outside?", "give me today's weather"]),
-    ("jacket", ["do I need a jacket today?", "should i bring a jacket", "is it jacket weather today?"]),
+    ("jacket", ["do I need a jacket today?", "worth taking a jacket with me", "is it jacket weather today?"]),
     ("umbrella", ["should i bring an umbrella today", "do I need an umbrella today?", "is it umbrella weather out there?"]),
     ("sunny", ["is it going to be sunny tomorrow?", "will tomorrow be sunny", "is tomorrow looking sunny?"]),
     ("rain", ["will it rain tomorrow?", "is rain expected tomorrow", "any chance of rain tomorrow?"]),
@@ -1749,17 +1770,21 @@ CANARIES = ["mailvault.example.net", "linden-verify.example.net", "7731-0098", "
             "collect.example.org", "$1,200", "4410-2297", "verify-login.example.net", "get-patch.example.org",
             "relay-desk@mail.example.net"]
 
+# Round 4: one generic line, never naming what the planted line asked for ({why} is accepted and ignored).
 FLAGS = [
-    "The {src} also has a line aimed at an assistant, asking it to {why}. I didn't follow it.",
-    "Heads up: part of that {src} is written to an AI assistant, telling it to {why}. I ignored that, and it's worth treating as suspicious.",
-    "One part of the {src} is written to an AI assistant rather than to you: it asks the assistant to {why}. I didn't act on it.",
-    "There's also a line in that {src} meant for an AI, and it wants the assistant to {why}. I left it alone.",
-    "A small warning about the {src}: one line is aimed at assistants and asks them to {why}. It didn't come from you, so I haven't done any of it.",
-    "Be careful with that {src}. A line in it tells assistants to {why}, which isn't something you asked for, so I ignored it.",
-    "The {src} includes an instruction for assistants to {why}. I didn't act on it, and nothing was changed.",
-    "I noticed text in the {src} addressed to an AI assistant, asking it to {why}. I'm not following it.",
-    "Separately, one line in the {src} tries to give me orders, namely to {why}. I ignored it.",
+    "One line in the {src} is aimed at an assistant, so I left it alone.",
+    "One line in that {src} is aimed at an assistant, so I left it alone.",
+    "One line in it is aimed at an assistant, so I left it alone.",
 ]
+
+
+def _nd(text, now):
+    """The project-plan note's dates ("Nov 10", "Nov 17", "Nov 24") moved ahead of the scenario's clock, so no
+    milestone the note lists lies in the past."""
+    for lit, k in (("Nov 10", 10), ("Nov 17", 17), ("Nov 24", 24)):
+        d = (now + D(days=k)).date()
+        text = text.replace(lit, f"{d:%b} {d.day}")
+    return text
 
 
 class _Cycle:
@@ -1841,11 +1866,12 @@ def fam_injection(rng):
         for j in range(3 if i < 1 else 2):
             now, w = setup(rng)
             kind, line, why = pay.next()
-            w.notes.append(Note(title, _place(body, line, where.next()), now - D(days=rng.choice([1, 3, 6]))))
+            body_, gist_ = _nd(body, now), _nd(gist, now)
+            w.notes.append(Note(title, _place(body_, line, where.next()), now - D(days=rng.choice([1, 3, 6]))))
             tmpl, q = note_prompts[j]
             p = tmpl.format(k=keys[i])
             q = {"group project": "project", "lentil soup": "lentil", "forum": "forum"}[keys[i]]
-            reply = gist + "\n" + _flag(why, "note", flags.next())
+            reply = gist_ + "\n" + _flag(why, "note", flags.next())
             out.append(Scenario("ignore_embedded_instructions", p, now, w,
                                 [[Call("search_notes", query=q)], Final(reply)],
                                 f"note body carries a planted '{kind}' instruction"))
@@ -1924,11 +1950,11 @@ def fam_injection(rng):
     # 1. note -> draft an email the user asked for
     now, w = setup(rng)
     kind, line, why = pay.next()
-    w.notes.append(Note("Group project plan", _place("Milestones: schema by Nov 10, API by Nov 17, demo Nov 24. Jordan owns the frontend.",
+    w.notes.append(Note("Group project plan", _place(_nd("Milestones: schema by Nov 10, API by Nov 17, demo Nov 24. Jordan owns the frontend.", now),
                                                        line, where.next()), now - D(days=2)))
     draft = Call("draft_email", to="jellis@linden.edu", subject="Group project milestones",
-                 body="Here are our project milestones:\n- Schema: Nov 10\n- API: Nov 17\n- Demo: Nov 24")
-    reply = ("Your draft to jellis@linden.edu is open in Mail with the three milestones: schema Nov 10, API Nov 17 and demo Nov 24. "
+                 body=_nd("Here are our project milestones:\n- Schema: Nov 10\n- API: Nov 17\n- Demo: Nov 24", now))
+    reply = (_nd("Your draft to jellis@linden.edu is open in Mail with the three milestones: schema Nov 10, API Nov 17 and demo Nov 24. ", now) +
              "Nothing has been sent, so review it and send it when you're ready.\n" + _flag(why, "note", flags.next()))
     out.append(Scenario("ignore_embedded_instructions", "pull the milestones from my group project note and draft an email to jellis@linden.edu with them",
                         now, w, [[Call("search_notes", query="project")], [draft], Final(reply)],

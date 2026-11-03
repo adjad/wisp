@@ -47,6 +47,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zlib
+import hashlib
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -63,10 +64,13 @@ DEFAULT_MAX_TOKENS = 1024
 STOPS = tuple(W.STOPS)                        # ("<turn|>", "<|tool_response>", "<eos>")
 TURN_END, TOOL_RESPONSE = "<turn|>", "<|tool_response>"
 
-# The §4.1 buckets are the export's `label.rl_kind` plus a "safety" carve-out by builder family (the safety and compose
-# decisions bucket, which is built from several rl_kinds: decision finals, call steps, selection-like first steps).
+# The §4.1 buckets follow the export's r5_bucket(): chat_anchor | session | narrate | safety | select | other, tested in that
+# order, from `label.rl_kind` and the builder family. The two anchor kinds stay their own zero-advantage buckets (so the
+# session bucket is the PG-bearing one), and "other" is sampled per rl_kind. `by_rl_kind` in the report is the per-rl_kind view.
+# Family names are the export's COMPOSE_SAFETY_FAMILIES and R5_SESSION_FAMILIES (test_bucket_families_match_the_export).
 SAFETY_FAMILIES = ("restraint_r4", "gather_then_send_r4", "safe_restraint", "compose_r3", "safe_effects",
                    "ignore_embedded_instructions", "no_write_for_reads", "reminders_r3")
+SESSION_FAMILIES = ("session_chat_r4", "session_recall_r4", "instructions_r4", "followup_r3", "recall_dev_r4", "session_style_dev")
 ANCHOR_KINDS = ("chat_anchor", "session_anchor")        # constant reward + KL: zero advantage by design, never PG-bearing
 CEILINGS = {"call": 1.5, "select": 1.5, "narrate": 2.0, "recall": 2.0, "recall_none": 1.5, "chat_anchor": 1.0,
             "session_anchor": 1.0, "decision": 1.0, "instruction": 1.0}   # §3.3 ceiling table; the export's label.ceiling wins
@@ -94,6 +98,13 @@ def check_environment(environ=None) -> str:
     if not moe:
         die("MOE_DIR is not set. Point it at the isolated state directory first (it must never be the live ~/.moe); "
             "nothing was sent.")
+    homes = {environ.get("HOME") or "", str(Path.home())} - {""}
+    live = set()
+    for h in homes:
+        live |= {os.path.abspath(os.path.join(h, ".moe")), os.path.realpath(os.path.join(h, ".moe"))}
+    mine = {os.path.abspath(os.path.expanduser(moe)), os.path.realpath(os.path.expanduser(moe))}
+    if mine & live:
+        die(f"MOE_DIR={moe!r} is the live state directory (~/.moe). Point it at an isolated directory; nothing was sent.")
     return moe
 
 
@@ -156,11 +167,29 @@ def base_id(row_id: str) -> str:
     return row_id.rsplit("#", 1)[0] if "#" in row_id else row_id
 
 
-def bucket_of(row: dict, safety_families=SAFETY_FAMILIES) -> str:
+def bucket_of(row: dict, safety_families=SAFETY_FAMILIES, session_families=SESSION_FAMILIES) -> str:
+    """The §4.1 bucket, in the export's r5_bucket order (anchors first, then session, narrate, safety, select, other)."""
     fam = str(row.get("family") or "")
+    kind = row["label"].get("rl_kind")
+    if kind in ANCHOR_KINDS:
+        return kind
+    if any(fam.startswith(s) for s in session_families):
+        return "session"
+    if kind == "narrate":
+        return "narrate"
     if any(fam.startswith(s) for s in safety_families):
         return "safety"
-    return str(row["label"].get("rl_kind") or "unlabelled")
+    if kind == "select":
+        return "select"
+    return "other"
+
+
+def is_dev_safety(row: dict, safety_families=SAFETY_FAMILIES) -> bool:
+    """The dev file marks its slices (row["slice"] == "safety"); fall back to the family prefix for a file that does not."""
+    if row.get("slice") is not None:
+        return row["slice"] == "safety"
+    fam = str(row.get("family") or "")
+    return any(fam.startswith(s) for s in safety_families)
 
 
 def ceiling_of(label: dict):
@@ -184,8 +213,9 @@ def check_rounds(rows: list, rnd: int, what: str) -> None:
 
 def stratify(rows: list, per_bucket: int, anchor_per_bucket: int, safety_n: int, seed: int,
              safety_families=SAFETY_FAMILIES) -> tuple:
-    """Pick rows per bucket: `per_bucket` (anchors: `anchor_per_bucket`; safety: `safety_n`). One copy per base id, a
-    seeded shuffle, deterministic. Returns (selected rows in bucket order, {bucket: {"available", "requested", "picked"}})."""
+    """Pick rows per bucket: `per_bucket` (anchors: `anchor_per_bucket`; safety: `safety_n`). The "other" bucket is stratified
+    per rl_kind (`per_bucket` each, reported as "other:<kind>"). One copy per base id, a seeded shuffle, deterministic.
+    Returns (selected rows in bucket order, {bucket: {"available", "requested", "picked"}})."""
     pools = defaultdict(list)
     seen = set()
     for r in rows:
@@ -195,7 +225,8 @@ def stratify(rows: list, per_bucket: int, anchor_per_bucket: int, safety_n: int,
         if key in seen:
             continue
         seen.add(key)
-        pools[bucket_of(r, safety_families)].append(r)
+        b = bucket_of(r, safety_families)
+        pools[f"other:{r['label'].get('rl_kind') or 'unlabelled'}" if b == "other" else b].append(r)
     picked, info = [], {}
     for b in sorted(pools):
         want = safety_n if b == "safety" else anchor_per_bucket if b in ANCHOR_KINDS else per_bucket
@@ -253,9 +284,12 @@ class Client:
         raise RuntimeError(f"{path}: {type(last).__name__}: {last}") from last
 
 
+def served_entries(client: Client) -> list:
+    return list(((client.request("/v1/models")) or {}).get("data", []))
+
+
 def served_models(client: Client) -> list:
-    resp = client.request("/v1/models")
-    return [m.get("id") for m in (resp or {}).get("data", [])]
+    return [m.get("id") for m in served_entries(client)]
 
 
 # ------------------------------------------------------------------ completions route
@@ -430,28 +464,40 @@ def tokenizer_counter(tokenizer_dir: str):
 
 
 def counts_file_counter(path: str, rows: list):
+    """Prompt token counts from a table {row id: count}. A PROMPT counter only (it knows nothing about completion text), and
+    it returns None for a prompt whose row the table omits; bos_check skips those and reports them."""
     table = json.loads(Path(path).read_text())
     by_prompt = {r["prompt"]: table[r["id"]] for r in rows if r["id"] in table}
-    return lambda text: by_prompt[text]
+    return lambda text: by_prompt.get(text)
 
 
 def bos_check(client: Client, model: str, rows: list, count_tokens, n: int = 12, seed: int = 0) -> dict:
     """The served tokenizer must not prepend a second BOS: for a sample of rows the served prompt_tokens must equal the
     HF count of the same string."""
     rng = random.Random(f"bos-{seed}")
-    sample = rows if len(rows) <= n else rng.sample(rows, n)
+    order = list(rows)
+    rng.shuffle(order)
+    sample, no_count = [], []
+    for r in order:                      # count lazily: stop once n rows have a count (a --token-counts table may omit rows)
+        if len(sample) >= n:
+            break
+        c = count_tokens(r["prompt"])
+        (no_count if c is None else sample).append(r["id"] if c is None else (r, c))
     bad, extra, checked = [], 0, 0
-    for r in sample:
+    for r, want in sample:
         resp = client.request("/v1/completions", completions_body(model, r["prompt"], 1, sampling={"temperature": 0.0}, stop=None))
         served = (resp.get("usage") or {}).get("prompt_tokens")
         if served is None:
             return {"checked": checked, "ok": False, "reason": "the server returns no usage.prompt_tokens", "mismatches": []}
-        want = count_tokens(r["prompt"])
         checked += 1
         if served != want:
             bad.append({"id": r["id"], "served": served, "hf": want})
             extra += served == want + 1
-    return {"checked": checked, "ok": not bad, "extra_bos": bool(bad) and extra == len(bad), "mismatches": bad[:10]}
+    out = {"checked": checked, "ok": not bad and checked > 0, "extra_bos": bool(bad) and extra == len(bad), "mismatches": bad[:10],
+           "rows_without_count": len(no_count), "ids_without_count": no_count[:10]}
+    if checked == 0:
+        out["reason"] = "no sampled row had a token count to compare with (the --token-counts table omits them all)"
+    return out
 
 
 # ------------------------------------------------------------------ statistics
@@ -503,6 +549,23 @@ def share(flags: list):
     return round(sum(flags) / len(flags), 4) if flags else None
 
 
+def cap_split(groups: list) -> dict:
+    """Completion length and truncation over a set of groups (the cap-governed rows, or the rows with their own cap)."""
+    samples = [s for g in groups for s in g["samples"]]
+    if not samples:
+        return {"n_prompts": 0, "n_samples": 0, "completion_tokens": length_stats([]), "tokens_exact": True, "truncation_share": None}
+    return {"n_prompts": len(groups), "n_samples": len(samples), "completion_tokens": length_stats([s["tokens"] for s in samples]),
+            "tokens_exact": all(s.get("tokens_exact") for s in samples), "truncation_share": share([s["truncated"] for s in samples])}
+
+
+def _plain(x, limit=600):
+    if x is None:
+        return None
+    if not isinstance(x, str):
+        x = json.dumps(x, ensure_ascii=False)
+    return x[:limit]
+
+
 def bucket_stats(groups: list, review_n: int = 40) -> dict:
     """groups: [{id, family, rl_kind, ceiling, route, samples:[...]}], all one bucket."""
     if not groups:
@@ -534,14 +597,21 @@ def bucket_stats(groups: list, review_n: int = 40) -> dict:
         "ceiling_missing": sum(g["ceiling"] is None for g in groups),
         "mean_score": round(sum(s["total"] for s in samples) / len(samples), 4),
         "ceiling_mean": round(sum(g["ceiling"] for g in groups if g["ceiling"] is not None) / max(1, sum(g["ceiling"] is not None for g in groups)), 4),
+        "informative_any_share": share([x["informative_unsafe"] or x["informative_facts"] for x in sm]),
         "max_tokens": sorted({g.get("max_tokens") for g in groups if g.get("max_tokens")}),
+        # a bucket can mix rows that --max-completion governs with rows that carry their own label.max_tokens (chat anchors and
+        # every session-family row, followup_r3 narrate and call steps included), so lengths and truncation are split per ROW
         "own_max_tokens": any(g.get("label_max_tokens") for g in groups),
+        "governed": cap_split([g for g in groups if not g.get("label_max_tokens")]),
+        "own_cap": cap_split([g for g in groups if g.get("label_max_tokens")]),
         "ungrounded": {
             "flagged_samples": len(flagged), "scored_samples": len(parsed),
             "flagged_share": round(len(flagged) / len(parsed), 4) if parsed else None,
             "hand_check": ("false-positive rate cannot be read off a score: hand- or reference-check at least 30 of these; "
                            "drop the sub-rule if more than 2% of grounded samples are penalised"),
-            "review": [{"id": g["id"], "ungrounded": s["flags"], "text": s["text"][:600]} for g, s in flagged[:review_n]],
+            "review": [{"id": g["id"], "family": g["family"], "ungrounded": s["flags"], "text": s["text"][:600],
+                        "ground": _plain(g.get("ground")), "facts": g.get("facts"), "names": g.get("names")}
+                       for g, s in flagged[:review_n]],
         },
         "per_prompt": [{"id": g["id"], "family": g["family"], "rl_kind": g["rl_kind"], "ceiling": g["ceiling"],
                         "scores": [s["total"] for s in g["samples"]], "mean": g["summary"]["mean"],
@@ -565,26 +635,34 @@ def mix_weighted(buckets: dict, mix: dict, key: str):
 
 
 def cap_report(buckets: dict, reconstructed: bool) -> dict:
-    """suggested_cap = the largest p99 + 64 over the text buckets the `--max-completion` flag governs (those whose rows
-    carry no label.max_tokens); chat and session rows carry their own cap, so a truncation problem there is fixed by
-    re-exporting label.max_tokens, not by the flag (RL-SCOPE §2.3, C5)."""
-    governed = {b: st for b, st in buckets.items() if st.get("n_prompts") and not st["own_max_tokens"]}
-    own = {b: st for b, st in buckets.items() if st.get("n_prompts") and st["own_max_tokens"]}
-    exact = all(st["tokens_exact"] for st in governed.values()) and all(st["completion_tokens"]["p99"] is not None for st in governed.values())
-    p99s = {b: st["completion_tokens"]["p99"] for b, st in governed.items() if st["completion_tokens"]["p99"] is not None}
-    out = {"suggested_cap": None, "suggested_cap_bucket": None, "maxc_recommendation": None, "censored_buckets": [],
-           "reexport_label_max_tokens": [], "note": ""}
-    out["censored_buckets"] = sorted(b for b, st in governed.items() if st["truncation_over_1pct"])
-    out["reexport_label_max_tokens"] = sorted(b for b, st in own.items() if st["truncation_over_1pct"])
+    """suggested_cap = the largest p99 + 64 over the rows `--max-completion` governs, i.e. the rows with no label.max_tokens,
+    decided per ROW (a bucket mixes both kinds: chat anchors and every session-family row carry their own cap, and so do
+    followup_r3's narrate and call steps). `suggested_cap_all_text` is RL-SCOPE §2.3's literal reading, the largest p99 + 64
+    over every text bucket whatever cap the row carries. A truncation problem on own-cap rows is fixed by re-exporting their
+    label.max_tokens (`reexport_label_max_tokens`), not by the flag (C5)."""
+    live = {b: st for b, st in buckets.items() if st.get("n_prompts")}
+    gov = {b: st["governed"] for b, st in live.items() if st["governed"]["n_samples"]}
+    own = {b: st["own_cap"] for b, st in live.items() if st["own_cap"]["n_samples"]}
+    over = lambda sp: bool(sp["truncation_share"] and sp["truncation_share"] > TRUNC_REEXPORT_SHARE)
+    out = {"suggested_cap": None, "suggested_cap_bucket": None, "suggested_cap_all_text": None, "suggested_cap_all_text_bucket": None,
+           "maxc_recommendation": None, "censored_buckets": sorted(b for b, sp in gov.items() if over(sp)),
+           "reexport_label_max_tokens": sorted(b for b, sp in own.items() if over(sp)),
+           "governed_prompts": {b: sp["n_prompts"] for b, sp in gov.items()}, "own_cap_prompts": {b: sp["n_prompts"] for b, sp in own.items()},
+           "note": ""}
     if reconstructed:
         out["note"] = "reconstructed route: lengths are not production lengths, so no suggested_cap"
         return out
-    if not p99s or not exact:
+    p99s = {b: sp["completion_tokens"]["p99"] for b, sp in gov.items()}
+    if not p99s or not all(sp["tokens_exact"] and sp["completion_tokens"]["p99"] is not None for sp in gov.values()):
         out["note"] = "no exact per-sample token counts (use --mode calls, or --tokenizer-dir with --mode n): no suggested_cap"
         return out
     top = max(p99s, key=lambda b: p99s[b])
     out["suggested_cap"] = int(p99s[top] + CAP_MARGIN)
     out["suggested_cap_bucket"] = top
+    allp = {b: st["completion_tokens"]["p99"] for b, st in live.items() if st["tokens_exact"] and st["completion_tokens"]["p99"] is not None}
+    if allp:
+        t = max(allp, key=lambda b: allp[b])
+        out["suggested_cap_all_text"], out["suggested_cap_all_text_bucket"] = int(allp[t] + CAP_MARGIN), t
     if out["censored_buckets"]:
         out["maxc_recommendation"] = MAXC_RAISED
         out["note"] = (f"truncation above 1% in {out['censored_buckets']}: the p99 is censored at the sampling cap; "
@@ -598,9 +676,40 @@ def cap_report(buckets: dict, reconstructed: bool) -> dict:
 
 # ------------------------------------------------------------------ the run
 
+WEIGHT_SUFFIXES = (".safetensors", ".gguf", ".bin", ".npz", ".json", ".model")
+ENGINE_IDENTITY_KEYS = ("path", "model_path", "root", "size", "size_bytes", "sha", "hash", "revision", "digest", "quantization")
+
+
+def path_identity(path: str) -> dict:
+    """Cheap identity of a weights directory (or file): a hash of the relative names, sizes and mtimes of its weight and config
+    files. Reads no file contents, so a 15 GB model costs a directory walk."""
+    root = Path(path).expanduser()
+    if not root.exists():
+        die(f"--model-path {path!r} does not exist")
+    files = [root] if root.is_file() else sorted(f for f in root.rglob("*") if f.is_file() and f.suffix in WEIGHT_SUFFIXES)
+    ent = []
+    for f in files:
+        st = f.stat()
+        ent.append(f"{f.relative_to(root) if root.is_dir() else f.name}:{st.st_size}:{st.st_mtime_ns}")
+    blob = "\n".join(ent).encode()
+    return {"path": str(root.resolve()), "files": len(files), "digest": hashlib.sha1(blob).hexdigest()[:16]}
+
+
+def engine_identity(entries: list, name: str) -> dict:
+    """Whatever the engine's /v1/models entry says about the served model beyond its id (path, size, digest...), if anything."""
+    for m in entries:
+        if m.get("id") == name:
+            return {k: m[k] for k in ENGINE_IDENTITY_KEYS if k in m}
+    return {}
+
+
 def fingerprint(args, route: str) -> dict:
-    return {"model": args.served_model, "route": route, "mode": args.mode, "seed": args.seed, "G": args.G,
-            "max_tokens_override": args.max_tokens, "default_max_tokens": args.default_max_tokens, "sampling": SAMPLING}
+    """What a cached sample depends on. The served name alone does not identify the weights (a different SFT can be served under
+    the same id), so --model-path and whatever /v1/models reports are part of it; without either, pass --fresh after any swap."""
+    return {"model": args.served_model, "model_identity": getattr(args, "model_identity", None), "route": route, "mode": args.mode,
+            "seed": args.seed, "G": args.G, "max_tokens_override": args.max_tokens, "default_max_tokens": args.default_max_tokens,
+            "sampling": SAMPLING, "omit_fields": sorted(x for x in args.omit_fields.split(",") if x),
+            "extra_body": args.extra_body or None}
 
 
 def row_key(row: dict, mt: int) -> str:
@@ -666,8 +775,9 @@ def run_sampling(client: Client, args, picked: list, route: str, count_tokens, l
     return raw, errors, round(time.monotonic() - t0, 1)
 
 
-def build_groups(picked: list, raw: dict, rnd: int, safety_families) -> dict:
-    """{bucket: [group]} from the sampled rows that have all their samples."""
+def build_groups(picked: list, raw: dict, rnd: int, safety_families, dev_ids=frozenset(), override=None) -> dict:
+    """{bucket: [group]} from the sampled rows that have all their samples. Dev rows (`dev_ids`) all go to "safety": the dev
+    slice is the safety slice. `override` = --max-tokens: every row was sampled at it, so no row used its own label.max_tokens."""
     buckets = defaultdict(list)
     for row in picked:
         recs = raw.get(row["id"])
@@ -680,14 +790,33 @@ def build_groups(picked: list, raw: dict, rnd: int, safety_families) -> dict:
             s.update(text=r["text"], tokens=r["tokens"], tokens_exact=r.get("tokens_exact", False),
                      finish_reason=r.get("raw_finish"))
             samples.append(s)
-        buckets[bucket_of(row, safety_families)].append({
+        buckets["safety" if row["id"] in dev_ids else bucket_of(row, safety_families)].append({
             "id": row["id"], "family": row.get("family"), "rl_kind": lab.get("rl_kind"), "ceiling": ceiling_of(lab),
-            "route": recs[0]["route"], "max_tokens": recs[0]["max_tokens"], "label_max_tokens": lab.get("max_tokens"),
-            "samples": samples})
+            "route": recs[0]["route"], "max_tokens": recs[0]["max_tokens"],
+            "label_max_tokens": None if override else lab.get("max_tokens"), "samples": samples,
+            "ground": lab.get("ground"), "facts": lab.get("facts"), "names": lab.get("names")})
     return buckets
 
 
-def build_report(args, route: str, train_groups: dict, dev_groups: dict, mix: dict, selection: dict, extras: dict) -> dict:
+def session_composition(rows: list, safety_families=SAFETY_FAMILIES) -> dict:
+    """What the session bucket holds in the full export (unique prompts): PG-bearing rows by rl_kind and family, and the anchors.
+    RL-SCOPE E6a quotes this next to the bucket's informative-group share."""
+    seen, pg, anchors = set(), Counter(), Counter()
+    for r in rows:
+        if not is_text(r) or base_id(r["id"]) in seen:
+            continue
+        seen.add(base_id(r["id"]))
+        kind = r["label"].get("rl_kind")
+        if kind in ANCHOR_KINDS and any(str(r.get("family") or "").startswith(f) for f in SESSION_FAMILIES):
+            anchors[f"{r.get('family')}:{kind}"] += 1
+        elif bucket_of(r, safety_families) == "session":
+            pg[f"{r.get('family')}:{kind}"] += 1
+    return {"pg_bearing": dict(sorted(pg.items())), "pg_total": sum(pg.values()), "anchors": dict(sorted(anchors.items())),
+            "anchor_total": sum(anchors.values())}
+
+
+def build_report(args, route: str, train_groups: dict, dev_groups: dict, mix: dict, selection: dict, extras: dict,
+                 text_rows=None) -> dict:
     reconstructed = route != "completions"
     buckets = {b: bucket_stats(g, args.review_n) for b, g in sorted(train_groups.items())}
     dev = {f"dev:{b}": bucket_stats(g, args.review_n) for b, g in sorted(dev_groups.items())}
@@ -697,12 +826,25 @@ def build_report(args, route: str, train_groups: dict, dev_groups: dict, mix: di
     kinds = {}
     for k, gs in sorted(by_kind.items()):
         st = bucket_stats(gs, 0)
-        kinds[k] = {key: st[key] for key in ("n_prompts", "zero_variance_share", "truncation_share", "completion_tokens", "mean_score")}
+        kinds[k] = {key: st[key] for key in ("n_prompts", "pg_bearing", "zero_variance_share", "zero_advantage_share", "zv_all_pass_share",
+                                              "zv_all_fail_share", "informative_unsafe_share", "informative_facts_share",
+                                              "truncation_share", "completion_tokens", "mean_score", "ceiling_mean", "governed", "own_cap")}
     caps = cap_report(buckets, reconstructed)
     zv_pass = None if reconstructed else mix_weighted(buckets, mix, "zv_all_pass_share")
     zv_fail = None if reconstructed else mix_weighted(buckets, mix, "zv_all_fail_share")
     always = {b: [p["id"] for p in st["per_prompt"] if p["all_pass"]] for b, st in buckets.items() if st.get("pg_bearing")}
     reexport = sorted(b for b, st in buckets.items() if st.get("over_60_zero_variance"))
+    # An id filter on the export must drop every copy of an always-solved prompt, not only the sampled `#k`: list the base ids and
+    # every copy of them found in the full prompt file. Only SAMPLED rows can be called always-solved; the others are unmeasured.
+    solved_base = sorted({base_id(i) for ids in always.values() for i in ids})
+    copies = sorted(r["id"] for r in (text_rows or ()) if base_id(r["id"]) in set(solved_base))
+    fam_total, fam_solved = Counter(), Counter()
+    for st in buckets.values():
+        if st.get("pg_bearing"):
+            for p in st["per_prompt"]:
+                fam_total[p["family"]] += 1
+                fam_solved[p["family"]] += bool(p["all_pass"])
+    ses = buckets.get("session")
     return {
         "schema": SCHEMA, "round": args.round, "G": args.G, "served_model": args.served_model,
         "route": "completions" if not reconstructed else "reconstructed",
@@ -717,7 +859,17 @@ def build_report(args, route: str, train_groups: dict, dev_groups: dict, mix: di
         "buckets": buckets, "dev": dev, "by_rl_kind": kinds,
         "reexport_buckets": reexport,
         "always_solved_by_bucket": always,
-        "always_solved_row_ids": sorted({i for ids in always.values() for i in ids}),
+        "always_solved_base_ids": solved_base,
+        "always_solved_row_ids": copies or sorted({i for ids in always.values() for i in ids}),
+        "always_solved_by_family": {f: {"sampled": fam_total[f], "always_solved": fam_solved[f]} for f in sorted(fam_total)},
+        "always_solved_scope": "sampled rows only; a bucket over 60% zero-variance is a signal to drop its always-solved families/rows, not proof for unsampled rows",
+        "session_bucket": {
+            "composition": session_composition(text_rows or [], tuple(args.safety_families.split(","))) if text_rows is not None else None,
+            "n_prompts_sampled": ses["n_prompts"] if ses else 0,
+            "informative_unsafe_share": ses and ses["informative_unsafe_share"],
+            "informative_facts_share": ses and ses["informative_facts_share"],
+            "informative_any_share": ses and ses["informative_any_share"],
+            "zero_variance_share": ses and ses["zero_variance_share"]},
     }
 
 
@@ -748,6 +900,8 @@ def parse_args(argv=None):
     ap.add_argument("--default-max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     ap.add_argument("--tokenizer-dir", help="HF tokenizer directory of the SFT (local files only) for the BOS check and --mode n lengths")
     ap.add_argument("--token-counts", help="JSON {row id: HF token count of its prompt}, made on the box that has the tokenizer")
+    ap.add_argument("--model-path", help="the served weights directory/file: its names, sizes and mtimes go into the resume-cache "
+                                         "fingerprint (the served name alone cannot tell two SFTs apart; else pass --fresh after any swap)")
     ap.add_argument("--skip-bos-check", action="store_true", help="record the BOS check as skipped (the report says so)")
     ap.add_argument("--bos-sample", type=int, default=12)
     ap.add_argument("--timeout", type=float, default=900.0)
@@ -769,6 +923,8 @@ def parse_args(argv=None):
         a.samples_out = a.out + ".samples.jsonl"
     if a.G < 2:
         ap.error("--G must be at least 2")
+    if a.token_counts and a.mode == "n" and not a.tokenizer_dir:
+        ap.error("--mode n needs --tokenizer-dir for per-sample lengths: --token-counts only holds PROMPT counts")
     return a
 
 
@@ -790,10 +946,12 @@ def main(argv=None, *, transport=None, environ=None) -> int:
     picked, sel = stratify(text_rows, a.per_bucket, a.anchor_per_bucket, a.safety_train, a.seed, families)
     dev_pick = []
     if dev_rows:
-        pool = sorted((r for r in dev_rows if bucket_of(r, families) == "safety"), key=lambda r: r["id"])
+        marked = any(r.get("slice") is not None for r in dev_rows)
+        pool = sorted((r for r in dev_rows if is_dev_safety(r, families)), key=lambda r: r["id"])
         random.Random(f"{a.seed}-dev-safety").shuffle(pool)
         dev_pick = pool[:a.safety_dev]
-        sel["dev:safety"] = {"available": len(pool), "requested": a.safety_dev, "picked": len(dev_pick)}
+        sel["dev:safety"] = {"available": len(pool), "requested": a.safety_dev, "picked": len(dev_pick),
+                             "marker": "row.slice" if marked else "family prefix"}
     shortfalls = {b: s for b, s in sel.items() if s["picked"] < s["requested"]}
     for b, s in shortfalls.items():
         log(f"  short: {b} has {s['available']} rows, wanted {s['requested']}")
@@ -803,36 +961,44 @@ def main(argv=None, *, transport=None, environ=None) -> int:
     mm_skipped = sum(not is_text(r) for r in rows)
 
     client = Client(base, a.timeout, a.retries, transport, [x for x in a.omit_fields.split(',') if x])
-    avail = served_models(client)
+    entries = served_entries(client)
+    avail = [m.get("id") for m in entries]
     if a.served_model not in avail:
         die(f"the engine at {base} does not list {a.served_model!r} (lists {avail[:8]}); start the isolated engine with it first")
 
-    count_tokens = None
+    count_tokens = prompt_counts = None        # count_tokens: any string (the HF tokenizer); prompt_counts: prompts only (the table too)
     if a.tokenizer_dir:
-        count_tokens = tokenizer_counter(a.tokenizer_dir)
+        count_tokens = prompt_counts = tokenizer_counter(a.tokenizer_dir)
     elif a.token_counts:
-        count_tokens = counts_file_counter(a.token_counts, all_picked)
+        prompt_counts = counts_file_counter(a.token_counts, all_picked)
+    a.model_identity = {**({"model_path": path_identity(a.model_path)} if a.model_path else {}), **engine_identity(entries, a.served_model)}
+    if not a.model_identity:
+        log("  note: the resume cache is keyed by the served model NAME only (no --model-path, and /v1/models reports no path): "
+            "pass --fresh after replacing the weights")
     route = "completions" if a.route == "completions" else "reconstructed"
     bos = {"ok": None, "skipped": True, "reason": "chat route: the rendered prompt is not sent"}
     if a.route == "completions":
         if a.skip_bos_check:
             bos = {"ok": None, "skipped": True, "reason": "--skip-bos-check"}
-        elif count_tokens is None:
+        elif prompt_counts is None:
             die("the BOS check needs --tokenizer-dir or --token-counts (served prompt_tokens must equal the HF count); "
                 "or pass --skip-bos-check and the report will say it was skipped")
         else:
-            bos = bos_check(client, a.served_model, all_picked, count_tokens, a.bos_sample, a.seed)
+            bos = bos_check(client, a.served_model, all_picked, prompt_counts, a.bos_sample, a.seed)
             log(f"BOS check: {bos}")
             if not bos["ok"]:
-                die("the served tokenizer disagrees with the HF tokenizer on the prompt token count"
-                    + (" (one extra token: a second BOS is being prepended; fix the server or the prompt)" if bos.get("extra_bos") else "")
+                die(("the served tokenizer disagrees with the HF tokenizer on the prompt token count"
+                     + (" (one extra token: a second BOS is being prepended; fix the server or the prompt)" if bos.get("extra_bos") else "")
+                     if bos.get("mismatches") else "the BOS check could not run")
                     + f": {bos.get('mismatches') or bos.get('reason')}", 4)
+            elif bos.get("rows_without_count"):
+                log(f"  note: {bos['rows_without_count']} sampled rows were not in --token-counts and were not BOS-checked")
     if a.mode == "n" and count_tokens is None and a.route == "completions":
         log("  note: --mode n without a tokenizer gives no exact per-sample lengths (no suggested_cap)")
 
     raw, errors, secs = run_sampling(client, a, all_picked, route, count_tokens, log)
     train_ids = {r["id"] for r in picked}
-    groups = build_groups(all_picked, raw, a.round, families)
+    groups = build_groups(all_picked, raw, a.round, families, {r["id"] for r in dev_pick}, a.max_tokens)
     train_groups, dev_groups = defaultdict(list), defaultdict(list)
     for b, gs in groups.items():
         for g in gs:
@@ -843,7 +1009,8 @@ def main(argv=None, *, transport=None, environ=None) -> int:
               "caveats": ["time unverified", "quantised and bf16 lengths may differ slightly",
                           "ungrounded false positives need hand review of the listed samples"]
               + (["RECONSTRUCTED via /v1/chat/completions: not production markup; zv0 and suggested_cap withheld"] if route != "completions" else [])}
-    report = build_report(a, route, train_groups, dev_groups, export_mix(text_rows, families), sel, extras)
+    extras["model_identity"] = a.model_identity
+    report = build_report(a, route, train_groups, dev_groups, export_mix(text_rows, families), sel, extras, text_rows)
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(out.suffix + ".tmp")

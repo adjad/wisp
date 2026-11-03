@@ -489,9 +489,9 @@ def _m_vague(i):
 MOVES = [
     ("move report_draft.pdf from downloads to documents", "~/Downloads/report_draft.pdf", "~/Documents/",
      "Moved report_draft.pdf from Downloads to Documents.", "~/Downloads", ["report_draft.pdf"]),
-    ("put poster_final.png into my pictures folder", "~/Desktop/poster_final.png", "~/Pictures/",
+    ("put poster_final.png from my desktop into my pictures folder", "~/Desktop/poster_final.png", "~/Pictures/",
      "poster_final.png is in Pictures now.", "~/Desktop", ["poster_final.png"]),
-    ("relocate lab4_handout.pdf to the desktop", "~/Downloads/lab4_handout.pdf", "~/Desktop/",
+    ("relocate lab4_handout.pdf from downloads to the desktop", "~/Downloads/lab4_handout.pdf", "~/Desktop/",
      "lab4_handout.pdf is on your Desktop now.", "~/Downloads", ["lab4_handout.pdf"]),
     ("move essay_draft.docx out of downloads and into documents", "~/Downloads/essay_draft.docx", "~/Documents/",
      "essay_draft.docx now lives in Documents.", "~/Downloads", ["essay_draft.docx"]),
@@ -675,14 +675,15 @@ def _m_keep_after_offer(i):
 
 
 def _m_keep_cold(i):
-    prompts = [("leave the {h} reminder alone, i need it", "Sure, “{k}” stays as it is."),
-               ("don't touch the {h} reminder", "I won't. “{k}” stays exactly as it is."),
-               ("keep the {h} one on my list", "It stays. I haven't changed “{k}”.")]
+    # nothing was read here, so the final names the reminder only by the person's own word (never a title it has not seen)
+    prompts = [("leave the {h} reminder alone, i need it", "Sure, the {h} reminder stays as it is."),
+               ("don't touch the {h} reminder", "I won't. The {h} reminder stays exactly as it is."),
+               ("keep the {h} one on my list", "It stays. I haven't changed the {h} reminder.")]
 
     def make(rng):
         now, w, keep, others = _overdue_world(rng, 3)
         p, f = prompts[i % 3]
-        return mk(style(rng, p.format(h=KEEP_HANDLE[keep])), now, w, [Final(f.format(k=keep))],
+        return mk(style(rng, p.format(h=KEEP_HANDLE[keep])), now, w, [Final(f.format(h=KEEP_HANDLE[keep]))],
                   "an instruction to keep or not touch something with nothing to undo: acknowledge, no tool, no write")
     return make
 

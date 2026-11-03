@@ -193,6 +193,34 @@ NOTES = [
 ]
 
 
+# A second sentence for a note answer: another fact the same note holds (each phrase must be in the note body).
+# {prompt: (sentence, [phrases the note body must contain])}
+EXTRA = {
+    "how long do i stir the risotto for": ("The recipe uses 1.5 cups arborio rice and 4 cups warm stock.", ["1.5 cups arborio rice", "4 cups warm stock"]),
+    "whats the combo for my rec center locker": ("Towels are at the front desk.", ["Towels are at the front desk"]),
+    "where do i get towels at the gym, did i write that": ("It also lists locker 112 on the second level.", ["Locker 112 on the second level"]),
+    "when's the dentist thing in my notes": ("Bring the insurance card and the signed X-ray release form.", ["Bring the insurance card and the signed X-ray release form"]),
+    "what do i bring to the dentist": ("The cleaning is on December 4 at 2:30 PM with Dr. Alvarez.", ["Cleaning on December 4 at 2:30 PM with Dr. Alvarez"]),
+    "tire pressure for the bike?": ("It also says to lube the chain every 200 miles.", ["Chain lube every 200 miles"]),
+    "where am i taking the bike for its service and when": ("The chain needs lube every 200 miles.", ["Chain lube every 200 miles"]),
+    "what questions did i plan to ask at the interview": ("It also says to bring a laptop and photo ID.", ["Bring a laptop and photo ID"]),
+    "what's my insurance policy number": ("Your agent is Dolores at Cedar Mutual, (503) 555-0177.", ["Agent: Dolores at Cedar Mutual, (503) 555-0177"]),
+    "who's my insurance agent and how do i reach her": ("The policy number is HR-77120, and it renews June 1.", ["Policy HR-77120", "Renews June 1"]),
+    "which places was i planning to hit on the coast trip": ("It also says to book the cabin by November 20, at $140 a night.", ["Book the cabin by November 20, $140 a night"]),
+    "how much was that cabin for the coast, and when do i have to book": ("The stops are Cannon Beach, Yachats and the Newport aquarium.", ["Stops: Cannon Beach, Yachats, Newport aquarium"]),
+    "when's project 2 due, per my own note": ("Still left to do: fix the scheduler bug, write the README and run valgrind.", ["fix the scheduler bug, write the README, run valgrind"]),
+    "how much is rent in my budget note": ("Utilities are $85, phone $40 and groceries $220, with a savings goal of $150.", ["Utilities $85. Phone $40. Groceries $220. Savings goal $150"]),
+    "whats the credit limit dr nguyen mentioned": ("It also suggests CS 340 for spring, and dropping PHIL 110 only if the grade is under a C.", ["take CS 340 in spring", "Drop PHIL 110 only if the grade is under a C"]),
+    "how often does the pothos get watered": ("The fern gets misted twice a week, and the cactus is watered once a month.", ["Fern: mist twice a week", "Cactus: once a month"]),
+    "remind me how to look after the fern and the cactus": ("The pothos is watered every 10 days.", ["Pothos: water every 10 days"]),
+    "which days is maya on dishes": ("You take the trash and bathroom on Saturday.", ["Me: trash and bathroom on Saturday"]),
+    "whats the word limit on my scholarship essay": ("The prompt is a time you changed your mind, and Prof. Okafor is your recommender.", ["Prompt: a time you changed your mind", "Recommender: Prof. Okafor"]),
+    "who is writing the recommendation for the essay, i put it in my notes": ("The essay is due January 12, with a limit of 650 words.", ["Limit 650 words", "Due January 12"]),
+    "how much does a day pass cost at the climbing gym, per my notes": ("The gym is open until 10 PM Monday to Friday.", ["Open until 10 PM Monday to Friday"]),
+    "what day is the belay class at the climbing gym, check my notes": ("A day pass is $18, and shoe rental is $5.", ["Day pass $18", "Shoe rental $5"]),
+}
+
+
 # one query per prompt, built from that prompt's own words (the model cannot know a term the user never said)
 PQ = {
     "what goes in the risotto recipie": "risotto", "how long do i stir the risotto for": "risotto",
@@ -239,10 +267,25 @@ def _other(rng, n, avoid=()):
     return pool[:n]
 
 
+# A date a note holds is written for the table once; it is moved to the scenario's own clock so it never lies in the
+# past (a deadline or an appointment is a date still to come). {literal date: days ahead of the clock}
+NOTE_DATES = {"December 4": 12, "November 20": 18, "August 22": 41, "January 12": 33}
+
+
+def _sh(now, text):
+    """`text` with each date literal of NOTE_DATES replaced by the date that many days after `now`."""
+    for lit, k in NOTE_DATES.items():
+        if lit in text:
+            d = (now + D(days=k)).date()
+            text = text.replace(lit, f"{d:%B} {d.day}")
+    return text
+
+
 def _notes_world(rng, target, extras=(), hours=(20, 400)):
-    """setup + notes: `target` (title, folder, body) first, then `extras`, then a few unrelated ones."""
+    """setup + notes: `target` (title, folder, body) first, then `extras`, then a few unrelated ones.
+    Dates in the bodies are moved to the scenario's clock (_sh)."""
     now, w = setup(rng)
-    rows = [target] + list(extras)
+    rows = [(t, f, _sh(now, b)) for t, f, b in [target] + list(extras)]
     notes = []
     for i, (title, folder, body) in enumerate(rows):
         notes.append(Note(title, body, now - D(hours=rng.randint(*hours) + i * 30, minutes=rng.randint(0, 59)), folder))
@@ -259,7 +302,12 @@ def fam_notes(rng, out):
             q = PQ[prompt]
             assert _grounded(prompt, q), (prompt, q)
             now, w = _notes_world(rng, (title, folder, body))
-            text = _chk(w, "search_notes", {"query": q}, final, musts[j], f"notes {title} {j}")
+            if prompt in EXTRA:
+                extra, need = EXTRA[prompt]
+                assert all(_sh(now, n) in _sh(now, body) or n in body for n in need), (prompt, need)
+                final = final + " " + extra
+            final, must = _sh(now, final), [_sh(now, m) for m in musts[j]]
+            text = _chk(w, "search_notes", {"query": q}, final, must, f"notes {title} {j}")
             assert text.count("Title:") == 1, (prompt, q, text[:300])
             out.append(_sc(prompt, now, w, [[Call("search_notes", query=q)], Final(final)],
                            "note lookup: search_notes with the word the note holds (typos in the question fixed), "
@@ -293,15 +341,15 @@ def fam_notes(rng, out):
 
     # ------------------------------------------------------------------ 3. the user's wording misses, one shorter word hits
     retries = [
-        ("what did i write for the soup recipe", "soup recipe", "soup", "Red lentil soup", "Recipes",
+        ("what did i write down for the soup recipe ingredients", "soup recipe ingredients", "soup", "Red lentil soup", "Recipes",
          "2 cups red lentils, 1 onion, 3 cloves garlic, 1 tsp cumin, 5 cups water. Simmer 25 minutes.",
          "Your red lentil soup note lists 2 cups red lentils, 1 onion, 3 cloves garlic, 1 tsp cumin and 5 cups water, simmered for 25 minutes.",
          ["2 cups red lentils", "3 cloves garlic", "25 minutes"]),
-        ("whats the dorm room number in my notes", "dorm room", "dorm", "Dorm move-in", "Home",
+        ("whats the dorm room number in my notes", "dorm room number", "dorm", "Dorm move-in", "Home",
          "Hartwell Hall, room 418. Move-in is August 22 at 9 AM. Parking pass pickup at the front office.",
          "Your dorm move-in note has Hartwell Hall, room 418, with move-in on August 22 at 9 AM.",
          ["Hartwell Hall", "room 418", "August 22 at 9 AM"]),
-        ("pull up what i saved about the hackathon team", "hackathon team", "hackathon", "Hackathon plan", "Career",
+        ("pull up what i saved about the hackathon team members", "hackathon team members", "hackathon", "Hackathon plan", "Career",
          "Team: Jordan (backend), Aisha (design), me (frontend). Demo Saturday at 4 PM in the Student Union.",
          "Your hackathon note has Jordan on the backend, Aisha on design and you on the frontend, with the demo Saturday at 4 PM in the Student Union.",
          ["Jordan", "Aisha", "Saturday at 4 PM", "Student Union"]),
@@ -309,6 +357,7 @@ def fam_notes(rng, out):
     for prompt, q1, q2, title, folder, body, final, must in retries:
         assert _grounded(prompt, q1) and _grounded(prompt, q2), (prompt, q1, q2)
         now, w = _notes_world(rng, (title, folder, body))
+        final, must = _sh(now, final), [_sh(now, m) for m in must]
         t1 = w.handle("search_notes", {"query": q1})
         assert "No note matches" in t1, t1[:200]
         _chk(w, "search_notes", {"query": q2}, final, must, f"retry {title}")
@@ -372,6 +421,7 @@ def fam_notes(rng, out):
     for prompt, q, (title, folder, body), final, must in nofact:
         assert _grounded(prompt, q), (prompt, q)
         now, w = _notes_world(rng, (title, folder, body))
+        final, must = _sh(now, final), [_sh(now, m) for m in must]
         _chk(w, "search_notes", {"query": q}, final, must, f"nofact {q}")
         out.append(_sc(prompt, now, w, [[Call("search_notes", query=q)], Final(final)],
                        "the note exists but lacks the asked fact: say what it does hold, never guess"))
@@ -572,8 +622,8 @@ CORRECT = [
     ("correct that, my advisor is dr. castellanos now", "advisor",
      ["Advisor is Dr. Nguyen, office in Mercer Hall 220."], "my advisor is dr. castellanos now",
      "Done, your advisor is Dr. Castellanos now instead of Dr. Nguyen."),
-    ("update my bus, i take the 8:10 now instead of the 7:40", "bus",
-     ["Takes the 7:40 bus to campus on weekdays."], "i take the 8:10 now instead of the 7:40",
+    ("update my bus, i take the 8:10 bus now instead of the 7:40", "bus",
+     ["Takes the 7:40 bus to campus on weekdays."], "i take the 8:10 bus now instead of the 7:40",
      "Updated: you take the 8:10 bus now, not the 7:40."),
     ("update this: my rent is due on the 5th now", "rent",
      ["Rent is due on the 1st."], "my rent is due on the 5th now",
@@ -581,8 +631,8 @@ CORRECT = [
     ("correct that, my usual coffee order is a cortado with oat milk now", "coffee",
      ["Usual coffee order: flat white with oat milk, no sugar."], "my usual coffee order is a cortado with oat milk now",
      "Corrected: your usual coffee order is a cortado with oat milk."),
-    ("update my emergency contact, it's maya chen (503) 555-0148 now", "emergency",
-     ["Emergency contact: Carmen Rivera, (503) 555-0163."], "it's maya chen (503) 555-0148 now",
+    ("update my emergency contact, my emergency contact is maya chen (503) 555-0148 now", "emergency",
+     ["Emergency contact: Carmen Rivera, (503) 555-0163."], "my emergency contact is maya chen (503) 555-0148 now",
      "Updated: your emergency contact is now Maya Chen, (503) 555-0148, in place of Carmen Rivera."),
 ]
 
@@ -631,6 +681,9 @@ def fam_memory(rng, out):
         w.memories = list(facts) + extra[:2]
         rng.shuffle(w.memories)
         final = fin(rng, *finals)
+        if len(facts) == 1 and rng.random() < 0.6:
+            # the recall line says the fact was saved on the person's own say-so ("explicit")
+            final += rng.choice([" You asked me to remember that.", " That's what you told me to keep.", " It's saved from when you told me."])
         text = _chk(w, "recall", {"query": q}, final, must, f"mem {prompt}")
         assert text.count("[memory") == len(facts), (q, text)
         out.append(_sc(prompt, now, w, [[Call("recall", query=q)], Final(final)],
@@ -814,7 +867,11 @@ DISTRACT = [("LindenLearn", "notifications@linden.edu", "Announcement: PHIL 110 
 
 
 def _mail_world(rng, items, keep=()):
+    """A fresh world: `items` (or items(now), so dates a mail states come from the clock the scenario runs at) plus
+    two or three unrelated newsletters."""
     now, w = setup(rng)
+    if callable(items):
+        items = items(now)
     mine = {i.sender for i in items}
     dis = [d for d in DISTRACT if d[0] not in mine]
     rng.shuffle(dis)
@@ -831,6 +888,7 @@ def _when(rng, now, lo=3, hi=40):
 
 
 def _digest(rows):
+    """Rows are the unread ones only (an unread-filtered digest lists nothing else)."""
     people_ = [m for m in rows if m.person]
     news = [m for m in rows if not m.person]
     parts = []
@@ -838,7 +896,31 @@ def _digest(rows):
         bits = [f"{m.sender} (“{m.subject}”)" for m in people_[:3]]
         parts.append("From people: " + join(bits) + ("" if len(people_) <= 3 else " and others") + ".")
     if news:
-        parts.append("The rest are updates from " + with_others(sorted({m.sender for m in news}), 3).rstrip(".") + ".")
+        names = with_others(sorted({m.sender for m in news}), 3).rstrip(".")
+        if people_:
+            parts.append("The rest are updates from " + names + ".")
+        elif len(news) == 1:
+            parts.append("It's an update from " + names + ".")
+        else:
+            parts.append("All of them are updates from " + names + ".")
+    return " ".join(parts)
+
+
+def _digest_all(rows):
+    """Rows are the whole digest: it tags only people as unread, and lists every newsletter sender with no
+    unread mark. The unread updates are then a count, said to be among the listed senders, never a subset."""
+    people_u = [m for m in rows if m.person and m.unread]
+    news = [m for m in rows if not m.person]
+    un = sum(m.unread for m in rows)
+    parts = []
+    if people_u:
+        bits = [f"{m.sender} (“{m.subject}”)" for m in people_u[:3]]
+        parts.append("From people: " + join(bits) + ("" if len(people_u) <= 3 else " and others") + ".")
+    k = un - len(people_u)
+    if k > 0 and news:
+        names = with_others(sorted({m.sender for m in news}), 5).rstrip(".")
+        lead = ("The other one is" if k == 1 else f"The other {k} are") if people_u else ("It is" if k == 1 else "They are")
+        parts.append(f"{lead} among the updates from {names}.")
     return " ".join(parts)
 
 
@@ -878,8 +960,8 @@ def fam_mail(rng, out):
         assert f"{n} emails · {un} unread" in text, text[:300]
         unread_rows = [m for m in rows if m.unread]
         final = fin(rng,
-                    f"{plural(un, 'email')} {'is' if un == 1 else 'are'} unread, out of {n} in your recent inbox. " + _digest(unread_rows),
-                    f"You have {un} unread out of {n} emails in your recent inbox. " + _digest(unread_rows))
+                    f"{plural(un, 'email')} {'is' if un == 1 else 'are'} unread, out of {n} in your recent inbox. " + _digest_all(rows),
+                    f"You have {un} unread out of {n} emails in your recent inbox. " + _digest_all(rows))
         out.append(_sc(pr, now, w, [[Call("summarize_emails")], Final(final)],
                        "total and unread in one digest: 'N emails · M unread' is M of N, never 'N unread'"))
     only_prompts = ["which emails are still unopened", "anything waiting in my mail that i haven't looked at?",
@@ -907,10 +989,13 @@ def fam_mail(rng, out):
 
     # ------------------------------------------------------------------ 2. did <office> email me: sender, subject, asked detail
     for prompt, q, sender, addr, subj, body, final, must in ORGS:
-        now, w = setup(rng)
-        d = _day(now, rng.randint(2, 8))
-        em = Email(sender, addr, subj, _when(rng, now), body.format(d=d), rng.random() < 0.6, False)
-        now, w = _mail_world(rng, [em])
+        k, seen = rng.randint(2, 8), {}
+
+        def make(n, k=k, seen=seen, sender=sender, addr=addr, subj=subj, body=body):
+            seen["d"] = _day(n, k)
+            return [Email(sender, addr, subj, _when(rng, n), body.format(d=seen["d"]), rng.random() < 0.6, False)]
+        now, w = _mail_world(rng, make)
+        d = seen["d"]
         f = final.format(d=d)
         m_ = [x.format(d=d) for x in must]
         _chk(w, "view_emails", {"query": q}, f, m_, f"org {sender}")
@@ -919,10 +1004,13 @@ def fam_mail(rng, out):
 
     # ------------------------------------------------------------------ 3. what did <person> say about <topic>
     for prompt, q, full, addr, subj, body, final, must in PEOPLE:
-        now, w = setup(rng)
-        d = _day(now, rng.randint(2, 8))
-        em = Email(full, addr, subj, _when(rng, now), body.format(d=d), True, True)
-        now, w = _mail_world(rng, [em])
+        k, seen = rng.randint(2, 8), {}
+
+        def make(n, k=k, seen=seen, full=full, addr=addr, subj=subj, body=body):
+            seen["d"] = _day(n, k)
+            return [Email(full, addr, subj, _when(rng, n), body.format(d=seen["d"]), True, True)]
+        now, w = _mail_world(rng, make)
+        d = seen["d"]
         f = final.format(d=d)
         m_ = [x.format(d=d) for x in must]
         _chk(w, "view_emails", {"query": q}, f, m_, f"person {full}")
@@ -943,10 +1031,10 @@ def fam_mail(rng, out):
          ["Room change", "room 5A at 5:45 PM", "room 3B"]),
     ]
     for prompt, q, full, addr, (s1, b1), (s2, b2), final, must in pairs:
-        now, w = setup(rng)
-        old = Email(full, addr, s1, now - D(days=rng.randint(3, 5), hours=rng.randint(0, 6)), b1, False, True)
-        new = Email(full, addr, s2, now - D(hours=rng.randint(4, 30)), b2, True, True)
-        now, w = _mail_world(rng, [new, old])
+        # the earlier mail is at least two days older than the newest, so the dates themselves say which one wins
+        now, w = _mail_world(rng, lambda n: [
+            Email(full, addr, s2, n - D(hours=rng.randint(4, 30)), b2, True, True),
+            Email(full, addr, s1, n - D(days=rng.randint(3, 5), hours=rng.randint(0, 6)), b1, False, True)])
         _chk(w, "view_emails", {"query": q}, final, must, f"two mails {full}")
         out.append(_sc(prompt, now, w, [[Call("view_emails", query=q)], Final(final)],
                        "two mails disagree: the newest one wins and the final says the earlier detail changed"))
@@ -963,8 +1051,7 @@ def fam_mail(rng, out):
          ["Transcript request received", "5 business days"]),
     ]
     for prompt, q, full, addr, subj, body, final, must in nodetail:
-        now, w = _mail_world(rng, [Email(full, addr, subj, setup(rng)[0], body, True, full.startswith("Priya"))])
-        w.emails[0].when = now - D(hours=rng.randint(4, 40))
+        now, w = _mail_world(rng, lambda n: [Email(full, addr, subj, n - D(hours=rng.randint(4, 40)), body, True, full.startswith("Priya"))])
         _chk(w, "view_emails", {"query": q}, final, must, f"nodetail {full}")
         out.append(_sc(prompt, now, w, [[Call("view_emails", query=q)], Final(final)],
                        "the mail was found but does not hold the detail: say what it does say"))
@@ -982,13 +1069,14 @@ def fam_mail(rng, out):
 
     # ------------------------------------------------------------------ 6. a day-scoped lookup
     for prompt, q, full, addr, subj, body, final, must in [PEOPLE[1], PEOPLE[2]]:
-        now, w = setup(rng)
-        d = _day(now, 3)
-        when = now.replace(hour=0, minute=0) - D(days=1) + D(hours=rng.randint(9, 20), minutes=rng.randint(0, 59))
-        em = Email(full, addr, subj, when, body.format(d=d), True, True)
-        _, w2 = _mail_world(rng, [em])
-        w2.now = now
-        em.when = when
+        seen = {}
+
+        def make(n, full=full, addr=addr, subj=subj, body=body, seen=seen):
+            seen["d"] = _day(n, 3)
+            seen["when"] = n.replace(hour=0, minute=0) - D(days=1) + D(hours=rng.randint(9, 20), minutes=rng.randint(0, 59))
+            return [Email(full, addr, subj, seen["when"], body.format(d=seen["d"]), True, True)]
+        now, w2 = _mail_world(rng, make)
+        d, when = seen["d"], seen["when"]
         H.set_clock(now)
         f = final.format(d=d).rstrip(".") + f". It came {day_word(when.date(), now)} at {clock(when)}."
         m_ = [x.format(d=d) for x in must] + [clock(when)]

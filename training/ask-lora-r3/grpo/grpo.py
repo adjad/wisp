@@ -509,6 +509,7 @@ def cmd_check(a) -> int:
     print(f"prompt tokens (first 60, before image/audio expansion): max {max(map(len, ids))}, mean {sum(map(len, ids)) // len(ids)}")
     # every ideal completion scores at the top and survives encode -> decode(skip_special_tokens=False)
     worst, below, low = 0.0, 0, []
+    below_kind, kind_n = collections.Counter(), collections.Counter()
     for r in rows:
         lab = json.loads(r["label"])
         ideal = lab["ideal_completion"]
@@ -526,6 +527,8 @@ def cmd_check(a) -> int:
         if res.total < top - tol or res.parts["malformed"] or res.parts["forbidden"] or res.parts["needless_call"]:
             below += 1
             low.append((r["id"], res.total, res.flags))
+            below_kind[lab.get("rl_kind") or lab.get("step")] += 1
+        kind_n[lab.get("rl_kind") or lab.get("step")] += 1
     for r in rows[:300]:
         lab = json.loads(r["label"])
         back = tok.decode(tok(lab["ideal_completion"], add_special_tokens=False)["input_ids"], skip_special_tokens=False)
@@ -554,6 +557,11 @@ def cmd_check(a) -> int:
             problems += 1
         if r4n["ideal_early_write"] or r4n["ideal_leak"] > max(2, r4n["text"] // 100) or r4n["ideal_ungrounded"] > max(5, r4n["narrate"] // 25):
             print("FAIL: ideal completions trip the round-4 terms (early writes, leaks or ungrounded facts) more than a handful of times")
+            problems += 1
+    if W.ROUND >= 5:                       # RL-SCOPE bar: at most 1% of the rows of any rl_kind (and at least 1 row of slack)
+        over = {k: f"{below_kind[k]}/{kind_n[k]}" for k in below_kind if below_kind[k] > max(1, kind_n[k] // 100)}
+        if over:
+            print(f"FAIL: ideal completions below their ceiling on more than 1% of an rl_kind: {over}")
             problems += 1
     if below > max(3, len(rows) // 100):
         print(f"FAIL: {below} ideal completions score badly, e.g. {low[:3]}")
@@ -718,10 +726,16 @@ def cmd_train(a) -> int:
     extra = install_forward_defaults(model, torch)
     model = get_peft_model(model, LoraConfig(r=16, lora_alpha=a.alpha, lora_dropout=0.0, target_modules=TARGET_RE, bias="none"))
     names = [n for n, _ in model.named_modules() if n.endswith(".lora_A")]
-    layout = P.lora_layout(names, N_LAYERS, P.kv_shared_first(read_config(a.base)))       # C22: q/o/MLP everywhere, k/v only where KV is built
-    if layout["problems"]:
-        sys.exit("LoRA targeting is wrong: " + "; ".join(layout["problems"]))
-    accelerator.print("LoRA layout: " + layout["summary"] + "".join(f"\n  warning: {w}" for w in layout["warnings"]))
+    if r5:                                          # C22: q/o/MLP everywhere, k/v only where KV is built
+        layout = P.lora_layout(names, N_LAYERS, P.kv_shared_first(read_config(a.base)))
+        if layout["problems"]:
+            sys.exit("LoRA targeting is wrong: " + "; ".join(layout["problems"]) + "\n  remedy: " + layout["remedy"])
+        accelerator.print("LoRA layout: " + layout["summary"] + "".join(f"\n  warning: {w}" for w in layout["warnings"]))
+    else:                                           # rounds 3 and 4 keep their check as it was
+        layout = {"summary": None}
+        lm = [n for n in names if "language_model" in n]
+        if len([n for n in lm if ".self_attn.q_proj." in n]) != N_LAYERS or len(lm) != len(names):
+            sys.exit(f"LoRA targeting is wrong: {len(lm)} language adapters of {len(names)} (want q_proj in all {N_LAYERS} layers, none elsewhere)")
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.enable_input_require_grads()
     start_step = 0
@@ -760,7 +774,8 @@ def cmd_train(a) -> int:
                      "beta_mm": a.beta_mm, "mm_ref": a.mm_ref, "prompts": len(rows), "reward_round": W.ROUND, "max_completion": a.max_completion, "forward_extra": extra,
                      "prompts_sha256": hashlib.sha256(Path(a.prompts).read_bytes()).hexdigest(), "base": str(a.base),
                      "deepspeed": is_ds, "mm_floor": a.mm_floor, "started": time.strftime("%FT%TZ", time.gmtime()),
-                     "lora_layout": layout["summary"], "guard_patience": a.guard_patience, "guard_margin": a.guard_margin})
+                     "guard_patience": a.guard_patience, "guard_margin": a.guard_margin,
+                     **({"lora_layout": layout["summary"]} if r5 else {})})
         import transformers, peft, accelerate
         info.update(transformers=transformers.__version__, peft=peft.__version__, accelerate=accelerate.__version__)
         write_info()
@@ -798,7 +813,7 @@ def cmd_train(a) -> int:
         # Gemma itself, and a drift already present in the r3 SFT checkpoint must not become the baseline
         below_untuned = [f"vs untuned base: {x}" for x in P.guard_problems(untuned, now, margins)] if untuned else []
         if r5 and untuned:
-            below_untuned += [f"vs untuned base: {x}" for x in P.small_n_floor_problems(untuned, now)]
+            below_untuned += [f"vs untuned base: {x}" for x in P.small_n_floor_problems(untuned, now, strict=True)]
         if guard_base is None:
             guard_base = now
             problems = []
@@ -862,6 +877,13 @@ def cmd_train(a) -> int:
                                    "floor": str(a.text_floor), "replicates": list(a.text_replicates), "step0_replicate": first,
                                    "schedule": schedule, "sample_counts": PR.sample_counts(rows_o), "calibration": PR.calibration_json(cal)}
             write_info()
+            msg = PR.budget_problem(cal)
+            if msg:
+                if not a.allow_unmet_budget:
+                    accelerator.print("STOP before step 1: " + msg + " -- widen the dev rows or samples (a noisier probe needs more of both), "
+                                      "or pass --allow-unmet-budget to run with a stop rule that fires on noise more often than planned")
+                    sys.exit(5)
+                accelerator.print("WARNING (--allow-unmet-budget): " + msg)
             if first:                                           # replay all three through the rules; any trip kills the run before step 1
                 bad = PR.replay(cal["rules"], [PR.probe_metrics(r) for r in reps_rows[:-1]] + [metrics])
                 if bad:
@@ -895,8 +917,9 @@ def cmd_train(a) -> int:
     if r5:
         kinds = collections.Counter(P.bucket_of(json.loads(r["label"]), r["modality"]) for r in rows)
         export_weights = {k: v / max(1, sum(n for b, n in kinds.items() if b != "mm")) for k, v in kinds.items() if k != "mm"}
-    prompt_recs, trunc_hist, zv_hist, grad_norms = [], [], [], []
-    learn_checked = False
+    prompt_recs, trunc_hist, zv_hist, grad_norms = [], [], [], []      # prompt_recs holds EVERY prompt (mm included) so index i is prompt i+1
+    learn_checked = soft_checked = start_step > 0       # prompts 1-100 / 301-400 are indexes into THIS process's prompt_recs: not defined after a resume
+    ratio_steps = P.parse_steps(a.grad_ratio_steps)
 
     if dev_rows and not a.resume:
         guard(0)
@@ -926,14 +949,15 @@ def cmd_train(a) -> int:
             results = [W.score(t, lab) for t in decode_all(tok, comps)]
             adv = P.advantages([r.total for r in results], a.adv_floor_mm if mmrow else a.adv_floor)
             bucket = P.bucket_of(lab, mod)
+            sbucket = P.stat_bucket_of(lab, mod)                  # counters and the per-class log: mm split into vision / audio / picture_read
             if r5:                                  # per-prompt log records and bucket counters (zero-variance, informative, truncated)
                 trunc = [P.truncated(c, STOP_IDS) for c in comps]
                 for k, v in P.group_flags([r.total for r in results], [r.parts for r in results], lab.get("ceiling"), trunc, adv).items():
-                    bst[f"{bucket}/{k}"] += v
+                    bst[f"{sbucket}/{k}"] += v
                 step_rows.append({"id": row["id"], "kind": bucket, "ceiling": lab.get("ceiling"), "mm_kind": lab.get("kind") if mmrow else None,
                                   "reward": round(sum(r.total for r in results) / len(results), 4)})
             for c, r, ad in zip(comps, results, adv):
-                samples.append((inp, c, ad, r, mmrow, a.mm_temperature if mmrow else a.temperature, a.beta_mm if mmrow else a.beta, mod, bucket))
+                samples.append((inp, c, ad, r, mmrow, a.mm_temperature if mmrow else a.temperature, a.beta_mm if mmrow else a.beta, mod, sbucket))
                 m[f"n/{mod}"] += 1
                 m[f"r/{mod}"] += r.total
                 m[f"len/{mod}"] += len(c)
@@ -945,7 +969,8 @@ def cmd_train(a) -> int:
         # ---- policy gradient over micro-batches (every chunk is one prompt's completions)
         t_train = time.time()
         loss_total = 0.0
-        ratio_step = r5 and a.grad_ratio_every > 0 and step % a.grad_ratio_every == 0     # PG:KL gradient norms cost two extra backward passes
+        # PG:KL gradient norms cost two extra backward passes: steps 1, 5 and 20 (the lr bracket reads them) and --grad-ratio-every
+        ratio_step = r5 and ((step + 1) in ratio_steps or (a.grad_ratio_every > 0 and (step + 1) % a.grad_ratio_every == 0))
         step_gn = []
         for c0 in range(0, len(samples), plan.micro_bs):
             chunk = samples[c0:c0 + plan.micro_bs]
@@ -985,6 +1010,9 @@ def cmd_train(a) -> int:
             loss_total += float(loss.detach())
             m[f"kl/{mod}"] += float((kl.detach() * mask).sum())
             m[f"tok/{mod}"] += float(mask.sum())
+            if r5:                                                    # per-class k3 (the bracket's non-anchor k3 > 0.01 test reads it)
+                m[f"{bucket}/kl_sum"] += float((kl.detach() * mask).sum())
+                m[f"{bucket}/tok"] += float(mask.sum())
             del lp, ref_lp, kl, tok_loss, seq, loss
         t_train = time.time() - t_train
         m.update(bst)
@@ -999,8 +1027,8 @@ def cmd_train(a) -> int:
                                int(sum(tot[f"{b}/samples"] for b in text_b))))
             trunc_stop = P.trunc_problem(trunc_hist, window_prompts=40)                # S-trunc, patience 1
             pg_b = [b for b in text_b if b not in P.ANCHOR_KINDS]
-            zv_hist.append(tuple(sum(tot[f"{b}/{k}"] for b in pg_b) for k in ("groups", "zv_fail", "zv")))
-            prompt_recs += [{"kind": r["kind"], "ceiling": r["ceiling"], "reward": r["reward"]} for r in rows_all if r["kind"] != "mm"]
+            zv_hist.append({b: (tot[f"{b}/groups"], tot[f"{b}/zv_fail"], tot[f"{b}/zv"]) for b in pg_b})
+            prompt_recs += [{"kind": r["kind"], "ceiling": r["ceiling"], "reward": r["reward"]} for r in rows_all]
         if accelerator.is_main_process:
             rec = {"step": step + 1, "seconds": round(time.time() - t_step, 1), "gen_s": round(t_gen, 1), "train_s": round(t_train, 1),
                    "loss": round(loss_total / max(1, len(samples) // plan.micro_bs), 5),
@@ -1027,11 +1055,12 @@ def cmd_train(a) -> int:
         if r5 and not learn_checked and seen >= 400:                          # S-learn at prompt 400: logged always, a stop only with its thresholds
             learn_checked = True
             ppst = plan.prompts_per_step
-            w = zv_hist[300 // ppst:400 // ppst] or zv_hist[-1:]
-            g_, zf_, zt_ = (sum(x[i] for x in w) for i in range(3))
+            i0, i1 = P.window_steps(300, 400, ppst)
+            w = zv_hist[i0:i1] or zv_hist[-1:]                                # steps wholly inside prompts 301-400
+            zf_, zt_ = P.weighted_zv(w, export_weights)                      # export-mix weighted, like the M6b baselines
             first, last = P.adjusted_reward(prompt_recs[:100], export_weights), P.adjusted_reward(prompt_recs[300:400], export_weights)
             learn = {"prompts_seen": seen, "adj_first100": first, "adj_301_400": last,
-                     "zv_fail_share": zf_ / max(1.0, g_), "zv_total_share": zt_ / max(1.0, g_)}
+                     "zv_fail_share": zf_, "zv_total_share": zt_, "zv_steps": [i0, i1]}
             if None not in (a.learn_delta, a.zv0_fail, a.zv0_total):
                 learn["hard_stop"] = P.s_learn_hard(first, last, a.learn_delta, learn["zv_fail_share"], a.zv0_fail, learn["zv_total_share"], a.zv0_total)
             else:
@@ -1057,7 +1086,7 @@ def cmd_train(a) -> int:
             probe_stop = guard(done)
         if probe_in and (done % a.eval_every == 0 or done == n_steps):
             probe_stop = text_probe(done) or probe_stop
-            if probe_stop is False and a.grader_delta is not None and len(probe_hist) >= 3 and tracker is not None:
+            if probe_stop is False and a.grader_delta is not None and len(probe_hist) >= 3 and tracker is not None and not start_step:
                 st = cal["stats"]
                 last2 = probe_hist[-2:]
 
@@ -1075,6 +1104,17 @@ def cmd_train(a) -> int:
                     rollback.update(stopped_at=done, why=["S-grader"])
                     write_info()
                     probe_stop = True
+        if r5 and probe_in and tracker is not None and probe_hist and not soft_checked and seen >= 200 \
+                and (done % a.eval_every == 0 or done == n_steps):
+            soft_checked = True                                                  # S-learn soft check at 200 prompts: logged, never a stop
+            bands = {r_.metric: (cal["stats"][r_.metric]["m0"], cal["stats"][r_.metric]["m0"] - r_.lo)
+                     for r_ in cal["rules"] if r_.family == "rate" and r_.lo is not None and r_.metric in cal["stats"]}
+            soft = P.s_learn_soft(P.adjusted_reward(prompt_recs[:100], export_weights), P.adjusted_reward(prompt_recs[100:200], export_weights),
+                                  bands, probe_hist[-1])
+            accelerator.print(f"[S-learn soft check at {seen} prompts] {json.dumps(soft)}")
+            if accelerator.is_main_process:
+                with open(log_path, "a") as f:
+                    f.write(json.dumps({"step": done, "s_learn_soft": soft}) + "\n")
         stop = stop or probe_stop
         if stop:
             break
@@ -1223,6 +1263,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--sim-paths", type=int, default=600, help="paths of the family-wise false-stop simulation (RL-SCOPE 8.2)")
     ap.add_argument("--dry-run-grad", action="store_true", help="train: build the model and LoRA, check the adapter layout, run one backward and assert every wrapped module got a gradient; no training")
     ap.add_argument("--grad-ratio-every", type=int, default=0, help="round 5: every N steps also measure the PG and KL gradient norms per bucket (two extra backward passes per micro-batch)")
+    ap.add_argument("--grad-ratio-steps", default="1,5,20", help="round 5: 1-based steps at which the PG and KL gradient norms are measured per bucket "
+                    "(the lr bracket reads steps 1, 5 and 20); '' turns it off")
+    ap.add_argument("--allow-unmet-budget", action="store_true", help="round 5: run even when the family-wise simulation cannot bring the false-stop "
+                    "rate under the 10%% budget at any scale (default: exit before step 1 and list the offending rules)")
     ap.add_argument("--learn-delta", type=float, help="S-learn: the null-calibrated rise in composition-adjusted reward (M6b); with --zv0-fail and --zv0-total it makes S-learn a stop at 400 prompts")
     ap.add_argument("--zv0-fail", type=float, help="S-learn: the M6b baseline all-fail zero-variance share over PG-bearing text groups")
     ap.add_argument("--zv0-total", type=float, help="S-learn: the M6b baseline total zero-variance share over PG-bearing text groups")

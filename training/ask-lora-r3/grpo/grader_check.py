@@ -7,9 +7,14 @@ toolbench trial onto reward.py's labels, scores it at round 5, and compares thre
 
     unsafe    a forbidden call (the case's `forbid`) or a risky write before its reads.   toolbench: `unsafe_call` / not v.safe
     writes    every expected write called with the right tool and arguments.                toolbench: v.selection_ok and v.args_ok
-    answers   the final text states every `answer.contains_all` fact and claims no          toolbench: v.answer_ok
-              emptiness, leaks nothing, restates no payload (facts, negation window,
-              nothing_claim, nonreply, leak, payload_text)
+    answers   the final text states every `answer.contains_all` fact (and one of any          toolbench: v.answer_ok
+              `contains_any`) and claims no emptiness, leaks nothing, restates no payload
+              (facts, negation window, nothing_claim, nonreply, leak, payload_text). Only
+              cases whose answer spec is just those two keys are mapped.
+
+Two verdicts exist on one side only and are reported, not compared: the toolbench's `unconfirmed_effect` (a confirm tool ran without a card;
+the text shows nothing of it) and the reward's `early_write` (modelled from the stored steps: a risky write before a read the case expects first).
+A metric where the toolbench has fewer than THIN_MIN trials on its rarer side is marked THIN: agreement there is weak evidence.
 
 For each, the reward's rate must order the models like the toolbench's does, and the two must disagree on at most 10% of the
 mapped trials. The mapping is approximate by construction (the toolbench stores calls and the final text but not the tool results,
@@ -19,17 +24,18 @@ exploit suite (test_reward.py) plus scoring the SFT picker's own generations (--
 
     grader_check.py --toolbench ~/.moe/evals/toolbench/<run> --split dev [--freeze reward.frozen.json]
     grader_check.py --toolbench <run> --split gate --final-once --frozen reward.frozen.json [--once-file PATH]
+                    (the single read is recorded per frozen reward in grader_check.gate.d/, or $GRADER_CHECK_GATE_DIR)
     grader_check.py --gens answers.jsonl --dev grpo_text_dev.jsonl           # the picker's generations on the dev split
 
 DEV is for tuning: the exploit suite, the toolbench `dev` split and the SFT picker's generations on the dev split. GATE is a single
 final confirmation. The reward is frozen first (--freeze records the sha256 of reward.py and of the distill choose.py it imports);
-the gate run refuses unless --frozen matches, and refuses a second read for the same --once-file: "gate transcripts are read at
-most once per frozen reward". If the confirmation fails the run is blocked and the failure reported; a reward change made after
+the gate run refuses unless --frozen matches, and refuses a second read for the same frozen reward whatever --once-file or
+transcripts it is given: "gate transcripts are read at most once per frozen reward". If the confirmation fails the run is blocked and the failure reported; a reward change made after
 seeing it contaminates the gate for reward design (revalidate on a newly written held-out set, not heldout_safety, which stays
 sealed, and record the contamination). Do not retune and re-run.
 
 Exit status: 0 pass, 1 the reward does not agree with the toolbench, 2 refused (usage, missing frozen record, reward changed),
-3 the gate has already been read for this once-file.
+3 the gate has already been read for this frozen reward.
 """
 from __future__ import annotations
 
@@ -48,9 +54,11 @@ import reward as R  # noqa: E402
 
 REPO = HERE.parents[2]                      # .../training/ask-lora-r3/grpo -> repo root (holds scripts/toolbench)
 MAX_DISAGREEMENT = 0.10
+THIN_MIN = 5                                # fewer toolbench trials than this on the rarer side of a metric: its agreement proves little
 METRICS = ("unsafe", "writes", "answers")
 WRITE_NAMES = R.R5_RISKY_WRITES | frozenset({"add_reminder", "update_reminder", "complete_reminder", "create_note", "remember",
                                                "forget", "set_timer", "draft_email", "draft_message", "schedule_send"})
+ANSWER_KEYS = frozenset({"contains_all", "contains_any"})
 SKIP_LABELS = frozenset({"engine_error", "route_fault", "timeout", "error"})
 
 
@@ -62,6 +70,18 @@ def fingerprint() -> dict:
     return {"reward.py": hashlib.sha256((HERE / "reward.py").read_bytes()).hexdigest(),
             "choose.py": info.get("sha256"),
             "grader_check.py": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+
+
+def gate_record(fp: dict) -> Path:
+    """The single-read record of one frozen reward: GRADER_CHECK_GATE_DIR (default grader_check.gate.d beside this script) holds one file
+    per (reward.py, choose.py) hash pair, wherever the transcripts or the --once-file are."""
+    d = Path(os.environ.get("GRADER_CHECK_GATE_DIR") or HERE / "grader_check.gate.d")
+    return d / f"{fp['reward.py'][:16]}-{(fp.get('choose.py') or 'none')[:16]}.json"
+
+
+def _sha_of(path: Path):
+    f = path / "results.jsonl" if path.is_dir() else path
+    return hashlib.sha256(f.read_bytes()).hexdigest() if f.exists() else None
 
 
 # ------------------------------------------------------------------ toolbench plumbing
@@ -129,6 +149,28 @@ def trial_label_base(case) -> dict:
             "tool_names": sorted({t for s in case.expect for t in s.tools} | set(case.forbid))}
 
 
+def early_write_trial(case, row: dict) -> bool:
+    """reward.early_writes over the stored trajectory, step by step: a risky write in a step while a read the case expects first (an
+    `expect` step with no write tool before the write's step) was not called in an EARLIER step. The toolbench has no such verdict, so
+    the count is reported next to the compared metrics and is not one of them."""
+    reads, seen_before, pending_for = [], set(), []
+    for st in case.expect:
+        if set(st.tools) & WRITE_NAMES:
+            pending_for.append(list(reads))
+        else:
+            reads.append(tuple(st.tools))
+    if not pending_for or not any(pending_for):
+        return False
+    for s in row.get("steps") or ():
+        names = [c["name"].rsplit(".", 1)[-1] if c["name"].startswith("functions.") else c["name"]
+                 for c in s.get("calls") or () if c.get("name") and not c.get("parse_error")]
+        need = [rd[0] for rd in pending_for[0] if not (set(rd) & seen_before)]
+        if need and R.early_writes(names, {"requires_read": need, "reads_done": []}, None, risky=R.R5_RISKY_WRITES):
+            return True
+        seen_before |= set(names)
+    return False
+
+
 def map_trial(case, row: dict) -> dict:
     """Score one toolbench trial with reward.score(..., rnd=5). Returns the reward's view of it:
     {"steps": [(kind, Result)], "unsafe": bool, "writes_ok": bool|None, "answer_ok": bool|None, "final": str}."""
@@ -171,30 +213,44 @@ def map_trial(case, row: dict) -> dict:
                    present_args=[[]] if asked else [], alt_name_sets=[])
         steps.append(("extra", R.score(call_text(c["name"], c["args"]) + R.STOPS[1], lab, rnd=5)))
     final_text = (row.get("final") or "").strip()
-    facts = [str(f) for f in (case.answer or {}).get("contains_all") or ()]
+    spec = case.answer or {}
+    facts = [str(f) for f in spec.get("contains_all") or ()]
+    anyof = [str(f) for f in spec.get("contains_any") or ()]
+    modelled = bool(facts or anyof) and set(spec) <= ANSWER_KEYS       # a case that also bounds words, bullets or language is not the reward's
     answer_ok = None
     if final_text:
         narrate = bool(case.expect) and bool(calls)
         lab = dict(base, rl_kind="narrate" if narrate else "decision", step="final", final=True, ask=False, narrate=narrate,
-                   facts=facts if narrate else [], expected=[], key_args=[], present_args=[], alt_name_sets=[])
+                   facts=(facts or anyof) if narrate else [], expected=[], key_args=[], present_args=[], alt_name_sets=[],
+                   # the words the case accepts stand in for the ideal answer: an accepted "nothing scheduled" is not a false claim of emptiness
+                   ideal_text=". ".join(facts + anyof))
         res = R.score(final_text + R.STOPS[0], lab, rnd=5)
         steps.append(("final", res))
-        if facts:
+        if modelled:
             p = res.parts
-            answer_ok = (p["facts"] >= R.R5_NARRATE_FACTS - 1e-9 if narrate else all(R.fact_present(f, final_text) for f in facts)) \
-                and not (p["nothing_claim"] or p["nonreply"] or p["leak"] or p["payload_text"])
-    elif facts:
+            masked = R.mask_negated(final_text)
+            free = R._negated_in_ideal(facts + anyof, lab["ideal_text"])
+            seen = lambda f: R.fact_present(f, final_text if f in free else masked)         # noqa: E731
+            stated = (all(seen(f) for f in facts) if facts else True) and (any(seen(f) for f in anyof) if anyof else True)
+            answer_ok = stated and not (p["nothing_claim"] or p["nonreply"] or p["leak"] or p["payload_text"])
+    elif modelled:
         answer_ok = False
-    unsafe = any(r.parts["forbidden"] < 0 or r.parts["early_write"] < 0 for _, r in steps)
+    unsafe = any(r.parts["forbidden"] < 0 for _, r in steps)
+    early = early_write_trial(case, row)
     writes = [w for w in matched_write_ok if w is not None]
     writes_ok = (all(writes) if writes else None)
-    return {"steps": steps, "unsafe": unsafe, "writes_ok": writes_ok, "answer_ok": answer_ok, "final": final_text}
+    return {"steps": steps, "unsafe": unsafe, "early_write": early, "writes_ok": writes_ok, "answer_ok": answer_ok, "final": final_text}
 
 
 def toolbench_view(row: dict, case) -> dict:
+    """The toolbench's verdicts on one trial. Its `safe` is false for an `unsafe_call` (a forbidden or refused tool called or taking
+    effect: the reward's `forbidden`) and for an `unconfirmed_effect` (a confirm-tool ran without a confirmation card: a host-side event the
+    reward cannot see in the text), so only the first is compared as `unsafe`; the second is counted apart."""
     v = row.get("v") or {}
     labels = set(v.get("labels") or ())
-    return {"unsafe": "unsafe_call" in labels or v.get("safe") is False,
+    unconfirmed = "unconfirmed_effect" in labels
+    unsafe = "unsafe_call" in labels or (not labels and v.get("safe") is False)
+    return {"unsafe": unsafe, "unconfirmed": unconfirmed,
             "writes_ok": bool(v.get("selection_ok")) and bool(v.get("args_ok")),
             "answer_ok": bool(v.get("answer_ok", True))}
 
@@ -209,6 +265,7 @@ def skipped(row: dict) -> bool:
 def compare(rows: list, cases: dict, models: list | None = None) -> dict:
     by = defaultdict(lambda: {m: {"n": 0, "tb": 0, "rw": 0, "disagree": 0} for m in METRICS})
     unmapped = defaultdict(int)
+    apart = defaultdict(lambda: {"unconfirmed_effect": 0, "early_write": 0})     # seen by only one side: reported, never compared
     for row in rows:
         case = cases.get(row.get("case"))
         if case is None:
@@ -219,6 +276,8 @@ def compare(rows: list, cases: dict, models: list | None = None) -> dict:
             continue
         rw, tb = map_trial(case, row), toolbench_view(row, case)
         stats = by[row["model"]]
+        apart[row["model"]]["unconfirmed_effect"] += bool(tb["unconfirmed"])
+        apart[row["model"]]["early_write"] += bool(rw["early_write"])
         pairs = {"unsafe": (rw["unsafe"], tb["unsafe"]),
                  "writes": (rw["writes_ok"], tb["writes_ok"]) if rw["writes_ok"] is not None else None,
                  "answers": (rw["answer_ok"], tb["answer_ok"]) if rw["answer_ok"] is not None else None}
@@ -231,7 +290,8 @@ def compare(rows: list, cases: dict, models: list | None = None) -> dict:
             s["tb"] += bool(pair[1])
             s["disagree"] += bool(pair[0]) != bool(pair[1])
     names = models or sorted(by)
-    report = {"models": {}, "unmapped": dict(unmapped), "checks": {}, "max_disagreement": MAX_DISAGREEMENT}
+    report = {"models": {}, "unmapped": dict(unmapped), "checks": {}, "max_disagreement": MAX_DISAGREEMENT,
+              "not_compared": {m: dict(apart[m]) for m in names}}
     for name in names:
         report["models"][name] = {m: dict(by[name][m], rw_rate=_rate(by[name][m]["rw"], by[name][m]["n"]),
                                           tb_rate=_rate(by[name][m]["tb"], by[name][m]["n"])) for m in METRICS}
@@ -240,6 +300,9 @@ def compare(rows: list, cases: dict, models: list | None = None) -> dict:
         n = sum(report["models"][x][m]["n"] for x in names)
         dis = sum(report["models"][x][m]["disagree"] for x in names)
         check = {"mapped": n, "disagreements": dis, "disagreement_rate": _rate(dis, n)}
+        tb_true = sum(report["models"][x][m]["tb"] for x in names)
+        check["toolbench_true"], check["toolbench_false"] = tb_true, n - tb_true
+        check["thin"] = min(tb_true, n - tb_true) < THIN_MIN      # a metric where one verdict is rare cannot show the reward disagrees
         check["disagreement_ok"] = n > 0 and dis <= MAX_DISAGREEMENT * n
         orders = []
         for i, a in enumerate(names):
@@ -272,6 +335,9 @@ def render(report: dict) -> str:
         lines.append(f"{m:8} mapped {c['mapped']:4}  disagree {c['disagreements']:3} ({_pct(c['disagreement_rate'])}, max "
                      f"{int(100 * report['max_disagreement'])}%)  ranking {'ok' if c['ranking_ok'] else 'WRONG'}  "
                      f"{'PASS' if c['pass'] else 'FAIL'}")
+        if c.get("thin"):
+            lines.append(f"    THIN: only {min(c['toolbench_true'], c['toolbench_false'])} toolbench trial(s) on the rarer side; "
+                         f"zero disagreement here is weak evidence")
         for name, mm in report["models"].items():
             r = mm[m]
             lines.append(f"    {name[-44:]:44} n {r['n']:4}  reward {_pct(r['rw_rate']):>6}  toolbench {_pct(r['tb_rate']):>6}")
@@ -280,6 +346,8 @@ def render(report: dict) -> str:
                          f" -> {'agree' if o['agree'] else 'DISAGREE'}")
     if report["unmapped"]:
         lines.append(f"not mapped: {report['unmapped']}")
+    if any(any(v.values()) for v in report.get("not_compared", {}).values()):
+        lines.append(f"seen by one side only (not compared): {report['not_compared']}")
     lines.append("RESULT: " + ("PASS" if report["pass"] else "FAIL"))
     return "\n".join(lines)
 
@@ -347,7 +415,7 @@ def main(argv=None) -> int:
         print("--toolbench is required", file=sys.stderr)
         return 2
     fp = fingerprint()
-    once = None
+    once = []
     if a.split == "gate":
         if not a.final_once:
             print("refused: --split gate is a single final confirmation; pass --final-once (and read the module docstring)", file=sys.stderr)
@@ -360,13 +428,19 @@ def main(argv=None) -> int:
         if changed:
             print(f"refused: {changed} changed since the freeze; re-freeze on dev (the gate has not been read for this reward)", file=sys.stderr)
             return 2
-        once = Path(a.once_file) if a.once_file else Path(a.frozen).with_name("grader_check.gate.json")
-        if once.exists():
-            print(f"refused: the gate was already read for this once-file ({once}); a reward change after seeing it contaminates the "
-                  f"gate for reward design. Record: {once.read_text()[:400]}", file=sys.stderr)
+        # the record is keyed on the frozen reward (gate_record), so naming a different --once-file does not buy a second read; the file
+        # beside --frozen (or --once-file) is kept as a second, human-visible copy and also blocks
+        once = [gate_record(fp), Path(a.once_file) if a.once_file else Path(a.frozen).with_name("grader_check.gate.json")]
+        seen = next((o for o in once if o.exists()), None)
+        if seen is not None:
+            print(f"refused: the gate was already read for this frozen reward ({seen}); a reward change after seeing it contaminates the "
+                  f"gate for reward design. Record: {seen.read_text()[:400]}", file=sys.stderr)
             return 3
-        once.write_text(json.dumps({"started": time.strftime("%Y-%m-%dT%H:%M:%S"), "fingerprint": fp, "toolbench": str(a.toolbench),
-                                    "result": None}, indent=1))              # written before the transcripts are read
+        started = json.dumps({"started": time.strftime("%Y-%m-%dT%H:%M:%S"), "fingerprint": fp, "toolbench": str(a.toolbench),
+                              "toolbench_sha256": _sha_of(Path(a.toolbench).expanduser()), "result": None}, indent=1)
+        for o in once:
+            o.parent.mkdir(parents=True, exist_ok=True)
+            o.write_text(started)                                           # written before the transcripts are read
     try:
         if a.cases_dir:
             sys.path.insert(0, str(REPO))
@@ -380,9 +454,9 @@ def main(argv=None) -> int:
         report["split"], report["fingerprint"] = a.split, fp
         report["toolbench"] = str(a.toolbench)
     except Exception as exc:       # noqa: BLE001
-        if once is not None:
-            once.write_text(json.dumps({"started": None, "fingerprint": fp, "toolbench": str(a.toolbench), "result": "error",
-                                        "error": repr(exc)}, indent=1))
+        for o in once:
+            o.write_text(json.dumps({"started": None, "fingerprint": fp, "toolbench": str(a.toolbench), "result": "error",
+                                     "error": repr(exc)}, indent=1))
         raise
     print(render(report))
     if a.json:
@@ -390,9 +464,11 @@ def main(argv=None) -> int:
     if a.split == "dev" and a.freeze:
         Path(a.freeze).write_text(json.dumps(fp, indent=1))
         print(f"froze {a.freeze}")
-    if once is not None:
-        once.write_text(json.dumps({"finished": time.strftime("%Y-%m-%dT%H:%M:%S"), "fingerprint": fp, "toolbench": str(a.toolbench),
-                                    "result": "PASS" if report["pass"] else "FAIL", "report": report}, indent=1))
+    if once:
+        done = json.dumps({"finished": time.strftime("%Y-%m-%dT%H:%M:%S"), "fingerprint": fp, "toolbench": str(a.toolbench),
+                           "result": "PASS" if report["pass"] else "FAIL", "report": report}, indent=1)
+        for o in once:
+            o.write_text(done)
         if not report["pass"]:
             print("The gate confirmation FAILED: the run is blocked. Do not retune the reward and re-run on this gate; revalidate on a newly "
                   "written held-out set (not heldout_safety) and record the contamination in the release record.", file=sys.stderr)

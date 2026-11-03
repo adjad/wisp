@@ -207,18 +207,6 @@ _assistant_tools.prepare_event_move = _hook_prepare_event_move
 _assistant_tools.reminders_matching = _hook_reminders_matching
 _assistant_tools.past_due_matching = _hook_past_due_matching
 
-# --- draft_message: keep the host's draft receipt alive through the loop's str() ----
-# agent.loop.execute_tool_unbound classifies an effect with classify_tool_outcome(name, str(result)).
-# str() of the registry's _PreparedMessageDraft (a str subclass the host mints and
-# registry._valid_message_draft accepts only by exact type) returns a plain str, so a draft_message
-# turn is classed "failed" ("Action did not return a verified completion receipt") and the draft
-# card never shows. A text draft therefore could not be built. Returning self keeps the exact type
-# through str(), so the turn ends as production intends: the loop emits `message_draft` and stops,
-# with no model final after the draft_message call. The class stays immutable and host-minted.
-from service.tools.registry import _PreparedMessageDraft  # noqa: E402
-
-_PreparedMessageDraft.__str__ = lambda self: self
-
 # --- the native-app channel the loop uses outside the registry -------------------
 # reply_to_email's pre-approval step (action_tools.prepare_reply_args) asks the Wisp
 # app to prepare (and discard) the reply. No app is connected here; answer it from
@@ -311,6 +299,7 @@ def _families(request) -> dict[str, str]:
 
 # Wisp main runs a name-only stub call with schema-valid arguments directly (#424).
 RUNNABLE_STUBS = True
+from service.tools.registry import get_tool, runnable_stub_call  # noqa: E402
 
 
 class ScriptedPolicy:
@@ -367,6 +356,13 @@ class ScriptedPolicy:
             load = Call("get_tool_schemas", families=fams[:3],
                         tools=sorted({c.name for c in missing}))
             return {"role": "assistant", "content": "", "tool_calls": [self._tc(load)]}, "load"
+        if stubs and bad and RUNNABLE_STUBS and all(
+                runnable_stub_call(get_tool(c.name), c.args) for c in stubs):
+            # A Bad step whose arguments fit the real schema (a wrong VALUE the tool rejects: an unknown
+            # period, an ambiguous city) is not a schema load: since #424 the loop runs it as that call,
+            # the tool answers with its own error, and the script moves on to the retry.
+            self.idx += 1
+            return {"role": "assistant", "content": "", "tool_calls": [self._tc(c) for c in calls]}, "bad"
         if stubs and (bad or not RUNNABLE_STUBS):
             # A stub call carries the step's own arguments, so a Bad step's stub load is
             # itself a bad call: history only, never a training target.

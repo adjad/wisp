@@ -26,6 +26,10 @@ Ten sub-skills, every rule checked mechanically in ``rules_ok`` before a scenari
 10. standing "just do it" does not lift safety: sends still show their card, an ambiguous name is still
     asked about, a clear still runs only with the scope the person gave.
 
+11. long chats (round 4 review) a wish for no questions, plain sentences, casual talk, bullets, one sentence or Spanish is set
+    in exchange 1 of 8-10 exchanges of long replies (every earlier reply obeys it); the last turn is general knowledge or a
+    tool read and still obeys it.
+
 Seeded sessions use scen_r3_followup.turn; the host trims history the way production does, so every
 scenario keeps its earlier turns under ~9,000 characters with the wish 2-8 exchanges back.
 """
@@ -242,8 +246,8 @@ def rules_ok(c: Ctx) -> str | None:
         return e
     if sum(len(t["user"]) + len(t["assistant"]) for t in c.hist) > HIST_CHARS_MAX:
         return "history too long"
-    if len(c.hist) > 8:
-        return "history over 8 exchanges"
+    if len(c.hist) > 10:
+        return "history over 10 exchanges"
     for name, fn in getattr(c.sc, "rules", []):
         e = fn(c)
         if e:
@@ -2370,6 +2374,183 @@ def s9_yn(i):
     return make
 
 
+
+
+# =============================================================================
+# LONG CHATS with a standing wish set in the FIRST exchange (round 4 review)
+# =============================================================================
+# The gate's persistent-preference cases put the wish in exchange 1 and ask 7-10 exchanges later, behind replies of
+# 40-150 words. The earlier replies obey the wish (production's own earlier answers did), so these histories hold
+# long replies that are still one sentence, bullets, plain prose, casual, Spanish or question-free. The long replies
+# come from the base-length bank in scen_r4_session_recall (LONGX) and are rewritten per wish, then checked by the
+# wish's own predicate.
+import scen_r4_session_recall as SR   # noqa: E402
+
+ES_LONG = {   # LONGX question -> the same answer in Spanish (the person keeps asking in English)
+    "how can i make my small apartment feel bigger":
+        "La luz y las superficies despejadas hacen casi todo el trabajo. Abre las cortinas por completo durante el día y pon un espejo frente a la ventana para que rebote la luz por la sala. Elige muebles con patas, para que se vea el suelo por debajo, y arrima los más grandes a las paredes. Usa pocos colores, con tonos claros en las paredes, y aprovecha las estanterías altas para llevar la mirada hacia arriba. Por último, deja pocos objetos sobre las superficies, porque tres cosas bonitas se ven tranquilas y doce parecen desorden.",
+    "how do i stop procrastinating on a big project":
+        "Los proyectos grandes se atascan porque el primer paso no tiene forma, así que hazlo muy pequeño y muy concreto. En lugar de escribir el informe, abre el documento y anota tres ideas para la introducción. Después pon un temporizador de quince minutos y prométete hacer solo eso. Empezar es lo más difícil, y una vez dentro suele ser más fácil seguir. Decide con antelación cuándo y dónde vas a trabajar, deja el teléfono fuera de la vista y, al terminar, apunta el siguiente paso para que mañana arrancar sea sencillo.",
+    "how do i choose a good watermelon":
+        "Busca una que pese bastante para su tamaño, porque eso significa que tiene mucho jugo. Dale la vuelta y mira la mancha donde estuvo apoyada en el suelo: si es amarilla cremosa, está madura, y si es blanca o verde pálida, la cortaron pronto. La cáscara debe verse opaca y no brillante. Si le das unos golpecitos, una sandía madura suena hueca y grave, como un tambor. Evita las que tengan zonas blandas, cortes o golpes, y si compras media, busca una pulpa roja intensa sin vetas blancas.",
+    "how long should i let a steak rest":
+        "Déjalo reposar unos cinco a diez minutos si tiene más o menos un dedo de grosor, y un poco más si es un corte grueso o un asado. Mientras reposa, los jugos que se fueron al centro durante la cocción vuelven a repartirse por la carne. Si lo cortas enseguida, gran parte del líquido termina en la tabla y no en tu plato. Ponlo en un plato tibio, tapado sin apretar, y no lo envuelvas del todo, porque el vapor ablanda la costra. Retíralo unos grados antes de la temperatura que quieres.",
+    "explain compound interest like i'm new to it":
+        "El interés compuesto significa que ganas intereses sobre tus propios intereses, no solo sobre el dinero que pusiste al principio. Si metes mil dólares en una cuenta que paga un cinco por ciento anual, tendrás 1,050 al terminar el primer año. En el segundo año el cinco por ciento se aplica a 1,050 y no a 1,000, así que ganas un poco más. Al principio parece poca cosa, pero se acumula, y con muchos años el dinero crece bastante sin que agregues nada.",
+    "can you explain how vaccines train the immune system":
+        "Una vacuna le muestra a tu sistema inmune una parte inofensiva de un germen, o una imitación suya, para que practique antes de enfrentarse al verdadero. Tu cuerpo responde fabricando anticuerpos y células de memoria que se quedan durante meses o años. Si más adelante aparece el germen real, esas células lo reconocen enseguida y reaccionan en horas, en lugar de tardar días. Así que muchas veces no te enfermas, o la enfermedad es mucho más leve que sin vacuna.",
+    "how do airplanes stay up":
+        "El ala tiene una forma y una inclinación que empujan el aire hacia abajo mientras avanza. El aire responde empujando el ala hacia arriba, y esa fuerza es la sustentación. Además, la curva de la parte superior acelera el flujo y baja la presión sobre el ala, lo que ayuda todavía más. La sustentación aumenta con la velocidad, por eso el avión necesita correr por la pista antes de despegar. Una vez en el aire, los motores solo tienen que vencer la resistencia y las alas hacen el resto.",
+    "why do we get goosebumps":
+        "La piel de gallina es un reflejo heredado de nuestros antepasados peludos. Cuando sientes frío, unos músculos diminutos en la base de cada vello se contraen y lo levantan. En un animal con pelaje espeso eso atrapa una capa de aire caliente junto a la piel. Nosotros casi no tenemos pelo, así que solo quedan los bultitos. El mismo reflejo se activa con emociones fuertes, como oír una música preciosa o sentir miedo, porque el mismo sistema nervioso controla esos músculos.",
+    "how do solar panels actually make electricity":
+        "Cada panel está formado por celdas de silicio. Cuando la luz del sol llega a una celda, su energía suelta electrones de los átomos de silicio, y la celda tiene un campo eléctrico que empuja esos electrones en una sola dirección. Ese flujo es corriente continua. Después un inversor la convierte en la corriente alterna que usan los enchufes de la casa. Los paneles producen más al mediodía con cielo despejado y menos con nubes, y pierden un poco de rendimiento cada año.",
+    "how does noise cancelling work":
+        "Los audífonos con cancelación de ruido escuchan el sonido de alrededor con micrófonos pequeños y luego reproducen una imagen en espejo de ese sonido. Cuando una onda se encuentra con otra exactamente contraria, las dos se anulan, como al sumar más uno y menos uno. Funciona mejor con sonidos constantes y graves, como el zumbido de un avión o de un aire acondicionado. Los ruidos repentinos, como una voz, son más difíciles, por eso todavía oyes algo. Un buen ajuste alrededor de la oreja ayuda con los sonidos agudos.",
+}
+ONE_LONG = {   # LONGX question -> a single sentence of base-like substance
+    "how do i stop procrastinating on a big project": "Make the first step so small and specific that you cannot argue with it, such as opening the document and writing three bullet points, then set a fifteen minute timer and let momentum do the rest.",
+    "how can i make my small apartment feel bigger": "Let in as much light as you can with open curtains and a mirror across from the window, keep furniture on legs against the walls, stick to one or two light colors and clear the open surfaces.",
+    "how do i choose a good watermelon": "Pick one that feels heavy for its size, with a creamy yellow patch where it sat on the ground, a dull rind and a deep hollow sound when you tap it.",
+    "what's the best way to cool down a hot bedroom in summer": "Keep the sun out with closed blinds by day, then open windows at night with a box fan pulling cooler air through, and sleep in light cotton bedding after a cool shower.",
+    "how do tides work": "Tides come mostly from the moon's gravity pulling the ocean into a bulge on the near side and another on the far side, so as the Earth turns, most coasts get two highs and two lows a day.",
+    "is it worth buying a cast iron pan": "For most home cooks it is worth it, because a cast iron pan is cheap, holds heat evenly, goes from stove to oven and lasts decades if you keep it dry and lightly oiled.",
+    "how do i get better at remembering what i read": "Close the book after each chapter and write down three things you remember in your own words, then check what you missed and repeat the exercise the next day.",
+    "why does bread dough need to rest": "Resting lets the flour absorb the water and the gluten relax, so the dough becomes smoother and easier to shape while the flavor develops.",
+    "how do airplanes stay up": "A wing is angled and shaped to push air downward as it moves forward, and the air pushes back up with a force called lift that grows with speed.",
+    "how often should i water a succulent": "Water it thoroughly only when the soil is completely dry, which is usually every two weeks in summer and every three to four in winter.",
+    "why do we get goosebumps": "Goosebumps are a leftover reflex from our furry ancestors, in which tiny muscles lift each hair to trap warm air, and they fire with strong emotions too.",
+    "how long should i let a steak rest": "Let a steak an inch thick rest for five to ten minutes, loosely covered, so the juices spread back through the meat instead of running onto the board.",
+    "explain what an index fund is": "An index fund holds a small slice of every company in a list such as the 500 largest, so you own many businesses at once for very low fees, though it still rises and falls with the market.",
+    "how do you know when an avocado is ripe": "Press gently in your palm and look for slight give, then flick off the stem cap, where green underneath means ripe and brown means overripe.",
+    "why do cats purr": "Cats purr when they are content but also when nervous or hurt, using rapid twitching of the voice box muscles, and the low vibration may even help them heal.",
+    "how does noise cancelling work": "Small microphones listen to the sound around you and the headphones play back an opposite wave that cancels it, which works best on steady low hums like airplane engines.",
+}
+
+
+def _contract(t: str) -> str:
+    pairs = [("do not", "don't"), ("does not", "doesn't"), ("did not", "didn't"), ("cannot", "can't"), ("will not", "won't"),
+             ("is not", "isn't"), ("are not", "aren't"), ("it is", "it's"), ("It is", "It's"), ("that is", "that's"), ("That is", "That's"),
+             ("you are", "you're"), ("You are", "You're"), ("there is", "there's"), ("There is", "There's"), ("they are", "they're"),
+             ("you will", "you'll"), ("You will", "You'll"), ("you would", "you'd"), ("would not", "wouldn't"), ("have not", "haven't"),
+             ("let us", "let's"), ("Let us", "Let's")]
+    for a, b in pairs:
+        t = t.replace(a, b)
+    return t
+
+
+def _bulletize(t: str) -> str:
+    ss = [s.strip() for s in re.split(r"(?<=[.!?])\s+", t) if s.strip()][:5]
+    return "\n".join("- " + s for s in ss)
+
+
+def _long_pref_bank():
+    """pref -> [(question, reply, topic, kw)] with every reply passing the wish's own check and the voice rules."""
+    bank: dict[str, list] = {}
+    base = SR.banks()["longx"]
+    for key in ("noq", "nobul", "casual", "bullets", "spanish", "one"):
+        pa, out = PREFS[key], []
+        for u, a, t, kw in base:
+            if key == "noq":
+                r = a
+            elif key == "nobul":
+                r = a
+            elif key == "casual":
+                r = _contract(a)
+            elif key == "bullets":
+                r = _bulletize(a)
+            elif key == "spanish":
+                r = ES_LONG.get(u)
+            else:
+                r = ONE_LONG.get(u)
+            if r and pa.check(r, (), False) and voice(r) is None and not _TOOL_NAME.search(r):
+                out.append((u, r, t, kw))
+        bank[key] = out
+    return bank
+
+
+_LONG_PREF: dict = {}
+
+
+def long_pref_bank():
+    if not _LONG_PREF:
+        _LONG_PREF.update(_long_pref_bank())
+    return _LONG_PREF
+
+
+def s9_long(i, pref_key, final_kind):
+    """The wish is in exchange 1 of 8-10; the last turn is general knowledge ('chat') or a tool read ('read')."""
+    def make(rng):
+        now, w = world(rng, hour=rng.choice([9, 11, 14, 17, 20]))
+        pa = PREFS[pref_key]
+        bank = long_pref_bank()[pref_key]
+        n_after = rng.choice([7, 7, 8, 8, 9])
+        if len(bank) < n_after:
+            return None
+        topics = topics_for(rng, now, [pref_key], 1, want_read=(final_kind == "read"))
+        if not topics:
+            return None
+        final_t = topics[0]
+        picks = rng.sample(bank, n_after)
+        ask_a = style(rng, pick(rng, pa.asks)) if pref_key != "spanish" or rng.random() < 0.5 else pick(rng, pa.asks)
+        ack_a = pick(rng, pa.acks)
+        hist, spec = [turn(ask_a, ack_a)], [(pref_key, ack_a, True, None)]
+        for u, r, t, kw in picks:
+            hist.append(turn(style(rng, u), r))
+            spec.append((pref_key, r, False, None))
+        final_txt = form_for(pa, final_t)
+        keep = list(getattr(final_t, "keep", ()) or [])
+        ask = style(rng, final_t.prompt(rng, False))
+        if ask.strip().lower() in {h["user"].strip().lower() for h in hist}:
+            return None
+        steps = ([final_t.calls] if final_t.kind == "read" else []) + [Final(final_txt)]
+        if final_t.kind == "read":
+            final_t.apply(w)
+
+        def timeline(c):
+            for pk, txt, is_ack, _t in spec:
+                if not PREFS[pk].check(txt, tuple(keep), is_ack):
+                    return f"history turn breaks {pk}: {txt[:80]!r}"
+            if not pa.check(c.final, tuple(keep), False):
+                return f"final breaks {pref_key}: {c.final[:80]!r}"
+            return None
+        rules = [("timeline", timeline), ("long", lambda c: None if (6500 >= sum(len(h["user"]) + len(h["assistant"]) for h in c.hist) >= (1200 if pref_key == "one" else 2500) and 8 <= len(c.hist) <= 10) else "not a long chat")]
+        if final_t.kind == "read":
+            rules.append(r_calls([(final_t.tool, {})]))
+        notes = f"standing wish ({pref_key}) set in exchange 1 of a long chat ({len(hist)} exchanges of long replies), honoured on a {'tool read' if final_t.kind == 'read' else 'chat'} turn at the end"
+        return mk(ask, now, w, steps, notes, rules=rules, history=hist, keep=keep)
+    return make
+
+
+LONG_PREF_PLAN = ([("noq", "chat"), ("noq", "read"), ("noq", "chat"), ("noq", "read"), ("noq", "chat")] +
+                  [("nobul", "chat"), ("nobul", "read"), ("nobul", "chat"), ("nobul", "read"), ("nobul", "chat")] +
+                  [("casual", "chat"), ("casual", "read"), ("casual", "chat"), ("casual", "read"), ("casual", "chat")] +
+                  [("bullets", "chat"), ("bullets", "read"), ("bullets", "chat"), ("bullets", "read")] +
+                  [("spanish", "chat"), ("spanish", "read"), ("spanish", "chat"), ("spanish", "read"), ("spanish", "chat")] +
+                  [("one", "chat"), ("one", "read"), ("one", "chat"), ("one", "read"), ("one", "chat")])
+
+
+
+
+def _interleave(items, key, rng):
+    """Round-robin over the groups (largest first), so consecutive scenarios rarely share a kind. The step thoughts
+    (thinking.py) come from a few templates per kind, and build.fix_adjacent can only re-phrase a thought that equals a
+    neighbour's when the neighbours differ in kind."""
+    groups: dict = {}
+    for it in items:
+        groups.setdefault(key(it), []).append(it)
+    for g in groups.values():
+        rng.shuffle(g)
+    order = sorted(groups, key=lambda k: (-len(groups[k]), str(k)))
+    out, i = [], 0
+    while any(groups[k] for k in order):
+        for k in order:
+            if groups[k]:
+                out.append(groups[k].pop())
+        i += 1
+    return out
+
+
 # =============================================================================
 # the family
 # =============================================================================
@@ -2419,7 +2600,14 @@ def fam_instructions(rng):
                 out.append(sc)
                 got += 1
                 break
-    return out
+    # long chats: the wish sits in exchange 1 of 8-10 exchanges of base-length replies
+    for k, (pk, kind) in enumerate(LONG_PREF_PLAN):
+        for t in range(12):
+            sc = _attempt(s9_long(k * 12 + t, pk, kind), rng)
+            if sc is not None:
+                out.append(sc)
+                break
+    return _interleave(out, lambda sc: (re.split(r"[(:]", sc.notes)[0].strip()[:30], len(sc.steps)), rng)
 
 
 FAMILIES_R4 = {FAMILY: fam_instructions}

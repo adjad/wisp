@@ -86,8 +86,33 @@ class FakeTok:
         return out + txt(msgs[-1]) + "<turn|>\n" if done else out
 
 
+def _gv(v):
+    """One argument value in Gemma's tool-call syntax, as the production template renders it (reward.parse reads it back)."""
+    if isinstance(v, str):
+        return '<|"|>' + v + '<|"|>'
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if v is None:
+        return "null"
+    if isinstance(v, (int, float)):
+        return str(v)
+    if isinstance(v, (list, tuple)):
+        return "[" + ",".join(_gv(x) for x in v) + "]"
+    if isinstance(v, dict):
+        return "{" + ",".join(f"{k}:{_gv(x)}" for k, x in v.items()) + "}"
+    return '<|"|>' + str(v) + '<|"|>'
+
+
+def gemma_call(name, args) -> str:
+    if isinstance(args, str):
+        args = json.loads(args)
+    return f"<|tool_call>call:{name}{{" + ",".join(f"{k}:{_gv(v)}" for k, v in (args or {}).items()) + "}<tool_call|>"
+
+
 class FakeRender:
     FORCED = "<|channel>thought\n"
+    WITH_ARGS = False        # round 5 scores each row's ideal (ideal_trips): the completion must carry the real args. Rounds 3 and 4
+                             # keep the old argument-less completion, whose digests test_rounds_3_and_4_unchanged pins
     TEMPLATE_SHAS = {"gemma": "fake"}
 
     @staticmethod
@@ -103,7 +128,8 @@ class FakeRender:
         forced = hist[-1]["role"] == "tool"
         prompt = body + "\n[model]\n" + (FakeRender.FORCED if forced else "")
         if target.get("tool_calls"):
-            text = "".join(f"<|tool_call>call:{tc['function']['name']}{{}}<tool_call|>" for tc in target["tool_calls"])
+            text = "".join(gemma_call(tc["function"]["name"], tc["function"]["arguments"]) if FakeRender.WITH_ARGS else
+                           f"<|tool_call>call:{tc['function']['name']}{{}}<tool_call|>" for tc in target["tool_calls"])
         else:
             text = target.get("content") or ""
         return {"id": meta["id"], "family": meta["family"], "kind": meta.get("target_kind"), "think": False, "prompt": prompt,
@@ -128,6 +154,8 @@ def run_main(argv, extra_patches=()):
     main() updates module-level weight tables for round 4/5 (VISION_WEIGHTS, PICTURE_READ_WEIGHTS, WRITE_TOOLS_R4); they are
     restored afterwards so a later round-3 run in the same process is not affected (a quirk of the original export)."""
     saved = (dict(X.VISION_WEIGHTS), dict(X.PICTURE_READ_WEIGHTS), X.WRITE_TOOLS_R4)
+    argv = list(argv)
+    FakeRender.WITH_ARGS = "--round" in argv and argv[argv.index("--round") + 1] == "5"
     try:
         with ExitStack() as st:
             st.enter_context(mock.patch.object(X, "load_render", lambda: FakeRender))

@@ -1,5 +1,6 @@
 """Tests for plan.py (batch math, advantages, KL, guard, estimate) and for grpo.py's torch-free helpers.
 Run: python -m pytest -q test_plan.py   (or python test_plan.py)"""
+import json
 import math
 import sys
 from pathlib import Path
@@ -335,14 +336,26 @@ def test_check_train_args_requires_the_floor_before_torch_loads():
     else:
         raise AssertionError("check_train_args must exit")
     grpo.check_train_args(_args(mm_floor="f.json"), True, rnd=3)
-    # round 5 also needs its text-probe files
-    probs = P.train_arg_problems(_args(mm_floor="f.json"), True, rnd=5)
-    assert len(probs) == 1 and "--text-dev" in probs[0]
-    probs = P.train_arg_problems(_args(mm_floor="f.json", text_dev="d.jsonl"), True, rnd=5)
-    assert len(probs) == 2 and any("--text-floor" in p for p in probs) and any("--text-replicates" in p for p in probs)
-    assert any("at least two" in p for p in P.train_arg_problems(_args(mm_floor="f", text_dev="d", text_floor="b", text_replicates=["r1"]), True, rnd=5))
-    assert P.train_arg_problems(_args(mm_floor="f", text_dev="d", text_floor="b", text_replicates=["r1", "r2"]), True, rnd=5) == []
-    assert P.train_arg_problems(_args(mm_floor="f", no_text_probes=True), True, rnd=5) == []
+    # round 5 also needs its text-probe files, and a floor that carries the C13 counts
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        good = Path(d) / "floor.json"
+        good.write_text(json.dumps({"vision_reward": 1.0, "proposals_right": 3.0, "proposals_spurious": 0.0, "vision_facts_total": 9.0}))
+        old_floor = Path(d) / "old.json"
+        old_floor.write_text(json.dumps({"vision_reward": 1.0}))
+        g, o = str(good), str(old_floor)
+        probs = P.train_arg_problems(_args(mm_floor=g), True, rnd=5)
+        assert len(probs) == 1 and "--text-dev" in probs[0]
+        probs = P.train_arg_problems(_args(mm_floor=g, text_dev="d.jsonl"), True, rnd=5)
+        assert len(probs) == 2 and any("--text-floor" in p for p in probs) and any("--text-replicates" in p for p in probs)
+        assert any("at least two" in p for p in P.train_arg_problems(_args(mm_floor=g, text_dev="d", text_floor="b", text_replicates=["r1"]), True, rnd=5))
+        assert P.train_arg_problems(_args(mm_floor=g, text_dev="d", text_floor="b", text_replicates=["r1", "r2"]), True, rnd=5) == []
+        assert P.train_arg_problems(_args(mm_floor=g, no_text_probes=True), True, rnd=5) == []
+        # a floor from before C13 is an error in round 5 (and in the launch check, before any GPU work), fine in round 4
+        probs = P.train_arg_problems(_args(mm_floor=o, no_text_probes=True), True, rnd=5)
+        assert len(probs) == 1 and "proposals_right" in probs[0] and "re-run" in probs[0]
+        assert P.train_arg_problems(_args(mm_floor=o), True, rnd=4) == []
+        assert any("not readable" in p for p in P.train_arg_problems(_args(mm_floor=str(Path(d) / "none.json"), no_text_probes=True), True, rnd=5))
     assert not P.train_arg_problems(_args(), False, rnd=4)                           # rounds 3 and 4 never need the text files
 
 
@@ -427,7 +440,7 @@ def test_ideal_top_is_the_old_table_in_rounds_3_and_4_and_the_ceiling_in_round_5
         assert P.ideal_top(lab, 3) == (r3, 0.31) and P.ideal_top(lab, 4) == (r4, 0.31), lab
     assert P.ideal_top({"step": "final", "ceiling": 2.0, "modality": "text"}, 5) == (2.0, 0.01)
     assert P.ideal_top({"step": "final", "ceiling": 1.5, "narrate": True, "facts": ["x"]}, 5) == (1.5, 0.01)
-    assert P.ideal_top({"step": "call", "ceiling": 1.5, "modality": "text"}, 5) == (1.5, 0.31)
+    assert P.ideal_top({"step": "call", "ceiling": 1.5, "modality": "text"}, 5) == (1.5, 0.01)         # a call ideal must reach its ceiling too
     assert P.ideal_top({"modality": "vision", "ceiling": None, "step": "mm_vision"}, 5) == (1.5, 0.31)      # mm rows keep today's check
     try:
         P.ideal_top({"step": "final", "modality": "text"}, 5)
@@ -685,3 +698,90 @@ def test_run_text_probe_keys_the_draws_per_row_and_eval_seed_whatever_the_shardi
                 sys.modules.pop(k, None)
             else:
                 sys.modules[k] = v
+
+
+# ---- verifier findings: windows, per-class logs, layout gaps, floors
+
+def test_mm_counters_are_split_by_modality_and_k3_is_logged_per_bucket():
+    assert P.stat_bucket_of({"kind": "image"}, "vision") == "mm_vision" and P.stat_bucket_of({"kind": "picture_read"}, "vision") == "mm_picture_read"
+    assert P.stat_bucket_of({"task": "picture_read"}, "vision") == "mm_picture_read" and P.stat_bucket_of({}, "audio") == "mm_audio"
+    assert P.stat_bucket_of({"rl_kind": "call"}, "text") == "call" and P.stat_bucket_of({}, "text") == "text"
+    assert P.bucket_of({"kind": "picture_read"}, "vision") == "mm"                              # the per-prompt log row keeps one 'mm' kind
+    keys = P.bucket_keys()
+    assert len(set(keys)) == len(keys) and "mm_vision/abs_adv" in keys and "mm_audio/kl_sum" in keys and "mm/groups" not in keys
+    tot = {k: 0.0 for k in keys}
+    for b, adv in (("mm_vision", 0.1), ("mm_audio", 0.5), ("mm_picture_read", 0.9)):
+        tot.update({f"{b}/groups": 1, f"{b}/samples": 4, f"{b}/abs_adv": adv * 4, f"{b}/adv_n": 4, f"{b}/kl_sum": 2.0, f"{b}/tok": 400.0})
+    tot.update({"narrate/groups": 2, "narrate/samples": 8, "narrate/adv_n": 8, "narrate/kl_sum": 0.8, "narrate/tok": 200.0})
+    log = P.bucket_log(tot)
+    assert [log[b]["mean_abs_adv"] for b in ("mm_vision", "mm_audio", "mm_picture_read")] == [0.1, 0.5, 0.9]
+    assert log["narrate"]["k3"] == 0.004 and log["mm_audio"]["k3"] == 0.005 and "mm" not in log
+
+
+def test_the_ratio_steps_default_to_1_5_20_and_the_budget_flag_is_off_by_default():
+    import grpo
+    a = grpo.build_parser().parse_args(["train", "--base", "x", "--prompts", "y", "--out", "z"])
+    assert P.parse_steps(a.grad_ratio_steps) == {1, 5, 20} and a.grad_ratio_every == 0 and a.allow_unmet_budget is False
+    assert P.parse_steps("") == set() and P.parse_steps(None) == set() and P.parse_steps(" 3, 7 ") == {3, 7}
+
+
+def test_window_steps_are_wholly_inside_the_prompt_window():
+    for ppst, want in ((8, (38, 50)), (4, (75, 100)), (12, (25, 33)), (100, (3, 4)), (7, (43, 57))):
+        first, last = P.window_steps(300, 400, ppst)
+        assert (first, last) == want, ppst
+        assert first * ppst >= 300 and last * ppst <= 400          # every step in [first, last) lies inside prompts 301-400
+    assert P.window_steps(0, 100, 8) == (0, 12)
+
+
+def test_weighted_zero_variance_uses_the_export_mix_not_the_pooled_groups():
+    hist = [{"narrate": (8, 4, 6), "select": (1, 0, 0)}, {"narrate": (8, 4, 6), "select": (1, 0, 0)}]
+    w = {"narrate": 0.5, "select": 0.5}
+    fail, total = P.weighted_zv(hist, w)
+    assert abs(fail - 0.25) < 1e-9 and abs(total - 0.375) < 1e-9
+    pooled_fail = 8 / 18                                            # what the unweighted pooled share would have said
+    assert abs(fail - pooled_fail) > 0.1
+    assert P.weighted_zv([{"narrate": (0, 0, 0)}], w) == (0.0, 0.0) and P.weighted_zv([], w) == (0.0, 0.0)
+    f2, _ = P.weighted_zv([{"narrate": (4, 2, 2)}], {"narrate": 0.3, "select": 0.7})           # an absent bucket renormalises
+    assert abs(f2 - 0.5) < 1e-9
+
+
+def test_the_s_learn_windows_index_prompts_whatever_the_modality_mix():
+    """prompt_recs holds every prompt: records 0..99 are prompts 1-100 and 300..399 are 301-400, mm rows included (no ceiling, so
+    adjusted_reward skips them). With ~15% multimodal prompts the old text-only list made [300:400] the wrong prompts."""
+    w = {"call": 1.0}
+    recs = []
+    for i in range(600):
+        mm = i % 7 == 0
+        recs.append({"kind": "mm" if mm else "call", "ceiling": None if mm else 1.0, "reward": 0.0 if mm else (0.2 if i < 100 else 0.9 if 300 <= i < 400 else 0.5)})
+    assert abs(P.adjusted_reward(recs[:100], w) - 0.2) < 1e-9 and abs(P.adjusted_reward(recs[300:400], w) - 0.9) < 1e-9
+    text_only = [r for r in recs if r["kind"] != "mm"]
+    assert abs(P.adjusted_reward(text_only[300:400], w) - 0.9) > 0.05                       # the old indexing was off
+
+
+def test_s_learn_soft_reports_targets_against_their_bands_and_never_stops():
+    soft = P.s_learn_soft(0.60, 0.63, {"facts_mean": (0.70, 0.05), "recall_hit": (0.80, 0.10)}, {"facts_mean": 0.78, "recall_hit": 0.85, "unsafe": 1.0})
+    assert soft["targets"]["facts_mean"]["up"] and not soft["targets"]["recall_hit"]["up"] and soft["any_target_up"]
+    assert abs(soft["adj_gain"] - 0.03) < 1e-9 and set(soft["targets"]) == {"facts_mean", "recall_hit"}
+    none = P.s_learn_soft(None, 0.5, {"facts_mean": (0.7, 0.05)}, {})
+    assert none["adj_gain"] is None and none["targets"] == {} and not none["any_target_up"]
+
+
+def test_lora_layout_requires_k_proj_on_every_non_shared_layer_and_shows_gaps():
+    gap = P.lora_layout(_adapter_names(drop={(5, "k_proj"), (6, "k_proj"), (9, "k_proj")}), 42, kv_first=24)
+    assert any("k_proj adapter missing on non-shared layers 5-6,9" in p for p in gap["problems"]) and gap["remedy"] and "TARGET_RE" in gap["remedy"]
+    assert not any("k_proj adapter missing" in p for p in P.lora_layout(_adapter_names(drop={(5, "k_proj")}), 42, kv_first=None)["problems"])
+    ok = P.lora_layout(_adapter_names(), 42, kv_first=24)
+    assert ok["remedy"] is None and "layers 0-23" in ok["summary"]
+    partial = P.lora_layout(_adapter_names(drop={(7, "k_proj"), (7, "v_proj")}), 42, kv_first=24)
+    assert any("missing" in p for p in partial["problems"])
+    assert P._ranges([0, 1, 2, 4, 5, 9]) == "0-2,4-5,9" and P._ranges([]) == "" and P._ranges([3]) == "3"
+
+
+def test_small_n_floor_strict_errors_on_a_floor_without_the_c13_keys():
+    floor = {"vision_reward": 1.0}
+    now = {"proposals_right": 20.0, "proposals_spurious": 3.0, "vision_facts_total": 60.0}
+    assert P.small_n_floor_problems(floor, now) == []                                   # rounds 3 and 4: skipped
+    strict = P.small_n_floor_problems(floor, now, strict=True)
+    assert len(strict) == 3 and all("predates C13" in p for p in strict)
+    full = {**floor, **now}
+    assert P.small_n_floor_problems(full, now, strict=True) == [] and len(P.small_n_floor_problems(full, {**now, "proposals_right": 19.0}, strict=True)) == 1

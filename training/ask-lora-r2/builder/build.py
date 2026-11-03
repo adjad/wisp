@@ -267,7 +267,7 @@ def for_training(ex: dict) -> dict:
 
 def write(examples, metas):
     examples = [for_training(ex) for ex in examples]
-    train_idx, valid_idx = split(metas)
+    train_idx, valid_idx = split(metas, examples)
     stuck = fix_adjacent(examples, metas, [list(range(len(metas))), train_idx, valid_idx])
     if stuck:
         raise SystemExit(f"thoughts: consecutive duplicates that could not be re-phrased: {stuck[:5]}")
@@ -287,7 +287,32 @@ def write(examples, metas):
     return train_idx, valid_idx
 
 
-def split(metas):
+# Families whose rows share a seeded conversation: one chat history feeds many rows (a thread asked several ways,
+# a long chat recalled at several points). Their split unit is the CONVERSATION, so no valid row has a train
+# sibling with the same earlier turns.
+CONVERSATION_FAMILIES = ("session_chat_r4", "session_recall_r4", "instructions_r4")
+_DIGEST_USER = "- User: "
+
+
+def conversation_key(messages) -> str:
+    """The folded first two user messages of the seeded history. A long chat that production condensed carries its
+    oldest user messages as "- User: ..." lines of the "Earlier in this conversation" system note, so those count
+    too, in order. The final user message is never part of the key."""
+    users = []
+    for m in messages[:-1]:
+        content = m.get("content")
+        if not isinstance(content, str):
+            continue
+        if m.get("role") == "system" and content.startswith("Earlier in this conversation"):
+            users += [line[len(_DIGEST_USER):].rstrip("…") for line in content.split("\n") if line.startswith(_DIGEST_USER)]
+        elif m.get("role") == "user":
+            users.append(content)
+        if len(users) >= 2:
+            break
+    return "|".join(leak.fold(u)[:80] for u in users[:2])
+
+
+def split(metas, examples=None):
     # 90/10 split by family. The unit is a prompt GROUP (prompts that fold to the
     # same text, see leak.fold; a group belongs to the family that first uses it),
     # so every step of a turn, and every turn that
@@ -307,7 +332,69 @@ def split(metas):
     train_idx, valid_idx = [], []
     for idx, m in enumerate(metas):
         (valid_idx if leak.fold(m["prompt"]) in valid_groups else train_idx).append(idx)
-    return train_idx, valid_idx
+    if examples is None:
+        return train_idx, valid_idx
+    return _split_conversations(metas, examples, set(valid_idx), valid_groups)
+
+
+def _split_conversations(metas, examples, old_valid, valid_groups):
+    """Re-split the CONVERSATION_FAMILIES rows by conversation (every other family keeps the split above).
+
+    Rows are linked into a component when they share a conversation key (same seeded history) or the same folded
+    prompt, so a component is never cut by the validator's own "no prompt group in both train and valid" rule. A
+    component whose prompt is also used by another family follows that family's side. About 10% of each family's
+    rows go to valid, whole components at a time, in a seeded shuffle."""
+    conv_rows = defaultdict(list)
+    for idx, m in enumerate(metas):
+        if m["family"] in CONVERSATION_FAMILIES:
+            conv_rows[m["family"]].append(idx)
+    other_side = {}
+    for idx, m in enumerate(metas):
+        if m["family"] not in CONVERSATION_FAMILIES:
+            other_side.setdefault(leak.fold(m["prompt"]), idx in old_valid)
+    new_valid = set(old_valid) - {i for rows in conv_rows.values() for i in rows}
+    for family, rows in sorted(conv_rows.items()):
+        parent: dict[str, str] = {}
+
+        def find(x):
+            parent.setdefault(x, x)
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            parent[find(a)] = find(b)
+
+        key_of = {}
+        for i in rows:
+            ck = "c:" + conversation_key(examples[i]["messages"])
+            pk = "p:" + leak.fold(metas[i]["prompt"])
+            key_of[i] = ck
+            union(ck, pk)
+        comps = defaultdict(list)
+        for i in rows:
+            comps[find(key_of[i])].append(i)
+        forced = {}
+        for root, members in comps.items():
+            sides = {other_side[leak.fold(metas[i]["prompt"])] for i in members if leak.fold(metas[i]["prompt"]) in other_side}
+            if sides:
+                forced[root] = True in sides
+        goal = max(1, round(len(rows) * 0.1))
+        have = 0
+        order = sorted(comps)
+        random.Random(f"{family}-conversation-split").shuffle(order)
+        for root in order:
+            if root in forced:
+                if forced[root]:
+                    new_valid |= set(comps[root])
+                    have += len(comps[root])
+                continue
+            if have < goal:
+                new_valid |= set(comps[root])
+                have += len(comps[root])
+    train_idx = [i for i in range(len(metas)) if i not in new_valid]
+    return train_idx, sorted(new_valid)
 
 
 def write_stats(metas, train_idx, valid_idx):

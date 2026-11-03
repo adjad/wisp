@@ -1754,7 +1754,7 @@ def _r_event_vs(kind, i):
                       cards=["add_calendar_event"], approve=[True], must_see=["Added"])
         task = TASKS[(i * 4 + 1) % len(TASKS)]
         prompt = A.style(rng, f"{wd} at {c} remind me to {task}")
-        final = pick(rng, [f"I'll remind you {d:%A} at {clock(d)} to {A.second(task)}.", f"Reminder set for {d:%A} at {clock(d)}."])
+        final = pick(rng, [f"I'll remind you {d:%A} at {clock(d)} to {A.second(task)}.", f"Reminder set for {d:%A} at {clock(d)}: {A.second(task)}."])
         return mk("reminders_r3", prompt, now, w, [[Call("add_reminder", title=cap1(task), when_iso=A.iso(d))], Final(final)],
                   "a nudge to do something: add_reminder, not a calendar event")
     return make

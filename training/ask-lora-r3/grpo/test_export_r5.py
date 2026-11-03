@@ -227,7 +227,7 @@ SMOKE = "safety=3,narrate=2,select=1,recall_dev_r4=8"
 def r5_argv(w, out=None, n=96, extra=()):
     out = out or w["tmp"] / "out5" / "grpo_prompts.jsonl"
     return ["--build-dir", str(w["build"]), "--model", "x", "--round", "5", "--out", str(out), "--n", str(n), "--mm-share", "0",
-            "--picture-share", "0", "--anchor-build-dir", str(w["anchor"]), "--dev-build-dir", str(w["dev"]), "--picker-dev", "none",
+            "--picture-share", "0", "--anchor-build-dir", str(w["anchor"]), "--dev-build-dir", str(w["dev"]), "--picker-dev", "none", "--allow-no-picker",
             "--dist-dir", str(w["tmp"] / "no-dist"), "--expect-session-chat", "skip", "--dev-slice-counts", COUNTS,
             "--dev-smoke-counts", SMOKE, *extra]
 
@@ -364,7 +364,7 @@ def test_rl_kind_order_and_ceiling_for_every_kind():
     for pairs, i, kind, ceiling in cases:
         lab = labs(pairs)[i]
         assert (lab["rl_kind"], lab["ceiling"]) == (kind, ceiling), (pairs[i][1]["id"], lab["rl_kind"], lab["ceiling"])
-        assert X.r5_label_problems({**lab, "round": 5}) == [] or "tool_names" not in " ".join(X.r5_label_problems(lab)), pairs[i][1]["id"]
+        assert X.r5_label_problems(lab) == [], (pairs[i][1]["id"], X.r5_label_problems(lab))
     # the C17 instruction term lifts the instruction ceiling
     assert labs(scenario("instructions_r4", 1, "why do onions make you cry", [("final", "A gas stings.")]), instruction_term=True)[0]["ceiling"] == 1.5
     # the order: an instructions_r4 final that is also a narrate-with-facts final is an instruction (3 before 4)
@@ -937,7 +937,8 @@ def test_text_dev_is_disjoint_from_the_picker_sample(tmp_path):
     free = {r["id"].rsplit("#", 1)[0] for r in dev_rows(w) if r["slice"] in ("safety", "narrate", "select")}
     assert free
     picker = tmp_path / "picker.jsonl"
-    picker.write_text("".join(json.dumps({"id": i, "family": "x", "prompt": "p", "label": {}}) + "\n" for i in sorted(free)))
+    prompts = {r["id"].rsplit("#", 1)[0]: r["prompt"] for r in dev_rows(w)}
+    picker.write_text("".join(json.dumps({"id": i, "family": "x", "prompt": prompts[i], "label": {}}) + "\n" for i in sorted(free)))
     argv = r5_argv(w, w["tmp"] / "outp" / "grpo_prompts.jsonl")
     argv[argv.index("--picker-dev") + 1] = str(picker)
     assert F.run_main(argv) == 0
@@ -945,6 +946,12 @@ def test_text_dev_is_disjoint_from_the_picker_sample(tmp_path):
     assert again and not again & free                                                         # the picker's rows are never dev rows
     rep = json.loads((w["tmp"] / "outp" / "grpo_text_dev.stats.json").read_text())
     assert rep["picker"]["given"] and rep["picker"]["rows"] == len(free) and rep["picker"]["overlap"] == 0 and rep["errors"] == []
+    # a picker row with the id of a valid row but another prompt saw a different instance (a re-seed): the id match proves nothing
+    first = sorted(free)[0]
+    picker.write_text(json.dumps({"id": first, "family": "x", "prompt": "another instance of it", "label": {}}) + "\n")
+    with pytest.raises(SystemExit, match="text dev set failed"):
+        F.run_main(argv)
+    assert "different prompt" in (w["tmp"] / "outp" / "grpo_text_dev.stats.json").read_text()
     # a picker row that is not a valid row of this build cannot be proven disjoint
     picker.write_text(json.dumps({"id": "ghost-000-s0"}) + "\n")
     with pytest.raises(SystemExit, match="text dev set failed"):
@@ -990,3 +997,231 @@ def test_overlap_hook_records_the_report_sha_in_the_stats_and_fails_on_a_hit(tmp
     # without the manifest the stats say the overlap proof has not run
     assert F.run_main(r5_argv(w, w["tmp"] / "nm" / "grpo_prompts.jsonl")) == 0
     assert json.loads((w["tmp"] / "nm" / "grpo_prompts.stats.json").read_text())["overlap"] == {"checked": False}
+
+
+# =========================================================================== verifier fixes: ceilings, ideals, labels, inputs
+def ideal_of(pairs, i, rnd=5, **kw):
+    """(label, ideal completion) of step i of a scenario, built the way make_item does it for the fake renderer."""
+    lab = labs(pairs, rnd, **kw)[i]
+    ex, meta = pairs[i]
+    lab["forced"] = ex["messages"][-2]["role"] == "tool"
+    lab["ideal_completion"] = F.FakeRender.render(None, ex, meta)["completion"] if not ex["messages"][-1].get("tool_calls") else \
+        "".join(F.gemma_call(tc["function"]["name"], tc["function"]["arguments"]) for tc in ex["messages"][-1]["tool_calls"]) + "<|tool_response>"
+    return lab
+
+
+def test_instruction_and_session_finals_after_a_read_carry_no_facts_and_score_at_their_ceiling():
+    """A final after a read that is an instruction, a session anchor or a recall answer is scored by a constant or by recall refs: it must
+    not be a narrate row with extracted facts (the ideal would score tool_set 1 + facts 1 against a ceiling of 1)."""
+    reply = "The dentist is at 9 AM with Dr. Maya Chen."
+    cases = [
+        (scenario("instructions_r4", 1, "what is up tomorrow", [("call", "get_upcoming", {}, "Dentist 9 AM with Dr. Maya Chen"), ("final", reply)]),
+         1, "instruction", 1.0),
+        (scenario("session_chat_r4", 2, "what is my dog called", [("call", "recall", {"query": "dog"}, "dog: Max"), ("final", "Your dog is Max Bell.")],
+                  final_meta={"qkind": "rec_user", "recall_refs": ["Max"], "thread": "t"}), 1, "recall", 2.0),
+        (scenario("session_chat_r4", 3, "what is my cat called", [("call", "recall", {"query": "cat"}, "nothing"), ("final", "You never told me, Sam Lee.")],
+                  final_meta={"qkind": "rec_none", "recall_absent": "cat name", "thread": "t"}), 1, "recall_none", 1.5),
+        (scenario("session_chat_r4", 4, "what is for dinner", [("call", "recall", {"query": "dinner"}, "pasta at 6 PM"), ("final", "Pasta at 6 PM, Maya Chen.")],
+                  final_meta={"qkind": "build", "thread": "t"}), 1, "session_anchor", 1.0),
+    ]
+    for pairs, i, kind, ceiling in cases:
+        lab = labs(pairs)[i]
+        assert (lab["rl_kind"], lab["ceiling"]) == (kind, ceiling), pairs[i][1]["id"]
+        assert lab["narrate"] is False and lab["facts"] == [] and "facts_explicit" not in lab, (kind, lab["narrate"], lab["facts"])
+        assert lab["post_read"] is True                                            # the thinking floor still sees a post-read step
+        assert X.r5_label_problems(lab) == []
+        bad = dict(lab, narrate=True, facts=["9 AM"])
+        assert any("narrate/facts" in p for p in X.r5_label_problems(bad)), kind
+    # the real ideal of the instruction row scores exactly its ceiling now
+    pairs = cases[0][0]
+    lab = ideal_of(pairs, 1)
+    assert W.score(lab["ideal_completion"], lab, 5).total == lab["ceiling"] == 1.0
+    # a narrate row of another family still pays for its facts (and keeps its ceiling of 2.0)
+    mail = ideal_of(scenario("mail_r3", 1, "what is in my inbox", [("call", "summarize_emails", {}, "Maya Chen at 12:30 PM"),
+                                                                   ("final", "Maya Chen wrote about lunch at 12:30 PM.")]), 1)
+    assert mail["rl_kind"] == "narrate" and mail["narrate"] and mail["facts"] and mail["ceiling"] == 2.0
+    # meta.facts on those kinds is not scored (the reward reads facts_explicit on decision/select finals only): noted, not carried
+    given = labs(scenario("instructions_r4", 2, "what is up", [("call", "get_upcoming", {}, "x"), ("final", reply)], final_meta={"facts": ["9 AM"]}))[1]
+    assert given["facts"] == [] and given["facts_ignored"] is True and given["ceiling"] == 1.0 and "facts_explicit" not in given
+
+
+def test_explicit_meta_facts_on_a_decision_final_are_flagged_and_lift_the_ceiling_to_what_the_reward_pays():
+    pairs = scenario("session_recall_r4", 3, "what was it", [("final", "It was at 12:30 PM, near the lake.")], final_meta={"facts": ["12:30 PM"]})
+    lab = ideal_of(pairs, 0)
+    assert lab["rl_kind"] == "decision" and lab["facts"] == ["12:30 PM"] and lab["facts_explicit"] is True and lab["ceiling"] == 1.5
+    assert W.score(lab["ideal_completion"], lab, 5).total == 1.5            # tool_set 1.0 + the explicit-facts credit (reward.R5_EXPLICIT_FACTS)
+    assert X.r5_label_problems(lab) == []
+    # an explicit list on a clarifying ask earns nothing and is not flagged
+    ask = labs(scenario("restraint_r4", 1, "what is the weather", [("final", "Which city?")], final_meta={"clarify": True, "facts": ["city"]}))[0]
+    assert ask["ask"] and "facts_explicit" not in ask and ask["ceiling"] == 1.5
+    with pytest.raises(KeyError):
+        X.ceiling_for("narrate", "final", facts_explicit=True)
+    with pytest.raises(KeyError):
+        X.ceiling_for("decision", "call", facts_explicit=True)
+    assert X.ceiling_for("select", "final", facts_explicit=True) == 1.5
+
+
+def test_a_clarify_flag_a_chat_or_session_row_cannot_use_is_counted_not_silently_lost(tmp_path):
+    lab = labs(scenario("instructions_r4", 1, "send it", [("final", "Which one should get it?")], final_meta={"clarify": True}))[0]
+    assert lab["step"] == "final" and not lab["ask"] and lab["clarify_dropped"] is True and lab["rl_kind"] == "instruction"
+    assert "clarify_dropped" not in labs(scenario("instructions_r4", 1, "send it", [("final", "Done then.")], final_meta={"clarify": False}))[0]
+    assert "clarify_dropped" not in labs(scenario("restraint_r4", 1, "send it", [("final", "Which one?")], final_meta={"clarify": True}))[0]
+    w = r5_world(tmp_path)
+    pairs = w["pairs"]
+    for _, m in pairs:
+        if m["family"] == "instructions_r4":
+            m["clarify"] = True
+    F.write_build(w["build"], pairs, w["valid"])
+    assert F.run_main(r5_argv(w)) == 0
+    st = json.loads((w["tmp"] / "out5" / "grpo_prompts.stats.json").read_text())["r5"]
+    assert st["clarify_dropped_rows"].get("instructions_r4", 0) > 0
+
+
+def test_narrate_family_pre_call_steps_are_call_rows_and_the_selection_bucket_keeps_selection_families():
+    for fam in sorted(X.R5_NARRATE_FAMILIES):
+        pairs = scenario(fam, 1, "what is on today", [("call", "get_upcoming", {}, "Dentist 9 AM"), ("final", "The dentist is at 9 AM.")])
+        first, final = labs(pairs)
+        assert (first["rl_kind"], first["ceiling"]) == ("call", 1.5), fam                 # RL-SCOPE 3.3: narrate pre-call steps are `call`
+        assert (final["rl_kind"], final["ceiling"]) == ("narrate", 2.0), fam
+    assert X.R5_NARRATE_FAMILIES == {"day_answers_r4", "info_answers_r4", "lookup_answers_r4"}
+    sel = labs(scenario("right_source", 1, "what is on today", [("call", "get_upcoming", {}, "Dentist 9 AM"), ("final", "The dentist is at 9 AM.")]))[0]
+    assert (sel["rl_kind"], sel["ceiling"]) == ("select", 1.5)
+    # round 3 and 4 never see the list
+    assert labs(scenario("day_answers_r4", 1, "x y", [("call", "get_upcoming", {}, "x"), ("final", "y z")]), rnd=4)[0].get("rl_kind") is None
+
+
+def test_an_anchor_needs_a_plain_history_and_the_rl_pool_holds_no_distilled_anchor_rows(tmp_path):
+    plain = scenario("chat_voice_r4", 1, "hi there", [("final", "Hello, friend.")], meta={"distilled": True})
+    assert labs(plain)[0]["rl_kind"] == "chat_anchor"
+    ex, meta = plain[0]
+    with_tool = {"messages": ex["messages"][:-1] + [F.call_msg("recall", {}, "c9"), {"role": "tool", "tool_call_id": "c9", "content": "x"},
+                                                  ex["messages"][-1]]}
+    assert X.anchor_row(meta, False) and X.anchor_row(meta, False, ex["messages"][:-1])
+    assert not X.anchor_row(meta, False, with_tool["messages"][:-1])                         # a tool message in the history: not an anchor
+    assert X.classify(with_tool, meta, 5, {}, TOOLS)["rl_kind"] != "chat_anchor"
+    # a distilled anchor-family row in --build-dir: a clear exit (the RL pool is re-seeded and has none), not a KeyError in the mix
+    w = r5_world(tmp_path)
+    pairs = w["pairs"] + scenario("chat_voice_r4", 99, "hi there friend", [("final", "Hello, friend.")], meta={"distilled": True})
+    F.write_build(w["build"], pairs, w["valid"])
+    with pytest.raises(SystemExit, match="distilled anchor-family row"):
+        F.run_main(r5_argv(w))
+    # an anchor-build row of an anchor family whose history holds a tool message is skipped and counted
+    w2 = r5_world(tmp_path / "w2")
+    ab = X.load_pairs(w2["anchor"])
+    bad = scenario("chat_voice_r4", 998, "zz yy", [("final", "Hello, friend.")], meta={"distilled": True})
+    bad[0][0]["messages"] = bad[0][0]["messages"][:-1] + [F.call_msg("recall", {}, "c9"), {"role": "tool", "tool_call_id": "c9", "content": "x"},
+                                                          bad[0][0]["messages"][-1]]
+    F.write_build(w2["anchor"], ab + bad, {m["id"] for _, m in ab if int(m["id"].split("-")[1]) % 6 == 5})
+    assert F.run_main(r5_argv(w2)) == 0
+    assert json.loads((w2["tmp"] / "out5" / "grpo_prompts.stats.json").read_text())["r5"]["anchor_skipped"] == {"history holds a tool message": 1}
+
+
+def test_picker_none_needs_an_explicit_flag(tmp_path):
+    w = r5_world(tmp_path)
+    argv = [a for a in r5_argv(w) if a != "--allow-no-picker"]
+    with pytest.raises(SystemExit, match="--allow-no-picker"):
+        F.run_main(argv)
+    assert F.run_main(r5_argv(w)) == 0
+    assert json.loads((w["tmp"] / "out5" / "grpo_text_dev.stats.json").read_text())["picker"]["given"] is False
+
+
+def test_meta_recall_is_carried_beside_the_refs_not_as_label_recall():
+    lab = labs(scenario("session_chat_r4", 1, "what is my dog", [("final", "Max.")],
+                        final_meta={"qkind": "rec_user", "recall_refs": ["Max"], "thread": "t", "recall": "Max the dog"}))[0]
+    assert lab["meta_recall"] == ["Max the dog"] and "recall" not in lab                      # label.recall is the round-4 flag reward.py reads
+    lab = labs(scenario("session_chat_r4", 1, "what is my dog", [("final", "Max.")],
+                        final_meta={"qkind": "rec_user", "recall_refs": ["Max"], "thread": "t", "recall": ["Max", "lake"]}))[0]
+    assert lab["meta_recall"] == ["Max", "lake"]
+    assert "meta_recall" not in labs(scenario("session_chat_r4", 1, "what is my dog", [("final", "Max.")],
+                                              final_meta={"qkind": "build", "thread": "t"}))[0]
+
+
+def test_call_rows_keep_their_ideal_and_the_leak_check_with_tool_names():
+    """Round 5 writes tool_names on call rows (for the namespace strip); the ideal call still scores its ceiling, and a tool name in text
+    beside a call is a leak only because the row now knows the names."""
+    pairs = scenario("right_source", 1, "what is on today", [("call", "get_upcoming", {"days": 1}, "x"), ("final", "Done.")])
+    lab = ideal_of(pairs, 0)
+    assert lab["tool_names"] == TOOLS
+    assert W.score(lab["ideal_completion"], lab, 5).total == 1.5
+    leaked = W.score("Let me use get_upcoming. " + lab["ideal_completion"], lab, 5)
+    assert leaked.parts["leak"] < 0
+    r4 = labs(pairs, 4)[0]
+    assert "tool_names" not in r4 and "skill_names" not in r4                               # round 4 call rows are untouched
+
+
+def test_ideal_trips_are_counted_dropped_and_fail_the_export_above_the_limit(tmp_path, monkeypatch):
+    w = r5_world(tmp_path)
+    real = X.ideal_trips
+    seen = {"n": 0}
+
+    def one_narrate(lab):
+        if lab["rl_kind"] == "narrate" and seen["n"] == 0:
+            seen["n"] = 1
+            return ["over_mention"]
+        return real(lab)
+    monkeypatch.setattr(X, "ideal_trips", one_narrate)
+    assert F.run_main(r5_argv(w)) == 0                                                         # a single trip is not "more than 1%" of >1 rows
+    st = json.loads((w["tmp"] / "out5" / "grpo_prompts.stats.json").read_text())
+    assert st["dropped"]["ideal trips over_mention"] == 1
+    trip = st["r5"]["ideal_trip"]["narrate"]
+    assert trip["tripped"] == 1 and trip["by_term"] == {"over_mention": 1} and trip["rows"] > 20 and st["r5"]["ideal_trip_pct_limit"] == 1.0
+    assert st["r5"]["dropped_ideal_trip"] == {"ideal trips over_mention": 1}
+    # every kind's counts are recorded, none above the limit here
+    assert all(v["tripped"] == 0 for k, v in st["r5"]["ideal_trip"].items() if k != "narrate")
+    # a term that more than 1% of a kind's ideals trip stops the export and says which; the counts file is written
+    monkeypatch.setattr(X, "ideal_trips", lambda lab: ["nothing_claim"] if lab["rl_kind"] == "narrate" else real(lab))
+    with pytest.raises(SystemExit) as e:
+        F.run_main(r5_argv(w))
+    assert "narrate" in str(e.value) and "nothing_claim" in str(e.value) and "(limit 1%)" in str(e.value)
+    counts = json.loads((w["tmp"] / "out5" / "grpo_prompts.ideal_trip.json").read_text())
+    assert counts["narrate"]["by_term"]["nothing_claim"] == counts["narrate"]["tripped"] == counts["narrate"]["rows"]
+    # the limit is a flag
+    assert F.run_main(r5_argv(w, extra=("--ideal-trip-pct", "100"))) == 0
+
+
+def test_ideal_trips_scores_the_row_ideal_with_the_round_5_reward():
+    ok = ideal_of(scenario("mail_r3", 1, "what is in my inbox", [("call", "summarize_emails", {}, "Maya Chen at 12:30 PM"),
+                                                                 ("final", "Maya Chen wrote about lunch at 12:30 PM.")]), 1)
+    assert X.ideal_trips(ok) == []
+    # an ideal that outscores its ceiling is a mislabel; one that trips a penalising term is named
+    assert X.ideal_trips(dict(ok, ceiling=1.0)) == ["above_ceiling"]
+    assert X.ideal_trips(dict(ok, ideal_completion="\n<channel|>Nothing scheduled, you are free<turn|>", ceiling=2.0))[:1] != []
+    assert X.ideal_trip_problems({"narrate": {"rows": 100, "tripped": 2, "by_term": Counter({"ungrounded": 2})}}) \
+        == ["narrate: 2 of 100 ideals (2.0%) trip ungrounded (limit 1%)"]
+    assert X.ideal_trip_problems({"narrate": {"rows": 100, "tripped": 1, "by_term": Counter({"ungrounded": 1})}}) == []
+    assert X.ideal_trip_problems({"recall": {"rows": 54, "tripped": 1, "by_term": Counter({"leak": 1})}}) == []      # one row is not a rate
+
+
+def test_narrate_facts_are_only_those_the_ideal_states_outside_a_negation():
+    none = ideal_of(scenario("act_dont_promise", 1, "anything from mom", [("call", "summarize_messages", {}, "Theo Park: hi"),
+                                                                         ("final", "Nothing from Mom in your recent messages.")]), 1)
+    assert none["facts"] == [] and none["rl_kind"] == "select" and none["ceiling"] == 1.0         # a negated fact earns nothing: not a narrate row
+    assert W.score(none["ideal_completion"], none, 5).total == 1.0
+    part = ideal_of(scenario("day_answers_r4", 1, "what is on", [("call", "get_upcoming", {}, "Dentist 3:30 PM"),
+                                                                  ("final", "I can only see the start, 3:30 PM. There's no end time on Dentist appointment.")]), 1)
+    assert part["facts"] == ["3:30 PM"] and part["rl_kind"] == "narrate"
+    assert W.score(part["ideal_completion"], part, 5).total == part["ceiling"] == 2.0
+    # an explicit builder list is the builder's word
+    given = labs(scenario("mail_r3", 2, "inbox", [("call", "summarize_emails", {}, "x"), ("final", "Nothing from Maya.")], final_meta={"facts": ["Maya"]}))[1]
+    assert given["facts"] == ["Maya"]
+
+
+def test_tool_results_and_the_world_names_ride_with_a_final_for_the_reward():
+    digest = "**Theo Park**\n- Theo Park: “Still on for coffee?” [received 2027-04-06]\n\n**Ben Ortiz**\n- Ben Ortiz: “Bring water” [received 2027-04-06]"
+    pairs = scenario("mail_r3", 1, "how are my messages", [("call", "summarize_messages", {}, digest),
+                                                          ("final", "Theo Park asks if you are still on for coffee.")])
+    other = scenario("mail_r3", 2, "who is on", [("call", "lookup_contact", {"name": "Dad"}, "Dad: +1 555 0100\nCarmen Rivera: +1 555 0101"),
+                                                 ("final", "Dad is +1 555 0100.")])
+    names = X.world_names(pairs + other)
+    assert names == ["Ben Ortiz", "Carmen Rivera", "Theo Park"]     # headings, sender lines and contact lines; "Dad" (one word) never enters
+    call, final = labs(pairs, names=names)
+    assert final["tool_results"] == [digest] and "tool_results" not in call
+    assert final["names"] == ["Carmen Rivera"]                        # the names of this row's ground are left out: only a stranger is flaggable
+    lab = labs(other, names=["Ben Ortiz", "Dana Whitfield"])[1]
+    assert lab["names"] == ["Ben Ortiz", "Dana Whitfield"] and lab["tool_results"] == ["Dad: +1 555 0100\nCarmen Rivera: +1 555 0101"]
+    assert "names" not in labs(other)[1]                              # no lexicon given: no key
+    assert "names" not in labs(other, 4)[1] and "tool_results" not in labs(other, 4)[1]       # round 4 is untouched
+    # a chat row with no ground and no tool result carries neither
+    chat = labs(scenario("chat_voice_r4", 1, "hi hi", [("final", "Hello.")]), names=["Ben Ortiz"])[0]
+    assert "names" not in chat and "tool_results" not in chat
+    assert X.world_names([]) == []

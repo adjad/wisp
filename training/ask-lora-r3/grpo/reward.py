@@ -141,7 +141,7 @@ COMPONENTS = {
     "picture": ("p_format", "p_recall", "p_clean", "p_invented", "p_answered", "p_obeyed", "planted"),
     # round 5 only (all 0.0 in rounds 3 and 4); "recall" above is the round-5 recall term too
     "safety_r5": ("wrong_target", "payload_text"),
-    "answer_r5": ("nothing_claim", "verbatim", "over_mention"),
+    "answer_r5": ("nothing_claim", "verbatim", "over_mention", "verbose"),
     "session_r5": ("recall_absent", "recall_denial", "over_recall", "nonreply"),
     "think_r5": ("thought_missing",),
 }
@@ -1357,6 +1357,15 @@ RECALL_DENIAL_PEN = -0.5
 OVER_RECALL_PEN = -0.5
 THOUGHT_MISSING_PEN = -0.5
 R5_NAME_PEN = -0.5
+VERBOSE_PEN = -0.5
+VERBOSE_WORDS = 150               # a narrate or recall final longer than this AND 5x its ideal (words) is padding
+ECHO_MIN_WORDS = 16               # words of a recall reply that sit in 6-grams of one earlier line before it is an echo of the history
+ECHO_NGRAM = 6
+VERBATIM_MARGIN = 0.2             # a copy must beat the ideal's own share of a result by this much to cost anything
+# The round-5 text terms are judged against what the row's own ideal does (label["ideal_text"], which the export writes on every
+# row): an entity, a negated fact, an emptiness claim, a copied span or a short reply the ideal itself contains is not a defect
+# of this row. The policy never sees the ideal, so this cannot be exploited; it keeps the ideal at its ceiling by construction.
+R5_IDEAL_RELATIVE = True
 VERBATIM_SHARE, VERBATIM_N, VERBATIM_MIN_TOKENS = 0.6, 8, 8
 NEGATION_WINDOW = 4
 NONREPLY_MIN_WORDS = 4
@@ -1402,8 +1411,16 @@ _DIST = None
 
 
 def dist_dir() -> _Path:
+    """Where choose.py and gen.py live: ASK_DIST_DIR, else a `distill/` folder beside this file (how a copied grpo directory ships
+    them), else the repository's training/ask-lora-r4/distill."""
     env = os.environ.get("ASK_DIST_DIR")
-    return _Path(env) if env else _Path(__file__).resolve().parents[2] / "ask-lora-r4" / "distill"
+    if env:
+        return _Path(env)
+    here = _Path(__file__).resolve()
+    beside = here.parent / "distill"
+    if (beside / "choose.py").exists():
+        return beside
+    return here.parents[2] / "ask-lora-r4" / "distill"
 
 
 def dist():
@@ -1604,6 +1621,24 @@ _R5_ORDINARY = {
 }
 
 
+# A sentence that starts with a capitalised word the ground does not hold and goes straight on with a verb ("Priya is joining you",
+# "Dana said") names someone; this is how a fabricated name is caught when the export wrote no contact lexicon. A common noun that
+# starts a sentence in the same shape ("Traffic is heavy") is not a name.
+_R5_NAME_VERB = re.compile(r"(?:\s+[A-Z][a-z]+)?\s+(?:is|was|will|has|had|said|says|asked|asks|wrote|writes|sent|replied|called|texted|"
+                           r"emailed|mentioned|joins|joined|coming|invited|isn't|wasn't|hasn't|should|could|would|might|can|may)\b|['’]s\b")
+_R5_COMMON_NOUNS = {
+    "weather", "traffic", "rain", "snow", "wind", "sunshine", "forecast", "temperatures", "temperature", "mail", "email", "emails",
+    "messages", "message", "reminders", "events", "event", "meetings", "meeting", "items", "files", "file", "folders", "folder",
+    "results", "result", "notes", "note", "tasks", "task", "battery", "wifi", "volume", "brightness", "bluetooth", "music",
+    "timer", "alarm", "calendar", "inbox", "dinner", "lunch", "breakfast", "class", "classes", "work", "school", "home", "office",
+    "flight", "trip", "party", "that", "which", "everything", "something", "anything", "nothing", "friday", "monday", "tuesday",
+    "wednesday", "thursday", "saturday", "sunday", "morning", "afternoon", "evening", "tonight", "tomorrow", "today", "water",
+    "coffee", "lunch", "photos", "pictures", "pages", "page", "apps", "app", "documents", "downloads", "desktop", "screen",
+    "everyone", "someone", "anyone", "people", "things", "thing", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "both", "either", "neither", "plenty", "most", "more", "less", "about", "around", "currently", "recently",
+    "right", "while", "during", "between", "since", "although", "however", "therefore", "overall", "mostly", "mainly", "roughly"}
+
+
 def _contact_lexicon(label: dict) -> set:
     """Lower-cased words of the row's contact or name lexicon, if the export wrote one (label["names"], ["contacts"] or ["lexicon"])."""
     out = set()
@@ -1619,16 +1654,34 @@ _R5_COUNT_STOP = {
     "secs", "hr", "hrs", "hours", "hour", "minutes", "minute", "days", "day", "weeks", "week", "months", "month", "years",
     "year", "seconds", "second", "times", "time", "more", "other", "others", "less", "left", "ago", "out", "up", "down", "over",
     "as", "is", "are", "was", "it", "that", "this", "you", "your", "i", "we", "my", "st", "nd", "rd", "th", "pt", "oz", "lb",
-    "lbs", "kg", "km", "mi", "ft", "cm", "mm", "f", "c", "mph", "percent", "points", "point", "stars", "star"}
+    "lbs", "kg", "km", "mi", "ft", "cm", "mm", "f", "c", "mph", "percent", "points", "point", "stars", "star",
+    "kilometers", "kilometres", "miles", "meters", "metres", "dollars", "euros", "pounds", "calories", "degrees", "grams", "kilograms",
+    "liters", "litres", "gallons", "ounces", "steps", "words", "pages", "reps", "sets"}      # units of measure are quantities, not counts of listed things
 _R5_SMALL_INT_NOUN = re.compile(r"(?<![\w$.,:/-])(\d{1,2})\s+([A-Za-z][A-Za-z'-]{2,})\b")
 _R5_BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+\S")
 _R5_DAYTIME_WORD = re.compile(r"\b(noon|midnight)\b", re.I)
 
 
-def list_lengths(ground: str, noun: str = "") -> set:
-    """Counts a tool result supports: the length of a run of bullet or numbered lines, a JSON array, a count/total field, and
-    the occurrences of the noun the count is about. (Plain lines are not counted: the ground joins the person's words and the
-    result with newlines, so a line count would include the prompt.)"""
+def _result_counts(result: str, plain: bool = True) -> set:
+    """Counts one tool result supports by its own layout: its non-empty lines (a plain list has one item per line), the lines
+    below a one-line header, and every bullet or numbered line (so dated and undated bullet groups add up, runs of one included)."""
+    lines = [x for x in (result or "").split("\n") if x.strip()]
+    out: set = set()
+    if lines and plain:
+        out.add(len(lines))
+        out.add(len(lines) - 1)
+        out.add(len(lines) - 2)
+    bullets = sum(1 for x in lines if _R5_BULLET.match(x))
+    if bullets:
+        out.add(bullets)
+    return {n for n in out if n > 0}
+
+
+def list_lengths(ground: str, noun: str = "", results=None) -> set:
+    """Counts a tool result supports: the length of a run of bullet or numbered lines, a JSON array, a count/total field, the
+    occurrences of the noun the count is about and, per tool result in `results` (label["tool_results"]), its line and bullet
+    counts. Without `results` the ground joins the person's words and the results, so plain lines are not counted (they would
+    include the prompt); only bullet and numbered lines are, as a total and as runs."""
     out: set = set()
     run = 0
     for line in (ground or "").split("\n") + [""]:      # runs of consecutive bullet or numbered lines
@@ -1638,6 +1691,11 @@ def list_lengths(ground: str, noun: str = "") -> set:
             if run >= 2:
                 out.add(run)
             run = 0
+    if results:
+        for r in results:
+            out |= _result_counts(str(r))
+    else:
+        out |= _result_counts(ground or "", plain=False)
     dec, i, tries = json.JSONDecoder(), 0, 0
     while tries < 300 and (i := (ground or "").find("[", i)) != -1:
         tries += 1
@@ -1658,13 +1716,73 @@ def list_lengths(ground: str, noun: str = "") -> set:
     return out
 
 
-def _count_supported(n: int, ground: str, gnorm: str, noun: str) -> bool:
+_R5_NUM = re.compile(r"(?<![\w.])\d[\d,]*(?:\.\d+)?")
+
+
+def _derived_number(n: float, ground: str) -> bool:
+    """`n` is arithmetic on numbers the ground holds: double or half of one ("$80 split between two" is $40; "9 km each way" is 18 km
+    there and back), or the sum or difference of two numbers from one line."""
+    vals = set()
+    for line in (ground or "").split("\n"):
+        row = []
+        for m in _R5_NUM.finditer(line):
+            try:
+                row.append(float(m.group(0).replace(",", "")))
+            except ValueError:
+                continue
+        vals.update(row[:40])
+        row = row[:12]
+        for i, a in enumerate(row):
+            for b in row[i + 1:]:
+                if abs(a + b - n) < 1e-9 or abs(abs(a - b) - n) < 1e-9:
+                    return True
+    return any(abs(a * 2 - n) < 1e-9 or abs(a / 2 - n) < 1e-9 for a in vals)
+
+
+def _count_supported(n: int, ground: str, gnorm: str, noun: str, results=None) -> bool:
     if re.search(rf"(?<![\d.]){n}(?![\d])", gnorm):
         return True
-    lens = sorted(list_lengths(ground, noun))[:40]
+    lens = sorted(list_lengths(ground, noun, results))[:60]
     if n in lens:
         return True
     return any(a + b == n or abs(a - b) == n for i, a in enumerate(lens) for b in lens[i + 1:])
+
+
+_R5_COMMON_CAPS = {"earth", "moon", "sun", "mars", "internet", "english", "spanish", "french", "german", "christmas", "easter",
+                   "thanksgiving", "halloween", "americans", "american", "european", "asian", "african", "pacific", "eastern", "central", "mountain",
+                   "utc", "gmt"}
+_R5_TIME_CTX = r"(?:(?:at|by|around|before|after|until|till|from|about|near|to)\s+{h}\b|{h}\s+(?:tomorrow|today|tonight|sharp|o'clock|in the|this|that|on)\b)"
+
+
+def _number_in_ground(item: str, ground: str) -> bool:
+    """A number the ground holds in another spelling: 33.60 for 33.6, 8.113 inside the address 10.24.8.113."""
+    if not re.fullmatch(r"\d[\d.]*", item):
+        return False
+    try:
+        x = float(item)
+    except ValueError:
+        return item in (ground or "")
+    if "." in item and re.search(rf"(?<![\d]){re.escape(item)}", ground or ""):
+        return True
+    for m in _R5_NUM.finditer(ground or ""):
+        try:
+            if abs(float(m.group(0).replace(",", "")) - x) < 1e-9:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _time_without_meridiem(item: str, gnorm: str) -> bool:
+    """"9 AM" or "7:30 PM" when the ground gives the same clock time without am/pm ("call by 9 tomorrow morning", "friday at 7:30"):
+    the answer completed a time the person left open; it did not make one up. A ground that gives the other meridiem does not count."""
+    m = re.fullmatch(r"(\d{1,2})(?::(\d\d))?\s?(am|pm)", item.strip(), re.I)
+    if not m:
+        return False
+    h, mi = m.group(1).lstrip("0") or "0", m.group(2)
+    if mi:
+        return re.search(rf"(?<![\d:.]){h}:{mi}(?![\d:])(?!\s?(?:am|pm)\b)", gnorm) is not None
+    return re.search(_R5_TIME_CTX.format(h=h), gnorm) is not None and re.search(rf"(?<![\d:.]){h}\s?(?:am|pm)\b", gnorm) is None
 
 
 def ungrounded_entities_r5(text: str, ground: str, label: dict | None = None) -> list:
@@ -1674,7 +1792,11 @@ def ungrounded_entities_r5(text: str, ground: str, label: dict | None = None) ->
     elsewhere in the completion) and not in the ground; (c) a lowercase known contact the ground does not hold."""
     label = label or {}
     me = {(label.get("user_name") or "Sam").lower(), "wisp"}      # addressing the person by name is never a fabrication
-    out = [x for x in ungrounded_entities(text, ground) if not {w.lower() for w in x.split()} <= me]
+    gn0 = _g_norm(ground)
+    out = [x for x in ungrounded_entities(text, ground)
+           if not {w.lower() for w in x.split()} <= (me | _R5_COMMON_CAPS) and not _time_without_meridiem(x, gn0)
+           and not (re.fullmatch(r"\d[\d.]*", x) and (_number_in_ground(x, ground)
+                or (re.fullmatch(r"\d+(?:\.\d+)?", x) and _derived_number(float(x), ground))))]
 
     def add(x):
         if x.lower() not in {o.lower() for o in out}:
@@ -1687,7 +1809,7 @@ def ungrounded_entities_r5(text: str, ground: str, label: dict | None = None) ->
             n, noun = int(m.group(1)), m.group(2)
             if n >= _G_SMALL_INT or noun.lower() in _R5_COUNT_STOP:
                 continue
-            if not _count_supported(n, ground, gnorm, noun):
+            if not _count_supported(n, ground, gnorm, noun, label.get("tool_results")):
                 add(f"{n} {noun}")
         for m in _R5_DAYTIME_WORD.finditer(text):
             w = m.group(1).lower()
@@ -1705,7 +1827,10 @@ def ungrounded_entities_r5(text: str, ground: str, label: dict | None = None) ->
             w = m.group(0).split()[0].lower()
             if w in _G_KNOWN or w in _R5_ORDINARY or w in _R5_ENT_SKIP:
                 continue
-            if (w in lexicon or w in mid) and w not in gwords:
+            if w in gwords:
+                continue
+            if w in lexicon or w in mid or (len(w) >= 4 and w not in _R5_COMMON_NOUNS and _R5_NAME_VERB.match(text, m.end())
+                                            and not re.search(rf"(?<![\w'-]){re.escape(w)}(?![\w-])", text)):
                 add(m.group(0).split()[0])
     if R5_UNGROUNDED_LOWER_CONTACTS and lexicon:
         for w in sorted(lexicon):            # a known contact written in lower case (a capitalised one is checked above)
@@ -1830,10 +1955,20 @@ _R5_DENIAL = re.compile(
     r"i (don['’]t|do not|can['’]t|cannot) (recall|remember|see|find)|i have no (record|memory)|not sure (you|what))\b", re.I)
 
 
+# "I don't (currently) have the airline name saved", "I don't have the race details right now", "that's a detail I don't have saved in my
+# files or memory": the assistant says it has nothing on it. Written once, with DENIAL and NONE_ACK, as the hedge.
+_R5_NO_RECORD = re.compile(
+    r"\bI\s+(?:do\s*n['’]?t|do\s+not|can['’]?t|cannot|could\s*n['’]?t)\s+(?:currently\s+|really\s+|actually\s+|yet\s+|seem\s+to\s+)?"
+    r"(?:have|know|keep|hold|see|find)\b[^.!?\n]{0,70}?\b(?:saved|stored|noted|recorded|on\s+file|memory|records?|details?|information|info|"
+    r"anything|that|it|right\s+now|yet)\b|"
+    r"\bI\s+have\s+(?:nothing|no\s+(?:details?|information|info|note))\b|\bno\s+record\s+of\b", re.I)
+
+
 def recall_hedge(text: str) -> bool:
-    """DENIAL or choose.py's NONE_ACK: the reply says the detail never came up. One definition for recall_denial and recall_absent."""
+    """DENIAL, choose.py's NONE_ACK or an "I don't have it saved" line: the reply says the detail never came up. One definition for
+    recall_denial and recall_absent."""
     t = (text or "").replace("’", "'")
-    return bool(_R5_DENIAL.search(t)) or bool(dist().NONE_ACK.search(text or ""))
+    return bool(_R5_DENIAL.search(t)) or bool(dist().NONE_ACK.search(text or "")) or bool(_R5_NO_RECORD.search(text or ""))
 
 
 _R5_VAL = r"(?:[A-Z][\w'’-]*(?:\s[A-Z][\w'’-]*)?|\d[\w:.,%-]*(?:\s?(?i:am|pm))?)"
@@ -1934,13 +2069,107 @@ def third_person_name_r5(text: str, name: str) -> bool:
     return False
 
 
+# ---- judging a reply against its own row's ideal
+
+def _ideal_of(label: dict) -> str:
+    return (label.get("ideal_text") or "") if R5_IDEAL_RELATIVE else ""
+
+
+def _negated_in_ideal(facts, ideal: str) -> set:
+    """Labelled facts the ideal itself states inside a negation window ("Nothing from Mom", "No Greta is saved"): the person's
+    question named them, the result held none, so stating them next to the negation is the right answer."""
+    if not ideal:
+        return set()
+    masked = mask_negated(ideal)
+    return {f for f in facts if fact_present(f, ideal) and not fact_present(f, masked)}
+
+
+def copied_words(text: str, sources, n: int = VERBATIM_N, union: bool = False) -> int:
+    """Words of `text` that lie inside n-grams (lower-cased, punctuation squashed) found in a source: the most for ONE source, or with
+    `union` the words covered by any of them (an echo of several short turns of a conversation)."""
+    toks = _squash(text).split()
+    if len(toks) < n:
+        return 0
+    grams = [" ".join(toks[i:i + n]) for i in range(len(toks) - n + 1)]
+    best = 0
+    covered = [False] * len(toks)
+    for src in sources:
+        hay = " " + _squash(src) + " "
+        if not union:
+            covered = [False] * len(toks)
+        for i, g in enumerate(grams):
+            if f" {g} " in hay:
+                for j in range(i, i + n):
+                    covered[j] = True
+        best = max(best, sum(covered))
+    return best
+
+
+def _history_text(label: dict) -> str:
+    h = label.get("history")
+    if h is None:
+        h = label.get("ground") or ""
+    return "\n".join(str(x) for x in h) if isinstance(h, (list, tuple)) else str(h)
+
+
+def history_echo(text: str, label: dict, ideal: str = "") -> bool:
+    """The reply restates a long stretch of the earlier conversation instead of answering from it: at least ECHO_MIN_WORDS words
+    inside 6-grams of any one earlier line, and 8 more than the ideal has."""
+    lines = [x for x in _history_text(label).split("\n") if x.strip()]
+    if not lines:
+        return False
+    got = copied_words(text, lines, ECHO_NGRAM, union=True)
+    base = copied_words(ideal, lines, ECHO_NGRAM, union=True) if ideal else 0
+    return got >= max(ECHO_MIN_WORDS, base + 8)
+
+
+_R5_SUGGEST = re.compile(
+    r"\b(?:such as|for example|for instance|e\.g\.|like|could|might|would|should|consider|try|trying|suggest\w*|recommend\w*|options?|"
+    r"ideas?|if you(?:'d| would)? (?:want|like|tell|let|share|give)|you can|you may|feel free|usually|typically|generally|often|common(?:ly)?|"
+    r"popular|good (?:place|start)|great (?:place|start))\b", re.I)
+
+
+def invented_r5(text: str, history: str, ok, acked: bool) -> list:
+    """choose.py's `invented` (names and numbers the history does not hold). Without an acknowledgement it is the SFT rule on the
+    whole reply. After one, what follows the acknowledgement is still checked, except sentences that only suggest ("a Sauternes
+    would suit the tart", "a lens like ... covers 10mm to 24mm"): a hedge does not license "but your dog is Max"."""
+    d = dist()
+    if not acked:
+        return d.invented(text, history, ok)
+    out: list = []
+    for sent in _sentences(text):
+        m = d.NONE_ACK.search(sent)
+        rest = sent[m.end():] if m else sent
+        if _R5_SUGGEST.search(rest):
+            continue
+        out += d.invented(rest, history, ok)
+    return out
+
+
+_R5_CODE_SPAN = re.compile(r"```.*?```|`[^`\n]+`", re.S)
+_R5_RECEIPT_NEG = re.compile(
+    r"\b(?:nothing|none|nobody|not|never|no\s+\w+)\b[^.!?\n]{0,20}?\b(?:was|has\s+been|have\s+been|got|been)\s+"
+    r"(?:sent|added|scheduled|created|saved|booked|deleted|moved|set)\b", re.I)
+
+
+def _plain_for_leaks(text: str, known) -> str:
+    """The text with code spans blanked unless they hold a known tool name, JSON or UNTRUSTED (`reversed_s = s[::-1]` is the person's
+    code, not plumbing), and with negated receipts ("Nothing was sent") removed: a refusal that says nothing happened is not a receipt."""
+    def keep(m):
+        span = m.group(0)
+        if _JSONISH.search(span) or "UNTRUSTED" in span or any(re.search(rf"(?<![\w-]){re.escape(n)}(?![\w-])", span) for n in known):
+            return span
+        return " "
+    return _R5_RECEIPT_NEG.sub(" ", _R5_CODE_SPAN.sub(keep, text))
+
+
 # ---- the scorer
 
 def _r5_flag_leaks(text: str, label: dict, kind: str) -> list:
     lab = dict(label)
     if kind in R5_SESSION_KINDS:
         lab["chat"] = True
-    hits = leaked_internals(text, lab)
+    hits = leaked_internals(_plain_for_leaks(text, r5_known_names(label)), lab)
     names = [n for n in label.get("skill_names") or () if n]
     if names:
         hits += [f"skill name: {n}" for n in dist().skill_leak(text, names)]
@@ -1957,6 +2186,7 @@ def _score_r5(p: Parsed, label: dict, parts: dict, flags: list) -> Result:
     ideal_names = {e["name"] for e in expected} | {n for s in label.get("alt_name_sets") or () for n in s}
     final_ideal = bool(label.get("final")) or bool(label.get("ask"))
     text = p.text
+    ideal = _ideal_of(label)
 
     bad = sorted(set(names) & ((_label_set(label, "forbidden") | _label_set(label, "unsafe_reads")) - ideal_names))
     if bad:
@@ -1975,10 +2205,13 @@ def _score_r5(p: Parsed, label: dict, parts: dict, flags: list) -> Result:
                     parts["facts"] = ASK_CREDIT
             else:
                 facts = label.get("facts") or []
-                if facts and (label.get("narrate") or label.get("facts_explicit")):
-                    top = R5_NARRATE_FACTS if label.get("narrate") else R5_EXPLICIT_FACTS
+                narrate_row = kind in R5_NARRATE_KINDS and bool(label.get("narrate"))
+                explicit_row = bool(label.get("facts_explicit")) and kind not in R5_SESSION_KINDS
+                if facts and (narrate_row or explicit_row):         # an instruction, chat, session or select/decision final earns none
+                    top = R5_NARRATE_FACTS if narrate_row else R5_EXPLICIT_FACTS
                     masked = mask_negated(text)
-                    parts["facts"] = top * sum(fact_present(f, masked) for f in facts) / len(facts)
+                    free = _negated_in_ideal(facts, ideal)
+                    parts["facts"] = top * sum(fact_present(f, text if f in free else masked) for f in facts) / len(facts)
     else:
         ok_sets = [sorted(e["name"] for e in expected)] + [sorted(s) for s in label.get("alt_name_sets") or ()]
         if sorted(names) in ok_sets:
@@ -2020,7 +2253,8 @@ def _score_r5(p: Parsed, label: dict, parts: dict, flags: list) -> Result:
             parts["leak"] = LEAK
             flags.append(f"leaked internals: {leaks[:3]}")
     if text and not calls:
-        if kind not in R5_SESSION_KINDS and third_person_name_r5(text, label.get("user_name") or ""):
+        if kind not in R5_SESSION_KINDS and third_person_name_r5(text, label.get("user_name") or "") and not (
+                ideal and third_person_name_r5(ideal, label.get("user_name") or "")):
             parts["name"] = R5_NAME_PEN
             flags.append("user named in the third person")
         if ritual_closer(text):
@@ -2028,26 +2262,40 @@ def _score_r5(p: Parsed, label: dict, parts: dict, flags: list) -> Result:
         if final_ideal and (kind in R5_SESSION_KINDS or label.get("narrate")) and not (
                 label.get("clarify") and kind not in R5_NO_ASK_KINDS):
             nr = nonreply_reasons(text, kind, label)
+            if nr and ideal:
+                own = set(nonreply_reasons(ideal, kind, label))       # an honest "I couldn't find it", a one-word "Yes." answer
+                nr = [x for x in nr if x not in own]
             if nr:
                 parts["nonreply"] = NONREPLY_PEN
                 flags.append(f"non-reply: {nr}")
         if final_ideal and not anchor:
             ground = label.get("ground")
+            sources = _r5_sources(label)
+            if kind in ("narrate", "recall", "recall_none") and len(text.split()) > max(VERBOSE_WORDS, 5 * len(ideal.split())):
+                parts["verbose"] = VERBOSE_PEN
+                flags.append("far longer than the answer needs")
             if label.get("narrate"):
                 masked_facts = label.get("facts") or []
-                if masked_facts and nothing_claim(text):
+                if masked_facts and nothing_claim(text) and not (ideal and nothing_claim(ideal)):
                     parts["nothing_claim"] = NOTHING_CLAIM
                     flags.append("claims there is nothing")
-                if verbatim_share(text, _r5_sources(label)) >= VERBATIM_SHARE:
+                own_share = verbatim_share(ideal, sources) if ideal else 0.0
+                if verbatim_share(text, sources) >= max(VERBATIM_SHARE, own_share + VERBATIM_MARGIN if ideal else 0.0):
                     parts["verbatim"] = VERBATIM_PEN
                     flags.append("copies a tool result")
-                if masked_facts and len(r5_entities(text)) > len(masked_facts) + 2:
-                    parts["over_mention"] = OVER_MENTION_PEN
-                    flags.append("names far more than the labelled facts")
+                if masked_facts:
+                    allowed = max(len(masked_facts), len(r5_entities(ideal)) if ideal else 0) + 2
+                    if len(r5_entities(text)) > allowed:
+                        parts["over_mention"] = OVER_MENTION_PEN
+                        flags.append("names far more than the labelled facts")
+            d = dist() if kind in ("recall", "recall_none") else None
             if ground is not None and (label.get("narrate") or kind in ("recall", "recall_none")):
-                acked = kind == "recall_none" and bool(dist().NONE_ACK.search(text))
+                acked = kind == "recall_none" and bool(d.NONE_ACK.search(text))
                 if not acked:
                     bad_ents = ungrounded_entities_r5(text, ground, label)
+                    if bad_ents and ideal:
+                        own = {x.lower() for x in ungrounded_entities_r5(ideal, ground, label)}
+                        bad_ents = [x for x in bad_ents if x.lower() not in own]
                     if bad_ents:
                         parts["ungrounded"] = max(UNGROUNDED_CAP, UNGROUNDED_EACH * len(bad_ents))
                         flags.append(f"ungrounded: {bad_ents[:4]}")
@@ -2065,15 +2313,25 @@ def _score_r5(p: Parsed, label: dict, parts: dict, flags: list) -> Result:
                 if len(r5_entities(text) & r5_entities(ground or "")) > len(refs) + 1:
                     parts["over_recall"] = OVER_RECALL_PEN
                     flags.append("restates more history than was asked for")
+                elif history_echo(text, label, ideal):
+                    parts["over_recall"] = OVER_RECALL_PEN
+                    flags.append("echoes the earlier conversation")
             elif kind == "recall_none":
-                d = dist()
                 history = label.get("history") if label.get("history") is not None else (ground or "")
-                inv = d.invented(text, history, list(label.get("recall_ok") or ()))
-                if not d.NONE_ACK.search(text) and inv:
+                history = _history_text({"history": history})
+                ok = list(label.get("recall_ok") or ())
+                inv = invented_r5(text, history, ok, bool(d.NONE_ACK.search(text)))
+                if inv and ideal:
+                    own = {x.lower() for x in invented_r5(ideal, history, ok, bool(d.NONE_ACK.search(ideal)))}
+                    inv = [x for x in inv if x.lower() not in own]
+                if inv:
                     parts["recall_absent"] = RECALL_NONE_INVENTED
                     flags.append(f"states a detail that never came up: {inv[:3]}")
                 elif recall_hedge(text):
                     parts["recall_absent"] = RECALL_NONE_OK
+                if history_echo(text, label, ideal):
+                    parts["over_recall"] = OVER_RECALL_PEN
+                    flags.append("echoes the earlier conversation")
 
     if R5_INSTRUCTION and final_ideal and not label.get("ask") and text and not calls and label.get("constraints"):
         broken = broken_constraints(label.get("constraints"), text)

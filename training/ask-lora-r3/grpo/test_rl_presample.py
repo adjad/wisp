@@ -364,7 +364,7 @@ def test_stratify_counts_dedupe_and_skips_multimodal():
     for r in picked:
         kinds.setdefault(S.bucket_of(r), []).append(r["id"])
     assert {b: len(v) for b, v in kinds.items()} == {"safety": 6, "narrate": 4, "chat_anchor": 3, "session_anchor": 3,
-                                                     "recall": 4, "select": 4}
+                                                     "session": 4, "select": 4}
     assert all(S.is_text(r) for r in picked)
     assert len({S.base_id(r["id"]) for r in picked}) == len(picked)                      # one copy per base id
     assert info["safety"] == {"available": 12, "requested": 6, "picked": 6}
@@ -376,15 +376,42 @@ def test_stratify_counts_dedupe_and_skips_multimodal():
 
 def test_stratify_short_bucket_reports_shortfall_not_padding():
     picked, info = S.stratify(pool(), per_bucket=30, anchor_per_bucket=30, safety_n=100, seed=0)
-    assert info["recall"] == {"available": 4, "requested": 30, "picked": 4}
-    assert sum(1 for r in picked if S.bucket_of(r) == "recall") == 4
+    assert info["session"] == {"available": 4, "requested": 30, "picked": 4}
+    assert sum(1 for r in picked if S.bucket_of(r) == "session") == 4
 
 
-def test_bucket_is_rl_kind_with_a_safety_carve_out():
+def test_bucket_follows_the_export_r5_bucket_order():
     r = parsed_row(call_row("a", family="compose_r3_extra"))
     assert S.bucket_of(r) == "safety"
-    assert S.bucket_of(parsed_row(call_row("a", family="narrate_r3"))) == "call"
+    assert S.bucket_of(parsed_row(call_row("a", family="narrate_r3"))) == "other"               # a call step outside the lists
     assert S.bucket_of(parsed_row(forced_row("a"))) == "narrate"
+    assert S.bucket_of(parsed_row(forced_row("a", family="compose_r3"))) == "narrate"           # narrate is tested before safety
+    assert S.bucket_of(parsed_row(forced_row("a", family="followup_r3"))) == "session"           # ... and session before narrate
+    assert S.bucket_of(parsed_row(call_row("a", family="followup_r3"))) == "session"
+    assert S.bucket_of(parsed_row(call_row("a", family="session_recall_r4", kind="decision"))) == "session"
+    assert S.bucket_of(parsed_row(chat_row("a", kind="session_anchor", family="session_chat_r4"))) == "session_anchor"   # anchors stay apart
+    assert S.bucket_of(parsed_row(chat_row("a"))) == "chat_anchor"
+    assert S.bucket_of(parsed_row(call_row("a", family="mail_r3", kind="select"))) == "select"
+
+
+def test_bucket_families_match_the_export():
+    import export_prompts as E
+    assert set(S.SAFETY_FAMILIES) == set(E.COMPOSE_SAFETY_FAMILIES)
+    assert set(S.SESSION_FAMILIES) == set(E.R5_SESSION_FAMILIES)
+    for kind, fam in (("call", "restraint_r4"), ("narrate", "mail_r3"), ("recall", "session_chat_r4"), ("select", "device_r3"),
+                      ("call", "followup_r3"), ("chat_anchor", "chat_voice_r4")):
+        it = {"family": fam, "label": {"rl_kind": kind}}
+        want = E.r5_bucket(it)
+        got = S.bucket_of(it)
+        assert got == want, (kind, fam, got, want)
+
+
+def test_other_bucket_is_stratified_per_rl_kind():
+    rows = [parsed_row(call_row(f"c{i}#0", family="misc_r3")) for i in range(6)] + \
+           [parsed_row(call_row(f"d{i}#0", family="misc_r3", kind="decision")) for i in range(6)]
+    picked, info = S.stratify(rows, 3, 3, 5, seed=0)
+    assert info == {"other:call": {"available": 6, "requested": 3, "picked": 3}, "other:decision": {"available": 6, "requested": 3, "picked": 3}}
+    assert {S.bucket_of(r) for r in picked} == {"other"}
 
 
 # ------------------------------------------------------------------ the share arithmetic
@@ -574,11 +601,13 @@ def test_end_to_end_report_fields_dev_slice_and_resume(tmp_path):
     assert rep["buckets"]["chat_anchor"]["truncation_share"] > 0 and not rep["buckets"]["chat_anchor"]["pg_bearing"]
     assert rep["suggested_cap"] is not None and rep["cap"]["suggested_cap_bucket"] in rep["buckets"]
     assert rep["zv0_pass"] == 1.0 and rep["zv0_fail"] == 0.0 and rep["export_mix"] == {"safety": 5, "narrate": 4}
-    assert len(rep["always_solved_row_ids"]) == 5
+    assert len(rep["always_solved_row_ids"]) == 5 and len(rep["always_solved_base_ids"]) == 5
     assert set(rep["always_solved_by_bucket"]) == {"safety", "narrate"}
     assert rep["reexport_buckets"] == ["narrate", "safety"]                                    # both > 60% zero-variance
     assert rep["by_rl_kind"]["narrate"]["n_prompts"] == 2 and "http_calls" in rep and rep["bos_check"]["skipped"]
     assert rep["moe_dir_set"] is True and not rep["errors"]
+    assert rep["selection"]["dev:safety"]["marker"] == "family prefix"                       # this dev file carries no slice marker
+    assert rep["session_bucket"]["n_prompts_sampled"] == 0
     n_calls = len(stub.requests)
     # a rerun resumes from the sample cache: no new completions requests
     stub2 = Stub(reply)
@@ -617,6 +646,168 @@ def test_missing_choices_is_retried_then_errors():
     with pytest.raises(RuntimeError):
         c.request("/v1/completions", {"prompt": "x"})
     assert calls["n"] == 3
+
+
+# ------------------------------------------------------------------ review fixes: mixed caps, session bucket, guards
+
+def test_mixed_cap_bucket_is_decided_per_row_not_per_bucket():
+    gov = [grp(f"n{i}", "narrate", 2.0, [smp(2.0, tokens=900)] * 3) for i in range(9)]
+    own = [grp("f0", "narrate", 2.0, [smp(2.0, tokens=100)] * 3, own=1024)]                  # a followup_r3 narrate step with its own cap
+    cap = S.cap_report({"session": S.bucket_stats(own), "narrate": S.bucket_stats(gov + own)}, False)
+    assert cap["suggested_cap"] == 900 + 64 and cap["suggested_cap_bucket"] == "narrate"        # the old per-bucket test said 264
+    mixed = S.bucket_stats(gov + own)
+    assert mixed["governed"]["n_prompts"] == 9 and mixed["own_cap"]["n_prompts"] == 1
+    assert mixed["governed"]["completion_tokens"]["p99"] == 900 and mixed["own_cap"]["completion_tokens"]["p99"] == 100
+
+
+def test_truncation_is_attributed_to_the_flag_or_to_label_max_tokens_by_row():
+    cut = lambda: [smp(2.0, tokens=500), smp(-1.0, truncated=True, tokens=1024)]
+    fine = lambda: [smp(2.0, tokens=300)] * 2
+    # the governed rows truncate: the flag is censored even though the bucket also holds clean own-cap rows
+    a = S.bucket_stats([grp("g", "narrate", 2.0, cut()), grp("o", "narrate", 2.0, fine(), own=1024)])
+    ca = S.cap_report({"narrate": a}, False)
+    assert ca["censored_buckets"] == ["narrate"] and ca["reexport_label_max_tokens"] == [] and ca["maxc_recommendation"] == 1536
+    # the own-cap rows truncate: re-export label.max_tokens, leave the flag alone
+    b = S.bucket_stats([grp("g", "narrate", 2.0, fine()), grp("o", "narrate", 2.0, cut(), own=1024)])
+    cb = S.cap_report({"narrate": b}, False)
+    assert cb["censored_buckets"] == [] and cb["reexport_label_max_tokens"] == ["narrate"]
+    assert cb["suggested_cap"] == 300 + 64 and cb["suggested_cap_all_text"] == 1024 + 64          # the literal RL-SCOPE reading, kept next to it
+    assert cb["suggested_cap_all_text_bucket"] == "narrate"
+
+
+def test_ungrounded_review_carries_the_ground_text_and_informative_any():
+    g = grp("u", "narrate", 2.0, [smp(1.0, {"ungrounded": -1.0}), smp(2.0)])
+    g.update(ground="Ethics at 11 AM.", facts=["11 AM"], names=["sam"])
+    g["samples"][0]["flags"] = ["ungrounded:12"]
+    st = S.bucket_stats([g])
+    rv = st["ungrounded"]["review"][0]
+    assert rv["ground"] == "Ethics at 11 AM." and rv["facts"] == ["11 AM"] and rv["names"] == ["sam"] and rv["family"] == "f"
+    assert st["informative_facts_share"] == 1.0 and st["informative_any_share"] == 1.0
+
+
+def test_session_bucket_reports_composition_and_informative_share(tmp_path):
+    rows = [forced_row(f"f{i}#0", family="followup_r3") for i in range(3)] + [forced_row("f0#1", family="followup_r3")] + \
+           [chat_row(f"r{i}#0", kind="recall", family="session_chat_r4") for i in range(2)] + \
+           [chat_row("q0#0", kind="session_anchor", family="session_chat_r4"), forced_row("n0#0"), call_row("s0#0", family="restraint_r4")]
+    ideal_of = {parsed_row(r)["prompt"]: label_of(r)["ideal_completion"] for r in rows}
+    stub = Stub(lambda body: (ideal_of[body["prompt"]], "stop"))
+    assert run(base_argv(tmp_path, write_jsonl(tmp_path / "p.jsonl", rows), ["--per-bucket", "5"]), stub) == 0
+    rep = json.loads((tmp_path / "pre-ok-report.json").read_text())
+    assert set(rep["buckets"]) == {"session", "session_anchor", "narrate", "safety"}
+    ses = rep["session_bucket"]
+    assert ses["n_prompts_sampled"] == 5 and ses["composition"]["pg_total"] == 5 and ses["composition"]["anchor_total"] == 1
+    assert ses["composition"]["pg_bearing"]["followup_r3:narrate"] == 3 and ses["composition"]["pg_bearing"]["session_chat_r4:recall"] == 2
+    assert ses["informative_any_share"] == 0.0 and ses["zero_variance_share"] == 1.0
+    assert rep["buckets"]["session"]["pg_bearing"] and not rep["buckets"]["session_anchor"]["pg_bearing"]
+
+
+def test_moe_dir_must_not_be_the_live_directory(tmp_path):
+    home = tmp_path / "home"
+    (home / ".moe").mkdir(parents=True)
+    for bad in (str(home / ".moe"), str(home / ".moe") + "/", "~/.moe"):
+        with pytest.raises(SystemExit) as e:
+            S.check_environment({"MOE_DIR": bad, "HOME": str(home)})
+        assert e.value.code == 2
+    assert S.check_environment({"MOE_DIR": str(home / "iso" / ".moe-test"), "HOME": str(home)})
+    assert S.check_environment({"MOE_DIR": str(tmp_path / "iso"), "HOME": str(home)})
+
+
+def test_token_counts_with_mode_n_is_rejected_up_front(tmp_path):
+    rows = [call_row("a#0", family="restraint_r4")]
+    p = write_jsonl(tmp_path / "p.jsonl", rows)
+    counts = tmp_path / "c.json"
+    counts.write_text(json.dumps({"a#0": 5}))
+    argv = [x for x in base_argv(tmp_path, p, ["--mode", "n", "--token-counts", str(counts)]) if x != "--skip-bos-check"]
+    stub = Stub(echo(rows))
+    with pytest.raises(SystemExit) as e:
+        run(argv, stub)
+    assert e.value.code == 2 and stub.requests == []
+
+
+def test_token_counts_missing_rows_are_skipped_and_all_missing_stops(tmp_path):
+    rows = [call_row(f"a{i}#0", family="restraint_r4") for i in range(4)]
+    p = write_jsonl(tmp_path / "p.jsonl", rows)
+    argv = [x for x in base_argv(tmp_path, p) if x != "--skip-bos-check"]
+    stub = Stub(echo(rows))
+    counts = tmp_path / "c.json"
+    prompts = {r["id"]: r["prompt"] for r in rows}
+    counts.write_text(json.dumps({"a0#0": stub.token_fn(prompts["a0#0"]), "a1#0": stub.token_fn(prompts["a1#0"])}))
+    assert run(argv + ["--token-counts", str(counts)], stub) == 0                          # two rows have no count: skipped, not a KeyError
+    rep = json.loads((tmp_path / "pre-ok-report.json").read_text())
+    assert rep["bos_check"]["ok"] and rep["bos_check"]["checked"] == 2 and rep["bos_check"]["rows_without_count"] == 1   # 3 sampled, 2 counted
+    counts.write_text(json.dumps({"zzz": 3}))
+    with pytest.raises(SystemExit) as e:
+        run(argv + ["--token-counts", str(counts)], Stub(echo(rows)))
+    assert e.value.code == 4
+
+
+def test_dev_safety_prefers_the_slice_marker_and_falls_back_to_the_family(tmp_path):
+    train = [call_row("s0#0", family="restraint_r4"), forced_row("n0#0")]
+    dev = [dict(call_row(f"d{i}#0", family="some_future_family"), slice="safety", samples=12) for i in range(3)] + \
+          [dict(call_row("d9#0", family="restraint_r4"), slice="narrate", samples=6), dict(forced_row("dn#0"), slice="narrate", samples=6)]
+    rows_all = train + dev
+    ideal_of = {parsed_row(r)["prompt"]: label_of(r)["ideal_completion"] for r in rows_all}
+    stub = Stub(lambda body: (ideal_of[body["prompt"]], "stop"))
+    argv = base_argv(tmp_path, write_jsonl(tmp_path / "p.jsonl", train), ["--text-dev", write_jsonl(tmp_path / "d.jsonl", dev)])
+    assert run(argv, stub) == 0
+    rep = json.loads((tmp_path / "pre-ok-report.json").read_text())
+    assert rep["selection"]["dev:safety"] == {"available": 3, "requested": 2, "picked": 2, "marker": "row.slice"}
+    assert rep["dev"]["dev:safety"]["n_prompts"] == 2
+    assert S.is_dev_safety({"slice": "narrate", "family": "restraint_r4"}) is False and S.is_dev_safety({"family": "restraint_r4"}) is True
+
+
+def test_resume_cache_is_keyed_by_the_weights_and_the_request_shape(tmp_path):
+    rows = [call_row(f"s{i}#0", family="restraint_r4") for i in range(2)]
+    p = write_jsonl(tmp_path / "p.jsonl", rows)
+    w = tmp_path / "weights"
+    w.mkdir()
+    (w / "model.safetensors").write_bytes(b"a" * 10)
+    (w / "config.json").write_text("{}")
+    argv = base_argv(tmp_path, p, ["--model-path", str(w)])
+    assert run(argv, Stub(echo(rows))) == 0
+    again = Stub(echo(rows))
+    assert run(argv, again) == 0 and [q for q, _ in again.requests] == ["/v1/models"]            # same weights: resumed
+    (w / "model.safetensors").write_bytes(b"b" * 11)                                             # a different SFT under the same served name
+    swapped = Stub(echo(rows))
+    assert run(argv, swapped) == 0 and any(q == "/v1/completions" for q, _ in swapped.requests)
+    other = Stub(echo(rows))
+    assert run(argv + ["--omit-fields", "add_special_tokens"], other) == 0 and any(q == "/v1/completions" for q, _ in other.requests)
+    # the engine's own /v1/models identity counts too
+    class Listed(Stub):
+        def transport(self, path, body):
+            out = super().transport(path, body)
+            if path == "/v1/models":
+                out["data"][0]["path"] = self.where
+            return out
+    a, b = Listed(echo(rows)), Listed(echo(rows))
+    a.where, b.where = "/m/one", "/m/two"
+    argv2 = base_argv(tmp_path, p, ["--samples-out", str(tmp_path / "s2.jsonl")])
+    assert run(argv2, a) == 0 and any(q == "/v1/completions" for q, _ in a.requests)
+    assert run(argv2, b) == 0 and any(q == "/v1/completions" for q, _ in b.requests)
+
+
+def test_always_solved_lists_base_ids_and_every_copy(tmp_path):
+    rows = [call_row("s0#0", family="restraint_r4"), call_row("s0#1", family="restraint_r4"), call_row("s0#2", family="restraint_r4"),
+            call_row("s1#0", family="restraint_r4"), call_row("s1#1", family="restraint_r4")]
+    ideal_of = {parsed_row(r)["prompt"]: label_of(r)["ideal_completion"] for r in rows}
+    bad = call("send_email", to="x") + "<|tool_response>"
+
+    def reply(body):
+        return (bad if "s1#" in body["prompt"] else ideal_of[body["prompt"]]), "stop"
+    assert run(base_argv(tmp_path, write_jsonl(tmp_path / "p.jsonl", rows)), Stub(reply)) == 0
+    rep = json.loads((tmp_path / "pre-ok-report.json").read_text())
+    assert rep["always_solved_base_ids"] == ["s0"]
+    assert rep["always_solved_row_ids"] == ["s0#0", "s0#1", "s0#2"]                                # an id filter drops every copy
+    assert rep["always_solved_by_family"]["restraint_r4"] == {"sampled": 2, "always_solved": 1}
+
+
+def test_max_tokens_override_means_no_row_uses_its_own_cap():
+    row = parsed_row(chat_row("h#0"))
+    row["label"]["max_tokens"] = 300
+    raw = {"h#0": [{"text": "ok<turn|>", "truncated": False, "tokens": 3, "tokens_exact": True, "route": "completions", "max_tokens": 77}] * 2}
+    own = S.build_groups([row], raw, 5, S.SAFETY_FAMILIES)["chat_anchor"][0]
+    gov = S.build_groups([row], raw, 5, S.SAFETY_FAMILIES, override=77)["chat_anchor"][0]
+    assert own["label_max_tokens"] == 300 and gov["label_max_tokens"] is None
 
 
 # ------------------------------------------------------------------ the same stub behind real loopback HTTP
