@@ -635,13 +635,18 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     brief = ""
     if boundary != "end":
         from service.tools import proactive_tools
-        found = proactive_tools.dated_brief_items(
-            proactive_tools.read_brief_snapshot(now), brief_start, end, account=account)
+        snap = proactive_tools.read_brief_snapshot(now)
+        found = proactive_tools.dated_brief_items(snap, brief_start, end, account=account)
         if query:
             found = _match_schedule_query(found, query)
         shown = {_agenda_text(item.get("title")).casefold() for item in items}
         brief = proactive_tools.brief_section(
             [todo for todo in found if _agenda_text(todo.get("title")).casefold() not in shown])
+        if not query:
+            # Overdue items and people waiting have no date in the range; say
+            # so and name the read that lists them, rather than hide them.
+            more = proactive_tools.brief_pointer(snap, now=now, day=period or "this_week")
+            brief = "\n".join(part for part in (brief, more) if part)
     if not items:
         if brief:
             what = "on your calendar" if calendar_only else "on your calendar or reminders"
