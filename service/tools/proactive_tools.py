@@ -354,9 +354,10 @@ def _store_schedule(start: float, end: float, now: float) -> dict:
     aliases=["what should I do today", "what's on my plate", "what do I need to do today",
              "plan my day", "what am I forgetting", "anything I should know today",
              "what's my day look like", "my to-do list for today", "what should I focus on",
-             "plan my day tomorrow", "help me plan tomorrow", "what is my plan for saturday",
-             "what's coming up", "anything I need to do this week", "what's on friday",
-             "what's going on this week"],
+             "plan my day tomorrow", "help me plan tomorrow",
+             # "what is my plan for saturday" and "what's coming up" are routed by
+             # model_only.day_plan_question: the dormant regex router claims them.
+             "anything I need to do this week", "what's on friday", "what's going on this week"],
 )
 async def get_my_day_plan(day: str = "today") -> str:
     from service.proactive.cycle import _zone, snapshot
