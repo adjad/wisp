@@ -144,8 +144,9 @@ def corrupt():
     e = copy.deepcopy(call)
     offered = {t["function"]["name"] for t in e["tools"]}
     # a registered read tool this step was not offered (send_email may be on the list in a send family)
-    absent = next(n for n in ("view_emails", "get_weather", "get_stock_price", "list_dir", "search_notes", "view_messages")
-                  if n in V.REGISTRY and n not in offered)
+    absent = next((n for n in ("view_emails", "get_weather", "get_stock_price", "list_dir", "search_notes", "view_messages")
+                   if n in V.REGISTRY and n not in offered), None) or next(
+        n for n in sorted(V.REGISTRY) if n not in offered and n.startswith(("view_", "get_", "search_", "list_")))
     target_call(e)["function"]["name"] = absent
     cases["call_not_offered"] = (e, call_meta)
 
