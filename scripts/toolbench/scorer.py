@@ -102,7 +102,7 @@ LABELS = (
     "needless_confirm",   # a `no_confirm` tool raised a confirmation card
     "empty_response",     # a step returned no text and no call (soft; oMLX drops calls to unoffered tools)
     "tool_error",         # a tool result was the loop's "(error calling …)" argument error (soft)
-    "empty_answer",       # no final text at all
+    "empty_answer",       # no final text and no message draft card
     "ungrounded_answer",  # the answer misses a fact it must state, or states one it must not
     "error",              # the turn raised
     "timeout",            # the turn hit the harness timeout (scored; reported separately too)
@@ -364,7 +364,7 @@ def score(case: Case, traj: dict, *, registry_names: set[str], today: date,
     if not model and stall_reply(final):
         labels.append("stall")
         notes.append(f"stalled: {final.strip()[:80]!r}")
-    if not final.strip() and not labels:
+    if not final.strip() and not labels and not traj.get("message_draft"):
         labels.append("empty_answer")
 
     # Answer grounding — only meaningful once the turn produced an answer.

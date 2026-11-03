@@ -1178,3 +1178,27 @@ def test_history_without_calls_leaves_no_subject(bench):
     turn = runner.prepare_turn(bench["client"], "and tmrw?",
                                [{"user": "what's on today?", "assistant": "Nothing.", "tools": "get_upcoming"}])
     assert not any(m["content"].startswith("Current subject") for m in turn.messages if m["role"] == "system")
+
+
+def test_message_draft_card_is_an_answer():
+    """Production ends a draft_message turn on the card with no prose."""
+    c = case(expect=(Step(("draft_message",), {}),))
+    names = NAMES | {"draft_message"}
+    t = traj([("draft_message", {"to": "Maya", "text": "7 works"})], final="",
+             message_draft={"to": "+15550100123", "text": "7 works"})
+    v = score(c, t, registry_names=names, today=TODAY)
+    assert v.passed and v.answer_ok, v.labels
+    t.pop("message_draft")
+    assert "empty_answer" in score(c, t, registry_names=names, today=TODAY).labels
+
+
+def test_msg_draft_friend_ends_in_the_draft_card(bench):
+    """End to end on the model-led path: the card, not the receipt-failure text."""
+    c = next(x for x in load_cases() if x.id == "msg_draft_friend").bind(bench["world"].facts)
+    friend = bench["world"].facts["friend_first"]
+    t = _run(bench, c, [{"calls": [("draft_message", {"to": friend, "text": "7 works for me"})]},
+                        {"text": "Synthetic prose that must not replace the card."}])
+    assert t["message_draft"]["text"] == "7 works for me" and t["message_draft"]["to"]
+    assert t["final"] == "" and "verified completion receipt" not in repr(t)
+    v = score(c, t, registry_names=bench["names"], today=bench["world"].today)
+    assert v.passed, v.labels
