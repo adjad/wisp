@@ -53,6 +53,21 @@ struct PrivacyRelaunchChecks {
         check(PrivacyRelaunch.isSystemSettings(bundleID: nil, path: "/System/Applications/System Settings.app/Contents/MacOS/System Settings")
               && !PrivacyRelaunch.isSystemSettings(bundleID: "com.apple.settingsx", path: "/Applications/Settings Helper.app/x"),
               "System Settings is told by its bundle id or its path, never a look-alike")
+        // A logout, restart, shutdown or sleep is never reopened, whoever sent it.
+        for reason in ["logo", "rlgo", "rrst", "rsdn", "rest", "shut", "pwrd", "slep"] {
+            check(!relaunch(.appleEvent(senderBundleID: nil, senderPath: nil, reason: reason), recent),
+                  "unknown sender, \(reason), just after a privacy page: stays quit")
+            check(!relaunch(.appleEvent(senderBundleID: nil, senderPath:
+                "/System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow", reason: reason), recent),
+                  "loginwindow's \(reason): stays quit")
+            check(!relaunch(.appleEvent(senderBundleID: "com.apple.systempreferences", senderPath: nil, reason: reason)),
+                  "even from System Settings, \(reason): stays quit")
+        }
+        check(relaunch(.appleEvent(senderBundleID: "com.apple.systempreferences", senderPath: nil, reason: nil), recent),
+              "a plain quit from System Settings just after a privacy page: reopens")
+        check(!relaunch(.appleEvent(senderBundleID: nil, senderPath: nil, reason: "abcd"), recent),
+              "any other quit reason from an unknown sender is not a plain quit: stays quit")
+        check(PrivacyRelaunch.Quit.fourCharCode(0x6C6F_676F) == "logo", "the quit reason reads as its four letters")
         // The marker.
         let defaults = UserDefaults(suiteName: "wisp.privacy-relaunch-checks.\(getpid())")!
         defer { defaults.removePersistentDomain(forName: "wisp.privacy-relaunch-checks.\(getpid())") }
@@ -60,6 +75,8 @@ struct PrivacyRelaunchChecks {
         PrivacyRelaunch.notePaneOpened(defaults, now: Date(timeIntervalSince1970: recent))
         check(PrivacyRelaunch.paneOpenedAt(defaults) == recent, "opening one records when")
         check(PrivacyRelaunch.paneOpenedKey.hasPrefix("wisp."), "the marker is one /resetwisp clears")
+        PrivacyRelaunch.clearPaneOpened(defaults)
+        check(PrivacyRelaunch.paneOpenedAt(defaults) == nil, "a scheduled reopen clears it")
         print("PrivacyRelaunchChecks: \(count) checks passed")
     }
 }

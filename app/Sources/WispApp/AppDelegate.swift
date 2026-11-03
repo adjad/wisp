@@ -2147,13 +2147,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !relaunchScheduled else { return }
         let relaunch = PrivacyRelaunch.shouldRelaunch(quit, paneOpenedAt: PrivacyRelaunch.paneOpenedAt(),
                                                       now: Date().timeIntervalSince1970)
-        if case let .appleEvent(bundleID, path) = quit {
-            NSLog("%@", "Wisp quit: Apple Event from \(bundleID ?? path ?? "an unknown sender"); "
+        if case let .appleEvent(bundleID, path, reason) = quit {
+            NSLog("%@", "Wisp quit: Apple Event from \(bundleID ?? path ?? "an unknown sender")"
+                  + (reason.map { " (reason \($0))" } ?? "") + "; "
                   + (relaunch ? "reopening once this copy has quit" : "not reopening"))
         }
         guard relaunch, let arguments = WispReset.relaunchArguments(
             pid: ProcessInfo.processInfo.processIdentifier, app: Bundle.main.bundleURL) else { return }
         relaunchScheduled = true
+        PrivacyRelaunch.clearPaneOpened()
         let helper = Process()
         helper.executableURL = URL(fileURLWithPath: WispReset.relaunchShell)
         helper.arguments = arguments

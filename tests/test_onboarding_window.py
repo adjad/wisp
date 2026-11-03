@@ -368,10 +368,11 @@ def test_quit_and_reopen_from_system_settings_reopens_wisp_itself():
     assert "WispReset.relaunchArguments(" in relaunch and "ProcessInfo.processInfo.processIdentifier" in relaunch
     assert "Bundle.main.bundleURL" in relaunch and "WispReset.relaunchShell" in relaunch
     assert "guard !relaunchScheduled else { return }" in relaunch and "relaunchScheduled = true" in relaunch
+    assert relaunch.index("relaunchScheduled = true") < relaunch.index("PrivacyRelaunch.clearPaneOpened()")
     for blocking in ("waitUntilExit", "Thread.sleep", "usleep("):
         assert blocking not in relaunch, blocking
     current = _body(sources["PrivacyRelaunch.swift"], "static func current()")
-    assert "currentAppleEvent" in current and "kAEQuitApplication" in current and "keySenderPIDAttr" in current
+    assert "currentAppleEvent" in current and "kAEQuitApplication" in current and "keySenderPIDAttr" in current and "kAEQuitReason" in current
     # Every privacy page or prompt Wisp opens notes it first.
     perms = sources["Permissions.swift"]
     pane = _body(perms, "static func openSettingsPane(")
