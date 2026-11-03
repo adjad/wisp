@@ -732,6 +732,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/checkin-cancel-contract": "native/checkin-cancel-compile",
     "native/chat-logic-contract": "native/chat-logic-compile",
     "native/chat-store-contract": "native/chat-store-compile",
+    "native/chat-debug-archive-contract": "native/chat-debug-archive-compile",
     "native/notch-command-contract": "native/notch-command-compile",
     "native/screen-look-contract": "native/screen-look-compile",
     "native/read-aloud-voice-contract": "native/read-aloud-voice-compile",
@@ -1021,6 +1022,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     know_you = str(build_dir / "know-you")
     chat_logic = str(build_dir / "chat-logic")
     chat_store = str(build_dir / "chat-store")
+    chat_debug_archive = str(build_dir / "chat-debug-archive")
     reminders_policy = str(build_dir / "reminders-policy")
     calendar_move = str(build_dir / "calendar-move")
     checkin_cancel = str(build_dir / "checkin-cancel")
@@ -1224,6 +1226,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/chat-store-contract", [chat_store]),
+        (
+            "native/chat-debug-archive-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/ChatDebugArchive.swift",
+                "tests/ChatDebugArchiveChecks.swift", "-o", chat_debug_archive,
+            ],
+        ),
+        ("native/chat-debug-archive-contract", [chat_debug_archive]),
         (
             "native/port-guard-compile",
             [
