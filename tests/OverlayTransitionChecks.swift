@@ -275,8 +275,28 @@ struct OverlayTransitionChecks {
               && export.text.contains("Session: chat-a") && export.text.contains("Session: (not saved)"),
               "The transcript has a header per chat")
 
+        // Saved privately, or not at all.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wisp-export-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        guard case .saved(let saved) = model.exportDebugLog(to: folder) else { return check(false, "The export saves") }
+        let written = (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.sorted() ?? []
+        check(written.count == 2 && written.allSatisfy { $0.hasPrefix("wisp-debug-") } && saved.pathExtension == "json",
+              "A .json and a .txt pair")
+        for name in written {
+            let mode = (try? FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent(name).path))?[.posixPermissions] as? Int
+            check(mode == 0o600, "\(name) is readable only by this user")
+        }
+        guard case .failed(let reason) = model.exportDebugLog(to: folder.appendingPathComponent("missing")), !reason.isEmpty else {
+            return check(false, "A write that fails says so")
+        }
+
         model.newChat()
         check(model.debugExport() != nil, "After New chat the archive still exports")
+        NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil, userInfo: ["session_id": "chat-a"])
+        check(model.chatArchive.chats.map(\.sessionId) == ["", "chat-c"], "A deleted chat leaves the archive")
+        NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil)
+        check(model.chatArchive.chats.isEmpty && model.debugExport() == nil, "A forget clears the archive")
         let history = [OverlayModel.Turn(role: "user", text: "window"), OverlayModel.Turn(role: "assistant", text: "w"),
                        OverlayModel.Turn(role: "user", text: "mail?"), OverlayModel.Turn(role: "assistant", text: "Two emails.")]
         let local = [OverlayModel.Turn(role: "user", text: "mail?"), reply("Two emails.", tool: "read_mail"),

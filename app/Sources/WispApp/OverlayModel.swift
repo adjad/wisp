@@ -227,6 +227,7 @@ final class OverlayModel: ObservableObject {
     // Set by the app delegate: ask the backend manager to start the service again.
     var onRetryService: () -> Void = {}
     private var startFailureObserver: NSObjectProtocol?
+    private var archiveForgetObserver: NSObjectProtocol?
 
     /// Retry from the service-down card or status line: forget the recorded
     /// failure (a new start may fix it) and start the service again.
@@ -290,6 +291,17 @@ final class OverlayModel: ObservableObject {
                 self.serviceStartFailure = reason.isEmpty ? "Wisp's service stopped while starting." : reason
             }
         }
+        archiveForgetObserver = NotificationCenter.default.addObserver(
+            forName: .wispForgetChatDebugArchive, object: nil, queue: .main) { [weak self] note in
+            let id = note.userInfo?["session_id"] as? String
+            MainActor.assumeIsolated { self?.forgetArchivedChats(sessionId: id) }
+        }
+    }
+
+    /// A deleted chat (by id) or a forget with no one chat to match (nil): the
+    /// debug log's memory of it goes. The chat open here stays on screen.
+    func forgetArchivedChats(sessionId: String?) {
+        if let sessionId { chatArchive.remove(sessionId: sessionId) } else { chatArchive.removeAll() }
     }
     /// True while the panel retracts into the bar: the content fades out at
     /// the start of the close so the shrinking shape never slices live text.
@@ -1590,18 +1602,39 @@ final class OverlayModel: ObservableObject {
         report.open(key: Self.reportKey(for: turn), metadata: metadata, details: details)
     }
 
-    func exportDebugLog() -> URL? {
-        guard let export = debugExport() else { return nil }
-        let jsonData = export.json, text = export.text
-        let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+    enum DebugLogExport {
+        case nothing
+        case saved(URL)
+        case failed(String)
+    }
+
+    /// Writes the export to Downloads, readable only by this user. A failed write
+    /// removes what it wrote and says why; it never reports a file as saved.
+    func exportDebugLog(to directory: URL? = nil) -> DebugLogExport {
+        guard let export = debugExport() else { return .nothing }
+        let dir = directory ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser
         let stamp = DateFormatter(); stamp.dateFormat = "yyyy-MM-dd_HH-mm-ss"
         let base = "wisp-debug-\(stamp.string(from: Date()))"
         let jsonURL = dir.appendingPathComponent("\(base).json")
         let textURL = dir.appendingPathComponent("\(base).txt")
-        try? jsonData.write(to: jsonURL)
-        try? text.write(to: textURL, atomically: true, encoding: .utf8)
-        return jsonURL
+        do {
+            try Self.writePrivate(export.json, to: jsonURL)
+            try Self.writePrivate(Data(export.text.utf8), to: textURL)
+        } catch {
+            for url in [jsonURL, textURL] { try? FileManager.default.removeItem(at: url) }
+            return .failed(error.localizedDescription)
+        }
+        return .saved(jsonURL)
+    }
+
+    /// A new file with mode 0600, never one already there.
+    static func writePrivate(_ data: Data, to url: URL) throws {
+        let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        try handle.write(contentsOf: data)
+        try handle.synchronize()
     }
 
     /// The export's .json and .txt: every chat left since Wisp opened (the archive,

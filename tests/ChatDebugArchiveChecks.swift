@@ -12,7 +12,7 @@ struct ChatDebugArchiveChecks {
     static func main() {
         // Order, empty chats, and chats with no session.
         var archive = ChatDebugArchive<String>()
-        check(archive.maxChats == 30 && archive.maxBytes == 64 << 20, "Defaults: 30 chats, 64 MB")
+        check(archive.maxChats == 30 && archive.maxBytes == 32 << 20, "Defaults: 30 chats, 32 MB")
         archive.archive(sessionId: "a", startedAt: nil, turns: [], bytes: 0)
         check(archive.chats.isEmpty, "A chat with no turns is not kept")
         archive.archive(sessionId: "a", startedAt: Date(timeIntervalSince1970: 20), turns: ["a1", "a2"], bytes: 4)
@@ -34,6 +34,14 @@ struct ChatDebugArchiveChecks {
         archive.archive(sessionId: "b", startedAt: Date(timeIntervalSince1970: 5), turns: ["b2"], bytes: 2)
         check(archive.chats.map(\.sessionId) == ["", "", "a", "b"] && archive.chats.last?.turns == ["b1", "b2"]
               && archive.chats.last?.bytes == 4, "One session is one chat; its earlier turns go first")
+
+        // Deleting a chat drops its copy; a forget with no one chat drops them all.
+        archive.remove(sessionId: "")
+        check(archive.chats.count == 4, "No session, nothing matched")
+        archive.remove(sessionId: "a")
+        check(archive.chats.map(\.sessionId) == ["", "", "b"], "A deleted chat leaves the archive")
+        archive.removeAll()
+        check(archive.chats.isEmpty, "A forget clears the archive")
 
         // The chat cap drops the oldest and says how much went.
         var capped = ChatDebugArchive<String>(maxChats: 3)

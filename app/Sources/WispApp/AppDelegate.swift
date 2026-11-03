@@ -1126,6 +1126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(withTitle: "Report a Problem…", action: #selector(reportProblem), keyEquivalent: "")
         menu.addItem(withTitle: Self.exportDebugLogTitle, action: #selector(exportDebugLogFromMenu), keyEquivalent: "")
+            .toolTip = SettingsView.debugLogPrivacyLine
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Wisp", action: #selector(quit), keyEquivalent: "q")
         for item in menu.items { item.target = self }
@@ -1973,15 +1974,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Debug metadata is tracked for every turn whether or not Debug Mode is on
     // (see OverlayModel.applyDebugFields).
     private func exportDebugLog() {
-        guard let url = model.exportDebugLog() else {
-            let alert = NSAlert()
+        let alert = NSAlert()
+        switch model.exportDebugLog() {
+        case .nothing:
             alert.messageText = "Nothing to export yet"
             alert.informativeText = "Start a conversation in Wisp first, then export its debug log."
             alert.alertStyle = .informational
             alert.runModal()
-            return
+        case .failed(let reason):
+            alert.messageText = "Couldn't save the chat debug log"
+            alert.informativeText = reason
+            alert.alertStyle = .warning
+            alert.runModal()
+        case .saved(let url):
+            alert.messageText = "Chat debug log saved to Downloads"
+            alert.informativeText = SettingsView.debugLogPrivacyLine
+            alert.alertStyle = .informational
+            alert.runModal()
+            NSWorkspace.shared.activateFileViewerSelecting([url])
         }
-        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
     /// Quit Wisp after the engine and its helpers have stopped. Every quit request
@@ -2621,6 +2632,7 @@ extension AppDelegate {
         }
         precondition(item.target === delegate && item.action == #selector(exportDebugLogFromMenu),
                      "The item runs the delegate's export action")
+        precondition(item.toolTip == SettingsView.debugLogPrivacyLine, "The item says to check the log before sharing")
         var posted = 0
         let observer = NotificationCenter.default.addObserver(forName: .wispExportDebugLog, object: nil, queue: nil) { _ in
             posted += 1

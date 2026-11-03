@@ -274,6 +274,11 @@ final class ChatStore: ObservableObject {
                 // The chat still exists on the service, so it goes back in the list.
                 deletedSessionIds.remove(id)
                 await refresh()
+            } else {
+                // Its full-detail copy in the notch's debug-log memory goes too
+                // (Notification.Name.wispForgetChatDebugArchive).
+                NotificationCenter.default.post(name: Notification.Name("WispForgetChatDebugArchive"), object: nil,
+                                                userInfo: ["session_id": id])
             }
         }
     }

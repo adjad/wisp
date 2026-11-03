@@ -15,9 +15,10 @@ struct ChatDebugArchive<Turn> {
         var bytes: Int
     }
 
-    /// The last 30 chats, and at most 64 MB of turn text and model I/O between them.
+    /// The last 30 chats, and at most 32 MB of turn text and model I/O between them
+    /// (the export is built on the main actor when it is asked for).
     static var defaultMaxChats: Int { 30 }
-    static var defaultMaxBytes: Int { 64 << 20 }
+    static var defaultMaxBytes: Int { 32 << 20 }
 
     let maxChats: Int
     let maxBytes: Int
@@ -61,6 +62,22 @@ struct ChatDebugArchive<Turn> {
         guard !sessionId.isEmpty, let index = chats.firstIndex(where: { $0.sessionId == sessionId }) else { return nil }
         return chats.remove(at: index)
     }
+
+    /// A saved chat was deleted: its archived copy goes too.
+    mutating func remove(sessionId: String) {
+        guard !sessionId.isEmpty else { return }
+        chats.removeAll { $0.sessionId == sessionId }
+    }
+
+    /// Something Wisp read or learned was forgotten, with no one chat to match:
+    /// every archived chat goes.
+    mutating func removeAll() { chats.removeAll() }
+}
+
+extension Notification.Name {
+    /// Drop archived chats from the debug log's memory: userInfo["session_id"] names
+    /// one deleted chat; without it, a forget whose scope is not one chat, all of them.
+    static let wispForgetChatDebugArchive = Notification.Name("WispForgetChatDebugArchive")
 }
 
 /// Assembles the export's .json payload and .txt transcript from chats whose turns

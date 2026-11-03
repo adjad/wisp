@@ -1073,6 +1073,8 @@ final class SettingsLoader: ObservableObject {
     /// untouched reminders and holds it created on its own.
     func forgetBehaviorData() {
         behaviorForgetStatus = "Forgetting…"
+        // What Wisp read for those chats goes from the debug log's memory too.
+        NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil)
         Task {
             guard let result = await client.forgetBehaviorData() else {
                 self.behaviorForgetStatus = "Couldn't forget what Wisp learned. Try again."
@@ -1268,6 +1270,9 @@ final class SettingsLoader: ObservableObject {
 }
 
 struct SettingsView: View {
+    /// Said with the chat debug log here and when it is saved.
+    static let debugLogPrivacyLine = "It includes your chats and what Wisp read for them, like mail and messages. "
+        + "Check it before sharing."
     private struct Pane: Identifiable {
         let id: String
         let title: String
@@ -2107,7 +2112,8 @@ struct SettingsView: View {
                                     .font(.system(size: 14, weight: .medium))
                                 Text("Saves every chat since Wisp opened to Downloads, with each turn's "
                                      + "model, route, timing, tool calls and errors. "
-                                     + "Full model input and output needs Debug Mode on.")
+                                     + "Full model input and output needs Debug Mode on. "
+                                     + Self.debugLogPrivacyLine)
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
