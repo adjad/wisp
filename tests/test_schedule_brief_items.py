@@ -17,6 +17,7 @@ import time
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -30,7 +31,8 @@ HW4 = "Finish HW4, Statistics"
 
 
 def ts(day, hour=0, minute=0):
-    return datetime(2026, 11, day, hour, minute).timestamp()
+    # Zone-aware: module-level fixtures are built before the fixture sets TZ.
+    return datetime(2026, 11, day, hour, minute, tzinfo=ZoneInfo(TZ)).timestamp()
 
 
 def _cal(title, day, *, id_):
