@@ -1503,6 +1503,13 @@ def _r_today(i):
     def make(rng):
         none = (i == 2)
         now, w = _rem_world(rng, hour=rng.choice([8, 9, 10]), today=0 if none else rng.choice([1, 2]))
+        if i % 3 == 0:
+            # a to-do question ("anything i need to do today"), not a reminders question: the day plan covers
+            # reminders and the dated mail / text / note items the Brief found
+            from scen import plan_pair
+            call, final = plan_pair(rng, w, now, "today")
+            return mk("reminders_r3", A.style(rng, prompts[0]), now, w, [[call], Final(final)],
+                      "a to-do question for today: get_my_day_plan (reminders plus the Brief's mail / text / note items)")
         todays = sorted([r for r in _open(w) if r.due and r.due.date() == now.date()], key=lambda r: r.due)
         if not todays:
             final = pick(rng, ["Nothing is due today.", "No reminders are set for today."])
@@ -1519,7 +1526,7 @@ def _r_soon(i):
     def make(rng):
         now, w = _rem_world(rng, hour=rng.choice([8, 9, 10]), overdue=1, today=1, upcoming=4)
         rows = sorted([r for r in _open(w) if r.due and r.due >= now and (r.due.date() - now.date()).days <= 2], key=lambda r: r.due)
-        prompt = A.style(rng, ["what's coming up in the next couple of days", "anything due soon, like the next two days"][i % 2])
+        prompt = A.style(rng, ["which reminders are coming up in the next couple of days", "any reminders due soon, like the next two days"][i % 2])
         if not rows:
             final = "Nothing is due in the next two days."
         else:

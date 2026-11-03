@@ -8,6 +8,7 @@
     .venv/bin/python scripts/run_toolbench.py --only mail,safety --ids mail_chase_balance
     .venv/bin/python scripts/run_toolbench.py --models LFM2.5-24B-A2B-MLX-4bit --exclusive
     .venv/bin/python scripts/run_toolbench.py --split gate                    # the frozen fine-tune gate
+    .venv/bin/python scripts/run_toolbench.py --split heldout_safety --trials 3   # the sealed safety set (never in a bare run)
     .venv/bin/python scripts/run_toolbench.py --world-seed 7                  # a variant world
     .venv/bin/python scripts/run_toolbench.py --models M --thinking default,narration-off,off
     .venv/bin/python scripts/run_toolbench.py --models G,N --profile-as G     # N treated exactly as G
@@ -63,7 +64,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from scripts.toolbench import report as rep  # noqa: E402  (no service imports)
-from scripts.toolbench.cases import load_cases, select  # noqa: E402
+from scripts.toolbench.cases import SPLITS, load_cases, select  # noqa: E402
 
 # Empty = the packaged models.yaml agent model (what a fresh install runs).
 DEFAULT_MODEL = ""
@@ -475,15 +476,16 @@ def main() -> int:
     ap.add_argument("--seed-base", type=int, default=1000,
                     help="trial t sends seed seed_base+t, the same for every model")
     ap.add_argument("--out", default="", help="results directory (default ~/.moe/evals/toolbench/<run>)")
-    ap.add_argument("--split", default="", choices=["", "gate", "dev", "voice"], help="only this split")
+    ap.add_argument("--split", default="", choices=["", *SPLITS],
+                    help="only this split (heldout_safety is sealed: it runs only when named here)")
     ap.add_argument("--world-seed", type=int, default=None,
                     help="variant world (default: the canonical gate world)")
     ap.add_argument("--thinking", default="default",
                     help="comma-separated variants: default, narration-on, narration-off, off "
                          "(see runner.set_thinking)")
     ap.add_argument("--export-shingles", default="",
-                    help="write hashed n-grams of every held-out (gate, voice) prompt (canonical + 50 "
-                         "seeded worlds) and exit")
+                    help="write hashed n-grams of every held-out (gate, voice, heldout_safety) prompt "
+                         "(canonical + 50 seeded worlds) and exit; --only/--ids/--split are ignored")
     ap.add_argument("--resume", default="", help="continue an interrupted run directory in place "
                     "(same --models/--thinking/--trials/--split); finished trials are skipped")
     ap.add_argument("--list", action="store_true", help="list cases and exit")
@@ -503,18 +505,25 @@ def main() -> int:
         if args.compare:
             print("\n" + rep.compare(_report(Path(args.compare).expanduser(), stored=args.stored), cur))
         return 0
-    cases = select(load_cases(), only=args.only, ids=args.ids, split=args.split)
-    if not cases:
-        print("no cases selected")
-        return 2
     if args.export_shingles:
+        # Before select(): the export covers every held-out case whatever --split says (select() leaves the
+        # sealed heldout_safety set out of an unsplit selection, and would leave gate and voice out of
+        # --split heldout_safety), so the filters do not apply to it.
         from scripts.toolbench.cases import heldout_shingles
         from scripts.toolbench.world import make_facts
+        if args.only or args.ids or args.split:
+            print("note: --only/--ids/--split do not apply to --export-shingles; exporting every held-out case")
         worlds = [make_facts(None)] + [make_facts(i) for i in range(50)]
-        data = heldout_shingles(cases, worlds)
+        data = heldout_shingles(load_cases(), worlds)
         Path(args.export_shingles).expanduser().write_text(json.dumps(data, separators=(",", ":")) + "\n")
-        print(f"wrote {data['n_prompts']} hashed gate prompts to {args.export_shingles}")
+        print(f"wrote {data['n_prompts']} hashed held-out (gate, voice, heldout_safety) prompts "
+              f"to {args.export_shingles}")
         return 0
+    cases = select(load_cases(), only=args.only, ids=args.ids, split=args.split)
+    if not cases:
+        print("no cases selected" + (" (heldout_safety is sealed: pass --split heldout_safety)"
+                                     if not args.split and "safety_heldout" in (args.only or args.ids) else ""))
+        return 2
     if args.list:
         for c in cases:
             want = "no tool" if c.no_tool else " > ".join("/".join(s.tools) for s in c.expect) or "-"

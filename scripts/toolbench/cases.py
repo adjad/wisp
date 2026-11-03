@@ -29,7 +29,7 @@ One YAML file per category under cases/. Each entry:
       access: full                       # full (shipped default) | default | view
       world:                             # optional world state for this case
         access_needed: [calendar]        # sources whose permission is missing (see WORLD)
-      split: gate                        # gate (held out; default) | dev | voice
+      split: gate                        # gate (held out; default) | dev | voice | heldout_safety (sealed)
       trap: "why this case exists"       # free text, shown in reports
 
 FACTS. Anything a world can vary is written as a `{fact}` placeholder —
@@ -44,7 +44,13 @@ hashed n-grams a dataset generator filters against). `dev` cases are for
 iterating on the harness and the data; still never train on them verbatim.
 `voice` cases are spoken-transcript variants of typed cases ("um whats on my
 calendar tomorrow"); they are held out like `gate` and included in the shingle
-export, since they paraphrase gate prompts. Real-usage-derived cases need no
+export, since they paraphrase gate prompts. `heldout_safety` is a SEALED set
+(cases/safety_heldout.yaml, category safety_heldout): 40 safety cases from
+patterns the r2/r3 unsafe lists never named, written so the gate alone cannot
+overstate safety. It is held out and exported like `gate`, but `select()` leaves
+it out of every unfiltered run (including gate.sh's toolbench stage); it runs
+only with `--split heldout_safety`, and no reward term or weight may be chosen
+from its transcripts (training/ask-lora-r4/RL-SCOPE.md section 6 rule 6). Real-usage-derived cases need no
 split of their own: a split decides training hold-out, and such a case is
 held out like any other gate case; its category or `trap` says where it came from.
 
@@ -145,9 +151,12 @@ def _fill(value, facts):
 _CASE_KEYS = {"id", "prompt", "history", "expect", "no_tool", "forbid", "answer", "max_calls", "trap",
               "split", "confirm", "no_confirm", "refused", "access", "world"}
 _WORLD_KEYS = {"access_needed"}
-SPLITS = ("gate", "dev", "voice")
+SPLITS = ("gate", "dev", "voice", "heldout_safety")
 # Splits held out of every training set (shingle export).
-HELD_OUT_SPLITS = frozenset({"gate", "voice"})
+HELD_OUT_SPLITS = frozenset({"gate", "voice", "heldout_safety"})
+# Sealed splits: never part of an unfiltered selection, so `gate.sh` and a bare run never touch them. They
+# run only with an explicit `--split <name>`; the shingle export still covers them (it ignores filters).
+SEALED_SPLITS = frozenset({"heldout_safety"})
 ACCESS = ("full", "default", "view")
 _ANSWER_KEYS = {"contains_all", "contains_any", "not_contains", "max_words", "max_sentences", "min_words", "min_sentences",
                 "starts_with_any", "regex_all", "regex_none", "no_bullets", "all_lines_bulleted",
@@ -271,12 +280,14 @@ def load_cases(directory: Path = CASES_DIR) -> list[Case]:
 
 
 def select(cases: list[Case], *, only: str = "", ids: str = "", split: str = "") -> list[Case]:
+    """The cases a run covers. With no `split`, every split except the sealed ones (heldout_safety);
+    a sealed split is selected only by naming it: `select(cases, split="heldout_safety")`."""
     cats = {c.strip() for c in only.split(",") if c.strip()}
     want = {i.strip() for i in ids.split(",") if i.strip()}
     # An id with a wildcard is a shell-style pattern: --ids '*_pref_*' picks a family of cases.
     return [c for c in cases if (not cats or c.category in cats)
             and (not want or any(fnmatchcase(c.id, w) if re.search(r"[*?\[]", w) else c.id == w for w in want))
-            and (not split or c.split == split)]
+            and ((c.split == split) if split else (c.split not in SEALED_SPLITS))]
 
 
 # ---------------------------------------------------------------- held-out shingles

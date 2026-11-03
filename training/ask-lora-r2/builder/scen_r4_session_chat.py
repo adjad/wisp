@@ -1803,6 +1803,9 @@ def _apply_cap():
 _apply_cap()
 
 
+RECALL_KINDS = frozenset({"rec_user", "rec_asst", "rec_both"})   # = DIST/choose.py RECALL_KINDS
+
+
 def fam_session_chat_r4(rng):
     _check_family()
     out, bad = [], []
@@ -1826,6 +1829,15 @@ def fam_session_chat_r4(rng):
         sc.approve = None
         sc.expect_cards = []
         sc.must_see = []
+        # RL-SCOPE C6/C7: the thread is the split unit; the recall labels follow the question KIND exactly (a
+        # non-empty `ref` is thread context on build/emo/fact/close/rec_none rows, never a recall target)
+        sc.thread, sc.qkind = q["thread"], q["kind"]
+        if q["kind"] in RECALL_KINDS:
+            assert q["ref"], f"[{q['thread']}] recall question without a ref: {q['prompt']!r}"
+            sc.recall_refs = tuple(q["ref"])
+        elif q["kind"] == "rec_none":
+            assert q["absent"], f"[{q['thread']}] never-said question without absent: {q['prompt']!r}"   # ok may be empty
+            sc.recall_absent, sc.recall_ok = q["absent"], tuple(q["ok"])
         ok, why = F._check(sc)
         if not ok:
             bad.append(f"[{q['thread']}/{q['kind']}] {prompt!r}: {why}")

@@ -47,6 +47,14 @@ class Scenario:
     notes: str = ""
     profile: dict | None = field(default_factory=lambda: H.PROFILE)
     paraphrase_of: str | None = None   # eval id whose wording this prompt replaced
+    # RL-SCOPE C6/C7: labels the round-5 GRPO export reads (step meta copies them; build.py)
+    clarify: bool = False              # the final is a clarifying question, the right move here
+    unsafe_reads: tuple = ()           # read tools unsafe for this prompt in this world state
+    thread: str | None = None          # seeded-conversation id (session families); the split unit
+    qkind: str | None = None           # session question kind (rec_user, rec_asst, rec_both, rec_none, ...)
+    recall_refs: tuple = ()            # recall kinds: what the answer must bring back from history
+    recall_absent: str | None = None   # rec_none: the detail that never came up
+    recall_ok: tuple = ()              # rec_none: words an honest answer may still use
 
     def __post_init__(self):
         for st in self.steps:
@@ -181,15 +189,9 @@ def fam_act(rng):
         if wd == now.strftime("%A").lower():
             wd = (now + D(days=2)).strftime("%A").lower()
         p, period = tmpl.format(wd=wd.capitalize() if rng.random() < 0.5 else wd), per.format(wd=wd)
-        rows, label, s = w.upcoming_rows(period=period)
-        phrase = period if period in ("today", "tomorrow") else "on " + label.split(",")[0]
-        early = "early" in p
-        if early:
-            rows = [r for r in rows if ts(r).hour < 12]
-            phrase = "tomorrow morning"
-        reply = agenda_reply(rows, phrase, now, rng)
-        out.append(Scenario("act_dont_promise", p, now, w, [[Call("get_upcoming", period=period)], Final(reply)],
-                            "calendar read at once, no 'let me check'"))
+        call, reply = plan_pair(rng, w, now, period, mode="morning" if "early" in p else "day")
+        out.append(Scenario("act_dont_promise", p, now, w, [[call], Final(reply)],
+                            "day question: get_my_day_plan at once (calendar, reminders and the Brief's mail/text/note items)"))
     plan_prompts = ["remind me what I have to do", "can you tell me remind me what I have to do",
                     "status update on my life lol", "what should I focus on today", "what's on my plate",
                     "whats on deck", "anything i need to remember today", "what do I need to do today?"]
@@ -257,55 +259,184 @@ def fam_act(rng):
     return out
 
 
+# --- Wisp's Brief as a source (2026-11-02, PR #446). A time-scoped or to-do question reads get_my_day_plan: the
+# calendar, reminders AND the dated to-dos Brief found in mail, texts and notes. The helpers below seed a world's
+# Brief, read the live plan, and narrate it with the day-answers family's own plan reader (scen_r4_day), so a final
+# only says what the plan printed. scen_r4_day imports this module, hence the lazy import.
+def R4D():
+    import scen_r4_day
+    return scen_r4_day
+
+
+BRIEF_KINDS = [(), ("text",), ("mail",), ("note",), ("mail", "text"), ("text",), ("mail",), ("note", "text"), ()]
+
+
+def span_dates(w, now, period):
+    """The dates a plan period covers (from today on), as the world resolves it."""
+    s, e, _ = w._span(period.replace("_", " "), True)
+    d0 = max(s.date(), now.date())
+    n = max((e.date() - d0).days, 1)
+    return [d0 + D(days=i) for i in range(n)]
+
+
+def seed_plan(rng, w, now, period, *, kinds=None, wait=None, over=0, und=0, tidy=True):
+    """Make ``w`` a Brief-seeded world for ``period``: its mail and notes are tidied (the Brief is the whole truth of
+    its dated to-dos), 0-2 dated items from texts, mail or notes land on days of the period, and 0-1 people wait on
+    a reply. Returns the seeded BriefItems."""
+    R = R4D()
+    days = span_dates(w, now, period)
+    kinds = rng.choice(BRIEF_KINDS) if kinds is None else kinds
+    if tidy:
+        R.tidy_sources(w)
+    elif w.waiting is None:
+        w.waiting = []
+    if over or und:
+        R.fill_plan_extras(rng, now, w, over, 0, und)
+    used, items = set(), []
+    for kind in kinds:
+        it = R.seed_brief(rng, w, now, rng.choice(days), kind, used=used)
+        if it:
+            items.append(it)
+    R.seed_waiting(rng, w, now, rng.choice([0, 0, 1]) if wait is None else wait)
+    return items
+
+
+def read_plan(w, day="today"):
+    """The live get_my_day_plan result for ``day``, parsed."""
+    plan = R4D().Plan(w.t_get_my_day_plan(day))
+    if plan.error:
+        raise ValueError(plan.error)
+    return plan
+
+
+def plan_arg(day):
+    """Call arguments for get_my_day_plan: the bare call reads today."""
+    return {} if day == "today" else {"day": day}
+
+
+def plan_final(rng, plan, now, *, mode="day"):
+    """A plan's answer. mode: day (the whole day), left (what is still ahead today), morning (before noon)."""
+    R = R4D()
+    if plan.kind == "range":
+        return R.narrate_range(rng, plan)
+    if mode == "left":
+        return R.narrate_today(rng, plan, now, "left")
+    if mode == "morning":
+        timed = plan.days[0][1] if plan.days else []
+        early = [e for e in timed if e[0] == "all day" or R.clock_of(e[0]) < dt.time(12)]
+        if not early:
+            return P(rng, f"Nothing is on the clock tomorrow morning.", "Tomorrow morning is open: nothing time-bound before noon.")
+        return P(rng, "Tomorrow morning you have ", "Early tomorrow you have ") + join(R.say_entry(e) for e in early) + "."
+    return R.narrate_day(rng, plan).replace("On tomorrow you have", "Tomorrow you have").replace("For tomorrow there's", "Tomorrow there's")
+
+
+def plan_pair(rng, w, now, day="today", *, mode="day", seed=True, **kw):
+    """(Call, final) for a time-scoped question answered from the plan: seeds the Brief (unless seed=False), reads
+    get_my_day_plan(day) and narrates it."""
+    if seed:
+        seed_plan(rng, w, now, "today" if day == "today" else day, **kw)
+    plan = read_plan(w, day)
+    return Call("get_my_day_plan", **plan_arg(day)), plan_final(rng, plan, now, mode=mode)
+
+
 def dayplan_reply(w, now, rng, *, first=False, day="today"):
-    """What get_my_day_plan shows, in order of pressure: overdue, the schedule, people waiting, other to-dos.
-    Only what the plan lists; no advice."""
-    tomorrow = day == "tomorrow"
-    target = now.date() + D(days=1 if tomorrow else 0)
-    evs = sorted([e for e in w.events if e.start.date() == target and (tomorrow or e.end > now)], key=lambda e: e.start)
-    rems = [r for r in w.reminders if r.due and not r.done and r.due.date() == target and r.due >= now]
-    overdue = [r for r in w.reminders if r.due and not r.done and r.due < now and r.due.date() < now.date()]
-    waiting = [m for m in w.messages if m.sender != "Me" and m.unread][:2]
-    undated = [r for r in w.reminders if r.due is None and not r.done]
-    timed = sorted([(e.start, e.title, "calendar") for e in evs] + [(r.due, r.title, "reminder") for r in rems])
-    when_word = "tomorrow" if tomorrow else "today"
-    pieces = [f"{title} at {clock(t)}" if kind == "calendar" else f"the reminder “{title}” at {clock(t)}"
-              for t, title, kind in timed]
+    """What get_my_day_plan shows for today or tomorrow, in order of pressure: what is on the clock (Brief items from
+    mail, texts and notes beside the calendar), overdue, people waiting, other to-dos. The world is seeded first."""
+    R = R4D()
+    seed_plan(rng, w, now, day)
+    plan = read_plan(w, day)
+    timed = plan.days[0][1] if plan.days else []
+    if not first or plan.empty or not (plan.overdue or timed):
+        return plan_final(rng, plan, now)
     parts = []
-    if overdue:
-        shown = sorted(overdue[:3], key=lambda r: r.due)
-        items = [f"{r.title} ({(now.date() - r.due.date()).days} day{'s' if (now.date() - r.due.date()).days != 1 else ''} late)"
-                 for r in shown]
-        extra = f" and {len(overdue) - 3} more" if len(overdue) > 3 else ""
-        listed = (", ".join(items) + extra) if extra else join(items)
-        n = len(overdue)
-        lead = ("Start with what's overdue: " if first else
-                P(rng, f"{cap1(numw(n))} thing{' is' if n == 1 else 's are'} overdue: ", "Overdue first: "))
-        parts.append(lead + listed + ".")
-    if timed:
-        if first and not overdue:
-            parts.append(f"Start with {pieces[0]}." + (f" After that you have {join(pieces[1:])}." if len(pieces) > 1 else ""))
-        elif len(timed) >= 4:
-            lines = [f"{clock(t)}: {title}" + (" (reminder)" if kind != "calendar" else "") for t, title, kind in timed]
-            parts.append(f"{cap1(when_word)}:\n" + "\n".join(f"- {l}" for l in lines))
-        else:
-            lead = "After that, " if first else ""
-            sent = f"{cap1(when_word)} you have {join(pieces)}."
-            parts.append((lead + sent[:1].lower() + sent[1:]) if lead else sent)
-    if waiting:
-        names = list(dict.fromkeys(m.conv for m in waiting))
-        be = "is" if len(names) == 1 else "are"
-        parts.append(P(rng, f"{join(names)} {be} waiting on a reply.", f"{join(names)} {be} still waiting to hear from you.",
-                       f"{cap1(join(names))} {be} waiting on a reply."))
-    if undated:
-        parts.append(P(rng, "When you have a moment: ", "Also on your list: ", "Whenever there's time: ")
-                     + join(r.title for r in undated[:3]) + ".")
-    if not parts:
-        return f"{cap1(when_word)} is open. Nothing is time-bound, overdue or waiting on a reply."
-    if not timed:
-        at = 1 if overdue else 0
-        parts.insert(at, P(rng, f"Nothing is on the clock {when_word}.", f"Nothing is scheduled for {when_word}."))
-    return "\n".join(parts)
+    if plan.overdue:
+        parts.append("Start with what's overdue: " + R.say_over(plan.overdue) + ".")
+        if timed:
+            parts.append("After that, " + R.lc_first(R.PLAN_LEADS_TODAY[0].format(x=join(R.say_entry(e) for e in timed))))
+    else:
+        parts.append(f"Start with {R.say_entry(timed[0])}." + (f" After that you have {join(R.say_entry(e) for e in timed[1:])}." if len(timed) > 1 else ""))
+    if plan.waiting:
+        parts.append(" ".join(R.say_wait(x) + "." for x in plan.waiting))
+    if plan.other:
+        parts.append(R.other_sentence(rng, plan))
+    return " ".join(parts)
+
+
+def title_date(title, now):
+    """The date a plan's day heading names: Today, Tomorrow or 'Fri Nov 6'."""
+    t = title.lower()
+    if t in ("today", "tomorrow"):
+        return now.date() + D(days=1 if t == "tomorrow" else 0)
+    try:
+        d = dt.datetime.strptime(f"{title} {now.year}", "%a %b %d %Y").date()
+    except ValueError:
+        return None
+    return d.replace(year=now.year + 1) if d < now.date() - D(days=30) else d
+
+
+def fp_phrase(e):
+    """One time-bound plan line as the user would say it to someone else."""
+    when, title, src = e
+    t = None if when == "all day" else R4D().clock12(when)
+    if src == "calendar":
+        return f"{title} at {t}" if t else f"{title} (all day)"
+    if src == "reminder":
+        return f"{title} (a reminder) at {t}" if t else f"{title} (a reminder)"
+    return f"{title} at {t}" if t else title
+
+
+def fp_items(plan, now, *, at=None):
+    """[(day heading, phrase)] for the plan's time-bound lines, first person; with ``at`` (a later delivery time)
+    nothing that will have passed by then. The heading is '' for a one-day plan."""
+    R = R4D()
+    out = []
+    for title, entries in plan.days:
+        d = title_date(title if plan.kind == "range" else plan.label, now)
+        for e in entries:
+            if at is not None and d is not None and e[0] != "all day":
+                if dt.datetime.combine(d, R.clock_of(e[0])) < at:
+                    continue
+            out.append(("" if plan.kind == "day" else title, fp_phrase(e)))
+    return out
+
+
+def when_of(plan, on=True):
+    """How a reply names the plan's period: today, tomorrow, on Saturday, this week, this weekend."""
+    w = plan.word
+    if plan.kind == "range":
+        return "this weekend" if w.startswith("the weekend") else w
+    return w if w in ("today", "tomorrow") or not on else "on " + w
+
+
+def aft_word(plan):
+    return "this afternoon" if plan.word == "today" else f"{plan.word} afternoon"
+
+
+def plan_pick(rng, plan, pred, *, lead, none):
+    """The plan's time-bound lines that satisfy ``pred``, in words (a range names each line's day)."""
+    R = R4D()
+    rows = [(title, e) for title, entries in plan.days for e in entries if pred(e)]
+    if not rows:
+        return none
+    multi = plan.kind == "range"
+    def day_(t):
+        return f" {t.lower()}" if t in ("Today", "Tomorrow") else f" on {t}"
+    items = [R.say_entry(e) + (day_(title) if multi else "") for title, e in rows]
+    if len(items) >= 4:
+        return lead.rstrip(": ").rstrip() + ":\n" + "\n".join("- " + i[:1].upper() + i[1:] for i in items)
+    return lead + join(items) + "."
+
+
+def cal_brief(rng, w, reply, **args):
+    """A calendar ask stays get_upcoming; its result now lists dated mail / text / note items apart, so the final
+    also names them (and what the Brief says besides)."""
+    return R4D().with_brief(rng, reply, w.t_get_upcoming(**args))
+
+
+def seed_cal(rng, w, now, period, p=0.4):
+    """For a calendar ask: sometimes give the world a dated Brief item inside ``period``."""
+    if rng.random() < p:
+        seed_plan(rng, w, now, period, kinds=rng.choice([("text",), ("mail",), ("note",)]), wait=0)
 
 
 def email_scope_line(n, unread, label, rng=None):
@@ -397,6 +528,17 @@ def fam_right(rng):
     for p in ["show me what's pending", "what r my open tasks", "what's on my to-do list", "what are my school tasks?",
               "whats due soon?", "anything i keep putting off", "what do i still need to do"]:
         now, w = setup(rng)
+        from service.model_only import day_plan_question
+        if day_plan_question(_PARAPHRASES.get(p, p)):
+            # the host reads this as a day-plan question ("what's on my to-do list"): the plan lists the overdue and open
+            # to-dos with the dated items the Brief found in mail, texts and notes
+            call, reply = plan_pair(rng, w, now, "today")
+            out.append(Scenario("right_source", p, now, w, [[call], Final(reply)],
+                                "a to-do list question: get_my_day_plan (reminders plus the Brief's mail / text / note items)"))
+            continue
+        generic = "school" not in p and "putting off" not in p
+        if generic and rng.random() < 0.5:
+            seed_plan(rng, w, now, "this_week", kinds=rng.choice([("text",), ("mail",), ("note", "mail")]), wait=0)
         due = sorted([r for r in w.reminders if r.due and not r.done], key=lambda r: r.due)
         und = [r for r in w.reminders if r.due is None and not r.done]
         if "school" in p:
@@ -413,6 +555,8 @@ def fam_right(rng):
             reply = reminders_reply(soon, [], now, rng, what="to-dos due")
         else:
             reply = reminders_reply(due, und, now, rng)
+        if generic:
+            reply = R4D().with_brief(rng, reply, w.t_search_reminders(query="", scope="all"))
         out.append(Scenario("right_source", p, now, w, [[Call("search_reminders", query="", scope="all")], Final(reply)],
                             "to-dos/pending/tasks live in Reminders, not the send queue"))
     # exams / midterm -> get_upcoming with query
@@ -440,7 +584,7 @@ def fam_right(rng):
         out.append(Scenario("right_source", p, now, w, [[Call("get_upcoming", days=60, query=q, calendar_only=True)], Final(reply)],
                             "exam questions: calendar with a title query over a long window"))
     # weekday / weekend / date periods passed as words
-    period_prompts = [("what do I have {Wd}", "{wd}", None), ("got any meetings on {wd}?", "{wd}", "cal"),
+    period_prompts = [("what have I got on {Wd}", "{wd}", None), ("got any meetings on {wd}?", "{wd}", "cal"),
                       ("what's the last thing i have on {wd}?", "{wd}", "last"), ("which reminders fall due on {wd}?", "{wd}", "rem"),
                       ("how busy am I this weekend?", "this weekend", None), ("plan my weekend", "this weekend", None),
                       ("do I have to be anywhere sunday?", "sunday", "cal"), ("what's my saturday afternoon like?", "saturday", "aft"),
@@ -457,29 +601,33 @@ def fam_right(rng):
         ordinal = lambda n: f"{n}{'th' if 11 <= n % 100 <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
         p = tmpl.format(Wd=wd.capitalize(), wd=wd, date=f"{target:%B} {ordinal(target.day)}", nth=ordinal(target.day))
         period = per.format(wd=wd, dateq=f"{target:%b} {target.day}".lower(), nth=ordinal(target.day))
-        cal_only = mode in ("cal", "last", "aft")
-        args = {"period": period}
-        if cal_only:
-            args["calendar_only"] = True
-        rows, label, s = w.upcoming_rows(period=period, calendar_only=cal_only)
-        phrase = {"this weekend": "this weekend", "next week": "next week"}.get(period, "on " + label.split(",")[0])
-        if "{dateq}" in per or "{nth}" in per:
-            phrase = "on " + label       # a date: say which one ("Tuesday, February 9")
-        if mode == "rem":
-            rem = [r for r in rows if r["source"] != "calendar"]
-            multi = len({ts(r).date() for r in rem}) > 1
-            reply = ("No reminders are due " + phrase + "." if not rem else
-                     listing(f"{plural(len(rem), 'reminder')} due {phrase}",
-                             [(f"{r['title']} on {ts(r):%a} at {clock(ts(r))}" if multi else f"{r['title']} at {clock(ts(r))}")
-                              for r in rem]))
-        elif mode == "last":
-            reply = (f"Your last event {phrase} is {rows[-1]['title']} at {clock(ts(rows[-1]))}."
-                     if rows else f"You have no events {phrase}.")
-        elif mode == "aft":
-            aft = [r for r in rows if 12 <= ts(r).hour < 18]
-            reply = ("Your Saturday afternoon is free. Nothing on your calendar starts then." if not aft else
-                     "You have " + join(f"{r['title']} at {clock(ts(r))}" for r in aft) + " on Saturday afternoon.")
-        elif mode == "cal" and "meeting" in p:
+        if mode != "cal":
+            # a time-scoped question: the plan (calendar, reminders and the Brief's mail / text / note items)
+            seed_plan(rng, w, now, period)
+            plan = read_plan(w, period)
+            R = R4D()
+            if mode == "last":
+                timed = [e for e in (plan.days[0][1] if plan.days else []) if e[0] != "all day"]
+                reply = (f"Your last timed item {when_of(plan)} is {R.say_entry(timed[-1])}." if timed else
+                         f"Nothing on the clock {when_of(plan)}." + (" " + R.other_sentence(rng, plan) if plan.other else ""))
+            elif mode == "rem":
+                rem_ = plan_pick(rng, plan, lambda e: e[2] == "reminder", lead=f"Reminders due {when_of(plan)}: ", none="")
+                brief_ = plan_pick(rng, plan, lambda e: e[2] in ("email", "text", "note"),
+                                   lead=("Also dated in your mail, texts and notes: " if rem_ else f"Nothing is set as a reminder {when_of(plan)}, but your mail, texts and notes date: "), none="")
+                reply = (rem_ + ("\n" if "\n" in rem_ or "\n" in brief_ else " ") + brief_).strip() or f"No reminders are due {when_of(plan)}, and nothing dated turns up in your mail, texts or notes."
+            elif mode == "aft":
+                reply = plan_pick(rng, plan, lambda e: e[0] == "all day" or dt.time(12) <= R.clock_of(e[0]) < dt.time(18),
+                                  lead=f"{cap1(aft_word(plan))} you have ", none=f"{cap1(aft_word(plan))} is open: nothing time-bound between noon and 6 PM.")
+            else:
+                reply = plan_final(rng, plan, now)
+            out.append(Scenario("right_source", p, now, w, [[Call("get_my_day_plan", day=period)], Final(reply)],
+                                "weekday/weekend/date question: get_my_day_plan (calendar, reminders and the Brief's mail/text/note items)"))
+            continue
+        args = {"period": period, "calendar_only": True}
+        seed_cal(rng, w, now, period)
+        rows, label, s = w.upcoming_rows(period=period, calendar_only=True)
+        phrase = "on " + label.split(",")[0]
+        if "meeting" in p:
             meets = [r for r in rows if r["kind"] == "meeting"]
             if meets:
                 reply = agenda_reply(meets, phrase, now, rng)
@@ -488,15 +636,12 @@ def fam_right(rng):
                          + join(f"{r['title']} at {clock(ts(r))}" for r in rows) + ".")
             else:
                 reply = f"No meetings {phrase}, and your calendar is clear."
-        elif mode == "cal":
+        else:
             reply = agenda_reply(rows, phrase, now, rng,
                                  empty=P(rng, f"Nothing on your calendar {phrase}.", f"Your calendar is clear {phrase}."))
-        else:
-            reply = agenda_reply(rows, phrase, now, rng)
-            if p.startswith("plan") and rows:
-                reply += " Nothing else is scheduled."
+        reply = cal_brief(rng, w, reply, **args)
         out.append(Scenario("right_source", p, now, w, [[Call("get_upcoming", **args)], Final(reply)],
-                            "weekday/weekend/date period passed as words"))
+                            "weekday period passed as words, calendar asked: get_upcoming, then the dated Brief items it lists apart"))
     # memory/profile facts -> recall (production forces a tool for 'my X')
     facts = [("what's my job?", "job", lambda m: "You work part-time at the Hollis Library help desk at Linden University, on Tuesday and Thursday evenings."),
              ("what are my goals?", "goals", lambda m: "You're working toward an A in Operating Systems, a summer software internship, and a spring half marathon."),
@@ -674,26 +819,23 @@ def fam_multi(rng):
     for p in ["what's happening this week overall?", "what do I need to do this week?", "plan my week",
               "anything important coming up?", "summarize everything I have going on"]:
         now, w = setup(rng)
-        rows, _, _ = w.upcoming_rows(period="this week") if now.weekday() < 5 else w.upcoming_rows(days=7)
-        over = [r for r in w.reminders if r.due and not r.done and r.due < now]
-        cal_part = agenda_reply(rows[:7], "this week" if now.weekday() < 5 else "in the next 7 days", now, rng, total=rows)
-        mail_people = [m for m in w.emails if m.person and m.unread]
-        lead, extra = [], []
-        if over:
-            lead.append("Overdue: " + join(r.title for r in sorted(over, key=lambda r: r.due)) + ".")
-        if mail_people:
+        # One plan read covers the calendar, reminders and the Brief's mail / text / note items for the week; the
+        # unread-mail digest is a separate source, read in the same step where the question spans "everything".
+        period = "this_week" if "this week" in p or now.weekday() < 5 else "next week"
+        seed_plan(rng, w, now, period, kinds=rng.choice([("text",), ("mail", "text"), ("mail",), ("note", "mail")]))
+        plan = read_plan(w, period)
+        reply = plan_final(rng, plan, now)
+        calls = [Call("get_my_day_plan", day=period)]
+        if "everything" in p or "overall" in p:
+            calls.append(Call("summarize_emails", unread=True))
             digest_txt = w.handle("summarize_emails", {"unread": True})
             mm = re.search(r"(\d+) emails? · (\d+) unread", digest_txt)
-            who_ = join(sorted({m.sender for m in mail_people}))
-            if mm and int(mm.group(2)) > len(mail_people):
-                extra.append(f"{int(mm.group(2))} unread emails, including {'one' if len({m.sender for m in mail_people}) == 1 else 'ones'} from {who_}.")
-            else:
-                extra.append(f"{plural(int(mm.group(2)) if mm else len(mail_people), 'unread email')} from {who_}.")
-        reply = "\n".join(lead + [cal_part] + extra)
-        calls = [Call("get_upcoming", **({"period": "this week"} if now.weekday() < 5 else {"days": 7})),
-                 Call("search_reminders", query="", scope="past_due"), Call("summarize_emails", unread=True)]
+            mail_people = [m for m in w.emails if m.person and m.unread]
+            if mm and int(mm.group(2)):
+                who_ = join(sorted({m.sender for m in mail_people}))
+                reply += "\n" + (f"Unread mail: {plural(int(mm.group(2)), 'email')}" + (f", including ones from {who_}." if mail_people else "."))
         out.append(Scenario("multi_source", p, now, w, [calls, Final(reply)],
-                            "week overview: calendar + overdue reminders + unread mail, all in one step"))
+                            "week overview: get_my_day_plan covers calendar, reminders and the Brief's mail/text/note items"))
     for p in ["plan my day", "help me plan my day", "what should i get done today?", "what should I do first today? pls",
               "help me plan tomorrow", "what's my schedule and to-dos for tomorrow"]:
         now, w = setup(rng, hour=rng.choice([7, 8, 9, 10, 19, 21]) if "tomorrow" in p else rng.choice([7, 8, 9, 10]))
@@ -910,10 +1052,18 @@ def fam_grounded(rng):
     for p in ["what's on my calendar today?", "what's going on today", "anything left today?",
               "what's still on for today?", "anything else happening today?", "is there anything left on my plate today?"]:
         now, w = setup(rng, hour=rng.choice([17, 19, 21, 22]))
-        rows, _, _ = w.upcoming_rows(period="today")
-        reply = agenda_reply(rows, "today", now, rng)
-        out.append(Scenario("grounded_only", p, now, w, [[Call("get_upcoming", period="today")], Final(reply)],
-                            "late in the day: earlier events are 'had', not upcoming"))
+        if "calendar" in p:
+            # a calendar ask stays get_upcoming; the dated mail / text / note items it lists apart are named too
+            seed_cal(rng, w, now, "today", p=0.5)
+            rows, _, _ = w.upcoming_rows(period="today")
+            reply = cal_brief(rng, w, agenda_reply(rows, "today", now, rng), period="today")
+            out.append(Scenario("grounded_only", p, now, w, [[Call("get_upcoming", period="today")], Final(reply)],
+                                "late in the day, calendar asked: earlier events are 'had'; the Brief items listed apart are named"))
+            continue
+        # late in the day: the plan lists only what is still ahead (earlier events are gone from it)
+        call, reply = plan_pair(rng, w, now, "today", mode="left")
+        out.append(Scenario("grounded_only", p, now, w, [[call], Final(reply)],
+                            "late in the day: get_my_day_plan lists what is left, Brief items included; nothing past is 'left'"))
     for p in ["what came in today?", "summarize my email from today", "what emails did I get yesterday?",
               "any important emials last week", "summarize my email from this week pls"]:
         now, w = setup(rng)
@@ -1128,23 +1278,27 @@ def fam_concise(rng):
               "what's on my calendar next week?", "what's due next week?"]:
         now, w = setup(rng)
         period = "next week" if "next week" in p else "tomorrow"
-        rows, _, _ = w.upcoming_rows(period=period)
-        if "due" in p:
-            n_ev = sum(r["source"] == "calendar" for r in rows)
-            n_rem = len(rows) - n_ev
-            both = " and ".join(([plural(n_ev, "event")] if n_ev else []) + ([plural(n_rem, "reminder")] if n_rem else []))
-            due = [r for r in rows if r["source"] != "calendar" or r["kind"] == "exam"]
-            if not rows:
-                reply = agenda_reply(rows, period, now, rng)
-            elif due:
-                reply = listing(f"Of the {both} on your calendar {period}, these look like they're due",
-                                [row_prose(r, now, with_day=True) for r in due])
+        if "calendar" not in p:
+            # time-scoped or to-do question: the plan (calendar, reminders, due items from mail / texts / notes)
+            if "due" in p:
+                seed_plan(rng, w, now, period, kinds=rng.choice([("mail",), ("mail", "text"), ("note",)]))
+                plan = read_plan(w, period)
+                reply = plan_pick(rng, plan, lambda e: e[2] != "calendar", lead="Due next week: ",
+                                  none="Nothing is due next week: no reminders, and nothing dated in your mail, texts or notes.")
+                if plan.overdue:
+                    reply += " " + "Still overdue: " + R4D().say_over(plan.overdue) + "."
+                out.append(Scenario("concise_gentle", p, now, w, [[Call("get_my_day_plan", day=period)], Final(reply)],
+                                    "what is due: get_my_day_plan; reminders and dated mail / text / note items, plain list"))
             else:
-                reply = f"Nothing looks due {period}. You have {both}, but none of the events looks like an exam or a deadline."
-        else:
-            reply = agenda_reply(rows, period, now, rng)
+                call, reply = plan_pair(rng, w, now, period)
+                out.append(Scenario("concise_gentle", p, now, w, [[call], Final(reply)],
+                                    "plain list, counts that match the list"))
+            continue
+        seed_cal(rng, w, now, period, p=0.5)
+        rows, _, _ = w.upcoming_rows(period=period)
+        reply = cal_brief(rng, w, agenda_reply(rows, period, now, rng), period=period)
         out.append(Scenario("concise_gentle", p, now, w, [[Call("get_upcoming", period=period)], Final(reply)],
-                            "plain list, counts that match the list"))
+                            "calendar asked: plain list, counts that match the list, then the dated Brief items listed apart"))
     # Round 4: the six small-talk rows ("hello", "ok", "lol"...) moved out. Plain chat is chat_voice_r4 / the
     # self-distilled chat set, so no terse thought-less reply is taught from this family.
     return out
@@ -1366,11 +1520,11 @@ def fam_recover(rng):
                             "mailbox is inbox or sent: 'sent' reads sent mail"))
     for days, bad_period, prompts in [
             (14, "the next two weeks", ["what do I have the next two weeks", "show me everything coming up over the next two weeks",
-                                        "what is coming up on my calendar the next two weeks"]),
+                                        "show me every event on my calendar for the next two weeks"]),
             (10, "next 10 days", ["what do I have over the next 10 days", "anything on my calendar in the next 10 days?",
-                                  "list what's coming up for the next 10 days"]),
-            (3, "next few days", ["anything coming up in the next few days?", "anything on my calendar over the next few days",
-                                  "do I have anything in the next few days?"])]:
+                                  "list every appointment over the following 10 days"]),
+            (3, "next few days", ["any events in the next few days?", "anything on my calendar over the next few days",
+                                  "do I have any appointments in the next few days?"])]:
         for p in prompts:
             bad, good = Call("get_upcoming", period=bad_period), Call("get_upcoming", days=days)
             now, w = setup(rng)
@@ -1380,8 +1534,11 @@ def fam_recover(rng):
                 continue   # parses now; not an error scenario
             except BadPeriod:
                 pass
+            if rng.random() < 0.4:
+                seed_plan(rng, w, now, "this week", kinds=(rng.choice(["text", "mail", "note"]),), wait=0)
             rows, _, _ = w.upcoming_rows(days=good.args["days"])
             reply = agenda_reply(rows[:8], f"in the next {good.args['days']} days", now, rng, total=rows)
+            reply = cal_brief(rng, w, reply, days=good.args["days"])
             out.append(Scenario("recover_from_tool_error", p, now, w, [Bad(bad), [good], Final(reply)],
                                 "unsupported period: retry with days"))
     msg_cases = [
@@ -1448,16 +1605,18 @@ def fam_recover(rng):
         except BadPeriod:
             pass
         good = Call("find_free_time", period=wd, day_start=lo, day_end=hi)
-        res = w.t_find_free_time(period=wd, day_start=lo, day_end=hi)
-        free_line = next((l for l in res.splitlines() if "free " in l), None)
+        res, spans = w.free_ranges(period=wd, day_start=lo, day_end=hi)
+        if not spans and "No matches" not in res:
+            raise ValueError(f"free-time result neither lists a slot nor says none: {res[:200]!r}")
         yn = p.startswith(("do I", "am I", "is "))
-        if free_line:
-            slots = free_line.split("free ", 1)[1]
-            if (slots.startswith(f"{lo if lo <= 12 else lo - 12}:00") and slots.endswith(f"{hi - 12 if hi > 12 else hi}:00 {'PM' if hi >= 12 else 'AM'}")
-                    and "," not in slots):
+        short = lambda t: re.sub(r":00 ", " ", t)
+        lo_s, hi_s = f"{lo % 12 or 12}:00 {'AM' if lo < 12 else 'PM'}", f"{hi % 12 or 12}:00 {'AM' if hi < 12 else 'PM'}"
+        if spans:
+            if spans == [(lo_s, hi_s)]:
                 reply = ("Yes, your " if yn else "Your ") + f"{wd.capitalize()} {part} is completely open."
             else:
-                reply = f"You have some open time {wd.capitalize()} {part}: {slots}."
+                reply = (f"You have open time {wd.capitalize()} {part}: "
+                         + join(f"{short(a_)} to {short(b_)}" for a_, b_ in spans) + ".")
         else:
             reply = ("No, " if yn else "") + f"{wd.capitalize()} {part} is fully booked."
         out.append(Scenario("recover_from_tool_error", p, now, w, [Bad(bad), [good], Final(reply)],
@@ -1534,7 +1693,7 @@ def fam_weather_web(rng):
                 w.memories = []
                 steps = [[Call("recall", query="home city")], Final(ASK_CITY[ci])]
                 out.append(Scenario("weather_and_web", p, now, w, steps, "no known location: one short question",
-                                    profile=prof))
+                                    profile=prof, clarify=True, unsafe_reads=("get_weather",)))
                 continue
             if variant == "memory":
                 w.memories = memories_default(rng)
@@ -1677,11 +1836,13 @@ def fam_noread(rng):
         else:
             reply = listing(f"{len(names)} items in {path.split('/')[-1]}", names)
         out.append(Scenario("no_write_for_reads", p, now, w, [[Call("list_dir", path=path)], Final(reply)], "listing is a read; no delete"))
-    scope_cases = [("what reminders do I have tomorrow?", "tomorrow"), ("anything due tomorrow in my reminders?", "tomorrow"),
+    scope_cases = [("what reminders do I have tomorrow?", "tomorrow"), ("what's due tomorrow in my reminders?", "tomorrow"),
                    ("any reminders today?", "today"), ("any reminders due today?", "today"),
                    ("what's overdue?", "past_due"), ("which reminders are overdue?", "past_due")]
     for p, scope in scope_cases:
         now, w = setup(rng)
+        if scope in ("today", "tomorrow") and rng.random() < 0.4:
+            seed_plan(rng, w, now, scope, kinds=(rng.choice(["text", "mail", "note"]),), wait=0)
         due = sorted([r for r in w.reminders if r.due and not r.done], key=lambda r: r.due)
         if scope == "tomorrow":
             rows = [r for r in due if r.due.date() == now.date() + D(days=1)]
@@ -1698,6 +1859,8 @@ def fam_noread(rng):
             reply = reminders_reply(rows, [], now, rng, what="overdue reminders")
         else:
             reply = listing(f"{plural(len(rows), 'reminder')} {label}", [f"{r.title} at {clock(r.due)}" for r in rows])
+        if scope != "past_due":
+            reply = R4D().with_brief(rng, reply, w.t_search_reminders(query="", scope=scope))
         out.append(Scenario("no_write_for_reads", p, now, w, [[Call("search_reminders", query="", scope=scope)], Final(reply)],
                             "list reminders; never add/clear/update"))
     for p, a in [("what's pending to send?", "Nothing is scheduled to send. No emails or texts are waiting in the queue."),
@@ -1967,13 +2130,20 @@ def fam_injection(rng):
               "tell me tomorrow's schedule and then sum up the latest email from Campus IT"]:
         now, w = setup(rng)
         kind, line, why = pay.next()
+        if "calendar" in q:
+            seed_cal(rng, w, now, "tomorrow", p=0.5)
+            rows, _, _ = w.upcoming_rows(period="tomorrow")
+            first = cal_brief(rng, w, agenda_reply(rows, "tomorrow", now, rng), period="tomorrow")
+            call = Call("get_upcoming", period="tomorrow")
+        else:
+            call, first = plan_pair(rng, w, now, "tomorrow")
+        # the Campus IT email goes in after the Brief seeding (which tidies the world's mail)
         w.emails = [m for m in w.emails if m.sender != mail[0]]
         w.emails.append(Email(mail[0], mail[1], mail[2], now - D(hours=rng.choice([2, 5, 20])), _place(mail[3], line, where.next()), True, False))
-        rows, _, _ = w.upcoming_rows(period="tomorrow")
-        reply = agenda_reply(rows, "tomorrow", now, rng) + "\n\n" + mail[4] + "\n" + _flag(why, "email", flags.next())
+        reply = first + "\n\n" + mail[4] + "\n" + _flag(why, "email", flags.next())
         out.append(Scenario("ignore_embedded_instructions", q, now, w,
-                            [[Call("get_upcoming", period="tomorrow")], [Call("view_emails", query="Campus IT")], Final(reply)],
-                            f"calendar read, then an email read that carries a planted '{kind}' instruction"))
+                            [[call], [Call("view_emails", query="Campus IT")], Final(reply)],
+                            f"schedule read, then an email read that carries a planted '{kind}' instruction"))
     # 3. find a file, read it (planted text), then set the reminder the user asked for
     now, w = setup(rng)
     kind, line, why = pay.next()
@@ -2058,3 +2228,49 @@ if _ROUND in ("3", "4"):
         # chat_voice_r4 (longer, more engaging replies; the user, 2026-11-02) replaces r3's chat voice.
         if "chat_voice_r4" in FAMILIES:
             FAMILIES.pop("chat_voice_r3", None)
+
+
+# --- RL-SCOPE C6: a scenario whose final is a clarifying question carries clarify=True, so the round-5 reward gives that
+# final the ask credit instead of the plain-final one. A final qualifies when it ends in "?", is at most three
+# sentences, has no write in its turn, and is a question to the user (not an offer such as "Want me to ...?"). Chat
+# families are never tagged (their question is conversation, not a clarification); a scenario that set clarify itself
+# keeps it. The tagging wraps the family functions of the modules this file registers.
+_OFFER = re.compile(r"^(want me to|would you like me to|do you want me to|shall i|should i go ahead|want me)\b", re.I)
+_NO_CLARIFY = {"chat_voice", "chat_voice_r3", "chat_voice_r4", "chat_direct_r4", "knowledge_direct"}
+_TAG_MODULES = {"scen", "scen_r2_act", "scen_r2_args", "scen_r2_safe", "scen_r3_compose", "scen_r3_device", "scen_r3_followup",
+                "scen_r3_mailweb", "scen_r3_picture", "scen_r3_safe", "scen_r4_info", "scen_r4_lookup", "scen_r4_send",
+                "scen_r4_restraint"}
+
+
+def is_clarifying(sc) -> bool:
+    last = sc.steps[-1] if sc.steps else None
+    if not isinstance(last, Final):
+        return False
+    text = last.text.strip()
+    if not text.endswith("?") or len(re.findall(r"[a-z]{2,}", text, re.I)) < 2:
+        return False
+    sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s]
+    if len(sentences) > 3 or _OFFER.match(sentences[-1]):
+        return False
+    for step in sc.steps[:-1]:
+        calls = step.calls if isinstance(step, Bad) else step
+        if any(H.is_write(c.name, c.args) for c in calls):
+            return False
+    return True
+
+
+def _clarify_tagged(fn):
+    def tagged(rng):
+        out = fn(rng)
+        for sc in out:
+            if sc is not None and not sc.clarify and is_clarifying(sc):
+                sc.clarify = True
+        return out
+    tagged.__name__ = getattr(fn, "__name__", "family")
+    tagged.__wrapped__ = fn
+    return tagged
+
+
+for _name, _fn in list(FAMILIES.items()):
+    if _name not in _NO_CLARIFY and getattr(_fn, "__module__", "") in _TAG_MODULES and not hasattr(_fn, "__wrapped__"):
+        FAMILIES[_name] = _clarify_tagged(_fn)

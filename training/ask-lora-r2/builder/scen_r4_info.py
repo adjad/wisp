@@ -126,10 +126,9 @@ def _memory(i):
     def make(rng):
         now, w, dev = dev_world(rng)
         note = "That is on the low side." if dev.mem_free < 30 else "That is a healthy amount."
-        cpu = f"CPU load is {dev.load[0]:.2f} (1m) across {dev.cores} cores."
-        final = pick(rng, [f"This Mac has 24 GB of memory installed, and {dev.mem_free}% of it is free right now. {note} {cpu}",
-                           f"Memory is {dev.mem_free}% free out of 24 GB installed. {note} {cpu}",
-                           f"{dev.mem_free}% of the 24 GB is free at the moment. {note} For comparison, {cpu[0].lower() + cpu[1:]}"])
+        final = pick(rng, [f"This Mac has 24 GB of memory installed, and {dev.mem_free}% of it is free right now. {note}",
+                           f"Memory is {dev.mem_free}% free out of 24 GB installed. {note}",
+                           f"{dev.mem_free}% of the 24 GB is free at the moment. {note}"])
         return mk(A.style(rng, prompts[i % 3]), now, w, [[Call("system_status")], Final(final)],
                   "memory: system_status overview; installed memory and the percent free as printed")
     return make
@@ -148,12 +147,11 @@ def _wifi(i):
                                f"The network is {ssid} and this Mac's local IP is 10.24.8.113."])
         elif i % 4 == 3:
             if ssid.startswith("Linden"):
-                final = f"Yes, you're on {ssid}, which is a campus network. The local IP address is 10.24.8.113."
+                final = f"Yes, you're on {ssid}, which is a campus network."
             else:
-                final = f"No, you're on {ssid} right now, not a campus network. The local IP address is 10.24.8.113."
+                final = f"No, you're on {ssid} right now, not a campus network."
         else:
-            final = pick(rng, [f"You're connected to {ssid}, and the Mac's local IP address is 10.24.8.113.",
-                               f"This Mac is on the {ssid} network, with a local IP of 10.24.8.113."])
+            final = pick(rng, [f"You're connected to {ssid}.", f"This Mac is on the {ssid} network."])
         return mk(A.style(rng, p), now, w, [[Call("system_status", section="network")], Final(final)],
                   "Wi-Fi: system_status network; the network name (and local IP when asked) as printed")
     return make
@@ -171,10 +169,10 @@ def _volume(i):
             final = f"Output volume is {dev.volume}% and it is {mute_word}. The microphone input volume is 72%."
         elif muted:
             final = pick(rng, [f"The Mac is muted. The output volume is set to {dev.volume}%, so it will come back at that level when you unmute.",
-                               f"It's muted, with the output volume at {dev.volume}% and the microphone input volume at 72%."])
+                               f"It's muted, with the output volume at {dev.volume}%."])
         else:
-            final = pick(rng, [f"The output volume is {dev.volume}% and it isn't muted. The microphone input volume is 72%.",
-                               f"Sound is on at {dev.volume}%, not muted, so it will play at that level. The microphone input volume is 72%."])
+            final = pick(rng, [f"The output volume is {dev.volume}% and it isn't muted.",
+                               f"Sound is on at {dev.volume}%, not muted, so it will play at that level."])
         return mk(A.style(rng, p), now, w, [[Call("system_status", section="sound")], Final(final)],
                   "volume: system_status sound; the output volume and mute state as printed")
     return make
@@ -187,9 +185,11 @@ def _bluetooth(i):
         on = (i != 1) or rng.random() < 0.5
         now, w, dev = dev_world(rng)
         dev.settings["bluetooth"] = on
-        if on:
-            final = pick(rng, ["Bluetooth is on, with 1 device connected: AirPods Pro, at a signal of -52 dBm. Nothing else is paired and connected right now.",
-                               "Bluetooth is on and AirPods Pro are connected, with a signal of -52 dBm. They're the only device connected."])
+        if on and i % 3 == 1:     # "is bluetooth on": the yes, and no more than the device that makes it useful
+            final = pick(rng, ["Yes, Bluetooth is on, and AirPods Pro are connected.", "It is on, with AirPods Pro connected."])
+        elif on:
+            final = pick(rng, ["Bluetooth is on, with 1 device connected: AirPods Pro, at a signal of -52 dBm.",
+                               "Bluetooth is on and AirPods Pro are connected, with a signal of -52 dBm."])
         else:
             final = pick(rng, ["Bluetooth is off, so no devices are connected.", "It's off right now, which means nothing is connected over Bluetooth."])
         return mk(A.style(rng, prompts[i % 3]), now, w, [[Call("system_status", section="bluetooth")], Final(final)],
@@ -218,8 +218,8 @@ def _macos(i):
 
     def make(rng):
         now, w, dev = dev_world(rng)
-        final = pick(rng, [f"You're on macOS {dev.version[0]} ({dev.version[1]}), and its uptime is {dev.uptime}.",
-                           f"This Mac runs macOS {dev.version[0]}, build {dev.version[1]}, with an uptime of {dev.uptime}."])
+        final = pick(rng, [f"You're on macOS {dev.version[0]}, build {dev.version[1]}.",
+                           f"This Mac runs macOS {dev.version[0]} ({dev.version[1]})."])
         return mk(A.style(rng, prompts[i % 2]), now, w, [[Call("system_status")], Final(final)],
                   "macOS version and build exactly as the overview prints them")
     return make

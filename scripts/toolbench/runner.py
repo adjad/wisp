@@ -1116,14 +1116,16 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
     # hints replace them, in main.py's insertion order.
     guidance: list[str] = []
     hints: list[str] = ["style"]
-    ask_preload, ask_stub_rank = M._ask_tool_rank(prompt)
+    # The user's prompt before this one: a bare follow-up ("and friday?") ranks and hints like its question.
+    previous_prompt = M._previous_user_text(messages, user_msg)
+    ask_preload, ask_stub_rank = M._ask_tool_rank(prompt, previous_prompt)
     if subject_tools:
         ask_stub_rank = list(dict.fromkeys([*ask_stub_rank, *subject_tools]))
     guidance.insert(0, ASK_STYLE_HINT)
     if wisp_self_question(prompt):
         guidance.insert(1, wisp_self_hint())
         hints.append("capability")
-    if day_plan_question(prompt):
+    if day_plan_question(prompt, previous_prompt):
         guidance.insert(1, ASK_DAY_PLAN_HINT)
         hints.append("day_plan")
     ask_forbidden = ask_forbidden_tools(prompt, REGISTRY)

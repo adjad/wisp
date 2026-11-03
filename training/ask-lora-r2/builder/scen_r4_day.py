@@ -26,16 +26,17 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import zlib
 
 import gen
 import harness as H
 from gen import D
 from harness import Call, Final
 from replies import join, plural
-from scen import Scenario, dedupe_mail, setup
+from scen import Scenario, cap1, dedupe_mail, setup
 from scen_r2_args import WDN, at
 from scen_r3_safe import _fw
-from world import Event, Msg, Reminder, short_clock
+from world import BriefItem, Email, Event, Msg, Note, Reminder, Waiting, short_clock
 
 FAMILY = "day_answers_r4"
 WRITE_ALLOW_R4 = {FAMILY: frozenset()}
@@ -56,14 +57,21 @@ T = short_clock                       # 10 AM / 1:30 PM
 USED_PROMPTS: set = set()
 
 
-def pickp(rng, stems, **kw):
+def pickp(rng, stems, plan=None, **kw):
     """A prompt from ``stems`` (formatted with ``kw``) not used yet in this family."""
-    return uniq(rng, *[x.format(**kw) for x in stems])
+    return uniq(rng, *[x.format(**kw) for x in stems], plan=plan)
 
 
-def uniq(rng, *opts):
-    """A prompt not used yet in this family."""
-    ok = [o for o in opts if o not in USED_PROMPTS] or list(opts)
+def uniq(rng, *opts, plan=None):
+    """A prompt not used yet in this family that leaks no eval or toolbench question. plan=True keeps the prompts the host
+    reads as a day-plan question (model_only.day_plan_question: the Brief plan tool is offered and hinted), plan=False the
+    ones it does not (a calendar ask)."""
+    from scen_r2_act import _leaks
+    from service.model_only import day_plan_question
+    fits = [o for o in opts if not _leaks().leaks(o)[0] and (plan is None or day_plan_question(o) == plan)]
+    ok = [o for o in fits if o not in USED_PROMPTS] or fits
+    if not ok:
+        raise ValueError(f"no usable prompt among {list(opts)[:4]} (plan={plan})")
     o = rng.choice(ok)
     USED_PROMPTS.add(o)
     return o
@@ -213,21 +221,27 @@ def chain(rng, w, day, start_h, end_h):
 
 
 def free_gaps(w, period, **kw):
-    """(result text, ['9:00 AM–11:00 AM', ...] of the first day line, header) from the world's find_free_time."""
-    res = w.t_find_free_time(period=period, **kw)
-    gaps = []
-    for ln in res.splitlines():
-        if ": free " in ln:
-            gaps = ln.split(": free ", 1)[1].split(", ")
-            break
+    """(result text, ['9:00 AM–11:00 AM', ...] of the first day line) from the world's find_free_time. Each range runs from
+    the slot's start to its 'free until' time, as World.free_ranges reads the live text. A result that lists slots but
+    parses to no range raises: a silent empty list would turn a free day into 'no gap'."""
+    res, spans = w.free_ranges(period, **kw)
+    if "free until" in res and not spans:
+        raise ValueError(f"free_gaps: slots listed but no range parsed from {res[:300]!r}")
+    gaps = [f"{a}–{b}" for a, b in spans]
+    for g in gaps:
+        a, b = g.split("–")
+        if not (re.fullmatch(r"\d{1,2}:\d\d [AP]M", a) and re.fullmatch(r"\d{1,2}:\d\d [AP]M", b)):
+            raise ValueError(f"free_gaps: malformed range {g!r}")
     return res, gaps
 
 
 def win(rng, res, p=0.75):
-    """A sentence naming the window and slot length find_free_time printed ('30-minute candidate slots, 09:00–18:00'),
-    or '' (the result's own figures, in the clock form the answer uses)."""
-    m = re.search(r"(\d+)-minute candidate slots, (\d\d):(\d\d)–(\d\d):(\d\d)", res)
-    if not m or rng.random() > p:
+    """A sentence naming the window and slot length find_free_time printed ('30-minute candidate slots, 9:00–18:00'), or ''
+    (the result's own figures, in the clock form the answer uses)."""
+    m = re.search(r"(\d+)-minute candidate slots, (\d{1,2}):(\d\d)–(\d{1,2}):(\d\d)", res)
+    if not m:
+        raise ValueError(f"win: no candidate-slot header in {res[:200]!r}")
+    if rng.random() > p:
         return ""
     ck = lambda h, mi: f"{int(h) % 12 or 12}{':' + mi if mi != '00' else ''} {'AM' if int(h) < 12 else 'PM'}"
     a, b, n = ck(m.group(2), m.group(3)), ck(m.group(4), m.group(5)), m.group(1)
@@ -379,6 +393,495 @@ def pick_day(rng, now, lo=2, hi=6):
     return now.date() + D(days=rng.randint(lo, hi))
 
 
+# ================================================================== Wisp's Brief: seeds, parsing, narration
+# The Brief holds what mail, texts and notes add to the calendar: dated to-dos (World.brief) and the people waiting on a
+# reply (World.waiting). Every seeded item is derived from a message the same world holds, so a re-read finds the words
+# it came from. Topics here are deliberately not the gate world's.
+class TextSeed:
+    def __init__(self, who, text, title, clock=None):
+        self.who, self.text, self.title, self.clock = who, text, title, clock
+
+
+TEXT_SEEDS = [
+    TextSeed("Aunt Priya", "Housewarming party {d} evening! Bring a plant if you can", "Bring a plant to Aunt Priya's housewarming"),
+    TextSeed("Dad", "My flight lands {d} at 4:40 pm. Can you pick me up from the airport?", "Pick up Dad from the airport", (16, 40)),
+    TextSeed("Theo Park", "Climbing gym {d} at 6? I'll grab us passes", "Go climbing with Theo", (18, 0)),
+    TextSeed("Maya Chen", "The landlord is coming {d} at 10 to fix the sink, can you be home?", "Be home for the sink repair", (10, 0)),
+    TextSeed("Jordan Ellis", "Lab writeup is due {d} at 11:59, did you do your half?", "Finish the lab writeup", (23, 59)),
+    TextSeed("Aisha Karim", "Study group {d} at 7, bring your linear algebra notes", "Bring linear algebra notes to study group", (19, 0)),
+    TextSeed("Ben Ortiz", "Long run {d} at 8am at Riverside, you in?", "Go on the long run at Riverside", (8, 0)),
+    TextSeed("Carmen Rivera", "Mom's birthday dinner is {d}! Don't forget the cake", "Pick up the cake for Mom's birthday dinner"),
+    TextSeed("Coach Reyes", "Team dinner {d} at 6:30, Luigi's on 5th", "Go to the team dinner", (18, 30)),
+    TextSeed("Dana Whitfield", "Can you cover my help desk shift {d} at 10? Need to know soon", "Cover Dana's help desk shift", (10, 0)),
+    TextSeed("Hana Kowalczyk", "My office hours moved to {d} at 3pm if you still want to go over the regrade", "Go to Hana's office hours", (15, 0)),
+    TextSeed("Nadia Khan", "Game night at mine {d}, 7pm. Bring snacks!", "Bring snacks to game night", (19, 0)),
+    TextSeed("Uncle Dev", "Ravi's graduation party is {d} afternoon at the park, 2pm", "Go to Ravi's graduation party", (14, 0)),
+    TextSeed("Grandma Ruth", "Call me {d} morning, I want to hear about your classes", "Call Grandma Ruth"),
+]
+COURSES = [("CS 162", "Project 3"), ("MATH 241", "Problem Set 7"), ("PHIL 110", "Reading Response 4"), ("CS 210", "Lab 6"),
+           ("CS 162", "Homework 5"), ("MATH 241", "Quiz Corrections")]
+
+
+class MailSeed:
+    def __init__(self, sender, addr, person, subject, body, title, clock=None):
+        self.sender, self.addr, self.person, self.subject, self.body, self.title, self.clock = (
+            sender, addr, person, subject, body, title, clock)
+
+
+MAIL_SEEDS = [
+    MailSeed("LindenLearn", "notifications@lindenlearn.edu", False, "Assignment due: {course} {hw}",
+             "{hw} for {course} is due {d} at 11:59 PM. Submit it on LindenLearn.", "Finish {hw}, {course}", (23, 59)),
+    MailSeed("Prof. Adaeze Okafor", "aokafor@linden.edu", True, "Project 2 extension",
+             "You have until {d} at 11:59 PM for project 2. Please don't slip further.", "Submit project 2", (23, 59)),
+    MailSeed("Renata Szabo", "rszabo@fernbrooklabs.com", True, "Fernbrook Labs: interview times",
+             "Could you send me three 45-minute slots by {d}?", "Send Fernbrook your interview times"),
+    MailSeed("Pine Street Pharmacy", "rx@pinestreetpharmacy.example", False, "Your prescription is ready",
+             "Your prescription is ready for pickup. We will hold it until {d} at 6 PM.", "Pick up your prescription", (18, 0)),
+    MailSeed("Linden Career Center", "careers@linden.edu", False, "RSVP: spring career fair",
+             "Please RSVP for the career fair by {d} so we can plan badges.", "RSVP for the career fair"),
+    MailSeed("Dana Whitfield", "dwhitfield@linden.edu", True, "Next week's help desk schedule",
+             "Please confirm your shifts for next week by {d}.", "Confirm next week's help desk shifts"),
+    MailSeed("Hana Kowalczyk", "hkowalczyk@linden.edu", True, "Section 4 quiz",
+             "Quiz 4 is {d} in section at 2 PM. Bring a pencil.", "Take Quiz 4 in section", (14, 0)),
+]
+NOTE_SEEDS = [
+    ("Weekend to-do", "{D}: return the library books\nBuy a birthday card", "Return the library books"),
+    ("Errands", "{D} - drop off the donation box", "Drop off the donation box"),
+    ("Trip prep", "Pack the climbing gear before {d}", "Pack the climbing gear"),
+    ("Birthday plans", "Order the cake by {d}", "Order the cake"),
+    ("Lab notes", "{D}: hand in the signed lab safety form", "Hand in the lab safety form"),
+    ("Bike", "Take the bike to the shop {d} morning", "Take the bike to the shop"),
+]
+# (who, what their last text says, what the Brief says they asked)
+WAIT_SEEDS = [
+    ("Maya Chen", "can you grab milk on your way home?", "Asked you to grab milk on your way home."),
+    ("Theo Park", "still on for coffee?", "Asked if you're still on for coffee."),
+    ("Jordan Ellis", "are you done with the analysis part?", "Asked if you finished the analysis part."),
+    ("Nadia Khan", "did you see the photos i sent?", "Asked if you saw the photos."),
+    ("Carmen Rivera", "did you decide what to get mom?", "Asked what you decided to get Mom."),
+    ("Ben Ortiz", "are you in for the long run?", "Asked if you're in for the long run."),
+    ("Aisha Karim", "can you send me the practice problems?", "Asked you to send the practice problems."),
+    ("Dad", "did you book your flight home yet?", "Asked if you booked your flight home."),
+    ("Hana Kowalczyk", "did the regrade go through?", "Asked whether the regrade went through."),
+    ("Naomi Brandt", "can we move our call to next week?", "Asked to move your call to next week."),
+]
+
+
+# How a person would point back at a Brief item they were just told about.
+REFS = {
+    "Bring a plant to Aunt Priya's housewarming": "the housewarming", "Pick up Dad from the airport": "dad's airport pickup",
+    "Go climbing with Theo": "the climbing plan", "Be home for the sink repair": "the sink repair",
+    "Finish the lab writeup": "the lab writeup", "Bring linear algebra notes to study group": "the study group",
+    "Go on the long run at Riverside": "the long run", "Pick up the cake for Mom's birthday dinner": "the cake pickup",
+    "Go to the team dinner": "the team dinner", "Cover Dana's help desk shift": "the shift cover",
+    "Go to Hana's office hours": "hana's office hours", "Bring snacks to game night": "game night",
+    "Go to Ravi's graduation party": "ravi's party", "Call Grandma Ruth": "the call to grandma",
+    "Submit project 2": "project 2", "Send Fernbrook your interview times": "the fernbrook times",
+    "Pick up your prescription": "the prescription pickup", "RSVP for the career fair": "the career fair rsvp",
+    "Confirm next week's help desk shifts": "the shift confirmation", "Take Quiz 4 in section": "quiz 4",
+    "Return the library books": "the library books", "Drop off the donation box": "the donation box",
+    "Pack the climbing gear": "the climbing gear", "Order the cake": "the cake order",
+    "Hand in the lab safety form": "the safety form", "Take the bike to the shop": "the bike shop trip",
+}
+
+
+def ref_of(title):
+    m = re.match(r"Finish (.+), [A-Z]+ \d+$", title)
+    return REFS.get(title) or (m.group(1).lower() if m else title.lower())
+
+
+def ensure_contact(w, name):
+    if name not in w.contacts:
+        w.contacts[name] = (f"(503) 555-{200 + zlib.crc32(name.encode()) % 800:04d}", "")
+    return name
+
+
+def said(rng, day, now):
+    """How a text or note would name ``day`` for a reader on ``now``'s date."""
+    delta = (day - now.date()).days
+    if delta == 0:
+        return "today"
+    if delta == 1:
+        return rng.choice(["tomorrow", "tomorrow", wd_name(day).lower()])
+    return wd_name(day).lower()
+
+
+def tidy_sources(w):
+    """Mail and notes the Brief would turn into dated to-dos are not left lying around unlisted: keep only undated
+    newsletters and notes, so a seeded world's Brief is the whole truth of its mail, texts and notes."""
+    w.emails = [m for m in w.emails if not m.person and not re.search(r"\bdue\b|rsvp|deadline|expires", m.subject, re.I)][:3]
+    w.notes = [n for n in w.notes if not re.search(r"\b(mon|tues?|wed|thu|fri|sat|sun)\w*\b|due|by |tonight|tomorrow", n.body, re.I)][:2]
+    w.waiting = []
+
+
+def seed_brief(rng, w, now, day, kind, *, used=None, timed=None):
+    """One dated Brief item on ``day`` from a text, an email or a note (kind), plus the source it came from. The item
+    is picked among seeds this world has not used; timed=True/False asks for a stated clock time or none.
+    Returns the BriefItem, or None when no seed fits (a clock time already past today)."""
+    used = used if used is not None else set()
+    d_said = said(rng, day, now)
+    sent = now - D(hours=rng.randint(4, 90))
+    if kind == "text":
+        pool = [s for s in TEXT_SEEDS if s.title not in used and s.who not in {m.conv for m in w.messages}]
+    elif kind == "mail":
+        pool = [s for s in MAIL_SEEDS if s.title not in used]
+    else:
+        pool = [s for i, s in enumerate(NOTE_SEEDS) if s[2] not in used]
+    if timed is not None and kind != "note":
+        pool = [s for s in pool if bool(s.clock) == timed]
+    if kind != "note":
+        pool = [s for s in pool if not s.clock or at(day, *s.clock) > now + D(minutes=90)]
+    if not pool:
+        return None
+    s = rng.choice(pool)
+    if kind == "text":
+        text = s.text.format(d=d_said)
+        msg = Msg(s.who, s.who, text, sent, False)
+        w.messages.append(msg)
+        ensure_contact(w, s.who)
+        item = BriefItem(s.title, at(day, *(s.clock or (23, 59))), "messages", s.who, bool(s.clock), msg)
+    elif kind == "mail":
+        course, hw = rng.choice(COURSES)
+        fmt = dict(d=d_said.capitalize() if d_said in ("today", "tomorrow") else d_said, course=course, hw=hw)
+        body = s.body.format(**fmt)
+        em = Email(s.sender, s.addr, s.subject.format(**fmt), sent, body, False, s.person)
+        w.emails.append(em)
+        item = BriefItem(s.title.format(**fmt), at(day, *(s.clock or (23, 59))), "mail", s.sender, bool(s.clock), em)
+    else:
+        title, body, brief_title = s
+        note = Note(title, body.format(d=d_said, D=d_said.capitalize()), sent - D(hours=rng.randint(1, 30)), "Notes")
+        w.notes.append(note)
+        item = BriefItem(brief_title, at(day, 23, 59), "notes", "", False, note)
+    w.brief.append(item)
+    used.add(s[2] if kind == "note" else s.title)
+    return item
+
+
+def seed_waiting(rng, w, now, n=1, *, via_mail=False, who=None):
+    """n people waiting on a reply, each with the text (or email) that makes them wait."""
+    pool = [s for s in WAIT_SEEDS if s[0] not in {p.who for p in (w.waiting or [])} and s[0] not in {m.conv for m in w.messages}]
+    rng.shuffle(pool)
+    if who:
+        pool = [s for s in WAIT_SEEDS if s[0] == who] + pool
+    out = []
+    for name, text, summary in pool[:n]:
+        when = now - D(hours=rng.randint(2, 40))
+        if via_mail and name in ("Hana Kowalczyk", "Naomi Brandt"):
+            w.emails.append(Email(name, name.split()[0].lower() + "@linden.edu", True, "Quick question", text.capitalize(), when, True))
+            w.waiting.append(Waiting(name, summary, "mail", "Quick question", when))
+        else:
+            w.messages.append(Msg(name, name, text, when, True))
+            w.waiting.append(Waiting(name, summary, "messages", text, when))
+        ensure_contact(w, name)
+        out.append(w.waiting[-1])
+    return out
+
+
+# ---- reading the tools' text (the finals are written from what the tool printed, never from the world)
+CLOCK_P = r"(?:\d{1,2}(?::\d\d)? [ap]m)"
+_ENTRY = re.compile(rf"^- (?P<when>all day|{CLOCK_P}) · (?P<title>.+) \((?P<src>calendar|reminder|email|text|note)\)$")
+_HEAD_DAY = re.compile(r"^Day plan for (?P<word>[^,]+), (?P<date>\w{3} \w{3} \d+) \(from Wisp's Brief")
+_HEAD_RANGE = re.compile(r"^Plan for (?P<label>.+), (?P<a>\w{3} \w{3} \d+)–(?P<b>\w{3} \w{3} \d+) \(from Wisp's Brief")
+
+
+class Plan:
+    """What a get_my_day_plan result lists."""
+
+    def __init__(self, text):
+        self.text, self.kind, self.word, self.label = text, None, None, None
+        self.overview, self.days, self.overdue, self.waiting, self.cards, self.other = "", [], [], [], [], []
+        self.more, self.more_by_day, self.empty, self.error = {}, {}, "", ""
+        lines = text.splitlines()
+        if text.startswith("(error"):
+            self.error = text
+            return
+        m = _HEAD_DAY.match(lines[0])
+        r = _HEAD_RANGE.match(lines[0])
+        if m:
+            self.kind, self.word, self.label = "day", m["word"], m["date"]
+        elif r:
+            self.kind, self.word, self.label = "range", r["label"], f"{r['a']}–{r['b']}"
+        else:
+            raise ValueError(f"not a plan: {lines[0]!r}")
+        sec, bucket = None, None
+        for ln in lines[1:]:
+            if ln.startswith("Overview: "):
+                self.overview = ln[len("Overview: "):]
+            elif ln.startswith("Mail and texts have not been analyzed"):
+                raise ValueError("Brief state unavailable")
+            elif ln.startswith("Nothing "):
+                self.empty = ln
+            elif ln.startswith("- …and "):
+                n_more = int(re.match(r"- …and (\d+) more", ln)[1])
+                self.more[sec] = n_more
+                if sec == "day":
+                    self.more_by_day[self.days[-1][0]] = n_more
+            elif ln == "- …":
+                self.more["truncated"] = 1
+            elif ln.startswith("- "):
+                if sec == "day":
+                    e = _ENTRY.match(ln)
+                    if not e:
+                        raise ValueError(f"unparsed plan line {ln!r}")
+                    bucket.append((e["when"], e["title"], e["src"]))
+                elif sec == "overdue" or sec == "other":
+                    title, _, label = ln[2:].partition(" · ")
+                    (self.overdue if sec == "overdue" else self.other).append((title, label))
+                elif sec == "waiting":
+                    mm = re.match(r"- (?P<who>.+?) \((?P<src>text|email)\): (?P<sum>.*)$", ln)
+                    self.waiting.append((mm["who"], mm["src"], mm["sum"]))
+                elif sec == "cards":
+                    self.cards.append(ln[2:])
+            elif ln.endswith(":"):
+                title = ln[:-1]
+                if title == "Overdue":
+                    sec = "overdue"
+                elif title == "Waiting on a reply from you":
+                    sec = "waiting"
+                elif title == "Suggested next steps":
+                    sec = "cards"
+                elif title == "Other to-dos":
+                    sec = "other"
+                else:
+                    sec = "day"
+                    bucket = []
+                    self.days.append((title.replace("Time-bound ", ""), bucket))
+            else:
+                raise ValueError(f"unparsed plan line {ln!r}")
+
+    @property
+    def n_lines(self):
+        return sum(len(e) for _t, e in self.days) + len(self.overdue) + len(self.waiting) + len(self.other)
+
+
+BRIEF_LINE = re.compile(r"^- (?P<day>\w{3}, \w{3} \d+)(?:, due (?P<due>\d{1,2}:\d\d [AP]M))?(?P<over> \(overdue\))? · "
+                        r"(?P<title>.+) \((?P<src>email|text|note)(?: from (?P<who>.+))?\)$")
+
+
+def brief_lines(res):
+    """The dated Brief items a get_upcoming, find_free_time, search_reminders or predict_my_day result lists apart."""
+    out = []
+    if "*Also from your Brief*" not in res:
+        return out
+    for ln in res.split("*Also from your Brief*", 1)[1].splitlines()[1:]:
+        m = BRIEF_LINE.match(ln)
+        if m:
+            out.append(m.groupdict())
+        elif ln.startswith("- "):
+            raise ValueError(f"unparsed Brief line {ln!r}")
+    return out
+
+
+def clock12(when):
+    return when if when == "all day" else when.upper()
+
+
+def src_kind(src, who=None):
+    return {"email": "an email", "text": "a text", "note": "a note"}[src] + (f" from {who}" if who and src != "note" else "")
+
+
+def say_entry(e, loc=False):
+    """One time-bound plan line, in words."""
+    when, title, src = e
+    t = None if when == "all day" else clock12(when)
+    if src == "calendar":
+        return f"{title} at {t}" if t else f"{title}, all day"
+    if src == "reminder":
+        return f"the reminder “{title}” at {t}" if t else f"the reminder “{title}”"
+    return f"“{title}” at {t} (from {src_kind(src)})" if t else f"“{title}” (from {src_kind(src)})"
+
+
+def say_over(items):
+    return join(f"{t} ({lab.replace('Overdue · ', '')} overdue)" for t, lab in items)
+
+
+def lc_first(s):
+    return s[:1].lower() + s[1:] if s[1:2].islower() else s
+
+
+def say_wait(w):
+    who, src, summ = w
+    return f"{who} is waiting on a reply: {lc_first(summ.rstrip('.'))}"
+
+
+def say_other(items, with_day=True):
+    """The plan's 'Other to-dos': a due label ('Sat', 'Fri 11:59 PM') stays as the plan printed it."""
+    return join(f"{t}" + (f" ({lab})" if lab and with_day else "") for t, lab in items)
+
+
+def clock_of(when):
+    """'6:30 pm' -> datetime.time(18, 30); None for 'all day'."""
+    if when == "all day":
+        return None
+    return dt.datetime.strptime(when.upper(), "%I:%M %p" if ":" in when else "%I %p").time()
+
+
+def other_sentence(rng, plan):
+    dated = [(t, lab) for t, lab in plan.other if lab]
+    undated = [(t, lab) for t, lab in plan.other if not lab]
+    out = []
+    if dated:
+        out.append(rng.choice(["Coming up after that: ", "Also coming up: "]) + say_other(dated) + ".")
+    if undated:
+        more = f", and {plan.more['other']} more" if plan.more.get("other") else ""
+        out.append(rng.choice(["Also open: ", "Still open: ", "Whenever there's time: "]) + say_other(undated) + more + ".")
+    return " ".join(out)
+
+
+PLAN_LEADS_TODAY = ["Today you have {x}.", "On today's list: {x}.", "Today holds {x}."]
+PLAN_LEADS_DAY = ["{W} has {x}.", "On {w} you have {x}.", "For {w} there's {x}."]
+PLAN_NONE = ["Nothing is on the clock {w}.", "Nothing is time-bound {w}.", "{W} has nothing on the clock."]
+
+
+def narrate_day(rng, plan, *, bullets=None):
+    """A short prioritized answer to a one-day plan: what is on the clock (Brief items from mail, texts and notes beside
+    the calendar), what is overdue, who is waiting, what else is open. Everything comes from the plan's lines."""
+    word = plan.word
+    w = word if word in ("today", "tomorrow") else word
+    W = w[:1].upper() + w[1:]
+    timed = plan.days[0][1] if plan.days else []
+    bullets = plan.n_lines >= 6 if bullets is None else bullets
+    parts = []
+    if plan.empty:
+        return rng.choice([f"Nothing is on the clock, waiting or open {w}.", f"Nothing is time-bound, waiting or open {w}."])
+    if timed:
+        phrases = [say_entry(e) for e in timed]
+        if plan.more.get("day"):
+            phrases.append(f"{plan.more['day']} more")
+        if not bullets:
+            tmpl = PLAN_LEADS_TODAY if w == "today" else PLAN_LEADS_DAY
+            parts.append(rng.choice(tmpl).format(x=join(phrases), W=W, w=w) if w != "today" else rng.choice(tmpl).format(x=join(phrases)))
+    else:
+        parts.append(rng.choice(PLAN_NONE).format(w=w, W=W))
+    extra = []
+    if plan.overdue:
+        extra.append(("Overdue: " + say_over(plan.overdue) + (f", and {plan.more['overdue']} more" if plan.more.get("overdue") else "") + "."))
+    if plan.waiting:
+        extra.extend(say_wait(x) + "." for x in plan.waiting) if bullets else extra.append(" ".join(say_wait(x) + "." for x in plan.waiting))
+    if plan.other:
+        extra.append(other_sentence(rng, plan))
+    if bullets:
+        lead = rng.choice([f"{W} has {len(timed)} thing{'s' if len(timed) != 1 else ''} lined up:" if timed else f"{W} has nothing on the clock, but there's more:",
+                           f"Here's {w}:" if w in ("today", "tomorrow") else f"Here's {W}:"])
+        rows = [f"- {say_entry(e)[:1].upper()}{say_entry(e)[1:]}" for e in timed]
+        rows += ["- " + x for x in extra]
+        return lead + "\n" + "\n".join(rows)
+    return " ".join(parts + extra)
+
+
+def narrate_today(rng, plan, now, mode="left"):
+    """'what's left today' / 'anything tonight' from TODAY's plan: only what is not behind the clock. mode='tonight' keeps
+    timed items from 5 PM on; an all-day item (a Brief to-do with only a date) is today's, never tonight's, and is
+    named as due today. Overdue, who waits and the other open items follow in 'left' mode."""
+    timed = plan.days[0][1] if plan.days else []
+    ahead, behind, allday = [], [], []
+    for e in timed:
+        c = clock_of(e[0])
+        if c is None:
+            allday.append(e)
+        elif c < now.time():
+            behind.append(e)
+        else:
+            ahead.append(e)
+    if mode == "tonight":
+        late = [e for e in ahead if clock_of(e[0]) >= dt.time(17, 0)]
+        ahead = late
+    parts = []
+    if plan.empty:
+        word = "tonight" if mode == "tonight" else "today"
+        return rng.choice([f"Nothing is on the clock, waiting or open {word}.", f"Nothing is time-bound, waiting or open {word}."])
+    if ahead:
+        phrases = [say_entry(e) for e in ahead]
+        if plan.more.get("day"):
+            phrases.append(f"{plan.more['day']} more")
+        lead = rng.choice(["Tonight you have ", "This evening: ", "On for tonight: "]) if mode == "tonight" else \
+            rng.choice(["Still ahead today: ", "Left today: ", "For the rest of today you have "])
+        parts.append(lead + join(phrases) + ".")
+    else:
+        parts.append("Nothing is on the clock tonight." if mode == "tonight" else "Nothing timed is left today.")
+    if allday:
+        parts.append(rng.choice(["Also due today: ", "Today also has "]) + join(say_entry(e) for e in allday) + ".")
+    if behind and rng.random() < 0.6:
+        e = behind[0]
+        parts.append(f"{say_entry(e)[:1].upper()}{say_entry(e)[1:]} is already behind you.")
+    if mode == "left":
+        if plan.overdue:
+            parts.append("Overdue: " + say_over(plan.overdue) + ".")
+        if plan.waiting:
+            parts.append(" ".join(say_wait(x) + "." for x in plan.waiting))
+        if plan.other:
+            parts.append(other_sentence(rng, plan))
+    return " ".join(parts)
+
+
+def trim_day(entries, cap=3):
+    """At most ``cap`` of a day's lines for a week answer: the mail / text / note items first (they are what the calendar
+    does not show), then the earliest of the rest, in the plan's order. Returns (shown, how many were left out)."""
+    if len(entries) <= cap:
+        return list(entries), 0
+    brief = [e for e in entries if e[2] in ("email", "text", "note")]
+    keep = brief[:cap]
+    keep += [e for e in entries if e not in brief][:cap - len(keep)]
+    shown = [e for e in entries if e in keep]
+    return shown, len(entries) - len(shown)
+
+
+def narrate_range(rng, plan):
+    """A week or weekend plan: each day that has something, then overdue, who waits, what else is open."""
+    lines = []
+    for title, entries in plan.days:
+        shown, hidden = trim_day(entries)
+        hidden += plan.more_by_day.get(title, 0)
+        lines.append(f"- {title}: " + "; ".join(say_entry(e)[:1].upper() + say_entry(e)[1:] for e in shown)
+                     + (f"; and {hidden} more" if hidden else ""))
+    tail = []
+    if plan.overdue:
+        tail.append("- Overdue: " + say_over(plan.overdue))
+    if plan.waiting:
+        tail.append("- " + " ".join(say_wait(x) + "." for x in plan.waiting))
+    if plan.other:
+        tail.append("- Also open: " + say_other(plan.other, with_day=False))
+    if plan.more.get("truncated"):
+        tail.append("- and a few more that the list cut off")
+    if not lines and not tail:
+        return rng.choice([f"Nothing is scheduled, due or waiting {plan.word}.", f"{cap1(plan.word)} is clear: nothing scheduled, due or waiting."])
+    lead = rng.choice([f"Here's {plan.word}:", f"{cap1(plan.word)} looks like this:", f"For {plan.word}:"])
+    if not lines:
+        lead = f"Nothing is on the calendar {plan.word}, but there's more:"
+    return lead + "\n" + "\n".join(lines + tail)
+
+
+def brief_sentence(rng, b):
+    """One apart-listed Brief item (from get_upcoming and the other schedule reads) as a clause."""
+    who = f" from {b['who']}" if b.get("who") else ""
+    kind = {"email": f"an email{who}", "text": f"a text{who}", "note": "a note"}[b["src"]]
+    due = f" at {b['due']}" if b.get("due") else ""
+    late = ", already overdue" if b.get("over") else ""
+    day = {"Mon": "Monday", "Tue": "Tuesday", "Wed": "Wednesday", "Thu": "Thursday", "Fri": "Friday", "Sat": "Saturday",
+           "Sun": "Sunday"}[b["day"].split(",")[0]]
+    return f"{kind} adds “{b['title']}” for {day}{due}{late}"
+
+
+_POINTER = re.compile(r"Wisp's Brief also has (?P<what>[^;]+); get_my_day_plan\(")
+
+
+def with_brief(rng, reply, res, *, only_days=None):
+    """Append the dated Brief items a schedule read listed apart (one sentence), and what its pointer line says the Brief
+    also holds (overdue items, people waiting) when it does."""
+    items = brief_lines(res)
+    if only_days is not None:
+        items = [b for b in items if b["day"] in only_days]
+    sep = "\n\n" if "\n- " in reply else " "
+    add = []
+    if items:
+        clauses = [brief_sentence(rng, b) for b in items[:3]]
+        add.append(rng.choice(["Separately, ", "Beyond the calendar, ", "Also, "]) + join(clauses) + ".")
+    ptr = _POINTER.search(res)
+    if ptr and rng.random() < 0.6:
+        add.append(rng.choice([f"Your Brief also has {ptr['what']}.", f"Besides that, the Brief shows {ptr['what']}."]))
+    return reply.rstrip() + (sep + " ".join(add) if add else "")
+
+
 # ================================================================== A. free / busy
 def period_for(w, day):
     """The period words a model would pass for ``day``: the bare weekday when it resolves there, else 'next <weekday>',
@@ -422,6 +925,13 @@ YN_PART = ["am i free {wd} {part}", "is there any gap in my {wd} {part}", "do i 
 WHAT_PART = ["what's open {wd} {part}", "which bits of {wd} {part} are free", "show me the free stretches {wd} {part}"]
 
 
+def maybe_seed(rng, w, now, day, p=0.3):
+    """With probability p, one dated Brief item (mail, text or note) on ``day``: find_free_time lists it apart, never as busy."""
+    if rng.random() < p:
+        return seed_brief(rng, w, now, day, rng.choice(["mail", "text", "note"]))
+    return None
+
+
 def free_part_of_day(rng, out):
     """'am i free thursday afternoon': find_free_time with day_start/day_end, the ranges in the answer."""
     cases = [("afternoon", "free", "yn"), ("morning", "gaps", "yn"), ("evening", "free", "what"), ("afternoon", "gaps", "yn"),
@@ -439,10 +949,12 @@ def free_part_of_day(rng, out):
             elif rng.random() < 0.5 and lo > 9:
                 put_events(rng, w, day, 1, lo=7, hi=21, max_end=at(day, lo))
             period = period_for(w, day)
+            maybe_seed(rng, w, now, day)
             res, gaps = free_gaps(w, period, day_start=lo, day_end=hi)
             if (mode == "booked") == (not gaps) and len(gaps) <= 3 and (mode != "gaps" or len(gaps) >= 1):
                 break
         else:
+            dropped("free_part_of_day", k)
             continue
         label = wd_name(day)
         prompt = pickp(rng, WHAT_PART if form == "what" else YN_PART, wd=wspell(rng, day), part=part)
@@ -457,7 +969,7 @@ def free_part_of_day(rng, out):
                 reply = fin(rng, f"No, there's no 30-minute gap {label} {part}. You have {body}.",
                             f"{label} {part} is booked solid: {body}.",
                             f"Not really. {label} {part} holds {body}, with no open stretch between.")
-            steps = [[call], [Call("get_upcoming", period=period, calendar_only=True)], Final(reply)]
+            steps = [[call], [Call("get_upcoming", period=period, calendar_only=True)], Final(with_brief(rng, reply, res))]
             note = "part of day with no gap: find_free_time, then read the day and name the conflicts with their times"
         else:
             whole = len(gaps) == 1 and gap_bounds(gaps[0], day) == (at(day, lo), at(day, hi))
@@ -474,7 +986,7 @@ def free_part_of_day(rng, out):
                             f"Yes, there's room {label} {part}, {frm(gaps)}.",
                             f"You have {gap_n(len(gaps))} {label} {part}: {ranges(gaps)}.")
             reply += win(rng, res)
-            steps = [[call], Final(reply)]
+            steps = [[call], Final(with_brief(rng, reply, res))]
             note = "part of day: find_free_time with day_start/day_end, the actual free ranges in the answer"
         out.append(sc(prompt, now, w, steps, note))
 
@@ -502,10 +1014,12 @@ def free_hour_on_date(rng, out):
                     continue
             except Exception:       # noqa: BLE001
                 continue
+            maybe_seed(rng, w, now, day)
             res, gaps = free_gaps(w, period, minutes=mins)
             if yes and gaps and len(gaps) <= 3 or not yes and not gaps:
                 break
         else:
+            dropped("free_hour_on_date", k)
             continue
         prompt = pickp(rng, YN_HOUR, dur=dur, d=said)
         label = long_date(day)
@@ -516,7 +1030,7 @@ def free_hour_on_date(rng, out):
                         f"You do. {label} is open {frm(gaps)}.",
                         f"Yes, {label} has room, {frm(gaps)}.")
             reply += win(rng, res)
-            steps = [[call], Final(reply)]
+            steps = [[call], Final(with_brief(rng, reply, res))]
             note = "a duration on a date: find_free_time(minutes=N); a yes states the actual ranges"
         else:
             evs = sorted(day_items(w, day, reminders=False))
@@ -526,7 +1040,7 @@ def free_hour_on_date(rng, out):
                 body = join(phrase(i) for i in evs)
                 reply = fin(rng, f"No, nothing that long is open on {label}. You have {body}.",
                             f"Not on {label}: there's no gap of {dur}. The day holds {body}.")
-            steps = [[call], [Call("get_upcoming", period=period, calendar_only=True)], Final(reply)]
+            steps = [[call], [Call("get_upcoming", period=period, calendar_only=True)], Final(with_brief(rng, reply, res))]
             note = "no gap long enough: find_free_time, then read the day and name the items with their times"
         out.append(sc(prompt, now, w, steps, note))
 
@@ -548,10 +1062,12 @@ def free_when(rng, out):
                 put_events(rng, w, day, n_ev, lo=max(lo_t.hour + 1, 9) if kind == "today" else 9, hi=17,
                            min_start=lo_t + D(minutes=30) if kind == "today" else None)
             period = "today" if kind == "today" else "tomorrow" if kind == "tomorrow" else period_for(w, day)
+            maybe_seed(rng, w, now, day)
             res, gaps = free_gaps(w, period)
             if gaps and len(gaps) <= 3:
                 break
         else:
+            dropped("free_when", k)
             continue
         prompt = pickp(rng, stems[kind], wd=wspell(rng, day))
         cap = "Today" if kind == "today" else "Tomorrow" if kind == "tomorrow" else wd_name(day)
@@ -562,7 +1078,7 @@ def free_when(rng, out):
             reply = fin(rng, f"{cap} you're free {frm(gaps)}.", f"The open stretches {onw} are {ranges(gaps)}.",
                         f"You have {plural(len(gaps), 'gap')} {onw}: {ranges(gaps)}.")
         reply += win(rng, res)
-        out.append(sc(prompt, now, w, [[Call("find_free_time", period=period)], Final(reply)],
+        out.append(sc(prompt, now, w, [[Call("find_free_time", period=period)], Final(with_brief(rng, reply, res))],
                       "when am I free: find_free_time(period), the free ranges listed in the answer"))
 
 
@@ -583,6 +1099,7 @@ def free_at_time(rng, out):
             day = pick_day(rng, now, 2, 6)
             put_events(rng, w, day, rng.choice([1, 2, 3]), lo=9, hi=17)
             period = period_for(w, day)
+            maybe_seed(rng, w, now, day)
             res, gaps = free_gaps(w, period, minutes=mins)
             if not gaps or len(gaps) > 3:
                 continue
@@ -591,6 +1108,7 @@ def free_at_time(rng, out):
             if bool(inside) == want:
                 break
         else:
+            dropped("free_at_time", k)
             continue
         dur = "an hour" if mins == 60 else "30 minutes"
         prompt = uniq(rng, stem.format(t=tx(rng, h, m), wd=wspell(rng, day), dur=dur))
@@ -610,7 +1128,7 @@ def free_at_time(rng, out):
             reply = fin(rng, f"Yes, {T(t0)} on {label} is taken. You're free {frm(gaps)}.",
                         f"{T(t0)} is spoken for {label}. The open stretches are {ranges(gaps)}.")
         reply += win(rng, res)
-        out.append(sc(prompt, now, w, [[call], Final(reply)],
+        out.append(sc(prompt, now, w, [[call], Final(with_brief(rng, reply, res))],
                       "a specific time: find_free_time, then say whether that time falls in a free range, with the ranges"))
 
 
@@ -699,6 +1217,7 @@ def free_trip(rng, out):
             if (day - now.date()).days <= 6:
                 break
         else:
+            dropped("free_trip", k)
             continue
         add_ev(w, title, dt.datetime.combine(start, dt.time()), nights * 24 * 60, where, all_day=True)
         period = period_for(w, day)
@@ -763,138 +1282,172 @@ def make_today(rng, now, w, n_ahead, n_back, *, rem_ahead=0, rem_back=0, tonight
     return back, ahead, r_ahead, r_back
 
 
+DROPPED: list = []         # (builder, what) for every scenario slot that could not be built: the family raises on any
+
+
+def dropped(name, k, why="no world satisfied the plan"):
+    DROPPED.append((name, k, why))
+
+
+CAL_WORDS = re.compile(r"calendar|schedule|booked|events?|appointments?|meetings?", re.I)
+
+
+def decorate(rng, now, w, day, *, over=0, wait=0, und=0, brief=(), brief_later=(), via_mail=False):
+    """Make ``w`` a Brief-seeded world for ``day``: undated and overdue reminders, people waiting, dated Brief items on
+    ``day`` (kinds in ``brief``) and on a later day (``brief_later``). Returns the seeded BriefItems."""
+    tidy_sources(w)
+    fill_plan_extras(rng, now, w, over, 0, und)
+    used, items = set(), []
+    for kind in brief:
+        it = seed_brief(rng, w, now, day, kind, used=used)
+        if it:
+            items.append(it)
+    for kind in brief_later:
+        it = seed_brief(rng, w, now, day + D(days=rng.randint(1, 3)), kind, used=used)
+        if it:
+            items.append(it)
+    seed_waiting(rng, w, now, wait, via_mail=via_mail)
+    return items
+
+
+def day_plan(w, *args, **kw):
+    return Plan(w.t_get_my_day_plan(*args, **kw))
+
+
 def left_today(rng, out):
-    """'what's left today': today's list against the clock. Earlier items are not left; reminders count."""
-    plans = [  # (hour, ahead events, earlier events, ahead reminders, earlier reminders)
-        (9, 3, 0, 1, 0), (14, 2, 2, 0, 0), (16, 0, 2, 0, 0), (11, 1, 1, 1, 0), (19, 0, 1, 1, 1), (13, 4, 1, 1, 0),
-        (17, 1, 2, 0, 1), (21, 0, 0, 0, 0), (10, 2, 0, 2, 0), (12, 3, 2, 1, 0),
+    """'what's left today': get_my_day_plan reads today's calendar, reminders and the Brief's mail / text / note items;
+    only what is not behind the clock is left, reminders and a due-tonight homework email included."""
+    plans = [  # (hour, ahead events, earlier events, ahead reminders, earlier reminders, brief kinds, overdue, waiting)
+        (9, 3, 0, 1, 0, ("mail",), 0, 0), (14, 2, 2, 0, 0, (), 1, 1), (16, 0, 2, 0, 0, ("text",), 0, 0),
+        (11, 1, 1, 1, 0, ("note",), 0, 0), (19, 0, 1, 1, 1, ("mail",), 0, 1), (13, 4, 1, 1, 0, ("text", "mail"), 1, 0),
+        (17, 1, 2, 0, 1, (), 0, 0), (21, 0, 0, 0, 0, (), 0, 0), (10, 2, 0, 2, 0, ("mail", "note"), 0, 1),
+        (12, 3, 2, 1, 0, ("text",), 2, 1), (8, 1, 0, 1, 0, ("text", "note"), 1, 0), (15, 0, 0, 0, 0, ("mail",), 0, 0),
     ]
     stems = [
-        "what's left on my plate today", "anything still ahead of me today", "what else is on today", "what have i got left today",
-        "is there more today or am i done", "what's still coming up today", "how much of today is left, anything scheduled",
-        "any more today?", "whats still to do today", "what remains on my day",
+        "anything i need to handle for the rest of today", "anything i have to do before bed", "anything left i need to finish today",
+        "what's on my to-do today", "anything still coming up today", "what's coming up the rest of today",
+        "anything i need to get done before tonight", "what's on my list for the rest of today", "anything else due today",
+        "what else is planned for today", "what is still going on today", "anything i should still know today",
+        "what's up for the rest of today", "anything coming up later today", "what's planned for the rest of today",
+        "anything due before midnight", "what am i missing today", "my plans for the rest of today?",
+        "anything i need to do this afternoon", "what's left on my agenda today",
     ]
-    for k, (hour, na, nb, ra, rb) in enumerate(plans):
+    for k, (hour, na, nb, ra, rb, bk, ov, wt) in enumerate(plans):
         for _try in range(60):
             now, w = mk(rng, hour=hour)
             back, ahead, r_ahead, r_back = make_today(rng, now, w, na, nb, rem_ahead=ra, rem_back=rb)
-            if len(ahead) == na and len(r_ahead) == ra and len(back) == nb:
+            if not (len(ahead) == na and len(r_ahead) == ra and len(back) == nb):
+                continue
+            decorate(rng, now, w, now.date(), over=ov, wait=wt, brief=bk)
+            if len(w.brief) == len(bk):
                 break
         else:
+            dropped("left_today", k)
             continue
-        items = [ev_item(e) for e in ahead] + [rem_item(r) for r in r_ahead]
-        items.sort(key=lambda i: i[0])
-        earlier = sorted(back, key=lambda e: e.start)
-        prompt = uniq(rng, *stems)
-        if not items:
-            if earlier:
-                reply = fin(rng,
-                            f"Nothing is left today. {join(phrase(ev_item(e)) for e in earlier)} " + ("was" if len(earlier) == 1 else "were") + " earlier, and nothing else is on.",
-                            f"You're done for today. Earlier you had {join(phrase(ev_item(e)) for e in earlier)}, and nothing else is scheduled.")
-            else:
-                reply = fin(rng, "Nothing is scheduled today, and no reminders are due either.",
-                            "Today is clear: no events and no reminders.")
-        else:
-            reply = agenda(items, fin(rng, "Still ahead today you have", "Left today you have", "For the rest of today you have"), loc=True)
-            if len(items) >= 4:
-                reply = f"Still ahead today, {counts(items)}:\n" + "\n".join("- " + bullet(i, True) for i in items)
-            if earlier and len(items) < 4 and rng.random() < 0.6:
-                reply += f" {earlier[0].title} at {T(earlier[0].start)} is already behind you."
-        out.append(sc(prompt, now, w, [[Call("get_upcoming", period="today")], Final(reply)],
-                      "what's left today: read today, keep only what is ahead of the clock (reminders included), say so plainly when none"))
+        plan = day_plan(w)
+        reply = narrate_today(rng, plan, now, "left")
+        call = Call("get_my_day_plan") if k % 3 else Call("get_my_day_plan", day="today")
+        out.append(sc(uniq(rng, *stems, plan=True), now, w, [[call], Final(reply)],
+                      "what's left today: get_my_day_plan (calendar, reminders, and mail / text / note items from the Brief); only what is ahead of the clock"))
 
 
 def tonight(rng, out):
-    """'anything tonight': the evening's items, a 6 PM reminder included; nothing is claimed that the result lacks."""
-    plans = [
-        (14, 0, 1, 1, 0), (15, 1, 0, 1, 0), (11, 0, 0, 1, 0), (16, 2, 1, 0, 0), (13, 1, 1, 2, 0), (17, 0, 1, 0, 0),
-        (12, 0, 0, 0, 0), (18, 1, 2, 1, 1), (10, 3, 0, 1, 0), (20, 0, 1, 0, 0),
+    """'anything tonight': the plan's evening items, a 6 PM reminder and a homework due at 11:59 PM included; an item with
+    only a date is today's, not tonight's. Earlier items are not tonight."""
+    plans = [  # (hour, ahead events, earlier events, ahead reminders, earlier reminders, brief kinds)
+        (14, 0, 1, 1, 0, ("mail",)), (15, 1, 0, 1, 0, ()), (11, 0, 0, 1, 0, ("text",)), (16, 2, 1, 0, 0, ("mail",)),
+        (13, 1, 1, 2, 0, ("note",)), (17, 0, 1, 0, 0, ()), (12, 0, 0, 0, 0, ("mail", "text")), (18, 1, 2, 1, 1, ("text",)),
+        (10, 3, 0, 1, 0, ()), (20, 0, 1, 0, 0, ("mail",)),
     ]
     stems = [
-        "anything lined up tonight?", "what's on tonight", "do i have plans this evening", "is anything happening tonight",
-        "what've i got tonight", "am i booked tonight or free", "tonight - anything i need to remember",
-        "what's the plan for tonight", "anything this evening?", "got anything on later tonight",
+        "what's happening tonight", "what's planned for tonight", "anything due tonight", "anything coming up tonight",
+        "what's going on tonight", "anything i need to handle tonight", "my plans for tonight?", "what's up for tonight",
+        "what is on tonight", "anything i need to do tonight", "what am i missing tonight", "what's on for tonight",
+        "anything planned this evening", "what's going on this evening",
     ]
-    for k, (hour, na, nb, ra, rb) in enumerate(plans):
+    for k, (hour, na, nb, ra, rb, bk) in enumerate(plans):
         for _try in range(60):
             now, w = mk(rng, hour=hour)
             back, ahead, r_ahead, r_back = make_today(rng, now, w, na, nb, rem_ahead=ra, rem_back=rb, tonight=True)
-            if len(ahead) == na and len(r_ahead) == ra and len(back) == nb:
+            if not (len(ahead) == na and len(r_ahead) == ra and len(back) == nb):
+                continue
+            decorate(rng, now, w, now.date(), brief=bk)
+            if len(w.brief) == len(bk):
                 break
         else:
+            dropped("tonight", k)
             continue
-        items = sorted([ev_item(e) for e in ahead] + [rem_item(r) for r in r_ahead], key=lambda i: i[0])
-        prompt = uniq(rng, *stems)
-        if not items:
-            if back:
-                reply = fin(rng, f"Nothing tonight. {back[0].title} at {T(back[0].start)} was earlier today, and nothing else is on.",
-                            f"Nothing is on for tonight. The only entry today, {back[0].title} at {T(back[0].start)}, is already behind you.")
-            else:
-                reply = fin(rng, "Nothing is on tonight, and no reminders are due.", "Tonight is clear, with no events or reminders.")
-        else:
-            if len(items) == 1 and items[0][2] == "reminder":
-                reply = fin(rng, f"Nothing on the calendar tonight, just the reminder “{items[0][1]}” at {T(items[0][0])}.",
-                            f"No events tonight, only a reminder: “{items[0][1]}” at {T(items[0][0])}.")
-            elif all(i[2] == "reminder" for i in items):
-                reply = fin(rng, "No events tonight, just reminders: " + join(f"“{i[1]}” at {T(i[0])}" for i in items) + ".")
-            elif len(items) >= 4:
-                reply = f"Tonight you have {counts(items)}:\n" + "\n".join("- " + bullet(i, True) for i in items)
-            else:
-                reply = agenda(items, fin(rng, "Tonight you have", "This evening you have", "On for tonight:").replace("On for tonight:", "Tonight you have"), loc=True)
-        out.append(sc(prompt, now, w, [[Call("get_upcoming", period="tonight")], Final(reply)],
-                      "tonight: the evening's events and reminders (a 6 PM reminder counts), earlier items are not tonight"))
+        plan = day_plan(w)
+        reply = narrate_today(rng, plan, now, "tonight")
+        out.append(sc(uniq(rng, *stems, plan=True), now, w, [[Call("get_my_day_plan")], Final(reply)],
+                      "tonight: get_my_day_plan; the evening's events, reminders and Brief items with times; a date-only item is today's, not tonight's"))
 
 
 def left_plan(rng, out):
     """'what do i still have to do today' through get_my_day_plan: time-bound items still ahead, then the rest."""
-    plans = [(10, 2, 1, 1, 0), (13, 1, 1, 0, 1), (15, 2, 0, 1, 0), (18, 0, 1, 0, 0)]
-    stems = ["what do i still need to get done today", "anything else i have to do today", "what's left for me to handle today",
-             "run me through what's still on for today"]
-    for k, (hour, na, ra, n_over, n_wait) in enumerate(plans):
+    plans = [(10, 2, 1, 1, 0, ("mail",)), (13, 1, 1, 0, 1, ("text", "note")), (15, 2, 0, 1, 0, ()), (18, 0, 1, 0, 0, ("mail",))]
+    stems = ["anything i need to get done today", "anything i need to handle today", "what's on my to-do today",
+             "anything i have to do before tonight"]
+    for k, (hour, na, ra, n_over, n_wait, bk) in enumerate(plans):
         for _try in range(60):
             now, w = mk(rng, hour=hour)
             back, ahead, r_ahead, _rb = make_today(rng, now, w, na, 1, rem_ahead=ra, rem_back=0)
-            if len(ahead) == na and len(r_ahead) == ra:
+            if not (len(ahead) == na and len(r_ahead) == ra):
+                continue
+            decorate(rng, now, w, now.date(), over=n_over, wait=n_wait + 1, und=1 if k % 2 == 0 else 0, brief=bk)
+            if len(w.brief) == len(bk):
                 break
         else:
+            dropped("left_plan", k)
             continue
-        fill_plan_extras(rng, now, w, n_over, n_wait, 1 if k % 2 == 0 else 0)
-        reply = plan_text(rng, now, w, "today")
-        prompt = uniq(rng, stems[k])
-        out.append(sc(prompt, now, w, [[Call("get_my_day_plan")], Final(reply)],
+        reply = narrate_day(rng, day_plan(w))
+        out.append(sc(uniq(rng, stems[k], plan=True), now, w, [[Call("get_my_day_plan")], Final(reply)],
                       "what's left to do today: get_my_day_plan; the still-ahead items, overdue, who waits, to-dos"))
 
 
 # ================================================================== C. a named day
 def named_day(rng, out):
-    """'what's on friday' / 'the 14th' / 'next tuesday' / 'nov 9': that date only, every item with time and title."""
-    sizes = [2, 3, 1, 0, 4, 2, 5, 3, 1, 6, 2, 0, 3, 4, 1, 2, 3]
+    """'what's on friday' / 'the 14th' / 'next tuesday' / 'nov 9': that date only. A time-scoped question reads the plan
+    (calendar, reminders and the Brief's mail / text / note items); a question that names the calendar reads
+    get_upcoming, and the final adds the dated Brief items that result lists apart."""
+    sizes = [2, 3, 1, 0, 4, 2, 5, 3, 1, 6, 2, 0, 3, 4, 1, 2, 3, 2, 1, 3]
     kinds = ["wd", "wd", "ordinal", "wd", "date", "next", "wd", "date", "ordinal", "wd", "next", "date", "wd", "ordinal", "wd",
              "date", "wd", "next", "ordinal", "wd"]
     stems = {
-        "wd": ["what's lined up {x}", "is there anything on the calendar {x}", "{x}: what's happening", "tell me about {x}'s plans",
-               "what am i doing {x}", "run me through {x}", "what does {x} look like", "give me {x}'s schedule"],
-        "next": ["what does {x} hold", "what am i up to {x}", "anything booked {x}", "what's scheduled {x}"],
-        "date": ["what's down for {x}", "anything on {x}", "what am i doing on {x}", "list everything on {x}"],
-        "ordinal": ["what's on the calendar for {x}", "what's happening on {x}", "anything planned {x}", "what's going down {x}"],
+        "wd": ["what's planned for {x}", "what's going on {x}", "what's happening {x}", "anything i need to handle {x}",
+               "anything coming up {x}", "what's on {x}", "my plans for {x}?", "anything due {x}", "what's up for {x}",
+               "what is planned {x}", "anything i should know {x}", "what's on for {x}", "anything i have to do {x}",
+               "is there anything on the calendar {x}", "give me {x}'s schedule", "what events do i have {x}",
+               "what's on my calendar {x}", "which meetings do i have {x}", "calendar check for {x}"],
+        "next": ["anything i need to handle {x}", "anything due {x}", "anything coming up {x}", "my plans for {x}?",
+                 "anything i have to do {x}", "anything planned {x}", "anything booked {x}", "what's scheduled {x}",
+                 "what's on my calendar {x}", "which events do i have {x}"],
+        "date": ["anything i need to handle on {x}", "anything due on {x}", "anything coming up on {x}", "my plans for {x}?",
+                 "anything i have to do on {x}", "anything planned for {x}", "what's on my calendar for {x}",
+                 "list the events i have on {x}", "anything booked on {x}"],
+        "ordinal": ["anything i need to handle on {x}", "anything due on {x}", "anything coming up on {x}", "anything planned for {x}",
+                    "anything i have to do on {x}", "my plans for {x}?", "what's on the calendar for {x}",
+                    "any events on {x}", "what appointments do i have on {x}"],
     }
+    brief_plan = ["text", "mail", None, "note", "mail", "text", None, "mail", "note", "text", "mail", None, "text", "note", "mail",
+                  None, "text", "mail", "note", "text"]
     for k, (n, kind) in enumerate(zip(sizes, kinds)):
         for _try in range(80):
             now, w = mk(rng, hour=rng.choice([8, 11, 14, 17, 20, 22]))
             if kind == "wd":
                 day = pick_day(rng, now, 2, 6)
-                said, period = f"{wspell(rng, day)}", WDN[day.weekday()]
+                said_, period = f"{wspell(rng, day)}", WDN[day.weekday()]
             elif kind == "next":
                 day = now.date() + D(days=rng.randint(4, 8))
                 wdn = WDN[day.weekday()]
-                said, period = f"next {wdn}", f"next {wdn}"
+                said_, period = f"next {wdn}", f"next {wdn}"
             elif kind == "ordinal":
                 day = now.date() + D(days=rng.randint(3, 16))
-                said, period = f"the {ordinal(day.day)}", f"the {ordinal(day.day)}"
+                said_, period = f"the {ordinal(day.day)}", f"the {ordinal(day.day)}"
             else:
                 day = now.date() + D(days=rng.randint(3, 18))
-                said, period = date_period(rng, day, now)[0], None
-                period = said.lower()
+                said_, period = date_period(rng, day, now)[0], None
+                period = said_.lower()
             try:
                 if span_day(w, period) != day:
                     continue
@@ -902,41 +1455,46 @@ def named_day(rng, out):
                 continue
             break
         else:
+            dropped("named_day", k, "no day resolved")
             continue
         n_ev = max(n - (1 if n >= 3 and k % 3 == 0 else 0), 0)
         put_events(rng, w, day, n_ev, lo=8, hi=20)
-        n_rem = n - n_ev
-        for r in rng.sample(REM_TITLES, n_rem):
+        for r in rng.sample(REM_TITLES, n - n_ev):
             add_rem(w, r, at(day, rng.choice([9, 12, 17, 20])))
-        # events on neighbouring days that must not appear in the answer
-        for off in (-1, 1):
+        for off in (-1, 1):            # neighbouring days that must not appear in the answer
             if rng.random() < 0.6:
                 put_events(rng, w, day + D(days=off), 1, lo=9, hi=18)
-        items = day_items(w, day)
-        prompt = pickp(rng, stems[kind], x=said)
+        bk = brief_plan[k]
+        decorate(rng, now, w, day, brief=(bk,) if bk else (), wait=1 if k % 4 == 1 else 0, over=1 if k % 5 == 2 else 0)
+        stem_pool = [x.format(x=said_) for x in stems[kind]]
+        use_cal = k % 3 == 1
+        prompt = uniq(rng, *stem_pool, plan=not use_cal)
         label = long_date(day)
-        if not items:
-            reply = fin(rng, f"Nothing is scheduled on {label}, and no reminders are due.",
-                        f"{label} is clear: no events and no reminders.",
-                        f"There's nothing on the calendar for {label}.")
-        elif len(items) >= 4:
-            reply = f"{label} has {counts(items)}:\n" + "\n".join("- " + bullet(i, True) for i in sorted(items))
+        if use_cal:
+            res = w.t_get_upcoming(period=period)
+            items = day_items(w, day)
+            if not items:
+                reply = fin(rng, f"Nothing is on your calendar for {label}, and no reminders are due.",
+                            f"{label} is clear: no events and no reminders.")
+            elif len(items) >= 4:
+                reply = f"{label} has {counts(items)}:\n" + "\n".join("- " + bullet(i, True) for i in sorted(items))
+            else:
+                head = fin(rng, f"On {label} you have", f"{label} has", f"For {label} there's")
+                reply = agenda(items, head, loc=True)
+            reply = with_brief(rng, reply, res)
+            out.append(sc(prompt, now, w, [[Call("get_upcoming", period=period)], Final(reply)],
+                          "a named day, calendar asked: get_upcoming; every item with its time and title, then the dated Brief items it lists apart"))
         else:
-            head = fin(rng, f"On {label} you have", f"{label} has", f"For {label} there's")
-            reply = agenda(items, head, loc=True)
-            if len(items) == 1:
-                it = items[0]
-                if it[2] == "event":
-                    reply = fin(rng, f"Just one thing on {label}: {phrase(it, loc=True)}.",
-                                f"{label} holds only {phrase(it, loc=True)}.")
-                else:
-                    reply = f"No events on {label}, only a reminder: {phrase(it)}."
-        out.append(sc(prompt, now, w, [[Call("get_upcoming", period=period)], Final(reply)],
-                      "a named day or date: that date only, every item with its time and title, an empty day said plainly"))
+            plan = day_plan(w, period)
+            if plan.error:
+                raise ValueError(plan.error)
+            out.append(sc(prompt, now, w, [[Call("get_my_day_plan", day=period)], Final(narrate_day(rng, plan))],
+                          "a named day: get_my_day_plan(day); calendar, reminders and the mail / text / note items from the Brief, an empty day said plainly"))
 
 
 # ================================================================== D. the whole day
 def fill_plan_extras(rng, now, w, n_over, n_wait, n_undated):
+    """Overdue and undated reminders (and, for n_wait > 0 in a world that has not tidied its sources, unread texts)."""
     titles = rng.sample(REM_TITLES, n_over + n_undated + 6)
     taken = {r.title for r in w.reminders}
     titles = [t for t in titles if t not in taken]
@@ -948,83 +1506,146 @@ def fill_plan_extras(rng, now, w, n_over, n_wait, n_undated):
         w.messages.append(Msg(who, who, text, now - D(hours=rng.randint(2, 30)), True))
 
 
-def plan_text(rng, now, w, day="today"):
-    """The whole-day answer from what get_my_day_plan prints."""
-    target = now.date() + D(days=1 if day == "tomorrow" else 0)
-    evs = [e for e in w.events if e.start.date() == target and (day == "tomorrow" or e.end > now)]
-    rems = [r for r in w.reminders if r.due and not r.done and r.due.date() == target and r.due >= now]
-    overdue = sorted([r for r in w.reminders if r.due and not r.done and r.due < now and r.due.date() < now.date()], key=lambda r: r.due)
-    waiting = [m for m in w.messages if m.sender != "Me" and m.unread][:2]
-    undated = [r for r in w.reminders if r.due is None and not r.done][:3]
-    timed = sorted([ev_item(e) for e in evs] + [rem_item(r) for r in rems], key=lambda i: i[0])
-    when = "tomorrow" if day == "tomorrow" else "today"
-    parts = []
-    if timed:
-        if len(timed) >= 4:
-            parts.append(f"{when.capitalize()} you have {counts(timed)}:\n" + "\n".join("- " + bullet(i) for i in timed))
-        else:
-            parts.append(f"{when.capitalize()} you have " + join(phrase(i) for i in timed) + ".")
-    else:
-        parts.append(rng.choice([f"Nothing is time-bound {when}.", f"Nothing is on the clock {when}."]))
-    if overdue:
-        shown = overdue[:3]
-        items = [f"{r.title} ({(now.date() - r.due.date()).days} day{'s' if (now.date() - r.due.date()).days != 1 else ''})" for r in shown]
-        if len(overdue) > 3:
-            items.append(f"{len(overdue) - 3} more")
-        n = len(overdue)
-        lead = rng.choice([f"{plural(n, 'item')} {'is' if n == 1 else 'are'} overdue: ", f"Overdue: "])
-        parts.append(lead + join(items) + ".")
-    if waiting:
-        # the plan prints each waiting person with the text (Mom (text): Call me when you get a chance)
-        names = [f"{m.conv} (“{m.text}”)" for m in waiting]
-        parts.append(f"{join(names)} {'is' if len(names) == 1 else 'are'} waiting on a reply.")
-    if undated:
-        parts.append(rng.choice(["Also on your list: ", "Whenever there's time: "]) + join(r.title for r in undated) + ".")
-    sep = "\n" if "\n" in parts[0] else " "
-    return sep.join(parts)
-
-
 def whole_day(rng, out):
-    """'how does my day look': timed items, overdue, who is waiting and the open to-dos, in a few sentences."""
-    plans = [  # (hour, day, ahead events, reminders ahead, overdue, waiting, undated)
-        (8, "today", 3, 0, 1, 1, 0), (9, "today", 2, 1, 2, 0, 1), (13, "today", 1, 1, 0, 1, 1), (7, "today", 4, 1, 2, 1, 1),
-        (11, "today", 0, 0, 2, 0, 0), (15, "today", 2, 0, 0, 2, 0), (10, "today", 0, 1, 0, 0, 0), (19, "today", 1, 0, 3, 1, 0),
-        (21, "tomorrow", 3, 1, 1, 0, 1), (22, "tomorrow", 2, 0, 0, 1, 0), (20, "tomorrow", 5, 1, 0, 0, 0), (18, "tomorrow", 0, 0, 1, 0, 1),
-        (12, "today", 2, 2, 4, 1, 2), (9, "tomorrow", 1, 1, 0, 2, 0), (16, "today", 3, 0, 0, 0, 0),
+    """'how does my day look': timed items (the Brief's mail / text / note items beside the calendar), overdue, who is
+    waiting and the open to-dos, in a few sentences or a short list."""
+    plans = [  # (hour, day, ahead events, reminders ahead, overdue, waiting, undated, brief kinds, brief later)
+        (8, "today", 3, 0, 1, 1, 0, ("text",), ()), (9, "today", 2, 1, 2, 0, 1, ("mail",), ("note",)),
+        (13, "today", 1, 1, 0, 1, 1, ("note", "mail"), ()), (7, "today", 4, 1, 2, 1, 1, ("mail", "text"), ()),
+        (11, "today", 0, 0, 2, 0, 0, (), ("text",)), (15, "today", 2, 0, 0, 2, 0, ("mail",), ()),
+        (10, "today", 0, 1, 0, 0, 0, ("text",), ("mail",)), (19, "today", 1, 0, 3, 1, 0, (), ()),
+        (21, "tomorrow", 3, 1, 1, 0, 1, ("text", "mail"), ()), (22, "tomorrow", 2, 0, 0, 1, 0, ("note",), ()),
+        (20, "tomorrow", 5, 1, 0, 0, 0, ("mail",), ("text",)), (18, "tomorrow", 0, 0, 1, 0, 1, ("text",), ()),
+        (12, "today", 2, 2, 4, 1, 2, ("mail", "text", "note"), ()), (9, "tomorrow", 1, 1, 0, 2, 0, ("mail",), ()),
+        (16, "today", 3, 0, 0, 0, 0, ("note",), ()), (8, "today", 1, 0, 0, 1, 0, ("mail", "text"), ("mail",)),
+        (20, "tomorrow", 0, 0, 0, 1, 0, ("text", "note"), ()), (12, "today", 0, 0, 1, 0, 0, ("mail", "text"), ()),
     ]
     stems = {
         "today": ["how's my day looking", "walk me through today", "what's the shape of my day", "so what's today like for me",
                   "give me the rundown for today", "what does today look like", "how does today shape up", "okay, my day, go",
                   "what is my day made of", "give me the picture for today", "my day, in a nutshell?",
-                  "what am i dealing with today", "sum up my day for me"],
+                  "what am i dealing with today", "sum up my day for me", "what's on my plate today", "anything i should know about today"],
         "tomorrow": ["how's tomorrow shaping up", "walk me through tomorrow", "give me the lay of the land for tomorrow",
                      "what does tomorrow have in store", "tomorrow, what am i dealing with", "sum up tomorrow for me",
-                     "what's tomorrow made of"],
+                     "what's tomorrow made of", "what do i have to do tomorrow"],
     }
-    for k, (hour, day, ne, nr, n_over, n_wait, n_und) in enumerate(plans):
+    for k, (hour, day, ne, nr, n_over, n_wait, n_und, bk, bl) in enumerate(plans):
         for _try in range(60):
             now, w = mk(rng, hour=hour)
             target = now.date() + D(days=1 if day == "tomorrow" else 0)
             if day == "tomorrow":
                 evs = put_events(rng, w, target, ne, lo=8, hi=20)
-                got_e = len(evs) == ne
-                rems_ = []
                 for t in rng.sample(REM_TITLES, nr):
-                    rems_.append(add_rem(w, t, at(target, rng.choice([9, 12, 17, 20]))))
-                ok = got_e
+                    add_rem(w, t, at(target, rng.choice([9, 12, 17, 20])))
+                ok = len(evs) == ne
             else:
                 back, ahead, r_ahead, _rb = make_today(rng, now, w, ne, 1 if hour > 11 and k % 3 == 0 else 0, rem_ahead=nr)
                 ok = len(ahead) == ne and len(r_ahead) == nr
-            if ok:
+            if not ok:
+                continue
+            decorate(rng, now, w, target, over=n_over, wait=n_wait, und=n_und, brief=bk, brief_later=bl)
+            if len(w.brief) == len(bk) + len(bl):
                 break
         else:
+            dropped("whole_day", k)
             continue
-        fill_plan_extras(rng, now, w, n_over, n_wait, n_und)
-        reply = plan_text(rng, now, w, day)
-        prompt = uniq(rng, *stems[day])
+        plan = day_plan(w, day) if day == "tomorrow" else day_plan(w)
         call = Call("get_my_day_plan") if day == "today" else Call("get_my_day_plan", day="tomorrow")
-        out.append(sc(prompt, now, w, [[call], Final(reply)],
-                      "the whole day: get_my_day_plan; timed items, overdue, who is waiting and open to-dos with counts and nouns"))
+        out.append(sc(uniq(rng, *stems[day]), now, w, [[call], Final(narrate_day(rng, plan))],
+                      "the whole day: get_my_day_plan; timed items (mail / text / note items from the Brief beside the calendar), overdue, who is waiting, open to-dos"))
+
+
+def week_plans(rng, out):
+    """'anything i need to do this week' / 'this weekend' / 'next week': get_my_day_plan with a range; each day that has
+    something, then overdue, who waits and the rest. The Brief's mail / text / note items sit beside the calendar."""
+    plans = [  # (range, weekday of 'now' wanted or None, items per day, brief kinds, waiting, overdue)
+        ("this_week", 0, 2, ("mail", "text"), 1, 0), ("this_week", 1, 1, ("mail", "note"), 0, 1), ("this_week", 2, 2, ("text", "mail", "note"), 1, 1),
+        ("this_week", 0, 1, ("text",), 0, 0), ("this weekend", 2, 1, ("text", "note"), 1, 0), ("this weekend", 3, 2, ("text",), 0, 1),
+        ("next week", 4, 1, ("mail", "text"), 1, 0), ("next week", 5, 1, ("note",), 0, 0), ("this_week", 1, 3, ("mail", "text"), 2, 2),
+        ("this weekend", 0, 1, ("text", "text", "mail"), 0, 0), ("next week", 1, 2, ("mail", "text", "note"), 1, 1),
+        ("this_week", 3, 1, ("mail",), 1, 0),
+    ]
+    stems = {
+        "this_week": ["anything i need to handle this week", "anything due this week", "anything coming up this week",
+                      "what do i have planned this week", "what do i have coming up this week", "what's planned for this week",
+                      "what's up for this week", "my plans for this week?", "what is happening this week",
+                      "what's on my agenda this week", "anything i should know this week", "what am i missing this week",
+                      "anything i have to get done this week", "what's on for this week"],
+        "this weekend": ["what's planned for this weekend", "anything coming up this weekend", "my plans for this weekend?",
+                         "what do i have planned this weekend", "anything i need to handle this weekend",
+                         "what's up for this weekend", "anything due this weekend", "anything i should know this weekend",
+                         "what is planned this weekend"],
+        "next week": ["what's coming up next week", "anything i need to handle next week", "anything due next week",
+                      "what do i have planned next week", "my plans for next week?", "what's planned for next week",
+                      "anything i should prep for next week", "what is happening next week", "anything coming up next week"],
+    }
+    for k, (rg, wd_now, per_day, bk, wt, ov) in enumerate(plans):
+        for _try in range(80):
+            now, w = mk(rng, weekday=wd_now, hour=rng.choice([8, 10, 13, 17]))
+            if rg == "this weekend" and now.weekday() >= 5:
+                continue
+            start, end, _lab = w._span("this week" if rg == "this_week" else rg, True)
+            days = []
+            d0 = max(start.date(), now.date())
+            while d0 < end.date() and len(days) < 7:
+                days.append(d0)
+                d0 += D(days=1)
+            if len(days) < 2:
+                continue
+            pick = rng.sample(days, min(len(days), rng.choice([2, 3])))
+            for d in pick:
+                put_events(rng, w, d, per_day, lo=9, hi=19, min_start=now + D(minutes=90))
+            decorate(rng, now, w, pick[0], over=ov, wait=wt)
+            used = {i.title for i in w.brief}
+            for kind in bk:
+                seed_brief(rng, w, now, rng.choice(days), kind, used=used)
+            if len(w.brief) == len(bk):
+                break
+        else:
+            dropped("week_plans", k)
+            continue
+        plan = day_plan(w, rg)
+        if plan.error:
+            raise ValueError(plan.error)
+        out.append(sc(uniq(rng, *stems[rg], plan=True), now, w, [[Call("get_my_day_plan", day=rg)], Final(narrate_range(rng, plan))],
+                      "a week or weekend: get_my_day_plan with a range; each day's events, reminders and mail / text / note items, then overdue, who waits and the rest"))
+
+
+def calendar_with_brief(rng, out):
+    """The person names the calendar ('what's on my calendar tomorrow', 'which events do i have friday'): get_upcoming, and
+    the final also names the dated mail / text / note items the result lists apart."""
+    stems = ["which events do i have {x}", "anything on my calendar {x}?", "check my calendar for {x}",
+             "what appointments do i have {x}", "calendar for {x}, what's in it", "any meetings on my calendar {x}",
+             "show me the calendar entries for {x}", "what's booked on my calendar {x}"]
+    plans = [("tomorrow", 2, "mail"), ("friday", 1, "text"), ("tomorrow", 0, "text"), ("saturday", 2, "note"), ("tomorrow", 1, "mail"),
+             ("sunday", 0, "text"), ("monday", 2, "mail"), ("friday", 3, "note")]
+    for k, (when, n, bk) in enumerate(plans):
+        for _try in range(60):
+            now, w = mk(rng, hour=rng.choice([8, 12, 17]))
+            day = now.date() + D(days=1) if when == "tomorrow" else None
+            if day is None:
+                day = next((now.date() + D(days=i) for i in range(2, 8) if WDN[(now.date() + D(days=i)).weekday()] == when), None)
+            if day is None:
+                continue
+            put_events(rng, w, day, n, lo=9, hi=19)
+            decorate(rng, now, w, day, brief=(bk,))
+            if len(w.brief) == 1:
+                break
+        else:
+            dropped("calendar_with_brief", k)
+            continue
+        res = w.t_get_upcoming(period=when)
+        items = day_items(w, day)
+        label = long_date(day)
+        if not items:
+            reply = fin(rng, f"Nothing is on your calendar {on_word(day, now)}, and no reminders are due.")
+        elif len(items) >= 4:
+            reply = f"{label} has {counts(items)}:\n" + "\n".join("- " + bullet(i, True) for i in sorted(items))
+        else:
+            reply = agenda(items, fin(rng, f"On {label} you have", f"{label} has"), loc=True)
+        reply = with_brief(rng, reply, res)
+        out.append(sc(uniq(rng, *[x.format(x=when) for x in stems], plan=False), now, w, [[Call("get_upcoming", period=when)], Final(reply)],
+                      "the calendar asked for: get_upcoming; its items, then the dated mail / text / note items the result lists apart"))
 
 
 # ================================================================== E. the past
@@ -1080,6 +1701,7 @@ def the_past(rng, out):
             if len(got) == n:
                 break
         else:
+            dropped("the_past", k)
             continue
         w.past.sort(key=lambda e: e.start)
         window = sorted([e for e in w.past if e.start.date() in days], key=lambda e: e.start)
@@ -1107,13 +1729,26 @@ def the_past(rng, out):
 
 
 # ================================================================== family
+ISO = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d")
+MIN_SCENARIOS = 121                  # the frozen build's day_answers_r4
+
+
 def fam_day_answers_r4(rng):
     out: list = []
     _FIRST.clear()
     USED_PROMPTS.clear()
+    DROPPED.clear()
     for fn in (free_part_of_day, free_hour_on_date, free_when, free_at_time, free_holiday, free_trip,
-               left_today, tonight, left_plan, named_day, whole_day, the_past):
+               left_today, tonight, left_plan, named_day, whole_day, week_plans, calendar_with_brief, the_past):
         fn(rng, out)
+    if DROPPED:
+        raise RuntimeError(f"day_answers_r4 lost scenarios: {DROPPED[:6]}")
+    if len(out) < MIN_SCENARIOS:
+        raise RuntimeError(f"day_answers_r4 has {len(out)} scenarios, the frozen build had {MIN_SCENARIOS}")
+    for sc_ in out:
+        for st in sc_.steps:
+            if isinstance(st, Final) and ISO.search(st.text):
+                raise RuntimeError(f"ISO timestamp in a final: {st.text[:200]!r}")
     return out
 
 

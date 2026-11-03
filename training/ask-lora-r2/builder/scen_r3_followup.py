@@ -73,7 +73,7 @@ import re
 import harness as H
 from harness import Call, Final
 from replies import clock, day_word, join, agenda_reply
-from scen import Scenario, person_texts
+from scen import Scenario, person_texts, plan_arg, plan_final, read_plan, seed_plan, fp_items
 from world import Email, Event, Msg, Reminder
 import scen_r2_act as A
 from scen_r2_act import base_world, style, iso, dphr, bare, clk, WEEKDAYS
@@ -114,6 +114,11 @@ _store.create_session = _create_session_with_history
 
 def turn(user, assistant, tools=None, calls=None):
     return {"user": user, "assistant": assistant, "tools": tools, "calls": calls or []}
+
+
+def plan_turn(user, assistant, day):
+    """An earlier turn that read the day plan (calendar, reminders and the Brief's mail / text / note items)."""
+    return turn(user, assistant, "get_my_day_plan", [{"name": "get_my_day_plan", "args": plan_arg(day), "result": ""}])
 
 
 # =============================================================================
@@ -225,8 +230,8 @@ EVENT_BANK = [
 # =============================================================================
 # 1. day pivot: "and tomorrow?" after a day's agenda
 # =============================================================================
-ASK_DAY_HIST = ["what have I got going on {w}", "anything lined up for {w}", "what's my schedule {w}",
-                "how does {w} look", "what's planned for {w}"]
+ASK_DAY_HIST = ["what's going on {w}", "what's planned for {w}", "what's happening {w}", "anything coming up {w}",
+                "what's on {w}", "my plans for {w}?", "what's up for {w}"]
 PIVOT_DAY = {"and tomorrow?": "tomorrow", "what about tomorrow": "tomorrow", "how about tomorrow?": "tomorrow",
              "and the day after that?": "after", "same question for {wd}": "wd", "and {wd}?": "wd",
              "what about {wd}?": "wd", "how about {wd} then": "wd", "ok and {wd}": "wd"}
@@ -250,16 +255,16 @@ def day_pivot(i):
         b_period = "tomorrow" if db == now.date() + D(days=1) else wd_name(db).lower()
         a_phrase = a_period if a_period in ("today", "tomorrow") else "on " + wd_name(da)
         b_phrase = "tomorrow" if b_period == "tomorrow" else "on " + wd_name(db)
-        rows_a, _, _ = w.upcoming_rows(period=a_period)
-        rows_b, _, _ = w.upcoming_rows(period=b_period)
+        # both days are read with the day plan: calendar, reminders and the mail / text / note items the Brief found
+        seed_plan(rng, w, now, a_period, wait=0)
+        seed_plan(rng, w, now, b_period, tidy=False, wait=0)
+        plan_a, plan_b = read_plan(w, a_period), read_plan(w, b_period)
         pool = [k for k, v in PIVOT_DAY.items() if v == tmpl_kind]
         prompt = rng.choice(pool).format(wd=wd_name(db).lower() if rng.random() < 0.7 else wd_name(db))
-        hist_user = rng.choice(ASK_DAY_HIST).format(w=a_phrase if a_period in ("today", "tomorrow") else f"on {wd_name(da)}")
-        hist = [turn(hist_user, agenda_reply(rows_a, a_phrase, now, rng), "get_upcoming",
-                     [{"name": "get_upcoming", "args": {"period": a_period}, "result": ""}])]
-        final = agenda_reply(rows_b, b_phrase, now, rng)
-        return fu(style(rng, prompt), now, w, [[Call("get_upcoming", period=b_period)], Final(final)],
-                  "follow-up changes only the day: same read, new period", hist)
+        hist_user = rng.choice(ASK_DAY_HIST).format(w=a_period)
+        hist = [plan_turn(hist_user, plan_final(rng, plan_a, now), a_period)]
+        return fu(style(rng, prompt), now, w, [[Call("get_my_day_plan", **plan_arg(b_period))], Final(plan_final(rng, plan_b, now))],
+                  "follow-up changes only the day: same read (the day plan), new day", hist)
     return make
 
 
@@ -568,14 +573,14 @@ def send_that(i, deny=False):
                          [{"name": "get_weather", "args": {"location": "Portland,OR"}, "result": ""}])]
             text = line
         elif kind == 1:
-            evs = rng.sample(EVENT_BANK, 2)
             day = now.date() + D(days=1)
-            evs = sorted(evs, key=lambda e: e[1])
-            c = [at_(day, e[1], e[2]) for e in evs]
-            line = f"Tomorrow you have {evs[0][0]} at {clock(c[0])} and {evs[1][0]} at {clock(c[1])}."
-            text = f"Tomorrow I have {evs[0][0]} at {clock(c[0])} and {evs[1][0]} at {clock(c[1])}."
-            hist = [turn(rng.choice(["what's on tomorrow", "what does tomorrow hold"]), line, "get_upcoming",
-                         [{"name": "get_upcoming", "args": {"period": "tomorrow"}, "result": ""}])]
+            for title_, h_, m_, mins_, loc_ in sorted(rng.sample(EVENT_BANK, 2), key=lambda e: e[1]):
+                w.events.append(Event(title_, at_(day, max(h_, 9), m_), mins_, loc_))
+            seed_plan(rng, w, now, "tomorrow", wait=0, kinds=rng.choice([(), ("text",), ("mail",)]))
+            plan_ = read_plan(w, "tomorrow")
+            line = plan_final(rng, plan_, now)
+            text = "Tomorrow I have " + join(ph for _h, ph in fp_items(plan_, now)) + "."
+            hist = [plan_turn(rng.choice(["what's on tomorrow", "what's planned for tomorrow", "what's going on tomorrow"]), line, "tomorrow")]
         elif kind == 2:
             q, a_, t_ = rng.choice([("how many ounces in a cup", "A cup is 8 fluid ounces.", "A cup is 8 fluid ounces."),
                                     ("what's the capital of Montana", "The capital of Montana is Helena.", "The capital of Montana is Helena."),
@@ -810,8 +815,9 @@ def event_detail(i):
         day = now.date() + D(days=rng.randint(1, 3))
         start = at_(day, h, m)
         w.events = [Event(title, start, mins, loc)]
-        hist = [turn(f"what's happening {day_word(day, now).replace('on ', '')}", f"{title} at {clock(start)}.", "get_upcoming",
-                     [{"name": "get_upcoming", "args": {"period": wd_name(day).lower()}, "result": ""}])]
+        period_ = wd_name(day).lower() if (day - now.date()).days != 1 else "tomorrow"
+        seed_plan(rng, w, now, period_, wait=0, kinds=())
+        hist = [plan_turn(f"what's happening {period_}", plan_final(rng, read_plan(w, period_), now), period_)]
         if i % 2 == 0:
             ask = rng.choice(["where is it", "where's that again", "what's the location"])
             final = _pick(rng, [f"{title} is at {loc}.", f"It's at {loc}."])
@@ -838,15 +844,14 @@ def read_correct(i):
                 w.events.append(Event(title, at_(day, max(h, 9), m), mins, loc))
         pa = wd_name(da).lower() if a != 1 else "tomorrow"
         pb = wd_name(db).lower() if b != 1 else "tomorrow"
-        ra, _, _ = w.upcoming_rows(period=pa)
-        rb, _, _ = w.upcoming_rows(period=pb)
-        phr = lambda p, d: p if p == "tomorrow" else "on " + wd_name(d)
-        hist = [turn(f"what's on {pa}", agenda_reply(ra, phr(pa, da), now, rng), "get_upcoming",
-                     [{"name": "get_upcoming", "args": {"period": pa}, "result": ""}])]
+        seed_plan(rng, w, now, pa, wait=0)
+        seed_plan(rng, w, now, pb, tidy=False, wait=0)
+        plan_a, plan_b = read_plan(w, pa), read_plan(w, pb)
+        hist = [plan_turn(rng.choice([f"what's on {pa}", f"what's planned for {pa}", f"what's going on {pa}"]), plan_final(rng, plan_a, now), pa)]
         wdb = wd_name(db) if b != 1 else "tomorrow"
         ask = rng.choice(["sorry, I meant {x}", "no, {x}", "I meant {x}", "oops, {x} not {y}"]).format(x=wdb.lower() if rng.random() < .6 else wdb, y=pa)
-        return fu(style(rng, ask), now, w, [[Call("get_upcoming", period=pb)], Final(agenda_reply(rb, phr(pb, db), now, rng))],
-                  "correction of the period: same read, the corrected day", hist)
+        return fu(style(rng, ask), now, w, [[Call("get_my_day_plan", day=pb)], Final(plan_final(rng, plan_b, now))],
+                  "correction of the period: same read (the day plan), the corrected day", hist)
     return make
 
 

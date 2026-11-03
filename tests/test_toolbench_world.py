@@ -133,6 +133,7 @@ def test_other_empty_answers_are_no_match(world, fk):
     assert status("complete_reminder", fk["complete_reminder"](title="launch the rocket")) == "no_match"
     world.events = []
     world.reminders = []
+    world.brief, world.waiting = [], []          # a Brief with nothing in it leaves the plain empty answer
     empty = fk["get_upcoming"](period="today")
     assert empty == f"Today is Wednesday, October 14, 2026. Nothing scheduled in today." and status(
         "get_upcoming", empty) == "no_match"
@@ -371,7 +372,9 @@ def test_get_upcoming_honours_its_arguments(world, fk):
     holiday_day = next(e for e in world.events if e["title"] == f["holiday"])["day"].isoformat()
     # Holidays stay out unless asked for.
     assert f["holiday"] not in fk["get_upcoming"](period=holiday_day)
-    assert fk["get_upcoming"](period=holiday_day).startswith("Today is Wednesday, October 14, 2026. Nothing scheduled in")
+    # Nothing on the calendar that day, so the answer is the empty one plus the Brief's pointer (people waiting).
+    assert fk["get_upcoming"](period=holiday_day).startswith(
+        "Today is Wednesday, October 14, 2026. Nothing on your calendar or reminders in")
     assert f"**All day** — {f['holiday']}" in fk["get_upcoming"](period=holiday_day, include_holidays=True)
     # period / days / query / calendar_only / boundary.
     assert "Brunch with" in fk["get_upcoming"](period="sunday") and "Patel" not in fk["get_upcoming"](period="sunday")
@@ -667,6 +670,7 @@ def test_permission_denied_mode_returns_production_sentences(world, fk, domain):
 
 def test_permission_denied_calendar_get_upcoming_and_free_time(world, fk):
     world.access_needed = {"calendar", "reminders"}
+    world.brief, world.waiting = [], []          # the Brief reads mail and texts, not Calendar: leave it out here
     text = fk["get_upcoming"]()
     assert text.startswith("Wisp could not check Calendar and Reminders. ")
     assert text.endswith("This schedule may be incomplete.\nNo scheduled items were found in the sources that could be checked.")

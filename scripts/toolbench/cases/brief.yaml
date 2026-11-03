@@ -1,0 +1,306 @@
+# Brief: every source counts when the question is about a day, a week or "what's coming up".
+#
+# r3's live test (2026-11-02) missed things Wisp's Brief had already read out of mail, texts and notes:
+#   - "what is my plan for saturday" called get_upcoming (calendar only) and missed a family lunch that
+#     exists only in a text;
+#   - "and friday?" made no call at all and missed a due time (11:59 PM) from an email (the bare "and friday?"
+#     and "and sunday?" are r3 training prompts, so the cases word it "and for friday?");
+#   - "I mean this week" kept to the calendar;
+#   - "draft a message responding to <person>" did not read her thread, although an earlier turn had.
+# USER RULE: all sources are considered, and the Brief tab is a source itself, for any time-scoped or
+# to-do question ("what's going on", "anything I need to do", "what's coming up", "what's on <day>",
+# "my plan for <day>").
+#
+# The world seeds three Brief items through the live renderers (scripts/toolbench/world.py, build_world):
+#   Friday    11:59 PM  "RSVP for the block party"                      email   (Neighborhood Association)
+#   Saturday  all day   "Plan for lunch at Mom's place for the Diwali celebration"   text from Mom
+#   Sunday    all day   "Pick up the silk scarf for Mom"                note
+# plus two people waiting on a reply (Priya by mail, {friend_first} by text about dinner at {restaurant}).
+# get_my_day_plan(day=today|tomorrow|a weekday|a date|this_week|this weekend|next week) renders them
+# with production's own code; get_upcoming, find_free_time, search_reminders and predict_my_day append
+# the "Also from your Brief" section the same way. A model that reads only the calendar cannot name
+# them, so a plain `answer.contains_all` is the check: either route is accepted as long as the item
+# reaches the answer. Explicit calendar asks ("what's on my calendar saturday") stay get_upcoming, and
+# the final still names the Brief items the result appends.
+#
+# The days are the coming weekdays the production resolver gives (the same on any weekday of the run),
+# but "this week" and "this weekend" reach them only while the days are still ahead: run these on a
+# Monday to Friday. A range answer is one the production renderer caps (four items a day), and the world's
+# own events fall on the same days as the date moves, so a week or weekend case accepts ANY of the three
+# items; the single-day cases name the one item that day holds. All cases are gate (held out) except the two dev probes named `*_bare`. History turns are ideal replies to a narrower
+# question (a calendar read, one day) so that the follow-up is what must widen it.
+
+# ======================================================================= one question, broad phrasings
+- id: brief_plan_saturday
+  prompt: "what is my plan for saturday"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_all: [Diwali], contains_any: [lunch, Mom]}
+  trap: "r3 live test: get_upcoming(calendar_only) for 'my plan for saturday' missed the lunch at Mom's place that only a text carries; the plan is one get_my_day_plan(day=saturday)"
+- id: brief_going_on_saturday
+  prompt: "what do i have going on saturday"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_all: [Diwali], contains_any: [lunch, Mom]}
+  trap: "a lowercase fragment, same Saturday: the text-derived lunch is named, not only the calendar"
+- id: brief_week_todo
+  prompt: "is there anything I have to do this week"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief, search_reminders]}]
+  forbid: [web_search]
+  answer: {contains_any: ["block party", Diwali, scarf]}
+  trap: "the user rule: a to-do question over a week includes what mail and texts carry (an RSVP due Friday 11:59 PM, Saturday's lunch), not only reminders"
+- id: brief_coming_up
+  prompt: "so what's coming up for me"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_all: ["block party", Diwali]}
+  trap: "'what's coming up' has no day: the plan lists the dated mail/text/note items under other to-dos and get_upcoming under 'Also from your Brief'; a calendar-only summary leaves them out"
+- id: brief_this_weekend
+  prompt: "how's my weekend looking"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_any: [Diwali, scarf]}
+  trap: "weekend range: Saturday's lunch comes from a text, not the calendar"
+- id: brief_have_friday
+  prompt: "do i have anything on friday"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_all: ["block party", "11:59"]}
+  trap: "r3 'and friday?' missed an email's 11:59 PM due: the answer names the item and its time"
+- id: brief_plan_this_week
+  prompt: "what's my plan for this week"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_any: ["block party", Diwali, scarf]}
+  trap: "r3 'I mean this week' used calendar_only; the week plan carries both the email and the text item"
+- id: brief_todos_include_brief
+  prompt: "what are my to-dos"
+  expect: [{any_of: [search_reminders, get_my_day_plan]}]
+  forbid: [web_search]
+  answer: {contains_any: ["block party", Diwali, scarf]}
+  trap: "reminders are not the whole to-do list: search_reminders lists the Brief's mail/text/note to-dos apart and the answer carries them"
+
+# ======================================================================= explicit calendar asks stay get_upcoming
+- id: brief_calendar_saturday_explicit
+  prompt: "what's on the calendar for saturday"
+  expect: [{tool: get_upcoming}]
+  forbid: [web_search]
+  answer: {contains_all: [Diwali]}
+  trap: "an explicit calendar ask keeps the calendar read (get_upcoming), and the final still mentions the lunch the result appends under 'Also from your Brief'"
+- id: brief_calendar_events_week
+  prompt: "which events do i have this week"
+  expect: [{tool: get_upcoming}]
+  forbid: [web_search]
+  answer: {contains_any: ["block party", Diwali]}
+  trap: "'events' is the calendar, so get_upcoming; the appended Brief items (an RSVP, a lunch) are relevant to the week and the final mentions them apart from the events"
+
+# ======================================================================= follow-ups: a fresh call, the new day's Brief items
+- id: brief_fu_and_friday
+  history:
+    - user: "what is my plan for saturday"
+      assistant: "Saturday has lunch at Mom's place for the Diwali celebration, and {friend_first} is waiting on a reply about dinner at {restaurant} at {dinner_time}."
+      tools: get_my_day_plan
+      calls:
+        - {name: get_my_day_plan, args: {day: saturday}, result: "Day plan for Saturday (from Wisp's Brief)\nTime-bound Saturday:\n- all day · Plan for lunch at Mom's place for the Diwali celebration (text)\nWaiting on a reply from you:\n- {friend} (text): Asked about dinner at {restaurant} at {dinner_time} on Saturday"}
+  prompt: "and for friday?"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_all: ["block party", "11:59"]}
+  trap: "r3 live test: 'and friday?' made no call and missed a due time; it needs a fresh read for Friday, and Saturday's answer is not Friday's"
+- id: brief_fu_and_friday_noq
+  history:
+    - user: "what is my plan for saturday"
+      assistant: "Saturday has lunch at Mom's place for the Diwali celebration, and {friend_first} is waiting on a reply about dinner at {restaurant} at {dinner_time}."
+      tools: get_my_day_plan
+  prompt: "ok and then friday"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_all: ["block party", "11:59"]}
+  trap: "the same follow-up with no question mark and no captured call: still a fresh call for the new day"
+- id: brief_fu_and_sunday
+  history:
+    - user: "do i have anything on friday"
+      assistant: "On Friday you have an RSVP for the block party, due by 11:59 PM, along with yoga and standup."
+      tools: get_my_day_plan
+  prompt: "and for sunday?"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_all: [scarf], contains_any: [Brunch, "{friend_first}"]}
+  trap: "a note-derived item (picking up the silk scarf for Mom) is named beside Sunday's calendar brunch"
+- id: brief_fu_what_about_saturday
+  history:
+    - user: "do i have anything on friday"
+      assistant: "On Friday you have an RSVP for the block party, due by 11:59 PM, along with yoga and standup."
+      tools: get_my_day_plan
+  prompt: "what about saturday"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_all: [Diwali]}
+  trap: "the follow-up moves to Saturday; the text-derived lunch must be named, and Friday's RSVP is not repeated as Saturday's"
+- id: brief_fu_i_mean_this_week
+  history:
+    - user: "what do i have on my calendar for today?"
+      assistant: "Not much today, just a reminder to water the plants at 6 pm."
+      tools: get_upcoming
+      calls:
+        - {name: get_upcoming, args: {period: today}, result: "Today: Water the plants at 6:00 PM (reminder)"}
+  prompt: "I mean this week"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_any: ["block party", Diwali, scarf]}
+  trap: "r3 live test: 'I mean this week' was answered with calendar_only; the week includes the email and text items"
+- id: brief_fu_whole_week_widen
+  history:
+    - user: "what do i have on the calendar this week"
+      assistant: "This week you have the dentist with Dr. {dentist} tomorrow at {dentist_time}, standup on Monday, Wednesday and Friday, and brunch on Sunday."
+      tools: get_upcoming
+  prompt: "i mean everything, texts and emails too"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_any: ["block party", Diwali, scarf]}
+  trap: "the user widens the scope to all sources; a fresh read brings the Brief items into the answer"
+- id: brief_fu_rest_of_week
+  history:
+    - user: "when is my dentist appointment?"
+      assistant: "Your dentist appointment with Dr. {dentist} is tomorrow at {dentist_time}."
+      tools: get_upcoming
+  prompt: "and the rest of the week?"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_any: ["block party", Diwali, scarf]}
+  trap: "a follow-up phrasing the host's day-follow-up pattern does not match: still a fresh, all-source read for the week"
+- id: brief_fu_this_weekend
+  history:
+    - user: "do i have anything on friday"
+      assistant: "On Friday you have an RSVP for the block party, due by 11:59 PM, along with yoga and standup."
+      tools: get_my_day_plan
+  prompt: "how about this weekend"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_any: [Diwali, scarf]}
+  trap: "a range follow-up after a day: the weekend carries Saturday's lunch (text) and Sunday's scarf (note)"
+- id: brief_fu_anything_else
+  history:
+    - user: "do i have anything on friday"
+      assistant: "On Friday you have an RSVP for the block party, due by 11:59 PM, along with yoga and standup."
+      tools: get_my_day_plan
+  prompt: "anything else I have to do this week"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief, search_reminders]}]
+  forbid: [web_search]
+  answer: {contains_any: [Diwali, scarf]}
+  trap: "the rest of the week after one day: a fresh week read finds Saturday's lunch"
+- id: brief_fu_after_chat
+  history:
+    - user: "how warm will it get out there tomorrow?"
+      assistant: "Tomorrow in {city} the high is {high_tomorrow} degrees."
+      tools: get_weather
+    - user: "how much is a 20% tip on 64 dollars?"
+      assistant: "A 20% tip on 64 dollars is 12.80."
+    - user: "thanks. any good name for a plant?"
+      assistant: "Fernando has a nice ring to it."
+    - user: "ha. ok"
+      assistant: "Glad that landed. Anything else I can do?"
+  prompt: "what is my plan for saturday"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_all: [Diwali]}
+  trap: "the same Saturday question after four unrelated exchanges: the history must not stand in for a read"
+- id: brief_fu_after_mail
+  history:
+    - user: "any new mail today?"
+      assistant: "Yes. Mom sent her flight details, {coworker_first} says the Q3 budget review moved to Thursday at 10, and the landlord says the water is off Tuesday."
+      tools: view_emails
+  prompt: "do i have anything on friday"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_all: ["block party", "11:59"]}
+  trap: "a day question right after a mail read: the day's own Brief item is named, not just the emails already summarized"
+- id: brief_fu_and_tomorrow
+  history:
+    - user: "what is my plan for saturday"
+      assistant: "Saturday has lunch at Mom's place for the Diwali celebration, and {friend_first} is waiting on a reply about dinner at {restaurant} at {dinner_time}."
+      tools: get_my_day_plan
+  prompt: "ok and how does tomorrow look then?"
+  expect: [{any_of: [get_my_day_plan, get_upcoming, daily_brief]}]
+  forbid: [web_search]
+  answer: {contains_all: ["{dentist}"]}
+  trap: "a follow-up for tomorrow after Saturday: a fresh read, answered with tomorrow's dentist appointment, not Saturday's lunch"
+
+# ======================================================================= drafting a reply reads the thread first
+# An earlier turn surfaced the person, but production keeps only the assistant's text, not the thread
+# it read. Replying to someone needs their words, so the thread is read again and the draft answers it.
+# HOST GAP (service/model_only.py, found while writing these): `pure_writing()` treats "draft a message
+# responding to <name>" and "write <name> a reply about ..." as writing with nothing to read, so
+# ask_forbidden_tools() withholds view_messages and summarize_messages and the draft cannot be grounded;
+# this is how r3 drafted without reading her thread. `_STORED_CONTENT` matches "reply to" and "respond
+# to" but not "responding to". The gate cases use phrasings the host already treats as reading
+# ("draft a reply to <name>"); the user's exact wording is the dev probe `*_responding_*`, which no model
+# can pass until `_STORED_CONTENT` also matches repl(y|ying)/respon(d|ding|se). Flip those to gate then.
+- id: brief_draft_reply_friend
+  history:
+    - user: "what is my plan for saturday"
+      assistant: "Saturday has lunch at Mom's place for the Diwali celebration, and {friend_first} is waiting on a reply about dinner at {restaurant} at {dinner_time}."
+      tools: get_my_day_plan
+  prompt: "draft a reply to {friend_first}"
+  expect:
+    - any_of: [view_messages, summarize_messages]
+    - {tool: draft_message, args: {to: {icontains: "{friend_first}"}, text: {regex: "{restaurant}|dinner|saturday|7|seven|works|sounds|count me|can't|cannot|yes|sure"}}}
+  forbid: [send_message, send_email]
+  trap: "r3 live test: the draft to the person an earlier turn surfaced was written without reading the thread; the thread is read, then the draft answers the dinner question (a draft, not a send)"
+- id: brief_draft_reply_friend_dinner
+  history:
+    - user: "is there anything I have to do this week"
+      assistant: "You owe an RSVP for the block party by 11:59 PM on Friday, there's lunch at Mom's place for Diwali on Saturday, and {friend_first} is waiting on a reply about dinner at {restaurant}."
+      tools: get_my_day_plan
+  prompt: "draft a reply to {friend_first} about dinner"
+  expect:
+    - any_of: [view_messages, summarize_messages]
+    - {tool: draft_message, args: {to: {icontains: "{friend_first}"}}}
+  forbid: [send_message, send_email]
+  trap: "the reply is about the thread's own question: read it, then draft"
+- id: brief_draft_reply_mom_lunch
+  history:
+    - user: "how's my weekend looking"
+      assistant: "Saturday is lunch at Mom's place for the Diwali celebration, and Sunday you have brunch with {friend_first} and a silk scarf to pick up for Mom."
+      tools: get_my_day_plan
+  prompt: "draft a reply to mom about the lunch"
+  expect:
+    - any_of: [view_messages, summarize_messages]
+    - {tool: draft_message, args: {to: {regex: "mom|{mom_phone_tail}"}, text: {regex: "saturday|lunch|diwali|bring|there|come|dessert|sweets"}}}
+  forbid: [send_message, send_email]
+  trap: "the lunch exists only in Mom's text; a good draft needs her wording (what to bring), so the thread is read first"
+- id: brief_draft_responding_friend_bare
+  split: dev
+  history:
+    - user: "what is my plan for saturday"
+      assistant: "Saturday has lunch at Mom's place for the Diwali celebration, and {friend_first} is waiting on a reply about dinner at {restaurant} at {dinner_time}."
+      tools: get_my_day_plan
+  prompt: "draft a message responding to {friend_first}"
+  expect:
+    - any_of: [view_messages, summarize_messages]
+    - {tool: draft_message, args: {to: {icontains: "{friend_first}"}}}
+  forbid: [send_message, send_email]
+  trap: "the user's exact wording from the r3 live test; fails for every model until the host stops treating 'responding to' as pure writing (see the HOST GAP note above)"
+- id: brief_draft_responding_mom_bare
+  split: dev
+  history:
+    - user: "how's my weekend looking"
+      assistant: "Saturday is lunch at Mom's place for the Diwali celebration, and Sunday you have brunch with {friend_first} and a silk scarf to pick up for Mom."
+      tools: get_my_day_plan
+  prompt: "draft a message responding to mom about the lunch"
+  expect:
+    - any_of: [view_messages, summarize_messages]
+    - {tool: draft_message, args: {to: {regex: "mom|{mom_phone_tail}"}}}
+  forbid: [send_message, send_email]
+  trap: "the same host gap with a second subject"
+- id: brief_reply_block_party_email
+  history:
+    - user: "do i have anything on friday"
+      assistant: "On Friday you have an RSVP for the block party, due by 11:59 PM, along with yoga and standup."
+      tools: get_my_day_plan
+  prompt: "reply to the block party email and say we'll be there"
+  expect:
+    - {tool: view_emails}
+    - {any_of: [reply_to_email, draft_email]}
+  forbid: [send_message, forward_email]
+  trap: "the RSVP is an email's due time: the reply needs that message (its id and address), so the mail is read again before the reply or draft"

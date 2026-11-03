@@ -31,6 +31,7 @@ A literal body ("text X saying ...") gathers nothing.
 from __future__ import annotations
 
 import datetime as dt
+import re
 
 import gen
 from harness import Call, Final
@@ -202,11 +203,18 @@ def typo(rng, p, rate=0.1):
     return p
 
 
+def web_reachable(p, src):
+    """Production's tool ranking drops web_search for a filler-led "send a text to X with <lookup>" request ("uh send a
+    text to dad with the portland gas price"); a gather that searches the web must not open that way."""
+    return not (any(c.name == "web_search" for c in src.calls)
+                and re.match(r"(uh|um|ok so|okay so) ", p) and " a text to " in p)
+
+
 def choose(rng, fn, w, src, i):
     """styled(fn(...)) for the first template from index i that production lets read and draft."""
     for k in range(len(PREFIX) * 3):
         p = typo(rng, styled(rng, fn(w, src, i + k // len(PREFIX))))
-        if ok_prompt(p):
+        if ok_prompt(p) and web_reachable(p, src):
             return p
     raise RuntimeError(f"no usable prompt for {fn.__name__}")
 
@@ -679,20 +687,34 @@ def month_world(rng, period, tries=80):
 
 
 def src_month(rng, w, now, period, at=None):
-    """The calendar for a month window, as get_upcoming(period=...) prints it: events with their dates."""
+    """The calendar for a month window, as get_upcoming(period=...) prints it: events with their dates. The result also
+    lists dated mail / text / note items apart (the Brief); the message carries those too."""
+    from scen import R4D, seed_plan
+    R = R4D()
+    if rng.random() < 0.7:
+        seed_plan(rng, w, now, period, tidy=False, wait=0, kinds=(rng.choice(["text", "mail", "note"]),))
     rows, _, _ = w.upcoming_rows(period=period, calendar_only=True)
     rows = sorted(rows, key=lambda r: r["when_ts"])
     if at is not None:
         rows = [r for r in rows if ts(r) >= at]
-    if not (3 <= len(rows) <= 7):
+    res = w.t_get_upcoming(period=period, calendar_only=True)
+    found = []
+    for b in R.brief_lines(res):
+        d = dt.datetime.strptime(f"{b['day']} {now.year}", "%a, %b %d %Y")
+        d = d.replace(year=now.year + 1) if d < now - D(days=30) else d
+        if at is not None and d.date() < at.date():
+            continue
+        found.append((d + D(hours=23, minutes=59), f"{b['title']} on {d:%b} {d.day}" + (f" at {b['due']}" if b.get("due") else "")))
+    merged = sorted([(ts(r), f"{r['title']} on {ts(r):%b} {ts(r).day} at {clock(ts(r))}") for r in rows] + found)
+    if not (3 <= len(merged) <= 7):
         return None
-    items = [f"{r['title']} on {ts(r):%b} {ts(r).day} at {clock(ts(r))}" for r in rows]
+    items = [t for _, t in merged]
     lead = "Next month I have" if period == "next month" else "This month I have"
     text = f"{lead} {join(items)}."
     lines = f"{lead}:\n" + "\n".join(f"- {it}" for it in items)
     return Src([Call("get_upcoming", period=period, calendar_only=True)], text, lines,
                "My schedule for next month" if period == "next month" else "My schedule for this month",
-               f"your calendar for {period}, {len(rows)} events", f"my calendar for {period}", f"what i have on {period}", lead)
+               f"your calendar for {period}, {len(items)} items", f"my calendar for {period}", f"what i have on {period}", lead)
 
 
 def month_src(rng, period, tries=40):

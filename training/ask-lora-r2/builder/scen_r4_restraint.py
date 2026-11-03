@@ -103,12 +103,14 @@ def _attempt(make, rng, tries=6):
     return None
 
 
-def mk(prompt, now, w, steps, notes, *, cards=(), approve=None, must_see=(), history=None, no_effect=False, profile=None):
+def mk(prompt, now, w, steps, notes, *, cards=(), approve=None, must_see=(), history=None, no_effect=False, profile=None,
+       unsafe_reads=()):
     if history:
         w.history = history
     sc = A.mk(FAMILY, prompt, now, w, steps, notes, approve=approve, cards=list(cards), must_see=must_see, profile=profile)
     sc.history = history
     sc.no_effect = no_effect
+    sc.unsafe_reads = tuple(unsafe_reads)      # RL-SCOPE C6: read tools that are wrong for this prompt in this world
     return sc
 
 
@@ -1219,7 +1221,7 @@ def _m_nocity(i):
             steps = [[Call("recall", query="home city")], Final(fin(rng, *ASK_CITY_NOMEM))]
         return mk(style(rng, prompt), now, w, steps,
                   "no city in the prompt and none in the profile or memory: ask which city; get_weather is not called",
-                  profile=NO_ABOUT)
+                  profile=NO_ABOUT, unsafe_reads=("get_weather",))
     return make
 
 

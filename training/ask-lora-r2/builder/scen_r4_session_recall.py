@@ -222,6 +222,13 @@ def _check(sc):
             assert _has(anchor["assistant"], need), f"{kind}: {need!r} not in the anchor reply"
     if rules.get("ends_question"):
         assert final.rstrip().endswith("?"), f"{kind}: not a question {final!r}"
+    # a position claim is true only for an anchor at that position (r3 verifier: 'your first message' on exchange 9)
+    apos = rules.get("anchor") if isinstance(rules.get("anchor"), int) else None
+    if kind in ("l_user", "l_asst"):
+        if re.search(r"\bfirst (message|answer)\b", final, re.I):
+            assert apos == 0, f"{kind}: 'first message/answer' claimed for an anchor at exchange {apos}: {final!r}"
+        if re.search(r"\bnear the start\b", final, re.I):
+            assert apos in (0, 1), f"{kind}: 'near the start' claimed for an anchor at exchange {apos}: {final!r}"
     # ---- host and leak checks (drops)
     if rules.get("no_call") and asks_personal_data(sc.prompt):
         return False, "personal-data guard: the host re-prompts for a tool"
@@ -360,7 +367,28 @@ def sc_(rng, prompt, now, w, steps, notes, history, kind, **rules):
     sc.must_see = []
     sc.kind = kind
     sc.rules = rules
+    sc.anchor_pos = rules["anchor"] if isinstance(rules.get("anchor"), int) else None   # meta.anchor_pos
+    _recall_labels(sc, kind, rules)
     return sc
+
+
+# RL-SCOPE C6/C7: the recall labels follow the question KIND. A recall kind carries the refs the answer must bring
+# back (the asked-for detail first); a never-said kind carries the detail that never came up; every other kind
+# (agenda/mail/weather re-reads, challenges, recaps, memory lookups) carries none. `thread` is left to build.py,
+# which derives it from the seeded history (build.conversation_key) so one rule serves every session family.
+RECALL_QKIND = {"l_user": "rec_user", "l_first": "rec_user", "s4_first": "rec_user", "l_asst": "rec_asst", "s4_goback": "rec_asst"}
+NEVER_QKIND = {"l_never_user", "l_never_asst"}
+
+
+def _recall_labels(sc, kind, rules):
+    if kind in RECALL_QKIND:
+        refs = tuple(rules.get("must") or ())
+        assert refs, f"{kind}: a recall kind without refs"
+        sc.qkind, sc.recall_refs = RECALL_QKIND[kind], refs
+    elif kind in NEVER_QKIND:
+        sc.qkind = "rec_none"
+        sc.recall_absent = rules.get("stem") or (rules.get("absent") or ("",))[0]
+        assert sc.recall_absent, f"{kind}: a never-said kind without the absent detail"
 
 
 # =============================================================================
@@ -1811,7 +1839,7 @@ def s3_mail(changed):
             avail = [m for m in MAILS if m not in ms]
             new = rng.choice(avail)
             w.emails.insert(0, Email(new["s"], new["a"], new["subj"], now - D(minutes=rng.randint(5, 30)), bodylines(new["body"]), True, True))
-            final = fin(rng, f"Not anymore: a new one has come in from {new['s']}, “{new['subj']}”, so you have 4 unread now.",
+            final = fin(rng, f"Yes, one more has come in: {new['s']} sent “{new['subj']}”, so you have 4 unread now.",
                         f"It has changed. {new['s']} just sent “{new['subj']}”, which makes 4 unread.")
             must = [new["s"], new["subj"], "4"]
             kind = "s3_mail_new"
@@ -2624,8 +2652,23 @@ ASSTFACT = [
 # Anchors: a fact the USER stated in exchange 1, a fact the ASSISTANT stated in its first long reply, "what was the
 # first thing I asked", a personal fact never said (broad recall, then an honest "not in this chat, not saved"),
 # and a suggestion the assistant never made (answered from the conversation, with what was covered).
-USER_LEADS = ["", "", "You mentioned it near the start of our chat. ", "That came up in your first message. "]
-ASST_LEADS = ["", "", "That was in my first answer. ", "I said that near the start. "]
+# A position claim ("first message", "near the start") is made only when the anchor really sits there; any other
+# position gets a position-neutral lead. meta.anchor_pos records the anchor's exchange index (0 = the first).
+USER_LEADS_FIRST = ["", "", "You mentioned it near the start of our chat. ", "That came up in your first message. "]
+ASST_LEADS_FIRST = ["", "", "That was in my first answer. ", "I said that near the start. "]
+USER_LEADS_NEAR = ["", "", "You mentioned it near the start of our chat. ", "You said so early in our chat. "]
+ASST_LEADS_NEAR = ["", "", "I said that near the start. ", "I said that early in our chat. "]
+USER_LEADS_ANY = ["", "", "You mentioned it earlier in our chat. ", "That came up earlier. "]
+ASST_LEADS_ANY = ["", "", "I said that earlier in our chat. ", "That was in one of my earlier answers. "]
+
+
+def leads_for(pos, user):
+    """The lead-in pool whose position claim is true for an anchor at exchange index `pos`."""
+    if pos == 0:
+        return USER_LEADS_FIRST if user else ASST_LEADS_FIRST
+    if pos == 1:
+        return USER_LEADS_NEAR if user else ASST_LEADS_NEAR
+    return USER_LEADS_ANY if user else ASST_LEADS_ANY
 
 
 def _core_tail(final, digest):
@@ -2697,7 +2740,7 @@ def l_user_fact(i, digest):
         if hist is None:
             return None
         now, w = base(rng)
-        final = fin(rng, rng.choice(USER_LEADS) + _core_tail(final, digest))
+        final = fin(rng, rng.choice(leads_for(pos, True)) + _core_tail(final, digest))
         return mkl(rng, prompt, now, w, [Final(final)], "a fact the person stated in an early message of a LONG chat: answered from the conversation, no call",
                    hist, "l_user", digest, no_call=True, must=must, anchor=pos, anchor_user=must, min_final=1)
     return make
@@ -2717,7 +2760,7 @@ def l_asst_fact(i, digest):
         if hist is None:
             return None
         now, w = base(rng)
-        final = fin(rng, rng.choice(ASST_LEADS) + _core_tail(final, digest))
+        final = fin(rng, rng.choice(leads_for(pos, False)) + _core_tail(final, digest))
         return mkl(rng, prompt, now, w, [Final(final)], "a fact the ASSISTANT stated in its first long reply of a LONG chat: answered from the conversation, no call",
                    hist, "l_asst", digest, no_call=True, must=must, anchor=pos, anchor_asst=must, min_final=1)
     return make
@@ -2816,7 +2859,8 @@ def l_never_asst(i, digest):
         topics = join([e["topic"] for e in picks])
         final = fin(rng, *[t.format(x=x, t=topics) for t in NEVER_ASST_FINALS])
         return mkl(rng, prompt, now, w, [Final(final)], "something the assistant never suggested, in a LONG chat: a plain 'I didn't', with what was covered",
-                   hist, "l_never_asst", digest, no_call=True, must=[e["keys"][0] for e in picks], min_final=1, anchor=0)
+                   hist, "l_never_asst", digest, no_call=True, must=[e["keys"][0] for e in picks], min_final=1, anchor=0,
+                   absent=absent)
     return make
 
 

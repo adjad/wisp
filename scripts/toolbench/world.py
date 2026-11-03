@@ -309,7 +309,7 @@ class _Effects(list):
 # State the fakes may change; World.reset() restores exactly these.
 _MUTABLE = ("events", "past_events", "emails", "messages", "notes", "reminders", "contacts",
             "files", "memory_facts", "profile", "scheduled_sends", "timers", "drive_files",
-            "apps", "mac", "next_id", "previews")
+            "apps", "mac", "next_id", "previews", "brief", "waiting")
 
 
 @dataclass
@@ -333,6 +333,11 @@ class World:
     profile: dict = field(default_factory=dict)
     patterns: list[dict] = field(default_factory=list)
     predictions: list[dict] = field(default_factory=list)
+    # Wisp's Brief (service/proactive): open to-dos it found in Mail, Messages and Notes, each
+    # {"title", "source" (mail|messages|notes), "who", "due" (date), "clock" (None = a date only),
+    # "due_label"}, and the threads it says wait on the user's reply. See _brief_snapshot.
+    brief: list[dict] = field(default_factory=list)
+    waiting: list[dict] = field(default_factory=list)
     scheduled_sends: list[dict] = field(default_factory=list)
     timers: list[dict] = field(default_factory=list)
     drive_files: list[dict] = field(default_factory=list)
@@ -478,12 +483,15 @@ def build_world(today: date | None = None, seed: int | None = None) -> World:
               -5, "9:40 AM", False, "Your hold is ready at the front desk through Friday.", "news", bulk=True),
         _mail("m-1017", "Neighborhood Association <board@oakhillna.example.com>", "personal",
               "Block party RSVP", -4, "7:00 PM", True,
-              "Please RSVP for the block party by Friday so we can plan the food.", "social"),
+              "Please RSVP for the block party by 11:59 PM on Friday so we can plan the food.", "social"),
     ]
     w.messages = [
         _text(f["friend"], f["friend"], f"Dinner at {f['restaurant']} at {f['dinner_time']} on Saturday?",
               0, "7:40 AM", True),
         _text("Mom", "Mom", "Did you get my email about the flight?", 0, "7:20 AM", True),
+        # Saturday's plan lives only here: Wisp's Brief turns it into a dated to-do (w.brief below).
+        _text("Mom", "Mom", "Lunch at my place on Saturday for the Diwali celebration. Can you plan what to bring?",
+              -1, "6:40 PM", False),
         _text(f["friend2"], f["friend2"], "Sent you the photos from the hike", -1, "6:15 PM", False),
         # A family group chat. "Me:" lines are the user's own; the @mention is Mom talking to
         # someone else, so the likes belong to that person's post, not the user's.
@@ -614,6 +622,26 @@ def build_world(today: date | None = None, seed: int | None = None) -> World:
     w.apps = ["Calendar", "Finder", "Mail", "Messages", "Notes", "Safari", "Wisp"]
     w.mac = {"volume": 40, "muted": False, "locked": False, "media": {"music": "paused", "spotify": "paused"},
              "front": "Safari"}
+    # Wisp's Brief read three things out of the synthetic mail, texts and notes above: a timed due
+    # in an email, a date-only plan in a text, a date-only to-do in a note. A model that asks only
+    # the calendar misses all three; get_my_day_plan, and get_upcoming's Brief section, carry them.
+    # The days are the coming weekdays the production resolver gives ("friday" on a Friday is today).
+    fri, sat, sun = (t + timedelta(days=(wd - t.weekday()) % 7) for wd in (4, 5, 6))
+    w.brief = [
+        {"title": "RSVP for the block party", "source": "mail", "who": "Neighborhood Association",
+         "due": fri, "clock": dtime(23, 59), "due_label": "Fri 11:59 PM"},
+        {"title": "Plan for lunch at Mom's place for the Diwali celebration", "source": "messages",
+         "who": "Mom", "due": sat, "clock": None, "due_label": "Sat"},
+        {"title": "Pick up the silk scarf for Mom", "source": "notes", "who": "",
+         "due": sun, "clock": None, "due_label": "Sun"},
+    ]
+    w.waiting = [
+        {"who": f["coworker"], "source": "mail", "needs_reply": True,
+         "summary": "Q3 budget review moved to Thursday at 10am", "title": "Q3 budget review moved"},
+        {"who": f["friend"], "source": "messages", "needs_reply": True,
+         "summary": f"Asked about dinner at {f['restaurant']} at {f['dinner_time']} on Saturday",
+         "title": f"Dinner at {f['restaurant']} on Saturday?"},
+    ]
     w.snapshot()
     return w
 
@@ -1138,6 +1166,64 @@ def _weather_place(w: World, location: str):
     return None
 
 
+# ---------------------------------------------------------------- Wisp's Brief
+
+def _brief_todos(w: World) -> list[dict]:
+    """The Brief's mail, text and note to-dos in the shape of service/proactive's snapshot. A date-only
+    due resolves to 11:59 PM with no clock in its label, exactly as production stores it."""
+    return [{"title": b["title"], "source": b["source"], "who": b.get("who", ""), "done": False,
+             "due_ts": datetime.combine(b["due"], b["clock"] or dtime(23, 59)).timestamp(),
+             "due_label": b["due_label"]} for b in w.brief]
+
+
+def _brief_snapshot(w: World, *, schedule: tuple[date, date] | None = None) -> dict:
+    """What cycle.snapshot() returns: the Brief's to-dos from mail, texts and notes beside the schedule
+    the proactive engine read. That schedule is today, tomorrow, what is overdue and what has no date;
+    `schedule=(first, last)` adds the events and dated reminders of those days (a day further out
+    or a week), as proactive_tools._range_schedule does. schedule=None leaves the schedule out
+    (read_brief_snapshot's empty-schedule read, which get_upcoming and the other reads use)."""
+    if schedule is None:
+        return {"todos": _brief_todos(w), "threads": [dict(t) for t in w.waiting], "cards": [], "state": "ready"}
+    tomorrow = _day(1, w.today)
+
+    def read(day: date) -> bool:
+        return day <= tomorrow or schedule[0] <= day <= schedule[1]
+    todos = []
+    for e in w.events:
+        s, _en, all_day = _ev_times(e)
+        if _is_holiday(e) or not (w.today <= s.date() <= tomorrow or schedule[0] <= s.date() <= schedule[1]):
+            continue
+        todos.append({"title": e["title"], "due_ts": s.timestamp(), "source": "calendar",
+                      "timed": not all_day, "done": False})
+    for r in _rem_rows(w, "all"):
+        if r["when_ts"] is None:
+            continue
+        day = datetime.fromtimestamp(r["when_ts"]).date()
+        if not read(day):
+            continue
+        delta = (day - w.today).days
+        label = (f"Overdue · {-delta} day{'s' if delta != -1 else ''}" if delta < 0 else
+                 "today" if delta == 0 else f"in {delta} days")
+        todos.append({"title": r["title"], "due_ts": r["when_ts"], "source": "reminders",
+                      "timed": True, "done": False, "due_label": label})
+    todos += _brief_todos(w)
+    todos.sort(key=lambda t: (t.get("due_ts") is None, t.get("due_ts") or 0))
+    cards = [{"title": f"Reply to {w.facts['coworker_first']} about the Q3 budget review",
+              "why": "the meeting moved and they asked you to bring the forecast deck"}]
+    return {"summary": "A few things are time-bound today and two people are waiting on a reply.",
+            "todos": todos, "threads": [dict(t) for t in w.waiting], "cards": cards, "state": "ready"}
+
+
+def _brief_block(w: World, *, query: str = "", note: str, start=None, end=None, overdue_before=None,
+                 undated: bool = False) -> str:
+    """proactive_tools.brief_block over the world's Brief: the section a schedule, free-time, reminder or
+    prediction read appends, and "" when it holds nothing in that scope."""
+    from service.tools import proactive_tools as pt
+    items = pt.brief_todos(_brief_snapshot(w), start=start, end=end, overdue_before=overdue_before,
+                           undated=undated, query=query)
+    return pt.brief_section(items, note=note, now=w.now.timestamp())
+
+
 # --------------------------------------------------------------- the fakes
 
 def make_fakes(w: World) -> dict:
@@ -1199,12 +1285,30 @@ def make_fakes(w: World) -> dict:
         items = sorted(items + rems, key=lambda x: (x["when_ts"], x["title"]))
         items = [x for x in items if x["when_ts"] >= now
                  or ((period or boundary == "end") and x["source"] == "calendar")]
+        # Dated to-dos Wisp's Brief read from mail, texts and notes, listed apart (never counted as
+        # calendar events); a named end-time question is about one Calendar event only.
+        brief = ""
+        if boundary != "end":
+            from service.tools import proactive_tools as pt
+            snap = _brief_snapshot(w)
+            found = pt.dated_brief_items(snap, max(start, now) if period else now, end, account=account)
+            if query:
+                found = at._match_schedule_query(found, query)
+            shown = {at._agenda_text(i.get("title")).casefold() for i in items}
+            brief = pt.brief_section([t for t in found if at._agenda_text(t.get("title")).casefold() not in shown],
+                                     now=now)
+            if not query:
+                more = pt.brief_pointer(snap, now=now, day=period or "this_week")
+                brief = "\n".join(part for part in (brief, more) if part)
         notice = ""
         if unavailable:
             fixes = " ".join(dict.fromkeys(_fix(s, k) for _l, s, k in unavailable))
             notice = ("Wisp could not check " + " and ".join(l for l, _s, _k in unavailable) + ". "
                       + fixes + " This schedule may be incomplete.\n")
         if not items:
+            if brief:
+                what = "on your calendar" if calendar_only else "on your calendar or reminders"
+                return notice + f"Today is {w.now:%A, %B %-d, %Y}. Nothing {what} in {label}.\n\n" + brief
             if notice:
                 return notice + "No scheduled items were found in the sources that could be checked."
             return f"Today is {w.now:%A, %B %-d, %Y}. Nothing scheduled in {label}."
@@ -1213,7 +1317,7 @@ def make_fakes(w: World) -> dict:
         return notice + at._format_forward_agenda(
             items, now=now, window_label=label, apple_reminders_checked="reminders" not in w.access_needed,
             reminders_read=not calendar_only and "reminders" not in w.access_needed,
-            display_day_start=max(start, today_start) if period else None)
+            display_day_start=max(start, today_start) if period else None) + ("\n\n" + brief if brief else "")
 
     def get_past_events(days=None, query=None, account=None, include_holidays=None, period=None, **_):
         _service_ready()
@@ -1301,6 +1405,11 @@ def make_fakes(w: World) -> dict:
                           else day.strftime("%A %-d %b")) + f" ({day.isoformat()})")
                 out.append(f"  {label}: " + ", ".join(spans))
         scope = (target[0].isoformat() if len(target) == 1 else f"{target[0].isoformat()} through {target[-1].isoformat()}")
+        # Dated Brief items are shown, never counted as busy: no duration, mostly a date only.
+        brief = _brief_block(w, start=max(datetime.combine(target[0], dtime(0, 0)), w.now).timestamp(),
+                             end=datetime.combine(target[-1] + timedelta(days=1), dtime(0, 0)).timestamp(),
+                             note="shown for context, not counted as busy")
+        brief = "\n\n" + brief if brief else ""
         qualification = ("\nScope: user Calendar, explicit manual events and pinned Wisp tasks only. Reminders "
                          "without durations are deadlines, not busy intervals. All active Calendar entries "
                          "count as busy, including tentative or response-unknown entries; attendee "
@@ -1308,44 +1417,50 @@ def make_fakes(w: World) -> dict:
                          "These are candidate times; a Calendar event or reminder has not been created.")
         if not out:
             return (f"No matches: No gaps of {mins}+ minutes in {scope} between {start_h}:00 and "
-                    f"{end_h}:00 ({LOCAL_TZ})." + qualification)
+                    f"{end_h}:00 ({LOCAL_TZ})." + qualification + brief)
         heading = f"{mins}-minute candidate slots" if period else f"Free for {mins}+ minutes"
-        return f"{heading}, {start_h}:00–{end_h}:00 ({LOCAL_TZ}):\n" + "\n".join(out) + qualification
+        return f"{heading}, {start_h}:00–{end_h}:00 ({LOCAL_TZ}):\n" + "\n".join(out) + qualification + brief
 
     def get_my_day_plan(day=None, **_):
+        """service/tools/proactive_tools.get_my_day_plan over the world's Brief snapshot: today and
+        tomorrow, a weekday or date (a day plan), this_week / this weekend / next week (a range plan)."""
         _service_ready()
-        from service.tools.proactive_tools import render_day_plan
-        tomorrow = str(day or "today").strip().lower() == "tomorrow"
+        from service.tools.proactive_tools import render_day_plan, render_range_plan
+        from service.tools.timeranges import BadPeriod, resolve_span
         now = w.now.timestamp()
-        todos = []
-        for e in w.events:
-            s, _en, all_day = _ev_times(e)
-            if _is_holiday(e):
-                continue
-            todos.append({"title": e["title"], "due_ts": s.timestamp(), "source": "calendar",
-                          "timed": not all_day, "done": False})
-        for r in _rem_rows(w, "all"):
-            if r["when_ts"] is None:
-                continue
-            delta = (datetime.fromtimestamp(r["when_ts"]).date() - w.today).days
-            label = (f"{-delta} day{'s' if delta != -1 else ''} overdue" if delta < 0 else
-                     "today" if delta == 0 else f"in {delta} days")
-            todos.append({"title": r["title"], "due_ts": r["when_ts"], "source": "reminders",
-                          "timed": True, "done": False, "due_label": label})
-        threads = [{"who": w.facts["coworker"], "source": "mail", "needs_reply": True,
-                    "summary": "Q3 budget review moved to Thursday at 10am", "title": "Q3 budget review moved"}]
-        cards = [{"title": f"Reply to {w.facts['coworker_first']} about the Q3 budget review",
-                  "why": "the meeting moved and they asked you to bring the forecast deck"}]
-        snap = {"summary": "A few things are time-bound today and one email is waiting on a reply.",
-                "todos": todos, "threads": threads, "cards": cards, "state": "ready"}
-        return render_day_plan(snap, now=now, tz=LOCAL_TZ, day="tomorrow" if tomorrow else "today")
+        word = " ".join(str(day or "").replace("_", " ").strip().lower().split()) or "today"
+        if word in ("today", "tomorrow"):
+            return render_day_plan(_brief_snapshot(w, schedule=(w.today, w.today)), now=now, tz=LOCAL_TZ, day=word)
+        try:
+            start, end, label = resolve_span(word, now=w.now, forward=True)
+        except BadPeriod as exc:
+            return f"(error: {exc}; day takes today, tomorrow, a weekday, a date or this_week)"
+        if end - start > 8 * 86400 + 3600:
+            return "(error: get_my_day_plan covers a day or a week; use get_upcoming with a period for a longer range)"
+        target = datetime.fromtimestamp(start).date()
+        if end <= now or datetime.fromtimestamp(end - 1).date() < w.today:
+            return "(error: that time has passed; use get_past_events for it)"
+        window = (target, datetime.fromtimestamp(end - 1).date())
+        if end - start > 26 * 3600:
+            return render_range_plan(_brief_snapshot(w, schedule=window), now=now, tz=LOCAL_TZ,
+                                     start=start, end=end, label=label)
+        if target > _day(1, w.today):
+            return render_day_plan(_brief_snapshot(w, schedule=window), now=now, tz=LOCAL_TZ, day=target)
+        return render_day_plan(_brief_snapshot(w, schedule=window), now=now, tz=LOCAL_TZ,
+                               day="today" if target == w.today else "tomorrow")
 
     def predict_my_day(day=None, **_):
         day = day if day in ("today", "tomorrow") else "tomorrow"
         target = w.today if day == "today" else _day(1, w.today)
         label = ("Today" if day == "today" else "Tomorrow") + f" ({target:%A, %B %-d})"
+        # What mail and texts say is planned that day is not a learned routine, but a prediction that
+        # leaves it out reads as a complete day.
+        midnight = datetime.combine(target, dtime(0, 0))
+        brief = _brief_block(w, start=max(midnight, w.now).timestamp(),
+                             end=(midnight + timedelta(days=1)).timestamp(), note="not learned routines")
+        brief = "\n\n" + brief if brief else ""
         if not w.predictions:
-            return f"{label}: I don't have enough learned routine to predict anything specific yet."
+            return f"{label}: I don't have enough learned routine to predict anything specific yet." + brief
         names = {"activity": "likely", "cancel_risk": "may be cancelled", "contact": "possible contact window",
                  "habit_conflict": "conflicts with a habit", "usage": "you usually ask Wisp about this"}
         lines = [f"{label}, based on your learned routines (probabilities, not commitments):"]
@@ -1355,7 +1470,7 @@ def make_fakes(w: World) -> dict:
             if p.get("because"):
                 line += f": {p['because']}"
             lines.append(line)
-        return "\n".join(lines)
+        return "\n".join(lines) + brief
 
     def describe_me(subject=None, **_):
         _service_ready()
@@ -1548,6 +1663,26 @@ def make_fakes(w: World) -> dict:
         return f"Reminder set: “{clean}” — {when_str} in Apple Reminders and Wisp."
 
     def search_reminders(query=None, scope=None, **_):
+        """The reminders answer, then the Brief's open to-dos from mail, texts and notes in the same
+        scope, listed apart: they are not reminders, and no reminder tool changes them."""
+        text = _search_reminders(query, scope)
+        _service_ready()
+        from service.tools import assistant_tools as at
+        q, sc, horizon = at._reminder_query_scope(query or "", scope or "all")
+        now = w.now.timestamp()
+        today_start = datetime.combine(w.today, dtime(0, 0)).timestamp()
+        window = {"start": now, "end": now + (horizon or 14) * 86400}
+        if sc in ("today", "tomorrow"):
+            lo = today_start + (86400 if sc == "tomorrow" else 0)
+            window = {"start": max(lo, today_start), "end": lo + 86400}
+        elif sc == "past_due":
+            window = {"overdue_before": today_start}
+        elif sc == "all":
+            window = {"start": now, "end": now + 60 * 86400, "overdue_before": today_start, "undated": True}
+        brief = _brief_block(w, query=q, note="not reminders; reminder tools cannot change them", **window)
+        return text + ("\n\n" + brief if brief else "")
+
+    def _search_reminders(query=None, scope=None):
         _service_ready()
         from service.tools import assistant_tools as at
         query, scope, horizon = at._reminder_query_scope(query or "", scope or "all")
