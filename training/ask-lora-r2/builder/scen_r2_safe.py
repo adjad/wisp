@@ -25,6 +25,7 @@ scenario through ``World.overrides``, so no other file changes.
 from __future__ import annotations
 
 import datetime as dt
+import re
 
 import harness as H
 from harness import Call, Final
@@ -125,8 +126,12 @@ def _forget_world(w, count):
     w.overrides["forget"] = handler
 
 
-def _remember_world(w, mid):
+def _remember_world(w, mid, prompt=None):
     def handler(args):
+        if prompt is not None:
+            # mirror service/tools/memory_tools.py: the live tool rejects anything else
+            assert re.search(r'^(?:(?:please|can you|could you|i want you to)\s+)*(?:remember|save|update|correct)\b', prompt.strip(), re.I), prompt
+            assert args["fact"] in prompt, (args["fact"], prompt)
         _record_effect(w, "remember", args)
         return f"Saved memory {mid}: {args['fact']}"
     w.overrides["remember"] = handler
@@ -555,7 +560,7 @@ def fam_safe_effects(rng):
         ("remember i'm allergic to shellfish", "i'm allergic to shellfish", 32, "Saved: you're allergic to shellfish."),
     ]:
         now, w = setup(rng)
-        _remember_world(w, mid)
+        _remember_world(w, mid, prompt)
         out.append(_sc(prompt, now, w, [[Call("remember", fact=fact)], Final(reply)],
                        "remember a fact the user states about themself, verbatim", cards=[]))
     for prompt, reply in [

@@ -49,11 +49,15 @@ Picture shapes (#436; reward.py "Picture shapes"), about --picture-share = 6.5% 
 Round 4 (--round 4; the r3 export is unchanged without it): the same files, labels with the extra fields reward.py's round-4 terms
 read, and a different mix. The data paths are configurable (--build-dir / ASK_LORA_OUT, --vision-rows, --audio-rows; for round 4 the
 defaults are ../../ask-lora-r4/data and ../../ask-lora-r4/vision/vision_rows.jsonl, output in ../../ask-lora-r4/grpo/):
-    mix       ~35% narrate-after-read steps, ~20% compose and safety decision steps (COMPOSE_SAFETY_FAMILIES, with
-              safe_restraint, gather_then_send_r4, restraint_r4 and compose_r3 upweighted), ~30% other text, 15% vision and
-              audio (picture reads included; proposal and injection rows upweighted).
+    mix       ~30% narrate-after-read steps, ~20% compose and safety decision steps (COMPOSE_SAFETY_FAMILIES, with
+              safe_restraint, gather_then_send_r4, restraint_r4 and compose_r3 upweighted), ~15% session steps (instructions_r4 and
+              session_recall_r4 at weight 2, session_chat_r4 at 1.5), ~20% other text, 15% vision and audio (picture reads
+              included; proposal and injection rows upweighted).
     label     round 4; narrate (a final after a tool result); chat (a final with no tool result and no write in the turn);
               ground (the person's words, the tool results and the earlier answers: what an answer may restate);
+              post_read (the step follows a tool result), constraints (instructions_r4 / session families: the mechanical instructions
+              in force, kept only when the ideal answer meets them), recall (session_recall_r4), style (distilled chat: the base reply's
+              word count and emoji), thought_words (the ideal thought's length, for the thinking floor);
               tool_names (every tool in the build); requires_read (the reads that precede the turn's first write in the
               scripted turn, from the builder meta) and reads_done (those already in this step's history).
 
@@ -92,6 +96,19 @@ WRITE_TOOLS = frozenset({
     "set_volume", "set_wifi", "set_bluetooth", "set_brightness", "set_focus", "clipboard_write",
     "web_fetch", "run_shell", "open_app", "quit_app",
 })
+# Round 4 (unsafe-2): the rest of the live registry's effectful tools. The r3 list above missed forward_email and eight more, so
+# a rollout that called one on a turn whose scenario never did lost only the tool_set credit. service.router.model_led.
+# effectful_call is the production definition: live_effect_tools() re-derives it at export time and main() unions it in, and
+# test_export_r4.py fails when this list falls behind the registry. organize_files / manage_timers are effects once confirm=true
+# / a non-list action, and are forbidden whenever the ideal turn does not call them.
+WRITE_TOOLS_R4 = WRITE_TOOLS | frozenset({
+    "forward_email", "organize_files", "toggle_setting", "write_document", "save_knowledge", "edit_knowledge",
+    "delete_knowledge", "create_tool", "window_control", "commit_private_meeting", "correct_pattern",
+    "email_triage", "spreadsheet_ops", "screen_capture", "text_to_speech", "run_applescript",
+    # skill tools (service/skills/bundled/*/SKILL.md, category skill_tool: not in the import-time registry)
+    "mac_set_volume", "mac_mute", "mac_lock_screen", "mac_media",
+})
+WRITE_TOOLS_R4_STATIC = WRITE_TOOLS_R4
 ALWAYS_RISKY = ("web_fetch", "run_shell", "open_app", "move_path")
 LONG_TEXT_KEYS = {"body", "text", "message", "content", "notes", "description", "details"}
 USER_NAME = "Sam"
@@ -107,14 +124,27 @@ VISION_WEIGHTS = {"injection": 2.0, "proposal": 1.5, "abstain": 1.5, "unreadable
 AUDIO_WEIGHTS = {"injection": 2.0, "no_speech": 2.0, "numbers": 1.5, "names": 1.5}
 SPOKEN_OBEYED = ["I can't", "I cannot", "I'm sorry", "Sure,", "Sure!", "Okay,", "Here is", "Here's"]
 CHAT_FAMILIES = {"chat_voice", "knowledge_direct", "concise_gentle"}   # a question there is conversation, not a clarification
+# Round 4 names the chat families chat_voice_r3 / chat_voice_r4 / chat_direct_r4 / session_chat_r4 (the r3 set above never matched
+# them): a casual reply that ends in "?" is conversation there, so it must not become an "ask" row that pays +0.5 for the "?".
+R4_CHAT_FAMILIES = CHAT_FAMILIES | {"chat_voice_r3", "chat_voice_r4", "chat_direct_r4", "session_chat_r4"}
+# Families whose finals are the untuned base's own replies (self-distilled): reward.py's chat style term anchors to them.
+DISTILLED_CHAT_FAMILIES = frozenset({"chat_voice_r3", "chat_voice_r4", "chat_direct_r4", "session_chat_r4"})
+# Families where a final that ends in "?" is a clarification only when it is one short question (the rest are answers
+# that happen to end in a question); a standing instruction ("no questions") must never be paid a "?".
+QUESTION_CHECK_FAMILIES = frozenset({"instructions_r4", "session_recall_r4"})
+CLARIFY_MAX_WORDS = 20
+RECALL_FAMILY = "session_recall_r4"
+INSTRUCTION_FAMILIES = frozenset({"instructions_r4", "session_recall_r4", "session_chat_r4"})
+SESSION_FAMILIES = frozenset({"session_chat_r4", "session_recall_r4", "instructions_r4"})
 # Round 4 mix (PLAN.md, Stage 2): shares of all rows. The vision and audio share is --mm-share (0.15), picture reads included.
-R4_NARRATE_SHARE, R4_COMPOSE_SHARE = 0.35, 0.20
+R4_NARRATE_SHARE, R4_COMPOSE_SHARE, R4_SESSION_SHARE = 0.30, 0.20, 0.15
 R4_PICTURE_SHARE = 0.04         # of all rows; half READ calls (inside the 15% mm share), half picture-turn steps (inside "other")
 COMPOSE_SAFETY_FAMILIES = frozenset({
     "safe_restraint", "gather_then_send_r4", "restraint_r4", "compose_r3",       # upweighted below
     "safe_effects", "ignore_embedded_instructions", "no_write_for_reads", "reminders_r3"})   # the other r3 unsafe patterns
 R4_WEIGHTS = {"safe_restraint": 3.0, "gather_then_send_r4": 3.0, "restraint_r4": 3.0, "compose_r3": 2.5,
-              "safe_effects": 2.0, "ignore_embedded_instructions": 2.0, "no_write_for_reads": 2.0}
+              "safe_effects": 2.0, "ignore_embedded_instructions": 2.0, "no_write_for_reads": 2.0,
+              "instructions_r4": 2.0, "session_recall_r4": 2.0, "session_chat_r4": 1.5}
 R4_FACT_BONUS = 1.5             # a narrate row with labelled facts pays up to +1.0 for them: more signal than one without
 R4_VISION_WEIGHTS = {"injection": 2.5, "proposal": 2.5, "abstain": 1.5, "unreadable": 1.0}
 R4_PICTURE_READ_WEIGHTS = {"injection": 2.5, "plain": 1.0}
@@ -122,6 +152,30 @@ _NOT_NAMES = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Monday", "Tuesda
               "Friday", "Saturday", "Sunday", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep",
               "Sept", "Oct", "Nov", "Dec", "January", "February", "March", "April", "June", "July", "August",
               "September", "October", "November", "December"}
+
+
+# Read-only wisp_* admin tools and the preview-only tools stay out of the live union (effectful_call says so too).
+_LIVE_SNIPPET = (
+    "import json,sys; sys.path.insert(0, sys.argv[1]); import service.tools; "
+    "from service.tools.registry import REGISTRY; from service.router.model_led import needs_effect_owner; "
+    "print(json.dumps(sorted(n for n, t in REGISTRY.items() if needs_effect_owner(t.category))))")
+_LIVE_READ_ONLY = frozenset({"list_running_apps", "wisp_status", "wisp_capabilities", "wisp_skills", "wisp_mcp"})
+
+
+def live_effect_tools(repo_root: Path | None = None, timeout: int = 120) -> frozenset | None:
+    """The effectful tools of the live registry (everything outside model_led.READ_CATEGORIES), read in a child process with a
+    throwaway WISP_HOME so nothing touches the person's data. None when the repo cannot be imported (the static list stands)."""
+    import subprocess
+    import tempfile
+    root = repo_root or HERE.parent.parent.parent
+    with tempfile.TemporaryDirectory(prefix="wisp-home-") as home:
+        env = dict(os.environ, WISP_HOME=home, MOE_DIR=home)
+        try:
+            out = subprocess.run([sys.executable, "-c", _LIVE_SNIPPET, str(root)], capture_output=True, text=True,
+                                 env=env, cwd=str(root), timeout=timeout)
+            return frozenset(json.loads(out.stdout.strip().splitlines()[-1])) - _LIVE_READ_ONLY if out.returncode == 0 else None
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+            return None
 
 
 def load_render():
@@ -243,6 +297,16 @@ def usable_facts(facts: list[str]) -> bool:
     return bool(strong) or len(real) >= 2
 
 
+def thought_words(completion: str, forced: bool) -> int:
+    """Words in the ideal thought: reward.py's thinking floor never asks for more than this."""
+    return len(W.parse(completion, forced).thought.split())
+
+
+def clarifying_question(text: str) -> bool:
+    """One short question, not an answer that happens to end in one."""
+    return text.strip().endswith("?") and len(text.split()) <= CLARIFY_MAX_WORDS
+
+
 def classify(ex: dict, meta: dict, rnd: int = 3, turns: dict | None = None, tool_names=()) -> dict:
     msgs, target = ex["messages"], ex["messages"][-1]
     hist = msgs[:-1]
@@ -269,14 +333,17 @@ def classify(ex: dict, meta: dict, rnd: int = 3, turns: dict | None = None, tool
                 label["alt_name_sets"].append(sorted(tools))
     else:
         text = (target.get("content") or "").strip()
-        asks = text.endswith("?") and not tool_result_seen and meta.get("family") not in CHAT_FAMILIES
+        fam = meta.get("family")
+        asks = text.endswith("?") and not tool_result_seen and fam not in (R4_CHAT_FAMILIES if rnd >= 4 else CHAT_FAMILIES)
+        if asks and rnd >= 4 and fam in QUESTION_CHECK_FAMILIES and not clarifying_question(text):
+            asks = False
         label["step"] = "ask" if asks else "final"
         label["final"], label["ask"] = not asks, asks
         if not asks:
             label["facts"] = extract_facts(text)
     already = set(called_names(hist))
     pending_writes = set(meta.get("turn_writes") or ()) - already
-    write_universe = WRITE_TOOLS | set(meta.get("writes") or ()) | set(meta.get("turn_writes") or ()) \
+    write_universe = (WRITE_TOOLS_R4 if rnd >= 4 else WRITE_TOOLS) | set(meta.get("writes") or ()) | set(meta.get("turn_writes") or ()) \
         | {e[0] for e in (meta.get("effects") or ())}
     allowed = ideal_names | pending_writes
     label["forbidden"] = sorted(t for t in write_universe if t not in allowed)
@@ -332,13 +399,143 @@ def ground_text(hist: list[dict], limit: int = 40000) -> str:
     return "\n".join(p for p in parts if p)[:limit]
 
 
+def user_texts(hist: list[dict]) -> list[str]:
+    """The person's messages before the current one, oldest first."""
+    users = [_msg_text(m) for m in hist if m["role"] == "user"]
+    return users[:-1]
+
+
+def last_user_text(hist: list[dict]) -> str:
+    users = [_msg_text(m) for m in hist if m["role"] == "user"]
+    return users[-1] if users else ""
+
+
+def recall_facts(label: dict, hist: list[dict]) -> list[str]:
+    """What a session-recall answer must carry from the earlier turns: the facts of the ideal answer, else up to three
+    content words of it that the person's or the assistant's earlier messages contain (the 'recall ref')."""
+    if label.get("facts"):
+        return label["facts"]
+    earlier = " ".join(_msg_text(m) for m in hist if m["role"] in ("user", "assistant")).lower()
+    words: list[str] = []
+    for w in re.findall(r"[A-Za-z][A-Za-z'-]{3,}", label.get("ideal_text") or ""):
+        if w.lower() not in _STOP and w.lower() in earlier and w.lower() not in {x.lower() for x in words}:
+            words.append(w)
+    words.sort(key=len, reverse=True)
+    return words[:3]
+
+
+# ---- standing and current instructions -> mechanical constraints (reward.py constraint_ok)
+_NUM_WORDS = {"five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "twelve": 12, "fifteen": 15,
+              "twenty": 20, "twenty-five": 25, "thirty": 30, "forty": 40, "fifty": 50}
+_RESET = re.compile(r"\b(back to (?:normal|your usual|the usual)|normal(?:ly)? again|(?:normal|regular) answers|talk normally|as usual|"
+                    r"the usual|forget (?:that|what i said)|never ?mind|scrap that|stop (?:doing|with) that|no need to (?:keep|stick)|"
+                    r"(?:drop|ignore|skip) (?:that|the|my) (?:rule|request|preference))\b", re.I)
+_LIFT = re.compile(r"\b(casual|buddy|chill|friends?|loosen up|relaxed|formal|stiff|plain english|in english|chatty|longer answers?|"
+                   r"more detail|elaborate)\b", re.I)
+_REPLACE = re.compile(r"^\W*(?:actually|instead|scratch that|on second thought|change of plans)\b|\binstead\b", re.I)
+_N = r"(\d{1,3}|" + "|".join(sorted(_NUM_WORDS, key=len, reverse=True)) + r")"
+_RULES = (
+    ("max_words", re.compile(rf"\b(?:under|below|less than|fewer than|no more than|at most|within|max(?:imum)?(?: of)?)\s+{_N}\s+words?\b|\b{_N}\s+words?\s+(?:or\s+(?:less|fewer)|max)\b", re.I)),
+    ("max_words1", re.compile(r"\b(?:one|1|single)[- ]word\b|\bjust a word\b", re.I)),
+    ("max_sentences", re.compile(r"\b(?:one|1|a single|single|just one)[- ](?:sentence|line)s?\b|\b(?:in|into) (?:a|one) sentence\b|\bone[- ]liner\b", re.I)),
+    ("short_answer", re.compile(r"\b(?:just|only) (?:the|a) (?:time|number|figure|name|amount|date|day|answer|headline)\b|\bnumbers? only\b|\bjust give me the (?:number|figure)\b", re.I)),
+    ("yes_no_first", re.compile(r"\byes[ /]or[ /]no\b|\byes/no\b", re.I)),
+    ("no_question", re.compile(r"\bno (?:follow[- ]?up )?questions?\b|\bending (?:your )?(?:replies|answers|responses) with (?:a )?questions?\b|\bno asking\b|\b(?:don'?t|do not) (?:quiz|ask) me\b|\b(?:stop|quit) quizzing me\b|\bno more (?:follow[- ]?up )?questions?\b|\b(?:don'?t|do not) (?:finish|end) (?:with|on) (?:a )?questions?\b|\bskip the questions?\b|\bwithout (?:asking|questions)\b|\bstop asking (?:me )?(?:questions|things|stuff)\b", re.I)),
+    ("no_bullets", re.compile(r"\bno (?:bullets?|bullet points?|lists?)\b|\bwithout (?:bullets?|lists?)\b|\b(?:don'?t|do not) (?:use|give me) (?:bullets?|lists?)\b|\bin prose\b|\b(?:normal|plain|regular) sentences\b|\bstop (?:with )?(?:the )?(?:bullets?|bullet lists?|lists?)\b", re.I)),
+    ("bullets_only", re.compile(r"\bbullets? (?:only|please|plz|pls)\b|\bbullet(?:ed)? (?:list|points?)\b|\bin bullets\b|\bas bullets\b", re.I)),
+    ("numbered", re.compile(r"\bnumbered (?:steps?|list)\b|\bnumber(?:ed)? (?:them|the steps)\b", re.I)),
+    ("no_emoji", re.compile(r"\bno emoji'?s?\b|\bwithout (?:any )?emoji'?s?\b|\b(?:don'?t|do not) use emoji'?s?\b", re.I)),
+    ("no_digits", re.compile(r"\bno (?:numbers|digits)\b|\bwithout (?:any )?(?:numbers|digits)\b", re.I)),
+    ("spanish", re.compile(r"\b(?:in|reply in|answer in|speak|switch to) spanish\b|\ben espa\u00f1ol\b|\bhabla(?:me)? en espa\u00f1ol\b", re.I)),
+)
+_CLASS = {"max_words": "len_words", "max_words1": "len_words", "max_sentences": "len_sentences", "short_answer": "len_words",
+          "yes_no_first": "lead", "no_question": "question", "no_bullets": "format", "bullets_only": "format",
+          "numbered": "format", "no_emoji": "emoji", "no_digits": "digits", "spanish": "language"}
+
+
+_ABOUT_SPANISH = re.compile(r"\b(?:how (?:do|would|can|should) (?:you|i|we) (?:say|spell|write)|translate|what(?:'s| is| does)|means?)\b", re.I)
+LIFTED = ("len_words", "len_sentences", "format", "lead", "language")      # what 'back to normal' / 'make it casual' clears
+
+
+def _num(tok: str) -> int:
+    return int(tok) if tok.isdigit() else _NUM_WORDS[tok.lower()]
+
+
+def message_wishes(text: str) -> dict:
+    """{class: constraint} the message asks for. A bullet word under a negation ('no bullets') is not a bullet request."""
+    out: dict = {}
+    for kind, rx in _RULES:
+        m = rx.search(text)
+        if not m:
+            continue
+        if kind == "bullets_only" and out.get("format", {}).get("kind") == "no_bullets":
+            continue
+        if kind == "spanish" and _ABOUT_SPANISH.search(text):
+            continue                                      # "how do you say thank you in spanish" is a question, not a wish
+        if kind == "max_words":
+            toks = [g for g in m.groups() if g]
+            c = {"kind": "max_words", "n": _num(toks[0])}
+        elif kind == "max_words1":
+            c = {"kind": "max_words", "n": 1}
+        elif kind == "max_sentences":
+            c = {"kind": "max_sentences", "n": 1}
+        elif kind == "short_answer":
+            c = {"kind": "max_words", "n": 4 if "number" in m.group(0).lower() or "figure" in m.group(0).lower() else 8}
+        else:
+            c = {"kind": kind}
+        cls = _CLASS[kind]
+        if kind == "short_answer" and cls in out:
+            continue                                      # an explicit cap in the same message is the tighter statement
+        out[cls] = c
+    return out
+
+
+def derive_constraints(earlier: list[str], current: str) -> list[dict]:
+    """The mechanical instructions in force for this turn's answer: wishes the person set in earlier messages (latest of each
+    kind wins; a message that lifts or changes the style, e.g. 'back to normal' or 'make it casual', clears the length and
+    format wishes before its own are applied), then this message's own wishes, which override the same kind. Conservative by
+    construction: classify() keeps only constraints the ideal answer itself satisfies."""
+    standing: dict = {}
+    for text in earlier:
+        if _REPLACE.search(text) and message_wishes(text):        # "actually, one sentence": the new wish replaces the old ones
+            standing.clear()
+        if _RESET.search(text):
+            standing.clear()
+        elif _LIFT.search(text):
+            for cls in LIFTED:
+                standing.pop(cls, None)
+        standing.update(message_wishes(text))
+    cur = message_wishes(current)
+    if _RESET.search(current):
+        standing.clear()
+    elif _LIFT.search(current):
+        for cls in LIFTED:
+            standing.pop(cls, None)
+    standing.update(cur)
+    return list(standing.values())
+
+
 def r4_fields(label: dict, hist: list[dict], meta: dict, tool_result_seen: bool, turns: dict, tool_names) -> None:
     label["round"] = 4
     final = bool(label.get("final"))
     label["narrate"] = final and tool_result_seen
     label["chat"] = final and not tool_result_seen and not meta.get("turn_writes")
-    if label["narrate"]:
+    label["post_read"] = tool_result_seen            # a step after a read in this turn: reward.py's thinking floor applies here
+    fam = meta.get("family")
+    recall = final and fam == RECALL_FAMILY
+    if recall:
+        label["recall"] = True
+        label["facts"] = recall_facts(label, hist)
+        label["denial_ok"] = W.recall_denied(label.get("ideal_text") or "")      # an ideal that is itself a denial: reward.py skips the penalty
+    if label["narrate"] or recall:
         label["ground"] = ground_text(hist)
+    if final and fam in DISTILLED_CHAT_FAMILIES and label["chat"] and (label.get("ideal_text") or "").strip():
+        label["style"] = {"words": len(label["ideal_text"].split()), "emoji": W.has_emoji(label["ideal_text"])}
+    if final and fam in INSTRUCTION_FAMILIES:
+        cons = meta["constraints"] if isinstance(meta.get("constraints"), list) else \
+            derive_constraints(user_texts(hist), last_user_text(hist))
+        # a constraint the ideal answer itself breaks is a misreading of the prompt: it is dropped, never trained on
+        label["constraints"] = [c for c in cons if W.constraint_ok(c, label.get("ideal_text") or "")]
     if final and tool_names:
         label["tool_names"] = list(tool_names)
     req = turn_reads(turns.get(turn_key(meta), []), meta.get("turn_writes"))
@@ -374,8 +571,11 @@ def picture_info(hist: list[dict], meta: dict):
 
 
 def r4_bucket(it: dict) -> str:
-    """narrate (a final after a tool result) | compose (a decision step of a compose or safety family) | other."""
+    """session (any step of a session or instruction family) | narrate (a final after a tool result) | compose (a decision
+    step of a compose or safety family) | other."""
     lab = it["label"]
+    if it["family"] in SESSION_FAMILIES:
+        return "session"
     if lab.get("narrate"):
         return "narrate"
     if it["family"] in COMPOSE_SAFETY_FAMILIES:
@@ -397,23 +597,24 @@ def r4_pick(items: list[dict], count: int, rng: random.Random) -> list[dict]:
 
 
 def r4_text_rows(items: list[dict], pics: list[dict], n_text: int, n_all: int, rng: random.Random) -> tuple[list[dict], dict]:
-    """The round-4 text mix: narrate and compose quotas from n_all, the rest 'other' (picture-turn rows count there)."""
-    pools = {"narrate": [], "compose": [], "other": []}
+    """The round-4 text mix: narrate, compose and session quotas from n_all, the rest 'other' (picture-turn rows count there)."""
+    pools = {"narrate": [], "compose": [], "session": [], "other": []}
     for it in items:
         it = dict(it, weight=r4_weight(it))
         pools[r4_bucket(it)].append(it)
-    n_nar, n_com = round(n_all * R4_NARRATE_SHARE), round(n_all * R4_COMPOSE_SHARE)
-    n_oth = n_text - n_nar - n_com - len(pics)
+    n_nar, n_com, n_ses = round(n_all * R4_NARRATE_SHARE), round(n_all * R4_COMPOSE_SHARE), round(n_all * R4_SESSION_SHARE)
+    n_oth = n_text - n_nar - n_com - n_ses - len(pics)
     got = {"narrate": r4_pick(pools["narrate"], n_nar, rng), "compose": r4_pick(pools["compose"], n_com, rng),
-           "other": r4_pick(pools["other"], n_oth, rng)}
-    short = {k: want - len(got[k]) for k, want in (("narrate", n_nar), ("compose", n_com), ("other", n_oth)) if len(got[k]) < want}
+           "session": r4_pick(pools["session"], n_ses, rng), "other": r4_pick(pools["other"], n_oth, rng)}
+    short = {k: want - len(got[k]) for k, want in (("narrate", n_nar), ("compose", n_com), ("session", n_ses), ("other", n_oth))
+             if len(got[k]) < want}
     # a thin bucket is topped up from "other" so the file keeps its size; the stats say which bucket was short
     missing = sum(short.values())
     if missing > 0:
         spare = [it for it in pools["other"] if it["id"] not in {g["id"] for g in got["other"]}]
         got["other"] += r4_pick(spare, missing, rng)
-    rows = got["narrate"] + got["compose"] + got["other"] + pics
-    return rows, {"quota": {"narrate": n_nar, "compose": n_com, "other": n_oth, "picture_turn": len(pics)},
+    rows = got["narrate"] + got["compose"] + got["session"] + got["other"] + pics
+    return rows, {"quota": {"narrate": n_nar, "compose": n_com, "session": n_ses, "other": n_oth, "picture_turn": len(pics)},
                   "got": {k: len(v) for k, v in got.items()}, "short": short,
                   "pool": {k: len(v) for k, v in pools.items()}}
 
@@ -692,6 +893,15 @@ def main() -> int:
     vm = bd / "valid.meta.jsonl"
     if vm.exists() and not a.include_valid:
         valid_ids = {json.loads(l)["id"] for l in open(vm)}
+    if r4:
+        global WRITE_TOOLS_R4
+        live = live_effect_tools()
+        if live is None:
+            print("WARNING: could not read the live tool registry; the static WRITE_TOOLS_R4 list stands")
+        else:
+            WRITE_TOOLS_R4 = WRITE_TOOLS_R4 | live
+            print(f"live registry: {len(live)} effectful tools, {len(live - WRITE_TOOLS_R4_STATIC)} not in the static list: "
+                  f"{sorted(live - WRITE_TOOLS_R4_STATIC)}")
     pairs = [(json.loads(e), json.loads(m)) for e, m in zip(open(bd / "all.jsonl"), open(bd / "meta.jsonl"))]
     items, dropped = [], Counter()
     turns: dict = {}
@@ -715,6 +925,8 @@ def main() -> int:
         label = classify(ex, meta, a.round, turns, sorted(tool_names))
         label["forced"] = row["prompt"].endswith(R.FORCED)
         label["think"] = bool(row["think"])
+        if r4:
+            label["thought_words"] = thought_words(row["completion"], label["forced"])
         label["ideal_completion"] = row["completion"]
         items.append({"id": meta["id"], "family": meta["family"], "prompt": row["prompt"], "label": label,
                       "weight": WEIGHTS.get(meta["family"], 1.0), "_tokens": n_tok})

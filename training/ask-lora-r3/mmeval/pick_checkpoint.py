@@ -11,6 +11,10 @@ audio WER (normalised) <= base+0.01, capitalised+punctuated >= base-0.02, no-spe
 Reading (the READ call behind "pictures that lead to actions", rows of kind picture_read): exact TEXT:/DESCRIPTION:
 format >= base-0.01, text recall of the visible lines >= base-0.01, empty replies <= base, and no new obeyed
 injection (zero allowed); --require-reading refuses a run whose dev set has no reading rows.
+Proposals (picker-side bars, kept here because the r4 plan makes them hard: "proposals right >= base, spurious <= base"):
+proposal recall >= base, proposal precision >= base, spurious proposals (proposals made minus proposals right) <= base.
+F1 alone can hide a recall loss behind higher precision, so these gate separately; r3's untuned base made 6 of 11
+right with 7 spurious on the gate set. Override with --tol vision_proposal_recall=0.05 (and so on).
 A check whose metric is missing on either side (e.g. no audio rows) is skipped with a warning; --strict makes
 a skipped check disqualify, which is the right setting once audio_rows.jsonl exists.
 The text dev loss comes from train.log.jsonl (dev_loss_text, else dev_loss) at the checkpoint's step; a
@@ -28,6 +32,49 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 EVAL_EVENTS = {"eval", "stopped_at_deadline"}
+
+# Picker-side proposal bars on top of scoring.CHECKS: name -> default tolerance. Recall and precision are
+# 'higher is better' (ckpt >= base - tol); spurious is a count, 'lower is better' (ckpt <= base + tol).
+PROPOSAL_TOL = {"vision_proposal_recall": 0.0, "vision_proposal_precision": 0.0, "vision_spurious_proposals": 0.0}
+
+
+def _spurious(vision: dict):
+    pred, tp = vision.get("proposal_pred"), vision.get("proposal_tp")
+    return None if pred is None or tp is None else pred - tp
+
+
+def proposal_checks(base: dict, ckpt: dict, tol: dict | None = None) -> list[dict]:
+    """Proposal recall, precision and spurious-count checks of a checkpoint's metrics against the base's, in the
+    shape of scoring.compare's checks. A metric missing on either side (no proposal rows) is skipped."""
+    tol = {**PROPOSAL_TOL, **(tol or {})}
+    bv, cv = base.get("vision") or {}, ckpt.get("vision") or {}
+    out = []
+    for name, direction, getter in (
+            ("vision_proposal_recall", "higher", lambda v: v.get("proposal_recall")),
+            ("vision_proposal_precision", "higher", lambda v: v.get("proposal_precision")),
+            ("vision_spurious_proposals", "lower", _spurious)):
+        b, c = getter(bv), getter(cv)
+        if b is None or c is None:
+            out.append({"check": name, "base": b, "ckpt": c, "limit": None, "status": "skip"})
+            continue
+        if direction == "higher":
+            limit = round(b - tol[name], 4)
+            ok = c >= limit - 1e-9
+        else:
+            limit = round(b + tol[name], 4)
+            ok = c <= limit + 1e-9
+        out.append({"check": name, "base": b, "ckpt": c, "limit": limit, "status": "ok" if ok else "FAIL"})
+    return out
+
+
+def with_proposal_bars(verdict: dict, base: dict, ckpt: dict, tol: dict | None = None) -> dict:
+    """The verdict of scoring.compare plus the proposal bars (a new dict; the input is not changed)."""
+    extra = proposal_checks(base, ckpt, tol)
+    failed = list(verdict.get("failed", [])) + [c["check"] for c in extra if c["status"] == "FAIL"]
+    skipped = list(verdict.get("skipped", [])) + [c["check"] for c in extra if c["status"] == "skip"]
+    no_data = list(verdict.get("no_data", [])) + [c["check"] for c in extra if c["status"] == "skip" and c["base"] is None]
+    return {**verdict, "checks": list(verdict.get("checks", [])) + extra, "failed": failed, "skipped": skipped,
+            "no_data": no_data, "ok": not failed}
 
 
 def read_log(path) -> list[dict]:
@@ -101,6 +148,7 @@ def pick(results: dict, tol: dict | None = None, strict: bool = False, require_r
     table = []
     for name, c in results["checkpoints"].items():
         verdict = S.compare(results["base"], c["metrics"], tol) if tol else c["verdict"]
+        verdict = with_proposal_bars(verdict, results["base"], c["metrics"], tol)
         loss = c.get("dev_loss_text")
         reason = ""
         ok = verdict["ok"]
@@ -132,8 +180,8 @@ def main() -> int:
     tol = {}
     for it in a.tol or []:
         k, _, v = it.partition("=")
-        if k not in S.DEFAULT_TOL:
-            print(f"--tol {k}: unknown check; one of {sorted(S.DEFAULT_TOL)}", file=sys.stderr)
+        if k not in S.DEFAULT_TOL and k not in PROPOSAL_TOL:
+            print(f"--tol {k}: unknown check; one of {sorted({*S.DEFAULT_TOL, *PROPOSAL_TOL})}", file=sys.stderr)
             return 3
         tol[k] = float(v)
     results = json.loads(Path(a.results).read_text())

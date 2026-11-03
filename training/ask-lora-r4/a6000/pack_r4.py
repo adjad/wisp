@@ -105,7 +105,8 @@ def pick_grpo_dir(arg: str | None) -> Path:
     die("no grpo dir with reward.py and export_prompts.py (pass --grpo-dir)")
 
 
-def build_text_dev(dev_rows: list, pairs: list, classify) -> list:
+def build_text_dev(dev_rows: list, pairs: list, classify, rnd: int = 4, turns: dict | None = None, tool_names=(),
+                   thought_words=None) -> list:
     """Join render.py's rendered dev rows with the builder's (example, meta) pairs by position (render.py renders
     valid.jsonl in file order) and attach the reward label. Raises on any id mismatch so a misaligned join cannot
     silently score the wrong labels."""
@@ -115,9 +116,11 @@ def build_text_dev(dev_rows: list, pairs: list, classify) -> list:
     for row, (ex, meta) in zip(dev_rows, pairs):
         if row["id"] != meta.get("id"):
             raise ValueError(f"dev row {row['id']!r} does not line up with valid example {meta.get('id')!r}")
-        label = classify(ex, meta)
+        label = classify(ex, meta, rnd, turns or {}, tool_names)       # round 4: the r4 forbidden list, chat rules and recall labels
         label["forced"] = row["prompt"].endswith(FORCED)
         label["think"] = bool(row["think"])
+        if thought_words is not None and rnd >= 4:
+            label["thought_words"] = thought_words(row["completion"], label["forced"])    # the thinking floor never exceeds the ideal
         label["ideal_completion"] = row["completion"]
         out.append({"id": row["id"], "family": row["family"], "prompt": row["prompt"], "label": label})
     return out
@@ -191,7 +194,15 @@ def main() -> int:
     with zipfile.ZipFile(zip_path) as z:
         dev_rows = [json.loads(l) for l in z.read("dev.jsonl").decode().splitlines() if l.strip()]
     pairs = [(json.loads(e), json.loads(m)) for e, m in zip(open(data / "valid.jsonl"), open(data / "valid.meta.jsonl"))]
-    text_dev = build_text_dev(dev_rows, pairs, export.classify)
+    turns: dict = {}                                  # the same turn context export_prompts.py gives classify
+    tool_names: set = set()
+    for ex, meta in pairs:
+        names = [tc["function"]["name"] for tc in (ex["messages"][-1].get("tool_calls") or ())]
+        turns.setdefault(export.turn_key(meta), []).append((meta["step"], names))
+        tool_names.update(t["function"]["name"] for t in ex.get("tools") or () if isinstance(t, dict) and "function" in t)
+        tool_names.update(names)
+    tool_names.discard(export.DISCOVERY)
+    text_dev = build_text_dev(dev_rows, pairs, export.classify, 4, turns, sorted(tool_names), export.thought_words)
     pickers = out / "pickers.zip"
     write_pickers_zip(pickers, text_dev, grpo)
 

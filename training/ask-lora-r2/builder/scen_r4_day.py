@@ -619,7 +619,8 @@ def free_holiday(rng, out):
                 hd += D(days=1)
             title = NO_CLASS[(k + idx) % len(NO_CLASS)]
         w = mk_on(rng, now)
-        add_ev(w, title, dt.datetime.combine(hd, dt.time()), 24 * 60, "", all_day=True, writable=False)
+        add_ev(w, title, dt.datetime.combine(hd, dt.time()), 24 * 60, "", all_day=True, writable=False,
+               context="US Holidays" if kind == "hol" else "")
         extra = put_events(rng, w, hd, 1, lo=10, hi=15) if n_ev else []
         period = hd.isoformat() if kind == "hol" else period_for(w, hd)
         label = long_date(hd)
@@ -630,7 +631,9 @@ def free_holiday(rng, out):
             prompt = pickp(rng, ["do i have class {wd}", "is there school {wd}", "do i have lectures {wd}"], wd=wspell(rng, hd))
         else:
             prompt = uniq(rng, f"am i booked {wspell(rng, hd)} or is it a day off")
-        steps = [[Call("get_upcoming", period=period)]]
+        # get_upcoming hides subscribed holiday calendars unless include_holidays=true, which the person's naming
+        # the holiday asks for; a no-classes marker is on the school calendar and shows without it
+        steps = [[Call("get_upcoming", period=period, include_holidays=True) if kind == "hol" else Call("get_upcoming", period=period)]]
         if extra:
             e = extra[0]
             if both:

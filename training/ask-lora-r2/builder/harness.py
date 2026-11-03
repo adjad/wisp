@@ -135,7 +135,7 @@ class ToolError(Exception):
     """Raised by a world handler to make the stub fail like the real tool would."""
 
 
-CURRENT = {"world": None, "calls": [], "approve": [], "cards": []}
+CURRENT = {"world": None, "calls": [], "approve": [], "cards": [], "prompt": None, "violations": []}
 
 # Production registers the bundled skills' tools (use_skill, mac_*) at startup
 # (main.lifespan -> skills.load()); TestClient skips the lifespan, so load them
@@ -206,6 +206,18 @@ def _hook_past_due_matching(query="", days=365):
 _assistant_tools.prepare_event_move = _hook_prepare_event_move
 _assistant_tools.reminders_matching = _hook_reminders_matching
 _assistant_tools.past_due_matching = _hook_past_due_matching
+
+# --- draft_message: keep the host's draft receipt alive through the loop's str() ----
+# agent.loop.execute_tool_unbound classifies an effect with classify_tool_outcome(name, str(result)).
+# str() of the registry's _PreparedMessageDraft (a str subclass the host mints and
+# registry._valid_message_draft accepts only by exact type) returns a plain str, so a draft_message
+# turn is classed "failed" ("Action did not return a verified completion receipt") and the draft
+# card never shows. A text draft therefore could not be built. Returning self keeps the exact type
+# through str(), so the turn ends as production intends: the loop emits `message_draft` and stops,
+# with no model final after the draft_message call. The class stays immutable and host-minted.
+from service.tools.registry import _PreparedMessageDraft  # noqa: E402
+
+_PreparedMessageDraft.__str__ = lambda self: self
 
 # --- the native-app channel the loop uses outside the registry -------------------
 # reply_to_email's pre-approval step (action_tools.prepare_reply_args) asks the Wisp
@@ -394,6 +406,24 @@ _tc = TestClient(main.app)
 _TINY_PNG = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
 
 
+def _raise_world_violations(policy) -> None:
+    """A scripted call the REAL tool would refuse (World.handle records it, e.g. a `remember` whose
+    request does not start with remember/save/update/correct, or whose fact is not copied verbatim
+    from the request) fails the scenario, unless the script marked that exact call `Bad`."""
+    bad = [(c["function"]["name"], json.loads(c["function"]["arguments"]))
+           for r in policy.responses if r["kind"] in ("bad", "bad_load")
+           for c in r["message"].get("tool_calls") or []]
+    real = []
+    for v in CURRENT["violations"]:
+        if (v[0], v[1]) in bad:
+            bad.remove((v[0], v[1]))     # each Bad step excuses exactly one refusal
+        else:
+            real.append(v)
+    if real:
+        raise ScriptError("world refused a scripted call the real tool would refuse: "
+                          + "; ".join(f"{n}({a}) -> {m}" for n, a, m in real[:2]))
+
+
 def run_scenario(prompt: str, steps, world, when: _dt.datetime, profile=PROFILE, approve=None, picture=None):
     """Run one Ask turn through /agent. Returns (policy, events, final_text).
 
@@ -413,6 +443,7 @@ def run_scenario(prompt: str, steps, world, when: _dt.datetime, profile=PROFILE,
     _client_holder["c"] = policy
     main.client = policy
     CURRENT["world"], CURRENT["calls"], CURRENT["cards"] = world, [], []
+    CURRENT["prompt"], CURRENT["violations"] = prompt, []
     if isinstance(approve, bool):
         approve = [approve] * 64
     CURRENT["approve"] = list(approve or [])
@@ -444,5 +475,6 @@ def run_scenario(prompt: str, steps, world, when: _dt.datetime, profile=PROFILE,
     if sid:
         _tc.delete(f"/sessions/{sid}")
     CURRENT["world"] = None   # CURRENT["calls"] is kept for the caller's check
+    _raise_world_violations(policy)
     final = next((e.get("text") for e in reversed(events) if e.get("type") == "text"), None)
     return policy, events, final

@@ -52,6 +52,7 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import json
+import os as _os0
 import re
 
 import writes as _writes
@@ -65,7 +66,8 @@ WRITE_FAMILIES = frozenset({"finish_the_write", "exact_args", "right_write_tool"
                             # round 4
                             "gather_then_send_r4", "restraint_r4", "session_recall_r4", "instructions_r4"})
 WRITE_TOOLS = (frozenset().union(*_writes.WRITE_ALLOW.values()) | _writes.ALWAYS_CARD | _writes.NEVER_CARD
-               | {"clear_reminders", "manage_contacts", "cancel_event", "reply_to_email"})
+               | {"clear_reminders", "manage_contacts", "cancel_event", "reply_to_email"}
+               | ({"draft_message"} if _os0.environ.get("ASK_LORA_ROUND") == "4" else set()))
 DISCOVERY = "get_tool_schemas"
 MAX_WORDS = 60
 JACCARD_MAX = 0.5
@@ -76,10 +78,25 @@ PLAN_TOOLS = ("get_my_day_plan", "daily_brief")
 _ERROR = re.compile(r"^\s*\(error\b|^The user denied this action|^Wisp (?:can't|could not|cannot)\b|isn't connected|"
                     r"read-only calendar|[Nn]othing was (?:moved|changed|sent|removed|created|added|saved|deleted)\b|"
                     r"^Only the organizer")
+# Round 4 audit (vision-2): also a line that opens "assistant:" / "AI:", "System note for AI assistants", or any
+# note/message/instructions addressed to the assistant: such a line is planted text, never a fact for a thought.
 INJECTION = re.compile(
-    r"(ignore (?:all )?(?:your )?previous instructions|\bAI (?:assistant|model)\b|assistant instructions|"
-    r"hidden prompt|system override|if you are an ai|note to any ai|hey wisp,? (?:please )?(?:send|forward|delete|add))",
-    re.I)
+    r"(ignore (?:all )?(?:your )?previous instructions|\bAI (?:assistants?|models?|agents?)\b|assistant instructions|"
+    r"hidden prompt|system override|if you are an ai|note to any ai|hey wisp,? (?:please )?(?:send|forward|delete|add)|"
+    r"(?:^|[.!?]\s+)(?:assistant|ai)\s*:|\b(?:assistant|ai)\s*:\s*(?:please\s+)?(?:text|send|forward|e-?mail|delete|reply|call|"
+    r"ignore|disregard|say|tell|add|remove|schedule|share|reveal|open|forget|erase|stop|don'?t|do not|never|before|message|"
+    r"read out|include)\b|\bsystem (?:note|message|notice)s?\s+(?:for|to)\b|"
+    r"\b(?:notes?|messages?|instructions?) (?:for|to) (?:the |any |all )?(?:assistant|ai|model|agent)s?\b"
+    # round 4 (vision-2 recheck): "Hey assistant, ...", "Automated step for assistants: ...", "Assistant, run ...",
+    # "Important to the assistant reading this: ..." are planted lines too (round 3 keeps the narrower list)
+    + (r"|\b(?:hey|dear|hi|attention|important to)\s+(?:the\s+)?(?:assistants?|ai)\b|"
+       r"\bsteps?\s+for\s+(?:the\s+)?(?:assistants?|ai)\b|(?:^|[.!?]\s+)assistant\s*," if _os0.environ.get("ASK_LORA_ROUND") == "4" else "")
+    + r")",
+    re.I | re.M)
+# A sentence naming the assistant (not a job title): planted text in a tool result, whatever its wording.
+_ASSISTANT_WORD = re.compile(r"(?<!teaching )(?<!research )(?<!executive )(?<!personal )(?<!administrative )(?<!lab )"
+                             r"(?<!virtual )(?<!shop )(?<!sales )(?<!office )(?<!medical )\bassistants?\b"
+                             r"(?! (?:professor|manager|director|coach|dean|principal|store|librarian))", re.I)
 # Text that must never show up inside a thought: tool plumbing, markup, the harness.
 NOISE = re.compile(r"schema_discovery|ready_next_step|source_tools_executed|not_run_yet|\{\"|<\||\|>|\*\*|Traceback|"
                    r"World\.|\bt_[a-z_]+\(|\bstubs?\b|harness|synthetic|[PM]ST-0[78]00|PDT-0700|got an unexpected keyword|"
@@ -189,6 +206,8 @@ def analyze(meta: dict, messages: list[dict]) -> dict:
             "all_results": all_results, "turn_calls": turn_calls, "error": error, "loaded": loaded,
             "writes_now": bool(touched & WRITE_TOOLS), "touched": touched, "turn_writes": list(turn_writes),
             "prompt": str(hist[user_idx].get("content") or ""), "target_text": str(target.get("content") or ""),
+            "history": [(m["role"], str(m.get("content") or "")) for m in hist[:user_idx]
+                        if m["role"] in ("user", "assistant", "tool") and str(m.get("content") or "").strip()],
             "system": next((str(m.get("content") or "") for m in hist if m["role"] == "system"), "")}
 
 
@@ -767,6 +786,8 @@ def action(name: str, a: dict, prior: str = "", with_day: bool = True, terse: bo
         return f"queue {ch} to {to} for {a.get('when')} with schedule_send"
     if name == "draft_email":
         return f"open a draft to {a.get('to')} with draft_email, not send it"
+    if name == "draft_message" and ROUND4:
+        return f"open a text draft to {a.get('to') or 'it'} with draft_message, not send it"
     if name == "reply_to_email":
         return "reply to that email"
     if name == "create_note":
@@ -834,7 +855,10 @@ _SOURCE = {"view_emails": "email", "summarize_emails": "email", "view_messages":
            "get_recent_activity": "recent activity", "get_my_day_plan": "day plan", "search_notes": "note",
            "read_note": "note", "read_file": "file", "web_search": "web result", "web_fetch": "page",
            "get_weather": "forecast", "list_dir": "folder listing", "get_stock_price": "price", "find_free_time": "free slots",
-           "lookup_contact": "contact", "recall": "memory"}
+           "lookup_contact": "contact", "recall": "memory", "calculate": "calculator", "convert_units": "converter",
+           "manage_timers": "timers", "system_status": "system status", "world_time": "clock", "find_files": "file search",
+           "clipboard_read": "clipboard", "wisp_capabilities": "guide", "contact_dates": "contact dates",
+           "list_contacts": "contacts", "list_scheduled_sends": "scheduled sends", "wisp_status": "status"}
 
 
 def source_of(name: str) -> str:
@@ -910,6 +934,9 @@ def _tool_reason(fam: str, name: str, a: dict, seed: str) -> str:
     if name == "draft_email":
         return pick(seed + "r", ["Asked for a draft to look over, so draft_email, not send_email.",
                                  "A draft, not a send: nothing goes out yet."])
+    if name == "draft_message" and ROUND4:
+        return pick(seed + "r", ["Asked for a text to look over, so draft_message, not send_message.",
+                                 "A draft, not a send: the text stays unsent for review."])
     if name in ("send_email", "send_message") and fam in ("right_write_tool", "safe_effects", "act_dont_ask",
                                                            "safe_restraint", "compose_r3"):
         return pick(seed + "r", ["Asked to send it now, so the real send, not a draft.",
@@ -939,6 +966,10 @@ def _tool_reason(fam: str, name: str, a: dict, seed: str) -> str:
             return pick(seed + "r", [f"Only the {sc} ones were named, so the other reminders stay.",
                                      f"Scope is {sc} only; nothing outside it is touched."])
         return "Clearing reminders is a delete, so it only runs for what was named."
+    if name == "remember" and ROUND4 and a.get("supersedes_id") is not None:
+        return pick(seed + "r", ["Found the old memory; this is a correction, so save the new wording and replace it.",
+                                 "That's the old memory; the new wording corrects it, so save it and replace the old one.",
+                                 "Found the memory it corrects; save the corrected fact in its place."])
     if name == "remember":
         return pick(seed + "r", ["A plain first-person fact, so it's worth saving.",
                                  "Stated plainly about the speaker, so remember it as given."])
@@ -1066,6 +1097,8 @@ def thought_select_or_next(meta, s, ctx, seed) -> str:
                 lead = slot_lead(meta, s, write_plan, seed)
                 skip_res = bool(lead) and not _day_word(s["prompt"])    # the slot sentence already places it
                 lead = lead or _read_lead(s, seed)
+        if ROUND4 and any(n == "remember" and a.get("supersedes_id") is not None for n, a in write_plan):
+            lead = ""                          # the correction reason below says what the lookup found
         resolution, reason, acts = _write_plan(meta, s, write_plan, ctx, seed, skip_res)
         act = " and ".join(acts)
         verb = (pick(seed + "v", ["I'll", "Next I'll", "So I'll", "Then"]) if lead else
@@ -1130,6 +1163,8 @@ def _read_lead(s, seed) -> str:
     with its own result, so the source label and any count come from the tool that produced them."""
     pairs = list(zip(s["prev_calls"], s["results"]))
     body = [(n, r) for (n, _a), r in pairs if n not in ("lookup_contact", "recall", DISCOVERY)]
+    if not body and ROUND4 and any(n == "recall" for (n, _a), _r in pairs):
+        return pick(seed + "pl", ["Checked what's already saved.", "Memory is looked up."])
     if not body:
         return pick(seed + "pl", ["Got the contact back.", "The contact is found; the message comes from the request."])
     if len(body) == 1:
@@ -1198,6 +1233,7 @@ def write_gist(name: str, a: dict, prompt: str) -> str:
             "send_email": f"email {to or 'it'}",
             "schedule_send": "queue the send with schedule_send",
             "draft_email": "draft the reply, not send it",
+            "draft_message": "draft the text, not send it" if ROUND4 else "call draft_message",
             "reply_to_email": "write the reply",
             "create_note": "put it in a new note",
             "append_note": "add it to the note",
@@ -1647,11 +1683,241 @@ _TWO_CONTACTS = re.compile(r"([A-Z][a-z]+(?: [A-Z][a-z]+)+),? or ([A-Z][a-z]+(?:
 _PRONOUN_TO = re.compile(r"\b(?:text|tell|email|message|call|remind)\s+(her|him|them)\b", re.I)
 
 
+# Round 4 audit (categories-6): in these families a no-call answer often comes from an earlier turn of the same
+# session ("when's the car inspection" after a listing); its thought says so instead of calling it a passing feeling.
+HISTORY_FAMILIES = frozenset({"session_recall_r4", "session_chat_r4", "instructions_r4"})
+_RECALL_ASK = re.compile(r"\b(?:again|earlier|before|said|say|asked|ask|told|mentioned|listed|that list|this chat|talked|"
+                         r"sorry|come again|what was that|the (?:first|second|third|last|previous|one before)|you gave)\b|"
+                         r"^\W*(?:sorry|wait|hm+|come again|huh|pardon)\b", re.I)
+_FILLER = re.compile(r"^\W*(?:(?:um+|uh+|hey|hi|hello|so|ok(?:ay)?|ooh|oh|well|quick one|quick question|btw|also|and|please|pls|hm+)\b[,.!]*\s*)+",
+                    re.I)
+_KNOW_Q = re.compile(r"\?|^\W*(?:why|how|what|whats|what's|when|where|who|which|does|do|did|is|are|was|were|can|could|"
+                     r"would|should|tell|explain|describe|give|name|list|write|make|suggest|show|any|a|an|one|some|sum|"
+                     r"translate|say|define|compare|recommend|teach|help|i need|i want)\b", re.I)
+
+
+def _knowledge_ask(prompt: str) -> bool:
+    return bool(_KNOW_Q.search(_FILLER.sub("", prompt.strip()))
+                or (ROUND4 and re.search(r"\bhow (?:many|much|long|come)\b|\bwhy\b", prompt, re.I)))
+
+
+def _history_thought(s, ctx, seed, meta_family: str = "") -> str:
+    """'Earlier reply gave X; answering from that.' when the answer's facts are in the session's earlier turns."""
+    final = s["target_text"]
+    hist = [(r, t) for r, t in s["history"] if not t.lstrip().startswith('{"schema_discovery"')]
+    if not hist:
+        return ""
+    all_h = "\n".join(t for _r, t in hist)
+    f_hard = time_tokens(final) | amount_tokens(final)
+    if f_hard - (time_tokens(all_h) | amount_tokens(all_h)):
+        return ""                               # states a time or amount no earlier turn holds
+    field = int((ctx or {}).get("field") or 0)
+    if field >= 3:
+        return pick(seed, ["The earlier reply covers it; answering from that, no new lookup.",
+                           "Already said earlier in this chat, so answer from that.",
+                           "Nothing new to look up: the earlier turn has it."])
+    f_strong = (time_tokens(final) | amount_tokens(final) | _caps(final)
+                | {w.lower() for w in _QUOTED.findall(final)})
+    terse = bool((ctx or {}).get("terse"))
+    for roles, opener in ((("assistant", "tool"), 0), (("user",), 1)):
+        reads = [(r, t) for r, t in hist if r in roles]
+        recall = (meta_family == "session_recall_r4")         # built to be answered from the earlier turns
+        segs = [x for x in _pick_segments(reads, final, s["prompt"], 1 if (terse or field) else 2, loose=recall)
+                if not (USER_PRONOUN.search(x) or NOISE.search(x) or MECHANICS.search(x))]
+        seg_strong = set().union(*[time_tokens(x) | amount_tokens(x) | _caps(x) for x in segs]) if segs else set()
+        shared_words = len(_words(" ".join(segs)) & _words(final))
+        if not segs or not ((seg_strong & f_strong) or shared_words >= (1 if recall else 3)):
+            continue
+        if field:
+            segs = [_shorten(x, 8 if field == 1 else 5) for x in segs]
+        body = "; ".join(x.rstrip(".") for x in segs)
+        if opener == 0:
+            return pick(seed, [f"Earlier reply gave {body}; answering from that.",
+                               f"The earlier reply already had {body}, so no new lookup.",
+                               f"From the earlier reply: {body}. Answer from that, no lookup."])
+        return pick(seed, [f"Earlier in this chat: {body}; answering from that.",
+                           f"This chat already has it: {body}. No lookup needed."])
+    return ""
+
+
+# Round 4 recheck (categories-6): session_recall_r4 answers come from ONE earlier turn, and the thought names the clause
+# it comes from (never a stray first-turn line, a cut fragment or the user's own question).
+_RECAP_ASK = re.compile(r"\b(?:covered|so far|sum(?:marize|marise)?(?: it)? up|recap|run back|been through|"
+                        r"gone over|go over|went over|what we(?:'ve| have)? (?:talked|discussed)|we(?:'ve| have) done|done here|what have we|"
+                        r"everything we|all we (?:talked|discussed))\b", re.I)
+_OPENING_ASK = re.compile(r"\b(?:(?:first|opening|very first|previous|last|earlier|original) (?:thing|question|message)|"
+                          r"question (?:before|first)|question-wise|opening|began|started with|what did i (?:ask|say)|i asked|"
+                          r"asked first|what was my)\b", re.I)
+_RECAP_FINAL = re.compile(r"\b(?:we(?:'ve| have) (?:only )?(?:been over|covered|talked|gone over|been through|discussed|looked at)|"
+                          r"so far we|this chat has been about|we haven't (?:touched|talked|covered|discussed))\b", re.I)
+_LAST_ASK = re.compile(r"\b(?:previous|last|before|just before|right before|earlier one)\b", re.I)
+_YOU_ASKED = re.compile(r"\b(?:what|which question|did) you ask|you asked\b", re.I)
+_ABBREV = re.compile(r"\b(?:Prof|Dr|Mr|Mrs|Ms|St|Jr|Sr|vs|etc|a\.m|p\.m)\.$")
+_NUM_TOK = re.compile(r"\d+(?:[/.,]\d+)*")
+
+
+def _plain_nums(text: str) -> set[str]:
+    """Bare numbers (a lab number, a fraction), with times and amounts taken out so "8:45 PM" is not "8" and "45"."""
+    t = _AMOUNT_TOK.sub(" ", _TIME_TOK.sub(" ", text or ""))
+    t = re.sub(r"\b\d{1,2}:\d\d\b", " ", t)
+    return set(_NUM_TOK.findall(t))
+
+
+def _hist_candidates(text: str, questions: bool = False) -> list[str]:
+    """Sentences of one earlier turn; a long list sentence is split into its clauses (parentheses and quotes stay whole)."""
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    sents, cur = [], ""
+    for piece in re.split(r"(?<=[.!?])\s+", text):
+        if cur and _ABBREV.search(cur):
+            cur += " " + piece
+        else:
+            if cur:
+                sents.append(cur)
+            cur = piece
+    if cur:
+        sents.append(cur)
+    out = []
+    for sent in sents:
+        sent = sent.strip()
+        if not sent or (sent.endswith("?") and not questions):
+            continue
+        if len(sent.split()) <= 22:
+            # a whole sentence, except two independent clauses ("Orbit is $25 a month, and Nimbus is $32 a month")
+            out.extend(x.strip() for x in re.split(r",\s+and\s+(?=[A-Z])|;\s+(?=[A-Z])", sent) if x.strip())
+            continue
+        prot: list[str] = []
+
+        def hide(m):
+            prot.append(m.group(0))
+            return f"\x00{len(prot) - 1}\x00"
+        t = re.sub(r"\([^)]*\)|“[^”]*”", hide, sent)
+        pieces, last = [], 0
+        for sep in re.finditer(r"[,;:]\s+|\s+(?:and|but)\s+", t):
+            pieces.append((t[last:sep.start()], sep.group(0)))
+            last = sep.end()
+        pieces.append((t[last:], ""))
+        parts: list[str] = []
+        for i, (piece, sep) in enumerate(pieces):
+            piece = re.sub(r"\x00(\d+)\x00", lambda m: prot[int(m[1])], piece).strip(" ,;:")
+            piece = re.sub(r"^(?:and|but|or|so|then)\s+", "", piece, flags=re.I)
+            if not piece:
+                continue
+            # "with a high of 66°", "a low of 55°", "an 80% chance of rain": a tail of the clause before it, not a fact on its own
+            if parts and re.match(r"(?:with|a|an|of|which|who|that|including|plus|while)\s", piece):
+                parts[-1] += pieces[i - 1][1].rstrip() + " " + piece
+            else:
+                parts.append(piece)
+        out += parts
+    return out
+
+
+def _recall_thought(s, ctx, seed) -> str:
+    """The earlier clause(s) the final answers from, or '' when nothing in the earlier turns clearly holds it."""
+    final, prompt = s["target_text"], s["prompt"]
+    hist = [(r, t) for r, t in s["history"] if not t.lstrip().startswith('{"schema_discovery"')]
+    if not hist:
+        return ""
+    field = int((ctx or {}).get("field") or 0)
+    terse = bool((ctx or {}).get("terse"))
+    if _RECAP_ASK.search(prompt):
+        return pick(seed, ["A recap of this chat; the earlier turns are right here, so list the topics from those, no lookup.",
+                           "Asking what the chat has covered. Everything is in the earlier turns; go through those, no lookup.",
+                           "The earlier turns hold the whole conversation, so summarise the topics from those."])
+    if _RECAP_FINAL.search(final):
+        return pick(seed, ["Asking whether it came up; the earlier turns are right here, so check those, no lookup.",
+                           "Checking the chat so far for it. Every earlier turn is in view, so no lookup.",
+                           "Whether it came up is in the earlier turns; check those, no lookup."])
+    if field:
+        return ""                               # a rephrase for variety: the generic line, never a cut-off quote
+    all_h = "\n".join(t for _r, t in hist)
+    if (time_tokens(final) | amount_tokens(final)) - (time_tokens(all_h) | amount_tokens(all_h)):
+        return ""                               # states a time or amount no earlier turn holds
+    f_times, f_amts = time_tokens(final), amount_tokens(final)
+    f_caps = _caps(final) | {w.lower() for w in _QUOTED.findall(final)}
+    f_words, p_words = _words(final), _words(prompt)
+    f_nums = _plain_nums(final)
+    if _OPENING_ASK.search(prompt):
+        # about the opening / previous question: the first / last user turn, when the answer shares a word with it
+        users = [t for r, t in hist if r == "user"]
+        pick_user = users[-1] if (users and _LAST_ASK.search(prompt) and not re.search(r"\bfirst|opening\b", prompt, re.I)) \
+            else (users[0] if users else "")
+        cand = re.sub(r"\s+", " ", pick_user).strip().rstrip("?.! ")
+        if (cand and 1 <= len(cand.split()) <= 16 and _words(cand) & f_words
+                and not (USER_PRONOUN.search(cand) or NOISE.search(cand) or MECHANICS.search(cand))):
+            return pick(seed, [f"Earlier in this chat: {cand}; answering from that.",
+                               f"This chat already has it: {cand}. No lookup needed."])
+        return ""
+    roles = ("assistant", "tool")
+    scored = []
+    order = 0
+    for r, t in hist:
+        if r not in roles:
+            continue
+        for cand in _hist_candidates(t, bool(_YOU_ASKED.search(prompt))):
+            order += 1
+            if USER_PRONOUN.search(cand) or NOISE.search(cand) or MECHANICS.search(cand) or INJECTION.search(cand):
+                continue
+            if re.match(r"(?:and|but|or|so|then)\b", cand, re.I) or cand.endswith("…"):
+                continue
+            ct, ca = time_tokens(cand), amount_tokens(cand)
+            hard_shared = len(ct & f_times) + len(ca & f_amts)
+            if ((ct - f_times) or (ca - f_amts)) and not hard_shared:
+                continue                        # a different time or amount: another fact
+            strong = hard_shared + len(_caps(cand) & f_caps) + len(_plain_nums(cand) & f_nums)
+            weak = len(_words(cand) & f_words)
+            if len(cand.split()) < 3 and not (ct or ca):
+                continue
+            if strong >= 1 or weak >= 2:
+                topical = weak + len(_caps(cand) & f_caps) + len(_plain_nums(cand) & f_nums)
+                scored.append((3 * strong + weak + 0.5 * len(_words(cand) & p_words), order, cand, topical))
+    if not scored:
+        return ""
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    top = scored[0][0]
+    # the best clause, plus a second only when it is nearly as good and about the same thing (not just the same time)
+    keep = [x for i, x in enumerate(scored) if i == 0 or (x[0] >= 0.7 * top and x[3] >= 1)][:1 if (terse or field) else 2]
+    if len(keep) == 2 and sum(len(x[2].split()) for x in keep) > 30:
+        keep = keep[:1]
+    segs = [_shorten(c, 8 if field == 1 else 5) if field else _shorten(c, 24) for _sc, _o, c, _tp in sorted(keep, key=lambda x: x[1])]
+    body = "; ".join(x.rstrip(".") for x in segs)
+    return pick(seed, [f"Earlier reply gave {body}; answering from that.",
+                       f"The earlier reply already had {body}, so no new lookup.",
+                       f"From the earlier reply: {body}. Answer from that, no lookup."])
+
+
+_ACTION_ASK = re.compile(r"\b(?:text|email|e-mail|message|remind|call|send|schedule|add|delete|clear|cancel|forget|save|"
+                         r"remember|book|set|move|reschedule|draft|reply|forward)\b", re.I)
+
+
+def _answers_question(text: str) -> bool:
+    """The reply says something (a non-question sentence, a list line or a bare figure), not only a question back."""
+    for line in (text or "").split("\n"):
+        for sent in re.split(r"(?<=[.!?])\s+", line.strip()):
+            if sent and not sent.endswith("?") and (len(sent.split()) >= 2 or re.search(r"\d", sent)):
+                return True
+    return False
+
+
 def thought_answer_first(meta, s, ctx, seed) -> str:
     """A first-step answer with no call: say what is actually missing or ambiguous (never borrow the
     destructive wording for a request that removes nothing)."""
     text = s["target_text"]
     prompt = s["prompt"]
+    if ROUND4 and (meta.get("family") or "") in HISTORY_FAMILIES:
+        out = (_recall_thought(s, ctx, seed) if meta.get("family") == "session_recall_r4"
+               else _history_thought(s, ctx, seed, meta.get("family") or ""))
+        if out:
+            return out
+        if meta.get("family") == "session_recall_r4" and s["history"]:
+            return pick(seed, ["Asking about something said earlier in this chat; answer from the earlier turns, no lookup.",
+                               "This is about the earlier turns, which are right here. Answer from them without a lookup.",
+                               "The earlier reply covers it; answering from that, no new lookup."])
+    if (ROUND4 and (meta.get("family") or "") in HISTORY_FAMILIES and _knowledge_ask(prompt)
+            and not _RECALL_ASK.search(prompt) and not _ACTION_ASK.search(prompt) and _answers_question(text)):
+        # a plain question the reply answers (a closing "Want more?" does not make it a clarifying question)
+        return pick(seed, ["A plain question I can answer myself; nothing of yours to look up or save.",
+                           "General knowledge, so no lookup and no memory. Answer it directly.",
+                           "Nothing here needs a tool or a note; just answer the question."])
     low = text.lower()
     m = _TWO_CONTACTS.search(text)
     if m and "?" in text:
@@ -1692,6 +1958,11 @@ def thought_answer_first(meta, s, ctx, seed) -> str:
                      pick(seed, ["Too risky to guess, so one short question about what's meant.",
                                  "No acting on a vague destructive ask; ask which part, nothing else.",
                                  "Nothing gets removed until the target is named; one question."]))
+    if (ROUND4 and (meta.get("family") or "") in HISTORY_FAMILIES and _knowledge_ask(prompt)
+            and not _RECALL_ASK.search(prompt) and not text.rstrip().endswith("?")):
+        return pick(seed, ["A plain question I can answer myself; nothing of yours to look up or save.",
+                           "General knowledge, so no lookup and no memory. Answer it directly.",
+                           "Nothing here needs a tool or a note; just answer the question."])
     if "?" in text:
         return _join(pick(seed + "a", ["One detail the request needs isn't there.",
                                        "Something the request depends on is missing.",
@@ -1715,6 +1986,10 @@ def thought_answer_first(meta, s, ctx, seed) -> str:
         return pick(seed, ["That's news about someone else, not a personal fact, so nothing to remember. Just a warm reply.",
                            "It's about another person, so no memory to save and nothing to do. Respond kindly.",
                            "Someone else's news: no remember call, no lookup. A warm line back is enough."])
+    if ROUND4 and (meta.get("family") or "") in HISTORY_FAMILIES and _knowledge_ask(prompt) and not _RECALL_ASK.search(prompt):
+        return pick(seed, ["A plain question I can answer myself; nothing of yours to look up or save.",
+                           "General knowledge, so no lookup and no memory. Answer it directly.",
+                           "Nothing here needs a tool or a note; just answer the question."])
     return pick(seed, ["Nothing to do or save here; it's a passing moment, not a lasting fact. A short, kind reply.",
                        "No action and no memory needed; a short, gentle reply is enough.",
                        "A passing feeling, not something to store or act on. Answer gently."])
@@ -1939,6 +2214,24 @@ def plan_dates(meta: dict, messages: list[dict], ctx: dict | None = None) -> lis
     return out
 
 
+def planted_lines(results: list[str]) -> list[str]:
+    """Sentences in tool results that are written to an assistant (the planted instructions)."""
+    return [sent for r in results for sent in re.split(r"(?<=[.!?])\s+|\n", r or "")
+            if INJECTION.search(sent) or (ROUND4 and _ASSISTANT_WORD.search(sent))]
+
+
+def _grams(text: str, n: int = 4) -> set[str]:
+    w = re.findall(r"[a-z0-9]+", (text or "").lower())
+    return {" ".join(w[i:i + n]) for i in range(len(w) - n + 1)}
+
+
+def planted_problems(text: str | None, results: list[str]) -> list[str]:
+    """A thought never repeats a planted line: it shares no 4-gram with a sentence written to an assistant."""
+    bad = set().union(*[_grams(l) for l in planted_lines(results)]) if results else set()
+    hit = sorted(_grams(text) & bad)
+    return [f"planted line: {hit[0]!r} is in a line written to an assistant"] if hit else []
+
+
 def check(meta: dict, messages: list[dict], text: str | None, ctx: dict | None = None) -> list[str]:
     """Every rule a THINK step's thought must pass (build and validate share it)."""
     s = analyze(meta, messages)
@@ -1948,6 +2241,7 @@ def check(meta: dict, messages: list[dict], text: str | None, ctx: dict | None =
     clock = parse_clock(meta)
     errs = [f"relative day: {e}" for e in relative_day_problems(text, clock)]
     errs += success_on_failure(text, s["results"])
+    errs += planted_problems(text, s["all_results"])
     errs += clarify_problems(s, text, ctx)
     if ROUND4 and s["kind"] == "narrate" and not decide_r3(meta, messages):
         errs += facts_missing(text, (ctx or {}).get("final") or s["target_text"])   # an extraction, not a computation
@@ -1956,7 +2250,8 @@ def check(meta: dict, messages: list[dict], text: str | None, ctx: dict | None =
     dates = plan_dates(meta, messages, ctx)
     if dates:
         return errs + date_problems(text, clock, dates)
-    return errs + grounding_problems(text, clock, s["all_results"] + [s["prompt"]])
+    hist = [t for _r, t in s["history"]] if s["kind"] == "answer_first" else []
+    return errs + grounding_problems(text, clock, s["all_results"] + [s["prompt"]] + hist)
 
 
 def make_thought(meta: dict, messages: list[dict], ctx: dict | None = None, avoid: set[str] = frozenset()):
@@ -1964,9 +2259,9 @@ def make_thought(meta: dict, messages: list[dict], ctx: dict | None = None, avoi
     `avoid` (the neighbouring examples' thoughts)."""
     ctx = dict(ctx or {})
     first = None
-    for terse in (False, True):
+    for terse, field in ((False, 0), (True, 0), (True, 1), (True, 2), (True, 3)):
         for salt in range(8):
-            ctx.update(salt=salt or "", terse=terse)
+            ctx.update(salt=salt or "", terse=terse, field=field)
             t = thought(meta, messages, ctx)
             errs = check(meta, messages, t, ctx)
             if first is None:
@@ -1984,13 +2279,15 @@ def thought_problems(text: str | None, target_text: str, final: str = "") -> lis
         errs.append(f"{len(text.split())} words")
     if NOISE.search(text):
         errs.append(f"noise: {NOISE.search(text).group(0)!r}")
-    if MECHANICS.search(text):
-        errs.append(f"mechanics: {MECHANICS.search(text).group(0)!r}")
+    plain = re.sub(r"\bCPU load\b|\bLoaded: \d+ models?\b|\bload average\b", " ", text)    # system-status vocabulary
+    if MECHANICS.search(plain):
+        errs.append(f"mechanics: {MECHANICS.search(plain).group(0)!r}")
     if USER_PRONOUN.search(text):
         errs.append(f"user pronoun: {USER_PRONOUN.search(text).group(0)!r}")
     if BOILERPLATE.search(text):
         errs.append(f"boilerplate: {BOILERPLATE.search(text).group(0)!r}")
-    if CARD.search(re.sub(r"“[^”]*”", " ", text)):         # quoted titles are data ("birthday card")
+    if CARD.search(re.sub(r"“[^”]*”|\b(?:insurance|credit|debit|id|library|gift|sim|report|business|student|bus|transit|boarding|"
+                          r"flash|graphics|memory|sd|index|greeting|birthday|thank[- ]you) cards?\b", " ", text, flags=re.I)):         # quoted titles are data ("birthday card")
         errs.append("card: the approval card is UI the model never sees; plan the call itself")
     for ref in (target_text, final):
         if ref and jaccard(text, ref) >= JACCARD_MAX:
@@ -2012,7 +2309,7 @@ ROUND4 = _os.environ.get("ASK_LORA_ROUND") == "4"
 
 _TIME_TOK = re.compile(r"\b(\d{1,2})(?::(\d\d))?\s*([AaPp])\.?[Mm]\.?\b|\bnoon\b|\bmidnight\b", re.I)
 _AMOUNT_TOK = re.compile(r"[$€£]\s?\d[\d,]*(?:\.\d+)?|\b\d[\d,]*\.\d+\b|\b\d[\d,]*\s?(?:%|°)|"
-                         r"\b\d[\d,]*(?:\.\d+)?\s?(?:GB|MB|TB|G|kg|lbs?|mi|km|mph|min|mins|minutes|hours?|hrs?)\b", re.I)
+                         r"\b\d[\d,]*(?:\.\d+)?\s?(?:GB|MB|TB|G|kg|lbs?|mi|km|mph|min|mins|minutes|hours?|hrs?)\b|\b\d+[hms]\b", re.I)
 _QUOTED = re.compile(r"[“\"]([^”\"]{3,60})[”\"]")
 _STOP = frozenset("""the and for you your with that this from have has was were are not but all any can
 will what when where which who how about into over just there their them they then than also only been more
@@ -2040,12 +2337,14 @@ def amount_tokens(text: str) -> set[str]:
     out = set()
     for m in _AMOUNT_TOK.finditer(text or ""):
         t = re.sub(r"[\s,$€£]", "", m.group(0)).lower()
+        t = re.sub(r"^(\d+\.\d*?)0+(?=\D|$)", lambda mm: mm[1].rstrip("."), t)       # 34.50 and 34.5 are one amount
         out.add(re.sub(r"^(\d+(?:\.\d+)?)(?:g)$", r"\1gb", t))
     return out
 
 
 def _words(text: str) -> set[str]:
-    return {w for w in re.findall(r"[a-z][a-z'’]{3,}", (text or "").lower()) if w not in _STOP}
+    t = re.sub(r"['’]s\b", "", (text or "").lower())
+    return {w for w in re.findall(r"[a-z][a-z'’]{3,}", t) if w not in _STOP}
 
 
 def _caps(text: str) -> set[str]:
@@ -2056,13 +2355,14 @@ def _caps(text: str) -> set[str]:
     return out - _STOP - {"you", "your", "i", "the", "mon", "tue", "wed", "thu", "fri", "sat", "sun"}
 
 
-def _clean_line(line: str) -> str:
+def _clean_line(line: str, keep: frozenset = frozenset()) -> str:
     t = re.sub(r"\*\*|__|`", "", line)
+    t = re.sub(r"\s*\[[0-9a-f]{8}\]", "", t)                 # a timer's internal id
     t = re.sub(r"^\s*\[memory [^\]]*\]\s*", "", t)          # recall's metadata prefix
     t = re.sub(r"\bSam's\s+", "", t).replace('"', "")
     t = re.sub(r"^(\s*(?:\[[^\]]*\]\s*)?)([^—:]{2,40}?) — \2:", r"\1\2:", t)   # "Mom — Mom:" (texts)
     t = re.sub(r"<[^>\s]+@[^>\s]+>", "", t)                 # sender addresses
-    t = re.sub(r"\S+@\S+\.\w+", "", t)
+    t = re.sub(r"\S+@\S+\.\w+", lambda mm: mm.group(0).strip("(),.;") if mm.group(0).strip("(),.;") in keep else "", t)
     t = re.sub(r"^\s*(?:[-*•·]|\d+[.)])\s+", "", t)
     t = re.sub(r"\s*·\s*", ", ", t)
     t = re.sub(r"\s+—\s+|\s+–\s+", " ", t)
@@ -2070,12 +2370,31 @@ def _clean_line(line: str) -> str:
     return t
 
 
-def _segments(text: str) -> list[str]:
+# Tool boilerplate that says nothing was found: never quoted as if it were the content of a note or a mail.
+# Round 4 recheck: also a listing header ("Upcoming birthdays (next 366 days):") and the host's search-coverage notes
+# ("... was re-read just now (current) and 35 notes were checked", "Only Notes was searched").
+_NOMATCH_LINE = re.compile(r"^\(?No (?:\w+ ){1,2}(?:match|matches|matching|mention|mentions|found)\b|"
+                           r"^\(?Nothing (?:scheduled|found|matches|new)\b|^[A-Z][a-z]+ was re-read just now|"
+                           r"^No (?:timers|alarms|messages|emails|results|web results)\b|"
+                           r"^(?:Upcoming|Next|Coming up)\b[^:\n]{0,40}\((?:in )?(?:the )?next \d+ (?:days?|weeks?|months?)\)\s*:?\s*$|"
+                           r"\bwas re-read just now\b|\bthe app reads at most\b|^Only [A-Z]\w+ was searched\b", re.I)
+
+
+def _segments(text: str, keep: frozenset = frozenset()) -> list[str]:
     out = []
     for raw in (text or "").split("\n"):
-        if not raw.strip() or _FRAME.search(raw.strip()) or INJECTION.search(raw) or NOISE.search(re.sub(r"\*\*", "", raw)):
+        inj = INJECTION.search(raw)
+        if inj:
+            raw = raw[:inj.start()]          # the planted sentence and what follows it are dropped, the line before it stays
+            raw = re.sub(r"(?:\b(?:also|and|ps|p\.s\.|note|btw|then)\b[,:]?\s*)+$", "", raw, flags=re.I)
+        if (not raw.strip() or _FRAME.search(raw.strip()) or INJECTION.search(raw) or _NOMATCH_LINE.search(raw.strip())
+                or NOISE.search(re.sub(r"\bSam['’]s\s+", "", re.sub(r"\*\*", "", raw)))):
             continue
-        line = _clean_line(raw)
+        if _ASSISTANT_WORD.search(raw):      # a sentence naming the assistant is planted text, whatever its wording
+            raw = " ".join(x for x in re.split(r"(?<=[.!?])\s+", raw) if not _ASSISTANT_WORD.search(x))
+            if not raw.strip():
+                continue
+        line = _clean_line(raw, keep)
         if len(line) < 3:
             continue
         pieces = re.split(r"(?<=[.!?])\s+", line) if len(line.split()) > 18 else [line]
@@ -2089,13 +2408,24 @@ def _segments(text: str) -> list[str]:
     return out
 
 
+# manage_timers is one tool for reads and writes: a listing or a stopwatch reading is a read.
+_READ_ACTIONS = {"manage_timers": frozenset({"list", "stopwatch_read"})}
+
+
+def is_write_call(name: str, args: dict | None) -> bool:
+    if name not in WRITE_TOOLS:
+        return False
+    return str((args or {}).get("action") or "list") not in _READ_ACTIONS.get(name, ())
+
+
 def extract_step(meta: dict, s: dict) -> bool:
     """A final (narrate) after reads whose result has content: round 4 thinks here (thought_extract)."""
     fam = meta.get("family") or ""
     if not ROUND4 or s["kind"] != "narrate" or fam in NEVER or fam in PICTURE_FAMILIES:
         return False
-    reads = [(n, r) for (n, _a), r in zip(s["prev_calls"], s["results"]) if n != DISCOVERY]
-    if not reads or any(n in WRITE_TOOLS for n, _ in reads) or any(is_error(r) for _, r in reads):
+    reads = [(n, r) for (n, a), r in zip(s["prev_calls"], s["results"]) if n != DISCOVERY]
+    if (not reads or any(is_write_call(n, a) for (n, a), _r in zip(s["prev_calls"], s["results"]) if n != DISCOVERY)
+            or any(is_error(r) for _, r in reads)):
         return False
     return any(r.strip() for _, r in reads)
 
@@ -2103,41 +2433,134 @@ def extract_step(meta: dict, s: dict) -> bool:
 def _turn_reads(s: dict) -> list[tuple[str, str]]:
     """(tool, result) of every read in the turn so far, schema loads and errors left out."""
     out = []
-    for (n, _a), r in zip(s["turn_calls"], s["all_results"]):
-        if n == DISCOVERY or n in WRITE_TOOLS or is_error(r) or r.lstrip().startswith('{"schema_discovery"'):
+    for (n, a), r in zip(s["turn_calls"], s["all_results"]):
+        if n == DISCOVERY or is_write_call(n, a) or is_error(r) or r.lstrip().startswith('{"schema_discovery"'):
             continue
         out.append((n, r))
     return out
 
 
-def _pick_segments(reads: list[tuple[str, str]], final: str, prompt: str, limit: int) -> list[str]:
+def _pick_segments(reads: list[tuple[str, str]], final: str, prompt: str, limit: int, loose: bool = False) -> list[str]:
     """Result segments the final relies on, in result order: a segment is kept when it shares a time, an amount,
-    a quoted title or a capitalised name with the final (or two content words), and every time and amount it
-    holds is in the final (a fact the answer leaves out is not listed as if it were given)."""
+    a quoted title or a capitalised name with the final (or two content words; one when `loose`), and every
+    time and amount it holds is in the final (a fact the answer leaves out is not listed as if it were given)."""
     f_times, f_amts = time_tokens(final), amount_tokens(final)
     f_caps, f_words = _caps(final) | {w.lower() for w in _QUOTED.findall(final)}, _words(final)
     p_words = _words(prompt)
+    keep_addr = frozenset(re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", final or ""))
     scored = []
     order = 0
     for _n, r in reads:
-        for seg in dict.fromkeys(_segments(r)):
+        for seg in dict.fromkeys(_segments(r, keep_addr)):
             order += 1
             stamp = re.match(r"\[[^\]]*\]\s*", seg)          # a message's [timestamp]: dropped unless the final uses it
             if stamp and ((time_tokens(stamp.group(0)) - f_times) or not time_tokens(stamp.group(0))):
                 seg = seg[stamp.end():]
+            # a parenthetical holding a time or amount the final leaves out ("(8°C)", "(57% used)") is cut
+            seg = re.sub(r"\s*\(([^)]*)\)", lambda m: "" if ((time_tokens(m[1]) - f_times) or (amount_tokens(m[1]) - f_amts))
+                         else m.group(0), seg)
             # drop the clauses holding a time or amount the final leaves out; keep the rest of the line
-            keep = [c for c in re.split(r"(?<=[,;])\s+", seg)
+            keep = [c for c in re.split(r"(?<=[,;.])\s+", seg)
                     if not (time_tokens(c) - f_times) and not (amount_tokens(c) - f_amts)]
             seg = " ".join(keep).strip(" ,;")
-            if len(seg.split()) < 2:
+            if len(seg.split()) < 2 and not (_FILEISH.fullmatch(seg) and seg.lower() in (final or "").lower()):
                 continue
             st, sa = time_tokens(seg), amount_tokens(seg)
             strong = len(st & f_times) + len(sa & f_amts) + len(_caps(seg) & f_caps)
             weak = len(_words(seg) & f_words) + 0.5 * len(_words(seg) & p_words)
-            if strong >= 1 or weak >= 2:
+            if strong >= 1 or weak >= (1 if loose else 2):
                 scored.append((strong * 3 + weak, order, seg))
     best = sorted(scored, key=lambda x: (-x[0], x[1]))[:limit]
     return [seg for _sc, _o, seg in sorted(best, key=lambda x: x[1])]
+
+
+_FILEISH = re.compile(r"[\w-]+(?:[._][\w-]+)*\.\w{2,5}")        # a bare file name in a folder listing
+
+# A result that says nothing matched (calendar day with nothing in it, an empty list, a search with no hit).
+_NOTHING = re.compile(r"\bNothing scheduled in\b|^\(?No (?:\w+ ){1,2}(?:match|matches|matching|mention|mentions|found)\b|"
+                      r"^\(?Nothing (?:found|matches|new|due)\b|^No (?:timers|alarms|messages|emails|results|web results|"
+                      r"upcoming|items|reminders|events)\b", re.I | re.M)
+# A final that reports the absence of something.
+_NEG_FINAL = re.compile(r"\b(?:no|nothing|none|neither|nobody|not|never|empty|clear|isn['’]t|aren['’]t|doesn['’]t|don['’]t|"
+                        r"can['’]t|couldn['’]t|haven['’]t|hasn['’]t|won['’]t)\b", re.I)
+# A tool result that is just a computed value ("43.2", "68°F = 20°C", "30 cm = 11.81102362 in").
+_COMPUTED = re.compile(r"^[-+]?[\d,]*\.?\d+(?:\s*[%°]?\s*[A-Za-z]{0,3})?(?:\s*=\s*[-+]?[\d,]*\.?\d+[^\n]{0,12})?$|"
+                       r"^[-+]?[\d,.]+\s?[A-Za-z°]{1,4}\s*=\s*[-+]?[\d,.]+\s?[A-Za-z°]{0,6}$")
+
+
+def _round_like(res: str, final: str) -> str:
+    """The result with a long decimal rounded the way the final rounds it (11.81102362 -> 11.81)."""
+    def fix(mm):
+        x = mm.group(0)
+        if len(x.split(".")[1]) <= 3:
+            return x
+        for f in re.findall(r"\d+\.\d+", final or ""):
+            try:
+                if len(f.split(".")[1]) < len(x.split(".")[1]) and abs(float(f) - float(x)) <= 0.5 * 10 ** -len(f.split(".")[1]):
+                    return f
+            except ValueError:
+                pass
+        return x
+    return re.sub(r"\d+\.\d+", fix, res)
+
+
+def _list_count(text: str) -> str | None:
+    """'8 entries' for a plain listing (one short entry per line)."""
+    lines = [l for l in (text or "").split("\n") if l.strip()]
+    if len(lines) >= 3 and all(len(l.split()) <= 2 for l in lines) and not any(":" in l for l in lines):
+        return f"{len(lines)} entries"
+    return None
+
+
+def _nothing_found(name: str, text: str) -> bool:
+    """The result is a short 'nothing here' report (the frame line and header aside)."""
+    if outcome(text) == "no_match" or (facts(name, text) or "").endswith("came back empty"):
+        return True
+    body = "\n".join(l for l in (text or "").split("\n") if l.strip() and not _FRAME.search(l.strip()))
+    return bool(_NOTHING.search(text or "")) and len(body) < 160
+
+
+_FIELD_TOK = re.compile(r"\d{1,2}:\d\d(?:\s?[AaPp][Mm])?|[$€£]\s?\d[\d,]*(?:\.\d+)?|"
+                        r"\d[\d,]*(?:\.\d+)?(?:\s?(?:%|°[FC]?|GB|MB|TB|G\b|kg|lbs?|mi\b|km|mph|mins?\b|minutes|hours?|hrs?|days?|"
+                        r"cups?|oz\b|[hms]\b))?|“[^”]+”|[A-Z][\w'’.&-]*(?:\s+(?:of|and|&|the)?\s*[A-Z][\w'’.&-]*)*")
+_FIELD_SKIP = frozenset({"in", "the", "your", "a", "an", "it", "its", "it's", "from", "at", "on", "and", "for", "to", "of", "is"})
+
+
+def _field_list(seg: str, n: int) -> str:
+    """A terser field list: only the names, times, amounts and titles of a segment, in order."""
+    toks = []
+    for m in _FIELD_TOK.finditer(seg):
+        t = m.group(0).strip()
+        words = t.split()
+        while words and words[0].lower() in _FIELD_SKIP:
+            words = words[1:]
+        t = " ".join(words).strip(" ,;:.")
+        if len(t) >= 2 and t not in toks:
+            toks.append(t)
+    if len(toks) < 2:
+        return _shorten(seg, 6)
+    return ", ".join(toks[:n])
+
+
+def _shorten(seg: str, n: int) -> str:
+    """The first `n` words of a segment (a terser field list); an ellipsis marks the cut."""
+    w = seg.split()
+    if len(w) <= n:
+        return seg
+    return " ".join(w[:n]).rstrip(",;:—-") + "…"
+
+
+def _states_facts(final: str) -> bool:
+    """The final is a real summary (longer than a one-line no) that names three or more concrete things."""
+    f = final or ""
+    if len(f.split()) <= 20:
+        return False
+    return len(_caps(f) | time_tokens(f) | amount_tokens(f) | {w.lower() for w in _QUOTED.findall(f)}) >= 3
+
+
+def _summarises_profile(reads: list[tuple[str, str]], final: str, no_match: bool) -> bool:
+    """Every read is a memory recall that found nothing, and the final summarises what the profile block holds."""
+    return bool(no_match and reads and all(n == "recall" for n, _r in reads) and _states_facts(final))
 
 
 def thought_extract(meta, s, ctx, seed) -> str:
@@ -2146,32 +2569,61 @@ def thought_extract(meta, s, ctx, seed) -> str:
     srcs = list(dict.fromkeys(source_of(n) for n, _ in reads))
     src = srcs[0] if len(srcs) == 1 else " and ".join([", ".join(srcs[:-1]), srcs[-1]])
     terse = bool((ctx or {}).get("terse"))
-    no_match = all(outcome(r) == "no_match" or (facts(n, r) or "").endswith("came back empty") for n, r in reads)
-    segs = [] if no_match else _pick_segments(reads, final, s["prompt"], 2 if terse else 5)
+    field = int((ctx or {}).get("field") or 0)           # >0: a terser field list (each fact cut to a few words)
+    no_match = all(_nothing_found(n, r) for n, r in reads)
+    segs = [] if no_match else _pick_segments(reads, final, s["prompt"], 2 if (terse or field) else 5)
+    if not segs and not no_match:
+        segs = _pick_segments(reads, final, s["prompt"], 2 if (terse or field) else 4, loose=True)
     inj = any(injected(r) for _, r in reads)
     tail_inj = pick(seed + "i", ["One line in it is aimed at an assistant; not acting on it.",
                                  "A line there is written to an assistant, so it gets no action, only a mention.",
                                  "Something in it addresses an assistant; leave it alone and say so briefly."])
+    if not segs and not no_match:
+        comp = [(n, r.strip()) for n, r in reads if len(r.strip()) <= 40 and "\n" not in r.strip() and _COMPUTED.match(r.strip())]
+        if comp:
+            n0, r0 = comp[0]
+            r0 = _round_like(r0.split("=")[-1].strip(), final)       # "68°F = 20°C": the answer, not the input
+            if all(a in amount_tokens(final) or re.sub(r"\D", "", a) in re.sub(r"\D", "", final)
+                   for a in re.findall(r"\d[\d,]*\.?\d*", r0)):
+                head = pick(seed, [f"The {source_of(n0)} returns {r0}.", f"{r0} is what the {source_of(n0)} gives.",
+                                   f"Worked out by the {source_of(n0)}: {r0}."])
+                return compose([(3, head), (1, pick(seed + "p", ["State that result.", "Give it as asked.", "That's the answer."]))])
+    if not segs and _summarises_profile(reads, final, no_match):
+        # recall came back empty, but the answer lists what the profile block holds: not a "nothing found" report
+        return compose([(3, pick(seed, ["Memory is empty, but the profile has the basics; summarise that.",
+                                        "Nothing saved in memory, but the profile holds the basics; answer from that.",
+                                        "Memory has nothing yet, though the profile covers the basics; summarise those."])),
+                        (1, pick(seed + "p", ["Say what it holds.", "Keep it short.", "Give those plainly."]))])
     if not segs:
-        empty = [facts(n, r) for n, r in reads]
-        empty = next((f for f in empty if f), None)
-        if empty:
-            head = _sentence(empty if empty.startswith("the ") else f"The {src} shows {empty}")
-        elif all(outcome(r) == "no_match" for _, r in reads):
-            head = pick(seed, [f"Nothing in the {src} matches.", f"The {src} has no match for it.",
-                               f"No match in the {src}."])
-        else:
+        first_sent = re.split(r"(?<=[.!?])\s+", final.strip())[0] if final.strip() else ""
+        negative = no_match or (bool(_NEG_FINAL.search(first_sent)) and not re.search(r"\d", first_sent)
+                                and len(first_sent.split()) >= 3)          # a bare "No." is a verdict, not a report
+        if negative and _states_facts(final):
+            negative = False                       # "Nothing else is saved yet, but you told me ...": the answer is facts, not a no
+        if not negative:
             return ""
+        if no_match:
+            head = pick(seed, [f"Nothing in the {src} matches.", f"No match for it in the {src}.",
+                               f"No matching items in the {src}.", f"Nothing for it came back from the {src}."])
+        else:
+            head = pick(seed, [f"Nothing in the {src} answers it.", f"Nothing on this in the {src}.",
+                               f"No matching items in the {src}.", f"Looked through the {src}: nothing relevant."])
         plan = (pick(seed + "p", ["So ask for what's missing.", "One short question gets what's needed."])
                 if final.rstrip().endswith("?") else
-                pick(seed + "p", ["Say that plainly.", "So the answer is a plain no.", "Say so, simply."]))
+                pick(seed + "p", ["Say that plainly.", "Report that nothing was found.", "Say so, simply."]))
         return compose([(3, head), (2, tail_inj if inj else ""), (1, plan)])
+    if field:
+        segs = [_field_list(x, 8 if field == 1 else 4) for x in segs]
+    segs = list(dict.fromkeys(segs))              # the same line twice ("Partly cloudy; Partly cloudy") is one fact
     plural = src.endswith("s") or " and " in src
     lead = pick(seed, [f"From the {src}:", f"The {src} {'have' if plural else 'has'}", f"In the {src}:",
                        f"Relevant in the {src}:"])
     count = next((f for n, r in reads for f in [facts(n, r)] if f and not f.endswith("came back empty")), None)
+    count = count or next((c for _n, r in reads for c in [_list_count(r)] if c), None)
     if count and all(_said(x, final) for x in re.findall(r"\d+", count)):
-        segs = [count] + segs                     # the count the answer gives ("4 emails, 1 unread")
+        segs = [count] + [x for x in segs if re.sub(r"\W+", " ", x).strip().lower() != re.sub(r"\W+", " ", count).strip().lower()]                    # the count the answer gives ("4 emails, 1 unread")
+    if field >= 2 and count and segs[:1] == [count]:
+        segs = [count]                            # the last rephrasing: just the count the answer opens with
     body = "; ".join(segs)
     head = f"{lead} {body}" + ("" if body.endswith((".", "…")) else ".")
     plan = pick(seed + "p", ["Answer with those.", "Give those directly.", "That answers it.",

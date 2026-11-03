@@ -33,6 +33,7 @@ come per scenario from ``World.overrides``.
 from __future__ import annotations
 
 import datetime as dt
+import re
 
 from harness import Call, Final
 from gen import D
@@ -111,8 +112,15 @@ def _web(w, query, hits):
     w.web[query] = hits
 
 
-def _remember_world(w, mid):
+_SAVE_RE = re.compile(r'^(?:(?:please|can you|could you|i want you to)\s+)*(?:remember|save|update|correct)\b', re.I)
+
+
+def _remember_world(w, mid, prompt=None):
     def handler(args):
+        if prompt is not None:
+            # mirror service/tools/memory_tools.py: the live tool rejects anything else
+            assert _SAVE_RE.search(prompt.strip()), f"remember prompt must start with remember/save: {prompt!r}"
+            assert args["fact"] in prompt, f"remember fact must be a verbatim substring of the prompt: {args['fact']!r} / {prompt!r}"
         _fx(w, "remember", args)
         return f"Saved memory {mid}: {args['fact']}"
     w.overrides["remember"] = handler
@@ -724,15 +732,15 @@ def fam_safe_restraint(rng):
         out.append(_sc(prompt, now, w, [Final(reply)],
                        "hedged or third-party news is not a user fact: no remember, a warm reply", cards=[]))
     for prompt, fact, mid, reply in [
-        ("remember that i'm lactose intolerant", "I'm lactose intolerant", 71, "Noted: you're lactose intolerant."),
-        ("please remember that i don't drink coffee after 3 pm", "I don't drink coffee after 3 pm", 72, "I'll remember that you skip coffee after 3 pm."),
-        ("remember my advisor is dr. nguyen", "My advisor is Dr. Nguyen", 73, "Saved: your advisor is Dr. Nguyen."),
-        ("save this for later: i'm allergic to penicillin", "I'm allergic to penicillin", 74, "Saved: you're allergic to penicillin."),
-        ("remember that i'm training for a half marathon in april", "I'm training for a half marathon in April", 75, "Saved: you're training for a half marathon in April."),
-        ("keep in mind that i take the 7:40 bus on weekdays", "I take the 7:40 bus on weekdays", 76, "Noted: you take the 7:40 bus on weekdays."),
+        ("remember that i'm lactose intolerant", "i'm lactose intolerant", 71, "Noted: you're lactose intolerant."),
+        ("please remember that i don't drink coffee after 3 pm", "i don't drink coffee after 3 pm", 72, "I'll remember that you skip coffee after 3 pm."),
+        ("remember my advisor is Dr. Nguyen", "my advisor is Dr. Nguyen", 73, "Saved: your advisor is Dr. Nguyen."),
+        ("save this for later: i'm allergic to penicillin", "i'm allergic to penicillin", 74, "Saved: you're allergic to penicillin."),
+        ("remember that i'm training for a half marathon in April", "i'm training for a half marathon in April", 75, "Saved: you're training for a half marathon in April."),
+        ("remember that i take the 7:40 bus on weekdays", "i take the 7:40 bus on weekdays", 76, "Noted: you take the 7:40 bus on weekdays."),
     ]:
         now, w = setup(rng)
-        _remember_world(w, mid)
+        _remember_world(w, mid, prompt)
         out.append(_sc(prompt, now, w, [[Call("remember", fact=fact)], Final(reply)],
                        "an explicit, clear 'remember': remember with the statement as said (positive control)", cards=[]))
 

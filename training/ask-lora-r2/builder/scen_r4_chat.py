@@ -161,14 +161,14 @@ A("opinion", "pen and paper or notes app",
   "Paper for thinking, an app for keeping. Writing by hand slows you down enough to choose your words, while the app is better for searching and finding things months later. Many people end up using both, with a notebook on the desk and the app in the pocket.")
 
 # ------------------------------------------------------------------ games
-A("rps", "ok rps again. scissors from me",
-  "Rock, which crushes your scissors, so that round goes to me. You do seem like a scissors person, and I am starting to enjoy noticing patterns. The score is one to nothing, so throw again whenever you are ready.")
+A("rps", "rock paper scissors, i'll throw scissors",
+  "Rock, which crushes your scissors, so that round goes to me. Scissors is a classic opening throw, and rock is a quiet answer to it. Throw again whenever you are ready.")
 A("rps", "rock paper scissors? you throw first",
   "Paper, laid flat and confident. Now you get to answer knowing my move, which seems a little unfair, so I will trust you to play honestly. Win or lose, we go again after this one.")
 A("rps", "best of 5 rps, im opening with paper",
   "Scissors, and they cut your paper in half, so I take the first round. That is one to nothing, with four rounds left to turn it around. Throw your second whenever you like, and I will try not to gloat.")
-A("rps", "rock. your move",
-  "Paper, which wraps your rock neatly, so that round is mine. The score is one to nothing, and I am curious whether you will stick with rock or switch. Throw again when you are ready.")
+A("rps", "rock! you go",
+  "Paper, which wraps your rock neatly, so that round is mine. I am curious whether you will stick with rock or switch next time. Throw again when you are ready.")
 A("rps", "scissors! go",
   "Paper this time, which means your scissors cut me cleanly and you take the round. That was a good throw, and I can feel the tide turning against me. Shall we make it best of three, or is a winner's exit allowed?")
 A("wyr", "would you rather have unlimited pizza or unlimited tacos forever",
@@ -183,8 +183,8 @@ A("riddle", "hit me with a riddle",
   "Here is one: what can travel around the world while staying in a corner? Think of something small that you would stick on an envelope. Take your time, and tell me your guess when you have one.")
 A("riddle", "riddle please, a tricky one",
   "The more of me there is, the less you can see. I fill a room when the lights go out and vanish when they come back. What am I? Give it a go, and I will tell you if you are warm.")
-A("riddle", "is it a bottle? what has a neck but no head",
-  "A bottle is a fine answer, and so is a shirt, since both have a neck and no head. Bottle is the classic answer, so your guess was right on the money. Want another one, maybe a harder one?")
+A("riddle", "riddle for you: what has a neck but no head",
+  "Is it a bottle? A shirt works too, since both have a neck and no head, but the bottle is the classic answer. Want one back from me, maybe a harder one?")
 A("riddle", "riddle: what has to be broken before you can use it",
   "An egg, I think, since you have to crack it before cooking or baking with it. It is a neat riddle because the answer is probably in your kitchen right now. Do you have another one for me?")
 A("game", "can we play a guessing game, i have an animal in mind",
@@ -223,7 +223,7 @@ A("fact", "why does the moon change shape",
   "The moon is always half lit by the sun, and what changes is how much of that lit half faces us as it circles Earth every month. At new moon the lit side faces away, and at full moon we see all of it. A thin crescent is just a sliver of that sunlit half coming into view. Do you track it, or only notice when it is big?")
 A("fact", "what causes the northern lights",
   "Charged particles from the sun hit gases high in Earth's atmosphere, and the gases glow. Oxygen gives green and sometimes red, while nitrogen adds blue and purple. They are strongest near the poles because the planet's magnetic field funnels the particles there.")
-A("fact", "why do we get hiccups",
+A("fact", "what causes hiccups",
   "A hiccup is a sudden spasm of the diaphragm, followed by the vocal cords snapping shut, which makes the sound. Eating fast, fizzy drinks or sudden excitement can set it off. Holding your breath for a few seconds works for many people, though nobody fully knows why.")
 
 
