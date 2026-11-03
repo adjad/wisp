@@ -104,6 +104,9 @@ PROFILE_TESTS = {
         # Pictures that lead to actions: the reading as untrusted data, every effect
         # carded (stub vision client, scripted agent client, synthetic tools).
         "tests/test_vision_actions.py",
+        # Several distinct writes in one turn; only true repeats refused, a per-turn
+        # cap, picture turns still carded (scripted client, synthetic tools).
+        "tests/test_effect_dedupe.py",
         # Document input: text extracted in memory, one no-tools call (stub client, synthetic files).
         "tests/test_documents.py",
         "tests/test_corpus_prompts.py",
@@ -342,6 +345,12 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_ask_history_recall.py",
     # Ask stall re-prompt, tomorrow typos and the day plan: fake model client, stubbed snapshot.
     "tests/test_ask_day_answers.py",
+    # Ask stall nudge (one retry on a promise-only final): fake model client, synthetic tools.
+    "tests/test_ask_stall_guard.py",
+    # Brief items beside day/week and schedule answers: stubbed snapshot and
+    # store, fixture calendars, fake behavior engine; no model, source or network.
+    "tests/test_schedule_brief_items.py",
+    "tests/test_brief_in_schedule_tools.py",
     # Ask quality: code-failure fixes, tool-pair descriptions, the Wisp self-reference
     # sheet, the follow-up subject record and intent hard stops; registry checks,
     # fake model client, synthetic tools, private WISP_HOME.
@@ -725,6 +734,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/chat-store-contract": "native/chat-store-compile",
     "native/notch-command-contract": "native/notch-command-compile",
     "native/screen-look-contract": "native/screen-look-compile",
+    "native/read-aloud-voice-contract": "native/read-aloud-voice-compile",
     "native/notch-tab-contract": "native/notch-tab-compile",
     "native/know-you-contract": "native/know-you-compile",
 }
@@ -1006,6 +1016,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     agent_send = str(build_dir / "agent-send")
     notch_command = str(build_dir / "notch-command")
     screen_look = str(build_dir / "screen-look")
+    read_aloud_voice = str(build_dir / "read-aloud-voice")
     notch_tab = str(build_dir / "notch-tab")
     know_you = str(build_dir / "know-you")
     chat_logic = str(build_dir / "chat-logic")
@@ -1152,6 +1163,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/screen-look-contract", [screen_look]),
+        (
+            "native/read-aloud-voice-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/ReadAloudVoice.swift",
+                "tests/ReadAloudVoiceChecks.swift", "-o", read_aloud_voice,
+            ],
+        ),
+        ("native/read-aloud-voice-contract", [read_aloud_voice]),
         (
             "native/notch-tab-compile",
             [

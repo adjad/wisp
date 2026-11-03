@@ -309,7 +309,7 @@ final class VoiceRecorder: @unchecked Sendable {
     }
 }
 
-/// Reads an answer aloud with the Mac's own speech voice, on this Mac.
+/// Reads an answer aloud with one of the Mac's own speech voices, on this Mac.
 @MainActor
 final class AnswerSpeaker: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     @Published private(set) var speaking = false
@@ -324,8 +324,10 @@ final class AnswerSpeaker: NSObject, ObservableObject, AVSpeechSynthesizerDelega
         let text = SpokenText.plain(markdown)
         guard !text.isEmpty else { return }
         stop()
-        // No voice or rate set: the ones chosen in System Settings › Accessibility › Spoken Content.
+        // Settings › General › Voice (an installed male voice unless chosen otherwise);
+        // "Use system voice" follows System Settings › Accessibility › Spoken Content.
         let utterance = AVSpeechUtterance(string: text)
+        ReadAloudVoice.apply(to: utterance)
         speaking = true
         synthesizer.speak(utterance)
     }

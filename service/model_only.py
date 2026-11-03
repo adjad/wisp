@@ -253,6 +253,27 @@ def stall_reply(text: str) -> bool:
         _STALL_FILLER.search(line) or _STALL_ACK.match(line) or _STALL.search(line) for line in lines)
 
 
+
+# The Ask LoRA r3 reward's stall phrases (training/ask-lora-r3/grpo/reward.py
+# `_STALL`, act_dont_promise), plus "I am …" and curly apostrophes. Unanchored,
+# unlike _STALL above: the toolbench misses were multi-sentence ("It looks like
+# you're curious about RAM! I'll look up the best details on that for you right
+# now.", "I'm looking up the schedule for you now. … I'll check the public web").
+_PROMISE = re.compile(
+    r"\b(let me (?:look|check|find|pull|see|search|get|grab|take a look|dig)|"
+    r"i(?:'| wi)ll (?:look|check|find|pull|search|get|grab|take a look|dig|see)|"
+    r"i(?:'m| am) (?:looking|checking|pulling|searching|grabbing)|one moment|give me a (?:moment|sec(?:ond)?)|hang on|"
+    r"looking (?:that|it|this) up)\b", re.I)
+
+
+def promise_only_reply(text: str) -> bool:
+    """A reply that promises to look something up instead of answering. Never a
+    question back to the user ("Which city? Once I have it, I'll check.") and
+    never a long answer that only mentions a follow-up."""
+    text = (text or "").strip().replace("\u2019", "'")
+    return (bool(text) and len(text) <= 400 and "?" not in text
+            and bool(_PROMISE.search(text)))
+
 # Appended to a model-led turn's runtime prompt (the light-read style hint the
 # legacy router sets is never set on a model-led turn).
 ASK_STYLE_HINT = (
