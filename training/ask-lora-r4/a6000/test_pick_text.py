@@ -283,6 +283,31 @@ def test_labels_made_by_the_real_exporter_score_end_to_end():
     assert T.score_answer(R, bad, label)["forbidden"] is True
 
 
+def test_picker_path_uses_round_4():
+    """pack_r4 labels dev rows with round 4 and the picker scores with round 4, so the r4 forbidden list reaches checkpoint selection."""
+    seen = []
+    dev = [{"id": "a", "family": "f", "prompt": "x", "think": True, "completion": "c1"}]
+    P.build_text_dev(dev, [({"messages": []}, {"id": "a"})], lambda ex, meta, rnd=3, turns=None, names=(): seen.append(rnd) or {})
+    assert seen == [4]
+    grpo = P.pick_grpo_dir(None)
+    sys.path.insert(0, str(grpo))
+    ex_mod = P.load_module(grpo / "export_prompts.py", "test_export_prompts_r4")
+    ex = {"tools": [], "messages": [{"role": "user", "content": "hi"},
+                                    {"role": "assistant", "content": None, "tool_calls": [{"id": "1", "type": "function", "function": {"name": "list_reminders", "arguments": {}}}]},
+                                    {"role": "tool", "tool_call_id": "1", "content": "none"},
+                                    {"role": "assistant", "content": "Nothing."}]}
+    label = ex_mod.classify(ex, {"id": "t-2", "family": "day", "think": True, "thought": "none"}, 4, {}, [])
+    assert "forward_email" in label["forbidden"] and label["round"] == 4
+    seen_rnd = []
+    class FakeR:
+        def __init__(self): self.real = R
+        def __getattr__(self, n): return getattr(R, n)
+        def score(self, raw, lab, rnd=None):
+            seen_rnd.append(rnd); return R.score(raw, lab, rnd)
+    T.score_answer(FakeR(), "x\n<channel|>Nothing.<turn|>", {**label, "forced": True})
+    assert seen_rnd == [4]
+
+
 # ------------------------------------------------------------------ packing
 
 def test_pack_refuses_missing_inputs_before_doing_anything():
@@ -325,11 +350,11 @@ def test_build_text_dev_joins_by_position_and_checks_ids():
     dev = [{"id": "a", "family": "f", "prompt": "x<|channel>thought\n", "think": True, "completion": "c1"},
            {"id": "b", "family": "g", "prompt": "y", "think": False, "completion": "c2"}]
     pairs = [({"messages": []}, {"id": "a"}), ({"messages": []}, {"id": "b"})]
-    out = P.build_text_dev(dev, pairs, lambda ex, meta: {"step": "final"})
+    out = P.build_text_dev(dev, pairs, lambda ex, meta, *a: {"step": "final"})
     assert [r["label"]["forced"] for r in out] == [True, False] and out[0]["label"]["ideal_completion"] == "c1"
     for bad in (pairs[::-1], pairs[:1]):
         try:
-            P.build_text_dev(dev, bad, lambda ex, meta: {})
+            P.build_text_dev(dev, bad, lambda ex, meta, *a: {})
         except ValueError:
             continue
         raise AssertionError("misaligned join accepted")

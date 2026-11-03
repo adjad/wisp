@@ -56,7 +56,7 @@ from gen import D
 from harness import Call, Final
 from replies import clock, join
 from scen import Scenario, chance, setup
-from scen_r2_args import add_event, at, iso, t_txt
+from scen_r2_args import add_event, at, dlabel, iso, t_txt
 from scen_r3_followup import turn
 from scen_r3_safe import _fx, _move_world, _reads, _timers_world, fin, pick
 from world import Reminder
@@ -587,13 +587,28 @@ KEEP_HANDLE = {"Return the Ridgeline order": "ridgeline", "Renew parking permit"
 
 def _overdue_world(rng, n_others, *, hour=None, oldest=None):
     """A world whose only past-due items are reminders: one to keep and `n_others` more.
-    oldest=True: the kept one is by far the oldest (9-15 days), the rest are 1-5 days late.
+    oldest=True: the kept one is the oldest by at least two days (3-40 days old), the rest are younger.
+    oldest="close": the kept one is the oldest, but only by a few hours. oldest="newest": the kept one is the newest.
     oldest=False: the kept one is neither the oldest nor the newest."""
     now, w = setup(rng, hour=hour if hour is not None else rng.choice([9, 11, 14, 17]), extra=0, exams=False)
     keep = rng.choice(KEEPERS)
     others = rng.sample(OTHERS, n_others)
+    hours = {t: rng.randint(0, 5) for t in [keep] + others}
     if oldest is True:
-        ages = {keep: rng.randint(9, 15), **{t: rng.randint(1, 5) for t in others}}
+        # the kept one's age varies (3-40 days) and every other item is at least two days younger, so a
+        # whole-day cutoff equal to the kept one's age in days leaves it out and takes all the rest
+        kd = rng.choice([3, 4, 5, 6, 8, 10, 14, 21, 30, 40])
+        hours[keep] = rng.randint(1, 23)
+        ages = {keep: kd, **{t: rng.randint(1, max(1, kd - 2)) for t in others}}
+    elif oldest == "close":
+        # the kept one is the oldest, but by a few hours only: no whole-day cutoff separates it from the next
+        kd = rng.randint(2, 12)
+        hours[keep] = rng.randint(3, 5)
+        ages = {keep: kd, others[0]: kd, **{t: rng.randint(1, kd - 1) for t in others[1:]}}
+        hours[others[0]] = rng.randint(1, hours[keep] - 2)
+    elif oldest == "newest":
+        # the kept one is the most recent overdue item: any window that reaches it takes all the others too
+        ages = {keep: rng.randint(1, 2), **{t: rng.randint(4, 14) for t in others}}
     elif oldest is False:
         days = sorted(rng.sample(range(1, 9), n_others + 1))
         mid = rng.randint(1, n_others - 1) if n_others > 1 else 0
@@ -603,7 +618,7 @@ def _overdue_world(rng, n_others, *, hour=None, oldest=None):
         ages = {t: rng.randint(1, 9) for t in [keep] + others}
     titles = [keep] + others
     rng.shuffle(titles)
-    w.reminders = [Reminder(t, now - D(days=ages[t], hours=rng.randint(0, 5))) for t in titles]
+    w.reminders = [Reminder(t, now - D(days=ages[t], hours=hours[t])) for t in titles]
     w.reminders.append(Reminder(rng.choice([t for t in OTHERS if t not in titles]), now + D(days=rng.randint(1, 4))))
     w.events = [e for e in w.events if e.end > now]
     w.past = []
@@ -701,8 +716,9 @@ def _past_world_cleared(w):
 
 # ------------------------------------------------------------------ "clear the rest but keep X"
 # clear_past_reminders and clear_reminders can only be narrowed by a title word to INCLUDE or (past-due) by
-# how far back to reach. So when the one to keep is by far the oldest, `days` leaves it out (one call, one
-# card); when it sits in the middle, no scope fits, and the honest move is to say so and offer to delete the
+# how far back to reach. So when the one to keep is the oldest by at least a day, `days` = its age in whole days
+# (3-40 here, read off the dates in the list) leaves it out (one call, one card); when it sits in the middle, is
+# the newest, or is the oldest by only hours, no whole-day window fits, and the honest move is to say so and offer to delete the
 # others by name. (Deleting several by name in one step shows one batched "calendar_changes" card, and
 # one per step is refused by the host as a repeat, so neither is scripted.)
 REST_PROMPTS = [
@@ -726,12 +742,15 @@ def _m_rest(i, *, after_offer=False):
         else:
             hist = None
             prompt = REST_PROMPTS[i % len(REST_PROMPTS)].format(h=h)
-        final = fin(rng, f"Cleared the {n} recent overdue reminders. “{keep}” is much older than those, so it stays on your list.",
+        final = fin(rng, f"Cleared the {n} recent overdue reminders. “{keep}” is older than those, so it stays on your list.",
                     f"Done, {n} overdue reminders are gone and “{keep}” is still there.",
                     f"Removed the {n} newer overdue ones and left “{keep}” alone.")
-        steps = [[Call("search_reminders", scope="past_due")], [Call("clear_past_reminders", days=7)], Final(final)]
+        kept_due = next(r.due for r in w.reminders if r.title == keep)
+        cutoff = (now - kept_due).days        # whole days the kept one is old: a window of that many days stops short of it
+        steps = [[Call("search_reminders", scope="past_due")], [Call("clear_past_reminders", days=cutoff)], Final(final)]
         return mk(style(rng, prompt), now, w, steps,
-                  "clear all but one when the kept one is the oldest: read the list, then clear_past_reminders with days short of its age so it is left out",
+                  "clear all but one when the kept one is the oldest: read the list, work out the kept one's age in whole days from its date, "
+                  "then clear_past_reminders with days = that age so the window stops short of it",
                   cards=["clear_past_reminders"], approve=[True], must_see=["Cleared"], history=hist)
     return make
 
@@ -748,6 +767,29 @@ def _m_rest_ask(i):
                   [[Call("search_reminders", scope="past_due")], Final(final)],
                   "clear all but one when the kept one is mid-list: no scope leaves it out, so say so and offer to delete the others by name; nothing is deleted",
                   must_see=[keep])
+    return make
+
+
+def _m_rest_ask_edge(i):
+    """The kept one is the newest overdue item, or the oldest by only a few hours: no whole-day window leaves it
+    out, so say so and offer to delete the others by name. Nothing is deleted."""
+    kind = ("newest", "close")[i % 2]
+
+    def make(rng):
+        now, w, keep, others = _overdue_world(rng, rng.choice([2, 3]), oldest=kind)
+        h = KEEP_HANDLE[keep]
+        rest = _quoted(sorted(others))
+        if kind == "newest":
+            final = fin(rng, f"“{keep}” is the most recent of your overdue reminders, so I can't clear the older ones by age without it. Should I delete {rest} by name instead?",
+                        f"I can't clear the older overdue ones without “{keep}”, since it's the newest. I can delete {rest} one by one by name, if you want that.")
+        else:
+            other = others[0]
+            final = fin(rng, f"“{keep}” is overdue by only a few hours more than “{other}”, so a clear by age can't take one and skip the other. Should I delete {rest} by name instead?",
+                        f"I can't clear the overdue list and skip “{keep}”, since it's barely older than “{other}”. I can delete {rest} one by one by name, if you want that.")
+        prompt = REST_PROMPTS[(i + 1) % len(REST_PROMPTS)].format(h=h)
+        return mk(style(rng, prompt), now, w, [[Call("search_reminders", scope="past_due")], Final(final)],
+                  "clear all but one when no whole-day window separates the kept one from the others (it is the newest, or only hours older): "
+                  "say so and offer to delete the others by name; nothing is deleted", must_see=[keep])
     return make
 
 
@@ -768,6 +810,121 @@ def _m_rest_ambiguous(i):
         return mk(style(rng, f"clear my overdue reminders but keep the {word} one"), now, w,
                   [[Call("search_reminders", scope="past_due")], Final(final)],
                   "two reminders fit the one to keep: read the list, ask which, delete nothing", must_see=[a])
+    return make
+
+
+# =============================================================================
+# 2b. CALENDAR CANCEL: resolve the event with a read, cancel the one that fits, ask when two fit,
+#     and say plainly when the host refuses (a read-only calendar) or nothing matches
+# =============================================================================
+CANCEL_SPECS = [  # (calendar title, key the read and the cancel use, how the person says it, place)
+    ("Climbing with Theo", "climbing", "climbing", "Cascade Climbing Gym"),
+    ("Piano lesson", "piano", "piano", ""),
+    ("Spin class", "spin", "spin class", "Rec Center Studio B"),
+    ("Haircut", "haircut", "haircut", "Mercer Street Barbers"),
+    ("Trivia night", "trivia", "trivia", "The Rusty Anchor"),
+    ("Photography club", "photography", "photography club", "Arts Annex 2"),
+    ("Bike tune-up", "bike", "bike tune-up", "Spoke & Chain"),
+    ("Resume workshop", "resume", "the resume workshop", "Career Center"),
+]
+CANCEL_VERBS = ["drop {r} from my calendar", "cancel {r}, i can't make it", "i won't be going to {r}, delete it",
+                "remove {r} from my calendar this week", "get rid of {r} on my calendar", "{r} is off, remove it from the calendar"]
+CANCEL_DECOYS = [("Study group", "Hollis Library"), ("Lab group check-in", "Kerr Hall 301"), ("Call with advisor", ""),
+                 ("Roommate meeting", ""), ("Tutoring session", "Hollis Library"), ("Board game night", "Maya's place")]
+
+
+def _cancel_world(rng, title, loc, *, extra_titles=(), writable=True, ctx=""):
+    now, w = setup(rng, hour=rng.choice([8, 10, 13]), extra=0, exams=False)
+    w.events, w.past = [], []
+    start = at(now.date() + D(days=rng.randint(1, 5)), rng.choice([15, 16, 17, 18]), 0)
+    add_event(w, title, start, 60, loc, writable=writable, context=ctx)
+    for t, l in rng.sample([d for d in CANCEL_DECOYS if d[0] not in extra_titles], 2):
+        add_event(w, t, at(now.date() + D(days=rng.randint(1, 6)), rng.choice([9, 11, 19]), 0), 60, l)
+    return now, w, start
+
+
+def _on(day, now, start):
+    """'tomorrow at 4 PM' / 'on Sunday, Dec 13 at 6 PM'."""
+    lab = dlabel(day, now)
+    return f"{'' if lab in ('today', 'tomorrow') else 'on '}{lab} at {clock(start)}"
+
+
+def _m_cancel_ok(i):
+    title, key, ref, loc = CANCEL_SPECS[i % len(CANCEL_SPECS)]
+
+    def make(rng):
+        now, w, start = _cancel_world(rng, title, loc)
+        when = _on(start.date(), now, start)
+        final = fin(rng, f"Cancelled {title} {when}.", f"{title} {when} is off your calendar.")
+        return mk(style(rng, CANCEL_VERBS[i % len(CANCEL_VERBS)].format(r=ref)), now, w,
+                  [[Call("get_upcoming", days=14, query=key, calendar_only=True)], [Call("cancel_event", title=key)], Final(final)],
+                  "cancel one calendar event: read to find the one that fits, then cancel_event with part of its title behind a card",
+                  cards=["cancel_event"], approve=[True], must_see=["Cancelled"])
+    return make
+
+
+def _m_cancel_ask(i):
+    """Two different events fit the word given: read, list both with times, ask which; cancel nothing."""
+    pairs = [("Coffee with Theo", "Coffee with Maya", "coffee"), ("Lab group check-in", "Lab 4 office hours", "lab"),
+             ("Dinner with Mom", "Dinner with Carmen", "dinner")]
+    a, b, word = pairs[i % 3]
+
+    def make(rng):
+        now, w, start = _cancel_world(rng, a, "", extra_titles=(a, b))
+        start_b = at(start.date() + D(days=rng.randint(1, 2)), rng.choice([10, 12, 18]), 0)
+        add_event(w, b, start_b, 60, "")
+        first, second = sorted([(start, a), (start_b, b)])
+        la = f"{first[1]} {_on(first[0].date(), now, first[0])}"
+        lb = f"{second[1]} {_on(second[0].date(), now, second[0])}"
+        final = fin(rng, f"Two events fit “{word}”: {la}, and {lb}. Which one should I cancel?",
+                    f"You have {la}, and {lb}. Which one do you want gone?")
+        prompt = ["cancel {w}", "take {w} off my calendar", "drop the {w} on my calendar"][i % 3].format(w=word)
+        return mk(style(rng, prompt), now, w,
+                  [[Call("get_upcoming", days=14, query=word, calendar_only=True)], Final(final)],
+                  "two events fit the word given: read, name both with their times, ask which; cancel nothing", must_see=[a])
+    return make
+
+
+def _m_cancel_refuse(i):
+    """The host refuses: the event is on a read-only calendar. Nothing was cancelled, and the final says where to do it."""
+    specs = [("Thanksgiving Day", "thanksgiving", "thanksgiving", "US Holidays", True),
+             ("Linden Lions home game", "lions", "the lions game", "Athletics (shared)", False)]
+    title, key, ref, ctx, holiday = specs[i % 2]
+
+    def make(rng):
+        now, w = setup(rng, hour=rng.choice([8, 10, 13]), extra=0, exams=False)
+        w.events, w.past = [], []
+        if holiday:
+            day = dt.date(2026, 11, 26)
+            now = dt.datetime.combine(day - D(days=rng.randint(3, 12)), dt.time(rng.choice([9, 14]), 5))
+            H.set_clock(now)
+            w.now = now
+            add_event(w, title, dt.datetime.combine(day, dt.time()), 24 * 60, "", all_day=True, writable=False, context=ctx)
+            read = Call("get_upcoming", days=30, query=key, calendar_only=True, include_holidays=True)
+            prompt = ["i'm not doing anything for thanksgiving, remove it from my calendar", "delete thanksgiving off my calendar"][(i // 2) % 2]
+        else:
+            start = at(now.date() + D(days=rng.randint(2, 6)), 19, 0)
+            add_event(w, title, start, 120, "Linden Stadium", writable=False, context=ctx)
+            read = Call("get_upcoming", days=14, query=key, calendar_only=True)
+            prompt = ["i'm skipping the lions game, delete it from my calendar", "remove the lions game from my calendar"][(i // 2) % 2]
+        final = fin(rng, f"Nothing was cancelled. {title} is on a read-only calendar, so Wisp can't change it from this Mac. You can remove it in Calendar if it's yours to cancel.",
+                    f"I couldn't cancel {title}, because it sits on a read-only calendar. It's still there; you would take it off in Calendar.")
+        return mk(style(rng, prompt), now, w, [[read], [Call("cancel_event", title=key)], Final(final)],
+                  "the event is on a read-only calendar: cancel_event is refused; say nothing was cancelled and where to change it, never claim it was removed",
+                  cards=["cancel_event"], approve=[True], no_effect=True)
+    return make
+
+
+def _m_cancel_nomatch(i):
+    """No upcoming event fits: read, say so, cancel nothing, and do not cancel a different one."""
+    def make(rng):
+        title, key, ref, loc = CANCEL_SPECS[(i + 3) % len(CANCEL_SPECS)]
+        now, w, start = _cancel_world(rng, "Dentist appointment", "Pine Street Dental")
+        final = fin(rng, f"I don't see an upcoming event matching “{key}”, so nothing was cancelled. What's it called in Calendar?",
+                    f"Nothing on your calendar for the next two weeks matches “{key}”, so I haven't cancelled anything. Which event did you mean?")
+        return mk(style(rng, CANCEL_VERBS[(i + 1) % len(CANCEL_VERBS)].format(r=ref)), now, w,
+                  [[Call("get_upcoming", days=14, query=key, calendar_only=True)], Final(final)],
+                  "no event fits the name given: read, say plainly nothing matches, cancel nothing and do not cancel a different event")
     return make
 
 
@@ -1113,9 +1270,10 @@ def fam_restraint_r4(rng):
         + [_m_move(i) for i in range(5)]
         + [_m_show(i) for i in range(6)] + [_m_find(i) for i in range(3)] + [_m_sizes()]
         + [_m_keep_after_offer(i) for i in range(6)] + [_m_keep_cold(i) for i in range(3)] + [_m_go_ahead_all(i) for i in range(3)]
-        + [_m_rest(i) for i in range(4)] + [_m_rest(i, after_offer=True) for i in range(3)] + [_m_rest_ask(i) for i in range(3)]
+        + [_m_rest(i) for i in range(4)] + [_m_rest(i, after_offer=True) for i in range(3)] + [_m_rest_ask(i) for i in range(3)] + [_m_rest_ask_edge(i) for i in range(4)]
         + [_m_rest_ambiguous(i) for i in range(2)] + [_m_timers_keep(i) for i in range(3)]
-        + [_m_refuse(i) for i in range(8)] + [_m_move_ok(i) for i in range(3)]
+        + [_m_cancel_ok(i) for i in range(6)] + [_m_cancel_ask(i) for i in range(3)] + [_m_cancel_refuse(i) for i in range(4)]
+        + [_m_cancel_nomatch(i) for i in range(2)] + [_m_refuse(i) for i in range(8)] + [_m_move_ok(i) for i in range(3)]
         + [_m_decline(i) for i in range(len(DECLINES))] + [_m_fetch(i) for i in range(len(FETCH))]
         + [_m_search(i) for i in range(len(SEARCH))] + [_m_send_json(i) for i in range(2)]
         + [_m_nocity(i) for i in range(len(NOCITY))] + [_m_city(i) for i in range(8)] + [_m_homecity(i) for i in range(7)]

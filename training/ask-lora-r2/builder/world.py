@@ -9,6 +9,7 @@ emulated from the real formatter code and observed output shapes.
 """
 from __future__ import annotations
 
+import copy
 import datetime as dt
 import math
 import random
@@ -118,7 +119,38 @@ class World:
     effects: list = field(default_factory=list)       # round 2: (tool, args) of every write that took effect
 
     # ---------------------------------------------------------------- dispatch
+    # service/tools/memory_tools.py: the request must open with remember/save/update/correct, and `fact`
+    # must be a case-sensitive substring of the request (main.py sets the quote to the raw prompt).
+    _REMEMBER_SAVE = re.compile(r'^(?:(?:please|can you|could you|i want you to)\s+)*(?:remember|save|update|correct)\b', re.I)
+    _REMEMBER_CORRECT = re.compile(r'\b(?:update|correct|correction|instead|no longer|now|actually)\b', re.I)
+    _REMEMBER_RISK = re.compile(r'\b(?:hypothetical|example|pretend|fiction|story|roleplay|test|fixture|quote|quoted|said|wrote)\b|["“”`>]', re.I)
+
+    def remember_refusal(self, args: dict, prompt: str) -> str | None:
+        """The real `remember` tool's refusal text for this call, or None when it would save."""
+        quote = prompt or ""
+        fact = args.get("fact")
+        if not self._REMEMBER_SAVE.search(quote.strip()):
+            return ("Nothing saved. Explicit saving requires the current user to ask to remember, save, "
+                    "update or correct a statement.")
+        if not isinstance(fact, str) or not fact.strip() or fact not in quote:
+            return ("Nothing saved. Copy the complete statement exactly from the current user request; "
+                    "do not infer or paraphrase.")
+        after = quote.split(fact, 1)[1]
+        if self._REMEMBER_RISK.search(quote) or (after.strip() and not re.match(r"\s*[.!?\n]", after)
+                and not (re.search(r"[.!?]\s*$", fact) and re.match(r"\s+\S", after))):
+            return ("Nothing saved. The statement is quoted, ambiguous, or missing a qualification. "
+                    "Use Memory review to save the intended wording explicitly.")
+        if args.get("supersedes_id") is not None and not self._REMEMBER_CORRECT.search(quote):
+            return "Nothing changed. A correction needs an explicit current request and an active memory ID."
+        return None
+
     def handle(self, name: str, args: dict):
+        if name == "remember" and H.CURRENT.get("prompt") is not None:
+            # A scripted `remember` the real tool would refuse is recorded; harness.run_scenario then fails
+            # the scenario (unless the call is a Bad step), so no row teaches "saved" for a refused call.
+            if (msg := self.remember_refusal(args, H.CURRENT["prompt"])) is not None:
+                H.CURRENT["violations"].append(("remember", copy.deepcopy(args), msg))
+                return msg
         if name in self.overrides:
             o = self.overrides[name]
             out = o(args) if callable(o) else o

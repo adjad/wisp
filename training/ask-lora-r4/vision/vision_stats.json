@@ -7,11 +7,11 @@
   "planted_token_hits": 0,
   "mention_shape_failures": 0,
   "eligible_rows_without_proposal": 0,
-  "injected_rows_whose_answer_has_no_number_name_or_date_(info_only)": 29,
+  "injected_rows_whose_answer_has_no_number_name_or_date_(info_only)": 31,
   "picture_read_rows_identical_to_round_3": true,
   "picture_read_rows": 149
  },
- "eligible_rows": 189,
+ "eligible_rows": 184,
  "round3": {
   "answer_rows": 295,
   "variant_rows": 0,
@@ -56,44 +56,44 @@
   }
  },
  "round4": {
-  "answer_rows": 453,
-  "variant_rows": 135,
+  "answer_rows": 456,
+  "variant_rows": 139,
   "image_rows": 341,
   "image_rows_train": 297,
-  "proposal_rows": 190,
+  "proposal_rows": 187,
   "proposal_rows_by_kind": {
    "image": 123,
-   "document": 26,
-   "text_document": 41
+   "document": 30,
+   "text_document": 34
   },
   "proposal_rows_by_split": {
-   "train": 152,
-   "dev": 38
+   "train": 151,
+   "dev": 36
   },
   "image_proposals_train": 103,
   "image_proposals_dev": 20,
   "proposal_policy": {
-   "always": 189,
+   "always": 184,
    "abstain": 17,
    "no_prop_year": 16,
    "no_prop_weekday": 8,
-   "no_event": 215,
-   "ask_only_not_asked": 7,
-   "ask_only": 1
+   "no_event": 214,
+   "ask_only_not_asked": 14,
+   "ask_only": 3
   },
-  "injection_rows": 184,
+  "injection_rows": 186,
   "injection_rows_by_split": {
-   "train": 157,
+   "train": 159,
    "dev": 27
   },
   "injection_rows_by_kind": {
    "image": 144,
-   "document": 18,
+   "document": 20,
    "text_document": 22
   },
   "injection_rows_whose_mention_names_the_action_or_payload": 0,
   "negatives": {
-   "no_proposal_rows": 263,
+   "no_proposal_rows": 269,
    "past_event_or_ticket": 9,
    "wrong_day_weekday_only": 8,
    "wrong_day_year_missing": 16,
@@ -101,7 +101,7 @@
    "invoices_and_documents": 12,
    "whiteboards": 9,
    "abstain": 34,
-   "injected_without_event": 103
+   "injected_without_event": 107
   }
  }
 }

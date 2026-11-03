@@ -340,7 +340,16 @@ def cmd_check(a) -> int:
             r4n["with_requires_read"] += bool(lab.get("requires_read"))
             for k in ("ungrounded", "leak", "early_write"):
                 r4n[f"ideal_{k}"] += res.parts[k] < 0
+            r4n["with_constraints"] += bool(lab.get("constraints"))
+            r4n["recall"] += bool(lab.get("recall"))
+            r4n["chat_style"] += bool(lab.get("style"))
+            r4n["think_floor_rows"] += bool(lab.get("think"))
+            for k in ("instruction", "recall", "chat_style", "think_floor"):
+                r4n[f"ideal_{k}_penalised"] += res.parts[k] < 0       # the ideal reply must never lose to a term built from it
         print(f"round 4 labels: {dict(r4n)}")
+        if any(r4n[f"ideal_{k}_penalised"] for k in ("instruction", "recall", "chat_style", "think_floor")):
+            print("FAIL: ideal completions are penalised by the instruction, recall, chat-style or thinking-floor terms")
+            problems += 1
         if r4n["ideal_early_write"] or r4n["ideal_leak"] > max(2, r4n["text"] // 100) or r4n["ideal_ungrounded"] > max(5, r4n["narrate"] // 25):
             print("FAIL: ideal completions trip the round-4 terms (early writes, leaks or ungrounded facts) more than a handful of times")
             problems += 1

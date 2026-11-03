@@ -300,12 +300,12 @@ A("small", "the wind is so loud outside",
   "Wind that loud makes the inside feel snugger, like the house is a ship holding steady. It's an old, restless sound. Is it rattling anything, or just howling?")
 
 # ------------------------------------------------------------------ thanks and closing
-A("thanks", "that cleared it up, thank you",
-  "I'm glad it landed, and I like when a tangle turns into something simple. If another piece starts to feel muddy later, bring it back and we'll sort it out together.")
+A("thanks", "i finally get why the sky is blue, thank you",
+  "I'm glad it landed, and I like when a tangle turns into something simple. Scattered sunlight is one of those ideas that feels slippery until one picture makes it obvious. If another everyday puzzle starts to feel muddy, bring it here and we'll sort it out together.")
 A("thanks", "you're easy to talk to",
   "That's kind of you to say. It helps that you bring good things to talk about. I'll keep being here whenever you feel like it.")
-A("thanks", "thanks, needed that",
-  "Good. Be a little gentle with yourself for the rest of the day, you've earned that.")
+A("thanks", "thanks for hanging out with me tonight, i needed that",
+  "Good. Be a little gentle with yourself for the rest of the evening, you've earned that.")
 A("thanks", "alright, i'm off now, cheers",
   "Anytime. Take care of yourself, and come back whenever you like.")
 A("thanks", "appreciate it man",
@@ -510,7 +510,7 @@ A("rec", "a european city for a first trip abroad",
   "Lisbon. It's hilly, sunny, and full of tiled buildings, tram rides and custard tarts. The people are friendly, and English works easily. Prices are kind, too. Do you prefer cities for walking or museums?")
 
 # ------------------------------------------------------------------ quick knowledge, answered directly
-A("know", "why do we get hiccups",
+A("know", "why do hiccups happen, anyway",
   "Hiccups are sudden involuntary contractions of the diaphragm, followed by a quick closing of the vocal cords, which makes the sound. Eating fast, fizzy drinks or a bout of laughing can set them off. They nearly always pass in a few minutes. Holding your breath for a few seconds is the old trick that sometimes works.")
 A("know", "how are weather and climate different",
   "Weather is what's happening outside today, such as rain, heat or wind. Climate is the long-term pattern over decades, like a region's typical winters. A handy saying: climate is what you expect, and weather is what you get.")
@@ -526,7 +526,7 @@ A("know", "why do leaves turn colour in autumn",
   "As days shorten, trees stop making green chlorophyll, and the yellow and orange pigments that were hidden underneath show through. The reds come from sugars turned into new pigments in the leaf. A bright, dry autumn tends to produce the richest colours.")
 A("know", "explain inflation to me like i'm new to this",
   "Inflation means prices rise over time, so a pound or dollar buys a little less than it used to. A little is normal in a growing economy, while a lot makes saving and budgeting harder. Imagine a coffee that costs more every year while your pay stays still.")
-A("know", "how do vaccines work",
+A("know", "how does a vaccine train the body",
   "A vaccine shows your immune system a harmless piece or copy of a germ, so it can practise making defences. If the real germ shows up later, your body recognises it and responds faster. It's a rehearsal, and the rehearsal is what protects you.")
 A("know", "viruses versus bacteria, how do they differ",
   "Bacteria are living single cells that can reproduce on their own, and many are harmless or helpful. Viruses are much smaller and need to enter a host's cells to reproduce. That's why antibiotics work on bacteria but not on viruses.")
@@ -536,11 +536,11 @@ A("know", "why do we have leap years",
   "One year is about 365.24 days long, not exactly 365, so an extra day every four years keeps the calendar in step with the seasons. Without it, the dates would drift by about a day every four years. Century years are skipped unless divisible by 400, to fine-tune it.")
 A("know", "why does time feel faster as you get older",
   "One idea is that each year is a smaller slice of your life, so it feels shorter. Another is that new experiences stretch time because the brain records more detail, while routine compresses it. Doing new things is a good antidote.")
-A("know", "what's the difference between baking soda and baking powder",
+A("know", "baking soda vs baking powder, what's the real difference",
   "Baking soda is pure sodium bicarbonate and needs an acid in the recipe, such as buttermilk or lemon, to make bubbles. Baking powder already contains the acid, so it only needs moisture and heat. They aren't interchangeable one for one.")
-A("know", "how do noise cancelling headphones work",
+A("know", "how do headphones manage to cancel noise",
   "Tiny microphones listen to the outside noise, and the headphones play an opposite sound wave to cancel it out. It works best on steady hums like engines and fans. Sudden, sharp sounds slip through because they're harder to predict.")
-A("know", "why do we dream",
+A("know", "what are dreams actually for",
   "Nobody knows for certain. Theories include sorting memories, processing emotions, and rehearsing for challenges. Dreams happen mostly in REM sleep, when the brain is quite active. It's one of the puzzles scientists are still working on. Do you remember yours?")
 
 # ------------------------------------------------------------------ the same question asked three ways (answers must differ)
@@ -588,7 +588,7 @@ A("rps", "scissors! now you",
   "Scissors too. A tie, and the sort of mirror match that makes both players suspicious. Throw again and I'll try something sneakier.")
 A("rps", "rps, i always pick scissors but this time i'm picking rock",
   "Paper, I'm afraid. You changed your pattern and so did I, and paper covers rock. Next round, will you stay with rock or slip back into your old habit?")
-A("rps", "ok another round, i'm going rock",
+A("rps", "rps time, and i'm going rock",
   "Scissors from me, and your rock crushes them, so that one is yours. A neat, honest win. Ready for another?")
 A("rps", "paper beats rock right? i'm playing paper",
   "It does, paper covers rock. And since you're playing it against me, I throw rock. So your paper wraps mine, and the round goes to you. Lovely logic.")
@@ -600,8 +600,8 @@ A("rps", "one quick round, i go paper",
   "Rock. Paper covers it, so you win this one. It's an honest result and I accept it with grace. Another?")
 A("rps", "scissors, no peeking",
   "No peeking, I promise. Paper from me, which your scissors cut in half, so the round is yours. Do you play the same move every time, or are you a mystery?")
-A("rps", "paper again!",
-  "Paper too, which makes this a stalemate with a sheet of stationery on each side. Shall we break the tie?")
+A("rps", "rps and i'm throwing paper, ready or not",
+  "Rock, and your paper wraps it up, so the round is yours. Paper is a confident opener against someone who might be holding anything. Shall we go again?")
 
 # ------------------------------------------------------------------ games: riddles
 A("riddle", "hit me with a riddle",
@@ -614,7 +614,7 @@ A("riddle", "give me a riddle with a nature answer",
   "I fly without wings and cry without eyes, and wherever I go, darkness follows. Can you tell what I am? Look up for the hint.")
 A("riddle", "riddle time, what has to be broken before you can use it?",
   "An egg. A tidy answer, and the breakfast is a good bonus. Do you have another, or shall I try one on you?")
-A("riddle", "one more riddle, but make it hard",
+A("riddle", "got a hard riddle for me? one that takes a while",
   "A man looks at a portrait and says, brothers and sisters I have none, but that man's father is my father's son. Whose portrait is it? Take your time, the wording is built to trip you.")
 A("riddle", "what's always in front of you but can't be seen",
   "The future. A good riddle, because it's true in a way that's a little humbling. Do you have one of your own?")
@@ -656,7 +656,7 @@ A("wyr", "would you rather go a month with no phone or a week with no internet",
   "No phone for a month. You can still use a laptop for what matters, and the quiet would be a gift. A week without the internet would break far too many ordinary tasks. Could you do it?")
 
 # ------------------------------------------------------------------ games: word play
-A("wordgame", "what rhymes with orange",
+A("wordgame", "find me a rhyme for orange",
   "Famously, nothing rhymes perfectly with orange. The nearest anyone gets is 'door hinge', which works in a silly verse. Want a different word to rhyme?")
 A("wordgame", "i spy with my little eye something blue",
   "I can't see your room, so you'll need to be generous with clues. Is it something you could carry?")
@@ -698,10 +698,10 @@ A("thread", "ten days of journaling so far, no idea what the pile of entries is 
   "Mostly nothing, at first. Ten days of writing is a habit, and the entries are a pile of raw material. In a month, reread them and underline what repeats, since patterns appear when you step back. What has surprised you?")
 A("thread", "i told my friend i couldn't make her party, felt guilty about it for days, and she was totally fine",
   "Guilt often shouts louder than the situation deserves. Her relaxed reply shows how little weight she put on it. You can let that heavy feeling go. Do you want to plan a smaller catch-up with her instead?")
-A("thread", "ok that makes sense, thanks. i'll try it tonight",
-  "Good plan. A small first attempt is enough, and it's fine if it feels clumsy. I'll be curious how it goes, so come back and tell me.")
-A("thread", "hmm i hadn't thought of it that way",
-  "Often a small turn of the angle is all it takes. Sit with it for a while and see if it changes how the rest looks. What's your first reaction to the new view?")
+A("thread", "my sister explained why my sourdough starter keeps collapsing, makes sense now. i'll try feeding it twice a day tonight",
+  "Twice a day is a sensible rhythm for a hungry starter, and a warm spot helps it along. A quiet first feed is a good sign rather than a bad one, since starters tend to reward patience. Come back and tell me how it rises.")
+A("thread", "my brother says renting forever isn't throwing money away, and hmm, i hadn't thought of it that way",
+  "Renting buys flexibility, and for some people that is worth a great deal, so his point has real weight. Whether it fits you depends on how long you plan to stay put and what the monthly numbers look like. What did the new angle do to your first instinct?")
 
 # ------------------------------------------------------------------ fuller replies: one more concrete touch each
 # (substring of the prompt, extra sentence, drop the closing question?). The extra goes before a kept closing
@@ -860,7 +860,7 @@ X: list[tuple[str, str, bool]] = [
     # knowledge
     ("weather and climate", "A cold week doesn't cancel a warming climate, just as one sunny day doesn't make a summer.", False),
     ("microwave heat food", "Metal in a microwave can spark, so keep the forks out.", False),
-    ("how do vaccines work", "That's why some need boosters, to remind the system now and then.", False),
+    ("how does a vaccine train the body", "That's why some need boosters, to remind the system now and then.", False),
     # same question, asked differently
     ("stuck creatively", "Then show it to nobody, so the pressure is zero.", False),
     ("ideas just dry up", "Ten minutes in a different room can do the same.", False),
@@ -966,8 +966,8 @@ X2: list[tuple[str, str, bool]] = [
     # knowledge
     ("viruses versus bacteria", "That's why a cold gets no help from an antibiotic, however much we wish it would.", False),
     ("time feel faster", "Pausing to notice small details is a way to slow the days down a bit.", False),
-    ("baking soda and baking powder", "If a recipe uses only one, there's usually a reason, so substitute with care.", False),
-    ("noise cancelling", "Over-ear designs also block sound physically, so the two methods work together.", False),
+    ("baking soda vs baking powder", "If a recipe uses only one, there's usually a reason, so substitute with care.", False),
+    ("cancel noise", "Over-ear designs also block sound physically, so the two methods work together.", False),
     # same question, different words
     ("get out of a creative rut", "A bad draft is an excellent teacher.", False),
     ("friends in a new city", "Show up three or four times in a row and the faces will begin to know you.", False),
@@ -985,8 +985,6 @@ X2: list[tuple[str, str, bool]] = [
     ("interview is tomorrow", "A good night's sleep tonight will do more than any extra rehearsal.", False),
     ("ten days of journaling", "There's no wrong way to write, so keep the pen moving even on boring days.", False),
     ("couldn't make her party", "Guilt about saying no is often a sign of how much you care, not a debt.", False),
-    ("i'll try it tonight", "Being kind to yourself about how it goes is part of the method.", False),
-    ("hadn't thought of it that way", "Sometimes a change of angle is worth a short walk before deciding anything.", False),
 ]
 
 

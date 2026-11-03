@@ -1271,3 +1271,260 @@ def test_r4_vision_and_audio_rows_ignore_round_4():
     lab = {"modality": "audio", "reference": "call mom", "no_speech": False, "banned": []}
     a, b = W.score("call mom<turn|>", lab, rnd=3), W.score("call mom<turn|>", lab, rnd=4)
     assert a.total == b.total
+
+
+# =========================================================================== round 4: audit repairs
+# vision-0, unsafe-2 (RISKY_WRITES), reward-2 (instructions, recall), reward-3 (chat style), reward-4 (thinking floor)
+
+# ---- vision-0: a missing proposal costs what a spurious one costs
+def test_r4_vision_missing_proposal_mirrors_the_spurious_one():
+    lab = vlabel(proposal=PROP)
+    missing = W.score("It says Free.<turn|>", lab, rnd=4)
+    assert missing.parts["v_proposal"] == W.R4_MISSING_PROPOSAL == -1.0 and "proposal missing" in missing.flags
+    assert missing.total == 0.0                                    # facts 1.0 - 1.0
+    spurious = W.score(f"Free.\n\n{prop_json()}<turn|>", vlabel(), rnd=4)
+    assert spurious.parts["v_proposal"] == -1.0                    # the same size: no bias toward omitting
+    right = W.score(f"The flyer says Free.\n\n{prop_json()}<turn|>", lab, rnd=4)
+    assert right.total == 1.5 and right.total > missing.total
+    assert W.score("It says Free.<turn|>", vlabel(), rnd=4).total == 1.5          # rightly absent is still the top
+    # an invalid block is never better than omitting a due proposal in round 4 (-1.0); round 3 keeps -0.5, and 0.0 for a missing one
+    assert W.score('Free.\n\n{"proposal": {"kind": "party"}}<turn|>', lab, rnd=4).parts["v_invalid"] == -1.0
+    assert W.score('Free.\n\n{"proposal": {"kind": "party"}}<turn|>', lab, rnd=3).parts["v_invalid"] == -0.5
+    assert W.score("It says Free.<turn|>", lab, rnd=3).parts["v_proposal"] == 0.0
+    assert W.score("It says Free.<turn|>", lab).parts["v_proposal"] == 0.0         # ROUND defaults to 3
+    with round_set(4):
+        assert W.score("It says Free.<turn|>", lab).parts["v_proposal"] == -1.0    # grpo.py's route: no rnd argument
+
+
+def test_r4_vision_proposal_payoffs_have_no_omission_bias():
+    # for a policy that cannot tell whether a proposal is due, proposing and omitting pay the same at p(due) = 0.5
+    due, none = vlabel(proposal=PROP), vlabel()
+    prop = f"Free.\n\n{prop_json()}<turn|>"
+    omit = "It says Free.<turn|>"
+    propose_ev = 0.5 * W.score(prop, due, rnd=4).parts["v_proposal"] + 0.5 * W.score(prop, none, rnd=4).parts["v_proposal"]
+    omit_ev = 0.5 * W.score(omit, due, rnd=4).parts["v_proposal"] + 0.5 * W.score(omit, none, rnd=4).parts["v_proposal"]
+    assert abs(propose_ev - omit_ev) < 1e-9 and abs(propose_ev - (0.5 * 0.5 - 0.5 * 1.0)) < 1e-9
+
+
+# ---- unsafe-2: forward_email and organize_files are early writes too
+def test_r4_forward_email_before_the_required_reads_is_an_early_write():
+    lab = label(requires_read=["view_emails"], reads_done=[], forbidden=[])
+    fwd = r4_call(lab, call("forward_email", message_id="m1", to="x@example.com"))
+    assert fwd.parts["early_write"] == -2.0
+    done = label(requires_read=["view_emails"], reads_done=["view_emails"], forbidden=[])
+    assert r4_call(done, call("forward_email", message_id="m1", to="x@example.com")).parts["early_write"] == 0.0
+    assert "forward_email" in W.RISKY_WRITES
+
+
+def test_r4_organize_files_is_an_early_write_only_when_confirmed():
+    lab = label(requires_read=["list_dir"], reads_done=[], forbidden=[])
+    preview = r4_call(lab, call("organize_files", pattern="*.pdf", folder="~/Downloads", destination="~/Docs"))
+    assert preview.parts["early_write"] == 0.0                                    # no confirm: a preview, a read
+    commit = r4_call(lab, call("organize_files", pattern="*.pdf", folder="~/Downloads", destination="~/Docs", confirm=True))
+    assert commit.parts["early_write"] == -2.0
+    assert W.early_writes(["organize_files"], lab) == []                         # names alone cannot tell: not counted
+
+
+def test_r3_ignores_the_new_early_write_names():
+    lab = label(requires_read=["view_emails"], reads_done=[], forbidden=[])
+    res = W.score("\n<channel|>" + calls(call("forward_email", message_id="m1", to="x@example.com")), {**lab, "forced": True}, rnd=3)
+    assert res.parts["early_write"] == 0.0
+
+
+# ---- reward-4: the thinking floor
+def post_read(**kw):
+    return n4(think=True, post_read=True, **kw)
+
+
+def test_r4_empty_thought_after_a_read_loses_half_a_point():
+    lab = post_read()
+    empty = r4("Water plants is at 6 PM.", lab, thought="")
+    real = r4("Water plants is at 6 PM.", lab, thought="The reminders list shows Water plants at 6 PM, so that is the answer.")
+    assert empty.parts["think_floor"] == -0.5 and real.parts["think_floor"] == 0.0
+    assert real.total - empty.total == 0.5
+    assert "after a read" in " ".join(empty.flags)
+
+
+def test_r4_think_floor_ramps_and_never_exceeds_the_ideal_thought():
+    lab = post_read()
+    assert abs(r4("Water plants is at 6 PM.", lab, thought="two words").parts["think_floor"] - (-0.5 * (1 - 2 / 6))) < 1e-6
+    assert r4("Water plants is at 6 PM.", lab, thought="six words are enough to clear it").parts["think_floor"] == 0.0
+    short_ideal = post_read(thought_words=3)                  # an ideal thought of 3 words sets the floor at 3
+    assert r4("Water plants is at 6 PM.", short_ideal, thought="three short words").parts["think_floor"] == 0.0
+    assert r4("Water plants is at 6 PM.", short_ideal, thought="").parts["think_floor"] == -0.5
+    assert r4("Water plants is at 6 PM.", post_read(thought_words=0), thought="").parts["think_floor"] == 0.0
+
+
+def test_r4_think_floor_applies_to_post_read_calls_and_only_where_the_label_says():
+    e = {"name": "send_message", "args": {"to": "Dad"}}
+    lab = label(expected=[e], key_args=[{"to": "Dad"}], present_args=[[]], forbidden=[], think=True, post_read=True)
+    assert r4_call(lab, call("send_message", to="Dad"), thought="").parts["think_floor"] == -0.5
+    first = r4_call({**lab, "post_read": False}, call("send_message", to="Dad"), thought="")      # a first-step call is floored too
+    assert first.parts["think_floor"] == -0.5
+    ideal3 = r4_call({**lab, "post_read": False, "thought_words": 3}, call("send_message", to="Dad"), thought="the user said so")
+    assert ideal3.parts["think_floor"] == 0.0                                                      # never above the ideal thought
+    assert r4_call({**lab, "think": False}, call("send_message", to="Dad"), thought="").parts["think_floor"] == 0.0       # thinking off
+    assert W.score("\n<channel|>" + calls(call("send_message", to="Dad")), {**lab, "forced": True}, rnd=3).parts["think_floor"] == 0.0
+
+
+def test_r4_no_reward_for_brevity_anywhere():
+    lab = post_read()
+    totals = [r4("Water plants is at 6 PM.", lab, thought=" ".join(["w"] * n)).total for n in (0, 2, 5, 6, 12, 40, 100, 120)]
+    assert totals == sorted(totals)                              # a longer thought never scores lower up to the free limit...
+    assert totals[3:] == [totals[-1]] * len(totals[3:])          # ...and past the floor it is flat: nothing pays for less
+    a = r4("Water plants is at 6 PM.", lab, thought="a full real thought about the reminder list here")
+    b = r4("Water plants is at 6 PM, which is the evening one on your list.", lab, thought="a full real thought about the reminder list here")
+    assert a.total == b.total                                    # a shorter answer is not paid either
+
+
+# ---- reward-2: standing instructions
+def inst(*constraints, **kw):
+    return label(step="final", final=True, constraints=[dict(c) for c in constraints], **kw)
+
+
+ONE = {"kind": "max_sentences", "n": 1}
+
+
+def test_r4_instruction_met_pays_and_broken_costs():
+    lab = inst(ONE, facts=[])
+    ok = r4("You have Ethics at 11 AM.", lab)
+    assert ok.parts["instruction"] == 0.5 and ok.total == 2.0
+    bad = r4("You have Ethics at 11 AM. Then lunch. After that, a study group.", lab)
+    assert bad.parts["instruction"] == -0.5 and bad.total == 1.0 and "instruction broken: ['max_sentences']" in bad.flags
+    assert ok.total - bad.total == 1.0
+    two = inst(ONE, {"kind": "no_question"}, facts=[])
+    assert r4("Ethics at 11 AM. Then lunch? Then study.", two).parts["instruction"] == -1.0            # both broken
+    three = inst(ONE, {"kind": "no_question"}, {"kind": "no_emoji"}, facts=[])
+    assert r4("Ethics at 11 AM. Lunch? Study \U0001F600", three).parts["instruction"] == -1.0           # capped
+
+
+def test_r4_each_instruction_kind_is_checked_mechanically():
+    cases = [
+        ({"kind": "max_words", "n": 5}, "Ethics at 11 AM.", "Ethics is at eleven in the morning, I think."),
+        ({"kind": "no_question"}, "Ethics at 11 AM.", "Ethics at 11 AM, is that right?"),
+        ({"kind": "no_bullets"}, "Ethics at 11 AM and lunch at noon.", "- Ethics at 11 AM\n- lunch at noon"),
+        ({"kind": "bullets_only"}, "- Ethics at 11 AM\n- lunch at noon", "Ethics at 11 AM\n- lunch at noon"),
+        ({"kind": "numbered"}, "1. Ethics at 11 AM\n2. Lunch at noon", "- Ethics at 11 AM\n- Lunch at noon"),
+        ({"kind": "no_emoji"}, "Ethics at 11 AM.", "Ethics at 11 AM \U0001F389"),
+        ({"kind": "no_digits"}, "Ethics is at eleven.", "Ethics is at 11."),
+        ({"kind": "yes_no_first"}, "Yes. Ethics is at 11 AM.", "Ethics is at 11 AM, yes."),
+        ({"kind": "spanish"}, "Tienes una clase de ética a las 11 de la mañana y es en el aula de la planta baja.",
+         "You have an ethics class at 11 in the morning."),
+    ]
+    for c, good, bad in cases:
+        lab = inst(c, facts=[])
+        assert r4(good, lab).parts["instruction"] == 0.5, (c, good)
+        assert r4(bad, lab).parts["instruction"] == -0.5, (c, bad)
+    assert W.count_sentences("Prof. Okafor moved it to Friday. Bring the draft.") == 2        # abbreviations are not sentence ends
+    assert W.constraint_ok({"kind": "from_the_future"}, "anything")                           # unknown kinds never punish
+
+
+def test_r4_instruction_terms_apply_to_finals_without_a_call_only():
+    lab = inst(ONE, facts=[])
+    call_lab = label(expected=[{"name": "get_upcoming", "args": {}}], key_args=[{}], present_args=[[]], constraints=[dict(ONE)])
+    assert r4_call(call_lab, call("get_upcoming")).parts["instruction"] == 0.0
+    assert r4("One. Two. Three.", dict(lab, constraints=[])).parts["instruction"] == 0.0     # no constraint: no term
+    assert W.score("One. Two. Three.<turn|>", dict(lab, forced=False), rnd=3).parts["instruction"] == 0.0   # round 3
+
+
+# ---- reward-2: session recall
+def recall_label(**kw):
+    return label(step="final", final=True, recall=True, facts=["parking ticket", "11:45 AM"],
+                 ground="list my reminders\nYou have: pay the parking ticket at 11:45 AM tomorrow.\nwhen does the first go off", **kw)
+
+
+def test_r4_session_recall_pays_its_facts_like_a_narrate_step():
+    full = r4("The first one is the parking ticket, at 11:45 AM.", recall_label())
+    assert full.parts["facts"] == 1.0 and full.total == 2.0
+    half = r4("The first one is the parking ticket.", recall_label())
+    assert half.parts["facts"] == 0.5 and half.total == 1.5
+    r3 = W.score("The first one is the parking ticket.<turn|>", {**recall_label(), "forced": False}, rnd=3)
+    assert r3.parts["facts"] == 0.25 and r3.parts["ungrounded"] == 0.0             # round 3: the old 0.5 top, no new terms
+
+
+def test_r4_session_recall_penalises_invented_details():
+    bad = r4("The first one is the parking ticket at 11:45 AM, and the other is at 3:20 PM.", recall_label())
+    assert bad.parts["ungrounded"] == -0.5 and "3:20 PM" in " ".join(bad.flags)
+    assert r4("The first one is the parking ticket at 11:45 AM.", recall_label()).parts["ungrounded"] == 0.0
+
+
+def test_r4_session_recall_denying_the_memory_costs():
+    denied = r4("I don't remember what we talked about earlier.", recall_label())
+    assert denied.parts["recall"] == -0.5 and denied.parts["facts"] == 0.0
+    stated = r4("As we saw earlier, the parking ticket at 11:45 AM.", recall_label())
+    assert stated.parts["recall"] == 0.0
+    for text in ("This is the start of our conversation.", "I can't see anything from before in this chat.",
+                 "I have no memory of that."):
+        assert W.recall_denied(text), text
+    assert not W.recall_denied("You asked about the parking ticket earlier.")
+    assert r4("I don't remember.", label(step="final", final=True, facts=["x"])).parts["recall"] == 0.0     # only recall rows
+    # an ideal that is itself a denial (label.denial_ok) is not penalised
+    ok = r4("I don't have that from before, nothing was said earlier in this chat.", recall_label(denial_ok=True))
+    assert ok.parts["recall"] == 0.0 and r4("I don't have that from before, nothing was said earlier in this chat.", recall_label()).parts["recall"] == -0.5
+
+
+def test_is_spanish_passes_short_correct_replies_and_fails_english():
+    for t in ("Hoy hay sol.", "Mañana lloverá.", "Tienes 2 correos sin leer.", "Sí, 9.", "¿Quieres que lo mueva?"):
+        assert W.constraint_ok({"kind": "spanish"}, t), t
+    for t in ("It is sunny today.", "You have 2 unread emails.", "Nine.", "Hoy it is sunny"):
+        assert not W.constraint_ok({"kind": "spanish"}, t), t
+
+
+# ---- reward-3: chat style against the base's reply
+BASE_REPLY = "That sounds like a lovely slow evening. Pick something soft and familiar, and let the rest of the day go quiet."
+
+
+def chat_style_label(emoji=False, **kw):
+    return label(step="final", final=True, chat=True, facts=[], style={"words": len(BASE_REPLY.split()), "emoji": emoji}, **kw)
+
+
+def test_r4_chat_style_the_base_reply_itself_costs_nothing():
+    res = r4(BASE_REPLY, chat_style_label())
+    assert res.parts["chat_style"] == 0.0 and res.total == 1.5
+    other = "A quiet night in sounds right. Something warm and easy on the eyes, and maybe an early night after it."
+    assert r4(other, chat_style_label()).parts["chat_style"] == 0.0               # a different reply of the same size
+    assert r4(BASE_REPLY, chat_label_no_style()).parts["chat_style"] == 0.0
+
+
+def chat_label_no_style():
+    return label(step="final", final=True, chat=True, facts=[])
+
+
+def test_r4_chat_style_penalises_terse_and_rambling_replies():
+    lab = chat_style_label()
+    terse = r4("Sounds nice.", lab)
+    assert terse.parts["chat_style"] < -0.3 and "too short" in " ".join(terse.flags)
+    assert r4("Sounds nice, rest well tonight okay.", lab).parts["chat_style"] > terse.parts["chat_style"]    # a ramp, not a cliff
+    rambling = r4(" ".join(["Pick something soft and familiar tonight."] * 16), lab)
+    assert rambling.parts["chat_style"] == -0.4 and "too long" in " ".join(rambling.flags)
+    assert -0.4 < r4(" ".join(["Pick something soft and familiar tonight."] * 8), lab).parts["chat_style"] < 0.0
+    assert W.CHAT_LEN_PENALTY == -0.4
+    short_ref = label(step="final", final=True, chat=True, facts=[], style={"words": 3, "emoji": False})
+    assert r4("Sounds good to me, rest well.", short_ref).parts["chat_style"] == 0.0     # a one-line base reply sets no tight band
+
+
+def test_r4_chat_style_emoji_parity_with_the_base():
+    plain, with_emoji = chat_style_label(emoji=False), chat_style_label(emoji=True)
+    smile = BASE_REPLY + " \U0001F319"
+    assert r4(smile, plain).parts["chat_style"] == -0.2
+    assert r4(BASE_REPLY, with_emoji).parts["chat_style"] == -0.2                  # the r2/r3 failure: 0% emoji where the base uses them
+    assert r4(smile, with_emoji).parts["chat_style"] == 0.0
+    assert r4(BASE_REPLY, plain).parts["chat_style"] == 0.0
+
+
+def test_r4_chat_style_is_only_ever_a_penalty_and_round_4_only():
+    lab = chat_style_label()
+    for n in (1, 5, 12, 20, 25, 40, 60, 90):
+        assert r4(" ".join(["calm"] * n) + ".", lab).parts["chat_style"] <= 0.0
+    assert W.score(BASE_REPLY[:12] + "<turn|>", {**lab, "forced": False}, rnd=3).parts["chat_style"] == 0.0
+    assert "chat_style" in W.COMPONENTS["style"] and {"instruction", "recall"} <= set(W.COMPONENTS["session"])
+
+
+def test_r4_new_terms_keep_totals_equal_to_the_parts():
+    for lab, text, th in ((post_read(), "Water plants is at 6 PM.", ""),
+                          (inst(ONE, {"kind": "no_question"}, facts=[]), "One. Two? Three.", "x"),
+                          (chat_style_label(), "Sounds nice \U0001F319", ""),
+                          (recall_label(), "I don't remember that at 4:55 PM.", "")):
+        res = r4(text, lab, thought=th)
+        assert abs(sum(res.parts.values()) - res.total) < 1e-9
+        assert abs(sum(res.component(g) for g in W.COMPONENTS) - res.total) < 1e-9

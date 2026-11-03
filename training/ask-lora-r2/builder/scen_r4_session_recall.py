@@ -149,6 +149,19 @@ def _check(sc):
     assert _hist_chars(sc) <= 9000, f"history of {_hist_chars(sc)} chars"
     for i, t in enumerate(sc.history):
         _voice(t["assistant"], f"history[{i}]")
+        # a chain follow-up or ack must sit right after its question (or the exchange before it in the same chain)
+        if t.get("crole") in ("fu", "ack"):
+            prev = sc.history[i - 1] if i else {}
+            want = ("q", "fu")
+            assert prev.get("cblk") == t["cblk"] and prev.get("crole") in want, f"history[{i}] {t['user']!r} is separated from its question"
+        elif t.get("crole") == "q":
+            nxt = sc.history[i + 1] if i + 1 < len(sc.history) else {}
+            if nxt.get("cblk") == t["cblk"]:
+                assert nxt["crole"] in ("fu", "ack"), f"history[{i}] chain out of order"
+    if sc.kind == "s4_first":
+        assert not sc.history[0].get("crole") in ("fu", "ack"), f"s4_first: the first message {sc.history[0]['user']!r} is a follow-up"
+    if sc.kind == "s4_before":
+        assert sc.history[-1].get("crole") != "ack", f"s4_before: the last message {sc.history[-1]['user']!r} is an ack"
     if final:
         _voice(final, "final")
     kind, rules = sc.kind, sc.rules
@@ -641,10 +654,11 @@ def fillers(rng, k, exclude=(), chains=True):
         used.add(key)
         _FUSED[key] = _FUSED.get(key, 0) + 1
         if kind == "chain":
-            ex = [dict(turn(u, a), topic=f[1], keys=[f[2]], filler=True) for u, a in f[0]]
+            blk = f"chain:{f[0][0][0]}"
+            ex = [dict(turn(u, a), topic=f[1], keys=[f[2]], filler=True, cblk=blk, crole="q" if j == 0 else "fu") for j, (u, a) in enumerate(f[0])]
             if left >= 3 and rng.random() < 0.4:
                 u, a = rng.choice(bk["acks"])
-                ex.append(dict(turn(u, a), topic=f[1], keys=[f[2]], filler=True))
+                ex.append(dict(turn(u, a), topic=f[1], keys=[f[2]], filler=True, cblk=blk, crole="ack"))
             out += ex[:left]
             continue
         u, a, t, kw = f[:4]
@@ -1889,8 +1903,15 @@ def _s4_history(rng, n_anchor, n_fill):
         # one world holds every anchor's data; anchors of one kind never repeat
         exs.append(_anchor(rng, k, now, w))
     pad = fillers(rng, n_fill, exclude={e["user"] for e in exs})
-    seq = pad + exs
-    rng.shuffle(seq)
+    # shuffle whole blocks: a chain's question, its follow-up and any ack stay adjacent and in order
+    blocks = []
+    for e in pad + exs:
+        if blocks and e.get("cblk") and blocks[-1][0].get("cblk") == e["cblk"]:
+            blocks[-1].append(e)
+        else:
+            blocks.append([e])
+    rng.shuffle(blocks)
+    seq = [e for b in blocks for e in b]
     return now, w, seq, exs
 
 
@@ -1951,6 +1972,8 @@ def s4_before(i):
         if not _topic_ok(seq):
             return None
         last = seq[-1]
+        if last.get("crole") in ("ack", "fu"):   # the literal previous message is a thanks or a short reply, not a question
+            return None
         prompt = rng.choice(["what was the question right before this one", "what was the last question before this", "and the question before this one was what",
                              "what was the thing i asked you just before"])
         final = fin(rng, f"Right before this you asked about {last['topic']}.", f"Your last question was about {last['topic']}.")

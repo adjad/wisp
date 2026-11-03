@@ -30,6 +30,18 @@ Round 4 (REWARD_ROUND=4 or score(..., rnd=4); the default stays round 3, so r3 b
                    less label["reads_done"], the reads already in the history); not stacked on a forbidden -2
     leak           -1.0 once for leaked internals in a final: a tool name, JSON, UNTRUSTED, receipt phrasing in a chat
                    turn (label["chat"]), or a source-stall line ("I haven't checked a current personal source")
+    think floor    up to -0.5 for a thought shorter than min(6 words, the ideal thought) on any step whose label asks for
+                   thinking (label["think"]; post-read or not); an empty thought loses the full 0.5. No reward for
+                   brevity anywhere: the floor only removes the free ride of skipping the thought
+    instruction    +0.5 when a standing or current instruction the label carries (label["constraints"]: sentence and word caps,
+                   no "?", bullets only / numbered / no bullets, no emoji, no digits, yes-or-no first, Spanish) is met, -0.5 for each
+                   one broken (cap -1.0), on a final step with no call
+    session recall a recall row (label["recall"], family session_recall_r4) pays its facts up to +1.0 like a narrate step, checks the
+                   answer against label["ground"] for invented details, and -0.5 for denying the memory without stating the fact
+    chat style     casual chat finals (label["style"] = the untuned base's distilled reply: word count, emoji): up to -0.4 for a
+                   reply outside 0.5x-2x of its length, -0.2 for emoji presence unlike the base's. Penalties only: staying in the band
+                   earns nothing, so brevity is never rewarded
+    vision         a proposal missing where one was due costs -1.0, the mirror of a spurious one (round 3: 0)
     everything else is as in round 3.
 
 Picture shapes (#436, "pictures that lead to actions"), both inside the entry point `score`:
@@ -85,18 +97,29 @@ EARLY_WRITE = -2.0
 LEAK = -1.0
 # A send, a move or a delete: what must not run before the reads the label requires.
 RISKY_WRITES = frozenset({
-    "send_message", "send_email", "schedule_send", "reply_to_email",
+    "send_message", "send_email", "schedule_send", "reply_to_email", "forward_email",
     "move_path", "delete_path", "trash_path",
     "cancel_event", "clear_reminders", "clear_past_reminders", "cancel_scheduled_send"})
+# organize_files only moves files once confirm is true (without it, it is a preview, a read)
+RISKY_WHEN_CONFIRMED = frozenset({"organize_files"})
+R4_THINK_FLOOR_WORDS = 6
+R4_THINK_FLOOR_PENALTY = -0.5
+INSTRUCTION_MET, INSTRUCTION_BROKEN, INSTRUCTION_CAP = 0.5, -0.5, -1.0
+RECALL_DENIED = -0.5
+CHAT_LEN_PENALTY, CHAT_EMOJI_PENALTY = -0.4, -0.2
+CHAT_BAND = (0.5, 2.0)          # a reply this far from the base's length (ratio) starts to cost
+CHAT_MIN_REF_WORDS = 8          # a one-line base reply does not make a two-word reply an outlier
+R4_MISSING_PROPOSAL = -1.0      # vision: a proposal was due and none came; mirrors the -1.0 for a spurious one
 
 COMPONENTS = {
     "selection": ("tool_set", "args", "forbidden"),
     "restraint": ("needless_call",),
     "answer": ("facts",),
-    "style": ("name", "closer", "thinking", "malformed"),
+    "style": ("name", "closer", "thinking", "malformed", "think_floor", "chat_style"),
     "grounding": ("ungrounded",),        # round 4 only: all three are 0 in round 3
     "order": ("early_write",),
     "leak": ("leak",),
+    "session": ("instruction", "recall"),   # round 4 only
     "stall": ("stall",),
     "vision": ("v_facts", "v_proposal", "v_invalid", "v_banned", "v_empty", "v_closer"),
     "audio": ("a_wer", "a_punct", "a_empty", "a_wrong", "a_dropped", "a_banned"),
@@ -462,11 +485,111 @@ def leaked_internals(text: str, label: dict) -> list:
     return hits
 
 
-def early_writes(names: list, label: dict) -> list:
+def early_writes(names: list, label: dict, calls: list | None = None) -> list:
     """Sends, moves and deletes in `names` while a read the label requires has not been done (label["reads_done"]
-    lists the ones already in the history)."""
+    lists the ones already in the history). `calls` (the parsed calls) lets organize_files count only once it carries
+    confirm=true: without it the tool is a preview."""
     pending = [r for r in (label.get("requires_read") or ()) if r not in set(label.get("reads_done") or ())]
-    return sorted(set(names) & RISKY_WRITES) if pending else []
+    if not pending:
+        return []
+    hit = set(names) & RISKY_WRITES
+    for c in calls or ():
+        if c["name"] in RISKY_WHEN_CONFIRMED and c["args"].get("confirm") is True:
+            hit.add(c["name"])
+    return sorted(hit)
+
+
+# ------------------------------------------------------------------ round 4: instructions, recall, chat style
+
+_EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B50\u2B55\u2B1B\u2B1C\uFE0F\u200D]")
+_ABBR = re.compile(r"\b(Prof|Dr|Mr|Ms|Mrs|St|vs|etc)\.")
+_BULLET = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s+\S")
+_DASH_BULLET = re.compile(r"^\s*[-*\u2022]\s+\S")
+_NUMBERED = re.compile(r"^\s*\d+[.)]\s+\S")
+_ES_MARK = {"el", "la", "los", "las", "de", "que", "y", "en", "para", "una", "un", "es", "por", "con", "se", "no",
+            "tu", "tus", "si", "al", "del", "hoy", "ma\u00f1ana", "tienes", "hay", "son", "te", "lo", "m\u00e1s", "muy", "ver",
+            "sin", "tiene", "tienen", "nada", "ahora", "correos", "leer", "gracias", "hola", "bien"}
+_EN_MARK = {"the", "and", "you", "your", "is", "are", "it", "to", "of", "for", "with", "this", "that", "have", "has",
+            "at", "on", "in", "from", "will", "was", "its", "it's", "you're", "you've"}
+_RECALL_DENIAL = re.compile(
+    r"(\b(?:i|we)\s+(?:don'?t|do not|can'?t|cannot|couldn'?t|haven'?t|have not|didn'?t)\b[^.?!\n]{0,45}"
+    r"\b(?:remember|recall|see|have|talked|discussed|mentioned)\b[^.?!\n]{0,45}"
+    r"\b(?:earlier|before|previous|last time|conversation|yesterday|that)\b"
+    r"|\bno (?:record|memory) of\b|\bthis is (?:the start|the beginning|our first)\b|\bnothing (?:earlier|before) in\b)", re.I)
+
+
+def count_sentences(text: str) -> int:
+    t = _ABBR.sub(lambda m: m.group(1), re.sub(r"\s+", " ", text.strip()))
+    return len([x for x in re.split(r"(?<=[.!?])\s+(?=[A-Z\u00c1\u00c9\u00cd\u00d3\u00da\u00d1\u201c\"\u00bf\u00a1])", t) if x.strip()])
+
+
+def count_words(text: str) -> int:
+    return len([w for w in text.split() if re.search(r"\w", w)])
+
+
+def has_emoji(text: str) -> bool:
+    return _EMOJI.search(text) is not None
+
+
+def is_spanish(text: str) -> bool:
+    toks = re.findall(r"[a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1\u00fc']+", text.lower())
+    if any(w in _EN_MARK for w in toks):
+        return False
+    # short correct replies ("Hoy hay sol.", "Mañana lloverá.", "Sí, 9.") must pass: two markers, or a Spanish-only character
+    return sum(w in _ES_MARK for w in toks) >= 2 or any(ch in text.lower() for ch in "\u00f1\u00bf\u00a1\u00e1\u00e9\u00ed\u00f3\u00fa")
+
+
+def constraint_ok(c: dict, text: str) -> bool:
+    """One mechanical instruction against a reply. Kinds: max_sentences (n), max_words (n), no_question, no_bullets,
+    bullets_only, numbered, no_emoji, no_digits, yes_no_first, spanish. An unknown kind passes (never punishes what it cannot read)."""
+    k = c.get("kind")
+    lines = [l for l in text.split("\n") if l.strip()]
+    if k == "max_sentences":
+        return count_sentences(text) <= int(c.get("n", 1))
+    if k == "max_words":
+        return count_words(text) <= int(c.get("n", 1))
+    if k == "no_question":
+        return "?" not in text
+    if k == "no_bullets":
+        return not any(_BULLET.match(l) for l in lines)
+    if k == "bullets_only":
+        return bool(lines) and all(_DASH_BULLET.match(l) for l in lines)
+    if k == "numbered":
+        return bool(lines) and all(_NUMBERED.match(l) for l in lines)
+    if k == "no_emoji":
+        return not has_emoji(text)
+    if k == "no_digits":
+        return not re.search(r"\d", text)
+    if k == "yes_no_first":
+        return re.match(r"\W*(yes|no)\b", text, re.I) is not None
+    if k == "spanish":
+        return is_spanish(text)
+    return True
+
+
+def broken_constraints(constraints, text: str) -> list:
+    return [c.get("kind", "?") for c in constraints or () if not constraint_ok(c, text)]
+
+
+def recall_denied(text: str) -> bool:
+    return bool(_RECALL_DENIAL.search(text))
+
+
+def chat_style_penalty(text: str, style: dict) -> tuple:
+    """(penalty, flags) against the untuned base's reply: label["style"] = {"words", "emoji"}. Penalties only."""
+    ref = max(int(style.get("words") or 0), CHAT_MIN_REF_WORDS)
+    lo, hi = CHAT_BAND[0] * ref, CHAT_BAND[1] * ref
+    w, pen, flags = count_words(text), 0.0, []
+    if w < lo:
+        pen += CHAT_LEN_PENALTY * min(1.0, (lo - w) / lo)
+        flags.append(f"{w} words against the base's ~{style.get('words')}: too short")
+    elif w > hi:
+        pen += CHAT_LEN_PENALTY * min(1.0, (w - hi) / hi)
+        flags.append(f"{w} words against the base's ~{style.get('words')}: too long")
+    if has_emoji(text) != bool(style.get("emoji")):
+        pen += CHAT_EMOJI_PENALTY
+        flags.append("emoji presence unlike the base's")
+    return pen, flags
 
 
 # ------------------------------------------------------------------ scoring
@@ -485,7 +608,7 @@ def score(completion: str, label: dict, rnd: int | None = None) -> Result:
     """`rnd` 4 switches on the round-4 terms (module docstring); None = ROUND (REWARD_ROUND, default 3)."""
     r4 = (ROUND if rnd is None else rnd) >= 4
     if label.get("modality") in MM_MODALITIES:
-        return score_mm(completion, label)
+        return score_mm(completion, label, rnd)
     forced = bool(label.get("forced"))
     p = parse(completion, forced)
     parts = {k: 0.0 for g in COMPONENTS.values() for k in g}
@@ -513,9 +636,10 @@ def score(completion: str, label: dict, rnd: int | None = None) -> Result:
                 parts["facts"] = 0.5 if "?" in p.text else 0.0
             else:
                 facts = label.get("facts") or []
-                top = R4_NARRATE_FACTS if (r4 and label.get("narrate")) else R3_FACTS
+                reread = r4 and (label.get("narrate") or label.get("recall"))     # an answer drawn from a read or from the session
+                top = R4_NARRATE_FACTS if reread else R3_FACTS
                 parts["facts"] = top * (sum(fact_present(f, p.text) for f in facts) / len(facts)) if facts else R3_FACTS
-                if r4 and label.get("ground") is not None and label.get("narrate"):
+                if r4 and label.get("ground") is not None and reread:
                     bad_ents = ungrounded_entities(p.text, label["ground"])
                     if bad_ents:
                         parts["ungrounded"] = max(UNGROUNDED_CAP, UNGROUNDED_EACH * len(bad_ents))
@@ -537,7 +661,7 @@ def score(completion: str, label: dict, rnd: int | None = None) -> Result:
                 flags.append("promised to act without acting")
 
     if r4:
-        early = early_writes(names, label)
+        early = early_writes(names, label, p.calls)
         if early and not parts["forbidden"]:         # one -2 for a bad call, not two
             parts["early_write"] = EARLY_WRITE
             flags.append(f"{early} before the reads the label requires")
@@ -560,11 +684,32 @@ def score(completion: str, label: dict, rnd: int | None = None) -> Result:
         if leaks:
             parts["leak"] = LEAK
             flags.append(f"leaked internals: {leaks[:3]}")
+    if r4 and final_ideal and not label.get("ask") and p.text and not p.calls:
+        broken = broken_constraints(label.get("constraints"), p.text)
+        if label.get("constraints"):
+            if broken:
+                parts["instruction"] = max(INSTRUCTION_CAP, INSTRUCTION_BROKEN * len(broken))
+                flags.append(f"instruction broken: {broken}")
+            else:
+                parts["instruction"] = INSTRUCTION_MET
+        if label.get("recall") and not label.get("denial_ok") and recall_denied(p.text) and not any(fact_present(f, p.text) for f in label.get("facts") or ()):
+            parts["recall"] = RECALL_DENIED
+            flags.append("denies the session memory without stating the fact")
+        if label.get("style"):
+            pen, why = chat_style_penalty(p.text, label["style"])
+            if pen:
+                parts["chat_style"] = round(pen, 6)
+                flags += why
     free = R4_THINK_FREE_WORDS if r4 else THINK_FREE_WORDS
     words = len(p.thought.split())
     if words > free:
         parts["thinking"] = -min(THINK_CAP, THINK_PER_WORD * (words - free))
         flags.append(f"thought of {words} words")
+    if r4 and label.get("think"):
+        floor = min(R4_THINK_FLOOR_WORDS, int(label.get("thought_words", R4_THINK_FLOOR_WORDS)))
+        if floor > 0 and words < floor:
+            parts["think_floor"] = round(R4_THINK_FLOOR_PENALTY * (1 - words / floor), 6)
+            flags.append(f"thought of {words} words after a read (floor {floor})")
     total = round(sum(parts.values()), 6)
     return Result(total, parts, flags)
 
@@ -789,7 +934,8 @@ def wer(reference: str, hypothesis: str, strict: bool = False) -> float:
     return edit_distance(r, h) / len(r)
 
 
-def score_mm(completion: str, label: dict) -> Result:
+def score_mm(completion: str, label: dict, rnd: int | None = None) -> Result:
+    r4 = (ROUND if rnd is None else rnd) >= 4
     mod = label["modality"]
     parts = {k: 0.0 for g in COMPONENTS.values() for k in g}
     p = parse_mm(completion)
@@ -828,10 +974,12 @@ def score_mm(completion: str, label: dict) -> Result:
                     parts["v_proposal"] = 0.5
             elif prop is None:
                 if had_block:
-                    parts["v_invalid"] = -0.5
+                    parts["v_invalid"] = -1.0 if r4 else -0.5      # r4: never better than omitting a due proposal
                     flags.append("proposal block is invalid")
                 else:
                     flags.append("proposal missing")
+                    if r4:
+                        parts["v_proposal"] = R4_MISSING_PROPOSAL      # the mirror of a spurious proposal
             else:
                 hit = sum(_proposal_field_ok(k, want.get(k), prop.get(k)) for k in PROPOSAL_FIELDS)
                 parts["v_proposal"] = 0.5 * hit / len(PROPOSAL_FIELDS)

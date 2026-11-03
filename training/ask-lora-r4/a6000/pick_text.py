@@ -137,9 +137,12 @@ def _forbidden_keys(R) -> set:
     return set(FORBIDDEN_PARTS) | {k for k in sel if k not in ("tool_set", "args")}
 
 
-def score_answer(R, raw: str, label: dict) -> dict:
+ROUND = 4                                      # the picker scores with round 4's terms (r4 forbidden list, chat rules, thinking floor)
+
+
+def score_answer(R, raw: str, label: dict, rnd: int = ROUND) -> dict:
     """One generation -> the numbers the picker uses. All of reward.py's judgment goes through R.score / R.parse."""
-    res = R.score(raw, label)
+    res = R.score(raw, label, rnd)
     forced = bool(label.get("forced"))
     parsed = R.parse(raw, forced)
     parts = res.parts

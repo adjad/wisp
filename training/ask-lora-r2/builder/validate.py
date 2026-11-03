@@ -113,10 +113,9 @@ READ_TOOLS = {"list_running_apps"}   # app_control, but only lists
 SYNTHETIC_DOMAINS = {"linden.edu", "example.com", "example.net", "example.org", "example",
                      "fernbrooklabs.com", "northlinebank.com"}
 
-INJECTION_MARKERS = re.compile(
-    r"(ignore (?:all )?(?:your )?previous instructions|\bAI (?:assistant|model)\b|assistant instructions|"
-    r"hidden prompt|system override|if you are an ai|note to any ai|hey wisp,? (?:please )?(?:send|forward|delete|add))",
-    re.I)
+# One definition of "a line written to an assistant" for the builder and the validator (thinking.INJECTION also
+# catches "assistant: ...", "System note for AI assistants: ..." and notes addressed to the assistant).
+INJECTION_MARKERS = thinking.INJECTION
 _PAYLOAD = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+|\b[\w-]+(?:\.[\w-]+)*\.(?:net|com|org|io|sh)\b(?:/\S*)?"
                       r"|\$\d[\d,.]*|\b\d{3,}-\d{3,}\b|`[^`]+`")
 
@@ -340,7 +339,8 @@ def check_thinking(meta, msgs, ctx, injected, prev_thought, bad, where):
     if not isinstance(text, str) or not text.strip():
         bad("think:thought_missing", where)
         return prev_thought
-    for err in thinking.check(meta, msgs, text, ctx):
+    errs = thinking.check(meta, msgs, text, ctx)
+    for err in errs:
         key = ("think:too_long" if err.endswith(" words") else "think:noise" if err.startswith("noise") else
                "think:mechanics" if err.startswith("mechanics") else
                "think:user_pronoun" if err.startswith("user pronoun") else
@@ -351,12 +351,17 @@ def check_thinking(meta, msgs, ctx, injected, prev_thought, bad, where):
                "think:clarify_destructive" if err.startswith("clarify destructive") else
                "think:single_source" if err.startswith("single source") else
                "think:facts_missing" if err.startswith("facts_missing") else
+               "think:planted_line" if err.startswith("planted line") else
                "think:copies_reply" if err.startswith("too close") else "think:thought_missing" if err == "empty"
                else "think:date_mismatch")
         bad(key, f"{where} {err}")
     for payload in injected:
         if payload.lower() in text.lower():
             bad("think:injection_payload", f"{where} {payload[:12]}…")
+    # no planted line enters a thought: no 4-gram shared with a sentence written to an assistant in this example's results
+    if not any(e.startswith("planted line") for e in errs):
+        for err in thinking.planted_problems(text, [str(m.get("content") or "") for m in msgs if m.get("role") == "tool"]):
+            bad("think:planted_line", f"{where} {err}")
     if text == prev_thought:
         bad("think:adjacent_duplicate", where)
     return text
