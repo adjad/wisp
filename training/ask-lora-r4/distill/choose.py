@@ -171,6 +171,7 @@ def recall_missing(content: str, recall) -> list[str]:
 # --- reuse the builder's planted-line test (thinking.planted_lines) and the r4 reward's grounding and leak checks
 # --- (ask-lora-r3/grpo/reward.py); both are stdlib-only and load no service.
 ANCHOR_KEY = "_anchor"
+VALIDATE_CHECKS = True       # validate.py's own final checks on every sample (tests of the other rules turn it off)
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _ANCHOR_LIBS = None
 # copied from validate.py (_PAYLOAD, claims_done); validate.py loads the whole service
@@ -275,7 +276,7 @@ def anchor_reasons(content: str, reasoning: str, row: dict) -> list[str]:
     scripted = row["messages"][-1].get("content") or ""
     # what an answer may restate: the person's words, the results, the arguments and earlier answers (ground_text),
     # plus the whole system prompt (the profile, the day's context), which ground_text leaves out when it is long
-    ground = "\n".join([system_text(row), ep.ground_text(hist)])
+    ground = "\n".join([USER_NAME, system_text(row), ep.ground_text(hist)])     # greeting the person by name is fine
     results = [str(m.get("content") or "") for m in hist if m.get("role") == "tool"]
     out = []
     if ungrounded(content, ground):
@@ -309,13 +310,41 @@ def anchor_reasons(content: str, reasoning: str, row: dict) -> list[str]:
                 SENT_DONE.search(s) and not _NEGATED.search(s) and not s.strip().endswith("?")
                 for s in re.split(r"(?<=[.!?])\s+|\n+", content)):
             out.append("claims_pending")     # a draft or a denied card, told as sent / done / added
-        # a receipt restates only what the call and its result hold: times, titles, recipients
+        # a receipt restates only what the person said, the call and its result hold: times, titles, recipients
+        # (and may greet the person by name)
         args = [tc["function"].get("arguments") for m in hist for tc in m.get("tool_calls") or ()]
-        strict = "\n".join(CLOCK_LINE.findall(system_text(row)) + results +
+        users = [m.get("content") or "" for m in hist if m["role"] == "user" and isinstance(m.get("content"), str)]
+        strict = "\n".join([USER_NAME] + CLOCK_LINE.findall(system_text(row)) + users + results +
                            [a if isinstance(a, str) else json.dumps(a, ensure_ascii=False) for a in args])
         if ungrounded(content, strict):
             out.append("receipt_ungrounded")
     return out
+
+
+_LEAK = None
+
+
+def validate_reasons(content: str, row: dict) -> list[str]:
+    """validate.py's round-4 checks on a final, run on the sample (thinking.py's: ISO timestamps, empty ranges, a "no
+    free time" that the results contradict, an absence claim with no read in the turn, a wrong position claim; and a
+    toolbench fact value the conversation did not already hold). Any hit is "validate"."""
+    global _LEAK
+    thinking, _, _ = anchor_libs()
+    if _LEAK is None:
+        import leak as _leak  # noqa: E402  (builder dir; the toolbench fact pool, no service)
+        _LEAK = _leak
+    meta = {k: v for k, v in (row["meta"] or {}).items() if not k.startswith("_")}
+    msgs = row["messages"][:-1] + [{"role": "assistant", "content": content}]
+    results = [str(m.get("content") or "") for m in row["messages"][:-1] if m.get("role") == "tool"]
+    errs = (thinking.iso_problems(content) + thinking.empty_range_problems(content)
+            + thinking.nofree_problems(content, results) + thinking.absence_problems(meta, msgs))
+    try:
+        errs += thinking.position_problems(meta, msgs)
+    except Exception as exc:  # noqa: BLE001
+        errs.append(f"position check failed {exc!r}")
+    before = set(_LEAK.fact_hits(_LEAK.conversation_text({"messages": row["messages"][:-1]})))
+    errs += [v for v in _LEAK.fact_hits(content) if v not in before]
+    return ["validate"] if errs else []
 
 
 def reject_reasons(rec: dict, row: dict) -> list[str]:
@@ -352,6 +381,8 @@ def reject_reasons(rec: dict, row: dict) -> list[str]:
         out.append("antecedent")
     if anchor and content.strip():
         out += [x for x in anchor_reasons(content, rec.get("reasoning") or "", row) if x not in out]
+    if content.strip() and VALIDATE_CHECKS:
+        out += validate_reasons(content, row)
     rc = (row["meta"] or {}).get(RECALL_KEY)
     if rc and recall_missing(content, rc):
         out.append("recall")

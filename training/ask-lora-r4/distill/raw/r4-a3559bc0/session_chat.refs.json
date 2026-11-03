@@ -1,0 +1,1405 @@
+{
+ "session_chat_r4-000-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "slow and repetitive"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-001-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "9 tomorrow morning"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-002-s0": {
+  "kind": "fact",
+  "ref": [
+   "jacket"
+  ],
+  "absent": null,
+  "ok": [
+   "40s",
+   "fahrenheit"
+  ]
+ },
+ "session_chat_r4-003-s0": {
+  "kind": "build",
+  "ref": [
+   "Dina",
+   "month"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-004-s0": {
+  "kind": "emo",
+  "ref": [
+   "6 hours",
+   "mechanism"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-005-s0": {
+  "kind": "rec_none",
+  "ref": [
+   "Lisbon",
+   "9 days",
+   "3rd"
+  ],
+  "absent": "airline",
+  "ok": []
+ },
+ "session_chat_r4-006-s0": {
+  "kind": "rec_both",
+  "ref": [
+   "lentil soup",
+   "stroganoff",
+   "lemon tart"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-007-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "onion",
+   "outer"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-008-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "beagle mix",
+   "10 weeks"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-009-s0": {
+  "kind": "fact",
+  "ref": [
+   "300"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-010-s0": {
+  "kind": "build",
+  "ref": [
+   "shower",
+   "abuela"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-011-s0": {
+  "kind": "emo",
+  "ref": [
+   "Pepper",
+   "night"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-012-s0": {
+  "kind": "rec_none",
+  "ref": [
+   "lemon",
+   "dinosaurs"
+  ],
+  "absent": "favorite color",
+  "ok": []
+ },
+ "session_chat_r4-013-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "$5 per square foot",
+   "300 square feet"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-014-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "$2,000"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-015-s0": {
+  "kind": "fact",
+  "ref": [],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-016-s0": {
+  "kind": "build",
+  "ref": [
+   "Basil & Bloom",
+   "Maren"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-017-s0": {
+  "kind": "emo",
+  "ref": [
+   "tryouts",
+   "yelling"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-018-s0": {
+  "kind": "rec_none",
+  "ref": [
+   "8 weeks"
+  ],
+  "absent": "sunday",
+  "ok": []
+ },
+ "session_chat_r4-019-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "three feet",
+   "10 feet"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-020-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "64F",
+   "75F",
+   "Gerald"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-021-s0": {
+  "kind": "fact",
+  "ref": [
+   "kettle"
+  ],
+  "absent": null,
+  "ok": [
+   "195",
+   "205",
+   "fahrenheit"
+  ]
+ },
+ "session_chat_r4-022-s0": {
+  "kind": "build",
+  "ref": [
+   "Contact",
+   "Arrival"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-023-s0": {
+  "kind": "emo",
+  "ref": [
+   "jam",
+   "Sunday"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-024-s0": {
+  "kind": "rec_none",
+  "ref": [
+   "landscape supply yard",
+   "Saturday in April"
+  ],
+  "absent": "garden center",
+  "ok": []
+ },
+ "session_chat_r4-025-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "fishing journal",
+   "waterproof"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-026-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Annihilation",
+   "Contact"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-027-s0": {
+  "kind": "fact",
+  "ref": [
+   "chain rule",
+   "Friday"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-028-s0": {
+  "kind": "build",
+  "ref": [
+   "Just One",
+   "Wingspan"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-029-s0": {
+  "kind": "emo",
+  "ref": [
+   "3 months",
+   "6 weeks"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-030-s0": {
+  "kind": "rec_none",
+  "ref": [
+   "$82,000",
+   "$85,000"
+  ],
+  "absent": "insurance",
+  "ok": []
+ },
+ "session_chat_r4-031-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "Cape Perpetua",
+   "Thor's Well"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-032-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Marcus"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-033-s0": {
+  "kind": "fact",
+  "ref": [
+   "chain",
+   "commute"
+  ],
+  "absent": null,
+  "ok": [
+   "200",
+   "300"
+  ]
+ },
+ "session_chat_r4-034-s0": {
+  "kind": "build",
+  "ref": [
+   "$200",
+   "15 miles"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-035-s0": {
+  "kind": "emo",
+  "ref": [
+   "Bea",
+   "hoodie"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-036-s0": {
+  "kind": "rec_none",
+  "ref": [
+   "separate account"
+  ],
+  "absent": "credit union",
+  "ok": []
+ },
+ "session_chat_r4-037-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "Braiding Sweetgrass",
+   "Overstory"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-038-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "7:30",
+   "Basil & Bloom"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-039-s0": {
+  "kind": "fact",
+  "ref": [
+   "f/8"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-040-s0": {
+  "kind": "build",
+  "ref": [
+   "Scarborough Fair",
+   "sight reading"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-041-s0": {
+  "kind": "emo",
+  "ref": [
+   "6 hours",
+   "mechanisms"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-042-s0": {
+  "kind": "rec_none",
+  "ref": [
+   "June",
+   "Prague"
+  ],
+  "absent": "venue",
+  "ok": []
+ },
+ "session_chat_r4-043-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "80 days"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-044-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "north window"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-045-s0": {
+  "kind": "fact",
+  "ref": [
+   "bath"
+  ],
+  "absent": null,
+  "ok": [
+   "10",
+   "13",
+   "24"
+  ]
+ },
+ "session_chat_r4-046-s0": {
+  "kind": "build",
+  "ref": [
+   "Asheville",
+   "ten things"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-047-s0": {
+  "kind": "emo",
+  "ref": [
+   "new baby",
+   "mom"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-048-s0": {
+  "kind": "rec_none",
+  "ref": [
+   "15 minutes",
+   "Knockin' on Heaven's Door"
+  ],
+  "absent": "buy",
+  "ok": []
+ },
+ "session_chat_r4-049-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "four counts",
+   "six"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-050-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Luis",
+   "$14,500"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-051-s0": {
+  "kind": "fact",
+  "ref": [
+   "Catan"
+  ],
+  "absent": null,
+  "ok": [
+   "60",
+   "90",
+   "10",
+   "15"
+  ]
+ },
+ "session_chat_r4-052-s0": {
+  "kind": "build",
+  "ref": [
+   "Luis",
+   "walk-up"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-053-s0": {
+  "kind": "emo",
+  "ref": [
+   "Sunday",
+   "peach jam"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-054-s0": {
+  "kind": "rec_none",
+  "ref": [
+   "lemon tart"
+  ],
+  "absent": "dessert wine",
+  "ok": []
+ },
+ "session_chat_r4-055-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "skipped tryouts",
+   "long pause"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-056-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "12 days",
+   "Saturday"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-057-s0": {
+  "kind": "fact",
+  "ref": [],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-058-s0": {
+  "kind": "build",
+  "ref": [
+   "Minseo",
+   "food"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-059-s0": {
+  "kind": "emo",
+  "ref": [
+   "never help plan anything",
+   "new baby"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-060-s0": {
+  "kind": "rec_none",
+  "ref": [
+   "accountant"
+  ],
+  "absent": "turbotax",
+  "ok": []
+ },
+ "session_chat_r4-061-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "another room",
+   "volume up"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-062-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "3 months",
+   "6 weeks"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-063-s0": {
+  "kind": "fact",
+  "ref": [
+   "Priya"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-064-s0": {
+  "kind": "build",
+  "ref": [
+   "sour",
+   "grind"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-065-s0": {
+  "kind": "emo",
+  "ref": [
+   "trivia night",
+   "Thursday"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-066-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "main claim",
+   "essential"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-067-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "4 by 8"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-068-s0": {
+  "kind": "fact",
+  "ref": [
+   "suckers"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-069-s0": {
+  "kind": "build",
+  "ref": [
+   "fence post",
+   "notebook"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-070-s0": {
+  "kind": "emo",
+  "ref": [
+   "Raj",
+   "parallel park"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-071-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "gallon"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-072-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "6 people",
+   "Saturday"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-073-s0": {
+  "kind": "fact",
+  "ref": [
+   "north window"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-074-s0": {
+  "kind": "build",
+  "ref": [
+   "castling",
+   "bishop"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-075-s0": {
+  "kind": "emo",
+  "ref": [
+   "drove smoothly",
+   "parallel parking"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-076-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "$34",
+   "$28"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-077-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "$31,000",
+   "April"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-078-s0": {
+  "kind": "fact",
+  "ref": [
+   "forearms"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-079-s0": {
+  "kind": "build",
+  "ref": [
+   "book",
+   "3 hours"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-080-s0": {
+  "kind": "emo",
+  "ref": [
+   "ninety papers",
+   "Dr. Abara"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-081-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "worn out",
+   "different day"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-082-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Denver"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-083-s0": {
+  "kind": "fact",
+  "ref": [
+   "Italian Game"
+  ],
+  "absent": null,
+  "ok": [
+   "king",
+   "evans",
+   "gambit"
+  ]
+ },
+ "session_chat_r4-084-s0": {
+  "kind": "build",
+  "ref": [
+   "stake",
+   "Cherokee"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-085-s0": {
+  "kind": "emo",
+  "ref": [
+   "12 days",
+   "next week"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-086-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "weekly delivery limit"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-087-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "9 km",
+   "hill"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-088-s0": {
+  "kind": "fact",
+  "ref": [
+   "Seoul"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-089-s0": {
+  "kind": "build",
+  "ref": [
+   "onion"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-090-s0": {
+  "kind": "emo",
+  "ref": [
+   "numb",
+   "cereal"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-091-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "Contact",
+   "Ex Machina",
+   "Annihilation"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-092-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "The Overstory",
+   "trees"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-093-s0": {
+  "kind": "fact",
+  "ref": [
+   "kitchen chair"
+  ],
+  "absent": null,
+  "ok": [
+   "150"
+  ]
+ },
+ "session_chat_r4-094-s0": {
+  "kind": "build",
+  "ref": [
+   "Odile",
+   "lighthouse"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-095-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "early",
+   "solo person"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-096-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "cone",
+   "parallel parking"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-097-s0": {
+  "kind": "fact",
+  "ref": [],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-098-s0": {
+  "kind": "build",
+  "ref": [
+   "Dev",
+   "chocolate chips"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-099-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "Dina",
+   "worried"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-100-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Theo is 5"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-101-s0": {
+  "kind": "fact",
+  "ref": [
+   "books"
+  ],
+  "absent": null,
+  "ok": [
+   "40",
+   "60"
+  ]
+ },
+ "session_chat_r4-102-s0": {
+  "kind": "build",
+  "ref": [
+   "waterproof jacket",
+   "chain"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-103-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "what the ship wants"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-104-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Eli",
+   "1994"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-105-s0": {
+  "kind": "fact",
+  "ref": [
+   "15 minutes"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-106-s0": {
+  "kind": "build",
+  "ref": [
+   "shoes",
+   "adult teeth"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-107-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "two books",
+   "Theo"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-108-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Dev",
+   "nuts"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-109-s0": {
+  "kind": "fact",
+  "ref": [
+   "fence post"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-110-s0": {
+  "kind": "build",
+  "ref": [
+   "$14,500",
+   "island"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-111-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "Horse with No Name",
+   "Em"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-112-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Rae"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-113-s0": {
+  "kind": "fact",
+  "ref": [
+   "luggage"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-114-s0": {
+  "kind": "build",
+  "ref": [
+   "dinosaur",
+   "digging"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-115-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "three things"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-116-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "$80",
+   "Kenji"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-117-s0": {
+  "kind": "fact",
+  "ref": [
+   "Overstory",
+   "Piranesi"
+  ],
+  "absent": null,
+  "ok": [
+   "richard",
+   "powers"
+  ]
+ },
+ "session_chat_r4-118-s0": {
+  "kind": "build",
+  "ref": [
+   "Moonlight Sonata"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-119-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "Italian Game"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-120-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Fujifilm X-T30"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-121-s0": {
+  "kind": "fact",
+  "ref": [
+   "Friday"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-122-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "2.4 cubic yards",
+   "64 cubic feet"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-123-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "2 miles",
+   "left knee"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-124-s0": {
+  "kind": "fact",
+  "ref": [
+   "bird house",
+   "$80"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-125-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "bag out of sight"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-126-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Wednesday",
+   "2pm",
+   "Northfield"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-127-s0": {
+  "kind": "fact",
+  "ref": [
+   "Gerald"
+  ],
+  "absent": null,
+  "ok": [
+   "4",
+   "8"
+  ]
+ },
+ "session_chat_r4-128-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "plan before the worry"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-129-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "3 hours",
+   "kitchen chair"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-130-s0": {
+  "kind": "fact",
+  "ref": [
+   "Odile",
+   "ship"
+  ],
+  "absent": null,
+  "ok": [
+   "1",
+   "000",
+   "7",
+   "500",
+   "2",
+   "4"
+  ]
+ },
+ "session_chat_r4-131-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "fossil dig",
+   "12"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-132-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "never help plan anything",
+   "restaurant"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-133-s0": {
+  "kind": "fact",
+  "ref": [
+   "glaze"
+  ],
+  "absent": null,
+  "ok": [
+   "8",
+   "12"
+  ]
+ },
+ "session_chat_r4-134-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "signing bonus",
+   "six months"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-135-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "December 3rd",
+   "Dr. Abara"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-136-s0": {
+  "kind": "fact",
+  "ref": [
+   "Teo"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-137-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "month or two"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-138-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "15",
+   "tryouts"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-139-s0": {
+  "kind": "fact",
+  "ref": [
+   "3 months"
+  ],
+  "absent": null,
+  "ok": [
+   "6",
+   "12"
+  ]
+ },
+ "session_chat_r4-140-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "kettle and a mug"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-141-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Seoul",
+   "Minseo"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-142-s0": {
+  "kind": "fact",
+  "ref": [
+   "keyboard"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-143-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "f/8",
+   "aperture priority"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-144-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Thursday at 4"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-145-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "peregrine falcon",
+   "200 miles per hour"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-146-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Lisbon",
+   "Porto"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-147-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "page",
+   "breathe"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-148-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "$82,000",
+   "Tessa"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-149-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "three or four",
+   "backup"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-150-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Summit Wall"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-151-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "$200",
+   "$800"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-152-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Thursday",
+   "alto"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-153-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "50 grams",
+   "Gerald"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-154-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Clay & Tide"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-155-s0": {
+  "kind": "rec_asst",
+  "ref": [
+   "nursery pot"
+  ],
+  "absent": null,
+  "ok": []
+ },
+ "session_chat_r4-156-s0": {
+  "kind": "rec_user",
+  "ref": [
+   "Noor",
+   "three weeks"
+  ],
+  "absent": null,
+  "ok": []
+ }
+}

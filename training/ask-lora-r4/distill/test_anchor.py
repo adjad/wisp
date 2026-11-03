@@ -101,6 +101,7 @@ def test_receipt_rules():
     done = "Reminder set: “Check the lab results” — Thu Oct 29 at 9:00 PM in Apple Reminders and Wisp."
     r = receipt_row(done, "I'll remind you tonight at 9 PM to check the lab results.")
     assert why("Done! I'll remind you at 9 PM tonight to check the lab results 😊", r) == []
+    assert why("Done, Sam! I'll remind you at 9 PM tonight to check the lab results.", r) == []
     assert "receipt_ungrounded" in why("Set for 8 PM: check the lab results.", r)
     assert "receipt_ungrounded" in why("I'll remind you at 9 PM to check the lab results with Priya Patel.", r)
     draft = "Draft opened in Mail to maya.chen@example.com — nothing has been sent."

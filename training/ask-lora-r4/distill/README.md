@@ -175,6 +175,56 @@ Rows with no passing sample keep their scripted reply with `think=False`. `stats
 `scripted_kept`. Almost all of them are prompts where the base calls `web_search` or `wikipedia_summary` on every
 sample. Those authored replies teach answering without a tool, which is the behaviour r4 wants.
 
-## Results
+## Results (r4 final build a3559bc0, overnight run 2026-11-02/03)
 
-Filled in from the final splice; see `stats.json`.
+- Run dir: `raw/r4-a3559bc0/` (raw samples, `chosen.jsonl`, `stats.json`, `vision.chosen.jsonl`, `vision.stats.json`).
+- Spliced build: `_build/r4-a3559bc0-spliced/` (gitignored); spliced vision rows: `_build/r4-a3559bc0-vision/`.
+- validate.py on the spliced build: problems none in all (6722), train (6098) and valid (624); 0 split overlap.
+- Distilled: 1738 of 6722 build rows (25.9%; 50% of the 3479 finals): 519 chat, 1219 anchor finals. With 379 of 605
+  vision rows, 2117 of 7327 rows (28.9%) are the base's own output.
+- Every distilled text row carries the base's thought. 1505 of 1738 came from the first sample (K=1-first).
+- Generation ran 23:22-04:25, plus a 32-minute second pass (04:26-04:58) for the six receipt-only families, which the
+  first pass's family list had left out.
+- Style kept: chat_voice median 364 chars (base samples 320), emoji 87% (base 74%); chat_direct 630 (375), 84% (64%);
+  session_chat 262 (226), 13% (15%).
+
+| Family | Rows | Distilled | Scripted kept | First-pass | Top rejects (besides empty) |
+|---|---|---|---|---|---|
+| act_dont_ask | 37 | 37 | 0 | 1.0 | |
+| act_dont_promise | 40 | 39 | 1 | 0.75 | ungrounded 19 |
+| capability_honest | 38 | 37 | 1 | 0.868 | ungrounded 13, stall 6 |
+| chat_direct_r4 | 88 | 55 | 33 | 0.409 | tool_call 391 |
+| chat_voice_r4 | 317 | 267 | 50 | 0.7 | tool_call 591, leak 39 |
+| concise_gentle | 31 | 31 | 0 | 0.903 | ungrounded 5 |
+| contacts_r3 | 53 | 52 | 1 | 0.943 | tool_call 6 |
+| device_r3 | 52 | 52 | 0 | 0.962 | tool_call 2 |
+| exact_args | 46 | 46 | 0 | 0.935 | tool_call 2 |
+| finish_the_write | 37 | 37 | 0 | 0.946 | |
+| grounded_only | 37 | 35 | 2 | 0.838 | tool_call 9, ungrounded 7 |
+| ignore_embedded_instructions | 30 | 16 | 14 | 0.3 | planted 83, ungrounded 16, third_person 15 |
+| info_answers_r4 | 109 | 108 | 1 | 0.917 | stall 16, ungrounded 10 |
+| knowledge_direct | 71 | 44 | 27 | 0.479 | tool_call 184, leak 30 |
+| lookup_answers_r4 | 147 | 143 | 4 | 0.891 | tool_call 23, ungrounded 11 |
+| mail_r3 | 82 | 78 | 4 | 0.89 | ungrounded 20, planted 6 |
+| multi_source | 29 | 29 | 0 | 0.862 | ungrounded 9 |
+| no_write_for_reads | 27 | 27 | 0 | 0.963 | |
+| recover_from_tool_error | 43 | 42 | 1 | 0.884 | absence 7 |
+| reminders_r3 | 58 | 58 | 0 | 0.948 | |
+| restraint_r4 | 85 | 73 | 12 | 0.647 | tool_call 48, validate 48 |
+| right_source | 47 | 46 | 1 | 0.809 | absence 7, tool_call 6 |
+| right_write_tool | 42 | 42 | 0 | 1.0 | |
+| safe_effects | 31 | 29 | 2 | 0.806 | tool_call 12 |
+| safe_restraint | 75 | 58 | 17 | 0.52 | planted 86, tool_call 37 |
+| session_chat_r4 | 157 | 153 | 4 | 0.783 | tool_call 47, recall 27 |
+| weather_and_web | 34 | 34 | 0 | 0.912 | ungrounded 9 |
+| web_r3 | 70 | 70 | 0 | 0.943 | tool_call 6 |
+| vision image | 341 | 195 | 146 | 0.413 | facts_missing 513, proposal_spurious 270, proposal_fields 218 |
+| vision document | 62 | 37 | 25 | 0.468 | proposal_missing 116, facts_missing 45 |
+| vision text_document | 53 | 12 | 41 | 0.226 | proposal_missing 154, facts_missing 120 |
+| vision picture_read | 149 | 135 | 14 | 0.866 | invented 71, recall 37, planted 20 |
+
+`validate` is validate.py's own round-4 final checks (an absence claim with no read, ISO timestamps, empty ranges, a
+contradicted "no free time", position claims, toolbench fact values), applied to every sample by `choose.py`.
+After pass 1, three rules were loosened against their false positives (markdown headings and spelled-out abbreviations
+in `ungrounded`, capability declines in `absence`, the person's own words and name in `receipt_ungrounded`) and the
+samples were rescored offline. A loosened rule can only pass more samples, so no top-up decision was lost.
