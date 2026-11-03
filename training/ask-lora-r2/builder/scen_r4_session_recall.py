@@ -69,6 +69,8 @@ from scen import Scenario
 from scen_r2_act import iso, style
 from scen_r3_chat import BANNED_OPENERS, CLOSERS, EMOJI
 from scen_r3_followup import at_, blank, turn, wd_name
+import scen_r4_instructions as I
+from scen_r4_session_chat import NONE_ACK
 from service.memory.context import DIGEST_HEADER, digest_line
 from service.model_only import asks_personal_data
 from world import Email, Event, Msg, Note, Reminder
@@ -183,6 +185,8 @@ def _check(sc):
         assert sc.history[-1].get("crole") != "ack", f"s4_before: the last message {sc.history[-1]['user']!r} is an ack"
     if final:
         _voice(final, "final")
+    if sc.kind in NEVER_QKIND:
+        assert NONE_ACK.search(final), f"{sc.kind}: a never-said final must match distill/choose.py NONE_ACK: {final!r}"
     kind, rules = sc.kind, sc.rules
     if rules.get("no_call"):
         assert len(sc.steps) == 1 and isinstance(sc.steps[0], Final), f"{kind}: a call where none is wanted"
@@ -367,7 +371,8 @@ def sc_(rng, prompt, now, w, steps, notes, history, kind, **rules):
     sc.must_see = []
     sc.kind = kind
     sc.rules = rules
-    sc.anchor_pos = rules["anchor"] if isinstance(rules.get("anchor"), int) else None   # meta.anchor_pos
+    # meta.anchor_pos: where the answer's anchor sits; a never-said kind has no anchor (its anchor=0 only picks the history)
+    sc.anchor_pos = rules["anchor"] if isinstance(rules.get("anchor"), int) and kind not in NEVER_QKIND else None
     _recall_labels(sc, kind, rules)
     return sc
 
@@ -838,7 +843,11 @@ def ordinal(rng, k, n):
     return rng.choice(ORD[k]), k % n
 
 
-def agenda_ex(rng, now, w, *, nonzero=True, n=None, off=None, with_loc=False, bullets=False):
+def agenda_ex(rng, now, w, *, nonzero=True, n=None, off=None, with_loc=False, bullets=False, brief=0.0):
+    """An earlier agenda exchange. A time-scoped ask ("what's lined up for friday") reads the Brief's day plan
+    (get_my_day_plan), the way the live host routes it, so the reply is built from the PARSED plan: the events, and
+    any Brief item (a text, note or email with a date) the plan also lists, which `brief` (a probability) adds to the
+    world. A location-asking exchange (with_loc) stays a calendar read: the plan carries no places."""
     n = n or rng.choice([3, 3, 4, 2])
     off = off or rng.choice([1, 1, 2, 3, 4])
     day = now.date() + D(days=off)
@@ -860,19 +869,35 @@ def agenda_ex(rng, now, w, *, nonzero=True, n=None, off=None, with_loc=False, bu
     on_pw = "tomorrow" if off == 1 else "on " + wd_name(day)
     items = [dict(title=t, noun=noun(t), c=clock(at_(day, h, m)), start=at_(day, h, m), loc=loc, short=sh)
              for t, h, m, mins, loc, sh in chosen]
+    plan = not with_loc
+    extra = []
+    if plan:
+        if brief:
+            I.maybe_brief(rng, w, now, day, p=brief)
+        result = w.handle("get_my_day_plan", {"day": period})
+        parsed = I.parse_plan(str(result))
+        cal = [x for x in parsed if x.src == "calendar"]
+        assert [x.title for x in cal] == [i["title"] for i in items] and [x.t for x in cal] == [i["c"] for i in items], \
+            f"the day plan does not list the world's events: {result!r}"
+        extra = [x for x in parsed if x.src != "calendar"]
     if bullets:
         lines = "\n".join(f"- {i['c']}: {i['title']}" + (f" ({i['loc']})" if with_loc else "") for i in items)
         reply = f"{Cp} you have {len(items)} things:\n{lines}"
     else:
         lst = join([f"your {i['noun']} at {i['c']}" + (f" ({i['loc']})" if with_loc else "") for i in items])
         reply = rng.choice([f"{Cp} you have {lst}.", f"You have {lst} {on_pw}.", f"{Cn} looks like this: {lst}."])
+    if extra:
+        also = I.plan_prose(extra)
+        reply += ("\n" if bullets else " ") + rng.choice([f"Also {on_pw}: {also}.", f"It also lists {also}."])
     user = rng.choice(["what does {p} look like", "what's lined up for {p}", "walk me through {p}", "how's {p} shaping up",
                        "what's on the books for {p}", "what's happening {p}", "give me the rundown for {p}"]).format(p=pw.lower())
-    result = w.handle("get_upcoming", {"period": period})
-    ex = dict(turn(user, reply, "get_upcoming", [{"name": "get_upcoming", "args": {"period": period}, "result": result}]),
+    if not plan:
+        result = w.handle("get_upcoming", {"period": period})
+    tool, args = ("get_my_day_plan", {"day": period}) if plan else ("get_upcoming", {"period": period})
+    ex = dict(turn(user, reply, tool, [{"name": tool, "args": args, "result": result}]),
               topic=f"your schedule {on_pw}", keys=["schedule", pw], cb=pw.lower(),
               say=join([f"{i['noun']} at {i['c']}" for i in items]), facts=[f"{i['noun']} at {i['c']}" for i in items] if not bullets else [i["c"] for i in items],
-              kind="agenda", st=dict(items=items, period=period, pw=pw, Cp=Cp, on_pw=on_pw, day=day, bullets=bullets))
+              kind="agenda", st=dict(items=items, period=period, pw=pw, Cp=Cp, on_pw=on_pw, day=day, bullets=bullets, extra=extra, plan=plan))
     return ex
 
 
@@ -1328,9 +1353,9 @@ def lead_in(rng, deep, word):
                        f"going back to {word}, ", f"{word} from earlier, "])
 
 
-def agenda_world(rng, *, nonzero=True, n=None, with_loc=False, bullets=False, off=None, hour=None):
+def agenda_world(rng, *, nonzero=True, n=None, with_loc=False, bullets=False, off=None, hour=None, brief=0.0):
     now, w = base(rng, hour)
-    ex = agenda_ex(rng, now, w, nonzero=nonzero, n=n, with_loc=with_loc, bullets=bullets, off=off)
+    ex = agenda_ex(rng, now, w, nonzero=nonzero, n=n, with_loc=with_loc, bullets=bullets, off=off, brief=brief)
     return now, w, ex
 
 
@@ -1767,7 +1792,7 @@ def _challenge_prompt(rng, deep, key):
 
 def s3_agenda(changed):
     def make(rng):
-        now, w, ex = agenda_world(rng, nonzero=True, n=rng.choice([3, 3, 4]))
+        now, w, ex = agenda_world(rng, nonzero=True, n=rng.choice([3, 3, 4]), brief=0.45)
         st = ex["st"]
         its = st["items"]
         old = {id(x): x["c"] for x in its}
@@ -1780,6 +1805,9 @@ def s3_agenda(changed):
             final = fin(rng, f"Yes, it's still the same: {st['on_pw']} you have {lst}.", f"I checked again and nothing has changed: {lst} {st['on_pw']}.",
                         f"It holds up. {cap1(st['pw'])} is {lst}.", f"Same as before, {st['on_pw']}: {lst}.")
             must = [x["c"] for x in its]
+            if st["extra"]:       # the plan also lists a Brief item: the re-read names it too
+                final += " " + rng.choice([f"The plan also still lists {I.plan_prose(st['extra'])}.", f"It also still has {I.plan_prose(st['extra'])}."])
+                must += [x.title for x in st["extra"]]
             kinds = "s3_agenda_same"
         else:
             it = rng.choice(its[:-1] if rng.random() < .5 and len(its) > 2 else its)
@@ -1813,9 +1841,11 @@ def s3_agenda(changed):
                             f"Something new has appeared {st['on_pw']}: your {noun(t)} at {nc}. Everything else is unchanged.")
                 must = [nc, noun(t)]
                 kinds = "s3_agenda_added"
-        return sc_(rng, prompt, now, w, [[Call("get_upcoming", period=st["period"])], Final(final)],
-                   "a challenge is a re-read against the source: the same read, then the fresh result (confirmed, or what it is now)", hist,
-                   kinds, first="get_upcoming", args={"period": st["period"]}, in_result=must, must=must, reply_must=reply_must[:1], anchor=ai)
+        # a time-scoped ask is read through the Brief's day plan (the live hint), so the re-read is the same call as the
+        # earlier turn's: get_my_day_plan(day=<that day>)
+        return sc_(rng, prompt, now, w, [[Call("get_my_day_plan", day=st["period"])], Final(final)],
+                   "a challenge is a re-read against the source: the same read (the day plan), then the fresh result (confirmed, or what it is now)", hist,
+                   kinds, first="get_my_day_plan", args={"day": st["period"]}, in_result=must, must=must, reply_must=reply_must[:1], anchor=ai)
     return make
 
 
@@ -2805,10 +2835,12 @@ UNSTORED_L = [
     ("what do i owe on my student loan", "loan", "your student loan balance"),
     ("what's my vet's phone number", "vet", "your vet's number"),
 ]
+# Every never-said final acknowledges it in the form distill/choose.py's NONE_ACK recognises ("haven't mentioned",
+# "haven't talked about", "haven't told me", ...), so the SFT picker and the GRPO reward judge it the same way.
 NEVER_USER_FINALS = [
     "You haven't mentioned {x} in this chat, and I don't have it saved either. If you tell me, I'll hold onto it.",
-    "That hasn't come up in this chat, and there's nothing saved about {x}. Tell me and I'll keep it for next time.",
-    "I can't find {x}: it wasn't said in this chat, and nothing is saved. If you share it, I'll remember it.",
+    "We haven't talked about {x} in this chat, and there's nothing saved about it. Tell me and I'll keep it for next time.",
+    "You haven't told me {x} in this chat, and nothing is saved either. If you share it, I'll remember it.",
 ]
 
 
@@ -2842,8 +2874,8 @@ NEVER_ASST = [
     ("who was the author you mentioned", ("author",), "an author"),
 ]
 NEVER_ASST_FINALS = [
-    "I didn't suggest {x} in this chat, so there's nothing to point you back to. We've covered {t}.",
-    "That hasn't come up: I haven't recommended {x} here. So far we've talked about {t}.",
+    "We haven't talked about {x} in this chat, so I haven't recommended one. We've covered {t}.",
+    "I haven't mentioned {x} here, so there's nothing to point you back to. So far we've talked about {t}.",
     "I don't think I mentioned {x}. What we've been over is {t}, among other things.",
 ]
 

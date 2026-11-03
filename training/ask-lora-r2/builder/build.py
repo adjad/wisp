@@ -306,9 +306,10 @@ _DIGEST_USER = "- User: "
 def conversation_key(messages) -> str:
     """The folded first two user messages of the seeded history. A long chat that production condensed carries its
     oldest user messages as "- User: ..." lines of the "Earlier in this conversation" system note, so those count
-    too, in order. The final user message is never part of the key. "" when there is no earlier user message."""
+    too, in order. `messages` is the history only (see history_of): the current question is never part of the key.
+    "" when there is no earlier user message."""
     users = []
-    for m in messages[:-1]:
+    for m in messages:
         content = m.get("content")
         if not isinstance(content, str):
             continue
@@ -321,15 +322,27 @@ def conversation_key(messages) -> str:
     return "|".join(leak.fold(u)[:80] for u in users[:2])
 
 
+def history_of(messages) -> list:
+    """The messages before the turn's own user message. A training example ends with the target assistant message, so
+    the turn's user message (and any tool steps after it) sit at the end: cut at the LAST user message, so a
+    single-turn row has an empty history and a follow-up's key never depends on its own question."""
+    last = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=0)
+    return messages[:last]
+
+
 def assign_threads(metas, examples):
-    """meta.thread for every row of a CONVERSATION family that did not record one: a stable id of its seeded history
-    (the same two opening user messages = the same conversation). Single-turn rows stay None (one group each)."""
+    """meta.thread is set ONLY on multi-turn rows of a seeded conversation: a row whose history holds an earlier user
+    message gets a stable id of that history (the same two opening user messages = the same conversation), unless the
+    scenario recorded its own (session_chat_r4). A single-turn row (no earlier user message) has thread None, whether
+    or not its scenario recorded one, and is a split unit of its own."""
     import hashlib
     for m, ex in zip(metas, examples):
-        if m.get("thread") or m["family"] not in CONVERSATION_FAMILIES:
+        if m["family"] not in CONVERSATION_FAMILIES:
             continue
-        key = conversation_key(ex["messages"])
-        if key:
+        key = conversation_key(history_of(ex["messages"]))
+        if not key:
+            m["thread"] = None
+        elif not m.get("thread"):
             m["thread"] = "conv-" + hashlib.sha1(key.encode()).hexdigest()[:12]
 
 
@@ -407,19 +420,28 @@ def write_manifest(metas, train_idx, valid_idx):
     later export drops them too."""
     import hashlib
     sha = lambda t: hashlib.sha1(t.encode()).hexdigest()
-    folds_now = {leak.fold(m["prompt"]): i in set(valid_idx) for i, m in enumerate(metas)}
+    vset = set(valid_idx)
+    folds_now = {leak.fold(m["prompt"]): i in vset for i, m in enumerate(metas)}
     r3 = []
     if os.path.exists(R3_VALID_META):
         r3 = sorted({leak.fold(json.loads(l)["prompt"]) for l in open(R3_VALID_META) if l.strip()})
+    # RL-SCOPE C16: every r3-valid fold in this build is still valid or is listed (sha1) in the manifest, so the
+    # export drops it; nothing r3 kept out of training can reach train unlisted.
+    now_train = sorted(sha(f) for f in r3 if folds_now.get(f) is False)
+    listed = set(now_train)
+    in_build = [f for f in r3 if f in folds_now]
+    still_valid = [f for f in in_build if folds_now[f]]
+    assert len(still_valid) + len(now_train) == len(in_build), "an r3-valid fold is neither valid nor listed in the manifest"
+    assert all(sha(f) in listed for f in in_build if not folds_now[f]), "an r3-valid fold in train is not listed"
     manifest = {"split": "sha1(leak.fold(prompt)) % 10 == 0 over connected components of prompt groups joined by shared meta.thread; "
                          "stratified to at least one valid unit per family",
                 "valid_threads": LAST_SPLIT["valid_threads"],
                 "valid_units_per_family": LAST_SPLIT["valid_units"], "units_per_family": LAST_SPLIT["units"],
                 "valid_fold_sha1": sorted(sha(f) for f in LAST_SPLIT["valid_folds"]),
                 "r3_valid_folds": len(r3),
-                "r3_valid_folds_in_build": sum(f in folds_now for f in r3),
-                "r3_valid_folds_still_valid": sum(folds_now.get(f) is True for f in r3),
-                "r3_valid_folds_now_train_sha1": sorted(sha(f) for f in r3 if folds_now.get(f) is False)}
+                "r3_valid_folds_in_build": len(in_build),
+                "r3_valid_folds_still_valid": len(still_valid),
+                "r3_valid_folds_now_train_sha1": now_train}
     with open(os.path.join(OUT, "eval_manifest.json"), "w") as f:
         json.dump(manifest, f, indent=1, sort_keys=True)
         f.write("\n")

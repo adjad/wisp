@@ -1831,17 +1831,26 @@ def _hist_spans(text: str, questions: bool = False, cap: int = 32) -> list[str]:
             cands.append((sent, True))
         if len(sent.split()) > 6:
             masked = re.sub(r"“[^”]*”|\"[^\"]*\"|\([^)]*\)|\[[^\]]*\]", lambda m: "x" * len(m.group(0)), sent)
-            cuts = [(m.start(), m.end()) for m in re.finditer(r"[,;]\s+", masked)]
+            cuts = [(m.start(), m.end()) for m in re.finditer(r"[,;]\s+|\s+and\s+(?=(?:takes?|is|are|was|were|has|have|had|comes?|costs?|runs?|"
+                                                              r"gets?|needs?|can|will|leaves?|opens?|closes?|starts?|ends?|means|adds?|makes?|"
+                                                              r"also|then|it|you|I|we|they|there)\b)", masked)]
             starts = [0] + [e for _b, e in cuts]
             ends = [b for b, _e in cuts] + [len(sent)]
             for i in range(len(starts)):
+                if i and re.match(r"[A-Z]", (sent[:cuts[i - 1][0]].split() or [""])[-1].lstrip("“\"(")):
+                    continue                 # a run never starts after "Louisville," / "Carmen,": the name or place stays whole
                 for j in range(i, len(starts)):
                     seg = sent[starts[i]:ends[j]]
                     if len(seg.split()) > cap:
                         break
+                    if (j < len(cuts) and sent[cuts[j][0]] == "," and re.match(r"[A-Z]", sent[cuts[j][1]:])
+                            and re.match(r"[A-Z]", (seg.split() or [""])[-1].lstrip("“\"("))):
+                        continue                  # nor ends at "Louisville," before "Kentucky"
                     cands.append((seg, i == 0))
         for seg, at_start in cands:
             seg = seg.strip().rstrip(",;:").strip()
+            if not at_start and re.match(r"(?:and|but|so)\s+[A-Z“]", seg):
+                seg = seg.split(None, 1)[1]                 # ", and Nimbus is $32 a month" -> "Nimbus is $32 a month"
             if seg.endswith(".") and not _ABBREV.search(seg):
                 seg = seg[:-1]
             if (not seg or "…" in seg or len(seg.split()) < 3 and not (time_tokens(seg) or amount_tokens(seg))
@@ -1878,7 +1887,7 @@ def _best_span(hist, final: str, prompt: str, cap: int, loose: bool = False, rol
             if extra and strong < 2:
                 continue                      # another fact's time or amount, with nothing else in common
             weak = len(_stems(sp) & f_words)
-            if not (strong >= 1 or weak >= (2 if loose else 3)):
+            if not (strong >= 1 or weak >= (1 if only_last_assistant else 2 if loose else 3)):
                 continue
             nw = len(sp.split())
             value = 3 * strong + weak + 0.5 * len(_stems(sp) & p_words) - 0.08 * nw - 1.0 * extra + (0.3 if r == "user" else 0)
@@ -1898,15 +1907,17 @@ _QUOTE_LEADS = {
     "tool": ["From the earlier lookup: {b}; answering from that.", "The earlier lookup showed: {b}. No new lookup."],
 }
 _QUOTE_RE = re.compile(r"^(Earlier reply|The earlier reply said|From the earlier reply|Earlier in this chat|This chat already has it|"
-                       r"From the earlier lookup|The earlier lookup showed):\s+(.+?)(?:;\s+answering from that\.?|\.\s+No new lookup\.|"
-                       r"\.\s+Answer from that, no lookup\.|\.\s+No lookup needed\.)\s*$", re.S)
+                       r"From the earlier lookup|The earlier lookup showed):\s+(.+?)(?:;\s+answering from that\.?|(?<=[?!])\s+Answering from that\.|"
+                       r"[.?!]\s+No new lookup\.|"
+                       r"[.?!]\s+Answer from that, no lookup\.|[.?!]\s+No lookup needed\.)\s*$", re.S)
 _QUOTE_ROLE = {"Earlier reply": "assistant", "The earlier reply said": "assistant", "From the earlier reply": "assistant",
                "Earlier in this chat": "user", "This chat already has it": "user",
                "From the earlier lookup": "tool", "The earlier lookup showed": "tool"}
 
 
 def _quote_line(seed: str, role: str, body: str) -> str:
-    return pick(seed, _QUOTE_LEADS[role]).format(b=body).replace("?.", "?").replace("!.", "!")
+    line = pick(seed, _QUOTE_LEADS[role]).format(b=body).replace("?.", "?").replace("!.", "!")
+    return re.sub(r"([?!]); answering from that\.", r"\1 Answering from that.", line)
 
 
 def _history_thought(s, ctx, seed, meta_family: str = "") -> str:
@@ -2030,7 +2041,7 @@ def _recall_thought(s, ctx, seed) -> str:
         return pick(seed, ["Asking whether it came up; the earlier turns are right here, so check those, no lookup.",
                            "Checking the chat so far for it. Every earlier turn is in view, so no lookup.",
                            "Whether it came up is in the earlier turns; check those, no lookup."])
-    if field >= 3:
+    if field >= 4:
         return ""                               # a rephrase for variety: the generic line, never a cut-off quote
     all_h = "\n".join(t for _r, t in hist)
     if (time_tokens(final) | amount_tokens(final)) - (time_tokens(all_h) | amount_tokens(all_h)):
@@ -2046,6 +2057,17 @@ def _recall_thought(s, ctx, seed) -> str:
                 and not (USER_PRONOUN.search(cand) or NOISE.search(cand) or MECHANICS.search(cand))):
             return pick(seed, [f"Earlier in this chat: {cand}; answering from that.",
                                f"This chat already has it: {cand}. No lookup needed."])
+        return ""
+    if field == 3:
+        # the answer restates the earlier reply word for word, so quoting the reply would copy it: name the question that
+        # reply answered (the person's own earlier turn, verbatim) instead
+        pref = (("user",) if _CREDITS_USER.search(final) else ("assistant",) if _CREDITS_ASSISTANT.search(final) else ())
+        got = _best_span(hist, final, prompt, 32, loose=True, **({"roles": pref} if pref else {}))
+        if got and got[1] == "assistant" and got[3] > 0 and hist[got[3] - 1][0] == "user":
+            q = re.sub(r"\s+", " ", hist[got[3] - 1][1]).strip()
+            if (3 <= len(q.split()) <= 16 and _balanced(q) and not (USER_PRONOUN.search(q) or NOISE.search(q) or MECHANICS.search(q))
+                    and not _PREV_ASK.search(prompt)):
+                return _quote_line(seed, "user", q.rstrip(".") if q.endswith(".") else q)
         return ""
     cap = 9 if field >= 2 else 14 if (field or terse) else 32
     if _PREV_ASK.search(prompt):
@@ -2534,21 +2556,29 @@ def _ord_of(word: str) -> int:
         "first", "opening", "earliest", "original", "started", "began", "opened") else _ORD.get(word.lower(), 0)
 
 
+_NEAR_CLAIM = re.compile(r"\b(?:near the (?:start|beginning)|early (?:on )?in (?:our|this) (?:chat|conversation)|"
+                         r"(?:at|toward) the (?:start|beginning) of (?:our|this) (?:chat|conversation))\b", re.I)
+
+
 def position_problems(meta: dict, messages: list[dict]) -> list[str]:
-    """A final that places something in the chat ("in my first answer", "your first message", "you started by asking")
-    names the right turn. The turn comes from meta['recall_anchor'] = {'role': 'user'|'assistant', 'pos': 1-based from the
-    start, -1 = the latest} when the scenario sets it, else it is the earlier turn of that speaker that shares the most
-    content words with the final."""
+    """A final that places something in the chat ("in my first answer", "your first message", "you started by asking",
+    "near the start of our chat") names the right turn. The turn comes from meta['anchor_pos'] (the longchat scenario's
+    0-based exchange index of the fact it asks about), or meta['recall_anchor'] = {'role': 'user'|'assistant', 'pos':
+    1-based from the start, -1 = the latest}, else it is the earlier turn of that speaker that shares the most content
+    words with the final. "Near the start" / "early in our chat" needs an anchor at exchange 0 or 1."""
     target = messages[-1]
     final = str(target.get("content") or "")
     if target.get("tool_calls") or not final:
         return []
+    anchor_pos = meta.get("anchor_pos") if isinstance(meta.get("anchor_pos"), int) and not isinstance(meta.get("anchor_pos"), bool) else None
+    errs = []
+    if anchor_pos is not None and anchor_pos > 1 and _NEAR_CLAIM.search(final):
+        errs.append(f"position: the answer says it came up near the start but the scenario anchors exchange {anchor_pos + 1}")
     claims = [(role, _ord_of(m.group("o"))) for rx, role in _POS_CLAIMS for m in rx.finditer(final)]
     if not claims:
-        return []
+        return errs[:2]
     s = analyze(meta, messages)
     anchor = meta.get("recall_anchor") if isinstance(meta.get("recall_anchor"), dict) else None
-    errs = []
     for role, pos in claims:
         turns = [t for r, t in s["history"] if r == role]
         if not turns or not pos:
@@ -2556,6 +2586,10 @@ def position_problems(meta: dict, messages: list[dict]) -> list[str]:
         if anchor:
             if anchor.get("role") != role or int(anchor.get("pos", 0)) != pos:
                 errs.append(f"position: the answer says the {role}'s turn {pos} but the scenario anchors {anchor.get('role')}'s {anchor.get('pos')}")
+            continue
+        if anchor_pos is not None and pos > 0:
+            if anchor_pos + 1 != pos:
+                errs.append(f"position: the answer says the {role}'s turn {pos} but the scenario anchors exchange {anchor_pos + 1}")
             continue
         fw = _words(final) - _POS_SKIP
         fc = _cap_tokens(final)
@@ -2567,6 +2601,44 @@ def position_problems(meta: dict, messages: list[dict]) -> list[str]:
             best = max(range(len(turns)), key=lambda i: (score[i], -i))
             errs.append(f"position: the answer places it in the {role}'s turn {pos}, but it matches turn {best + 1} of {len(turns)}")
     return errs[:2]
+
+
+# An absence claim: the final says there is nothing / none / no messages / "I don't have ..." about the person's own data.
+# It is only true after a read in the same turn (follow-ups like "and friday?" re-read); chat and recall answers about
+# the conversation itself are exempt (the conversation is the source).
+_ABS_NOUN = (r"(?:new |unread |matching |recent |upcoming |such |relevant |saved |open |pending |overdue |other )*"
+             r"(?:messages?|emails?|e-mails?|texts?|mail|events?|reminders?|notes?|results?|matches|items?|meetings?|appointments?|"
+             r"files?|contacts?|tasks?|timers?|alarms?|birthdays?|deadlines?|plans?|classes|lectures?|conflicts?|gaps?|free (?:time|slots?)|"
+             r"memor(?:y|ies)|facts?|mentions?|entries|due dates?)")
+_ABSENCE = re.compile(
+    rf"\b(?:no|zero|not any|without any) {_ABS_NOUN}\b|"
+    rf"\bnothing (?:scheduled|new|due|waiting|saved|stored|found|matching|came|pending|unread|overdue|planned|on (?:your|the|for)|"
+    rf"in (?:your|the)|here|there|today|tomorrow|tonight|this (?:week|weekend|morning|afternoon|evening))\b|"
+    rf"\bnone (?:of|due|today|tomorrow|scheduled|found|saved)\b|^\W*none\b|"
+    rf"\b(?:there (?:are|is)n['’]t|there (?:are|is) no|aren['’]t|isn['’]t|doesn['’]t (?:have|show|list)|don['’]t (?:have|show|see)) (?:any )?{_ABS_NOUN}\b|"
+    rf"\bI (?:don['’]t|do not|can['’]t|cannot|couldn['’]t) (?:have|see|find|know of|remember) (?!access\b|the ability\b|a way\b|permission\b|"
+    rf"enough\b|how\b|what\b|which\b|who\b|where\b|when\b|whether\b|if\b|that you\b|about\b)\w+|"
+    rf"\byou (?:have|got|don['’]t have|haven['’]t got) (?:no|nothing)\b|\b(?:inbox|calendar|schedule|day|list) is (?:empty|clear|free|open)\b|"
+    rf"\bnothing (?:is )?(?:in the way|on the calendar|on your plate)\b", re.I)
+_ABSENCE_EXEMPT = frozenset({"chat_voice", "knowledge_direct"}) | HISTORY_FAMILIES
+
+
+def absence_problems(meta: dict, messages: list[dict]) -> list[str]:
+    """A final that says nothing / none / no messages / "I don't have ..." about the person's own data follows a read in
+    its own turn (a write whose result the final relays counts: "no alarm time" after a timed-alarm reminder). Chat and recall
+    answers about the conversation itself, and the picture turns (the host's read), are exempt."""
+    target = messages[-1]
+    final = str(target.get("content") or "")
+    fam = str(meta.get("family") or "")
+    if target.get("tool_calls") or not final or fam in _ABSENCE_EXEMPT or fam.startswith("chat_") or fam in PICTURE_FAMILIES:
+        return []
+    m = _ABSENCE.search(final)
+    if not m:
+        return []
+    s = analyze(meta, messages)
+    if any(n != DISCOVERY for n, _a in s["turn_calls"]):
+        return []                               # a tool ran in this turn (a read, or a write whose result the final relays)
+    return [f"absence: {m.group(0)[:40]!r} is claimed with no read in this turn"]
 
 
 def history_quote_problems(text: str, s: dict, final: str) -> list[str]:
@@ -2603,7 +2675,8 @@ def history_quote_problems(text: str, s: dict, final: str) -> list[str]:
     shared = (len(time_tokens(body) & f_times) + len(amount_tokens(body) & f_amts)
               + len(_caps(body) & _caps(final)) + len(_plain_nums(body) & _plain_nums(final)))
     need = 1 if _OPENING_ASK.search(s["prompt"]) else 2          # "the first question" is placed by its position
-    if not (shared >= 1 or len(_stems(body) & _stems(final)) >= need):
+    asked_again = role == "user" and len(_stems(body) & _stems(s["prompt"])) >= 2     # the earlier question the new one is about
+    if not (shared >= 1 or len(_stems(body) & _stems(final)) >= need or asked_again):
         errs.append(f"quote: {body[:40]!r} shares no time, amount, name or two words with the answer")
     return errs
 
@@ -2629,9 +2702,9 @@ def make_thought(meta: dict, messages: list[dict], ctx: dict | None = None, avoi
     `avoid` (the neighbouring examples' thoughts)."""
     ctx = dict(ctx or {})
     first = None
-    for terse, field in ((False, 0), (True, 0), (True, 1), (True, 2), (True, 3)):
+    for terse, field, share in ((False, 0, 0), (True, 0, 0), (True, 0, 4), (True, 0, 3), (True, 0, 2), (True, 1, 0), (True, 2, 0), (True, 3, 0), (True, 4, 0)):
         for salt in range(8):
-            ctx.update(salt=salt or "", terse=terse, field=field)
+            ctx.update(salt=salt or "", terse=terse, field=field, share=share)
             t = thought(meta, messages, ctx)
             errs = check(meta, messages, t, ctx)
             if first is None:
@@ -2741,8 +2814,22 @@ def _norm_time(h: str, m: str | None, ap: str) -> str:
 _RANGE_TOK = re.compile(r"\b(\d{1,2})(?::(\d\d))?(?!\s*[ap]\.?m)\s*(?:to|until|till|and|[-–])\s*(\d{1,2})(?::(\d\d))?\s*([ap])\.?m\b", re.I)
 
 
+_TIME_LIST = re.compile(r"\b((?:\d{1,2}:\d\d(?:\s*,\s*|\s*,?\s+(?:and|or)\s+))+)(\d{1,2}:\d\d)\s*([ap])\.?m\b", re.I)
+
+
 def time_tokens(text: str) -> set[str]:
     out = set()
+    for mt in _TIME_LIST.finditer(text or ""):             # "6:15, 8:40 and 10:55 PM": the earlier times share the meridiem
+        times = re.findall(r"\d{1,2}:\d\d", mt[1]) + [mt[2]]
+        ap = mt[3].upper()
+        for k in range(len(times) - 1, -1, -1):
+            h = int(times[k].split(":")[0])
+            if k < len(times) - 1:
+                nh = int(times[k + 1].split(":")[0])
+                if h > nh and h != 12 and nh != 12:        # "10:15, 11:30 and 1:00 PM" starts in the morning
+                    ap = "A" if ap == "P" else "P"
+            if 1 <= h <= 12:
+                out.add(_norm_time(str(h), times[k].split(":")[1], ap))
     for mt in _RANGE_TOK.finditer(text or ""):             # "9 and 11 AM", "4 to 8 PM": the first time shares the meridiem
         h1, h2 = int(mt[1]), int(mt[3])
         if 1 <= h1 <= 12 and 1 <= h2 <= 12:
@@ -2780,10 +2867,10 @@ def _caps(text: str) -> set[str]:
 
 
 _ISO_DT = re.compile(r"\b(\d{4})-(\d\d)-(\d\d)(?:[T ](\d\d):(\d\d)(?::\d\d(?:\.\d+)?)?(?:Z|[+-]\d\d:?\d\d)?)?\b")
+_WD_ISO = re.compile(r"\b(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+(\d{4})-(\d\d)-(\d\d)\b(?!T)")
 
 
-def humanize_iso(text: str) -> str:
-    """ISO dates and timestamps as people write them ("Tue Mar 9", "Tue Mar 9, 3:30 PM"); a thought never shows ISO."""
+def _hum_iso(text: str) -> str:
     def fix(m):
         try:
             d = _dt.date(int(m[1]), int(m[2]), int(m[3]))
@@ -2793,16 +2880,58 @@ def humanize_iso(text: str) -> str:
         if m[4] is not None:
             out += ", " + fmt_time(_dt.time(int(m[4]), int(m[5])))
         return out
-    return _ISO_DT.sub(fix, text)
+
+    def with_weekday(m):                       # "Wednesday, 2026-10-14" is "Wednesday, Oct 14", not "Wednesday, Wed Oct 14"
+        try:
+            d = _dt.date(int(m[2]), int(m[3]), int(m[4]))
+        except ValueError:
+            return m.group(0)
+        return f"{m[1]}, {d.strftime('%b')} {d.day}"
+    return _ISO_DT.sub(fix, _WD_ISO.sub(with_weekday, text))
+
+
+def humanize_iso(text: str) -> str:
+    """ISO dates and timestamps as people write them ("Tue Mar 9", "Tue Mar 9, 3:30 PM"); a thought never shows ISO.
+    A file name keeps its characters ("Screenshot 2026-10-02 at 9.14.11 PM.png" is that name, not a date)."""
+    out, pos = [], 0
+    for m in _FILENAME.finditer(text):
+        out.append(_hum_iso(text[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(_hum_iso(text[pos:]))
+    return "".join(out)
+
+
+def _hm12(h: int, m: int) -> str:
+    return f"{h % 12 or 12}:{m:02d} {'AM' if h < 12 else 'PM'}"
+
+
+_SLOT_SPAN = re.compile(r"(\d{1,2}:\d\d [AP]M)[–-]\d{1,2}:\d\d [AP]M \(\d{4}-\d\d-\d\dT[^ ]+ → \d{4}-\d\d-\d\dT[^ ;]+; free until (\d{4}-\d\d-\d\d)T(\d\d):(\d\d)[^)]*\)")
+_SLOT_HEAD = re.compile(r"(\d{1,2}):(\d\d)[–-](\d{1,2}):(\d\d) \([A-Za-z_]+(?:/[A-Za-z_+-]+)+\)")
+
+
+def slot_ranges(line: str) -> str:
+    """A candidate-slot line as free ranges: each "6:00 PM–6:30 PM (iso → iso; free until iso)" is the range the answer
+    gives, from the slot's start to where the gap ends ("free 6:00 PM–10:00 PM"); a "9:00–12:00 (America/Los_Angeles)"
+    window as "9:00 AM–12:00 PM"."""
+    def span(m):
+        return f"{m[1]}–{_hm12(int(m[3]), int(m[4]))}"
+    if _SLOT_SPAN.search(line):
+        line = _SLOT_SPAN.sub(span, line)
+        head, sep, rest = line.partition(": ")
+        if sep and re.search(r"\d{4}-\d\d-\d\d|\d{1,2}:\d\d [AP]M", rest):
+            line = f"{head}: free {rest}"
+    return _SLOT_HEAD.sub(lambda m: f"{_hm12(int(m[1]), int(m[2]))}–{_hm12(int(m[3]), int(m[4]))}", line)
 
 
 def _clean_line(line: str, keep: frozenset = frozenset()) -> str:
-    t = humanize_iso(re.sub(r"\*\*|__|`", "", line))
+    t = humanize_iso(slot_ranges(re.sub(r"\*\*|__|`", "", line)))
     t = re.sub(r"^[\s\u2190-\u2bff\U0001F000-\U0001FAFF\ufe0f\u200d]+", "", t)       # a leading emoji (digest headers)
     t = re.sub(r"^\s*\[\d{1,2}\]\s+", "", t)                    # a web result's "[1] " index
     t = re.sub(r"\s*\[[0-9a-f]{8}\]", "", t)                 # a timer's internal id
     t = re.sub(r"\s*\[(?:received|sent) \d{4}-\d\d-\d\d\]\s*$", "", t)    # a digest line's trailing stamp
     t = re.sub(r"^\s*\[memory [^\]]*\]\s*", "", t)          # recall's metadata prefix
+    t = re.sub(r"\b0% chance of (rain|snow|precipitation|showers|thunderstorms?)\b", r"no chance of \1", t)   # "0%" is not a figure the answer states
     t = re.sub(r"\bSam's\s+", "", t).replace('"', "")
     t = re.sub(r"^(\s*(?:\[[^\]]*\]\s*)?)([^—:]{2,40}?) — \2:", r"\1\2:", t)   # "Mom — Mom:" (texts)
     t = re.sub(r"^(\s*(?:\[[^\]]*\]\s*)?)[^—:]{2,40}? — (Me:)", r"\1\2", t)           # "Carmen Rivera — Me: ..." (texts)
@@ -2851,7 +2980,10 @@ def _segments(text: str, keep: frozenset = frozenset()) -> list[str]:
         if inj:
             raw = raw[:inj.start()]          # the planted sentence and what follows it are dropped, the line before it stays
             raw = re.sub(r"(?:\b(?:also|and|ps|p\.s\.|note|btw|then)\b[,:]?\s*)+$", "", raw, flags=re.I)
-        raw = _SALUTE.sub("", raw)
+        salute = _SALUTE.sub("", raw)
+        if salute != raw and re.match(r"[a-z]", salute.strip()):
+            salute = salute.strip()[:1].upper() + salute.strip()[1:]      # "Hi Sam, could you ..." is the sentence "Could you ..."
+        raw = salute
         if raw.strip().endswith(":") and len(raw.split()) <= 5 and not re.search(r"\d", raw):
             continue                          # a section label ("Overdue:", "Time-bound today:"), not a fact
         if (not raw.strip() or _FRAME.search(raw.strip()) or INJECTION.search(raw) or _NOMATCH_LINE.search(raw.strip())
@@ -2877,7 +3009,9 @@ def _segments(text: str, keep: frozenset = frozenset()) -> list[str]:
 _WEEKDAY = re.compile(r"(?:Mon|Tue|Tues|Wed|Thu|Thur|Thurs|Fri|Sat|Sun)(?:day|sday|nesday|rsday|urday)?\.?$", re.I)
 # a piece never opens on a lowercase function word: that is the tail of a clause ("and tell you what needs a reply")
 _WIN_BAD_START = re.compile(r"(?:and|or|but|with|on|of|to|for|in|at|by|from|which|that|who|while|including|plus|as|if|because|"
-                            r"then|so|than|when|where|not|also|no)\s")
+                            r"then|so|than|when|where|not|also|no|across|within|during|per|under|over|could|would|can|will|should|"
+                            r"shall|may|might|must|please|before|after|until|through|into|about|around|between|against|upon|via|"
+                            r"are|is|was|were|be|been|do|does|did|has|have|had)\s")
 _MONTHW = re.compile(r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s", re.I)
 
 
@@ -2984,7 +3118,7 @@ _SOURCE_TAGS = frozenset({"(email)", "(text)", "(note)", "(reminder)"})
 
 
 def _windows(unit: str, f_times, f_amts, f_caps, f_words, p_words, loose: bool, cap: int, n_out: int = 2, f_quotes=(),
-             f_dates=frozenset(), f_ids=frozenset(), f_toks=frozenset(), f_nums=frozenset()):
+             f_dates=frozenset(), f_ids=frozenset(), f_toks=frozenset(), f_nums=frozenset(), f_zero=False):
     """Up to `n_out` best contiguous runs of clauses in a unit: [(value, text, first clause index)]."""
     atoms = _atoms_for(unit, f_times, f_amts)
     n = len(atoms)
@@ -3018,6 +3152,8 @@ def _windows(unit: str, f_times, f_amts, f_caps, f_words, p_words, loose: bool, 
                 nw = len(text.split())
                 if text.startswith("(") or _WIN_BAD_START.match(text) or _SPAN_BAD_END.search(text) or not _balanced(text):
                     continue                           # a clause tail ("and tell you ...", "(66% used)", "not Samuel"), never a piece
+                if (j + 2 < n and atoms[j + 1][0].lstrip().startswith("(") and re.match(r"[a-z]", atoms[j + 2][0].lstrip())):
+                    continue                           # never cut just before a parenthetical whose clause goes on ("Focus (a set time) isn't recorded")
                 one_item = (nw == 1 and len(unit.split()) == 1 and (_tok(text) or [""])[0] in f_toks)   # a one-word list item
                 if nw > cap or (nw < 2 and not _FILEISH.fullmatch(text) and not one_item):
                     continue
@@ -3030,6 +3166,8 @@ def _windows(unit: str, f_times, f_amts, f_caps, f_words, p_words, loose: bool, 
                 strong += len(set(_ID_TOK.findall(text)) & f_ids)                # a phone number, a code, a bare 8:15
                 strong += len({k[1] for k in fact_keys(text) if k[0] == "date"} & f_dates)      # a date (month and day) it gives
                 strong += len(_plain_nums(text) & f_nums)                       # a bare number both state ("10 to 2", a lab number)
+                if f_zero and re.search(r"\bno chance of (?:rain|snow|precip\w*|showers|thunderstorms?)\b", text):
+                    strong += 1                                                 # the line a "no rain expected" answer rests on
                 fo, po = len(_words(text) & f_words), len(_words(text) & p_words)
                 weak = fo + 0.5 * po
                 if not (strong >= 1 or weak >= (1 if loose else 2) or (fo >= 1 and po >= 1)):
@@ -3069,11 +3207,15 @@ def _pick_scored(reads: list[tuple[str, str]], final: str, prompt: str, loose: b
     keep_addr = frozenset(re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", final or ""))
     f_toks = frozenset(_tok(final))
     f_nums = frozenset(_plain_nums(final))
+    f_zero = bool(re.search(r"\bno (?:rain|snow|precip\w*|showers|storms?)\b|\bdry\b|\b(?:won['’]t|not going to|isn['’]t going to|not expected to) (?:rain|snow)\b",
+                            final or "", re.I))
     scored = []
     order = 0
     for n_, r in reads:
         for unit in dict.fromkeys(_segments(r, keep_addr)):
             order += 1
+            if _HIDDEN.match(unit):
+                continue                                   # "…and 2 more" is a count of items, counted by "plus N more"
             stamp = re.match(r"\[[^\]]*\]\s*", unit)          # a message's [timestamp]: dropped unless the final uses it
             if stamp and ((time_tokens(stamp.group(0)) - f_times) or not time_tokens(stamp.group(0))):
                 unit = unit[stamp.end():]
@@ -3081,7 +3223,7 @@ def _pick_scored(reads: list[tuple[str, str]], final: str, prompt: str, loose: b
                 scored.append((3, order, unit))
                 continue
             for val, text, at in _windows(unit, f_times, f_amts, f_caps, f_words, p_words, loose, cap, f_quotes=f_quotes,
-                                       f_dates=f_dates, f_ids=f_ids, f_toks=f_toks, f_nums=f_nums):
+                                       f_dates=f_dates, f_ids=f_ids, f_toks=f_toks, f_nums=f_nums, f_zero=f_zero):
                 value = val * (0.35 if (_HEADER_LINE.match(unit) and n_ in _MAIL_TOOLS) else 1.0)
                 scored.append((value, order + at * 0.001, text))
     best = sorted(scored, key=lambda x: (-x[0], x[1]))
@@ -3274,7 +3416,7 @@ def fact_keys(text: str) -> set[tuple[str, str]]:
 
 def _result_facts(final: str, results: list[str]) -> set[tuple[str, str]]:
     """Facts the final states that a tool result also shows (in the same form)."""
-    res = "\n".join(results or [])
+    res = humanize_iso("\n".join(results or []))          # an ISO timestamp in a result is a time the answer may state
     low = res.lower()
     rk = fact_keys(res)
     jr = " ".join(_tok(res))
@@ -3319,7 +3461,7 @@ def _has_facts(text: str, keys) -> set:
 # A list answer names list items ("Piranesi", "Mom", "Laundry") and people. Every such item the final states and a
 # result shows is in the thought, or the thought ends "plus N more" with N = the number of result lines that still
 # carry an unlisted fact (items_omitted). The builder (_extract_core) and the check (facts_unlisted) use one function.
-_NAME_SKIP = frozenset("""the your you yes there here also today tomorrow tonight yesterday nothing overdue this that these those
+_NAME_SKIP = frozenset("""no nope probably maybe the your you yes there here also today tomorrow tonight yesterday nothing overdue this that these those
 it its they them then when what where which who how both each some any all one two three four five six seven eight nine ten
 from with about after before also just only still more most other another first second third last next none neither either
 mon tue wed thu fri sat sun monday tuesday wednesday thursday friday saturday sunday january february march april may june
@@ -3362,27 +3504,44 @@ def _in_tokens(needle: tuple[str, ...], hay: list[str]) -> bool:
     return bool(n) and any(tuple(hay[i:i + n]) == needle for i in range(len(hay) - n + 1))
 
 
-def result_units(results: list[str], final: str) -> list[str]:
-    """The distinct cleaned lines of the results (the same units the pieces of a thought come from)."""
+def result_units_tagged(results: list[str], final: str) -> list[tuple[str, str]]:
+    """(unit, kind) for the distinct cleaned lines of the results. kind: "item" (a bullet line of a bulleted result),
+    "other" (a header or summary line of a bulleted result: not an item), "plain" (a line of a result without bullets)."""
     keep_addr = frozenset(re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", final or ""))
-    out: list[str] = []
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
     for r in results or []:
-        for unit in _segments(r, keep_addr):
-            stamp = re.match(r"\[[^\]]*\]\s*", unit)
-            if stamp:
-                unit = unit[stamp.end():]
-            if unit and unit not in out:
-                out.append(unit)
+        lines = (r or "").split("\n")
+        listy = any(_BULLET.match(ln) for ln in lines)
+        for ln in lines:
+            kind = ("item" if _BULLET.match(ln) else "other") if listy else "plain"
+            for unit in _segments(ln, keep_addr):
+                stamp = re.match(r"\[[^\]]*\]\s*", unit)
+                if stamp:
+                    unit = unit[stamp.end():]
+                if unit and (unit not in seen or _HIDDEN.match(unit)):      # two "…and 1 more" lines are two counts
+                    seen.add(unit)
+                    out.append((unit, kind))
     return out
 
 
-def unit_keys(unit: str, final: str, f_tokens: list[str], f_names: set[str]) -> set[tuple]:
-    """What a result line holds that the final also states: hard facts, names, and the line's own head."""
+def result_units(results: list[str], final: str) -> list[str]:
+    """The distinct cleaned lines of the results (the same units the pieces of a thought come from)."""
+    return [u for u, _b in result_units_tagged(results, final)]
+
+
+def unit_keys(unit: str, final: str, f_tokens: list[str], f_names: set[str], item: bool = False) -> set[tuple]:
+    """What a result line holds that the final also states: hard facts, names, and the line's own head. A bullet line
+    (`item`) also has its title (a reworded one counts: "dishes should be done the same day" / "dishes done the same day")."""
     keys: set[tuple] = {("fact",) + k for k in _result_facts(final, [unit])}
     keys |= {("name", w) for w in _cap_tokens(unit) & f_names}
     head = _item_head(unit)
     if head and _in_tokens(head, f_tokens):
         keys.add(("head", " ".join(head)))
+    if item:
+        for t in unit_titles(unit)[:1]:
+            if _title_hit(t, f_tokens, 0.75):
+                keys.add(("title", " ".join(t)))
     return keys
 
 
@@ -3403,27 +3562,82 @@ def _listed(keys: set[tuple], thought: str) -> set[tuple]:
         elif k[0] == "head":
             if _in_tokens(tuple(k[1].split()), jt):
                 out.add(k)
+        elif k[0] == "title":
+            if _title_hit(k[1].split(), jt, 0.9):
+                out.add(k)
     return out
 
 
-def omitted_detail(final: str, results: list[str], thought: str) -> list[tuple]:
-    """The first unlisted key of each result line the thought still needs (greedy, in result order)."""
+def _pieces_of(thought: str) -> list[str]:
+    """The ';'-separated pieces of a thought's body (or of a joined list of pieces), "plus N more" left out."""
+    body = extract_body(thought)
+    if body is None:
+        body = [x.strip() for x in re.split(r";\s+", thought or "") if x.strip()]
+    return [p for p in body if not _MORE.fullmatch(p)]
+
+
+def _unit_touched(unit: str, pieces: list[str]) -> bool:
+    """A piece of the thought is a contiguous run of this result line (the line is listed, at least in part)."""
+    ut = _tok(unit)
+    ut2 = _tok(re.sub(r"\([^)]*\)", " ", unit))
+    for p in pieces:
+        pt = tuple(_tok(p))
+        if len(pt) >= 2 and (_in_tokens(pt, ut) or _in_tokens(pt, ut2)):
+            return True
+        if len(pt) == 1 and len(ut) == 1 and pt == tuple(ut):
+            return True
+    return False
+
+
+_HARD = frozenset({"time", "amt", "quote", "clock"})
+_HIDDEN = re.compile(r"^\W*(?:and )?(\d+) more\b", re.I)
+
+
+def omitted_split(final: str, results: list[str], thought: str, pieces: list[str] | None = None) -> tuple[list[tuple], list[tuple], int]:
+    """(unlisted, partial). `unlisted`: the first missing key of each result line none of the thought's pieces comes from
+    (these are the lines "plus N more" stands for; a bare date header is a label, not a line, and no line is merged with
+    another). `partial`: a time, amount or quoted title of a line the thought does list in part, that the thought leaves
+    out (the answer states it, the line shows it, the piece stops short of it). The third value is how many of the `unlisted`
+    come from results without bullets (a mail header, a text line): the rest are bullets and "…and N more" counts."""
     f_tokens, f_names = _tok(final), _cap_tokens(final)
-    covered: set[tuple] = set()
-    out = []
-    for unit in result_units(results, final):
-        keys = unit_keys(unit, final, f_tokens, f_names)
-        missing = {k for k in keys - _listed(keys, thought) - covered if k[:2] != ("fact", "date")}   # a date header is a label, not an item
-        if missing:
-            out.append(sorted(missing)[0])
-            covered |= keys
-    return out
+    pieces = _pieces_of(thought) if pieces is None else list(pieces)
+    unlisted, partial, plain = [], [], 0
+    for unit, kind in result_units_tagged(results, final):
+        if _bare_date(unit):
+            continue
+        if kind == "item" and not _HIDDEN.match(unit) and not any(_title_hit(t, f_tokens, 0.75) for t in unit_titles(unit)[:1]):
+            continue                                 # a bullet whose title the answer does not state is not one of its items
+        hidden = _HIDDEN.match(unit)
+        if hidden:                                   # "…and 2 more": the result's own count of items it does not show
+            if re.search(rf"\b{hidden[1]} more\b", final or "", re.I) or _said(hidden[1], final) and re.search(r"\bmore\b", final or "", re.I):
+                unlisted += [("hidden", str(i)) for i in range(int(hidden[1]))]
+            continue
+        keys = unit_keys(unit, final, f_tokens, f_names, kind == "item")
+        missing = {k for k in keys - _listed(keys, thought) if k[:2] != ("fact", "date")}
+        if not missing:
+            continue
+        if _unit_touched(unit, pieces):
+            partial += [k for k in sorted(missing) if k[0] == "fact" and k[1] in _HARD]
+        elif kind != "other":                        # a header or a summary sentence of a bulleted result is not one of its items
+            unlisted.append(sorted(missing)[0])
+            plain += kind == "plain"
+    return unlisted, partial, plain
 
 
-def items_omitted(final: str, results: list[str], thought: str) -> int:
-    """How many more result lines would be needed to list every fact, name and list item of the final that a result
-    shows and the thought leaves out."""
-    return len(omitted_detail(final, results, thought))
+def omitted_detail(final: str, results: list[str], thought: str, pieces: list[str] | None = None) -> list[tuple]:
+    """The first unlisted key of each result line the thought does not list at all (what "plus N more" counts)."""
+    return omitted_split(final, results, thought, pieces)[0]
+
+
+def items_omitted(final: str, results: list[str], thought: str, pieces: list[str] | None = None) -> int:
+    """How many result lines the thought leaves out although the answer states a fact, name or list item they show."""
+    return len(omitted_detail(final, results, thought, pieces))
+
+
+def _is_item(text: str, item_toks: list[list[str]]) -> bool:
+    """The text is (a run of) a bullet line of a bulleted result."""
+    t = tuple(_tok(text))
+    return bool(t) and any(_in_tokens(t, u) for u in item_toks)
 
 
 def _extract_core(meta, s, ctx, seed, budget_words: int | None = None):
@@ -3436,6 +3650,7 @@ def _extract_core(meta, s, ctx, seed, budget_words: int | None = None):
     src = srcs[0] if len(srcs) == 1 else " and ".join([", ".join(srcs[:-1]), srcs[-1]])
     terse = bool((ctx or {}).get("terse"))
     field = int((ctx or {}).get("field") or 0)           # >0: one best piece only
+    share = int((ctx or {}).get("share") or 0)           # >0: the best `share` pieces, the rest as "plus N more"
     reads = _weather_day(reads, s["prompt"], parse_clock(meta), final)
     no_match = all(_nothing_found(n, r) for n, r in reads)
     cands, more = [], 0
@@ -3443,8 +3658,8 @@ def _extract_core(meta, s, ctx, seed, budget_words: int | None = None):
         cands = _pick_scored(reads, final, s["prompt"])
         if not cands:
             cands = _pick_scored(reads, final, s["prompt"], loose=True)
-    limit = 1 if field else 3 if terse else 8
-    budget = budget_words or (24 if (terse or field) else 40)
+    limit = 1 if field else share or (3 if terse else 8)
+    budget = budget_words or (24 if (terse or field or share) else 40)
     chosen, words = [], 0
     need = _result_facts(final, [r for _n, r in reads])
     for c in cands:
@@ -3459,7 +3674,7 @@ def _extract_core(meta, s, ctx, seed, budget_words: int | None = None):
             chosen.append(c)
             words += w
     have = _has_facts(" ".join(c[2] for c in chosen), need)
-    if need - have and not field:                      # a fact the answer states that no chosen piece holds: add its line
+    if need - have and not field and not share:        # a fact the answer states that no chosen piece holds: add its line
         for c in cands:
             if c in chosen:
                 continue
@@ -3469,11 +3684,12 @@ def _extract_core(meta, s, ctx, seed, budget_words: int | None = None):
                 have |= _has_facts(c[2], need)
     # list items and names the answer states that no chosen piece holds: add their lines while the budget lasts
     f_tokens, f_names = _tok(final), _cap_tokens(final)
-    if not field:
+    item_toks = [_tok(u) for u, kd in result_units_tagged([r for _n, r in reads], final) if kd == "item"]
+    if not field and not share:
         for c in cands:
             if c in chosen or len(chosen) >= limit + 4 or _bare_date(c[2]):
                 continue
-            k = unit_keys(c[2], final, f_tokens, f_names)
+            k = unit_keys(c[2], final, f_tokens, f_names, _is_item(c[2], item_toks))
             if k and (k - _listed(k, " ".join(x[2] for x in chosen))) and words + len(c[2].split()) <= budget:
                 chosen.append(c)
                 words += len(c[2].split())
@@ -3488,7 +3704,7 @@ def _extract_core(meta, s, ctx, seed, budget_words: int | None = None):
         segs = [count] + segs                      # the count the answer gives ("4 emails, 1 unread")
     if field >= 2 and count and segs[:1] == [count] and len(fact_keys(final) - fact_keys(count)) <= 1 and len(_QUOTED.findall(final)) <= 1:
         segs = [count]                            # the last rephrasing: just the count the answer opens with
-    more = items_omitted(final, [r for _n, r in reads], "; ".join(segs)) if segs else 0
+    more = items_omitted(final, [r for _n, r in reads], "; ".join(segs), segs) if segs else 0
     return reads, src, segs, no_match, inj, more, final
 
 
@@ -3776,6 +3992,14 @@ def fragment_problems(text: str, results: list[str], counts: list[str] = ()) -> 
         return errs
     lines = _result_token_lines(results)
     seen: list[str] = []
+    merged: list[str] = []
+    for seg in body:                                  # a result line with its own ';' ("charge: 47%; on battery power; ~2h left") is one piece
+        if (merged and not _MORE.fullmatch(seg) and not _MORE.fullmatch(merged[-1]) and _tok(seg)
+                and _contiguous(_tok(merged[-1] + " " + seg), lines)):
+            merged[-1] = merged[-1] + "; " + seg
+        else:
+            merged.append(seg)
+    body = merged
     for seg in body:
         if _MORE.fullmatch(seg):
             continue
@@ -3795,15 +4019,93 @@ def fragment_problems(text: str, results: list[str], counts: list[str] = ()) -> 
     return errs
 
 
+_BULLET = re.compile(r"^\s*(?:[-•*]|\d+[.)])\s+(.+?)\s*$")
+_BUL_SKIP = re.compile(r"^(?:\d{1,2}(?::\d\d)?\s*[ap]m|all[- ]day|overdue|\d+ days?|due\b.*|today|tomorrow|calendar|reminder|email|text|note"
+                       r"|(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?(?:,? \w{3,9}\.? \d{1,2})?)$", re.I)
+
+
+def bullet_titles(line: str) -> list[list[str]]:
+    """Token lists of what a bullet line is about (its title parts), counted without any key logic: the line cut at
+    ", ", " · " and " — ", times, 'Overdue' and 'N days' parts and a trailing "(calendar)" tag dropped."""
+    return unit_titles(re.sub(r"\*\*|__|`", "", line))
+
+
+def _title_hit(title: list[str], hay: list[str], frac: float) -> int:
+    """How often a bullet title is in `hay` (token list): its contiguous occurrences, else 1 when at least `frac` of its
+    content words are there (the answer rewords a title: "Naomi Brandt (text): Asked to move ..."), else 0."""
+    n = len(title)
+    if n:
+        k = sum(1 for i in range(len(hay) - n + 1) if hay[i:i + n] == title)
+        if k:
+            return k
+    content = [t for t in title if t not in _STOP and len(t) > 2]
+    if not content:
+        return 0
+    got = sum(1 for t in content if t in set(hay))
+    return 1 if len(content) >= 3 and got / len(content) >= frac else 0       # rewording is only recognised for a longer title
+
+
+def unit_titles(unit: str) -> list[list[str]]:
+    """bullet_titles for a cleaned unit ("4 pm, Project sync with Jordan (calendar)": its comma parts)."""
+    out = []
+    for part in re.split(r",\s+|\s+[·—–]\s+", unit):
+        part = re.sub(r"\s*\((?:calendar|reminder|email|text|note)(?: from [^)]*)?\)\s*$", "", part.strip()).strip(" ,;:.")
+        part = re.sub(r"^\d{1,2}(?::\d\d)?\s*[ap]m\s+(?=\S)", "", part, flags=re.I)         # "12:00 PM Yoga class": the title is the rest
+        if part and not _BUL_SKIP.match(part) and _tok(part):
+            out.append(_tok(part))
+    return out
+
+
+def bullet_items_left(final: str, results: list[str], thought: str) -> int | None:
+    """An independent count of "plus N more": the distinct bullet lines of the results (plus the N of a "…and N more"
+    line) whose title (its first part) the answer states and the thought does not list; a title the thought lists once
+    covers one bullet. None when the results have no bullet lines. No fact keys, no merging: it only reads the bullets."""
+    ft, tt = _tok(final), _tok(thought)
+    seen = left = 0
+    distinct: set[str] = set()
+    used: dict[tuple, int] = {}
+    for r in results or []:
+        for ln in (r or "").split("\n"):
+            m = _BULLET.match(ln)
+            if not m:
+                continue
+            seen += 1
+            h = _HIDDEN.match(re.sub(r"^\W+", "", m[1]))
+            if h:
+                if re.search(rf"\b{h[1]} more\b", final or "", re.I) or (_said(h[1], final) and re.search(r"\bmore\b", final or "", re.I)):
+                    left += int(h[1])
+                continue
+            text = re.sub(r"\s+", " ", re.sub(r"\*\*|__|`", "", m[1])).strip().lower()
+            if text in distinct:
+                continue                                  # the same line on another day is the same item
+            distinct.add(text)
+            titles = bullet_titles(m[1])[:1]
+            if not titles or not _title_hit(titles[0], ft, 0.75):
+                continue
+            key = tuple(titles[0])
+            have = _title_hit(titles[0], tt, 0.9)
+            if used.get(key, 0) >= have:
+                left += 1
+            else:
+                used[key] = used.get(key, 0) + 1
+    return left if seen else None
+
+
 def facts_unlisted(text: str, final: str, results: list[str]) -> list[str]:
     """Reverse of facts_missing: a time, amount, quoted title, date, name or list item the final states and a tool result
     also shows must be in the thought, or the thought ends 'plus N more' where N is the number of result lines that still
     hold such an unlisted fact (a list too long for 60 words)."""
-    left = omitted_detail(final, results, text)
+    left, partial, plain = omitted_split(final, results, text)
+    errs = [f"facts_unlisted: {k[1]} {' '.join(map(str, k[2:]))!r} is in a line the thought lists in part, and in the answer, "
+            f"but not in the thought" for k in partial[:3]]
     m = _MORE.search(text or "")
+    bl = bullet_items_left(final, results, text)
+    if bl is not None and bl != len(left) - plain:
+        errs.append(f"facts_unlisted: {bl} bullet item(s) of the results are stated in the answer and not in the thought, "
+                    f"the thought counts {len(left) - plain}")
     if m:
         if int(m[1]) != len(left):
-            return [f"facts_unlisted: 'plus {m[1]} more' but {len(left)} result line(s) still hold a fact the answer states"]
-        return []
-    return [f"facts_unlisted: {k[0]} {' '.join(map(str, k[1:]))!r} is in the answer and the result, not in the thought"
-            for k in left[:3]]
+            errs.append(f"facts_unlisted: 'plus {m[1]} more' but {len(left)} result line(s) are not listed and hold a fact the answer states")
+        return errs
+    return errs + [f"facts_unlisted: {k[0]} {' '.join(map(str, k[1:]))!r} is in the answer and the result, not in the thought"
+                   for k in left[:3]]

@@ -4,12 +4,18 @@ These two families are held-out evaluation data for the GRPO probes (S-text reca
 training data, so they load ONLY when ``ASK_LORA_DEVSETS=1``; without it ``FAMILIES_R4`` is empty and the SFT build,
 the validator and every other round-4 tool see nothing of them. The data below is always importable (the tests read it).
 
-Build (a separate directory, never merged into the SFT build or data-rl):
+Build (a separate directory, never merged into the SFT build or data-rl). This module is its own entry point, so the dev
+build writes the SAME file set a normal build does (all.jsonl, meta.jsonl, train/valid and their .meta.jsonl,
+eval_manifest.json, stats.json) and needs no shared-file change (it adds the two names to ``writes.MULTITURN`` itself):
 
     cd training/ask-lora-r2/builder
-    ASK_LORA_DEVSETS=1 ASK_LORA_ROUND=4 ASK_LORA_OUT=$OUT/devsets \\
-        ~/Desktop/MOE_Project/.venv/bin/python build.py recall_dev_r4 session_style_dev
-    ASK_LORA_DEVSETS=1 ASK_LORA_ROUND=4 ASK_LORA_OUT=$OUT/devsets ~/Desktop/MOE_Project/.venv/bin/python validate.py $OUT/devsets/partial.jsonl
+    ASK_LORA_OUT=$OUT/devsets ~/Desktop/MOE_Project/.venv/bin/python scen_r4_devsets.py build
+    ASK_LORA_OUT=$OUT/devsets ~/Desktop/MOE_Project/.venv/bin/python scen_r4_devsets.py validate
+    ~/Desktop/MOE_Project/.venv/bin/python export_prompts.py ... --dev-build-dir $OUT/devsets
+
+(``check`` runs only the authoring checks.) The command sets ASK_LORA_DEVSETS=1 and ASK_LORA_ROUND=4 itself and refuses to
+run without ASK_LORA_OUT, so it can never write into a full build. Do not run ``build.py`` with these family names: it
+writes only partial.jsonl.
 
 ``recall_dev_r4``: 12 NEW threads, two questions each = 24. 17 recall questions (7 the user said, 7 the assistant said,
 3 both) and 7 never-said ones, in ``scen_r4_session_chat.Q()`` terms: ``qkind`` rec_user | rec_asst | rec_both | rec_none,
@@ -37,6 +43,10 @@ import os
 import random
 import re
 
+if __name__ == "__main__":      # the script is the dev-set entry point: the flags must be set before scen is imported
+    os.environ["ASK_LORA_DEVSETS"] = "1"
+    os.environ["ASK_LORA_ROUND"] = "4"
+
 from harness import Final
 from scen import Scenario, setup
 import harness as H
@@ -53,6 +63,10 @@ STYLE = "session_style_dev"
 PREFIX = {RECALL: "rdev", STYLE: "sdev"}
 ENABLED = os.environ.get("ASK_LORA_DEVSETS") == "1"
 WRITE_ALLOW_R4 = {RECALL: frozenset(), STYLE: frozenset()} if ENABLED else {}
+if ENABLED:
+    # seeded sessions: the validator reads the last user message as the prompt and allows the earlier user turns
+    import writes as _writes
+    _writes.MULTITURN = _writes.MULTITURN | {RECALL, STYLE}
 
 THREADS: dict[str, dict] = {}     # thread id -> {"fam", "name", "mode", "ex": [(user, assistant)], "opening": n}
 QS: dict[str, list[dict]] = {RECALL: [], STYLE: []}
@@ -137,7 +151,7 @@ def _fillers(tid, n, avoid):
 T(RECALL, "swim", "short",
   ("signed up for adult swim lessons and honestly i'm a little embarrassed, i can barely float",
    "Plenty of adults learn to swim, and the beginner class is usually the friendliest room in the building. Floating is the real first skill, since everything else builds on trusting the water to hold you. Do you know yet when your first lesson is?"),
-  ("tuesdays at 7:30 at the sorrel hill rec center, the coach is a woman named thandiwe",
+  ("tuesdays at 7:30 at the sorrel crossing rec center, the coach is a woman named thandiwe",
    "A Tuesday evening slot gives you a full week between lessons to let each one settle. Coaches who teach beginners tend to be patient, and a name you already know makes the first night easier to walk into. Arrive a few minutes early so you are not rushing onto the pool deck."),
   ("what goes in my swim bag",
    "A swimsuit you can move in, a towel, goggles and a swim cap if your hair is long. A small bag with a change of clothes and a bottle of water makes the evening less hectic. Most rec centers also ask for a quick shower before you get in."),
@@ -146,11 +160,11 @@ T(RECALL, "swim", "short",
   ("and what if i panic in the deep end",
    "Most beginner classes start in the shallow end, and nobody is asked to go deep before they are ready. If panic comes, the move is to stop, hold the wall and breathe out slowly, and a coach will meet you there. Telling Thandiwe on the first night that deep water makes you nervous lets her plan around it."))
 Q(RECALL, "swim", "rec_user", "which night were the lessons again?",
-  "Tuesdays at 7:30, at the Sorrel Hill rec center. That leaves a full week between classes, and arriving a few minutes early gives you time to shower and settle before you get in the water.",
+  "Tuesdays at 7:30, at the Sorrel Crossing rec center. That leaves a full week between classes, and arriving a few minutes early gives you time to shower and settle before you get in the water.",
   ref=("Tuesdays", "7:30"))
 Q(RECALL, "swim", "rec_none", "what's the pool's street address btw",
-  "The address has not come up. What you have told me is that it is the Sorrel Hill rec center, on Tuesdays at 7:30, with Thandiwe as the coach. The sign-up confirmation probably lists the street, and it is worth saving before the first night.",
-  absent="address", ctx=("Sorrel Hill", "Thandiwe"))
+  "No street has come up yet. What you have told me is that it is the Sorrel Crossing rec center, on Tuesdays at 7:30, with Thandiwe as the coach. The sign-up confirmation probably lists the street, and it is worth saving before the first night.",
+  absent="address", ctx=("Sorrel Crossing", "Thandiwe"))
 
 # ------------------------------------------------------------------ bookshelf (short)
 T(RECALL, "shelf", "short",
@@ -162,11 +176,11 @@ T(RECALL, "shelf", "short",
    "Both is best. Glue makes the joint strong and the screws hold it while the glue dries, so you get a bond that outlasts either one alone. Wipe away any glue that squeezes out right away, because dried glue blocks stain."),
   ("stain or paint?",
    "Pine takes paint beautifully, and paint hides the knots. Stain can look blotchy on pine unless you brush on a wood conditioner first, so for a first build, paint is the easier route. Two thin coats look better than one thick one."))
-Q(RECALL, "shelf", "rec_asst", "what thickness boards were you saying for the shelves",
-  "Three quarter inch pine, with a strip of wood glued and screwed along the back edge under each shelf. Across 30 inches and loaded with heavy art books, that strip is what stops them from bowing.",
-  ref=("three quarter inch", "back edge"))
+Q(RECALL, "shelf", "rec_asst", "what was the trick you gave me so the shelves don't sag",
+  "A strip of wood glued and screwed along the back edge under each shelf. Across 30 inches and loaded with heavy art books, that strip is what stops them from bowing.",
+  ref=("back edge",))
 Q(RECALL, "shelf", "rec_none", "which color did we land on for the finish",
-  "A color has not come up. You were weighing paint against stain, and paint was the easier route for pine. Once you see the shelf standing in its spot, the color is much easier to choose.",
+  "That was never settled. You were weighing paint against stain, and paint was the easier route for pine. Once the shelf is standing in its spot, the color is much easier to choose.",
   absent="color", ctx=("paint", "stain"))
 
 # ------------------------------------------------------------------ used car (short)
@@ -179,11 +193,11 @@ T(RECALL, "car", "short",
    "Start a little under the asking price, since most sellers expect some back and forth. For a 9800 dollar car, an opening offer around 9000 leaves you room to meet in the middle. If the inspection turns up a problem, use it to lower the number further."),
   ("ok. i'll have a mechanic look at it first",
    "A pre-purchase inspection is the best money you can spend here, and it usually costs somewhere around 100 to 150 dollars. A mechanic will spot rust, leaks and worn parts that a test drive can hide. If the seller objects to one, treat that as a warning."))
-Q(RECALL, "car", "rec_both", "what was the price he's asking?",
-  "He is asking 9800 dollars for the 2016 Honda Fit, which has 74,000 miles. Opening around 9000 and having a mechanic inspect it first is a sound way to approach it.",
-  ref=("9800", "74,000"))
+Q(RECALL, "car", "rec_both", "who's the guy selling it again?",
+  "Desmond, who says he is the only owner of the 2016 Honda Fit. Asking him why he is selling, and for the service records, is a sound way to approach it.",
+  ref=("Desmond",))
 Q(RECALL, "car", "rec_none", "what color is the car",
-  "The color has not come up. What you have told me is that it is a 2016 Honda Fit with 74,000 miles, owned by Desmond and priced at 9800 dollars. Color rarely changes the value much, so it is fine to leave it to the end.",
+  "The color is not in anything you have told me yet. What you have said is that it is a 2016 Honda Fit with 74,000 miles, owned by Desmond and priced at 9800 dollars. Color rarely changes the value much, so it is fine to leave it to the end.",
   absent="color", ctx=("2016", "Desmond"))
 
 # ------------------------------------------------------------------ telescope (short)
@@ -196,28 +210,28 @@ T(RECALL, "scope", "short",
    "A red flashlight is the one extra worth getting, because white light ruins your night vision. A simple star chart or a phone app that shows the sky helps her find things. A folding chair and a blanket will make longer sessions much more comfortable."),
   ("what's the best thing to look at first",
    "Start with the moon, since it is bright and easy to find, and the detail along the edge of the shadow is striking. After that, Jupiter is a good second target, because its four large moons show up as tiny dots in a line. Saturn's rings are the one that usually makes people gasp."))
-Q(RECALL, "scope", "rec_asst", "how big a telescope was that",
+Q(RECALL, "scope", "rec_asst", "what kind of telescope was that",
   "A six inch Dobsonian, which fits the 350 budget and is easy for Signe to aim. The sturdy base is the part to protect, so skip anything on a wobbly mount.",
-  ref=("six inch", "Dobsonian"))
-Q(RECALL, "scope", "rec_user", "what age is signe",
-  "Signe is 11, and with her interest in space she will likely get years of use out of a good first scope.",
-  ref=("11", "Signe"))
+  ref=("Dobsonian",))
+Q(RECALL, "scope", "rec_user", "what was the most i wanted to spend on it",
+  "Around 350, which is enough for a good first scope. With her interest in space, Signe will likely get years of use out of it.",
+  ref=("350",))
 
 # ------------------------------------------------------------------ first campaign (short)
 T(RECALL, "campaign", "short",
   ("i'm running my first dungeons and dragons campaign next sunday for four friends",
    "A first campaign is easier than it looks if you keep the first session small. One simple opening scene, a clear goal and a few interesting characters to meet is plenty for four players. Do you have a setting in mind, or would you like to start from a ready-made adventure?"),
-  ("a published one. it's called the sunken bell, and the players are all total beginners",
+  ("a published one. it's called the sunken cistern, and the players are all total beginners",
    "A published adventure is a kind choice for a first run, because the maps and encounters are already done and you can focus on being a good host. With four beginners, expect the first hour to go slowly while everyone learns their sheets. That is normal and usually part of the fun."),
   ("how do i keep them from derailing everything",
    "Let them wander a little, because beginners often enjoy poking at things you did not plan for. When the story drifts too far, you can nudge it back with a new event, such as a messenger arriving or a noise from the next room. The goal is a story that feels free but still has somewhere to go."),
   ("what if i forget a rule",
    "Make a call, keep the game moving and look it up after the session. Players remember a fun scene much longer than a correct ruling, and most groups are happy to let the host decide. Jot the rule in a notebook so it is right next time."))
 Q(RECALL, "campaign", "rec_user", "what was the adventure called again",
-  "The Sunken Bell. A published adventure is a good fit for four beginners, since the maps and encounters are done for you and you can concentrate on hosting.",
-  ref=("sunken bell",))
+  "The Sunken Cistern. A published adventure is a good fit for four beginners, since the maps and encounters are done for you and you can concentrate on hosting.",
+  ref=("sunken cistern",))
 Q(RECALL, "campaign", "rec_none", "which friend is playing the wizard",
-  "The characters have not come up yet, only that there are four beginners and a Sunday start. Once everyone picks a class, a short list on an index card will help you keep track of who is who.",
+  "Nobody has picked a class yet, as far as this chat goes, only that there are four beginners and a Sunday start. Once everyone chooses one, a short list on an index card will help you keep track of who is who.",
   absent="wizard", ctx=("beginners", "Sunday"))
 
 # ------------------------------------------------------------------ watercolors (short)
@@ -230,11 +244,11 @@ T(RECALL, "paint", "short",
    "One round brush in a size 8 and a flat brush about an inch wide cover almost everything a beginner needs. Synthetic brushes are cheaper and work well. Rinse them after each session and let them dry lying flat."),
   ("and what do i paint to practice",
    "Simple washes and gradients are the best drills: a flat color, then a color fading into water. After that, try clouds, a pear or a row of leaves. Small, quick studies teach more than one careful painting."))
-Q(RECALL, "paint", "rec_asst", "what weight of paper was it again",
-  "140 pound, in cold press, which holds water without buckling. A small pad is enough to start, and it will help the colors stay clean.",
-  ref=("140 pound", "cold press"))
+Q(RECALL, "paint", "rec_asst", "what finish of paper was it again",
+  "Cold press, in a small pad. At 140 pound it holds water without buckling, which will help the colors stay clean.",
+  ref=("cold press",))
 Q(RECALL, "paint", "rec_none", "what brand was that kids set",
-  "A brand has not come up. You only said it was a cheap kids set and that the colors were turning muddy. Switching to better paper will help more than the name on the lid.",
+  "You only said it was a cheap kids set and that the colors were turning muddy, and the brand was never mentioned. Switching to better paper will help more than the name on the lid.",
   absent="brand", ctx=("kids set", "muddy"))
 
 # ------------------------------------------------------------------ bake sale (long)
@@ -244,7 +258,7 @@ T(RECALL, "bakesale", "long",
   ("about 240 families. we want to raise 1,500 dollars for the library",
    "With 240 families, a goal of 1,500 dollars is realistic. If a third of them contribute baked goods and you sell most items for one or two dollars, you will land close to it. A few special items, like whole cakes or boxed cookie sets priced higher, help you cover the gap. Keep a simple count of what comes in so you can see how the goal is shaping up."),
   ("how should i price things",
-   "Keep it simple so the line moves: one dollar for a cookie or a small muffin, two for a cupcake or a brownie, and four or five for a whole loaf or a decorated cake. Round numbers mean you do not need coins, and it helps to have a cash box with a stack of ones and some quarters. A small sign at each table with the prices saves a lot of repeated questions."),
+   "Keep it simple so the line moves: one dollar for a cookie or a small muffin, two dollars for a cupcake or a brownie, and four or five for a whole loaf or a decorated cake. Round numbers mean you do not need coins, and it helps to have a cash box with a stack of ones and some quarters. A small sign at each table with the prices saves a lot of repeated questions."),
   ("what about allergies, last year someone had a nut reaction",
    "That deserves real care. Ask every baker to label what is in each item, and set up a separate table, or at least a clear sign, for anything that contains nuts. Some schools prefer a nut-free sale altogether, so it is worth checking the school policy before you send the sign-up form. A printed ingredient card next to each tray makes it easy for parents to check."),
   ("ok i'll ask the office. who do i get to help on the day",
@@ -257,8 +271,8 @@ Q(RECALL, "bakesale", "rec_user", "what date is the sale again",
   "October 18th, at Lincoln Elementary. A flyer in backpacks a week ahead of it would reach most families in time.",
   ref=("October 18th", "Lincoln"))
 Q(RECALL, "bakesale", "rec_asst", "what were you suggesting for the cupcake price",
-  "One dollar for a cookie or a small muffin, two for a cupcake or a brownie, and four or five for a whole loaf or a decorated cake. Round numbers keep the line moving and mean nobody needs coins.",
-  ref=("one dollar for a cookie", "two for a cupcake"))
+  "Two dollars, with cookies and small muffins at one. Round prices like that keep the line moving.",
+  ref=("two dollars",))
 
 # ------------------------------------------------------------------ apartment hunt (long)
 T(RECALL, "flat", "long",
@@ -276,35 +290,35 @@ T(RECALL, "flat", "long",
    "Run the taps and flush the toilet, check the water pressure, and open the windows to see how they seal. Look for signs of water damage on ceilings and under sinks, test the outlets with your phone charger and notice cell reception in each room. Ask about heat, since many older Chicago buildings control it centrally and winter bills vary."),
   ("ok last one, how do i not get scammed",
    "Never send a deposit for an apartment you have not seen, and be wary of a landlord who cannot meet in person or insists on payment by gift card or wire. Check that the listing matches the building's address and that the person showing it can prove they manage it. Real listings rarely come with pressure to decide the same day."))
-Q(RECALL, "flat", "rec_both", "what is the rent ceiling we landed on",
-  "1,900 dollars a month, near the Blue Line. A deposit of one month would come to the same 1,900, if the landlord asks for one.",
-  ref=("1,900", "Blue Line"))
+Q(RECALL, "flat", "rec_both", "which line was it that i need to live near",
+  "The Blue Line. At 1,900 dollars a month, Logan Square, Avondale and Irving Park are the neighborhoods worth looking at first.",
+  ref=("Blue Line",))
 Q(RECALL, "flat", "rec_none", "who's moving in with me again",
   "You have not said anyone is moving in with you. What we have settled is a one bedroom near the Blue Line, 1,900 dollars a month and a lease starting August 1st. If a partner or roommate is joining, a two bedroom changes the numbers.",
   absent="roommate", ctx=("Blue Line", "August 1st"))
 
-# ------------------------------------------------------------------ local-history podcast (long)
-T(RECALL, "podcast", "long",
-  ("i want to start a podcast about the history of my hometown, it's a mill town called harlan falls",
-   "A local history podcast is a lovely idea because every town has stories that nobody has written down. Starting with a small number of episodes, say five or six, lets you find your format before you commit to a long run. It also helps to decide early whether you will tell the stories alone or interview people who remember them, because the equipment and the planning are different. Which feels more natural to you?"),
-  ("interviews, i want to talk to the old mill workers. my aunt worked the night shift there for thirty years",
-   "Your aunt sounds like the ideal first guest, because she can introduce you to others and she will be at ease on tape. Before the interview, write a short list of open questions and begin with easy ones, like what a normal shift looked like, so she settles in. Let her stories wander, since the best moments are rarely in the questions you planned."),
-  ("what microphone should i get",
-   "A USB dynamic microphone around 80 dollars, such as the Samson Q2U, is a dependable choice, since it records clearly in an ordinary room and ignores a lot of background noise. It also has an XLR output, so you can upgrade later without replacing it. For interviews away from home, a simple recorder with a small clip-on microphone works well too."),
-  ("roughly how long per episode",
-   "For interview episodes, 25 to 40 minutes is a comfortable length, long enough to go deep and short enough to finish in one commute. If a conversation runs long, you can split it into two parts rather than cutting good stories. Listeners forgive length when the material is strong and the editing is tidy."),
-  ("how do i record the intro and stuff",
-   "Write the intro as a few short sentences: the name of the show, one line on what it covers and the episode title. Say it aloud several times and record it in a quiet room with soft surfaces, like a closet full of clothes, which damps echo nicely. Then add a short piece of music under it, and keep the whole thing under thirty seconds."),
-  ("ok and where do i put it so people can find it",
-   "A podcast host such as Buzzsprout or Podbean takes your audio files and sends them to Apple Podcasts, Spotify and the other directories for you. You upload each episode once, and the feed updates itself. Most have a free or cheap starter plan, so you can try one before you commit."),
-  ("alright. what should the first episode be about",
-   "Open with the mill itself: when it opened, what it made and what a normal day there felt like. That gives listeners a picture of the town before the individual stories begin. A short episode with your aunt, telling how she started on the night shift, would make a warm first guest."))
-Q(RECALL, "podcast", "rec_asst", "what microphone model did you suggest",
-  "The Samson Q2U, a USB dynamic microphone at around 80 dollars. It also has an XLR output, so it can grow with you if you upgrade later.",
-  ref=("Samson Q2U",))
-Q(RECALL, "podcast", "rec_user", "which town is the show about",
-  "Harlan Falls, your mill town. Your aunt, who worked the night shift there, would make a lovely first guest.",
-  ref=("Harlan Falls",))
+# ------------------------------------------------------------------ first aquarium (long)
+T(RECALL, "tank", "long",
+  ("i want to set up my first aquarium, a betta fish, and i have no idea what i need",
+   "A betta is a good first fish, because it is hardy, colorful and happy in a small tank as long as the water stays warm and clean. The biggest decision is the tank, and five gallons is the smallest size worth buying, since a larger volume holds its temperature and chemistry far more steadily. Do you already have a spot in mind where it will sit?"),
+  ("yes on my desk, away from the window. i'm going to name him bartleby",
+   "A desk away from the window is a smart spot, since direct sun heats the water and feeds algae. Bartleby will also see you often there, and bettas tend to learn the people who feed them. Keep the tank off the edge of the desk and use a flat, level base that can hold the full weight of the water, which is a little over forty pounds for five gallons."),
+  ("what equipment do i need",
+   "You need a heater, a gentle filter, a lid and a thermometer, plus a water conditioner for tap water. For the filter, the Aqueon QuietFlow is a dependable pick, because its flow is soft enough that a betta with long fins will not be pushed around. A heater set to about 26 degrees Celsius keeps him comfortable, and a lid matters because bettas are surprisingly good jumpers."),
+  ("do i need to cycle it before he goes in",
+   "Yes, and it is the step beginners most often skip. A new tank has no helpful bacteria yet, so the first waste turns into ammonia that can harm him. Running the filter for a few weeks while adding a pinch of fish food each day lets those bacteria settle, and a simple test kit tells you when the water is safe."),
+  ("what do i feed him",
+   "A good betta pellet twice a day, in an amount he can finish in about two minutes, is the core of his diet. Frozen bloodworms once or twice a week make a nice treat. Overfeeding is the most common mistake, since uneaten food fouls the water quickly, so a little less is always safer than a little more."),
+  ("how often do i change the water",
+   "About a quarter of the water each week is a good routine for a tank this size. Use the conditioner on the fresh water and match its temperature to the tank before it goes in. A small siphon lets you pick debris off the bottom while you drain, which keeps the gravel tidy and the water clear."),
+  ("any decorations he'd like",
+   "Bettas like cover, so a few soft plants and a small cave give him somewhere to rest. Silk or live plants are kinder to long fins than hard plastic ones, which can tear them. Leave open water near the surface as well, because he comes up for air and likes to swim in the light."))
+Q(RECALL, "tank", "rec_asst", "which filter did you say would suit him",
+  "The Aqueon QuietFlow. Its flow is soft enough for a betta with long fins, and a heater set near 26 degrees would keep Bartleby comfortable.",
+  ref=("QuietFlow",))
+Q(RECALL, "tank", "rec_user", "what's the fish's name again",
+  "Bartleby, the betta for the desk. A tank on a level base away from the window will keep him comfortable.",
+  ref=("Bartleby",))
 
 # ------------------------------------------------------------------ printer offline (digest)
 T(RECALL, "printer", "digest",
@@ -315,35 +329,35 @@ T(RECALL, "printer", "digest",
 Q(RECALL, "printer", "rec_user", "what's the printer model again",
   "It's a Brother HL-L2350DW. Its wireless is the part to watch, since it connects only on the 2.4 gigahertz band.",
   ref=("Brother HL-L2350DW",))
-Q(RECALL, "printer", "rec_none", "what is the password for that network",
-  "A password has not come up. All I have is the printer model and the network name, MapleHouse_5G, which looks like the faster band the printer cannot join. The password is usually on the router label or in its app.",
-  absent="password", ctx=("MapleHouse_5G",))
+Q(RECALL, "printer", "rec_none", "what's the serial number on that printer",
+  "A serial number never came up. I only know the model, a Brother HL-L2350DW, and that it keeps dropping off MapleHouse_5G, which looks like a band it cannot join. The serial is printed on the label at the back of the printer.",
+  absent="serial", ctx=("Brother HL-L2350DW", "MapleHouse_5G"))
 
 # ------------------------------------------------------------------ real estate license exam (digest)
 T(RECALL, "license", "digest",
   ("i'm studying for my real estate license exam, it's in march and i've only done two chapters",
    "Two chapters in is a fine start. A steady 45 minutes a day on weekdays, with a two hour review on Saturdays, is a plan that works for most people. Both the national and the state sections must be passed."),
   ("what are flashcards worth for this",
-   "Flashcards are especially good for vocabulary, such as easement, lien and escrow. The Quizlet app has ready-made decks, which saves you the work of making them. Ten new cards a day, reviewed on a spaced schedule, builds recall without eating your study time."))
+   "Flashcards are especially good for vocabulary, such as easement, lien and covenant. The Quizlet app has ready-made decks, which saves you the work of making them. Ten new cards a day, reviewed on a spaced schedule, builds recall without eating your study time."))
 Q(RECALL, "license", "rec_asst", "what study schedule did you suggest",
   "45 minutes a day on weekdays, with a two hour review on Saturdays. A steady rhythm like that is easier to keep up than long weekend cramming.",
   ref=("45 minutes",))
 Q(RECALL, "license", "rec_asst", "which flashcard app did you mention",
-  "Quizlet, which has ready-made decks for vocabulary like easement, lien and escrow, so you can skip building your own.",
+  "Quizlet, which has ready-made decks for vocabulary like easement, lien and covenant, so you can skip building your own.",
   ref=("Quizlet",))
 
-# ------------------------------------------------------------------ octopus costume (digest)
+# ------------------------------------------------------------------ jellyfish costume (digest)
 T(RECALL, "costume", "digest",
-  ("i'm sewing an octopus costume for my daughter Marguerite, she's 6, and the parade at Alder Grove School is on the 31st",
-   "An octopus is a friendly first costume to sew, because the body can be a simple hooded tunic and the legs are just tubes stuffed with batting. Eight arms sound like a lot, but each one is the same pattern repeated. Cut them from a soft jersey so they drape instead of standing stiff."),
+  ("i'm sewing a jellyfish costume for my daughter Philippa, she's 6, and the parade at Alder Grove School is on the 31st",
+   "A jellyfish is a friendly first costume to sew, because the body can be a simple hooded dome and the tentacles are just long strips hung from the rim. A dozen strips sound like a lot, but each one is the same pattern repeated. Cut them from a soft tulle so they float instead of hanging stiff."),
   ("what fabric for the arms",
-   "Stretchy jersey or fleece in purple works best, since it holds its shape and does not fray. About 2 yards covers all eight arms if you cut them 6 inches wide and 24 inches long."))
+   "Sheer tulle or chiffon in pale purple works best, since it floats and does not fray. About 2 yards covers a dozen tentacles if you cut them 6 inches wide and 24 inches long."))
 Q(RECALL, "costume", "rec_user", "which school is the parade at",
-  "Alder Grove School, for the parade on the 31st. Marguerite will have the best-looking arms in the line.",
+  "Alder Grove School, for the parade on the 31st. Philippa will have the best-looking tentacles in the line.",
   ref=("Alder Grove",))
 Q(RECALL, "costume", "rec_both", "what costume were we planning again",
-  "An octopus, a hooded tunic with eight stuffed arms cut from soft jersey. It is for Marguerite's parade at Alder Grove School on the 31st.",
-  ref=("octopus",))
+  "A jellyfish, a hooded dome with a dozen long tentacles cut from pale tulle. It is for Philippa's parade at Alder Grove School on the 31st.",
+  ref=("jellyfish",))
 
 # the digest threads: 22-24 exchanges in all (production keeps the newest 40 messages and condenses the rest)
 DIGEST_N = {"rdev_printer": 22, "rdev_license": 23, "rdev_costume": 24}
@@ -746,5 +760,40 @@ def fam_session_style_dev(rng):
 FAMILIES_R4 = {RECALL: fam_recall_dev_r4, STYLE: fam_session_style_dev} if ENABLED else {}
 
 
+def _cli(argv):
+    """build | validate | check. Run in a fresh process: the flags below are read when scen is first imported."""
+    import json
+    import sys
+    cmd = argv[0] if argv else "check"
+    if cmd == "check":
+        print(check_all())
+        return 0
+    if cmd not in ("build", "validate"):
+        print(__doc__)
+        return 2
+    if not os.environ.get("ASK_LORA_OUT"):
+        print("ASK_LORA_OUT is required (a directory of its own, never the SFT build's)")
+        return 2
+    os.makedirs(os.environ["ASK_LORA_OUT"], exist_ok=True)
+    if cmd == "build":
+        import build as B
+        examples, metas, failures, per = B.main({RECALL, STYLE})
+        print("scenarios ok per family:", dict(per))
+        print("examples:", len(examples), "failures:", len(failures))
+        for f in failures:
+            print("FAIL", f)
+        if failures or {m["family"] for m in metas} != {RECALL, STYLE}:
+            return 1
+        tr, va = B.write(examples, metas)
+        B.write_stats(metas, tr, va)
+        print("train", len(tr), "valid", len(va), "->", B.OUT)
+        print("files:", ", ".join(sorted(f for f in os.listdir(B.OUT) if f.endswith((".jsonl", ".json")))))
+        return 0
+    import validate as V
+    V.main([])           # all.jsonl, train.jsonl, valid.jsonl with their meta files, and the train/valid group check
+    return 0
+
+
 if __name__ == "__main__":
-    print(check_all())
+    import sys
+    sys.exit(_cli(sys.argv[1:]))

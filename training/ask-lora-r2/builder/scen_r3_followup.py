@@ -256,8 +256,9 @@ def day_pivot(i):
         a_phrase = a_period if a_period in ("today", "tomorrow") else "on " + wd_name(da)
         b_phrase = "tomorrow" if b_period == "tomorrow" else "on " + wd_name(db)
         # both days are read with the day plan: calendar, reminders and the mail / text / note items the Brief found
-        seed_plan(rng, w, now, a_period, wait=0)
-        seed_plan(rng, w, now, b_period, tidy=False, wait=0)
+        used = set()
+        seed_plan(rng, w, now, a_period, wait=0, used=used)
+        seed_plan(rng, w, now, b_period, tidy=False, wait=0, used=used)
         plan_a, plan_b = read_plan(w, a_period), read_plan(w, b_period)
         pool = [k for k, v in PIVOT_DAY.items() if v == tmpl_kind]
         prompt = rng.choice(pool).format(wd=wd_name(db).lower() if rng.random() < 0.7 else wd_name(db))
@@ -844,8 +845,9 @@ def read_correct(i):
                 w.events.append(Event(title, at_(day, max(h, 9), m), mins, loc))
         pa = wd_name(da).lower() if a != 1 else "tomorrow"
         pb = wd_name(db).lower() if b != 1 else "tomorrow"
-        seed_plan(rng, w, now, pa, wait=0)
-        seed_plan(rng, w, now, pb, tidy=False, wait=0)
+        used_ = set()
+        seed_plan(rng, w, now, pa, wait=0, used=used_)
+        seed_plan(rng, w, now, pb, tidy=False, wait=0, used=used_)
         plan_a, plan_b = read_plan(w, pa), read_plan(w, pb)
         hist = [plan_turn(rng.choice([f"what's on {pa}", f"what's planned for {pa}", f"what's going on {pa}"]), plan_final(rng, plan_a, now), pa)]
         wdb = wd_name(db) if b != 1 else "tomorrow"
@@ -904,7 +906,7 @@ def ask_one(i):
             return fu(style(rng, ask), now, w, [Final(q)], "two reminders listed, 'it' is ambiguous", hist)
         hist = [turn(rng.choice(["give me a quick fact", "got a random fact for me"]), "Octopuses have three hearts.")]
         ask = rng.choice(["cancel it", "delete that"])
-        q = _pick(rng, ["Cancel what? Nothing on your list came up just now.", "I'm not sure what to cancel. Which event or reminder?"])
+        q = _pick(rng, ["Cancel what? Nothing we were just talking about can be cancelled.", "I'm not sure what to cancel. Which event or reminder?"])
         return fu(style(rng, ask), now, w, [Final(q)], "nothing cancellable in context", hist)
     return make
 

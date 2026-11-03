@@ -342,6 +342,24 @@ def day_items(w, day, *, reminders=True, after=None):
     return items
 
 
+def calendar_reply(rng, items, day, now):
+    """The final for an explicit calendar ask (events, meetings, appointments) over get_upcoming's agenda ``items``. With no
+    event but a reminder the answer says the calendar is empty first, then names the reminder; with nothing it says so."""
+    label = long_date(day)
+    events = [i for i in items if i[2] != "reminder"]
+    rems = [i for i in items if i[2] == "reminder"]
+    if not items:
+        return fin(rng, f"Nothing is on your calendar {on_word(day, now)}, and no reminders are due.")
+    if not events:
+        lead = rng.choice([f"Nothing on your calendar {on_word(day, now)}, but there's ",
+                           f"No events {on_word(day, now)}, though you do have ",
+                           f"Your calendar is clear {on_word(day, now)}; the only thing is "])
+        return lead + join(phrase(i) for i in sorted(rems)) + "."
+    if len(items) >= 4:
+        return f"{label} has {counts(items)}:\n" + "\n".join("- " + bullet(i, True) for i in sorted(items))
+    return agenda(items, fin(rng, f"On {label} you have", f"{label} has"), loc=True)
+
+
 def sc(prompt, now, w, steps, notes):
     return Scenario(FAMILY, prompt, now, w, steps, notes)
 
@@ -761,9 +779,14 @@ def narrate_day(rng, plan, *, bullets=None):
     if plan.other:
         extra.append(other_sentence(rng, plan))
     if bullets:
-        lead = rng.choice([f"{W} has {len(timed)} thing{'s' if len(timed) != 1 else ''} lined up:" if timed else f"{W} has nothing on the clock, but there's more:",
+        n_more = plan.more.get("day", 0)
+        counted = f"{W} has {len(timed)} thing{'s' if len(timed) != 1 else ''} lined up:" if not n_more else \
+            f"{W} has a full day, here are the first {len(timed)}:"
+        lead = rng.choice([counted if timed else f"{W} has nothing on the clock, but there's more:",
                            f"Here's {w}:" if w in ("today", "tomorrow") else f"Here's {W}:"])
         rows = [f"- {say_entry(e)[:1].upper()}{say_entry(e)[1:]}" for e in timed]
+        if n_more:
+            rows.append(f"- And {n_more} more after that")
         rows += ["- " + x for x in extra]
         return lead + "\n" + "\n".join(rows)
     return " ".join(parts + extra)
@@ -1634,16 +1657,11 @@ def calendar_with_brief(rng, out):
         else:
             dropped("calendar_with_brief", k)
             continue
+        when = period_for(w, day) if when != "tomorrow" else when      # a bare weekday on that same weekday is today
+        assert span_day(w, when) == day, (when, day)
         res = w.t_get_upcoming(period=when)
         items = day_items(w, day)
-        label = long_date(day)
-        if not items:
-            reply = fin(rng, f"Nothing is on your calendar {on_word(day, now)}, and no reminders are due.")
-        elif len(items) >= 4:
-            reply = f"{label} has {counts(items)}:\n" + "\n".join("- " + bullet(i, True) for i in sorted(items))
-        else:
-            reply = agenda(items, fin(rng, f"On {label} you have", f"{label} has"), loc=True)
-        reply = with_brief(rng, reply, res)
+        reply = with_brief(rng, calendar_reply(rng, items, day, now), res)
         out.append(sc(uniq(rng, *[x.format(x=when) for x in stems], plan=False), now, w, [[Call("get_upcoming", period=when)], Final(reply)],
                       "the calendar asked for: get_upcoming; its items, then the dated mail / text / note items the result lists apart"))
 

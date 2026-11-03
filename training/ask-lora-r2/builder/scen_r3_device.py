@@ -1150,7 +1150,7 @@ def _c_bday_none(i):
         install_birthdays(w, table)
         first = who.split()[0]
         prompt = A.style(rng, ["is {n}'s birthday saved anywhere", "what's {n}'s birthday"][i % 2].format(n=first.lower()))
-        final = pick(rng, [f"I don't see a birthday for {first} coming up in the next year.", f"None of {first}'s birthdays shows up in the year the tool covers."])
+        final = pick(rng, [f"I don't see a birthday for {first} coming up in the next year.", f"I don't see any of {first}'s birthdays in the next year."])
         return mk("contacts_r3", prompt, now, w, [[Call("contact_dates", days=366)], Final(final)],
                   "birthday not in the list: say it is not saved, no guess")
     return make
@@ -1467,6 +1467,11 @@ def _r_pending(i):
 
     def make(rng):
         now, w = _rem_world(rng, hour=rng.choice([8, 9, 10, 11]))
+        if i % len(prompts) == 3:     # "everything i still have to do" is a to-do question: the plan, with the Brief as a source
+            from scen import plan_pair
+            call, reply = plan_pair(rng, w, now, "today", wait=0)
+            return mk("reminders_r3", A.style(rng, prompts[3]), now, w, [[call], Final(reply)],
+                      "a to-do question: get_my_day_plan (reminders plus the Brief's mail / text / note items)")
         dated = sorted([r for r in _open(w) if r.due], key=lambda r: r.due)
         und = [r for r in _open(w) if not r.due]
         head = f"You have {len(dated) + len(und)} open reminders"

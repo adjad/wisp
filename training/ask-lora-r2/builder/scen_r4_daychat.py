@@ -59,6 +59,8 @@ STEMS = [
     "whats going on {x}", "what is happening {x}", "what's coming up {x}", "what do i have planned {x}",
     "what do i have coming up {x}", "what am i missing {x}", "anything i need to get done {x}", "what is coming up {x}",
     "whats happening {x}", "anything planned {x}", "what's on my agenda {x}",
+    "what is my plan for {x}", "what is my plan for {x}", "whats my plan for {x}", "tell me my plan for {x}",
+    "what is my plan on {x}", "what do i need to do {x}", "what is my plan for {x}",
 ]
 PRE = ["", "", "", "", "hey ", "ok so ", "quick one: ", "um ", "hi, ", "so "]
 SUF = ["", "", "", "", "?", " pls", " thanks", " for me", " please"]
@@ -83,31 +85,65 @@ CAL_Q = ["which events do i have {y}", "anything on my calendar {y}?", "check my
          "any meetings on my calendar {y}"]
 PAST_Q = ["what was on my calendar {y}", "what did i have {y}", "what events did i have {y}", "anything on my calendar {y}?"]
 
-# Hold replies and answers per person: (the user's words, the text sent). The text carries what the user said and nothing more.
-TOPIC = {"Maya Chen": "the milk", "Theo Park": "coffee", "Jordan Ellis": "the analysis part", "Nadia Khan": "the photos",
-         "Carmen Rivera": "Mom's gift", "Ben Ortiz": "the long run", "Aisha Karim": "the practice problems",
-         "Dad": "your flight question", "Hana Kowalczyk": "the regrade", "Naomi Brandt": "moving our call"}
 # What a person might answer, in their own words (first person). The text sent is these words, capitalised and ended.
 SAY = {
-    "Maya Chen": ["yes i'll grab it", "sorry i forgot, i'll get it tomorrow"],
-    "Theo Park": ["yes i'm still in", "sorry i can't make it"],
-    "Jordan Ellis": ["i'm finishing it tonight", "it's done"],
-    "Nadia Khan": ["yes they're great", "not yet, i'll look tonight"],
-    "Carmen Rivera": ["i'm still deciding", "i'll tell you friday"],
-    "Ben Ortiz": ["i'm in", "thanks but i'll skip it"],
-    "Aisha Karim": ["i'll send them tonight", "i'll send them tomorrow"],
-    "Dad": ["not yet, booking it friday", "yes it's booked"],
-    "Hana Kowalczyk": ["not yet, i'll check", "yes it went through"],
-    "Naomi Brandt": ["next week works", "can we do thursday"],
+    "Maya Chen": ["yes i'll grab it", "sorry i forgot, i'll get it tomorrow", "on it, i'll stop on the way home", "i can get it after class"],
+    "Theo Park": ["yes i'm still in", "sorry i can't make it", "still in, see you there", "can we push it to friday"],
+    "Jordan Ellis": ["i'm finishing it tonight", "it's done", "almost done, sending it over soon", "not yet, i'll finish after dinner"],
+    "Nadia Khan": ["yes they're great", "not yet, i'll look tonight", "loved them, thanks for sending", "i'll look at them on my break"],
+    "Carmen Rivera": ["i'm still deciding", "i'll tell you friday", "i was thinking a scarf", "can we pick something together"],
+    "Ben Ortiz": ["i'm in", "thanks but i'll skip it", "count me in, what time", "can't this time, maybe next week"],
+    "Aisha Karim": ["i'll send them tonight", "i'll send them tomorrow", "sending them in a few minutes", "i'll email them after my lab"],
+    "Dad": ["not yet, booking it friday", "yes it's booked", "i'll book it this weekend", "booked it, i land at noon"],
+    "Hana Kowalczyk": ["not yet, i'll check", "yes it went through", "i haven't heard back, i'll check tomorrow", "it did, thank you"],
+    "Naomi Brandt": ["next week works", "can we do thursday", "sure, monday morning works", "how about tuesday at 2"],
 }
+WEEKDAY_RE = re.compile(r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b")
+OPENERS = re.compile(r"^(yes|no|sorry|thanks|sure|okay|ok|loved them|on it)\b(?!,)(?= \w)", re.I)
 
 
 def said_text(phrase):
-    """'i'll send them tonight' -> "I'll send them tonight." (the user's words, capitalised and ended)."""
+    """'i'll send them tonight' -> "I'll send them tonight." (the user's words: capitalised, weekdays too, ended)."""
     t = re.sub(r"\bi\b", "I", phrase.strip())
-    t = re.sub(r"\bi'(m|ll|ve|d)\b", lambda m: "I'" + m.group(1), t)
+    t = WEEKDAY_RE.sub(lambda m: m.group(1).capitalize(), t)
+    t = OPENERS.sub(lambda m: m.group(1) + ",", t, count=1)
     t = t[:1].upper() + t[1:]
-    return t if t.endswith(("?", "!", ".")) else t + ("?" if re.match(r"(?i)can we\b", phrase) else ".")
+    return t if t.endswith(("?", "!", ".")) else t + ("?" if re.match(r"(?i)can we\b|how about\b", phrase) else ".")
+
+
+# What a drafted reply might say when the user gave no words: it answers the question the person asked, in the user's voice,
+# and commits to nothing the thread does not support (an answer, a short hold, or a question back).
+DRAFTS = {
+    "Maya Chen": ["Yes, I can grab milk on my way home.", "Sure, I'll stop for milk on the way back.", "Not yet, but I'll pick it up on my way home.",
+                  "Got it, milk is on my list for the way home."],
+    "Theo Park": ["Yes, still on for coffee. What time works for you?", "Still in for coffee! Where should we meet?",
+                  "I think so, let me check my schedule and I'll confirm soon.", "Count me in for coffee."],
+    "Jordan Ellis": ["Almost done with the analysis part. I'll send it over tonight.", "Not quite yet, I'm still working through the analysis. I'll send it when it's finished.",
+                     "Nearly there. You'll have the analysis part later today."],
+    "Nadia Khan": ["I saw the photos, thanks for sending them. They look great.", "Sorry, I haven't had a chance to look at the photos yet. I'll check them today.",
+                   "Just opened the photos, they're lovely!"],
+    "Carmen Rivera": ["Still deciding. Do you have any ideas for Mom?", "I haven't decided yet. What are you thinking of getting her?",
+                      "Not yet. Want to go in on something together?"],
+    "Ben Ortiz": ["I'm in for the long run. What time should I be there?", "Probably in. Let me check my schedule and confirm.", "Count me in."],
+    "Aisha Karim": ["Sure, I'll send you the practice problems today.", "Yes, sending them over later tonight.", "I'll dig them out and send them over shortly."],
+    "Dad": ["Not yet, I'll book it soon and send you the details.", "Not booked yet, I'm looking at flights today.",
+            "Still working on it. I'll let you know as soon as it's booked."],
+    "Hana Kowalczyk": ["I haven't heard back yet. I'll let you know when I do.", "Not sure yet, I'll check and tell you.",
+                       "I'm still waiting to see if it went through."],
+    "Naomi Brandt": ["Next week works for me. What day is best for you?", "Moving it to next week is fine. Let me know what time suits you.",
+                     "Sure, let's move it. Do you have a day in mind?"],
+}
+GREET = ["", "", "Hi {nm}, ", "Hey {nm}, ", "Hey {nm}! ", "{nm}, "]
+
+
+def greeted(rng, nm, body):
+    """``body`` (a capitalised sentence) behind an optional greeting, capitalised correctly after a comma or a bang."""
+    g = rng.choice(GREET).format(nm=nm)
+    if not g:
+        return body
+    if g.endswith(", ") and not re.match(r"I(\b|')", body):
+        body = body[:1].lower() + body[1:]
+    return g + body
 
 
 def first_name(who):
@@ -264,6 +300,22 @@ def attempt(make, rng, tries=8):
 
 
 # ------------------------------------------------------------------ patterns
+def mk_clock(rng, hour):
+    """A world clocked so the user's failing days (saturday, friday, sunday) are often 2-5 days out: Mon-Wed 55% of the time."""
+    wd = rng.choice([0, 1, 2]) if rng.random() < 0.55 else None
+    return S.mk(rng, weekday=wd, hour=hour)
+
+
+WEEKDAY_WEIGHT = {5: 8, 4: 4, 6: 4}     # saturday, friday, sunday; every other weekday weighs 1
+
+
+def pick_weekday_off(rng, now):
+    """Days ahead (2-6) of a weekday, biased toward saturday, friday and sunday."""
+    offs = list(range(2, 7))
+    weights = [WEEKDAY_WEIGHT.get((now.weekday() + o) % 7, 1) for o in offs]
+    return rng.choices(offs, weights)[0]
+
+
 def pick_day_kind(rng, now, kinds):
     """One of ``kinds`` that the clock allows: (kind, arg, how it is said, days it covers)."""
     for _ in range(30):
@@ -271,8 +323,7 @@ def pick_day_kind(rng, now, kinds):
         if kind in ("this_week", "this weekend") and now.weekday() > 4:
             continue
         if kind == "weekday":
-            off = rng.randint(2, 6)
-            return kind, None, None, off
+            return kind, None, None, pick_weekday_off(rng, now)
         return kind, None, None, None
     raise ValueError("no day kind")
 
@@ -291,12 +342,18 @@ def describe(rng, w, now, kind, off, *, typo=False):
     return said_, kind, range_days(w, kind)
 
 
-def make_pivot(rng, kinds_a, kinds_b, *, correct=False, two=False):
-    """A day question, then a follow-up that changes the day or range; the follow-up reads the plan again."""
+def make_pivot(rng, kinds_a, kinds_b, *, correct=False, two=False, force=None):
+    """A day question, then a follow-up that changes the day or range; the follow-up reads the plan again. ``force`` is a pair
+    of weekday numbers (5 = saturday, 4 = friday): the user's live failures, "what is my plan for saturday" then "and friday?"."""
     hour = rng.choice([7, 8, 9, 10, 13, 17])
-    now, w = S.mk(rng, hour=hour)
-    ka, _a, _b, offa = pick_day_kind(rng, now, kinds_a)
-    kb, _a2, _b2, offb = pick_day_kind(rng, now, kinds_b)
+    if force:
+        now, w = S.mk(rng, weekday=rng.choice([0, 1, 2]), hour=hour)
+        ka, kb = "weekday", "weekday"
+        offa, offb = [(wd - now.weekday()) % 7 for wd in force]
+    else:
+        now, w = mk_clock(rng, hour=hour)
+        ka, _a, _b, offa = pick_day_kind(rng, now, kinds_a)
+        kb, _a2, _b2, offb = pick_day_kind(rng, now, kinds_b)
     if ka == kb and offa == offb:
         raise ValueError("same day twice")
     said_a, arg_a, days_a = describe(rng, w, now, ka, offa, typo=True)
@@ -327,7 +384,7 @@ def make_pivot(rng, kinds_a, kinds_b, *, correct=False, two=False):
 
 def make_single(rng):
     """A day or range question with wide wording and nothing before it."""
-    now, w = S.mk(rng, hour=rng.choice([7, 8, 9, 11, 13, 16, 19]))
+    now, w = mk_clock(rng, hour=rng.choice([7, 8, 9, 11, 13, 16, 19]))
     kind, _a, _b, off = pick_day_kind(rng, now, ["weekday", "weekday", "tomorrow", "today", "this_week", "this weekend", "next week"])
     said_, arg, days = describe(rng, w, now, kind, off, typo=True)
     populate(rng, w, now, days[:4] if len(days) > 4 else days)
@@ -340,7 +397,7 @@ def make_single(rng):
 
 def make_draft(rng, mode):
     """A reply to a person the plan listed as waiting: read the thread, then draft (mode 'draft') or send (mode 'say')."""
-    now, w = S.mk(rng, hour=rng.choice([8, 9, 10, 13, 17]))
+    now, w = mk_clock(rng, hour=rng.choice([8, 9, 10, 13, 17]))
     kind, _a, _b, off = pick_day_kind(rng, now, ["weekday", "tomorrow", "this_week", "today"])
     said_, arg, days = describe(rng, w, now, kind, off, typo=True)
     populate(rng, w, now, days[:3], waiting=rng.choice([1, 1, 2]))
@@ -355,7 +412,7 @@ def make_draft(rng, mode):
     p = first_name(who).lower() if rng.random() < 0.8 else who.lower()
     if mode == "draft":
         prompt = rng.choice(DRAFT).format(p=p)
-        text = f"Hi {first_name(who)}, I got your message about {TOPIC[who]}. I'll get back to you shortly."
+        text = greeted(rng, first_name(who), rng.choice(DRAFTS[who]))
         steps = [[Call("view_messages", conversation=who)], [Call("draft_message", to=who, text=text)]]
         sc = mk(prompt, now, w, steps,
                 "a reply to a person the plan listed as waiting: read the thread (view_messages) before drafting, then draft_message; the host ends the turn with the draft card",
@@ -365,12 +422,12 @@ def make_draft(rng, mode):
     say_text = said_text(say_user)
     prompt = rng.choice(SAYING).format(p=p, say=say_user)
     nm = first_name(who)
-    body = f"Hi {nm}, {say_text}"
+    body = say_text if rng.random() < 0.6 else greeted(rng, nm, say_text)
     deny = rng.random() < 0.2
     steps = [[Call("view_messages", conversation=who)], [Call("send_message", to=who, text=body)]]
     if not deny:
-        steps.append(Final(rng.choice([f"I texted {nm}: {body[len('Hi ' + nm + ', '):]}", f"Done, {nm} has your text: {body[len('Hi ' + nm + ', '):]}",
-                                       f"{nm} got your reply: {body[len('Hi ' + nm + ', '):]}"])))
+        steps.append(Final(rng.choice([f"I texted {nm}: “{body}”", f"Done, {nm} has your text: “{body}”", f"{nm} got your reply: “{body}”",
+                                       f"Sent. {nm} will see: “{body}”"])))
     return mk(prompt, now, w, steps,
               "a reply with the user's words to a person the plan listed as waiting: read the thread, then ONE send_message behind its card"
               + ("; the card is declined, the turn ends at the call" if deny else ""),
@@ -379,7 +436,7 @@ def make_draft(rng, mode):
 
 def make_recall(rng):
     """A recall of something the earlier final stated: answered from the conversation, no tool."""
-    now, w = S.mk(rng, hour=rng.choice([8, 9, 10, 13]))
+    now, w = mk_clock(rng, hour=rng.choice([8, 9, 10, 13]))
     kind, _a, _b, off = pick_day_kind(rng, now, ["weekday", "weekday", "tomorrow", "this_week"])
     said_, arg, days = describe(rng, w, now, kind, off)
     populate(rng, w, now, days[:3])
@@ -416,7 +473,7 @@ def make_recall(rng):
 
 def make_calendar(rng):
     """After a plan answer, an explicit calendar ask: get_upcoming; the final adds the dated Brief items it lists apart."""
-    now, w = S.mk(rng, hour=rng.choice([8, 9, 12, 17]))
+    now, w = mk_clock(rng, hour=rng.choice([8, 9, 12, 17]))
     k1, _a, _b, o1 = pick_day_kind(rng, now, ["weekday", "tomorrow"])
     said1, arg1, days1 = describe(rng, w, now, k1, o1)
     k2, _a, _b, o2 = pick_day_kind(rng, now, ["weekday", "tomorrow"])
@@ -436,14 +493,7 @@ def make_calendar(rng):
     res = w.t_get_upcoming(period=arg2)
     day = days2[0]
     items = S.day_items(w, day)
-    label = S.long_date(day)
-    if not items:
-        reply = f"Nothing is on your calendar {S.on_word(day, now)}, and no reminders are due."
-    elif len(items) >= 4:
-        reply = f"{label} has {S.counts(items)}:\n" + "\n".join("- " + S.bullet(i, True) for i in sorted(items))
-    else:
-        reply = S.agenda(items, rng.choice([f"On {label} you have", f"{label} has"]), loc=True)
-    reply = S.with_brief(rng, reply, res)
+    reply = S.with_brief(rng, S.calendar_reply(rng, items, day, now), res)
     return mk(prompt, now, w, [[Call("get_upcoming", period=arg2)], Final(reply)],
               "the calendar asked for after a plan answer: get_upcoming; its items, then the dated Brief items it lists apart",
               [hist_turn(q, fin1)], "calendar_ask", f"daychat-{rng.random():.9f}")
@@ -496,6 +546,9 @@ def fam_day_chat_r4(rng):
         + [("pivot", ["this_week", "this weekend"], ["weekday", "weekday", "tomorrow"], False, False)] * 16
         + [("pivot", ["weekday", "weekday", "tomorrow"], ["this_week", "this weekend", "next week"], False, False)] * 14
         + [("pivot", ["this weekend"], ["next week"], False, False)] * 4
+        + [("pivot", None, None, False, False, (5, 4))] * 6 + [("pivot", None, None, False, False, (4, 5))] * 5
+        + [("pivot", None, None, False, False, (5, 6))] * 4 + [("pivot", None, None, False, False, (6, 4))] * 3
+        + [("pivot", None, None, True, False, (5, 4))] * 3
         + [("pivot", ["tomorrow", "today", "weekday"], ["this_week", "next week", "this weekend"], True, False)] * 20
         + [("draft",)] * 36 + [("say",)] * 14 + [("recall",)] * 16 + [("calendar",)] * 14 + [("past",)] * 10
     )
@@ -504,8 +557,9 @@ def fam_day_chat_r4(rng):
         if spec[0] == "single":
             make = make_single
         elif spec[0] == "pivot":
-            _t, ka, kb, correct, two = spec
-            make = lambda r, ka=ka, kb=kb, correct=correct, two=two: make_pivot(r, ka, kb, correct=correct, two=two)
+            _t, ka, kb, correct, two, *force = spec
+            make = lambda r, ka=ka, kb=kb, correct=correct, two=two, force=(force[0] if force else None): make_pivot(
+                r, ka, kb, correct=correct, two=two, force=force)
         elif spec[0] == "draft":
             make = lambda r: make_draft(r, "draft")
         elif spec[0] == "say":

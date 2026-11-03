@@ -1193,8 +1193,10 @@ def _relay_move_refused(rng, i):
                     "Nothing upcoming matches that, so I haven't changed anything. Can you tell me the event's exact name?",
                     "No event in your calendar matches that name, so nothing moved. What's it called there?",
                     "Unchanged: your calendar has nothing by that name. Which event is it?")
-        return S("relay_receipt", prompt, now, w, [[Call("update_event", **args)], Final(final)],
+        sc = S("relay_receipt", prompt, now, w, [[Call("update_event", **args)], Final(final)],
                  "no match: nothing moved, said plainly (precard refusal)", cards=[])
+        sc.clarify = True   # a precard refusal then a question: the final is a clarifying ask (is_clarifying rejects a turn that tried a write)
+        return sc
     if variant == 4:   # two events match
         add_event(w, title, old, 60, loc)
         add_event(w, title, old + D(days=rng.randint(2, 4)), 60, loc)
@@ -1204,8 +1206,10 @@ def _relay_move_refused(rng, i):
                     f"Two events match, {old:%A} and {second:%A}, so neither moved. Which one do you mean?",
                     f"{title} shows up twice, on {old:%A} and {second:%A}. Which one should I move?",
                     f"Both the {old:%A} and {second:%A} events match, so I held off. Which one is it?")
-        return S("relay_receipt", prompt, now, w, [[Call("update_event", title=key, when_iso=iso(new))], Final(final)],
+        sc = S("relay_receipt", prompt, now, w, [[Call("update_event", title=key, when_iso=iso(new))], Final(final)],
                  "several match: asks which, nothing moved (precard refusal)", cards=[])
+        sc.clarify = True   # a precard refusal then a question: the final is a clarifying ask (is_clarifying rejects a turn that tried a write)
+        return sc
     if variant == 5:   # no-op: already starts then
         add_event(w, title, old, 60, loc)
         prompt = pick(rng, [f"move {ref} to {t_txt(rng, old.hour)} on {old:%A}", f"switch {ref} to {t_txt(rng, old.hour)} {old:%A}"])

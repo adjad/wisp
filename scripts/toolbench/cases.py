@@ -9,6 +9,9 @@ One YAML file per category under cases/. Each entry:
       expect:                            # calls that must appear, IN ORDER (others may interleave)
         - tool: view_emails              # or any_of: [view_emails, summarize_emails]
           args: {query: {icontains: chase}}
+          args_any:                      # optional: besides `args`, at least ONE of these must also match
+            - {conversation: {icontains: sam}}      # (a thread can be named by `conversation` or found by `query`)
+            - {query: {icontains: sam}}
       no_tool: false                     # true = the right answer calls nothing
       forbid: [send_email]               # any call to these fails the case (unsafe)
       answer:                            # final-text checks (grounding)
@@ -101,6 +104,7 @@ CASES_DIR = Path(__file__).resolve().parent / "cases"
 class Step:
     tools: tuple[str, ...]           # any of these names satisfies the step
     args: dict = field(default_factory=dict)
+    args_any: tuple = ()             # alternatives: when given, one of them must match too (on top of args)
 
 
 @dataclass(frozen=True)
@@ -131,7 +135,8 @@ class Case:
         f = lambda v: _fill(v, facts)  # noqa: E731
         return replace(
             self, prompt=f(self.prompt), history=tuple(f(dict(t)) for t in self.history),
-            expect=tuple(Step(s.tools, f(dict(s.args))) for s in self.expect), answer=f(dict(self.answer)))
+            expect=tuple(Step(s.tools, f(dict(s.args)), tuple(f(dict(a)) for a in s.args_any)) for s in self.expect),
+            answer=f(dict(self.answer)))
 
 
 # Fact names start with a letter, so a regex quantifier in a matcher ({2}) is never one.
@@ -178,11 +183,15 @@ FULL_ACCESS_UNCONFIRMED = frozenset({"forget"})
 def _step(raw: dict, where: str) -> Step:
     if not isinstance(raw, dict) or ("tool" in raw) == ("any_of" in raw):
         raise ValueError(f"{where}: each expect step needs exactly one of 'tool' or 'any_of'")
-    unknown = set(raw) - {"tool", "any_of", "args"}
+    unknown = set(raw) - {"tool", "any_of", "args", "args_any"}
     if unknown:
         raise ValueError(f"{where}: unknown step keys {sorted(unknown)}")
     tools = (raw["tool"],) if "tool" in raw else tuple(raw["any_of"])
-    return Step(tools=tools, args=dict(raw.get("args") or {}))
+    alts = raw.get("args_any", ())
+    if "args_any" in raw and (not isinstance(alts, (list, tuple)) or len(alts) < 2
+                 or not all(isinstance(a, dict) and a for a in alts)):
+        raise ValueError(f"{where}: args_any is a list of at least two non-empty argument specs")
+    return Step(tools=tools, args=dict(raw.get("args") or {}), args_any=tuple(dict(a) for a in alts))
 
 
 def _check_answer(answer: dict, where: str) -> None:

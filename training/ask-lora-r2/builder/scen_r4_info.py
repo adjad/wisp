@@ -61,17 +61,19 @@ def _battery(i):
         now, w, dev = dev_world(rng, charging=rng.random() < 0.4)
         dev.remaining = int(dev.battery * rng.uniform(3.0, 4.2))
         b = dev.battery
-        wear = f"Its health is {dev.health}% of the original design capacity after {dev.cycles} charge cycles."
-        if dev.charging:
-            final = pick(rng, [f"Your battery is at {b}% and charging. {wear}",
-                               f"It's plugged in and charging, currently at {b}%. It has {dev.cycles} charge cycles behind it.",
-                               f"The battery is charging and sits at {b}% right now. {wear}"])
+        asks_charge = i % 6 in (4, 5)      # "is it charging" / "is it plugged in": a yes or no first
+        left = hm(dev.remaining)
+        if asks_charge and dev.charging:
+            final = pick(rng, [f"Yes, it's charging, at {b}% right now.", f"Yes, it's plugged in and charging. The battery is at {b}%."])
+        elif asks_charge:
+            final = pick(rng, [f"No, it's on battery, at {b}% with about {left} remaining.",
+                               f"No, it isn't plugged in. The battery is at {b}% and the Mac estimates ~{left} remaining."])
+        elif dev.charging:
+            final = pick(rng, [f"Your battery is at {b}% and charging.", f"It's plugged in and charging, currently at {b}%."])
         else:
-            left = hm(dev.remaining)
-            final = pick(rng, [f"Your battery is at {b}% and not charging, with about {left} remaining. {wear}",
-                               f"You're on battery power at {b}%, and the Mac estimates ~{left} remaining. It has {dev.cycles} charge cycles so far.",
-                               f"It's at {b}% and not plugged in, so you have about {left} left. {wear}",
-                               f"{b}% charge, running on battery with about {left} of use remaining. {wear}"])
+            final = pick(rng, [f"Your battery is at {b}% and not charging, with about {left} remaining.",
+                               f"You're on battery power at {b}%, and the Mac estimates ~{left} remaining.",
+                               f"{b}% charge, running on battery with about {left} of use remaining."])
         return mk(A.style(rng, p), now, w, [[Call("system_status", section="battery")], Final(final)],
                   "battery: system_status battery; the percent, the charging state and the remaining time exactly as printed")
     return make
@@ -112,9 +114,9 @@ def _disk(i):
                                    f"No: {free} is free of {total}, so {size} GB would not fit until you clear something."])
         else:
             note = ("That is getting full." if int(used) >= 80 else "That leaves a comfortable amount of room." if int(used) < 60 else "That is a reasonable amount of room for now.")
-            final = pick(rng, [f"You have {free} free of {total}, so the disk is {used}% used. {note} Memory is {dev.mem_free}% free right now.",
-                               f"The disk shows {free} free of {total} ({used}% used). {note} Memory is at {dev.mem_free}% free.",
-                               f"{free} free of {total}, which puts the disk at {used}% used. {note} The Mac's memory is {dev.mem_free}% free as well."])
+            final = pick(rng, [f"You have {free} free of {total}, so the disk is {used}% used. {note}",
+                               f"The disk shows {free} free of {total} ({used}% used). {note}",
+                               f"{free} free of {total}, which puts the disk at {used}% used. {note}"])
         return mk(A.style(rng, p), now, w, [[Call("system_status")], Final(final)],
                   "disk: system_status overview; free of total and the percent exactly as printed")
     return make
@@ -251,6 +253,7 @@ def _overview(kind, i):
             busy = ratio >= 0.9
             fig = f"load is {load} (1m) across {dev.cores} cores, memory is {dev.mem_free}% free, and the disk is {used}% used"
             if busy_q:
+                fig = f"load is {load} (1m) across {dev.cores} cores"
                 verdict = ("Yes, the CPU is busy" if busy else "No, the CPU isn't busy" if ratio < 0.5 else "The CPU is moderately loaded")
                 final = f"{verdict}. CPU {fig}. " + ("Something on this Mac is working hard." if busy else
                                                      "The processor has plenty of headroom." if ratio < 0.5 else "That isn't extreme.")

@@ -68,7 +68,12 @@ Exit code 1 on any problem. Checks, per example:
               facts_unlisted (the reverse: a time, amount, quoted title, month-day
               date, H:MM, name or list item the final states and a tool result also
               shows is in the thought, or the thought ends "plus N more" with N equal
-              to the number of result lines that still hold such a fact), fragment
+              to the number of result items none of the thought's pieces comes from:
+              result lines, minus the headers and summary sentences of a bulleted
+              result, plus the N of a "…and N more" line, with no merging of lines;
+              a line the thought lists in part must also give its times, amounts
+              and quoted titles, and the bullet count is repeated independently of
+              the builder: bullet_items_left), fragment
               (every ';' piece is one contiguous, whole run of a tool-result line: no
               clause tail such as "and tell you ...", no opening "(", no unbalanced
               bracket, no repeated piece, no lone AM/PM in any thought), banner (no
@@ -92,10 +97,16 @@ Exit code 1 on any problem. Checks, per example:
               against a free-time result that lists slots the final does not state
               (final:nofree_contradiction), and a position claim ("in my first
               answer", "your first message", "you started by asking") names the
-              right turn (final:position_claim): meta recall_anchor
-              {"role": "user"|"assistant", "pos": 1-based, -1 = latest} when the
-              scenario sets it, else the earlier turn of that speaker that shares the
-              most words with the final. Warns (does not fail)
+              right turn (final:position_claim): meta anchor_pos (the longchat
+              scenario's 0-based exchange index of the fact asked about), or meta
+              recall_anchor {"role": "user"|"assistant", "pos": 1-based, -1 =
+              latest}, else the earlier turn of that speaker that shares the most
+              words with the final; "near the start" / "early in our chat" needs
+              anchor_pos <= 1. No absence claim without a read: a final that says
+              nothing / none / no messages / "I don't have ..." about the person's
+              own data needs a tool call in its own turn (final:absence_without_read;
+              chat, voice, knowledge, session chat / recall and instructions
+              answers about the conversation itself are exempt). Warns (does not fail)
               when more than 3 finals in a file are byte-identical, listing them
   template    (with --template MODEL_DIR, repeatable) each model's chat template
               renders every example, and the prompt is a prefix of the full text,
@@ -560,6 +571,8 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
                             bad("final:empty_range", f"{where} {meta.get('id', '')} {err[:60]}")
                         for err in thinking.nofree_problems(content, [str(v) for v in results.values()]):
                             bad("final:nofree_contradiction", f"{where} {meta.get('id', '')} {err[:80]}")
+                        for err in thinking.absence_problems(meta, msgs):
+                            bad("final:absence_without_read", f"{where} {meta.get('id', '')} {err[:80]}")
                         try:
                             pos_errs = thinking.position_problems(meta, msgs)
                         except Exception as exc:  # noqa: BLE001

@@ -160,7 +160,7 @@ Q("films", "rec_user", "i said one of them was too scary for me, which",
   "Annihilation. You said it was a bit scary, so we went with Contact instead. It is beautiful to look at, but the tension is exactly what you wanted to leave out. Moon would be the gentler option if you want another in the same mood.",
   ref=("Annihilation", "Contact"))
 Q("films", "rec_none", "what streaming service was it that we talked about?",
-  "No streaming service has been named yet. We have only talked about the films, Arrival, Ex Machina, Contact and the older ones. Tell me where you watch and we can plan the order around it. Contact is the one you chose, so that can go first, with Moon as the short backup for a weeknight.",
+  "We haven't settled on a streaming service yet. We have only talked about the films, Arrival, Ex Machina, Contact and the older ones. Tell me where you watch and we can plan the order around it. Contact is the one you chose, so that can go first, with Moon as the short backup for a weeknight.",
   absent="streaming", ref=("Arrival", "Contact"))
 Q("films", "build", "i think i'll do contact tomorrow night, any homework before it?",
   "No homework needed, since Contact stands alone. It does help to be in a patient mood, because it takes its time and rewards it. Since you loved Arrival, the pacing should feel familiar. Dim lights and no phone nearby suit a film that lives on its silences.",
@@ -320,7 +320,7 @@ Q("monstera", "rec_asst", "what was the trick for the pot with no hole",
   "Keep the plant in its plastic nursery pot and set that inside the ceramic one. At watering time, lift it out, let it drain in the sink and put it back. That way you keep the cute pot and spare the roots. A saucer under the inner pot will catch drips on the way back in.",
   ref=("nursery pot",))
 Q("monstera", "rec_none", "what kind of fertilizer were we using?",
-  "There has been no mention of fertilizer so far. We talked about the Sunday soak, the north window and the pot with no drainage hole. Feeding is rarely the cause when leaves turn yellow, so the watering and the pot are the better places to start.",
+  "We haven't mentioned fertilizer so far. We talked about the Sunday soak, the north window and the pot with no drainage hole. Feeding is rarely the cause when leaves turn yellow, so the watering and the pot are the better places to start.",
   absent="fertilizer", ref=("Sunday", "north window"))
 Q("monstera", "fact", "how often should a monstera really get watered",
   "Roughly every one to two weeks, but the plant should decide rather than the calendar. Water when the top two inches of soil feel dry, which happens less often in winter and in a north window like yours. A good soak followed by full drainage beats small sips.",
@@ -345,7 +345,7 @@ Q("guitar", "rec_asst", "what was the other song you said, the one with only two
   "Horse with No Name, which needs only Em and one other chord. You already have Em, so the second shape is the only new thing to learn. Knockin' on Heaven's Door is the one with G and a couple of other easy chords. Both are slow and friendly, which suits fingers that are still learning.",
   ref=("Horse with No Name", "Em"))
 Q("guitar", "rec_none", "which guitar did we say to buy?",
-  "Nobody has settled on a guitar yet. So far we have talked about your sore fingertips, the 15 minutes a day, the G and Em chords and Knockin' on Heaven's Door. Is there one you are considering, or are you using one you already have?",
+  "We haven't picked a guitar yet. So far we have talked about your sore fingertips, the 15 minutes a day, the G and Em chords and Knockin' on Heaven's Door. Is there one you are considering, or are you using one you already have?",
   absent="buy", ref=("15 minutes", "Knockin' on Heaven's Door"))
 Q("guitar", "fact", "how long until fingertips stop hurting",
   "Usually two to four weeks of regular practice, as the skin on the fingertips thickens and the soreness fades. Short daily sessions work better than one long one, since the skin needs rest between rounds. Your 15 minutes a day suit that well.",
@@ -373,7 +373,7 @@ Q("dadgift", "rec_asst", "what was the idea for the journal thing",
   "A leather-bound fishing journal, where he could write dates, spots, water conditions and what worked. Over time it turns into a record of good days. A waterproof pen alongside it would finish the gift off. He could also tuck a photo of his best catch inside the cover.",
   ref=("fishing journal", "waterproof"))
 Q("dadgift", "rec_none", "what's his favorite fishing spot?",
-  "His favorite spot has not come up, only that he fishes a lot and builds things in the garage. If you know it, you could have its name written inside the cover of the journal as a personal touch. Do you know where he usually goes?",
+  "We haven't talked about his favorite spot, only that he fishes a lot and builds things in the garage. If you know it, you could have its name written inside the cover of the journal as a personal touch. Do you know where he usually goes?",
   absent="favorite", ref=("journal", "garage"))
 Q("dadgift", "fact", "is a hand plane a good tool for someone who's just starting woodworking",
   "It is not the easiest first purchase, since a hand plane needs sharpening and setting up before it cuts well. For someone already building a bird house it could be a lovely gift, though a decent one would take most of an $80 budget.",
@@ -401,7 +401,7 @@ Q("camping", "rec_asst", "how much water per person did you say",
   "About a gallon per person per day, plus extra for cooking and washing up. A big refillable jug in the car works better than lots of small bottles when there are five of you. Water jugs also double as a quick wash for hands and dishes.",
   ref=("gallon",))
 Q("camping", "rec_none", "which campsite did we book?",
-  "No campsite has come up yet, only that you are heading to Joshua Tree in October with 4 friends and leaving on Friday morning. Booking is worth sorting soon, since desert campsites can fill up on busy weekends. Have you looked at what is available?",
+  "We haven't decided on a campsite yet, only that you are heading to Joshua Tree in October with 4 friends and leaving on Friday morning. Booking is worth sorting soon, since desert campsites can fill up on busy weekends. Have you looked at what is available?",
   absent="campsite", ref=("Joshua", "Friday"))
 Q("camping", "fact", "how cold does it get at night out there in october",
   "It can dip into the 40s Fahrenheit, which is a big swing from a warm day. A warm jacket, a hat and a good sleeping bag are what you will want after dark. The cold arrives quickly once the sun is down. Do you have a sleeping bag meant for cold nights?",
@@ -428,7 +428,7 @@ Q("speech", "rec_user", "who's the groom again, going blank",
   "Marcus. You said you barely know him, so one sincere line about how happy Hana is around him is plenty. It is a short, honest line that still honors both of them. A quick chat with Hana about what she loves in him will give you something real to say.",
   ref=("Marcus",))
 Q("speech", "rec_none", "what's the venue?",
-  "No venue has been named yet. All I know is that the wedding is in June and your story is about the lost luggage in Prague. Knowing the room can help, since a big hall asks for a slower pace than a backyard. A quick question to Hana about the guest count would tell you how to pace it.",
+  "You haven't told me the venue yet. All I know is that the wedding is in June and your story is about the lost luggage in Prague. Knowing the room can help, since a big hall asks for a slower pace than a backyard. A quick question to Hana about the guest count would tell you how to pace it.",
   absent="venue", ref=("June", "Prague"))
 Q("speech", "fact", "is it ok to tell an embarrassing story in a toast",
   "A mildly embarrassing story is fine if it ends up showing how much you love the person. Avoid anything about exes, money or things she would not want her new in-laws to hear. The lost luggage story works because she comes out of it looking wonderful. Does Hana know the Prague story is coming?",
@@ -453,7 +453,7 @@ Q("laptop", "rec_asst", "what did you say to do about the food delivery thing",
   "A weekly delivery limit, plus a couple of easy groceries at home for the nights you are tired. It is a small change that tends to free up more money than people expect. Planning for a tired night in advance is usually what makes the difference.",
   ref=("weekly delivery limit",))
 Q("laptop", "rec_none", "which bank did we pick?",
-  "No bank has come up yet. We talked about opening a separate account with an automatic transfer after payday, but not where. If you are comparing, a credit union or an online bank is worth a look, since fees and rates matter on a goal like this.",
+  "We haven't settled on a bank yet. We talked about opening a separate account with an automatic transfer after payday, but not where. If you are comparing, a credit union or an online bank is worth a look, since fees and rates matter on a goal like this.",
   absent="credit union", ref=("separate account",))
 Q("laptop", "fact", "what's a high yield savings account",
   "It is a savings account that pays a higher interest rate than a regular one, usually offered by online banks. Your money stays accessible, and the interest is a small bonus on top of what you put in. For a goal like this, it is a good home for the 300 a month.",
@@ -481,7 +481,7 @@ Q("bedtime", "rec_asst", "what was the plan for the books, two or three",
   "Two books and one drink, then lights out. Telling Theo the plan before the routine starts makes it feel agreed rather than imposed. Praising him when he sticks to it works better than repeating the rule. Even a quiet well done at the door counts.",
   ref=("two books", "Theo"))
 Q("bedtime", "rec_none", "what's his favorite book?",
-  "Neither of us has named a favorite book yet. All I know is that he loves asking for more stories and likes choosing things, so letting him pick which of the two books to read might be a good start. Does he have a few that he keeps coming back to?",
+  "We haven't talked about a favorite book yet. All I know is that he loves asking for more stories and likes choosing things, so letting him pick which of the two books to read might be a good start. Does he have a few that he keeps coming back to?",
   absent="favorite", ref=("stories", "choosing"))
 Q("bedtime", "fact", "how much sleep does a 5 year old need",
   "Most children around 5 need about 10 to 13 hours of sleep across 24 hours. With the bath at 7 and two books afterward, he can be asleep early enough to get that. Is the lights-out time roughly the same each night?",
@@ -856,7 +856,7 @@ Q("tenk", "build", "teo is sick so i'm running alone on tuesday, same plan?",
   "Same plan, just on your own: run 2 minutes, walk 1, for about 20 minutes. Keep it easy, since Tuesday is the chatty run, and save the effort for Saturday. Your left knee will like a flat route. How is the knee feeling these days?",
   ref=("Tuesday", "left knee"))
 Q("camera", "rec_none", "which lens were we using?",
-  "We have not got as far as the lens. We have talked about the Fujifilm X-T30, landscapes by the lake, f/8 and golden hour. If you tell me what came with it, I can say what it is good for. Landscapes by the lake do not need anything special to begin with.",
+  "We have not mentioned the lens. We have talked about the Fujifilm X-T30, landscapes by the lake, f/8 and golden hour. If you tell me what came with it, I can say what it is good for. Landscapes by the lake do not need anything special to begin with.",
   absent="lens", ref=("Fujifilm X-T30", "f/8"))
 Q("guitar", "build", "ok which one first, the knockin one or the other",
   "Start with Knockin' on Heaven's Door, since it is the one your dad loves, and its slow pace gives your fingers time to change. Horse with No Name is the easy backup when you want a quick win. Either way, a few minutes a day will get you moving.",
@@ -865,7 +865,7 @@ Q("portugal", "fact", "is porto walkable or do we need a car",
   "Porto is very walkable in the center, though the streets are steep, so comfortable shoes matter. Trams, the metro and taxis cover the rest, and a car is more trouble than help in the old town. A car is only useful for trips out to the countryside.",
   ref=("Porto",))
 Q("menu", "rec_none", "did we pick a dessert wine?",
-  "No dessert wine has been picked yet. The lemon tart is the dessert, and a small glass of something sparkling would suit it if you want a pairing. Sparkling lemonade would suit anyone skipping alcohol. Is anyone at the table not drinking?",
+  "We haven't picked a dessert wine yet. The lemon tart is the dessert, and a small glass of something sparkling would suit it if you want a pairing. Sparkling lemonade would suit anyone skipping alcohol. Is anyone at the table not drinking?",
   absent="dessert wine", ref=("lemon tart",))
 
 # ------------------------------------------------------------------ surprise dinner
@@ -1213,7 +1213,7 @@ Q("beds", "rec_asst", "how much soil did you work out for them again",
   "About 2.4 cubic yards in total, which is roughly 64 cubic feet for the two beds. A bulk delivery from a landscape supply yard costs far less than bags, and the logs and leaves in the bottom third cut the amount you need to buy.",
   ref=("2.4 cubic yards", "64 cubic feet"))
 Q("beds", "rec_none", "what did you say the name of that garden center was",
-  "I haven't named a garden center in this chat. I only suggested a landscape supply yard for the soil delivery, and the delivery date is the Friday before your first Saturday in April. If you have a couple near you, which one is closest?",
+  "I haven't settled on a garden center in this chat. I only suggested a landscape supply yard for the soil delivery, and the delivery date is the Friday before your first Saturday in April. If you have a couple near you, which one is closest?",
   absent="garden center", ref=("landscape supply yard", "Saturday in April"))
 
 # ------------------------------------------------------------------ anniversary trip
@@ -1409,7 +1409,7 @@ Q("offer", "rec_asst", "what other things could i ask for if the base can't move
   "A signing bonus, an earlier salary review at six months, extra vacation days, a professional development budget or more remote days. Companies often have more room on those than on base pay, and it is worth getting any of them in writing. Which one would matter most to you?",
   ref=("signing bonus", "six months"))
 Q("offer", "rec_none", "did you say anything about the benefits package",
-  "I haven't covered the benefits at all. We went through the $82,000 base, the market range of $85,000 to $95,000 and the other things you could ask for, but nothing about insurance or retirement. If you want, we can list what to compare in the benefits before Friday.",
+  "I haven't talked about the benefits at all. We went through the $82,000 base, the market range of $85,000 to $95,000 and the other things you could ask for, but nothing about insurance or retirement. If you want, we can list what to compare in the benefits before Friday.",
   absent="insurance", ref=("$82,000", "$85,000"))
 
 # ------------------------------------------------------------------ community choir
@@ -1465,7 +1465,7 @@ Q("taxes", "rec_asst", "which method did you mention for the home office deducti
   "The simplified method, which allows $5 per square foot up to 300 square feet. A 100 square foot space would give you $500. The space has to be used regularly and only for your business to count.",
   ref=("$5 per square foot", "300 square feet"))
 Q("taxes", "rec_none", "which tax software did you recommend",
-  "I didn't recommend a particular program. I only said that many tax programs handle a simple freelance return well, and that a one-time session with an accountant can be worth it in the first year. Do you want to compare a couple of options?",
+  "I didn't name a specific program. I only said that many tax programs handle a simple freelance return well, and that a one-time session with an accountant can be worth it in the first year. Do you want to compare a couple of options?",
   absent="turbotax", ref=("accountant",))
 
 # ------------------------------------------------------------------ teenage son
@@ -1528,6 +1528,19 @@ Q("noor", "build", "okay so what is the plan now, briefly",
 LEAK = re.compile(r"\b(tool|tools|receipt|wisp|as an ai|mcp|api|schema|untrusted|json|web results|search results|"
                   r"i searched|i looked up|can't look up|cannot look up|don't have access|haven't checked|"
                   r"i've saved|i have saved|i've noted|i have noted|i'll remember|i will remember|sam)\b", re.I)
+def _none_ack():
+    """distill/choose.py's NONE_ACK, read from its source (choose.py cannot be imported here: it puts its own `gen` first on
+    sys.path), so the scripted rec_none finals, the SFT picker and the GRPO reward judge a "did not come up" the same way."""
+    import ast
+    import os
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ask-lora-r4", "distill", "choose.py")
+    for node in ast.parse(open(path).read()).body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "NONE_ACK" for t in node.targets):
+            return eval(compile(ast.Expression(node.value), path, "eval"), {"re": re})
+    raise RuntimeError(f"NONE_ACK not found in {path}")
+
+
+NONE_ACK = _none_ack()
 NOT_SAID = re.compile(r"hasn't|has not|haven't|have not|hadn't|didn't|did not|not come up|not mentioned|never|"
                       r"no mention|not said|not yet|isn't|wasn't|yet\b", re.I)
 TOK = re.compile(r"[A-Za-zÀ-ɏ0-9]+(?:['’][A-Za-z]+)*")
@@ -1621,6 +1634,7 @@ def _check_q(q):
     if kind == "rec_none":
         assert q["absent"] and q["absent"].lower() not in hlow, f"absent {q['absent']!r} is in the history"
         assert NOT_SAID.search(final), "rec_none final must say it did not come up"
+        assert NONE_ACK.search(final), f"rec_none final must match distill/choose.py NONE_ACK: {final!r}"
     if kind in ("emo", "build"):
         assert q["ref"], f"{kind} needs a ref to an earlier specific"
     if kind == "emo":

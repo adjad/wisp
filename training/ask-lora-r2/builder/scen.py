@@ -279,7 +279,7 @@ def span_dates(w, now, period):
     return [d0 + D(days=i) for i in range(n)]
 
 
-def seed_plan(rng, w, now, period, *, kinds=None, wait=None, over=0, und=0, tidy=True):
+def seed_plan(rng, w, now, period, *, kinds=None, wait=None, over=0, und=0, tidy=True, used=None):
     """Make ``w`` a Brief-seeded world for ``period``: its mail and notes are tidied (the Brief is the whole truth of
     its dated to-dos), 0-2 dated items from texts, mail or notes land on days of the period, and 0-1 people wait on
     a reply. Returns the seeded BriefItems."""
@@ -292,7 +292,7 @@ def seed_plan(rng, w, now, period, *, kinds=None, wait=None, over=0, und=0, tidy
         w.waiting = []
     if over or und:
         R.fill_plan_extras(rng, now, w, over, 0, und)
-    used, items = set(), []
+    used, items = (set() if used is None else used), []   # a shared ``used`` keeps two seeds of one world from repeating a title
     for kind in kinds:
         it = R.seed_brief(rng, w, now, rng.choice(days), kind, used=used)
         if it:
@@ -318,7 +318,7 @@ def plan_final(rng, plan, now, *, mode="day"):
     """A plan's answer. mode: day (the whole day), left (what is still ahead today), morning (before noon)."""
     R = R4D()
     if plan.kind == "range":
-        return R.narrate_range(rng, plan)
+        return re.sub(r"; The reminder", "; the reminder", R.narrate_range(rng, plan))   # not a new sentence after the semicolon
     if mode == "left":
         return R.narrate_today(rng, plan, now, "left")
     if mode == "morning":
@@ -396,7 +396,10 @@ def fp_items(plan, now, *, at=None):
             if at is not None and d is not None and e[0] != "all day":
                 if dt.datetime.combine(d, R.clock_of(e[0])) < at:
                     continue
-            out.append(("" if plan.kind == "day" else title, fp_phrase(e)))
+            head = "" if plan.kind == "day" else title
+            if at is not None and head in ("Today", "Tomorrow") and d is not None:
+                head = f"{d:%a %b} {d.day}"   # read on the delivery morning, "tomorrow" would name the wrong day
+            out.append((head, fp_phrase(e)))
     return out
 
 
@@ -529,10 +532,11 @@ def fam_right(rng):
               "whats due soon?", "anything i keep putting off", "what do i still need to do"]:
         now, w = setup(rng)
         from service.model_only import day_plan_question
-        if day_plan_question(_PARAPHRASES.get(p, p)):
-            # the host reads this as a day-plan question ("what's on my to-do list"): the plan lists the overdue and open
+        generic_todo = p in ("whats due soon?", "what do i still need to do")   # to-do / time-scoped: the plan, the Brief a source
+        if day_plan_question(_PARAPHRASES.get(p, p)) or generic_todo:
+            # a to-do list question ("what's on my to-do list", "what's due soon"): the plan lists the overdue and open
             # to-dos with the dated items the Brief found in mail, texts and notes
-            call, reply = plan_pair(rng, w, now, "today")
+            call, reply = plan_pair(rng, w, now, "this_week" if "due soon" in p else "today")
             out.append(Scenario("right_source", p, now, w, [[call], Final(reply)],
                                 "a to-do list question: get_my_day_plan (reminders plus the Brief's mail / text / note items)"))
             continue
@@ -613,7 +617,7 @@ def fam_right(rng):
             elif mode == "rem":
                 rem_ = plan_pick(rng, plan, lambda e: e[2] == "reminder", lead=f"Reminders due {when_of(plan)}: ", none="")
                 brief_ = plan_pick(rng, plan, lambda e: e[2] in ("email", "text", "note"),
-                                   lead=("Also dated in your mail, texts and notes: " if rem_ else f"Nothing is set as a reminder {when_of(plan)}, but your mail, texts and notes date: "), none="")
+                                   lead=("Also dated in your mail, texts and notes: " if rem_ else f"Nothing is set as a reminder {when_of(plan)}, but you also have "), none="")
                 reply = (rem_ + ("\n" if "\n" in rem_ or "\n" in brief_ else " ") + brief_).strip() or f"No reminders are due {when_of(plan)}, and nothing dated turns up in your mail, texts or notes."
             elif mode == "aft":
                 reply = plan_pick(rng, plan, lambda e: e[0] == "all day" or dt.time(12) <= R.clock_of(e[0]) < dt.time(18),
@@ -1219,6 +1223,17 @@ def fam_concise(rng):
     for p in ["quick question: what's my next meeting?", "what's my next class?", "when's my next thing today",
               "what's next on my calendar?", "which class is next for me?", "next meeting?", "quick q: what's after this?"]:
         now, w = setup(rng, hour=rng.choice([8, 9, 12, 13]))
+        if p in ("when's my next thing today", "quick q: what's after this?"):
+            # generic and time-scoped ("my next thing"): the plan, calendar plus the Brief's mail / text / note items
+            seed_plan(rng, w, now, "today", wait=0)
+            plan = read_plan(w, "today")
+            R = R4D()
+            ahead = [e for e in (plan.days[0][1] if plan.days else []) if e[0] != "all day" and R.clock_of(e[0]) >= now.time()]
+            reply = (P(rng, f"Next up is {R.say_entry(ahead[0])}.", f"Your next one is {R.say_entry(ahead[0])}.")
+                     if ahead else P(rng, "Nothing else on the clock today.", "That's everything time-bound for today."))
+            out.append(Scenario("concise_gentle", p, now, w, [[Call("get_my_day_plan")], Final(reply)],
+                                "one-line answer to a quick question, read from the day plan"))
+            continue
         rows, _, _ = w.upcoming_rows(days=7, calendar_only=True)
         rows = [r for r in rows if r["when_ts"] >= now.timestamp()]
         if "class" in p:
@@ -1677,7 +1692,7 @@ WEATHER_PROMPTS = [
     ("week", ["what's the forecast for the week?", "weather outlook for the week?", "how does the weather look this week?"]),
 ]
 ASK_CITY = ["Which city should I check the weather for?", "What city are you in? I'll look it up there.",
-            "Which city would you like the weather for?", "Tell me the city and I'll check it.",
+            "Which city would you like the weather for?", "Which city should I check it for?",
             "I don't have your city yet. Which one should I use?", "Which city are you asking about?",
             "Where should I look up the weather?", "What city do you want the forecast for?"]
 
@@ -2136,7 +2151,12 @@ def fam_injection(rng):
             first = cal_brief(rng, w, agenda_reply(rows, "tomorrow", now, rng), period="tomorrow")
             call = Call("get_upcoming", period="tomorrow")
         else:
-            call, first = plan_pair(rng, w, now, "tomorrow")
+            # a short plan (at most two items in all): the thought has room for its facts beside the planted-line note
+            tmr = (now + D(days=1)).date()
+            on_tmr = [e for e in w.events if e.start.date() == tmr]
+            w.events = [e for e in w.events if e.start.date() != tmr] + on_tmr[:1]
+            w.reminders = []
+            call, first = plan_pair(rng, w, now, "tomorrow", kinds=rng.choice([("text",), ("mail",), ("note",)]))
         # the Campus IT email goes in after the Brief seeding (which tidies the world's mail)
         w.emails = [m for m in w.emails if m.sender != mail[0]]
         w.emails.append(Email(mail[0], mail[1], mail[2], now - D(hours=rng.choice([2, 5, 20])), _place(mail[3], line, where.next()), True, False))
@@ -2236,6 +2256,7 @@ if _ROUND in ("3", "4"):
 # families are never tagged (their question is conversation, not a clarification); a scenario that set clarify itself
 # keeps it. The tagging wraps the family functions of the modules this file registers.
 _OFFER = re.compile(r"^(want me to|would you like me to|do you want me to|shall i|should i go ahead|want me)\b", re.I)
+_OFFER_YN = re.compile(r"^(do you want|should i)\b", re.I)   # a yes/no offer; "Do you want the 3 PM or the 5 PM?" is a choice, not an offer
 _NO_CLARIFY = {"chat_voice", "chat_voice_r3", "chat_voice_r4", "chat_direct_r4", "knowledge_direct"}
 _TAG_MODULES = {"scen", "scen_r2_act", "scen_r2_args", "scen_r2_safe", "scen_r3_compose", "scen_r3_device", "scen_r3_followup",
                 "scen_r3_mailweb", "scen_r3_picture", "scen_r3_safe", "scen_r4_info", "scen_r4_lookup", "scen_r4_send",
@@ -2251,6 +2272,8 @@ def is_clarifying(sc) -> bool:
         return False
     sentences = [s for s in re.split(r"(?<=[.!?])\s+", text) if s]
     if len(sentences) > 3 or _OFFER.match(sentences[-1]):
+        return False
+    if _OFFER_YN.match(sentences[-1]) and not re.search(r"\bor\b", sentences[-1], re.I):
         return False
     for step in sc.steps[:-1]:
         calls = step.calls if isinstance(step, Bad) else step

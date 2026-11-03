@@ -1352,18 +1352,23 @@ def s4_events_only(i):
         w.reminders = [Reminder(rem_title, at_(tomorrow(now), 17))]
         ask = pick(rng, ["what's on tomorrow? events only, skip the reminders", "just calendar events tomorrow, leave out reminders",
                          "tomorrow's events, no reminders please"])
-        maybe_brief(rng, w, now, tomorrow(now), p=0.5)
+        # half the instances always carry a Brief item (so the calendar-only read that appends it, and the final that
+        # mentions it, are in the data); the rest draw one at random
+        maybe_brief(rng, w, now, tomorrow(now), p=1.0 if i % 2 == 0 else 0.4)
         final = fin(rng, f"Tomorrow you have {agenda_prose(evs)}.", f"On the calendar tomorrow: {agenda_prose(evs)}.",
                     f"Your events tomorrow are {agenda_prose(evs)}.")
         # an explicit calendar ask stays get_upcoming; the dated Brief items it appends are mentioned, not dropped
-        for b in brief_also(w.handle("get_upcoming", {"period": "tomorrow", "calendar_only": True})):
+        also = brief_also(w.handle("get_upcoming", {"period": "tomorrow", "calendar_only": True}))
+        if i % 2 == 0 and not also:
+            return None
+        for b in also:
             final += " " + {"text": f"Separately, a text mentions “{b[0]}” for tomorrow.",
                             "note": f"Separately, your notes have “{b[0]}” for tomorrow.",
                             "email": f"Separately, an email has “{b[0]}”" + (f", due {b[2]}." if b[2] else " for tomorrow.")}[b[1]]
         return mk(style(rng, ask), now, w, [[Call("get_upcoming", period="tomorrow", calendar_only=True)], Final(final)],
                   "negative constraint: events only; the reminder in the world is left out",
                   rules=[r_calls([("get_upcoming", {"period": "tomorrow", "calendar_only": True})]), r_never("remind", re.escape(rem_title)),
-                         r_must(*[re.escape(e.title) for e in evs])])
+                         r_must(*[re.escape(e.title) for e in evs], *[re.escape(b[0]) for b in also])])
     return make
 
 
@@ -2767,7 +2772,7 @@ def fam_instructions(rng):
             (s1_number_calc, 1), (s1_count_unread, 1),
             (s2_before, 4), (s2_rain, 2), (s2_text_from, 2), (s2_unread_from, 2),
             (s3_bullets, 3), (s3_numbered_day, 2), (s3_steps, 2), (s3_no_list, 3), (s3_one_per_line, 2),
-            (s4_no_price, 3), (s4_no_numbers, 3), (s4_events_only, 2), (s4_no_emoji, 2), (s4_no_location, 2), (s4_skip_part, 2),
+            (s4_no_price, 3), (s4_no_numbers, 3), (s4_events_only, 4), (s4_no_emoji, 2), (s4_no_location, 2), (s4_skip_part, 2),
             (s5_one_account, 3), (s5_draft, 3), (s5_calendar_only, 2), (s5_reminder_only, 2), (s5_move_one, 2), (s5_done_one, 2),
             (s5_channel_only, 2),
             (s6_exact_text, 5), (s6_send_draft, 2), (s6_exact_email, 2),

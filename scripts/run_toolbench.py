@@ -57,7 +57,7 @@ import tempfile
 import time
 from collections import Counter
 from dataclasses import asdict
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -115,6 +115,28 @@ def _row(run_id, model, case, trial, traj, verdict, variant="default", profile_a
             "error": traj.get("error"), "timeout": traj.get("timeout"), "v": verdict.to_dict()}
 
 
+def world_date(world_date_arg: str, cases, *, resume: str = "", today: date | None = None) -> date | None:
+    """The date the world's "today" is pinned to; None = the real date (build_world's default).
+
+    Explicit `--world-date` wins; a resumed run keeps its recorded date. The Brief cases ask about the coming
+    Friday, Saturday and Sunday and "this week", which a Saturday or Sunday run no longer contains, so a run
+    that selects any `brief` case on a weekend moves the (faked) date to the following Monday. Every model
+    sees the same pinned date either way (runner.set_clock)."""
+    if world_date_arg:
+        return date.fromisoformat(world_date_arg)
+    if resume:
+        meta_path = Path(resume).expanduser() / "meta.json"
+        if meta_path.exists() and (recorded := json.loads(meta_path.read_text()).get("today")):
+            return date.fromisoformat(recorded)
+    real = today or datetime.now().date()
+    if real.weekday() >= 5 and any(c.category == "brief" for c in cases):
+        moved = real + timedelta(days=7 - real.weekday())
+        print(f"note: {real:%A} run with brief cases: the world's date is pinned to {moved:%A %Y-%m-%d} "
+              "(this week and the weekend are still ahead on a weekday); --world-date overrides")
+        return moved
+    return None
+
+
 def _dry_run(args, cases) -> int:
     """Offline: bind every case to the world and check its tool names and host
     preparation. Runs no model and tests no routing (production has no router
@@ -122,7 +144,7 @@ def _dry_run(args, cases) -> int:
     host's own guards withhold this turn, which no model can then call."""
     from scripts.toolbench import runner
     from scripts.toolbench.world import build_world
-    world = build_world(seed=args.world_seed)
+    world = build_world(world_date(args.world_date, cases), seed=args.world_seed)
     names = runner.install_fakes(world)
     runner.set_clock(world.now)
     try:
@@ -290,7 +312,7 @@ async def _run(args, cases) -> int:
     from scripts.toolbench import runner
     from scripts.toolbench.world import build_world
 
-    world = build_world(seed=args.world_seed)
+    world = build_world(world_date(args.world_date, cases, resume=args.resume), seed=args.world_seed)
     names = runner.install_fakes(world)
     # Every model sees the same pinned date and time, in its prompt and its tools.
     runner.set_clock(world.now)
@@ -480,6 +502,9 @@ def main() -> int:
                     help="only this split (heldout_safety is sealed: it runs only when named here)")
     ap.add_argument("--world-seed", type=int, default=None,
                     help="variant world (default: the canonical gate world)")
+    ap.add_argument("--world-date", default="",
+                    help="pin the world's today to this ISO date (default: the real date; a weekend run "
+                         "that selects brief cases moves it to the following Monday)")
     ap.add_argument("--thinking", default="default",
                     help="comma-separated variants: default, narration-on, narration-off, off "
                          "(see runner.set_thinking)")
