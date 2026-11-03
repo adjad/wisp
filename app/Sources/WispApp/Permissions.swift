@@ -44,6 +44,7 @@ enum Permissions {
         if asksInWisp(url.absoluteString) {
             NotificationCenter.default.post(name: .wispOpenPermissions, object: nil)
         } else {
+            if url.scheme == "x-apple.systempreferences" { PrivacyRelaunch.notePaneOpened() }
             NSWorkspace.shared.open(url)
         }
     }
@@ -221,6 +222,7 @@ enum Permissions {
         case .none: break
         case .prompt:
             defaults.set(true, forKey: screenRecordingPromptedKey)
+            PrivacyRelaunch.notePaneOpened()
             CGRequestScreenCaptureAccess()
         case .settings:
             openSettingsPane("com.apple.preference.security?Privacy_ScreenCapture")
@@ -237,6 +239,7 @@ enum Permissions {
         case .none: break
         case .prompt:
             defaults.set(true, forKey: accessibilityPromptedKey)
+            PrivacyRelaunch.notePaneOpened()
             let axOpts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(axOpts)
         case .settings:
@@ -261,8 +264,11 @@ enum Permissions {
         openSettingsPane(fullDiskAccessPane)
     }
 
+    /// Every privacy page Wisp opens. Switching Wisp on there can make macOS
+    /// offer Quit & Reopen, so Wisp notes it first (PrivacyRelaunch).
     static func openSettingsPane(_ path: String) {
         if let url = URL(string: "x-apple.systempreferences:\(path)") {
+            PrivacyRelaunch.notePaneOpened()
             NSWorkspace.shared.open(url)
         }
     }

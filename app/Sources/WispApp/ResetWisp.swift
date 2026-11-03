@@ -67,6 +67,7 @@ enum WispReset {
         "wisp.browserHistoryEnabled", "wisp.browserHistoryRevision", "wisp.browserHistoryPreferenceChanged",
         "wisp.browserBridge.enabledProfiles.v1", "wisp.mailAccountLabels.identity.v1",
         "wisp.shuttingDownPID", "wisp.backendStartFailed", "wisp.backendRefused", "wisp.restartBackend",
+        PrivacyRelaunch.paneOpenedKey,
     ]
     /// Per-account "Not now" notes in Settings ▸ Google (one key per account).
     static let markerPrefixes = ["wisp.", "Wisp"]
