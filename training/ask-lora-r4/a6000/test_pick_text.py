@@ -1,4 +1,4 @@
-"""Mac tests for the A6000 kit: the text picker on fake generations, the packing guards, the estimates and the
+"""Mac tests for the r4 GPU kit (L40 or A6000): the text picker on fake generations, the packing guards, the estimates and the
 changes made to ask-lora-r3/brev. No torch, no GPU, no tokenizer, no network.
 
     ~/Desktop/MOE_Project/.venv/bin/python -I -m pytest training/ask-lora-r4/a6000/test_pick_text.py -q
@@ -596,7 +596,7 @@ def test_stage2_instructions_name_both_checkpoints_and_keep_private_data_on_the_
     top = [{"rank": 1, "name": "step-01140", "step": 1140}, {"rank": 2, "name": "final", "step": 1510}]
     text = T.stage2_text(top)
     for want in ("step-01140", "merged-final", "oQ4e-mtp", "quantize.py", "$PRIVATE_EVAL_DIR", "run_toolbench.py", "--trials 3",
-                 "safe_delete_everything", "sess_user_fact_3", "stage2-decide", "never goes to the A6000"):
+                 "safe_delete_everything", "sess_user_fact_3", "stage2-decide", "never goes to the GPU box"):
         assert want in text, want
     assert "gemma-4-E4B-it-r4-step-01140-oQ4e-mtp,gemma-4-E4B-it-r4-final-oQ4e-mtp" in text
     assert "/Users/" not in T.stage2_text(top, "/data/private")             # an explicit dir is shown as given
@@ -886,6 +886,18 @@ def test_memory_arithmetic_fits_with_margin():
     assert abs(E.peak_gib(E.MATH_PEAK_TOKENS, "math") - E.MATH_PEAK_GIB) < 0.05
 
 
+def test_l40_profile_is_between_measured_and_spec():
+    l40, a6 = E.GPUS["l40"], E.GPUS["a6000"]
+    assert E.DEFAULT_GPU == "l40" and E.CARD_GIB == l40["card_gib"] < a6["card_gib"]
+    assert l40["train_tok_s"][2] == a6["train_tok_s"][2]                    # pessimistic: no gain over the A6000 at all
+    assert a6["train_tok_s"][1] < l40["train_tok_s"][1] < a6["train_tok_s"][1] * 1.18
+    assert all(x <= y for x, y in zip(l40["decode_s"], a6["decode_s"]))
+    s = [E.stage1_hours(5400, gpu="l40", case=c) for c in (0, 1, 2)]
+    assert s[0]["total_h"] < s[1]["total_h"] < s[2]["total_h"] and s[1]["usd_h"] == l40["usd_h"]
+    assert E.stage1_hours(5400, gpu="l40", case=1)["total_h"] < E.stage1_hours(5400, gpu="a6000", case=1)["total_h"]
+    assert 35 <= s[1]["total_h"] <= 50, s[1]
+
+
 def test_grpo_calibration_is_slower_than_plan_py():
     plan = E.grpo_hours_plan_py()
     cal = E.grpo_hours_calibrated()
@@ -934,7 +946,8 @@ def test_run_sft_saves_many_checkpoints_and_runs_both_stages():
     assert '--safety-steps "${SAFETY_STEPS:-60}"' in sh and '--absence-steps "${ABSENCE_STEPS:-60}"' in sh
     # stage 1 hands over the top 2; merge folds both; stage2 prints the Mac steps and refuses a PRIVATE_EVAL_DIR on the box
     assert "--top 2" in sh and "merged-$NAME" in sh and '"$PYX" "$PT" stage2 --picked' in sh
-    assert 'PRIVATE_EVAL_DIR' in sh and "never on the A6000" in sh
+    assert 'r4-sft-bundle.tgz' in sh and 'a6000-bundle' not in sh and '(8, 9): "l40"' in sh
+    assert 'PRIVATE_EVAL_DIR' in sh and "never on the GPU box" in sh
     for step in ("stage2)", "merge)", "picked)"):
         assert step in sh
 

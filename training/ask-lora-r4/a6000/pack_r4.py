@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pack r4 for the Brev A6000: the SFT data zip, the mmeval zip and the text-picker zip. Runs on the Mac.
+"""Pack r4 for the Brev GPU (an L40 since 2026-11-02; the A6000 profile still works): the SFT data zip, the mmeval zip and the text-picker zip. Runs on the Mac.
 
     PY=~/Desktop/MOE_Project/.venv/bin/python
     $PY training/ask-lora-r4/a6000/pack_r4.py --model ~/Desktop/OMLX_Model_Files/Jundot/gemma-4-E4B-it-oQ4e-mtp
@@ -167,7 +167,8 @@ def main() -> int:
     ap.add_argument("--out-dir", default=str(HERE / "out"))
     ap.add_argument("--check-only", action="store_true", help="validate the inputs and stop")
     ap.add_argument("--no-estimate", action="store_true", help="skip the exact token count (slow: tokenizes every row)")
-    ap.add_argument("--usd-per-hour", type=float, default=0.60)
+    ap.add_argument("--gpu", default="l40", help="card profile in estimate.GPUS (l40 or a6000)")
+    ap.add_argument("--usd-per-hour", type=float, help="default: the card's planning rate in estimate.GPUS")
     a = ap.parse_args()
 
     data, vrows, arows = Path(a.data), Path(a.vision_rows), Path(a.audio_rows)
@@ -221,8 +222,13 @@ def main() -> int:
         import estimate as E
         t = E.tokens_from_zip(zip_path, Path(a.model))
         info["tokens"] = t
-        info["estimate_sft"] = E.sft_estimate(t["train.jsonl"]["rows"], t["train.jsonl"]["mean"], usd_h=a.usd_per_hour)
+        g = E.GPUS[a.gpu]
+        usd_h = g["usd_h"] if a.usd_per_hour is None else a.usd_per_hour
+        info["estimate_sft"] = E.sft_estimate(t["train.jsonl"]["rows"], t["train.jsonl"]["mean"], tok_s=g["train_tok_s"][1], usd_h=usd_h)
+        info["estimate_stage1"] = [E.stage1_hours(t["train.jsonl"]["rows"], t["train.jsonl"]["mean"], gpu=a.gpu, case=c, usd_h=usd_h)
+                                   for c in (0, 1, 2)]
         print("estimate:", json.dumps(info["estimate_sft"]))
+        print("stage 1 (optimistic / middle / pessimistic):", [(e["total_h"], e["usd"]) for e in info["estimate_stage1"]])
     (out / "upload.json").write_text(json.dumps(info, indent=1) + "\n")
     print(json.dumps({k: v for k, v in info.items() if k.endswith(".zip")}, indent=1))
     print(f"\nupload to ~/wisp/uploads: {zip_path.name}, mmeval-data.zip, pickers.zip, ../../ask-lora-r3/brev/vm-setup.sh, run_sft.sh"

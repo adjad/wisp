@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Time and cost of r4 on ONE RTX A6000, from what was measured on an A6000 and on r3's data. Pure python.
+"""Time and cost of r4 on ONE 48 GB card (the L40 the user chose, or the A6000), from r2's measured A6000 run and r3's data.
+Pure python.
 
     python estimate.py                                   # the r4 planning table (5,500-6,500 text examples)
-    python estimate.py --train-rows 5400 --mean-tokens 6650 --usd-per-hour 0.60
+    python estimate.py --train-rows 5400 --mean-tokens 6650 --gpu l40 --usd-per-hour 1.00
+    python estimate.py --gpu a6000                       # the old A6000 table
     python estimate.py --zip out/ask-lora-data.zip --tokenizer <gemma dir>   # exact token counts from the packed zip
 
 EVERYTHING HERE IS AN ESTIMATE. The one measured anchor is r2's A6000 run (Hyperstack, SDPA, checkpointing on):
 85.6 s per 8-row step at ~6.7k tokens per row = 624 tok/s, peak 21.6 GiB (ask-lora-r3/PLAN.md, "Measured basis").
-Nothing in r3/r4 has run on an A6000. r3 on the MI355X node cannot be scaled to it (math attention, 8 GPUs).
+Nothing in r3/r4 has run on an A6000 or an L40. r3 on the MI355X node cannot be scaled to either (math attention, 8 GPUs).
+The L40 numbers are the A6000's scaled by spec ratios (GPUS below), so they are one step further from a measurement.
 
 What the model assumes:
   * training speed is tokens/s, flat in the row length (rows are 6.5k tokens on average, so the GPU is already full);
@@ -38,6 +41,19 @@ SETUP_H = 0.75                   # venv + torch, 16 GB base download, uploads, p
 DECODE_S = (0.030, 0.040, 0.055)  # seconds per decoded token on the A6000, optimistic / middle / pessimistic (plan.py HW)
 TRAIN_TOK_S = (700, A6000_TRAIN_TOK_S, 520)   # optimistic / measured / pessimistic (-17%: a hotter or slower host)
 
+# ---- per card. The L40 (Ada, sm_89, 48 GB GDDR6 with ECC on, 864 GB/s, ~181 TFLOPS dense bf16) has NOT been measured: its
+# training speed is the A6000's x 1.17 (the bf16 tensor peak ratio, 181/155) / x 1.10 / x 1.0 (passively cooled hosts can
+# throttle), its decode the A6000's / 1.125 (the bandwidth ratio, 864/768) / 1.06 / 1.0. r2 ran at ~10% MFU, so the peak is
+# not what bounds it: the middle is a guess. smoke's tok/s replaces all of this. card_gib is what torch reports (ECC on the
+# L40 by default: 46,068 MiB). usd_h: r2 paid $0.60/h for the A6000; the user's Brev L40 is $1.06/h (48 GB VRAM, 72 GB host
+# RAM; 2026-11-02).
+GPUS = {
+    "a6000": dict(name="RTX A6000 48 GB (sm_86)", train_tok_s=TRAIN_TOK_S, decode_s=DECODE_S, card_gib=47.9, usd_h=0.60),
+    "l40": dict(name="L40 48 GB (sm_89, ECC on)", train_tok_s=(round(700 * 1.17), round(A6000_TRAIN_TOK_S * 1.10), 520),
+                decode_s=(round(DECODE_S[0] / 1.125, 4), round(DECODE_S[1] / 1.06, 4), DECODE_S[2]), card_gib=45.0, usd_h=1.06),
+}
+DEFAULT_GPU = "l40"              # the user's choice on 2026-11-02, replacing the A6000
+
 
 # ---- memory (GiB). Measured: weights 14.8 GiB (7.94B params, bf16; the r3 smoke log's `gpu_alloc`), 34,881,536 trainable LoRA
 # parameters (r16 on the language model), r2's A6000 peak 21.6 GiB with SDPA, r3's MI355X peak 30.7 GiB at 9,938 tokens with MATH attention.
@@ -45,7 +61,7 @@ WEIGHTS_GIB = 14.8
 LORA_STATE_GIB = 4 * 4 * 34_881_536 / 2**30     # fp32 weights + grads + two Adam moments (an upper bound: bf16 adapters halve it)
 SDPA_PEAK_GIB, SDPA_PEAK_TOKENS = 21.6, 9500    # r2, A6000
 MATH_PEAK_GIB, MATH_PEAK_TOKENS = 30.7, 9938    # r3, MI355X
-CARD_GIB = 48.0
+CARD_GIB = min(g["card_gib"] for g in GPUS.values())     # the smaller usable card (the L40 with ECC on)
 
 
 def peak_gib(tokens: int, attn: str = "sdpa") -> float:
@@ -107,6 +123,23 @@ def picker_mm_hours(n_checkpoints: int, rows: int = 230, secs_per_row: float = 4
     return (n_checkpoints + 1) * rows * secs_per_row / 3600
 
 
+def stage1_hours(train_rows: int, mean_text: float = R3_MEAN_TEXT_TOKENS + 100, gpu: str = DEFAULT_GPU, case: int = 1,
+                 n_ckpts: int = 6, gens_per_pass: int = 600, usd_h: float | None = None) -> dict:
+    """Stage 1 end to end on one card (README "Time and cost"): SFT with setup and evals, 8 adapter snapshots (0.1 h), the
+    text probe (base + n_ckpts passes of gens_per_pass generations), the mmeval picker, merging and downloading the top 2 (1.0 h).
+    case 0 / 1 / 2 = optimistic / middle / pessimistic."""
+    g = GPUS[gpu]
+    usd_h = g["usd_h"] if usd_h is None else usd_h
+    tok_s, dec = g["train_tok_s"][case], g["decode_s"][case]
+    sft = sft_estimate(train_rows, mean_text, tok_s=tok_s, usd_h=usd_h)
+    per_gen = mean_text / (tok_s * FWD_SPEEDUP) + 100 * dec
+    text_h = (n_ckpts + 1) * gens_per_pass * per_gen / 3600
+    mm_h = picker_mm_hours(n_ckpts) * A6000_TRAIN_TOK_S / tok_s
+    total = sft["total_h"] + 0.1 + text_h + mm_h + 1.0
+    return {"gpu": gpu, "case": case, "sft_h": sft["total_h"], "text_probe_h": round(text_h, 1), "mmeval_h": round(mm_h, 1),
+            "total_h": round(total, 1), "usd": round(total * usd_h, 2), "usd_h": usd_h}
+
+
 def grpo_hours_plan_py(rows: int = 1500):
     """grpo/plan.py's A6000 estimate (optimistic, middle, pessimistic), read from the module, not retyped.
     None when plan.py is missing or its API has moved (another agent is adapting it for r4)."""
@@ -143,14 +176,18 @@ def grpo_hours_calibrated(rows: int = 1500, tok_s: float = A6000_TRAIN_TOK_S, de
     return rows * mean / 3600
 
 
-def planning_table(usd_h: float = 0.60) -> str:
-    out = ["| text examples (train rows) | steps | tokens | train h | evals h | SFT total h | $ at $%.2f/h |" % usd_h,
-           "|---|---|---|---|---|---|---|"]
+def planning_table(usd_h: float | None = None, gpu: str = DEFAULT_GPU) -> str:
+    g = GPUS[gpu]
+    usd_h = g["usd_h"] if usd_h is None else usd_h
+    out = [f"{g['name']}, middle speed {g['train_tok_s'][1]} tok/s",
+           "| text examples (train rows) | steps | tokens | train h | evals h | SFT total h | $ at $%.2f/h | stage 1 h (opt-pess) | stage 1 $ |" % usd_h,
+           "|---|---|---|---|---|---|---|---|---|"]
     for total_examples in (5500, 6000, 6500):
         train = round(total_examples * 0.9)          # r3 split: 3,254 train of 3,618 examples (90%)
-        e = sft_estimate(train, usd_h=usd_h)
+        e = sft_estimate(train, tok_s=g["train_tok_s"][1], usd_h=usd_h)
+        s = [stage1_hours(train, gpu=gpu, case=c, usd_h=usd_h) for c in (0, 2)]
         out.append(f"| {total_examples} ({train}) | {e['steps']} | {e['tokens_m']} M | {e['train_h']} | {e['eval_h']} "
-                   f"| **{e['total_h']}** | {e['usd']:.0f} |")
+                   f"| **{e['total_h']}** | {e['usd']:.0f} | {s[0]['total_h']}-{s[1]['total_h']} | {s[0]['usd']:.0f}-{s[1]['usd']:.0f} |")
     return "\n".join(out)
 
 
@@ -180,12 +217,15 @@ def main() -> int:
     ap.add_argument("--mean-tokens", type=float, default=R3_MEAN_TEXT_TOKENS + 100)
     ap.add_argument("--zip", help="packed ask-lora-data.zip: take row counts and token means from it")
     ap.add_argument("--tokenizer", help="Gemma tokenizer dir, needed with --zip")
-    ap.add_argument("--usd-per-hour", type=float, default=0.60, help="r2 paid $0.60/h on Hyperstack; confirm the real rate")
+    ap.add_argument("--gpu", choices=sorted(GPUS), default=DEFAULT_GPU)
+    ap.add_argument("--usd-per-hour", type=float, help="default: the card's planning rate (GPUS); confirm the real one")
     ap.add_argument("--eval-every", type=int, default=200)
     ap.add_argument("--dev-text-rows", type=int, default=150)
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
     train_rows, mean = a.train_rows, a.mean_tokens
+    g = GPUS[a.gpu]
+    usd_h = g["usd_h"] if a.usd_per_hour is None else a.usd_per_hour
     if a.zip:
         if not a.tokenizer:
             ap.error("--zip needs --tokenizer")
@@ -195,9 +235,11 @@ def main() -> int:
     res = {}
     if train_rows:
         res["sft"] = {n: sft_estimate(train_rows, mean, eval_every=a.eval_every, dev_text_rows=a.dev_text_rows, tok_s=s,
-                                      usd_h=a.usd_per_hour)
-                      for n, s in zip(("optimistic", "measured", "pessimistic"), TRAIN_TOK_S)}
-    res["picker_text_h_per_360_steps_per_ckpt"] = round(picker_text_hours(360, 1), 2)
+                                      usd_h=usd_h)
+                      for n, s in zip(("optimistic", "middle", "pessimistic"), g["train_tok_s"])}
+        res["stage1"] = {n: stage1_hours(train_rows, mean, gpu=a.gpu, case=c, usd_h=usd_h)
+                         for c, n in enumerate(("optimistic", "middle", "pessimistic"))}
+    res["picker_text_h_per_360_steps_per_ckpt"] = round(picker_text_hours(360, 1, tok_s=g["train_tok_s"][1], decode_s=g["decode_s"][1]), 2)
     res["grpo_plan_py_h"] = grpo_hours_plan_py()
     res["grpo_calibrated_h"] = round(grpo_hours_calibrated(), 1)
     if a.json:
@@ -207,10 +249,12 @@ def main() -> int:
         for n, e in res["sft"].items():
             print(f"SFT {n:11s} {e['tok_s']} tok/s: {e['steps']} steps, {e['tokens_m']} M tokens, train {e['train_h']} h + "
                   f"{e['n_evals']} evals {e['eval_h']} h + setup = {e['total_h']} h = ${e['usd']:.0f}")
+        for n, e in res["stage1"].items():
+            print(f"stage 1 {n:11s} (SFT + picker + merge + download): {e['total_h']} h = ${e['usd']:.0f}")
     else:
-        print(planning_table(a.usd_per_hour))
+        print(planning_table(usd_h, a.gpu))
     print(f"text picker: {res['picker_text_h_per_360_steps_per_ckpt']} h per checkpoint per 360 dev steps")
-    print(f"GRPO epoch (1,500 prompts): plan.py {res['grpo_plan_py_h']} h; re-derived from the measured SFT speed {res['grpo_calibrated_h']} h")
+    print(f"GRPO epoch (1,500 prompts), A6000 profile: plan.py {res['grpo_plan_py_h']} h; re-derived from the measured SFT speed {res['grpo_calibrated_h']} h")
     return 0
 
 

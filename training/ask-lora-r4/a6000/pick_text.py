@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """r4 text checkpoint picker, stage 1 of a two-stage BEHAVIOUR pick (PLAN.md section F, RL-SCOPE.md section 8).
 
-r3's lowest-loss checkpoint was the one that had stopped thinking, so dev loss does not pick here. The A6000 generates on
+r3's lowest-loss checkpoint was the one that had stopped thinking, so dev loss does not pick here. The GPU box (an L40, or an A6000) generates on
 the valid TEXT steps for the untuned base (a pseudo-checkpoint named "base", same steps, same seeds) and for each saved
 checkpoint, scores every generation with grpo/reward.py, and a checkpoint is INELIGIBLE if any one of these fails:
 
@@ -37,7 +37,7 @@ answer steps that have facts (reward.fact_present).
     python pick_text.py stage2     --picked PICKED.json                 # print the Mac-side instructions for the top 2
     python pick_text.py stage2-decide --picked PICKED.json --result NAME=PRIV_PASSED/PRIV_TOTAL,TB_PASSED/TB_TOTAL ...
 
-`generate` needs torch and the weights (the A6000 box); everything else is pure python and runs on the Mac
+`generate` needs torch and the weights (the GPU box); everything else is pure python and runs on the Mac
 (test_pick_text.py runs it on fake generations). Generation is at production sampling (temperature 1.0, top_p 0.95,
 top_k 64, thinking on, as the prompt is rendered) with the SAME random seed per (step, sample) for every checkpoint AND the
 base, so all of them are compared on common random numbers; `--greedy` turns sampling off. Batch 1, resumable. The base is
@@ -888,7 +888,7 @@ def stage2_text(top: list, private_dir: str | None = None) -> str:
                  f"       --out ~/Desktop/OMLX_Model_Files/{quant_dir(n)} \\\n"
                  f"       --mtp-from ~/Desktop/OMLX_Model_Files/Jundot/gemma-4-E4B-it-oQ4e-mtp")
     L += ["",
-          "3. The private real-use eval. Local only: it never goes to the A6000 or any cloud. Run the eval's own runner once per",
+          "3. The private real-use eval. Local only: it never goes to the GPU box or any cloud. Run the eval's own runner once per",
           f"   quantised model, with PRIVATE_EVAL_DIR={pd} exported (the eval is built separately; its runner is documented there).",
           "",
           f"4. The toolbench subset: {len(stage2_ids())} cases ({', '.join(f'{k} {len(v)}' for k, v in STAGE2_CASES.items())}), "

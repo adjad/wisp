@@ -1,5 +1,6 @@
 #!/bin/bash
-# r4 SFT on ONE NVIDIA RTX A6000 (48 GB, sm_86) on Brev: the whole flow from a fresh instance to a picked checkpoint.
+# r4 SFT on ONE 48 GB NVIDIA card on Brev, an L40 (sm_89; the user's choice, 2026-11-02) or an RTX A6000 (sm_86): the whole
+# flow from a fresh instance to a picked checkpoint.
 # A thin layer over ~/wisp/run.sh (written by ../../ask-lora-r3/brev/vm-setup.sh). README.md next to this file explains every step.
 #
 #   bash run_sft.sh setup                  pinned stack (torch 2.11.0+cu128, transformers 5.22.1, peft 0.21.2) + the 16 GB base
@@ -37,14 +38,14 @@ OUT="$TD/ask-lora-out"
 MM="$WISP/mmeval"
 PK="$TD/pick"
 ATTN="${ATTN:-sdpa}"
-EVAL_EVERY="${EVAL_EVERY:-200}"          # one eval = ~11 min on the A6000 with --dev-text-max 150; see README
+EVAL_EVERY="${EVAL_EVERY:-200}"          # one eval = ~11 min on an A6000 (~10 on an L40, estimated) with --dev-text-max 150; see README
 DEV_TEXT_MAX="${DEV_TEXT_MAX:-150}"
 DEV_STEPS="${DEV_STEPS:-360}"
 SEED=20261029                            # train.py's default; eval_mm.py's serving-shape hash must use the same one
 
 # The pins. r2 trained on an A6000 with exactly this stack (ask-lora-r3/PLAN.md: "r2 stack ... is the starting pin").
 PIN_TORCH="2.11.0"; PIN_TV="0.26.0"; PIN_TRANSFORMERS="5.22.1"; PIN_PEFT="0.21.2"
-TORCH_IDX="https://download.pytorch.org/whl/cu128"     # driver 570 (CUDA 12.8) is what Brev's A6000 hosts ship
+TORCH_IDX="https://download.pytorch.org/whl/cu128"     # needs driver 570+ (CUDA 12.8); its sm_86 kernels also run on the L40's sm_89
 
 die() { echo "FAIL: $*" >&2; exit 1; }
 say() { echo "== $(date '+%F %T %Z') $*"; }
@@ -96,11 +97,19 @@ for k in want:
     print(f"  {k:13s} {have[k]:10s} pinned {want[k]:8s} {'ok' if have[k] == want[k] else 'DIFFERENT (fine only if PIN=0 was used on purpose)'}")
 p = torch.cuda.get_device_properties(0)
 print(f"  gpu {p.name}, {p.total_memory / 2**30:.1f} GiB, sm_{p.major}{p.minor}; torch cuda {torch.version.cuda}")
-if (p.major, p.minor) != (8, 6):
-    print("  NOTE: this is not an sm_86 card; the memory numbers in README.md were estimated for an A6000")
+known = {(8, 9): "l40", (8, 6): "a6000"}
+if (p.major, p.minor) in known:
+    print(f"  profile: python estimate.py --gpu {known[(p.major, p.minor)]}  (re-run it with smoke's tok/s before committing hours)")
+else:
+    print(f"  NOTE: sm_{p.major}{p.minor} is neither the L40 (sm_89) nor the A6000 (sm_86) the README was estimated for")
+# A cubin for sm_86 runs on sm_89 (same major, lower minor): the cu128 wheels need not list sm_89 itself.
+archs = [a for a in torch.cuda.get_arch_list() if a.startswith("sm_")]
+if not any(a[3:-1] == str(p.major) and int(a[-1]) <= p.minor for a in archs if a[3:].isdigit()):
+    print(f"  WARNING: this torch build has no kernels for sm_{p.major}{p.minor} (it lists {archs})")
 if p.total_memory < 44 * 2**30:
     print("  WARNING: under 44 GiB; this recipe was sized for a 48 GB card (QLORA=1 is the 24 GB fallback, untested for r4)")
 PYC
+  nvidia-smi --query-gpu=name,driver_version,ecc.mode.current,memory.total,power.limit --format=csv,noheader 2>/dev/null | sed 's/^/  nvidia-smi: /'
   for z in ask-lora-data.zip mmeval-data.zip pickers.zip; do
     [ -f "$WISP/uploads/$z" ] && echo "  $z  $(sha256sum "$WISP/uploads/$z" | cut -c1-64)" || echo "  $z  MISSING in $WISP/uploads"
   done ;;
@@ -223,7 +232,7 @@ PYM
   done <<< "$LIST" ;;
 stage2)
   # Printable anywhere. PRIVATE_EVAL_DIR is for the Mac: the private eval is never uploaded to the box.
-  case "${PRIVATE_EVAL_DIR:-}" in "$WISP"/*) die "PRIVATE_EVAL_DIR=$PRIVATE_EVAL_DIR is under $WISP: the private eval must stay on the Mac, never on the A6000";; esac
+  case "${PRIVATE_EVAL_DIR:-}" in "$WISP"/*) die "PRIVATE_EVAL_DIR=$PRIVATE_EVAL_DIR is under $WISP: the private eval must stay on the Mac, never on the GPU box";; esac
   PT="$MM/pick_text.py"; [ -f "$PT" ] || PT="$HERE/pick_text.py"; [ -f "$PT" ] || die "pick_text.py not found (run '$0 unzip-pickers', or run this on the Mac next to it)"
   PYX="$PY"; [ -x "$PYX" ] || PYX=python3
   [ -f "${PICKED:-$PK/picked.json}" ] || die "no picked.json: run '$0 pick' (or set PICKED=/path/to/picked.json on the Mac)"
@@ -231,7 +240,7 @@ stage2)
 package) need_setup; "$RUN" $TAG package ;;
 bundle)
   [ -f "$PK/picked.json" ] || die "run '$0 pick' first"
-  B="$TD/r4-sft-a6000-bundle.tgz"
+  B="$TD/r4-sft-bundle.tgz"
   ( cd "$TD" && tar czf "$B" --ignore-failed-read ask-lora-out/ckpt ask-lora-out/final ask-lora-out/train.log.jsonl ask-lora-out/smoke.json \
       pick run-info.json ask-lora-adapter.zip ask-lora/stats.json ask-lora/smoke.log ask-lora/train.out "$WISP/freeze.txt" 2>/dev/null )
   ls -la "$B"; sha256sum "$B"
