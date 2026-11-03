@@ -511,7 +511,8 @@ def _format_calendar_end_times(items: list[dict], *, now: float, window_label: s
 @register(
     "get_upcoming",
     "Read the user's upcoming calendar events, meetings, Canvas due dates and reminders from "
-    "Wisp's local store. Use for 'what's on my calendar/schedule', 'am I free', deadlines and "
+    "Wisp's local store, plus dated items Wisp's Brief found in email, texts and notes. Use "
+    "for 'what's on my calendar/schedule', 'am I free', deadlines and "
     "what's coming up; for 'what should I do today' or planning the day use get_my_day_plan. "
     "Pass `account` for one linked calendar when several are linked. Do NOT script "
     "Calendar.app.",
@@ -520,7 +521,7 @@ def _format_calendar_end_times(items: list[dict], *, now: float, window_label: s
          "days": {"type": "integer",
                   "description": "how many days ahead to look (default 7, max 60)"},
          "period": {"type": "string", "description": "Exact calendar range, e.g. tomorrow, this week, this month. Overrides days."},
-         "calendar_only": {"type": "boolean", "description": "Only actual calendar events, not preparation reminders."},
+         "calendar_only": {"type": "boolean", "description": "Only actual calendar events, not preparation reminders. Dated Brief items from email and texts are still listed apart."},
          "boundary": {"type": "string", "enum": ["start", "end"], "description": "Named Calendar time question: end returns scheduled end timestamps, never actual completion. Requires calendar_only and query. Default start preserves the agenda."},
          "query": {"type": "string", "description": "Filter titles within the requested range; bounded subject typos and test/exam synonyms are supported. Multiple matches remain distinct; ask which instead of selecting one."},
          "account": {"type": "string",
@@ -575,7 +576,7 @@ async def get_upcoming(days: int = 7, account: str | None = None,
         # A named period such as "this month" describes the forward agenda
         # from this moment, not a historical month-to-date dump. Preserve the
         # period's end/boundary semantics while removing elapsed entries.
-        forward_start = max(start, now)
+        forward_start = brief_start = max(start, now)
         # Calendar appointments can begin before a requested range and still
         # occupy it. Today includes the entire day; other explicit periods
         # retain ongoing and future appointments without elapsed history.
@@ -590,6 +591,7 @@ async def get_upcoming(days: int = 7, account: str | None = None,
         # raw Calendar occurrences instead, retaining the existing inclusive
         # elapsed-seconds horizon (explicit periods remain half-open).
         end = now + days * 86400
+        brief_start = now
         calendar_rows = assistant_store.calendar_events_overlapping(
             now, math.nextafter(end, math.inf))
         rows = assistant_store.upcoming(now=now, days=days)
@@ -624,7 +626,27 @@ async def get_upcoming(days: int = 7, account: str | None = None,
         [item for item in items
          if float(item.get("when_ts") or 0) >= now
          or ((period or boundary == "end") and item.get("source") == "calendar")])
+    # Dated to-dos the Brief read from mail, texts and notes (a family lunch
+    # on Saturday, a homework due time) are not calendar rows, but a day or
+    # week answer without them is wrong. calendar_only keeps them too: the
+    # model sets it for "what's my plan this week", and they are listed apart,
+    # never counted or labelled as calendar events. A named end-time question
+    # is about one Calendar event only.
+    brief = ""
+    if boundary != "end":
+        from service.tools import proactive_tools
+        found = proactive_tools.dated_brief_items(
+            proactive_tools.read_brief_snapshot(now), brief_start, end, account=account)
+        if query:
+            found = _match_schedule_query(found, query)
+        shown = {_agenda_text(item.get("title")).casefold() for item in items}
+        brief = proactive_tools.brief_section(
+            [todo for todo in found if _agenda_text(todo.get("title")).casefold() not in shown])
     if not items:
+        if brief:
+            what = "on your calendar" if calendar_only else "on your calendar or reminders"
+            return (notice + f"Today is {today_str}. Nothing {what} in {window_label}.\n\n"
+                    + brief + reminder_note)
         if notice or reminder_note:
             return (notice + "No scheduled items were found in the sources that could be checked."
                     + reminder_note)
@@ -635,7 +657,8 @@ async def get_upcoming(days: int = 7, account: str | None = None,
         items, now=now, window_label=window_label,
         apple_reminders_checked="reminders" not in withheld,
         reminders_read=not calendar_only and "reminders" not in withheld,
-        display_day_start=max(start, today_start) if period else None) + reminder_note
+        display_day_start=max(start, today_start) if period else None) + (
+            "\n\n" + brief if brief else "") + reminder_note
 
 
 @register(

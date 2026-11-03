@@ -193,7 +193,8 @@ def test_day_plan_tool_takes_a_day_and_only_reads_the_snapshot(monkeypatch):
     assert "Day plan for tomorrow" in text
     assert "Day plan for today" in asyncio.run(proactive_tools.get_my_day_plan())
     tool = registry.get_tool("get_my_day_plan")
-    assert tool.parameters["properties"]["day"]["enum"] == ["today", "tomorrow"]
+    assert "enum" not in tool.parameters["properties"]["day"]
+    assert "saturday" in tool.parameters["properties"]["day"]["description"]
     assert "required" not in tool.parameters
 
 
