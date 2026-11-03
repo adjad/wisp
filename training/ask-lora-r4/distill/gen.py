@@ -96,7 +96,12 @@ def http(path: str, body: dict | None = None, timeout: float = 600, headers: dic
 
 
 def one_resident(model: str) -> None:
-    for m in (http("/v1/models/status") or {}).get("models", []):
+    """Unload every other model; exit unless the server's own path for `model` is in Jundot/ (the untuned base)."""
+    models = (http("/v1/models/status") or {}).get("models", [])
+    path = next((m.get("model_path") for m in models if m.get("id") == model), None)
+    if not path or f"/{BASE_ORG}/" not in path:
+        sys.exit(f"oMLX serves {model} from {path!r}, not from {BASE_ORG}/")
+    for m in models:
         if m.get("loaded") and m["id"] != model:
             http(f"/admin/api/models/{m['id']}/unload", {})
             print("unloaded", m["id"], flush=True)
