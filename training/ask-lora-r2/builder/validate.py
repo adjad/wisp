@@ -87,8 +87,14 @@ Exit code 1 on any problem. Checks, per example:
               "…" unless the result itself has one), brief (a Brief item of a day plan
               keeps its "(email)" / "(text)" / "(note)" / "(reminder)" source), iso (no
               ISO date or timestamp in any thought: think:iso_timestamp) and empty
-              range ("free from ." / "between  and": think:empty_range). The copy
-              bound is 0.5 for extraction thoughts too.
+              range ("free from ." / "between  and": think:empty_range). A free-slot
+              piece states only a range the result produces (think:slot_window): a
+              slot's start to where its gap ends, a range another result line shows
+              or one the prompt asks for; the search window of a find_free_time
+              header ("9:00-18:00") is not a free slot unless a slot spans it. A
+              piece that holds a bullet's whole title has the title's content words
+              in the final (think:item_title). The copy bound is 0.5 for extraction
+              thoughts too.
               A thought that quotes an earlier turn ("The earlier reply said: ...",
               "Earlier in this chat: ...") passes think:quote: one contiguous run of
               a turn by the speaker its label names (never "the earlier reply" for
@@ -411,6 +417,8 @@ def check_thinking(meta, msgs, ctx, injected, prev_thought, bad, where):
                "think:empty_range" if err.startswith("empty range") else
                "think:quote" if err.startswith("quote") else
                "think:brief_source" if err.startswith("brief") else
+               "think:slot_window" if err.startswith("free slot") else
+               "think:item_title" if err.startswith("item") else
                "think:copies_reply" if err.startswith("too close") else "think:thought_missing" if err == "empty"
                else "think:date_mismatch")
         bad(key, f"{where} {err}")

@@ -1842,7 +1842,8 @@ def _balanced(x: str) -> bool:
 def _hist_spans(text: str, questions: bool = False, cap: int = 32) -> list[str]:
     """Verbatim contiguous spans of one earlier turn: a whole sentence, or for a long sentence the comma- or
     semicolon-bounded runs of it (never inside a quote or parenthesis)."""
-    text = re.sub(r"\s+", " ", (text or "").strip())
+    text = re.sub(r"[ \t]*\n[ \t]*[-•*][ \t]+", ". ", (text or "").strip())      # a list line is a sentence of its own
+    text = re.sub(r"\s+", " ", text.strip())
     sents, cur = [], ""
     for piece in re.split(r"(?<=[.!?])\s+", text):
         if cur and (_ABBREV.search(cur) or re.search(r"(?:^|\s)[A-Z]\.$", cur)):
@@ -2065,6 +2066,30 @@ def _hist_candidates(text: str, questions: bool = False) -> list[str]:
     return out
 
 
+def _span_shares(body: str, final: str, prompt: str) -> bool:
+    """The quoted span shares a time, amount, name, bare number or two content words with the final (the bar history_quote_problems
+    holds a quote to), or is the earlier question the new one is about."""
+    shared = (len(time_tokens(body) & time_tokens(final)) + len(amount_tokens(body) & amount_tokens(final))
+              + len(_caps(body) & _caps(final)) + len(_plain_nums(body) & _plain_nums(final)))
+    need = 1 if _OPENING_ASK.search(prompt) else 2
+    return shared >= 1 or len(_stems(body) & _stems(final)) >= need
+
+
+_ORDINAL_ASK = re.compile(r"\b(?:first|second|third|fourth|fifth|1st|2nd|3rd|4th|5th|opening|last|final|next)\b", re.I)
+_YOU_SAID_ASK = re.compile(r"\b(?:you|u)\b.*\b(?:suggest|recommend|list|mention|said|say|gave|give|offer|name|propos|tell|told|advis)\w*|"
+                           r"\b(?:suggest|recommend|list|mention|gave|offer|propos|advis)\w*\b.*\b(?:you|u)\b", re.I)
+
+
+def _ordinal_turn(hist, final: str, prompt: str):
+    """For "the first question you suggested": [(role, text)] holding just the assistant reply the answer comes from (the one
+    sharing most with the final), or None when the prompt is not an ordinal ask of the assistant's own earlier words."""
+    if not (_ORDINAL_ASK.search(prompt) and _YOU_SAID_ASK.search(prompt)):
+        return None
+    scored = [(len(_stems(t) & _stems(final)), i) for i, (r, t) in enumerate(hist) if r == "assistant"]
+    scored = [x for x in scored if x[0] >= 2]
+    return [hist[max(scored)[1]]] if scored else None
+
+
 def _recall_thought(s, ctx, seed) -> str:
     """The earlier span the final answers from, or '' when nothing in the earlier turns clearly holds it."""
     final, prompt = s["target_text"], s["prompt"]
@@ -2116,11 +2141,14 @@ def _recall_thought(s, ctx, seed) -> str:
             return ""
         return _quote_line(seed, "assistant", got[2])
     got = None
+    turn = _ordinal_turn(hist, final, prompt)           # "the first question you suggested": the reply that holds the answer
+    if turn:
+        got = _best_span(turn, final, prompt, cap, loose=True, roles=("assistant",), q_asked=True)
     for pref in ((("user",) if _CREDITS_USER.search(final) else ("assistant",) if _CREDITS_ASSISTANT.search(final) else ()), None):
-        got = _best_span(hist, final, prompt, cap, loose=True, **({"roles": pref} if pref else {}))
         if got:
             break
-    if not got:
+        got = _best_span(hist, final, prompt, cap, loose=True, **({"roles": pref} if pref else {}))
+    if not got or not _span_shares(got[2], final, prompt):
         return ""
     return _quote_line(seed, "user" if got[1] == "user" else "assistant", got[2])
 
@@ -2521,6 +2549,8 @@ def check(meta: dict, messages: list[dict], text: str | None, ctx: dict | None =
         errs += facts_unlisted(text, fin, [r for _n, r in _turn_reads(s)])
         errs += fragment_problems(text, s["all_results"], _count_lines(s))
         errs += brief_tag_problems(text, s["all_results"])
+        errs += window_range_problems(text, s["all_results"], s["prompt"])
+        errs += bullet_title_problems(text, fin, [r for _n, r in _turn_reads(s)] or s["all_results"])
     elif ROUND4 and s["kind"] == "narrate" and not decide_r3(meta, messages):
         fin = (ctx or {}).get("final") or s["target_text"]
         if len(fin.split()) > 3:                  # a one-word answer is decided by facts it leaves out
@@ -2528,6 +2558,8 @@ def check(meta: dict, messages: list[dict], text: str | None, ctx: dict | None =
         errs += facts_unlisted(text, fin, [r for _n, r in _turn_reads(s)] or s["all_results"])
         errs += fragment_problems(text, s["all_results"], _count_lines(s))
         errs += brief_tag_problems(text, s["all_results"])
+        errs += window_range_problems(text, s["all_results"], s["prompt"])
+        errs += bullet_title_problems(text, fin, [r for _n, r in _turn_reads(s)] or s["all_results"])
     else:
         errs += single_source_problems(meta, s, text)
     if ROUND4 and s["kind"] == "answer_first" and (meta.get("family") or "") in HISTORY_FAMILIES:
@@ -2661,7 +2693,8 @@ _ABSENCE = re.compile(
     rf"\byou (?:have|got|don['’]t have|haven['’]t got) (?:no|nothing)\b|\b(?:inbox|calendar|schedule|day|list) is (?:empty|clear|free|open)\b|"
     rf"\bnothing (?:is )?(?:in the way|on the calendar|on your plate)\b|"
     rf"\b(?:no ?one|nobody) (?:has|have|texted|emailed|replied|wrote|messaged|called)\b|\ball (?:clear|caught up)\b|\bcaught up\b|"
-    rf"\bfree all day\b|\bwide open\b|\bI haven['’]t (?:seen|got|received)\b|\byou haven['’]t (?:got|received)\b", re.I)
+    rf"\bfree all day\b|\bwide open\b|\bI haven['’]t (?:seen|got|received)\b|\byou haven['’]t (?:got|received)\b|"
+    rf"\bnothing (?:from [A-Z]|is (?:scheduled|due|planned|waiting|queued|pending|on |new|coming|happening|there|in the|set)\b)|\bI (?:didn['’]t|did not) find\b|\blooks quiet\b", re.I)
 # instructions_r4 includes read requests ("what's on my calendar", then the standing instruction applies), so it is checked;
 # the recall and session-chat families answer from the conversation itself.
 _ABSENCE_EXEMPT = frozenset({"chat_voice", "knowledge_direct"}) | (HISTORY_FAMILIES - {"instructions_r4"})
@@ -2850,7 +2883,7 @@ _BANNER = re.compile(r"Email is from Mail|Newer messages may be missing|server f
 _FRAME = re.compile(r"^(?:Account:|To:|Cc:|Status:|Wisp's reading|UNTRUSTED|"
                     r"Source:|Note: |\(showing|Showing \d|Results? for|Search results|Today is |Day plan for\b|Plan for (?:this|next|the)\b|"
                     r"Overview:.*\b(?:events?|items?) today\b.*(?:\bat\b|—)|"
-                    r"Weather for .*\(asked for|URL:|https?://|Historical evidence)", re.I)
+                    r"Weather for .*\(asked for|URL:|https?://|Historical evidence|Ask \"?how do I use Wisp\?\"? for the whole guide)", re.I)
 # Hard plumbing in a result line (the whole line goes); the user's name or a pronoun only bars the clause it sits in.
 _NOISE_HARD = re.compile(r"schema_discovery|ready_next_step|source_tools_executed|not_run_yet|\{\"|<\||\|>|Traceback|"
                          r"World\.|\bt_[a-z_]+\(|\bstubs?\b|harness|synthetic|got an unexpected keyword|[PM]ST-0[78]00|PDT-0700",
@@ -2972,7 +3005,39 @@ def slot_ranges(line: str) -> str:
         head, sep, rest = line.partition(": ")
         if sep and re.search(r"\d{4}-\d\d-\d\d|\d{1,2}:\d\d [AP]M", rest):
             line = f"{head}: free {rest}"
+    if "candidate slots" in line:
+        # The header's "9:00–18:00 (tz)" is the window that was SEARCHED, not a free slot: no piece lists it (a slot that
+        # really spans the window is its own slot line, "free 9:00 AM–6:00 PM").
+        return _SLOT_HEAD.sub("", line)
     return _SLOT_HEAD.sub(lambda m: f"{_hm12(int(m[1]), int(m[2]))}–{_hm12(int(m[3]), int(m[4]))}", line)
+
+
+_RANGE_FULL = re.compile(r"\b(\d{1,2}:\d\d [AP]M)\s*[–-]\s*(\d{1,2}:\d\d [AP]M)")
+
+
+def free_span_ranges(results: list[str]) -> set[tuple[str, str]]:
+    """The (start, end) free ranges the candidate-slot lines of the results produce: a slot's start to where its gap ends."""
+    out = set()
+    for r in results:
+        for m in _SLOT_SPAN.finditer(r or ""):
+            out.add((m[1], _hm12(int(m[3]), int(m[4]))))
+    return out
+
+
+def window_range_problems(text: str | None, results: list[str], prompt: str = "") -> list[str]:
+    """A range a thought states must be one the results produce. With a find_free_time result in the turn: a free span of
+    its slot lines (the search window of its header, "9:00 AM-6:00 PM", is not a free slot unless a slot really spans it), a
+    range another line of a result shows (a calendar event) or one the prompt asks for. Holds whatever the answer's wording."""
+    if not text or not any(re.search(r"candidate slots|free until", r or "") for r in results):
+        return []
+    allowed = free_span_ranges(results)
+    for r in list(results) + [prompt or ""]:
+        for ln in (r or "").split("\n"):
+            if "free until" in ln or "candidate slots" in ln:
+                continue
+            allowed |= {(a, b) for a, b in _RANGE_FULL.findall(slot_ranges(ln))}
+    bad = [f"{a}–{b}" for a, b in _RANGE_FULL.findall(text) if (a, b) not in allowed]
+    return [f"free slot: {x} is not a free span of the result (the search window is not a slot)" for x in dict.fromkeys(bad)]
 
 
 def _clean_line(line: str, keep: frozenset = frozenset()) -> str:
@@ -3045,8 +3110,8 @@ def _segments(text: str, keep: frozenset = frozenset()) -> list[str]:
             if not raw.strip():
                 continue
         line = _clean_line(raw, keep)
-        if len(line) < 3:
-            continue
+        if len(line) < 3 or re.fullmatch(r"\d+-minute candidate slots", line):
+            continue                          # the search-window header of find_free_time: a label, not a fact
         pieces = _sentences(line) if len(line.split()) > 18 else [line]
         for p in pieces:
             if INJECTION.search(p) or re.search(r"https?://|www\.", p):
@@ -3158,7 +3223,8 @@ def _atoms_for(unit: str, f_times, f_amts):
             post = core[bad[-1][1]:].lstrip(" ,;:)–-").rstrip()
             balanced = lambda x: x.count("“") == x.count("”") and x.count("(") == x.count(")") and x.count("[") == x.count("]")
             dangling_range = bool(re.search(r"\d\s*(?:[AP]M)?\s*[–—-]\s*$", pre_raw, re.I))     # "free 9:00 AM–" of an end the answer leaves out
-            out.append((pre, "pre") if len(pre.split()) >= 2 and balanced(pre) and not dangling_range else ("", "wall"))
+            object_cut = bool(re.search(r"\b(?:me|you|us|them|him|her)$", pre_raw, re.I) and re.match(r"[$€£\d]", core[bad[0][0]:]))   # "Can you send me | $30 ..."
+            out.append((pre, "pre") if len(pre.split()) >= 2 and balanced(pre) and not dangling_range and not object_cut else ("", "wall"))
             if (len(post.split()) >= 2 and balanced(post) and not _bad_tokens(post, f_times, f_amts)
                     and not re.match(r"(?:chance|of|to|and|or|per|free|left|used|remaining|total|off|in|at|on|for|more|less|"
                                      r"percent|degrees)\b", post, re.I)):
@@ -3206,6 +3272,8 @@ def _windows(unit: str, f_times, f_amts, f_caps, f_words, p_words, loose: bool, 
                     continue                           # a clause tail ("and tell you ...", "(66% used)", "not Samuel"), never a piece
                 if (j + 2 < n and atoms[j + 1][0].lstrip().startswith("(") and re.match(r"[a-z]", atoms[j + 2][0].lstrip())):
                     continue                           # never cut just before a parenthetical whose clause goes on ("Focus (a set time) isn't recorded")
+                if re.search(r"\b(?:me|you|us|them|him|her|the|a|an)$", text, re.I) and j + 1 < n and re.match(r"[$€£\d]", atoms[j + 1][0].lstrip()):
+                    continue                           # nor just before an amount or a number the clause goes on with ("Can you send me | $30 for Mom's gift")
                 if text.endswith(")") and j + 1 < n and re.match(r"[a-z]", atoms[j + 1][0].lstrip()):
                     continue                           # nor just after one: "A scheduled Focus (a set time, an app)" loses its verb
                 if i > 0 and re.match(r"[a-z]", text) and atoms[i - 1][0].rstrip().endswith(","):
@@ -3470,6 +3538,28 @@ def fact_keys(text: str) -> set[tuple[str, str]]:
             | {("clock", x) for x in re.findall(r"\b\d{1,2}:\d\d\b", t)})
 
 
+def _clock_pat(t: str) -> str:
+    """A regex for the time "9:00 AM" however the answer writes it ("9 AM", "9:00 a.m.")."""
+    h, m, ap = re.match(r"(\d{1,2}):(\d\d) ([AP])M", t).groups()
+    return rf"\b0?{int(h)}(?::{m})?\s*{ap}\.?M\.?" if m != "00" else rf"\b0?{int(h)}(?::00)?\s*{ap}\.?M\.?"
+
+
+def strip_window_phrase(final: str, results: list[str]) -> str:
+    """The final without a phrase that gives the SEARCH WINDOW of a find_free_time result ("I searched within 9 AM to 6 PM"):
+    those two times are not free-slot facts the thought must carry, unless a slot really spans the window."""
+    wins = []
+    for r in results or []:
+        if "candidate slots" in (r or ""):
+            wins += [(_hm12(int(m[1]), int(m[2])), _hm12(int(m[3]), int(m[4]))) for m in _SLOT_HEAD.finditer(r)]
+    if not wins:
+        return final
+    spans = free_span_ranges(results)
+    for a, b in wins:
+        if (a, b) not in spans:
+            final = re.sub(_clock_pat(a) + r"\s*(?:to|until|till|and|through|[-–—])\s*" + _clock_pat(b), " ", final, flags=re.I)
+    return final
+
+
 def _result_facts(final: str, results: list[str]) -> set[tuple[str, str]]:
     """Facts the final states that a tool result also shows (in the same form)."""
     res = humanize_iso("\n".join(results or []))          # an ISO timestamp in a result is a time the answer may state
@@ -3527,7 +3617,7 @@ night noon midnight not but and for are was were has have had can will would sho
 said says tell told ask asked want wants need needs like make made take took give gave let lets try tried keep kept use used
 open close start end next soon later early late free busy due late overdue unread new old best good great fine sure okay
 please thanks thank hello hey hi dear sorry sir high low rain sunny cloudy windy chance percent degrees light heavy partly
-mostly clear fair snow showers storms""".split())
+mostly clear fair snow showers storms gb mb tb kb ghz mhz am pm pst pdt est edt cst cdt mst mdt utc gmt""".split())
 _CAPTOK = re.compile(r"\b([A-Z][a-z][A-Za-z'’]*|[A-Z]{2,}[a-z]*)\b")
 
 
@@ -3563,30 +3653,44 @@ def _in_tokens(needle: tuple[str, ...], hay: list[str]) -> bool:
 def result_units_tagged(results: list[str], final: str) -> list[tuple[str, str]]:
     """(unit, kind) for the distinct cleaned lines of the results. kind: "item" (a bullet line of a bulleted result),
     "other" (a header or summary line of a bulleted result: not an item), "plain" (a line of a result without bullets)."""
-    out: list[tuple[str, str]] = []
+    return [(u, k) for u, k, _g in result_units_grouped(results, final)]
+
+
+def result_units_grouped(results: list[str], final: str) -> list[tuple[str, str, tuple]]:
+    """result_units_tagged with the group each unit belongs to: the sentences of one result line are one group, and so are
+    the lines of one web hit ("[1] title", its URL, its snippet), of one mail ("From:" to the body) and of one note."""
+    out: list[tuple[str, str, tuple]] = []
     seen: set[str] = set()
-    for unit, kind in _all_units(results, final):
+    for unit, kind, grp in _all_units(results, final, True):
         if unit not in seen or _HIDDEN.match(unit):      # two "…and 1 more" lines are two counts
             seen.add(unit)
-            out.append((unit, kind))
+            out.append((unit, kind, grp))
     return out
 
 
-def _all_units(results: list[str], final: str) -> list[tuple[str, str]]:
-    """Every cleaned unit of the results with its kind, repeats included (the same event on two days is two units)."""
+def _all_units(results: list[str], final: str, grouped: bool = False) -> list:
+    """Every cleaned unit of the results with its kind, repeats included (the same event on two days is two units).
+    With `grouped`, (unit, kind, group) triples."""
     keep_addr = frozenset(re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", final or ""))
-    out: list[tuple[str, str]] = []
-    for r in results or []:
+    out: list = []
+    for ri, r in enumerate(results or []):
         lines = (r or "").split("\n")
         listy = any(_BULLET.match(ln) for ln in lines)
-        for ln in lines:
+        starter = (re.compile(r"\[\d+\]\s") if any(re.match(r"\[\d+\]\s", ln) for ln in lines)
+                   else re.compile(r"From:") if any(ln.startswith("From:") for ln in lines)
+                   else re.compile(r"Title:") if any(ln.startswith("Title:") for ln in lines) else None)
+        block = 0
+        for li, ln in enumerate(lines):
+            if starter and starter.match(ln):
+                block += 1
             kind = ("item" if _BULLET.match(ln) else "other") if listy else "plain"
+            grp = (ri, "b", block) if (starter and block) else (ri, "l", li)
             for unit in _segments(ln, keep_addr):
                 stamp = re.match(r"\[[^\]]*\]\s*", unit)
                 if stamp:
                     unit = unit[stamp.end():]
                 if unit:
-                    out.append((unit, kind))
+                    out.append((unit, kind, grp) if grouped else (unit, kind))
     return out
 
 
@@ -3688,10 +3792,13 @@ def omitted_split(final: str, results: list[str], thought: str, pieces: list[str
     out (the answer states it, the line shows it, the piece stops short of it). The third value is how many of the `unlisted`
     come from results without bullets (a mail header, a text line): the rest are bullets and "…and N more" counts."""
     f_tokens, f_names = _tok(final), _cap_tokens(final)
+    final_f = strip_window_phrase(final, results)          # the facts the answer gives, less a search-window phrase
     pieces = _pieces_of(thought) if pieces is None else list(pieces)
     unlisted, partial, plain = [], [], 0
     extras = _repeat_extras(results, final)          # the same event on several days: one more item per day the answer states
-    for unit, kind in result_units_tagged(results, final):
+    grouped = result_units_grouped(results, final)
+    touched_groups = {g for u, _k, g in grouped if _unit_touched(u, pieces)}     # a line (or hit, or mail, or note) the thought lists in part
+    for unit, kind, grp in grouped:
         if _bare_date(unit):
             continue
         if kind == "item" and not _HIDDEN.match(unit) and not any(_title_hit(t, f_tokens, 0.75) for t in unit_titles(unit)[:1]):
@@ -3702,11 +3809,11 @@ def omitted_split(final: str, results: list[str], thought: str, pieces: list[str
             if re.search(rf"\b{hidden[1]} more\b", final or "", re.I) or _said(hidden[1], final) and re.search(r"\bmore\b", final or "", re.I):
                 unlisted += [("hidden", str(i)) for i in range(int(hidden[1]))]
             continue
-        keys = unit_keys(unit, final, f_tokens, f_names, kind == "item")
+        keys = unit_keys(unit, final_f, f_tokens, f_names, kind == "item")
         missing = {k for k in keys - _listed(keys, thought) if k[:2] != ("fact", "date")}
         if not missing:
             continue
-        if _unit_touched(unit, pieces):
+        if _unit_touched(unit, pieces) or grp in touched_groups:     # the next sentence of a listed line is not "one more"
             partial += [k for k in sorted(missing) if k[0] == "fact" and k[1] in _HARD]
         elif kind != "other":                        # a header or a summary sentence of a bulleted result is not one of its items
             unlisted.append(sorted(missing)[0])
@@ -3740,6 +3847,40 @@ def _drop_day_headers(result: str) -> str:
     return "\n".join(ln for ln in (result or "").split("\n") if not _DAY_HEADER.match(ln))
 
 
+_DATE_PART = frozenset("""jan feb mar apr may jun jul aug sep sept oct nov dec january february march april june july august september
+october november december mon tue tues wed thu thur thurs fri sat sun monday tuesday wednesday thursday friday saturday sunday due today
+tomorrow yesterday overdue""".split())
+
+
+# words of a bullet's framing, not of its title: clock and zone words, ages, the kind of item ("event: Call with advisor")
+_TITLE_IGNORE = _DATE_PART | frozenset("""am pm pst pdt est edt cst cdt mst mdt utc gmt ago d h w min mins event events reminder reminders task
+tasks todo note notes email emails text texts message messages calendar all day""".split())
+
+
+def item_title(unit: str) -> list[str]:
+    """The title tokens of a cleaned bullet line (its first comma part that is not a time, a day or a date)."""
+    unit = re.sub(r"(\d{1,2}(?::\d\d)?\s*[ap]m)\s+(?:[PMCE][SD]T|UTC|GMT)\b", r"\1", unit, flags=re.I)        # "9:00 AM PST MATH 241 ..."
+    for part in unit_titles(re.sub(r"^\s*all[- ]day\s+(?=\S)", "", unit, flags=re.I)):
+        if any(t not in _DATE_PART and not t.isdigit() for t in part):
+            return part
+    return []
+
+
+def title_stated(piece: str, f_set: set[str]) -> bool:
+    """False when `piece` holds a bullet's whole title and its alphabetic content words are not in the final (all of a one- or
+    two-word title, three quarters of a longer one, so a reworded "dishes get done" passes): the piece would list an item the
+    answer does not state ("Read PHIL 110 chapter 5" over an answer that says "PHIL 110 Intro to Ethics")."""
+    title = item_title(piece)
+    pt = tuple(_tok(piece))
+    if not title or not _in_tokens(tuple(title), list(pt)):
+        return True
+    content = [t for t in title if t.isalpha() and t not in _TITLE_IGNORE and t not in _STOP and len(t) > 2]
+    if not content:
+        return True
+    need = len(content) if len(content) <= 2 else -(-3 * len(content) // 4)       # all of a short title, three quarters of a longer one (a reworded "get done")
+    return sum(1 for t in content if t in f_set) >= need
+
+
 def _extract_core(meta, s, ctx, seed, budget_words: int | None = None):
     """The pieces of an extraction thought: (reads, src, segs, no_match, inj, more) where segs are whole contiguous
     pieces of the turn's results that the final states, and `more` counts result lines with a fact the final states
@@ -3759,12 +3900,16 @@ def _extract_core(meta, s, ctx, seed, budget_words: int | None = None):
         cands = _pick_scored(reads, final, s["prompt"])
         if not cands:
             cands = _pick_scored(reads, final, s["prompt"], loose=True)
+    if cands:
+        f_set0 = set(_tok(final))
+        item_toks0 = [_tok(u) for u, kd in result_units_tagged([r for _n, r in reads], final) if kd == "item"]
+        cands = [c for c in cands if not _is_item(c[2], item_toks0) or title_stated(c[2], f_set0)]      # a bullet piece's title is in the answer
     if field == 1 and len(cands) > 1:
-        cands = _asked_first(cands, s["prompt"])           # a single piece is the one that holds what the question asks for
+        cands = _asked_first(cands, s["prompt"], reads)     # a single piece is the one that holds what the question asks for
     limit = 1 if field else share or (3 if terse else 8)
     budget = budget_words or (24 if (terse or field or share) else 40)
     chosen, words = [], 0
-    need = _result_facts(final, [r for _n, r in reads])
+    need = _result_facts(strip_window_phrase(final, [r for _n, r in reads]), [r for _n, r in reads])
     for c in cands:
         w = len(c[2].split())
         if len(chosen) >= limit:
@@ -3922,18 +4067,54 @@ _ASK_TIME = re.compile(r"\b(?:when|what time|how long|until when|what day|which 
 _ASK_AMOUNT = re.compile(r"\b(?:how much|how many|cost|price|total|owe|balance|percent)\b|\$", re.I)
 
 
-def _asked_first(cands: list, prompt: str) -> list:
-    """Single-piece thoughts: of the pieces that score close to the best, the one that holds the kind of fact the question
-    asks for (a time for "when / how long", an amount for "how much") goes first."""
+_HOWTO_ASK = re.compile(r"\bhow (?:do|can|should|would|could|to|does)\b|\bwhat (?:do|should) i (?:bring|need|do|wear|pack|prepare)\b|\bwhat to\b", re.I)
+_HOWTO_CUE = re.compile(r"\b(?:submit|turn(?:ed|ing)? in|hand(?:ed|ing)? in|upload|send|bring|use|apply|log ?in|sign|connect|open|click|follow|pay|"
+                        r"register|reply|call|email|text|attach|share|press|tap|select|wear|pack|need|require|must|should)\w*", re.I)
+_WHERE_ASK = re.compile(r"\bwhere\b", re.I)
+_WHERE_CUE = re.compile(r"\b(?:room|hall|building|address|street|ave(?:nue)?|floor|zoom|link|location|campus|lab|office|downtown|at the|in the)\b", re.I)
+_WHY_ASK = re.compile(r"\bwhy\b", re.I)
+_WHY_CUE = re.compile(r"\b(?:because|since|so that|due to|reason|in order to)\b", re.I)
+_WHO_ASK = re.compile(r"\bwho(?:m|se|['’]s)?\b", re.I)
+_FOLLOWUP = re.compile(r"\b(?:too|also|again|else|instead)\b|^\W*(?:and|what about|how about|ok(?:ay)?(?: and)?|then)\b", re.I)
+_RECENT_TOOLS = frozenset({"view_messages", "summarize_messages", "view_emails", "summarize_emails"})
+_ASK_STOP = frozenset("""what whats when whens where wheres who whos whom whose which why how does did are was were can could should would will
+have has had get got been this that there their them they with from about into your mine the and for any some""".split())
+
+
+def _stem(w: str) -> str:
+    return w[:5]
+
+
+def _ask_fit(text: str, prompt: str, want_time: bool, want_amt: bool) -> float:
+    """How well a piece answers the question's wh-word: a time for when, an amount for how much, a how-to verb for how / what
+    do I bring, a place for where, a reason for why, and the prompt's own content words."""
+    fit = 0.0
+    if want_time and time_tokens(text):
+        fit += 1.0
+    if want_amt and amount_tokens(text):
+        fit += 1.0
+    if _HOWTO_ASK.search(prompt) and _HOWTO_CUE.search(text):
+        fit += 1.0
+    if _WHERE_ASK.search(prompt) and _WHERE_CUE.search(text):
+        fit += 1.0
+    if _WHY_ASK.search(prompt) and _WHY_CUE.search(text):
+        fit += 1.0
+    if _WHO_ASK.search(prompt) and re.search(r"\b[A-Z][a-z]+\b", text[1:]):
+        fit += 0.25
+    pw = {_stem(w) for w in _words(prompt) if w not in _ASK_STOP}
+    pw |= {_stem(w) for w in re.findall(r"[a-z]{4,}", (prompt or "").lower()) if w not in _ASK_STOP and w not in _STOP}
+    return fit + 0.5 * len(pw & {_stem(w) for w in _words(text)})
+
+
+def _asked_first(cands: list, prompt: str, reads: list | None = None) -> list:
+    """Single-piece thoughts: of the pieces that score close to the best, the one that answers what the question asks goes
+    first: a time for "when / how long", an amount for "how much", the sentence that says how for "how do I ... / what do I
+    bring", the prompt's own words; and, for a follow-up over texts or mail ("Mom too?"), the newest message."""
     top = cands[0][0]
     want_time, want_amt = bool(_ASK_TIME.search(prompt)), bool(_ASK_AMOUNT.search(prompt))
-    if not (want_time or want_amt):
-        return cands
-
-    def fit(c):
-        return int((want_time and bool(time_tokens(c[2]))) or (want_amt and bool(amount_tokens(c[2]))))
+    recent = bool(reads) and all(n in _RECENT_TOOLS for n, _r in reads) and (len(prompt.split()) <= 5 or bool(_FOLLOWUP.search(prompt)))
     near = [c for c in cands if c[0] >= 0.3 * top]
-    best = max(near, key=lambda c: (fit(c), c[0]))
+    best = max(near, key=lambda c: (round(_ask_fit(c[2], prompt, want_time, want_amt), 2), -c[1] if recent else 0, c[0]))
     return [best] + [c for c in cands if c is not best]
 
 
@@ -4165,7 +4346,7 @@ def fragment_problems(text: str, results: list[str], counts: list[str] = ()) -> 
             after = ln[at + len(seg):].lstrip(" ,;")
             if seg.endswith(")") and re.match(r"[a-z]", after):
                 errs.append(f"fragment: {seg[:50]!r} stops after a parenthetical whose clause goes on ({after[:20]!r})")
-            elif re.search(r"\b(?:me|last|over|into|per)$", seg, re.I) and re.match(r"\w", after) and not seg.endswith("."):
+            elif re.search(r"\b(?:me|last|over|into|per)$", seg, re.I) and re.match(r"[\w$€£]", after) and not seg.endswith("."):
                 errs.append(f"fragment: {seg[:50]!r} is cut before the rest of its clause ({after[:20]!r})")
             if re.match(r"[a-z]", seg) and re.search(r",\s+$", ln[:at]):
                 errs.append(f"fragment: {seg[:50]!r} opens on the tail of a list")
@@ -4249,6 +4430,31 @@ def bullet_items_left(final: str, results: list[str], thought: str) -> int | Non
         stated = max(distinct, min(len(texts), stated_in_final))       # the repeats the answer also states
         left += max(0, stated - _title_hit(list(key), tt, 0.9))
     return left if seen else None
+
+
+def bullet_title_problems(text: str, final: str, results: list[str]) -> list[str]:
+    """Every piece that holds a bullet line's whole title has all that title's alphabetic tokens in the answer."""
+    body = extract_body(text)
+    if body is None:
+        return []
+    fset = set(_tok(final))
+    lines = []
+    for r in results or []:
+        for ln in (r or "").split("\n"):
+            if _BULLET.match(ln):
+                cl = _clean_line(ln)
+                lines.append((_tok(cl), cl))
+    errs = []
+    for p in body:
+        if _MORE.fullmatch(p):
+            continue
+        pt = _tok(p)
+        for lt, cl in lines:
+            if len(pt) >= 2 and _in_tokens(tuple(pt), lt) and not title_stated(p, fset):
+                miss = [t for t in item_title(p) if t.isalpha() and t not in fset and t not in _TITLE_IGNORE and t not in _STOP and len(t) > 2]
+                errs.append(f"item: {p[:40]!r} lists a bullet whose title word(s) {miss[:3]} the answer does not state")
+                break
+    return errs
 
 
 def facts_unlisted(text: str, final: str, results: list[str]) -> list[str]:

@@ -80,6 +80,7 @@ FOLLOW = ["and what's on {y}?", "what's going on {y} then?", "ok and what's happ
           "then {y}: anything i need to get done?", "and my plans for {y}?", "what is my plan for {y} then?",
           "sure, what's coming up {y}?", "next, anything i should handle {y}?", "what about my to-dos {y}: anything due?"]
 FPRE = ["", "", "", "", "ok ", "hmm ", "so ", "cool, ", "alright "]
+
 CORRECT = ["no, i meant {y}: anything coming up?", "sorry i mean {y}, what's on my plate?", "i meant {y}, anything due?",
            "oops, i mean {y}, anything planned?", "actually i want {y}: anything i should know?", "wait, i mean {y}, what am i missing?",
            "i mean {y}, what's coming up", "no i meant what's on {y}", "sorry, i meant what's going on {y}",
@@ -87,6 +88,32 @@ CORRECT = ["no, i meant {y}: anything coming up?", "sorry i mean {y}, what's on 
            "i meant {y} instead, anything coming up?", "no no, {y}: what's on my plate?", "i mean {y}, what's up for me",
            "sorry, wrong day, i mean {y}: anything i need to handle?", "ah i meant {y}, what's happening",
            "i'm asking about {y}, what's coming up?", "no, {y}. what am i missing?", "wait no, i mean what's planned {y}"]
+STEMS += ["how does {x} look: anything coming up?", "what do i have to get done {x}", "is there anything i should handle {x}",
+          "tell me what's coming up {x}", "check {x} for me: what's coming up?", "walk me through {x}: anything planned?",
+          "what's on my plate for {x}", "then anything i need to do {x}", "what's the story {x}, anything due?",
+          "what's my schedule {x}: anything due?", "how about {x}: anything planned?", "and what's up {x}, anything planned?"]
+FOLLOW += ["ok what about my schedule {y}: anything due?", "how does {y} look: anything coming up?", "and what's up {y}, anything planned?",
+           "check {y} for me: what's coming up?", "what do i have to get done {y}?", "how about {y}: anything planned?",
+           "is there anything i should handle {y}?", "tell me what's coming up {y}", "walk me through {y}: anything planned?",
+           "and what's on my plate for {y}?", "then anything i need to do {y}?", "what's the story {y}, anything due?"]
+CORRECT += ["oops i mean what's on my plate {y}", "not that one, {y}: what's coming up?", "i said {y}, anything planned?",
+            "no i meant {y}, anything i need to handle", "the other one: {y}, what's coming up?", "hold on, i meant {y}: anything due?"]
+
+
+def _spellings(stems):
+    """Each stem again with the way people type it ('whats', 'what is'), so a day-normalised stem has several distinct wordings."""
+    out = list(stems)
+    for t in stems:
+        for a, b in (("what's", "whats"), ("what's", "what is"), ("anything i need to", "anything i have to"),
+                     ("coming up", "going on"), ("planned", "scheduled"), ("anything due", "is anything due"),
+                     ("what am i missing", "what am i forgetting")):
+            if a in t and t.replace(a, b) not in out:
+                out.append(t.replace(a, b))
+    return out
+
+
+FOLLOW, CORRECT, STEMS = _spellings(FOLLOW), _spellings(CORRECT), _spellings(STEMS)
+
 # Corrections the host's follow-up pattern does not cover are kept only when the dry-run still reaches the plan tool.
 CORRECT_ALT = ["no, i meant {y}", "sorry, i meant {y}", "i meant {y}", "actually {y}", "i was asking about {y}", "oh i meant {y}"]
 DRAFT = ["draft a message responding to {p}", "write a reply to {p}", "draft something back to {p}", "respond to {p} for me, just a draft",
@@ -101,7 +128,11 @@ RECALL_D = ["wait which day was {ref}", "sorry, what day is {ref}", "remind me w
             "{ref} was which day again"]
 CAL_Q = ["which events do i have {y}", "anything on my calendar {y}?", "check my calendar for {y}", "what appointments do i have {y}",
          "any meetings on my calendar {y}"]
-PAST_Q = ["what was on my calendar {y}", "what did i have {y}", "what events did i have {y}", "anything on my calendar {y}?"]
+CAL_Q += ["what's on my calendar {y}", "show me my calendar for {y}", "do i have any events {y}", "list my events for {y}",
+          "what meetings do i have {y}", "pull up my calendar for {y}", "any events on my calendar {y}?", "what's in my calendar {y}"]
+PAST_Q = ["what was on my calendar {y}", "what did i have {y}", "what events did i have {y}", "anything on my calendar {y}?",
+          "what meetings did i have {y}", "what appointments did i have {y}", "show me my calendar from {y}", "what was i doing {y}",
+          "which events did i have {y}", "list my events from {y}"]
 
 # What a person might answer, in their own words (first person). The text sent is these words, capitalised and ended.
 SAY = {
@@ -135,17 +166,17 @@ def said_text(phrase):
 # user supplies the content (SAY, below).
 DRAFTS = {
     "Maya Chen": ["Thanks for the heads up about the milk. Can I get back to you in a bit?", "Saw your note about the milk. Let me check and I'll text you back.",
-                  "Got your message about the milk. Give me a little while and I'll reply properly.", "Do you need the milk tonight or can it wait?"],
+                  "Got your message about the milk. Give me a little while and I'll reply properly.", "Got your note about the milk. Is it needed tonight? I'll reply properly soon."],
     "Theo Park": ["Thanks for checking about coffee. Can I get back to you shortly?", "Saw your message about coffee. Let me check my day and I'll reply soon.",
-                  "About coffee, what time were you thinking?", "Got your text about coffee. Give me a bit and I'll confirm."],
+                  "About coffee, were you hoping for a particular time? Let me check and I'll confirm.", "Got your text about coffee. Give me a bit and I'll confirm."],
     "Jordan Ellis": ["Got your message about the analysis part. Can I get back to you in a bit?", "Thanks for checking in on the analysis part. Let me look and I'll reply shortly.",
                      "About the analysis part, when do you need it by?", "Saw your question about the analysis. I'll reply properly in a little while."],
     "Nadia Khan": ["Thanks for sending the photos. Can I get back to you about them in a bit?", "Got your message about the photos. I'll reply properly soon.",
-                   "About the photos, which ones did you most want me to look at?", "Saw your note about the photos. Give me a little while to reply."],
+                   "About the photos, which ones were you most keen to hear about?", "Saw your note about the photos. Give me a little while to reply."],
     "Carmen Rivera": ["Got your message about Mom's gift. Can I get back to you in a bit?", "Thanks for asking about Mom's gift. Let me think and I'll reply soon.",
                       "About Mom's gift, do you have any ideas?", "Saw your text about Mom's gift. Give me a little while to reply."],
     "Ben Ortiz": ["Thanks for the invite to the long run. Can I get back to you in a bit?", "Got your message about the long run. Let me check and I'll reply soon.",
-                  "About the long run, what time are you meeting?", "Saw your text about the long run. Give me a little while to reply."],
+                  "About the long run, can you tell me more about it? I'll get back to you.", "Saw your text about the long run. Give me a little while to reply."],
     "Aisha Karim": ["Got your message about the practice problems. Can I get back to you in a bit?", "Thanks for the reminder about the practice problems. Let me check and I'll reply soon.",
                     "Which practice problems did you mean?", "Saw your text about the practice problems. Give me a little while to reply."],
     "Dad": ["Thanks for checking in about the flight. Can I get back to you in a bit?", "Got your message about the flight home. Let me check and I'll text you back.",
@@ -153,7 +184,7 @@ DRAFTS = {
     "Hana Kowalczyk": ["Got your message about the regrade. Can I get back to you in a bit?", "Thanks for checking in on the regrade. Let me look and I'll reply soon.",
                        "About the regrade, have you heard anything on your end?", "Saw your note about the regrade. Give me a little while to reply."],
     "Naomi Brandt": ["Got your message about moving our call. Can I get back to you shortly?", "Thanks for asking about moving the call. Let me check my calendar and I'll reply soon.",
-                     "About moving our call, what days work for you next week?", "Saw your note about the call. Give me a little while to reply."],
+                     "About moving our call, let me check my calendar and I'll get back to you.", "Saw your note about the call. Give me a little while to reply."],
 }
 GREET = ["", "", "Hi {nm}, ", "Hey {nm}, ", "Hey {nm}! ", "{nm}, "]
 
@@ -209,51 +240,14 @@ def first_prompt(rng, x, *, typo_ok=True):
     for _ in range(40):
         stem = rng.choice(STEMS).format(x=x)
         p = rng.choice(PRE) + stem + (rng.choice(SUF) if not stem.endswith("?") else "")
-        if day_plan_question(p) and not _leaks().leaks(p)[0]:
+        if day_plan_question(p) and not _leaks().leaks(p)[0] and not near_gate(p):
             pool.append(p)
     if not pool:
         raise ValueError(f"no day question for {x!r}")
     return pool[0]
 
 
-_GATE_CACHE: list = []
-_DAYWORD = re.compile(r"\b(?:(?:the rest of )?(?:this |next |the )?week(?:end)?|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow)\b")
-
-
-def _norm_tokens(p):
-    t = _DAYWORD.sub("D", p.lower())
-    return re.sub(r"[^a-z0-9' ]", " ", t).split()
-
-
-def _tok_dist(a, b):
-    prev = list(range(len(b) + 1))
-    for i, x in enumerate(a, 1):
-        cur = [i]
-        for j, y in enumerate(b, 1):
-            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x != y)))
-        prev = cur
-    return prev[-1]
-
-
-def gate_prompts():
-    """The brief.yaml toolbench prompts, as day-neutral token lists; training follow-ups stay more than one token away."""
-    if not _GATE_CACHE:
-        import pathlib
-        path = pathlib.Path(__file__).resolve().parents[3] / "scripts" / "toolbench" / "cases" / "brief.yaml"
-        text = path.read_text() if path.exists() else ""
-        for m in re.finditer(r'^\s*prompt:\s*"((?:[^"\\]|\\.)*)"', text, re.M):
-            _GATE_CACHE.append(_norm_tokens(m.group(1)))
-        if not _GATE_CACHE:         # the cases file is missing: keep the wordings that were in it on 2026-11-02
-            for p in ["and friday?", "and for friday?", "ok and then friday", "and for sunday?", "what about saturday", "i mean this week",
-                      "i mean everything, texts and emails too", "and the rest of the week?", "how about this weekend",
-                      "anything else I have to do this week", "ok and how does tomorrow look then?"]:
-                _GATE_CACHE.append(_norm_tokens(p))
-    return _GATE_CACHE
-
-
-def near_gate(p):
-    toks = _norm_tokens(p)
-    return any(_tok_dist(toks, g) <= 1 for g in gate_prompts())
+_norm_tokens, _tok_dist, gate_prompts, near_gate, stem_key = S._norm_tokens, S._tok_dist, S.gate_prompts, S.near_gate, S.stem_key
 
 
 def follow_prompt(rng, y, previous, *, correct=False):
@@ -344,7 +338,7 @@ _REPEAT: dict = {}
 REPEAT_CAP = 2
 
 
-def attempt(make, rng, tries=8):
+def attempt(make, rng, tries=40):
     """A scenario that runs as scripted through the real host (dry-run), built twice from one seed so the kept copy is untouched.
     Follow-up wordings repeat across conversations (``and friday?`` folds to the same prompt), so the cap is per wording."""
     last = None
@@ -355,7 +349,7 @@ def attempt(make, rng, tries=8):
         except Exception as exc:  # noqa: BLE001
             last = f"build {exc!r:.160}"
             continue
-        key = sc.prompt.strip().lower()
+        key = stem_key(sc.prompt)
         if _REPEAT.get(key, 0) >= REPEAT_CAP:
             last = "wording used too often"
             continue
@@ -564,7 +558,7 @@ def make_calendar(rng, reminder_only=False):
     opts = [t.format(y=said2) for t in CAL_Q]
     rng.shuffle(opts)
     from service.model_only import day_plan_question
-    prompt = next((p for p in opts if not day_plan_question(p, q) and not _leaks().leaks(p)[0]), None)
+    prompt = next((p for p in opts if not day_plan_question(p, q) and not _leaks().leaks(p)[0] and not near_gate(p)), None)
     if prompt is None:
         raise ValueError("no calendar prompt")
     res = w.t_get_upcoming(period=arg2)

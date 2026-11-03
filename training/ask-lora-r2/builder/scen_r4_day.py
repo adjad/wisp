@@ -68,7 +68,7 @@ def uniq(rng, *opts, plan=None):
     ones it does not (a calendar ask)."""
     from scen_r2_act import _leaks
     from service.model_only import day_plan_question
-    fits = [o for o in opts if not _leaks().leaks(o)[0] and (plan is None or day_plan_question(o) == plan)]
+    fits = [o for o in opts if not _leaks().leaks(o)[0] and (plan is None or day_plan_question(o) == plan) and not near_gate(o)]
     ok = [o for o in fits if o not in USED_PROMPTS] or fits
     if not ok:
         raise ValueError(f"no usable prompt among {list(opts)[:4]} (plan={plan})")
@@ -245,8 +245,8 @@ def win(rng, res, p=0.75):
         return ""
     ck = lambda h, mi: f"{int(h) % 12 or 12}{':' + mi if mi != '00' else ''} {'AM' if int(h) < 12 else 'PM'}"
     a, b, n = ck(m.group(2), m.group(3)), ck(m.group(4), m.group(5)), m.group(1)
-    return " " + rng.choice([f"I checked {a} to {b} for stretches of {n} minutes or more.",
-                             f"That covers {a} to {b}, counting only stretches of {n} minutes or more."])
+    return " " + rng.choice([f"I checked within {a} to {b} for stretches of {n} minutes or more.",
+                             f"I searched within {a} to {b}, counting only stretches of {n} minutes or more."])
 
 
 def rng_txt(g):
@@ -361,6 +361,80 @@ def calendar_reply(rng, items, day, now):
     if len(items) >= 4:
         return f"{label} has {counts(items)}:\n" + "\n".join("- " + bullet(i, True) for i in sorted(items))
     return agenda(items, fin(rng, f"On {label} you have", f"{label} has"), loc=True)
+
+
+# ---- gate-wording proximity: training prompts stay more than one token from the toolbench prompts (scripts/toolbench/cases/brief.yaml)
+_GATE_CACHE: list = []
+_DAYWORD = re.compile(r"\b(?:(?:the rest of )?(?:this |next |the )?week(?:end)?|(?:mon|tue|wed|thu|thr|fri|sat|sun)[a-z]{0,8}|today|tomorrow)\b")
+_LEAD_FILL = {"ok", "okay", "hmm", "so", "cool", "alright", "hey", "um", "hi", "quick", "one", "now", "then", "also", "wait", "well", "sure", "and"}
+_TAIL_FILL = {"pls", "thanks", "please", "then", "too", "now", "instead", "again"}
+
+
+def _norm_tokens(p):
+    t = _DAYWORD.sub("D", p.lower())
+    return re.sub(r"[^a-z0-9' ]", " ", t).split()
+
+
+def _strip_fill(toks):
+    """The tokens without leading fillers ('ok so', 'hey', 'and') and trailing ones ('pls', 'for me', 'thanks', 'then')."""
+    toks = list(toks)
+    while toks and toks[0] in _LEAD_FILL:
+        toks.pop(0)
+    while toks:
+        if toks[-1] in _TAIL_FILL:
+            toks.pop()
+        elif toks[-2:] == ["for", "me"]:
+            toks = toks[:-2]
+        else:
+            break
+    return toks
+
+
+def _tok_dist(a, b):
+    prev = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        cur = [i]
+        for j, y in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x != y)))
+        prev = cur
+    return prev[-1]
+
+
+def gate_prompts():
+    """The brief.yaml toolbench prompts, as day-neutral token lists."""
+    if not _GATE_CACHE:
+        import pathlib
+        path = pathlib.Path(__file__).resolve().parents[3] / "scripts" / "toolbench" / "cases" / "brief.yaml"
+        text = path.read_text() if path.exists() else ""
+        for m in re.finditer(r'^\s*prompt:\s*"((?:[^"\\]|\\.)*)"', text, re.M):
+            _GATE_CACHE.append(_norm_tokens(m.group(1)))
+        if not _GATE_CACHE:         # the cases file is missing: keep the wordings that were in it on 2026-11-02
+            for p in ["and friday?", "and for friday?", "ok and then friday", "and for sunday?", "what about saturday", "i mean this week",
+                      "i mean everything, texts and emails too", "and the rest of the week?", "how about this weekend",
+                      "anything else I have to do this week", "ok and how does tomorrow look then?",
+                      "what is my plan for saturday", "which events do i have this week"]:
+                _GATE_CACHE.append(_norm_tokens(p))
+    return _GATE_CACHE
+
+
+def near_gate(p):
+    """True when ``p`` is within one token of a gate prompt, after day words (typos too) are normalised and fillers (a prefix, a
+    suffix) are stripped from either side; the plain and the stripped forms are both compared."""
+    toks = _norm_tokens(p)
+    forms = [toks, _strip_fill(toks)]
+    for g in gate_prompts():
+        for gf in (g, _strip_fill(g)):
+            if not gf:
+                continue
+            for f in forms:
+                if f and _tok_dist(f, gf) <= 1:
+                    return True
+    return False
+
+
+def stem_key(p):
+    """A prompt's repeat key: its day-normalised stem with fillers stripped."""
+    return " ".join(_strip_fill(_norm_tokens(p)))
 
 
 def sc(prompt, now, w, steps, notes):
@@ -712,8 +786,16 @@ def say_entry(e, loc=False):
     return f"“{title}” at {t} (from {src_kind(src)})" if t else f"“{title}” (from {src_kind(src)})"
 
 
-def say_over(items):
-    return join(f"{t} ({lab.replace('Overdue · ', '')} overdue)" for t, lab in items)
+def join_more(xs, more=0):
+    """``join`` for a list that a '..and N more' follows: commas only, so 'A, B, and 2 more' never reads 'A and B, and 2 more'."""
+    xs = list(xs)
+    if not more:
+        return join(xs)
+    return ", ".join(xs) + f", and {more} more"
+
+
+def say_over(items, more=0):
+    return join_more((f"{t} ({lab.replace('Overdue · ', '')} overdue)" for t, lab in items), more)
 
 
 def lc_first(s):
@@ -725,9 +807,9 @@ def say_wait(w):
     return f"{who} is waiting on a reply: {lc_first(summ.rstrip('.'))}"
 
 
-def say_other(items, with_day=True):
-    """The plan's 'Other to-dos': a due label ('Sat', 'Fri 11:59 PM') stays as the plan printed it."""
-    return join(f"{t}" + (f" ({lab})" if lab and with_day else "") for t, lab in items)
+def say_other(items, with_day=True, more=0):
+    """The plan's 'Other to-dos': a due label ('Sat', 'Fri 11:59 PM') stays as the plan printed it. ``more`` trails as ', and N more'."""
+    return join_more((f"{t}" + (f" ({lab})" if lab and with_day else "") for t, lab in items), more)
 
 
 def clock_of(when):
@@ -741,17 +823,19 @@ def other_sentence(rng, plan):
     """The plan's 'Other to-dos' in prose. The tool's '...and N more' trails the whole section, so it closes the last sentence."""
     dated = [(t, lab) for t, lab in plan.other if lab]
     undated = [(t, lab) for t, lab in plan.other if not lab]
-    more = f", and {plan.more['other']} more" if plan.more.get("other") else ""
+    more = plan.more.get("other", 0)
     out = []
     if dated:
-        out.append(rng.choice(["Coming up after that: ", "Also coming up: "]) + say_other(dated) + (more if not undated else "") + ".")
+        out.append(rng.choice(["Coming up after that: ", "Also coming up: "]) + say_other(dated, more=(more if not undated else 0)) + ".")
     if undated:
-        out.append(rng.choice(["Also open: ", "Still open: ", "Whenever there's time: "]) + say_other(undated) + more + ".")
+        out.append(rng.choice(["Also open: ", "Still open: ", "Whenever there's time: "]) + say_other(undated, more=more) + ".")
     return " ".join(out)
 
 
 PLAN_LEADS_TODAY = ["Today you have {x}.", "On today's list: {x}.", "Today holds {x}."]
 PLAN_LEADS_DAY = ["{W} has {x}.", "On {w} you have {x}.", "For {w} there's {x}."]
+# 'tomorrow' takes no 'On': 'On tomorrow you have' is not English.
+PLAN_LEADS_TOMORROW = ["{W} has {x}.", "{W} you have {x}.", "For {w} there's {x}."]
 PLAN_NONE = ["Nothing is on the clock {w}.", "Nothing is time-bound {w}.", "{W} has nothing on the clock."]
 
 
@@ -771,13 +855,13 @@ def narrate_day(rng, plan, *, bullets=None):
         if plan.more.get("day"):
             phrases.append(f"{plan.more['day']} more")
         if not bullets:
-            tmpl = PLAN_LEADS_TODAY if w == "today" else PLAN_LEADS_DAY
+            tmpl = PLAN_LEADS_TODAY if w == "today" else PLAN_LEADS_TOMORROW if w == "tomorrow" else PLAN_LEADS_DAY
             parts.append(rng.choice(tmpl).format(x=join(phrases), W=W, w=w) if w != "today" else rng.choice(tmpl).format(x=join(phrases)))
     else:
         parts.append(rng.choice(PLAN_NONE).format(w=w, W=W))
     extra = []
     if plan.overdue:
-        extra.append(("Overdue: " + say_over(plan.overdue) + (f", and {plan.more['overdue']} more" if plan.more.get("overdue") else "") + "."))
+        extra.append(("Overdue: " + say_over(plan.overdue, plan.more.get("overdue", 0)) + "."))
     if plan.waiting:
         extra.extend(say_wait(x) + "." for x in plan.waiting) if bullets else extra.append(" ".join(say_wait(x) + "." for x in plan.waiting))
     if plan.other:
@@ -867,8 +951,7 @@ def narrate_range(rng, plan):
     if plan.waiting:
         tail.append("- " + " ".join(say_wait(x) + "." for x in plan.waiting))
     if plan.other:
-        tail.append("- Also open: " + say_other(plan.other, with_day=False)
-                    + (f", and {plan.more['other']} more" if plan.more.get("other") else ""))
+        tail.append("- Also open: " + say_other(plan.other, with_day=False, more=plan.more.get("other", 0)))
     if plan.more.get("truncated"):
         tail.append("- and a few more that the list cut off")
     if not lines and not tail:

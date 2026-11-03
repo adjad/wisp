@@ -368,6 +368,17 @@ def corrupt():
                 r"(free \d{1,2}:\d\d [AP]M)–\d{1,2}:\d\d [AP]M", r"\1", rng_meta["thought"], count=1)})
             cases["think:iso_timestamp~slot"] = (rng_row, {**rng_meta, "thought": rng_meta["thought"].rstrip()
                                                            + " Free until 2027-03-09T22:00:00-08:00."})
+            cases["think:slot_window"] = (rng_row, {**rng_meta, "thought": rng_meta["thought"].replace("In the free slots:", "In the free slots: 1:07 AM–11:51 PM;", 1)
+                                                    if "In the free slots:" in rng_meta["thought"] else rng_meta["thought"].rstrip() + " Free 1:07 AM–11:51 PM."})
+            def _unstated_bullet(e):
+                fs = set(thinking._tok(e["messages"][-1].get("content") or ""))
+                return next((b for r in _tools(e) for ln in r.split("\n") if thinking._BULLET.match(ln)
+                             for b in [thinking._clean_line(ln)] if thinking.item_title(b) and not thinking.title_stated(b, fs)), None)
+            try:
+                tit_row, tit_meta = first_m(lambda e, m: m.get("think") and m.get("step_kind") == "narrate" and _unstated_bullet(e))
+                cases["think:item_title"] = (tit_row, {**tit_meta, "thought": f"In the calendar: {_unstated_bullet(tit_row)}. Answer with those."})
+            except SystemExit:
+                print("skipped  think:item_title (no bullet title the answer leaves out)")
             # "plus N more" counts the result's items: the bullets (and a "…and N more" line) the thought does not list
             blt_row, blt_meta = first_m(lambda e, m: m.get("think") and m.get("step_kind") == "narrate"
                                         and thinking._MORE.search(m.get("thought") or "")
@@ -432,10 +443,47 @@ def corrupt():
         # absence phrases the first regex missed
         for _txt in ("No one has texted you today.", "Nobody has replied.", "It's all clear today.", "You're all caught up.",
                      "You're free all day.", "Your schedule is wide open.", "I haven't seen anything from Maya.",
-                     "You haven't got any mail from Dana."):
+                     "You haven't got any mail from Dana.", "Nothing from Maya yet.", "I didn't find any messages from Dana.",
+                     "Your inbox looks quiet.", "Nothing is scheduled for Friday."):
             assert thinking.absence_problems({"family": "right_source"}, [_u, {"role": "assistant", "content": _txt}]), _txt
         assert thinking.absence_problems({"family": "instructions_r4"}, [_u, {"role": "assistant", "content": "Nobody has replied."}]), \
             "instructions_r4 includes read requests, so it is checked"
+        assert not thinking.absence_problems({"family": "right_source"}, [_u, {"role": "assistant", "content": "Nothing is settled yet."}]), \
+            "'Nothing is settled' is chat, not an absence claim"
+        # a cut before an amount: "Can you send me | $30 for Mom's gift"
+        assert thinking.fragment_problems("From the texts: Carmen Rivera: Can you send me", ["Carmen Rivera — Carmen: Can you send me $30 for Mom's gift?"])
+        assert not any(t.strip().endswith(("send me", "send me.")) for t in [x[0] for x in thinking._atoms_for(
+            "Carmen Rivera: Can you send me $30 for Mom's gift?", thinking.time_tokens(""), thinking.amount_tokens(""))] if t)
+        # the search window of a find_free_time header is not a free slot, whatever the answer says ("I searched within 9 AM to 6 PM")
+        _win = ("60-minute candidate slots, 9:00–18:00 (America/Los_Angeles):\n  Wednesday, 2026-11-25: 9:00 AM–10:00 AM "
+                "(2026-11-25T09:00:00-08:00 → 2026-11-25T10:00:00-08:00; free until 2026-11-25T10:00:00-08:00), 2:15 PM–3:15 PM "
+                "(2026-11-25T14:15:00-08:00 → 2026-11-25T15:15:00-08:00; free until 2026-11-25T18:00:00-08:00)")
+        _winfin = "Wednesday is free from 2:15 PM to 6:00 PM. I searched within 9 AM to 6 PM."
+        assert thinking.window_range_problems("In the free slots: 9:00 AM–6:00 PM; 2:15 PM–6:00 PM. Answer with those.", [_win]), "the window is no slot"
+        assert not thinking.window_range_problems("In the free slots: Wednesday, Nov 25: free 9:00 AM–10:00 AM, 2:15 PM–6:00 PM.", [_win])
+        assert thinking.window_range_problems("In the free slots: Wednesday, Nov 25: free 9:00 AM–12:00 PM.", [_win]), "a range no slot produces"
+        assert not any("9:00 AM–6:00 PM" in x for x in thinking._segments(_win)), thinking._segments(_win)
+        assert any("2:15 PM–6:00 PM" in x for x in thinking._segments(_win))
+        assert not thinking.window_range_problems("In the free slots: free 9:00 AM–6:00 PM", [_win.replace("free until 2026-11-25T10:00:00", "free until 2026-11-25T18:00:00")]), \
+            "a slot that really spans the window"
+        # the next sentence of a listed line is not "one more"; the next mail / hit / note block is
+        _mail = ("Account: sam@linden.example\nFrom: LindenLearn\nSubject: Assignment due soon\nDate: Sat Jan 30, 2027 4:45 AM\n\n"
+                 "MATH 241 Problem Set 7 is due Wednesday, February 3 at 11:59 PM. Submit it as a single PDF.")
+        _mfin = "MATH 241 Problem Set 7 is due Wednesday, February 3 at 11:59 PM, and it needs to go in as a single PDF."
+        _mth = "From the email: MATH 241 Problem Set 7 is due Wednesday, February 3 at 11:59 PM. Start with those, then cover the rest."
+        assert thinking.items_omitted(_mfin, [_mail], _mth) == 0, thinking.omitted_split(_mfin, [_mail], _mth)
+        assert thinking.items_omitted(_mfin, [_mail + "\n\nFrom: Registrar\nSubject: single PDF\n\nSubmit as a single PDF."], _mth) >= 0
+        # a bullet piece's title is in the answer: "Read PHIL 110 chapter 5" over an answer that says "PHIL 110 Intro to Ethics"
+        _bul = "Next 10 days: 3 events\n- **11:00 AM** — PHIL 110 Intro to Ethics · Mercer Hall 12\n- **9:00 PM** — Read PHIL 110 chapter 5"
+        _bfin = "You have PHIL 110 Intro to Ethics at 11 AM (Mercer Hall 12), and a 9 PM reminder."
+        assert thinking.bullet_title_problems("From the calendar: 9:00 PM Read PHIL 110 chapter 5", _bfin, [_bul]), "title word not in the answer"
+        assert not thinking.bullet_title_problems("From the calendar: 11:00 AM PHIL 110 Intro to Ethics, Mercer Hall 12", _bfin, [_bul])
+        assert thinking.item_title("All day Veterans Day") == ["veterans", "day"], thinking.item_title("All day Veterans Day")
+        # an ordinal ask of the assistant's own words takes the span from the reply that holds the answer
+        _hs = [("user", "which questions should i ask"), ("assistant", "A strong first question is, what does success look like in this role after six months? It shows results."),
+               ("assistant", "Finally, edit what sits on open surfaces, since three pretty objects look calm, while twelve look like clutter.")]
+        assert thinking._ordinal_turn(_hs, "I said that near the start. What does success look like in this role after six months?",
+                                      "what was the first quesiton you suggested asking")[0][1].startswith("A strong first question")
         # a piece is a whole clause: not cut before the object ("send me ..."), not the tail of a list, not before a parenthetical's verb
         _src = ["Carmen Rivera: Can you send me the receipt today.", "Your mail, texts, notes, and what you tell me are read and kept on this Mac.",
                 "A scheduled or automatic Focus (a set time, an app, Sleep) isn't recorded."]
