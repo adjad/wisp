@@ -1541,12 +1541,13 @@ def ideal_trips(label: dict) -> list[str]:
 
 
 def ideal_trip_problems(trip: dict, pct: float = IDEAL_TRIP_PCT) -> list[str]:
-    """Kinds with a term (or below/above ceiling) that more than `pct` percent of their ideals trip (and more than one row): the
-    reward and the labels disagree, so the export stops instead of silently thinning the kind."""
+    """Kinds with a term (or below/above ceiling) that more than `pct` percent of their ideals trip: the reward and the labels
+    disagree, so the export stops instead of silently thinning the kind. The rule is purely the rate: with the default 1% a kind of
+    fewer than 100 rows tolerates no trip at all (one row is already above 1%), a kind of 100 or more tolerates one per 100."""
     out = []
     for kind, rec in sorted(trip.items()):
         for term, n in sorted(rec["by_term"].items()):
-            if n > 1 and 100.0 * n / rec["rows"] > pct:
+            if n >= 1 and 100.0 * n / rec["rows"] > pct:
                 out.append(f"{kind}: {n} of {rec['rows']} ideals ({100.0 * n / rec['rows']:.1f}%) trip {term} (limit {pct:g}%)")
     return out
 
@@ -1564,7 +1565,8 @@ def trivial_ties(label: dict) -> list[str]:
     if label.get("step") not in ("final", "ask") or not ideal.strip() or ideal not in comp:
         return []
     top = W.score(comp, label, 5).total
-    return [p for p in TRIVIAL_PROBES if W.score(comp.replace(ideal, p, 1), label, 5).total >= top - 1e-9]
+    i = comp.rfind(ideal)      # the LAST occurrence is the final; a short ideal can also sit in the thought channel (the first one)
+    return [p for p in TRIVIAL_PROBES if W.score(comp[:i] + p + comp[i + len(ideal):], label, 5).total >= top - 1e-9]
 
 
 def tie_probe(label: dict, ties: dict) -> list[str]:
@@ -1581,11 +1583,12 @@ def tie_probe(label: dict, ties: dict) -> list[str]:
 def tie_problems(ties: dict, pct: float = IDEAL_TRIP_PCT, instruction_term: bool = False) -> list[str]:
     """Kinds where a trivial reply ties the ideal on more than `pct` percent of the rows and must not: narrate, recall and never-said
     always; instruction only with the C17 term (without it an instruction final is a constant, so a tie is by design). Anchors,
-    decisions and selections are constant or call-scored by design and are only counted."""
+    decisions and selections are constant or call-scored by design and are only counted. The rule is the rate alone (a kind of fewer
+    than 100 rows tolerates no tie)."""
     strict = R5_TIE_STRICT_KINDS | ({"instruction"} if instruction_term else frozenset())
     out = []
     for kind, rec in sorted(ties.items()):
-        if kind in strict and rec["tied"] > 1 and 100.0 * rec["tied"] / rec["rows"] > pct:
+        if kind in strict and rec["tied"] >= 1 and 100.0 * rec["tied"] / rec["rows"] > pct:      # the rate alone: no "more than one row" guard
             out.append(f"{kind}: {rec['tied']} of {rec['rows']} ideals ({100.0 * rec['tied'] / rec['rows']:.1f}%) are tied or beaten by "
                        f"{'/'.join(sorted(rec['by_probe']))} (limit {pct:g}%)")
     return out
@@ -1780,6 +1783,7 @@ def r5_outputs(a, bd: Path, R, tok, kw: dict, r5s: dict, ordered: list, mm_dev: 
     out = Path(a.out)
     info: dict = {"pool_by_bucket": dict(Counter(r5_bucket(it) for it in items)), "anchor_build": str(a.anchor_build_dir),
                   "old_build": bool(a.allow_old_build), "chat_max_tokens": a.chat_max_tokens, "instruction_term": bool(a.instruction_term),
+                  "reward_r5_instruction": bool(W.R5_INSTRUCTION),
                   "dist": r5s["dist"], "session_counts": r5s["session_counts"], "clarify_in_build": r5s["clarify_in_build"]}
     text = [r for r in ordered if r.get("modality", "text") == "text"]
     info["rl_kind"] = dict(Counter(r["label"]["rl_kind"] for r in ordered))
@@ -1901,7 +1905,26 @@ def load_tokenizer(model: str):
     return AutoTokenizer.from_pretrained(model)
 
 
+def sync_instruction_term(instruction_term: bool) -> None:
+    """--instruction-term and reward.R5_INSTRUCTION (the C17 term, an env toggle read at import) must agree: the label ceiling (1.5 on a
+    constrained final) is only reachable when the reward pays the term. The flag turns the reward toggle on for this process; the
+    toggle on without the flag would score ideals above their 1.0 ceilings, so it is refused with a clear message."""
+    if instruction_term:
+        W.R5_INSTRUCTION = True
+    elif W.R5_INSTRUCTION:
+        sys.exit("REWARD_R5_INSTRUCTION=1 is set but --instruction-term is not: the reward would pay the C17 instruction credit while the "
+                 "labels' ceilings omit it (every constrained ideal would trip above_ceiling). Pass --instruction-term or unset the variable")
+
+
 def main(argv: list[str] | None = None) -> int:
+    prev = W.R5_INSTRUCTION          # --instruction-term flips the reward's toggle for the run; restore it for in-process callers
+    try:
+        return _main(argv)
+    finally:
+        W.R5_INSTRUCTION = prev
+
+
+def _main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--build-dir", default=os.environ.get("ASK_LORA_OUT"), help="dir with all.jsonl + meta.jsonl")
     ap.add_argument("--model", required=True, help="Gemma 4 E4B-it dir with the tokenizer + chat_template.jinja")
@@ -1943,7 +1966,8 @@ def main(argv: list[str] | None = None) -> int:
     r5g.add_argument("--no-text-dev", action="store_true", help="export grpo_prompts only (no grpo_text_dev*); recorded in the stats")
     r5g.add_argument("--chat-max-tokens", type=int, default=1024,
                      help="C5: label.max_tokens of chat-anchor and session rows (re-export at 1536 when their bucket truncates above 1%%)")
-    r5g.add_argument("--instruction-term", action="store_true", help="the C17 instruction term is on: instruction rows' ceiling is 1.5")
+    r5g.add_argument("--instruction-term", action="store_true", help="the C17 instruction term is on: sets reward.R5_INSTRUCTION for the run (REWARD_R5_INSTRUCTION=1 without this flag is "
+                                                                       "refused) and labels constrained finals' ceiling 1.5; recorded in the stats")
     r5g.add_argument("--ideal-trip-pct", type=float, default=IDEAL_TRIP_PCT,
                      help="exit when more than this percent of a kind's ideal completions trip one penalising term of reward.py (RL-SCOPE "
                           "3.5, default 1). Rows whose ideal trips are dropped from the export either way and counted in the stats")
@@ -1970,6 +1994,8 @@ def main(argv: list[str] | None = None) -> int:
                      help="eval_manifest.json: run check_overlap.py on the exported files, write <out>.overlap_report.json, record its "
                           "sha256 in the stats and exit non-zero on any hit")
     a = ap.parse_args(argv)
+    if a.round >= 5:
+        sync_instruction_term(a.instruction_term)
     r4 = a.round >= 4
     r5 = a.round >= 5
     r4_root = HERE.parent.parent / "ask-lora-r4"

@@ -15,7 +15,11 @@ RL-SCOPE 2.3 reading over every text row) and the always-solved row ids for the 
 it scores every row's own `label.ideal_completion` (offline, instant) and refuses to go on if the ideals of a rl_kind do not
 reach `label.ceiling` or trip a penalising term on more than 1% of rows (`ideal_check` in the report; `--ideal-check-only`
 runs just that, `--allow-ideal-trips` records the failure and samples anyway): the zv0 split and the all-pass share are only
-meaningful when the ideal completion sits at the ceiling.
+meaningful when the ideal completion sits at the ceiling. The bar is the exact integer rule of plan.kind_trip_problems (a kind
+of 14 rows tolerates none, a kind of 100 tolerates one); `ideal_check.by_rl_kind[k]` carries the absolute `bad`, `allowed` and
+`bad_ids`, so a one-row kind that fails the run names its row. `--ideal-floor-rows N` (default 0 = the spec) tolerates N rows in
+a kind under 100 rows, recorded in the report. The gate is a ROUND-5 gate: rounds 3 and 4 export no rl_kind, ideal_completion
+or ceiling, so `--round 3|4` records `ideal_check: {"skipped": true}` and goes on (the round check still applies).
 
 Route (default `completions`): POST /v1/completions with the row's exported rendered `prompt` string VERBATIM (forced
 rows keep their trailing `<|channel>thought\\n`), no chat template and no tool parser, `skip_special_tokens: false` so
@@ -97,7 +101,8 @@ BUCKET_NOTES = {
     "session_anchor": "split out of the export's r5_bucket 'session' on purpose: session-family anchor rows (rl_kind session_anchor) "
                       "are constant-reward, so they sit in their own zero-advantage bucket and `session` is the PG-bearing rows only",
     "other": "sampled with equal rows per rl_kind; the bucket-level shares (zero-variance, informative, truncation, malformed) are "
-             "re-weighted by each kind's share of the export (`kind_weights`, `shares_weighted`); lengths and counts are not",
+             "re-weighted by each kind's share of the export (`kind_weights`, `shares_weighted`), and so are mean_score and "
+             "ceiling_mean; the length statistics, counts and review lists are not",
 }
 
 
@@ -572,6 +577,16 @@ def share(flags: list, weights=None):
     return round(sum(w for f, w in zip(flags, weights) if f) / den, 4) if den else None
 
 
+def wmean(xs: list, weights=None):
+    """Mean of `xs`, re-weighted by `weights` (one per value) when the sample is stratified; None for no values."""
+    if not xs:
+        return None
+    if weights is None:
+        return round(sum(xs) / len(xs), 4)
+    den = sum(weights)
+    return round(sum(x * w for x, w in zip(xs, weights)) / den, 4) if den else None
+
+
 def cap_split(groups: list) -> dict:
     """Completion length and truncation over a set of groups (the cap-governed rows, or the rows with their own cap)."""
     samples = [s for g in groups for s in g["samples"]]
@@ -587,6 +602,23 @@ def _plain(x, limit=600):
     if not isinstance(x, str):
         x = json.dumps(x, ensure_ascii=False)
     return x[:limit]
+
+
+REVIEW_TERMS = ("over_mention", "verbatim", "nothing_claim", "nonreply", "verbose")    # RL-SCOPE 4.1: on-policy false-positive review
+
+
+def on_policy_penalties(groups: list, parsed: list, review_n: int) -> dict:
+    """Per penalising term of REVIEW_TERMS: how many parsed on-policy samples it fired on, and up to `review_n` of them (id, family,
+    kind, the term's value and the text: enough to hand-check against the row). A term that fires on grounded,
+    right answers is a false positive and must be dropped or widened before the cost OK (RL-SCOPE 4.1)."""
+    out = {}
+    for t in REVIEW_TERMS:
+        hit = [(g, s) for g in groups for s in g["samples"] if not s["malformed"] and s["parts"].get(t, 0.0) < 0]
+        out[t] = {"flagged_samples": len(hit), "scored_samples": len(parsed),
+                  "flagged_share": round(len(hit) / len(parsed), 4) if parsed else None,
+                  "review": [{"id": g["id"], "family": g["family"], "rl_kind": g["rl_kind"], "value": s["parts"][t], "text": s["text"][:600]}
+                             for g, s in hit[:review_n]]}
+    return out
 
 
 def bucket_stats(groups: list, review_n: int = 40) -> dict:
@@ -628,8 +660,9 @@ def bucket_stats(groups: list, review_n: int = 40) -> dict:
         "completion_tokens": length_stats(toks),
         "tokens_exact": not estimated,
         "ceiling_missing": sum(g["ceiling"] is None for g in groups),
-        "mean_score": round(sum(s["total"] for s in samples) / len(samples), 4),
-        "ceiling_mean": round(sum(g["ceiling"] for g in groups if g["ceiling"] is not None) / max(1, sum(g["ceiling"] is not None for g in groups)), 4),
+        "mean_score": wmean([s["total"] for s in samples], sw),
+        "ceiling_mean": wmean([g["ceiling"] for g in groups if g["ceiling"] is not None],
+                              [w for g, w in zip(groups, gw or [1.0] * len(groups)) if g["ceiling"] is not None] if weighted else None),
         "informative_any_share": share([x["informative_unsafe"] or x["informative_facts"] for x in sm], gw),
         "max_tokens": sorted({g.get("max_tokens") for g in groups if g.get("max_tokens")}),
         # a bucket can mix rows that --max-tokens governs with rows that carry their own label.max_tokens (chat anchors and
@@ -637,6 +670,7 @@ def bucket_stats(groups: list, review_n: int = 40) -> dict:
         "own_max_tokens": any(g.get("label_max_tokens") for g in groups),
         "governed": cap_split([g for g in groups if not g.get("label_max_tokens")]),
         "own_cap": cap_split([g for g in groups if g.get("label_max_tokens")]),
+        "on_policy_penalties": on_policy_penalties(groups, parsed, review_n),
         "ungrounded": {
             "flagged_samples": len(flagged), "scored_samples": len(parsed),
             "flagged_share": round(len(flagged) / len(parsed), 4) if parsed else None,
@@ -725,19 +759,38 @@ def cap_report(buckets: dict, reconstructed: bool) -> dict:
 
 IDEAL_TRIP_SHARE = 0.01                      # RL-SCOPE bar: an ideal may miss its ceiling or trip a penalty on at most 1% of a kind's rows
 IDEAL_EXAMPLES = 8
+IDEAL_BAD_IDS = 200
+SMALL_KIND_ROWS = 100                        # --ideal-floor-rows applies to kinds under this many rows only
 
 
-def ideal_check(rows: list, rnd: int = 5, bar: float = IDEAL_TRIP_SHARE) -> dict:
+def ideal_allowed(n: int, bar: float = IDEAL_TRIP_SHARE, floor_rows: int = 0) -> int:
+    """Rows of a kind of `n` whose ideal may be bad: floor(bar * n), the exact integer rule of plan.kind_trip_problems (14 rows
+    tolerate none, 100 tolerate one). `floor_rows` (default 0, the spec) raises that to at least `floor_rows` for a kind under
+    SMALL_KIND_ROWS rows, so one stray ideal in a tiny kind does not block a run if the user accepts it."""
+    allowed = int(math.floor(bar * n + 1e-9))
+    if floor_rows and n < SMALL_KIND_ROWS:
+        allowed = max(allowed, int(floor_rows))
+    return allowed
+
+
+def ideal_check(rows: list, rnd: int = 5, bar: float = IDEAL_TRIP_SHARE, floor_rows: int = 0) -> dict:
     """Score every text row's own `label.ideal_completion` with reward.score(.., rnd) and compare it with `label.ceiling`.
 
     The sampler's all-pass/all-fail split is "scored at the ceiling", so it is only meaningful when the ideal completion is itself
     AT the ceiling with no penalising term. This is the check that the ceiling table and the exported ideal agree, row by row
     (the stub engine of the tests cannot prove it: it echoes the ideal against a ceiling computed from that same ideal). A row is
     bad when the ideal has no text, scores below or above its ceiling by more than TOL, trips any negative term, or the row has
-    no ceiling to compare with. Per rl_kind: n, bad, bad_share, the trips by term, the mean ideal score and the mean ceiling,
-    examples. `ok` = no kind is over `bar`."""
+    no ceiling to compare with. Per rl_kind: n, bad, bad_share, `allowed` (the integer tolerance), the trips by term, the mean
+    ideal score and the mean ceiling, examples and `bad_ids` (up to IDEAL_BAD_IDS). `ok` = no kind has more than `allowed` bad rows.
+
+    Only round 5 exports carry rl_kind, ideal_completion and ceiling, so for `rnd` < 5 the check is skipped (`skipped`: true,
+    `ok`: true) rather than reporting every row of a round-3 or round-4 export as unlabelled."""
+    if rnd < 5:
+        return {"round": rnd, "bar": bar, "skipped": True, "ok": True, "n_rows": 0, "by_rl_kind": {}, "failing_kinds": [],
+                "reason": f"round {rnd} exports carry no rl_kind, ideal_completion or ceiling; the ideal gate is a round-5 gate"}
     kinds = defaultdict(lambda: {"n": 0, "bad": 0, "missing_ideal": 0, "no_ceiling": 0, "below_ceiling": 0, "above_ceiling": 0,
-                                 "penalised": 0, "terms": Counter(), "ideal_sum": 0.0, "ceiling_sum": 0.0, "scored": 0, "examples": []})
+                                 "penalised": 0, "terms": Counter(), "ideal_sum": 0.0, "ceiling_sum": 0.0, "scored": 0, "examples": [],
+                                 "bad_ids": []})
     for r in rows:
         if not is_text(r):
             continue
@@ -772,22 +825,26 @@ def ideal_check(rows: list, rnd: int = 5, bar: float = IDEAL_TRIP_SHARE) -> dict
                     why.append(f"scores {round(res.total, 4)} above ceiling {ceil}")
         if why:
             k["bad"] += 1
+            if len(k["bad_ids"]) < IDEAL_BAD_IDS:
+                k["bad_ids"].append(r["id"])
             if len(k["examples"]) < IDEAL_EXAMPLES:
                 k["examples"].append({"id": r["id"], "family": r.get("family"), "why": why,
                                       "ideal": _plain(ideal, 240)})
     by_kind, failing = {}, []
     for name, k in sorted(kinds.items()):
         share_bad = round(k["bad"] / k["n"], 4)
-        by_kind[name] = {"n": k["n"], "bad": k["bad"], "bad_share": share_bad, "missing_ideal": k["missing_ideal"],
+        allowed = ideal_allowed(k["n"], bar, floor_rows)
+        by_kind[name] = {"n": k["n"], "bad": k["bad"], "bad_share": share_bad, "allowed": allowed, "over_by": max(0, k["bad"] - allowed),
+                         "missing_ideal": k["missing_ideal"],
                          "no_ceiling": k["no_ceiling"], "below_ceiling": k["below_ceiling"], "above_ceiling": k["above_ceiling"],
                          "penalised": k["penalised"], "penalising_terms": dict(sorted(k["terms"].items())),
                          "ideal_mean": round(k["ideal_sum"] / k["scored"], 4) if k["scored"] else None,
                          "ceiling_mean": round(k["ceiling_sum"] / max(1, k["scored"] - k["no_ceiling"]), 4) if k["scored"] else None,
-                         "examples": k["examples"]}
-        if share_bad > bar:
+                         "examples": k["examples"], "bad_ids": k["bad_ids"]}
+        if k["bad"] > allowed:
             failing.append(name)
-    return {"round": rnd, "bar": bar, "n_rows": sum(k["n"] for k in kinds.values()), "by_rl_kind": by_kind,
-            "failing_kinds": failing, "ok": not failing}
+    return {"round": rnd, "bar": bar, "floor_rows": int(floor_rows), "skipped": False, "n_rows": sum(k["n"] for k in kinds.values()),
+            "by_rl_kind": by_kind, "failing_kinds": failing, "ok": not failing}
 
 
 # ------------------------------------------------------------------ the run
@@ -1053,6 +1110,9 @@ def parse_args(argv=None):
     ap.add_argument("--allow-ideal-trips", action="store_true",
                     help="sample even though the ideal-completion check failed (the report records the failure and says the zv0 split is "
                          "not meaningful); without it the run stops before the first request")
+    ap.add_argument("--ideal-floor-rows", type=int, default=0,
+                    help="tolerate this many bad ideals in a kind of fewer than 100 rows (default 0 = the spec's 1%% rule: 14 rows tolerate "
+                         "none); recorded in ideal_check.floor_rows")
     ap.add_argument("--out", help="the report path (required unless --ideal-check-only, which then prints the check to stdout)")
     a = ap.parse_args(argv)
     if not a.ideal_check_only:
@@ -1092,10 +1152,14 @@ def main(argv=None, *, transport=None, environ=None) -> int:
         dev_rows = [r for r in load_rows(a.text_dev) if is_text(r)]
         check_rounds(dev_rows, a.round, a.text_dev)
     # nothing is sent before this: an ideal completion that misses its ceiling makes every all-pass/all-fail number meaningless
-    ideal = ideal_check(text_rows + dev_rows, a.round)
+    ideal = ideal_check(text_rows + dev_rows, a.round, floor_rows=a.ideal_floor_rows)
     ideal["files"] = [a.prompts] + ([a.text_dev] if a.text_dev else [])
     if not ideal["ok"]:
-        log("IDEAL CHECK FAILED for " + ", ".join(f"{k} ({ideal['by_rl_kind'][k]['bad']}/{ideal['by_rl_kind'][k]['n']})" for k in ideal["failing_kinds"]))
+        log("IDEAL CHECK FAILED for " + ", ".join(f"{k} ({ideal['by_rl_kind'][k]['bad']}/{ideal['by_rl_kind'][k]['n']}, "
+                                                  f"allowed {ideal['by_rl_kind'][k]['allowed']}: {', '.join(ideal['by_rl_kind'][k]['bad_ids'][:5])})"
+                                                  for k in ideal["failing_kinds"]))
+    elif ideal.get("skipped"):
+        log(f"ideal check skipped: {ideal['reason']}")
     if a.ideal_check_only:
         text = json.dumps(ideal, indent=1, ensure_ascii=False)
         if a.out:

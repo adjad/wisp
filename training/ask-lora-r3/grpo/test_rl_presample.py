@@ -976,6 +976,99 @@ def test_ideal_check_gates_the_run_before_any_request_and_can_be_overridden(tmp_
 
 
 
+# ------------------------------------------------------------------ verifier round 3: rounds 3/4, tiny kinds, weights, on-policy review
+
+def _bad_ideal_row(rid, kind="decision"):
+    return exported_style_row(rid, "", 1.0, kind=kind, family="restraint_r4", step="final", final=True)
+
+
+def _good_ideal_row(rid, kind="decision"):
+    return exported_style_row(rid, "Your Ethics class is at 11 AM.<turn|>", 1.0, kind=kind, family="restraint_r4", step="final", final=True)
+
+
+@pytest.mark.parametrize("rnd", [3, 4])
+def test_ideal_gate_is_skipped_for_rounds_3_and_4_and_says_so(rnd):
+    """Round 3/4 exports carry no rl_kind, ideal_completion or ceiling: the gate must not call every row 'unlabelled'."""
+    legacy = {"id": "x#0", "family": "misc", "prompt": "p", "modality": "text", "label": {"step": "call", "round": rnd}}
+    rep = S.ideal_check([legacy] * 5, rnd)
+    assert rep["ok"] and rep["skipped"] is True and rep["failing_kinds"] == [] and "round-5" in rep["reason"]
+    assert S.ideal_check([parsed_row(_bad_ideal_row("b#0"))], 5)["skipped"] is False
+
+
+def test_ideal_gate_main_records_skip_for_round_4_instead_of_exiting_5(tmp_path, capsys):
+    rows = [call_row(f"c{i}#0", family="misc_r3") for i in range(2)]
+    for r in rows:
+        lb = label_of(r)
+        for k in ("rl_kind", "ideal_completion", "ceiling"):
+            lb.pop(k)
+        lb["round"] = 4
+        r["label"] = json.dumps(lb)
+    p = write_jsonl(tmp_path / "p4.jsonl", rows)
+    assert S.main(["--prompts", p, "--round", "4", "--ideal-check-only"], environ={}) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["skipped"] is True and out["ok"] is True and out["round"] == 4
+
+
+def test_ideal_bar_is_the_exact_integer_rule_of_plan_and_names_the_rows():
+    """A kind of 14 rows tolerates none (one row is 7%); a kind of 100 tolerates one; the report names the bad ids and the count."""
+    import plan
+    for n, bad in ((14, 1), (14, 0), (99, 1), (100, 1), (100, 2), (101, 1), (300, 3), (300, 4), (700, 7), (700, 8)):
+        rows = [parsed_row(_good_ideal_row(f"g{i}#0")) for i in range(n - bad)] + [parsed_row(_bad_ideal_row(f"b{i}#0")) for i in range(bad)]
+        rep = S.ideal_check(rows)
+        k = rep["by_rl_kind"]["decision"]
+        assert rep["ok"] == (not plan.kind_trip_problems({"decision": bad}, {"decision": n})), (n, bad)
+        assert k["bad"] == bad and k["allowed"] == n // 100 and k["bad_ids"] == [f"b{i}#0" for i in range(bad)]
+        assert k["over_by"] == max(0, bad - n // 100)
+
+
+def test_ideal_floor_rows_only_relaxes_small_kinds_and_is_recorded():
+    rows = [parsed_row(_good_ideal_row(f"g{i}#0")) for i in range(13)] + [parsed_row(_bad_ideal_row("b#0"))]
+    assert not S.ideal_check(rows)["ok"]
+    rep = S.ideal_check(rows, floor_rows=1)
+    assert rep["ok"] and rep["floor_rows"] == 1 and rep["by_rl_kind"]["decision"]["allowed"] == 1 and rep["by_rl_kind"]["decision"]["bad"] == 1
+    two = rows[:12] + [parsed_row(_bad_ideal_row("b2#0")), parsed_row(_bad_ideal_row("b3#0"))]
+    assert not S.ideal_check(two, floor_rows=1)["ok"]                                  # the floor is a count, not a licence
+    big = [parsed_row(_good_ideal_row(f"g{i}#0")) for i in range(98)] + [parsed_row(_bad_ideal_row("b#0")), parsed_row(_bad_ideal_row("c#0"))]
+    assert not S.ideal_check(big, floor_rows=1)["ok"]                                   # the floor never applies to a kind of 100
+
+
+def test_ideal_gate_cli_reports_the_row_ids_of_a_tiny_failing_kind(tmp_path, capsys):
+    rows = [_good_ideal_row(f"g{i}#0") for i in range(13)] + [_bad_ideal_row("b#0")]
+    p = write_jsonl(tmp_path / "p.jsonl", rows)
+    assert S.main(["--prompts", p, "--ideal-check-only"], environ={}) == 5
+    cap = capsys.readouterr()
+    assert json.loads(cap.out)["by_rl_kind"]["decision"]["bad_ids"] == ["b#0"] and "b#0" in cap.err and "allowed 0" in cap.err
+    assert S.main(["--prompts", p, "--ideal-check-only", "--ideal-floor-rows", "1"], environ={}) == 0
+
+
+def test_mean_score_and_ceiling_mean_are_weighted_like_the_shares():
+    easy = [grp(f"c{i}", "call", 1.5, [smp(1.5)] * 4) for i in range(3)]
+    hard = [grp(f"d{i}", "decision", 1.0, [smp(1.0), smp(0.0)] * 2) for i in range(3)]
+    flat = S.bucket_stats(easy + hard)
+    assert flat["mean_score"] == round((1.5 * 12 + 0.5 * 12) / 24, 4) and flat["ceiling_mean"] == 1.25
+    for g in easy:
+        g["weight"] = 9.0
+    for g in hard:
+        g["weight"] = 1.0
+    w = S.bucket_stats(easy + hard)
+    assert w["shares_weighted"] and w["mean_score"] == round(0.9 * 1.5 + 0.1 * 0.5, 4) and w["ceiling_mean"] == round(0.9 * 1.5 + 0.1 * 1.0, 4)
+    assert "mean_score" in S.BUCKET_NOTES["other"] and "ceiling_mean" in S.BUCKET_NOTES["other"]
+
+
+def test_on_policy_penalty_review_lists_flagged_samples_per_term():
+    def smp_t(total, **parts):
+        s = smp(total)
+        s["parts"] = parts
+        s["text"] = "txt"
+        return s
+    g = grp("n1", "narrate", 2.0, [smp_t(2.0), smp_t(1.5, over_mention=-0.5), smp_t(1.5, verbatim=-0.5), smp_t(1.0, over_mention=-0.5, verbose=-0.5)])
+    st = S.bucket_stats([g], review_n=1)["on_policy_penalties"]
+    assert set(st) == set(S.REVIEW_TERMS)
+    assert st["over_mention"]["flagged_samples"] == 2 and st["over_mention"]["scored_samples"] == 4 and st["over_mention"]["flagged_share"] == 0.5
+    assert len(st["over_mention"]["review"]) == 1 and st["over_mention"]["review"][0]["id"] == "n1"        # review_n caps the list
+    assert st["verbatim"]["flagged_samples"] == 1 and st["nothing_claim"]["flagged_samples"] == 0 and st["nothing_claim"]["flagged_share"] == 0.0
+
+
 def test_real_http_round_trip_sends_the_prompt_unmodified():
     row = parsed_row(forced_row("f1"))
     stub = Stub(echo([forced_row("f1")]))

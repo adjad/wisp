@@ -1168,11 +1168,15 @@ def test_ideal_trips_are_counted_dropped_and_fail_the_export_above_the_limit(tmp
             return ["over_mention"]
         return real(lab)
     monkeypatch.setattr(X, "ideal_trips", one_narrate)
-    assert F.run_main(r5_argv(w)) == 0                                                         # a single trip is not "more than 1%" of >1 rows
+    # the rate alone decides: one tripped row of ~55 is 1.8%, above 1%, so the export stops; under a 5% limit it is dropped and counted
+    with pytest.raises(SystemExit, match=r"narrate: 1 of \d+ ideals .* trip over_mention \(limit 1%\)"):
+        F.run_main(r5_argv(w))
+    seen["n"] = 0
+    assert F.run_main(r5_argv(w, extra=("--ideal-trip-pct", "5"))) == 0
     st = json.loads((w["tmp"] / "out5" / "grpo_prompts.stats.json").read_text())
     assert st["dropped"]["ideal trips over_mention"] == 1
     trip = st["r5"]["ideal_trip"]["narrate"]
-    assert trip["tripped"] == 1 and trip["by_term"] == {"over_mention": 1} and trip["rows"] > 20 and st["r5"]["ideal_trip_pct_limit"] == 1.0
+    assert trip["tripped"] == 1 and trip["by_term"] == {"over_mention": 1} and trip["rows"] > 20 and st["r5"]["ideal_trip_pct_limit"] == 5.0
     assert st["r5"]["dropped_ideal_trip"] == {"ideal trips over_mention": 1}
     # every kind's counts are recorded, none above the limit here
     assert all(v["tripped"] == 0 for k, v in st["r5"]["ideal_trip"].items() if k != "narrate")
@@ -1197,7 +1201,12 @@ def test_ideal_trips_scores_the_row_ideal_with_the_round_5_reward():
     assert X.ideal_trip_problems({"narrate": {"rows": 100, "tripped": 2, "by_term": Counter({"ungrounded": 2})}}) \
         == ["narrate: 2 of 100 ideals (2.0%) trip ungrounded (limit 1%)"]
     assert X.ideal_trip_problems({"narrate": {"rows": 100, "tripped": 1, "by_term": Counter({"ungrounded": 1})}}) == []
-    assert X.ideal_trip_problems({"recall": {"rows": 54, "tripped": 1, "by_term": Counter({"leak": 1})}}) == []      # one row is not a rate
+    # the rule is the rate alone: a kind under 100 rows tolerates no trip (one row is already above 1%), 100 rows tolerate one
+    assert X.ideal_trip_problems({"recall": {"rows": 54, "tripped": 1, "by_term": Counter({"leak": 1})}}) \
+        == ["recall: 1 of 54 ideals (1.9%) trip leak (limit 1%)"]
+    assert X.ideal_trip_problems({"recall_none": {"rows": 14, "tripped": 2, "by_term": Counter({"below_ceiling": 2})}})[0].startswith("recall_none: 2 of 14")
+    assert X.ideal_trip_problems({"recall": {"rows": 100, "tripped": 1, "by_term": Counter({"leak": 1})}}) == []
+    assert X.ideal_trip_problems({"recall": {"rows": 54, "tripped": 1, "by_term": Counter({"leak": 1})}}, pct=2.0) == []
 
 
 def test_narrate_facts_are_only_those_the_ideal_states_outside_a_negation():
@@ -1321,8 +1330,42 @@ def test_trivial_ties_probe_the_ideal_final_with_ok_and_done(monkeypatch):
     big = {k: {"rows": 100, "tied": 5, "by_probe": Counter({"Ok.": 5})} for k in ("narrate", "chat_anchor", "decision", "instruction")}
     assert [p.split(":")[0] for p in X.tie_problems(big)] == ["narrate"]
     assert [p.split(":")[0] for p in X.tie_problems(big, instruction_term=True)] == ["instruction", "narrate"]
-    assert X.tie_problems({"narrate": {"rows": 100, "tied": 1, "by_probe": Counter({"Ok.": 1})}}) == []                  # one row is not a rate
+    assert X.tie_problems({"narrate": {"rows": 100, "tied": 1, "by_probe": Counter({"Ok.": 1})}}) == []                  # 1 of 100 is not above 1%
+    assert X.tie_problems({"recall_none": {"rows": 14, "tied": 1, "by_probe": Counter({"Ok.": 1})}}) \
+        == ["recall_none: 1 of 14 ideals (7.1%) are tied or beaten by Ok. (limit 1%)"]                                  # a small kind: one tie counts
     assert X.tie_problems(big, 10.0, True) == []
+
+
+def test_trivial_ties_replace_the_final_not_an_earlier_copy_of_the_ideal_in_the_thought():
+    # a short ideal that also appears in the thought channel: replacing the FIRST occurrence rewrote the thought and left the final
+    # unchanged, so the probe scored exactly the ideal (a false tie). The last occurrence is the final.
+    text = "You parked on level three."
+    for kind in ("session_anchor", "recall"):
+        lab = tie_label(kind, text, ideal_completion=f"Say: {text} now<channel|>{text}<turn|>")
+        comp, top = lab["ideal_completion"], X.W.score(lab["ideal_completion"], lab, 5).total
+        first = [p for p in X.TRIVIAL_PROBES if X.W.score(comp.replace(text, p, 1), lab, 5).total >= top - 1e-9]
+        assert first == list(X.TRIVIAL_PROBES)               # the old behaviour: a false tie on both probes
+        assert X.trivial_ties(lab) == []                     # the final is probed: "Ok." / "Done." are nonreplies and lose
+        # a probe that really does tie (a one-word ideal that is also in its thought) is still found
+        one = dict(lab, ideal_text="Ok.", ideal_completion="Say Ok. now<channel|>Ok.<turn|>")
+        assert "Ok." in X.trivial_ties(one)
+
+
+def test_instruction_term_flag_sets_and_checks_the_reward_toggle(tmp_path, monkeypatch):
+    w = r5_world(tmp_path)
+    # the toggle on without the flag is refused with a clear message (ideals would outscore their 1.0 ceilings)
+    monkeypatch.setattr(X.W, "R5_INSTRUCTION", True)
+    with pytest.raises(SystemExit, match=r"REWARD_R5_INSTRUCTION=1 is set but --instruction-term is not"):
+        F.run_main(r5_argv(w))
+    # the flag alone turns the reward toggle on for the run (no environment variable needed), records it, and restores it
+    monkeypatch.setattr(X.W, "R5_INSTRUCTION", False)
+    assert F.run_main(r5_argv(w, extra=("--instruction-term",))) == 0
+    st = json.loads((w["tmp"] / "out5" / "grpo_prompts.stats.json").read_text())["r5"]
+    assert st["instruction_term"] is True and st["reward_r5_instruction"] is True and st["dropped_ideal_trip"] == {}
+    assert X.W.R5_INSTRUCTION is False
+    assert F.run_main(r5_argv(w, w["tmp"] / "outoff" / "grpo_prompts.jsonl")) == 0
+    st = json.loads((w["tmp"] / "outoff" / "grpo_prompts.stats.json").read_text())["r5"]
+    assert st["instruction_term"] is False and st["reward_r5_instruction"] is False
 
 
 def test_export_counts_trivial_ties_and_exits_when_a_narrate_ideal_is_tied(tmp_path, monkeypatch):
@@ -1334,7 +1377,7 @@ def test_export_counts_trivial_ties_and_exits_when_a_narrate_ideal_is_tied(tmp_p
     monkeypatch.setattr(X, "trivial_ties", lambda lab: ["Ok."] if lab["rl_kind"] == "narrate" else real(lab))
     with pytest.raises(SystemExit, match=r"narrate: \d+ of \d+ ideals .* are tied or beaten by Ok\. \(limit 1%\)"):
         F.run_main(r5_argv(w))
-    # one tied narrate row is below the limit: dropped as "no variance" and counted, the export goes on
+    # one tied narrate row of ~55 is above 1% (no "more than one row" guard any more) ...
     seen = {"n": 0}
 
     def first_narrate(lab):
@@ -1343,7 +1386,19 @@ def test_export_counts_trivial_ties_and_exits_when_a_narrate_ideal_is_tied(tmp_p
             return ["Ok."]
         return real(lab)
     monkeypatch.setattr(X, "trivial_ties", first_narrate)
-    assert F.run_main(r5_argv(w, w["tmp"] / "outu" / "grpo_prompts.jsonl")) == 0
+    with pytest.raises(SystemExit, match=r"narrate: 1 of \d+ ideals .* are tied or beaten by Ok\. \(limit 1%\)"):
+        F.run_main(r5_argv(w))
+    # ... and below a looser limit it is dropped as "no variance" and counted, the export goes on
+    seen = {"n": 0}
+
+    def first_narrate(lab):
+        if lab["rl_kind"] == "narrate" and not seen["n"]:
+            seen["n"] = 1
+            return ["Ok."]
+        return real(lab)
+    monkeypatch.setattr(X, "trivial_ties", first_narrate)
+    seen["n"] = 0
+    assert F.run_main(r5_argv(w, w["tmp"] / "outu" / "grpo_prompts.jsonl", extra=("--ideal-trip-pct", "5"))) == 0
     one = json.loads((w["tmp"] / "outu" / "grpo_prompts.stats.json").read_text())
     assert one["dropped"]["trivial reply ties the ideal"] == 1 and one["r5"]["dropped_trivial_tie"] == {"trivial reply ties the ideal": 1}
     assert one["r5"]["trivial_ties"]["narrate"]["tied"] == 1

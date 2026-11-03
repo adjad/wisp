@@ -1360,6 +1360,7 @@ THOUGHT_MISSING_PEN = -0.5
 R5_NAME_PEN = -0.5
 VERBOSE_PEN = -0.5
 VERBOSE_WORDS = 150               # a narrate or recall final longer than this AND 5x its ideal (words) is padding
+VERBOSE_ABS_WORDS = 300           # ... or longer than this AND 2.5x its ideal: a long ideal does not license a 500-word pad (RL-SCOPE #22)
 ECHO_MIN_WORDS = 16               # words of a recall reply that sit in 6-grams of one earlier line before it is an echo of the history
 ECHO_NGRAM = 6
 VERBATIM_EXTRA_WORDS = 14          # words copied from one result beyond what the ideal copies: pasting the result after a good answer
@@ -1497,18 +1498,36 @@ def r5_tool_name(name: str, known: set) -> str:
 
 _R5_BOUNDARY = re.compile(r"[!?;\n,]|(?<!\d)\.(?!\d)|:(?!\d)")
 # negators: the words and every n't contraction ("You don't have 5 PM", "Without X", "None of it is X")
-_R5_NEG = re.compile(r"\b(?:no|not|never|nothing|none|without|neither|nor|nobody|nowhere|cannot)\b|\b[a-z]+n['’]t\b", re.I)
-# a negated predicate whose subject comes first ("5 PM isn't scheduled"): the words before it are negated too, back to the clause start
-_R5_NEG_SUBJECT = re.compile(r"\b(?:is|are|was|were|has|had|does|did)n['’]t\b", re.I)
+_R5_NEG_CORE = r"\b(?:no|not|never|nothing|none|without|neither|nor|nobody|nowhere|cannot)\b|\b[a-z]+n['’]t\b"
+# words that say a thing is not there without a "not" ("5 PM was cancelled", "You lack 5 PM", "Zero entries for 5 PM", "Hardly any 5 PM")
+_R5_NEG_SEMANTIC = r"\b(?:cancell?ed|missing|absent|unavailable|lack(?:s|ed|ing)?|zero|hardly|scarcely)\b"
+_R5_NEG = re.compile(_R5_NEG_CORE + "|" + _R5_NEG_SEMANTIC, re.I)
+_R5_NEG_STRICT = re.compile(_R5_NEG_CORE, re.I)
+# the verb a negator hangs on: its subject, when it comes first ("5 PM isn't scheduled", "5 PM is not scheduled", "5 PM was cancelled",
+# "5 PM has never been added") is negated too, back to the clause start
+_R5_AUX = frozenset("is are was were be been being am has have had having does do did can could will would shall should may might must got get gets".split())
+_R5_NEG_AUX_CONTRACTED = re.compile(r"^(?:ai|is|are|was|were|has|have|had|does|do|did|ca|could|wo|would|should|might|must|need|dare)n['’]t$", re.I)
+# idioms that begin with a negator and negate nothing: "Don't forget that ...", "no worries", "can't miss", "don't hesitate"
+_R5_NEG_IDIOM = re.compile(r"\s*(?:to\s+)?(?:forget|hesitate|worry|worries|miss|mind|problem|problems|rush|doubt|wonder|bother|sweat)\b", re.I)
 _R5_CLAUSE_JOIN = frozenset({"and", "but", "or", "so", "while", "though", "although", "then", "because", "since", "if", "when", "which", "who"})
+_R5_ADV = frozenset("also really even just actually currently yet still ever always simply quite".split())
 
 
-def mask_negated(text: str, window: int = NEGATION_WINDOW) -> str:
-    """`text` with the `window` tokens after each negator (no, not, never, nothing, none, without, neither, nor, n't) blanked
-    (stopping at the end of the clause), so a fact inside a negation does not count as stated. After "isn't", "wasn't", "doesn't" and
-    the like the subject before them is blanked too ("5 PM isn't scheduled"), back to the start of the clause or a joining word."""
+def mask_negated(text: str, window: int = NEGATION_WINDOW, semantic: bool = True) -> str:
+    """`text` with the `window` tokens after each negator (no, not, never, nothing, none, without, neither, nor, every n't, and with
+    `semantic` also cancelled, missing, lack, zero, hardly ...) blanked (stopping at the end of the clause), so a fact inside a negation
+    does not count as stated. When the negator hangs on a verb ("isn't", "is not", "was cancelled", "has never been") the subject before
+    that verb is blanked too ("5 PM is not scheduled"), back to the start of the clause or a joining word. Idioms that only look
+    negative ("Don't forget", "no worries") blank nothing."""
     chars = list(text)
-    for m in _R5_NEG.finditer(text):
+    pat = _R5_NEG if semantic else _R5_NEG_STRICT
+
+    def blank(lo, hi):
+        for i in range(lo, hi):
+            chars[i] = " "
+    for m in pat.finditer(text):
+        if _R5_NEG_IDIOM.match(text, m.end()):
+            continue
         seg_end = len(text)
         b = _R5_BOUNDARY.search(text, m.end())
         if b:
@@ -1516,18 +1535,29 @@ def mask_negated(text: str, window: int = NEGATION_WINDOW) -> str:
         for k, tok in enumerate(re.finditer(r"\S+", text[m.end():seg_end])):
             if k >= window:
                 break
-            for i in range(m.end() + tok.start(), m.end() + tok.end()):
-                chars[i] = " "
-        if _R5_NEG_SUBJECT.fullmatch(m.group(0)):
-            seg_start = 0
-            for bb in _R5_BOUNDARY.finditer(text, 0, m.start()):
-                seg_start = bb.end()
-            toks = list(re.finditer(r"\S+", text[seg_start:m.start()]))
-            for tok in reversed(toks[-window:]):
-                if re.sub(r"\W+", "", tok.group(0)).lower() in _R5_CLAUSE_JOIN:
-                    break
-                for i in range(seg_start + tok.start(), seg_start + tok.end()):
-                    chars[i] = " "
+            blank(m.end() + tok.start(), m.end() + tok.end())
+        # the verb the negator hangs on, and the subject before it
+        seg_start = 0
+        for bb in _R5_BOUNDARY.finditer(text, 0, m.start()):
+            seg_start = bb.end()
+        toks = list(re.finditer(r"\S+", text[seg_start:m.start()]))
+        word = re.sub(r"[^\w'’]+", "", m.group(0)).lower()
+        head = len(toks)             # tokens before `head` are the subject
+        if _R5_NEG_AUX_CONTRACTED.match(word):
+            pass
+        elif word in ("not", "never", "no") or re.fullmatch(_R5_NEG_SEMANTIC, word, re.I) and word not in ("zero", "hardly", "scarcely", "barely"):
+            k = len(toks) - 1
+            while k >= 0 and re.sub(r"\W+", "", toks[k].group(0)).lower() in _R5_ADV:
+                k -= 1
+            if k < 0 or re.sub(r"[^\w]+", "", toks[k].group(0)).lower() not in _R5_AUX:
+                continue
+            head = k
+        else:
+            continue
+        for tok in reversed(toks[max(0, head - window):head]):
+            if re.sub(r"\W+", "", tok.group(0)).lower() in _R5_CLAUSE_JOIN:
+                break
+            blank(seg_start + tok.start(), seg_start + tok.end())
     return "".join(chars)
 
 
@@ -1653,7 +1683,15 @@ _R5_COMMON_NOUNS = {
     "coffee", "lunch", "photos", "pictures", "pages", "page", "apps", "app", "documents", "downloads", "desktop", "screen",
     "everyone", "someone", "anyone", "people", "things", "thing", "one", "two", "three", "four", "five", "six", "seven", "eight",
     "nine", "ten", "both", "either", "neither", "plenty", "most", "more", "less", "about", "around", "currently", "recently",
-    "right", "while", "during", "between", "since", "although", "however", "therefore", "overall", "mostly", "mainly", "roughly"}
+    "right", "while", "during", "between", "since", "although", "however", "therefore", "overall", "mostly", "mainly", "roughly",
+    "color", "colour", "price", "cost", "size", "speed", "height", "weight", "distance", "taste", "flavor", "flavour", "season", "style"}
+_R5_NOT_NAME_SUFFIX = ("ing", "ness", "ment", "ity", "ings", "ments")      # "Booking is worth sorting", "Feeding is rarely needed": gerunds and abstract nouns, not people
+
+
+def _name_like_opener(w: str) -> bool:
+    """A sentence-initial word that is not an ordinary word, a common noun or a gerund or abstract noun (the shape of a name)."""
+    wl = w.lower()
+    return (len(wl) >= 4 and wl not in _R5_ORDINARY and wl not in _R5_COMMON_NOUNS and not wl.endswith(_R5_NOT_NAME_SUFFIX))
 
 
 # First names (lower case) a fabricated contact is likely to use. A word that is also an ordinary English word, a month or a day is left out
@@ -1896,6 +1934,17 @@ def _time_without_meridiem(item: str, gnorm: str) -> bool:
     return re.search(_R5_TIME_CTX.format(h=h), gnorm) is not None and re.search(rf"(?<![\d:.]){h}\s?(?:am|pm)\b", gnorm) is None
 
 
+def _clock_with_minutes_grounded(item: str, gnorm: str) -> bool:
+    """A time that carries minutes ("9:45 PM") is grounded only by the same hour and minute: "9 PM" in the ground does not hold it. The
+    ground's own am/pm may be missing or the 24-hour reading of the same time."""
+    m = re.fullmatch(r"(\d{1,2}):(\d\d)\s?(am|pm)", item.strip(), re.I)
+    if not m or m.group(2) == "00":
+        return True
+    h, mi, ap = int(m.group(1)), m.group(2), m.group(3).lower()
+    h24 = h % 12 + (12 if ap == "pm" else 0)
+    return bool(re.search(rf"(?<![\d:.])0?{h}:{mi}(?![\d:])", gnorm) or re.search(rf"(?<![\d:.]){h24:02d}:{mi}(?![\d])", gnorm))
+
+
 def ungrounded_entities_r5(text: str, ground: str, label: dict | None = None) -> list:
     """`ungrounded_entities` plus the round-5 sub-rules: (a) a small count followed by a noun ("4 unread") unless it is in the
     ground, the length of a list in it, or a sum or difference of two lengths; "noon" and "midnight" the ground does not hold;
@@ -1914,6 +1963,9 @@ def ungrounded_entities_r5(text: str, ground: str, label: dict | None = None) ->
             out.append(x)
     gnorm = _g_norm(ground)
     gwords = _word_set(gnorm)
+    for t in _G_TIME.findall(text):
+        if not _clock_with_minutes_grounded(t, gnorm):
+            add(t)
     if R5_UNGROUNDED_SMALL_INTS:
         rest = _G_TIME.sub(" ", text)
         for m in _R5_SMALL_INT_NOUN.finditer(rest):
@@ -1928,7 +1980,7 @@ def ungrounded_entities_r5(text: str, ground: str, label: dict | None = None) ->
                 add(f"{n} {noun}")
         for m in _R5_DAYTIME_WORD.finditer(text):
             w = m.group(1).lower()
-            if not re.search(r"\b(noon|midnight|12\s?(?:pm|am)|12:00|00:00)\b", gnorm):
+            if not re.search(r"\b(?:noon|midnight)\b|(?<![\d:.])12(?::00)?\s?(?:pm|am)\b|(?<![\d:.])(?:12|00):00(?![\d:])", gnorm):
                 add(w)
     lexicon = _contact_lexicon(label)
     safe = lexicon | (_R5_FIRST_NAMES - _R5_ORDINARY - _R5_ENT_SKIP - me)       # the row's contacts plus common first names
@@ -1955,7 +2007,7 @@ def ungrounded_entities_r5(text: str, ground: str, label: dict | None = None) ->
                 continue
             if w in gwords:
                 continue
-            if w in safe or w in mid or (len(w) >= 4 and w not in _R5_COMMON_NOUNS and _R5_NAME_VERB.match(text, m.end())
+            if w in safe or w in mid or (_name_like_opener(words[0]) and _R5_NAME_VERB.match(text, m.end())
                                          and not re.search(rf"(?<![\w'-]){re.escape(w)}(?![\w-])", text)):
                 add(words[0])
     if R5_UNGROUNDED_LOWER_CONTACTS:
@@ -2099,7 +2151,11 @@ _R5_ACK_EXTRA = re.compile(
     r"\b(?:has|have|had)\s*(?:not|n['’]t)\s+(?:come\s+up|been\s+(?:named|mentioned|picked|chosen|settled|decided|selected|discussed|shared|said))|"
     r"\bnot\s+(?:come\s+up|been\s+(?:named|mentioned|picked|chosen|settled|decided|selected|discussed))\b|"
     r"\b(?:we|i)\s+(?:haven['’]t|have\s+not|didn['’]t|did\s+not)\s+(?:named|recommend(?:ed)?|covered|suggested|got(?:ten)?\s+(?:as\s+far|to))\b|"
-    r"\b(?:we|i)\s+have\s+not\s+got(?:ten)?\s+(?:as\s+far|to)\b", re.I)
+    r"\b(?:we|i)\s+have\s+not\s+got(?:ten)?\s+(?:as\s+far|to)\b|"
+    # "There has been no mention of fertilizer so far", "No real mention of it yet", "I don't see any mention of a lens", "It hasn't been mentioned"
+    r"\b(?:no|zero)\s+(?:\w+\s+){0,2}?(?:mention|talk|discussion|word|sign|trace)\w*\s+(?:of|about|on|regarding)\b|"
+    r"\bthere\s+(?:has|have|had|was|were|is)\s*(?:n['’]t|not)\s+(?:\w+\s+){0,2}?(?:been\s+)?(?:any\s+)?(?:mention|talk|discussion|word)\w*|"
+    r"\b(?:don['’]t|do\s+not|can['’]t|cannot|couldn['’]t)\s+(?:see|find|have|recall|spot)\s+(?:any|a)\s+(?:\w+\s+)?(?:mention|record|note|word|trace)\w*", re.I)
 
 
 def ack_match(text: str):
@@ -2138,7 +2194,7 @@ def guess_list(text: str) -> bool:
 def _recall_text(text: str, refs) -> str:
     """The reply with its negated windows blanked (a negated ref is not hit), except when a ref itself holds a negator
     ("never help plan anything", "Horse with No Name"): blanking would erase the ref, so the reply is read as written."""
-    return text if any(_R5_NEG.search(r) for r in refs) else mask_negated(text)
+    return text if any(_R5_NEG.search(r) for r in refs) else mask_negated(text, semantic=False)
 
 
 def recall_refs_hit(text: str, refs) -> list:
@@ -2235,6 +2291,14 @@ def _negated_in_ideal(facts, ideal: str) -> set:
 # A fact counts when the answer says something around it. A list of the labelled facts ("Water plants, 6 PM", "Here is what I found: 5 PM.
 # Anything else you need?") states every fact and tells the person nothing: each fact sits in a clause with no word of its own.
 _R5_FACT_FILLER = frozenset("a an the and or of anything else need needs ok okay sure yes also just please thanks".split())
+# Frame words of a list ("Result: ...", "Noted: ...", "... is fine. Done."): they carry no content of their own.
+_R5_FRAME = frozenset("""result results found find finds noted note notes fine ok okay yes sure alright right correct answer answers info information detail
+details item items entry entries value values fact facts thing things stuff data output reply response looks look see seen saw got get gets
+thanks thank please anything something everything else need needs want wants know let""".split())
+# A clause is only a list entry when everything around the fact is one of these: a pronoun and a copula ("It is 5 PM"), a frame word
+# ("Result: 5 PM", "5 PM is fine"), or filler. "Mom has it", "Low Power Mode is on" and "Added Maya to your calendar" say something.
+_R5_BARE = frozenset("""it its it's this that that's these those there here is are was were be been am the a an and or so too also as well""".split()) | _R5_FRAME
+_R5_REL = frozenset("is are was were has have had at on by for with from to until till before after around in starts start begins begin".split())
 _R5_DUMP_LEAD = re.compile(
     r"\b(?:here(?:['’]s|\s+is|\s+are)|this\s+is|these\s+are|i\s+(?:found|see|have|got)|what\s+i\s+(?:found|see|have|got))\b"
     r"(?:\s+(?:what|everything|all|the|your|a|an|details?|list|results?|facts?|summary|info|information|answer|i|we|found|got|see|have|ve))*", re.I)
@@ -2271,8 +2335,10 @@ def _fact_layout(facts, text: str) -> tuple:
         words = [w.lower() for w in re.findall(r"[A-Za-z]+(?:['’][A-Za-z]+)?", rest)]
         n = sum(w not in _R5_FACT_FILLER for w in words)
         extra += n
+        says = any(w not in _R5_BARE and w not in _R5_FACT_FILLER for w in words)
+        related = len(set(ids)) >= 2 and any(w in _R5_REL for w in words)          # "Water plants is at 6 PM": two facts tied by a verb or a preposition
         for i in ids:
-            out[facts[i]] = out.get(facts[i], False) or n > 0
+            out[facts[i]] = out.get(facts[i], False) or says or related
     return out, extra
 
 
@@ -2363,6 +2429,36 @@ _R5_ABOUT_YOU = re.compile(
     r"walk\w*|say)\b|\b(?:as|like)\s+you\b|"
     r"\bwe(?:'ve|’ve|'re|’re)?\s+(?:said|talked|picked|chose|agreed|decided|discussed|booked|set|have|had|are|were)\b|"
     r"\bi\s+(?:remember|recall)\b)|\b[Yy]our\s+[\w'’-]+\s+[A-Z0-9]")
+# Anywhere in a sentence, a word that ties what it says to the person's own things or words ("your dog could be Max", "your dog, for example Max,
+# is great", "One option: Max, your dog", "you said"). The modal verb, the comma and the clause the name sits in do not matter: one such
+# word makes the whole sentence a statement about the person, so no clause of it is an offer from general knowledge.
+_R5_SAYS = re.compile(
+    r"(?i:\b(?:you|we)\s+(?:also\s+|already\s+|just\s+|once\s+|earlier\s+)?(?:said|told|mentioned|chose|picked|booked|decided|named|called|noted|"
+    r"shared|asked|wrote|set|agreed|talked|discussed|planned)\b|\b(?:as|like)\s+you\s+(?:said|told|mentioned|noted|did)\b|\bi\s+(?:remember|recall)\b)")
+# nouns after "your" that frame an offer instead of naming something of the person's ("your options could include a Sauternes")
+_R5_FRAME_NOUNS = frozenset("""option options choice choices idea ideas possibility possibilities suggestion suggestions call decision pick picks taste
+tastes best better bet favourite favorite preference preferences budget plan plans needs need question questions answer answers""".split())
+
+
+def _attributed(sent: str, hay: str) -> bool:
+    """The sentence ties what it says to the person's own things: "your dog" (a thing the conversation never mentioned), "you said", "I
+    recall". "Your tart" when the history holds a tart, and "your options", are not."""
+    d = dist()
+    s = _R5_IF_YOU.sub(" ", sent)
+    if _R5_SAYS.search(s):
+        return True
+    for m in re.finditer(r"\byours?\b(?:\s+([A-Za-z'’-]+))?", s, re.I):
+        w = (m.group(1) or "").lower().strip("'’-")
+        if m.group(0).lower().startswith("yours") or (w and w not in _R5_FRAME_NOUNS and f" {d.squash(w)} " not in hay):
+            return True
+    return False
+
+
+# a quantity of the person's own things ("about 47 of them", "12 emails"): a claim, not a size or a temperature
+_R5_OWN_COUNT = re.compile(
+    r"(?<![\w$.,:/-])(\d[\d,]*)\s+(?:of\s+(?:them|those|these|it|your\b)|(?:unread\s+|new\s+|open\s+|old\s+)?(?:emails?|messages?|meetings?|events?|reminders?|"
+    r"notes?|files?|tasks?|photos?|contacts?|appointments?|items?|unread|texts?|invites?|alarms?|lists?|folders?|books?|pets?|kids?|children|friends?|"
+    r"people|guests?|courses?|classes|lessons?|workouts?))\b", re.I)
 _R5_DATE = re.compile(rf"(?i:\b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:{_R5_MONTHS})\b|\b(?:{_R5_MONTHS})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?\b)")
 _R5_CLOCK = re.compile(r"\b\d{1,2}:\d\d(?:\s?(?i:am|pm))?\b|\b\d{1,2}\s?(?i:am|pm)\b")
 
@@ -2378,7 +2474,38 @@ def _specific_hits(sent: str, history: str, hay: str) -> list:
     for m in _R5_DATE.finditer(sent):
         if f" {d.squash(m.group(0))} " not in hay:
             out.append(m.group(0))
+    for m in _R5_OWN_COUNT.finditer(sent):
+        if f" {d.squash(m.group(1))} " not in hay:
+            out.append(m.group(0))
     return out
+
+
+def _offer_name_hits(sent: str, hay: str, allowed) -> list:
+    """Names an OFFER from general knowledge still must not carry. A Sauternes or a Riesling is general knowledge; "Priya" or "Anil" is
+    someone, "a Labrador called Max" gives the person a pet, and a run of three or more names (even pet-style ones: "Max, Rex, Bella")
+    is a guessing game about the person."""
+    d = dist()
+
+    def new(w):
+        wl = w.lower()
+        return wl not in allowed and f" {d.squash(wl)} " not in hay and wl not in _G_KNOWN
+
+    firsts, pets, named = [], [], []
+    for m in re.finditer(r"[A-Za-z][A-Za-z'’-]+", sent):
+        w, wl = m.group(0), m.group(0).lower()
+        if not new(w) or w in firsts or w in pets:
+            continue
+        if wl in _R5_FIRST_NAMES:
+            firsts.append(w)
+        elif wl in _R5_AMBIGUOUS_NAMES and w[0].isupper():
+            pets.append(w)
+    for m in re.finditer(r"\b(?:named|called|name)\s+(?:(?:him|her|it|them|the\s+\w+)\s+)?([A-Z][a-z]{2,})\b", sent):
+        if new(m.group(1)):
+            named.append(m.group(1))
+    out = firsts + named
+    if len(firsts) + len(pets) >= 3:
+        out += pets
+    return _uniq(out)
 
 
 def _loose_name_hits(sent: str, hay: str, allowed, claim: bool) -> list:
@@ -2392,8 +2519,7 @@ def _loose_name_hits(sent: str, hay: str, allowed, claim: bool) -> list:
         w = first.group(1)
         wl = w.lower()
         if wl not in allowed and f" {d.squash(w)} " not in hay and wl not in _G_KNOWN and (
-                wl in names or (wl not in _R5_ORDINARY and wl not in _R5_COMMON_NOUNS and len(wl) >= 4
-                                and _R5_NAME_VERB.match(sent, first.end()))):
+                wl in names or (_name_like_opener(w) and _R5_NAME_VERB.match(sent, first.end()))):
             out.append(w)
     if claim:
         for m in re.finditer(r"[A-Za-z][A-Za-z'’-]+", sent):
@@ -2428,12 +2554,15 @@ def invented_r5(text: str, history: str, ok, acked: bool) -> list:
         clean = (sent[:m.start()] + " ; " + sent[m.end():]) if m else sent
         guess = guess_list(clean)
         clauses = [c for c in re.split(r"[,;]|\s[—–-]\s", clean) if c.strip()] or [clean]
-        claims = [guess or bool(_R5_ABOUT_YOU.search(_R5_IF_YOU.sub(" ", c))) for c in clauses]
+        about = _attributed(clean, hay)          # sentence level: no clause of it is then an offer
+        claims = [guess or about or bool(_R5_ABOUT_YOU.search(_R5_IF_YOU.sub(" ", c))) for c in clauses]
         offer = bool(_R5_SUGGEST.search(clean)) and not guess
         if not acked:
             for c, claim in zip(clauses, claims):
                 out += _loose_name_hits(c, hay, allowed, claim)
             continue
+        if offer and not any(claims):
+            out += _offer_name_hits(clean, hay, allowed)
         for k, (c, claim) in enumerate(zip(clauses, claims)):
             if offer and not claim:
                 out += _specific_hits(c, history, hay)
@@ -2573,7 +2702,8 @@ def _score_r5(p: Parsed, label: dict, parts: dict, flags: list) -> Result:
         if final_ideal and not anchor:
             ground = label.get("ground")
             sources = _r5_sources(label)
-            if kind in ("narrate", "recall", "recall_none") and len(text.split()) > max(VERBOSE_WORDS, 5 * len(ideal.split())):
+            if kind in ("narrate", "recall", "recall_none") and (len(text.split()) > max(VERBOSE_WORDS, 5 * len(ideal.split()))
+                                                                  or len(text.split()) > max(VERBOSE_ABS_WORDS, 2.5 * len(ideal.split()))):
                 parts["verbose"] = VERBOSE_PEN
                 flags.append("far longer than the answer needs")
             if label.get("narrate"):
