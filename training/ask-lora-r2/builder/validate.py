@@ -61,7 +61,8 @@ Exit code 1 on any problem. Checks, per example:
               anything (think:clarify_destructive), or think on a final in a
               single-source family (grounded_only, right_source,
               weather_and_web, act_dont_promise, no_write_for_reads) without a
-              date/time or free/busy computation (think:single_source).
+              date/time or free/busy computation (think:single_source), or write a tool name twice in one
+              plan ("call get_my_day_plan ... and call get_my_day_plan": think:mechanics).
               Round 4 extraction thoughts (a final after a read, and the facts part
               of an ignore_embedded_instructions thought) also pass: facts_missing
               (a time, amount or quoted title the thought lists reaches the final),
@@ -71,12 +72,17 @@ Exit code 1 on any problem. Checks, per example:
               to the number of result items none of the thought's pieces comes from:
               result lines, minus the headers and summary sentences of a bulleted
               result, plus the N of a "…and N more" line, with no merging of lines;
+              counted per title occurrence: the same event on several days is one
+              item per day the answer states it (less the times the thought lists it);
               a line the thought lists in part must also give its times, amounts
               and quoted titles, and the bullet count is repeated independently of
               the builder: bullet_items_left), fragment
               (every ';' piece is one contiguous, whole run of a tool-result line: no
               clause tail such as "and tell you ...", no opening "(", no unbalanced
-              bracket, no repeated piece, no lone AM/PM in any thought), banner (no
+              bracket, no repeated piece, no lone AM/PM in any thought; no bare day
+              header such as "Mon Nov 2" as a piece; no piece that stops at the start of a
+              "9:00 AM–10:00 AM" range, before the object of "send me", after a
+              parenthetical whose clause goes on, or on the tail of a list), banner (no
               Mail cache/freshness text in any thought), ellipsis (no piece cut with
               "…" unless the result itself has one), brief (a Brief item of a day plan
               keeps its "(email)" / "(text)" / "(note)" / "(reminder)" source), iso (no
@@ -105,8 +111,10 @@ Exit code 1 on any problem. Checks, per example:
               anchor_pos <= 1. No absence claim without a read: a final that says
               nothing / none / no messages / "I don't have ..." about the person's
               own data needs a tool call in its own turn (final:absence_without_read;
-              chat, voice, knowledge, session chat / recall and instructions
-              answers about the conversation itself are exempt). Warns (does not fail)
+              "nobody has replied", "all caught up", "free all day", "wide open",
+              "I haven't seen ..." count; chat, voice, knowledge and session chat /
+              recall answers about the conversation itself are exempt, instructions
+              answers are checked). Warns (does not fail)
               when more than 3 finals in a file are byte-identical, listing them
   template    (with --template MODEL_DIR, repeatable) each model's chat template
               renders every example, and the prompt is a prefix of the full text,

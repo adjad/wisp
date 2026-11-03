@@ -507,12 +507,12 @@ def plan_call(day="tomorrow"):
 # A dated to-do the Brief read from the person's texts, notes or mail (world.BriefItem): the plan lists it beside the
 # calendar, and the final names it. {d} is the weekday of the day asked about.
 BRIEF_BANK = [  # (title, source, who, source text, timed)
-    ("Plan for lunch at Mom's place", "messages", "Mom", "can you plan for lunch at my place on {d}? the cousins are coming", False),
+    ("Bring dessert to dinner at Mom's", "messages", "Mom", "can you bring a dessert to dinner at my place on {d}? the cousins are coming", False),
     ("Bring the folding chairs to Theo's", "messages", "Theo", "bring the folding chairs over on {d}, we're short", False),
     ("Pick up the cake for Maya's birthday", "messages", "Maya", "don't forget the cake for my birthday on {d}!", False),
     ("Call the landlord about the heater", "notes", "", "call the landlord about the heater on {d}", False),
     ("Return the borrowed drill", "notes", "", "return the borrowed drill on {d}", False),
-    ("Finish HW4, Statistics", "mail", "Canvas", "HW4 is due {d} at 11:59 PM", True),
+    ("Finish Problem Set 5, Linear Algebra", "mail", "Canvas", "Problem Set 5 is due {d} at 11:59 PM", True),
     ("Submit the lab writeup", "mail", "Prof. Okafor", "the lab writeup is due {d} at 11:59 PM", True),
 ]
 

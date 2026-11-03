@@ -403,6 +403,45 @@ def corrupt():
         assert thinking.bullet_items_left(_fin, [_res], "3 pm, Study group; plus 4 more") == 4
         assert thinking.bullet_items_left(_fin, [_res], "3 pm, Study group; 5 pm, Piano lesson; Mail the package; plus 2 more") == 2
         assert thinking.bullet_items_left(_fin, ["no bullets here"], "x") is None
+        # "plus N more" is per title occurrence: the same event on two days is two items when the answer states both
+        _res2 = ("Next 3 days: 6 events, no reminders\n\n**Tomorrow · Tue, Jan 26**\n- **11:00 AM** — PHIL 110 Intro to Ethics · Mercer Hall 12\n"
+                 "- **4:00 PM** — Library help desk shift · Hollis Library\n\n**Wednesday · Jan 27**\n"
+                 "- **10:00 AM** — CS 162 Operating Systems — Lecture · Kerr Hall 204\n\n**Thursday · Jan 28**\n"
+                 "- **11:00 AM** — PHIL 110 Intro to Ethics · Mercer Hall 12")
+        _fin2 = ("You have 4 events: Tue 11 AM PHIL 110 Intro to Ethics, Tue 4 PM Library help desk shift, Wed 10 AM CS 162 Operating Systems, "
+                 "and Thu 11 AM PHIL 110 Intro to Ethics.")
+        _th2 = "10:00 AM CS 162 Operating Systems Lecture, Kerr Hall 204; 11:00 AM PHIL 110 Intro to Ethics, Mercer Hall 12; plus 2 more"
+        assert thinking.bullet_items_left(_fin2, [_res2], _th2) == 2, thinking.bullet_items_left(_fin2, [_res2], _th2)
+        assert len(thinking.omitted_split(_fin2, [_res2], _th2)[0]) == 2, thinking.omitted_split(_fin2, [_res2], _th2)
+        assert thinking.bullet_items_left(_fin2.replace(", and Thu 11 AM PHIL 110 Intro to Ethics", ""), [_res2], _th2) == 1
+        # a range plan's day headers ("Thu Dec 3:", "Today:") are labels, never pieces
+        _rng = "Plan for this week\nToday:\n- all day · Send the form (email)\nThu Dec 3:\n- 9:30 am · Volunteer shift (calendar)"
+        assert "Thu Dec 3" not in thinking._drop_day_headers(_rng) and "Volunteer shift" in thinking._drop_day_headers(_rng)
+        assert thinking.fragment_problems("From the day plan: Thu Dec 3; 9:30 am, Volunteer shift", [_rng]), "a bare day header is not a piece"
+        assert not thinking.fragment_problems("From the day plan: 9:30 am, Volunteer shift; all day, Send the form (email)", [_rng])
+        # a one-slot free line keeps its range: "free 9:00 AM" alone is the start of "9:00 AM–10:00 AM"
+        _slots = ("30-minute candidate slots, 9:00-18:00 (America/Los_Angeles):\n  Wednesday, 2027-02-17: 9:00 AM–9:30 AM "
+                  "(2027-02-17T09:00:00-08:00 → 2027-02-17T09:30:00-08:00; free until 2027-02-17T10:00:00-08:00)")
+        assert thinking.fragment_problems("In the free slots: Wednesday, Feb 17: free 9:00 AM. Answer with those.", [_slots]), "free 9:00 AM"
+        assert not thinking.fragment_problems("In the free slots: free 9:00 AM–10:00 AM", [_slots]), \
+            thinking.fragment_problems("In the free slots: free 9:00 AM–10:00 AM", [_slots])
+        # two reads of one tool are not named twice in a plan thought
+        assert thinking.thought_problems('First call get_my_day_plan with day "this_week" and call get_my_day_plan, then email Dad.', "x", "y")
+        assert "the open to-dos too" in thinking._join_reads([("get_my_day_plan", {"day": "this_week"}), ("get_my_day_plan", {})])
+        assert thinking._join_reads([("get_my_day_plan", {"day": "this_week"}), ("get_my_day_plan", {})]).count("day plan") == 1
+        # absence phrases the first regex missed
+        for _txt in ("No one has texted you today.", "Nobody has replied.", "It's all clear today.", "You're all caught up.",
+                     "You're free all day.", "Your schedule is wide open.", "I haven't seen anything from Maya.",
+                     "You haven't got any mail from Dana."):
+            assert thinking.absence_problems({"family": "right_source"}, [_u, {"role": "assistant", "content": _txt}]), _txt
+        assert thinking.absence_problems({"family": "instructions_r4"}, [_u, {"role": "assistant", "content": "Nobody has replied."}]), \
+            "instructions_r4 includes read requests, so it is checked"
+        # a piece is a whole clause: not cut before the object ("send me ..."), not the tail of a list, not before a parenthetical's verb
+        _src = ["Carmen Rivera: Can you send me the receipt today.", "Your mail, texts, notes, and what you tell me are read and kept on this Mac.",
+                "A scheduled or automatic Focus (a set time, an app, Sleep) isn't recorded."]
+        for _bad in ("Carmen Rivera: Can you send me", "notes, and what you tell me are read and kept on this Mac",
+                     "A scheduled or automatic Focus (a set time, an app, Sleep)"):
+            assert thinking.fragment_problems(f"From the texts: {_bad}. Answer with those.", _src), _bad
         # recall quotes: one contiguous run of an earlier turn, from the speaker the label names, about the answer
         try:
             q_row, q_meta = first_m(lambda e, m: m.get("think") and m.get("step_kind") == "answer_first"

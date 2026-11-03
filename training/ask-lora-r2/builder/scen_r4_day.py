@@ -351,9 +351,12 @@ def calendar_reply(rng, items, day, now):
     if not items:
         return fin(rng, f"Nothing is on your calendar {on_word(day, now)}, and no reminders are due.")
     if not events:
-        lead = rng.choice([f"Nothing on your calendar {on_word(day, now)}, but there's ",
+        one = len(rems) == 1
+        lead = rng.choice([f"Nothing on your calendar {on_word(day, now)}, but there's " if one
+                           else f"Nothing on your calendar {on_word(day, now)}, but you do have ",
                            f"No events {on_word(day, now)}, though you do have ",
-                           f"Your calendar is clear {on_word(day, now)}; the only thing is "])
+                           (f"Your calendar is clear {on_word(day, now)}; the only thing is " if one
+                            else f"Your calendar is clear {on_word(day, now)}; the only things are ")])
         return lead + join(phrase(i) for i in sorted(rems)) + "."
     if len(items) >= 4:
         return f"{label} has {counts(items)}:\n" + "\n".join("- " + bullet(i, True) for i in sorted(items))
@@ -735,13 +738,14 @@ def clock_of(when):
 
 
 def other_sentence(rng, plan):
+    """The plan's 'Other to-dos' in prose. The tool's '...and N more' trails the whole section, so it closes the last sentence."""
     dated = [(t, lab) for t, lab in plan.other if lab]
     undated = [(t, lab) for t, lab in plan.other if not lab]
+    more = f", and {plan.more['other']} more" if plan.more.get("other") else ""
     out = []
     if dated:
-        out.append(rng.choice(["Coming up after that: ", "Also coming up: "]) + say_other(dated) + ".")
+        out.append(rng.choice(["Coming up after that: ", "Also coming up: "]) + say_other(dated) + (more if not undated else "") + ".")
     if undated:
-        more = f", and {plan.more['other']} more" if plan.more.get("other") else ""
         out.append(rng.choice(["Also open: ", "Still open: ", "Whenever there's time: "]) + say_other(undated) + more + ".")
     return " ".join(out)
 
@@ -863,7 +867,8 @@ def narrate_range(rng, plan):
     if plan.waiting:
         tail.append("- " + " ".join(say_wait(x) + "." for x in plan.waiting))
     if plan.other:
-        tail.append("- Also open: " + say_other(plan.other, with_day=False))
+        tail.append("- Also open: " + say_other(plan.other, with_day=False)
+                    + (f", and {plan.more['other']} more" if plan.more.get("other") else ""))
     if plan.more.get("truncated"):
         tail.append("- and a few more that the list cut off")
     if not lines and not tail:
@@ -1641,8 +1646,12 @@ def calendar_with_brief(rng, out):
              "what appointments do i have {x}", "calendar for {x}, what's in it", "any meetings on my calendar {x}",
              "show me the calendar entries for {x}", "what's booked on my calendar {x}"]
     plans = [("tomorrow", 2, "mail"), ("friday", 1, "text"), ("tomorrow", 0, "text"), ("saturday", 2, "note"), ("tomorrow", 1, "mail"),
-             ("sunday", 0, "text"), ("monday", 2, "mail"), ("friday", 3, "note")]
-    for k, (when, n, bk) in enumerate(plans):
+             ("sunday", 0, "text"), ("monday", 2, "mail"), ("friday", 3, "note"),
+             # a day with no event and only reminders: the "calendar is clear, the only thing is the reminder" answer
+             ("tomorrow", 0, "mail", 1), ("wednesday", 0, "text", 1), ("tomorrow", 0, "text", 2), ("saturday", 0, "note", 2),
+             ("thursday", 0, "mail", 1), ("friday", 0, "text", 2)]
+    for k, (when, n, bk, *rest) in enumerate(plans):
+        n_rem = rest[0] if rest else 0
         for _try in range(60):
             now, w = mk(rng, hour=rng.choice([8, 12, 17]))
             day = now.date() + D(days=1) if when == "tomorrow" else None
@@ -1652,7 +1661,12 @@ def calendar_with_brief(rng, out):
                 continue
             put_events(rng, w, day, n, lo=9, hi=19)
             decorate(rng, now, w, day, brief=(bk,))
-            if len(w.brief) == 1:
+            if n_rem:
+                taken = {r.title for r in w.reminders}
+                for title in [t for t in rng.sample(REM_TITLES, 10) if t not in taken][:n_rem]:
+                    add_rem(w, title, at(day, rng.choice([9, 12, 15, 17, 20])))
+            if len(w.brief) == 1 and (not n_rem or (not [e for e in w.events if e.start.date() == day]
+                                                    and len([r for r in w.reminders if r.due and r.due.date() == day]) == n_rem)):
                 break
         else:
             dropped("calendar_with_brief", k)

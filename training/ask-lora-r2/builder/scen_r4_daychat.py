@@ -64,13 +64,31 @@ STEMS = [
 ]
 PRE = ["", "", "", "", "hey ", "ok so ", "quick one: ", "um ", "hi, ", "so "]
 SUF = ["", "", "", "", "?", " pls", " thanks", " for me", " please"]
-FOLLOW = ["and {y}?", "and {y}", "what about {y}", "what about {y}?", "how about {y}", "how about {y}?", "same for {y}",
-          "and on {y}?", "and for {y}?", "what about for {y}", "And {y}?", "What about {y}?"]
-CORRECT = ["i mean {y}", "I mean {y}", "i mean {y}", "i mean {y}."]
-# Corrections the host's follow-up pattern does not cover (it needs "i mean <day>" exactly): the dry-run keeps only the
-# ones whose turn still reaches the plan tool.
-CORRECT_ALT = ["no, i meant {y}", "sorry, i meant {y}", "i meant {y}", "actually {y}", "no, {y}", "i was asking about {y}",
-               "i meant for {y}", "{y}, i meant", "oh i meant {y}"]
+# Follow-up stems. Each one holds a phrase the host reads as a day-plan question (model_only.day_plan_question), so the bare
+# "and <day>?" family stays out of training: those wordings (and every one a single word from them) belong to the toolbench gate
+# (scripts/toolbench/cases/brief.yaml), and ``follow_prompt`` drops any candidate within one token of a gate prompt.
+FOLLOW = ["and what's on {y}?", "what's going on {y} then?", "ok and what's happening {y}?", "and anything coming up {y}?",
+          "then what's planned {y}", "so what's up for {y}?", "what's on {y} then", "now what's going on {y}?",
+          "and what about my plans for {y}?", "and anything due {y}", "what's coming up {y} then?", "ok now anything planned {y}?",
+          "and what am i missing {y}?", "anything i should know {y} too?", "{y} next: anything i need to handle?",
+          "now check {y}: anything coming up", "{y} instead, what's on my plate?", "how's {y}? anything due?",
+          "what do i have coming up {y}?", "what do i have planned {y} then?", "and what's on for {y}?", "wait, what's on {y}",
+          "and for {y}: anything coming up?", "also what's up for {y}", "same for {y}: what's coming up?",
+          "okay, {y}: what's coming up?", "switching to {y}, what's on my plate?", "{y} instead, anything i should know?",
+          "can you do {y} as well, what's on my plate?", "for {y} then, anything due?", "let's do {y} now, anything planned?",
+          "what's happening {y} then?", "anything i have to do {y} too?", "ok so anything coming up {y}", "{y} too: what am i missing?",
+          "then {y}: anything i need to get done?", "and my plans for {y}?", "what is my plan for {y} then?",
+          "sure, what's coming up {y}?", "next, anything i should handle {y}?", "what about my to-dos {y}: anything due?"]
+FPRE = ["", "", "", "", "ok ", "hmm ", "so ", "cool, ", "alright "]
+CORRECT = ["no, i meant {y}: anything coming up?", "sorry i mean {y}, what's on my plate?", "i meant {y}, anything due?",
+           "oops, i mean {y}, anything planned?", "actually i want {y}: anything i should know?", "wait, i mean {y}, what am i missing?",
+           "i mean {y}, what's coming up", "no i meant what's on {y}", "sorry, i meant what's going on {y}",
+           "i was asking about {y}, what's coming up?", "not that day, i mean {y}: anything planned?", "my bad, i meant {y}. anything due?",
+           "i meant {y} instead, anything coming up?", "no no, {y}: what's on my plate?", "i mean {y}, what's up for me",
+           "sorry, wrong day, i mean {y}: anything i need to handle?", "ah i meant {y}, what's happening",
+           "i'm asking about {y}, what's coming up?", "no, {y}. what am i missing?", "wait no, i mean what's planned {y}"]
+# Corrections the host's follow-up pattern does not cover are kept only when the dry-run still reaches the plan tool.
+CORRECT_ALT = ["no, i meant {y}", "sorry, i meant {y}", "i meant {y}", "actually {y}", "i was asking about {y}", "oh i meant {y}"]
 DRAFT = ["draft a message responding to {p}", "write a reply to {p}", "draft something back to {p}", "respond to {p} for me, just a draft",
          "can you put together a reply to {p}", "draft a text back to {p}", "answer {p}, draft it first", "write {p} back",
          "prepare a reply to {p}", "draft a response to {p}", "put together a text for {p}, replying to what they said",
@@ -111,27 +129,31 @@ def said_text(phrase):
     return t if t.endswith(("?", "!", ".")) else t + ("?" if re.match(r"(?i)can we\b|how about\b", phrase) else ".")
 
 
-# What a drafted reply might say when the user gave no words: it answers the question the person asked, in the user's voice,
-# and commits to nothing the thread does not support (an answer, a short hold, or a question back).
+# What a drafted reply might say when the user gave no words. The user told the draft nothing about their own state, so a body
+# asserts nothing about it (not done, not booked, not seen, not coming) and decides nothing for them: it acknowledges the message,
+# holds ("I'll get back to you"), or asks back, and it names the topic the thread raised. A committing answer exists only where the
+# user supplies the content (SAY, below).
 DRAFTS = {
-    "Maya Chen": ["Yes, I can grab milk on my way home.", "Sure, I'll stop for milk on the way back.", "Not yet, but I'll pick it up on my way home.",
-                  "Got it, milk is on my list for the way home."],
-    "Theo Park": ["Yes, still on for coffee. What time works for you?", "Still in for coffee! Where should we meet?",
-                  "I think so, let me check my schedule and I'll confirm soon.", "Count me in for coffee."],
-    "Jordan Ellis": ["Almost done with the analysis part. I'll send it over tonight.", "Not quite yet, I'm still working through the analysis. I'll send it when it's finished.",
-                     "Nearly there. You'll have the analysis part later today."],
-    "Nadia Khan": ["I saw the photos, thanks for sending them. They look great.", "Sorry, I haven't had a chance to look at the photos yet. I'll check them today.",
-                   "Just opened the photos, they're lovely!"],
-    "Carmen Rivera": ["Still deciding. Do you have any ideas for Mom?", "I haven't decided yet. What are you thinking of getting her?",
-                      "Not yet. Want to go in on something together?"],
-    "Ben Ortiz": ["I'm in for the long run. What time should I be there?", "Probably in. Let me check my schedule and confirm.", "Count me in."],
-    "Aisha Karim": ["Sure, I'll send you the practice problems today.", "Yes, sending them over later tonight.", "I'll dig them out and send them over shortly."],
-    "Dad": ["Not yet, I'll book it soon and send you the details.", "Not booked yet, I'm looking at flights today.",
-            "Still working on it. I'll let you know as soon as it's booked."],
-    "Hana Kowalczyk": ["I haven't heard back yet. I'll let you know when I do.", "Not sure yet, I'll check and tell you.",
-                       "I'm still waiting to see if it went through."],
-    "Naomi Brandt": ["Next week works for me. What day is best for you?", "Moving it to next week is fine. Let me know what time suits you.",
-                     "Sure, let's move it. Do you have a day in mind?"],
+    "Maya Chen": ["Thanks for the heads up about the milk. Can I get back to you in a bit?", "Saw your note about the milk. Let me check and I'll text you back.",
+                  "Got your message about the milk. Give me a little while and I'll reply properly.", "Do you need the milk tonight or can it wait?"],
+    "Theo Park": ["Thanks for checking about coffee. Can I get back to you shortly?", "Saw your message about coffee. Let me check my day and I'll reply soon.",
+                  "About coffee, what time were you thinking?", "Got your text about coffee. Give me a bit and I'll confirm."],
+    "Jordan Ellis": ["Got your message about the analysis part. Can I get back to you in a bit?", "Thanks for checking in on the analysis part. Let me look and I'll reply shortly.",
+                     "About the analysis part, when do you need it by?", "Saw your question about the analysis. I'll reply properly in a little while."],
+    "Nadia Khan": ["Thanks for sending the photos. Can I get back to you about them in a bit?", "Got your message about the photos. I'll reply properly soon.",
+                   "About the photos, which ones did you most want me to look at?", "Saw your note about the photos. Give me a little while to reply."],
+    "Carmen Rivera": ["Got your message about Mom's gift. Can I get back to you in a bit?", "Thanks for asking about Mom's gift. Let me think and I'll reply soon.",
+                      "About Mom's gift, do you have any ideas?", "Saw your text about Mom's gift. Give me a little while to reply."],
+    "Ben Ortiz": ["Thanks for the invite to the long run. Can I get back to you in a bit?", "Got your message about the long run. Let me check and I'll reply soon.",
+                  "About the long run, what time are you meeting?", "Saw your text about the long run. Give me a little while to reply."],
+    "Aisha Karim": ["Got your message about the practice problems. Can I get back to you in a bit?", "Thanks for the reminder about the practice problems. Let me check and I'll reply soon.",
+                    "Which practice problems did you mean?", "Saw your text about the practice problems. Give me a little while to reply."],
+    "Dad": ["Thanks for checking in about the flight. Can I get back to you in a bit?", "Got your message about the flight home. Let me check and I'll text you back.",
+            "About the flight, when do you need to know by?", "Saw your text about the flight. Give me a little while and I'll reply properly."],
+    "Hana Kowalczyk": ["Got your message about the regrade. Can I get back to you in a bit?", "Thanks for checking in on the regrade. Let me look and I'll reply soon.",
+                       "About the regrade, have you heard anything on your end?", "Saw your note about the regrade. Give me a little while to reply."],
+    "Naomi Brandt": ["Got your message about moving our call. Can I get back to you shortly?", "Thanks for asking about moving the call. Let me check my calendar and I'll reply soon.",
+                     "About moving our call, what days work for you next week?", "Saw your note about the call. Give me a little while to reply."],
 }
 GREET = ["", "", "Hi {nm}, ", "Hey {nm}, ", "Hey {nm}! ", "{nm}, "]
 
@@ -194,20 +216,67 @@ def first_prompt(rng, x, *, typo_ok=True):
     return pool[0]
 
 
+_GATE_CACHE: list = []
+_DAYWORD = re.compile(r"\b(?:(?:the rest of )?(?:this |next |the )?week(?:end)?|monday|tuesday|wednesday|thursday|friday|saturday|sunday|today|tomorrow)\b")
+
+
+def _norm_tokens(p):
+    t = _DAYWORD.sub("D", p.lower())
+    return re.sub(r"[^a-z0-9' ]", " ", t).split()
+
+
+def _tok_dist(a, b):
+    prev = list(range(len(b) + 1))
+    for i, x in enumerate(a, 1):
+        cur = [i]
+        for j, y in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x != y)))
+        prev = cur
+    return prev[-1]
+
+
+def gate_prompts():
+    """The brief.yaml toolbench prompts, as day-neutral token lists; training follow-ups stay more than one token away."""
+    if not _GATE_CACHE:
+        import pathlib
+        path = pathlib.Path(__file__).resolve().parents[3] / "scripts" / "toolbench" / "cases" / "brief.yaml"
+        text = path.read_text() if path.exists() else ""
+        for m in re.finditer(r'^\s*prompt:\s*"((?:[^"\\]|\\.)*)"', text, re.M):
+            _GATE_CACHE.append(_norm_tokens(m.group(1)))
+        if not _GATE_CACHE:         # the cases file is missing: keep the wordings that were in it on 2026-11-02
+            for p in ["and friday?", "and for friday?", "ok and then friday", "and for sunday?", "what about saturday", "i mean this week",
+                      "i mean everything, texts and emails too", "and the rest of the week?", "how about this weekend",
+                      "anything else I have to do this week", "ok and how does tomorrow look then?"]:
+                _GATE_CACHE.append(_norm_tokens(p))
+    return _GATE_CACHE
+
+
+def near_gate(p):
+    toks = _norm_tokens(p)
+    return any(_tok_dist(toks, g) <= 1 for g in gate_prompts())
+
+
 def follow_prompt(rng, y, previous, *, correct=False):
     from scen_r2_act import _leaks
     from service.model_only import day_plan_question
     tmpl = CORRECT if correct else FOLLOW
-    opts = [t.format(y=y) for t in tmpl]
+    opts = []
+    for t in tmpl:
+        p = t.format(y=y)
+        if not correct and not re.match(r"(?i)(and|ok|so|now|then|also|wait|can|same|sure|next|okay|alright|hmm|cool)\b", t):
+            p = rng.choice(FPRE) + p
+        if rng.random() < 0.12:
+            p = p[:1].upper() + p[1:]
+        opts.append(p)
     rng.shuffle(opts)
     for p in opts:
-        if day_plan_question(p, previous) and not _leaks().leaks(p)[0]:
+        if day_plan_question(p, previous) and not _leaks().leaks(p)[0] and not near_gate(p):
             return p
     if correct:
         alt = [t.format(y=y) for t in CORRECT_ALT]
         rng.shuffle(alt)
         for p in alt:
-            if not _leaks().leaks(p)[0]:
+            if not _leaks().leaks(p)[0] and not near_gate(p):
                 return p
     raise ValueError(f"no follow-up for {y!r}")
 
@@ -272,7 +341,7 @@ def guard_final(sc):
 
 
 _REPEAT: dict = {}
-REPEAT_CAP = 3
+REPEAT_CAP = 2
 
 
 def attempt(make, rng, tries=8):
@@ -357,7 +426,7 @@ def make_pivot(rng, kinds_a, kinds_b, *, correct=False, two=False, force=None):
     if ka == kb and offa == offb:
         raise ValueError("same day twice")
     said_a, arg_a, days_a = describe(rng, w, now, ka, offa, typo=True)
-    said_b, arg_b, days_b = describe(rng, w, now, kb, offb)
+    said_b, arg_b, days_b = describe(rng, w, now, kb, offb, typo=True)
     extra = []
     if two:
         k2, _x, _y, off2 = pick_day_kind(rng, now, ["weekday", "tomorrow", "today"])
@@ -422,7 +491,7 @@ def make_draft(rng, mode):
     say_text = said_text(say_user)
     prompt = rng.choice(SAYING).format(p=p, say=say_user)
     nm = first_name(who)
-    body = say_text if rng.random() < 0.6 else greeted(rng, nm, say_text)
+    body = say_text          # a dictated send carries the user's words exactly: no greeting is added
     deny = rng.random() < 0.2
     steps = [[Call("view_messages", conversation=who)], [Call("send_message", to=who, text=body)]]
     if not deny:
@@ -471,7 +540,7 @@ def make_recall(rng):
               history, "recall", f"daychat-{rng.random():.9f}")
 
 
-def make_calendar(rng):
+def make_calendar(rng, reminder_only=False):
     """After a plan answer, an explicit calendar ask: get_upcoming; the final adds the dated Brief items it lists apart."""
     now, w = mk_clock(rng, hour=rng.choice([8, 9, 12, 17]))
     k1, _a, _b, o1 = pick_day_kind(rng, now, ["weekday", "tomorrow"])
@@ -481,6 +550,14 @@ def make_calendar(rng):
     if arg1 == arg2:
         raise ValueError("same day")
     populate(rng, w, now, days1 + days2)
+    d2 = days2[0]
+    if reminder_only and d2 not in days1:
+        # a day with no event and only reminders (one or two): the calendar answer says the calendar is clear, then names them
+        w.events = [e for e in w.events if not (e.start.date() <= d2 < (e.start + D(minutes=e.minutes)).date() or e.start.date() == d2)]
+        w.reminders = [r for r in w.reminders if not (r.due and r.due.date() == d2)]
+        taken = {r.title for r in w.reminders}
+        for title in [t for t in rng.sample(S.REM_TITLES, 10) if t not in taken][:rng.choice([1, 2, 2])]:
+            S.add_rem(w, title, S.at(d2, rng.choice([9, 12, 15, 17, 20])))
     q = first_prompt(rng, said1)
     _p, fin1 = day_final(rng, w, now, arg1)
     from scen_r2_act import _leaks
@@ -550,7 +627,7 @@ def fam_day_chat_r4(rng):
         + [("pivot", None, None, False, False, (5, 6))] * 4 + [("pivot", None, None, False, False, (6, 4))] * 3
         + [("pivot", None, None, True, False, (5, 4))] * 3
         + [("pivot", ["tomorrow", "today", "weekday"], ["this_week", "next week", "this weekend"], True, False)] * 20
-        + [("draft",)] * 36 + [("say",)] * 14 + [("recall",)] * 16 + [("calendar",)] * 14 + [("past",)] * 10
+        + [("draft",)] * 36 + [("say",)] * 14 + [("recall",)] * 16 + [("calendar",)] * 8 + [("calendar_rem",)] * 6 + [("past",)] * 10
     )
     rng.shuffle(plan)
     for spec in plan:
@@ -568,6 +645,8 @@ def fam_day_chat_r4(rng):
             make = make_recall
         elif spec[0] == "calendar":
             make = make_calendar
+        elif spec[0] == "calendar_rem":
+            make = lambda r: make_calendar(r, reminder_only=True)
         else:
             make = make_past
         sc = attempt(make, rng)

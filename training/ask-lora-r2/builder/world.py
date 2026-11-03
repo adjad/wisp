@@ -106,7 +106,7 @@ class BriefItem:
     """A dated to-do Wisp's Brief read from mail, texts or notes (proactive_tools.BRIEF_SOURCES): a family lunch from
     a text, a homework due time from a Canvas email. `ref` is the Email / Msg / Note it was read from, so a
     re-read of that source (view_messages, view_emails, search_notes) finds the same words."""
-    title: str                   # the Brief's to-do title ("Finish HW4, Statistics")
+    title: str                   # the Brief's to-do title ("Finish Problem Set 5, Linear Algebra")
     due: dt.datetime             # date-only items: any time on that day (the Brief stores 11:59 PM)
     source: str                  # mail | messages | notes
     who: str = ""
