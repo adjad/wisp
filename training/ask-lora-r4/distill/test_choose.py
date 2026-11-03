@@ -130,6 +130,18 @@ def test_capability_refusal_and_antecedent():
     ok("Rock beats scissors, so I win this round! 😊 Again?")
 
 
+def test_recall_normalised():
+    m = choose.recall_missing
+    assert m("The distance was **two miles**.", ["2 miles", "left knee"]) == []
+    assert m("The interview is **Wednesday at 2:00 PM**.", ["Wednesday", "2pm", "Northfield"]) == []
+    assert m("Your kitchen was around **64°F**, Gerald likes warmth.", ["64F", "75F", "Gerald"]) == []
+    assert m("They said **by 9 AM tomorrow morning**.", ["9 tomorrow morning"]) == []
+    assert m("Basil & Bloom at **7:30 PM**.", ["7:30", "Basil & Bloom"]) == []
+    assert m("Set a weekly limit for food delivery.", ["weekly delivery limit"]) == []
+    assert m("The last one was Moon, after Annihilation.", ["Contact", "Ex Machina", "Annihilation"])
+    assert m("A cozy party at Cedar Park.", ["fossil dig", "12"])
+
+
 def test_no_thought():
     check("A lovely reply.", "no_thought", reasoning="  ")
 
@@ -149,6 +161,8 @@ def test_session_refs():
     none, recall = rows
     assert choose.reject_reasons({**rec, "content": "You didn't mention a color for Ivy, Sam. Ask her! 😊"}, none) == []
     assert "invented" in choose.reject_reasons({**rec, "content": "You said Teal, for her 8th."}, none)
+    assert choose.reject_reasons({**rec, "content": "We haven't picked one yet, but Teal or Coral would suit Ivy."},
+                                 none) == []
     assert choose.reject_reasons({**rec, "content": "It was a Fossil-dig party!"}, recall) == []
     assert "recall" in choose.reject_reasons({**rec, "content": "A dinosaur party."}, recall)
 

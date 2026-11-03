@@ -128,10 +128,43 @@ def squash(s: str) -> str:
     return " ".join(re.sub(r"[\W_]+", " ", s.lower()).split())
 
 
+_NUMWORD = {w: str(i) for i, w in enumerate("zero one two three four five six seven eight nine ten eleven twelve".split())}
+_RSTOP = {"the", "a", "an", "is", "of", "to", "and", "on", "at", "in", "for", "my", "your"}
+
+
+def recall_tokens(s: str) -> set[str]:
+    """Tokens for the recall match: number words as digits, "2:00 PM" ~ "2pm", "64°F" ~ "64F", plus the split
+    pieces of a merged number+unit ("9am" also gives "9")."""
+    s = s.lower().replace("°", "")
+    s = re.sub(r"(\d+):00\s*", r"\1", s)
+    s = re.sub(r"(\d+)\s*(am|pm|f|c|km|kg|g)\b", r"\1\2", s)
+    out = set()
+    for t in re.findall(r"[a-z0-9/]+", s):
+        t = _NUMWORD.get(t, t)
+        out.add(t)
+        m = re.fullmatch(r"(\d+)([a-z]+)", t)
+        if m:
+            out.add(m.group(1))
+    return out
+
+
+def ref_present(ref: str, have: set[str]) -> bool:
+    need = [t for t in recall_tokens(ref) if t not in _RSTOP and not (t.isdigit() and any(
+        x != t and x.startswith(t) and not x.isdigit() for x in recall_tokens(ref)))]
+    return all(t in have or t.rstrip("s") in have or t + "s" in have for t in need)
+
+
 def recall_missing(content: str, recall) -> list[str]:
+    """The refs a reply misses. A ref counts when all its tokens appear (order-free, so "a weekly limit for food
+    delivery" carries "weekly delivery limit"). The reply passes (returns []) when it carries the FIRST ref, the
+    detail the question asks for, and at least half of all refs; the rest are context (the starter's name) that a
+    correct answer may leave out."""
     need = [recall] if isinstance(recall, str) else list(recall or [])
-    hay = " " + squash(content) + " "
-    return [r for r in need if f" {squash(r)} " not in hay]
+    have = recall_tokens(content)
+    hits = [ref_present(r, have) for r in need]
+    if not need or (hits[0] and sum(hits) * 2 >= len(need)):
+        return []
+    return [r for r, h in zip(need, hits) if not h]
 
 
 def reject_reasons(rec: dict, row: dict) -> list[str]:
@@ -163,7 +196,7 @@ def reject_reasons(rec: dict, row: dict) -> list[str]:
     if rc and recall_missing(content, rc):
         out.append("recall")
     none = (row["meta"] or {}).get(NONE_KEY)
-    if none is not None and invented(content, history_text(row), none):
+    if none is not None and not NONE_ACK.search(content) and invented(content, history_text(row), none):
         out.append("invented")
     return out
 
@@ -175,6 +208,13 @@ WORD = re.compile(r"[A-Za-zÀ-ɏ0-9]+(?:['’][A-Za-z]+)*")
 SEGMENT = re.compile(r"(?<=[.!?:;*])\s+|\n+|\s[—–-]\s|[\"“”(]")
 LEAD = re.compile(r"^[\s*#>•\-\d.)]+")
 ALWAYS_OK = {"i", "wisp", "sam"}
+# rec_none: a reply that first says the detail never came up may go on to suggest options from general knowledge
+# ("We haven't picked a dessert wine yet, but a Sauternes would suit the tart"); only an unacknowledged answer is
+# checked for invented names and numbers.
+NONE_ACK = re.compile(r"\b(?:haven['’]t|have\s+not|didn['’]t|did\s+not|don['’]t\s+(?:think|recall|remember|have|see)|"
+                      r"do\s+not\s+(?:think|recall|remember|have|see)|never|not\s+yet|no\s+one)\b[^.!?]{0,60}?"
+                      r"\b(?:mention\w*|pick\w*|select\w*|settl\w*|decid\w*|chose|chosen|said|say|talk\w*|"
+                      r"discuss\w*|come\s+up|came\s+up|share\w*|detail|specific|yet|told)\b", re.I)
 
 
 def history_text(row: dict) -> str:
