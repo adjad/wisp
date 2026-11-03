@@ -2059,6 +2059,8 @@ struct SettingsView: View {
                 if selectedPane == "general" {
                 ReadAloudVoiceSettings()
                 Divider()
+                SoftwareUpdateSettings(updater: SoftwareUpdater.shared)
+                Divider()
                 }
 
                 // Occasional, technical knobs — memory management — that

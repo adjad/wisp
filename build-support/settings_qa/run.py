@@ -184,6 +184,9 @@ def main() -> int:
             raise RuntimeError("Settings QA Swift build failed")
         executable.parent.mkdir(parents=True)
         shutil.copy2(scratch / "debug/WispApp", executable)
+        # WispApp loads Sparkle from Contents/Frameworks (app/Package.swift's rpath).
+        shutil.copytree(scratch / "debug/Sparkle.framework", app / "Contents/Frameworks/Sparkle.framework",
+                        symlinks=True)
         with (app / "Contents/Info.plist").open("wb") as output:
             plistlib.dump({
                 "CFBundleIdentifier": "com.wisp.settings-qa",
