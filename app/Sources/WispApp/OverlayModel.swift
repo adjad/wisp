@@ -299,9 +299,16 @@ final class OverlayModel: ObservableObject {
     }
 
     /// A deleted chat (by id) or a forget with no one chat to match (nil): the
-    /// debug log's memory of it goes. The chat open here stays on screen.
+    /// debug log's memory of it goes, the open chat's included when it matches.
+    /// The chat open here stays on screen.
     func forgetArchivedChats(sessionId: String?) {
-        if let sessionId { chatArchive.remove(sessionId: sessionId) } else { chatArchive.removeAll() }
+        if let sessionId {
+            chatArchive.remove(sessionId: sessionId)
+            if !sessionId.isEmpty && sessionId == self.sessionId { liveChatForgotten = true }
+        } else {
+            chatArchive.removeAll()
+            liveChatForgotten = true
+        }
     }
     /// True while the panel retracts into the bar: the content fades out at
     /// the start of the close so the shrinking shape never slices live text.
@@ -600,6 +607,9 @@ final class OverlayModel: ObservableObject {
     /// Every chat left since Wisp opened, full detail, for Export Chat Debug Log….
     /// Memory only (ChatDebugArchive).
     private(set) var chatArchive = ChatDebugArchive<Turn>()
+    /// The chat open here was deleted or forgotten: it stays on screen, but is
+    /// neither archived nor exported. A new chat starts clear (reset).
+    private(set) var liveChatForgotten = false
     // Each attachment kind warms the encoder that will read it (prewarmVision).
     private var attachedImage: String? {
         didSet { if attachedImage != nil { client.prewarmEncoder(.vision) } }
@@ -920,6 +930,7 @@ final class OverlayModel: ObservableObject {
 
     /// Keep the chat being left, with every turn's debug detail, for the export.
     private func archiveCurrentChat() {
+        guard !liveChatForgotten else { return }
         chatArchive.archive(sessionId: sessionId, startedAt: turns.compactMap(\.startedAt).min(),
                             turns: turns, bytes: Self.debugBytes(turns))
     }
@@ -1533,6 +1544,7 @@ final class OverlayModel: ObservableObject {
         clearAttachmentState(); messageDraft = nil; phase = .idle
         collapsed = false; turns = []
         reopenedChatTitle = nil
+        liveChatForgotten = false
     }
 
     /// Leave the inline Research surface without cancelling its persisted job.
@@ -1614,15 +1626,18 @@ final class OverlayModel: ObservableObject {
         guard let export = debugExport() else { return .nothing }
         let dir = directory ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser
-        let stamp = DateFormatter(); stamp.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        let base = "wisp-debug-\(stamp.string(from: Date()))"
+        // Milliseconds and a short random suffix: two exports in one second never collide.
+        let stamp = DateFormatter(); stamp.dateFormat = "yyyy-MM-dd_HH-mm-ss-SSS"
+        let base = "wisp-debug-\(stamp.string(from: Date()))-\(UUID().uuidString.prefix(6).lowercased())"
         let jsonURL = dir.appendingPathComponent("\(base).json")
         let textURL = dir.appendingPathComponent("\(base).txt")
+        var created: [URL] = []
         do {
-            try Self.writePrivate(export.json, to: jsonURL)
-            try Self.writePrivate(Data(export.text.utf8), to: textURL)
+            try Self.writePrivate(export.json, to: jsonURL); created.append(jsonURL)
+            try Self.writePrivate(Data(export.text.utf8), to: textURL); created.append(textURL)
         } catch {
-            for url in [jsonURL, textURL] { try? FileManager.default.removeItem(at: url) }
+            // Only what this export created; a file already there was never opened.
+            for url in created { try? FileManager.default.removeItem(at: url) }
             return .failed(error.localizedDescription)
         }
         return .saved(jsonURL)
@@ -1633,8 +1648,14 @@ final class OverlayModel: ObservableObject {
         let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        try handle.write(contentsOf: data)
-        try handle.synchronize()
+        do {
+            try handle.write(contentsOf: data)
+            try handle.synchronize()
+        } catch {
+            // This call created it, so a half-written file is this call's to remove.
+            try? FileManager.default.removeItem(at: url)
+            throw error
+        }
     }
 
     /// The export's .json and .txt: every chat left since Wisp opened (the archive,
@@ -1649,11 +1670,11 @@ final class OverlayModel: ObservableObject {
                                  transcript: Self.debugTranscript(turns, clock: clock))
         }
         var chats = chatArchive.chats.map { chat($0.sessionId, $0.startedAt, $0.turns, current: false) }
-        if !turns.isEmpty {
+        if !turns.isEmpty && !liveChatForgotten {
             chats.append(chat(sessionId, turns.compactMap(\.startedAt).min(), turns, current: true))
         }
         guard !chats.isEmpty else { return nil }
-        let payload = ChatDebugExport.payload(chats: chats, currentSessionId: sessionId,
+        let payload = ChatDebugExport.payload(chats: chats, currentSessionId: liveChatForgotten ? "" : sessionId,
                                               droppedChats: chatArchive.droppedChats,
                                               droppedTurns: chatArchive.droppedTurns, exportedAt: now, iso: iso)
         guard JSONSerialization.isValidJSONObject(payload), let jsonData = try? JSONSerialization.data(

@@ -474,3 +474,10 @@ enum ChatHistory {
         return out
     }
 }
+
+extension Notification.Name {
+    /// Drop chats from the debug log's memory (OverlayModel.chatArchive and the chat
+    /// open in the notch): userInfo["session_id"] names one deleted chat; without it,
+    /// a forget whose scope is not one chat, all of them.
+    static let wispForgetChatDebugArchive = Notification.Name("WispForgetChatDebugArchive")
+}

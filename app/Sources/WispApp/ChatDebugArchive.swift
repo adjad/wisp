@@ -74,11 +74,6 @@ struct ChatDebugArchive<Turn> {
     mutating func removeAll() { chats.removeAll() }
 }
 
-extension Notification.Name {
-    /// Drop archived chats from the debug log's memory: userInfo["session_id"] names
-    /// one deleted chat; without it, a forget whose scope is not one chat, all of them.
-    static let wispForgetChatDebugArchive = Notification.Name("WispForgetChatDebugArchive")
-}
 
 /// Assembles the export's .json payload and .txt transcript from chats whose turns
 /// the notch has already rendered, so the shape is checked without the notch.

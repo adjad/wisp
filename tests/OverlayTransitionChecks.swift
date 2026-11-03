@@ -280,9 +280,12 @@ struct OverlayTransitionChecks {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
         guard case .saved(let saved) = model.exportDebugLog(to: folder) else { return check(false, "The export saves") }
+        guard case .saved(let again) = model.exportDebugLog(to: folder), again != saved else {
+            return check(false, "A second export in the same second saves beside the first")
+        }
         let written = (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.sorted() ?? []
-        check(written.count == 2 && written.allSatisfy { $0.hasPrefix("wisp-debug-") } && saved.pathExtension == "json",
-              "A .json and a .txt pair")
+        check(written.count == 4 && written.allSatisfy { $0.hasPrefix("wisp-debug-") } && saved.pathExtension == "json",
+              "Two .json and .txt pairs, neither export replacing the other")
         for name in written {
             let mode = (try? FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent(name).path))?[.posixPermissions] as? Int
             check(mode == 0o600, "\(name) is readable only by this user")
@@ -297,6 +300,22 @@ struct OverlayTransitionChecks {
         check(model.chatArchive.chats.map(\.sessionId) == ["", "chat-c"], "A deleted chat leaves the archive")
         NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil)
         check(model.chatArchive.chats.isEmpty && model.debugExport() == nil, "A forget clears the archive")
+
+        // The chat open here, deleted in the Chat window or forgotten: kept on screen, never exported.
+        await open("chat-x")
+        model.turns = [OverlayModel.Turn(role: "user", text: "secret"), reply("Done.", tool: "read_mail")]
+        NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil, userInfo: ["session_id": "other"])
+        check(!model.liveChatForgotten && model.debugExport() != nil, "Deleting another chat leaves the open one")
+        NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil, userInfo: ["session_id": "chat-x"])
+        check(model.turns.count == 2 && model.liveChatForgotten && model.debugExport() == nil,
+              "A deleted open chat stays on screen but is not exported")
+        model.newChat()
+        check(model.chatArchive.chats.isEmpty && !model.liveChatForgotten, "Nor archived when left; the next chat starts clear")
+        model.turns = [OverlayModel.Turn(role: "user", text: "next"), OverlayModel.Turn(role: "assistant", text: "ok")]
+        NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil)
+        check(model.turns.count == 2 && model.debugExport() == nil, "A forget drops the open chat from the export too")
+        model.newChat()
+        check(model.chatArchive.chats.isEmpty, "A forgotten open chat is not archived")
         let history = [OverlayModel.Turn(role: "user", text: "window"), OverlayModel.Turn(role: "assistant", text: "w"),
                        OverlayModel.Turn(role: "user", text: "mail?"), OverlayModel.Turn(role: "assistant", text: "Two emails.")]
         let local = [OverlayModel.Turn(role: "user", text: "mail?"), reply("Two emails.", tool: "read_mail"),

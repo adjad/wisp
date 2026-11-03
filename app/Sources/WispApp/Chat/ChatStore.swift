@@ -275,9 +275,8 @@ final class ChatStore: ObservableObject {
                 deletedSessionIds.remove(id)
                 await refresh()
             } else {
-                // Its full-detail copy in the notch's debug-log memory goes too
-                // (Notification.Name.wispForgetChatDebugArchive).
-                NotificationCenter.default.post(name: Notification.Name("WispForgetChatDebugArchive"), object: nil,
+                // Its full-detail copy in the notch's debug-log memory goes too.
+                NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil,
                                                 userInfo: ["session_id": id])
             }
         }
