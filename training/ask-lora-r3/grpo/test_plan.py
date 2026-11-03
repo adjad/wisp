@@ -795,3 +795,31 @@ def test_small_n_floor_strict_errors_on_a_floor_without_the_c13_keys():
     assert len(strict) == 3 and all("predates C13" in p for p in strict)
     full = {**floor, **now}
     assert P.small_n_floor_problems(full, now, strict=True) == [] and len(P.small_n_floor_problems(full, {**now, "proposals_right": 19.0}, strict=True)) == 1
+
+
+def test_l40_profile_matches_the_a6000_batch_and_sits_between_no_gain_and_spec():
+    a6, l4 = P.PROFILES["a6000"], P.PROFILES["l40"]
+    assert (a6["plan"], a6["lr"], a6["accelerate"]) == (l4["plan"], l4["lr"], l4["accelerate"])
+    h_a6 = [P.hours("a6000", 1488, 1, c, 4) for c in (0, 1, 2)]
+    h_l4 = [P.hours("l40", 1488, 1, c, 4) for c in (0, 1, 2)]
+    assert all(l <= a + 1e-6 for l, a in zip(h_l4, h_a6)) and h_l4[0] < h_a6[0]
+    assert abs(h_l4[2] - h_a6[2]) / h_a6[2] < 0.02          # pessimistic: no gain over the A6000
+    assert P.HW["l40"]["usd_h"] == 1.06
+
+
+def test_arch_ok_accepts_same_major_lower_minor_cubins():
+    import importlib.util
+    import sys
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("grpo_for_arch", Path(__file__).with_name("grpo.py"))
+    g = importlib.util.module_from_spec(spec)
+    sys.modules["grpo_for_arch"] = g
+    try:
+        spec.loader.exec_module(g)
+    except ImportError as e:                                  # torch-free Mac: the helper is pure, but grpo.py may not import
+        import pytest
+        pytest.skip(f"grpo.py does not import here: {e}")
+    cu128 = ["sm_75", "sm_80", "sm_86", "sm_90", "sm_100", "sm_120"]
+    assert g.arch_ok((8, 9), cu128) and g.arch_ok((8, 6), cu128) and g.arch_ok((10, 3), cu128)
+    assert not g.arch_ok((8, 9), ["sm_75", "sm_90"]) and not g.arch_ok((8, 0), ["sm_86"])
+    assert g.arch_ok((10, 3), ["sm_90", "compute_100"]) and not g.arch_ok((9, 0), ["compute_100"])

@@ -4,6 +4,7 @@
     accelerate launch --config_file accelerate_b300x8_zero2.yaml grpo.py train --profile b300x8 --base DIR \\
         --prompts grpo_prompts.jsonl --out DIR [--mm-root mm] [--resume DIR]
     accelerate launch --config_file accelerate_a6000.yaml        grpo.py train --profile a6000  ...
+    accelerate launch --config_file accelerate_a6000.yaml        grpo.py train --profile l40    ...   (one L40, same config)
     python grpo.py check   --base DIR --prompts grpo_prompts.jsonl [--profile P] [--train-py PATH]
     python grpo.py mm-eval --base DIR --mm-dev grpo_mm_dev.jsonl [--adapter DIR] [--mm-root mm] [--out mm-untuned.json]
     python grpo.py text-eval --base DIR --text-dev grpo_text_dev.jsonl --round 5 --seed-offset N --out text-sft-1.json [--adapter DIR]
@@ -85,6 +86,19 @@ GROUPS = list(W.COMPONENTS)
 
 
 # ------------------------------------------------------------------ helpers (no torch)
+
+def arch_ok(cap: tuple[int, int], arch: list[str]) -> bool:
+    """Whether a torch build with this arch list has kernels for a GPU of compute capability cap. A cubin runs on a GPU of the
+    same major version and an equal or higher minor (the cu128 wheels list sm_86 and not sm_89, and an L40 runs them);
+    a compute_XY PTX entry of the same major is JIT-compiled."""
+    for x in arch:
+        if x.startswith("sm_") and x[3:].isdigit() and len(x) > 4:
+            if int(x[3:-1]) == cap[0] and int(x[-1]) <= cap[1]:
+                return True
+        elif x.startswith("compute_") and x[8:].isdigit() and int(x[8:]) // 10 == cap[0]:
+            return True
+    return False
+
 
 def import_train(path: str | None):
     cands = [Path(path)] if path else [HERE / "train.py", HERE.parent / "brev" / "train.py",
@@ -630,7 +644,7 @@ def check_gpu_side(a, tok, rows, mm_root) -> int:
         for i in range(torch.cuda.device_count()):
             cap = torch.cuda.get_device_capability(i)
             tag = f"sm_{cap[0]}{cap[1]}"
-            ok = tag in arch or any(x.startswith("compute_") and int(x[8:]) // 10 == cap[0] for x in arch)
+            ok = arch_ok(cap, arch)
             x = torch.randn(2048, 2048, device=f"cuda:{i}", dtype=torch.bfloat16)
             torch.cuda.synchronize(i)
             finite = bool(torch.isfinite((x @ x).float()).all())

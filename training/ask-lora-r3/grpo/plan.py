@@ -73,6 +73,9 @@ class Plan:
 PROFILES = {
     # one 48 GB card: the old text-only batch (4 prompts x 6 completions); micro_bs 3 is the 48 GB estimate
     "a6000": dict(plan=Plan(world=1, G=6, ppr=4, micro_bs=3), lr=5e-6, accelerate="accelerate_a6000.yaml"),
+    # one L40 (the user's card for all of r4 since 2026-11-02): the A6000's batch, lr and single-GPU accelerate config. It has
+    # the same 48 GB, and torch sees less of it (~45 GiB with ECC on), so nothing grows: micro_bs 2 stays the fallback
+    "l40": dict(plan=Plan(world=1, G=6, ppr=4, micro_bs=3), lr=5e-6, accelerate="accelerate_a6000.yaml"),
     # 8 x 288 GB: one prompt x 8 completions per GPU, the whole group in one forward/backward; lr x sqrt(64/24)
     "b300x8": dict(plan=Plan(world=8, G=8, ppr=1, micro_bs=8), lr=8e-6, accelerate="accelerate_b300x8_zero2.yaml"),
 }
@@ -532,6 +535,13 @@ HW = {
                   opt_s=0.3, straggler=1.0, usd_h=None,
                   src="bf16 dense tensor peak 154.8 TFLOPS (no FP8); HF eager + SDPA + checkpointing MFU 25-45 %; "
                       "decode is launch-bound at 30-55 ms/token for 42 layers"),
+    # Unmeasured: the A6000's effective speed x 1.17 / 1.10 / 1.0 (the bf16 peak ratio, a middle guess, no gain), expressed
+    # as MFU against the L40's own peak, and decode / 1.125 / 1.06 / 1.0 (the bandwidth ratio 864/768). As in ../../ask-lora-r4/a6000/estimate.py.
+    "l40": dict(name="1 x L40 48 GB (sm_89, ECC on)", peak=181.05e12,
+                mfu=tuple(round(m * 154.8 / 181.05 * f, 3) for m, f in zip((0.45, 0.35, 0.25), (1.17, 1.10, 1.0))),
+                tok_s=(round(0.030 / 1.125, 4), round(0.040 / 1.06, 4), 0.055), opt_s=0.3, straggler=1.0, usd_h=1.06,
+                src="bf16 dense tensor peak 181 TFLOPS, 864 GB/s; never measured: scaled from the A6000 profile; "
+                    "Brev rate $1.06/h (the user, 2026-11-02)"),
     "b300x8": dict(name="8 x B300 288 GB (sm_103), ZeRO-2", peak=2250e12, mfu=(0.28, 0.18, 0.10), tok_s=(0.022, 0.030, 0.045),
                    opt_s=0.5, straggler=1.3, usd_h=32.0,
                    src="bf16 dense peak ~2.25 PFLOPS per GPU; a 2560-wide model in eager PyTorch reaches only 10-28 %; "
