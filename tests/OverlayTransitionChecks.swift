@@ -226,7 +226,7 @@ struct OverlayTransitionChecks {
     /// detail; the export lists each chat and keeps the open one's top-level fields.
     @MainActor
     static func chatArchiveChecks() async {
-        let model = AppDelegate().model
+        let model = OverlayModel(loadDebugMode: { false }, saveDebugMode: { _ in })
         check(model.debugExport() == nil, "Nothing to export before any chat")
         func reply(_ text: String, tool: String) -> OverlayModel.Turn {
             var turn = OverlayModel.Turn(role: "assistant", text: text)
