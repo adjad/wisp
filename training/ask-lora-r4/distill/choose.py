@@ -185,7 +185,8 @@ _NEGATED = re.compile(r"\b(?:not|never|no|nothing|none|nope|without|cannot|unsen
 ABSENCE = re.compile(rf"\bnothing\b|\bnone\b|\bno\s+(?:new\s+|unread\s+|other\s+|upcoming\s+|matching\s+)?"
                      rf"(?:messages?|e-?mails?|mail|events?|meetings?|appointments?|reminders?|notes?|results?|matches|"
                      rf"plans|files?|contacts?|record|entries|items?|alarms?|timers?|texts?)\b|"
-                     rf"\bI\s+(?:do\s+not|don{_AP}t)\s+(?:have|see)\b|\bthere\s+(?:is|are)\s+no\b|"
+                     rf"\bI\s+(?:do\s+not|don{_AP}t)\s+(?:have|see)\s+(?:any|anything|a\s+(?:new|recent|reply|message|record))\b|"
+                     rf"\bthere\s+(?:is|are)\s+no\b|"
                      rf"\bthere\s+(?:isn{_AP}t|aren{_AP}t)\s+any\b|\bno\s+sign\s+of\b|\b(?:couldn{_AP}t|didn{_AP}t)\s+find\b",
                      re.I)
 # a first-person claim that something was done ("I've added", "it's on your calendar"): a defect when the turn shows
@@ -200,6 +201,10 @@ PENDING = re.compile(r"nothing has been sent|not (?:been )?sent|\bdraft (?:opene
                      r"waiting for (?:your )?approval|needs your approval|The user denied this action", re.I)
 SENT_DONE = re.compile(r"\b(?:sent|done|added|emailed|texted|forwarded|replied|scheduled|booked|all set)\b", re.I)
 CLOCK_LINE = re.compile(r"The current date and time is [^\n]+")
+# the scripted final already says something is missing or has not happened ("you haven't replied"), so a base reply
+# that says so in other words is not contradicting the results
+SCRIPTED_NEG = re.compile(rf"\b(?:haven{_AP}t|hasn{_AP}t|didn{_AP}t|isn{_AP}t|aren{_AP}t|wasn{_AP}t|not\s+yet|no|not|never|none|"
+                          rf"nothing|can{_AP}t|cannot|couldn{_AP}t|won{_AP}t)\b", re.I)
 # the user spoken of in the third person: "Sam's", "Sam has", "the user"
 THIRD_PERSON = re.compile(rf"\b{USER_NAME}{_AP}s\b|\b{USER_NAME}\s+(?:has|is|was|had|needs|wants|asked|said|will)\b|"
                           r"\bthe user\b", re.I)
@@ -236,6 +241,10 @@ def _grams(text: str, n: int = 4) -> set[str]:
 
 _NUMTOK = re.compile(r"\b\d+(?:\.\d+){2,}\b")     # dotted numbers: IPs, versions
 _DEC = re.compile(r"-?\d+(?:\.\d+)?")
+HEADING = re.compile(r"^[ \t]*#{1,6}[^\n]*$", re.M)
+# the long forms of the abbreviations a result uses, so a reply may spell them out
+ALIASES = ((r"\bProf\.", "Professor"), (r"\bDr\.", "Doctor"), (r"\bP[SD]?T\b", "Pacific"), (r"\bE[SD]?T\b", "Eastern"),
+           (r"\bAve\.?\b", "Avenue"), (r"\bSt\.(?=\s|$)", "Street"))
 
 
 def ungrounded(content: str, ground: str) -> list[str]:
@@ -244,6 +253,8 @@ def ungrounded(content: str, ground: str) -> list[str]:
     11.81: a computed answer, not an invented one)."""
     _, reward, _ = anchor_libs()
     text = _NUMTOK.sub(lambda m: " " if m.group(0) in ground else m.group(0), content)
+    text = HEADING.sub(" ", text)            # markdown headings are the reply's own labels, not facts
+    ground = ground + "".join(f"\n{full}" for short, full in ALIASES if re.search(short, ground))
     nums = [float(x) for x in _DEC.findall(ground.replace(",", ""))]
     out = []
     for hit in reward.ungrounded_entities(text, ground):
@@ -269,7 +280,7 @@ def anchor_reasons(content: str, reasoning: str, row: dict) -> list[str]:
     out = []
     if ungrounded(content, ground):
         out.append("ungrounded")
-    if ABSENCE.search(content) and not ABSENCE.search(scripted):
+    if ABSENCE.search(content) and not ABSENCE.search(scripted) and not SCRIPTED_NEG.search(scripted):
         out.append("absence")
     if THIRD_PERSON.search(content):
         out.append("third_person")

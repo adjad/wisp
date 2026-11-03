@@ -25,7 +25,8 @@ CHAT_K0="${CHAT_K0:-1}"; SC_K0="${SC_K0:-1}"; EXTRA_K0="${EXTRA_K0:-1}"; ANCHOR_
 OMLX_BASE="${OMLX_BASE:-http://127.0.0.1:8000}"
 SETTINGS="${OMLX_SETTINGS:-$HOME/.omlx/model_settings.json}"
 SNAP="$HERE/_build/model_settings.before.full.$$.json"
-ANCHOR_FAMS=right_source,multi_source,grounded_only,mail_r3,web_r3,contacts_r3,device_r3,weather_and_web,concise_gentle,capability_honest,recover_from_tool_error,info_answers_r4,lookup_answers_r4,safe_effects,safe_restraint,ignore_embedded_instructions,no_write_for_reads,restraint_r4
+# every family select_anchor.py can pick from (gen.py filters by family before --ids)
+ANCHOR_FAMS="$("$PY" -c 'import select_anchor as A; print(",".join(A.NARRATE + A.SAFETY + A.RECEIPT))')" || exit 1
 mkdir -p "$OUT" "$HERE/_build"
 if lsof -nP -iTCP:8765 -iTCP:8791 -sTCP:LISTEN >/dev/null 2>&1; then echo "WISP IS RUNNING - not starting"; exit 4; fi
 "$PY" -c "import gen; print('model', gen.MODEL, '->', gen.check_base())" || exit 5

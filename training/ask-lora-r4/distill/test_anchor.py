@@ -68,6 +68,18 @@ def test_absence_and_stall_follow_the_scripted_final():
     assert "stall" in why("I couldn't find that email.")      # the results show it, the scripted final reports it
 
 
+def test_pass1_false_positives():
+    # markdown headings are labels, abbreviations may be spelled out, a decline is not an absence claim
+    assert why("### Saturday Shift Request\nDana wants you to cover Saturday, 10 AM to 2 PM.") == []
+    r = row(scripted="Prof. Okafor moved office hours to 1:30 PM.", result="From: Prof. Okafor\nOffice hours 1:30 PM")
+    assert why("Professor Okafor moved her office hours to 1:30 PM.", r) == []
+    r = row(scripted="Wisp can't call webhooks.", result="(no tool)")
+    assert why("I don't have a tool that can call a webhook, sorry.", r) == []
+    r = row(scripted="You haven't replied to Dana yet.", result="Sent mail: none to Dana")
+    assert why("I don't see any reply from you to Dana.", r) == []
+    assert "absence" in why("I don't see any email from Dana.")      # the scripted final reports it
+
+
 def test_rounding_and_dotted_numbers():
     r = row(scripted="Each person pays $34.50.", result="34.5")
     assert why("That's $34.50 each.", r) == []
