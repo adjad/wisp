@@ -351,6 +351,8 @@ ADDITIONAL_FULL_TESTS = {
     # store, fixture calendars, fake behavior engine; no model, source or network.
     "tests/test_schedule_brief_items.py",
     "tests/test_brief_in_schedule_tools.py",
+    # Reply-draft reads and day-plan corrections: regex and registry checks only.
+    "tests/test_reply_draft_reads.py",
     # Ask quality: code-failure fixes, tool-pair descriptions, the Wisp self-reference
     # sheet, the follow-up subject record and intent hard stops; registry checks,
     # fake model client, synthetic tools, private WISP_HOME.
