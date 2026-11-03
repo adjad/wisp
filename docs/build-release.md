@@ -524,5 +524,12 @@ Removing the downloaded quarantine attribute with `xattr` is the fallback. A fre
 general GitHub distribution; use the protected Developer ID path for a signed,
 notarized public release.
 
+### In-app updates
+
+`publish_update` (from main, in the `release` environment) publishes a verified build as
+release `v<update_label>` and adds it to the signed Sparkle appcast on the `appcast`
+branch. Keys, hosting, the TCC findings and the self-signed option are in
+[updates.md](updates.md).
+
 These external release hooks have not been exercised locally. This implementation
 phase authorizes local compilation, fixture QA, and ad-hoc sealed artifacts only.

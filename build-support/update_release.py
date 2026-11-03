@@ -260,7 +260,9 @@ def write_feed(env, repository: str, feed: bytes, previous_sha: str | None, mess
 def _existing_release_matches(release: dict, name: str, sha256: str, size: int) -> bool:
     assets = release.get("assets") or []
     return (release.get("draft") is False and len(assets) == 1 and assets[0].get("name") == name
-            and assets[0].get("size") == size and assets[0].get("digest") == "sha256:" + sha256)
+            and assets[0].get("size") == size
+            # GitHub may not report a digest yet; a different one always refuses.
+            and assets[0].get("digest") in (None, "sha256:" + sha256))
 
 
 def release_update(runner, args):

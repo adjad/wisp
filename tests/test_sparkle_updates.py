@@ -182,6 +182,8 @@ def test_existing_release_must_hold_exactly_the_signed_archive():
     assert update_release._existing_release_matches(good, "a.zip", "0" * 64, 3)
     assert not update_release._existing_release_matches(dict(good, draft=True), "a.zip", "0" * 64, 3)
     assert not update_release._existing_release_matches(good, "a.zip", "1" * 64, 3)
+    undigested = {"draft": False, "assets": [{"name": "a.zip", "size": 3}]}
+    assert update_release._existing_release_matches(undigested, "a.zip", "0" * 64, 3)
     two = dict(good, assets=good["assets"] * 2)
     assert not update_release._existing_release_matches(two, "a.zip", "0" * 64, 3)
 
