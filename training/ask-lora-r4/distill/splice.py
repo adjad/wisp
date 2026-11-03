@@ -122,6 +122,7 @@ def splice_pair(build: str, ex_name: str, meta_name: str, chosen: dict, errors: 
         reasoning = (c.get("reasoning") or "").strip()
         meta["distilled"], meta["think"], meta["thought"] = True, bool(reasoning), reasoning or None
         meta["distill_k"] = c["k"]
+        meta["distill_kind"] = c.get("distill_kind") or "chat"      # "anchor_final": a final r4 keeps as the base's
         ex_lines[i] = json.dumps(ex, ensure_ascii=False)
         meta_lines[i] = json.dumps(meta, ensure_ascii=False)
         spliced.append(meta["id"])
@@ -173,6 +174,8 @@ def splice(build: str, chosen_paths: list[str], out: str | None = None) -> dict:
                   f: v["spliced"] for f, v in by_family.items()},
               "unchanged_per_family": {f: v["unchanged"] for f, v in by_family.items()},
               "think": results["all.jsonl"][3], "no_think": len(spliced_ids) - results["all.jsonl"][3],
+              "spliced_per_kind": dict(collections.Counter(chosen[i].get("distill_kind") or "chat" for i in spliced_ids)),
+              "build_rows": len(metas), "spliced_share": round(len(spliced_ids) / len(metas), 3) if metas else None,
               "missing_ids": missing}
     write_atomic(os.path.join(dest, "distill.json"), json.dumps(report, indent=2, ensure_ascii=False) + "\n")
     return report

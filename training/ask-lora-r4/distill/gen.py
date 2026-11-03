@@ -63,10 +63,10 @@ def request_hash(messages: list[dict], tools: list | None) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
-def http(path: str, body: dict | None = None, timeout: float = 600):
+def http(path: str, body: dict | None = None, timeout: float = 600, headers: dict | None = None):
     data = None if body is None else json.dumps(body).encode()
     req = urllib.request.Request(BASE + path, data, method="GET" if body is None else "POST",
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json", **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         raw = r.read()
     return json.loads(raw) if raw else None
