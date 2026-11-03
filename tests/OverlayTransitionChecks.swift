@@ -220,6 +220,113 @@ struct OverlayTransitionChecks {
         print("PASS: a cold-launch start failure shows the down card; a running service ignores stale failures")
     }
 
+    #if WISP_MOTION_APP_DELEGATE_CHECKS
+    /// Export Chat Debug Log… covers every chat since Wisp opened: New chat and opening
+    /// another chat archive the one left, whole; reopening it continues it with its
+    /// detail; the export lists each chat and keeps the open one's top-level fields.
+    @MainActor
+    static func chatArchiveChecks() async {
+        let model = OverlayModel(loadDebugMode: { false }, saveDebugMode: { _ in })
+        check(model.debugExport() == nil, "Nothing to export before any chat")
+        func reply(_ text: String, tool: String) -> OverlayModel.Turn {
+            var turn = OverlayModel.Turn(role: "assistant", text: text)
+            var call = OverlayModel.ToolCallRecord(); call.name = tool; call.argsJSON = "{}"; call.result = "result of \(tool)"
+            var io = OverlayModel.RawModelIO(); io.model = "fixture"; io.requestJSON = #"{"q":1}"#; io.responseJSON = #"{"a":2}"#
+            turn.toolCalls = [call]; turn.rawIO = [io]; turn.reasoningText = "thought about \(tool)"
+            turn.startedAt = Date(timeIntervalSince1970: 1_000)
+            return turn
+        }
+        func open(_ id: String) async {
+            model.reopenChat(ChatSummary(id: id, title: id, preview: "", lastUsed: Date(), turnCount: 0))
+            for _ in 0..<50 { await Task.yield() }
+        }
+        await open("chat-a")
+        model.turns += [OverlayModel.Turn(role: "user", text: "mail?"), reply("Two emails.", tool: "read_mail")]
+        model.newChat()
+        check(model.turns.isEmpty && model.chatArchive.chats.map(\.sessionId) == ["chat-a"], "New chat archives the chat left")
+        model.turns = [OverlayModel.Turn(role: "user", text: "unsaved"), OverlayModel.Turn(role: "assistant", text: "x", isError: true)]
+        model.newChat()
+        check(model.chatArchive.chats.map(\.sessionId) == ["chat-a", ""], "A chat with no session is kept, in order")
+
+        await open("chat-a")
+        check(model.turns.map(\.text) == ["mail?", "Two emails."] && model.turns[1].toolCalls.first?.result == "result of read_mail"
+              && model.turns[1].rawIO.count == 1, "Reopening an archived chat brings back its full detail")
+        check(model.chatArchive.chats.map(\.sessionId) == [""], "A reopened chat leaves the archive while it is open")
+        model.turns += [OverlayModel.Turn(role: "user", text: "and calendar?"), reply("Free at 3.", tool: "read_calendar")]
+        await open("chat-c")
+        check(model.chatArchive.chats.map(\.sessionId) == ["", "chat-a"]
+              && model.chatArchive.chats[1].turns.count == 4, "Opening another chat archives the continued one whole")
+        model.turns = [OverlayModel.Turn(role: "user", text: "now"), reply("Now.", tool: "clock")]
+
+        guard let export = model.debugExport(),
+              let json = try? JSONSerialization.jsonObject(with: export.json) as? [String: Any],
+              let chats = json["chats"] as? [[String: Any]] else { return check(false, "The export is JSON with chats") }
+        check(chats.map { $0["session_id"] as? String } == ["", "chat-a", "chat-c"], "Every chat, oldest first, the open one last")
+        check(chats.map { $0["current"] as? Bool } == [false, false, true], "Only the open chat is marked current")
+        check(chats.map { $0["turn_count"] as? Int } == [2, 4, 2], "Each chat counts its turns")
+        check(json["session_id"] as? String == "chat-c" && json["turn_count"] as? Int == 2
+              && (json["turns"] as? [[String: Any]])?.map { $0["text"] as? String } == ["now", "Now."],
+              "Top-level session_id / turn_count / turns stay the open chat's")
+        let continued = chats[1]["turns"] as? [[String: Any]] ?? []
+        check(continued[1]["raw_model_io"] != nil && continued[3]["tool_calls"] != nil && continued[1]["reasoning"] != nil,
+              "Archived turns keep tool results, reasoning and model I/O")
+        check(json["dropped_chats"] == nil && json["chat_count"] as? Int == 3, "Nothing dropped under the cap")
+        check(export.text.contains("CHAT 1 of 3") && export.text.contains("CHAT 3 of 3 — open now")
+              && export.text.contains("Session: chat-a") && export.text.contains("Session: (not saved)"),
+              "The transcript has a header per chat")
+
+        // Saved privately, or not at all.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wisp-export-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        guard case .saved(let saved) = model.exportDebugLog(to: folder) else { return check(false, "The export saves") }
+        guard case .saved(let again) = model.exportDebugLog(to: folder), again != saved else {
+            return check(false, "A second export in the same second saves beside the first")
+        }
+        let written = (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.sorted() ?? []
+        check(written.count == 4 && written.allSatisfy { $0.hasPrefix("wisp-debug-") } && saved.pathExtension == "json",
+              "Two .json and .txt pairs, neither export replacing the other")
+        for name in written {
+            let mode = (try? FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent(name).path))?[.posixPermissions] as? Int
+            check(mode == 0o600, "\(name) is readable only by this user")
+        }
+        guard case .failed(let reason) = model.exportDebugLog(to: folder.appendingPathComponent("missing")), !reason.isEmpty else {
+            return check(false, "A write that fails says so")
+        }
+
+        model.newChat()
+        check(model.debugExport() != nil, "After New chat the archive still exports")
+        NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil, userInfo: ["session_id": "chat-a"])
+        check(model.chatArchive.chats.map(\.sessionId) == ["", "chat-c"], "A deleted chat leaves the archive")
+        NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil)
+        check(model.chatArchive.chats.isEmpty && model.debugExport() == nil, "A forget clears the archive")
+
+        // The chat open here, deleted in the Chat window or forgotten: kept on screen, never exported.
+        await open("chat-x")
+        model.turns = [OverlayModel.Turn(role: "user", text: "secret"), reply("Done.", tool: "read_mail")]
+        NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil, userInfo: ["session_id": "other"])
+        check(!model.liveChatForgotten && model.debugExport() != nil, "Deleting another chat leaves the open one")
+        NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil, userInfo: ["session_id": "chat-x"])
+        check(model.turns.count == 2 && model.liveChatForgotten && model.debugExport() == nil,
+              "A deleted open chat stays on screen but is not exported")
+        model.newChat()
+        check(model.chatArchive.chats.isEmpty && !model.liveChatForgotten, "Nor archived when left; the next chat starts clear")
+        model.turns = [OverlayModel.Turn(role: "user", text: "next"), OverlayModel.Turn(role: "assistant", text: "ok")]
+        NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil)
+        check(model.turns.count == 2 && model.debugExport() == nil, "A forget drops the open chat from the export too")
+        model.newChat()
+        check(model.chatArchive.chats.isEmpty, "A forgotten open chat is not archived")
+        let history = [OverlayModel.Turn(role: "user", text: "window"), OverlayModel.Turn(role: "assistant", text: "w"),
+                       OverlayModel.Turn(role: "user", text: "mail?"), OverlayModel.Turn(role: "assistant", text: "Two emails.")]
+        let local = [OverlayModel.Turn(role: "user", text: "mail?"), reply("Two emails.", tool: "read_mail"),
+                     OverlayModel.Turn(role: "assistant", text: "oops", isError: true)]
+        let merged = OverlayModel.merging(history: history, into: local)
+        check(merged.map(\.text) == ["window", "w", "mail?", "Two emails.", "oops"] && merged[3].toolCalls.count == 1,
+              "Saved history merges around archived turns, keeping their detail and the local-only error")
+        print("PASS: the debug export covers every chat since launch; reopened chats continue with full detail")
+    }
+    #endif
+
     static func main() async {
         lifecycleChecks()
         await MainActor.run { coldStartFailureChecks() }
@@ -234,6 +341,8 @@ struct OverlayTransitionChecks {
         await AppDelegate.checkQuickSettingsSurviveCollapse()
         await AppDelegate.checkSetupCardHoldsAsk()
         await AppDelegate.checkInlineReportHoldsOpen()
+        await chatArchiveChecks()
+        await AppDelegate.checkMenuExportsDebugLog()
         #endif
         if ProcessInfo.processInfo.environment["WISP_MOTION_NATIVE_CHECK"] == "1" {
             await nativeChecks()

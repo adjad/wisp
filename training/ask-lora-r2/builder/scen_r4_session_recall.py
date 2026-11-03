@@ -9,8 +9,9 @@ the one that matters; this family puts the earlier turn 2-7 exchanges back, behi
 What production keeps of an earlier turn (service/main.py, service/memory): only the user text and the final
 assistant text. Tool results and thinking are never stored; a one-line "Current subject" survives two assistant
 turns. So a fact an earlier reply STATED can be answered from the conversation with no call, and a detail it did
-NOT state needs the tool again. Seeded histories are 2-8 exchanges and stay under ~9,000 characters, so the host
-keeps all of them in the request (checked at build time: every history message must reach the request).
+NOT state needs the tool again. Seeded histories are 2-10 exchanges and stay under ~9,000 characters, so the host
+keeps all of them in the request (checked at build time: every history message must reach the request); the
+long-chat sub-skill 6 below goes past that on purpose and exercises the condensed note.
 
 Sub-skills (counts in the build output):
 1. answer from the conversation (no call): a time, title, name, price or total the earlier reply stated, asked
@@ -26,6 +27,13 @@ Sub-skills (counts in the build output):
    "go back to what you said about Friday", "did we talk about the weather": answered from the history.
 5. stored facts: a broad ``recall`` (one stem word, never narrowed) and the stored fact stated; a fact the user
    said earlier in THIS chat is answered from the chat; an absent fact is said plainly.
+6. long chats (round 4 review): 8-10 exchanges of base-length replies (60-150 words, 2,500-9,000 characters), and condensed
+   chats of 21-24 exchanges, which production cuts to its newest 40 messages plus the "Earlier in this conversation" note
+   (service/memory/context.py). Asked at the end: a fact the user stated in an early message, a figure the assistant gave
+   in its first long reply, "what was the first thing I asked", a personal fact never said (broad recall, then "not in this
+   chat, not saved") and something the assistant never suggested. In the condensed chats the asked fact must survive into
+   the note's own text and not be verbatim anywhere (checked on the captured request); the final states only the core of
+   the fact there (the "core||tail" finals drop their tail)
 
 Host finding that shapes the no-call prompts. When the model answers a prompt with no tool at all, the Ask loop
 re-prompts once with a tool required if ``service.model_only.asks_personal_data(prompt)`` is true (a question with
@@ -61,6 +69,9 @@ from scen import Scenario
 from scen_r2_act import iso, style
 from scen_r3_chat import BANNED_OPENERS, CLOSERS, EMOJI
 from scen_r3_followup import at_, blank, turn, wd_name
+import scen_r4_instructions as I
+from scen_r4_session_chat import NONE_ACK
+from service.memory.context import DIGEST_HEADER, digest_line
 from service.model_only import asks_personal_data
 from world import Email, Event, Msg, Note, Reminder
 
@@ -145,8 +156,18 @@ def _check(sc):
     """(ok, why). Rule violations raise (a broken scenario fails the build); host and leak problems return False."""
     final = sc.steps[-1].text if isinstance(sc.steps[-1], Final) else ""
     # ---- authoring rules (assertions)
-    assert 2 <= len(sc.history) <= 10, f"history of {len(sc.history)} exchanges"
-    assert _hist_chars(sc) <= 9000, f"history of {_hist_chars(sc)} chars"
+    mode = getattr(sc, "long_mode", None)
+    if mode == "digest":
+        # production keeps 40 messages verbatim and condenses the rest: 21+ exchanges always condense the first
+        assert 21 <= len(sc.history) <= 24, f"digest chat of {len(sc.history)} exchanges"
+        assert _hist_chars(sc) <= 30000, f"history of {_hist_chars(sc)} chars"
+    elif mode == "long":
+        assert 7 <= len(sc.history) <= 10, f"long chat of {len(sc.history)} exchanges"
+        assert 2500 <= _hist_chars(sc) <= 9000, f"long chat of {_hist_chars(sc)} chars"
+    else:
+        assert 2 <= len(sc.history) <= 10, f"history of {len(sc.history)} exchanges"
+        if _hist_chars(sc) > 9000:      # longer replies in the filler banks can push a session past the cap: drop it
+            return False, f"history of {_hist_chars(sc)} chars"
     for i, t in enumerate(sc.history):
         _voice(t["assistant"], f"history[{i}]")
         # a chain follow-up or ack must sit right after its question (or the exchange before it in the same chain)
@@ -164,6 +185,8 @@ def _check(sc):
         assert sc.history[-1].get("crole") != "ack", f"s4_before: the last message {sc.history[-1]['user']!r} is an ack"
     if final:
         _voice(final, "final")
+    if sc.kind in NEVER_QKIND:
+        assert NONE_ACK.search(final), f"{sc.kind}: a never-said final must match distill/choose.py NONE_ACK: {final!r}"
     kind, rules = sc.kind, sc.rules
     if rules.get("no_call"):
         assert len(sc.steps) == 1 and isinstance(sc.steps[0], Final), f"{kind}: a call where none is wanted"
@@ -194,8 +217,22 @@ def _check(sc):
     for need in rules.get("reply_must", ()):
         reply = sc.history[rules["anchor"]]["assistant"] if "anchor" in rules else ""
         assert _has(reply, need), f"{kind}: {need!r} not in the earlier reply {reply!r}"
+    if "anchor" in rules:
+        anchor = sc.history[rules["anchor"]]
+        for need in rules.get("anchor_user", ()):
+            if mode != "digest" or kind != "l_first":
+                assert _has(anchor["user"], need), f"{kind}: {need!r} not in the anchor message {anchor['user']!r}"
+        for need in rules.get("anchor_asst", ()):
+            assert _has(anchor["assistant"], need), f"{kind}: {need!r} not in the anchor reply"
     if rules.get("ends_question"):
         assert final.rstrip().endswith("?"), f"{kind}: not a question {final!r}"
+    # a position claim is true only for an anchor at that position (r3 verifier: 'your first message' on exchange 9)
+    apos = rules.get("anchor") if isinstance(rules.get("anchor"), int) else None
+    if kind in ("l_user", "l_asst"):
+        if re.search(r"\bfirst (message|answer)\b", final, re.I):
+            assert apos == 0, f"{kind}: 'first message/answer' claimed for an anchor at exchange {apos}: {final!r}"
+        if re.search(r"\bnear the start\b", final, re.I):
+            assert apos in (0, 1), f"{kind}: 'near the start' claimed for an anchor at exchange {apos}: {final!r}"
     # ---- host and leak checks (drops)
     if rules.get("no_call") and asks_personal_data(sc.prompt):
         return False, "personal-data guard: the host re-prompts for a tool"
@@ -203,21 +240,56 @@ def _check(sc):
     if not ok:
         return ok, why
     for t in sc.history:
-        hits = leak.fact_hits(t["user"] + "\n" + t["assistant"])
-        if hits:
-            return False, f"toolbench fact in history {hits[:2]}"
-        leaked, score, q = A._leaks().leaks(t["user"])
-        if leaked:
-            return False, f"history prompt leaks {q['id']} {score:.2f}"
+        why = _leaky_why(t["user"], t["assistant"])
+        if why:
+            return False, why
     # every history message must reach the request (the host trims long sessions)
     policy, _ev, _fin = H.run_scenario(sc.prompt, copy.deepcopy(sc.steps), sc.world, sc.when,
                                        profile=sc.profile, approve=getattr(sc, "approve", None))
+    msgs = policy.requests[0]["messages"]
     sent = "\n".join(m["content"] if isinstance(m["content"], str) else str(m["content"])
-                     for m in policy.requests[0]["messages"] if m["role"] in ("user", "assistant"))
+                     for m in msgs[:-1] if m["role"] in ("user", "assistant"))
+    notes = [m["content"] for m in msgs if m["role"] == "system" and isinstance(m.get("content"), str) and m["content"].startswith(DIGEST_HEADER)]
+    if mode == "digest":
+        # the oldest exchanges must be condensed, and what the answer states must survive into the note
+        if not notes:
+            return False, "no 'Earlier in this conversation' note in the request"
+        needles = list(rules.get("anchor_user", ())) + list(rules.get("anchor_asst", ()))
+        for nd in needles:
+            if not _has(notes[0], nd):
+                if os.environ.get("SESSION_RECALL_DEBUG"):
+                    tot = sum(len(str(m.get("content"))) for m in msgs) // 4 + len(str(policy.requests[0].get("tools"))) // 4
+                    print("DEBUG digest lines", len(notes[0].split("\n")) - 1, "of", len(sc.history), "est tokens", tot, "needle", nd, "anchor", rules.get("anchor"))
+                return False, f"{nd!r} did not survive into the condensed note"
+            if _has(sent, nd):
+                return False, f"{nd!r} is still verbatim in the request"
+        if not all(t["user"] in sent and t["assistant"] in sent for t in sc.history[-12:]):
+            return False, "the host trimmed recent history"
+        return True, ""
+    if notes:
+        return False, "the host condensed a chat meant to stay verbatim"
     for t in sc.history:
         if t["user"] not in sent or t["assistant"] not in sent:
             return False, "the host trimmed the history"
     return True, ""
+
+
+_LEAKY_WHY: dict = {}
+
+
+def _leaky_why(user, assistant):
+    key = (user, assistant)
+    if key not in _LEAKY_WHY:
+        why = ""
+        hits = leak.fact_hits(user + "\n" + assistant)
+        if hits:
+            why = f"toolbench fact in history {hits[:2]}"
+        else:
+            leaked, score, q = A._leaks().leaks(user)
+            if leaked:
+                why = f"history prompt leaks {q['id']} {score:.2f}"
+        _LEAKY_WHY[key] = why
+    return _LEAKY_WHY[key]
 
 
 def _attempt(make, rng, tries=8):
@@ -299,7 +371,29 @@ def sc_(rng, prompt, now, w, steps, notes, history, kind, **rules):
     sc.must_see = []
     sc.kind = kind
     sc.rules = rules
+    # meta.anchor_pos: where the answer's anchor sits; a never-said kind has no anchor (its anchor=0 only picks the history)
+    sc.anchor_pos = rules["anchor"] if isinstance(rules.get("anchor"), int) and kind not in NEVER_QKIND else None
+    _recall_labels(sc, kind, rules)
     return sc
+
+
+# RL-SCOPE C6/C7: the recall labels follow the question KIND. A recall kind carries the refs the answer must bring
+# back (the asked-for detail first); a never-said kind carries the detail that never came up; every other kind
+# (agenda/mail/weather re-reads, challenges, recaps, memory lookups) carries none. `thread` is left to build.py,
+# which derives it from the seeded history (build.conversation_key) so one rule serves every session family.
+RECALL_QKIND = {"l_user": "rec_user", "l_first": "rec_user", "s4_first": "rec_user", "l_asst": "rec_asst", "s4_goback": "rec_asst"}
+NEVER_QKIND = {"l_never_user", "l_never_asst"}
+
+
+def _recall_labels(sc, kind, rules):
+    if kind in RECALL_QKIND:
+        refs = tuple(rules.get("must") or ())
+        assert refs, f"{kind}: a recall kind without refs"
+        sc.qkind, sc.recall_refs = RECALL_QKIND[kind], refs
+    elif kind in NEVER_QKIND:
+        sc.qkind = "rec_none"
+        sc.recall_absent = rules.get("stem") or (rules.get("absent") or ("",))[0]
+        assert sc.recall_absent, f"{kind}: a never-said kind without the absent detail"
 
 
 # =============================================================================
@@ -621,7 +715,8 @@ def banks():
     what the least-used picker draws from)."""
     if not _BANKS:
         _BANKS["short"] = [f for f in FILL + FILL_B + FILL_C if not _leaky(f[0], f[1]) and f[3].lower() in f[2].lower()]
-        _BANKS["long"] = [f for f in LONG + LONG_B + LONG_C if not _leaky(f[0], f[1]) and f[3].lower() in f[2].lower()]
+        _BANKS["longx"] = [f for f in LONGX if not _leaky(f[0], f[1]) and f[3].lower() in f[2].lower()]
+        _BANKS["long"] = [f for f in LONG + LONG_B + LONG_C if not _leaky(f[0], f[1]) and f[3].lower() in f[2].lower()] + _BANKS["longx"]
         _BANKS["chains"] = [c for c in CHAINS + CHAINS_C if not any(_leaky(u, a) for u, a in c[0]) and c[2].lower() in c[1].lower()]
         _BANKS["acks"] = [a for a in ACKS if not _leaky(a[0], a[1])]
         if os.environ.get("SESSION_RECALL_SOFT"):
@@ -748,7 +843,11 @@ def ordinal(rng, k, n):
     return rng.choice(ORD[k]), k % n
 
 
-def agenda_ex(rng, now, w, *, nonzero=True, n=None, off=None, with_loc=False, bullets=False):
+def agenda_ex(rng, now, w, *, nonzero=True, n=None, off=None, with_loc=False, bullets=False, brief=0.0):
+    """An earlier agenda exchange. A time-scoped ask ("what's lined up for friday") reads the Brief's day plan
+    (get_my_day_plan), the way the live host routes it, so the reply is built from the PARSED plan: the events, and
+    any Brief item (a text, note or email with a date) the plan also lists, which `brief` (a probability) adds to the
+    world. A location-asking exchange (with_loc) stays a calendar read: the plan carries no places."""
     n = n or rng.choice([3, 3, 4, 2])
     off = off or rng.choice([1, 1, 2, 3, 4])
     day = now.date() + D(days=off)
@@ -770,19 +869,35 @@ def agenda_ex(rng, now, w, *, nonzero=True, n=None, off=None, with_loc=False, bu
     on_pw = "tomorrow" if off == 1 else "on " + wd_name(day)
     items = [dict(title=t, noun=noun(t), c=clock(at_(day, h, m)), start=at_(day, h, m), loc=loc, short=sh)
              for t, h, m, mins, loc, sh in chosen]
+    plan = not with_loc
+    extra = []
+    if plan:
+        if brief:
+            I.maybe_brief(rng, w, now, day, p=brief)
+        result = w.handle("get_my_day_plan", {"day": period})
+        parsed = I.parse_plan(str(result))
+        cal = [x for x in parsed if x.src == "calendar"]
+        assert [x.title for x in cal] == [i["title"] for i in items] and [x.t for x in cal] == [i["c"] for i in items], \
+            f"the day plan does not list the world's events: {result!r}"
+        extra = [x for x in parsed if x.src != "calendar"]
     if bullets:
         lines = "\n".join(f"- {i['c']}: {i['title']}" + (f" ({i['loc']})" if with_loc else "") for i in items)
         reply = f"{Cp} you have {len(items)} things:\n{lines}"
     else:
         lst = join([f"your {i['noun']} at {i['c']}" + (f" ({i['loc']})" if with_loc else "") for i in items])
         reply = rng.choice([f"{Cp} you have {lst}.", f"You have {lst} {on_pw}.", f"{Cn} looks like this: {lst}."])
+    if extra:
+        also = I.plan_prose(extra)
+        reply += ("\n" if bullets else " ") + rng.choice([f"Also {on_pw}: {also}.", f"It also lists {also}."])
     user = rng.choice(["what does {p} look like", "what's lined up for {p}", "walk me through {p}", "how's {p} shaping up",
                        "what's on the books for {p}", "what's happening {p}", "give me the rundown for {p}"]).format(p=pw.lower())
-    result = w.handle("get_upcoming", {"period": period})
-    ex = dict(turn(user, reply, "get_upcoming", [{"name": "get_upcoming", "args": {"period": period}, "result": result}]),
+    if not plan:
+        result = w.handle("get_upcoming", {"period": period})
+    tool, args = ("get_my_day_plan", {"day": period}) if plan else ("get_upcoming", {"period": period})
+    ex = dict(turn(user, reply, tool, [{"name": tool, "args": args, "result": result}]),
               topic=f"your schedule {on_pw}", keys=["schedule", pw], cb=pw.lower(),
               say=join([f"{i['noun']} at {i['c']}" for i in items]), facts=[f"{i['noun']} at {i['c']}" for i in items] if not bullets else [i["c"] for i in items],
-              kind="agenda", st=dict(items=items, period=period, pw=pw, Cp=Cp, on_pw=on_pw, day=day, bullets=bullets))
+              kind="agenda", st=dict(items=items, period=period, pw=pw, Cp=Cp, on_pw=on_pw, day=day, bullets=bullets, extra=extra, plan=plan))
     return ex
 
 
@@ -1238,9 +1353,9 @@ def lead_in(rng, deep, word):
                        f"going back to {word}, ", f"{word} from earlier, "])
 
 
-def agenda_world(rng, *, nonzero=True, n=None, with_loc=False, bullets=False, off=None, hour=None):
+def agenda_world(rng, *, nonzero=True, n=None, with_loc=False, bullets=False, off=None, hour=None, brief=0.0):
     now, w = base(rng, hour)
-    ex = agenda_ex(rng, now, w, nonzero=nonzero, n=n, with_loc=with_loc, bullets=bullets, off=off)
+    ex = agenda_ex(rng, now, w, nonzero=nonzero, n=n, with_loc=with_loc, bullets=bullets, off=off, brief=brief)
     return now, w, ex
 
 
@@ -1677,7 +1792,7 @@ def _challenge_prompt(rng, deep, key):
 
 def s3_agenda(changed):
     def make(rng):
-        now, w, ex = agenda_world(rng, nonzero=True, n=rng.choice([3, 3, 4]))
+        now, w, ex = agenda_world(rng, nonzero=True, n=rng.choice([3, 3, 4]), brief=0.45)
         st = ex["st"]
         its = st["items"]
         old = {id(x): x["c"] for x in its}
@@ -1690,6 +1805,9 @@ def s3_agenda(changed):
             final = fin(rng, f"Yes, it's still the same: {st['on_pw']} you have {lst}.", f"I checked again and nothing has changed: {lst} {st['on_pw']}.",
                         f"It holds up. {cap1(st['pw'])} is {lst}.", f"Same as before, {st['on_pw']}: {lst}.")
             must = [x["c"] for x in its]
+            if st["extra"]:       # the plan also lists a Brief item: the re-read names it too
+                final += " " + rng.choice([f"The plan also still lists {I.plan_prose(st['extra'])}.", f"It also still has {I.plan_prose(st['extra'])}."])
+                must += [x.title for x in st["extra"]]
             kinds = "s3_agenda_same"
         else:
             it = rng.choice(its[:-1] if rng.random() < .5 and len(its) > 2 else its)
@@ -1723,9 +1841,11 @@ def s3_agenda(changed):
                             f"Something new has appeared {st['on_pw']}: your {noun(t)} at {nc}. Everything else is unchanged.")
                 must = [nc, noun(t)]
                 kinds = "s3_agenda_added"
-        return sc_(rng, prompt, now, w, [[Call("get_upcoming", period=st["period"])], Final(final)],
-                   "a challenge is a re-read against the source: the same read, then the fresh result (confirmed, or what it is now)", hist,
-                   kinds, first="get_upcoming", args={"period": st["period"]}, in_result=must, must=must, reply_must=reply_must[:1], anchor=ai)
+        # a time-scoped ask is read through the Brief's day plan (the live hint), so the re-read is the same call as the
+        # earlier turn's: get_my_day_plan(day=<that day>)
+        return sc_(rng, prompt, now, w, [[Call("get_my_day_plan", day=st["period"])], Final(final)],
+                   "a challenge is a re-read against the source: the same read (the day plan), then the fresh result (confirmed, or what it is now)", hist,
+                   kinds, first="get_my_day_plan", args={"day": st["period"]}, in_result=must, must=must, reply_must=reply_must[:1], anchor=ai)
     return make
 
 
@@ -1749,7 +1869,7 @@ def s3_mail(changed):
             avail = [m for m in MAILS if m not in ms]
             new = rng.choice(avail)
             w.emails.insert(0, Email(new["s"], new["a"], new["subj"], now - D(minutes=rng.randint(5, 30)), bodylines(new["body"]), True, True))
-            final = fin(rng, f"Not anymore: a new one has come in from {new['s']}, “{new['subj']}”, so you have 4 unread now.",
+            final = fin(rng, f"Yes, one more has come in: {new['s']} sent “{new['subj']}”, so you have 4 unread now.",
                         f"It has changed. {new['s']} just sent “{new['subj']}”, which makes 4 unread.")
             must = [new["s"], new["subj"], "4"]
             kind = "s3_mail_new"
@@ -2018,12 +2138,19 @@ def s4_didask(yes):
             final = fin(rng, f"Yes, you asked about {e['topic']} earlier. Here it is again. {reply}", f"Yes, we covered {e['topic']} a few messages back. {reply}")
             return sc_(rng, prompt, now, w, [Final(final)], "'did I ask about X': yes, from the history, with what was said", seq, "s4_did_yes",
                        no_call=True, must=e["facts"], reply_must=e["facts"], anchor=seq.index(e), min_final=1)
-        absent = [k for k in ["weather", "unread", "reminders", "texts"] if not any(_has(t["user"] + " " + t["assistant"], {"unread": "email"}.get(k, k)) for t in seq)]
+        # a topic counts as absent only when none of its words (the user's or the assistant's) is anywhere in the chat
+        aliases = {"weather": ("weather", "forecast", "rain", "temperature", "sunny", "cloud"),
+                   "unread": ("unread", "email", "mail", "inbox"),
+                   "reminders": ("reminder", "remind", "due"),
+                   "texts": ("text", "message", "messaged", "texted")}
+        absent = [k for k, al in aliases.items() if not any(_has(t["user"] + " " + t["assistant"], a) for t in seq for a in al)]
         if not absent:
             return None
         k = rng.choice(absent)
         word = {"weather": "the weather", "unread": "the emails", "reminders": "the reminders", "texts": "the texts"}[k]
         topics = join([e["topic"] for e in _uniq(seq)])
+        if any(_has(topics, a) for a in aliases[k]):     # the recap must not name the topic it denies
+            return None
         prompt = rng.choice(["have we talked about {w} yet", "did {w} come up earlier", "has {w} come up in this chat"]).format(w=word)
         final = fin(rng, f"No, we haven't touched on {word} in this chat. So far we've covered {topics}.", f"Not yet. We've only been over {topics}.")
         return sc_(rng, prompt, now, w, [Final(final)], "'did I ask about X' when it did not come up: a plain no with what was covered", seq, "s4_did_no",
@@ -2222,6 +2349,575 @@ def s5_missing(i):
 
 
 # =============================================================================
+# round 4, long chats: base-length replies (80-150 words), the way a capable chat model answers in this app
+# =============================================================================
+# (user, assistant, topic: a noun phrase that follows "about", first keyword)
+LONGX = [
+    ("what's the difference between baking soda and baking powder",
+     "They both make baked goods rise, but they work differently. Baking soda is pure sodium bicarbonate, so it needs an acid in the recipe, like buttermilk, yogurt, honey or brown sugar, to start fizzing. Baking powder already contains its own acid, which means it only needs moisture and heat. That is why cookie recipes with brown sugar lean on soda and plain vanilla cakes often use powder. If you are ever stuck, you can make a rough substitute for one teaspoon of powder by mixing a quarter teaspoon of soda with half a teaspoon of cream of tartar. Check the dates on both tins too, since old leaveners go flat and quietly ruin a bake.",
+     "baking soda versus baking powder", "powder"),
+    ("how do i get better at remembering what i read",
+     "Most of the forgetting happens because the reading was passive, so the fix is to make your brain do a little work afterward. When you finish a chapter, close the book and write down three things you remember in your own words before you look anything up. Then check what you missed. Doing that the next day, and again a week later, matters more than rereading ever will. It also helps to read with one question in mind, such as what the author wants me to believe, because a question gives the details somewhere to land. Keep the notes short, or you will end up with a second book to forget.",
+     "remembering what you read", "remembering"),
+    ("how do tides work",
+     "Tides come mostly from the moon's gravity pulling on the ocean. The water on the side of Earth facing the moon is pulled into a bulge, and a second bulge forms on the far side because the whole planet is also being tugged. As Earth rotates, a coastline passes through both bulges, which is why most places get two high tides and two low tides a day. The sun adds its own, smaller pull. When the sun and moon line up, at new and full moon, you get the biggest swings, called spring tides, and when they are at right angles the swings are gentler. Local coastline shape then changes everything, which is why some bays have tides twice as tall as others.",
+     "how tides work", "tides"),
+    ("is it worth buying a cast iron pan",
+     "For most home cooks, yes. A cast iron pan is cheap for what it does, it holds heat evenly, and it goes from the stove straight into the oven, which makes it great for searing a steak, baking cornbread or crisping potatoes. It lasts decades if you wipe it dry after washing and rub on a thin coat of oil. The trade-offs are weight, a slower heat-up, and the fact that acidic sauces like tomato can strip the seasoning if they simmer for a long time. If you mostly cook eggs and delicate fish, a nonstick pan will be easier. Many people end up owning both and reaching for the cast iron more often than they expected.",
+     "buying a cast iron pan", "cast"),
+    ("explain compound interest like i'm new to it",
+     "Compound interest means you earn interest on your interest, not just on the money you put in. Say you put $1,000 in an account paying 5% a year. After the first year you have $1,050. In the second year the 5% is applied to $1,050 rather than $1,000, so you earn $52.50 and end up with $1,102.50. The difference looks tiny at first, but it keeps stacking, and after 30 years that same $1,000 grows to about $4,300 without you adding anything. The lesson most people take from it is to start early, since time does more of the work than the size of the deposit.",
+     "compound interest", "compound"),
+    ("what should i do on a rainy sunday with nothing planned",
+     "A rainy Sunday is a good excuse for a slow one. You could start with a long breakfast, something like pancakes or eggs on toast, and then pick one small project that has been waiting around, such as sorting a drawer or finally fixing the wobbly chair. In the afternoon, a movie you have been meaning to watch or a few chapters of a book fits the weather nicely, ideally under a blanket with tea. If you need to get out, a cafe, a bookshop or a museum works well when it is wet. Finish with a simple dinner, maybe a soup, and an early night so Monday does not feel so abrupt.",
+     "a rainy sunday", "sunday"),
+    ("how do i politely end a conversation that won't stop",
+     "The kindest way is to be warm and clear at the same moment. Wait for a natural pause, then say something like, I have really enjoyed this, and I need to get going, but let's pick it up next time. Naming the thing you enjoyed makes it land as a compliment instead of a brush-off. If the person keeps going, you can stand up or shift your body toward the door while you say it, since people pick up on movement. In a meeting or on a call, offering a concrete next step works too, such as I'll send you that link this afternoon. Most people are relieved when someone else makes the exit easy.",
+     "ending a long conversation politely", "conversation"),
+    ("why is my sourdough so dense",
+     "Dense sourdough usually comes from one of three things. The first is a starter that is not active enough, so check that it doubles within about six hours of feeding before you bake with it. The second is underproofing, where the dough has not had enough time to rise, which is common in a cool kitchen. A good test is to poke it gently, and if the dent springs back slowly rather than instantly, it is ready. The third is weak shaping, which leaves the loaf without the tension it needs to hold its height. Try a longer bulk rise, a hotter preheated pot, and a wetter dough, but change one thing at a time so you can tell what helped.",
+     "dense sourdough", "dense"),
+    ("how often should i water a succulent",
+     "Less often than you would think. Most succulents like to dry out completely between waterings, so the soil should be bone dry a couple of inches down before you give them a thorough soak. In a bright room that is usually every two weeks in summer and every three to four weeks in winter, when growth slows. Water until it runs out of the drainage hole, then empty the saucer so the roots do not sit wet. Signs of too much water are soft, translucent or yellowing leaves, while a thirsty plant shows wrinkled, deflated ones. If you are ever unsure, wait a few more days, because underwatering is far easier to fix than rot.",
+     "watering a succulent", "succulent"),
+    ("can you explain how vaccines train the immune system",
+     "A vaccine shows your immune system a harmless piece or imitation of a germ so it can practice before the real thing arrives. That might be a weakened virus, a protein from its surface, or instructions that make your own cells produce that protein briefly. Your body responds by making antibodies and, importantly, memory cells that stay around for months or years. If you meet the real germ later, those memory cells recognize it quickly and respond within hours, rather than the days it would take to start from nothing. Often that means you never get sick at all, or you get a much milder illness. Some vaccines need boosters, because the memory fades over time.",
+     "how vaccines work", "vaccines"),
+    ("tips for a first time at a hot yoga class",
+     "Hydrate well for the whole day beforehand, not just in the hour before the class. Eat something light two or three hours earlier, since a full stomach and a hot room are an unpleasant mix. Wear fabric that breathes and lies flat, and bring a large towel to lay over your mat, because it gets slippery. Arrive a little early to tell the teacher it is your first time and to find a spot near the door, where it is slightly cooler. Rest in child's pose whenever you feel dizzy, and do not worry about keeping up. The heat makes everyone feel a bit wobbly in the first few sessions, and it does get easier.",
+     "a first hot yoga class", "yoga"),
+    ("what makes a good thank you note",
+     "A good thank you note is specific and short. Start with the thing itself, such as thank you for the scarf, and then say one concrete thing about it, like how you wore it on the first cold morning and got three compliments. That small detail tells the person you really noticed what they did. If the gift was a favor or someone's time, say what difference it made. Keep it to a few sentences, write it by hand if you can, and send it within a week or two. Skip the apology for being late, just send it. People remember a warm, specific note much longer than a long one.",
+     "writing a thank you note", "thank"),
+    ("how do airplanes stay up",
+     "A wing is shaped and tilted so that as it moves forward, it pushes air downward. The air pushes back up on the wing in response, and that upward force is lift. The curved top surface also speeds the airflow and lowers the pressure above the wing, which adds to the effect. Lift grows with speed, which is why a plane needs a long run down the runway before it can leave the ground. Once it is up, the engines only have to overcome drag, and the wings do the rest. Pilots adjust flaps on the wings during takeoff and landing, which change the wing's shape so it can make enough lift at lower speeds.",
+     "how airplanes stay up", "airplanes"),
+    ("how do i stop procrastinating on a big project",
+     "Big projects stall because the first step feels shapeless, so make it very small and very specific. Instead of work on the report, try open the document and write three bullet points for the introduction. Then set a timer for 15 minutes and promise yourself only that. Starting is the hard part, and once you are in it, momentum often carries you further. It also helps to decide in advance when and where you will work, and to put your phone out of sight. When you finish a session, jot down the next step so tomorrow's start is easy. Treat a slow day as information, not failure, and just do the next small thing.",
+     "procrastinating on a big project", "procrastinating"),
+    ("what's a good way to learn the guitar chords without getting frustrated",
+     "Start with just four chords, G, C, D and E minor, because they unlock hundreds of songs. Practice switching between two of them for a minute at a time, slowly, and keep your fingers close to the strings as you move. Your fingertips will hurt for the first couple of weeks, so short sessions of ten or fifteen minutes spread through the day work better than one long one. A cheap clip-on tuner keeps everything in tune, which matters more than people expect, because out-of-tune strings sound wrong even when your fingers are right. Pick one simple song you love and learn it all the way through, since that gives the practice a reward.",
+     "learning guitar chords", "guitar"),
+    ("how can i make my small apartment feel bigger",
+     "Light and clear surfaces do most of the work. Pull curtains fully open in the day, choose sheer ones if you need privacy, and place a mirror across from the window so it bounces light around the room. Keep furniture on legs so you can see the floor underneath, and keep large pieces against the walls. Use one or two colors throughout, with lighter shades on the walls, which blurs the edges of the room. Vertical storage, like tall shelves, draws the eye up and frees the floor. Finally, edit what sits on open surfaces, since three pretty objects look calm, while twelve look like clutter.",
+     "making a small apartment feel bigger", "apartment"),
+    ("why do we get goosebumps",
+     "Goosebumps are a leftover reflex from our furry ancestors. When you feel cold, tiny muscles at the base of each hair contract and make the hair stand up. On an animal with thick fur, that traps a layer of warm air against the skin. We have lost most of our fur, so now it only produces bumps. The same reflex fires with strong emotion, like hearing a beautiful piece of music or feeling afraid, because the same nervous system that handles fight or flight also controls those muscles. In furry animals, raised hair also makes them look larger to a threat, which is the other half of why the reflex stuck around.",
+     "why we get goosebumps", "goosebumps"),
+    ("how long should i let a steak rest",
+     "Rest it for about five to ten minutes for a typical steak an inch or so thick, a little longer for a thick cut or a roast. While it sits, the juices that were pushed toward the center during cooking spread back through the meat. If you cut right away, much of that liquid ends up on the board instead of in your mouth. Rest it on a warm plate or board, loosely covered with foil if the kitchen is cold, and do not wrap it tightly, which steams the crust you worked to build. The meat also keeps cooking a little as it rests, so pull it a few degrees under your target.",
+     "resting a steak", "steak"),
+    ("what's a decent way to learn a language in the evenings after work",
+     "Short and consistent beats long and occasional. Twenty to thirty minutes a night, split between listening, a bit of vocabulary and speaking out loud, does more than a weekend binge. Pick content you actually enjoy, like a podcast or a show with subtitles in the target language, because enjoyment is what keeps you coming back after a long day. Learn the 500 most common words first, since they cover most everyday speech. Try to speak from the first week, even if it is just describing your dinner to yourself. A weekly chat with a tutor or language partner is the best accelerator, because it forces you to use what you have learned.",
+     "learning a language in the evenings", "language"),
+    ("explain what an index fund is",
+     "An index fund is a single investment that holds a small slice of every company in a particular list, called an index, such as the 500 largest US companies. Instead of someone picking winners, the fund simply copies the list, which keeps its fees very low. When you buy one share of the fund, you own a tiny piece of hundreds of businesses at once, so no single company can sink your savings. Over long periods, low fees and broad ownership have beaten most actively managed funds. The main caveat is that it still moves with the market, so it can fall sharply in a bad year, which is why it suits money you will not need for a long while.",
+     "index funds", "index"),
+    ("how do i get red wine out of a carpet",
+     "Act quickly and blot, never rub, using a clean white cloth or paper towel to soak up as much as you can. Then sprinkle a little cold water on the spot and keep blotting, which dilutes the stain. Mix a tablespoon of dish soap with a tablespoon of white vinegar and two cups of warm water, sponge it on, and blot again until the color stops transferring. If a pink shadow remains, a paste of baking soda and water left for an hour and then vacuumed can lift it. Avoid hot water and strong scrubbing, which set the dye. For an old stain, a carpet cleaner from the hardware store is worth trying.",
+     "removing red wine from a carpet", "carpet"),
+    ("what's the best way to prepare for a long flight with a layover",
+     "Treat the layover as part of the plan. Check the connection time, and if it is under 90 minutes at a big airport, keep your boarding pass and the next gate on your phone so you can walk straight there. Carry a small bag with the essentials, such as a charger, snacks, a water bottle you fill after security, a light jacket and any medication, because checked bags can run late. Choose an aisle seat if you like to stretch, and set your watch to the destination time as soon as you board to start shifting your body clock. A few minutes of walking each hour helps your legs and your mood on the second leg.",
+     "preparing for a long flight", "flight"),
+    ("how do you know when an avocado is ripe",
+     "Press gently in the palm of your hand, not with your fingertips, which leave bruises. A ripe avocado gives slightly under steady pressure, a bit like a ripe peach, while a hard one feels like a rock. Another trick is to flick off the little stem cap. If it comes away easily and the spot underneath is green, the fruit is ready, but if it is brown, the avocado is overripe, and if it will not budge, it needs more time. A dark skin is a clue for some varieties like Hass, but it is not reliable alone. To speed up a hard one, put it in a paper bag with a banana.",
+     "ripe avocados", "avocado"),
+    ("what's the story with daylight saving time",
+     "Daylight saving time moves clocks forward an hour in spring and back in autumn, so that evenings stay lighter during the summer months. It was adopted widely during the world wars to save fuel, and people have argued about it ever since. Supporters like the extra evening light for outdoor activity and shopping, while critics point to the disruption of sleep in the days after the change, with studies linking it to a short rise in accidents and heart problems. Many places have debated staying on permanent standard time or permanent summer time, but changing the rules takes legislation, so for now the clocks keep switching in most of the US and Europe.",
+     "daylight saving time", "daylight"),
+    ("how do i make my commute less miserable",
+     "Give the commute a purpose so it stops feeling like lost time. If you take transit, treat it as a reading slot or a podcast hour, and save a favorite series just for that ride. If you drive, a good audiobook or a call to a friend can turn the same traffic into something you look forward to. Leaving ten minutes earlier or later can change the traffic dramatically, so try a few start times for a week and note which feels best. Keep a small kit in your bag, with water, a snack and headphones, so delays do not wreck your mood. And if you can work from home even one day, that tends to help more than any trick.",
+     "making a commute less miserable", "commute"),
+    ("is it better to run in the morning or evening",
+     "The best time is whichever one you will actually do consistently. That said, each has its perks. Morning runs tend to be easier to protect from a busy day, they leave you feeling accomplished, and the air is often cooler and cleaner. Evening runs are when your body is warmest and your muscles looser, so many people feel stronger and faster, and a run can be a good way to let go of the day. Running too close to bedtime can leave some people wired, so try finishing a couple of hours before sleep. Try each for two weeks and see which suits your schedule and energy.",
+     "running in the morning or evening", "running"),
+    ("what is the difference between a virus and a bacteria",
+     "Bacteria are living single-celled organisms that can reproduce on their own, and most of them are harmless or even helpful, like the ones in your gut. A few cause illnesses such as strep throat or urinary infections, and those can be treated with antibiotics. Viruses are much smaller and are not cells at all. They are bits of genetic material in a protein coat that can only multiply by getting inside your cells and borrowing their machinery. Colds, flu and measles are viral, and antibiotics do nothing against them. The best protections against viruses are vaccines, rest and hygiene, and sometimes antiviral drugs for specific infections.",
+     "viruses versus bacteria", "bacteria"),
+    ("how can i be a better listener",
+     "Good listening mostly comes down to patience and curiosity. Put your phone away, face the person, and let them finish a thought without planning your reply while they talk. When they stop, you can repeat back the heart of what you heard, such as, it sounds like the move has been exhausting, which lets them know you followed and gives them a chance to correct you. Ask one open follow-up question rather than offering advice straight away, since many people just want to be understood first. Comfortable silence is part of it, too. If you notice you keep waiting for your turn to speak, take a breath and ask one more question instead.",
+     "being a better listener", "listener"),
+    ("what's the difference between weather and climate",
+     "Weather is what the atmosphere is doing right now or this week, like a rainy Tuesday or a heat wave in July. Climate is the long-term pattern for a place, usually averaged over thirty years or more, such as the fact that Seattle is wet in winter and fairly dry in summer. A handy way to remember it is that climate is what you expect and weather is what you get. One cold winter does not disprove a warming climate, in the same way that one unusually cold day does not make summer cold. Scientists track climate through averages, extremes and trends across many years and many places.",
+     "weather versus climate", "climate"),
+    ("how should i store fresh herbs so they last",
+     "Treat soft herbs like cilantro, parsley and dill as a bouquet. Trim the stems, stand them in a jar with an inch of water, cover the leaves loosely with a bag, and keep them in the fridge, changing the water every couple of days. Basil is the exception, since the cold blackens it, so keep it on the counter in water like flowers. Woody herbs such as rosemary and thyme prefer being wrapped in a slightly damp paper towel inside a container in the fridge. If you cannot use them in time, chop and freeze them in olive oil in an ice cube tray, which gives you ready-made flavor for soups and pan sauces.",
+     "storing fresh herbs", "herbs"),
+    ("why do cats purr",
+     "Cats purr when they are content, and that is the part everyone knows, but they also purr when they are nervous, in pain or recovering. The sound comes from rapid twitching of the muscles in the voice box, which opens and closes the airway as the cat breathes in and out. Kittens purr to tell their mother they are fine, and mothers purr back to soothe them. Some researchers think the low vibration may even help bones and tissue heal, since it falls in a range linked to repair. If your cat purrs while hiding or not eating, it may be self-soothing, so watch the whole picture rather than the sound alone.",
+     "why cats purr", "purr"),
+    ("how do i choose a good watermelon",
+     "Look for one that feels heavy for its size, which means it is full of juice. Turn it over and find the field spot, the patch where it rested on the ground. A creamy yellow patch is a good sign, while a white or pale green one suggests it was picked early. The rind should be dull rather than shiny, and the shape should be fairly even. Give it a tap, and a ripe one makes a deep, hollow sound, a bit like a low drum. Skip any with soft spots, cuts or dents. If it is a cut half, look for deep red flesh without white streaks or a mealy texture.",
+     "choosing a watermelon", "watermelon"),
+    ("what are some ways to save money on groceries without eating worse",
+     "Planning is the biggest lever. Check what is already in your fridge, write a short list of meals for the week, and shop with it, which cuts impulse buys and food waste. Buy staples like rice, oats, beans and frozen vegetables in larger sizes, since they are cheap and keep for a long time. Store brands are often made in the same factories as name brands for much less. Check unit prices on the shelf tag, because the biggest package is not always the best value. Finally, cook once and eat twice, turning one night's roast chicken into tomorrow's tacos or soup. Many people save a fifth of their bill with just those habits.",
+     "saving money on groceries", "groceries"),
+    ("how does noise cancelling work",
+     "Noise cancelling headphones listen to the sound around you with small microphones, then play back a mirror image of that sound. When a sound wave meets another wave that is exactly opposite, the two cancel each other out, a bit like adding plus one and minus one. It works best on steady, low sounds, like the hum of an airplane engine, an air conditioner or a train, because they are easy to predict. Sudden sounds such as a voice or a door slam are harder, so you still hear some of those. Better headphones also seal around your ear, which blocks the higher sounds the electronics cannot handle.",
+     "noise cancelling headphones", "headphones"),
+    ("what's a good routine for winding down before bed",
+     "Pick a consistent time to start winding down, about an hour before you want to sleep. Dim the lights, put your phone out of reach and do something calm, such as a warm shower, light stretching or a few pages of a paperback. Keep the room cool and dark. If your mind keeps racing, write a short list of tomorrow's tasks on paper, which moves them out of your head. Avoid caffeine after early afternoon and heavy meals close to bedtime. It can take a couple of weeks for the routine to really work, because the body learns the pattern, so be patient and keep the order the same each night.",
+     "winding down before bed", "winding"),
+    ("what makes a good first impression at a new job",
+     "People tend to remember warmth and reliability most. Arrive a little early on the first few days, learn names and write them down, and ask questions, since new colleagues like being asked. Listen more than you talk in the first week, and take notes so you do not ask the same thing twice. Offer help with small things, such as covering a quick task or sharing a useful link, which builds goodwill quickly. Follow through on anything you promise, even something minor like sending an article. Dress one notch smarter than the team's usual style at first, then adjust. A friendly, curious attitude carries more weight than trying to look impressive.",
+     "making a good impression at a new job", "impression"),
+    ("how do i deal with a noisy neighbor",
+     "Start with a friendly, direct conversation, because many people have no idea how far sound carries. Pick a calm moment rather than the middle of the noise, and describe the specific problem, such as the bass through the wall after 11, instead of accusing them. Offer a simple compromise, like keeping it down after a certain hour. If that does not work, a polite written note comes next, then your landlord or building manager, who often has rules about quiet hours. Keep a short log of dates and times in case you need to escalate. In the meantime, white noise or earplugs can take the edge off.",
+     "dealing with a noisy neighbor", "neighbor"),
+    ("what should i know before adopting a rescue dog",
+     "Expect an adjustment period. Many rescue dogs need two or three weeks to settle, and a few months to show their real personality, so keep the first days quiet and predictable, with a bed in a calm corner and a steady routine for meals and walks. Ask the shelter everything they know about its history, energy and how it behaves around other animals and children. Budget for the first vet visit, vaccines, a microchip and some training classes, which help bonding as much as obedience. Accidents and chewing are normal at first, so dog-proof your space. Patience pays off, and the dogs that start out nervous often become the most loyal.",
+     "adopting a rescue dog", "rescue"),
+    ("how do solar panels actually make electricity",
+     "Each panel is a grid of silicon cells. When sunlight hits a cell, its energy knocks electrons loose from the silicon atoms, and the cell is built with an electric field that pushes those free electrons in one direction. That flow is direct current. An inverter then converts it to the alternating current that your outlets use. Output depends on sunlight, so panels make the most power on clear days around midday and a smaller amount under cloud. Any surplus can charge a battery or be sent to the grid, depending on your setup. Panels slowly lose a small percentage of output each year, but most keep working well for twenty-five years or more.",
+     "how solar panels work", "solar"),
+    ("how do i start journaling without it feeling forced",
+     "Lower the bar so far that you cannot fail. Try writing just three lines at the end of the day, such as one thing that happened, one thing you felt and one thing you want tomorrow. There is no need to write well or fill a page. If a blank page feels intimidating, use a prompt, like what is taking up the most space in my head right now. Keep the notebook and a pen by your bed so there is no setup. Some people like a morning page instead, which clears the mental noise before the day begins. After a few weeks, you will probably find yourself writing more without trying.",
+     "starting a journaling habit", "journaling"),
+    ("what's the best way to cool down a hot bedroom in summer",
+     "Block the heat before it comes in. Keep blinds or blackout curtains closed on sunny windows during the day, then open the windows at night once the outdoor air is cooler than the room. Place a box fan in one window facing out and open another window on the opposite side, which pulls cooler air through. A bowl of ice in front of a regular fan adds a little extra chill. Lighter, breathable bedding, such as cotton or linen, helps, and so does a cool shower before bed. Avoid using the oven in the evening. If it is still too warm, sleeping on the lowest floor of the house makes a real difference.",
+     "cooling a hot bedroom", "bedroom"),
+]
+
+
+# Exchange 1 of a long chat: the person states facts, and the long reply builds on them. Each seed carries its
+# own questions (asked many exchanges later) with the final that states the fact from the conversation.
+# (user, reply, topic, keyword, [(prompt, final, must)])
+USERFACT = [
+    ("i'm planning a surprise 40th for my brother Tomas on October 18th at the Harbor Grill, and he's obsessed with sailing",
+     "A surprise party for a sailor has a lot of room to play. For the Harbor Grill, you could ask whether the host will keep the guest list quiet, and have people arrive twenty minutes before Tomas so he walks in on a full room. A nautical theme is easy to pull off without being corny: navy and white tablecloths, a few rope-wrapped centerpieces and a chart of his favorite sailing spots on the wall. Since October 18th falls in the cooler part of the year, a toast on the deck at sunset could be a lovely moment if the restaurant has one. A short slideshow of his sailing photos would give people something to laugh about during dinner.",
+     "a surprise party", "surprise",
+     [("which date was the party again", "You said the party is on October 18th, at the Harbor Grill.", ["October 18th"]),
+      ("and the guest of honor, what was his name again", "Your brother is Tomas, turning 40, and the whole thing is built around his love of sailing.", ["Tomas"]),
+      ("where was the surprise dinner going to be", "The surprise dinner is at the Harbor Grill, on October 18th.||Tomas arrives after the guests.", ["Harbor Grill"])]),
+    ("we're moving to Denver on March 3rd and my partner Ines will drive the truck while i fly out with the dog, Pepper",
+     "Moving day is easier when the jobs are split clearly, and your plan already does that. With Ines driving the truck, it is worth agreeing on a daily mileage limit and a fixed time to check in, so neither of you worries along the way. For the flight with Pepper, check the airline's pet rules early, since many limit how many animals fit in the cabin and want a carrier that fits under the seat. Take a recent vet certificate, a familiar blanket and a few treats. Landing in Denver on March 3rd, you could pick up a key and sit with Pepper in the empty home before the truck arrives.",
+     "a move to Denver", "denver",
+     [("who was driving the truck again", "Ines is driving the truck, while you fly out with Pepper.", ["Ines"]),
+      ("what's the dog called, i forgot i told you", "The dog is called Pepper, and Pepper flies with you.", ["Pepper"]),
+      ("what day is the move", "March 3rd is the day you're moving to Denver.", ["March 3rd"])]),
+    ("my sister Annika is getting married in Lisbon on June 21st and i'm giving the toast, so i need to start soon",
+     "That is a lovely thing to be asked, and starting early gives you time to make it good. A toast for a sister works best when it is short and has one real story at its center, rather than a list of facts. Think of a moment when you saw who Annika really is, maybe a childhood adventure or a time she showed up for you, and let that carry the speech. Aim for about two minutes, finish by raising a glass and wishing the couple something specific, and practice it out loud a few times. In Lisbon on June 21st, the evening light will be long, so you will have a warm crowd.",
+     "a wedding toast", "toast",
+     [("which city is the wedding in", "The wedding is in Lisbon, on June 21st.||You are giving the toast there.", ["Lisbon"]),
+      ("who's the bride in that toast i'm writing", "That's your sister Annika, getting married in Lisbon on June 21st.", ["Annika"]),
+      ("remind me the wedding date", "It is on June 21st, in Lisbon.||Your toast fits somewhere in the evening.", ["June 21st"])]),
+    ("i just started at a new job at Fernbrook Labs, my manager is Dana Whitfield and my first day is Monday the 9th",
+     "Congratulations on the new role. A first week goes best when you decide a few things in advance. For Monday the 9th, aim to arrive about ten minutes early, bring a notebook and plan to ask Dana Whitfield what a good first month looks like, since managers love that question. Learn names as you go and write them down with a detail beside each. Do not worry about proving yourself in week one. Mostly you are there to listen, to find out how things really work and to say yes to lunch invitations. By Friday, you will already feel like you know where the coffee is kept at Fernbrook Labs.",
+     "a new job", "job",
+     [("what was the manager's name again", "Your manager is Dana Whitfield.||A good question for her is what the first month should look like.", ["Dana Whitfield"]),
+      ("what was the name of the company again", "You're joining Fernbrook Labs, starting Monday the 9th.", ["Fernbrook Labs"]),
+      ("first day, what was it", "Your first day is Monday the 9th, at Fernbrook Labs.", ["Monday the 9th"])]),
+    ("i'm training for the Cedar Ridge half marathon on April 12th and my goal time is 1 hour 55",
+     "A goal of 1:55 for a half marathon is ambitious and realistic if you build it steadily. That works out to about 8:44 per mile, so most of your training can be at an easier effort, with one weekly session at or just under that pace. Add a long run that grows by about a mile a week and lets you practice fueling, and take an easy week every fourth week. In the final fortnight before April 12th, reduce the volume but keep a few short, sharp efforts so your legs stay lively. Race day is about trusting the work, so start a touch slower than goal pace and finish strongly in the last three miles.",
+     "half marathon training", "marathon",
+     [("what was the target time for the race", "Your goal is 1 hour 55 for the Cedar Ridge half marathon.", ["1 hour 55"]),
+      ("when's the race again", "The Cedar Ridge half marathon is on April 12th.", ["April 12th"])]),
+    ("my landlord Mr. Ostrow says the heater gets replaced Wednesday between 9 and noon, and somebody has to be home",
+     "That window is manageable if you plan around it. Since someone needs to be home between 9 and noon on Wednesday, it helps to clear a path to the heater beforehand and move anything breakable out of the way. Ask Mr. Ostrow if the installer will turn off the water or power during the work, so you can plan showers and charging. Take a quick photo of the old unit and the new one for your records, and make sure you get the model number and warranty details afterward. If the visit runs long, keep a book handy. Replacements like this often take a couple of hours, but the finish is rarely on schedule.",
+     "a heater replacement", "heater",
+     [("when's the heater getting replaced, what was the window", "The heater is replaced on Wednesday between 9 and noon, and someone needs to be home.", ["Wednesday", "9 and noon"]),
+      ("what's the landlord called again", "The landlord is Mr. Ostrow.||He is sending someone Wednesday to replace the heater.", ["Mr. Ostrow"])]),
+    ("i've got a dentist appointment on Thursday at 3:45 with Dr. Lindqvist and i'm honestly kind of dreading it",
+     "Dreading a dentist visit is very common, and a few small things can make it easier. When you arrive for your Thursday appointment, tell the staff and Dr. Lindqvist that you are nervous, which gets you a slower pace and clearer warnings before anything uncomfortable. Agree a hand signal for a pause. Bring headphones and play something calm or funny, and breathe out slowly when you feel tense, because a long exhale settles the body. Try not to schedule anything stressful right after, and plan a little treat, like a warm drink. Most of the worry is anticipation, and the real visit is usually shorter and gentler than your mind has been predicting.",
+     "a dentist appointment", "dentist",
+     [("what time was the dentist visit", "The appointment with Dr. Lindqvist is on Thursday at 3:45.", ["3:45"]),
+      ("who's the dentist i'm seeing", "You're seeing Dr. Lindqvist on Thursday at 3:45.", ["Dr. Lindqvist"])]),
+    ("our group project is a podcast about city falcons, and my part is the interview with a woman named Rosalind who watches a nest on an office tower",
+     "That is a lovely subject for audio, because a falcon nest gives you drama, patience and story all at once. For the interview with Rosalind, start with how she got into it, then move to the moments only she can describe, such as the first chick she saw fledge or a dive she still remembers. Record near the tower if she is comfortable, since the city sound around her will give your listeners a real sense of place. Prepare eight or ten questions, but leave room to follow tangents, because the best lines often come unplanned. Ask her to explain one surprising fact about falcons, and let her take her time.",
+     "a podcast on city falcons", "podcast",
+     [("who was the person i'm interviewing for the podcast", "You're interviewing Rosalind, who watches a falcon nest on an office tower.", ["Rosalind"]),
+      ("what's the podcast about, the topic i mean", "It's a podcast about city falcons, and your part is the interview with Rosalind.", ["city falcons"])]),
+    ("i'm learning to bake and want to make my grandmother's Sicilian lemon cake for her 80th birthday on the 14th",
+     "What a thoughtful gift, and a cake with that history will carry a lot of meaning. Because the 14th is an important date, bake a practice version a week before so you can adjust the timing and sweetness in your own oven. Use fresh lemons for both the zest and the juice, rub the zest into the sugar to release the oils, and do not overmix the batter, which toughens the crumb. Let the cake cool completely before glazing. If you can, ask your grandmother about the original recipe, since the stories she tells while you ask will become part of the present too.",
+     "a lemon cake for a birthday", "lemon",
+     [("which cake was it, the one for her birthday", "A Sicilian lemon cake, your grandmother's recipe, for her 80th birthday.", ["Sicilian lemon cake"]),
+      ("which birthday is it, the number", "It's her 80th birthday, on the 14th.||The lemon cake has a big occasion to live up to.", ["80th"])]),
+    ("my flight to Osaka leaves Saturday at 6:20 AM from gate B14 and i haven't packed at all",
+     "A 6:20 AM departure means the real deadline is Friday evening, so pack tonight if you can. Start with a list sorted by category, such as documents, clothing, toiletries and electronics, and lay everything out on the bed before you put it in the bag. For Osaka, check the weather for next week, and pack layers that you can mix and match. Keep your passport, charger and anything fragile in your carry-on, along with one change of clothes in case your bag is delayed. Set two alarms, arrange a ride in advance, and aim to be at the airport about two and a half hours early, since gate B14 may be a long walk after security.",
+     "a flight to Osaka", "osaka",
+     [("what time was the flight leaving again", "Your flight leaves Saturday at 6:20 AM.||That makes Friday evening the real packing deadline.", ["6:20 AM"]),
+      ("which gate was it", "Your flight leaves from gate B14.||It could be a long walk after security.", ["B14"])]),
+    ("i adopted a rescue whippet named Biscuit last week and he refuses to go up the stairs",
+     "That is a very common quirk in a rescue dog, and it gets better with patience. Many rescue whippets have never lived with stairs, and their long legs and light frames make the first steps feel strange. Start by letting Biscuit sniff the bottom step, then reward any interest with a treat. Place a treat on the first step and then the second, and move slowly. Some owners guide the back legs with a hand under the hips for the first few tries. Keep each session short, stay relaxed, and avoid pulling on the lead. Within a couple of weeks, most dogs learn it, and then many of them treat the staircase as a favorite lounging spot.",
+     "a rescue whippet", "whippet",
+     [("what's the whippet's name", "His name is Biscuit, the rescue whippet you adopted last week.", ["Biscuit"]),
+      ("what was the problem he has with the house", "Biscuit refuses to go up the stairs.||That is a common quirk for a rescue whippet.", ["stairs"])]),
+    ("the book club meets Tuesday the 5th at Marguerite's place to talk about The Remains of the Day, and i haven't finished it",
+     "You still have time, and this novel rewards a steady pace more than a sprint. If you have around a hundred pages left, try reading thirty or forty pages a night, preferably in a quiet block before bed. It helps to focus on how the butler Stevens tells his own story, since the gap between what he says and what he feels is what the group will probably debate. Jot a few notes on moments that struck you, so you have something to say even if you do not finish in time. Nobody at a book club minds an honest, partial reading, and a thoughtful question is often more useful than a perfect summary.",
+     "a book club meeting", "club",
+     [("which book are we discussing at the club", "The Remains of the Day, at Marguerite's place on Tuesday the 5th.", ["The Remains of the Day"]),
+      ("whose place is the meeting at", "It's at Marguerite's place, on Tuesday the 5th.", ["Marguerite"])]),
+    ("my car's registration expires on the 30th and the DMV appointment i found is Monday at 8:15",
+     "Booking that appointment early is smart, because a Monday morning slot at 8:15 usually means shorter waits. Before you go, collect your current registration card, proof of insurance, your license and any smog or inspection paperwork your state requires. Many renewals can also be done online, so check whether yours qualifies, because that could save the visit entirely. If you do attend, bring a pen, a payment method they accept and a book for the line. After you renew, keep the new sticker or card in the car and set a reminder a month before next year's expiry, so the 30th does not sneak up again.",
+     "a car registration", "registration",
+     [("when does the registration run out", "The registration expires on the 30th.||The Monday appointment comes in just ahead of it.", ["30th"]),
+      ("what time is the DMV slot", "Your DMV appointment is Monday at 8:15.||It is a good early slot for a shorter wait.", ["8:15"])]),
+    ("i'm hosting thanksgiving for 11 people this year and my cousin Wen is bringing the pies",
+     "Eleven is a good size, big enough to feel festive and small enough to manage on your own. The key is to work backward from the meal. Order or thaw the turkey early, make cranberry sauce and stuffing components a day ahead, and set the table the night before. With Wen bringing the pies, you can cross dessert off your list and spend that oven space on side dishes. Ask a couple of other guests to bring drinks or a vegetable, since people usually want to contribute. Keep a printed timeline on the fridge, with oven times for each dish, so the afternoon runs smoothly and you actually get to sit down.",
+     "hosting thanksgiving", "thanksgiving",
+     [("how many people are coming to the dinner", "You said 11 people are coming for Thanksgiving.", ["11"]),
+      ("who's bringing dessert", "Your cousin Wen is bringing the pies.||That frees the oven for your side dishes.", ["Wen"])]),
+    ("i booked a cabin near Lake Tahoe for the weekend of February 7th, there are four of us and it has a hot tub",
+     "A winter weekend like that is easy to look forward to. In early February, check the road conditions and chain rules before you drive up, and pack a set of chains or confirm your tires are suitable. With four of you, it is worth deciding on meals in advance, since a grocery run once you arrive costs time and the cabin kitchen makes group cooking easy. The hot tub is wonderful after a day of snow, but keep the evening soaks to about twenty minutes at a time and drink plenty of water. Bring layers, slippers and a deck of cards, and you have the ingredients for a very good weekend of February 7th.",
+     "a cabin weekend", "cabin",
+     [("how many of us are going to the cabin", "There are four of you going.||The cabin has a hot tub for the evenings.", ["four"]),
+      ("which lake was it near", "The cabin is near Lake Tahoe, for the weekend of February 7th.", ["Lake Tahoe"])]),
+    ("my daughter Mira has her piano recital on Saturday the 22nd at 2 PM and she is playing a Chopin nocturne",
+     "How exciting for Mira. A recital is a big moment at any age, and a Chopin nocturne asks for calm and expressive playing, which is a lot to hold in front of an audience. In the days before Saturday the 22nd, encourage her to play the piece through for friends or family at least a couple of times, so the nerves of an audience feel familiar. On the day, have her warm up with scales, eat something light before the 2 PM start and arrive with time to feel the piano. Afterward, tell her one specific thing you loved about the performance, such as a phrase that made you stop and listen.",
+     "a piano recital", "recital",
+     [("what time does the recital begin", "Mira's recital is on Saturday the 22nd at 2 PM.", ["2 PM"]),
+      ("what's the piece she's playing", "She is playing a Chopin nocturne.||It asks for calm and expressive playing.", ["Chopin nocturne"])]),
+    ("i'm trying to cut down on coffee, i usually have 4 cups a day and want to get to 1 by the end of the month",
+     "A gradual cut is much kinder than stopping abruptly, which can bring headaches and a foggy afternoon. Going from 4 cups to 1 over a month works out to dropping roughly one cup every week. Start by dropping the afternoon cup first, since it is the one most likely to affect your sleep, then replace it with tea or a warm drink so the ritual stays. You can also blend half-decaf into a cup to soften the step. Drink water first thing in the morning, and keep an eye on how you feel. Many people find that their energy steadies after a week or two, once the cycle of peaks and dips fades.",
+     "cutting down on coffee", "coffee",
+     [("how many cups a day was that before", "You were having 4 cups a day, and you want to get down to 1 by the end of the month.", ["4 cups"]),
+      ("what was the target number", "You want to get down to 1 cup a day by the end of the month.", ["by the end of the month"])]),
+    ("my best friend Priya is visiting from Toronto the first week of May and i want to show her around Portland",
+     "A first visit is a good chance to see your own city freshly. In the first week of May, Portland is usually mild and green, so plan some outdoor time, such as the Japanese Garden or a wander along the waterfront. Food carts and a bakery breakfast are easy ways to taste the city without much planning. Ask Priya what she likes, whether it is bookstores, coffee, hiking or music, and build two or three highlights around that, leaving room for a slow afternoon. Keep a rainy-day backup, since May can surprise you, and save one evening for just the two of you to talk and catch up.",
+     "a friend's visit", "visit",
+     [("where is she coming from again", "Priya is coming from Toronto, the first week of May.", ["Toronto"]),
+      ("which friend is visiting", "Your best friend Priya, the first week of May.", ["Priya"])]),
+]
+
+
+# Exchange 1 of a long chat: the person asks, and the long reply states specifics (a number, a name, a place) in
+# its first sentence and in later ones. The questions ask for one of them many exchanges later.
+# (user, reply, topic, keyword, [(prompt, final, must)])
+ASSTFACT = [
+    ("how should i split a two day drive from chicago to nashville with a toddler",
+     "I'd stop in Louisville, Kentucky for the night, which splits the trip into roughly five hours on day one and about three on day two. Toddlers do best with a drive broken into short stretches, so plan a stop every ninety minutes and make the first one a real playground rather than a gas station. A quiet hotel with a pool in Louisville gives your little one a chance to burn off energy before bed. Leave in the morning right after breakfast so the longer leg falls over the nap, and keep a small bag of new stickers and board books within reach. If the day gets rough, shorten the next leg and do not worry about the schedule.",
+     "a drive to Nashville", "nashville",
+     [("which town did you suggest for the overnight stop", "I suggested Louisville, Kentucky for the night, with about five hours of driving on day one and three on day two.", ["Louisville"]),
+      ("how long did you say the first day's drive would be", "About five hours on the first day, then roughly three on the second.", ["five hours"])]),
+    ("what's a good starter set of herbs for a sunny kitchen windowsill",
+     "I'd start with basil, chives and mint, because all three grow quickly and forgive the occasional missed watering. Basil wants the most sun, so give it the spot closest to the glass, and pinch the top leaves often to keep it bushy. Chives are nearly unkillable and regrow after you snip them, which makes them a good confidence builder. Mint spreads aggressively, so keep it in its own pot, otherwise it will take over the others. Use pots with drainage holes and a saucer, and water when the top of the soil feels dry. Rosemary is worth adding later, but it dislikes soggy roots, so it prefers a slightly separate routine.",
+     "windowsill herbs", "windowsill",
+     [("which three herbs did you say to begin with", "Basil, chives and mint.||All three grow quickly and forgive a missed watering.", ["basil", "chives", "mint"]),
+      ("what was the herb i should keep in its own pot", "Mint, since it spreads and takes over the other pots.", ["mint"])]),
+    ("can you suggest a simple weeknight dinner for four that's cheap",
+     "A big pot of chickpea and spinach curry with rice comes to about $2.50 a serving and takes 35 minutes. Brown a chopped onion in oil, add two tablespoons of curry paste, then a can of chopped tomatoes, two cans of drained chickpeas and a cup of water. Simmer for fifteen minutes, then stir in a few handfuls of spinach until it wilts. Serve over rice with a spoonful of yogurt on top. It reheats well, so leftovers make tomorrow's lunch, and you can add a diced sweet potato if you want it heartier. Squeeze lemon over it right at the end for brightness.",
+     "a cheap weeknight dinner", "weeknight",
+     [("what was the cheap dinner you suggested", "A chickpea and spinach curry with rice, about $2.50 a serving and ready in 35 minutes.", ["chickpea and spinach curry"]),
+      ("how much per serving did you say it cost", "About $2.50 a serving.||It takes around 35 minutes.", ["$2.50"])]),
+    ("what should i read before visiting japan, something not a guidebook",
+     "Start with Pico Iyer's The Lady and the Monk, a quiet memoir about a year in Kyoto that helps you notice small things when you arrive. If you want something lighter, Haruki Murakami's short story collections are very approachable, and they give you a feel for modern Tokyo. For history, Donald Keene's essays are generous and clear without being heavy. I would also try Kamome Shirahama's manga Delicious in Dungeon only if you like fantasy, because it is playful and full of food. A single paperback in your bag is plenty. Read a few pages on the plane and you will arrive in a mood for the place.",
+     "reading before visiting Japan", "japan",
+     [("what was the memoir you mentioned about kyoto", "Pico Iyer's The Lady and the Monk, a quiet memoir about a year in Kyoto.", ["The Lady and the Monk"]),
+      ("who was the author of that kyoto book", "The author was Pico Iyer.||It is a quiet memoir about a year in Kyoto.", ["Pico Iyer"])]),
+    ("how many hours of sleep do teenagers need and how do i get my 15 year old to bed earlier",
+     "Teenagers need about eight to ten hours a night, and most get far less. Their body clocks shift later during adolescence, so an 11 PM bedtime feels like early evening to a 15 year old. Rather than forcing a strict lights-out, try moving the bedtime back by fifteen minutes every few nights. Agree a screens-off time with them, perhaps 9:30, and charge phones outside the bedroom. Bright light in the morning helps reset the clock, so open the curtains right away. Explain the reasons rather than ordering, since teens respond better when they are part of the plan. A calm, consistent routine usually works within a couple of weeks.",
+     "sleep for teenagers", "teenagers",
+     [("how many hours of sleep did you say teens need", "Eight to ten hours a night.||Most teenagers get far less.", ["eight to ten hours"]),
+      ("what time did you suggest for the screens to go off", "Around 9:30, with phones charging outside the bedroom.", ["9:30"])]),
+    ("what's a realistic budget for a week in lisbon, not fancy",
+     "Plan on about $1,400 for a week in Lisbon for one person, not counting the flight. A comfortable guesthouse or a small apartment runs roughly $90 a night, which comes to $630 for the week. Meals at neighborhood restaurants cost around $20 a day if you eat the lunch special, adding about $140. Transport is cheap: a 24 hour pass is about $7, so plan $50 or so for the week. Add around $150 for museums, a day trip to Sintra and a fado evening, and keep about $300 aside for coffee, snacks, souvenirs and surprises. The numbers shift in summer, when rooms cost much more.",
+     "a budget for Lisbon", "budget",
+     [("what was the nightly cost you gave for the guesthouse", "About $90 a night, which comes to $630 for the week.", ["$90"]),
+      ("what total did you suggest for lisbon", "About $1,400 for a week in Lisbon for one person, not counting the flight.", ["$1,400"])]),
+    ("how do i pick the right size ladder for painting a room with ten foot ceilings",
+     "An 8 foot stepladder is the right choice for ten foot ceilings. The rule is that your reach, standing on the second-to-top step, should land you comfortably at the ceiling line, and an 8 footer gives roughly 12 feet of reach for an average adult. Look for a ladder rated Type 1A or higher, which holds at least 300 pounds, and check that it has a wide base and a paint tray shelf. Never stand on the top step or the one below it. Place the ladder on flat, dry ground, keep your belt buckle between the rails and move it rather than leaning to the side.",
+     "a ladder for painting", "ladder",
+     [("what ladder size did you recommend", "An 8 foot stepladder.||It gives roughly 12 feet of reach for an average adult.", ["8 foot"]),
+      ("what rating should it have, you said a type", "Type 1A or higher, which holds at least 300 pounds.", ["Type 1A"])]),
+    ("is there a way to make my laptop battery last longer",
+     "Yes, the biggest change is to keep the charge between about 20 and 80 percent most of the time, since lithium cells age faster at the extremes. Many laptops have a setting that caps charging at 80 percent, which is worth switching on if you are plugged in at a desk all day. Lower the screen brightness, which is usually the largest drain, and close apps that run in the background. Avoid leaving the machine in a hot car, because heat does lasting damage. After two or three years, even good batteries lose capacity, and a replacement can be cheaper than a new laptop. A quick battery health check in your system settings tells you where yours stands.",
+     "laptop battery life", "laptop",
+     [("what range did you say to keep the charge in", "Between about 20 and 80 percent.||Lithium cells age faster at the extremes.", ["20 and 80"]),
+      ("what was the biggest drain on the battery you mentioned", "The screen brightness, which is usually the largest drain.", ["brightness"])]),
+    ("which questions should i ask when the interviewers say do you have any questions for us",
+     "A strong first question is, what does success look like in this role after six months? It shows you are thinking about results, and the answer tells you how the team measures work. A second one is, what is the biggest challenge the team is facing right now, which invites an honest answer. You can also ask how they handle feedback, what a typical week looks like and what the person before you went on to do. Avoid asking about salary in a first interview unless they raise it. Choose three questions and write them down, so you look prepared, and listen carefully to the answers because they might lead to a better follow-up.",
+     "interview questions to ask", "interview",
+     [("what was the first question you suggested asking", "What does success look like in this role after six months?", ["six months"]),
+      ("how many questions did you say to prepare", "Three, written down so you look prepared.||That also gives you something to follow up on.", ["three"])]),
+    ("how long should i soak dried beans and is it worth it",
+     "Soak them for eight to twelve hours in plenty of cold water, with about three inches of water above the beans, because they will swell to roughly double their size. It is worth doing for most varieties, since soaked beans cook faster, more evenly and are often easier to digest. If you forgot, use the quick method: cover with water, boil for two minutes, turn off the heat and let them sit for an hour. Discard the soaking water, rinse and cook in fresh water, adding salt once they begin to soften. Lentils and split peas do not need soaking at all, so you can skip it for those.",
+     "soaking dried beans", "beans",
+     [("how many hours did you say to soak them", "Eight to twelve hours in cold water.||Use about three inches of water above the beans.", ["eight to twelve hours"]),
+      ("what was the quick method for the beans", "Boil for two minutes, turn off the heat and let them sit for an hour.", ["two minutes"])]),
+    ("what's the best order to do a house deep clean so i don't redo things",
+     "Work from the top of each room to the bottom and from the back of the house to the front. That means ceilings and light fixtures first, then walls, shelves, windows and furniture, and the floors last, so any dust falling from above lands on a surface you will clean later. Do the bathrooms and kitchen with the strongest products and let sprays sit for a few minutes while you move on. Save the vacuuming and mopping for the very end. Open a window as you go. If your home is big, tackle one room at a time and finish each completely, which gives a sense of progress and avoids a pile of half-done jobs.",
+     "deep cleaning a house", "cleaning",
+     [("what was the rule on the order of cleaning", "Work from the top of each room to the bottom and from the back of the house to the front.", ["top of each room to the bottom"]),
+      ("what goes last in the clean", "The floors, vacuuming and mopping at the very end.", ["floors"])]),
+    ("how do i figure out if i should buy or rent a place, i'm in my late twenties",
+     "A common rule of thumb is to compare the cost of buying a home to renting something similar, and look for a price-to-rent ratio below about 15 to make buying attractive. Divide the home's price by a year of rent for a comparable place. If it comes out at 20 or more, renting is usually cheaper. Also consider how long you plan to stay, since transaction costs mean you generally need five years to break even. Factor in the down payment, property tax, insurance and repairs, which often add one to two percent of the home's price every year. Renting also gives you flexibility while your career and location are still changing.",
+     "buying or renting", "renting",
+     [("what ratio number did you mention for deciding", "A price-to-rent ratio below about 15 makes buying attractive, and 20 or more usually means renting is cheaper.", ["15"]),
+      ("how many years to break even did you say", "Around five years, because of transaction costs.", ["five years"])]),
+    ("what should be in a basic first aid kit for a family car",
+     "Pack a compact kit with adhesive bandages in three sizes, sterile gauze pads, medical tape, antiseptic wipes, a pair of tweezers and small scissors. Add two elastic bandages, an instant cold pack, disposable gloves and a small bottle of saline for flushing eyes. Include any personal medication, a thermometer and a pack of pain relievers. A space blanket weighs almost nothing and can be a lifesaver in cold weather. Keep the kit in the cabin rather than the trunk, since heat in the trunk ruins some supplies. Check expiry dates twice a year, replace what you have used and keep a card with emergency numbers and allergies in the lid.",
+     "a car first aid kit", "aid",
+     [("where did you say to store the kit", "In the cabin rather than the trunk, since heat in the trunk can ruin some supplies.", ["cabin"]),
+      ("how often should i check the expiry dates, you gave a number", "Check them twice a year.||Replace anything used or expired.", ["twice a year"])]),
+    ("how can i improve my posture when i work at a desk all day",
+     "Start with the setup, because it does most of the work. Place your screen so the top is at eye level, about an arm's length away, and keep your elbows at roughly 90 degrees with forearms level. Your feet should rest flat on the floor, and your lower back should be supported by the chair, so add a small rolled towel if needed. Then build in movement: stand up every thirty minutes, even for a minute, and do a couple of shoulder rolls and chest stretches. Strengthening your upper back with rows or resistance bands helps in the long run. Posture improves when you feel comfortable, so aim for position changes rather than a perfect pose.",
+     "improving desk posture", "posture",
+     [("how often did you say to stand up", "Every thirty minutes, even for a minute.||Add a couple of shoulder rolls.", ["thirty minutes"]),
+      ("where should the top of the screen be, you gave a spot", "At eye level, about an arm's length away.||Keep your elbows at roughly 90 degrees.", ["eye level"])]),
+    ("what's a simple way to start composting in a small apartment",
+     "A worm bin is the best fit for a small space. A 10 gallon plastic bin with a lid, some holes for air and a bed of shredded newspaper gives red wiggler worms a home that stays odorless when managed well. Start with a pound of worms, which you can buy online or at a garden store, and feed them vegetable scraps, coffee grounds and eggshells in small amounts, burying them under the bedding. Avoid meat, dairy, oily food and citrus peels in big quantities. The bin can live under the sink or in a closet. After about three months, you will have rich compost for your plants.",
+     "composting in an apartment", "composting",
+     [("what size bin did you suggest", "A 10 gallon plastic bin with a lid and some holes for air.", ["10 gallon"]),
+      ("what kind of worms were they", "They were red wigglers.||About a pound is enough to start the bin.", ["red wiggler"])]),
+    ("how do i figure out how much paint i need for my bedroom, it's 12 by 14 with 8 foot walls",
+     "For a 12 by 14 foot room with 8 foot walls, you need about two gallons for two coats. The perimeter is 52 feet, and multiplied by 8 feet it gives 416 square feet of wall. A gallon covers roughly 350 square feet, so one coat takes just over a gallon, and two coats take just over two. Subtract about 20 square feet for each door and 15 for each average window if you want to be exact, though most people simply round up. Buy a quart extra for touch-ups, and ask the store to tint all the cans together from one batch so the color matches.",
+     "paint for a bedroom", "paint",
+     [("how many gallons did you work out for the room", "About two gallons, for two coats.||Add a quart extra for touch-ups.", ["two gallons"]),
+      ("what was the total wall area you calculated", "416 square feet of wall.||It comes from a 52 foot perimeter times the 8 foot height.", ["416"])]),
+]
+
+
+# =============================================================================
+# SUB-SKILL 6: long chats (7-10 exchanges of base-length replies) and condensed chats (the digest path)
+# =============================================================================
+# Production keeps the last ~19,500 characters of a chat verbatim (history budget of Gemma's 16,384-token window),
+# at most 40 messages, and condenses everything older into one "Earlier in this conversation" note
+# (service/memory/context.py: the user's words, clipped at 160 characters, and an assistant reply's lead sentence
+# plus the sentences that carry a number or a name, 200 characters). The builder runs the real loop, so a chat of
+# about 21 exchanges with base-length replies shows that note by itself. These scenarios ask for something the
+# first exchanges said:
+#   long   7-10 exchanges, 2,500-9,000 characters, everything verbatim
+#   digest 21-23 exchanges, the anchor exchange sits in the condensed note; the fact asked for must survive in the
+#          note's text (checked on the captured request), and the answer uses only that.
+# Anchors: a fact the USER stated in exchange 1, a fact the ASSISTANT stated in its first long reply, "what was the
+# first thing I asked", a personal fact never said (broad recall, then an honest "not in this chat, not saved"),
+# and a suggestion the assistant never made (answered from the conversation, with what was covered).
+# A position claim ("first message", "near the start") is made only when the anchor really sits there; any other
+# position gets a position-neutral lead. meta.anchor_pos records the anchor's exchange index (0 = the first).
+USER_LEADS_FIRST = ["", "", "You mentioned it near the start of our chat. ", "That came up in your first message. "]
+ASST_LEADS_FIRST = ["", "", "That was in my first answer. ", "I said that near the start. "]
+USER_LEADS_NEAR = ["", "", "You mentioned it near the start of our chat. ", "You said so early in our chat. "]
+ASST_LEADS_NEAR = ["", "", "I said that near the start. ", "I said that early in our chat. "]
+USER_LEADS_ANY = ["", "", "You mentioned it earlier in our chat. ", "That came up earlier. "]
+ASST_LEADS_ANY = ["", "", "I said that earlier in our chat. ", "That was in one of my earlier answers. "]
+
+
+def leads_for(pos, user):
+    """The lead-in pool whose position claim is true for an anchor at exchange index `pos`."""
+    if pos == 0:
+        return USER_LEADS_FIRST if user else ASST_LEADS_FIRST
+    if pos == 1:
+        return USER_LEADS_NEAR if user else ASST_LEADS_NEAR
+    return USER_LEADS_ANY if user else ASST_LEADS_ANY
+
+
+def _core_tail(final, digest):
+    """"core||tail": the core states the asked fact from words the condensed note keeps; the tail adds a detail from
+    the earlier reply, so it is used only when the chat is verbatim."""
+    core, _, tail = final.partition("||")
+    return core if (digest or not tail) else core + " " + tail
+
+
+def _lowfirst_keep(s):
+    return s if len(s) > 1 and (s[1].isupper() or s[1].isdigit()) else s[:1].lower() + s[1:]
+
+
+def _long_fillers(rng, k, exclude_users, needles=()):
+    """k long exchanges, the least-used first; none mentions any of `needles`."""
+    bk = banks()
+    pool = bk["longx"] * 2 + bk["long"]
+    seen, cands = set(exclude_users), []
+    for f in pool:
+        if f[0] in seen:
+            continue
+        seen.add(f[0])
+        if any(_has(f[0] + " " + f[1], nd) for nd in needles):
+            continue
+        cands.append(f)
+    out, used = [], set()
+    while len(out) < k:
+        left = [f for f in cands if f[0] not in used]
+        if not left:
+            return None
+        low = min(_FUSED.get(f[0], 0) for f in left)
+        f = rng.choice([x for x in left if _FUSED.get(x[0], 0) == low])
+        used.add(f[0])
+        _FUSED[f[0]] = _FUSED.get(f[0], 0) + 1
+        out.append(dict(turn(f[0], f[1]), topic=f[2], keys=[f[3]], filler=True))
+    return out
+
+
+def long_history(rng, anchors, pos, n_total, needles=()):
+    fill = _long_fillers(rng, n_total - len(anchors), {a["user"] for a in anchors}, needles)
+    if fill is None:
+        return None
+    return fill[:pos] + list(anchors) + fill[pos:]
+
+
+def mkl(rng, prompt, now, w, steps, notes, hist, kind, digest, **rules):
+    sc = sc_(rng, prompt, now, w, steps, notes, hist, kind, **rules)
+    sc.long_mode = "digest" if digest else "long"
+    return sc
+
+
+def _seq_sizes(rng, digest):
+    # 41+ messages: production keeps the newest 40 verbatim, so exchanges 0..n-21 are condensed
+    return rng.choice([21, 22, 22, 23, 24]) if digest else rng.choice([8, 9, 9, 10, 10])
+
+
+def _anchor_pos(rng, digest, n):
+    return rng.randint(0, n - 21) if digest else rng.choice([0, 0, 0, 0, 1])
+
+
+def l_user_fact(i, digest):
+    def make(rng):
+        u, r, topic, kw, qa = USERFACT[i % len(USERFACT)]
+        prompt, final, must = qa[(i // len(USERFACT)) % len(qa)]
+        anchor = dict(turn(u, r), topic=topic, keys=[kw], filler=False, kind="ufact")
+        n = _seq_sizes(rng, digest)
+        pos = _anchor_pos(rng, digest, n)
+        hist = long_history(rng, [anchor], pos, n, needles=must)
+        if hist is None:
+            return None
+        now, w = base(rng)
+        final = fin(rng, rng.choice(leads_for(pos, True)) + _core_tail(final, digest))
+        return mkl(rng, prompt, now, w, [Final(final)], "a fact the person stated in an early message of a LONG chat: answered from the conversation, no call",
+                   hist, "l_user", digest, no_call=True, must=must, anchor=pos, anchor_user=must, min_final=1)
+    return make
+
+
+def l_asst_fact(i, digest):
+    def make(rng):
+        u, r, topic, kw, qa = ASSTFACT[i % len(ASSTFACT)]
+        cands = [x for x in qa if not digest or all(_has(digest_line("assistant", r), n) for n in x[2])]
+        if not cands:
+            return None
+        prompt, final, must = cands[(i // len(ASSTFACT)) % len(cands)]
+        anchor = dict(turn(u, r), topic=topic, keys=[kw], filler=False, kind="afact")
+        n = _seq_sizes(rng, digest)
+        pos = _anchor_pos(rng, digest, n)
+        hist = long_history(rng, [anchor], pos, n, needles=must)
+        if hist is None:
+            return None
+        now, w = base(rng)
+        final = fin(rng, rng.choice(leads_for(pos, False)) + _core_tail(final, digest))
+        return mkl(rng, prompt, now, w, [Final(final)], "a fact the ASSISTANT stated in its first long reply of a LONG chat: answered from the conversation, no call",
+                   hist, "l_asst", digest, no_call=True, must=must, anchor=pos, anchor_asst=must, min_final=1)
+    return make
+
+
+FIRST_Q = ["what was the first thing i asked you in this chat", "remind me what i opened this chat with", "what was the very first question in this chat",
+           "which question started this whole conversation", "what was asked first, way back", "what was the opening question of this chat"]
+
+
+def l_first(i, digest):
+    def make(rng):
+        # the first exchange is a plain question from the long bank (or an assistant-fact seed), never a statement
+        pool = [(f[0], f[1], f[2], f[3]) for f in banks()["longx"]] + [(a[0], a[1], a[2], a[3]) for a in ASSTFACT]
+        f = pool[(i * 7 + rng.randrange(len(pool))) % len(pool)]
+        if len(f[0]) > 150:
+            return None
+        anchor = dict(turn(f[0], f[1]), topic=f[2], keys=[f[3]], filler=True, kind="first")
+        fill = _long_fillers(rng, _seq_sizes(rng, digest) - 1, {f[0]}, needles=(f[3],))
+        if fill is None:
+            return None
+        seq = [anchor] + fill
+        if not _topic_ok(seq):
+            return None
+        now, w = base(rng)
+        prompt = rng.choice(FIRST_Q)
+        final = fin(rng, f"You started by asking about {f[2]}.", f"The first thing you asked was about {f[2]}.", f"Your opening question was about {f[2]}.")
+        others = [e["keys"][0] for e in seq[1:]]
+        return mkl(rng, prompt, now, w, [Final(final)], "'what was the first thing I asked' in a LONG chat: the first user message, found in the history",
+                   seq, "l_first", digest, no_call=True, must=[f[3]], must_not=others, anchor=0, anchor_user=[f[0]], min_final=1)
+    return make
+
+
+UNSTORED_L = [
+    ("what's my gym locker number", "locker", "your locker number"),
+    ("which airline am i flying with", "airline", "the airline you're flying with"),
+    ("what's my passport expiry date", "passport", "your passport's expiry date"),
+    ("what's my doctor's name", "doctor", "your doctor's name"),
+    ("what's my sister's address", "sister", "your sister's address"),
+    ("which hotel did i book", "hotel", "the hotel you booked"),
+    ("what's my mother's maiden name", "maiden", "your mother's maiden name"),
+    ("what's my employee id", "employee", "your employee ID"),
+    ("what do i owe on my student loan", "loan", "your student loan balance"),
+    ("what's my vet's phone number", "vet", "your vet's number"),
+]
+# Every never-said final acknowledges it in the form distill/choose.py's NONE_ACK recognises ("haven't mentioned",
+# "haven't talked about", "haven't told me", ...), so the SFT picker and the GRPO reward judge it the same way.
+NEVER_USER_FINALS = [
+    "You haven't mentioned {x} in this chat, and I don't have it saved either. If you tell me, I'll hold onto it.",
+    "We haven't talked about {x} in this chat, and there's nothing saved about it. Tell me and I'll keep it for next time.",
+    "You haven't told me {x} in this chat, and nothing is saved either. If you share it, I'll remember it.",
+]
+
+
+def l_never_user(i, digest):
+    def make(rng):
+        prompt, stem, x = UNSTORED_L[i % len(UNSTORED_L)]
+        hist = long_history(rng, [], 0, _seq_sizes(rng, digest), needles=(stem,))
+        if hist is None:
+            return None
+        now, w = base(rng)
+        w.memories = rng.sample(OTHER_MEM, 2)
+        text = w.handle("recall", {"query": stem})
+        assert "No matching memory" in text, text
+        final = fin(rng, *[t.format(x=x) for t in NEVER_USER_FINALS])
+        return mkl(rng, prompt, now, w, [[Call("recall", query=stem)], Final(final)],
+                   "a personal fact never said in a LONG chat and not stored: one broad recall, then an honest 'not in this chat, not saved', no invention",
+                   hist, "l_never_user", digest, first="recall", args={"query": stem}, min_final=40, anchor=0, stem=stem, must=["this chat"])
+    return make
+
+
+NEVER_ASST = [
+    ("which hotel did you recommend", ("hotel",), "a hotel"),
+    ("what was the plumber you mentioned", ("plumber",), "a plumber"),
+    ("what airline did you suggest", ("airline",), "an airline"),
+    ("which brand of laptop did you point me to", ("laptop",), "a laptop brand"),
+    ("what was the website you told me about", ("website", "www"), "a website"),
+    ("which restaurant did you suggest for tonight", ("restaurant",), "a restaurant"),
+    ("what was the movie you recommended", ("movie", "film"), "a movie"),
+    ("which app did you say i should download", ("download", "app "), "an app"),
+    ("what was that podcast you suggested", ("podcast",), "a podcast"),
+    ("who was the author you mentioned", ("author",), "an author"),
+]
+NEVER_ASST_FINALS = [
+    "We haven't talked about {x} in this chat, so I haven't recommended one. We've covered {t}.",
+    "I haven't mentioned {x} here, so there's nothing to point you back to. So far we've talked about {t}.",
+    "I don't think I mentioned {x}. What we've been over is {t}, among other things.",
+]
+
+
+def l_never_asst(i, digest):
+    def make(rng):
+        prompt, absent, x = NEVER_ASST[i % len(NEVER_ASST)]
+        hist = long_history(rng, [], 0, _seq_sizes(rng, digest), needles=absent)
+        if hist is None:
+            return None
+        now, w = base(rng)
+        picks = rng.sample(hist, 3)
+        topics = join([e["topic"] for e in picks])
+        final = fin(rng, *[t.format(x=x, t=topics) for t in NEVER_ASST_FINALS])
+        return mkl(rng, prompt, now, w, [Final(final)], "something the assistant never suggested, in a LONG chat: a plain 'I didn't', with what was covered",
+                   hist, "l_never_asst", digest, no_call=True, must=[e["keys"][0] for e in picks], min_final=1, anchor=0,
+                   absent=absent)
+    return make
+
+
+
+
+def _interleave(items, key, rng):
+    """Round-robin over the groups (largest first), so consecutive scenarios rarely share a kind. The step thoughts
+    (thinking.py) come from a few templates per kind, and build.fix_adjacent can only re-phrase a thought that equals a
+    neighbour's when the neighbours differ in kind."""
+    groups: dict = {}
+    for it in items:
+        groups.setdefault(key(it), []).append(it)
+    for g in groups.values():
+        rng.shuffle(g)
+    order = sorted(groups, key=lambda k: (-len(groups[k]), str(k)))
+    out, i = [], 0
+    while any(groups[k] for k in order):
+        for k in order:
+            if groups[k]:
+                out.append(groups[k].pop())
+        i += 1
+    return out
+
+
+# =============================================================================
 # the family
 # =============================================================================
 def fam_session(rng):
@@ -2241,6 +2937,11 @@ def fam_session(rng):
         (s4_first, 5), (s4_cover, 5), (s4_before, 3), (s4_goback, 5), (lambda i: s4_didask(True), 2), (lambda i: s4_didask(False), 2),
         # 5. stored facts
         (s5_plain, 10), (s5_a_then_b, 3), (s5_a_again, 2), (s5_told, 5), (s5_missing, 3),
+        # 6. long chats (everything verbatim) and condensed chats (the "Earlier in this conversation" note)
+        (lambda i: l_user_fact(i, False), 12), (lambda i: l_asst_fact(i, False), 12), (lambda i: l_first(i, False), 8),
+        (lambda i: l_never_user(i, False), 6), (lambda i: l_never_asst(i, False), 6),
+        (lambda i: l_user_fact(i + 7, True), 18), (lambda i: l_asst_fact(i + 5, True), 15), (lambda i: l_first(i + 3, True), 12),
+        (lambda i: l_never_user(i + 4, True), 4), (lambda i: l_never_asst(i + 5, True), 4),
     ]
     for maker, n in plan:
         got, tries = 0, 0
@@ -2250,7 +2951,7 @@ def fam_session(rng):
             if sc is not None:
                 out.append(sc)
                 got += 1
-    rng.shuffle(out)
+    out = _interleave(out, lambda sc: "digest" if getattr(sc, "long_mode", None) == "digest" else sc.kind, rng)
     if os.environ.get("SESSION_RECALL_STATS"):
         from collections import Counter
         lens = Counter(len(sc.history) for sc in out)

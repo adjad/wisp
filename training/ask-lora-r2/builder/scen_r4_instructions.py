@@ -26,6 +26,10 @@ Ten sub-skills, every rule checked mechanically in ``rules_ok`` before a scenari
 10. standing "just do it" does not lift safety: sends still show their card, an ambiguous name is still
     asked about, a clear still runs only with the scope the person gave.
 
+11. long chats (round 4 review) a wish for no questions, plain sentences, casual talk, bullets, one sentence or Spanish is set
+    in exchange 1 of 8-10 exchanges of long replies (every earlier reply obeys it); the last turn is general knowledge or a
+    tool read and still obeys it.
+
 Seeded sessions use scen_r3_followup.turn; the host trims history the way production does, so every
 scenario keeps its earlier turns under ~9,000 characters with the wish 2-8 exchanges back.
 """
@@ -46,7 +50,7 @@ from replies import clock, join
 from scen_r2_act import iso, style
 from scen_r3_chat import BANNED_OPENERS, CLOSERS, EMOJI
 from scen_r3_followup import at_, blank, nextday, turn
-from world import Email, Event, Msg, Reminder
+from world import BriefItem, Email, Event, Msg, Note, Reminder
 
 FAMILY = "instructions_r4"
 WRITE_ALLOW_R4 = {FAMILY: frozenset({"add_reminder", "add_calendar_event", "update_reminder", "update_event",
@@ -242,8 +246,8 @@ def rules_ok(c: Ctx) -> str | None:
         return e
     if sum(len(t["user"]) + len(t["assistant"]) for t in c.hist) > HIST_CHARS_MAX:
         return "history too long"
-    if len(c.hist) > 8:
-        return "history over 8 exchanges"
+    if len(c.hist) > 10:
+        return "history over 10 exchanges"
     for name, fn in getattr(c.sc, "rules", []):
         e = fn(c)
         if e:
@@ -426,6 +430,139 @@ def agenda_prose(events) -> str:
 
 def fin(rng, *opts):
     return rng.choice(list(opts))
+
+
+# ---- get_my_day_plan (the Brief as a source) ------------------------------------------------------------
+# A time-scoped question ("what's on tomorrow", "anything before 10") reads the person's Brief through
+# get_my_day_plan, not the calendar alone; the final names what the PLAN lists (events, reminders, and any dated
+# email, text or note the world carries), parsed from the real tool result so a Brief item can never be dropped.
+# Explicit calendar asks ("events only", "just the calendar") stay get_upcoming(calendar_only=True).
+_PLAN_ROW = re.compile(r"^- (all day|\d{1,2}(?::\d\d)? [ap]m) · (.+) \((calendar|reminder|email|text|note)\)$")
+_SRC_WORD = {"reminder": "reminder", "email": "email", "text": "text", "note": "note"}
+
+
+class PlanItem:
+    def __init__(self, label, title, src):
+        self.title, self.src = title.strip(), src
+        if label == "all day":
+            self.t, self.minutes = None, None
+        else:
+            m = re.fullmatch(r"(\d{1,2})(?::(\d\d))? ([ap])m", label)
+            self.minutes = (int(m[1]) % 12 + (12 if m[3] == "p" else 0)) * 60 + int(m[2] or 0)
+            self.t = f"{int(m[1])}{':' + m[2] if m[2] else ''} {m[3].upper()}M"
+
+    @property
+    def when(self):
+        return self.t or "all day"
+
+    @property
+    def label(self):
+        """The title as a list line shows it: a Brief item says where it came from."""
+        return self.title if self.src == "calendar" else f"{self.title} ({_SRC_WORD[self.src]})"
+
+    @property
+    def prose(self):
+        at = f" at {self.t}" if self.t else ""
+        if self.src == "calendar":
+            return f"{self.title}{at}" if self.t else f"{self.title} all day"
+        if self.src == "reminder":
+            return f"a reminder to {self.title[:1].lower() + self.title[1:]}{at}"
+        return f"{self.title} (from your {'texts' if self.src == 'text' else 'notes' if self.src == 'note' else 'email'}){at}"
+
+    @property
+    def noun(self):
+        return {"calendar": "event", "reminder": "reminder"}.get(self.src, "item")
+
+
+def plan_items(w, day="tomorrow"):
+    """The time-bound lines of get_my_day_plan(day) for this world, in the order the tool prints them."""
+    return parse_plan(str(w.handle("get_my_day_plan", {"day": day})))
+
+
+def parse_plan(text):
+    out, section = [], ""
+    for ln in text.splitlines():
+        if not ln.startswith("- "):
+            section = ln
+            continue
+        m = _PLAN_ROW.match(ln)
+        if m and section.startswith("Time-bound"):
+            out.append(PlanItem(m[1], m[2], m[3]))
+    return out
+
+
+def plan_prose(items):
+    return join(i.prose for i in items)
+
+
+def plan_must(items):
+    """r_must patterns: every title and every clock time the plan lists."""
+    return [re.escape(i.title) for i in items] + [re.escape(i.t) for i in items if i.t]
+
+
+def plan_call(day="tomorrow"):
+    return Call("get_my_day_plan", day=day)
+
+
+# A dated to-do the Brief read from the person's texts, notes or mail (world.BriefItem): the plan lists it beside the
+# calendar, and the final names it. {d} is the weekday of the day asked about.
+BRIEF_BANK = [  # (title, source, who, source text, timed)
+    ("Bring dessert to dinner at Mom's", "messages", "Mom", "can you bring a dessert to dinner at my place on {d}? the cousins are coming", False),
+    ("Bring the folding chairs to Theo's", "messages", "Theo", "bring the folding chairs over on {d}, we're short", False),
+    ("Pick up the cake for Maya's birthday", "messages", "Maya", "don't forget the cake for my birthday on {d}!", False),
+    ("Call the landlord about the heater", "notes", "", "call the landlord about the heater on {d}", False),
+    ("Return the borrowed drill", "notes", "", "return the borrowed drill on {d}", False),
+    ("Finish Problem Set 5, Linear Algebra", "mail", "Canvas", "Problem Set 5 is due {d} at 11:59 PM", True),
+    ("Submit the lab writeup", "mail", "Prof. Okafor", "the lab writeup is due {d} at 11:59 PM", True),
+]
+
+
+_ALSO_ROW = re.compile(r"^- [^·]+?(?:, due (?P<t>\d{1,2}(?::\d\d)? [AP]M))? · (?P<title>.+) \((?P<src>text|email|note)(?: from [^)]+)?\)$")
+
+
+def brief_also(result):
+    """(title, source, due clock or None) of every line under get_upcoming's "Also from your Brief" block."""
+    out, on = [], False
+    for ln in str(result).splitlines():
+        if ln.startswith("*Also from your Brief*"):
+            on = True
+        elif on and ln.startswith("- "):
+            m = _ALSO_ROW.match(ln)
+            if m:
+                out.append((m["title"], m["src"], m["t"]))
+        elif on and not ln.strip():
+            on = False
+    return out
+
+
+def brief_pack(rng, now, day, sources=("messages", "notes", "mail")):
+    """(BriefItem, source object) for a Brief to-do due on `day`, or None."""
+    pool = [b for b in BRIEF_BANK if b[1] in sources]
+    title, src, who, text, timed = rng.choice(pool)
+    wd = day.strftime("%A")
+    text = text.format(d=wd)
+    due = at_(day, 23, 59)
+    if src == "messages":
+        ref = Msg(who, who, text, now - D(hours=rng.randint(10, 30)))
+    elif src == "notes":
+        ref = Note(title, text, now - D(days=1))
+    else:
+        ref = Email(who, "noreply@school.example.com", f"{title} due {wd}", now - D(hours=rng.randint(10, 30)), text, False, False)
+    return BriefItem(title, due, src, who, timed, ref), ref
+
+
+def attach_brief(w, pack):
+    item, ref = pack
+    w.brief.append(item)
+    {"messages": w.messages, "notes": w.notes, "mail": w.emails}[item.source].append(ref)
+
+
+def maybe_brief(rng, w, now, day, p=0.4, sources=("messages", "notes", "mail")):
+    """With probability p, give the world one Brief to-do due on `day`. The rng is drawn either way."""
+    take = rng.random() < p
+    pack = brief_pack(rng, now, day, sources)
+    if take:
+        attach_brief(w, pack)
 
 
 # =============================================================================
@@ -814,16 +951,21 @@ def s1_agenda_one(i):
         now, w = world(rng, hour=rng.choice([7, 8, 21]))
         evs = make_events(rng, now, tomorrow(now), rng.choice([2, 3]))
         w.events = evs
+        maybe_brief(rng, w, now, tomorrow(now))
         ask = pick(rng, ["what's on tomorrow, one sentence please", "in one sentence, what do i have tomorrow",
                          "give me tomorrow's schedule in a single sentence", "tomorrow's plans in just one sentence",
                          "one sentence only: what's lined up tomorrow"])
-        final = fin(rng, f"Tomorrow you have {agenda_prose(evs)}.", f"You have {agenda_prose(evs)} tomorrow.",
-                    f"Tomorrow holds {agenda_prose(evs)}.", f"On tomorrow's schedule: {agenda_prose(evs)}.",
-                    f"Lined up for tomorrow: {agenda_prose(evs)}.")
-        return mk(style(rng, ask), now, w, [[Call("get_upcoming", period="tomorrow")], Final(final)],
-                  "length cap: one sentence, every event with its time",
-                  rules=[r_sentences(1), r_calls([("get_upcoming", {"period": "tomorrow"})]),
-                         r_must(*[re.escape(e.title) for e in evs], *[re.escape(clock(e.start)) for e in evs])])
+        items = plan_items(w)
+        if not items:
+            return None
+        prose = plan_prose(items)
+        final = fin(rng, f"Tomorrow you have {prose}.", f"You have {prose} tomorrow.",
+                    f"Tomorrow holds {prose}.", f"On tomorrow's plan: {prose}.",
+                    f"Lined up for tomorrow: {prose}.")
+        return mk(style(rng, ask), now, w, [[plan_call()], Final(final)],
+                  "length cap: one sentence, every item of tomorrow's plan with its time (time-scoped asks read the Brief)",
+                  rules=[r_sentences(1), r_calls([("get_my_day_plan", {"day": "tomorrow"})]),
+                         r_must(*plan_must(items))])
     return make
 
 
@@ -956,12 +1098,16 @@ def s2_before(i):
         now, w = world(rng, hour=rng.choice([7, 8, 21]))
         evs = make_events(rng, now, tomorrow(now), rng.choice([2, 3]), lo=9, hi=19)
         w.events = evs
-        first = evs[0]
+        maybe_brief(rng, w, now, tomorrow(now), sources=("mail",))
+        timed = [x for x in plan_items(w) if x.t]
+        if not timed:
+            return None
+        first = timed[0]
         yes = i % 2 == 0
         if yes:
-            limit_h = first.start.hour + rng.choice([1, 2, 3])
+            limit_h = first.minutes // 60 + rng.choice([1, 2, 3])
         else:
-            limit_h = first.start.hour - rng.choice([1, 2])
+            limit_h = first.minutes // 60 - rng.choice([1, 2])
             if limit_h < 8:
                 return None
         label = "noon" if limit_h == 12 else clk_word(limit_h)
@@ -972,19 +1118,19 @@ def s2_before(i):
             ask = pick(rng, [f"just yes or no: anything before {label} tomorrow?", f"yes or no only, anything on before {label} tomorrow"])
             final = "Yes." if yes else "No."
         else:
-            final = f"Yes, you have {ev_line(first)}." if yes else f"No, your first event tomorrow is {ev_line(first)}."
+            final = f"Yes, you have {first.prose}." if yes else f"No, your first {first.noun} tomorrow is {first.prose}."
 
         def agrees(c):
-            rows = time_minutes(c.res)
+            rows = [(x.minutes, x.title) for x in parse_plan(c.res) if x.t]
             truth = any(m < limit_h * 60 for m, _ in rows)
             return None if (c.final.startswith("Yes")) == truth and c.final.split()[0].strip(",.") in ("Yes", "No") \
                 else f"final {c.final!r} but truth={truth}"
         rules = [r_pred("starts yes/no", lambda c: None if re.match(r"(Yes|No)\b", c.final) else "no yes/no first"),
-                 r_pred("agrees with result", agrees), r_calls([("get_upcoming", {"period": "tomorrow"})])]
+                 r_pred("agrees with result", agrees), r_calls([("get_my_day_plan", {"day": "tomorrow"})])]
         rules.append(r_pred("only", lambda c: None if re.fullmatch(r"(Yes|No)\.", c.final.strip()) else "not only yes/no") if only
                      else r_sentences(1))
-        return mk(style(rng, ask), now, w, [[Call("get_upcoming", period="tomorrow")], Final(final)],
-                  "answer first: Yes/No agrees with the schedule" + (", and nothing else" if only else ", then the fact"),
+        return mk(style(rng, ask), now, w, [[plan_call()], Final(final)],
+                  "answer first: Yes/No agrees with tomorrow's plan" + (", and nothing else" if only else ", then the fact"),
                   rules=rules)
     return make
 
@@ -1059,14 +1205,18 @@ def s3_bullets(i):
         now, w = world(rng, hour=rng.choice([7, 8, 21]))
         evs = make_events(rng, now, tomorrow(now), rng.choice([2, 3]))
         w.events = evs
+        maybe_brief(rng, w, now, tomorrow(now))
         ask = pick(rng, ["list tomorrow's schedule as bullet points", "tomorrow's plan as a bulleted list please",
                          "bullets only: what's on tomorrow"])
-        final = "\n".join(f"- {e.title}: {clock(e.start)}" for e in evs)
-        n = len(evs)
-        return mk(style(rng, ask), now, w, [[Call("get_upcoming", period="tomorrow")], Final(final)],
-                  "format: a bulleted list, every line a bullet, one per event",
+        items = plan_items(w)
+        if not items:
+            return None
+        final = "\n".join(f"- {x.label}: {x.when}" for x in items)
+        n = len(items)
+        return mk(style(rng, ask), now, w, [[plan_call()], Final(final)],
+                  "format: a bulleted list, every line a bullet, one per item of tomorrow's plan",
                   rules=[r_pred("all bullets", lambda c: None if all_bullets(c.final) and len(lines(c.final)) == n else "not just n bullets"),
-                         r_must(*[re.escape(e.title) for e in evs], *[re.escape(clock(e.start)) for e in evs])])
+                         r_must(*plan_must(items))])
     return make
 
 
@@ -1075,18 +1225,22 @@ def s3_numbered_day(i):
         now, w = world(rng, hour=rng.choice([7, 8, 20]))
         evs = make_events(rng, now, tomorrow(now), rng.choice([2, 3]))
         w.events = evs
+        maybe_brief(rng, w, now, tomorrow(now))
         ask = pick(rng, ["give me tomorrow as a numbered list in time order", "number my plans for tomorrow, earliest first"])
-        final = "\n".join(f"{k}. {clock(e.start)}: {e.title}" for k, e in enumerate(evs, 1))
+        items = plan_items(w)
+        if not items:
+            return None
+        final = "\n".join(f"{k}. {x.when}: {x.label}" for k, x in enumerate(items, 1))
 
         def numbered(c):
             ls = lines(c.final)
             for k, l in enumerate(ls, 1):
                 if not l.startswith(f"{k}. "):
                     return f"line {k} is {l!r}"
-            return None if len(ls) == len(evs) else "wrong line count"
-        return mk(style(rng, ask), now, w, [[Call("get_upcoming", period="tomorrow")], Final(final)],
-                  "format: numbered 1..n in time order", rules=[r_pred("numbered", numbered),
-                                                               r_must(*[re.escape(e.title) for e in evs])])
+            return None if len(ls) == len(items) else "wrong line count"
+        return mk(style(rng, ask), now, w, [[plan_call()], Final(final)],
+                  "format: numbered 1..n in time order, one per item of tomorrow's plan", rules=[r_pred("numbered", numbered),
+                                                               r_must(*plan_must(items))])
     return make
 
 
@@ -1114,14 +1268,18 @@ def s3_no_list(i):
         now, w = world(rng, hour=rng.choice([7, 8, 20]))
         evs = make_events(rng, now, tomorrow(now), 3, lo=8, hi=20)
         w.events = evs
+        maybe_brief(rng, w, now, tomorrow(now), p=0.25)
         ask = pick(rng, ["no list, just tell me what's on tomorrow", "what's on tomorrow? no bullets, talk it through",
                          "tomorrow's schedule in plain sentences, no list"])
-        mid = ", ".join(f"then {ev_line(e)}" for e in evs[1:-1])
-        final = f"Tomorrow starts with {ev_line(evs[0])}, {mid}, and ends with {ev_line(evs[-1])}."
-        return mk(style(rng, ask), now, w, [[Call("get_upcoming", period="tomorrow")], Final(final)],
+        items = plan_items(w)
+        if len(items) < 3:
+            return None
+        mid = ", ".join(f"then {x.prose}" for x in items[1:-1])
+        final = f"Tomorrow starts with {items[0].prose}, {mid}, and ends with {items[-1].prose}."
+        return mk(style(rng, ask), now, w, [[plan_call()], Final(final)],
                   "format: prose, no list lines even though several items would normally be bulleted",
                   rules=[r_pred("no list", lambda c: None if not has_bullets(c.final) and "\n" not in c.final.strip() else "list lines"),
-                         r_must(*[re.escape(e.title) for e in evs], *[re.escape(clock(e.start)) for e in evs])])
+                         r_must(*plan_must(items))])
     return make
 
 
@@ -1194,12 +1352,23 @@ def s4_events_only(i):
         w.reminders = [Reminder(rem_title, at_(tomorrow(now), 17))]
         ask = pick(rng, ["what's on tomorrow? events only, skip the reminders", "just calendar events tomorrow, leave out reminders",
                          "tomorrow's events, no reminders please"])
+        # half the instances always carry a Brief item (so the calendar-only read that appends it, and the final that
+        # mentions it, are in the data); the rest draw one at random
+        maybe_brief(rng, w, now, tomorrow(now), p=1.0 if i % 2 == 0 else 0.4)
         final = fin(rng, f"Tomorrow you have {agenda_prose(evs)}.", f"On the calendar tomorrow: {agenda_prose(evs)}.",
                     f"Your events tomorrow are {agenda_prose(evs)}.")
+        # an explicit calendar ask stays get_upcoming; the dated Brief items it appends are mentioned, not dropped
+        also = brief_also(w.handle("get_upcoming", {"period": "tomorrow", "calendar_only": True}))
+        if i % 2 == 0 and not also:
+            return None
+        for b in also:
+            final += " " + {"text": f"Separately, a text mentions “{b[0]}” for tomorrow.",
+                            "note": f"Separately, your notes have “{b[0]}” for tomorrow.",
+                            "email": f"Separately, an email has “{b[0]}”" + (f", due {b[2]}." if b[2] else " for tomorrow.")}[b[1]]
         return mk(style(rng, ask), now, w, [[Call("get_upcoming", period="tomorrow", calendar_only=True)], Final(final)],
                   "negative constraint: events only; the reminder in the world is left out",
                   rules=[r_calls([("get_upcoming", {"period": "tomorrow", "calendar_only": True})]), r_never("remind", re.escape(rem_title)),
-                         r_must(*[re.escape(e.title) for e in evs])])
+                         r_must(*[re.escape(e.title) for e in evs], *[re.escape(b[0]) for b in also])])
     return make
 
 
@@ -1233,18 +1402,22 @@ def s4_skip_part(i):
         now, w = wx_world(rng, hour=rng.choice([7, 8, 20]))
         evs = make_events(rng, now, tomorrow(now), rng.choice([2, 3]))
         w.events = evs
+        maybe_brief(rng, w, now, tomorrow(now), sources=("messages", "notes"))
         k = rng.choice([2, 3])
         w.emails = mail(rng, now, k)
         w.emails.sort(key=lambda m: m.when, reverse=True)
         senders = join(m.sender for m in w.emails)
         ask = pick(rng, ["quick rundown for tomorrow: schedule, weather and unread mail, but skip the weather part",
                          "give me tomorrow's schedule and my unread mail, skip the weather part"])
-        final = fin(rng, f"Tomorrow you have {agenda_prose(evs)}. Your unread mail is from {senders}.",
-                    f"On tomorrow's schedule: {agenda_prose(evs)}. You also have unread mail from {senders}.")
-        return mk(style(rng, ask), now, w, [[Call("get_upcoming", period="tomorrow"), Call("view_emails", unread=True, count=20)], Final(final)],
+        items = plan_items(w)
+        if not items:
+            return None
+        final = fin(rng, f"Tomorrow you have {plan_prose(items)}. Your unread mail is from {senders}.",
+                    f"On tomorrow's plan: {plan_prose(items)}. You also have unread mail from {senders}.")
+        return mk(style(rng, ask), now, w, [[plan_call(), Call("view_emails", unread=True, count=20)], Final(final)],
                   "negative constraint: the part the person ruled out (the weather) is neither fetched nor mentioned",
-                  rules=[r_calls([("get_upcoming", {}), ("view_emails", {})]), r_none_of("get_weather"),
-                         r_never(r"weather|rain|forecast|°|sunny|cloud"), r_must(*[re.escape(e.title) for e in evs])])
+                  rules=[r_calls([("get_my_day_plan", {}), ("view_emails", {})]), r_none_of("get_weather"),
+                         r_never(r"weather|rain|forecast|°|sunny|cloud"), r_must(*plan_must(items))])
     return make
 
 
@@ -1518,14 +1691,19 @@ def s7_sched_weather(i):
         now, w = wx_world(rng, hour=rng.choice([7, 8, 20]))
         evs = make_events(rng, now, tomorrow(now), rng.choice([2, 3]))
         w.events = evs
+        maybe_brief(rng, w, now, tomorrow(now))
         d = weather_day(w)
         ask = pick(rng, ["what's my first thing tomorrow and what's the weather like", "tell me tomorrow's first event, and also the forecast",
                          "first event tomorrow plus the weather, both please"])
         rain = f", with {'an' if d[4] == 80 else 'a'} {d[4]}% chance of rain" if d[4] else ", and no rain is expected"
-        final = f"Your first event tomorrow is {ev_line(evs[0])}. The forecast is {d[3].lower()}, high {d[1]}°F and low {d[2]}°F{rain}."
-        return mk(style(rng, ask), now, w, [[Call("get_upcoming", period="tomorrow"), Call("get_weather", location="Portland,OR", period="tomorrow")], Final(final)],
-                  "several parts: schedule and weather, both read and both answered",
-                  rules=[r_calls([("get_upcoming", {}), ("get_weather", {})]), r_must(re.escape(evs[0].title), re.escape(clock(evs[0].start)),
+        items = plan_items(w)
+        if not items:
+            return None
+        first = next((x for x in items if x.t), items[0])      # the first thing on the clock
+        final = f"Your first {first.noun} tomorrow is {first.prose}. The forecast is {d[3].lower()}, high {d[1]}°F and low {d[2]}°F{rain}."
+        return mk(style(rng, ask), now, w, [[plan_call(), Call("get_weather", location="Portland,OR", period="tomorrow")], Final(final)],
+                  "several parts: tomorrow's plan and weather, both read and both answered",
+                  rules=[r_calls([("get_my_day_plan", {}), ("get_weather", {})]), r_must(re.escape(first.title), *([re.escape(first.t)] if first.t else []),
                                                                                     str(d[1]), str(d[2]))])
     return make
 
@@ -1716,18 +1894,20 @@ def s8_day(i):
                       "correction: same read, the day the person meant", history=hist,
                       rules=[r_calls([("get_weather", {"period": "tomorrow"})]), r_must("tomorrow")])
         now, w = world(rng, hour=rng.choice([7, 8]))
-        from replies import agenda_reply
-        d1, d2 = now.date(), now.date() + D(days=rng.randint(2, 4))
+        d1, d2 = now.date(), tomorrow(now)
         w.events = make_events(rng, now, d1, 2, lo=10, hi=20) + make_events(rng, now, d2, rng.choice([2, 3]))
-        rows1, _, _ = w.upcoming_rows(period="today")
-        wd = d2.strftime("%A")
-        rows2, _, _ = w.upcoming_rows(period=wd.lower())
-        hist = filler(rng, rng.choice([0, 1])) + [turn("what's on today", agenda_reply(rows1, "today", now, rng), "get_upcoming",
-                                                      [{"name": "get_upcoming", "args": {"period": "today"}, "result": ""}])]
-        ask = pick(rng, [f"no, i meant {wd.lower()}", f"sorry, {wd.lower()}"])
-        return mk(style(rng, ask), now, w, [[Call("get_upcoming", period=wd.lower())], Final(agenda_reply(rows2, f"on {wd}", now, rng))],
-                  "correction: same read, the day the person meant", history=hist,
-                  rules=[r_calls([("get_upcoming", {"period": wd.lower()})]), r_must(re.escape(w.events[-1].title))])
+        maybe_brief(rng, w, now, d2)
+        items1, items2 = plan_items(w, "today"), plan_items(w, "tomorrow")
+        if not items1 or not items2:
+            return None
+        reply1 = rng.choice([f"Today you have {plan_prose(items1)}.", f"On today's plan: {plan_prose(items1)}."])
+        hist = filler(rng, rng.choice([0, 1])) + [turn("what's on today", reply1, "get_my_day_plan",
+                                                      [{"name": "get_my_day_plan", "args": {"day": "today"}, "result": ""}])]
+        ask = pick(rng, ["no, i meant tomorrow", "sorry, tomorrow", "i meant tomorrow, not today"])
+        final = rng.choice([f"Tomorrow you have {plan_prose(items2)}.", f"On tomorrow's plan: {plan_prose(items2)}."])
+        return mk(style(rng, ask), now, w, [[plan_call("tomorrow")], Final(final)],
+                  "correction: same read (the day plan), the day the person meant", history=hist,
+                  rules=[r_calls([("get_my_day_plan", {"day": "tomorrow"})]), r_must(*plan_must(items2))])
     return make
 
 
@@ -1868,25 +2048,37 @@ class Read:
 
 
 class AgendaRead(Read):
+    """"what's lined up tomorrow": a time-scoped ask, so it reads the Brief's day plan (get_my_day_plan), and every
+    form below states what that plan lists."""
+
     def __init__(self, rng, now, n):
         super().__init__()
         self.evs = make_events(rng, now, tomorrow(now), n)
         tw = World(now=now, events=self.evs)
-        rows, _, _ = tw.upcoming_rows(period="tomorrow")
-        from replies import agenda_reply
-        prose = agenda_prose(self.evs)
+        self.pack = brief_pack(rng, now, tomorrow(now)) if rng.random() < 0.4 else None
+        if self.pack:
+            attach_brief(tw, self.pack)
+        self.items = plan_items(tw)
+        assert self.items, "empty plan"
+        prose = plan_prose(self.items)
         self.asks = ["what's lined up for tomorrow", "run me through tomorrow's schedule", "anything on my plate tomorrow", "walk me through tomorrow"]
-        self.calls = [Call("get_upcoming", period="tomorrow")]
-        self.keep = [e.title for e in self.evs]
-        one = pick(rng, [f"Tomorrow you have {prose}.", f"You have {prose} tomorrow.", f"On tomorrow's schedule: {prose}.",
+        self.calls = [plan_call()]
+        self.keep = [x.title for x in self.items]
+        one = pick(rng, [f"Tomorrow you have {prose}.", f"You have {prose} tomorrow.", f"On tomorrow's plan: {prose}.",
                          f"Lined up for tomorrow: {prose}."])
-        self.f = {"n": agenda_reply(rows, "tomorrow", now, rng), "p": one, "one": one,
+        many = "events" if all(x.src == "calendar" for x in self.items) else "things"
+        k = len(self.items)
+        head = pick(rng, [f"You have {k} {many[:-1] if k == 1 else many} tomorrow", f"Tomorrow has {k} {many[:-1] if k == 1 else many}"])
+        self.f = {"n": f"{head}: {prose}.", "p": one, "one": one,
                   "cas": pick(rng, [f"You've got {prose} tomorrow.", f"Looks like you've got {prose} tomorrow.", f"Tomorrow you've got {prose}."]),
-                  "es": f"Mañana tienes {es_join(es_at(e.title, clock(e.start)) for e in self.evs)}.",
-                  "bul": "\n".join(f"- {e.title}: {clock(e.start)}" for e in self.evs)}
+                  "bul": "\n".join(f"- {x.label}: {x.when}" for x in self.items)}
+        if all(x.src == "calendar" and x.t for x in self.items):      # the Spanish form is written for events only
+            self.f["es"] = f"Mañana tienes {es_join(es_at(x.title, x.t) for x in self.items)}."
 
     def apply(self, w):
         w.events = list(self.evs)
+        if self.pack:
+            attach_brief(w, self.pack)
 
 
 class ReminderRead(Read):
@@ -2313,14 +2505,18 @@ def s9_yn(i):
         if kind == "before":
             evs = make_events(rng, now, tomorrow(now), rng.choice([2, 3]), lo=9, hi=19)
             w.events = evs
-            first = evs[0]
-            limit_h = first.start.hour + (rng.choice([1, 2]) if yes else -rng.choice([1, 2]))
+            maybe_brief(rng, w, now, tomorrow(now), sources=("mail",))
+            timed = [x for x in plan_items(w) if x.t]
+            if not timed:
+                return None
+            first = timed[0]
+            limit_h = first.minutes // 60 + (rng.choice([1, 2]) if yes else -rng.choice([1, 2]))
             if limit_h < 8:
                 return None
             ask = f"is anything on before {clk_word(limit_h)} tomorrow"
-            call = Call("get_upcoming", period="tomorrow")
-            final = f"Yes, you have {ev_line(first)}." if yes else f"No, your first event tomorrow is {ev_line(first)}."
-            truth = lambda c: any(m < limit_h * 60 for m, _ in time_minutes(c.res))
+            call = plan_call()
+            final = f"Yes, you have {first.prose}." if yes else f"No, your first {first.noun} tomorrow is {first.prose}."
+            truth = lambda c: any(x.minutes < limit_h * 60 for x in parse_plan(c.res) if x.t)
         elif kind == "text":
             (full, fn), (ofull, ofn) = rng.sample(PEOPLE_NAMES, 2)
             text = pick(rng, TEXT_BANK)
@@ -2370,6 +2566,183 @@ def s9_yn(i):
     return make
 
 
+
+
+# =============================================================================
+# LONG CHATS with a standing wish set in the FIRST exchange (round 4 review)
+# =============================================================================
+# The gate's persistent-preference cases put the wish in exchange 1 and ask 7-10 exchanges later, behind replies of
+# 40-150 words. The earlier replies obey the wish (production's own earlier answers did), so these histories hold
+# long replies that are still one sentence, bullets, plain prose, casual, Spanish or question-free. The long replies
+# come from the base-length bank in scen_r4_session_recall (LONGX) and are rewritten per wish, then checked by the
+# wish's own predicate.
+import scen_r4_session_recall as SR   # noqa: E402
+
+ES_LONG = {   # LONGX question -> the same answer in Spanish (the person keeps asking in English)
+    "how can i make my small apartment feel bigger":
+        "La luz y las superficies despejadas hacen casi todo el trabajo. Abre las cortinas por completo durante el día y pon un espejo frente a la ventana para que rebote la luz por la sala. Elige muebles con patas, para que se vea el suelo por debajo, y arrima los más grandes a las paredes. Usa pocos colores, con tonos claros en las paredes, y aprovecha las estanterías altas para llevar la mirada hacia arriba. Por último, deja pocos objetos sobre las superficies, porque tres cosas bonitas se ven tranquilas y doce parecen desorden.",
+    "how do i stop procrastinating on a big project":
+        "Los proyectos grandes se atascan porque el primer paso no tiene forma, así que hazlo muy pequeño y muy concreto. En lugar de escribir el informe, abre el documento y anota tres ideas para la introducción. Después pon un temporizador de quince minutos y prométete hacer solo eso. Empezar es lo más difícil, y una vez dentro suele ser más fácil seguir. Decide con antelación cuándo y dónde vas a trabajar, deja el teléfono fuera de la vista y, al terminar, apunta el siguiente paso para que mañana arrancar sea sencillo.",
+    "how do i choose a good watermelon":
+        "Busca una que pese bastante para su tamaño, porque eso significa que tiene mucho jugo. Dale la vuelta y mira la mancha donde estuvo apoyada en el suelo: si es amarilla cremosa, está madura, y si es blanca o verde pálida, la cortaron pronto. La cáscara debe verse opaca y no brillante. Si le das unos golpecitos, una sandía madura suena hueca y grave, como un tambor. Evita las que tengan zonas blandas, cortes o golpes, y si compras media, busca una pulpa roja intensa sin vetas blancas.",
+    "how long should i let a steak rest":
+        "Déjalo reposar unos cinco a diez minutos si tiene más o menos un dedo de grosor, y un poco más si es un corte grueso o un asado. Mientras reposa, los jugos que se fueron al centro durante la cocción vuelven a repartirse por la carne. Si lo cortas enseguida, gran parte del líquido termina en la tabla y no en tu plato. Ponlo en un plato tibio, tapado sin apretar, y no lo envuelvas del todo, porque el vapor ablanda la costra. Retíralo unos grados antes de la temperatura que quieres.",
+    "explain compound interest like i'm new to it":
+        "El interés compuesto significa que ganas intereses sobre tus propios intereses, no solo sobre el dinero que pusiste al principio. Si metes mil dólares en una cuenta que paga un cinco por ciento anual, tendrás 1,050 al terminar el primer año. En el segundo año el cinco por ciento se aplica a 1,050 y no a 1,000, así que ganas un poco más. Al principio parece poca cosa, pero se acumula, y con muchos años el dinero crece bastante sin que agregues nada.",
+    "can you explain how vaccines train the immune system":
+        "Una vacuna le muestra a tu sistema inmune una parte inofensiva de un germen, o una imitación suya, para que practique antes de enfrentarse al verdadero. Tu cuerpo responde fabricando anticuerpos y células de memoria que se quedan durante meses o años. Si más adelante aparece el germen real, esas células lo reconocen enseguida y reaccionan en horas, en lugar de tardar días. Así que muchas veces no te enfermas, o la enfermedad es mucho más leve que sin vacuna.",
+    "how do airplanes stay up":
+        "El ala tiene una forma y una inclinación que empujan el aire hacia abajo mientras avanza. El aire responde empujando el ala hacia arriba, y esa fuerza es la sustentación. Además, la curva de la parte superior acelera el flujo y baja la presión sobre el ala, lo que ayuda todavía más. La sustentación aumenta con la velocidad, por eso el avión necesita correr por la pista antes de despegar. Una vez en el aire, los motores solo tienen que vencer la resistencia y las alas hacen el resto.",
+    "why do we get goosebumps":
+        "La piel de gallina es un reflejo heredado de nuestros antepasados peludos. Cuando sientes frío, unos músculos diminutos en la base de cada vello se contraen y lo levantan. En un animal con pelaje espeso eso atrapa una capa de aire caliente junto a la piel. Nosotros casi no tenemos pelo, así que solo quedan los bultitos. El mismo reflejo se activa con emociones fuertes, como oír una música preciosa o sentir miedo, porque el mismo sistema nervioso controla esos músculos.",
+    "how do solar panels actually make electricity":
+        "Cada panel está formado por celdas de silicio. Cuando la luz del sol llega a una celda, su energía suelta electrones de los átomos de silicio, y la celda tiene un campo eléctrico que empuja esos electrones en una sola dirección. Ese flujo es corriente continua. Después un inversor la convierte en la corriente alterna que usan los enchufes de la casa. Los paneles producen más al mediodía con cielo despejado y menos con nubes, y pierden un poco de rendimiento cada año.",
+    "how does noise cancelling work":
+        "Los audífonos con cancelación de ruido escuchan el sonido de alrededor con micrófonos pequeños y luego reproducen una imagen en espejo de ese sonido. Cuando una onda se encuentra con otra exactamente contraria, las dos se anulan, como al sumar más uno y menos uno. Funciona mejor con sonidos constantes y graves, como el zumbido de un avión o de un aire acondicionado. Los ruidos repentinos, como una voz, son más difíciles, por eso todavía oyes algo. Un buen ajuste alrededor de la oreja ayuda con los sonidos agudos.",
+}
+ONE_LONG = {   # LONGX question -> a single sentence of base-like substance
+    "how do i stop procrastinating on a big project": "Make the first step so small and specific that you cannot argue with it, such as opening the document and writing three bullet points, then set a fifteen minute timer and let momentum do the rest.",
+    "how can i make my small apartment feel bigger": "Let in as much light as you can with open curtains and a mirror across from the window, keep furniture on legs against the walls, stick to one or two light colors and clear the open surfaces.",
+    "how do i choose a good watermelon": "Pick one that feels heavy for its size, with a creamy yellow patch where it sat on the ground, a dull rind and a deep hollow sound when you tap it.",
+    "what's the best way to cool down a hot bedroom in summer": "Keep the sun out with closed blinds by day, then open windows at night with a box fan pulling cooler air through, and sleep in light cotton bedding after a cool shower.",
+    "how do tides work": "Tides come mostly from the moon's gravity pulling the ocean into a bulge on the near side and another on the far side, so as the Earth turns, most coasts get two highs and two lows a day.",
+    "is it worth buying a cast iron pan": "For most home cooks it is worth it, because a cast iron pan is cheap, holds heat evenly, goes from stove to oven and lasts decades if you keep it dry and lightly oiled.",
+    "how do i get better at remembering what i read": "Close the book after each chapter and write down three things you remember in your own words, then check what you missed and repeat the exercise the next day.",
+    "why does bread dough need to rest": "Resting lets the flour absorb the water and the gluten relax, so the dough becomes smoother and easier to shape while the flavor develops.",
+    "how do airplanes stay up": "A wing is angled and shaped to push air downward as it moves forward, and the air pushes back up with a force called lift that grows with speed.",
+    "how often should i water a succulent": "Water it thoroughly only when the soil is completely dry, which is usually every two weeks in summer and every three to four in winter.",
+    "why do we get goosebumps": "Goosebumps are a leftover reflex from our furry ancestors, in which tiny muscles lift each hair to trap warm air, and they fire with strong emotions too.",
+    "how long should i let a steak rest": "Let a steak an inch thick rest for five to ten minutes, loosely covered, so the juices spread back through the meat instead of running onto the board.",
+    "explain what an index fund is": "An index fund holds a small slice of every company in a list such as the 500 largest, so you own many businesses at once for very low fees, though it still rises and falls with the market.",
+    "how do you know when an avocado is ripe": "Press gently in your palm and look for slight give, then flick off the stem cap, where green underneath means ripe and brown means overripe.",
+    "why do cats purr": "Cats purr when they are content but also when nervous or hurt, using rapid twitching of the voice box muscles, and the low vibration may even help them heal.",
+    "how does noise cancelling work": "Small microphones listen to the sound around you and the headphones play back an opposite wave that cancels it, which works best on steady low hums like airplane engines.",
+}
+
+
+def _contract(t: str) -> str:
+    pairs = [("do not", "don't"), ("does not", "doesn't"), ("did not", "didn't"), ("cannot", "can't"), ("will not", "won't"),
+             ("is not", "isn't"), ("are not", "aren't"), ("it is", "it's"), ("It is", "It's"), ("that is", "that's"), ("That is", "That's"),
+             ("you are", "you're"), ("You are", "You're"), ("there is", "there's"), ("There is", "There's"), ("they are", "they're"),
+             ("you will", "you'll"), ("You will", "You'll"), ("you would", "you'd"), ("would not", "wouldn't"), ("have not", "haven't"),
+             ("let us", "let's"), ("Let us", "Let's")]
+    for a, b in pairs:
+        t = t.replace(a, b)
+    return t
+
+
+def _bulletize(t: str) -> str:
+    ss = [s.strip() for s in re.split(r"(?<=[.!?])\s+", t) if s.strip()][:5]
+    return "\n".join("- " + s for s in ss)
+
+
+def _long_pref_bank():
+    """pref -> [(question, reply, topic, kw)] with every reply passing the wish's own check and the voice rules."""
+    bank: dict[str, list] = {}
+    base = SR.banks()["longx"]
+    for key in ("noq", "nobul", "casual", "bullets", "spanish", "one"):
+        pa, out = PREFS[key], []
+        for u, a, t, kw in base:
+            if key == "noq":
+                r = a
+            elif key == "nobul":
+                r = a
+            elif key == "casual":
+                r = _contract(a)
+            elif key == "bullets":
+                r = _bulletize(a)
+            elif key == "spanish":
+                r = ES_LONG.get(u)
+            else:
+                r = ONE_LONG.get(u)
+            if r and pa.check(r, (), False) and voice(r) is None and not _TOOL_NAME.search(r):
+                out.append((u, r, t, kw))
+        bank[key] = out
+    return bank
+
+
+_LONG_PREF: dict = {}
+
+
+def long_pref_bank():
+    if not _LONG_PREF:
+        _LONG_PREF.update(_long_pref_bank())
+    return _LONG_PREF
+
+
+def s9_long(i, pref_key, final_kind):
+    """The wish is in exchange 1 of 8-10; the last turn is general knowledge ('chat') or a tool read ('read')."""
+    def make(rng):
+        now, w = world(rng, hour=rng.choice([9, 11, 14, 17, 20]))
+        pa = PREFS[pref_key]
+        bank = long_pref_bank()[pref_key]
+        n_after = rng.choice([7, 7, 8, 8, 9])
+        if len(bank) < n_after:
+            return None
+        topics = topics_for(rng, now, [pref_key], 1, want_read=(final_kind == "read"))
+        if not topics:
+            return None
+        final_t = topics[0]
+        picks = rng.sample(bank, n_after)
+        ask_a = style(rng, pick(rng, pa.asks)) if pref_key != "spanish" or rng.random() < 0.5 else pick(rng, pa.asks)
+        ack_a = pick(rng, pa.acks)
+        hist, spec = [turn(ask_a, ack_a)], [(pref_key, ack_a, True, None)]
+        for u, r, t, kw in picks:
+            hist.append(turn(style(rng, u), r))
+            spec.append((pref_key, r, False, None))
+        final_txt = form_for(pa, final_t)
+        keep = list(getattr(final_t, "keep", ()) or [])
+        ask = style(rng, final_t.prompt(rng, False))
+        if ask.strip().lower() in {h["user"].strip().lower() for h in hist}:
+            return None
+        steps = ([final_t.calls] if final_t.kind == "read" else []) + [Final(final_txt)]
+        if final_t.kind == "read":
+            final_t.apply(w)
+
+        def timeline(c):
+            for pk, txt, is_ack, _t in spec:
+                if not PREFS[pk].check(txt, tuple(keep), is_ack):
+                    return f"history turn breaks {pk}: {txt[:80]!r}"
+            if not pa.check(c.final, tuple(keep), False):
+                return f"final breaks {pref_key}: {c.final[:80]!r}"
+            return None
+        rules = [("timeline", timeline), ("long", lambda c: None if (6500 >= sum(len(h["user"]) + len(h["assistant"]) for h in c.hist) >= (1200 if pref_key == "one" else 2500) and 8 <= len(c.hist) <= 10) else "not a long chat")]
+        if final_t.kind == "read":
+            rules.append(r_calls([(final_t.tool, {})]))
+        notes = f"standing wish ({pref_key}) set in exchange 1 of a long chat ({len(hist)} exchanges of long replies), honoured on a {'tool read' if final_t.kind == 'read' else 'chat'} turn at the end"
+        return mk(ask, now, w, steps, notes, rules=rules, history=hist, keep=keep)
+    return make
+
+
+LONG_PREF_PLAN = ([("noq", "chat"), ("noq", "read"), ("noq", "chat"), ("noq", "read"), ("noq", "chat")] +
+                  [("nobul", "chat"), ("nobul", "read"), ("nobul", "chat"), ("nobul", "read"), ("nobul", "chat")] +
+                  [("casual", "chat"), ("casual", "read"), ("casual", "chat"), ("casual", "read"), ("casual", "chat")] +
+                  [("bullets", "chat"), ("bullets", "read"), ("bullets", "chat"), ("bullets", "read")] +
+                  [("spanish", "chat"), ("spanish", "read"), ("spanish", "chat"), ("spanish", "read"), ("spanish", "chat")] +
+                  [("one", "chat"), ("one", "read"), ("one", "chat"), ("one", "read"), ("one", "chat")])
+
+
+
+
+def _interleave(items, key, rng):
+    """Round-robin over the groups (largest first), so consecutive scenarios rarely share a kind. The step thoughts
+    (thinking.py) come from a few templates per kind, and build.fix_adjacent can only re-phrase a thought that equals a
+    neighbour's when the neighbours differ in kind."""
+    groups: dict = {}
+    for it in items:
+        groups.setdefault(key(it), []).append(it)
+    for g in groups.values():
+        rng.shuffle(g)
+    order = sorted(groups, key=lambda k: (-len(groups[k]), str(k)))
+    out, i = [], 0
+    while any(groups[k] for k in order):
+        for k in order:
+            if groups[k]:
+                out.append(groups[k].pop())
+        i += 1
+    return out
+
+
 # =============================================================================
 # the family
 # =============================================================================
@@ -2399,7 +2772,7 @@ def fam_instructions(rng):
             (s1_number_calc, 1), (s1_count_unread, 1),
             (s2_before, 4), (s2_rain, 2), (s2_text_from, 2), (s2_unread_from, 2),
             (s3_bullets, 3), (s3_numbered_day, 2), (s3_steps, 2), (s3_no_list, 3), (s3_one_per_line, 2),
-            (s4_no_price, 3), (s4_no_numbers, 3), (s4_events_only, 2), (s4_no_emoji, 2), (s4_no_location, 2), (s4_skip_part, 2),
+            (s4_no_price, 3), (s4_no_numbers, 3), (s4_events_only, 4), (s4_no_emoji, 2), (s4_no_location, 2), (s4_skip_part, 2),
             (s5_one_account, 3), (s5_draft, 3), (s5_calendar_only, 2), (s5_reminder_only, 2), (s5_move_one, 2), (s5_done_one, 2),
             (s5_channel_only, 2),
             (s6_exact_text, 5), (s6_send_draft, 2), (s6_exact_email, 2),
@@ -2419,7 +2792,14 @@ def fam_instructions(rng):
                 out.append(sc)
                 got += 1
                 break
-    return out
+    # long chats: the wish sits in exchange 1 of 8-10 exchanges of base-length replies
+    for k, (pk, kind) in enumerate(LONG_PREF_PLAN):
+        for t in range(12):
+            sc = _attempt(s9_long(k * 12 + t, pk, kind), rng)
+            if sc is not None:
+                out.append(sc)
+                break
+    return _interleave(out, lambda sc: (re.split(r"[(:]", sc.notes)[0].strip()[:30], len(sc.steps)), rng)
 
 
 FAMILIES_R4 = {FAMILY: fam_instructions}

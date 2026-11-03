@@ -400,7 +400,7 @@ def test_compact_catalog_and_step_budget(synthetic):
     assert "TOOLS (model-led)" in request["messages"][1]["content"]
     estimate = loop._est_tokens(request["tools"]) + sum(loop._est_tokens(m.get("content") or "")
                                                         for m in request["messages"])
-    assert estimate <= mo.ASK_PROMPT_BUDGET + 200
+    assert estimate <= mo.ASK_PROMPT_BUDGET + mo.ASK_HISTORY_RESERVE + 200
     assert request["messages"][-1]["content"] == "what is up this weej?"
     # The baseline loop keeps far more of the same history.
     client, _, _ = run(["Fine."], history=history, model_led_preload=["get_upcoming"])

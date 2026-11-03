@@ -32,7 +32,7 @@ from harness import Call, Final
 import gen
 from gen import D
 from replies import clock, day_word, join, ts
-from scen import Scenario, setup
+from scen import Scenario, fp_items, read_plan, seed_plan, setup
 from world import Msg
 from service.tools.timeranges import resolve_when
 
@@ -204,19 +204,23 @@ def fam_safe_effects(rng):
         wd = (now + D(days=2)).strftime("%A").lower()
         period = period.format(wd=wd)
         prompt = prompt.format(wd=wd)
-        rows, label, _ = w.upcoming_rows(period=period, calendar_only=True)
-        rows = sorted(rows, key=lambda r: r["when_ts"])
-        bits = [f"{r['title']} at {clock(ts(r))}" for r in rows]
+        # The schedule question reads the plan (calendar, reminders and the Brief's mail / text / note items), and the
+        # text carries all of it.
+        seed_plan(rng, w, now, period, tidy=False, wait=0, kinds=rng.choice([("text",), ("mail",), ("note",), ("mail", "text"), ()]))
+        items = [ph for _h, ph in fp_items(read_plan(w, period), now)]
+        if not items:
+            continue
         day_label = "tomorrow" if period == "tomorrow" else wd.capitalize()
-        text = f"{day_label} I've got " + join(bits) + "."
-        reply = fin(rng, f"I texted {who} your schedule for {day_label}, all {len(rows)} events.",
-                    f"{who} now has your {day_label} lineup: {len(rows)} events in all.",
-                    f"Texted {who} everything on your calendar for {day_label}.",
-                    f"Your schedule for {day_label} is with {who} now, all {len(rows)} events.",
-                    f"The {len(rows)} events on your {day_label} calendar went to {who} by text.")
+        text = f"{day_label[:1].upper() + day_label[1:]} I've got " + join(items) + "."
+        n_ = len(items)
+        reply = fin(rng, f"I texted {who} your plan for {day_label}, all {n_} item{'s' if n_ != 1 else ''}.",
+                    f"{who} now has your {day_label} lineup: {n_} item{'s' if n_ != 1 else ''} in all.",
+                    f"Texted {who} everything you have on {day_label}.",
+                    f"Your plan for {day_label} is with {who} now, all {n_} item{'s' if n_ != 1 else ''}.",
+                    f"The {n_} item{'s' if n_ != 1 else ''} on your {day_label} plan went to {who} by text.")
         out.append(_sc(prompt, now, w,
-                       [[Call("get_upcoming", period=period, calendar_only=True)], [Call("send_message", to=who, text=text)], Final(reply)],
-                       "text the schedule: read the calendar, then send_message behind a card",
+                       [[Call("get_my_day_plan", day=period)], [Call("send_message", to=who, text=text)], Final(reply)],
+                       "text the schedule: read the day plan (calendar and Brief items), then send_message behind a card",
                        cards=["send_message"], approve=[True]))
 
     # stock price -> message (approved) and one denied
@@ -349,16 +353,16 @@ def fam_safe_effects(rng):
                    "email myself: read, then send_email to the user's own address behind a card (never schedule_send)",
                    cards=["send_email"], approve=[True]))
     now, w = setup(rng, weekday=rng.choice([0, 1, 2, 3]), **_fut(rng, 8, 15))
-    rows, _, _ = w.upcoming_rows(period="tomorrow", calendar_only=True)
-    rows = sorted(rows, key=lambda r: r["when_ts"])
-    body = "Tomorrow:\n" + "\n".join(f"- {clock(ts(r))} {r['title']}" for r in rows)
+    seed_plan(rng, w, now, "tomorrow", tidy=False, wait=0, kinds=("mail", "text"))
+    items = [ph for _h, ph in fp_items(read_plan(w, "tomorrow"), now)]
+    body = "Tomorrow:\n" + "\n".join(f"- {ph}" for ph in items)
     out.append(_sc("email me what's on tomorrow so i have it on my phone", now, w,
-                   [[Call("get_upcoming", period="tomorrow", calendar_only=True)],
-                    [Call("send_email", to=OWN, subject="Tomorrow's events", body=body, confirmed_self_send=True)],
-                    Final(fin(rng, f"I emailed you tomorrow's {len(rows)} event{'s' if len(rows) != 1 else ''}.",
-                              f"Tomorrow's {len(rows)} event{'s' if len(rows) != 1 else ''} are in an email to you now.",
-                              f"Emailed you your schedule for tomorrow.", f"Your calendar for tomorrow went to your inbox."))],
-                   "email myself the schedule: read, then send_email behind a card",
+                   [[Call("get_my_day_plan", day="tomorrow")],
+                    [Call("send_email", to=OWN, subject="Tomorrow's plan", body=body, confirmed_self_send=True)],
+                    Final(fin(rng, f"I emailed you tomorrow's {len(items)} item{'s' if len(items) != 1 else ''}.",
+                              f"Tomorrow's {len(items)} item{'s' if len(items) != 1 else ''} are in an email to you now.",
+                              f"Emailed you your plan for tomorrow.", f"Your plan for tomorrow went to your inbox."))],
+                   "email myself the day: read the day plan, then send_email behind a card",
                    cards=["send_email"], approve=[True]))
     now, w = setup(rng, **_fut(rng))
     due = sorted([r for r in w.reminders if r.due and not r.done], key=lambda r: r.due)
@@ -646,16 +650,17 @@ def fam_safe_effects(rng):
                     Final(fin(rng, f"Yes, Theo wrote “Sure, tomorrow works!” at {clock(now - D(hours=2))}.", f"Theo replied at {clock(now - D(hours=2))}: “Sure, tomorrow works!”"))],
                    "reply check: view_messages only, no send", cards=[]))
     now, w = setup(rng, weekday=rng.choice([0, 1, 2, 3]), hour=rng.randint(8, 15))
-    rows, _, _ = w.upcoming_rows(period="tomorrow", calendar_only=True)
-    rows = sorted(rows, key=lambda r: r["when_ts"])
-    first = rows[0]
+    seed_plan(rng, w, now, "tomorrow", wait=0, kinds=("text",))
+    plan = read_plan(w, "tomorrow")
+    timed = [e for e in (plan.days[0][1] if plan.days else []) if e[0] != "all day"]
+    first = timed[0]
+    from scen import R4D
     out.append(_sc("what time does my day start tomorrow", now, w,
-                   [[Call("get_upcoming", period="tomorrow", calendar_only=True)],
-                    Final(fin(rng, f"Your day starts at {clock(ts(first))} with {first['title']}",
-                              f"First up is {first['title']} at {clock(ts(first))}",
-                              f"Tomorrow begins at {clock(ts(first))} with {first['title']}")
-                          + (f" in {first['location']}." if first.get("location") else "."))],
-                   "schedule question: get_upcoming only, no calendar write", cards=[]))
+                   [[Call("get_my_day_plan", day="tomorrow")],
+                    Final(fin(rng, f"Your day starts at {R4D().clock12(first[0])} with {first[1]}.",
+                              f"First up is {first[1]} at {R4D().clock12(first[0])}.",
+                              f"Tomorrow begins at {R4D().clock12(first[0])} with {first[1]}."))],
+                   "schedule question: get_my_day_plan only (calendar and Brief items), no calendar write", cards=[]))
 
     return out
 

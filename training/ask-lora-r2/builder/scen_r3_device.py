@@ -1150,7 +1150,7 @@ def _c_bday_none(i):
         install_birthdays(w, table)
         first = who.split()[0]
         prompt = A.style(rng, ["is {n}'s birthday saved anywhere", "what's {n}'s birthday"][i % 2].format(n=first.lower()))
-        final = pick(rng, [f"I don't see a birthday for {first} coming up in the next year.", f"None of {first}'s birthdays shows up in the year the tool covers."])
+        final = pick(rng, [f"I don't see a birthday for {first} coming up in the next year.", f"I don't see any of {first}'s birthdays in the next year."])
         return mk("contacts_r3", prompt, now, w, [[Call("contact_dates", days=366)], Final(final)],
                   "birthday not in the list: say it is not saved, no guess")
     return make
@@ -1467,6 +1467,11 @@ def _r_pending(i):
 
     def make(rng):
         now, w = _rem_world(rng, hour=rng.choice([8, 9, 10, 11]))
+        if i % len(prompts) == 3:     # "everything i still have to do" is a to-do question: the plan, with the Brief as a source
+            from scen import plan_pair
+            call, reply = plan_pair(rng, w, now, "today", wait=0)
+            return mk("reminders_r3", A.style(rng, prompts[3]), now, w, [[call], Final(reply)],
+                      "a to-do question: get_my_day_plan (reminders plus the Brief's mail / text / note items)")
         dated = sorted([r for r in _open(w) if r.due], key=lambda r: r.due)
         und = [r for r in _open(w) if not r.due]
         head = f"You have {len(dated) + len(und)} open reminders"
@@ -1503,6 +1508,13 @@ def _r_today(i):
     def make(rng):
         none = (i == 2)
         now, w = _rem_world(rng, hour=rng.choice([8, 9, 10]), today=0 if none else rng.choice([1, 2]))
+        if i % 3 == 0:
+            # a to-do question ("anything i need to do today"), not a reminders question: the day plan covers
+            # reminders and the dated mail / text / note items the Brief found
+            from scen import plan_pair
+            call, final = plan_pair(rng, w, now, "today")
+            return mk("reminders_r3", A.style(rng, prompts[0]), now, w, [[call], Final(final)],
+                      "a to-do question for today: get_my_day_plan (reminders plus the Brief's mail / text / note items)")
         todays = sorted([r for r in _open(w) if r.due and r.due.date() == now.date()], key=lambda r: r.due)
         if not todays:
             final = pick(rng, ["Nothing is due today.", "No reminders are set for today."])
@@ -1519,7 +1531,7 @@ def _r_soon(i):
     def make(rng):
         now, w = _rem_world(rng, hour=rng.choice([8, 9, 10]), overdue=1, today=1, upcoming=4)
         rows = sorted([r for r in _open(w) if r.due and r.due >= now and (r.due.date() - now.date()).days <= 2], key=lambda r: r.due)
-        prompt = A.style(rng, ["what's coming up in the next couple of days", "anything due soon, like the next two days"][i % 2])
+        prompt = A.style(rng, ["which reminders are coming up in the next couple of days", "any reminders due soon, like the next two days"][i % 2])
         if not rows:
             final = "Nothing is due in the next two days."
         else:
@@ -1754,7 +1766,7 @@ def _r_event_vs(kind, i):
                       cards=["add_calendar_event"], approve=[True], must_see=["Added"])
         task = TASKS[(i * 4 + 1) % len(TASKS)]
         prompt = A.style(rng, f"{wd} at {c} remind me to {task}")
-        final = pick(rng, [f"I'll remind you {d:%A} at {clock(d)} to {A.second(task)}.", f"Reminder set for {d:%A} at {clock(d)}."])
+        final = pick(rng, [f"I'll remind you {d:%A} at {clock(d)} to {A.second(task)}.", f"Reminder set for {d:%A} at {clock(d)}: {A.second(task)}."])
         return mk("reminders_r3", prompt, now, w, [[Call("add_reminder", title=cap1(task), when_iso=A.iso(d))], Final(final)],
                   "a nudge to do something: add_reminder, not a calendar event")
     return make

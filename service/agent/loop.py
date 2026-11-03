@@ -96,6 +96,41 @@ def _action_fingerprint(tool: str, args: dict) -> str:
                          separators=(",", ":"), default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
+# Effect calls the loop will run in one turn. "Make these into reminders" from
+# a picture or a list is several distinct writes; past this many, a turn is a
+# runaway, not a request.
+_MAX_EFFECT_CALLS_PER_TURN = 8
+# The arguments that name WHAT an effect acts on, for tools where a second call
+# on the same target in one turn is a repeat even when the rest differs: a
+# reworded second email to the same person, a flip-flopped setting, a delete
+# retried with a stale revision. Other effects compare all their arguments.
+_EFFECT_TARGET_ARGS = {
+    "send_message": ("to",), "send_email": ("to",), "schedule_send": ("channel", "to"),
+    "reply_to_email": ("message_id",), "forward_email": ("message_id", "to"),
+    "toggle_setting": ("setting",), "delete_knowledge": ("record_id",),
+}
+# Optimistic-concurrency tokens: they change after every write, so they never
+# make a second call a different action.
+_EFFECT_VOLATILE_ARGS = frozenset({"expected_revision", "expected_id", "expected_reply"})
+
+
+def _effect_duplicate_key(tool: str, args: dict) -> str:
+    """Fingerprint for refusing a repeated effect: the target arguments (or all
+    of them), with strings compared case- and whitespace-insensitively."""
+    def norm(value):
+        if isinstance(value, str):
+            return " ".join(value.split()).casefold()
+        if isinstance(value, dict):
+            return {k: norm(v) for k, v in value.items() if v not in (None, "")}
+        if isinstance(value, list):
+            return [norm(v) for v in value]
+        return value
+    keys = _EFFECT_TARGET_ARGS.get(tool)
+    picked = {k: v for k, v in (args or {}).items()
+              if (k in keys if keys else k not in _EFFECT_VOLATILE_ARGS)}
+    return _action_fingerprint(tool, norm(picked))
+
+
 SYSTEM = (
     "You are Wisp, a private assistant running locally on the user's Mac. "
     "You can use tools to inspect and operate the machine.\n"
@@ -386,16 +421,22 @@ SYSTEM = (
     "- Mailbox upkeep: `email_triage` archives a message (moves it out of the "
     "inbox — NOT a delete, it stays in Archive), marks it read/unread, or "
     "flags/unflags it. It needs the Message-ID from `view_emails`.\n"
-    "- MEMORY — call `remember` whenever the user reveals something durable "
-    "about themselves, EVEN IN PASSING and even when they never ask you to "
-    "remember it. You are building a long-term picture of this person, not "
-    "taking dictation. Save it the moment it comes up:\n"
+    # `remember` saves only when the current message asks to remember, save,
+    # update or correct (memory_tools._SAVE); anything else it refuses. This
+    # rule used to say "EVEN IN PASSING", so "from now on keep answers short"
+    # got a refused call and a false "noted". Facts mentioned in passing are
+    # extracted from the chat by the background memory queue, and a standing
+    # answer-style instruction is saved to the profile by the host.
+    "- MEMORY — call `remember` when the user asks you to remember, save, "
+    "update or correct something about themselves. Good things to keep:\n"
     "    * what they own, drive, or use — 'I drive a Subaru', 'I'm on a Mac'\n"
     "    * money and holdings — 'I invest in Nvidia and AMD', 'I bank with Chase'\n"
     "    * people in their life, and who those people are to them\n"
     "    * where they live, work, or study; their job, school, or field\n"
     "    * preferences, tastes, allergies, and how they want you to behave\n"
     "    * recurring routines, commitments, and ongoing projects\n"
+    "  A fact only mentioned in passing is noted from the chat automatically: "
+    "do NOT call `remember` for it, nor for how they want answers.\n"
     # VERIFIED FAILURE 2026-08-19 (user's debug export): a corrupted memory —
     # "<user>'s family includes their mom (<the user's own address>)" — was live for
     # weeks and used 624 times. That address is the USER'S OWN email
@@ -416,10 +457,8 @@ SYSTEM = (
     "wrong contact fact saved to memory does not just mislead one answer, it "
     "silently misdirects every future send to that person until someone "
     "notices.\n"
-    "  A statement like 'I invest in Nvidia and AMD, and I drive a Subaru' is "
-    "THREE things worth keeping, and none of them came with the word "
-    "'remember'. Waiting to be asked is the single most common way to get this "
-    "wrong.\n"
+    "  'Remember that I invest in Nvidia and AMD, and I drive a Subaru' is "
+    "THREE things worth keeping.\n"
     "  Never say 'I'll keep that in mind', 'noted', 'already noted', or "
     "'that's saved' unless you actually called `remember` on it THIS turn, or "
     "you can see it verbatim in the 'Things you were explicitly asked to "
@@ -531,8 +570,7 @@ SYSTEM = (
     "quick hello or small talk gets a warm, unhurried reply, never a flat "
     "one-liner. Lead with what is going well or already handled before what "
     "isn't; never scold.\n"
-    "- Give full answers: concrete specifics and examples. Do NOT trim an "
-    "answer down just to keep it short — say what is worth saying.\n"
+    "- By default give full answers: concrete specifics and examples.\n"
     "- Keep every answer organized and easy to scan: the direct answer first, "
     "then short paragraphs (never a wall of text), a list for several items or "
     "steps, **bold** key facts, and a short heading only for clearly separate "
@@ -540,7 +578,15 @@ SYSTEM = (
     "- Emoji sparingly (at most one; none is fine), and no stacked "
     "exclamation marks.\n"
     "- Gentleness never replaces accuracy: every rule above still applies, and "
-    "you never invent facts, results or actions."
+    "you never invent facts, results or actions.\n"
+    # The full-answer and layout rules above are defaults. Read as absolute
+    # ("Do NOT trim"), they told the model to override "one sentence" or "no
+    # lists"; the user's own instruction wins. Kept short: with the history
+    # reserve (#442) the Ask step budget has little room for always-on text.
+    "IMPORTANT rules about the user's own instructions:\n"
+    "- Their length or format ask, now, earlier in this chat or saved, beats "
+    "every rule above: 'one sentence', 'just the time', 'no lists'. A one-off "
+    "covers that answer only."
 )
 
 
@@ -1126,13 +1172,21 @@ def _est_tokens(obj) -> int:
 def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
                 model: str, force_first_tool: str | None, *,
                 protected_prefix_count: int = 1, context_window: int | None = None,
-                min_output_tokens: int = _MIN_OUTPUT_TOKENS):
+                min_output_tokens: int = _MIN_OUTPUT_TOKENS,
+                history_end: int | None = None):
     """Trim a request until prompt + output fits the model's context window.
 
     Order of sacrifice, LEAST VALUABLE FIRST:
       1. the OLDEST history turns — never the required system prefix (rules the model
          needs), never the last user message (the actual request), and never
-         the most recent tool result (what the current step is reasoning about)
+         the most recent tool result (what the current step is reasoning about).
+         A plain user/assistant turn before the request is CONDENSED, not
+         dropped: it leaves one line in the "earlier in this conversation"
+         digest (memory/context.py), which is how a fact stated twenty
+         exchanges ago is still in the request. Then the digest's oldest
+         lines; then the older context notes (system messages after the
+         prefix: host notes, the summary, the digest itself); then everything
+         else oldest-first
       2. TOOL SCHEMAS, from the end of the list
       3. the OUTPUT reservation, down to _MIN_OUTPUT_TOKENS
 
@@ -1159,8 +1213,16 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
 
     `protected_prefix_count` includes the current runtime system block when
     it is separate from the stable prompt. Only that explicit prefix is
-    protected: older system-role history summaries can still be evicted.
-    This is local bookkeeping, never an extra field on API messages.
+    protected: older system-role history summaries can still be evicted, after
+    the verbatim turns they summarize. The digest's oldest lines go before the
+    digest does. This is local bookkeeping, never an extra field on API
+    messages.
+
+    `history_end` is the index just past the request that opened this turn
+    (run_agent knows it: everything it appends comes after). Only messages
+    before it condense; this turn's later traffic (tool calls, results, host
+    nudges) is dropped, never written into the digest. Without it, condensing
+    stops at the first tool call or result.
     """
     from service.config import model_context_window
 
@@ -1209,15 +1271,90 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
             return False
         return True
 
+    from service.memory.context import (
+        cap_digest, digest_content, digest_line, digest_lines, is_digest)
+
+    def over() -> bool:
+        return overhead + max_tokens > window
+
+    def set_digest(at: int, lines: list[str]) -> None:
+        nonlocal overhead
+        overhead -= _msg_tokens(msgs[at])
+        msgs[at] = {"role": "system", "content": digest_content(lines)}
+        overhead += _msg_tokens(msgs[at])
+
+    first_traffic = next((j for j, m in enumerate(msgs)
+                          if m.get("tool_calls") or m.get("role") == "tool"), len(msgs))
+    boundary = min(history_end if history_end is not None else first_traffic, first_traffic)
+
+    def pop(at: int) -> None:
+        nonlocal overhead, last_user, boundary
+        overhead -= _msg_tokens(msgs[at])
+        msgs.pop(at)
+        if at < last_user:               # indices shifted under us
+            last_user -= 1
+        if at < boundary:
+            boundary -= 1
+
+    # 1a. Condense the conversation's earlier turns into the digest, oldest
+    # first. Never this turn's own traffic after its request (see history_end).
     i = 1
-    while overhead + max_tokens > window and i < len(msgs):
-        if droppable(i):
-            overhead -= _msg_tokens(msgs[i])
-            msgs.pop(i)
-            if i < last_user:            # indices shifted under us
-                last_user -= 1
+    while over() and i < min(boundary, last_user):
+        m = msgs[i]
+        if not droppable(i) or m.get("role") == "system":
+            i += 1
             continue
-        i += 1
+        line = (digest_line(m["role"], m.get("content"))
+                if m.get("role") in ("user", "assistant") else "")
+        pop(i)
+        if not line:
+            continue
+        at = next((j for j in range(protected_prefix_count, last_user) if is_digest(msgs[j])), None)
+        if at is None:
+            # A new digest sits where the condensed turn was: after any summary
+            # or context notes, before the turns still shown verbatim.
+            msgs.insert(i, {"role": "system", "content": digest_content([line])})
+            overhead += _msg_tokens(msgs[i])
+            last_user += 1
+            boundary += 1
+            i += 1
+        else:
+            set_digest(at, cap_digest(digest_lines(msgs[at]) + [line]))
+
+    # 1b. Then the digest's oldest lines, and only then the context notes
+    # (host notes such as "do not repeat these unverified sends", the summary,
+    # the digest itself), oldest first.
+    at = next((j for j in range(protected_prefix_count, last_user) if is_digest(msgs[j])), None)
+    while over() and at is not None and droppable(at) and len(digest_lines(msgs[at])) > 1:
+        set_digest(at, digest_lines(msgs[at])[1:])
+    i = 1
+    while over() and i < last_user:
+        if not droppable(i) or msgs[i].get("role") != "system":
+            i += 1
+            continue
+        pop(i)
+
+    # 1c. Then anything else droppable, oldest first (this turn's own traffic
+    # before the newest result). A tool call goes only together with all of
+    # its results, and never while one of them is protected: a result without
+    # its call, or a call missing a result, is a malformed transcript.
+    i = 1
+    while over() and i < len(msgs):
+        m = msgs[i]
+        if not droppable(i) or m.get("role") == "tool":
+            i += 1
+            continue
+        if m.get("tool_calls"):
+            end = i + 1
+            while end < len(msgs) and msgs[end].get("role") == "tool":
+                end += 1
+            if not all(droppable(j) for j in range(i + 1, end)):
+                i += 1
+                continue
+            for _ in range(end - i):
+                pop(i)
+            continue
+        pop(i)
 
     # 2. Drop tools from the end, keeping any forced one.
     while (overhead + max_tokens > window and len(schemas) > _MIN_TOOLS):
@@ -2047,7 +2184,10 @@ async def run_agent(
                     pass
             raise
         if claim is not None:
-            outcome = classify_tool_outcome(tool.name, str(result))
+            # Classify the result object itself: typed receipts (a prepared
+            # message draft, an outbound-unknown marker) are str subclasses,
+            # and str() would reduce them to text no receipt check accepts.
+            outcome = classify_tool_outcome(tool.name, result)
             # Unknown extension actions default to 'read' in the legacy outcome
             # classifier. That default is not a verified mutation receipt.
             from service.router.model_led import trusted_effect_receipt
@@ -2452,6 +2592,9 @@ async def run_agent(
     system_prefix = [{"role": "system", "content": sys_content},
                      {"role": "system", "content": runtime_content}]
     msgs: list[dict] = system_prefix + messages
+    # Everything before this index is the conversation so far and the request;
+    # what the turn appends after it is never condensed into the digest.
+    turn_history_end = len(msgs)
     if picture_reading:
         # The reading arrives the way any read does: a tool result (data), after
         # a synthesized call so the chat template sees a well-formed exchange.
@@ -2537,6 +2680,9 @@ async def run_agent(
     tool_outcomes: list[tuple[str, object]] = []
     fresh_personal_evidence = False
     completed_effects: dict[str, str] = {}
+    # Effects that succeeded (or were planned, in a dry run) this turn, keyed by
+    # _effect_duplicate_key. A distinct second write runs; a repeat does not.
+    effect_keys_done: set[str] = set()
     executed_strict_reads: dict[str, int] = {}
     # Reads that already succeeded this turn, keyed by tool and exact
     # arguments. An identical repeat returns a pointer to the earlier result
@@ -2625,6 +2771,9 @@ async def run_agent(
             contact_receipts.pop(key, None)
             if outcome.status == "succeeded" and not planned:
                 contact_receipts[key] = result
+        if (name in _EFFECT_TOOLS and args is not None
+                and outcome.status in {"succeeded", "planned"}):
+            effect_keys_done.add(_effect_duplicate_key(name, args))
         if outcome.status == "succeeded":
             if outcome.effect != "read" and args is not None:
                 completed_effects[_action_fingerprint(name, args)] = result
@@ -2659,6 +2808,14 @@ async def run_agent(
         # It must not exhaust the obligation's only eligible tool.
         previews = {name for name, outcome in latest.items() if outcome.status == "preview"}
         return set(group or ()) - (attempted_tools - previews)
+
+    def _earlier_effect_receipts(text: str) -> str:
+        """Put the receipts of writes that already succeeded this turn before a
+        stop message: a later write failing or being declined must not hide
+        that the earlier ones happened."""
+        done = [outcome.text for name, outcome in tool_outcomes
+                if name in _EFFECT_TOOLS and outcome.status == "succeeded"]
+        return "\n".join([*dict.fromkeys(done), text]) if done else text
 
     def _reminder_update_receipts() -> str | None:
         """Project update-only effects; model prose is not an effect receipt."""
@@ -3011,7 +3168,8 @@ async def run_agent(
                 if _name in _TERMINAL_OUTBOUND_DENIALS:
                     return await _finish_denied_outbound(emit)
                 response = (_reminder_update_receipts() or
-                            "The requested action was not completed because approval was denied.")
+                            _earlier_effect_receipts(
+                                "The requested action was not completed because approval was denied."))
                 await emit({"type": "text", "text": response})
                 await emit({"type": "done"})
                 return response
@@ -3025,7 +3183,8 @@ async def run_agent(
             failed_tools.add(_name)
             if _direct_outcome.effect != "read":
                 response = (_reminder_update_receipts() or
-                            "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(_result))
+                            _earlier_effect_receipts(
+                                "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(_result)))
                 await emit({"type": "text", "text": response})
                 await emit({"type": "done"})
                 return response
@@ -3397,6 +3556,7 @@ async def run_agent(
     ask_write_nudged = False
     ask_text_call_nudged = False
     ask_guard_retried = False
+    ask_stall_nudged = False
     ask_scale = 1.0
     ask_tool_calls: Counter = Counter()
     ask_blocked: set[str] = set()
@@ -3409,17 +3569,24 @@ async def run_agent(
     # a tool-free direct step does not follow a tool result and may still drop it.
     _ask_after_tool_thinks = ask_quality and thinking_after_tool_required(model)
 
+    from service.memory.context import is_digest as _is_digest
+    _ask_has_history = any(isinstance(m, dict) and (m.get("role") == "assistant" or _is_digest(m))
+                           for m in messages)
+
     def _ask_window(offered, stubs, scale: float) -> int:
         """This step's fit window: the Ask prompt budget (scaled down after a
         guard refusal), never below what the protected prefix and the real
         schemas need, never above the model's own window."""
         from service.config import model_context_window
-        from service.model_only import ASK_PROMPT_BUDGET
+        from service.model_only import ASK_HISTORY_RESERVE, ASK_PROMPT_BUDGET
         real = [sch for sch in offered if sch["function"]["name"] not in stubs]
         floor = _est_tokens(msgs[:len(system_prefix)]) + _est_tokens(real) + 2500
         window = (getattr(getattr(client, "target", None), "context_window", None)
                   or model_context_window(model))
-        return min(window, max(int(ASK_PROMPT_BUDGET * scale), floor) + max_tokens)
+        # Earlier conversation gets its own room: without it a tool result
+        # evicted every earlier turn (see ASK_HISTORY_RESERVE).
+        reserve = int(ASK_HISTORY_RESERVE * scale) if _ask_has_history else 0
+        return min(window, max(int(ASK_PROMPT_BUDGET * scale), floor) + max_tokens + reserve)
 
     def _ask_results_text() -> str:
         from service.model_only import compact_results
@@ -3436,19 +3603,23 @@ async def run_agent(
         the step that replaces a raw tool dump. With `direct`, the same step
         for a turn with no tool result (its steps came back empty, e.g. a call
         to a tool that was not offered, which oMLX drops). "" when it fails."""
-        from service.model_only import ASK_PROMPT_BUDGET, salvage_answer, strip_think
+        from service.model_only import (ASK_HISTORY_RESERVE, ASK_PROMPT_BUDGET,
+                                        salvage_answer, strip_think)
         nudge = {"role": "user", "content": (
             "Answer my last question directly now, briefly and helpfully, from what you "
             "know. Do not call any tool. If it needs my personal data you have not "
             "looked up, say so instead of guessing." if direct else
             "Answer my last question now in at most 4 sentences (a short bullet list "
-            "only if there are several items), using only the tool results above. "
+            "only if there are several items) unless I asked for another length or "
+            "format, using only the tool results above. "
             "Do not call any tool and do not paste raw tool output.")}
         try:
             fitted, _, out_tokens = _fit_window(
                 msgs + [nudge], [], 700, model, None,
-                protected_prefix_count=len(system_prefix),
-                context_window=int(ASK_PROMPT_BUDGET * ask_scale) + 700, min_output_tokens=400)
+                protected_prefix_count=len(system_prefix), history_end=turn_history_end,
+                context_window=int((ASK_PROMPT_BUDGET + (ASK_HISTORY_RESERVE if _ask_has_history
+                                                         else 0)) * ask_scale) + 700,
+                min_output_tokens=400)
             answer, thought, _ = await _run_step(
                 client, model, fitted, [], "auto", min(out_tokens, 700), emit,
                 stream_content=False, temperature=temperature, no_thinking=True,
@@ -3738,7 +3909,7 @@ async def run_agent(
                 else getattr(getattr(client, "target", None), "context_window", None))
             step_msgs, step_schemas, step_max_tokens = _fit_window(
                 msgs, offered_schemas, max_tokens, model, forced_tool,
-                protected_prefix_count=len(system_prefix),
+                protected_prefix_count=len(system_prefix), history_end=turn_history_end,
                 context_window=step_context_window)
             # Keep enforcement in sync with what was actually offered — a tool
             # dropped to fit must be rejected if the model calls it anyway,
@@ -3751,7 +3922,7 @@ async def run_agent(
                 step_stubs = frozenset()
                 step_msgs, step_schemas, step_max_tokens = _fit_window(
                     msgs, offered_schemas, max_tokens, model, forced_tool,
-                    protected_prefix_count=len(system_prefix),
+                    protected_prefix_count=len(system_prefix), history_end=turn_history_end,
                     context_window=step_context_window)
             allowed_names = {s["function"]["name"] for s in step_schemas} - step_stubs
             if model_led_discovery and step_schemas != offered_schemas:
@@ -3811,7 +3982,7 @@ async def run_agent(
                     step_stubs = frozenset()
                     step_msgs, step_schemas, step_max_tokens = _fit_window(
                         msgs, offered_schemas, max_tokens, model, forced_tool,
-                        protected_prefix_count=len(system_prefix),
+                        protected_prefix_count=len(system_prefix), history_end=turn_history_end,
                         context_window=_ask_window(offered_schemas, step_stubs, ask_scale))
                     allowed_names = {s["function"]["name"] for s in step_schemas}
                     if step_schemas != offered_schemas:
@@ -3954,9 +4125,9 @@ async def run_agent(
         if not tool_calls:
             text = msg.get("content") or ""
             if ask_quality:
-                from service.model_only import (asks_personal_data, pure_writing, salvage_answer,
-                                                stall_reply, strip_text_tool_calls, strip_think,
-                                                text_tool_call)
+                from service.model_only import (asks_personal_data, promise_only_reply,
+                                                pure_writing, salvage_answer, stall_reply,
+                                                strip_text_tool_calls, strip_think, text_tool_call)
                 text = strip_think(text)
                 wrote_call = text_tool_call(text)
                 if wrote_call:
@@ -4013,7 +4184,8 @@ async def run_agent(
                 # "I'm checking your schedule now. Give me just a moment!" with
                 # nothing run is a promise, not an answer: the turn ended there
                 # (2026-10-29 dev7 export; only get_upcoming's schema had loaded).
-                stalled = not attempted_tools and (stall_reply(text) or (wrote_call and not text))
+                stalled = (not attempted_tools and not ask_stall_nudged
+                           and (stall_reply(text) or (wrote_call and not text)))
                 if (not ask_reprompted and (not attempted_tools or web_only)
                         and _step < max_steps - 1
                         and not _ask_capability_prompt and not test_mode
@@ -4038,6 +4210,23 @@ async def run_agent(
                          "That asks for my own current data, and no tool has been called yet. ")
                         + "Call the tool that holds it now (calendar, email, messages, reminders, "
                         "notes or memory); if nothing holds it, say you don't know. Do not guess.")})
+                    continue
+                if (not ask_stall_nudged and not ask_reprompted and not attempted_tools
+                        and step_schemas and choice != "none" and _step < max_steps - 1
+                        and not test_mode and not pure_writing(memory_query)
+                        and promise_only_reply(text)):
+                    # "I'll look up the best details on that for you right
+                    # now." with nothing called ends the turn on a promise
+                    # (toolbench: 0.3-0.8% of finals). One nudge, tool choice
+                    # left to the model; its next reply is accepted as is.
+                    ask_stall_nudged = True
+                    audit("ask_stall_nudge", step=_step)
+                    if content_streamed:
+                        await emit({"type": "clear_answer"})
+                    msgs.append({"role": "assistant", "content": text})
+                    msgs.append({"role": "user", "content": (
+                        "You said you would look, but nothing has run yet. Call the tool "
+                        "now, or answer from what you already have.")})
                     continue
             unmet = _unmet_group()
             candidates = _unmet_candidates(unmet)
@@ -4448,10 +4637,24 @@ async def run_agent(
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 continue
 
-            if name in _EFFECT_TOOLS and name in tools_answered:
-                result = (f"({name} already succeeded earlier this turn; it was NOT run "
-                          "again. Narrate the existing result instead of duplicating the action.)")
+            if name in _EFFECT_TOOLS and _effect_duplicate_key(name, args) in effect_keys_done:
+                # Only a true repeat: the same tool on the same target or with
+                # equivalent arguments. A different reminder, event or setting
+                # in the same turn is its own action and runs (with its own
+                # card wherever one is due).
+                result = (f"({name} already succeeded earlier this turn with these arguments; "
+                          "it was NOT run again. Narrate the existing result instead of "
+                          "duplicating the action.)")
                 audit("reject_duplicate_effect", tool=name, args=args)
+                prev_step_refusals += 1
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
+            if name in _EFFECT_TOOLS and len(effect_keys_done) >= _MAX_EFFECT_CALLS_PER_TURN:
+                result = (f"({name} was NOT run: this request already made "
+                          f"{len(effect_keys_done)} changes, the most one request may make. "
+                          "Tell the user which items were done and which were not.)")
+                audit("reject_effect_cap", tool=name, args=args)
                 prev_step_refusals += 1
                 await emit({"type": "tool_result", "id": cid, "result": result})
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
@@ -4632,6 +4835,8 @@ async def run_agent(
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 _record_outcome(name, result, planned=True)
                 tools_answered.add(name)
+                if name in _EFFECT_TOOLS:
+                    effect_keys_done.add(_effect_duplicate_key(name, args))
                 if restricted[0] is not None:
                     # A dry run's planned lookup stands in for the real one.
                     restricted_ran[0] = True
@@ -4667,6 +4872,17 @@ async def run_agent(
             if fingerprint in completed_effects:
                 result = ('Already completed in this turn; not executed again.\n'
                           + completed_effects[fingerprint])
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
+            if name in _EFFECT_TOOLS and _effect_duplicate_key(name, args) in effect_keys_done:
+                # The same repeat check, on the arguments as bound: a send to
+                # "Sam" became Sam's verified address only just above.
+                result = (f"({name} already succeeded earlier this turn with these arguments; "
+                          "it was NOT run again. Narrate the existing result instead of "
+                          "duplicating the action.)")
+                audit("reject_duplicate_effect", tool=name, args=args)
+                prev_step_refusals += 1
                 await emit({"type": "tool_result", "id": cid, "result": result})
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 continue
@@ -4945,7 +5161,8 @@ async def run_agent(
                     if name in _TERMINAL_OUTBOUND_DENIALS:
                         return await _finish_denied_outbound(emit)
                     response = (_reminder_update_receipts() or
-                                "The requested action was not completed because approval was denied.")
+                                _earlier_effect_receipts(
+                                    "The requested action was not completed because approval was denied."))
                     await emit({"type": "text", "text": response})
                     await emit({"type": "done"})
                     return response
@@ -4961,7 +5178,8 @@ async def run_agent(
                     # Retrying a write after an uncertain response can create
                     # duplicates; let the user correct the arguments first.
                     response = (_reminder_update_receipts() or
-                                "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(result))
+                                _earlier_effect_receipts(
+                                    "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(result)))
                     await emit({"type": "text", "text": response})
                     await emit({"type": "done"})
                     return response

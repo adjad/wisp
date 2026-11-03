@@ -189,7 +189,14 @@ def main(only=None):
                               "chat_template_kwargs": req.get("chat_template_kwargs"),
                               "writes": writes, "approve": approve, "expect_cards": expect_cards,
                               "cards_seen": cards_seen, "shown_final": shown_final, "effects": effects,
-                              "turn_writes": turn_writes})
+                              "turn_writes": turn_writes,
+                              "clarify": bool(getattr(sc, "clarify", False)) and resp["kind"] == "final",
+                              "unsafe_reads": list(getattr(sc, "unsafe_reads", ()) or ()),
+                              "thread": getattr(sc, "thread", None), "qkind": getattr(sc, "qkind", None),
+                              "recall_refs": list(getattr(sc, "recall_refs", ()) or ()),
+                              "recall_absent": getattr(sc, "recall_absent", None),
+                              "recall_ok": list(getattr(sc, "recall_ok", ()) or ()),
+                              "anchor_pos": getattr(sc, "anchor_pos", None)})
             think_turn(examples[first_new:], metas[first_new:], failures)
     return examples, metas, failures, per_family_scen
 
@@ -267,7 +274,8 @@ def for_training(ex: dict) -> dict:
 
 def write(examples, metas):
     examples = [for_training(ex) for ex in examples]
-    train_idx, valid_idx = split(metas)
+    train_idx, valid_idx = split(metas, examples)
+    write_manifest(metas, train_idx, valid_idx)
     stuck = fix_adjacent(examples, metas, [list(range(len(metas))), train_idx, valid_idx])
     if stuck:
         raise SystemExit(f"thoughts: consecutive duplicates that could not be re-phrased: {stuck[:5]}")
@@ -287,27 +295,157 @@ def write(examples, metas):
     return train_idx, valid_idx
 
 
-def split(metas):
-    # 90/10 split by family. The unit is a prompt GROUP (prompts that fold to the
-    # same text, see leak.fold; a group belongs to the family that first uses it),
-    # so every step of a turn, and every turn that
-    # asks the same question of a different world, lands in the same split.
+# Families whose rows share a seeded conversation: one chat history feeds many rows (a thread asked several ways,
+# a long chat recalled at several points). Their split unit is the CONVERSATION, so no valid row has a train
+# sibling with the same earlier turns. A scenario that records its own thread (session_chat_r4) keeps it; the
+# others get one derived from the seeded history (thread_of).
+CONVERSATION_FAMILIES = ("session_chat_r4", "session_recall_r4", "instructions_r4")
+_DIGEST_USER = "- User: "
+
+
+def conversation_key(messages) -> str:
+    """The folded first two user messages of the seeded history. A long chat that production condensed carries its
+    oldest user messages as "- User: ..." lines of the "Earlier in this conversation" system note, so those count
+    too, in order. `messages` is the history only (see history_of): the current question is never part of the key.
+    "" when there is no earlier user message."""
+    users = []
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, str):
+            continue
+        if m.get("role") == "system" and content.startswith("Earlier in this conversation"):
+            users += [line[len(_DIGEST_USER):].rstrip("…") for line in content.split("\n") if line.startswith(_DIGEST_USER)]
+        elif m.get("role") == "user":
+            users.append(content)
+        if len(users) >= 2:
+            break
+    return "|".join(leak.fold(u)[:80] for u in users[:2])
+
+
+def history_of(messages) -> list:
+    """The messages before the turn's own user message. A training example ends with the target assistant message, so
+    the turn's user message (and any tool steps after it) sit at the end: cut at the LAST user message, so a
+    single-turn row has an empty history and a follow-up's key never depends on its own question."""
+    last = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=0)
+    return messages[:last]
+
+
+def assign_threads(metas, examples):
+    """meta.thread is set ONLY on multi-turn rows of a seeded conversation: a row whose history holds an earlier user
+    message gets a stable id of that history (the same two opening user messages = the same conversation), unless the
+    scenario recorded its own (session_chat_r4). A single-turn row (no earlier user message) has thread None, whether
+    or not its scenario recorded one, and is a split unit of its own."""
+    import hashlib
+    for m, ex in zip(metas, examples):
+        if m["family"] not in CONVERSATION_FAMILIES:
+            continue
+        key = conversation_key(history_of(ex["messages"]))
+        if not key:
+            m["thread"] = None
+        elif not m.get("thread"):
+            m["thread"] = "conv-" + hashlib.sha1(key.encode()).hexdigest()[:12]
+
+
+def _h(text: str) -> int:
+    import hashlib
+    return int(hashlib.sha1(text.encode()).hexdigest(), 16)
+
+
+def split(metas, examples=None):
+    """RL-SCOPE C16. The unit is a CONNECTED COMPONENT of prompt groups: groups (prompts that fold to the same text,
+    leak.fold) are joined when they share a non-null meta.thread, so no thread spans train and valid; a row without
+    a thread is a unit of its own group. A unit is valid when sha1 of its smallest fold is 0 mod 10, which for a
+    one-group unit is exactly sha1(leak.fold(prompt)) % 10 == 0. Stratified: a family with no valid unit gets its
+    lowest-sha1 unit (a unit belongs to the family that first uses its smallest group). Asserts that no group and no
+    thread is on both sides. The result of the last call is kept in LAST_SPLIT for the manifest."""
+    if examples is not None:
+        assign_threads(metas, examples)
+    fold_of = [leak.fold(m["prompt"]) for m in metas]
     group_family: dict[str, str] = {}
-    for m in metas:
-        group_family.setdefault(leak.fold(m["prompt"]), m["family"])
-    by_family = defaultdict(set)
-    for g, family in group_family.items():
-        by_family[family].add(g)
-    split_rng = random.Random(7)
-    valid_groups = set()
-    for family, groups in sorted(by_family.items()):
-        groups = sorted(groups)
-        split_rng.shuffle(groups)
-        valid_groups |= set(groups[:max(1, round(len(groups) * 0.1))])
+    for f, m in zip(fold_of, metas):
+        group_family.setdefault(f, m["family"])
+    parent = {f: f for f in group_family}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    first_of_thread: dict[str, str] = {}
+    for f, m in zip(fold_of, metas):
+        t = m.get("thread")
+        if t:
+            ra, rb = find(first_of_thread.setdefault(t, f)), find(f)
+            if ra != rb:
+                parent[max(ra, rb)] = min(ra, rb)         # the smaller fold is the unit's key
+    units: dict[str, list[str]] = defaultdict(list)
+    for f in sorted(group_family):
+        units[find(f)].append(f)
+    by_family = defaultdict(list)
+    for key in units:
+        by_family[group_family[key]].append(key)
+    valid_units = {k for k in units if _h(k) % 10 == 0}
+    for family, keys in by_family.items():
+        if not any(k in valid_units for k in keys):
+            valid_units.add(min(keys, key=lambda k: (_h(k), k)))
+    valid_groups = {f for k in valid_units for f in units[k]}
     train_idx, valid_idx = [], []
+    for idx, f in enumerate(fold_of):
+        (valid_idx if f in valid_groups else train_idx).append(idx)
+    # asserts: no prompt group and no thread on both sides; every family has a valid unit
+    assert not ({fold_of[i] for i in train_idx} & valid_groups), "a prompt group is in both splits"
+    thread_side: dict[str, set] = defaultdict(set)
     for idx, m in enumerate(metas):
-        (valid_idx if leak.fold(m["prompt"]) in valid_groups else train_idx).append(idx)
+        if m.get("thread"):
+            thread_side[m["thread"]].add(fold_of[idx] in valid_groups)
+    spanning = sorted(t for t, v in thread_side.items() if len(v) > 1)
+    assert not spanning, f"threads in both train and valid: {spanning[:5]}"
+    assert all(any(k in valid_units for k in keys) for keys in by_family.values()), "a family has no valid unit"
+    LAST_SPLIT.clear()
+    LAST_SPLIT.update(valid_threads=sorted(t for t, v in thread_side.items() if v == {True}),
+                      valid_units={fam: sum(k in valid_units for k in keys) for fam, keys in sorted(by_family.items())},
+                      units={fam: len(keys) for fam, keys in sorted(by_family.items())},
+                      valid_folds=sorted(valid_groups))
     return train_idx, valid_idx
+
+
+LAST_SPLIT: dict = {}
+R3_VALID_META = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ask-lora-r3", "data", "valid.meta.jsonl")
+
+
+def write_manifest(metas, train_idx, valid_idx):
+    """eval_manifest.json beside the build: the valid thread ids (sorted) and the folds that must never reach RL or SFT
+    train. r3-valid folds that this build puts in train are listed (the hash split does not keep r3's old split), so a
+    later export drops them too."""
+    import hashlib
+    sha = lambda t: hashlib.sha1(t.encode()).hexdigest()
+    vset = set(valid_idx)
+    folds_now = {leak.fold(m["prompt"]): i in vset for i, m in enumerate(metas)}
+    r3 = []
+    if os.path.exists(R3_VALID_META):
+        r3 = sorted({leak.fold(json.loads(l)["prompt"]) for l in open(R3_VALID_META) if l.strip()})
+    # RL-SCOPE C16: every r3-valid fold in this build is still valid or is listed (sha1) in the manifest, so the
+    # export drops it; nothing r3 kept out of training can reach train unlisted.
+    now_train = sorted(sha(f) for f in r3 if folds_now.get(f) is False)
+    listed = set(now_train)
+    in_build = [f for f in r3 if f in folds_now]
+    still_valid = [f for f in in_build if folds_now[f]]
+    assert len(still_valid) + len(now_train) == len(in_build), "an r3-valid fold is neither valid nor listed in the manifest"
+    assert all(sha(f) in listed for f in in_build if not folds_now[f]), "an r3-valid fold in train is not listed"
+    manifest = {"split": "sha1(leak.fold(prompt)) % 10 == 0 over connected components of prompt groups joined by shared meta.thread; "
+                         "stratified to at least one valid unit per family",
+                "valid_threads": LAST_SPLIT["valid_threads"],
+                "valid_units_per_family": LAST_SPLIT["valid_units"], "units_per_family": LAST_SPLIT["units"],
+                "valid_fold_sha1": sorted(sha(f) for f in LAST_SPLIT["valid_folds"]),
+                "r3_valid_folds": len(r3),
+                "r3_valid_folds_in_build": len(in_build),
+                "r3_valid_folds_still_valid": len(still_valid),
+                "r3_valid_folds_now_train_sha1": now_train}
+    with open(os.path.join(OUT, "eval_manifest.json"), "w") as f:
+        json.dump(manifest, f, indent=1, sort_keys=True)
+        f.write("\n")
+    return manifest
 
 
 def write_stats(metas, train_idx, valid_idx):

@@ -232,6 +232,8 @@ struct MemoryView: View {
                 if let fact = forgetting {
                     Button("Forget", role: .destructive) {
                         Task { await model.mutate("/memory/facts/\(fact.id)", method: "DELETE") }
+                        // The chats it came from may still be held for the debug log: drop them all.
+                        NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil)
                         forgetting = nil
                     }
                 }

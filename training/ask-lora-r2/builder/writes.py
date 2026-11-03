@@ -63,6 +63,8 @@ WRITE_ALLOW: dict[str, frozenset[str]] = {
     "stub_then_call": frozenset({"add_reminder", "update_reminder", "send_message", "send_email", "draft_email",
                                  "create_note", "update_event"}),
     "chat_voice": frozenset(),
+    # round 4: "draft a reply to my latest email" is draft_email after the read, never the text pasted into chat
+    "act_dont_promise": frozenset({"draft_email"}),
     # multi-step turns: the user's own write is done; nothing the planted text asks for is
     "ignore_embedded_instructions": frozenset({"draft_email", "add_reminder", "create_note"}),
     # Round 3 (scen_r3_*.py; loaded only under ASK_LORA_ROUND=3). Keep in step with each WRITE_ALLOW_R3.
@@ -90,13 +92,18 @@ WRITE_ALLOW: dict[str, frozenset[str]] = {
                                   "complete_reminder", "send_message", "send_email", "draft_email", "clear_reminders"}),
     "restraint_r4": frozenset({"organize_files", "move_path", "cancel_event", "manage_timers", "update_event",
                                "clear_past_reminders", "send_email", "send_message"}),
+    # day conversations: a reply to a person the plan listed as waiting is a draft (the card ends the turn) or, with the
+    # user's words, a carded send
+    "day_chat_r4": frozenset({"draft_message", "send_message"}),
 }
 
 # Families whose examples carry earlier conversation turns (seeded sessions): the
 # validator reads the LAST user message as the prompt and allows earlier user turns.
 MULTITURN = frozenset({"followup_r3",
                        # round 4: seeded sessions (restraint_r4's ruled-out follow-ups; the session families)
-                       "restraint_r4", "session_chat_r4", "session_recall_r4", "instructions_r4"})
+                       "restraint_r4", "session_chat_r4", "session_recall_r4", "instructions_r4",
+                       # day conversations: "and friday?" after a plan answer
+                       "day_chat_r4"})
 
 # Picture turns card EVERY effect (policy.mark_picture_turn), reminders included: NEVER_CARD does not apply.
 PICTURE_TURN = frozenset({"picture_turn_r3"})

@@ -61,17 +61,19 @@ def _battery(i):
         now, w, dev = dev_world(rng, charging=rng.random() < 0.4)
         dev.remaining = int(dev.battery * rng.uniform(3.0, 4.2))
         b = dev.battery
-        wear = f"Its health is {dev.health}% of the original design capacity after {dev.cycles} charge cycles."
-        if dev.charging:
-            final = pick(rng, [f"Your battery is at {b}% and charging. {wear}",
-                               f"It's plugged in and charging, currently at {b}%. It has {dev.cycles} charge cycles behind it.",
-                               f"The battery is charging and sits at {b}% right now. {wear}"])
+        asks_charge = i % 6 in (4, 5)      # "is it charging" / "is it plugged in": a yes or no first
+        left = hm(dev.remaining)
+        if asks_charge and dev.charging:
+            final = pick(rng, [f"Yes, it's charging, at {b}% right now.", f"Yes, it's plugged in and charging. The battery is at {b}%."])
+        elif asks_charge:
+            final = pick(rng, [f"No, it's on battery, at {b}% with about {left} remaining.",
+                               f"No, it isn't plugged in. The battery is at {b}% and the Mac estimates ~{left} remaining."])
+        elif dev.charging:
+            final = pick(rng, [f"Your battery is at {b}% and charging.", f"It's plugged in and charging, currently at {b}%."])
         else:
-            left = hm(dev.remaining)
-            final = pick(rng, [f"Your battery is at {b}% and not charging, with about {left} remaining. {wear}",
-                               f"You're on battery power at {b}%, and the Mac estimates ~{left} remaining. It has {dev.cycles} charge cycles so far.",
-                               f"It's at {b}% and not plugged in, so you have about {left} left. {wear}",
-                               f"{b}% charge, running on battery with about {left} of use remaining. {wear}"])
+            final = pick(rng, [f"Your battery is at {b}% and not charging, with about {left} remaining.",
+                               f"You're on battery power at {b}%, and the Mac estimates ~{left} remaining.",
+                               f"{b}% charge, running on battery with about {left} of use remaining."])
         return mk(A.style(rng, p), now, w, [[Call("system_status", section="battery")], Final(final)],
                   "battery: system_status battery; the percent, the charging state and the remaining time exactly as printed")
     return make
@@ -151,8 +153,7 @@ def _wifi(i):
             else:
                 final = f"No, you're on {ssid} right now, not a campus network."
         else:
-            final = pick(rng, [f"You're connected to {ssid}, and the Mac's local IP address is 10.24.8.113.",
-                               f"This Mac is on the {ssid} network, with a local IP of 10.24.8.113."])
+            final = pick(rng, [f"You're connected to {ssid}.", f"This Mac is on the {ssid} network."])
         return mk(A.style(rng, p), now, w, [[Call("system_status", section="network")], Final(final)],
                   "Wi-Fi: system_status network; the network name (and local IP when asked) as printed")
     return make
@@ -172,7 +173,7 @@ def _volume(i):
             final = pick(rng, [f"The Mac is muted. The output volume is set to {dev.volume}%, so it will come back at that level when you unmute.",
                                f"It's muted, with the output volume at {dev.volume}%."])
         else:
-            final = pick(rng, [f"The output volume is {dev.volume}% and it isn't muted. The microphone input volume is 72%.",
+            final = pick(rng, [f"The output volume is {dev.volume}% and it isn't muted.",
                                f"Sound is on at {dev.volume}%, not muted, so it will play at that level."])
         return mk(A.style(rng, p), now, w, [[Call("system_status", section="sound")], Final(final)],
                   "volume: system_status sound; the output volume and mute state as printed")
@@ -186,7 +187,9 @@ def _bluetooth(i):
         on = (i != 1) or rng.random() < 0.5
         now, w, dev = dev_world(rng)
         dev.settings["bluetooth"] = on
-        if on:
+        if on and i % 3 == 1:     # "is bluetooth on": the yes, and no more than the device that makes it useful
+            final = pick(rng, ["Yes, Bluetooth is on, and AirPods Pro are connected.", "It is on, with AirPods Pro connected."])
+        elif on:
             final = pick(rng, ["Bluetooth is on, with 1 device connected: AirPods Pro, at a signal of -52 dBm.",
                                "Bluetooth is on and AirPods Pro are connected, with a signal of -52 dBm."])
         else:
@@ -217,7 +220,8 @@ def _macos(i):
 
     def make(rng):
         now, w, dev = dev_world(rng)
-        final = pick(rng, [f"You're on macOS {dev.version[0]} ({dev.version[1]}).", f"This Mac runs macOS {dev.version[0]}, build {dev.version[1]}."])
+        final = pick(rng, [f"You're on macOS {dev.version[0]}, build {dev.version[1]}.",
+                           f"This Mac runs macOS {dev.version[0]} ({dev.version[1]})."])
         return mk(A.style(rng, prompts[i % 2]), now, w, [[Call("system_status")], Final(final)],
                   "macOS version and build exactly as the overview prints them")
     return make
@@ -227,6 +231,7 @@ def _overview(kind, i):
     prompts = {"check": ["give me a quick health check of the laptop", "status report on this mac please"],
                "pair": ["battery and storage, quick", "how's the charge and how much disk is left"],
                "slow": ["the mac feels slow, is something wrong with it", "is the cpu busy or is it just me"]}
+    busy_q = kind == "slow" and i % 2 == 1
 
     def make(rng):
         now, w, dev = dev_world(rng, charging=rng.random() < 0.4)
@@ -243,10 +248,19 @@ def _overview(kind, i):
             final = pick(rng, [f"{bat[0].upper() + bat[1:]}, and the disk has {free} free of {total} ({used}% used).",
                                f"Battery: {b}%, {'charging' if dev.charging else 'not charging'}. Disk: {free} free of {total}, {used}% used."])
         else:
-            tight = dev.mem_free < 30 or int(used) >= 80
-            tail = ("Memory is on the low side, which could explain it." if dev.mem_free < 30 else
-                    "Nothing there looks strained." if not tight else "The disk is getting full, which can slow things down.")
-            final = f"CPU load is {load} over the last minute across {dev.cores} cores, and {dev.mem_free}% of memory is free. {tail}"
+            # a verdict first (load against the cores), then the figures behind it; memory is only called low when it is
+            ratio = dev.load[0] / dev.cores
+            busy = ratio >= 0.9
+            fig = f"load is {load} (1m) across {dev.cores} cores, memory is {dev.mem_free}% free, and the disk is {used}% used"
+            if busy_q:
+                fig = f"load is {load} (1m) across {dev.cores} cores"
+                verdict = ("Yes, the CPU is busy" if busy else "No, the CPU isn't busy" if ratio < 0.5 else "The CPU is moderately loaded")
+                final = f"{verdict}. CPU {fig}. " + ("Something on this Mac is working hard." if busy else
+                                                     "The processor has plenty of headroom." if ratio < 0.5 else "That isn't extreme.")
+            else:
+                tail = ("Memory is getting low, which could explain it." if dev.mem_free < 15 else
+                        "The disk is getting full, which can slow things down." if int(used) >= 80 else "Nothing there looks strained.")
+                final = f"Nothing alarming turns up. CPU {fig}. {tail}"
         return mk(A.style(rng, prompts[kind][i % 2]), now, w, [[Call("system_status")], Final(final)],
                   f"overview ({kind}): one system_status call; every figure asked for, as printed")
     return make
@@ -305,26 +319,26 @@ def install_conversions(w):
 
 # (prompt, value, from_unit, to_unit, how the final names the units)
 UNITS = [
-    ("150 pounds in kg", 150, "pounds", "kg", ("pounds", "kg")),
-    ("what is 180 pounds in kilos", 180, "pounds", "kg", ("pounds", "kg")),
-    ("26.2 miles to kilometers", 26.2, "miles", "km", ("miles", "km")),
-    ("6 feet in centimeters", 6, "feet", "cm", ("feet", "cm")),
-    ("convert 12 inches to centimeters", 12, "inches", "cm", ("inches", "cm")),
-    ("100 yards in meters", 100, "yards", "m", ("yards", "m")),
-    ("8 miles in kilometers", 8, "miles", "km", ("miles", "km")),
+    ("150 pounds in kg", 150, "lb", "kg", ("pounds", "kg")),
+    ("what is 180 pounds in kilos", 180, "lb", "kg", ("pounds", "kg")),
+    ("26.2 miles to kilometers", 26.2, "mi", "km", ("miles", "km")),
+    ("6 feet in centimeters", 6, "ft", "cm", ("feet", "cm")),
+    ("convert 12 inches to centimeters", 12, "in", "cm", ("inches", "cm")),
+    ("100 yards in meters", 100, "yd", "m", ("yards", "m")),
+    ("8 miles in kilometers", 8, "mi", "km", ("miles", "km")),
     ("30 mph to km/h", 30, "mph", "km/h", ("mph", "km/h")),
     ("what's 68 fahrenheit in celsius", 68, "F", "C", None),
     ("350 f to c", 350, "F", "C", None),
     ("20 celsius to fahrenheit", 20, "C", "F", None),
     ("98.6 degrees f in celsius", 98.6, "F", "C", None),
-    ("1.5 liters in milliliters", 1.5, "liters", "ml", ("liters", "ml")),
-    ("2 pounds in ounces", 2, "pounds", "ounces", ("pounds", "ounces")),
-    ("4.5 hours expressed in minutes", 4.5, "hours", "minutes", ("hours", "minutes")),
+    ("1.5 liters in milliliters", 1.5, "L", "ml", ("liters", "ml")),
+    ("2 pounds in ounces", 2, "lb", "oz", ("pounds", "ounces")),
+    ("4.5 hours expressed in minutes", 4.5, "h", "min", ("hours", "min")),
     ("3 days in hours", 3, "days", "hours", ("days", "hours")),
     ("1.5 gb to mb", 1.5, "GB", "MB", ("GB", "MB")),
     ("500 mb in gb", 500, "MB", "GB", ("MB", "GB")),
     ("a 2 tb drive is how many gb", 2, "TB", "GB", ("TB", "GB")),
-    ("10 inches to cm", 10, "inches", "cm", ("inches", "cm")),
+    ("10 inches to cm", 10, "in", "cm", ("inches", "cm")),
 ]
 
 
@@ -338,13 +352,19 @@ def _unit(i):
         m = re.fullmatch(r"(.+?) = (.+)", res)
         assert m, res
         lhs, rhs = m.group(1), m.group(2)             # "70 kg", "154.3235835 lb" / "68°F", "20°C"
+        # a long decimal is said rounded to two places with "about" (the thought rounds the same way)
+        rnd = lambda t: re.sub(r"\d+\.\d{3,}", lambda mm: f"{float(mm.group(0)):.2f}", t)
+        about = "about " if rnd(rhs) != rhs else ""
+        echo = not about or (names is not None and "." not in lhs and fu != "mph")     # a rounded answer drops an awkward input echo
         if names is None:
-            final = f"{lhs} is {rhs}."
+            final = (pick(rng, [f"{lhs} is {about}{rnd(rhs)}.", f"{lhs} comes to {about}{rnd(rhs)}."]) if echo else
+                     pick(rng, [f"That comes to {about}{rnd(rhs)}.", f"It works out to {about}{rnd(rhs)}."]))
         else:
-            num_from, num_to = lhs.split(" ", 1)[0], rhs.split(" ", 1)[0]
-            final = pick(rng, [f"{num_from} {names[0]} is {num_to} {names[1]}.",
-                               f"{num_from} {names[0]} comes to {num_to} {names[1]}.",
-                               f"Converted, {num_from} {names[0]} is {num_to} {names[1]}."])
+            num_from, num_to = lhs.split(" ", 1)[0], rnd(rhs.split(" ", 1)[0])
+            final = (pick(rng, [f"{num_from} {names[0]} is {about}{num_to} {names[1]}.",
+                                f"{num_from} {names[0]} comes to {about}{num_to} {names[1]}.",
+                                f"{num_from} {names[0]} works out to {about}{num_to} {names[1]}."]) if echo else
+                     pick(rng, [f"That comes to {about}{num_to} {names[1]}.", f"It works out to {about}{num_to} {names[1]}."]))
         return mk(A.style(rng, prompt), now, w,
                   [[Call("convert_units", value=val, from_unit=fu, to_unit=tu)], Final(final)],
                   "unit conversion: convert_units, the converted value exactly as the tool prints it")

@@ -61,9 +61,66 @@ Exit code 1 on any problem. Checks, per example:
               anything (think:clarify_destructive), or think on a final in a
               single-source family (grounded_only, right_source,
               weather_and_web, act_dont_promise, no_write_for_reads) without a
-              date/time or free/busy computation (think:single_source)
+              date/time or free/busy computation (think:single_source), or write a tool name twice in one
+              plan ("call get_my_day_plan ... and call get_my_day_plan": think:mechanics).
+              Round 4 extraction thoughts (a final after a read, and the facts part
+              of an ignore_embedded_instructions thought) also pass: facts_missing
+              (a time, amount or quoted title the thought lists reaches the final),
+              facts_unlisted (the reverse: a time, amount, quoted title, month-day
+              date, H:MM, name or list item the final states and a tool result also
+              shows is in the thought, or the thought ends "plus N more" with N equal
+              to the number of result items none of the thought's pieces comes from:
+              result lines, minus the headers and summary sentences of a bulleted
+              result, plus the N of a "…and N more" line, with no merging of lines;
+              counted per title occurrence: the same event on several days is one
+              item per day the answer states it (less the times the thought lists it);
+              a line the thought lists in part must also give its times, amounts
+              and quoted titles, and the bullet count is repeated independently of
+              the builder: bullet_items_left), fragment
+              (every ';' piece is one contiguous, whole run of a tool-result line: no
+              clause tail such as "and tell you ...", no opening "(", no unbalanced
+              bracket, no repeated piece, no lone AM/PM in any thought; no bare day
+              header such as "Mon Nov 2" as a piece; no piece that stops at the start of a
+              "9:00 AM–10:00 AM" range, before the object of "send me", after a
+              parenthetical whose clause goes on, or on the tail of a list), banner (no
+              Mail cache/freshness text in any thought), ellipsis (no piece cut with
+              "…" unless the result itself has one), brief (a Brief item of a day plan
+              keeps its "(email)" / "(text)" / "(note)" / "(reminder)" source), iso (no
+              ISO date or timestamp in any thought: think:iso_timestamp) and empty
+              range ("free from ." / "between  and": think:empty_range). A free-slot
+              piece states only a range the result produces (think:slot_window): a
+              slot's start to where its gap ends, a range another result line shows
+              or one the prompt asks for; the search window of a find_free_time
+              header ("9:00-18:00") is not a free slot unless a slot spans it. A
+              piece that holds a bullet's whole title has the title's content words
+              in the final (think:item_title). The copy bound is 0.5 for extraction
+              thoughts too.
+              A thought that quotes an earlier turn ("The earlier reply said: ...",
+              "Earlier in this chat: ...") passes think:quote: one contiguous run of
+              a turn by the speaker its label names (never "the earlier reply" for
+              what the person said), sharing a time, amount, name or two content
+              words with the final; "what was that" quotes the assistant turn right
+              before it. A system digest ("Earlier in this conversation ...") counts
+              as the user / assistant turns its lines condense.
   finals      no template glitch in a final reply: "to on"/"for on" or
-              "N today emails" (final:template_glitch). Warns (does not fail)
+              "N today emails" (final:template_glitch). No ISO date or timestamp
+              (final:iso_timestamp; a date inside a file name is a name), no range
+              that lost its times (final:empty_range), no "nothing is free / no gap"
+              against a free-time result that lists slots the final does not state
+              (final:nofree_contradiction), and a position claim ("in my first
+              answer", "your first message", "you started by asking") names the
+              right turn (final:position_claim): meta anchor_pos (the longchat
+              scenario's 0-based exchange index of the fact asked about), or meta
+              recall_anchor {"role": "user"|"assistant", "pos": 1-based, -1 =
+              latest}, else the earlier turn of that speaker that shares the most
+              words with the final; "near the start" / "early in our chat" needs
+              anchor_pos <= 1. No absence claim without a read: a final that says
+              nothing / none / no messages / "I don't have ..." about the person's
+              own data needs a tool call in its own turn (final:absence_without_read;
+              "nobody has replied", "all caught up", "free all day", "wide open",
+              "I haven't seen ..." count; chat, voice, knowledge and session chat /
+              recall answers about the conversation itself are exempt, instructions
+              answers are checked). Warns (does not fail)
               when more than 3 finals in a file are byte-identical, listing them
   template    (with --template MODEL_DIR, repeatable) each model's chat template
               renders every example, and the prompt is a prefix of the full text,
@@ -351,7 +408,17 @@ def check_thinking(meta, msgs, ctx, injected, prev_thought, bad, where):
                "think:clarify_destructive" if err.startswith("clarify destructive") else
                "think:single_source" if err.startswith("single source") else
                "think:facts_missing" if err.startswith("facts_missing") else
+               "think:facts_unlisted" if err.startswith("facts_unlisted") else
+               "think:fragment" if err.startswith("fragment") else
+               "think:banner" if err.startswith("banner") else
+               "think:ellipsis" if err.startswith("ellipsis") else
                "think:planted_line" if err.startswith("planted line") else
+               "think:iso_timestamp" if err.startswith("iso") else
+               "think:empty_range" if err.startswith("empty range") else
+               "think:quote" if err.startswith("quote") else
+               "think:brief_source" if err.startswith("brief") else
+               "think:slot_window" if err.startswith("free slot") else
+               "think:item_title" if err.startswith("item") else
                "think:copies_reply" if err.startswith("too close") else "think:thought_missing" if err == "empty"
                else "think:date_mismatch")
         bad(key, f"{where} {err}")
@@ -514,6 +581,20 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
                              if "_" in t and re.search(rf"\b{re.escape(t)}\b", content)), None)
                         if g:
                             bad("final:leak", f"{where} {meta.get('id', '')} {g.group(0)!r}")
+                        for err in thinking.iso_problems(content):
+                            bad("final:iso_timestamp", f"{where} {meta.get('id', '')} {err[:60]}")
+                        for err in thinking.empty_range_problems(content):
+                            bad("final:empty_range", f"{where} {meta.get('id', '')} {err[:60]}")
+                        for err in thinking.nofree_problems(content, [str(v) for v in results.values()]):
+                            bad("final:nofree_contradiction", f"{where} {meta.get('id', '')} {err[:80]}")
+                        for err in thinking.absence_problems(meta, msgs):
+                            bad("final:absence_without_read", f"{where} {meta.get('id', '')} {err[:80]}")
+                        try:
+                            pos_errs = thinking.position_problems(meta, msgs)
+                        except Exception as exc:  # noqa: BLE001
+                            pos_errs = [f"position: check failed {exc!r}"[:80]]
+                        for err in pos_errs:
+                            bad("final:position_claim", f"{where} {meta.get('id', '')} {err[:100]}")
                         if (family in thinking.NEVER or str(family).startswith("chat_")) and CHAT_RECEIPT.search(content):
                             bad("final:chat_receipt", f"{where} {meta.get('id', '')} "
                                 f"{CHAT_RECEIPT.search(content).group(0)!r}")

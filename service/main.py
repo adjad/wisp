@@ -1724,7 +1724,15 @@ def _model_led_preload(prompt: str) -> list[str]:
     except Exception:  # noqa: BLE001 — a missing head start must never fail the turn
         return []
 
-def _ask_tool_rank(prompt: str) -> tuple[list[str], list[str]]:
+def _previous_user_text(messages: list[dict], current: dict) -> str:
+    """The user's last prompt before this turn, for a bare follow-up ("and saturday?")."""
+    for message in reversed(messages):
+        if message is not current and message.get("role") == "user" and isinstance(message.get("content"), str):
+            return message["content"]
+    return ""
+
+
+def _ask_tool_rank(prompt: str, previous: str = "") -> tuple[list[str], list[str]]:
     """Model-only Ask head start: (preload, stub rank). The preload is
     _model_led_preload's shortlist cut to ASK_PRELOAD real schemas; the stub
     rank is the next ASK_STUBS lexical candidates, offered by name only
@@ -1753,7 +1761,7 @@ def _ask_tool_rank(prompt: str) -> tuple[list[str], list[str]]:
             return reads + [n for n in names if n not in reads]
         head = reads_first(_model_led_preload(prompt))
         from service.model_only import DAY_PLAN_TOOL, day_plan_question
-        if day_plan_question(prompt) and DAY_PLAN_TOOL in REGISTRY:
+        if day_plan_question(prompt, previous) and DAY_PLAN_TOOL in REGISTRY:
             # The Brief already ranked the day: one read instead of four.
             head = [DAY_PLAN_TOOL, *(n for n in head if n != DAY_PLAN_TOOL)]
         from service.model_only import WISP_SELF_TOOLS, wisp_self_question
@@ -1771,6 +1779,10 @@ def _ask_tool_rank(prompt: str) -> tuple[list[str], list[str]]:
                                  ("search_reminders", reminders_first(prompt))):
                 if wanted and lead in REGISTRY:
                     head = [lead, *(n for n in head if n != lead)]
+        from service.model_only import reply_reads
+        if lead_reads := [n for n in reply_reads(prompt) if n in REGISTRY]:
+            # A reply draft reads the conversation it answers before drafting.
+            head = [*lead_reads, *(n for n in head if n not in lead_reads)]
         preload = head[:ASK_PRELOAD]
         try:
             ranked = _reranker.ranked_lexical_candidates(text, writing=writing,
@@ -2783,6 +2795,7 @@ async def agent(body: dict[str, Any]):
                 if _is_stock_quote_only_prompt(prompt):
                     synthesis_tool_names.difference_update({"web_search", "web_fetch"})
                 synthesis_guidance = []
+                answer_style_guidance = ""
                 if synthesis_tool_names & {"web_search", "web_fetch"}:
                     synthesis_guidance.append(
                         "Summarize web evidence as clear, calm bullets. Open with a short "
@@ -2807,7 +2820,8 @@ async def agent(body: dict[str, Any]):
                 # Model-only Ask: no router sets light_read on a model-led
                 # turn, so the answer-style hint is restored here instead.
                 ask_quality = model_only and model_led_turn
-                ask_preload, ask_stub_rank = _ask_tool_rank(prompt) if ask_quality else ([], [])
+                previous_prompt = _previous_user_text(messages, user_msg) if ask_quality else ""
+                ask_preload, ask_stub_rank = _ask_tool_rank(prompt, previous_prompt) if ask_quality else ([], [])
                 if ask_quality and subject_tools:
                     ask_stub_rank = list(dict.fromkeys([*ask_stub_rank, *subject_tools]))
                 if ask_quality:
@@ -2816,7 +2830,7 @@ async def agent(body: dict[str, Any]):
                     if wisp_self_question(prompt):
                         synthesis_guidance.insert(1, wisp_self_hint())
                     from service.model_only import ASK_DAY_PLAN_HINT, day_plan_question
-                    if day_plan_question(prompt):
+                    if day_plan_question(prompt, previous_prompt):
                         synthesis_guidance.insert(1, ASK_DAY_PLAN_HINT)
                 ask_forbidden: frozenset[str] = frozenset()
                 ask_direct = False
@@ -2834,6 +2848,22 @@ async def agent(body: dict[str, Any]):
                     knowledge = knowledge_question(prompt)
                     if knowledge:
                         synthesis_guidance.insert(1, ASK_KNOWLEDGE_HINT)
+                    # "From now on keep answers short" has no tool route (remember
+                    # refuses it by design): the host saves a standing style to the
+                    # profile before the model runs, and builds canonical guidance
+                    # from this chat's earlier style instructions so history
+                    # trimming cannot drop them. It is appended as the LAST
+                    # synthesis_guidance item (below), after every other Ask hint,
+                    # so a later topic hint cannot out-rank the user's own rule.
+                    if not test_mode:
+                        try:
+                            from service.memory.answer_style import apply_for_turn
+                            earlier_texts = store.recent_user_turns(sid, limit=40) if sess else []
+                            if persisted_user_idx is not None and earlier_texts:
+                                earlier_texts = earlier_texts[:-1]  # this turn, already stored
+                            answer_style_guidance = apply_for_turn(prompt, earlier_texts)
+                        except Exception:  # noqa: BLE001
+                            pass  # a style note never breaks the turn
                     # One tool-free step: writing with no destination, general
                     # knowledge, and questions about what Wisp can do (their
                     # tool paths failed, refused or named internal tools).
@@ -2845,6 +2875,8 @@ async def agent(body: dict[str, Any]):
                     # only added for a routed web menu, which a model-led turn
                     # never has; the model may still search (0.5.0-rc3 audit M3).
                     synthesis_guidance.append(MODEL_LED_UNTRUSTED_WEB_HINT)
+                if answer_style_guidance:
+                    synthesis_guidance.append(answer_style_guidance)  # last: wins by recency
                 style_hint = ((_LIGHT_READ_STYLE if is_light_read else "")
                              + ("\n" + _CLARIFY_CHANNEL_HINT if decision.clarify_channel else "")
                              + ("\n" + _CLARIFY_TARGET_HINT if decision.clarify_target else "")

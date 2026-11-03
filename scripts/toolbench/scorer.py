@@ -102,7 +102,7 @@ LABELS = (
     "needless_confirm",   # a `no_confirm` tool raised a confirmation card
     "empty_response",     # a step returned no text and no call (soft; oMLX drops calls to unoffered tools)
     "tool_error",         # a tool result was the loop's "(error calling …)" argument error (soft)
-    "empty_answer",       # no final text at all
+    "empty_answer",       # no final text and no message draft card
     "ungrounded_answer",  # the answer misses a fact it must state, or states one it must not
     "error",              # the turn raised
     "timeout",            # the turn hit the harness timeout (scored; reported separately too)
@@ -190,6 +190,17 @@ def _model_calls(traj: dict) -> list[dict]:
     return _split_calls(traj)[0]
 
 
+def _step_problems(step, args: dict, today: date) -> list[str]:
+    """Why `args` fail the step: its `args`, and (when it has `args_any`) all of the alternatives."""
+    problems = match_args(step.args, args, today)
+    alts = getattr(step, "args_any", ())
+    if alts:
+        tried = [match_args(a, args, today) for a in alts]
+        if all(tried):
+            problems.append("none of the alternatives matched: " + " | ".join("; ".join(t) for t in tried))
+    return problems
+
+
 def _match_expect(case: Case, calls: list[dict], today: date, *, effects: list[dict] = (),
                   write_tools: frozenset[str] = frozenset(),
                   refused: frozenset[str] = frozenset()) -> tuple[list[str], list[str]]:
@@ -203,7 +214,7 @@ def _match_expect(case: Case, calls: list[dict], today: date, *, effects: list[d
     unspent = Counter(e["tool"] for e in effects)
     for i, step in enumerate(case.expect):
         named = [j for j in range(cursor, len(calls)) if calls[j]["name"] in step.tools]
-        matching = [j for j in named if not match_args(step.args, calls[j].get("args") or {}, today)]
+        matching = [j for j in named if not _step_problems(step, calls[j].get("args") or {}, today)]
         hit = next((j for j in matching if calls[j]["name"] not in write_tools
                     or calls[j]["name"] in refused or unspent[calls[j]["name"]] > 0), None)
         if hit is not None:
@@ -215,7 +226,7 @@ def _match_expect(case: Case, calls: list[dict], today: date, *, effects: list[d
         if matching:
             return ["no_effect"], [f"step {i + 1} {want}: called, but it never took effect"]
         if named:
-            why = match_args(step.args, calls[named[0]].get("args") or {}, today)
+            why = _step_problems(step, calls[named[0]].get("args") or {}, today)
             return ["bad_args"], [f"step {i + 1} {want}: {'; '.join(why)}"]
         if any(c["name"] in step.tools for c in calls[:cursor]):
             return ["out_of_order"], [f"step {i + 1} {want} only appears before step {i}"]
@@ -454,7 +465,7 @@ def score(case: Case, traj: dict, *, registry_names: set[str], today: date,
     if not model and stall_reply(final):
         labels.append("stall")
         notes.append(f"stalled: {final.strip()[:80]!r}")
-    if not final.strip() and not labels:
+    if not final.strip() and not labels and not traj.get("message_draft"):
         labels.append("empty_answer")
 
     # Answer grounding — only meaningful once the turn produced an answer.

@@ -431,8 +431,9 @@ def status(profile: dict, *, now: float | None = None) -> dict:
     count = profile.get("dismiss_count", 0)
     # Someone who already filled in About you has told Wisp who they are; the
     # questionnaire would only ask it again. A name alone (step one, then the
-    # person left) still leaves the rest worth offering.
-    beyond_name = set(filled_fields(profile)) - {"name"}
+    # person left) still leaves the rest worth offering, and so does an answer
+    # style alone, which a chat can set ("from now on keep answers short").
+    beyond_name = set(filled_fields(profile)) - {"name", "tone", "detail"}
     offer = (not completed and not beyond_name and count < MAX_AUTO_OFFERS
              and (dismissed_at is None or now - dismissed_at >= REOFFER_AFTER_S))
     updated = profile.get("updated_at")
@@ -544,9 +545,15 @@ def profile_block(profile: dict | None = None) -> str:
     profile = load() if profile is None else profile
     if not has_content(profile):
         return ""
-    lines = ["ABOUT THE USER — they told Wisp this directly, in the Getting to know "
-             "you questions. Trust it over guesses from their data, and use it to "
-             "make help personal, not to lecture."]
+    if set(filled_fields(profile)) <= {"tone", "detail"}:
+        # Only a style, often set by asking in chat ("from now on keep answers
+        # short"): there were no Getting to know you questions to cite.
+        lines = ["ABOUT THE USER — they told Wisp how they want its answers to sound "
+                 "(Memory › About you, or by asking in chat). Follow it."]
+    else:
+        lines = ["ABOUT THE USER — they told Wisp this directly, in the Getting to know "
+                 "you questions. Trust it over guesses from their data, and use it to "
+                 "make help personal, not to lecture."]
     if profile.get("name"):
         lines.append(f"- Call them {profile['name']}. Use the name naturally, not in every sentence.")
     if profile.get("about"):

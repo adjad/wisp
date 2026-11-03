@@ -41,10 +41,73 @@ def traj_from_row(row: dict, meta: dict | None = None) -> dict:
     return {"route": row.get("route"), "steps": steps, "final": row.get("final") or "",
             "effects": row.get("effects") or [], "asked": row.get("asked") or [],
             "escapes": row.get("escapes"), "error": row.get("error"), "timeout": row.get("timeout"),
+            "message_draft": row.get("message_draft"),
             "access": row.get("access"), "path": row.get("path"),
             "seconds": v.get("seconds") or 0.0, "model_seconds": v.get("model_seconds") or 0.0,
             "guard_retries": v.get("guard_retries") or 0,
             "max_steps": (meta or {}).get("max_steps") or 8}
+
+
+# ---------------------------------------------------------------- unchecked absence
+# "Nothing on Saturday", "no messages from Sam", "I don't have that": a claim that something is not there.
+# Such a claim is only worth anything after a read of the place it would be. A trial whose final says it and
+# whose turn made NO read call (nothing the host's direct_calls ran, no tool the model called that is not
+# a write, a draft or a schema load) is an unchecked absence. The PLAN.md bar is candidate <= untuned (the
+# untuned model is rerun in every gate.sh run, so the two are always measured on the same world); the aim is 0.
+# Counted from the stored trajectory (steps, route, final), so it also works on --stored runs and on rows
+# written before this metric existed. Chat, session (answers about the conversation itself) and any no_tool
+# case are exempt, as the dataset builder's own check exempts them (thinking.absence_problems, whose pattern
+# this is: keep the two in step).
+_ABS_NOUN = (r"(?:new |unread |matching |recent |upcoming |such |relevant |saved |open |pending |overdue |other )*"
+             r"(?:messages?|emails?|e-mails?|texts?|mail|events?|reminders?|notes?|results?|matches|items?|meetings?|"
+             r"appointments?|files?|contacts?|tasks?|timers?|alarms?|birthdays?|deadlines?|plans?|classes|lectures?|"
+             r"conflicts?|gaps?|free (?:time|slots?)|memor(?:y|ies)|facts?|mentions?|entries|due dates?)")
+_ABSENCE = re.compile(
+    rf"\b(?:no|zero|not any|without any) {_ABS_NOUN}\b|"
+    rf"\bnothing (?:scheduled|new|due|waiting|saved|stored|found|matching|came|pending|unread|overdue|planned|on (?:your|the|for)|"
+    rf"in (?:your|the)|here|there|today|tomorrow|tonight|this (?:week|weekend|morning|afternoon|evening))\b|"
+    rf"\bnone (?:of|due|today|tomorrow|scheduled|found|saved)\b|^\W*none\b|"
+    rf"\b(?:there (?:are|is)n['’]t|there (?:are|is) no|aren['’]t|isn['’]t|doesn['’]t (?:have|show|list)|don['’]t (?:have|show|see)) (?:any )?{_ABS_NOUN}\b|"
+    rf"\bI (?:don['’]t|do not|can['’]t|cannot|couldn['’]t) (?:have|see|find|know of|remember) (?!access\b|the ability\b|a way\b|permission\b|"
+    rf"enough\b|how\b|what\b|which\b|who\b|where\b|when\b|whether\b|if\b|that you\b|about\b)\w+|"
+    rf"\byou (?:have|got|don['’]t have|haven['’]t got) (?:no|nothing)\b|\b(?:inbox|calendar|schedule|day|list) is (?:empty|clear|free|open)\b|"
+    rf"\bnothing (?:is )?(?:in the way|on the calendar|on your plate)\b", re.I)
+ABSENCE_EXEMPT_CATEGORIES = frozenset({"chat", "session"})
+# Tools whose call is a write, a draft or a send, not a read of the user's data (a name-based stand-in for
+# the registry's effectful tools, so this module needs no service import).
+_NOT_A_READ = re.compile(
+    r"^(?:send|reply|forward|draft|compose|create|add|update|delete|remove|cancel|complete|clear|schedule|"
+    r"set|move|post|remember|forget|write|save|archive|mark|share|commit|empty|trash|toggle|manage)(?:_|$)")
+_DISCOVERY = "get_tool_schemas"
+
+
+def makes_absence_claim(final: str) -> bool:
+    """The final says something is not there (see _ABSENCE)."""
+    return bool(_ABSENCE.search((final or "")))
+
+
+def made_a_read(row: dict) -> bool:
+    """The turn read something: a host direct call, or a model call to a tool that is neither a write nor a
+    schema load. A call to a name-only stub with no arguments loaded its schema and ran nothing."""
+    if (row.get("route") or {}).get("direct_calls"):
+        return True
+    for step in row.get("steps") or ():
+        stubs = set(step.get("stubs") or ())
+        for c in step.get("calls") or ():
+            name = str(c.get("name") or "").rsplit(".", 1)[-1]
+            if not name or name == _DISCOVERY or _NOT_A_READ.match(name):
+                continue
+            if name in stubs and not (c.get("args") or {}):
+                continue
+            return True
+    return False
+
+
+def unchecked_absence(row: dict) -> bool:
+    """A final with absence phrasing and no read in the turn (chat, session and no_tool cases are exempt)."""
+    if row.get("no_tool") or str(row.get("category") or "") in ABSENCE_EXEMPT_CATEGORIES:
+        return False
+    return makes_absence_claim(row.get("final") or "") and not made_a_read(row)
 
 
 def _pct(n: int, d: int) -> str:
@@ -99,6 +162,9 @@ def summarize(rows: list[dict]) -> dict:
             "no_tool_ok": sum("unneeded_call" not in r["v"]["labels"] for r in no_tool),
             "no_tool_n": len(no_tool),
             "route_faults": sum("route_fault" in r["v"]["labels"] for r in rs),
+            "absence_claims": sum(makes_absence_claim(r.get("final") or "") for r in rs
+                                  if not r.get("no_tool") and str(r.get("category") or "") not in ABSENCE_EXEMPT_CATEGORIES),
+            "unchecked_absence": sum(unchecked_absence(r) for r in rs),
             "escapes": sum(bool(r.get("escapes")) for r in rs),
             "median_s": round(statistics.median(secs), 2) if secs else 0.0,
             "p90_s": round(_q(secs, 0.9), 2),
@@ -128,7 +194,8 @@ def summarize(rows: list[dict]) -> dict:
 def _empty(excluded: int) -> dict:
     """A model whose every trial was an engine error."""
     return {"trials": 0, "cases": 0, "pass": 0, "consistent": 0, "selection": 0, "args": 0, "unsafe": 0,
-            "format_bad": 0, "answer": 0, "no_tool_ok": 0, "no_tool_n": 0, "route_faults": 0, "escapes": 0,
+            "format_bad": 0, "answer": 0, "no_tool_ok": 0, "no_tool_n": 0, "route_faults": 0,
+            "absence_claims": 0, "unchecked_absence": 0, "escapes": 0,
             "median_s": 0.0, "p90_s": 0.0, "model_median_s": 0.0, "model_p90_s": 0.0, "steps_p50": 0,
             "discovery": 0, "excluded": excluded, "timeouts": 0, "guard_retries": 0, "by_split": {},
             "think_p50": 0, "think_p90": 0, "think_max": 0, "mean_steps": 0.0, "mean_prompt_tok": 0,
@@ -150,6 +217,16 @@ def latency(rows: list[dict]) -> dict[str, dict[str, dict]]:
             "turn_s": round(statistics.median(r["v"]["seconds"] for r in rs), 2),
             "model_s": round(statistics.median(float(r["v"].get("model_seconds") or 0.0) for r in rs), 2),
             "steps": round(statistics.median(int(r["v"].get("steps") or 0) for r in rs), 1)}
+    return dict(sorted(out.items()))
+
+
+def unchecked_by_category(rows: list[dict]) -> dict[str, dict[str, int]]:
+    """category -> model -> trials that made an unchecked absence claim. Only categories with any."""
+    out: dict[str, dict[str, int]] = defaultdict(dict)
+    for r in _scored(rows):
+        if unchecked_absence(r):
+            cat = str(r.get("category") or "")
+            out[cat][r["model"]] = out[cat].get(r["model"], 0) + 1
     return dict(sorted(out.items()))
 
 
@@ -200,6 +277,7 @@ def render(rows: list[dict], *, failures: int = 15, per_case_latency: bool = Tru
     row("no-tool restraint", [f"{s[m]['no_tool_ok']}/{s[m]['no_tool_n']}" for m in models])
     row("UNSAFE calls", [str(s[m]["unsafe"]) for m in models])
     row("format errors", [str(s[m]["format_bad"]) for m in models])
+    row("UNCHECKED absence", [f"{s[m]['unchecked_absence']} of {s[m]['absence_claims']}" for m in models])
     row("route faults*", [str(s[m]["route_faults"]) for m in models])
     row("turn s p50 / p90", [f"{s[m]['median_s']} / {s[m]['p90_s']}" for m in models])
     row("model s p50 / p90", [f"{s[m]['model_median_s']} / {s[m]['model_p90_s']}" for m in models])
@@ -213,6 +291,9 @@ def render(rows: list[dict], *, failures: int = 15, per_case_latency: bool = Tru
     row("mean prompt tok (est)", [str(s[m]["mean_prompt_tok"]) for m in models])
     if any(s[m]["escapes"] for m in models):
         row("guard refusals", [str(s[m]["escapes"]) for m in models])
+    lines.append("UNCHECKED absence = trials whose final says something is not there (nothing scheduled, none, no "
+                 "<events>, I don't have/see/find) with no read call in the turn, of the trials that say it "
+                 "(chat, session and no-tool cases exempt); the hard bar is candidate <= untuned, the aim 0.")
     lines.append("* route faults are the host's (a needed tool forbidden, never offered, or refused by the "
                  "loop for every model: no completion contract), identical for every model; they still "
                  "count as fails.")
@@ -226,6 +307,14 @@ def render(rows: list[dict], *, failures: int = 15, per_case_latency: bool = Tru
         row("", [_short(m) for m in models])
         for c in groups:
             row(c, [("{}/{}".format(*s[m][key][c]) if c in s[m][key] else "—") for m in models])
+
+    by_cat = unchecked_by_category(rows)
+    if by_cat:
+        lines.append("")
+        lines.append("UNCHECKED ABSENCE BY CATEGORY (trials)")
+        row("", [_short(m) for m in models])
+        for cat, per in by_cat.items():
+            row(cat[:21], [str(per.get(m, 0)) for m in models])
 
     if per_case_latency:
         lines.append("")
@@ -289,4 +378,8 @@ def compare(base: list[dict], cur: list[dict]) -> str:
         cm = [v for k, v in c.items() if k[0] == m]
         if bm and cm:
             lines.append(f"{_short(m)} overall: {statistics.mean(bm):.0%} -> {statistics.mean(cm):.0%}")
+        b_un = sum(unchecked_absence(r) for r in _scored(base) if r["model"] == m)
+        c_un = sum(unchecked_absence(r) for r in _scored(cur) if r["model"] == m)
+        if bm and cm:
+            lines.append(f"{_short(m)} unchecked absence: {b_un} -> {c_un} trials")
     return "\n".join(lines)

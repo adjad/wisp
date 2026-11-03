@@ -105,6 +105,14 @@ def narration_thinking_enabled() -> bool:
 # first throttled (a 32k-token step) and far under the 38k step after which it
 # rejected everything. A first step is ~5k estimated tokens.
 ASK_PROMPT_BUDGET = 8000
+# Extra estimated tokens a step may spend on earlier conversation, on top of
+# ASK_PROMPT_BUDGET. Measured without it (scripts/measure_ask_history.py, Gemma
+# 4 E4B, 16,384 window): the system prompt and schemas take ~6,250 of the 8,000,
+# so a direct step kept 8 of 20 earlier exchanges and the step after a
+# 6,000-character tool result kept none. Sized to hold the condensed digest
+# (memory/context.DIGEST_MAX_CHARS, ~1,200) almost whole; the step stays
+# around 9k estimated tokens, far under the window and the guard's 32k.
+ASK_HISTORY_RESERVE = 1200
 # Per-result cap in the model's context (the general loop allows 12,000).
 ASK_TOOL_RESULT_CHARS = 6000
 # Calls to ONE tool per turn. The corpus raw dumps were turns that called
@@ -130,6 +138,13 @@ ASK_CORE_STUBS = frozenset({
 })
 
 DAY_PLAN_TOOL = "get_my_day_plan"
+_WHEN = (r"(?:today|tonight|tomorrow|(?:this|next)\s+(?:week(?:end)?|month)|the\s+week(?:end)?"
+         r"|(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b")
+# "and saturday?", "what about friday", "I mean this week", and corrections:
+# "actually saturday", "no, friday", "i meant tomorrow", "no wait, saturday"
+_DAY_FOLLOWUP = re.compile(r"(?:(?:no|nah|sorry|oops)[\s,]+)?(?:wait[\s,]+)?"
+                           r"(?:(?:and|what\s+about|how\s+about|i\s+mean[t]?|same\s+for|actually)[\s,]+)?"
+                           r"(?:for\s+|on\s+)?" + _WHEN + r"\s*[?.!]?$", re.I)
 _DAY_PLAN = re.compile(
     r"\bwhat\s+(?:should|do|must|can)\s+i\s+(?:do|focus on|work on|tackle|get done|prioriti[sz]e)\b"
     r"|\bwhat(?:['’]?s| is)\s+on\s+my\s+(?:plate|list|agenda|to-?do)"
@@ -137,14 +152,28 @@ _DAY_PLAN = re.compile(
     r"|\bplan\s+(?:out\s+)?my\s+day\b|\bwhat\s+am\s+i\s+(?:forgetting|missing)\b"
     r"|\banything\s+i\s+should\s+(?:know|do|handle)\b|\bwhat(?:['’]?s| does| is)\s+my\s+day\b"
     r"|\bmy\s+(?:to-?do|todo)s?(?:\s+list)?\b|\bwhat(?:['’]?s| is)\s+next\s+for\s+me\b"
-    r"|\bhow\s+(?:does|is)\s+my\s+day\b|\bwhere\s+should\s+i\s+start\b",
+    r"|\bhow\s+(?:does|is)\s+my\s+day\b|\bwhere\s+should\s+i\s+start\b"
+    # Time-scoped "what's going on" questions: the Brief holds what mail,
+    # texts and notes add to the calendar (2026-11-02: "what is my plan for
+    # saturday" missed a family lunch from a text). "what's up" alone is a
+    # greeting, so it counts only with a time.
+    r"|\bwhat(?:['’]?s| is| are)\s+coming\s+up\b|\banything\s+(?:coming\s+up|due|planned)\b"
+    r"|\banything\s+i\s+(?:need|have)\s+to\s+(?:do|get done|handle)\b"
+    r"|\bwhat\s+do\s+i\s+have\s+(?:due|going on|coming up|planned|on|for|this|next|today|tomorrow|tonight)\b"
+    r"|\bmy\s+plans?\s+(?:for|on|this|next|today|tomorrow|tonight)\b"
+    r"|\bwhat(?:['’]?s| is)\s+(?:up|on|going\s+on|happening|planned)\s+(?:for\s+|on\s+)?" + _WHEN,
     re.I)
 
 
-def day_plan_question(prompt: str) -> bool:
-    """"What should I do today?" and its paraphrases: one get_my_day_plan read
-    answers it better than four separate source reads."""
-    return bool(_DAY_PLAN.search(normalize_day_words(prompt)))
+def day_plan_question(prompt: str, previous: str = "") -> bool:
+    """"What should I do today?", "what's on friday?" and their paraphrases:
+    one get_my_day_plan read answers it better than four separate source
+    reads. A bare follow-up ("and saturday?") counts when the previous user
+    prompt was one."""
+    if _DAY_PLAN.search(normalize_day_words(prompt)):
+        return True
+    return bool(previous and _DAY_FOLLOWUP.match(normalize_day_words(prompt).strip())
+                and _DAY_PLAN.search(normalize_day_words(previous)))
 
 
 # Misspellings of "tomorrow" seen in real prompts ("what is up for tommorow"
@@ -161,12 +190,15 @@ def normalize_day_words(prompt: str) -> str:
 
 
 ASK_DAY_PLAN_HINT = (
-    "DAY PLAN: call get_my_day_plan once and answer from it (day='tomorrow' when "
-    "the user asks about tomorrow); do not read the calendar, mail, messages and "
+    "DAY PLAN: call get_my_day_plan once for the day or range asked about (day='tomorrow', "
+    "a weekday like 'saturday', a date, or 'this_week') and answer from it, including the "
+    "items it found in email and texts; for a follow-up like 'and friday?' call it again "
+    "for that day; do not read the calendar, mail, messages and "
     "notes one by one unless it says the plan is unavailable. predict_my_day is "
     "learned habits only, never the plan. Answer as a short prioritized list: one "
     "lead line, then 3-6 bullets — time-bound items first (with times), then "
-    "overdue items, then people waiting on a reply, then suggestions and tasks. "
+    "overdue items, then people waiting on a reply, then suggestions and tasks, "
+    "unless the user asked for another length or format. "
     "No digests, no data-freshness caveats, no source labels."
 )
 
@@ -174,12 +206,20 @@ ASK_DAY_PLAN_HINT = (
 # just a moment!") with no tool run is not an answer: the turn ends there and
 # the user never gets the result (2026-10-29 dev7 export).
 _STALL = re.compile(
-    r"\b(?:give me (?:just )?(?:a|one) (?:moment|sec(?:ond)?|minute)|one moment|just a moment|"
-    r"hang (?:on|tight)|bear with me|stand by)\b"
-    r"|^\s*(?:(?:sure|okay|ok|of course|absolutely|got it)[.,!]?\s*)?"
+    r"^\s*(?:(?:sure|okay|ok|of course|absolutely|got it)[.,!]?\s*)?"
     r"(?:i(?:'|’)m|i am|i(?:'|’)ll|i will|let me)\s+(?:now\s+)?(?:go(?:ing)? (?:to )?)?"
     r"(?:check|look|pull|fetch|grab|search|review)\w*\b[^\n]{0,160}$",
     re.I)
+# "Hang on to the bananas! Overripe ones are perfect for banana bread: mash
+# three, ..." opens with a stall phrase but is a real answer. A filler phrase
+# is a stall only when the whole reply is a line or two, and "hang on to",
+# "stand by your decision", "one moment in history" are not fillers at all.
+_STALL_FILLER = re.compile(
+    r"\b(?:give me (?:just )?(?:a|one) (?:moment|sec(?:ond)?|minute)|(?:one|just a) moment(?!\s+(?:in|of|when|that)\b)|"
+    r"hang (?:on(?!\s+to\b)|tight)|bear with me|stand by(?=\s*(?:[.!,;]|$)))", re.I)
+_STALL_FILLER_MAX = 160
+_STALL_ACK = re.compile(r"^\s*(?:sure|okay|ok|of course|absolutely|got it|alright|yes|yep|on it|"
+                        r"(?:checking|looking|searching)(?: (?:now|on that|into it|that))?)\s*[.,!]*\s*$", re.I)
 
 
 # Gemma's tool-call markup written as plain text: what it does on a turn that
@@ -202,12 +242,48 @@ def strip_text_tool_calls(text: str) -> str:
 def stall_reply(text: str) -> bool:
     """A short "I'm checking now / one moment" promise instead of an answer."""
     text = (text or "").strip()
-    return bool(text) and len(text) <= 300 and bool(_STALL.search(text))
+    if not text or len(text) > 300:
+        return False
+    if _STALL.search(text):
+        return True
+    if len(text) > _STALL_FILLER_MAX:
+        return False
+    # A line or two that are each only a filler or an acknowledgement ("Sure!\nOne
+    # moment.") is a stall; a line with anything else in it is an answer.
+    lines = [line for line in text.splitlines() if line.strip()]
+    return bool(lines) and any(_STALL_FILLER.search(line) for line in lines) and all(
+        _STALL_FILLER.search(line) or _STALL_ACK.match(line) or _STALL.search(line) for line in lines)
+
+
+
+# The Ask LoRA r3 reward's stall phrases (training/ask-lora-r3/grpo/reward.py
+# `_STALL`, act_dont_promise), plus "I am …" and curly apostrophes. Unanchored,
+# unlike _STALL above: the toolbench misses were multi-sentence ("It looks like
+# you're curious about RAM! I'll look up the best details on that for you right
+# now.", "I'm looking up the schedule for you now. … I'll check the public web").
+_PROMISE = re.compile(
+    r"\b(let me (?:look|check|find|pull|see|search|get|grab|take a look|dig)|"
+    r"i(?:'| wi)ll (?:look|check|find|pull|search|get|grab|take a look|dig|see)|"
+    r"i(?:'m| am) (?:looking|checking|pulling|searching|grabbing)|one moment|give me a (?:moment|sec(?:ond)?)|hang on|"
+    r"looking (?:that|it|this) up)\b", re.I)
+
+
+def promise_only_reply(text: str) -> bool:
+    """A reply that promises to look something up instead of answering. Never a
+    question back to the user ("Which city? Once I have it, I'll check.") and
+    never a long answer that only mentions a follow-up."""
+    text = (text or "").strip().replace("\u2019", "'")
+    return (bool(text) and len(text) <= 400 and "?" not in text
+            and bool(_PROMISE.search(text)))
 
 # Appended to a model-led turn's runtime prompt (the light-read style hint the
 # legacy router sets is never set on a model-led turn).
 ASK_STYLE_HINT = (
     "ANSWER STYLE for this reply:\n"
+    # Defaults only: "one sentence", "no lists" or "just the time" from the
+    # user, in this message or earlier in the chat, wins over every line below.
+    "- If the user said how long or in what format to answer, in this message "
+    "or earlier in this chat, do exactly that; it overrides this list.\n"
     "- Lead with the answer itself. Do not restate or rephrase the question.\n"
     "- Warm, natural and concise: at most 4 sentences unless the user asks for "
     "more detail or a list.\n"
@@ -338,6 +414,17 @@ def web_degradation_hint(tool: str, result: str) -> str:
             "specifics such as scores, dates or prices that are not in the results above.)")
 
 
+# Replying is a destination and draws on the message replied to, in any form:
+# "draft a message responding to trishe" read nothing and drafted nothing
+# (2026-11-02 r3). The verbs need only "to"; the nouns ("a response to", "an
+# answer to") need a person or a message after it, so "the public response to
+# the policy" stays plain writing.
+_REPLY_TO = (r"(?:\b(?:repl(?:y|ies|ied|ying)|respon(?:d|ds|ded|ding))\s+to\b"
+             r"|\b(?:response|answer|reply)\s+to\s+(?:[\w.-]+['’]s\b|(?:my|his|her|their|the|this|that|"
+             r"your)\s+(?:e-?mail|message|text|dm|thread|note|invite|post)\b|(?:my\s+)?(?:mom|mum|dad|"
+             r"mother|father|sister|brother|boss|manager|professor|prof|teacher|landlord|roommate|"
+             r"friend|wife|husband|partner|girlfriend|boyfriend)\b|(?-i:[A-Z][\w.'-]*)\b|(?:him|her|them)\b)"
+             r"|\banswer(?:ing)?\s+(?:him|her|them)\b)")
 _COMPOSE = re.compile(r"^\s*(?:please\s+)?(?:can you\s+|could you\s+)?(?:write|compose|draft|come up with)\b", re.I)
 # A destination is somewhere the text goes: a named recipient ("an email to
 # Priya"), a send/reply verb, or a place it is saved. The noun alone ("a
@@ -349,6 +436,7 @@ _DESTINATION = re.compile(
     # draft_email). A "note to my professor" is still only text to write.
     r"|(?i:\b(?:e-?mail|text|message|imessage|dm)\s+to\s+(?:my\s+|the\s+|our\s+)?[a-z][\w.'-]*)"
     r"|(?i:\b(?:send|sent|reply|respond|forward|post\s+(?:it|this)|share)\b)"
+    r"|(?i:" + _REPLY_TO + r")"
     r"|(?i:\b(?:in|to|into)\s+(?:my\s+)?(?:notes?|notes app|a file|calendar|reminders?)\b)"
     r"|(?i:\b(?:save|file|document|doc|calendar|reminder|clipboard)\b)"
     r"|\b(?i:text|e-?mail|message)\s+[A-Z][\w.'-]*")
@@ -376,7 +464,7 @@ _STORED_CONTENT = re.compile(
     r"messages?|texts?|chats?|reminders?|to-?dos?|docs?|documents?|files?|folder|drafts?|"
     r"meetings?|events?|plans?|conversations?|browsing|history)\b"
     r"|\b(?:based on|using|from|according to|summari[sz]e|summary of|recap of)\b"
-    r"|\b(?:reply|respond|answer)\s+to\b"
+    r"|" + _REPLY_TO +
     r"|\b[\w.-]+['’]s\s+(?:e-?mail|message|text|note|doc|document|post|invite)\b"
     r"|\bthe\s+(?:doc|document|file|attachment|e-?mail|thread|message|text|note|"
     r"meeting|call|invite|spreadsheet|pdf|deck)\b"
@@ -387,6 +475,20 @@ _STORED_CONTENT = re.compile(
 _WRITING = re.compile(
     r"^\s*(?:please\s+)?(?:can you\s+|could you\s+|would you\s+)?(?:help me\s+)?"
     r"(?:write|compose|draft|come up with|pen)\b", re.I)
+
+
+def reply_reads(prompt: str) -> list[str]:
+    """The conversation a reply draft answers is read first: "draft a message
+    responding to trishe" needs her thread before draft_message. An email
+    reply reads mail, a text or message reply reads Messages, otherwise both."""
+    text = prompt or ""
+    if not (_WRITING.match(text) or _COMPOSE.match(text)) or not re.search(_REPLY_TO, text, re.I):
+        return []
+    if re.search(r"\be-?mails?\b", text, re.I):
+        return ["view_emails"]
+    if re.search(r"\b(?:text|message|imessage|dm|chat|group)s?\b", text, re.I):
+        return ["view_messages"]
+    return ["view_messages", "view_emails"]
 
 
 def pure_writing(prompt: str) -> bool:
@@ -730,25 +832,63 @@ def capability_question(prompt: str) -> bool:
                 and not _TIME_WORDS.search(text))
 
 
+# Nouns that are the user's stored data wherever they follow "my": "my calendar",
+# "my tasks", "my midterm". Ambiguous nouns ("my phone keeps dying", "my class is
+# so boring", "my day was rough", "my bag for a beach day", "my order at a
+# restaurant") are chat unless asked in a lookup shape, below.
 _PERSONAL_NOUNS = (
-    r"calendar|schedule|agenda|events?|meetings?|appointments?|plans?|plate|day|week|weekend|"
+    r"calendar|schedule|agenda|events?|meetings?|appointments?|"
     r"emails?|e-mails?|inbox|mail|texts?|messages?|imessages?|reminders?|to-?dos?|tasks?|notes?|"
-    r"contacts?|brief|backpack|bag|keys?|wallet|password|wifi|order|package|deadlines?|"
-    r"classes|class|exams?|homework|assignments?|flight|trip|birthday|name|address|phone|number"
+    r"contacts?|brief|deadlines?|homework|assignments?|exams?|midterms?|finals?|"
+    r"flights?|birthday|password|wifi"
 )
+_AMBIGUOUS_NOUNS = (
+    r"plans?|plate|day|week|weekend|backpack|bag|keys?|wallet|order|orders|package|packages|"
+    r"class|classes|trip|name|address|phone|number"
+)
+_RECORD_NOUNS = _PERSONAL_NOUNS + r"|calls?|shifts?|interviews?|lectures?|quizzes|quiz|tests?"
+_MY_WORD = r"my\s+(?:[\w'’-]+\s+)?"
+# A lookup lead: "what's / when is / where are / how heavy is / how does ... my X".
+_LOOKUP_LEAD = (r"(?:what(?:['’]s|\s+is|\s+are)|when(?:['’]s|\s+is|\s+are|\s+was|\s+do|\s+does|\s+will)|where(?:['’]s|\s+is|\s+are)|"
+                r"what\s+time(?:['’]s|\s+is|\s+are)?|how\s+(?:heavy|long|big|much|many|far|late|early)\s+(?:is|are)|"
+                r"how(?:['’]s|\s+is|\s+are|\s+does|\s+do))")
+# Day anchors; "my coffee with Alex tomorrow" is the user's plan, "my bag for a beach day" is not.
+_DATE_ANCHOR = (r"(?:today|tonight|tomorrow|this\s+(?:morning|afternoon|evening|weekend|week)|next\s+(?:week|month|\w+day)|"
+                r"on\s+(?:mon|tues|wednes|thurs|fri|satur|sun)day|"
+                r"(?:mon|tues|wednes|thurs|fri|satur|sun)day)")
 _PERSONAL = re.compile(
-    rf"\b(?:my|mine)\s+(?:\w+\s+)?(?:{_PERSONAL_NOUNS})\b"
-    r"|\b(?:do|did|am|have|was|were|should)\s+i\b"
+    rf"\b(?:my|mine)\s+(?:[\w'’-]+\s+)?(?:{_PERSONAL_NOUNS})\b"
+    # "when is my midterm", "where are my keys", "how heavy is my backpack",
+    # "how does my day look", "what's my wifi password"; "my phone keeps dying" is not.
+    rf"|\b{_LOOKUP_LEAD}\s+(?:all\s+)?{_MY_WORD}(?:{_AMBIGUOUS_NOUNS})\b"
+    # "did my order ship", "has my package arrived", "is my flight on time"
+    rf"|\b(?:did|has|have|is|are|was|were|will)\s+(?:all\s+)?{_MY_WORD}(?:orders?|packages?|parcels?|"
+    r"keys|wallet|plans|trip|name|address)\b"
+    # First person counts only in a record or lookup form: "do I have class
+    # tomorrow", "did I pay the electric bill", "am I free at 3". Bare "do I" /
+    # "should I" is advice ("what do I do with overripe bananas", "should I learn guitar").
+    rf"|\bdo\s+i\s+have\s+(?:(?:anything|something|nothing|plans?|class|classes|work|school|practice)\b|"
+    rf"(?:\w+\s+){{0,3}}?(?:{_RECORD_NOUNS})\b)"
+    rf"|\bdo\s+i\s+(?:have|got)\s+(?:[\w'’-]+\s+){{0,3}}?{_DATE_ANCHOR}\b"  # "what do I have tomorrow"
+    r"|\bdid\s+i\s+(?:already\s+)?(?:pay|reply|respond|send|book|rsvp|miss|sign|submit|schedule|renew|text|email|call)\b"
+    r"|\bam\s+i\s+(?:free|busy|available|double[- ]?booked)\b"
+    r"|\bhave\s+i\s+(?:got|paid|replied|responded|sent|booked|missed)\b"
     r"|\b(?:anyone|anybody|someone)\s+(?:text|email|message|call|write)\w*\s+me\b"
     r"|\b(?:any|new|unread)\s+(?:texts?|emails?|messages?|mail)\b"
-    r"|\bwhat(?:'s| is| are)?\s+(?:on\s+)?my\b"
-    r"|\b(?:mom|dad|mother|father)\s+(?:text|said|say|send|email)"
+    r"|\bwhat(?:['’]s| is| are)?\s+(?:on\s+)?my\b(?!\s+(?:best|thoughts?|options?|chances?|odds|purpose|meaning|problem)\b)"
+    # "did mom text me?" — but not "my dad said cracking knuckles causes arthritis".
+    r"|\b(?:mom|dad|mother|father)\s+(?:text|send|sent|email|call|messag)"
     r"|\b(?:reply|replied|respond|responded|text|texted|email|emailed|message|messaged|call|called|"
     r"write|wrote)\s+(?:back\s+)?(?:to\s+)?me\b"
     # Implicit personal deadlines, events and items: "When is the W-9 due?",
-    # "what's on tomorrow", "is there a meeting today", "has the package shipped".
-    r"|\b(?:due|deadline|expires?|expiring|overdue|rsvp|shipped|delivered|arriv(?:e|ing))\b"
-    r"|\bwhat(?:'s| is)\s+on\b"
+    # "what's on tomorrow", "is there a meeting today". Not "due to climate
+    # change", and ship/deliver/arrive only for a parcel ("when was the first
+    # iphone shipped", "when do swallows arrive in spring").
+    r"|\b(?:due(?!\s+to\b)|deadline|expires?|expiring|overdue|rsvp)\b"
+    r"|\b(?:package|parcel|order|delivery|shipment)s?\b[^?.!]{0,30}\b(?:ship(?:ped|s)?|arriv\w*|deliver(?:ed|s)?|here)\b"
+    r"|\b(?:has|did|have)\s+(?:it|they)\s+(?:ship|shipped|arrived|been\s+delivered)\b"
+    # "what's on tv tonight" is not the calendar.
+    rf"|\bwhat(?:'s| is)\s+on\s+(?:today|tonight|tomorrow|this\b|next\b|for\b|the\s+(?:calendar|agenda|schedule)|{_DATE_ANCHOR})"
     # "what is up for tomorrow", "what's happening today", "anything planned this weekend"
     r"|\b(?:what(?:['’]?s| is| are)|anything)\s+(?:up|happening|going on|planned|scheduled|coming up)\s+"
     r"(?:for\s+|on\s+|this\s+|next\s+)?(?:today|tonight|tomorrow|weekend|week|monday|tuesday|wednesday|"
@@ -757,6 +897,147 @@ _PERSONAL = re.compile(
     r"|\b(?:when|where|what time)\s+(?:is|was|are)\s+(?:the|my|our)\s+\w+.*\b(?:today|tomorrow|tonight|"
     r"this|next|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
     re.I)
+# First-person and "my <time>" lookups that the narrowed _PERSONAL above does not
+# reach on its own: "who am I meeting tomorrow", "how busy am I this week", "did
+# I get a text from mom", "do I owe Sam money", "track my order", "summarize my
+# day", "am I going to be late for my 3pm", "what time is my lunch with Sam",
+# "how long is my commute". Each is led by a lookup word or names a record, so
+# "who am I to judge", "am I overthinking this" and "did I do the right thing"
+# stay chat.
+_CLOCK = r"(?:\d{1,2}(?::\d\d)?\s*(?:am|pm|a\.m\.|p\.m\.)|noon|midnight)"
+_PARCEL_NOUNS = (r"orders?|packages?|parcels?|deliver(?:y|ies)|shipments?|refunds?|claims?|payments?|reservations?|"
+                 r"bookings?|tickets?|luggage|flights?|rides?|returns?|applications?")
+_ARRIVING_NOUNS = (r"invoices?|bills?|statements?|receipts?|refunds?|payments?|che(?:que|ck)s?|packages?|parcels?|"
+                   r"orders?|shipments?|deliver(?:y|ies)|stuff|things|luggage|bags?|rides?|food|groceries|mail|"
+                   r"letters?|tickets?|passport|card")
+_ARRIVING_VERBS = (r"arriv\w*|come|came|coming|get\s+here|be\s+here|here|ship\w*|go\s+through|gone\s+through|"
+                   r"clear\w*|post(?:ed)?|show\s+up|land\w*|deliver\w*|been\s+(?:sent|received|paid|processed)")
+_DAY_WORDS = r"(?:day|week|weekend|morning|afternoon|evening|month|schedule|calendar)"
+_PERSONAL_LOOKUPS = re.compile(
+    # "my 3pm", "my 2pm", "my noon": a clock time after "my" is a calendar entry.
+    rf"\bmy\s+{_CLOCK}"
+    r"|\bwho\s+(?:am\s+i|do\s+i)\s+(?:meeting|seeing|having|owe|need\s+to\s+(?:call|text|email|reply|meet|see)|"
+    r"have\s+(?:a|an|any|to\s+(?:call|text|email|reply)))\b"
+    rf"|\bhow\s+busy\s+(?:am\s+i|is\s+(?:my\b|today|tonight|tomorrow|this\s+{_DAY_WORDS}|next\s+(?:week|month)|"
+    r"(?:mon|tues|wednes|thurs|fri|satur|sun)day))"
+    r"|\bam\s+i\s+(?:going\s+to\s+(?:be\s+late|make\s+it|miss|be\s+on\s+time)|late\s+for|running\s+late|on\s+time|"
+    r"meeting|seeing|supposed\s+to\s+(?:meet|see|be\s+at))\b"
+    r"|\bdid\s+i\s+(?:get|receive|miss)\s+(?:an?|any|the|my|that)\s+(?:[\w'’-]+\s+)?"
+    r"(?:texts?|e-?mails?|messages?|mail|calls?|voicemails?|invites?|invitations?|packages?|parcels?|repl(?:y|ies)|"
+    r"responses?|notifications?|alerts?|letters?)\b"
+    r"|\bdo\s+i\s+owe\s+(?:[\w'’]+\s+){0,2}?(?:money|(?:an?\s+)?(?:repl(?:y|ies)|text|call|e-?mail|response|payment|"
+    r"rent|taxes|tax|bill))\b"
+    r"|\bhow\s+much\s+(?:do\s+i|i)\s+owe\b"
+    r"|\bhow\s+many\s+(?:(?:unread|new|open|overdue|pending)\s+)?(?:e-?mails?|texts?|messages?|tasks?|reminders?|"
+    r"meetings?|events?|appointments?|notifications?|to-?dos?|invites?|calls?|voicemails?)\b"
+    r"[^?.!]{0,40}\b(?:do\s+i|have\s+i|did\s+i|i\s+(?:have|got)|are\s+(?:on|in|there|unread|waiting|left|due|open)|"
+    r"unread|overdue|today|tomorrow|this\s+(?:week|morning|afternoon)|my\b)"
+    r"|\bhow\s+many\s+(?:e-?mails?|texts?|messages?|tasks?|reminders?)\s+(?:are\s+)?(?:unread|overdue|due|open)\b"
+    # parcels and payments
+    rf"|\b(?:status\s+of|track(?:ing)?|where(?:['’]s|\s+is|\s+are))\s+(?:all\s+)?my\s+(?:[\w'’-]+\s+)?(?:{_PARCEL_NOUNS})\b"
+    r"|\bstatus\s+of\s+(?:the|that|this)\s+(?:orders?|packages?|parcels?|deliver(?:y|ies)|shipments?|refund|claim|payment|invoice)\b"
+    rf"|\b(?:did|has|have|will|when\s+will|when\s+does|when\s+do)\s+(?:all\s+)?(?:the|my|that|this|our|these|those)\s+"
+    rf"(?:[\w'’-]+\s+)?(?:{_ARRIVING_NOUNS})\s+(?:\w+\s+){{0,2}}?(?:{_ARRIVING_VERBS})\b"
+    r"|\b(?:when\s+(?:will|does|is)\s+(?:it|they)\s+(?:arrive|get\s+here|be\s+here|ship|come)|is\s+(?:it|they)\s+here\s+yet)\b"
+    # recaps of the day
+    rf"|\b(?:summari[sz]e|describe|recap|walk\s+me\s+through|run\s+through)\s+(?:for\s+me\s+)?my\s+(?:(?:whole|entire|upcoming)\s+)?{_DAY_WORDS}\b"
+    rf"|\b(?:rundown|summary|overview|recap|run-?through)\s+of\s+my\s+(?:(?:whole|entire|upcoming)\s+)?{_DAY_WORDS}\b"
+    # "what time is my lunch with Sam": a lookup lead, so any noun counts
+    r"|\bwhat\s+time\s+(?:is|are|does|do|was)\s+my\s+(?!body\b|favou?rite\b)\w+"
+    r"|\bwhat\s+time\s+(?:is|does)\s+(?:the|our)\s+(?:[\w'’-]+\s+)?(?:meeting|call|standup|stand-up|sync|interview|"
+    r"appointment|class|lecture|flight|dinner|lunch|event)\b"
+    r"|\bwhen(?:['’]s|\s+is|\s+are|\s+was|\s+does|\s+do)\s+my\s+(?!body\b|favou?rite\b)\w+"
+    rf"|\bwhat(?:['’]s|\s+is)\s+on\s+at\s+(?:\d|{_CLOCK})"
+    rf"|\bwhat\s+do\s+i\s+(?:have|got)\s+(?:at|by|before|after|around)\s+(?:\d|{_CLOCK})"
+    rf"|\bwhat\s+do\s+i\s+need\s+to\s+(?:do|get\s+done|finish)\s+(?:\w+\s+){{0,2}}?{_DATE_ANCHOR}\b"
+    r"|\bwhen\s+do\s+i\s+(?:need\s+to\s+|have\s+to\s+)?(?:leave|head\s+out|land|get\s+there|check\s+in)\b"
+    r"|\bhow\s+long\s+(?:is|will|does)\s+my\s+(?:[\w'’-]+\s+)?(?:commute|drive|ride|meeting|flight)\b"
+    r"|\bhow\s+long\s+is\s+(?:the\s+)?commute\b"
+    rf"|\bhow(?:['’]s|\s+is|\s+does|\s+do)\s+(?:my\s+{_DAY_WORDS}|{_DATE_ANCHOR}|{_DAY_WORDS})\s+(?:look|looking|shaping)"
+    # "is my dentist tomorrow", "is my interview still on for Friday"
+    rf"|\b(?:is|are|was|will)\s+my\s+(?:[\w'’-]+\s+){{0,4}}?{_DATE_ANCHOR}\b"
+    # the state of one of the user's things: "Are my bills paid?", "Is my train delayed?"
+    r"|\b(?:is|are|was|were|does|did|has|have)\s+my\s+(?:[\w'’-]+\s+){0,2}?(?:been\s+)?(?:paid|pending|confirmed|"
+    r"approved|declined|charged|sent|delivered|delayed|cancell?ed|active|valid|expired|expiring|renewed|done|filed|"
+    r"booked|covered|processed|received|overdue|due|late|on\s+time|still\s+on|on\s+the\s+calendar)\b"
+    # replies and updates from a person
+    r"|\b(?:has|did|have)\s+(?!you\b|i\b|we\b|it\b)\w+\s+(?:replied|reply|responded|respond|texted|text|emailed|email|"
+    r"called|call|messaged|message|gotten\s+back|got\s+back|answered|confirmed)\b"
+    r"|\bany\s+(?:word|news|updates?|replies|messages?|texts?|e-?mails?|mail)\s+from\b"
+    r"|\b(?:anything|is\s+there\s+anything)\s+(?:new\s+)?from\s+(?:my\s+)?\w+\b(?!\s+(?:the|a|an|that)\b)"
+    # "what did Mom say?", "what did I say to Maya yesterday?", "did my landlord write back?"
+    # Not "What did Einstein say about imagination?": family, "my X", or a recent channel.
+    r"|\bwhat\s+did\s+(?:mom|mum|dad|my\s+[\w'’-]+|i|he|she|they)\s+(?:say|send|write|tell)\b"
+    r"|\bwhat\s+did\s+(?!you\b)\w+\s+(?:say|send|write)\s+(?:in|on|last|yesterday|today|tonight|this|earlier|just)\b"
+    r"|\bdo\s+i\s+owe\s+(?:my\s+)?\w+\s+(?:for|money|anything|back)\b|\bam\s+i\s+booked\b"
+    r"|\bhow(?:['’]s|\s+is|\s+does)\s+my\s+\w+\s+look(?:ing)?\b"
+    r"|\b(?:did|has|have)\s+(?:my\s+)?(?!you\b|i\b|we\b|it\b)\w+\s+(?:write|written|wrote|get|gotten|got)\s+back\b"
+    rf"|\bwhat\s+am\s+i\s+(?:doing|up\s+to)\s+(?:\w+\s+){{0,2}}?{_DATE_ANCHOR}\b"
+    r"|\bwhat\s+time\s+do\s+i\s+(?:need\s+to\s+|have\s+to\s+)?\w+"
+    r"|\bdo\s+i\s+have\s+any\s+(?:new\s+|unread\s+|missed\s+)?(?:voicemails?|missed\s+calls?|calls?|invites?|"
+    r"packages?|deliveries|bills?|payments?|replies)\b",
+    re.I)
+# A lookup lead with "my <thing>" close behind: "Who is my dentist?", "How old
+# is my dog?", "What day is my interview?", "How much is my electric bill?". The
+# catch-all main had ("any question with my X") also took "my phone keeps dying,
+# any tips?"; this one needs the lead and leaves opinion and advice alone ("what's
+# the best way to prepare for my exam", "how much water should my dog drink").
+# A first-person question is about the user's own things ("Do I have a doctor's
+# appointment?", "When do I fly out?", "How much PTO do I have?", "Where do I
+# park?") unless it asks for an opinion, advice or a hypothetical: "should I
+# learn guitar or piano", "what do I do with overripe bananas", "am I
+# overthinking this", "do I need to peel ginger", "what do I do if my car
+# won't start". "should I" never counts.
+_FIRST_PERSON_ASK = re.compile(r"\b(?:do|did|am|have|was|were)\s+i\b", re.I)
+_FIRST_PERSON_CASUAL = re.compile(
+    r"\b(?:should|would|could|ought|better|best|worth|normal|weird|okay|wrong|crazy|mistake|"
+    r"tips?|advice|ideas?|recommend\w*|suggest\w*|realistically|generally|"
+    r"in\s+general|if|look\s+(?:like|tired|good|old|young|fat|thin)|too\s+(?:old|young|late|early)|"
+    r"overthinking|over-?reacting|being\s+(?:silly|dramatic|unreasonable|paranoid)|right\s+thing|"
+    r"apolog\w*|sorry|vote|judge|"
+    r"going\s+to\s+be\s+(?:ok|okay|alright|all\s+right|fine)|how\s+(?:do|can|should|would)\s+i)\b"
+    r"|\bwhat\s+do\s+i\s+(?:do|say|cook|make|eat|wear|watch|read|play)\s+(?:with|about|to|for|when|if)\b"
+    r"|\bdo\s+i\s+(?:need|have)\s+to\s+(?!(?:reply|respond|answer|pay|call|text|email|send|submit|be|go|"
+    r"bring|pick|leave|renew|sign|book|finish|return|check|show|attend|meet|see)\b)\w+"
+    r"|\bdo\s+i\s+need\s+(?:a|an)\s+(?:visa|passport|vaccine|license|licence|permit)\b"
+    r"|\bam\s+i\s+(?:a|an|the|too|really|being|right|smart|good|bad|ready|old|allowed)\b"
+    # "Do I need to tip in Japan?", not "When do I fly to Japan?"
+    r"|\b(?:need|have\s+to|tip|allowed)\b[^?.!]{0,30}\b(?:in|to)\s+(?:japan|france|europe|the\s+us|america|"
+    r"canada|mexico|china|india|general)\b", re.I)
+
+
+# "Is my prescription ready?", "Are my test results back?", "Is my gym membership
+# still active?": the state of one of the user's things, unless the question
+# judges it ("Is my sleep schedule bad?", "Is my cat normal?").
+_MY_STATE = re.compile(r"^\s*(?:so\s+|and\s+|hey\s+|ok\s+)?(?:is|are|was|were|has|have|did|does)\s+my\s+[a-z]", re.I)
+_MY_STATE_JUDGED = re.compile(
+    r"\b(?:normal|bad|good|healthy|unhealthy|weird|strange|okay|ok|fine|enough|too|worth|safe|unsafe|smart|"
+    r"right|wrong|better|worse|best|worst|ugly|pretty|cute|fat|thin|overweight|underweight|dangerous|common|"
+    r"rare|possible|supposed\s+to|a\s+sign|considered|polite|rude|realistic|reasonable|toxic|healthy|harmful|"
+    r"bad\s+for|good\s+for|should|would|could|likely|strong|weak|even|dying|sick|ill|readable|lying|"
+    r"cheating|love|loves|like|likes|hate|hates|mad|angry|upset|attractive|gotten|getting|normal)\b", re.I)
+
+
+_MY_LOOKUP = re.compile(
+    r"^\s*(?:so\s+|and\s+|hey\s+|ok\s+)?(?:what|when|where|which|who|whose|how\s+(?:much|many|old|long|far|big|heavy)"
+    r"|did|has|have)\b[^?.!]{0,40}?\bmy\s+[a-z]", re.I)
+_MY_LOOKUP_OPINION = re.compile(
+    r"\b(?:best|better|worst|good|great|nice|ideal|favou?rite|should|would|could|ought|recommend\w*|suggest\w*|"
+    r"tips?|ideas?|advice|way\s+to|ways\s+to|worth|purpose|meaning|point\s+of|why|wrong\s+with|"
+    r"opinion|think|thoughts?|feel|chances?|odds|options?|gift|present|worse)\b", re.I)
+# "Is it going to rain during my coffee with Alex tomorrow?": a question that
+# puts one of the user's plans on a day. "my" alone is not enough ("my phone
+# keeps dying fast, any tips?"), and neither is a plan-less advice lead ("what
+# should I wear to my sister's wedding tomorrow?").
+_PLAN_ON_A_DAY = re.compile(
+    rf"\b(?:with|during|before|after|around|until|for|at)\s+my\s+[\w'’ -]{{1,40}}?\b{_DATE_ANCHOR}\b"
+    rf"|\bmy\s+[\w'’ -]{{1,40}}?\s+(?:with|at)\s+[\w'’ -]{{1,30}}?\b{_DATE_ANCHOR}\b", re.I)
+# Asking for tips or comfort about one's own stuff is chat: "my meetings are
+# exhausting, any tips?", "my day was rough, can you cheer me up?".
+_CHAT_TAIL = re.compile(r"\bany\s+(?:tips|advice|ideas|suggestions)\b|\bcheer\s+me\s+up\b|"
+                        r"\bis\s+(?:that|it)\s+(?:true|rude|normal|weird)\b", re.I)
+_ADVICE_LEAD = re.compile(r"^\s*(?:what\s+should|should\s+(?:i|we)|what\s+to|any\s+(?:tips|advice|ideas)|"
+                          r"how\s+(?:do|can|should|would)\s+(?:i|we))\b", re.I)
 _QUESTION = re.compile(r"\?\s*$|^\s*(?:what|when|where|who|which|how|is|are|am|do|does|did|have|has|"
                        r"was|were|will|should|any)\b", re.I)
 _COMPOSE_OR_GENERAL = re.compile(
@@ -771,8 +1052,18 @@ def asks_personal_data(prompt: str) -> bool:
     text = normalize_day_words(prompt)
     if capability_question(text) or _COMPOSE_OR_GENERAL.match(text) or advice_question(text):
         return False
-    return bool(_PERSONAL.search(text)
-                or (_QUESTION.search(text) and re.search(r"\bmy\s+[a-z]", text, re.I)))
+    if _CHAT_TAIL.search(text) and not re.search(_DATE_ANCHOR, text, re.I):
+        return False
+    return bool(_PERSONAL.search(text) or _PERSONAL_LOOKUPS.search(text)
+                or (_MY_LOOKUP.match(text) and not _MY_LOOKUP_OPINION.search(text))
+                or (_MY_STATE.match(text) and not _MY_STATE_JUDGED.search(text)
+                    and not _MY_LOOKUP_OPINION.search(text))
+                or (_QUESTION.search(text) and _FIRST_PERSON_ASK.search(text)
+                    and not _FIRST_PERSON_CASUAL.search(text))
+                # "Do I need to work Saturday?", "Do I have to fill out the form by Friday?"
+                or (re.search(r"\bdo\s+i\s+(?:need|have)\s+to\b", text, re.I)
+                    and re.search(_DATE_ANCHOR, text, re.I) and not re.search(r"\bshould\b", text, re.I))
+                or (_QUESTION.search(text) and not _ADVICE_LEAD.match(text) and _PLAN_ON_A_DAY.search(text)))
 
 
 # --- public facts ----------------------------------------------------------------

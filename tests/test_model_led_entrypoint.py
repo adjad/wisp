@@ -451,7 +451,8 @@ def test_actual_session_private_result_provenance_survives_followup(endpoint, mo
     if history_mode == "summary":
         endpoint.store.set_summary(sid, "Synthetic private calendar summary.", 2)
     elif history_mode == "trimmed":
-        # Actual history builder drops the older private reply under its budget.
+        # Actual history builder drops the older private reply from the
+        # verbatim turns under its budget (it survives only as a digest line).
         endpoint.store.add_turn(sid, "user", "Neutral context " * 40)
         monkeypatch.setattr(main, "build_messages", lambda sid, **kw: context.build_messages(sid, max_tokens=1))
     endpoint.script = _shell_attempt_script()

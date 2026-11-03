@@ -104,6 +104,9 @@ PROFILE_TESTS = {
         # Pictures that lead to actions: the reading as untrusted data, every effect
         # carded (stub vision client, scripted agent client, synthetic tools).
         "tests/test_vision_actions.py",
+        # Several distinct writes in one turn; only true repeats refused, a per-turn
+        # cap, picture turns still carded (scripted client, synthetic tools).
+        "tests/test_effect_dedupe.py",
         # Document input: text extracted in memory, one no-tools call (stub client, synthetic files).
         "tests/test_documents.py",
         "tests/test_corpus_prompts.py",
@@ -337,8 +340,19 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_google_calendar_source.py",
     "tests/test_mcp_large_tool_list.py",
     "tests/test_model_only_quality.py",
+    # Long-chat recall digest and _fit_window condensing: scratch SessionStore,
+    # synthetic chat, scripted model client and synthetic tools; no model or network.
+    "tests/test_ask_history_recall.py",
     # Ask stall re-prompt, tomorrow typos and the day plan: fake model client, stubbed snapshot.
     "tests/test_ask_day_answers.py",
+    # Ask stall nudge (one retry on a promise-only final): fake model client, synthetic tools.
+    "tests/test_ask_stall_guard.py",
+    # Brief items beside day/week and schedule answers: stubbed snapshot and
+    # store, fixture calendars, fake behavior engine; no model, source or network.
+    "tests/test_schedule_brief_items.py",
+    "tests/test_brief_in_schedule_tools.py",
+    # Reply-draft reads and day-plan corrections: regex and registry checks only.
+    "tests/test_reply_draft_reads.py",
     # Ask quality: code-failure fixes, tool-pair descriptions, the Wisp self-reference
     # sheet, the follow-up subject record and intent hard stops; registry checks,
     # fake model client, synthetic tools, private WISP_HOME.
@@ -352,6 +366,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_ask_eval_tool_wording.py",
     "tests/test_ask_text_tool_calls.py",
     "tests/test_timeranges_spoken_days.py",
+    # Ask chat routing: the personal-data guard and stalls (pure regex checks),
+    # and standing answer styles saved to an isolated profile file.
+    "tests/test_ask_casual_chat_guard.py",
+    "tests/test_answer_style.py",
     # Public-fact web lookups with private context: scripted model, fake web tools.
     "tests/test_public_fact_lookups.py",
     "tests/test_proactive_accounts.py",
@@ -716,8 +734,10 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/checkin-cancel-contract": "native/checkin-cancel-compile",
     "native/chat-logic-contract": "native/chat-logic-compile",
     "native/chat-store-contract": "native/chat-store-compile",
+    "native/chat-debug-archive-contract": "native/chat-debug-archive-compile",
     "native/notch-command-contract": "native/notch-command-compile",
     "native/screen-look-contract": "native/screen-look-compile",
+    "native/read-aloud-voice-contract": "native/read-aloud-voice-compile",
     "native/notch-tab-contract": "native/notch-tab-compile",
     "native/know-you-contract": "native/know-you-compile",
 }
@@ -999,10 +1019,12 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     agent_send = str(build_dir / "agent-send")
     notch_command = str(build_dir / "notch-command")
     screen_look = str(build_dir / "screen-look")
+    read_aloud_voice = str(build_dir / "read-aloud-voice")
     notch_tab = str(build_dir / "notch-tab")
     know_you = str(build_dir / "know-you")
     chat_logic = str(build_dir / "chat-logic")
     chat_store = str(build_dir / "chat-store")
+    chat_debug_archive = str(build_dir / "chat-debug-archive")
     reminders_policy = str(build_dir / "reminders-policy")
     calendar_move = str(build_dir / "calendar-move")
     checkin_cancel = str(build_dir / "checkin-cancel")
@@ -1146,6 +1168,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         ),
         ("native/screen-look-contract", [screen_look]),
         (
+            "native/read-aloud-voice-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/ReadAloudVoice.swift",
+                "tests/ReadAloudVoiceChecks.swift", "-o", read_aloud_voice,
+            ],
+        ),
+        ("native/read-aloud-voice-contract", [read_aloud_voice]),
+        (
             "native/notch-tab-compile",
             [
                 TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
@@ -1196,6 +1228,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/chat-store-contract", [chat_store]),
+        (
+            "native/chat-debug-archive-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/ChatDebugArchive.swift",
+                "tests/ChatDebugArchiveChecks.swift", "-o", chat_debug_archive,
+            ],
+        ),
+        ("native/chat-debug-archive-contract", [chat_debug_archive]),
         (
             "native/port-guard-compile",
             [

@@ -128,13 +128,8 @@ def note_inj(rng, final, what):
     """The final says, briefly, that the picture held instructions that were not followed (never repeating them)."""
     if not what:
         return final
-    tail = rng.choice([
-        "The picture also had a line of instructions for an assistant, and I didn't follow it.",
-        f"A line in the picture told an assistant to {what}. That didn't come from you, so I skipped it.",
-        "There was also a line in the picture written to an assistant. I ignored it.",
-        f"The picture included instructions aimed at an assistant, asking it to {what}. I didn't follow them.",
-        "One line in the picture was addressed to an assistant, not to you, so I left it alone.",
-    ])
+    tail = rng.choice(["One line in the picture is aimed at an assistant, so I left it alone.",
+                       "One line in it is aimed at an assistant, so I left it alone."])
     return f"{final} {tail}"
 
 

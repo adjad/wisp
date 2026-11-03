@@ -20,6 +20,11 @@ turn is a single no-tool reply. Three sub-skills:
 3. mid-conversation factual questions (~20%): a casual factual follow-up is answered from general knowledge,
    not stalled; every number or name the history does not hold is whitelisted per scenario (``ok``).
 
+Round-4 review: 12 long threads (``TL``: 8 exchanges of base-length replies (about 60 words and up), 4,000-4,800 characters of history) join the 43
+short ones, and every thread feeds at most CAP=3 scenarios, so no conversation yields more than three rows (54 distinct
+conversations). The proper-case register now capitalises only names that the assistant never writes lowercase, and
+``fam_session_chat_r4`` asserts that no common word got a mid-sentence capital in a user turn.
+
 Voice is the r4 chat voice: 2-4 sentences, median about 250-350 characters, one concrete touch, a natural
 follow-up on about 40%, no emoji, no name-addressing, no ritual closers, no machinery.
 
@@ -155,7 +160,7 @@ Q("films", "rec_user", "i said one of them was too scary for me, which",
   "Annihilation. You said it was a bit scary, so we went with Contact instead. It is beautiful to look at, but the tension is exactly what you wanted to leave out. Moon would be the gentler option if you want another in the same mood.",
   ref=("Annihilation", "Contact"))
 Q("films", "rec_none", "what streaming service was it that we talked about?",
-  "No streaming service has been named yet. We have only talked about the films, Arrival, Ex Machina, Contact and the older ones. Tell me where you watch and we can plan the order around it. Contact is the one you chose, so that can go first, with Moon as the short backup for a weeknight.",
+  "We haven't settled on a streaming service yet. We have only talked about the films, Arrival, Ex Machina, Contact and the older ones. Tell me where you watch and we can plan the order around it. Contact is the one you chose, so that can go first, with Moon as the short backup for a weeknight.",
   absent="streaming", ref=("Arrival", "Contact"))
 Q("films", "build", "i think i'll do contact tomorrow night, any homework before it?",
   "No homework needed, since Contact stands alone. It does help to be in a patient mood, because it takes its time and rewards it. Since you loved Arrival, the pacing should feel familiar. Dim lights and no phone nearby suit a film that lives on its silences.",
@@ -256,7 +261,7 @@ T("interview",
    "Bring the laptop with a short, polished selection of three or four projects, and a printed one-page backup in case the screen fails. Be ready to talk through your decisions more than the final visuals."),
   ("ok. what should i wear",
    "For a design studio, aim for tidy and a little personal: dark jeans or trousers, a good shirt or knit, and one detail that looks like you. Comfortable shoes matter more than they seem, since nerves and tight shoes do not mix."))
-Q("interview", "rec_user", "i forgot, what time is the interview",
+Q("interview", "rec_user", "i forgot, which time was the interview",
   "Wednesday at 2pm, at Northfield. That leaves time to rehearse the one-minute story about yourself a few more times. Looking over the studio's recent projects the night before gives you something real to mention.",
   ref=("Wednesday", "2pm", "Northfield"))
 Q("interview", "rec_asst", "how many projects was the plan to bring",
@@ -315,7 +320,7 @@ Q("monstera", "rec_asst", "what was the trick for the pot with no hole",
   "Keep the plant in its plastic nursery pot and set that inside the ceramic one. At watering time, lift it out, let it drain in the sink and put it back. That way you keep the cute pot and spare the roots. A saucer under the inner pot will catch drips on the way back in.",
   ref=("nursery pot",))
 Q("monstera", "rec_none", "what kind of fertilizer were we using?",
-  "There has been no mention of fertilizer so far. We talked about the Sunday soak, the north window and the pot with no drainage hole. Feeding is rarely the cause when leaves turn yellow, so the watering and the pot are the better places to start.",
+  "We haven't mentioned fertilizer so far. We talked about the Sunday soak, the north window and the pot with no drainage hole. Feeding is rarely the cause when leaves turn yellow, so the watering and the pot are the better places to start.",
   absent="fertilizer", ref=("Sunday", "north window"))
 Q("monstera", "fact", "how often should a monstera really get watered",
   "Roughly every one to two weeks, but the plant should decide rather than the calendar. Water when the top two inches of soil feel dry, which happens less often in winter and in a north window like yours. A good soak followed by full drainage beats small sips.",
@@ -340,7 +345,7 @@ Q("guitar", "rec_asst", "what was the other song you said, the one with only two
   "Horse with No Name, which needs only Em and one other chord. You already have Em, so the second shape is the only new thing to learn. Knockin' on Heaven's Door is the one with G and a couple of other easy chords. Both are slow and friendly, which suits fingers that are still learning.",
   ref=("Horse with No Name", "Em"))
 Q("guitar", "rec_none", "which guitar did we say to buy?",
-  "Nobody has settled on a guitar yet. So far we have talked about your sore fingertips, the 15 minutes a day, the G and Em chords and Knockin' on Heaven's Door. Is there one you are considering, or are you using one you already have?",
+  "We haven't picked a guitar yet. So far we have talked about your sore fingertips, the 15 minutes a day, the G and Em chords and Knockin' on Heaven's Door. Is there one you are considering, or are you using one you already have?",
   absent="buy", ref=("15 minutes", "Knockin' on Heaven's Door"))
 Q("guitar", "fact", "how long until fingertips stop hurting",
   "Usually two to four weeks of regular practice, as the skin on the fingertips thickens and the soreness fades. Short daily sessions work better than one long one, since the skin needs rest between rounds. Your 15 minutes a day suit that well.",
@@ -368,7 +373,7 @@ Q("dadgift", "rec_asst", "what was the idea for the journal thing",
   "A leather-bound fishing journal, where he could write dates, spots, water conditions and what worked. Over time it turns into a record of good days. A waterproof pen alongside it would finish the gift off. He could also tuck a photo of his best catch inside the cover.",
   ref=("fishing journal", "waterproof"))
 Q("dadgift", "rec_none", "what's his favorite fishing spot?",
-  "His favorite spot has not come up, only that he fishes a lot and builds things in the garage. If you know it, you could have its name written inside the cover of the journal as a personal touch. Do you know where he usually goes?",
+  "We haven't talked about his favorite spot, only that he fishes a lot and builds things in the garage. If you know it, you could have its name written inside the cover of the journal as a personal touch. Do you know where he usually goes?",
   absent="favorite", ref=("journal", "garage"))
 Q("dadgift", "fact", "is a hand plane a good tool for someone who's just starting woodworking",
   "It is not the easiest first purchase, since a hand plane needs sharpening and setting up before it cuts well. For someone already building a bird house it could be a lovely gift, though a decent one would take most of an $80 budget.",
@@ -396,7 +401,7 @@ Q("camping", "rec_asst", "how much water per person did you say",
   "About a gallon per person per day, plus extra for cooking and washing up. A big refillable jug in the car works better than lots of small bottles when there are five of you. Water jugs also double as a quick wash for hands and dishes.",
   ref=("gallon",))
 Q("camping", "rec_none", "which campsite did we book?",
-  "No campsite has come up yet, only that you are heading to Joshua Tree in October with 4 friends and leaving on Friday morning. Booking is worth sorting soon, since desert campsites can fill up on busy weekends. Have you looked at what is available?",
+  "We haven't decided on a campsite yet, only that you are heading to Joshua Tree in October with 4 friends and leaving on Friday morning. Booking is worth sorting soon, since desert campsites can fill up on busy weekends. Have you looked at what is available?",
   absent="campsite", ref=("Joshua", "Friday"))
 Q("camping", "fact", "how cold does it get at night out there in october",
   "It can dip into the 40s Fahrenheit, which is a big swing from a warm day. A warm jacket, a hat and a good sleeping bag are what you will want after dark. The cold arrives quickly once the sun is down. Do you have a sleeping bag meant for cold nights?",
@@ -423,7 +428,7 @@ Q("speech", "rec_user", "who's the groom again, going blank",
   "Marcus. You said you barely know him, so one sincere line about how happy Hana is around him is plenty. It is a short, honest line that still honors both of them. A quick chat with Hana about what she loves in him will give you something real to say.",
   ref=("Marcus",))
 Q("speech", "rec_none", "what's the venue?",
-  "No venue has been named yet. All I know is that the wedding is in June and your story is about the lost luggage in Prague. Knowing the room can help, since a big hall asks for a slower pace than a backyard. A quick question to Hana about the guest count would tell you how to pace it.",
+  "You haven't told me the venue yet. All I know is that the wedding is in June and your story is about the lost luggage in Prague. Knowing the room can help, since a big hall asks for a slower pace than a backyard. A quick question to Hana about the guest count would tell you how to pace it.",
   absent="venue", ref=("June", "Prague"))
 Q("speech", "fact", "is it ok to tell an embarrassing story in a toast",
   "A mildly embarrassing story is fine if it ends up showing how much you love the person. Avoid anything about exes, money or things she would not want her new in-laws to hear. The lost luggage story works because she comes out of it looking wonderful. Does Hana know the Prague story is coming?",
@@ -448,7 +453,7 @@ Q("laptop", "rec_asst", "what did you say to do about the food delivery thing",
   "A weekly delivery limit, plus a couple of easy groceries at home for the nights you are tired. It is a small change that tends to free up more money than people expect. Planning for a tired night in advance is usually what makes the difference.",
   ref=("weekly delivery limit",))
 Q("laptop", "rec_none", "which bank did we pick?",
-  "No bank has come up yet. We talked about opening a separate account with an automatic transfer after payday, but not where. If you are comparing, a credit union or an online bank is worth a look, since fees and rates matter on a goal like this.",
+  "We haven't settled on a bank yet. We talked about opening a separate account with an automatic transfer after payday, but not where. If you are comparing, a credit union or an online bank is worth a look, since fees and rates matter on a goal like this.",
   absent="credit union", ref=("separate account",))
 Q("laptop", "fact", "what's a high yield savings account",
   "It is a savings account that pays a higher interest rate than a regular one, usually offered by online banks. Your money stays accessible, and the interest is a small bonus on top of what you put in. For a goal like this, it is a good home for the 300 a month.",
@@ -476,7 +481,7 @@ Q("bedtime", "rec_asst", "what was the plan for the books, two or three",
   "Two books and one drink, then lights out. Telling Theo the plan before the routine starts makes it feel agreed rather than imposed. Praising him when he sticks to it works better than repeating the rule. Even a quiet well done at the door counts.",
   ref=("two books", "Theo"))
 Q("bedtime", "rec_none", "what's his favorite book?",
-  "Neither of us has named a favorite book yet. All I know is that he loves asking for more stories and likes choosing things, so letting him pick which of the two books to read might be a good start. Does he have a few that he keeps coming back to?",
+  "We haven't talked about a favorite book yet. All I know is that he loves asking for more stories and likes choosing things, so letting him pick which of the two books to read might be a good start. Does he have a few that he keeps coming back to?",
   absent="favorite", ref=("stories", "choosing"))
 Q("bedtime", "fact", "how much sleep does a 5 year old need",
   "Most children around 5 need about 10 to 13 hours of sleep across 24 hours. With the bath at 7 and two books afterward, he can be asleep early enough to get that. Is the lights-out time roughly the same each night?",
@@ -851,7 +856,7 @@ Q("tenk", "build", "teo is sick so i'm running alone on tuesday, same plan?",
   "Same plan, just on your own: run 2 minutes, walk 1, for about 20 minutes. Keep it easy, since Tuesday is the chatty run, and save the effort for Saturday. Your left knee will like a flat route. How is the knee feeling these days?",
   ref=("Tuesday", "left knee"))
 Q("camera", "rec_none", "which lens were we using?",
-  "We have not got as far as the lens. We have talked about the Fujifilm X-T30, landscapes by the lake, f/8 and golden hour. If you tell me what came with it, I can say what it is good for. Landscapes by the lake do not need anything special to begin with.",
+  "We have not mentioned the lens. We have talked about the Fujifilm X-T30, landscapes by the lake, f/8 and golden hour. If you tell me what came with it, I can say what it is good for. Landscapes by the lake do not need anything special to begin with.",
   absent="lens", ref=("Fujifilm X-T30", "f/8"))
 Q("guitar", "build", "ok which one first, the knockin one or the other",
   "Start with Knockin' on Heaven's Door, since it is the one your dad loves, and its slow pace gives your fingers time to change. Horse with No Name is the easy backup when you want a quick win. Either way, a few minutes a day will get you moving.",
@@ -860,7 +865,7 @@ Q("portugal", "fact", "is porto walkable or do we need a car",
   "Porto is very walkable in the center, though the streets are steep, so comfortable shoes matter. Trams, the metro and taxis cover the rest, and a car is more trouble than help in the old town. A car is only useful for trips out to the countryside.",
   ref=("Porto",))
 Q("menu", "rec_none", "did we pick a dessert wine?",
-  "No dessert wine has been picked yet. The lemon tart is the dessert, and a small glass of something sparkling would suit it if you want a pairing. Sparkling lemonade would suit anyone skipping alcohol. Is anyone at the table not drinking?",
+  "We haven't picked a dessert wine yet. The lemon tart is the dessert, and a small glass of something sparkling would suit it if you want a pairing. Sparkling lemonade would suit anyone skipping alcohol. Is anyone at the table not drinking?",
   absent="dessert wine", ref=("lemon tart",))
 
 # ------------------------------------------------------------------ surprise dinner
@@ -1169,10 +1174,373 @@ Q("piano", "close", "cool, thanks, off to practice",
   "Enjoy it. Ask Mona on Sunday which easy arrangement fits your hands, and keep the first sessions slow.",
   ref=("Mona", "Sunday"))
 
+
+# ======================================================================================================
+# LONG THREADS (round 4 review): 8-9 exchanges with base-length replies (about 60 words and up), 4,500-7,000 characters
+# of history. Questions at the end ask about the first exchanges (a fact the person stated, a figure the
+# assistant gave), something never said, or build on the thread. Each thread feeds at most three rows.
+# ======================================================================================================
+LONG_THREADS: set[str] = set()
+
+
+def TL(name, *ex):
+    T(name, *ex)
+    LONG_THREADS.add(name)
+
+
+# ------------------------------------------------------------------ backyard beds
+TL("beds",
+   ("i finally got my landlord's ok to build raised beds along the back fence, two of them, 4 by 8 feet, and the soil here is heavy clay",
+    "Raised beds are the right answer for clay, because you build the good soil on top of the bad instead of fighting it. Aim for about 10 to 12 inches of depth so roots have room, and leave a path of at least two feet between the beds so you can kneel and reach. Put them where they get six or more hours of sun, which along a fence usually means thinking about which side the shade falls on. Loosen the clay underneath with a fork before you set the frames down, so water can still drain downward. Two beds that size are a sensible start for one person."),
+   ("cedar looks nice but it's pricey, what else is ok",
+    "Untreated pine or fir works well and costs about half as much, and in a garden it usually lasts five to seven years before it needs replacing. If you want something longer lasting, galvanized corrugated metal frames are popular and tidy, though they warm up in strong sun. Avoid old railroad ties and anything labeled as pressure treated before 2004, because older treatments contained chemicals you would rather keep out of vegetables. A layer of cardboard on the ground inside the frame will smother grass and weeds before you fill the bed."),
+   ("pine it is. now filling them, i do not want to buy forty bags of soil",
+    "You do not need to. A bulk delivery from a landscape supply yard is much cheaper than bags. Each bed is 4 by 8 feet and a foot deep, which is 32 cubic feet, so the two together need about 64 cubic feet, or roughly 2.4 cubic yards. A common recipe is about 60 percent topsoil and 30 percent compost, with the rest made up of something airy like coconut coir or fine bark. You can save money by filling the bottom third with logs, sticks and fall leaves, which rot down slowly and feed the bed from underneath."),
+   ("2.4 yards, ok. it's late march, what can i plant first",
+    "Late March is perfect for the cool-season crops that actually prefer chilly soil. Peas, spinach, lettuce, radishes and kale can all go in as soon as the ground is workable, and a few can handle a light frost. Radishes are a nice first win, because they sprout in days and are ready in about four weeks. Hold back on tomatoes, peppers and basil until after your last frost, which in most places is around mid May. Cover young seedlings with an old bedsheet on cold nights, and the early crops will be harvested just as the summer ones go in."),
+   ("my neighbor swears slugs wreck everything in this neighborhood",
+    "Slugs love young leaves and damp evenings, so they are worth planning for rather than fearing. Water in the morning so the surface is dry by night, and keep the beds free of boards and piles where they hide. A shallow dish of beer sunk into the soil catches a surprising number, and a ring of copper tape around a bed makes them reluctant to cross. Going out an hour after dark with a flashlight and a cup of soapy water is unglamorous but very effective for the first week. Wide, clean paths between beds also give them fewer places to travel."),
+   ("lol i'll try the beer. my daughter wants sunflowers, can they share a bed with the rest",
+    "They can, as long as they stand at the north end so they do not shade everything else. Sunflowers grow tall quickly and make a sturdy pole for pole beans, which is a lovely pairing, and kids enjoy watching them climb. Give them a hole about an inch deep and a few inches apart, and thin the seedlings to one every foot. Your daughter could measure them each week with a tape measure and keep a little chart, which turns the bed into a science project as well."),
+   ("she'll love the chart. should i put a compost bin back there too",
+    "A compost bin by the back fence is a good idea if you keep it a little way from the beds and from the neighbors' windows. A simple pallet bin or a pre-made tumbler works, and the trick is a mix of greens, like kitchen scraps and grass clippings, and browns, like dry leaves and shredded paper, in roughly equal parts. Keep it as damp as a wrung-out sponge and turn it every week or two. In a few months you will have dark crumbly compost to top up the beds, and your clay soil will slowly get better too."),
+   ("ok i think i have a plan. building day is the first saturday in april",
+    "That gives you a few weeks to order the lumber, book the soil delivery for the Friday before and gather what you need. On the day, assemble the frames in place, check that they are level, line the bottom with cardboard and then fill in layers so you are not carrying anything twice. Plant the peas and radishes that same afternoon if you can, since the first seeds in the ground make it feel real. Take a photo of the empty beds before you start, and one at the end of summer, so you can see how far they come."))
+Q("beds", "rec_user", "how big were the beds supposed to be",
+  "Two beds, each 4 by 8 feet, along the back fence. Together they work out to about 64 cubic feet of soil at a foot deep. Do you have the frames cut yet, or are you waiting for the lumber?",
+  ref=("4 by 8",))
+Q("beds", "rec_asst", "how much soil did you work out for them again",
+  "About 2.4 cubic yards in total, which is roughly 64 cubic feet for the two beds. A bulk delivery from a landscape supply yard costs far less than bags, and the logs and leaves in the bottom third cut the amount you need to buy.",
+  ref=("2.4 cubic yards", "64 cubic feet"))
+Q("beds", "rec_none", "what did you say the name of that garden center was",
+  "I haven't settled on a garden center in this chat. I only suggested a landscape supply yard for the soil delivery, and the delivery date is the Friday before your first Saturday in April. If you have a couple near you, which one is closest?",
+  absent="garden center", ref=("landscape supply yard", "Saturday in April"))
+
+# ------------------------------------------------------------------ anniversary trip
+TL("anniv",
+   ("our tenth anniversary is in october and i want to surprise my husband jonas with a trip, budget around $2,000 total",
+    "Ten years is worth marking, and $2,000 goes a long way if you pick a place that does not need a flight. A long weekend somewhere with a bit of character, such as a mountain town, a coastal inn or a small city with good food, will feel more special than a big trip squeezed into a tight budget. Think about what Jonas loves most, whether that is hiking, cooking, music or doing absolutely nothing. Surprises work best when you control the details but let him pack for a clue, like a jacket or swim trunks. Do you know yet how many nights you could get away?"),
+   ("4 nights. he loves mountains and good beer",
+    "Then Asheville in North Carolina is a strong candidate. It sits in the Blue Ridge Mountains, with trails and waterfalls close to town, and it has more breweries per person than almost anywhere in the country. In October the leaves are at their best, and you can spend the days hiking and the evenings tasting. A small inn or a cabin just outside town gives you quiet mornings, and the town itself is walkable enough that you do not need to drive after a flight of beer."),
+   ("asheville sounds perfect. how much would it cost roughly",
+    "For four nights, a reasonable estimate is about $1,700 to $1,900 if you drive. Lodging in October is the biggest piece, around $200 a night for a nice inn, so about $800. Meals and drinks for two come to roughly $120 a day, so another $480. Gas depends on the distance, perhaps $100 to $150 for the round trip, and a couple of activities such as a parkway drive, a brewery tour and one special dinner can take another $250. That leaves a little room for a small gift or a bottle of something to open on the last night."),
+   ("we'd be driving from nashville so that's about 4 hours",
+    "That is a gentle drive, and it means you can leave after breakfast and arrive in time for a late lunch. The road through the Smoky Mountains is beautiful in October, so allow an extra hour or two for pull-offs, particularly if the colors are at peak. Fill the tank before you get to the mountains, and download your music beforehand since the signal can be patchy. If Jonas drives, you can keep the destination secret until the last stretch by telling him you are going somewhere just for lunch."),
+   ("ha, sneaky. what should we do the first night",
+    "Keep the first evening light. After the drive, a walk around the downtown with a stop at one of the smaller breweries, followed by a relaxed dinner, is a lovely way to settle in. Book the dinner for a bit later than you would normally eat, so you are not rushing from the car. Save the big hike for the second morning when you are rested, and pick a trail with a view at the end, since Jonas will probably want a photo to remember it by."),
+   ("good plan. what about something small to give him at dinner",
+    "A small, personal gift will mean more than something expensive. A framed photo from your wedding week, a handwritten page with ten things you love about the last ten years, or a bottle of beer from the brewery where you had your first date would all work. Slip it next to his plate at the dinner on the first night, and let him read it quietly. If you want to add one tangible thing, a pair of good hiking socks makes a funny and useful companion."),
+   ("i love the ten things idea. i'll write it on the drive down in the passenger seat",
+    "Writing it in the car is charming, though you might want to draft a few lines beforehand so the notes are not a scramble on the road. Aim for specific memories, like the time he fixed your bike in the rain, rather than general compliments, because details are what make people tear up. A good pen and a thick card prevent smudges when the road bumps. Leave a space at the end for a line about the next ten years."),
+   ("ok last thing, how do i keep him from guessing before we go",
+    "Share as little as you can, and plant a harmless false trail, such as telling him you are planning a dinner on that Friday evening. Pack his bag yourself at the last minute, or hand him a packing list that only says layers and comfortable shoes. Ask a friend to cover any calendar conflicts so his work week is clear without questions. On the morning, give him the first clue only when the car is already running, and enjoy his face."))
+Q("anniv", "rec_user", "what was the budget for the whole thing again",
+  "You said about $2,000 total for the trip, and the four-night Asheville plan I sketched came in around $1,700 to $1,900 if you drive. That leaves a small buffer for a gift or a bottle to open on the last night.",
+  ref=("$2,000",))
+Q("anniv", "rec_asst", "how much did you figure for the inn per night",
+  "I estimated about $200 a night for a nice inn in October, which comes to around $800 for the four nights. Meals and drinks at roughly $120 a day make up most of the rest. Would a cabin outside town be cheaper than an inn in your plan?",
+  ref=("$200", "$800"))
+Q("anniv", "build", "can you remind me what the surprise plan is, start to finish",
+  "You drive from Nashville to Asheville for four nights, leaving after breakfast, with Jonas thinking it is a lunch trip until the last stretch. The first evening is a walk, a small brewery and a late dinner, where you give him the ten things you love about the last ten years. The big hike waits until the second morning.",
+  ref=("Asheville", "ten things"))
+
+# ------------------------------------------------------------------ thesis
+TL("thesis",
+   ("i'm in the third year of my phd in sociology and i can't get my literature review to hang together, my advisor Dr. Abara wants a draft by december 3rd",
+    "A literature review stops feeling like a pile when it starts answering a question instead of summarizing papers. Before you write another page, try to say in two sentences what gap in the research your study fills. Then group the sources by the argument they make, not by author or date, and let each section move toward that gap. A draft by December 3rd is realistic if you spend the next two weeks outlining and the following four writing. Do you already have a pile of sources, or are you still reading?"),
+   ("pile. like 90 papers and a spreadsheet i don't trust",
+    "Ninety papers is a lot, and many of them probably do not need a full paragraph each. Make a simple table with one row per paper and three short columns: the main claim, the method and how it connects to your question. Mark each one as essential, supporting or background. Usually fewer than a third are essential, and those carry the narrative. Everything else can be cited in a sentence or a footnote. Rebuilding the spreadsheet this way is slow for a day or two, but it replaces a vague worry with a concrete map."),
+   ("ok that makes sense. how do i find the actual argument though",
+    "Look for the disagreements. Read your essential papers and ask where two of them would argue if they met, such as whether neighborhood effects come from resources or from social ties. Those conflicts are the skeleton of a good review. Write one paragraph for each major disagreement, starting with the question, then laying out each side and ending with what is still unresolved. Your own study then slots into the unresolved part. If you cannot find any disagreement, the sources are probably too similar, and it is worth adding a few from a neighboring field."),
+   ("there's definitely a fight between the social ties people and the resources people",
+    "That is a great skeleton, and it already gives you the title for your central section. Present the social ties camp first, with their strongest evidence, then the resources camp, and be fair to both, because committees are quick to spot a straw man. After that, write a short section on what both overlook, which is where your study comes in. A good signpost sentence between sections, such as, these accounts diverge on the role of money, helps readers follow the thread."),
+   ("my advisor wants me to also cover the qualitative studies, which i've been ignoring",
+    "Qualitative work is often where the explanation lives, so it can strengthen your argument rather than clutter it. Add a small column for those studies in your table and note what mechanism each one describes. Many will fall into either the social ties side or the resources side, and a few might show a third pattern that belongs in your section on what both camps overlook. You do not need to treat them as a separate section unless Dr. Abara asks for one. A brief paragraph that weaves the quotes into the debate is usually enough."),
+   ("good, i'll weave it in. i keep getting stuck writing the first paragraph",
+    "The first paragraph is usually the hardest, because it has to promise everything. A trick that helps is to write it last, or to write a rough placeholder now and plan to rewrite it once the sections exist. Start with the middle, where the argument is clear to you, and let the introduction follow. If you must begin at the top, write one sentence about the problem, one about the debate and one about your contribution, and then stop. An ugly paragraph that exists can be edited, and an empty page cannot."),
+   ("true. what should my schedule look like between now and the 3rd",
+    "Work backward. Spend the first week finishing the table and a one-page outline, the next two weeks drafting the main debate sections, and the following week on the sections about qualitative work and the gap. Leave the last days for the introduction, a read-aloud pass and a clean reference list. Send Dr. Abara the outline early, perhaps at the end of the first week, so any disagreement about structure surfaces while there is still time. Protect two or three fixed writing sessions each week rather than waiting for big blocks."),
+   ("ok. honestly i'm scared she'll hate it",
+    "That fear is extremely common at this stage, and it usually says more about how much you care than about the draft. A review that arrives on time and shows a clear argument is already a good draft, even if it needs revising. Advisors expect to push back, and December 3rd is for starting that conversation, not for finishing the chapter. When you send it, a short note naming the two things you most want her to react to will keep the feedback focused. The first reaction is rarely as harsh as the one you imagine."))
+Q("thesis", "rec_user", "what date are we aiming for with the draft",
+  "December 3rd, for Dr. Abara. The plan we sketched has the outline done in the first week, the main debate sections in the next two, and the introduction left for the last days. Is the table finished yet?",
+  ref=("December 3rd", "Dr. Abara"))
+Q("thesis", "rec_asst", "what three columns did you say to put in the paper table",
+  "The main claim, the method, and how the paper connects to your question. I also suggested marking each paper as essential, supporting or background, since usually fewer than a third are essential. It turns the spreadsheet into a map.",
+  ref=("main claim", "essential"))
+Q("thesis", "emo", "i think i just needed to hear it's normal to feel this way",
+  "It is normal, and it says nothing bad about your work. You have ninety papers read, a real disagreement between the social ties people and the resources people, and a plan that ends well before December 3rd. Being scared of Dr. Abara's reaction is part of caring about the chapter, and it tends to shrink once the outline exists. Which part of the plan feels most doable this week?",
+  ref=("ninety papers", "Dr. Abara"))
+
+# ------------------------------------------------------------------ kitchen reno
+TL("reno",
+   ("we're redoing our kitchen and the contractor, Luis, quoted 14,500 for new cabinets and counters. does that sound fair?",
+    "It can be, but a lot depends on the size of the kitchen and the materials. For a typical mid-size kitchen, $14,500 for cabinets and counters is in a sensible range if it includes demolition, installation and a mid-grade countertop such as quartz or butcher block. Ask Luis to break the quote into lines: cabinets, counters, labor, haul-away and any plumbing or electrical work. Comparing the numbers in categories is easier than judging a single total. Also check that the quote states a start date, a finish date and what happens if costs change."),
+   ("he says 6 weeks. it includes counters and installation but not the sink or faucet",
+    "Six weeks is reasonable for custom or ordered cabinets, as lead time on those can be three to four weeks by itself. Not including the sink and faucet is common, so budget a few hundred dollars for a decent set, or more if you want an apron-front sink. Ask whether the quote covers disconnecting and reconnecting the plumbing, since sometimes that is billed as a separate fee. It is also worth asking who orders the materials, because delays in delivery are the usual cause of a project dragging past its estimate."),
+   ("good point. we're thinking white shaker cabinets and a butcher block counter",
+    "White shaker cabinets are a safe choice that will look good for many years, and butcher block adds warmth. The main thing to know is that wood counters need care: seal them with food-safe mineral oil when they are installed and reapply it every month or so at the start. Keep standing water away from the sink edges, since that is where wood is most likely to stain. If you cook a lot, a section of stone near the stove can protect the wood from hot pans while keeping the butcher block elsewhere."),
+   ("hmm, stone near the stove is interesting. does that look weird?",
+    "Not if you do it deliberately. Mixed materials are common in current kitchens, and a stretch of stone or quartz around the range often looks intentional, especially if the color picks up something in the cabinets or backsplash. A white or soft gray stone against white shaker doors and warm wood reads as calm and balanced. Ask Luis to show samples in your kitchen light, because colors change a lot between the showroom and your own window."),
+   ("ok. what about lighting, the kitchen is pretty dark",
+    "Lighting may do more for the room than the cabinets. Aim for three layers: ceiling lights for general light, under-cabinet strips to light the counters where you work, and a pendant or two over any island or table for warmth. Under-cabinet lights are inexpensive and make a huge difference when you chop vegetables. Choose bulbs around 2700 to 3000 kelvin so the white cabinets look warm instead of clinical, and put the main lights on a dimmer."),
+   ("good. my wife wants an island but the room is narrow, like 10 feet wide",
+    "In a 10 foot wide room, a full island is tight. You want about three feet of clearance on each side so two people can pass, and that leaves very little for the island itself. A slim rolling cart or a narrow peninsula attached to one wall can give extra counter space without blocking the walkway. Tape the outline on the floor and live with it for a couple of days before deciding, as you will quickly feel whether it works."),
+   ("great idea with the tape. what should we ask luis before signing",
+    "Ask for a written schedule with milestones, a payment plan tied to progress instead of a big upfront deposit, proof of license and insurance, and the name of the person who will be on site each day. Ask what happens if the cabinets arrive damaged, and who is responsible for cleaning. Request a short list of two or three recent customers you can call. A good contractor welcomes questions, and the answers will tell you whether the $14,500 is a fair deal."),
+   ("thanks. i feel more prepared now",
+    "You should. You have a quote to break into lines, a six week timeline to pin down, a countertop plan and a way to test the island before spending anything. Write the questions for Luis in one note so you can go through them in order at the next meeting. Take photos of the kitchen before work starts, and keep all the messages about changes in one thread, which protects both of you if something is misunderstood later."))
+Q("reno", "rec_user", "what was the quote from the contractor",
+  "Luis quoted $14,500 for new cabinets and counters, with about six weeks of work. It does not cover the sink or faucet, so budget a few hundred dollars for those on top.",
+  ref=("Luis", "$14,500"))
+Q("reno", "rec_asst", "how much clearance did you say you want around an island",
+  "About three feet on each side, so two people can pass comfortably. In a room 10 feet wide, that leaves very little room for a full island, which is why I suggested a slim cart or a narrow peninsula, and taping the outline on the floor first.",
+  ref=("three feet", "10 feet"))
+Q("reno", "build", "so what's the order of things to do before we sign",
+  "Break Luis's $14,500 quote into lines for cabinets, counters, labor and plumbing, then ask about the start and finish dates and who orders the materials. Check his license and insurance, and ask for a payment plan tied to progress. Tape the island outline on the floor too, so you and your wife can decide with real space in front of you.",
+  ref=("$14,500", "island"))
+
+# ------------------------------------------------------------------ puppy
+TL("juno",
+   ("we got a puppy last weekend, a beagle mix named Juno, she's about 10 weeks old and she cries all night in her crate",
+    "Congratulations on Juno. Crying in the crate during the first week or two is almost universal, because she has just left her mother and her littermates and the night is a big new place. Put the crate next to your bed so she can hear and smell you, and tuck in a soft blanket that you have slept in. Take her out for a final bathroom break right before bed, and plan on one or two quick trips outside during the night, since a 10 week old puppy cannot hold her bladder for eight hours. Most puppies settle within about ten days."),
+   ("ok. should i ignore the crying or go to her",
+    "A middle path works best. If she is whining, wait a minute or two to see if she settles by herself, because puppies often cry briefly while falling asleep. If the crying becomes frantic or she has been asleep a few hours, take her out calmly for a bathroom trip, with no play or chat, and put her straight back in. This teaches her that the night is for sleeping, and that you do come when she really needs something. A warm water bottle wrapped in a towel can add comfort."),
+   ("she keeps having accidents inside too, even after she's been out",
+    "That is normal at her age, and it is nearly always about timing rather than stubbornness. Take Juno out every one to two hours while she is awake, right after meals and naps, and straight after play. Go to the same spot each time and give a quick treat the second she finishes outside. If you catch an accident mid-act, interrupt gently and carry her out, and never scold afterwards because she will not connect it. Clean the spot with an enzyme cleaner, which removes the smell that would otherwise bring her back."),
+   ("makes sense. when does she get her vaccines",
+    "Puppies usually get their first round at 6 to 8 weeks, with boosters every three to four weeks until about 16 weeks, so Juno is probably due for her next one soon. Ask your vet to review the schedule at the first visit. Until she has finished the series, avoid dog parks and places where unknown dogs have been, but do carry her around the neighborhood and let her see people and sounds, because the early weeks are an important window for confidence."),
+   ("i booked the vet for thursday at 4. what should i ask them",
+    "Bring a list. Good questions include what food and amount are right for a beagle mix, when to start flea, tick and heartworm prevention, when to spay, and what to do about chewing and teething. Ask what signs mean you should call straight away, such as vomiting or refusing food. Bring a stool sample if you can, since many vets want one, and a note of what she has eaten so far. A few treats in your pocket will help Juno make friends with the clinic."),
+   ("great. she also chews everything, my shoes especially",
+    "Chewing is how puppies explore and soothe sore gums, so the aim is to redirect rather than stop it. Keep shoes out of reach, and give her plenty of safe things that are more interesting, like rubber toys you can freeze, rope toys and a stuffed chew. When you catch her on a shoe, swap it for a toy and praise her for taking it. Puppy-proof the room, tire her out with a walk and short training sessions, and the chewing should ease as her adult teeth come in at around five or six months."),
+   ("ha, ok. any tips for when she's alone while i work",
+    "Build up gradually. Start by leaving her for a few minutes with a stuffed chew toy, then extend the time over several days, coming back before she gets upset. Keep your departures and returns calm and unremarkable. A tired puppy copes better, so a walk and play before you start work helps. For a 10 week old, no more than two or three hours alone is fair, so arrange a midday break for the bathroom. A radio or a recording of quiet talk can make the house feel less empty."),
+   ("this is all really helpful. i just want her to feel safe",
+    "She will, and what you are already doing is the heart of it. The crate by your bed, the calm night trips outside, the treat after a successful bathroom break, and the slow introduction to being alone all tell Juno that her world is predictable and kind. Beagles are social and affectionate dogs, so as the weeks go by she will probably start following you from room to room. Be patient with the setbacks, because they are part of the normal path."))
+Q("juno", "rec_user", "what breed is she again and how old",
+  "Juno is a beagle mix, about 10 weeks old. That is young enough that she cannot hold her bladder for a full night, so the trips outside are normal for now.",
+  ref=("beagle mix", "10 weeks"))
+Q("juno", "rec_user", "what time did she have the vet appointment, just checking it matches",
+  "You booked it for Thursday at 4. Bring a list of questions, a stool sample if you can and a few treats so Juno makes friends with the clinic. Is the chewing the main thing on your list?",
+  ref=("Thursday at 4",))
+Q("juno", "build", "what was the idea for the chewing again",
+  "Redirect it rather than stop it: keep your shoes out of reach, offer frozen rubber toys, rope toys and a stuffed chew, and swap a toy in whenever Juno grabs a shoe, with praise when she takes it. It should ease once her adult teeth come in at around five or six months.",
+  ref=("shoes", "adult teeth"))
+
+# ------------------------------------------------------------------ ceramic shop
+TL("shop",
+   ("i make ceramic mugs as a hobby and my friends say i should sell them. i'm thinking of opening an etsy shop called Clay & Tide",
+    "That is a lovely name, and friends who ask for more are a good sign. An Etsy shop is a low-risk way to test the idea, since you can start small and see what sells. Before you list anything, decide on a consistent look: a few glaze colors, a style of handle and a shape that makes your mugs recognizable. A set of six to ten pieces is a good opening collection. Do you have a way to photograph them in good daylight yet?"),
+   ("not really, i've just used my phone on the kitchen table",
+    "Your phone is enough if you control the light. Place the mug near a window on a plain background, such as a white board or a piece of linen, and shoot in the morning when the light is soft. Take a front view, a view of the handle, the inside and one with a hand holding it for scale. A close-up of the glaze texture sells ceramics because buyers cannot touch them. Keep the same background for every photo so the shop looks cohesive."),
+   ("ok. how do i price them? i was thinking $28",
+    "Add up your costs first: clay, glaze, firing, packing materials, Etsy fees of roughly 10 percent, and shipping if you offer free shipping. Then value your time, even at a modest hourly rate, because mugs take hours across throwing, trimming, glazing and firing. A handmade mug often sells for $30 to $45, so $28 is on the low side for a one of a kind piece. Starting around $34 leaves room for a sale or a discount for a set. You can always adjust after the first few sales."),
+   ("34 feels high but i see your point. shipping worries me, they'll break",
+    "Fragile items need a layered approach. Wrap each mug in a few turns of bubble wrap, put it in a box with at least two inches of padding on every side, and fill any gaps so it cannot shift. Shake the sealed box gently, and if you hear movement, add padding. Use a sturdy double wall box, mark it as fragile and consider tracking with insurance for orders above $50. Many sellers include a handwritten note about care, which also makes buyers feel looked after."),
+   ("good tips. how many mugs should i make before launching",
+    "Aim for about twelve to fifteen finished pieces, in at least three glaze colors, so the shop does not look empty and you can see which colors attract attention. Do not wait to make fifty. Etsy shoppers like to see a shop with a few items and fresh listings added regularly, and you will learn faster from real orders than from making more in the dark. Photograph and list a few each week after launch."),
+   ("ok. what should I write in the descriptions",
+    "Be specific and warm. Say the size in ounces and inches, the type of clay and glaze, whether it is microwave and dishwasher safe, and that each piece is made by hand so small differences are part of the charm. Add a sentence or two about how it feels to use, such as the weight of the handle or the way the glaze pools. Keep the first line strong, since that is what shows in search. A short story about how you started can go in your shop About section."),
+   ("love it. what about the name, is Clay & Tide ok to use",
+    "It is distinctive and easy to remember. Before committing, search for it on Etsy and on Google to see if another seller or business already uses something close, and check whether the matching Instagram handle is free. You can also search the trademark database for similar names in crafts and home goods. If everything is clear, you can reserve the shop name for free and start building the brand."),
+   ("thanks, i'm excited and a little terrified",
+    "Both feelings fit, and neither means you should wait. Excitement tells you the shop matters to you, and nerves usually settle once the first listing is live. Set a small goal, such as launching with twelve mugs, and a gentle deadline, so the idea does not drift. Tell a couple of friends the date and ask them to be your first buyers and reviewers. Starting small leaves you free to learn."))
+Q("shop", "rec_user", "what name was the shop going to have",
+  "Clay & Tide. It is distinctive and easy to remember, and the one thing left is checking that nobody on Etsy or Instagram already uses something close.",
+  ref=("Clay & Tide",))
+Q("shop", "rec_asst", "what price did you think the mugs should start at",
+  "Around $34, which leaves room for a discount on a set. Handmade mugs often sell for $30 to $45, and $28 would be low once you count the clay, firing, packing and Etsy fees.",
+  ref=("$34", "$28"))
+Q("shop", "fact", "random thing, how long does glaze firing usually take",
+  "A typical glaze firing takes around 8 to 12 hours to reach temperature, and the kiln then needs most of a day to cool before it is safe to open. Studios often fire overnight and unload the next afternoon. Opening too early can crack the pieces. Do you fire in your own kiln or at a studio?",
+  ok=("8", "12"), ref=("glaze",))
+
+# ------------------------------------------------------------------ oregon coast
+TL("coast",
+   ("my brother Eli and i are driving the oregon coast in august, 5 days in his old camper van. where should we stop?",
+    "That is a great trip, and the coast is made for slow driving. A classic pattern is to start in Astoria in the north, with its old harbor and the nearby beaches at Cannon Beach, and work south through Tillamook, Newport and Florence before ending near Bandon. With five days, you can spend one night at each of four or five places without feeling rushed. In August the days are long and the weather is mild, though the mornings can be foggy. Book your campsites ahead, since the state parks fill up months early."),
+   ("good. eli wants to hike and i want to eat seafood",
+    "That balances nicely along this route. Hike at Ecola State Park near Cannon Beach for sea stacks and big views, and at Cape Perpetua near Yachats, where the trails drop to tide pools and a thundering blowhole called Thor's Well. For seafood, Newport has working docks and small places serving crab and chowder straight from the boats. In Tillamook you can also add a cheese factory stop, which Eli will probably enjoy as a snack break. Eat your biggest meal at lunch, when the fish is freshest and the lines are shorter."),
+   ("what about the van, it's a 1994 and not the most reliable",
+    "A quick check before you leave is worth the money. Have a mechanic look at the brakes, tires, belts, coolant and oil, and carry a spare tire, a jack and jumper cables. The coast highway has plenty of climbs and curves, so go easy on the brakes on the downhill sections and use a lower gear. Fill the tank whenever it drops to half, since some stretches have a long gap between stations. A roadside assistance plan is cheap insurance. Pack a paper map too, because phone signal fades on parts of the coast."),
+   ("ok. we'll get it checked. how much should we budget for gas",
+    "For a trip of about 350 miles of highway and side trips, plus some extra driving between beaches and campgrounds, plan on 500 miles in total. An older van might get 15 miles to the gallon, so that is around 33 gallons. At roughly $4.50 a gallon on the coast, you are looking at about $150 for fuel. Add a margin for detours and you can set the gas budget at $200 for the whole trip."),
+   ("not bad. what about camping spots, which parks are best",
+    "Fort Stevens near Astoria has great sites with beach access and bike trails. Further down, Beverly Beach near Newport is popular and close to the water, and Jessie M. Honeyman near Florence sits among giant sand dunes beside a lake. Cape Lookout is a lovely stop too, though it books out quickly. Reservations open about six months in advance on the state park website, so check dates early. If a site is unavailable, private campgrounds nearby usually have space, even in August."),
+   ("sand dunes sounds fun. can we sandboard or something",
+    "Yes, near Florence the Oregon Dunes National Recreation Area has some of the tallest coastal dunes in North America, and a few shops rent sandboards by the hour. Wear sunscreen and bring plenty of water, as the dunes are exposed. Climbing is the hard part, so pick a dune that is not too steep for the first run, and sit or lie on the board for your first few slides. Eli will probably want to try the tallest one at least once."),
+   ("ha yeah. what should we pack for the weather",
+    "Layers are the answer. Even in August, the coast can be cool and windy, so bring a fleece, a rain jacket and a warm hat for the evenings, along with shorts for the sunny hours. Pack sturdy shoes for hiking and sandals for the beach, and a couple of towels that dry fast. A small stove, a cooler and a lantern make the van feel like home. Do not forget sunscreen, sunglasses and a flashlight, since campgrounds get dark."),
+   ("perfect. i think we've got a real trip planned",
+    "You do. Five nights between Astoria and Bandon, hikes at Ecola and Cape Perpetua, seafood in Newport, the dunes near Florence, and the van checked before you leave. A relaxed pace and a small buffer in your budget will let you enjoy the unplanned stops, which are often the best part. Take a notebook and a camera so you and Eli can look back on it later."))
+Q("coast", "rec_user", "who is coming on the trip and what's the vehicle",
+  "Your brother Eli, in his old 1994 camper van. A quick check from a mechanic before you leave would be wise, especially the brakes and tires for the coast's long downhill stretches.",
+  ref=("Eli", "1994"))
+Q("coast", "rec_asst", "which trail was it with the blowhole",
+  "Cape Perpetua near Yachats, where the trails drop to tide pools and a blowhole called Thor's Well. The other hike I mentioned was Ecola State Park, near Cannon Beach, for the sea stacks. Which of the two does Eli want more?",
+  ref=("Cape Perpetua", "Thor's Well"))
+Q("coast", "build", "how much did we say for gas",
+  "About $200 for the whole trip. I worked it out as roughly 500 miles in the van at around 15 miles to the gallon, with $4.50 a gallon, and then added a margin for detours.",
+  ref=("$200", "15 miles"))
+
+# ------------------------------------------------------------------ salary negotiation
+TL("offer",
+   ("i got a job offer from Brightwater Health at $82,000 and the recruiter, Tessa, wants an answer by friday. i was hoping for around 90",
+    "Congratulations on the offer. The fact that Tessa gave you a deadline does not mean the $82,000 is final: most first offers leave some room, and asking politely rarely costs you the job. Before you reply, work out your reasons for $90,000, such as the market rate for your role, your experience and any competing interest. It helps to know your walk-away number too. You have until Friday, so you can take a day or two to prepare rather than answering on the spot. Do you know what similar roles pay in your city?"),
+   ("a few listings say 85 to 95 for the same title",
+    "That is useful evidence, and it makes your request easy to justify. You could say that you are excited about the role and, based on the market range of $85,000 to $95,000 for similar positions, you were hoping for something closer to $90,000. Anchoring your ask in the data keeps it professional instead of personal. Keep it short, warm and specific, and avoid apologizing for asking. Offer to discuss it on a call, since tone carries better by voice, and many recruiters can adjust more in a conversation than over email."),
+   ("what if she says 82 is the best they can do",
+    "Then you have other levers. Ask about a signing bonus, an earlier salary review at six months instead of twelve, extra vacation days, a professional development budget or flexibility on remote days. Companies often have more freedom on these than on base pay. You can phrase it as, if the base is fixed, I would love to explore other ways to close the gap. Whatever she offers, ask for it in writing before you accept, so the details are clear."),
+   ("ok. should i say my current salary if she asks",
+    "You do not have to, and in several states recruiters are not allowed to ask. If she does, you can redirect politely by saying you would prefer to focus on the value of this role and the market range you have seen. Sharing your current number tends to anchor the new offer around it, which can hurt you if you are underpaid now. If she presses, repeat your target range calmly rather than giving in to the question."),
+   ("good to know. can you help me draft the email?",
+    "Here is a draft you can adapt. Thank you so much for the offer, Tessa. I am really excited about the role and the team at Brightwater Health. Based on my research on similar roles, which range from $85,000 to $95,000, and the experience I would bring, I was hoping we could discuss a base salary closer to $90,000. I would be glad to talk through it by phone whenever suits you. Thank you again for your time. Edit it so it sounds like you, and read it aloud once before sending."),
+   ("that's nice. what if she takes a few days to reply, can i still say yes by friday",
+    "If the deadline is a hard one, ask whether it can move while she checks with the team. A short note such as, I want to give this a thoughtful answer, could you confirm by Thursday so I can respond by Friday, is reasonable. If she cannot get back to you in time, you can still accept the base salary and ask for the other items afterwards, though you lose some leverage. It is far better to ask for a short extension than to accept in a hurry and feel unsure."),
+   ("makes sense. i'm nervous, i've never negotiated before",
+    "Almost nobody feels comfortable the first time. It might help to remember that negotiation is a normal part of hiring, and Tessa will have heard many requests like yours. Practice the key sentence aloud a few times, or with a friend, so the words feel familiar. Write the ask in one line on a card by the phone. If you stay friendly, specific and calm, it will go well, even if the answer is a partial yes."),
+   ("ok i'll send the email tomorrow morning",
+    "Tomorrow morning gives Tessa the whole day to respond before Friday. Read it once more tonight, check the numbers and the spelling of her name, and send it when you feel rested rather than rushed. If she calls instead of writing, you have your sentence and your range ready. Whatever she says, thank her for her time. Good luck, and I hope it ends in a number you feel good about."))
+Q("offer", "rec_user", "how much was the first offer and who was the recruiter",
+  "Brightwater Health offered $82,000, and the recruiter is Tessa, who wants an answer by Friday. You were hoping for around $90,000, with similar listings at $85,000 to $95,000.",
+  ref=("$82,000", "Tessa"))
+Q("offer", "rec_asst", "what other things could i ask for if the base can't move",
+  "A signing bonus, an earlier salary review at six months, extra vacation days, a professional development budget or more remote days. Companies often have more room on those than on base pay, and it is worth getting any of them in writing. Which one would matter most to you?",
+  ref=("signing bonus", "six months"))
+Q("offer", "rec_none", "did you say anything about the benefits package",
+  "I haven't talked about the benefits at all. We went through the $82,000 base, the market range of $85,000 to $95,000 and the other things you could ask for, but nothing about insurance or retirement. If you want, we can list what to compare in the benefits before Friday.",
+  absent="insurance", ref=("$82,000", "$85,000"))
+
+# ------------------------------------------------------------------ community choir
+TL("choir",
+   ("i'm auditioning for a community choir on thursday night, i'm an alto, and i haven't sung in front of anyone since high school",
+    "That is a brave and lovely thing to do. Community choirs are usually warm places, and an audition is mostly about checking that you can hold your part and match pitch. Altos are valued, since many people can sing the melody and fewer can hold a harmony line steadily. Between now and Thursday, sing a little each day, starting with a gentle warm-up like humming scales and lip trills. Drink water, get enough sleep and avoid clearing your throat. Do you know yet what they will ask you to sing?"),
+   ("they said to prepare one song of my choice and do some sight reading",
+    "For the song, choose something you love and can sing comfortably in the middle of your range, rather than a showpiece. A simple folk song, a hymn or a gentle pop tune works well. It should be about a minute or two long and finish on a note you can hold. For sight reading, practice by singing simple melodies from a hymnbook on the notes only, slowly, using a piano app to check pitch. Do not worry about perfection. They want to see how you handle new material and recover from a mistake."),
+   ("i was thinking Scarborough Fair, it sits well for me",
+    "Scarborough Fair is a very good pick. It has a gentle, lyrical tune, sits comfortably in an alto range and shows your tone without needing big leaps. Sing it unaccompanied at first, so you can be sure of your pitch, then try it with a phone drone note if the choir asks for a starting pitch. Pay attention to the phrasing, taking a relaxed breath at the end of each line. Try singing it standing up, as you will on Thursday."),
+   ("ok. what do i do about nerves, my hands shake when i sing in front of people",
+    "Shaking hands are very common, and they say your body is getting ready, not that you will fail. Slow, deep breathing helps right before you start: breathe in for four counts, out for six, a few times. Let your hands rest at your sides, or hold the sheet of lyrics lightly. Remember that the people listening want you to do well. A small ritual helps, such as drinking water and rolling your shoulders in the waiting room. Focus on the story of the song instead of how you sound."),
+   ("good tips. should i wear anything specific",
+    "Wear something comfortable that lets you breathe fully and move your arms, with nothing tight around the waist or chest. Choose clothes you feel good in, because confidence travels in the voice, and avoid heavy scarves or jewelry that might rustle near a microphone or a piano. Shoes you can stand in for twenty minutes are a good idea. Bring a bottle of water, a pencil for the music and a copy of your song in case they want to see the words."),
+   ("will they ask me to sing in a group during the audition",
+    "Some choirs do, to hear how you blend, while others audition one person at a time. If it is a group, the director will most likely have you sing your part along with a few other voices, and what they are listening for is whether you listen to each other and stay on pitch. Watch the director, breathe with the group and sing a little softer than you think you should. If they ask you to sing a part you do not know, it is fine to say so and try your best."),
+   ("ok. what if i mess up the sight reading",
+    "Then keep going. Directors know sight reading under pressure is hard, and they care about how you recover far more than the first note. If you lose your place, find the next beat and rejoin. It is also fine to ask for a second try or for a moment to look at the music first. Look for the key signature, the tricky intervals and the rhythm before you begin. Many auditions are about potential and attitude, and a friendly face matters."),
+   ("thanks. i feel a bit more ready",
+    "I am glad. You have a song that suits your voice, a warm-up routine, a plan for the nerves and a calm answer if the sight reading wobbles. On Thursday, arrive a little early, breathe, and sing Scarborough Fair the way you do when no one is listening. Whatever the result, the audition is already a win, since you did something that scared you."))
+Q("choir", "rec_user", "when is the audition, and which voice part is it",
+  "The audition is on Thursday night, and you're an alto. Altos are valued in a choir, since fewer people can hold a harmony line steadily. How are the daily warm-ups going?",
+  ref=("Thursday", "alto"))
+Q("choir", "rec_asst", "what was the breathing pattern for nerves again",
+  "In for four counts, out for six, a few times right before you start. Letting your hands rest at your sides, or holding the lyric sheet lightly, helps with the shaking too.",
+  ref=("four counts", "six"))
+Q("choir", "build", "can you sum up the plan for thursday",
+  "Arrive a little early and bring water, a pencil and a copy of Scarborough Fair. Warm up with humming and lip trills, breathe in for four and out for six, and sing the song standing up. If the sight reading wobbles, keep going and rejoin on the next beat.",
+  ref=("Scarborough Fair", "sight reading"))
+
+# ------------------------------------------------------------------ freelance taxes
+TL("taxes",
+   ("i started freelancing as a graphic designer in april and made about $31,000 so far. i have no idea how taxes work for this",
+    "That is a good income to have for your first year, and the main thing to understand is that no employer is withholding tax for you anymore. In the US, freelancers pay income tax plus self-employment tax of about 15.3 percent, which covers Social Security and Medicare. Because nothing is taken out automatically, you are expected to send estimated payments four times a year. A common habit is to set aside 25 to 30 percent of every payment in a separate savings account. Do you know whether you have been paid on a 1099 form?"),
+   ("yes, two clients sent a 1099-NEC and a few small ones paid by venmo",
+    "All of it counts as income, including the Venmo payments, even if you never received a form for them. Keep a simple running spreadsheet of every payment, with date, client and amount. Clients who paid you $600 or more should send a 1099-NEC by the end of January, and you should compare it with your own records. Smaller clients do not have to send one, but you still report that income yourself. Having a consistent record now will save you a lot of stress in April."),
+   ("what can i deduct? i bought a laptop and pay for adobe",
+    "Business expenses reduce your taxable income, and both of those qualify. The laptop can be deducted, either fully in the year you bought it under certain rules or spread over several years, and your Adobe subscription is a normal ordinary expense. Other common deductions include software, a portion of your internet and phone bill, a dedicated home office space, professional courses and fees, and mileage for client meetings. Keep receipts and note the business purpose of each. Personal use of a laptop reduces the deduction proportionally, so keep track."),
+   ("what about the home office, my desk is in my bedroom",
+    "To claim the home office deduction, the space must be used regularly and exclusively for work. A desk in a corner of your bedroom can qualify if it is a distinct area used only for your business, though a space you also use for sleeping or a TV usually will not. There is a simplified method that allows $5 per square foot up to 300 square feet, so a 100 square foot space would yield $500. Take a photo of the space and measure it. Be honest, as this is an area people tend to be asked about."),
+   ("ok. when are the estimated payments due",
+    "Quarterly estimated payments are due around April 15, June 15, September 15 and January 15 of the next year. Because you started in April, your first payment would likely be the June one for your earnings so far. You can pay online at the IRS website, using the direct pay option, and record each payment. If you pay at least 90 percent of the current year's tax through the quarterly payments, you generally avoid a penalty, and a tax professional can help you calculate it."),
+   ("should i hire an accountant or just use software",
+    "For your first year of freelancing, a one-time consultation with an accountant can be worth the cost, especially to set up the right habits, even if you file with software afterwards. Many tax programs handle a simple freelance return well, and they walk you through each question. Consider an accountant if you have multiple income sources, plan to claim the home office, or just want reassurance. A good accountant often saves their fee in deductions you might have missed."),
+   ("how much should i put aside from the 31,000",
+    "A simple estimate is 25 to 30 percent of your net earnings, which would be about $7,750 to $9,300 on $31,000 before deductions. Your actual bill is probably lower once you subtract expenses such as the laptop and software, but it is safer to over-save at first. Move the money into a separate savings account each time a client pays you, so it is not tempting to spend. If you end up with extra, it becomes a nice cushion."),
+   ("ok that helps a lot. thanks",
+    "You are welcome. You have a clear plan now: track every payment, keep your receipts, save about a quarter of each invoice, pay the quarterly estimates and think about a short session with an accountant. Set recurring reminders on your phone for the four payment dates so none of them sneaks up. A tidy record and a steady habit will make next April far calmer."))
+Q("taxes", "rec_user", "how much had been earned so far in the first year",
+  "About $31,000 since you started freelancing as a graphic designer in April. Setting aside 25 to 30 percent of that comes to roughly $7,750 to $9,300 before deductions.",
+  ref=("$31,000", "April"))
+Q("taxes", "rec_asst", "which method did you mention for the home office deduction",
+  "The simplified method, which allows $5 per square foot up to 300 square feet. A 100 square foot space would give you $500. The space has to be used regularly and only for your business to count.",
+  ref=("$5 per square foot", "300 square feet"))
+Q("taxes", "rec_none", "which tax software did you recommend",
+  "I didn't name a specific program. I only said that many tax programs handle a simple freelance return well, and that a one-time session with an accountant can be worth it in the first year. Do you want to compare a couple of options?",
+  absent="turbotax", ref=("accountant",))
+
+# ------------------------------------------------------------------ teenage son
+TL("caleb",
+   ("my 15 year old son Caleb has been glued to his phone and his grades dropped from B's to C's this semester. i took the phone away last week and it turned into a huge fight",
+    "A fight like that must be exhausting for both of you, and it tells me the phone is carrying a lot of weight for Caleb, probably friendships as well as entertainment. Taking it away outright often creates a power struggle that hides the real problem. It may help to separate two questions: what is behind the drop in grades, and what agreement about the phone would be fair. A calm conversation when nobody is angry usually goes much better than one in the middle of a fight. Do you know whether anything changed for him at school this term?"),
+   ("not sure. he's gotten quiet and he skipped basketball tryouts which he usually loves",
+    "Skipping tryouts for something he loves is worth noticing. It could be burnout, a conflict with friends, worry about being cut or a low mood, and a phone can be a way to hide from any of those. You do not need to figure it out alone. Try inviting him to do something low pressure together, like driving to get food or walking the dog, where he does not have to look at you. Side by side conversations are often easier for teenagers. Say what you have seen with care, and then listen."),
+   ("what do i say to start it?",
+    "Keep it gentle and specific. Something like, I noticed you skipped tryouts and you have seemed quiet lately, and I am not angry, I just want to know how you are doing. Then leave a long pause, because teenagers often need a moment before they speak. Avoid asking why with an edge, since it can feel like an accusation. If he says nothing is wrong, you can say, okay, I am here when you want to talk, and leave it there. The door staying open matters more than getting an answer that night."),
+   ("ok. and the phone? i don't want to just give it back as if nothing happened",
+    "You do not have to pretend. A fair approach is to give the phone back with a clear agreement that you make together, such as phones charging outside the bedroom at night and a time each evening for homework without it. Letting Caleb help shape the rules makes it more likely he will stick to them. Explain that the aim is sleep and focus, not punishment. Agree on a check-in after two weeks to see how it is working and adjust."),
+   ("he's going to hate the bedroom rule",
+    "He probably will at first, and it is fine for him to be annoyed while the rule still holds. Teens need more sleep than they get, and a phone in the room is the biggest thief of it. You can soften it by buying him a cheap alarm clock so he does not need the phone to wake up, and by following the rule yourself with your own phone. When everyone in the house does the same, it feels less like a punishment."),
+   ("good point, i'm on mine a lot at night too. what about his grades",
+    "Tackle one thing at a time. Ask him which class feels hardest, and see if his teacher can offer a quick plan or extra help. A short homework routine, for example thirty to forty-five minutes at the same time each day, with the phone out of reach, tends to bring grades up within a few weeks. Praise effort and specifics, like finishing the assignment early, instead of only results. If the quiet mood continues, talk with his school counselor or doctor, because a dip in mood is worth checking."),
+   ("do you think i should be worried about his mood",
+    "It deserves attention but not panic. Pay attention to how long it lasts and whether it affects sleep, appetite, friendships and things he normally enjoys. A few weeks of withdrawal after a rough patch is common, while a mood that stays low for more than two weeks, or any talk of feeling hopeless, is a reason to contact his doctor or a counselor soon. You know him best, and trusting your instincts here is sensible. Asking for professional help is a normal step."),
+   ("thank you. i guess i needed a plan other than yelling",
+    "That is a good place to be. You have a calm opening for the conversation, a fair phone agreement, a gentle way to work on grades and a clear sign to watch for in his mood. Choose a moment this weekend that feels relaxed, and keep your first aim small: to let Caleb know you are on his side. Even if he says little, your steady tone will register more than you expect."))
+Q("caleb", "rec_user", "how old is the boy and what did he skip",
+  "Caleb is 15, and he skipped basketball tryouts, which he usually loves. That, along with the quiet mood and the drop from B's to C's, is why the conversation matters more than the phone rule.",
+  ref=("15", "tryouts"))
+Q("caleb", "rec_asst", "what did you suggest i say to open the conversation",
+  "You could open with a gentle observation that he skipped tryouts and has seemed quiet, say you are not angry, and ask how he is doing. Then leave a long pause. Doing it side by side, on a drive or a walk with the dog, often makes it easier for him.",
+  ref=("skipped tryouts", "long pause"))
+Q("caleb", "emo", "i just feel like i'm failing him",
+  "You are not failing him. A parent who notices the quiet mood, the skipped tryouts and the grades, and who is looking for a better plan than yelling, is paying attention in the way Caleb needs. The phone fight was one rough week in a long relationship. A calm talk this weekend will do more good than you expect. Which part of the plan feels hardest to start?",
+  ref=("tryouts", "yelling"))
+
+# ------------------------------------------------------------------ a friend gone quiet
+TL("noor",
+   ("my close friend Noor hasn't replied to my texts in three weeks and i don't know what i did",
+    "Three weeks of silence from a close friend is painful, and it is natural to search your memory for a reason. Before assuming you did something, remember that people go quiet for many reasons that have nothing to do with the friend: stress, a hard stretch at work, family problems, low energy. It would help to look at the last conversation you had and see whether anything felt off, but try not to turn it into a trial of yourself. Was there anything unusual in the way things ended, or did she just stop answering?"),
+   ("she just stopped. last thing was me sending a photo from our trip and she hearted it",
+    "A heart on a happy trip photo sounds friendly, not angry, which is a gentle sign. People who are upset with someone usually stop engaging in a more obvious way. Something else may be going on in her life that is using up her energy. You could send a single, low pressure message that asks for nothing in return, such as, I was thinking of you today and hope you are doing okay, no need to reply. That way you show you care without making her feel she owes you an answer."),
+   ("i did that two weeks ago. nothing",
+    "That is hard, and I am sorry it has gone this way. It still does not mean you did something wrong. Some people withdraw when they are overwhelmed, and a message can feel like one more task. You have shown that you care, so the next step might be to wait and give her space, or to try a different channel, like a short card or asking a mutual friend whether she is okay. Checking on her wellbeing is different from pressing for an answer."),
+   ("we do have a mutual friend, Dina. should i ask her",
+    "Asking Dina to share how Noor is doing can be a kind step, as long as you keep it simple and avoid gossip. You might say, I have not heard from Noor in a while and I am a bit worried, do you know if she is okay. This puts her wellbeing first and does not ask Dina to reveal secrets. If Dina knows something difficult, she may tell you what is appropriate. If she does not know, you will at least know you are not the only one in the dark."),
+   ("ok i'll ask dina tomorrow. i'm just so sad about it",
+    "You would be. A friendship that mattered is going through a silence you cannot explain, and not knowing is its own kind of grief. It is fine to feel sad while you wait. Be gentle with yourself in the meantime, and keep up the things that steady you, like seeing other friends, getting outside and sleeping. You can care about Noor and still look after yourself while the situation clears."),
+   ("what if she's just done with the friendship",
+    "That is a fear many people have in this position, and it is possible, but it is only one of several explanations. If it turns out she does want to step back, it will hurt, and it will also give you an answer you can grieve and move through, instead of a question that stays open. For now there is no evidence for it, and the heart on your photo points the other way. Try not to settle on the worst case before you have heard from her."),
+   ("true. i guess i should wait for dina's answer",
+    "That seems sensible. Ask Dina tomorrow, keep the message light and then let a few days pass. In the meantime, you do not need to send any other message to Noor. If you hear that she is struggling, a short note offering support without any pressure would be kind. If you hear nothing, you can send one more message in a month or so, simply saying that the door is open."),
+   ("thanks for letting me think it through",
+    "Any time. You have done this thoughtfully: one gentle message already sent, a plan to check with Dina, and patience in between. Whatever you hear, your care for Noor shows in the way you are handling it. Be kind to yourself tonight, and try to do something small that you enjoy."))
+Q("noor", "rec_user", "who was the friend that stopped replying and how long ago",
+  "Noor, about three weeks now. Her last sign of contact was a heart on the photo you sent from your trip, which points to a busy or overwhelmed friend more than an angry one.",
+  ref=("Noor", "three weeks"))
+Q("noor", "rec_asst", "what did you suggest i say to dina",
+  "Something simple like, I have not heard from Noor in a while and I am a bit worried, do you know if she is okay. It puts Noor's wellbeing first and doesn't ask Dina to share any secrets. Do you plan to message or call her tomorrow?",
+  ref=("Dina", "worried"))
+Q("noor", "build", "okay so what is the plan now, briefly",
+  "Ask Dina tomorrow with that light, worried-but-kind message, then let a few days pass without sending Noor any more messages. If you hear she is struggling, a short note offering support would be kind, and if you hear nothing, you could try once more in about a month. Meanwhile, look after yourself.",
+  ref=("Dina", "month"))
+
 # ==== FRAMEWORK (keep last) ==========================================================================
 LEAK = re.compile(r"\b(tool|tools|receipt|wisp|as an ai|mcp|api|schema|untrusted|json|web results|search results|"
                   r"i searched|i looked up|can't look up|cannot look up|don't have access|haven't checked|"
                   r"i've saved|i have saved|i've noted|i have noted|i'll remember|i will remember|sam)\b", re.I)
+def _none_ack():
+    """distill/choose.py's NONE_ACK, read from its source (choose.py cannot be imported here: it puts its own `gen` first on
+    sys.path), so the scripted rec_none finals, the SFT picker and the GRPO reward judge a "did not come up" the same way."""
+    import ast
+    import os
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ask-lora-r4", "distill", "choose.py")
+    for node in ast.parse(open(path).read()).body:
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "NONE_ACK" for t in node.targets):
+            return eval(compile(ast.Expression(node.value), path, "eval"), {"re": re})
+    raise RuntimeError(f"NONE_ACK not found in {path}")
+
+
+NONE_ACK = _none_ack()
 NOT_SAID = re.compile(r"hasn't|has not|haven't|have not|hadn't|didn't|did not|not come up|not mentioned|never|"
                       r"no mention|not said|not yet|isn't|wasn't|yet\b", re.I)
 TOK = re.compile(r"[A-Za-zÀ-ɏ0-9]+(?:['’][A-Za-z]+)*")
@@ -1210,10 +1578,10 @@ def _ents(text):
     return out
 
 
-def _voice(text, who):
+def _voice(text, who, long=False):
     low = text.lower()
     n = len(_sents(text))
-    assert 1 <= n <= 5, f"{who}: sentences={n}: {text!r}"
+    assert 1 <= n <= (12 if long else 5), f"{who}: sentences={n}: {text!r}"
     assert not any(low.startswith(b) for b in BANNED_OPENERS), f"{who}: banned opener: {text!r}"
     assert not CLOSERS.search(text), f"{who}: ritual closer: {text!r}"
     assert not PERSONA.search(text), f"{who}: invented persona: {text!r}"
@@ -1242,9 +1610,10 @@ def _check_q(q):
     assert prompt.lower() not in {u.lower() for u, _ in hist}, "prompt repeats an earlier user turn"
     assert 60 <= len(final) <= 650, f"final length {len(final)}"
     _voice(final, "final")
+    long_thread = q["thread"] in LONG_THREADS
     for k, (u, a) in enumerate(hist):
-        _voice(a, f"history[{k}]")
-        assert len(a) >= 90, f"history[{k}] too curt: {a!r}"
+        _voice(a, f"history[{k}]", long=long_thread)
+        assert len(a) >= (250 if long_thread else 90), f"history[{k}] too curt: {a!r}"
         assert not EMOJI.search(u), "emoji in a user turn"
     # references: each must be in both the history and the final, exactly as the history has it
     for r in q["ref"]:
@@ -1260,11 +1629,12 @@ def _check_q(q):
         if kind in ("rec_asst", "rec_both"):
             assert where_a, f"{p!r} never said by the assistant"
         idx = sorted(set(where_u + where_a))
-        assert idx[0] >= n - 9, f"{p!r} first appears {n - idx[0]} exchanges back"
+        assert idx[0] >= n - 10, f"{p!r} first appears {n - idx[0]} exchanges back"
         assert idx[0] <= n - 2, f"{p!r} only in the last exchange"
     if kind == "rec_none":
         assert q["absent"] and q["absent"].lower() not in hlow, f"absent {q['absent']!r} is in the history"
         assert NOT_SAID.search(final), "rec_none final must say it did not come up"
+        assert NONE_ACK.search(final), f"rec_none final must match distill/choose.py NONE_ACK: {final!r}"
     if kind in ("emo", "build"):
         assert q["ref"], f"{kind} needs a ref to an earlier specific"
     if kind == "emo":
@@ -1337,12 +1707,24 @@ def _register(thread):
     return "casual" if r < 5 else "proper" if r < 8 else "hurried"
 
 
-def _names(text):
+# Words that are never names, whatever their case in a sentence.
+_NOT_NAMES = set("a an the that this those these in on at of to for and but or then so if as is it its i you we they he she there "
+                 "here what when where who which how why not no yes good ok okay well now also just really very too one two "
+                 "three first second last next tonight today tomorrow lemon sour".split())
+
+
+def _names(text, owner=""):
+    """Capitalised proper nouns of a thread: a token that is capitalised in the middle of a sentence and is never
+    written lowercase in `owner` (the assistant's own text, which is correctly cased). Without that test a
+    quoted opener, a list item or a title put 'A', 'That' or 'In' in the map, and the proper register then
+    capitalised every occurrence in the user's turns."""
+    lower = {re.sub(r"['’]s$", "", t).lower() for t in TOK.findall(owner or text) if t[0].islower()}
     out = {}
     for sent in re.split(r"(?<=[.!?])\s+|:\s+", text):
         for i, t in enumerate(TOK.findall(sent)):
             base = re.sub(r"['’]s$", "", t)
-            if i > 0 and base[0].isupper() and base != "I":
+            if (i > 0 and base[0].isupper() and base != "I" and base.lower() not in lower
+                    and base.lower() not in _NOT_NAMES):
                 out[base.lower()] = base
     return out
 
@@ -1379,16 +1761,79 @@ def _surface(thread, text, names, protect, *, prompt=False):
     return text
 
 
+_SLIP_SKIP = {"I"}
+
+
+def _mid_caps(text):
+    out = []
+    for sent in re.split(r"(?<=[.!?])\s+|:\s+", text):
+        for i, t in enumerate(TOK.findall(sent)):
+            base = re.sub(r"['’]s$", "", t)
+            if i > 0 and base not in _SLIP_SKIP and base[0].isupper():
+                out.append(base)
+    return out
+
+
+def _cap_slips(orig, text, owner):
+    """Mid-sentence capitalised words that the register added to a user turn although they are common words (the
+    assistant writes them lowercase) and the person never capitalised them."""
+    common = {t.lower() for t in TOK.findall(owner) if t[0].islower()} | _NOT_NAMES
+    typed = {w.lower() for w in _mid_caps(orig)}
+    return [w for w in _mid_caps(text) if w.lower() in common and w.lower() not in typed]
+
+
+CAP = 3   # rows per conversation: a thread feeds at most this many scenarios
+
+
+def _apply_cap():
+    by: dict[str, list[dict]] = {}
+    for q in QS:
+        by.setdefault(q["thread"], []).append(q)
+    keep: list[dict] = []
+    for qs in by.values():
+        picked: list[dict] = []
+
+        def take(pred):
+            for q in qs:
+                if len(picked) < CAP and all(q is not p for p in picked) and pred(q):
+                    picked.append(q)
+                    return
+
+        take(lambda q: q["kind"] in ("rec_user", "rec_both"))
+        take(lambda q: q["kind"] in ("rec_asst", "rec_both", "rec_none"))
+        take(lambda q: q["kind"] in ("build", "emo", "fact", "close"))
+        for _ in range(CAP):
+            take(lambda q: True)
+        keep += picked
+    kept = [q for q in QS if any(q is k for k in keep)]
+    # Spread the kinds: consecutive scenarios rarely share a kind (the step thoughts come from a few templates per
+    # kind, and build.fix_adjacent re-phrases a thought only when its neighbours differ). refs.py maps scenario k to
+    # QS[k], so the order is fixed here, once, at import.
+    import random
+    from scen_r4_session_recall import _interleave
+    QS[:] = _interleave(kept, lambda q: q["kind"], random.Random("session-chat-order"))
+
+
+_apply_cap()
+
+
+RECALL_KINDS = frozenset({"rec_user", "rec_asst", "rec_both"})   # = DIST/choose.py RECALL_KINDS
+
+
 def fam_session_chat_r4(rng):
     _check_family()
     out, bad = [], []
     for q in QS:
         ex = THREADS[q["thread"]]
         base = ex[:q["cut"] or len(ex)]
-        names = _names("\n".join(u + "\n" + a for u, a in base) + "\n" + q["final"])
+        owner = "\n".join(a for u, a in base) + "\n" + q["final"]
+        names = _names("\n".join(u + "\n" + a for u, a in base) + "\n" + q["final"], owner)
         protect = {t.lower() for r in q["ref"] for t in TOK.findall(r)} | set(names)
         hist = [turn(_surface(q["thread"], u, names, protect), a) for u, a in base]
         prompt = _surface(q["thread"], q["prompt"], names, protect, prompt=True)
+        slips = [(t, w) for o, t in zip([u for u, _ in base] + [q["prompt"]], [h["user"] for h in hist] + [prompt])
+                 for w in _cap_slips(o, t, owner)]
+        assert not slips, f"[{q['thread']}] capitalised common word in a user turn: {slips[:3]}"
         now, w = setup(rng)
         w.history = hist
         sc = Scenario(FAMILY, prompt, now, w, [Final(q["final"])],
@@ -1398,6 +1843,15 @@ def fam_session_chat_r4(rng):
         sc.approve = None
         sc.expect_cards = []
         sc.must_see = []
+        # RL-SCOPE C6/C7: the thread is the split unit; the recall labels follow the question KIND exactly (a
+        # non-empty `ref` is thread context on build/emo/fact/close/rec_none rows, never a recall target)
+        sc.thread, sc.qkind = q["thread"], q["kind"]
+        if q["kind"] in RECALL_KINDS:
+            assert q["ref"], f"[{q['thread']}] recall question without a ref: {q['prompt']!r}"
+            sc.recall_refs = tuple(q["ref"])
+        elif q["kind"] == "rec_none":
+            assert q["absent"], f"[{q['thread']}] never-said question without absent: {q['prompt']!r}"   # ok may be empty
+            sc.recall_absent, sc.recall_ok = q["absent"], tuple(q["ok"])
         ok, why = F._check(sc)
         if not ok:
             bad.append(f"[{q['thread']}/{q['kind']}] {prompt!r}: {why}")

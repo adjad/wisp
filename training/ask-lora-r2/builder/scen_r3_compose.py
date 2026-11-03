@@ -139,14 +139,17 @@ def src_weather(rng, w, now, which, at=None):
 
 
 def src_calendar(rng, w, now, period, at=None):
-    rows, _, _ = w.upcoming_rows(period=period, calendar_only=True)
-    rows = sorted(rows, key=lambda r: r["when_ts"])
-    if at is not None:   # scheduled: nothing that has passed by delivery time
-        rows = [r for r in rows if ts(r) >= at]
-    if not (1 <= len(rows) <= 9):
+    """The schedule for a day or week, read with get_my_day_plan (calendar, reminders and the Brief's dated mail / text /
+    note items), so the message carries all of it."""
+    from scen import fp_items, read_plan, seed_plan
+    plan_day = {"this week": "this_week"}.get(period, period)
+    seed_plan(rng, w, now, plan_day, tidy=False, wait=0, kinds=rng.choice([(), ("text",), ("mail",), ("note",), ("mail", "text")]))
+    plan = read_plan(w, plan_day)
+    pairs = fp_items(plan, now, at=at)
+    if not (1 <= len(pairs) <= 9):
         return None
-    multi = period in ("this week", "next week")
-    items = [f"{r['title']} {('on ' + ts(r).strftime('%A') + ' ') if multi else ''}at {clock(ts(r))}" for r in rows]
+    multi = plan.kind == "range"
+    items = [f"{ph} {h.lower() if h in ('Today', 'Tomorrow') else 'on ' + h}" if multi and h else ph for h, ph in pairs]
     lead = {"today": "Today I have", "tomorrow": "Tomorrow I have", "this week": "This week I have",
             "next week": "Next week I have"}.get(period, f"On {period.capitalize()} I have")
     if at is not None and period == "tomorrow":
@@ -157,7 +160,7 @@ def src_calendar(rng, w, now, period, at=None):
     else:
         lines = text
     label = period if period in ("today", "tomorrow", "this week", "next week") else period.capitalize()
-    short = f"your schedule for {label}, {len(rows)} event{'s' if len(rows) != 1 else ''}"
+    short = f"your plan for {label}, {len(items)} item{'s' if len(items) != 1 else ''}"
     obj = {"today": "what i have on today", "tomorrow": "my plans for tomorrow", "this week": "my plans for the week",
            "next week": "what's on for next week"}.get(period, f"my {period} lineup")
     clause = {"today": "what my day looks like", "tomorrow": "what i've got going on tomorrow",
@@ -166,7 +169,7 @@ def src_calendar(rng, w, now, period, at=None):
     subj = {"today": "My day", "tomorrow": "My schedule for tomorrow", "this week": "My week"}.get(period, f"My {period.capitalize()}")
     if at is not None and period == "tomorrow":
         subj = f"My schedule for {_absdate(now + D(days=1))}"
-    return Src([Call("get_upcoming", period=period, calendar_only=True)], text, lines, subj,
+    return Src([Call("get_my_day_plan", day=plan_day)], text, lines, subj,
                short, obj, clause, lead)
 
 
@@ -283,12 +286,21 @@ def src_mail(rng, w, now, idx):
 
 
 def src_todos(rng, w, now):
-    due = sorted([r for r in w.reminders if r.due and not r.done], key=lambda r: r.due)
-    und = [r for r in w.reminders if r.due is None and not r.done]
-    titles = [r.title for r in (due + und)]
+    """The to-do list: a to-do question reads the day plan (overdue reminders, today's items, the open list, and the
+    dated mail / text / note items the Brief found), so the message carries those too."""
+    from scen import read_plan, seed_plan
+    seed_plan(rng, w, now, "today", tidy=False, wait=0, kinds=rng.choice([(), ("text",), ("mail",), ("note",), ("mail", "text")]))
+    plan = read_plan(w, "today")
+    if plan.more or plan.empty:
+        return None          # a truncated or empty plan is not the whole list
+    titles = [t for t, _lab in plan.overdue]
+    titles += [t for _w, t, src in (plan.days[0][1] if plan.days else []) if src != "calendar"]
+    titles += [t for t, _lab in plan.other]
+    if not (2 <= len(titles) <= 9):
+        return None
     text = f"My open to-dos are {join(titles)}."
     lines = "Open to-dos:\n" + "\n".join(f"- {t}" for t in titles)
-    return Src([Call("search_reminders", query="", scope="all")], text, lines, "My open to-dos",
+    return Src([Call("get_my_day_plan")], text, lines, "My open to-dos",
                f"your {len(titles)} open to-dos", "my open to-dos", "what's still on my to-do list")
 
 
@@ -309,7 +321,7 @@ PRICE_WEB = [
     ("gas prices portland oregon", [("Portland gas prices", "https://www.fuelboard.example/portland",
                                      "The average price for regular in Portland is $4.19 a gallon, down 3 cents from last week.")],
      "Regular gas in Portland averages $4.19 a gallon, down 3 cents from last week.", "the Portland gas price, $4.19 a gallon",
-     "the average gas price in portland", "what gas costs around portland"),
+     "what regular gas costs in portland", "what gas costs around portland"),
 ]
 
 
@@ -326,15 +338,19 @@ def src_web(rng, w, now, idx, at=None):
 
 
 def src_brief(rng, w, now):
-    rows, _, _ = w.upcoming_rows(period="today", calendar_only=True)
-    rows = sorted([r for r in rows if ts(r) >= now], key=lambda r: r["when_ts"])
-    if not (1 <= len(rows) <= 6):
+    """The rest of today: the day plan (calendar, reminders and the Brief's mail / text / note items) and how many
+    to-dos stay open."""
+    from scen import fp_items, read_plan, seed_plan
+    seed_plan(rng, w, now, "today", tidy=False, wait=0, kinds=rng.choice([(), ("text",), ("mail",), ("note",)]))
+    plan = read_plan(w, "today")
+    items = [ph for _h, ph in fp_items(plan, now)]
+    if not (1 <= len(items) <= 6) or plan.more:
         return None
-    items = [f"{r['title']} at {clock(ts(r))}" for r in rows]
-    n_rem = len([r for r in w.reminders if not r.done])
-    text = f"Still ahead today: {join(items)}. I also have {n_rem} open to-dos."
-    lines = "Still ahead today:\n" + "\n".join(f"- {i}" for i in items) + f"\nAnd {n_rem} open to-dos."
-    return Src([Call("daily_brief")], text, lines, "My day so far", f"the rest of your day, {len(rows)} event{'s' if len(rows) != 1 else ''} and {n_rem} to-dos",
+    n_open = len(plan.overdue) + len(plan.other)
+    text = f"Still ahead today: {join(items)}." + (f" I also have {n_open} open to-dos." if n_open else "")
+    lines = "Still ahead today:\n" + "\n".join(f"- {i}" for i in items) + (f"\nAnd {n_open} open to-dos." if n_open else "")
+    return Src([Call("get_my_day_plan")], text, lines, "My day so far",
+               f"the rest of your day, {len(items)} item{'s' if len(items) != 1 else ''}" + (f" and {n_open} to-dos" if n_open else ""),
                "a quick rundown of my day", "how the rest of my day looks")
 
 

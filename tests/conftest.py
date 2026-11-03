@@ -27,6 +27,13 @@ def explicit_legacy_router_for_rollback_suites(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_real_brief_in_schedule_reads(monkeypatch):
+    # get_upcoming merges the Brief's dated to-dos from the real proactive
+    # store; tests that want them turn this back on with a fake snapshot.
+    monkeypatch.setenv("WISP_SCHEDULE_BRIEF_ITEMS", "0")
+
+
+@pytest.fixture(autouse=True)
 def isolated_credential_quarantine(tmp_path, monkeypatch):
     from service.config import quarantine, credentials
     gate = quarantine.RecoveryGate(home=lambda: tmp_path)

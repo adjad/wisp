@@ -90,12 +90,14 @@ def main():
             ("onboarding-follow-ups", ["OnboardingFollowUps.swift", "DiagnosticReport.swift"],
              "OnboardingFollowUpsChecks.swift"),
             ("voice-capture", ["VoiceCapture.swift"], "VoiceCaptureChecks.swift"),
+            ("read-aloud-voice-ci", ["ReadAloudVoice.swift"], "ReadAloudVoiceChecks.swift"),
             ("video-sampler", ["VideoSampler.swift"], "VideoSamplerChecks.swift"),
             ("screen-look-ci", ["ScreenLook.swift"], "ScreenLookChecks.swift"),
             ("media-attachment", ["MediaAttachment.swift", "VideoSampler.swift", "DocumentAttachment.swift"],
              "MediaAttachmentChecks.swift"),
             ("document-attachment", ["DocumentAttachment.swift", "MediaAttachment.swift", "VideoSampler.swift"],
              "DocumentAttachmentChecks.swift"),
+            ("chat-debug-archive", ["ChatDebugArchive.swift"], "ChatDebugArchiveChecks.swift"),
         ):
             binary = str(build / (os.environ["WISP_BUILD_FIXTURE_PREFIX"] + "-" + name))
             result.extend([

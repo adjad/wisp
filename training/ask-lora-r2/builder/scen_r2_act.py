@@ -862,8 +862,8 @@ MOVE_EARLIER = ["start {ev} {amt} earlier", "pull {ev} up by {amt}", "move {ev} 
                 "get {ev} going {amt} sooner", "{ev} should begin {amt} before it does now"]
 MOVE_NEXT_DAY = ["bump {ev} to the next day, same time", "move {ev} a day later, same time",
                  "shift {ev} one day later but keep the time", "{ev} should be the day after, same time"]
-MOVE_CLOCK = ["make {ev} start at {c} that day", "change {ev} to {c}, same day", "{ev}: new start is {c} that day",
-              "set {ev} for {c} instead, same day"]
+MOVE_CLOCK = ["change {ev} to start at {c} that day", "change {ev} to {c}, same day", "move {ev}: new start is {c} that day",
+              "switch {ev} to {c} instead, same day"]
 
 
 def _move_event(i, denied=False):
