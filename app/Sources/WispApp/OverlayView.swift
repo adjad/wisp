@@ -1359,7 +1359,10 @@ struct SourceSyncTip: View {
             // instead of a bare "Unavailable" the user can't act on.
             ForEach(sources.filter(\.needsFullDiskAccess)) { source in
                 Button {
-                    if let url = URL(string: BriefDetail.fullDiskAccess.url) { NSWorkspace.shared.open(url) }
+                    if let url = URL(string: BriefDetail.fullDiskAccess.url) {
+                        PrivacyRelaunch.notePaneOpened()
+                        NSWorkspace.shared.open(url)
+                    }
                 } label: {
                     Text("\(source.label) needs Full Disk Access. \(BriefDetail.fullDiskAccess.label)")
                         .lineLimit(2)

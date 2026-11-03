@@ -350,6 +350,52 @@ def test_relaunch_waits_for_a_quitting_copy_instead_of_yielding_to_it():
     assert _body(app, "private func launch()").lstrip("{ \n").startswith("launched = true")
 
 
+def test_quit_and_reopen_from_system_settings_reopens_wisp_itself():
+    """System Settings' Quit & Reopen gave up while Wisp stopped its engine
+    (rc1-beta1: quit 7 s, never reopened). Wisp now reopens itself after that
+    quit, in setup and from Settings alike, and only after that quit."""
+    sources = _sources()
+    app = sources["AppDelegate.swift"]
+    should = _body(app, "func applicationShouldTerminate(")
+    # Read while the quit Apple Event is still being handled, before the slow stop,
+    # and only by a launched copy (a waiting one owns nothing to reopen).
+    read_at = should.index("relaunchIfSystemSettingsAsked(PrivacyRelaunch.Quit.current())")
+    assert should.index("if !launched { shutdownFinished = true; return .terminateNow }") < read_at
+    assert read_at < should.index("beginShutdown()")
+    relaunch = _body(app, "private func relaunchIfSystemSettingsAsked(")
+    assert "PrivacyRelaunch.shouldRelaunch(" in relaunch and "PrivacyRelaunch.paneOpenedAt()" in relaunch
+    # The /resetwisp helper: waits for this PID to exit, then opens this bundle. Once.
+    assert "WispReset.relaunchArguments(" in relaunch and "ProcessInfo.processInfo.processIdentifier" in relaunch
+    assert "Bundle.main.bundleURL" in relaunch and "WispReset.relaunchShell" in relaunch
+    assert "guard !relaunchScheduled else { return }" in relaunch and "relaunchScheduled = true" in relaunch
+    for blocking in ("waitUntilExit", "Thread.sleep", "usleep("):
+        assert blocking not in relaunch, blocking
+    current = _body(sources["PrivacyRelaunch.swift"], "static func current()")
+    assert "currentAppleEvent" in current and "kAEQuitApplication" in current and "keySenderPIDAttr" in current
+    # Every privacy page or prompt Wisp opens notes it first.
+    perms = sources["Permissions.swift"]
+    pane = _body(perms, "static func openSettingsPane(")
+    assert pane.index("PrivacyRelaunch.notePaneOpened()") < pane.index("NSWorkspace.shared.open(url)")
+    for name, call in (("static func requestScreenRecording()", "CGRequestScreenCaptureAccess()"),
+                       ("static func requestAccessibility()", "AXIsProcessTrustedWithOptions(")):
+        body = _body(perms, name)
+        assert body.index("PrivacyRelaunch.notePaneOpened()") < body.index(call), name
+    fix = _body(perms, "static func openFix(")
+    assert fix.index("PrivacyRelaunch.notePaneOpened()") < fix.index("NSWorkspace.shared.open(url)")
+    for name, text in sources.items():
+        for match in re.finditer(r"x-apple\.systempreferences:com\.apple\.(?:settings\.PrivacySecurity|preference\.security)", text):
+            if name in ("BriefSummary.swift", "Permissions.swift"):
+                continue   # constants: opened through Permissions.openFix / openSettingsPane
+            opened = text[match.end():match.end() + 200]
+            assert "PrivacyRelaunch.notePaneOpened()" in opened, name
+    reader = _body(sources["PageReader.swift"], "static func requestAccessibility()")
+    assert reader.index("PrivacyRelaunch.notePaneOpened()") < reader.index("AXIsProcessTrustedWithOptions(")
+    brief_fda = sources["OverlayView.swift"]
+    at = brief_fda.index("URL(string: BriefDetail.fullDiskAccess.url)")
+    assert "PrivacyRelaunch.notePaneOpened()" in brief_fda[at:at + 200]
+    assert "PrivacyRelaunch.paneOpenedKey" in sources["ResetWisp.swift"]
+
+
 def test_an_early_close_clears_a_stale_resume_mark():
     app = _sources()["AppDelegate.swift"]
     closed = _body(app, "private func firstRunClosed()")

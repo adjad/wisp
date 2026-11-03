@@ -2131,9 +2131,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if shutdownFinished { return .terminateNow }
         // Still waiting for a quitting copy: no engine or backend of ours to stop.
         if !launched { shutdownFinished = true; return .terminateNow }
+        // Read now, while the quit Apple Event is still the one being handled.
+        relaunchIfSystemSettingsAsked(PrivacyRelaunch.Quit.current())
         systemAwaitingReply = true
         if !shutdownStarted { beginShutdown() }
         return .terminateLater
+    }
+
+    private var relaunchScheduled = false
+
+    /// macOS's Quit & Reopen after a privacy switch: System Settings gives up on
+    /// the reopen while Wisp is still stopping its engine, so Wisp opens itself
+    /// again once this process has gone (PrivacyRelaunch).
+    private func relaunchIfSystemSettingsAsked(_ quit: PrivacyRelaunch.Quit) {
+        guard !relaunchScheduled else { return }
+        let relaunch = PrivacyRelaunch.shouldRelaunch(quit, paneOpenedAt: PrivacyRelaunch.paneOpenedAt(),
+                                                      now: Date().timeIntervalSince1970)
+        if case let .appleEvent(bundleID, path) = quit {
+            NSLog("%@", "Wisp quit: Apple Event from \(bundleID ?? path ?? "an unknown sender"); "
+                  + (relaunch ? "reopening once this copy has quit" : "not reopening"))
+        }
+        guard relaunch, let arguments = WispReset.relaunchArguments(
+            pid: ProcessInfo.processInfo.processIdentifier, app: Bundle.main.bundleURL) else { return }
+        relaunchScheduled = true
+        let helper = Process()
+        helper.executableURL = URL(fileURLWithPath: WispReset.relaunchShell)
+        helper.arguments = arguments
+        do { try helper.run() } catch { NSLog("%@", "Wisp quit: couldn't schedule the reopen (\(error))") }
     }
 
     /// Settings is a section of the Wisp window (⌘,, the menus, the window's

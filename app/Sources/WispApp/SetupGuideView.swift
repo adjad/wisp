@@ -794,6 +794,7 @@ final class SetupGuideModel: ObservableObject {
 
     func open(_ urlString: String?) {
         guard let urlString, let url = URL(string: urlString) else { return }
+        if url.scheme == "x-apple.systempreferences" { PrivacyRelaunch.notePaneOpened() }
         NSWorkspace.shared.open(url)
     }
 }
