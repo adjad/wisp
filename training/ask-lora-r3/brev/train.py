@@ -848,6 +848,10 @@ ATTN_TOP1_MIN = 0.98       # agreement of the argmax on those confident position
 ATTN_KL_MAX = 0.05         # mean KL(math || configured) over labeled positions, nats
 ATTN_GRAD_COS_MIN = 0.99   # cosine of the LoRA gradients (configured vs math) on one short row
 ATTN_CAP_TOKENS = 4096     # CUDA / OOM-retry cap on a parity row's length (the math reference materializes L x L scores)
+# The gradient check backpropagates in eval mode (no activation checkpointing) under math attention, so its row is cut to
+# this many tokens: r4's shortest row is ~3.5k tokens (every row carries the ~6k tool prompt), which ran a 48 GB A6000 out
+# of memory. Kernel agreement on a shorter sequence is the same check.
+ATTN_GRAD_ROW_TOKENS = 1024
 ATTN_MIN_COMPLETION = 64   # parity rows prefer >= this many labeled tokens, so the statistics have positions to chew on
 EXIT_ATTN_PARITY = 8       # smoke: the attention kernel disagrees with the math reference (run.sh: >= 5 = pipeline)
 
@@ -1041,6 +1045,15 @@ def attention_parity(model, rows, attn: str, dev=0, grad_row=None) -> dict:
     return v
 
 
+def grad_row_cut(t, n: int = ATTN_GRAD_ROW_TOKENS):
+    """The gradient check's row, at most `n` tokens: the completion whole and the end of the prompt before it. A text row
+    only (a multimodal row's soft tokens sit in the prompt and cannot be cut)."""
+    rid, p, c, mm = t
+    if mm or len(p) + len(c) <= n:
+        return t
+    return (rid, p[-max(1, n - len(c)):], c, mm)
+
+
 def run_attention_parity(model, toks, vis, attn: str, strict: bool, dev=0, cap: int = ATTN_CAP_TOKENS) -> dict:
     """attention_parity with the memory fallbacks. The math reference holds an L x L score matrix per head, so the
     longest rows are risky: ROCm (strict) tries full length first, then rows <= `cap` tokens; CUDA goes straight
@@ -1050,7 +1063,7 @@ def run_attention_parity(model, toks, vis, attn: str, strict: bool, dev=0, cap: 
     import torch
     res = {"ok": False, "status": "inconclusive", "reason": "no parity row fits", "reference": "math" if attn == "sdpa" else "self",
            "rows": []}
-    short = sorted(toks, key=lambda t: len(t[1]) + len(t[2]))[:1]     # the gradient check's row
+    short = [grad_row_cut(t) for t in sorted(toks, key=lambda t: len(t[1]) + len(t[2]))[:1]]     # the gradient check's row
     try:
         for c_ in ([None, cap] if strict else [cap]):
             rows = pick_parity_rows(toks, vis, c_)

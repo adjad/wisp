@@ -332,9 +332,19 @@ def test_oom_fallback():
     print("OOM fallback (full -> capped -> inconclusive), CUDA capped from the start: OK")
 
 
+def test_grad_row_cut():
+    p, c = list(range(3000)), list(range(50))
+    rid, p2, c2, mm = tr.grad_row_cut(("r", p, c, None), 1024)
+    assert c2 == c and p2 == p[-974:] and len(p2) + len(c2) == 1024
+    assert tr.grad_row_cut(("r", p[:100], c, None), 1024)[1] == p[:100]          # short rows stay whole
+    assert tr.grad_row_cut(("r", p, c, {"modality": "image"}), 1024)[1] == p     # multimodal rows are never cut
+    assert len(tr.grad_row_cut(("r", p, list(range(2000)), None), 1024)[1]) == 1  # a long completion keeps one prompt token
+    print("grad row cut: OK")
+
+
 def main() -> int:
     for fn in (test_selection_and_maps, test_verdict_rules, test_pick_rows_and_fatal, test_gate, test_math_switch,
-               test_parity_stats_flag_a_wrong_attention, test_attention_parity_end_to_end, test_oom_fallback):
+               test_parity_stats_flag_a_wrong_attention, test_attention_parity_end_to_end, test_oom_fallback, test_grad_row_cut):
         fn()
     print("test_attn_parity: OK")
     return 0
