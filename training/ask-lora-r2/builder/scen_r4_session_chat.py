@@ -20,7 +20,7 @@ turn is a single no-tool reply. Three sub-skills:
 3. mid-conversation factual questions (~20%): a casual factual follow-up is answered from general knowledge,
    not stalled; every number or name the history does not hold is whitelisted per scenario (``ok``).
 
-Round-4 review: 12 long threads (``TL``: 8 exchanges of 60-130 word replies, 4,000-4,800 characters of history) join the 43
+Round-4 review: 12 long threads (``TL``: 8 exchanges of base-length replies (about 60 words and up), 4,000-4,800 characters of history) join the 43
 short ones, and every thread feeds at most CAP=3 scenarios, so no conversation yields more than three rows (54 distinct
 conversations). The proper-case register now capitalises only names that the assistant never writes lowercase, and
 ``fam_session_chat_r4`` asserts that no common word got a mid-sentence capital in a user turn.
@@ -1176,7 +1176,7 @@ Q("piano", "close", "cool, thanks, off to practice",
 
 
 # ======================================================================================================
-# LONG THREADS (round 4 review): 8-9 exchanges with base-length replies (60-130 words), 4,500-7,000 characters
+# LONG THREADS (round 4 review): 8-9 exchanges with base-length replies (about 60 words and up), 4,500-7,000 characters
 # of history. Questions at the end ask about the first exchanges (a fact the person stated, a figure the
 # assistant gave), something never said, or build on the thread. Each thread feeds at most three rows.
 # ======================================================================================================

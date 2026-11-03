@@ -338,6 +338,10 @@ class World:
     # "due_label"}, and the threads it says wait on the user's reply. See _brief_snapshot.
     brief: list[dict] = field(default_factory=list)
     waiting: list[dict] = field(default_factory=list)
+    # The Brief's suggested next steps ({"title", "why"}). None = the canonical world's one card; a private
+    # world (scripts/toolbench/private.py) sets its own list, [] for none.
+    cards: list | None = None
+    summary: str | None = None      # the Brief's one-line overview of today; None = the canonical sentence
     scheduled_sends: list[dict] = field(default_factory=list)
     timers: list[dict] = field(default_factory=list)
     drive_files: list[dict] = field(default_factory=list)
@@ -1208,9 +1212,11 @@ def _brief_snapshot(w: World, *, schedule: tuple[date, date] | None = None) -> d
                       "timed": True, "done": False, "due_label": label})
     todos += _brief_todos(w)
     todos.sort(key=lambda t: (t.get("due_ts") is None, t.get("due_ts") or 0))
-    cards = [{"title": f"Reply to {w.facts['coworker_first']} about the Q3 budget review",
-              "why": "the meeting moved and they asked you to bring the forecast deck"}]
-    return {"summary": "A few things are time-bound today and two people are waiting on a reply.",
+    cards = ([{"title": f"Reply to {w.facts['coworker_first']} about the Q3 budget review",
+               "why": "the meeting moved and they asked you to bring the forecast deck"}]
+             if w.cards is None else [dict(c) for c in w.cards])
+    return {"summary": ("A few things are time-bound today and two people are waiting on a reply."
+                        if w.summary is None else w.summary),
             "todos": todos, "threads": [dict(t) for t in w.waiting], "cards": cards, "state": "ready"}
 
 

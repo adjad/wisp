@@ -14,6 +14,8 @@
     .venv/bin/python scripts/run_toolbench.py --models G,N --profile-as G     # N treated exactly as G
     .venv/bin/python scripts/run_toolbench.py --omlx-port 8001                # a second engine
     .venv/bin/python scripts/run_toolbench.py --export-shingles out.json      # held-out prompts, hashed
+    PRIVATE_EVAL_DIR=~/.moe/evals/private-real-use .venv/bin/python scripts/run_toolbench.py --private
+                                                                              # the user's own real-use cases (private)
     .venv/bin/python scripts/run_toolbench.py --report ~/.moe/evals/toolbench/<run>   # rescored offline
     .venv/bin/python scripts/run_toolbench.py --report <run> --stored        # the verdicts stored at run time
     .venv/bin/python scripts/run_toolbench.py --report <run> --compare <baseline_run>
@@ -137,14 +139,27 @@ def world_date(world_date_arg: str, cases, *, resume: str = "", today: date | No
     return None
 
 
+def _private_world():
+    """The frozen private world from PRIVATE_EVAL_DIR (fails closed when it is unset)."""
+    from scripts.toolbench import private
+    return private.private_world(private.private_dir())
+
+
+def _world_for(args, cases, *, resume: str = ""):
+    """The world a run uses: the private one under --private, else the canonical/seeded synthetic world."""
+    from scripts.toolbench.world import build_world
+    if getattr(args, "private", False):
+        return _private_world()
+    return build_world(world_date(args.world_date, cases, resume=resume), seed=args.world_seed)
+
+
 def _dry_run(args, cases) -> int:
     """Offline: bind every case to the world and check its tool names and host
     preparation. Runs no model and tests no routing (production has no router
     menu any more; the model chooses). `host-forbids` flags an expected tool the
     host's own guards withhold this turn, which no model can then call."""
     from scripts.toolbench import runner
-    from scripts.toolbench.world import build_world
-    world = build_world(world_date(args.world_date, cases), seed=args.world_seed)
+    world = _world_for(args, cases)
     names = runner.install_fakes(world)
     runner.set_clock(world.now)
     try:
@@ -198,13 +213,20 @@ def rescore(run_dir: Path, rows: list[dict]) -> tuple[list[dict], dict]:
     meta_path = run_dir / "meta.json"
     meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
     today = date.fromisoformat(meta["today"]) if meta.get("today") else None
-    world = build_world(today, seed=meta.get("world_seed"))
+    if meta.get("private"):     # a --private run: the private world and cases, from PRIVATE_EVAL_DIR only
+        world = _private_world()
+    else:
+        world = build_world(today, seed=meta.get("world_seed"))
     names = runner.install_fakes(world, seed=False)
     try:
         writes, refused = runner.write_tool_names(), runner.host_refused_tools()
     finally:
         runner.uninstall_fakes()
-    cases = {c.id: c.bind(world.facts) for c in load_cases()}
+    shipped = load_cases()
+    if meta.get("private"):
+        from scripts.toolbench import private
+        shipped = private.load_private_cases(private.private_dir())
+    cases = {c.id: c.bind(world.facts) for c in shipped}
     out, kept, changed = [], 0, 0
     for row in rows:
         case = cases.get(row["case"])
@@ -310,9 +332,8 @@ def _update_meta(out: Path, key: str, model: str, value) -> None:
 
 async def _run(args, cases) -> int:
     from scripts.toolbench import runner
-    from scripts.toolbench.world import build_world
 
-    world = build_world(world_date(args.world_date, cases, resume=args.resume), seed=args.world_seed)
+    world = _world_for(args, cases, resume=args.resume)
     names = runner.install_fakes(world)
     # Every model sees the same pinned date and time, in its prompt and its tools.
     runner.set_clock(world.now)
@@ -393,6 +414,10 @@ async def _trials(args, cases, runner, world, names) -> int:
     else:
         run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
         out = Path(args.out).expanduser() if args.out else RESULTS_ROOT / run_id
+        if args.private:    # rows quote the user's data: results stay in the private directory, outside any checkout
+            from scripts.toolbench import private
+            out = (private.require_outside_checkout(out, "--out") if args.out
+                   else private.runs_dir(private.private_dir()) / run_id)
     out.mkdir(parents=True, exist_ok=True)
     settings, parity, go = await _parity(runner, client, models, args.profile_as or None,
                                          args.allow_engine_mismatch)
@@ -400,13 +425,14 @@ async def _trials(args, cases, runner, world, names) -> int:
     meta = {"run": run_id, "git": _git_sha(), "models": models, "trials": args.trials,
             "cases": [c.id for c in cases], "started": time.time(), "exclusive": args.exclusive,
             "today": world.today.isoformat(), "max_steps": args.max_steps,
-            "world_seed": args.world_seed, "thinking": variants, "split": args.split or "all",
+            "world_seed": args.world_seed, "thinking": variants,
+            "split": ("private" if args.private else args.split or "all"),
             "path": "model_led", "profile_as": args.profile_as or None, "omlx_port": args.omlx_port,
             "cleared_env": sorted(runner.CLEARED_ENV),
             "access": dict(sorted(Counter(c.access for c in cases).items())),
             "now": world.now.isoformat(), "seed_base": args.seed_base, "seeds": seeds,
             "engine_settings": settings, "engine_parity": parity,
-            "allow_engine_mismatch": args.allow_engine_mismatch}
+            "allow_engine_mismatch": args.allow_engine_mismatch, "private": bool(args.private)}
     if not args.resume:
         (out / "meta.json").write_text(json.dumps(meta, indent=2, default=str))
     if not go:
@@ -508,6 +534,10 @@ def main() -> int:
     ap.add_argument("--thinking", default="default",
                     help="comma-separated variants: default, narration-on, narration-off, off "
                          "(see runner.set_thinking)")
+    ap.add_argument("--private", action="store_true",
+                    help="run the user's PRIVATE real-use cases (split private) on their frozen world, both read "
+                         "from the directory named by $PRIVATE_EVAL_DIR (fails closed when unset); results go "
+                         "to $PRIVATE_EVAL_DIR/runs; never mixed with other splits, never exported")
     ap.add_argument("--export-shingles", default="",
                     help="write hashed n-grams of every held-out (gate, voice, heldout_safety) prompt "
                          "(canonical + 50 seeded worlds) and exit; --only/--ids/--split are ignored")
@@ -525,11 +555,33 @@ def main() -> int:
     args = ap.parse_args()
 
     if args.report:
-        cur = _report(Path(args.report).expanduser(), stored=args.stored)
-        print(rep.render(cur))
-        if args.compare:
-            print("\n" + rep.compare(_report(Path(args.compare).expanduser(), stored=args.stored), cur))
+        from scripts.toolbench.private import PrivateEvalError
+        try:
+            cur = _report(Path(args.report).expanduser(), stored=args.stored)
+            print(rep.render(cur))
+            if args.compare:
+                print("\n" + rep.compare(_report(Path(args.compare).expanduser(), stored=args.stored), cur))
+        except PrivateEvalError as e:
+            print(f"refusing to rescore a private run: {e}")
+            return 2
         return 0
+    if args.private:
+        from scripts.toolbench import private
+        if args.export_shingles:
+            ap.error("--export-shingles never covers private cases (nothing derived from them may be shared)")
+        if args.world_seed is not None or args.world_date:
+            ap.error("--private pins its own world; --world-seed/--world-date do not apply")
+        if args.split not in ("", "private"):
+            ap.error("--private runs split private only")
+        try:
+            directory = private.private_dir()
+            pool = private.load_private_cases(directory)
+            private.load_world_spec(directory)
+        except private.PrivateEvalError as e:
+            print(f"refusing to run the private eval: {e}")
+            return 2
+    elif args.split == "private":
+        ap.error("--split private needs --private (and $PRIVATE_EVAL_DIR)")
     if args.export_shingles:
         # Before select(): the export covers every held-out case whatever --split says (select() leaves the
         # sealed heldout_safety set out of an unsplit selection, and would leave gate and voice out of
@@ -544,7 +596,8 @@ def main() -> int:
         print(f"wrote {data['n_prompts']} hashed held-out (gate, voice, heldout_safety) prompts "
               f"to {args.export_shingles}")
         return 0
-    cases = select(load_cases(), only=args.only, ids=args.ids, split=args.split)
+    cases = select(pool if args.private else load_cases(), only=args.only, ids=args.ids,
+                   split="private" if args.private else args.split)
     if not cases:
         print("no cases selected" + (" (heldout_safety is sealed: pass --split heldout_safety)"
                                      if not args.split and "safety_heldout" in (args.only or args.ids) else ""))

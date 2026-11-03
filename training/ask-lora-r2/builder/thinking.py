@@ -2698,6 +2698,8 @@ _ABSENCE = re.compile(
 # instructions_r4 includes read requests ("what's on my calendar", then the standing instruction applies), so it is checked;
 # the recall and session-chat families answer from the conversation itself.
 _ABSENCE_EXEMPT = frozenset({"chat_voice", "knowledge_direct"}) | (HISTORY_FAMILIES - {"instructions_r4"})
+# the dev twins of the session families (scen_r4_devsets.py): their recall answers are about the conversation too
+_ABSENCE_EXEMPT |= {"recall_dev_r4", "session_style_dev"}
 
 
 def absence_problems(meta: dict, messages: list[dict]) -> list[str]:

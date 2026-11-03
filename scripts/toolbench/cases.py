@@ -33,6 +33,7 @@ One YAML file per category under cases/. Each entry:
       world:                             # optional world state for this case
         access_needed: [calendar]        # sources whose permission is missing (see WORLD)
       split: gate                        # gate (held out; default) | dev | voice | heldout_safety (sealed)
+                                         # | private (sealed; only from PRIVATE_EVAL_DIR, never exported)
       trap: "why this case exists"       # free text, shown in reports
 
 FACTS. Anything a world can vary is written as a `{fact}` placeholder —
@@ -156,12 +157,14 @@ def _fill(value, facts):
 _CASE_KEYS = {"id", "prompt", "history", "expect", "no_tool", "forbid", "answer", "max_calls", "trap",
               "split", "confirm", "no_confirm", "refused", "access", "world"}
 _WORLD_KEYS = {"access_needed"}
-SPLITS = ("gate", "dev", "voice", "heldout_safety")
+SPLITS = ("gate", "dev", "voice", "heldout_safety", "private")
 # Splits held out of every training set (shingle export).
 HELD_OUT_SPLITS = frozenset({"gate", "voice", "heldout_safety"})
 # Sealed splits: never part of an unfiltered selection, so `gate.sh` and a bare run never touch them. They
-# run only with an explicit `--split <name>`; the shingle export still covers them (it ignores filters).
-SEALED_SPLITS = frozenset({"heldout_safety"})
+# run only with an explicit `--split <name>`; the shingle export still covers them (it ignores filters),
+# except `private`: the user's own real-use cases (scripts/toolbench/private.py) are loaded only from
+# PRIVATE_EVAL_DIR, are not in HELD_OUT_SPLITS, and so never reach a shingle export or any shared file.
+SEALED_SPLITS = frozenset({"heldout_safety", "private"})
 ACCESS = ("full", "default", "view")
 _ANSWER_KEYS = {"contains_all", "contains_any", "not_contains", "max_words", "max_sentences", "min_words", "min_sentences",
                 "starts_with_any", "regex_all", "regex_none", "no_bullets", "all_lines_bulleted",
