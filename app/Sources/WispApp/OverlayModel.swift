@@ -945,14 +945,18 @@ final class OverlayModel: ObservableObject {
 
     /// Roughly what a turn holds in memory, for the archive's size limit.
     static func debugBytes(_ turns: [Turn]) -> Int {
-        turns.reduce(0) { total, t in
-            total + t.text.utf8.count + t.reasoningText.utf8.count + (t.errorDetail?.utf8.count ?? 0)
-                + t.activity.reduce(0) { $0 + $1.utf8.count }
-                + t.toolCalls.reduce(0) { sum, tc in
-                    sum + tc.argsJSON.utf8.count + tc.result.utf8.count
-                        + tc.debugRecords.reduce(0) { $0 + $1.json.utf8.count } }
-                + t.rawIO.reduce(0) { $0 + $1.requestJSON.utf8.count + $1.responseJSON.utf8.count }
+        var total = 0
+        for t in turns {
+            total += t.text.utf8.count + t.reasoningText.utf8.count
+            total += t.errorDetail?.utf8.count ?? 0
+            for line in t.activity { total += line.utf8.count }
+            for tc in t.toolCalls {
+                total += tc.argsJSON.utf8.count + tc.result.utf8.count
+                for record in tc.debugRecords { total += record.json.utf8.count }
+            }
+            for io in t.rawIO { total += io.requestJSON.utf8.count + io.responseJSON.utf8.count }
         }
+        return total
     }
 
     /// Saved history around a chat's archived turns (and any asked while it
