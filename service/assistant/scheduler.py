@@ -398,6 +398,8 @@ def _brief_date() -> date | None:
     if not _last_brief_loaded:
         _last_brief_loaded = True
         try:
+            from service.paths import tighten_private_file
+            tighten_private_file(_brief_state_path())
             with _brief_state_path().open() as f:
                 _last_brief = date.fromisoformat(json.load(f)["last_brief"])
         except Exception:  # noqa: BLE001 — absent or corrupt is simply "never"
@@ -409,10 +411,9 @@ def _record_brief_date(day: date) -> None:
     global _last_brief
     _last_brief = day
     try:
-        path = _brief_state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w") as f:
-            json.dump({"last_brief": day.isoformat()}, f)
+        from service.paths import private_write_bytes
+        private_write_bytes(_brief_state_path(),
+                            json.dumps({"last_brief": day.isoformat()}).encode("utf-8"))
     except Exception:  # noqa: BLE001 — an unwritable state file must not stop the brief
         pass
 

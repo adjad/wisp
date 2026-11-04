@@ -16,6 +16,7 @@ import sqlite3
 import stat
 import sys
 from typing import Sequence
+from urllib.parse import quote
 
 
 LIVE_TABLE = "commitments"
@@ -47,6 +48,15 @@ class RecoveryReport:
     conflicting_rows: int
     backup: Path | None = None
     conflicts: tuple[str, ...] = ()
+
+
+def _ro_uri(path: Path) -> str:
+    """A read-only SQLite URI for `path`, percent-encoded.
+
+    An unescaped ``?``, ``#`` or ``%`` in the path would end the path part of
+    a ``file:`` URI early (or decode as an escape) and open some other file.
+    """
+    return "file:" + quote(str(path)) + "?mode=ro"
 
 
 def _quote(name: str) -> str:
@@ -207,18 +217,43 @@ def _make_owner_only(path: Path) -> None:
         raise first_error
 
 
-def _create_private(path: Path) -> None:
-    """Create an empty file that is 0600 from its first instant.
+def _create_private(path: Path) -> tuple[int, int]:
+    """Create an empty file that is 0600 from its first instant; its identity.
 
     O_EXCL refuses a file (or link) that appeared after the caller's check, and
     the fchmod pins 0600 whatever the umask. SQLite then writes into this file
-    and gives each sidecar it creates the same mode.
+    and gives each sidecar it creates the same mode. Returns the (device,
+    inode) of the file created, for _same_backup.
     """
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
         os.fchmod(fd, 0o600)
+        info = os.fstat(fd)
+        return info.st_dev, info.st_ino
     finally:
         os.close(fd)
+
+
+def _regular_identity(path: Path) -> tuple[int, int] | None:
+    """(device, inode) of `path` if it is a regular file itself, never via a link."""
+    try:
+        info = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    return (info.st_dev, info.st_ino) if stat.S_ISREG(info.st_mode) else None
+
+
+def _same_backup(path: Path, identity: tuple[int, int]) -> None:
+    """Refuse when the backup path no longer names the file made private above.
+
+    SQLite opens by path, so a same-user swap (a symlink or another file put in
+    its place) between the mode work and a connect would point the copy, or
+    the verification, at a different file. Checked right before and right
+    after every connect to the backup path."""
+    if _regular_identity(path) != identity:
+        raise RecoveryRefused(
+            f"backup path {path} changed during recovery; database unchanged"
+        )
 
 
 def _remove_created(backup_path: Path, preexisting: set[Path]) -> None:
@@ -252,8 +287,7 @@ def _ensure_backup(db: sqlite3.Connection, path: Path) -> Path:
         # 0600 before SQLite opens it, and any sidecar an earlier run left (a
         # stale -wal holds row data) tightened, as is an earlier run's backup.
         try:
-            if created:
-                _create_private(backup_path)
+            identity = _create_private(backup_path) if created else _regular_identity(backup_path)
             _make_owner_only(backup_path)
         except FileExistsError as exc:
             raise RecoveryRefused(
@@ -263,8 +297,14 @@ def _ensure_backup(db: sqlite3.Connection, path: Path) -> Path:
             raise RecoveryRefused(
                 f"could not make backup {backup_path} owner-only ({exc}); database unchanged"
             ) from exc
+        if identity is None:
+            raise RecoveryRefused(
+                f"backup path {backup_path} is not an independent regular file; database unchanged"
+            )
+        _same_backup(backup_path, identity)
         backup = sqlite3.connect(str(backup_path))
-        source = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        _same_backup(backup_path, identity)
+        source = sqlite3.connect(_ro_uri(path), uri=True)
         if created:
             # A connection cannot back itself up while it owns BEGIN
             # IMMEDIATE: sqlite3_backup waits for that writer forever. A
@@ -284,8 +324,11 @@ def _ensure_backup(db: sqlite3.Connection, path: Path) -> Path:
         raise
     source.close()
     backup.close()
-    verified = sqlite3.connect(f"file:{backup_path}?mode=ro", uri=True)
+    verified = None
     try:
+        _same_backup(backup_path, identity)
+        verified = sqlite3.connect(_ro_uri(backup_path), uri=True)
+        _same_backup(backup_path, identity)
         integrity = verified.execute("PRAGMA integrity_check").fetchone()[0]
         if integrity != "ok" or _logical_digest(verified) != expected:
             raise RecoveryRefused(
@@ -293,7 +336,8 @@ def _ensure_backup(db: sqlite3.Connection, path: Path) -> Path:
                 "move it aside and inspect it before retrying"
             )
     except BaseException:
-        verified.close()
+        if verified is not None:
+            verified.close()
         if created:
             _remove_created(backup_path, preexisting)
         raise
@@ -350,7 +394,7 @@ def inspect(path: Path) -> RecoveryReport:
     path = path.expanduser().resolve()
     if not path.is_file():
         raise RecoveryRefused(f"database does not exist: {path}")
-    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    db = sqlite3.connect(_ro_uri(path), uri=True)
     db.row_factory = sqlite3.Row
     try:
         if db.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
@@ -373,7 +417,7 @@ def inspect(path: Path) -> RecoveryReport:
 
     # Classification uses a disposable in-memory copy so inspection stays
     # genuinely read-only while exercising the same merge rules as repair.
-    source = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    source = sqlite3.connect(_ro_uri(path), uri=True)
     scratch = sqlite3.connect(":memory:")
     scratch.row_factory = sqlite3.Row
     try:

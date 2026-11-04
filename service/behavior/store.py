@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import sqlite3
+import stat
 import threading
 import time
 import uuid
@@ -42,14 +43,20 @@ def _private_sqlite_file(path: str) -> None:
     if path == ":memory:":
         return
     try:
-        os.close(os.open(path, os.O_RDONLY | os.O_CREAT, 0o600))
+        os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
+    except FileExistsError:
+        pass                                  # an existing file (or link): tightened below
     except OSError as exc:
         log.warning("could not create %s privately: %s", path, exc)
         return
     for candidate in (path, path + "-wal", path + "-shm", path + "-journal"):
+        # lstat + chmod(follow_symlinks=False): a symlinked file is refused, not
+        # followed, and nothing is opened, so no POSIX lock another connection
+        # in this process holds on the database is dropped by a close.
         try:
-            if os.stat(candidate).st_mode & 0o077:
-                os.chmod(candidate, 0o600)
+            info = os.lstat(candidate)
+            if stat.S_ISREG(info.st_mode) and info.st_mode & 0o077:
+                os.chmod(candidate, 0o600, follow_symlinks=False)
         except FileNotFoundError:
             continue
         except OSError as exc:

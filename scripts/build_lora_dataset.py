@@ -18,6 +18,7 @@ import os
 import sqlite3
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 from service.agent.loop import SYSTEM
 from service.router.router import route
@@ -30,6 +31,24 @@ MIN_ASSISTANT_CHARS = 8   # drop near-empty / truncated turns
 MAX_MESSAGE_CHARS = 4000  # drop runaway turns (bad for a 2.6B context budget)
 
 
+def _private_mkdirs(path: Path) -> None:
+    """Create `path` and every missing parent, each 0700.
+
+    mkdir(mode=..., parents=True) gives the mode only to the last directory;
+    the parents it creates get the umask's (0755). Directories that already
+    exist are left as they are.
+    """
+    missing = []
+    while not os.path.lexists(path):
+        missing.append(path)
+        path = path.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+
+
 def _private_dir(path: Path) -> Path:
     """The output directory, created owner-only (0700) when it is new.
 
@@ -37,7 +56,7 @@ def _private_dir(path: Path) -> Path:
     from the home folder); the files written into it are 0600 either way.
     """
     if not path.is_dir():
-        path.mkdir(mode=0o700, parents=True)
+        _private_mkdirs(path)
     elif path.stat().st_mode & 0o077:
         print(f"note: {path} is readable by other accounts; the files written "
               "there are owner-only", file=sys.stderr)
@@ -52,8 +71,13 @@ def _write_private(path: Path, text: str) -> None:
     process umask. fchmod also tightens a file an earlier run left 0644.
     """
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w") as f:
+    try:
+        os.fchmod(fd, 0o600)
+        f = os.fdopen(fd, "w")
+    except BaseException:
+        os.close(fd)              # fdopen did not take ownership of it
+        raise
+    with f:
         f.write(text)
 
 
@@ -158,7 +182,8 @@ async def main():
     out_dir = _private_dir(Path(args.out).expanduser())
 
     # Read-only: a missing store must not be created here with the umask.
-    conn = sqlite3.connect(f"file:{SESSIONS_DB}?mode=ro", uri=True)
+    # Percent-encoded: a ? # or % in the path must not change which file opens.
+    conn = sqlite3.connect("file:" + quote(str(SESSIONS_DB)) + "?mode=ro", uri=True)
     audit = load_audit_events()
     examples = await build_examples(conn, audit)
 
