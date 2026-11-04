@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shlex
 import sqlite3
+import stat
 import sys
 from typing import Sequence
 
@@ -165,6 +166,68 @@ def _backup_path(path: Path) -> Path:
     return path.with_name(path.name + ".recovery-backup")
 
 
+# SQLite's rollback journal and WAL files. SQLite creates a sidecar with its
+# main file's mode, so a private main file keeps new sidecars private; one left
+# by an earlier run still needs its own chmod.
+_SQLITE_SIDECARS = ("-wal", "-shm", "-journal")
+
+
+def _sqlite_files(path: Path) -> tuple[Path, ...]:
+    return (path, *(path.with_name(path.name + suffix) for suffix in _SQLITE_SIDECARS))
+
+
+def _make_owner_only(path: Path) -> None:
+    """Tighten an existing SQLite file and its sidecars to 0600, never via a link.
+
+    The rule of service.paths.private_sqlite_file, kept local because this
+    file runs by path and must not import the service package (module
+    docstring). Stricter than that helper: a link is refused rather than
+    followed, and only regular files are touched (O_NONBLOCK so a FIFO cannot
+    hang the open). Every file is tried; the first OSError is then raised so
+    the caller decides whether a file it cannot make private is fatal.
+    """
+    first_error: OSError | None = None
+    for candidate in _sqlite_files(path):
+        try:
+            fd = os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            first_error = first_error or exc
+            continue
+        try:
+            info = os.fstat(fd)
+            if stat.S_ISREG(info.st_mode) and info.st_mode & 0o077:
+                os.fchmod(fd, 0o600)
+        except OSError as exc:
+            first_error = first_error or exc
+        finally:
+            os.close(fd)
+    if first_error is not None:
+        raise first_error
+
+
+def _create_private(path: Path) -> None:
+    """Create an empty file that is 0600 from its first instant.
+
+    O_EXCL refuses a file (or link) that appeared after the caller's check, and
+    the fchmod pins 0600 whatever the umask. SQLite then writes into this file
+    and gives each sidecar it creates the same mode.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+    finally:
+        os.close(fd)
+
+
+def _remove_created(backup_path: Path, preexisting: set[Path]) -> None:
+    """Undo a backup this run created, leaving files that were there before it."""
+    for leftover in _sqlite_files(backup_path):
+        if leftover not in preexisting:
+            leftover.unlink(missing_ok=True)
+
+
 def _ensure_backup(db: sqlite3.Connection, path: Path) -> Path:
     expected = _logical_digest(db)
     backup_path = _backup_path(path)
@@ -178,9 +241,30 @@ def _ensure_backup(db: sqlite3.Connection, path: Path) -> Path:
             f"backup path {backup_path} is not an independent regular file; database unchanged"
         )
     created = not backup_exists
-    backup = sqlite3.connect(str(backup_path))
-    source = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    preexisting = {
+        candidate for candidate in _sqlite_files(backup_path)
+        if candidate.exists() or candidate.is_symlink()
+    }
+    backup = source = None
     try:
+        # The backup is a full copy of assistant.db (synced mail and message
+        # caches, commitments), so it gets the store's owner-only mode: created
+        # 0600 before SQLite opens it, and any sidecar an earlier run left (a
+        # stale -wal holds row data) tightened, as is an earlier run's backup.
+        try:
+            if created:
+                _create_private(backup_path)
+            _make_owner_only(backup_path)
+        except FileExistsError as exc:
+            raise RecoveryRefused(
+                f"backup path {backup_path} appeared during recovery; database unchanged"
+            ) from exc
+        except OSError as exc:
+            raise RecoveryRefused(
+                f"could not make backup {backup_path} owner-only ({exc}); database unchanged"
+            ) from exc
+        backup = sqlite3.connect(str(backup_path))
+        source = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         if created:
             # A connection cannot back itself up while it owns BEGIN
             # IMMEDIATE: sqlite3_backup waits for that writer forever. A
@@ -188,11 +272,15 @@ def _ensure_backup(db: sqlite3.Connection, path: Path) -> Path:
             # prevents the source from changing under it.
             source.backup(backup)
             backup.commit()
-    except BaseException:
-        source.close()
-        backup.close()
-        if created:
-            backup_path.unlink(missing_ok=True)
+    except BaseException as exc:
+        for connection in (source, backup):
+            if connection is not None:
+                connection.close()
+        # Includes the empty 0600 placeholder when a connect failed, so the
+        # next run does not mistake it for an earlier backup. A path that
+        # appeared under us (FileExistsError) is not ours to remove.
+        if created and not isinstance(exc.__cause__, FileExistsError):
+            _remove_created(backup_path, preexisting)
         raise
     source.close()
     backup.close()
@@ -207,7 +295,7 @@ def _ensure_backup(db: sqlite3.Connection, path: Path) -> Path:
     except BaseException:
         verified.close()
         if created:
-            backup_path.unlink(missing_ok=True)
+            _remove_created(backup_path, preexisting)
         raise
     verified.close()
     return backup_path
@@ -313,6 +401,14 @@ def repair(path: Path, *, apply: bool = False) -> RecoveryReport:
         raise RecoveryRefused("only the legacy table exists; restart Wisp to recover it automatically")
 
     path = plan.database
+    # Repair writes through a rollback journal that SQLite creates with the
+    # database's mode. AssistantStore already made the database 0600 before
+    # the startup that sent the user here; this covers a database from an
+    # older build or another machine. Its mode must not block the recovery.
+    try:
+        _make_owner_only(path)
+    except OSError:
+        pass
     db = sqlite3.connect(str(path))
     db.row_factory = sqlite3.Row
     backup_path: Path | None = None
