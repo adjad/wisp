@@ -2380,7 +2380,7 @@ async def run_agent(
             return None
         if any(outcome.effect != "read" for _, outcome in tool_outcomes):
             return None
-        from service.model_only import claimed_effect, pure_writing
+        from service.model_only import claimed_effect, claimed_item, pure_writing
         if pure_writing(memory_query):
             return None
         claim = claimed_effect(text)
@@ -2392,6 +2392,8 @@ async def run_agent(
             return None
         if not claim.first_person and not _ask_wanted_change:
             return None  # "Set a reminder so you don't forget" is advice
+        if not _ask_wanted_change and not claimed_item(claim.sentence):
+            return None  # "I've sent you the list below." on a read-only turn
         return claim
 
     def _ask_offers_change(step_schemas) -> bool:

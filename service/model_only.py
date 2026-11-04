@@ -341,6 +341,16 @@ def claimed_effect(text: str) -> EffectClaim | None:
     return None
 
 
+_CLAIM_ITEM = re.compile(r"\b" + _CLAIM_NOUNS + r"\b|\b(?:to|from|off)\s+(?:your|the|my)\s+calendar\b|\bdo\s+not\s+disturb\b|\bfocus\b|"
+                         r"\b(?:texted|emailed|messaged)\b", re.I)
+
+
+def claimed_item(sentence: str) -> bool:
+    """The claim names a thing a tool makes or sends (a reminder, a text, the
+    calendar), not just a phrase like "I've sent you the list below"."""
+    return bool(_CLAIM_ITEM.search(sentence or ""))
+
+
 # Says plainly that nothing happened, in place of a claim no tool backs.
 ASK_CLAIM_NOT_DONE = "I haven't done that yet: nothing was created, sent or changed."
 

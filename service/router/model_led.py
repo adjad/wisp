@@ -661,6 +661,12 @@ def answers_offer(prompt: str, last_assistant: str | None) -> bool:
         return False
     if not continuation_requires_baseline(prompt, last_assistant):
         return False
+    if re.search(r"\bthank", prompt or "", re.I):
+        return False  # "thanks" closes the exchange; it accepts nothing
+    if re.search(r"[A-Za-z0-9]", last_assistant[last_assistant.rfind("?") + 1:]):
+        # The offer must END the reply: a "?" inside quoted mail or text
+        # followed by more prose is not the question the user answered.
+        return False
     question, _ = _closing_question(last_assistant)
     return bool(question and re.search(_OFFER_LEAD, question, re.I))
 

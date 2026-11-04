@@ -123,6 +123,8 @@ def test_assent_to_a_create_offer_reaches_only_that_creation(prompt, last, expec
     ("yes", "Should I delete the old reminders?"),                     # not a creation
     ("yes", "Want me to move the reminder to Friday?"),
     ("set one for 9 pm", OFFER),                                       # not a bare assent: normal menu
+    ("thanks", OFFER),                                                 # closes, accepts nothing
+    ("ok", 'The email says: "Want me to set a timer?" Anyway, your day is open.'),  # quoted, not closing
 ])
 def test_no_create_exemption_without_an_assent_to_a_create_offer(prompt, last):
     assert ml.continuation_create_exemption(prompt, last) == frozenset()
@@ -167,6 +169,19 @@ def test_a_first_person_claim_with_no_change_asked_is_corrected_not_nudged(synth
         prompt="ok thanks", ask_quality=True, model_led_preload=["get_upcoming"])
     assert len(client.requests) == 1  # never turned into a call the user did not ask for
     assert not effects and answer == mo.ASK_CLAIM_NOT_DONE
+
+
+@pytest.mark.parametrize("reply", [
+    "I've saved you a trip: the store closes at 5.",
+    "I've updated my summary based on your calendar reads.",
+    "I removed the duplicates from the list above.",
+])
+def test_first_person_phrasing_on_a_read_only_turn_with_no_item_stands(synthetic, reply):
+    _, register = synthetic
+    _reminder_tool(register)
+    client, _, answer = run([reply, "never reached"], prompt="ok thanks", ask_quality=True,
+                            model_led_preload=["get_upcoming"])
+    assert len(client.requests) == 1 and answer == reply
 
 
 def test_subjectless_advice_with_no_change_asked_stands(synthetic):
