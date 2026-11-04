@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
 import subprocess
 import time
@@ -41,7 +40,7 @@ from pathlib import Path
 # alias is how it still reads the clock.
 _clock = time
 
-from service.paths import MOE_DIR
+from service.paths import MOE_DIR, private_write_bytes
 from service.tools.registry import register
 
 _STORE = MOE_DIR / "cache" / "timers.json"
@@ -66,11 +65,10 @@ def _load() -> None:
 
 def _save() -> None:
     try:
-        _STORE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        tmp = _STORE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(_TIMERS), encoding="utf-8")
-        os.chmod(tmp, 0o600)
-        tmp.replace(_STORE)
+        # Owner-only from the first byte and atomic (timer labels are the user's).
+        private_write_bytes(_STORE, json.dumps(_TIMERS).encode("utf-8"))
+        # The temp name builds before this used, which a crash could leave 0644.
+        _STORE.with_suffix(".tmp").unlink(missing_ok=True)
     except Exception:  # noqa: BLE001 — persistence is best-effort, never fatal
         pass
 

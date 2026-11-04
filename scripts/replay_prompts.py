@@ -36,6 +36,8 @@ Usage
 from __future__ import annotations
 
 import json
+import os
+import stat
 import sys
 import time
 
@@ -43,6 +45,25 @@ import httpx
 
 BASE = "http://127.0.0.1:8765"
 RESULT_CAP = 4000  # chars of each tool result to keep
+
+
+def _open_private(path: str, mode: str = "w"):
+    """Open `path` for text writing ("w" or "a"), owner-only (0600) from the first byte.
+
+    The results hold tool arguments and results from the LIVE backend (mail,
+    messages, composed bodies of denied sends). A file an earlier run left 0644 is tightened
+    before anything is written to it.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if mode == "a" else os.O_TRUNC)
+    fd = os.open(path, flags, 0o600)
+    try:
+        info = os.fstat(fd)
+        if stat.S_ISREG(info.st_mode) and info.st_mode & 0o077:
+            os.fchmod(fd, 0o600)      # before anything more is written
+        return os.fdopen(fd, mode, encoding="utf-8")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def run_prompt(client: httpx.Client, prompt: str, sid: str | None) -> dict:
@@ -124,7 +145,8 @@ def main() -> int:
                     print(f"    ERROR: {res['error']}", flush=True)
                 # Persist after EVERY turn: the backend died mid-run once and
                 # took 9 turns of results with it.
-                json.dump(results, open(outfile, "w"), indent=2)
+                with _open_private(outfile) as handle:
+                    json.dump(results, handle, indent=2)
     print(f"\nwrote {len(results)} results -> {outfile}")
     return 0
 

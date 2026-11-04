@@ -53,7 +53,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import re
+import stat
 import sys
 import time
 from dataclasses import dataclass, field
@@ -66,6 +68,26 @@ from service.agent.loop import run_agent               # noqa: E402
 from service.config import role_to_model                 # noqa: E402
 from service.inference.omlx_client import OMLXClient      # noqa: E402
 from service.router.router import route                   # noqa: E402
+
+
+def _open_private(path: Path, mode: str = "w"):
+    """Open `path` for text writing ("w" or "a"), owner-only (0600) from the first byte.
+
+    The examples carry real tool output from the user's own mail, messages
+    and calendar (the flows execute real tools unless --skip-real-exec).
+    A file an earlier run left 0644 is tightened before
+    anything is written to it.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if mode == "a" else os.O_TRUNC)
+    fd = os.open(path, flags, 0o600)
+    try:
+        info = os.fstat(fd)
+        if stat.S_ISREG(info.st_mode) and info.st_mode & 0o077:
+            os.fchmod(fd, 0o600)      # before anything more is written
+        return os.fdopen(fd, mode, encoding="utf-8")
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 SELF_EMAIL = "johnstandark@gmail.com"
@@ -634,10 +656,10 @@ async def main() -> int:
     await client.ensure_only(model, exclusive=True)
 
     out_dir = Path(args.out).expanduser()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     mode = "a" if args.append else "w"
-    sft_f = (out_dir / "harvest_sft.jsonl").open(mode)
-    dpo_f = (out_dir / "harvest_dpo.jsonl").open(mode)
+    sft_f = _open_private(out_dir / "harvest_sft.jsonl", mode)
+    dpo_f = _open_private(out_dir / "harvest_dpo.jsonl", mode)
 
     n_ok = n_fail = n_route_fault = n_sft = n_dpo = 0
     t_start = time.time()

@@ -12,7 +12,9 @@ them to the browser as they arrive. Neither knows Wisp's raw event shapes.
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +23,26 @@ from typing import AsyncIterator
 import httpx
 
 from scripts.eval_ling_tasks import Task
+
+
+def _open_private(path: Path, mode: str = "w"):
+    """Open `path` for text writing ("w" or "a"), owner-only (0600) from the first byte.
+
+    Each record holds a real prompt, Wisp's reply and its tool calls, run
+    against the user's live data. A file an earlier run left 0644 is tightened before
+    anything is written to it.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if mode == "a" else os.O_TRUNC)
+    fd = os.open(path, flags, 0o600)
+    try:
+        info = os.fstat(fd)
+        if stat.S_ISREG(info.st_mode) and info.st_mode & 0o077:
+            os.fchmod(fd, 0o600)      # before anything more is written
+        return os.fdopen(fd, mode, encoding="utf-8")
+    except BaseException:
+        os.close(fd)
+        raise
+
 
 BASE = "http://127.0.0.1:8765"
 LOG_DIR = Path.home() / ".moe" / "evals"
@@ -276,8 +298,8 @@ def load_log(path: Path = DEFAULT_LOG) -> dict[str, dict]:
 
 
 def append_log(rec: dict, path: Path = DEFAULT_LOG) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a") as fh:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with _open_private(path, "a") as fh:
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
