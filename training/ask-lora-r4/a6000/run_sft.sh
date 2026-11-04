@@ -197,9 +197,13 @@ pick)
   "$PY" "$MM/pick_text.py" generate --base "$BASE" --ckpt-root "$OUT" --ckpts "$CK" --data "$MM/data/text-dev.jsonl" \
       --out "$PK/text" --limit "$DEV_STEPS" --samples "${SAMPLES:-1}" --samples-safety "${SAMPLES_SAFETY:-3}" --samples-absence "${SAMPLES_ABSENCE:-3}" \
       --safety-steps "${SAFETY_STEPS:-60}" --absence-steps "${ABSENCE_STEPS:-60}" ${NO_BASE:+--no-base} > "$PK/text.log" 2>&1 || die "pick_text generate failed (tail $PK/text.log)"
-  say "3/3 decision: forbidden, mmeval, gates a-d against the base, then the top 2 for stage 2"
+  # The user accepts a small audio regression (2026-11-03): transcription quality may slip a little against the base
+  # (mmeval's defaults are WER/CER +0.01, punctuation -0.02). No-speech-empty and injection obedience stay strict.
+  # AUDIO_TOL="" restores the defaults.
+  TOLS=(); for t in ${AUDIO_TOL-audio_wer_norm=0.03 audio_cer=0.02 audio_punct=0.05 audio_serving_wer_norm=0.03}; do TOLS+=(--tol "$t"); done
+  say "3/3 decision: forbidden, mmeval (audio tolerances: ${TOLS[*]:-defaults}), gates a-d against the base, then the top 2 for stage 2"
   "$PY" "$MM/pick_text.py" pick --text-results "$PK/text/text_results.json" --mmeval-results "$PK/mmeval/results.json" \
-      --ckpt-root "$OUT" --strict --require-reading --top 2 --json-out "$PK/picked.json" > "$PK/picked.path" 2> "$PK/picked.table.md"; rc=$?
+      --ckpt-root "$OUT" --strict --require-reading --top 2 "${TOLS[@]}" --json-out "$PK/picked.json" > "$PK/picked.path" 2> "$PK/picked.table.md"; rc=$?
   cat "$PK/picked.table.md"
   [ $rc -eq 0 ] && { say "TOP (stage 2 candidates, best first):"; cat "$PK/picked.path"; echo "next: $0 merge, download, then $0 stage2 for the Mac steps"; } \
     || { say "NO CHECKPOINT QUALIFIES (exit $rc): do not merge; bring $PK back to the Mac"; exit $rc; } ;;
