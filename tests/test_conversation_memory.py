@@ -1192,7 +1192,8 @@ def test_rolling_summary_failures_count_then_fall_back(summary_world, bad, caplo
     assert len(model.prompts) == context._MAX_FOLD_FAILURES
     assert sess['summarized_idx'] == context._FOLD_BATCH
     lines = sess['summary'].split('\n')
-    assert lines[0] == 'Prior: user is planning a trip to Lisbon.'
+    assert lines[0] == context._FALLBACK_HEAD
+    assert lines[1] == 'Prior: user is planning a trip to Lisbon.'
     assert '- User: User fact 0: my locker is 0' in lines
     assert 'Cut off' not in sess['summary']
     assert len(sess['summary']) <= context._SUMMARY_MAX_CHARS
@@ -1234,3 +1235,54 @@ def test_rolling_summary_fallback_stays_capped_when_summarizer_never_recovers(su
     # The newest folded notes survive the cap; the oldest give way.
     assert 'User fact 0:' not in sess['summary']
     assert f'User fact {12 * context._FOLD_BATCH - 2}:' in sess['summary']
+
+
+def test_rolling_summary_fallback_keeps_a_share_of_the_early_conversation(summary_world):
+    # A long prior used to be the part the cap cut: one fallback dropped all of it.
+    context, sessions, sid, fill, fold = summary_world
+    prior = '\n'.join(f'Early thread {i}: ' + 'detail ' * 40 for i in range(9))   # ~2,400 chars
+    sessions.set_summary(sid, prior, 0)
+    context._fold_failures[sid] = context._MAX_FOLD_FAILURES
+    fill(context.KEEP_MESSAGES + 30, assistant_text='A reply with a fact: ' + 'x' * 180)
+    sess = fold(SummaryModel(RuntimeError('down')))
+    summary = sess['summary']
+    assert summary.startswith(context._FALLBACK_HEAD + '\n')
+    assert 'Early thread 8:' in summary and len(summary) <= context._SUMMARY_MAX_CHARS
+    assert '- User: User fact' in summary
+    # A second fallback does not repeat the label.
+    fill(context._FOLD_BATCH)
+    sess = fold(SummaryModel(RuntimeError('down')))
+    assert sess['summary'].count(context._FALLBACK_HEAD) == 1
+
+
+def test_rolling_summary_blank_turns_advance_without_a_call_or_a_rewrite(summary_world):
+    context, sessions, sid, fill, fold = summary_world
+    stored = 'Kept line ' + 'y' * 3000          # one long line, longer than the cap
+    sessions.set_summary(sid, stored, 0)
+    for i in range(context.KEEP_MESSAGES + context._FOLD_BATCH):
+        sessions.add_turn(sid, 'user' if i % 2 == 0 else 'assistant',
+                          ' ' if i < context._FOLD_BATCH else f'turn {i}')
+    model = SummaryModel(('should not be asked', 'stop'))
+    sess = fold(model)
+    assert model.prompts == []
+    assert sess['summarized_idx'] == context._FOLD_BATCH
+    assert sess['summary'] == stored
+
+
+def test_rolling_summary_a_failing_prepare_hook_counts_as_a_failure(summary_world):
+    context, sessions, sid, fill, fold = summary_world
+    fill(context.KEEP_MESSAGES + context._FOLD_BATCH)
+
+    async def prepare():
+        raise RuntimeError('model swap failed')
+
+    model = SummaryModel(('never reached', 'stop'))
+    for attempt in range(1, context._MAX_FOLD_FAILURES):
+        asyncio.run(context.maybe_summarize(model, sid, 'fast', prepare=prepare))
+        assert context._fold_failures[sid] == attempt
+        assert sessions.get_session(sid)['summarized_idx'] == 0
+    asyncio.run(context.maybe_summarize(model, sid, 'fast', prepare=prepare))
+    assert model.prompts == []
+    sess = sessions.get_session(sid)
+    assert sess['summarized_idx'] == context._FOLD_BATCH
+    assert sess['summary'].startswith(context._FALLBACK_HEAD)
