@@ -128,9 +128,13 @@ def clear_contacts() -> None:
     _contacts, _name_handles, _birthdays = {}, {}, {}
     # Unlike best-effort cache_store.save, a failed removal must surface to
     # the sender, which keeps the privacy change pending and retries it.
+    from service.paths import private_temp_files
     for name in ("contacts", "contact_handles", "birthdays"):
         for suffix in ("txt", "tmp"):
             (cache_store.CACHE_DIR / f"{name}.{suffix}").unlink(missing_ok=True)
+        # A save that died before its rename leaves an owner-only temp copy.
+        for leftover in private_temp_files(cache_store.CACHE_DIR / f"{name}.txt"):
+            leftover.unlink(missing_ok=True)
 
 
 def _contacts_not_allowed_message() -> str:

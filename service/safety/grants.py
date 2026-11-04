@@ -29,7 +29,7 @@ import threading
 import time
 from pathlib import Path
 
-from service.paths import MOE_DIR
+from service.paths import MOE_DIR, private_write_bytes, tighten_private_file
 from service.publication_authority import Authority, Witness, assert_mutation_allowed, revocation
 
 GRANTS_PATH = MOE_DIR / "grants.json"
@@ -134,6 +134,9 @@ def _known_cache(data) -> bool:
 
 
 def _load_snapshot() -> tuple[dict, bool]:
+    # Grants name web hosts, folders and programs the user allowed; a file an
+    # older build wrote 0644 is tightened when it is read (never via a link).
+    tighten_private_file(GRANTS_PATH)
     try:
         if GRANTS_PATH.exists():
             duplicate = False
@@ -184,10 +187,12 @@ def _save() -> None:
         _publication.withdraw()
         _proof_known = False
         try:
-            GRANTS_PATH.parent.mkdir(parents=True, exist_ok=True)
             payload = json.dumps(_CACHE, indent=2)
-            if GRANTS_PATH.write_text(payload) == len(payload):
-                _proof_known = _known_cache(_CACHE)
+            # Owner-only and atomic: a reader sees the old grants or the new
+            # ones, never a torn file. Any failure raises, so _proof_known
+            # stays False exactly as a short write left it before.
+            private_write_bytes(GRANTS_PATH, payload.encode("utf-8"))
+            _proof_known = _known_cache(_CACHE)
         except Exception:  # noqa: BLE001
             pass
 

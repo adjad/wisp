@@ -158,8 +158,44 @@ enum ResearchLibraryChecks {
         await selectionDuringSaveAndDeleteFailure()
         await steeringStaysWithItsJob()
         await completionWinsOverDelayedPause()
+        exportIsOwnerOnly()
         try renderPreviewIfRequested()
         print("Research Library: \(checks) native checks passed (store fixtures, no live actions)")
+    }
+
+    /// The exported report is 0600 from the first byte under a 022 umask, an earlier
+    /// export left 0644 is replaced by a 0600 file, and a symlink is replaced, not followed.
+    static func exportIsOwnerOnly() {
+        let dir = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory())
+            .appendingPathComponent("wisp-research-export-\(getpid())")
+        try? FileManager.default.removeItem(at: dir)
+        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let previous = umask(0o022)
+        defer { umask(previous) }
+        func mode(_ url: URL) -> Int {
+            var info = stat()
+            return lstat(url.path, &info) == 0 ? Int(info.st_mode & 0o777) : -1
+        }
+        let report = dir.appendingPathComponent("report.md")
+        check((try? WispClient.writeOwnerOnly(Data("first".utf8), to: report)) != nil, "export writes a new report")
+        check(mode(report) == 0o600, "a new export is owner-only")
+        chmod(report.path, 0o644)
+        check((try? WispClient.writeOwnerOnly(Data("second".utf8), to: report)) != nil, "export replaces a report")
+        check(mode(report) == 0o600 && (try? String(contentsOf: report, encoding: .utf8)) == "second",
+              "an earlier 0644 export is replaced and tightened")
+        let outside = dir.appendingPathComponent("outside.txt")
+        try! Data("keep".utf8).write(to: outside)
+        chmod(outside.path, 0o644)
+        let link = dir.appendingPathComponent("linked.md")
+        try! FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        check((try? WispClient.writeOwnerOnly(Data("x".utf8), to: link)) != nil, "a symlinked export path is replaced")
+        check(mode(link) == 0o600 && (try? FileManager.default.destinationOfSymbolicLink(atPath: link.path)) == nil,
+              "the link itself is replaced by an owner-only file")
+        check(mode(outside) == 0o644 && (try? String(contentsOf: outside, encoding: .utf8)) == "keep",
+              "the link target is untouched")
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path).sorted()) ?? []
+        check(names == ["linked.md", "outside.txt", "report.md"], "no temp file left: \(names)")
     }
 
     static func libraryFilteringAndRefresh() async {

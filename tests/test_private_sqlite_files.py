@@ -312,3 +312,103 @@ def test_lora_dataset_export_writes_private_files_and_never_creates_the_store(
     with pytest.raises(sqlite3.OperationalError):
         asyncio.run(build.main())
     assert not missing.exists()               # read-only: no empty 0644 sessions.db
+
+
+
+# ── batch 10 Auditor notes (a)–(e) ──────────────────────────────────────────
+
+def test_recovery_handles_a_path_with_uri_characters(tmp_path, loose_umask):
+    # (c) An unescaped ? # or % ended the file: URI's path early and opened another file.
+    recovery = _recovery()
+    folder = tmp_path / "odd ?#% name"
+    folder.mkdir()
+    db = folder / "assistant.db"
+    _conflicted_assistant_db(db)
+    assert recovery.inspect(db).state == "recovery_required"
+    report = recovery.repair(db, apply=True)
+    assert report.state == "recovered" and mode(report.backup) == 0o600
+    assert not list(tmp_path.glob("odd *assistant.db*"))      # nothing opened beside it
+
+
+def test_recovery_refuses_a_backup_swapped_before_sqlite_opens_it(tmp_path, loose_umask, monkeypatch):
+    # (d) SQLite opens by path, so the made-private file is re-identified (lstat
+    # device + inode) right before and right after each connect.
+    recovery = _recovery()
+    db = tmp_path / "assistant.db"
+    _conflicted_assistant_db(db)
+    backup = recovery._backup_path(db)
+    elsewhere = tmp_path / "elsewhere.db"
+    real_connect = recovery.sqlite3.connect
+
+    def swapping_connect(target, *args, **kwargs):
+        if str(target) == str(backup):
+            elsewhere.write_bytes(b"")
+            os.replace(elsewhere, backup)                      # a same-user swap
+        return real_connect(target, *args, **kwargs)
+
+    monkeypatch.setattr(recovery.sqlite3, "connect", swapping_connect)
+    with pytest.raises(recovery.RecoveryRefused, match="changed during recovery"):
+        recovery.repair(db, apply=True)
+
+
+def test_lora_private_write_closes_its_fd_when_fchmod_fails(tmp_path, monkeypatch):
+    # (a) The descriptor leaked if fchmod raised before fdopen took it over.
+    for name in ("build_lora_dataset", "merge_lora_data"):
+        script = _load_script(name)
+        before = len(os.listdir("/dev/fd"))
+
+        def failing_fchmod(fd, mode_arg):
+            raise OSError("injected")
+
+        monkeypatch.setattr(script.os, "fchmod", failing_fchmod)
+        with pytest.raises(OSError, match="injected"):
+            script._write_private(tmp_path / f"{name}.jsonl", "x")
+        monkeypatch.undo()
+        assert len(os.listdir("/dev/fd")) == before, name
+        link = tmp_path / f"{name}-link.jsonl"                  # the O_NOFOLLOW refusal stays
+        link.symlink_to(tmp_path / "target")
+        with pytest.raises(OSError):
+            script._write_private(link, "x")
+        assert not (tmp_path / "target").exists()
+
+
+def test_lora_dataset_main_end_to_end_writes_owner_only_output(tmp_path, loose_umask, monkeypatch):
+    # (e) main() itself, with a sessions.db at a path holding URI characters (c),
+    # an output folder whose new parents must all be 0700 (b), and the
+    # serve-time router stubbed (it would need a model).
+    import asyncio
+    import json
+    import types
+    build = _load_script("build_lora_dataset")
+    store = tmp_path / "moe ?#%" / "sessions.db"
+    store.parent.mkdir()
+    db = sqlite3.connect(store)
+    db.execute("CREATE TABLE turns (session_id TEXT, idx INTEGER, role TEXT, content TEXT,"
+               " tool_digest TEXT, display_content TEXT, display_kind TEXT, created_at REAL)")
+    db.executemany("INSERT INTO turns (session_id, idx, role, content, tool_digest, created_at)"
+                   " VALUES (?, ?, ?, ?, ?, ?)", [
+        ("s1", 0, "user", "text Mom I'm late", None, 1.0),
+        ("s1", 1, "assistant", "Drafted a message to Mom.", None, 2.0),
+        ("s2", 0, "user", "what's on today", None, 3.0),
+        ("s2", 1, "assistant", "Two meetings and a dentist visit.", None, 4.0),
+    ])
+    db.commit()
+    db.close()
+    monkeypatch.setattr(build, "SESSIONS_DB", store)
+    monkeypatch.setattr(build, "AUDIT_LOG", tmp_path / "no-audit.jsonl")
+
+    async def no_route(text):
+        return types.SimpleNamespace(tool_subset=None)
+
+    monkeypatch.setattr(build, "route", no_route)
+    out = tmp_path / "new-a" / "new-b" / "lora"
+    monkeypatch.setattr("sys.argv", ["build_lora_dataset.py", "--out", str(out), "--val-frac", "0.5"])
+    asyncio.run(build.main())
+    for directory in (tmp_path / "new-a", tmp_path / "new-a" / "new-b", out):
+        assert mode(directory) == 0o700, directory
+    for name in ("train.jsonl", "valid.jsonl", "test.jsonl"):
+        assert mode(out / name) == 0o600, name
+    lines = [json.loads(line) for name in ("train.jsonl", "valid.jsonl")
+             for line in (out / name).read_text().splitlines() if line]
+    assert len(lines) == 2 and all(e["messages"][-1]["role"] == "assistant" for e in lines)
+    assert mode(store) == 0o644                                # the source is only read

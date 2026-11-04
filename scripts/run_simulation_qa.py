@@ -346,6 +346,10 @@ ADDITIONAL_FULL_TESTS = {
     # Owner-only (0600) SQLite stores: every store opened under tmp_path with a
     # 022 umask; no model, network or user data.
     "tests/test_private_sqlite_files.py",
+    # Owner-only (0600) state files and logs (checkins, audit, grants, caches,
+    # timers, research cache, script outputs): tmp_path, 022 umask; no model,
+    # network or user data.
+    "tests/test_private_state_files.py",
     # Ask stall re-prompt, tomorrow typos and the day plan: fake model client, stubbed snapshot.
     "tests/test_ask_day_answers.py",
     # Ask stall nudge (one retry on a promise-only final): fake model client, synthetic tools.

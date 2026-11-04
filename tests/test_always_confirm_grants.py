@@ -239,16 +239,17 @@ def test_publication_mutation_waits_for_existing_commit_lease(publication_state)
 @pytest.mark.parametrize("short_write", [False, True])
 def test_publication_failed_save_withholds_proof_without_changing_grant_result(
         short_write, publication_state, monkeypatch):
-    from pathlib import Path
     before = grants.publication_witness()
-    original = Path.write_text
-    def fail(path, *args, **kwargs):
+    original = grants.private_write_bytes
+    def fail(path, data):
+        # grants.json is written through service.paths.private_write_bytes (0600,
+        # atomic), which raises on a short write instead of returning a count.
         if path == grants.GRANTS_PATH:
             if short_write:
-                return 0
+                raise OSError("synthetic short write")
             raise PermissionError("synthetic save failure")
-        return original(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "write_text", fail)
+        return original(path, data)
+    monkeypatch.setattr(grants, "private_write_bytes", fail)
     args = {"url": "https://example.invalid/a"}
     assert grants.grant("web_fetch", args)["ok"] is True
     assert grants.check("web_fetch", args) == "allow"  # Historical cache semantics.
