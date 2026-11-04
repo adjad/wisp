@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -23,13 +24,36 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from service.behavior.types import Nudge, Observation, Pattern
-from service.paths import private_sqlite_file
 
 SCHEMA_VERSION = 2
 log = logging.getLogger(__name__)
 
 
 _WARNED_NEWER: set[str] = set()
+
+
+def _private_sqlite_file(path: str) -> None:
+    """Owner-only (0600) database file and sidecars, before SQLite opens it.
+
+    The same rule as service.paths.private_sqlite_file, kept local because this
+    package imports only the standard library (tests/test_behavior_boundary.py).
+    behavior.db holds what the engine learned about the user's days; it used to
+    be created with the process umask, 0644, readable by other accounts."""
+    if path == ":memory:":
+        return
+    try:
+        os.close(os.open(path, os.O_RDONLY | os.O_CREAT, 0o600))
+    except OSError as exc:
+        log.warning("could not create %s privately: %s", path, exc)
+        return
+    for candidate in (path, path + "-wal", path + "-shm", path + "-journal"):
+        try:
+            if os.stat(candidate).st_mode & 0o077:
+                os.chmod(candidate, 0o600)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            log.warning("could not make %s owner-only: %s", candidate, exc)
 
 
 def written_by_newer_build(path: Path) -> bool:
@@ -181,7 +205,7 @@ class Store:
         file this build must not touch can still be read for its version. The
         file's mode is still made owner-only: that changes who can read it, not
         what it holds."""
-        private_sqlite_file(db_path)
+        _private_sqlite_file(db_path)
         self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
         self._conn.row_factory = sqlite3.Row
         if create:
