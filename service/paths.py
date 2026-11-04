@@ -94,6 +94,25 @@ def private_sqlite_file(path: str | os.PathLike[str]) -> None:
         tighten_private_file(candidate)
 
 
+def private_mkdirs(path: str | os.PathLike[str]) -> None:
+    """Create `path` and every missing parent, each 0700.
+
+    mkdir(mode=..., parents=True) gives the mode only to the last directory;
+    the parents it creates get the umask's (0755). Directories that already
+    exist are left as they are.
+    """
+    target = Path(path)
+    missing = []
+    while not os.path.lexists(target):
+        missing.append(target)
+        target = target.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+
+
 def private_temp_files(path: str | os.PathLike[str]) -> list[Path]:
     """The temp files private_write_bytes uses for `path` that exist right now.
 
@@ -114,12 +133,12 @@ def private_write_bytes(path: str | os.PathLike[str], data: bytes) -> None:
     new one, never a torn write, and a file an older build left 0644 is
     replaced by a 0600 one. A symlink at `path` is replaced, not written
     through. Nothing is chmod-ed after data is written. Temp files an earlier
-    write of `path` left behind by dying are removed first. The parent
-    directory is created 0700 if missing; an existing one is left as it is.
+    write of `path` left behind by dying are removed first. Missing
+    parent directories are created 0700 (private_mkdirs).
     Errors propagate, as from a plain write.
     """
     target = Path(path)
-    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    private_mkdirs(target.parent)
     cutoff = time.time() - STALE_TEMP_S
     for stale in private_temp_files(target):
         try:
@@ -153,12 +172,12 @@ def private_append_text(path: str | os.PathLike[str], text: str) -> None:
     The file is created 0600 with O_NOFOLLOW (a symlink in its place is
     refused with ELOOP) and O_NONBLOCK (a FIFO cannot hang the open); anything
     but a regular file is refused. One an older build left 0644 is tightened
-    through the same descriptor before anything more is written to it. The
-    parent directory is created 0700 if missing. Errors propagate, as from a
+    through the same descriptor before anything more is written to it. Missing
+    parent directories are created 0700 (private_mkdirs). Errors propagate, as from a
     plain write.
     """
     target = Path(path)
-    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    private_mkdirs(target.parent)
     fd = os.open(target, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
                  0o600)
     try:

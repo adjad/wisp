@@ -67,6 +67,7 @@ sys.stdout.reconfigure(line_buffering=True)
 from service.agent.loop import run_agent               # noqa: E402
 from service.config import role_to_model                 # noqa: E402
 from service.inference.omlx_client import OMLXClient      # noqa: E402
+from service.paths import private_mkdirs                   # noqa: E402
 from service.router.router import route                   # noqa: E402
 
 
@@ -656,7 +657,7 @@ async def main() -> int:
     await client.ensure_only(model, exclusive=True)
 
     out_dir = Path(args.out).expanduser()
-    out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    private_mkdirs(out_dir)                  # every new directory 0700
     mode = "a" if args.append else "w"
     sft_f = _open_private(out_dir / "harvest_sft.jsonl", mode)
     dpo_f = _open_private(out_dir / "harvest_dpo.jsonl", mode)

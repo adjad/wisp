@@ -310,10 +310,36 @@ def test_script_outputs_are_owner_only(script, tmp_path, monkeypatch):
 
 
 def test_harvest_creates_a_new_output_dir_private():
-    # main() needs a live model; the mkdir it uses is checked here directly.
+    # main() needs a live model; the call it uses is checked here, and
+    # private_mkdirs itself below.
     source = (ROOT / "scripts" / "harvest_training_data.py").read_text()
-    assert "out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)" in source
+    assert "private_mkdirs(out_dir)" in source
     assert '.open(mode)' not in source
+
+
+def test_every_new_parent_directory_is_private(tmp_path):
+    # batch 10 Auditor note (b): mkdir(mode=0o700, parents=True) gives 0700 to
+    # the last directory only; the parents it creates got 0755.
+    existing = tmp_path / "existing"
+    existing.mkdir(mode=0o755)
+    os.chmod(existing, 0o755)
+    deep = existing / "a" / "b" / "c"
+    paths.private_mkdirs(deep)
+    for directory in (existing / "a", existing / "a" / "b", deep):
+        assert mode(directory) == 0o700, directory
+    assert mode(existing) == 0o755                            # an existing one is left alone
+    paths.private_write_bytes(tmp_path / "w1" / "w2" / "state.json", b"x")
+    paths.private_append_text(tmp_path / "l1" / "l2" / "audit.jsonl", "x\n")
+    for directory in ("w1", "w1/w2", "l1", "l1/l2"):
+        assert mode(tmp_path / directory) == 0o700, directory
+
+
+def test_eval_log_parents_are_all_private(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(ROOT))
+    eval_core = _load_script("eval_core", monkeypatch)
+    log = tmp_path / "moe" / "evals" / "ling_eval.jsonl"
+    eval_core.append_log({"id": "t1"}, log)
+    assert mode(tmp_path / "moe") == 0o700 and mode(log.parent) == 0o700
 
 
 # ── temp files a write left by dying before its rename ──────────────────────

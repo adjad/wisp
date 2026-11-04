@@ -25,6 +25,24 @@ import httpx
 from scripts.eval_ling_tasks import Task
 
 
+def _private_mkdirs(path: Path) -> None:
+    """Create `path` and every missing parent, each 0700.
+
+    mkdir(mode=..., parents=True) gives the mode only to the last directory;
+    the parents it creates get the umask's (0755). Directories that already
+    exist are left as they are.
+    """
+    missing = []
+    while not os.path.lexists(path):
+        missing.append(path)
+        path = path.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+
+
 def _open_private(path: Path, mode: str = "w"):
     """Open `path` for text writing ("w" or "a"), owner-only (0600) from the first byte.
 
@@ -298,7 +316,7 @@ def load_log(path: Path = DEFAULT_LOG) -> dict[str, dict]:
 
 
 def append_log(rec: dict, path: Path = DEFAULT_LOG) -> None:
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _private_mkdirs(path.parent)
     with _open_private(path, "a") as fh:
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
