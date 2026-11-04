@@ -473,6 +473,8 @@ _PATH_ARG_KEYS = ("path", "paths", "source", "src", "destination", "dest", "arch
 
 
 def _path_operands(args: dict, tool: str | None = None) -> list[tuple[str, str]]:
+    # `tool` is unused since archive_files was retired; kept so both call
+    # sites (hard-deny and preview) need not change.
     """(argument name, value) for every string location in `args`, list items included."""
     found: list[tuple[str, str]] = []
     for key in _PATH_ARG_KEYS:
@@ -1486,19 +1488,22 @@ def _fs_change(category: str, tool: str | None, args: dict) -> str:
     destination, not `path`, and read the same way.
     """
     if tool == "remember":
-        return f"saving a memory: {_card_text(args.get('fact'))}"
+        replacing = args.get("supersedes_id")
+        suffix = f" (replacing memory {_card_text(replacing, 64)})" if replacing not in (None, "") else ""
+        return f"saving a memory: {_card_text(args.get('fact'))}{suffix}"
     if tool == "forget":
         return f"forgetting: {_card_text(args.get('query'))}"
     if tool == "save_knowledge":
         return f"saving to your knowledge: {_card_text(args.get('title'))}"
     if tool == "edit_knowledge":
-        return f"editing saved knowledge: {_card_text(args.get('title'))}"
+        return (f"replacing saved knowledge item {_card_text(args.get('record_id'), 64)} "
+                f"with “{_card_text(args.get('title'))}”")
     if tool == "delete_knowledge":
         return f"deleting saved knowledge item {_card_text(args.get('record_id'), 64)}"
     if tool == "move_path":
-        return f"moving {args.get('source', '')} to {args.get('destination', '')}"
+        return f"moving {_card_text(args.get('source'))} to {_card_text(args.get('destination'))}"
     verb = "deleting" if category == "fs_delete" else "writing"
-    return f"{verb} {args.get('path', '')}"
+    return f"{verb} {_card_text(args.get('path'))}"
 
 
 # manage_timers actions that only report: "how long is left", the stopwatch's
@@ -1507,6 +1512,9 @@ def _fs_change(category: str, tool: str | None, args: dict) -> str:
 # "how much time is left on the pasta timer" showed a confirmation card in the
 # default mode and was refused outright in view-only.
 _TIMER_READ_ACTIONS = frozenset({"list", "stopwatch_read"})
+_STOPWATCH_CHANGES = {"stopwatch_start": "starts the stopwatch",
+                      "stopwatch_lap": "records a lap on the stopwatch",
+                      "stopwatch_stop": "stops the stopwatch"}
 
 
 def _timer_read(tool: str | None, args: dict) -> bool:
@@ -1534,22 +1542,22 @@ def _timer_change(tool: str | None, args: dict) -> str:
         return f"cancels the timer {_card_text(args.get('label'), 80)}"
     if action == "cancel_all":
         return "cancels every timer and alarm"
-    if action.startswith("stopwatch_"):
-        return f"{action.removeprefix('stopwatch_')}s the stopwatch"
-    return "changes your timers"
+    return _STOPWATCH_CHANGES.get(action, "changes your timers")
 
 
 def _contact_change(args: dict) -> str:
     """The manage_contacts change, worded for its always-confirm card."""
     action = str(args.get("action") or "").strip().lower()
     name, value = _card_text(args.get("name"), 80), _card_text(args.get("value"), 120)
+    # The tool writes to the one card whose name *contains* `name`, so the
+    # card says "matching", not "Mom's": a lone "Tom Mommsen" would match.
     if action == "add_phone":
-        return f"adds the phone number {value} to {name}'s contact"
+        return f"adds the phone number {value} to the contact matching “{name}”"
     if action == "add_email":
-        return f"adds the email address {value} to {name}'s contact"
+        return f"adds the email address {value} to the contact matching “{name}”"
     if action == "create":
-        return f"creates a new contact named {name}"
-    return f"changes {name}'s contact"
+        return f"creates a new contact named “{name}”"
+    return f"changes the contact matching “{name}”"
 
 
 def _decide(category: str, args: dict, tool: str | None = None) -> Decision:

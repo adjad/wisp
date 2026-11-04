@@ -428,11 +428,11 @@ def test_contact_writes_ask_even_with_full_access_and_never_offer_always(monkeyp
 def test_contact_cards_name_the_exact_change(monkeypatch):
     _mode(monkeypatch, "full")
     assert _decide("manage_contacts", CONTACT_WRITES[1]).reason.startswith(
-        "adds the phone number +1 555-555-0188 to Mom's contact")
+        "adds the phone number +1 555-555-0188 to the contact matching “Mom”")
     assert _decide("manage_contacts", CONTACT_WRITES[2]).reason.startswith(
-        "adds the email address mom@example.com to Mom's contact")
+        "adds the email address mom@example.com to the contact matching “Mom”")
     assert _decide("manage_contacts", CONTACT_WRITES[0]).reason.startswith(
-        "creates a new contact named Pat Example")
+        "creates a new contact named “Pat Example”")
 
 
 LOCAL_WRITES = [
@@ -444,6 +444,9 @@ LOCAL_WRITES = [
     ("manage_timers", {"action": "cancel", "label": "pasta"}, "cancels the timer pasta"),
     ("manage_timers", {"action": "cancel_all"}, "cancels every timer and alarm"),
     ("manage_timers", {"action": "stopwatch_start"}, "starts the stopwatch"),
+    ("manage_timers", {"action": "stopwatch_lap"}, "records a lap on the stopwatch"),
+    ("manage_timers", {"action": "stopwatch_stop"}, "stops the stopwatch"),
+    ("manage_timers", {"action": "stopwatch_"}, "changes your timers"),         # no "s the stopwatch"
     ("manage_timers", {"action": ["list"]}, "changes your timers"),     # malformed: write rules
 ]
 
@@ -472,19 +475,23 @@ def test_reading_timers_never_asks(monkeypatch, args, mode):
 
 MEMORY_CARDS = [
     ("remember", {"fact": "Mom's  birthday\nis May 3"}, "saving a memory: Mom's birthday is May 3"),
+    ("remember", {"fact": "Mom's birthday is May 4", "supersedes_id": 12},
+     "saving a memory: Mom's birthday is May 4 (replacing memory 12)"),
     ("forget", {"query": "old address"}, "forgetting: old address"),
     ("save_knowledge", {"title": "Lease terms", "text": "x"}, "saving to your knowledge: Lease terms"),
     ("edit_knowledge", {"record_id": "a" * 32, "expected_revision": "1", "title": "Lease", "text": "x"},
-     "editing saved knowledge: Lease"),
+     "replacing saved knowledge item " + "a" * 32 + " with “Lease”"),
     ("delete_knowledge", {"record_id": "a" * 32, "expected_revision": "1"},
      "deleting saved knowledge item " + "a" * 32),
     ("move_path", {"source": "/Users/x/Desktop/a.txt", "destination": "/Users/x/Documents/"},
      "moving /Users/x/Desktop/a.txt to /Users/x/Documents/"),
+    ("move_path", {"source": "/Users/x/a\n(nothing changes)", "destination": "/tmp/b"},
+     "moving /Users/x/a (nothing changes) to /tmp/b"),           # one line: no spoofed second line
     ("write_file", {"path": "/Users/x/Desktop/a.txt", "content": "x"}, "writing /Users/x/Desktop/a.txt"),
 ]
 
 
-@pytest.mark.parametrize("tool,args,reason", MEMORY_CARDS, ids=[c[0] for c in MEMORY_CARDS])
+@pytest.mark.parametrize("tool,args,reason", MEMORY_CARDS, ids=[f"{c[0]}-{i}" for i, c in enumerate(MEMORY_CARDS)])
 def test_file_category_cards_name_what_changes(monkeypatch, tool, args, reason):
     # The memory tools take no `path`: their cards used to read "writing " / "deleting ".
     _mode(monkeypatch, "default")
