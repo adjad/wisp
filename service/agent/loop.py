@@ -1819,6 +1819,10 @@ async def run_agent(
     # read (see the latches below and policy.mark_picture_turn).
     picture_reading: str | None = None,
     picture_label: str | None = None,
+    # Host-only: an earlier turn of this chat ran a change (its stored tool
+    # digest names a write). Lets "I set that earlier" stand on an ask_quality
+    # final with no write this turn; never from the HTTP body or the model.
+    earlier_effects: bool = False,
     # This turn's access notes, from _access_notes_scoped; never passed by callers.
     _access_noted: list[dict] | None = None,
 ) -> str:
@@ -2468,6 +2472,52 @@ async def run_agent(
     if ask_quality:
         from service.model_only import capability_question
         _ask_capability_prompt = capability_question(memory_query)
+    # ask_quality: did the user ask for a change this turn? Their own words
+    # name one, or they said "yes" to the assistant's own offer ("Should I set
+    # a reminder?"). A claim the model makes on any other turn is never turned
+    # into a call: the nudge below is only for a change the user asked for.
+    _ask_wanted_change = False
+    if ask_quality:
+        from service.router.model_led import answers_offer as _answers_offer
+        from service.router.router import has_write_intent as _has_write_intent
+        _ask_wanted_change = bool(_has_write_intent(memory_query)
+                                  or _answers_offer(guard_prompt, guard_last_assistant))
+
+    def _ask_unbacked_claim(text: str):
+        """The sentence of an ask_quality final that says a change was made
+        when this turn attempted none (2026-11-04 export: "yes go ahead" ->
+        "Set a reminder tomorrow at 10 PM…", zero tool calls). An attempted
+        change is not this guard's: _verified_final checks its receipt."""
+        if not ask_quality or test_mode or ask_direct:
+            return None
+        if any(outcome.effect != "read" for _, outcome in tool_outcomes):
+            return None
+        from service.model_only import claimed_effect, claimed_item, pure_writing
+        if pure_writing(memory_query):
+            return None
+        claim = claimed_effect(text)
+        if claim is None:
+            return None
+        if earlier_effects and (claim.backref or not _ask_wanted_change):
+            # "I set that earlier", or "Yes, I sent it." to "did you text
+            # her?": an earlier turn of this chat did run a change.
+            return None
+        if not claim.first_person and not _ask_wanted_change:
+            return None  # "Set a reminder so you don't forget" is advice
+        if not _ask_wanted_change and not claimed_item(claim.sentence):
+            return None  # "I've sent you the list below." on a read-only turn
+        return claim
+
+    def _ask_offers_change(step_schemas) -> bool:
+        """This step offers some change tool (a real schema or a name stub)."""
+        from service.router.model_led import needs_effect_owner
+        for schema in step_schemas or ():
+            tool_name = schema["function"]["name"]
+            registered = get_tool(tool_name)
+            if (registered is not None and tool_name not in forbidden_tools
+                    and needs_effect_owner(registered.category)):
+                return True
+        return False
 
     def _ask_short_question(text: str) -> bool:
         """A one-line clarifying question back to the user, not an answer."""
@@ -3669,6 +3719,7 @@ async def run_agent(
     ask_text_call_nudged = False
     ask_guard_retried = False
     ask_stall_nudged = False
+    ask_claim_nudged = False
     ask_scale = 1.0
     ask_tool_calls: Counter = Counter()
     ask_blocked: set[str] = set()
@@ -4340,6 +4391,24 @@ async def run_agent(
                         "You said you would look, but nothing has run yet. Call the tool "
                         "now, or answer from what you already have.")})
                     continue
+                if (not ask_claim_nudged and _ask_wanted_change and step_schemas
+                        and choice != "none" and _step < max_steps - 1
+                        and _ask_offers_change(step_schemas)
+                        and (claim := _ask_unbacked_claim(text)) is not None):
+                    # The user asked for the change and the reply says it is
+                    # done, but nothing ran. One nudge, tool choice left to the
+                    # model: the step offers only what the turn already
+                    # allowed, so this cannot widen what may run. A reply that
+                    # still claims it is corrected before it is published.
+                    ask_claim_nudged = True
+                    audit("ask_claim_nudge", step=_step)
+                    if content_streamed:
+                        await emit({"type": "clear_answer"})
+                    msgs.append({"role": "assistant", "content": text})
+                    msgs.append({"role": "user", "content": (
+                        "Nothing has run yet, so that was not done. If I asked for it, call the "
+                        "tool for it now. Otherwise reply without saying it was done.")})
+                    continue
             unmet = _unmet_group()
             candidates = _unmet_candidates(unmet)
             if unmet is not None and candidates and _step < max_steps - 1:
@@ -4438,6 +4507,15 @@ async def run_agent(
                 audit("ask_unknown_personal_fact", step=_step)
                 from service.model_only import ASK_UNKNOWN_MESSAGE
                 text = ASK_UNKNOWN_MESSAGE
+            if _ask_unbacked_claim(text) is not None:
+                # Still claims a change no tool made: say plainly it was not
+                # done, never the claim (the user looked for a reminder that
+                # did not exist).
+                from service.model_only import ASK_CLAIM_NOT_DONE
+                audit("ask_claim_not_done", step=_step, nudged=ask_claim_nudged)
+                if content_streamed:
+                    await emit({"type": "clear_answer"})
+                text = ASK_CLAIM_NOT_DONE
             # Publish once, after checking receipts and obligations.
             verified = _verified_final(text)
             if verified != text:
