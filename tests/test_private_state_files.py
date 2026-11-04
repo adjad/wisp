@@ -392,3 +392,96 @@ def test_research_purge_removes_stale_temp_copies(tmp_path, monkeypatch):
     os.utime(stale, (old, old))
     cache.purge_older_than()
     assert not stale.exists()
+
+
+
+# ── a failed write or clear never loses what is already saved ───────────────
+
+def _failing_replace_for(monkeypatch, target):
+    real_replace = os.replace
+
+    def failing_replace(src, dst, *args, **kwargs):
+        if Path(dst) == Path(target):
+            raise OSError("injected rename failure")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", failing_replace)
+
+
+def test_a_failed_grants_save_never_loses_or_resets_saved_grants(tmp_path, monkeypatch):
+    from service.publication_authority import Authority
+    from service.safety import grants
+    path = tmp_path / "grants.json"
+    monkeypatch.setattr(grants, "GRANTS_PATH", path)
+    monkeypatch.setattr(grants, "_CACHE", {})
+    authority = Authority("test-private-grants-failure")
+    authority.publish()
+    monkeypatch.setattr(grants, "_publication", authority)
+    monkeypatch.setattr(grants, "_proof_known", True)
+    kept = {"url": "https://kept.example/a"}
+    assert grants.grant("web_fetch", kept)["ok"] is True
+    saved = path.read_bytes()
+
+    _failing_replace_for(monkeypatch, path)
+    new = {"url": "https://new.example/a"}
+    assert grants.grant("web_fetch", new)["ok"] is True         # historical: the call still succeeds
+    assert grants.revoke("web_fetch") in (True, False)          # a failed revoke must not wipe it either
+    # The file on disk is exactly what the last good save wrote, still 0600, no temp copy left.
+    assert path.read_bytes() == saved and mode(path) == 0o600
+    assert paths.private_temp_files(path) == []
+    # Nothing saved is lost or reset: reading the file back gives the kept grant.
+    reloaded, _ = grants._load_snapshot()
+    assert reloaded == json.loads(saved)
+    assert reloaded["web_fetch"]["allow"][0]["scope"] == "kept.example"
+
+
+def test_a_failed_grants_save_keeps_existing_grants_in_memory(tmp_path, monkeypatch):
+    from service.publication_authority import Authority
+    from service.safety import grants
+    path = tmp_path / "grants.json"
+    monkeypatch.setattr(grants, "GRANTS_PATH", path)
+    monkeypatch.setattr(grants, "_CACHE", {})
+    authority = Authority("test-private-grants-memory")
+    authority.publish()
+    monkeypatch.setattr(grants, "_publication", authority)
+    monkeypatch.setattr(grants, "_proof_known", True)
+    kept = {"url": "https://kept.example/a"}
+    assert grants.grant("web_fetch", kept)["ok"] is True
+    _failing_replace_for(monkeypatch, path)
+    assert grants.grant("web_fetch", {"url": "https://new.example/a"})["ok"] is True
+    assert grants.check("web_fetch", kept) == "allow"           # the existing grant is untouched
+    assert grants.publication_witness() is None                # a failed save never advertises proof
+
+
+def test_a_failed_cache_save_keeps_the_previous_cache(tmp_path, monkeypatch):
+    from service.tools import cache_store
+    monkeypatch.setattr(cache_store, "CACHE_DIR", tmp_path)
+    cache_store.save("contacts", "Mom: 555-0100")
+    _failing_replace_for(monkeypatch, tmp_path / "contacts.txt")
+    cache_store.save("contacts", "a half-synced list")           # best-effort: does not raise
+    assert cache_store.load("contacts") == "Mom: 555-0100"
+    assert sorted(os.listdir(tmp_path)) == ["contacts.txt"]      # no temp copy left behind
+
+
+def test_a_failed_privacy_clear_is_reported_not_swallowed(tmp_path, monkeypatch):
+    # The sender keeps the privacy change pending and retries only if the clear raises.
+    from service.tools import browser_history_tools, cache_store, imessage_tools
+    monkeypatch.setattr(cache_store, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(imessage_tools, "_contacts", {})
+    monkeypatch.setattr(imessage_tools, "_name_handles", {})
+    monkeypatch.setattr(imessage_tools, "_birthdays", {})
+    stuck = {".contacts.txt.1.aa.tmp", ".browser_history_safari.txt.1.bb.tmp"}
+    for name in stuck:
+        (tmp_path / name).write_text("private")
+    real_unlink = Path.unlink
+
+    def failing_unlink(self, *args, **kwargs):
+        if self.name in stuck:
+            raise PermissionError("injected")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", failing_unlink)
+    with pytest.raises(PermissionError):
+        imessage_tools.clear_contacts()
+    with pytest.raises(PermissionError):
+        browser_history_tools._delete_history_files(["safari"])
