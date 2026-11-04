@@ -1527,7 +1527,12 @@ def _fit_tool_result(result: str, name: str, limit: int = _MAX_TOOL_RESULT_CHARS
     if len(result) <= limit:
         return result
     kept = result[:limit].rsplit("\n", 1)[0]
-    return (f"{kept}\n\n[... {len(result) - len(kept):,} more characters were cut "
+    # A cut inside a fenced page or email body would leave the note below
+    # inside the fence, where the model is told to read it as untrusted data.
+    from service.tools.untrusted import close_open_fences
+    cut = len(result) - len(kept)
+    kept = close_open_fences(kept)
+    return (f"{kept}\n\n[... {cut:,} more characters were cut "
             f"to fit. This is NOT all of it — do not describe what you have as "
             f"complete. If you need what's missing, call {name} again with "
             f"narrower arguments (e.g. a `query`, a `day`, or a smaller "
@@ -1628,10 +1633,14 @@ def _readable_results(results: list[tuple[str, str]]) -> list[tuple[str, str]]:
     Messages verification codes.
     """
     from service.tools.task_evidence import render_evidence_text
+    from service.tools.untrusted import unfence
     out = []
     for name, result in results:
         if name == "collect_task_evidence" and (text := render_evidence_text(result)):
             result = text
+        elif isinstance(result, str) and not isinstance(result, DisplayOnlyToolResult):
+            # The untrusted-content fence lines are for the model, not the user.
+            result = unfence(result)
         out.append((name, result))
     return out
 

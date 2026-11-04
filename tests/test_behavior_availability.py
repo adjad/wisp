@@ -1179,6 +1179,7 @@ _PUBLIC_PLANNING_SOURCES = (
     'service/tools/notes_tools.py',
     'service/tools/registry.py',
     'service/tools/timeranges.py',
+    'service/tools/untrusted.py',  # email_tools fences bodies with it; stdlib only, no effects
 )
 
 
