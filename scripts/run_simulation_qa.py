@@ -347,6 +347,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_ask_day_answers.py",
     # Ask stall nudge (one retry on a promise-only final): fake model client, synthetic tools.
     "tests/test_ask_stall_guard.py",
+    # Ask claims with no tool call, a bare "yes" to a create offer, and the
+    # stored reply of a draft turn: fake model clients, synthetic tools, the
+    # synthetic /agent entrypoint over a scratch SessionStore; no model or network.
+    "tests/test_ask_claimed_action_guard.py",
     # Brief items beside day/week and schedule answers: stubbed snapshot and
     # store, fixture calendars, fake behavior engine; no model, source or network.
     "tests/test_schedule_brief_items.py",
