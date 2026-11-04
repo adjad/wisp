@@ -358,10 +358,13 @@ is assembled from these layers, oldest material first:
 Known gaps:
 
 - **Two capped tool results.** On `main`, an Ask step carrying two capped tool
-  results still dropped all earlier history and context notes (0/20 recall in
-  the `scripts/measure_ask_history.py` setup). The fix is on branch
-  `claude/memory-db-perms-history-floor`, pending review; that branch also
-  makes Wisp's SQLite stores 0600.
+  results still dropped all earlier history and context notes: 0/20 recall,
+  measured with the `after_two_tools` scenario that PR #459
+  (`claude/memory-db-perms-history-floor`) adds to
+  `scripts/measure_ask_history.py`. That PR fixes it (20/20) and also makes
+  Wisp's SQLite stores 0600. When it merges, the shedding-order list below,
+  `WISP_OVERVIEW.md` §2.4's `_fit_window` bullet and §3.4's "lobotomized" row
+  need updating to its order.
 - **Lexical-only recall.** Cross-conversation retrieval is FTS5 with a
   deterministic lexical fallback; a paraphrase that shares no terms with the
   stored statement is not found. Persistent embeddings remain Phase 4 work.

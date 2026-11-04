@@ -3,9 +3,11 @@
 *What it does, how it works, what's broken, and how it got here.*
 Compiled 2026-08-23 from the full project history (80 Claude Code sessions,
 2026-06-29 → 2026-08-23), the codebase, and the project memory store.
-Harness figures (§0 scale, §1.3, §2.3–§2.5, §3.1–§3.4) re-verified against the
-code at `e46d4622` on 2026-11-04; history (§4) is left as it was written,
-apart from one cross-reference.
+Harness behaviour in §0 scale, §1.3, §2.3–§2.5 and §3.1–§3.4 was re-verified
+against the code at `e46d4622` on 2026-11-04. Measurements taken in an earlier
+era (162 tools, Ling as the agent model) are labelled *(historical)* inline and
+were not re-run; per-machine state (memory-guard ceilings) was not re-checked.
+History (§4) is left as it was written, apart from one cross-reference.
 
 ---
 
@@ -54,8 +56,9 @@ Four tiers stream out as they land, each independently failable:
 
 Deliberately **not** `⌘F`: Carbon's `RegisterEventHotKey` would claim it
 system-wide and break native find in every app. The 320 MB embedder does not
-load when Wisp opens; it loads on demand when Smart Search captures a document
-or an ambiguous tool route needs semantic retrieval. Synthesis runs on whatever
+load when Wisp opens; it loads on demand when Smart Search captures a document.
+It no longer takes part in tool routing (`models.yaml`; the packaged retrieval
+provider is lexical, §2.3). Synthesis runs on whatever
 chat model is already resident.
 
 ### 1.3 Operating the Mac — 93 tools
@@ -145,10 +148,11 @@ model to actually run and verify the code it writes. The router never picks it.
 - **MCP** — any stdio server in `~/.moe/mcp.json` contributes its tools to the
   same loop. **stdio only, deliberately** — an HTTP/SSE MCP server would send
   user content off-device.
-- **Self-authored tools** — `draft_tool` generates code and writes nothing;
-  `create_tool` can only install whatever `draft_tool` most recently produced
-  for that name. The split structurally forces "shown to the user" before
-  "installed". A tool created mid-turn is usable in that same turn.
+- **Self-authored tools** — `create_tool` writes the tool with the coding
+  model and shows the generated code on its confirmation card; nothing is
+  installed until the user approves that exact code (`draft_tool`, the earlier
+  separate drafting step, is no longer registered). A tool created mid-turn is
+  usable in that same turn.
 
 ### 1.8 Safety
 
@@ -250,7 +254,10 @@ facts, the assistant store, syncs, skills, MCP, permissions, audit, and search.
 > typed tasks, delivery workflows, router reads and `direct_calls`, verbatim
 > tool short-circuits. The router survives there only as a head start:
 > `main._ask_tool_rank` offers `ASK_PRELOAD` = 6 real schemas and up to
-> `ASK_STUBS` = 24 name-only stubs from a lexical ranking, and the model can
+> `ASK_STUBS` = 24 name-only stubs from a lexical ranking, plus the
+> `ASK_CORE_STUBS` everyday set (30 names) and any subject follow-up tools, all
+> name-only (44 tools offered on the first step in the
+> `scripts/measure_ask_history.py` setup), and the model can
 > fetch any other admitted tool's schema with `get_tool_schemas`
 > (`service/router/model_led.py`). Policy, confirmation cards and grants apply
 > to every call either way. The three layers below are the rules path
@@ -269,7 +276,7 @@ A rules-path request passes through:
    inbox" completes with zero agent-loop model calls.
 3. **Semantic retrieval fallback** (`service/router/semantic.py`) — anything
    ambiguous retrieves ~10 tools by embedding similarity instead of getting a
-   static list. Each tool's aliases are embedded as **separate vectors**, scored
+   static list *(historical: the embedding era, 162 tools)*. Each tool's aliases are embedded as **separate vectors**, scored
    by MAX, which took recall from 77.5% to 100%. Retrieval costs ~31 ms warm and
    the retrieved menu is ~1,632 tokens against the static core's 3,992 — net
    TTFT is ~250 ms *better*, not merely flat. **The packaged provider is now
@@ -281,13 +288,14 @@ A rules-path request passes through:
 
 **No route may hand the model the full registry.** `route()` fills
 `tool_subset` by retrieval for *any* decision with `needs_tools=True` and no
-subset. Worst scoped route is ~1,580 tokens against ~14,994 unscoped.
+subset. Worst scoped route was ~1,580 tokens against ~14,994 unscoped
+*(historical: measured with 162 tools; the registry is now 93)*.
 
 Key `RouteDecision` fields, each of which encodes a hard-won lesson:
 
 | Field | Meaning |
 |---|---|
-| `tool_subset` | The exact tools the loop may offer. Narrowing is a **reliability** measure: 5–7 domain tools → 3/3 correct calls; all 44 → 2/3, reaching for unrelated tools. |
+| `tool_subset` | The exact tools the loop may offer. Narrowing is a **reliability** measure: 5–7 domain tools → 3/3 correct calls; all 44 → 2/3, reaching for unrelated tools *(historical, Ling)*. |
 | `expect_tool_first` | Forces `tool_choice="required"` + retry-and-nudge. Only set when a rule confidently detected tool intent — forcing it on a genuinely uncertain prompt got "any new ideas for the project" refused outright. |
 | `force_first_tool` | Restricts step 1 to exactly one function. oMLX's `tool_choice` is a soft nudge; this is the only real guarantee. |
 | `light_read` | Marks a warm read-out of the user's own data, which selects a different answer voice. Deliberately *not* inferred from `tool_subset` — that conflation once answered "what's my battery level" in an emoji'd calendar-readout voice. |
@@ -319,9 +327,13 @@ Key `RouteDecision` fields, each of which encodes a hard-won lesson:
   on model-only Ask turns) *and the cut is announced* — silent truncation is
   worse than slow, because the model answers from the fragment as if it were
   complete.
-- **Narration gate.** Once every tool the model has actually *called* is clean,
-  the final narration step runs with thinking suppressed: −32% median turn time
-  at unchanged correctness. Blocked on `multi_round` routes.
+- **Narration gate (rules path).** Once every tool the model has actually
+  *called* is clean, the final narration step runs with thinking suppressed:
+  −32% median turn time at unchanged correctness *(historical, measured with
+  Ling)*. Blocked on `multi_round` routes. On the packaged default (Gemma,
+  `model_only`) narration after a tool result keeps thinking **on**: Gemma is in
+  `thinking_required_after_tool` and `model_only_narration_thinking` is true
+  (`models.yaml`), so only a tool-free direct Ask step can drop thinking.
 - **Retry ladder** with a corrective nudge that actually reaches the model
   (it previously didn't — see §4, 2026-08-09).
 - **Error translation** maps a stopped engine, a memory limit, or an over-long
@@ -472,7 +484,7 @@ large job.
 
 | Issue | Status |
 |---|---|
-| **Memory guard ceiling is currently configured at 10.0 GB** (`memory_guard_custom_ceiling_gb`). Ornith 7.9 GB + Ling 6.9 GB = 14.8 GB, so any coding request evicts the resident model and back. This is a knob someone set, not something oMLX computes under pressure — it read 17.75 GB earlier the same day. | **OPEN** — raising it on this 24 GB machine would let both stay resident |
+| **Memory guard ceiling was configured at 10.0 GB** *(per-machine state, 2026-08-23; not re-checked)* (`memory_guard_custom_ceiling_gb`). Ornith 7.9 GB + Ling 6.9 GB = 14.8 GB, so any coding request evicts the resident model and back. This is a knob someone set, not something oMLX computes under pressure — it read 17.75 GB earlier the same day. | **OPEN** — raising it on this 24 GB machine would let both stay resident |
 | Killing Wisp shuts down the oMLX engine, and `omlx-cli start` **cannot** revive it — only `restart` can. Symptom: `/health` 500s and `ConnectError`, while `ps` still shows an oMLX process. Check `lsof -nP -iTCP:8000 -sTCP:LISTEN`, not `ps`. | **FIXED** — `ensure_omlx()` falls back to `restart` |
 | Under load oMLX returns **200 with no `choices` key at all** | **FIXED** at source in `OMLXClient.chat()` |
 | `prefill_memory_exceeded` surfaces as a bare `400 Bad Request` that looks like a malformed request | **FIXED** by the error-translation layer |
