@@ -2008,6 +2008,16 @@ final class OverlayModel: ObservableObject {
                 turns.append(t)
                 answered(answer, question: turns.dropLast().last(where: { $0.role == "user" })?.text, isError: false)
                 answer = ""
+            } else if let draft = messageDraft {
+                // A draft turn ends on its card with no prose. Without a turn
+                // here the request read as unanswered once the next message
+                // cleared the card, and Debug exports dropped it (2026-11-04).
+                let who = draft.to.isEmpty ? "the recipient" : draft.to
+                var t = Turn(role: "assistant",
+                             text: "Drafted a text to \(who). It goes only when you tap Send.",
+                             activity: activity)
+                applyDebugFields(to: &t)
+                turns.append(t)
             }
             activity = []
             phase = .done
