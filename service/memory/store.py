@@ -50,7 +50,7 @@ import json
 import hashlib
 from pathlib import Path
 
-from service.paths import MOE_DIR
+from service.paths import MOE_DIR, private_sqlite_file
 
 DB_PATH = MOE_DIR / "sessions.db"
 
@@ -111,6 +111,7 @@ _CORPUS_TITLE_SQL = f"title LIKE '{CORPUS_TITLE}%'"
 class SessionStore:
     def __init__(self, path: Path = DB_PATH) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        private_sqlite_file(path)
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(_SCHEMA)

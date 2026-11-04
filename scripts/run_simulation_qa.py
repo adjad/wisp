@@ -343,6 +343,9 @@ ADDITIONAL_FULL_TESTS = {
     # Long-chat recall digest and _fit_window condensing: scratch SessionStore,
     # synthetic chat, scripted model client and synthetic tools; no model or network.
     "tests/test_ask_history_recall.py",
+    # Owner-only (0600) SQLite stores: every store opened under tmp_path with a
+    # 022 umask; no model, network or user data.
+    "tests/test_private_sqlite_files.py",
     # Ask stall re-prompt, tomorrow typos and the day plan: fake model client, stubbed snapshot.
     "tests/test_ask_day_answers.py",
     # Ask stall nudge (one retry on a promise-only final): fake model client, synthetic tools.
