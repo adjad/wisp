@@ -22,11 +22,19 @@ Rules:
   "‹‹‹", "UNTRUSTED" and "un\\u200btrusted" all count) has its brackets turned
   into parentheses. Everything else is left byte for byte, so an order number
   or a quoted shell here-string ("<<<" with no "untrusted") is untouched.
+  Only NFKC-equivalent brackets are folded: look-alikes such as ❮❯ (U+276E/F),
+  ˂˃ or ᐸᐳ, or a Cyrillic "е" in "untrusted", pass through. Parsing is still
+  exact (strip_fenced matches only the real marker), but a model could read
+  such a line as an end marker; a per-call nonce in the markers would close
+  that, at a few tokens per block.
 - Linear time: a line with fewer than two bracket characters is returned after
   one C-speed regex search; only the rest are folded and scanned, with a
   bracket-run regex that has no nested quantifier. Mail bodies run to 20,000
   chars and this runs on the event loop (email_digest's #245 note); 60,000
   "<" around "untrusted" took 9 ms (2026-11-04).
+- `unfence` drops the marker lines for text a person reads (a fallback answer
+  or a deterministic read reply), and `close_open_fences` re-closes a fence a
+  length cap cut, so Wisp's own truncation note after it reads as Wisp's.
 - `strip_fenced` removes fenced regions for parsers that must read only Wisp's
   own lines (memory/subject.build). A fence the tool-result cap cut before its
   end marker is stripped to the end of the text, never parsed.
@@ -111,6 +119,33 @@ def fence(text: str, kind: str) -> str:
 def overhead(kind: str) -> int:
     """Characters `fence` adds around a body of `kind`."""
     return len(begin_marker(kind)) + len(end_marker(kind)) + 2
+
+
+_KINDS = (WEB_PAGE, EMAIL_BODY)
+
+
+def unfence(text: str) -> str:
+    """`text` without any marker line, for a reply a person reads. Content inside
+    a fence cannot carry a real marker line (neutralize), so only Wisp's go."""
+    markers = {m for kind in _KINDS for m in (begin_marker(kind), end_marker(kind))}
+    if "<<<" not in str(text or ""):
+        return text
+    return "\n".join(line for line in str(text).split("\n") if line not in markers)
+
+
+def close_open_fences(text: str) -> str:
+    """`text` with an end line added for each fence a cut left open."""
+    lines = str(text or "").split("\n")
+    open_kinds: list[str] = []
+    for line in lines:
+        for kind in _KINDS:
+            if line == begin_marker(kind):
+                open_kinds.append(kind)
+            elif line == end_marker(kind) and kind in open_kinds:
+                open_kinds.remove(kind)
+    if not open_kinds:
+        return text
+    return text + "".join(f"\n{end_marker(kind)}" for kind in reversed(open_kinds))
 
 
 def strip_fenced(text: str, kind: str) -> str:

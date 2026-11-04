@@ -523,7 +523,11 @@ def _read_reply_text(item: dict) -> str:
         sentence = format_weather_reply(item["result"])
         if sentence:
             return sentence
-    return item["result"]
+    # The fence lines tell the model where untrusted text starts and stops; the
+    # person reading this reply needs neither (and a renderer may take "<...>"
+    # for a tag).
+    from service.tools.untrusted import unfence
+    return unfence(item["result"])
 
 
 async def execute_read(compiled, emit, *, test_mode=False):

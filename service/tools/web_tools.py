@@ -2614,9 +2614,12 @@ async def web_fetch(url: str) -> str:
     # the header with nothing marking where Wisp's text ended. The title is
     # the page's too, so a marker-shaped run in it is defused; Wisp's own
     # truncation note goes after the fence, where it reads as Wisp's.
-    header = neutralize(f"Title: {page.title}\nURL: {page.canonical_url}")
+    # Published comes from the page's own <meta> too (up to 80 chars, newlines
+    # allowed), so it is put on one line and neutralized with the rest.
+    header = f"Title: {page.title}\nURL: {page.canonical_url}"
     if page.published_at:
-        header += f"\nPublished: {page.published_at}"
+        header += "\nPublished: " + " ".join(str(page.published_at).split())
+    header = neutralize(header)
     body, note = page.text, ""
     if len(body) > 10500:
         body, note = body[:10500], f"\n…[truncated {len(page.text) - 10500} characters]"
