@@ -302,6 +302,12 @@ def test_memory_facts_profile_and_conversations(world, fk):
     assert f["preferred_name"] == world.profile["name"] and world.profile["goals"] == [f["goal_a"], f["goal_b"]]
     assert "No matching memory" in fk["recall"](query="submarine")
     assert "Nothing was searched" in fk["recall"](query="the and of")
+    # The any-term fallback mirrors the real recall: no fact holds both 'allergic' and
+    # 'anything', so the shared-term fact comes back labelled, not as an answer.
+    allergy = fk["recall"](query="am I allergic to anything")
+    assert "POSSIBLE MATCHES ONLY" in allergy and "[possible match, shares only 'allergic'" in allergy
+    assert "penicillin" in allergy and "No matching memory" in fk["recall"](query="submarine volcano")
+    assert "possible match" not in fk["recall"](query="allergic penicillin")
     assert f["convo_topic"] in fk["search_conversations"](query=f["convo_topic"])
     assert "No matching user conversation passages" in fk["search_conversations"](query="submarine")
     assert fk["remember"](fact="my gate code is 4417").startswith("Saved memory 7: ")

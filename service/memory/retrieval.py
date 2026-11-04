@@ -187,7 +187,10 @@ def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=1
     from service.memory.capture import current_source
     source = current_source.get() or {}
     if strict and query.strip():
-        rows = _strict_facts(facts, query, limit)
+        # Over-fetch, then cut AFTER the validity filters: a top `limit` made up
+        # entirely of facts hidden from this reader must not hide a valid one
+        # just past it, and then let the fallback claim nothing matched.
+        rows = _strict_facts(facts, query, max(limit * 4, 50))
         passages = _strict_passages(sessions, facts, query, limit, source.get('session_id', '')) \
             if include_passages and terms(query) else []
     else:
@@ -196,6 +199,8 @@ def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=1
             exclude_session=source.get('session_id', '')) if include_passages and terms(query) else []
     passages = [r for r in passages if 'prefer' not in r['text'].casefold() or _in_scope(r['text'], query)]
     valid = _valid_facts(rows, query, facts, sessions, mail_facts)
+    if strict and query.strip():
+        valid = valid[:max(1, min(1000, limit))]
     fallback = False
     # Only a miss AFTER the validity filters falls back, and the fallback rows pass
     # the same filters, so a hidden mail-only or unsupported fact is never reached
@@ -206,6 +211,14 @@ def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=1
         valid = _valid_facts(_any_term_facts(facts, query, any_term_fallback),
                              query, facts, sessions, mail_facts)[:max(1, any_term_fallback)]
         fallback = bool(valid)
+        # The strict pre-filter is the index's porter AND query; the confirming
+        # rule is the light stem. They disagree on irregular forms (pay ~ paid),
+        # so a fact holding every term can miss the strict path and arrive here.
+        # Such a row is a full match: return it as one, not as a "possible" one.
+        wanted = set(terms(query))
+        full = [r for r in valid if wanted <= set(r['matched_terms'])]
+        if full:
+            valid, fallback = full, False
     reason = ('strict query match' if strict else 'query match') if terms(query) else 'explicit browse'
     return {'facts': valid, 'passages': passages, 'fallback': fallback, 'debug': {
         'provider': 'lexical', 'fact_ids': [r['id'] for r in valid],

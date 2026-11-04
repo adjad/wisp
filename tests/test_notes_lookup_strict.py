@@ -466,6 +466,37 @@ def test_recall_fallback_confirms_terms_on_the_light_stem(world, monkeypatch):
     assert _recall(facts, monkeypatch, "generate invoice").startswith("No matching memory")
 
 
+def test_a_fallback_row_holding_every_term_is_a_full_match(world, monkeypatch):
+    # porter AND misses pay ~ paid, the light stem joins them: the fact holds
+    # every term, so it must not be labelled as sharing "only" some of them.
+    from service.memory.retrieval import retrieve
+    facts, sessions = world
+    facts.add("I pay rent on the first", "fact")
+    got = retrieve("when is rent paid", facts=facts, sessions=sessions, strict=True, any_term_fallback=5)
+    if not got["facts"]:
+        pytest.skip("this index's stemmer does not offer the pay/paid pair")
+    assert not got["fallback"] and got["debug"]["reason"] == "strict query match"
+    out = _recall(facts, monkeypatch, "when is rent paid")
+    assert '"I pay rent on the first"' in out
+    assert "possible match" not in out.lower() and "contains every term" not in out
+
+
+def test_hidden_top_strict_hits_do_not_hide_a_valid_one_behind_them(world):
+    # Fifteen mail-only facts (hidden on this non-local turn) outrank the one
+    # visible fact; the cut must come after the validity filter, so the visible
+    # one is returned as a strict hit, not lost and replaced by the fallback.
+    from service.memory.retrieval import retrieve
+    facts, sessions = world
+    for i in range(15):
+        facts.add(f"Sister sister name {i}", "person", origin="mail", evidence=[
+            {"source_type": "mail", "source_id": f"acct:msg-{i}", "quote": f"Sister sister name {i}"}])
+    facts.add("My sister's name is Ana, which she spells with one n", "person")
+    got = retrieve("sister name", facts=facts, sessions=sessions, strict=True, limit=15,
+                   any_term_fallback=5)
+    assert not got["fallback"]
+    assert [f["text"] for f in got["facts"]] == ["My sister's name is Ana, which she spells with one n"]
+
+
 # ------------------------------------------------------- native reader contract
 def test_native_notes_reader_stamps_each_read_and_queues_a_request_behind_one_in_flight():
     from pathlib import Path
