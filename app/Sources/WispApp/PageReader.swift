@@ -61,6 +61,7 @@ enum PageReader {
     /// the grant lands out of band (macOS requires a relaunch for some apps).
     static func requestAccessibility() {
         let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+        PrivacyRelaunch.notePaneOpened()
         _ = AXIsProcessTrustedWithOptions(opts as CFDictionary)
     }
 
