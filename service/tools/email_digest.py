@@ -51,6 +51,7 @@ import time
 import weakref
 
 from service import idle
+from service.tools.untrusted import EMAIL_BODY, overhead
 
 # Bodies longer than this are digested; shorter ones stay verbatim.
 LONG_BODY_CHARS = 4000
@@ -61,7 +62,9 @@ RESULT_BUDGET_CHARS = 6000
 _MIN_OTHER_BODY_CHARS = 300
 # What head_cut's label adds to a trimmed body.
 _CUT_LABEL_CHARS = 230
-_ROW_HEADER_CHARS = 350
+# Each row's header lines, plus the untrusted-body fence view_emails puts
+# around every body (email_tools._email_body_block, about 80 chars).
+_ROW_HEADER_CHARS = 350 + overhead(EMAIL_BODY)
 _MAX_INPUT_CHARS = 20000
 _TIMEOUT_S = 20.0
 _FAILURE_PAUSE_S = 120.0

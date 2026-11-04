@@ -28,6 +28,7 @@ import httpx
 from service.research.web import (fetch_page as research_fetch_page,
                                   render_search_results, search_web)
 from service.tools.registry import DisplayOnlyToolResult, PublicSearchToolResult, register
+from service.tools.untrusted import WEB_PAGE, fence, neutralize
 
 MAX_CHARS = 3000
 _TAG_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.I | re.S)
@@ -2608,10 +2609,15 @@ async def web_fetch(url: str) -> str:
         page = await research_fetch_page(url)
     except Exception as exc:  # noqa: BLE001
         return f"(fetch failed: {type(exc).__name__}: {exc})"
-    header = f"Title: {page.title}\nURL: {page.canonical_url}"
+    # The page is fenced as untrusted, as web_search's snippets already are
+    # (_public_search_model_evidence): until 2026-11-04 the raw body followed
+    # the header with nothing marking where Wisp's text ended. The title is
+    # the page's too, so a marker-shaped run in it is defused; Wisp's own
+    # truncation note goes after the fence, where it reads as Wisp's.
+    header = neutralize(f"Title: {page.title}\nURL: {page.canonical_url}")
     if page.published_at:
         header += f"\nPublished: {page.published_at}"
-    body = page.text
+    body, note = page.text, ""
     if len(body) > 10500:
-        body = body[:10500] + f"\n…[truncated {len(page.text) - 10500} characters]"
-    return f"{header}\n\n{body}"
+        body, note = body[:10500], f"\n…[truncated {len(page.text) - 10500} characters]"
+    return f"{header}\n\n{fence(body, WEB_PAGE)}{note}"

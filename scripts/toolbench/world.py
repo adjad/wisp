@@ -1757,14 +1757,16 @@ def make_fakes(w: World) -> dict:
             coverage = (f"Result coverage: returned {len(rows)} of {available} available {kind}; "
                         f"{omitted} older {'email was' if omitted == 1 else 'emails were'} omitted "
                         f"by count={limit}.\n\n")
+        from service.tools.untrusted import EMAIL_BODY, fence
         blocks = []
         for m in rows:
             body = m["body"]
             if len(body) > 4000:       # Wisp digests a long body once per call (email_digest.py)
                 body = _digest_long_body(body, query)
+            # Fenced as untrusted, exactly as email_tools._email_body_block does.
             blocks.append(f"Account: {m['account']}\nFrom: {m['from']}\nTo: {_account_to(m['account'])}\n"
                           f"Subject: {m['subject']}\nDate: {_mail_ts(w, m):%a %b %-d, %Y %-I:%M %p}\n"
-                          f"Message-ID: {m['id']}\n\n{body}")
+                          f"Message-ID: {m['id']}\n\n{fence(body, EMAIL_BODY)}")
         return note + coverage + "\n\n---\n\n".join(blocks)
 
     def summarize_emails(period=None, day=None, count=None, unread=None, account=None, query=None, **_):
@@ -2408,13 +2410,16 @@ def make_fakes(w: World) -> dict:
         return "\n\n".join(f"[{i}] {t}\nURL: {u}\n{s}" for i, (t, u, s) in enumerate(canned, 1))
 
     def web_fetch(url, **_):
+        # The page is fenced as untrusted, exactly as web_tools.web_fetch does.
+        from service.tools.untrusted import WEB_PAGE, fence
         u = str(url)
         if re.search(r"coingecko|bitcoin|btc|crypto", u, re.I):
-            return f'Title: Bitcoin price\nURL: {u}\n\n{{"bitcoin": {{"usd": 98400}}}}'
+            return f"Title: Bitcoin price\nURL: {u}\n\n" + fence('{"bitcoin": {"usd": 98400}}', WEB_PAGE)
         if "wikipedia.org" in u:
             topic = u.rstrip("/").rsplit("/", 1)[-1].replace("_", " ")
-            return f"Title: {topic}\nURL: {u}\n\n{topic}: (synthetic encyclopedia entry) — summary unavailable in this test world."
-        return f"Title: Example page\nURL: {u}\n\nThis page is for use in illustrative examples."
+            return f"Title: {topic}\nURL: {u}\n\n" + fence(
+                f"{topic}: (synthetic encyclopedia entry) — summary unavailable in this test world.", WEB_PAGE)
+        return f"Title: Example page\nURL: {u}\n\n" + fence("This page is for use in illustrative examples.", WEB_PAGE)
 
     def wikipedia_summary(topic, **_):
         return f"{topic}: (synthetic encyclopedia entry) — summary unavailable in this test world."
