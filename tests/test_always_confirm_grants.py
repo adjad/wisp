@@ -388,3 +388,176 @@ def test_publication_cold_policy_config_issues_proof_only_for_known_state(
         assert witness.current()
     else:
         assert module.publication_witness() is None
+
+
+# --- categories that used to fall to "unclassified action" ---------------------
+
+def _mode(monkeypatch, mode):
+    monkeypatch.setattr(policy, "_FULL_ACCESS", mode == "full")
+    monkeypatch.setattr(policy, "_READ_ONLY", mode == "view")
+
+
+def _decide(name, args):
+    return policy.decide(REGISTRY[name].category, args, tool=name)
+
+
+CONTACT_WRITES = [
+    {"action": "create", "name": "Pat Example"},
+    {"action": "add_phone", "name": "Mom", "value": "+1 555-555-0188"},
+    {"action": "add_email", "name": "Mom", "value": "mom@example.com"},
+    {"action": "not_an_action", "name": "Mom"},
+]
+
+
+@pytest.mark.parametrize("args", CONTACT_WRITES, ids=lambda a: a["action"])
+def test_contact_writes_ask_even_with_full_access_and_never_offer_always(monkeypatch, args):
+    # A changed number silently redirects every later send to that person.
+    assert REGISTRY["manage_contacts"].category in policy.ALWAYS_CONFIRM_CATEGORIES
+    for mode in ("default", "full"):
+        _mode(monkeypatch, mode)
+        decision = _decide("manage_contacts", args)
+        assert decision.tier is policy.Tier.CONFIRM, (mode, decision)
+        assert "always confirmed" in decision.reason and "unclassified" not in decision.reason
+    _mode(monkeypatch, "view")
+    assert _decide("manage_contacts", args).tier is policy.Tier.DENY
+    assert not grants.is_grantable("manage_contacts", args)
+    assert "manage_contacts" in grants.never_grantable()
+    assert grants.grant("manage_contacts", args, decision="allow").get("ok") is False
+
+
+def test_contact_cards_name_the_exact_change(monkeypatch):
+    _mode(monkeypatch, "full")
+    assert _decide("manage_contacts", CONTACT_WRITES[1]).reason.startswith(
+        "adds the phone number +1 555-555-0188 to Mom's contact")
+    assert _decide("manage_contacts", CONTACT_WRITES[2]).reason.startswith(
+        "adds the email address mom@example.com to Mom's contact")
+    assert _decide("manage_contacts", CONTACT_WRITES[0]).reason.startswith(
+        "creates a new contact named Pat Example")
+
+
+LOCAL_WRITES = [
+    ("create_note", {"title": "Groceries", "body": "milk"}, "creates the note “Groceries” in Notes"),
+    ("append_note", {"title": "Groceries", "text": "eggs"}, "adds to the note “Groceries” in Notes"),
+    ("set_timer", {"duration": "10 minutes", "label": "pasta"}, "sets a timer for 10 minutes"),
+    ("set_timer", {"kind": "alarm", "time": "7:30am"}, "sets an alarm for 7:30am"),
+    ("set_timer", {"kind": "sleep", "duration": "30 minutes"}, "pauses playback in 30 minutes"),
+    ("manage_timers", {"action": "cancel", "label": "pasta"}, "cancels the timer pasta"),
+    ("manage_timers", {"action": "cancel_all"}, "cancels every timer and alarm"),
+    ("manage_timers", {"action": "stopwatch_start"}, "starts the stopwatch"),
+    ("manage_timers", {"action": ["list"]}, "changes your timers"),     # malformed: write rules
+]
+
+
+@pytest.mark.parametrize("tool,args,reason", LOCAL_WRITES, ids=[f"{t}:{r}" for t, _, r in LOCAL_WRITES])
+def test_note_and_timer_writes_follow_the_access_mode(monkeypatch, tool, args, reason):
+    _mode(monkeypatch, "default")
+    decision = _decide(tool, args)
+    assert (decision.tier, decision.reason) == (policy.Tier.CONFIRM, reason)
+    _mode(monkeypatch, "full")
+    assert _decide(tool, args).tier is policy.Tier.ALLOW
+    _mode(monkeypatch, "view")
+    decision = _decide(tool, args)
+    assert decision.tier is policy.Tier.DENY and "view-only" in decision.reason
+    assert grants.is_grantable(tool, args)      # ordinary writes keep "always allow"
+
+
+@pytest.mark.parametrize("args", [{}, {"action": ""}, {"action": "list"}, {"action": " LIST "},
+                                  {"action": "stopwatch_read"}])
+@pytest.mark.parametrize("mode", ["default", "full", "view"])
+def test_reading_timers_never_asks(monkeypatch, args, mode):
+    # "how much time is left on the pasta timer" used to get a card, and a refusal in view-only.
+    _mode(monkeypatch, mode)
+    assert _decide("manage_timers", args).tier is policy.Tier.ALLOW
+
+
+MEMORY_CARDS = [
+    ("remember", {"fact": "Mom's  birthday\nis May 3"}, "saving a memory: Mom's birthday is May 3"),
+    ("forget", {"query": "old address"}, "forgetting: old address"),
+    ("save_knowledge", {"title": "Lease terms", "text": "x"}, "saving to your knowledge: Lease terms"),
+    ("edit_knowledge", {"record_id": "a" * 32, "expected_revision": "1", "title": "Lease", "text": "x"},
+     "editing saved knowledge: Lease"),
+    ("delete_knowledge", {"record_id": "a" * 32, "expected_revision": "1"},
+     "deleting saved knowledge item " + "a" * 32),
+    ("move_path", {"source": "/Users/x/Desktop/a.txt", "destination": "/Users/x/Documents/"},
+     "moving /Users/x/Desktop/a.txt to /Users/x/Documents/"),
+    ("write_file", {"path": "/Users/x/Desktop/a.txt", "content": "x"}, "writing /Users/x/Desktop/a.txt"),
+]
+
+
+@pytest.mark.parametrize("tool,args,reason", MEMORY_CARDS, ids=[c[0] for c in MEMORY_CARDS])
+def test_file_category_cards_name_what_changes(monkeypatch, tool, args, reason):
+    # The memory tools take no `path`: their cards used to read "writing " / "deleting ".
+    _mode(monkeypatch, "default")
+    decision = _decide(tool, args)
+    assert decision.tier is policy.Tier.CONFIRM and decision.reason == reason
+    assert REGISTRY[tool].category in ("fs_write", "fs_delete")     # categories unchanged
+
+
+def test_a_long_memory_is_cut_to_fit_the_card(monkeypatch):
+    _mode(monkeypatch, "default")
+    reason = _decide("remember", {"fact": "x" * 5000}).reason
+    assert reason.startswith("saving a memory: xxx") and reason.endswith("…") and len(reason) < 260
+
+
+@pytest.mark.parametrize("mode", ["default", "view"])
+def test_no_registered_tool_is_unclassified(monkeypatch, mode):
+    _mode(monkeypatch, mode)
+    loose = {name: decision.reason for name, tool in REGISTRY.items()
+             if (decision := policy.decide(tool.category, {}, tool=name)).reason.startswith("unclassified")}
+    assert not loose, f"tools with no policy rule for their category: {loose}"
+
+
+# --- tool names the policy refers to must exist ---------------------------------
+
+# Imported from model_led inside a function, so not a table of these modules.
+_EXTERNAL_TABLES = {"OPAQUE_OUTBOUND_TOOLS"}
+
+
+def _referenced_tool_names(module):
+    """Every literal tool name a module's code compares `tool` against, plus
+    every module-level *_TOOLS table, as written in the source."""
+    import ast
+    import inspect
+    tree = ast.parse(inspect.getsource(module))
+    names, unresolved = set(), set()
+
+    def strings(node):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return {node.value}
+        if isinstance(node, (ast.Set, ast.Tuple, ast.List)):
+            return set().union(*(strings(e) for e in node.elts))
+        if isinstance(node, ast.Call) and getattr(node.func, "id", "") in ("frozenset", "set") and node.args:
+            return strings(node.args[0])
+        if isinstance(node, ast.Name) and node.id.lstrip("_")[:1].isupper():   # a table, not a local
+            value = getattr(module, node.id, None)
+            if isinstance(value, (set, frozenset, dict)):
+                return {v for v in value if isinstance(v, str)}
+            unresolved.add(node.id)
+        return set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Compare):
+            operands = [node.left, *node.comparators]
+            if any(isinstance(o, ast.Name) and o.id == "tool" for o in operands):
+                for o in operands:
+                    if not (isinstance(o, ast.Name) and o.id == "tool"):
+                        names |= strings(o)
+    for attr, value in vars(module).items():
+        if attr.endswith("_TOOLS") and isinstance(value, (set, frozenset)):
+            names |= {v for v in value if isinstance(v, str)}
+    return names, unresolved
+
+
+@pytest.mark.parametrize("module", [policy, grants], ids=["policy", "grants"])
+def test_every_tool_name_policy_names_is_registered(module):
+    # uninstall_app, archive_files, convert_file, encrypt_file and http_request
+    # outlived their tools here after the 182 -> 100 consolidation.
+    names, unresolved = _referenced_tool_names(module)
+    assert unresolved <= _EXTERNAL_TABLES, unresolved
+    # Guards the scan itself: a refactor that hid the names would pass vacuously.
+    expected = {"policy": {"run_applescript", "organize_files", "toggle_setting", "move_path", "open_app"},
+                "grants": {"manage_contacts", "send_email", "toggle_setting", "web_fetch", "run_shell"}}
+    assert expected[module.__name__.rsplit(".", 1)[-1]] <= names
+    # MCP and skill tools register at run time under these prefixes.
+    stale = sorted(n for n in names if n not in REGISTRY and not n.startswith(("mcp_", "skill_")))
+    assert not stale, f"{module.__name__} names tools that are not registered: {stale}"
