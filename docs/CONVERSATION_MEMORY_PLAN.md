@@ -287,7 +287,7 @@ and this plan. Settings and overlay entry points are reused without changes.
 ## In-session context (as built)
 
 The phases above are about memory *across* conversations. This section records
-what keeps a single conversation coherent, as it stands on `main` at `e46d4622`
+what keeps a single conversation coherent, as it stands after rc1 batch 9
 (2026-11-04); every figure is the constant in the cited file. A turn's request
 is assembled from these layers, oldest material first:
 
@@ -328,18 +328,27 @@ is assembled from these layers, oldest material first:
   narration step uses the same budget with 700 output tokens (floor 400).
   Tool results on Ask turns are capped at `ASK_TOOL_RESULT_CHARS` = 6,000.
 - **Shedding order** (`loop._fit_window`), least valuable first. Never shed:
-  the protected system prefix, the latest user message, the last two messages.
-  1. Earlier user/assistant turns before this turn's request are *condensed*
+  the protected system prefix, this turn's request (protected by position via
+  `history_end`, even after a host nudge becomes the last user message), the
+  last two messages.
+  1. This turn's *older* tool results are cut to `_OLDER_RESULT_CHARS` = 1,500
+     characters; the newest result is never touched.
+  2. Earlier user/assistant turns before this turn's request are *condensed*
      into the digest, oldest first; this turn's own tool traffic is never
      written into the digest.
-  2. The digest's oldest lines, then the older context notes (host notes, the
-     summary, the digest itself), oldest first.
-  3. Anything else droppable, oldest first; a tool call goes only together
+  3. Older tool results are cleared to a one-line placeholder; the call stays,
+     so the model knows it already ran.
+  4. The digest's oldest lines down to `_DIGEST_FLOOR_LINES` = 4, and the
+     context notes outside the floor (the rolling summary).
+  5. This turn's older traffic, oldest first; a tool call goes only together
      with all of its results.
-  4. Tool schemas from the end, never a forced tool, never below 4. On a
+  6. Only then the conversation floor: the rest of the digest, then the kept
+     notes (`_KEPT_NOTE_PREFIXES`: the unverified-context, prior-attempt,
+     pending-task and current-subject notes).
+  7. Tool schemas from the end, never a forced tool, never below 4. On a
      model-led turn the name-only stubs go first, and a step whose real schemas
      still cannot fit raises instead of silently losing a tool.
-  5. The output reservation, last, down to `_MIN_OUTPUT_TOKENS` = 2,000.
+  8. The output reservation, last, down to `_MIN_OUTPUT_TOKENS` = 2,000.
 - **Subject note** (`service/memory/subject.py`). After each assistant turn a
   deterministic record of what it resolved — person, email(s), event,
   reminder, place, file, stocks, or text sent — built from Wisp's own tool
@@ -357,14 +366,12 @@ is assembled from these layers, oldest material first:
 
 Known gaps:
 
-- **Two capped tool results.** On `main`, an Ask step carrying two capped tool
-  results still dropped all earlier history and context notes: 0/20 recall,
-  measured with the `after_two_tools` scenario that PR #459
-  (`claude/memory-db-perms-history-floor`) adds to
-  `scripts/measure_ask_history.py`. That PR fixes it (20/20) and also makes
-  Wisp's SQLite stores 0600. When it merges, the shedding-order list below,
-  `WISP_OVERVIEW.md` §2.4's `_fit_window` bullet and §3.4's "lobotomized" row
-  need updating to its order.
+- **Two capped tool results** (fixed by PR #459). An Ask step carrying two
+  capped tool results used to drop all earlier history and context notes:
+  0/20 recall in the `after_two_tools` scenario of
+  `scripts/measure_ask_history.py`. With the conversation floor and older
+  results trimmed first (the shedding order above) it recalls 20/20. The same
+  PR makes Wisp's SQLite stores 0600.
 - **Lexical-only recall.** Cross-conversation retrieval is FTS5 with a
   deterministic lexical fallback; a paraphrase that shares no terms with the
   stored statement is not found. Persistent embeddings remain Phase 4 work.

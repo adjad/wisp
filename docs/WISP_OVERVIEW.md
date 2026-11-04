@@ -307,11 +307,14 @@ Key `RouteDecision` fields, each of which encodes a hard-won lesson:
 `service/agent/loop.py` (5,336 lines). Per step:
 
 - **Build the message list**, then `_fit_window()` trims it to fit, sacrificing
-  least-valuable first: oldest history (earlier user/assistant turns are
-  *condensed* into the "earlier in this conversation" digest rather than
-  dropped, then the digest's oldest lines, then older context notes; never the
-  protected system prefix, the latest user turn, or the newest tool result),
-  then tool schemas from the end (never a forced first tool, never below 4),
+  least-valuable first: this turn's older tool results (cut to 1,500
+  characters, then cleared to a placeholder), oldest history (earlier
+  user/assistant turns are *condensed* into the "earlier in this conversation"
+  digest rather than dropped, then the digest's oldest lines down to a floor
+  of 4, then the rolling summary), and only last the conversation floor (the
+  digest's newest lines and the safety/subject notes); never the protected
+  system prefix, this turn's request, or the newest tool result. Then tool
+  schemas from the end (never a forced first tool, never below 4),
   and only then the output reservation, down to `_MIN_OUTPUT_TOKENS` = 2,000
   (raised from 600 once every role thought before answering). Model-only Ask
   steps fit a smaller per-step budget than the window; see
@@ -496,7 +499,7 @@ large job.
 
 | Issue | Status |
 |---|---|
-| **"The model's memory gets lobotomized after a couple of chats"** — reported 2026-08-23. Diagnosed on model-only Ask: `build_messages` kept only what fit its budget, the Ask step fit cut that to its 8,000-token step budget, and the rolling summary only starts once 48 turns are stored, so turns in between were in neither — a fact ~8 exchanges back was lost, and after a 6,000-character tool result no earlier turn survived. `326fe940` and `137fba8f` (2026-11-02) condense turns that miss the verbatim cut into an "earlier in this conversation" digest instead of dropping them and give Ask steps `ASK_HISTORY_RESERVE`; `scripts/measure_ask_history.py` (synthetic 20-exchange chat, 16,384 window) went 8/20 → 20/20 on a zero-tool step and 0/20 → 20/20 after one tool result. **Residual:** an Ask step carrying *two* capped tool results still dropped all earlier history and context notes (measured 0/20 recall). Fixed on branch `claude/memory-db-perms-history-floor`, pending review, which also makes Wisp's SQLite stores 0600. | **MITIGATED** — zero- and one-tool steps fixed on `main`; the two-result case is open until that branch merges |
+| **"The model's memory gets lobotomized after a couple of chats"** — reported 2026-08-23. Diagnosed on model-only Ask: `build_messages` kept only what fit its budget, the Ask step fit cut that to its 8,000-token step budget, and the rolling summary only starts once 48 turns are stored, so turns in between were in neither — a fact ~8 exchanges back was lost, and after a 6,000-character tool result no earlier turn survived. `326fe940` and `137fba8f` (2026-11-02) condense turns that miss the verbatim cut into an "earlier in this conversation" digest instead of dropping them and give Ask steps `ASK_HISTORY_RESERVE`; `scripts/measure_ask_history.py` (synthetic 20-exchange chat, 16,384 window) went 8/20 → 20/20 on a zero-tool step and 0/20 → 20/20 after one tool result. An Ask step carrying *two* capped tool results still dropped all earlier history and context notes (0/20); PR #459 adds a conversation floor and trims older results first, 20/20, and also makes Wisp's SQLite stores 0600. | **FIXED** on the synthetic harness (zero-, one- and two-tool steps 20/20); real-session truncation is still unmeasured |
 | Tool schemas, not conversation, fill the window — 57 tools ≈ 9,943 tokens, **62% of a 16k window before a single message**. Overflow surfaces as an unexplained 400. | **FIXED** by universal retrieval scoping + `_fit_window` |
 | Uncapped tool results — an 89,000-char result (~22k tokens, ~2.8 GB of KV) went into context whole and was re-paid every step | **FIXED** (12,000-char cap, announced) |
 | Background jobs contend with live turns on the single resident model: the *same* call measured **12.8s and 319.7s** on consecutive runs | **FIXED** — a foreground gate in `service/idle.py` brackets `/agent` and the scheduler skips model work while a turn is in flight. Note a harness calling `run_agent` directly bypasses the gate. |
