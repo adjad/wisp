@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from service.behavior.types import Nudge, Observation, Pattern
+from service.paths import private_sqlite_file
 
 SCHEMA_VERSION = 2
 log = logging.getLogger(__name__)
@@ -177,7 +178,10 @@ class Store:
 
     def _open(self, db_path: str, *, create: bool = True) -> None:
         """Connect. With ``create=False`` nothing is written (not even the WAL switch), so a
-        file this build must not touch can still be read for its version."""
+        file this build must not touch can still be read for its version. The
+        file's mode is still made owner-only: that changes who can read it, not
+        what it holds."""
+        private_sqlite_file(db_path)
         self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
         self._conn.row_factory = sqlite3.Row
         if create:

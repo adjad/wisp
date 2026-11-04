@@ -161,15 +161,22 @@ def run_turn(messages: list[dict], script, window: int) -> Client:
     return client
 
 
-def pick_read_tool(request: dict):
-    """An offered read tool we can call with no arguments (prefer get_upcoming)."""
+def pick_read_tools(request: dict) -> list:
+    """Offered read tools we can call with no arguments (get_upcoming first)."""
     from service.router.model_led import READ_CATEGORIES
     offered = [s["function"] for s in request.get("tools") or [] if "description" in s["function"]]
+    out = []
     for fn in sorted(offered, key=lambda f: f["name"] != "get_upcoming"):
         tool = registry.REGISTRY.get(fn["name"])
         if tool and tool.category in READ_CATEGORIES and not (fn.get("parameters") or {}).get("required"):
-            return tool
-    return None
+            out.append(tool)
+    return out
+
+
+def pick_read_tool(request: dict):
+    """An offered read tool we can call with no arguments (prefer get_upcoming)."""
+    tools = pick_read_tools(request)
+    return tools[0] if tools else None
 
 
 def table(rows: list[dict]) -> str:
@@ -248,6 +255,37 @@ def main() -> int:
             after["kept_first_user_assistant"] = kept[:3]
             results["scenarios"]["after_tool"] = after
             rows.append(after)
+
+    # 3. after_two_tools: two distinct capped reads in one turn, then the
+    # answer step (request 2). This is the step that used to drop every
+    # earlier turn, the digest and the host notes.
+    reads = pick_read_tools(client.requests[0])[:2]
+    if len(reads) < 2:
+        results["scenarios"]["after_two_tools"] = {"error": "fewer than two offered read tools callable without arguments"}
+    else:
+        originals = [(t.func, t.unavailable_reason) for t in reads]
+        for n, t in enumerate(reads):
+            body = (f"Synthetic result {n} line. " * 400)[:TOOL_RESULT_CHARS]
+
+            async def fake(_body=body, **kwargs):
+                return _body
+            t.func, t.unavailable_reason = fake, ""
+        try:
+            client3 = run_turn(turn_messages, [[tool_call(reads[0].name)], [tool_call(reads[1].name)],
+                                               "Synthetic final answer."], args.window)
+        finally:
+            for t, (func, reason) in zip(reads, originals):
+                t.func, t.unavailable_reason = func, reason
+        if len(client3.requests) < 3:
+            results["scenarios"]["after_two_tools"] = {"error": f"only {len(client3.requests)} request(s) captured"}
+        else:
+            two = summarize(client3.requests[2], f"after_two:{reads[0].name}+{reads[1].name} (req 2)")
+            two["tool_result_chars"] = TOOL_RESULT_CHARS
+            two["tool_results_chars_sent"] = [len(m.get("content") or "") for m in client3.requests[2]["messages"]
+                                              if m.get("role") == "tool"]
+            two["request_kept"] = any(m.get("content") == FINAL_PROMPT for m in client3.requests[2]["messages"])
+            results["scenarios"]["after_two_tools"] = two
+            rows.append(two)
 
     # Where the loop cut: first surviving exchange in each request.
     for name, scenario in results["scenarios"].items():

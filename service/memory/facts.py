@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 from service.config import MOE_DIR
+from service.paths import private_sqlite_file
 
 DB_PATH = MOE_DIR / 'facts.db'
 CATEGORIES = ('fact', 'preference', 'person', 'project', 'routine')
@@ -83,6 +84,7 @@ class FactStore:
     def __init__(self, path: Path = DB_PATH):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        private_sqlite_file(self.path)
         self._db = sqlite3.connect(str(self.path), check_same_thread=False, timeout=10)
         self._db.row_factory = sqlite3.Row
         self._lock = threading.RLock()
