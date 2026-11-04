@@ -1098,3 +1098,139 @@ def test_session_ui_endpoint_returns_display_without_changing_history(world, mon
     assert response['turns'][0]['content'] == display
     assert response['turns'][0]['content_provenance'] == 'display_only_publisher_metadata'
     assert store.last_assistant_turn(sid) == display.model_text
+
+
+# Rolling summary (memory/context.maybe_summarize): bounded input, failure
+# counting, and the deterministic fallback after _MAX_FOLD_FAILURES.
+class SummaryModel:
+    def __init__(self, *responses):
+        self.responses = list(responses)
+        self.prompts = []
+
+    async def chat(self, model, messages, **kwargs):
+        self.prompts.append(messages[-1]['content'])
+        item = self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
+        if isinstance(item, Exception):
+            raise item
+        content, finish = item
+        return {'choices': [{'message': {'content': content}, 'finish_reason': finish}]}
+
+
+@pytest.fixture
+def summary_world(world, monkeypatch):
+    from service.memory import context
+    _, sessions, _ = world
+    monkeypatch.setattr(context, 'store', sessions)
+    monkeypatch.setattr(context, '_fold_failures', {})
+    monkeypatch.setattr(context, '_fallback_logged', set())
+    sid = sessions.create_session()
+    added = [0]
+
+    def fill(n, assistant_text='Noted.'):
+        for _ in range(n):
+            i = added[0]
+            added[0] += 1
+            sessions.add_turn(sid, 'user' if i % 2 == 0 else 'assistant',
+                              f'User fact {i}: my locker is {i}' if i % 2 == 0 else assistant_text)
+
+    def fold(model):
+        asyncio.run(context.maybe_summarize(model, sid, 'fast'))
+        return sessions.get_session(sid)
+
+    return context, sessions, sid, fill, fold
+
+
+def test_rolling_summary_input_is_digest_lines_and_bounded(summary_world):
+    context, sessions, sid, fill, fold = summary_world
+    # ~44k chars a reply, with a ~460-char lead sentence.
+    huge = ('A long research answer ' * 20).strip() + '. ' + 'Filler sentence here. ' * 2000
+    fill(context.KEEP_MESSAGES + 60, assistant_text=huge)
+    model = SummaryModel(('Folded summary.', 'stop'))
+    sess = fold(model)
+    prompt = model.prompts[0]
+    # Raw replies never reach the summarizer: only capped digest lines.
+    assert 'Filler sentence here. Filler' not in prompt
+    assert huge[:400] not in prompt
+    assert '- User: User fact 0: my locker is 0' in prompt
+    assert len(prompt) < context._FOLD_INPUT_MAX_CHARS + 1000
+    # Only the oldest turns that fit were folded; the backlog waits, not skipped.
+    first = sess['summarized_idx']
+    assert 0 < first < 60
+    assert sess['summary'] == 'Folded summary.'
+    sess = fold(model)
+    assert sess['summarized_idx'] > first
+    assert 'Current summary:\nFolded summary.' in model.prompts[1]
+    assert f'User fact {first + first % 2}:' in model.prompts[1]
+
+
+def test_rolling_summary_normal_fold_keeps_prompt_and_folds_whole_batch(summary_world):
+    context, sessions, sid, fill, fold = summary_world
+    fill(context.KEEP_MESSAGES + context._FOLD_BATCH)
+    model = SummaryModel(('Folded summary.', None))   # no finish_reason (remote/fake) is fine
+    sess = fold(model)
+    assert sess['summarized_idx'] == context._FOLD_BATCH
+    assert sess['summary'] == 'Folded summary.'
+    assert model.prompts[0].startswith('Update the running summary of this conversation')
+    assert 'Current summary:\n(none yet)' in model.prompts[0]
+    assert model.prompts[0].endswith('Updated summary:')
+
+
+@pytest.mark.parametrize('bad', [('', 'stop'), ('   ', None), ('Cut off mid-sent', 'length'),
+                                 ('', 'error'), RuntimeError('engine refused')])
+def test_rolling_summary_failures_count_then_fall_back(summary_world, bad, caplog):
+    context, sessions, sid, fill, fold = summary_world
+    sessions.set_summary(sid, 'Prior: user is planning a trip to Lisbon.', 0)
+    fill(context.KEEP_MESSAGES + context._FOLD_BATCH)
+    model = SummaryModel(bad)
+    for attempt in range(1, context._MAX_FOLD_FAILURES):
+        sess = fold(model)
+        assert sess['summarized_idx'] == 0, 'a failed fold must not advance'
+        assert sess['summary'] == 'Prior: user is planning a trip to Lisbon.'
+        assert context._fold_failures[sid] == attempt
+    with caplog.at_level('WARNING', logger='service.memory.context'):
+        sess = fold(model)
+    assert len(model.prompts) == context._MAX_FOLD_FAILURES
+    assert sess['summarized_idx'] == context._FOLD_BATCH
+    lines = sess['summary'].split('\n')
+    assert lines[0] == 'Prior: user is planning a trip to Lisbon.'
+    assert '- User: User fact 0: my locker is 0' in lines
+    assert 'Cut off' not in sess['summary']
+    assert len(sess['summary']) <= context._SUMMARY_MAX_CHARS
+    assert sum('consecutive fold failures' in r.getMessage() for r in caplog.records) == 1
+    # Still broken at the next due fold: one try, straight back to the
+    # fallback, and no second log line for this session.
+    fill(context._FOLD_BATCH)
+    with caplog.at_level('WARNING', logger='service.memory.context'):
+        sess = fold(model)
+    assert len(model.prompts) == context._MAX_FOLD_FAILURES + 1
+    assert sess['summarized_idx'] == 2 * context._FOLD_BATCH
+    assert sum('consecutive fold failures' in r.getMessage() for r in caplog.records) == 1
+
+
+def test_rolling_summary_success_resets_failure_count(summary_world):
+    context, sessions, sid, fill, fold = summary_world
+    fill(context.KEEP_MESSAGES + context._FOLD_BATCH)
+    model = SummaryModel(('', 'stop'), ('', 'stop'), ('Recovered summary.', 'stop'))
+    fold(model)
+    fold(model)
+    assert context._fold_failures[sid] == 2
+    sess = fold(model)
+    assert sess['summary'] == 'Recovered summary.'
+    assert sess['summarized_idx'] == context._FOLD_BATCH
+    assert sid not in context._fold_failures
+
+
+def test_rolling_summary_fallback_stays_capped_when_summarizer_never_recovers(summary_world):
+    context, sessions, sid, fill, fold = summary_world
+    context._fold_failures[sid] = context._MAX_FOLD_FAILURES
+    model = SummaryModel(RuntimeError('down'))
+    fill(context.KEEP_MESSAGES)
+    for _ in range(12):
+        fill(context._FOLD_BATCH)
+        sess = fold(model)
+    assert len(model.prompts) == 12
+    assert sess['summarized_idx'] == 12 * context._FOLD_BATCH
+    assert len(sess['summary']) <= context._SUMMARY_MAX_CHARS
+    # The newest folded notes survive the cap; the oldest give way.
+    assert 'User fact 0:' not in sess['summary']
+    assert f'User fact {12 * context._FOLD_BATCH - 2}:' in sess['summary']
