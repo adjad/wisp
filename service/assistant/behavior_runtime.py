@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Any, Callable
 from types import MappingProxyType
 from service.behavior.store import NewerSchemaError
+from service.paths import private_sqlite_file
 from service.publication_authority import Authority, PublicationBusy, PublicationUnavailable, Witness, assert_drain_allowed, assert_mutation_allowed, mutating, publication, revocation
 
 log = logging.getLogger("wisp.behavior")
@@ -365,6 +366,7 @@ class BehaviorRuntime:
         self.home.mkdir(parents=True, exist_ok=True)
         from service.assistant.store import behavior_owner_id
         self._owner_id = behavior_owner_id(self.home)
+        private_sqlite_file(self.home / RUNTIME_DB)
         self._db = sqlite3.connect(str(self.home / RUNTIME_DB), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         with self._db_lock, self._db:

@@ -27,7 +27,7 @@ from pathlib import Path
 from service.publication_authority import (Authority, LIVE_CLOCK, Witness, revocation,
     PublicationLease, PublicationUnavailable, owned_write, assert_mutation_allowed)
 from service.assistant.recovery import recovery_guidance
-from service.paths import MOE_DIR
+from service.paths import MOE_DIR, private_sqlite_file
 
 # Most undated reminders one native snapshot may carry. The app sends at most this many
 # plus the TRUE total, so the backend can tell a complete list from a truncated one.
@@ -302,6 +302,7 @@ class AssistantStore:
         path = path.expanduser().resolve()
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
+        private_sqlite_file(path)
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._lock = threading.RLock()

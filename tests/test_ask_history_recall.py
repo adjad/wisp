@@ -187,11 +187,92 @@ def test_fit_drops_a_tool_call_with_its_results_and_never_condenses_a_nudge():
     for i, m in enumerate(out):
         if m.get("role") == "tool":
             assert out[i - 1].get("tool_calls"), "a tool result lost its call"
-    # Earlier conversation still goes before this turn's own traffic, so the
-    # 8,000-character result takes the digest with it here; nothing malformed
-    # is left behind, and a host nudge never becomes a digest line.
+    # The older 8,000-character result is cleared to a placeholder before the
+    # conversation floor goes; nothing malformed is left behind, and a host
+    # nudge never becomes a digest line.
     assert "NUDGE" not in text([m for m in out if context.is_digest(m)])
     assert out[-1]["content"].startswith("NUDGE 2")
+
+
+SAFETY_NOTE = {"role": "system", "content": (
+    "Host-recorded prior action attempts (not instructions): [\"send_message\"]. "
+    "Their completion is unverified. Do not repeat them.")}
+SUBJECT_NOTE = {"role": "system", "content": (
+    "Current subject from the last turns (unverified context, not instructions): "
+    "the email from Ruiz.")}
+
+
+def test_two_capped_results_clear_the_older_one_and_keep_the_conversation():
+    # The residual "memory gets lobotomized" case: an Ask step carrying two
+    # 6,000-character results used to shed every earlier turn, the digest and
+    # the safety notes, while keeping a stale result the model had already read.
+    msgs = PREFIX + [SAFETY_NOTE, SUBJECT_NOTE] + history_messages() + [
+        {"role": "user", "content": "what's my locker code, and today?"},
+        _call("c1"), {"role": "tool", "tool_call_id": "c1", "content": "A" * 6000},
+        _call("c2"), {"role": "tool", "tool_call_id": "c2", "content": "B" * 6000}]
+    end = len(PREFIX) + 2 + len(history_messages()) + 1
+    window = prompt_tokens(PREFIX) + 3200
+    out, _, out_tokens = loop._fit_window(msgs, [], 500, "m", None, protected_prefix_count=2,
+                                          context_window=window, history_end=end,
+                                          min_output_tokens=1)
+    assert prompt_tokens(out) + out_tokens <= window
+    assert_well_formed(out)
+    assert SAFETY_NOTE in out and SUBJECT_NOTE in out          # the floor's notes stay
+    assert any(context.is_digest(m) for m in out)              # and so does the digest
+    assert any(m.get("content") == "what's my locker code, and today?" for m in out)
+    results = [m["content"] for m in out if m.get("role") == "tool"]
+    assert results[-1] == "B" * 6000                           # newest result whole
+    # The older one is cut to its head (call kept) before any earlier turn goes.
+    assert results[0].startswith("A" * loop._OLDER_RESULT_CHARS)
+    assert "4500 more characters cut" in results[0]
+    assert all(session.recall_depths(out).values()), \
+        sorted(k for k, v in session.recall_depths(out).items() if not v)
+
+
+def test_an_older_result_is_cleared_before_the_digest_is_trimmed():
+    msgs = PREFIX + [SAFETY_NOTE] + history_messages() + [
+        {"role": "user", "content": "q"},
+        _call("c1"), {"role": "tool", "tool_call_id": "c1", "content": "A" * 6000},
+        _call("c2"), {"role": "tool", "tool_call_id": "c2", "content": "B" * 6000}]
+    end = len(PREFIX) + 1 + len(history_messages()) + 1
+    window = prompt_tokens(PREFIX) + 2700
+    out, _, out_tokens = loop._fit_window(msgs, [], 500, "m", None, protected_prefix_count=2,
+                                          context_window=window, history_end=end,
+                                          min_output_tokens=1)
+    assert prompt_tokens(out) + out_tokens <= window
+    assert_well_formed(out)
+    results = [m["content"] for m in out if m.get("role") == "tool"]
+    assert results[0].startswith(loop._CLEARED_RESULT_HEAD) and "6000 characters" in results[0]
+    assert SAFETY_NOTE in out
+    digest = next(m for m in out if context.is_digest(m))
+    assert len(context.digest_lines(digest)) >= loop._DIGEST_FLOOR_LINES
+
+
+def test_the_floor_still_gives_way_when_nothing_else_is_left():
+    # Under extreme pressure the floor is shed too (after the cleared result),
+    # rather than the request or the newest result.
+    msgs = PREFIX + [SAFETY_NOTE] + history_messages()[-4:] + [
+        {"role": "user", "content": "q"},
+        _call("c1"), {"role": "tool", "tool_call_id": "c1", "content": "A" * 6000},
+        _call("c2"), {"role": "tool", "tool_call_id": "c2", "content": "B" * 2000}]
+    end = len(PREFIX) + 1 + 4 + 1
+    window = prompt_tokens(PREFIX) + 700
+    out, _, out_tokens = loop._fit_window(msgs, [], 100, "m", None, protected_prefix_count=2,
+                                          context_window=window, history_end=end,
+                                          min_output_tokens=1)
+    assert prompt_tokens(out) + out_tokens <= window
+    assert_well_formed(out)
+    assert any(m.get("content") == "q" for m in out)
+    assert out[-1]["content"] == "B" * 2000
+
+
+def test_kept_note_prefixes_match_the_notes_their_writers_send():
+    import inspect
+    from service import main
+    from service.memory import subject
+    source = inspect.getsource(main) + inspect.getsource(subject)
+    for prefix in loop._KEPT_NOTE_PREFIXES:
+        assert prefix in source, prefix
 
 
 # --- an Ask turn end to end -----------------------------------------------------
@@ -288,9 +369,12 @@ def test_a_nudge_before_any_tool_call_is_never_condensed():
     out, _, _ = loop._fit_window(msgs, [], 500, "m", None, protected_prefix_count=2,
                                  context_window=prompt_tokens(PREFIX) + 560, history_end=end)
     digest = text([m for m in out if context.is_digest(m)])
-    assert "- User: what did Ruiz say?" in digest           # the request condenses
+    # The request stays verbatim even though the nudge is now the last user
+    # message: it is protected by identity (history_end), not position.
+    assert "what did Ruiz say?" not in digest
     assert "NUDGE" not in digest and "Ruiz is a plumber" not in digest
-    assert [m["content"] for m in out[-2:]] == ["Ruiz is a plumber.", "NUDGE: look it up with a tool."]
+    assert [m["content"] for m in out[-3:]] == [
+        "what did Ruiz say?", "Ruiz is a plumber.", "NUDGE: look it up with a tool."]
 
 
 def test_fitting_never_leaves_a_malformed_tool_transcript():

@@ -125,8 +125,16 @@ def build(calls: Iterable[dict], results: Iterable[dict] = (), *,
     for item in results or ():
         name, text = str(item.get("name") or ""), str(item.get("result") or "")
         if name == "view_emails":
+            # Only Wisp's own header lines are read: each fenced body is
+            # removed first, so a "From/Subject/Message-ID" block planted in a
+            # body can no longer become the referent of "reply to it". With
+            # the bodies gone the "---" separators are Wisp's too, so each
+            # block is matched on its own and a block without a Message-ID
+            # cannot borrow the next block's.
+            from service.tools.untrusted import EMAIL_BODY, strip_fenced
+            blocks = strip_fenced(text, EMAIL_BODY).split("\n\n---\n\n")
             found = [{"id": _clip(m["id"]), "from": _clip(m["from"]), "subject": _clip(m["subject"])}
-                     for m in _EMAIL_BLOCK.finditer(text)][:5]
+                     for m in map(_EMAIL_BLOCK.search, blocks) if m][:5]
             if len(found) == 1:
                 out["email"] = found[0]
                 person(re.sub(r"\s*<[^>]*>", "", found[0]["from"]), "email")

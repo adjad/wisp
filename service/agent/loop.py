@@ -1169,6 +1169,39 @@ def _est_tokens(obj) -> int:
     return len(json.dumps(strip(obj))) // 4 + images * _IMAGE_TOKENS
 
 
+# Context notes _fit_window keeps until everything else in step 1 is gone: they
+# keep the model oriented (what "her" means, what is unverified, what not to
+# resend), and each costs one line. Matched by the text their writers open with:
+# service/main.py's model-led notes and service/memory/subject.hint.
+_KEPT_NOTE_PREFIXES = (
+    "Conversation and remembered facts are unverified context",
+    "Host-recorded prior action attempts",
+    "An older task is still pending",
+    "Current subject from the last turns",
+)
+# The digest keeps this many of its newest lines before older tool traffic of
+# the current turn is cleared. Measured (scripts/measure_ask_history.py): an Ask
+# step carrying two capped tool results used to lose the digest, the notes and
+# every earlier turn, and recalled 0 of 20 planted facts.
+_DIGEST_FLOOR_LINES = 4
+# An older tool result of the current turn is first cut to this many characters
+# (about 375 estimated tokens), and cleared to a placeholder only if that is not
+# enough. The newest result is never touched.
+_OLDER_RESULT_CHARS = 1500
+_TRIMMED_RESULT_MARK = "\n[…"
+_TRIMMED_RESULT_TAIL = ("{n} more characters cut to fit the context window; call the tool "
+                        "again for the full result.]")
+_CLEARED_RESULT_HEAD = "[Older tool result cleared to fit the context window"
+_CLEARED_RESULT = (_CLEARED_RESULT_HEAD + " ({n} characters). Call the tool again if you "
+                   "still need it; its call is kept above.]")
+
+
+def _is_kept_note(m: dict) -> bool:
+    content = m.get("content")
+    return (m.get("role") == "system" and isinstance(content, str)
+            and content.startswith(_KEPT_NOTE_PREFIXES))
+
+
 def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
                 model: str, force_first_tool: str | None, *,
                 protected_prefix_count: int = 1, context_window: int | None = None,
@@ -1177,16 +1210,25 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
     """Trim a request until prompt + output fits the model's context window.
 
     Order of sacrifice, LEAST VALUABLE FIRST:
-      1. the OLDEST history turns — never the required system prefix (rules the model
-         needs), never the last user message (the actual request), and never
-         the most recent tool result (what the current step is reasoning about).
-         A plain user/assistant turn before the request is CONDENSED, not
-         dropped: it leaves one line in the "earlier in this conversation"
-         digest (memory/context.py), which is how a fact stated twenty
-         exchanges ago is still in the request. Then the digest's oldest
-         lines; then the older context notes (system messages after the
-         prefix: host notes, the summary, the digest itself); then everything
-         else oldest-first
+      1. history and this turn's older traffic — never the required system
+         prefix (rules the model needs), never the request (by identity, see
+         history_end), and never the most recent tool result (what the
+         current step is reasoning about). In order:
+           a0. this turn's OLDER tool results are cut to _OLDER_RESULT_CHARS;
+           a.  plain user/assistant turns before the request are CONDENSED,
+               not dropped: each leaves one line in the "earlier in this
+               conversation" digest (memory/context.py), which is how a fact
+               stated twenty exchanges ago is still in the request;
+           b.  older tool results are cleared to a one-line placeholder (the
+               call stays, so the model knows it already ran);
+           c.  the digest's oldest lines down to _DIGEST_FLOOR_LINES, and the
+               context notes outside the floor (the rolling summary);
+           d.  this turn's older traffic, oldest first;
+           e.  only then the conversation floor: the rest of the digest, then
+               the kept notes (_KEPT_NOTE_PREFIXES).
+         Before this order, one step carrying two capped results lost every
+         earlier turn, the safety notes and the digest while keeping a stale
+         result the model had already read (0 of 20 planted facts recalled).
       2. TOOL SCHEMAS, from the end of the list
       3. the OUTPUT reservation, down to _MIN_OUTPUT_TOKENS
 
@@ -1222,7 +1264,9 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
     (run_agent knows it: everything it appends comes after). Only messages
     before it condense; this turn's later traffic (tool calls, results, host
     nudges) is dropped, never written into the digest. Without it, condensing
-    stops at the first tool call or result.
+    stops at the first tool call or result. The message just before it is the
+    request, and it is protected even after a host nudge (also role "user")
+    becomes the last user message.
     """
     from service.config import model_context_window
 
@@ -1260,12 +1304,19 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
     # reason the ordering comment calls history "least valuable first".
     last_user = max((i for i, m in enumerate(msgs) if m.get("role") == "user"),
                     default=-1)
+    # The last user message is not always the request: a host nudge ("Nothing
+    # was read yet. Call X now…") is role "user" too, and once one is appended
+    # the request this turn answers would lose its protection. history_end
+    # points just past the request, so protect that message by identity too.
+    request = (history_end - 1
+               if history_end is not None and 0 < history_end <= len(msgs)
+               and msgs[history_end - 1].get("role") == "user" else last_user)
 
     # 1. Drop the oldest droppable history.
     def droppable(i: int) -> bool:
         if i < protected_prefix_count:  # required system/runtime blocks
             return False
-        if i == last_user:               # the request being answered
+        if i in (last_user, request):    # the request being answered
             return False
         if i >= len(msgs) - 2:           # newest tool result / current exchange
             return False
@@ -1288,13 +1339,49 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
     boundary = min(history_end if history_end is not None else first_traffic, first_traffic)
 
     def pop(at: int) -> None:
-        nonlocal overhead, last_user, boundary
+        nonlocal overhead, last_user, request, boundary
         overhead -= _msg_tokens(msgs[at])
         msgs.pop(at)
         if at < last_user:               # indices shifted under us
             last_user -= 1
+        if at < request:
+            request -= 1
         if at < boundary:
             boundary -= 1
+
+    def reduce_older_results(keep_chars: int | None) -> None:
+        """Shorten (keep_chars) or clear (None) this turn's older tool results,
+        oldest first, while over budget. The newest result is never touched:
+        droppable() protects the last two messages."""
+        nonlocal overhead
+        for k in range(protected_prefix_count, len(msgs)):
+            if not over():
+                return
+            m = msgs[k]
+            content = m.get("content")
+            if (m.get("role") != "tool" or not droppable(k) or not isinstance(content, str)
+                    or content.startswith(_CLEARED_RESULT_HEAD)):
+                continue
+            if keep_chars is None:
+                head, mark, tail = content.partition(_TRIMMED_RESULT_MARK)
+                cut = re.match(r"(\d+) more characters cut", tail) if mark else None
+                size = len(head) + int(cut.group(1)) if cut else len(content)
+                new = _CLEARED_RESULT.format(n=size)
+            elif _TRIMMED_RESULT_MARK in content or len(content) <= keep_chars:
+                continue
+            else:
+                new = (content[:keep_chars] + _TRIMMED_RESULT_MARK
+                       + _TRIMMED_RESULT_TAIL.format(n=len(content) - keep_chars))
+            reduced = {**m, "content": new}
+            if _msg_tokens(reduced) >= _msg_tokens(m):
+                continue
+            overhead += _msg_tokens(reduced) - _msg_tokens(m)
+            msgs[k] = reduced
+
+    # 1a0. Shorten this turn's OLDER tool results first. The model already read
+    # each one in the step that followed it, so its head is usually what still
+    # matters; an earlier turn of the conversation cannot be fetched again.
+    reduce_older_results(_OLDER_RESULT_CHARS)
 
     # 1a. Condense the conversation's earlier turns into the digest, oldest
     # first. Never this turn's own traffic after its request (see history_end).
@@ -1316,32 +1403,47 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
             msgs.insert(i, {"role": "system", "content": digest_content([line])})
             overhead += _msg_tokens(msgs[i])
             last_user += 1
+            if i <= request:
+                request += 1
             boundary += 1
             i += 1
         else:
             set_digest(at, cap_digest(digest_lines(msgs[at]) + [line]))
 
-    # 1b. Then the digest's oldest lines, and only then the context notes
-    # (host notes such as "do not repeat these unverified sends", the summary,
-    # the digest itself), oldest first.
-    at = next((j for j in range(protected_prefix_count, last_user) if is_digest(msgs[j])), None)
-    while over() and at is not None and droppable(at) and len(digest_lines(msgs[at])) > 1:
-        set_digest(at, digest_lines(msgs[at])[1:])
+    def floor_item(m: dict) -> bool:
+        return is_digest(m) or _is_kept_note(m)
+
+    def trim_digest(keep: int) -> None:
+        at = next((j for j in range(protected_prefix_count, len(msgs)) if is_digest(msgs[j])), None)
+        while over() and at is not None and droppable(at) and len(digest_lines(msgs[at])) > keep:
+            set_digest(at, digest_lines(msgs[at])[1:])
+
+    # 1b. Then clear this turn's OLDER tool results (already shortened in 1a0)
+    # to a placeholder, oldest first. The call stays, so the transcript is well
+    # formed and the model can see it already ran; an exact re-read is served
+    # from the turn's read cache.
+    reduce_older_results(None)
+
+    # 1c. Then the digest's oldest lines down to its floor, and the context
+    # notes that are not part of the floor (the rolling summary), oldest first.
+    trim_digest(_DIGEST_FLOOR_LINES)
     i = 1
-    while over() and i < last_user:
-        if not droppable(i) or msgs[i].get("role") != "system":
+    while over() and i < len(msgs):
+        m = msgs[i]
+        if not droppable(i) or m.get("role") != "system" or floor_item(m):
             i += 1
             continue
         pop(i)
 
-    # 1c. Then anything else droppable, oldest first (this turn's own traffic
-    # before the newest result). A tool call goes only together with all of
-    # its results, and never while one of them is protected: a result without
-    # its call, or a call missing a result, is a malformed transcript.
+    # 1d. Then anything else droppable outside the floor, oldest first (this
+    # turn's own traffic before the newest result). A tool call goes only
+    # together with all of its results, and never while one of them is
+    # protected: a result without its call, or a call missing a result, is a
+    # malformed transcript.
     i = 1
     while over() and i < len(msgs):
         m = msgs[i]
-        if not droppable(i) or m.get("role") == "tool":
+        if not droppable(i) or m.get("role") == "tool" or floor_item(m):
             i += 1
             continue
         if m.get("tool_calls"):
@@ -1353,6 +1455,16 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
                 continue
             for _ in range(end - i):
                 pop(i)
+            continue
+        pop(i)
+
+    # 1e. Only now the conversation floor: the digest's remaining lines, then
+    # the digest and the kept notes themselves, oldest first.
+    trim_digest(1)
+    i = 1
+    while over() and i < len(msgs):
+        if not droppable(i) or msgs[i].get("role") != "system":
+            i += 1
             continue
         pop(i)
 
@@ -1415,7 +1527,12 @@ def _fit_tool_result(result: str, name: str, limit: int = _MAX_TOOL_RESULT_CHARS
     if len(result) <= limit:
         return result
     kept = result[:limit].rsplit("\n", 1)[0]
-    return (f"{kept}\n\n[... {len(result) - len(kept):,} more characters were cut "
+    # A cut inside a fenced page or email body would leave the note below
+    # inside the fence, where the model is told to read it as untrusted data.
+    from service.tools.untrusted import close_open_fences
+    cut = len(result) - len(kept)
+    kept = close_open_fences(kept)
+    return (f"{kept}\n\n[... {cut:,} more characters were cut "
             f"to fit. This is NOT all of it — do not describe what you have as "
             f"complete. If you need what's missing, call {name} again with "
             f"narrower arguments (e.g. a `query`, a `day`, or a smaller "
@@ -1516,10 +1633,14 @@ def _readable_results(results: list[tuple[str, str]]) -> list[tuple[str, str]]:
     Messages verification codes.
     """
     from service.tools.task_evidence import render_evidence_text
+    from service.tools.untrusted import unfence
     out = []
     for name, result in results:
         if name == "collect_task_evidence" and (text := render_evidence_text(result)):
             result = text
+        elif isinstance(result, str) and not isinstance(result, DisplayOnlyToolResult):
+            # The untrusted-content fence lines are for the model, not the user.
+            result = unfence(result)
         out.append((name, result))
     return out
 

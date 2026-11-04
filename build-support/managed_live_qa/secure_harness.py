@@ -170,7 +170,8 @@ def install_synthetic_adapters(service_root: Path, *, endpoint: str) -> dict:
     isolated = ("service.publication_authority", "service.config.quarantine", "service.inference.omlx_client",
                 "service.inference.attributed_transport", "service.inference.local_peer",
                 "service.tools.email_tools", "service.tools.imessage_tools",
-                "service.tools.message_digest", "service.assistant.brief")
+                "service.tools.message_digest", "service.tools.untrusted",
+                "service.assistant.brief")
     for name in isolated:
         sys.modules.pop(name, None)
         parent_name, child = name.rsplit(".", 1)
