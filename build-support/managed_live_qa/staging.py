@@ -19,7 +19,7 @@ SOURCE_ALLOWLIST = (
     "service/credential_pipe.py",
     "service/message_content.py",
     "service/tools/email_tools.py", "service/tools/imessage_tools.py",
-    "service/tools/message_digest.py", "service/assistant/brief.py",
+    "service/tools/message_digest.py", "service/tools/untrusted.py", "service/assistant/brief.py",
     "service/inference/omlx_client.py", "service/inference/attributed_transport.py",
     "service/inference/local_peer.py", "service/inference/inference_errors.py",
     "service/inference/engine_epoch.py",

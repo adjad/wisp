@@ -63,7 +63,13 @@ _NEVER_GRANTABLE = {"send_email", "send_message", "create_tool",
                     # Always confirmed on model-led turns, where the model
                     # picks the exact item (model_led.MODEL_LED_ALWAYS_CONFIRM_TOOLS);
                     # an "always allow" offered there could never be honoured.
-                    "cancel_scheduled_send", "delete_knowledge", "edit_knowledge"}
+                    "cancel_scheduled_send", "delete_knowledge", "edit_knowledge",
+                    # A contact card is what every later send to that person
+                    # resolves through, so one approved add_phone is not
+                    # agreement to the next (policy._ALWAYS_CONFIRM_CONTACTS).
+                    # Its category already refuses an allow; named here too so
+                    # the refusal holds before the registry has loaded the tool.
+                    "manage_contacts"}
 
 # Tools that absorbed several single-purpose tools in the 100-tool
 # consolidation: (argument that selects the behaviour, its default, the
@@ -202,7 +208,7 @@ def scope_for(tool: str, args: dict) -> str:
                 from service.tools.system_extras import setting_key
                 return setting_key(value)
             return value.strip().lower()
-        if tool in ("web_fetch", "http_request"):
+        if tool == "web_fetch":
             from urllib.parse import urlparse
             return (urlparse(str(args.get("url", ""))).hostname or "").lower()
         if tool in ("write_file", "read_file"):

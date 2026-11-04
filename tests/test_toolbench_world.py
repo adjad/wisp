@@ -303,6 +303,12 @@ def test_memory_facts_profile_and_conversations(world, fk):
     assert f["preferred_name"] == world.profile["name"] and world.profile["goals"] == [f["goal_a"], f["goal_b"]]
     assert "No matching memory" in fk["recall"](query="submarine")
     assert "Nothing was searched" in fk["recall"](query="the and of")
+    # The any-term fallback mirrors the real recall: no fact holds both 'allergic' and
+    # 'anything', so the shared-term fact comes back labelled, not as an answer.
+    allergy = fk["recall"](query="am I allergic to anything")
+    assert "POSSIBLE MATCHES ONLY" in allergy and "[possible match, shares only 'allergic'" in allergy
+    assert "penicillin" in allergy and "No matching memory" in fk["recall"](query="submarine volcano")
+    assert "possible match" not in fk["recall"](query="allergic penicillin")
     assert f["convo_topic"] in fk["search_conversations"](query=f["convo_topic"])
     assert "No matching user conversation passages" in fk["search_conversations"](query="submarine")
     assert fk["remember"](fact="my gate code is 4417").startswith("Saved memory 7: ")
@@ -603,6 +609,17 @@ def test_web_results_vary_by_query(world, fk):
     assert isinstance(news, DisplayOnlyToolResult) and "unavailable to the model" in news.model_text
     assert "Wildfire" in str(news)
     assert "98400" in fk["web_fetch"](url="https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd")
+
+
+def test_fakes_fence_untrusted_bodies_as_production_does(fk):
+    # FIDELITY: production fences pages and email bodies (service/tools/untrusted.py).
+    from service.tools.untrusted import EMAIL_BODY, WEB_PAGE, begin_marker, end_marker
+    page = fk["web_fetch"](url="https://example.com/")
+    assert page.startswith("Title: Example page\nURL: https://example.com/\n\n" + begin_marker(WEB_PAGE))
+    assert page.endswith(end_marker(WEB_PAGE))
+    mail = fk["view_emails"](count=3)
+    assert mail.count(begin_marker(EMAIL_BODY)) == mail.count(end_marker(EMAIL_BODY)) == 3
+    assert "\nMessage-ID: m-" in mail.split(begin_marker(EMAIL_BODY))[0]
 
 
 def test_weather_degrades_for_misspelled_places(world, fk):

@@ -470,18 +470,15 @@ _PATH_DENY = [
 _PATH_ARG_KEYS = ("path", "paths", "source", "src", "destination", "dest", "archive_path",
                   "folder", "directory", "dir", "target", "output", "output_path",
                   "file", "files")
-_PATH_NAME_TOOLS = frozenset({"uninstall_app"})
 
 
 def _path_operands(args: dict, tool: str | None = None) -> list[tuple[str, str]]:
+    # `tool` is unused since archive_files was retired; kept so both call
+    # sites (hard-deny and preview) need not change.
     """(argument name, value) for every string location in `args`, list items included."""
     found: list[tuple[str, str]] = []
     for key in _PATH_ARG_KEYS:
         value = args.get(key)
-        # archive_files alone treats an empty/whitespace optional output as
-        # a default beside its first input, not Path('') at cwd.
-        if tool == "archive_files" and key == "archive_path" and isinstance(value, str) and not value.strip():
-            continue
         if isinstance(value, str):
             found.append((key, value))
         elif isinstance(value, (list, tuple)):
@@ -520,33 +517,16 @@ def _derived_path_operands(tool: str | None, args: dict):
     its preview does. This is admission-time checking, not recursive scanning
     or a binding of paths against changes between confirmation and execution.
     """
-    if tool == "archive_files":
-        paths, output = args.get("paths"), args.get("archive_path", "")
-        if not isinstance(paths, list) or not paths or not isinstance(paths[0], str) or not isinstance(output, str):
-            return
-        first = Path(paths[0]).expanduser()
-        if output.strip():
-            target = Path(output).expanduser()
-            if target.suffix != ".zip":
-                target = target.with_suffix(".zip")
-        else:
-            target = first.parent / f"{first.stem or first.name}.zip"
-        yield "archive output", str(target)
-    elif tool in {"convert_file", "write_document", "spreadsheet_ops", "encrypt_file"}:
+    # archive_files, convert_file and encrypt_file had branches here too; all
+    # three were retired in the 182 -> 100 tool consolidation, so nothing could
+    # reach them (test_every_tool_name_policy_names_is_registered keeps it so).
+    if tool in {"write_document", "spreadsheet_ops"}:
         if not isinstance(args.get("path"), str):
             return
         target = Path(args["path"]).expanduser()
-        if tool == "convert_file":
-            fmt = args.get("to_format", "")
-            if not isinstance(fmt, str):
-                return
-            target = target.with_suffix("." + fmt.strip().lower().lstrip("."))
-        elif tool == "encrypt_file":
-            target = target.with_suffix(target.suffix + (".dec" if args.get("decrypt", False) else ".enc"))
-        else:
-            suffix = ".docx" if tool == "write_document" else ".xlsx"
-            if target.suffix.lower() != suffix:
-                target = target.with_suffix(suffix)
+        suffix = ".docx" if tool == "write_document" else ".xlsx"
+        if target.suffix.lower() != suffix:
+            target = target.with_suffix(suffix)
         yield "derived output", str(target)
     elif tool == "move_path":
         if not isinstance(args.get("source"), str) or not isinstance(args.get("destination"), str):
@@ -927,6 +907,24 @@ _ALWAYS_CONFIRM_TOOL_AUTHORING = {"tool_authoring"}
 # is not covered here (service/mcp).
 _ALWAYS_CONFIRM_EXTENSION = {"mcp_action", "skill_tool"}
 
+# manage_contacts (create, add_phone, add_email). Always confirmed, in every
+# access mode, and never grantable (grants._NEVER_GRANTABLE). A contact card is
+# not a private note: it is the address book every later send resolves
+# through. lookup_contact turns "text Mom" into whatever number Mom's card
+# holds, and the ContactsReader sync turns an incoming number back into a
+# name. So one wrong add_phone (the 1B #33 "this is my mom btw" shape, aimed at
+# the wrong number) silently redirects every future message to "Mom" to a
+# stranger, and labels the stranger's texts as hers, with nothing at send time
+# to suggest anything changed. Same lesson as _ALWAYS_CONFIRM_CALENDAR's
+# 2026-08-18 incident: a write whose damage only shows up later, somewhere
+# else, needs a human to see the exact change before it happens, whatever mode
+# Wisp is in. Before this it had no rule of its own and fell to "unclassified
+# action": confirmed by default, but run unprompted under full access, and an
+# "always allow" for it could be stored. The tool has no read actions to
+# exempt (lookup_contact and list_contacts are the reads, category
+# messages_read), and an unknown action is a no-op error, so every call asks.
+_ALWAYS_CONFIRM_CONTACTS = {"messages_write"}
+
 
 # EVERY category that must be confirmed on every call. One definition, read by
 # both decide() (a standing grant cannot lift these) and grants (an allow rule
@@ -937,7 +935,7 @@ _ALWAYS_CONFIRM_EXTENSION = {"mcp_action", "skill_tool"}
 # smaller set. A new tool in any of these categories is covered automatically.
 ALWAYS_CONFIRM_CATEGORIES = frozenset(
     _ALWAYS_CONFIRM | _ALWAYS_CONFIRM_OUTBOUND | _ALWAYS_CONFIRM_CALENDAR
-    | _ALWAYS_CONFIRM_TOOL_AUTHORING | _ALWAYS_CONFIRM_EXTENSION)
+    | _ALWAYS_CONFIRM_TOOL_AUTHORING | _ALWAYS_CONFIRM_EXTENSION | _ALWAYS_CONFIRM_CONTACTS)
 
 # toggle_setting calls that switch something OFF the user may be relying on:
 # the network, wireless devices, a protection or an accessibility aid. Confirmed
@@ -1252,17 +1250,10 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
                 return Decision(Tier.DENY, f"matches blocked pattern: {hit}")
     if category in ("fs_write", "fs_delete"):
         rules = _rules("path_deny", _PATH_DENY)
+        # uninstall_app's `name` (an app basename joined onto each Applications
+        # folder) was the one location not passed under a _PATH_ARG_KEYS name;
+        # its special case went with the tool, retired in the consolidation.
         operands = _path_operands(args, tool)
-        if tool in _PATH_NAME_TOOLS and isinstance(args.get("name"), str):
-            # uninstall_app strips/appends .app, then joins each Applications
-            # root. Admit a basename only; an absolute name replaces the root.
-            name = args["name"].strip()
-            if not name or "/" in name or "\x00" in name or name in {".", ".."}:
-                return Decision(Tier.DENY, "uninstall_app requires an application basename, not a path")
-            if not name.endswith(".app"):
-                name += ".app"
-            operands.extend(("name", str(root / name))
-                            for root in (Path("/Applications"), Path.home() / "Applications"))
         if any("\x00" in operand for _, operand in operands):
             return Decision(Tier.DENY, "invalid filesystem path: NUL character")
         if (tool == "organize_files" and isinstance(args.get("folder"), str)
@@ -1480,6 +1471,95 @@ def _too_long_for_card(args: dict) -> Decision:
                     "did not run it. If the user wants it run, they can run it themselves.")
 
 
+def _card_text(value, limit: int = 200) -> str:
+    """A model-chosen argument as one line of a card reason, cut to fit. The
+    card shows the call's full arguments as well; this only names the change."""
+    text = " ".join(str(value if value is not None else "").split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def _fs_change(category: str, tool: str | None, args: dict) -> str:
+    """What an fs_write/fs_delete call changes, worded for its card.
+
+    The memory tools reuse these categories for their access-mode rules but
+    take no `path`, so the generic f"{verb} {path}" rendered their cards as
+    "writing " and "deleting " with nothing after them: a prompt asking the
+    user to approve a change it never named. move_path takes source and
+    destination, not `path`, and read the same way.
+    """
+    if tool == "remember":
+        replacing = args.get("supersedes_id")
+        suffix = f" (replacing memory {_card_text(replacing, 64)})" if replacing not in (None, "") else ""
+        return f"saving a memory: {_card_text(args.get('fact'))}{suffix}"
+    if tool == "forget":
+        return f"forgetting: {_card_text(args.get('query'))}"
+    if tool == "save_knowledge":
+        return f"saving to your knowledge: {_card_text(args.get('title'))}"
+    if tool == "edit_knowledge":
+        return (f"replacing saved knowledge item {_card_text(args.get('record_id'), 64)} "
+                f"with “{_card_text(args.get('title'))}”")
+    if tool == "delete_knowledge":
+        return f"deleting saved knowledge item {_card_text(args.get('record_id'), 64)}"
+    if tool == "move_path":
+        return f"moving {_card_text(args.get('source'))} to {_card_text(args.get('destination'))}"
+    verb = "deleting" if category == "fs_delete" else "writing"
+    return f"{verb} {_card_text(args.get('path'))}"
+
+
+# manage_timers actions that only report: "how long is left", the stopwatch's
+# current reading. The tool defaults a missing or empty action to "list". They
+# used to fall to "unclassified action" with every other timer_write call, so
+# "how much time is left on the pasta timer" showed a confirmation card in the
+# default mode and was refused outright in view-only.
+_TIMER_READ_ACTIONS = frozenset({"list", "stopwatch_read"})
+_STOPWATCH_CHANGES = {"stopwatch_start": "starts the stopwatch",
+                      "stopwatch_lap": "records a lap on the stopwatch",
+                      "stopwatch_stop": "stops the stopwatch"}
+
+
+def _timer_read(tool: str | None, args: dict) -> bool:
+    if tool != "manage_timers":
+        return False
+    action = args.get("action")
+    if action is None or action == "":
+        return True
+    # Anything that is not a plain read action, including a non-string the
+    # tool would choke on, takes the write rules.
+    return isinstance(action, str) and action.strip().lower() in _TIMER_READ_ACTIONS
+
+
+def _timer_change(tool: str | None, args: dict) -> str:
+    """The timer_write change, worded for its card."""
+    if tool == "set_timer":
+        kind = str(args.get("kind") or "timer").strip().lower()
+        if kind == "alarm":
+            return f"sets an alarm for {_card_text(args.get('time'), 40)}"
+        if kind == "sleep":
+            return f"pauses playback in {_card_text(args.get('duration'), 40)}"
+        return f"sets a timer for {_card_text(args.get('duration'), 40)}"
+    action = str(args.get("action") or "").strip().lower()
+    if action == "cancel":
+        return f"cancels the timer {_card_text(args.get('label'), 80)}"
+    if action == "cancel_all":
+        return "cancels every timer and alarm"
+    return _STOPWATCH_CHANGES.get(action, "changes your timers")
+
+
+def _contact_change(args: dict) -> str:
+    """The manage_contacts change, worded for its always-confirm card."""
+    action = str(args.get("action") or "").strip().lower()
+    name, value = _card_text(args.get("name"), 80), _card_text(args.get("value"), 120)
+    # The tool writes to the one card whose name *contains* `name`, so the
+    # card says "matching", not "Mom's": a lone "Tom Mommsen" would match.
+    if action == "add_phone":
+        return f"adds the phone number {value} to the contact matching “{name}”"
+    if action == "add_email":
+        return f"adds the email address {value} to the contact matching “{name}”"
+    if action == "create":
+        return f"creates a new contact named “{name}”"
+    return f"changes the contact matching “{name}”"
+
+
 def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
     """Return the policy decision for a tool action.
 
@@ -1648,6 +1728,14 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
         return Decision(Tier.CONFIRM,
                         "changes your calendar — always confirmed")
 
+    # Contacts writes redirect every later send to that person
+    # (_ALWAYS_CONFIRM_CONTACTS), so full access does not skip the card.
+    if category in _ALWAYS_CONFIRM_CONTACTS:
+        if read_only():
+            return Decision(Tier.DENY, "view-only mode: changing contacts is disabled")
+        return Decision(Tier.CONFIRM, f"{_contact_change(args)} — messages and email to them can "
+                        "go wherever their card points, so this is always confirmed")
+
     # Drafts and mailbox triage: real writes, but nothing irreversible and
     # nothing sent. They fall through to the normal access-mode rules below —
     # allowed outright in full-access, confirmed in the default mode, denied in
@@ -1744,11 +1832,29 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
         return Decision(Tier.ALLOW, "read-only web fetch (GET)")
 
     if category in ("fs_write", "fs_delete"):
-        path = str(args.get("path", ""))
         if ro:
             return Decision(Tier.DENY, "view-only mode: modifying files is disabled")
-        verb = "deleting" if category == "fs_delete" else "writing"
-        return Decision(Tier.CONFIRM, f"{verb} {path}")
+        return Decision(Tier.CONFIRM, _fs_change(category, tool, args))
+
+    # create_note / append_note write into Notes.app, and set_timer /
+    # manage_timers start or cancel something that fires later. Ordinary local
+    # writes: nothing leaves the Mac and nothing is destroyed beyond a timer, so
+    # they take the plain access-mode rules (full access ran above, view-only
+    # refuses, the default mode asks). Until these rules existed both
+    # categories fell to "unclassified action" below, which happened to give
+    # the same tiers but named nothing on the card.
+    if category == "notes_write":
+        if ro:
+            return Decision(Tier.DENY, "view-only mode: changing notes is disabled")
+        title = _card_text(args.get("title"), 120)
+        return Decision(Tier.CONFIRM, f"adds to the note “{title}” in Notes" if tool == "append_note"
+                        else f"creates the note “{title}” in Notes")
+    if category == "timer_write":
+        if _timer_read(tool, args):
+            return Decision(Tier.ALLOW, "reading your timers")
+        if ro:
+            return Decision(Tier.DENY, "view-only mode: timers and alarms are disabled")
+        return Decision(Tier.CONFIRM, _timer_change(tool, args))
 
     if category in ("app_control", "network"):
         if ro:

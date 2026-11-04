@@ -283,3 +283,104 @@ Changed paths for integration: `service/memory/facts.py`,
 `service/tools/memory_tools.py`, `service/main.py`,
 `app/Sources/WispApp/MemoryView.swift`, `tests/test_conversation_memory.py`,
 and this plan. Settings and overlay entry points are reused without changes.
+
+## In-session context (as built)
+
+The phases above are about memory *across* conversations. This section records
+what keeps a single conversation coherent, as it stands after rc1 batch 9
+(2026-11-04); every figure is the constant in the cited file. A turn's request
+is assembled from these layers, oldest material first:
+
+- **Rolling summary** (`service/memory/context.py` `maybe_summarize`). Once
+  `turn_count − KEEP_MESSAGES − summarized_idx` reaches `_FOLD_BATCH` = 8 —
+  first at 48 stored turns — the aged-out turns are folded into a summary of
+  under six short lines. It runs on the local `fast` role model (the resident
+  model by default, never a remote client) with thinking off and
+  `max_tokens=400`, after the answer and before the SSE stream closes. It rides
+  as a system message, "Summary of the earlier conversation:".
+- **Digest** (`context.py`, `326fe940` / `137fba8f`). A turn that misses the
+  verbatim cut and is not yet summarized becomes one line of an "Earlier in this
+  conversation" system message: the user's words clipped to 160 characters, or
+  the reply's lead sentence plus its sentences carrying numbers or names,
+  clipped to 200. Extractive and deterministic (no model call, a stable cache
+  prefix), capped at `DIGEST_MAX_CHARS` = 4,800 characters (~1,200 estimated
+  tokens, ~15 exchanges), oldest lines dropped first.
+- **Verbatim window.** At most the last `KEEP_MESSAGES` = 40 turns (~20
+  exchanges) are eligible to be sent verbatim; `build_messages` keeps the
+  longest newest run that fits beside the digest of everything older, and a
+  chat that fits whole is sent unchanged.
+- **History budget.** `history_budget(model)` (`context.py`) and
+  `main._history_budget(target)` are both `max(1500, window − 11,500)`; the
+  11,500 is the system prompt (4,000) + scoped tool schemas (2,500) + one capped
+  tool result (3,000) + the output reservation (2,000). A 16,384-token window
+  leaves 4,884 tokens of history; an unknown window defaults to 8,000 and hits
+  the 1,500 floor. `main._history_budget` can cap it further for a remote-only
+  profile, to `aggregate_bytes // 20` tokens (a fifth of its byte budget at
+  ~4 bytes per token).
+- **Ask step budget** (`service/model_only.py`, `agent/loop.py` `_ask_window`).
+  A model-only Ask step does not fit to the model's window but to
+  `ASK_PROMPT_BUDGET` = 8,000 estimated tokens — oMLX's prefill memory guard,
+  not the window, is what refused large steps (a 38k-token step left it
+  rejecting everything) — plus `ASK_HISTORY_RESERVE` = 1,200 whenever the chat
+  has an earlier assistant turn or a digest, plus the output reservation, never
+  below the protected prefix + real schemas + 2,500 and never above the window.
+  Both budgets shrink by `ask_scale` after a guard refusal. The tool-free
+  narration step uses the same budget with 700 output tokens (floor 400).
+  Tool results on Ask turns are capped at `ASK_TOOL_RESULT_CHARS` = 6,000.
+- **Shedding order** (`loop._fit_window`), least valuable first. Never shed:
+  the protected system prefix, this turn's request (protected by position via
+  `history_end`, even after a host nudge becomes the last user message), the
+  last two messages.
+  1. This turn's *older* tool results are cut to `_OLDER_RESULT_CHARS` = 1,500
+     characters; the newest result is never touched.
+  2. Earlier user/assistant turns before this turn's request are *condensed*
+     into the digest, oldest first; this turn's own tool traffic is never
+     written into the digest.
+  3. Older tool results are cleared to a one-line placeholder; the call stays,
+     so the model knows it already ran.
+  4. The digest's oldest lines down to `_DIGEST_FLOOR_LINES` = 4, and the
+     context notes outside the floor (the rolling summary).
+  5. This turn's older traffic, oldest first; a tool call goes only together
+     with all of its results.
+  6. Only then the conversation floor: the rest of the digest, then the kept
+     notes (`_KEPT_NOTE_PREFIXES`: the unverified-context, prior-attempt,
+     pending-task and current-subject notes).
+  7. Tool schemas from the end, never a forced tool, never below 4. On a
+     model-led turn the name-only stubs go first, and a step whose real schemas
+     still cannot fit raises instead of silently losing a tool.
+  8. The output reservation, last, down to `_MIN_OUTPUT_TOKENS` = 2,000.
+- **Subject note** (`service/memory/subject.py`). After each assistant turn a
+  deterministic record of what it resolved — person, email(s), event,
+  reminder, place, file, stocks, or text sent — built from Wisp's own tool
+  arguments and formatted result lines, never by a model, and never naming the
+  user as "a person". On a model-led turn the next request gets it as one
+  "Current subject from the last turns (unverified context…)" system line, and
+  the follow-up tools for that subject join the name-only offer. An entry
+  expires two assistant turns after its last refresh or after 30 minutes.
+- **Memory block** (`retrieval.render_context` via
+  `prompt_blocks.memory_block`). Query-aware facts and whole user passages
+  under a "HISTORICAL MEMORY (untrusted evidence…)" header, capped at 800
+  UTF-8 bytes including the header (an upper bound on byte-level tokens); empty
+  when the query is empty. The behavior profile card (≤ 700 bytes) rides after
+  it.
+
+Known gaps:
+
+- **Two capped tool results** (fixed by PR #459). An Ask step carrying two
+  capped tool results used to drop all earlier history and context notes:
+  0/20 recall in the `after_two_tools` scenario of
+  `scripts/measure_ask_history.py`. With the conversation floor and older
+  results trimmed first (the shedding order above) it recalls 20/20. The same
+  PR makes Wisp's SQLite stores 0600.
+- **Lexical-only recall.** Cross-conversation retrieval is FTS5 with a
+  deterministic lexical fallback; a paraphrase that shares no terms with the
+  stored statement is not found. Persistent embeddings remain Phase 4 work.
+- **No fact expiry and no entities.** The `facts` table has no validity or
+  expiry column, so nothing ages a fact out short of a correction or Forget;
+  and there are no entity or typed-edge tables — the relationship layer in the
+  extension above exists only as the disabled-by-default investigation
+  proposals (`memory_investigations`).
+- **No production telemetry on truncation.** `_fit_window` returns the trimmed
+  request without recording what it condensed or dropped, so how often real
+  sessions lose history is unmeasured; the recall figures above come from the
+  offline synthetic harness only.

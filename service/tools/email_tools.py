@@ -57,6 +57,7 @@ from functools import wraps
 from service.tools.timeranges import PERIOD_ARG, BadPeriod, resolve_span
 from service.tools import cache_store
 from service.tools.registry import register
+from service.tools.untrusted import EMAIL_BODY, fence, neutralize
 
 
 # Legacy shared token ceiling imported by imessage_tools.
@@ -2130,13 +2131,23 @@ def _raw_account_scope(rows: list[dict], account: str | None) -> tuple[list[dict
 
 def _email_body_block(row: dict) -> str:
     """Render a body (verbatim, or a labelled digest of a long one) with its
-    account and message identities."""
+    account and message identities.
+
+    The body is fenced as untrusted (service/tools/untrusted.py): a raw body
+    line "From: ..." or "---" read exactly like this block's own structure, and
+    memory/subject.build took a header-shaped block planted in a body as a
+    second email with its own Message-ID. Header lines stay outside the fence,
+    in this order, for the parsers that read them (subject.build,
+    model_led.personal_evidence_matches, model_only.compact_results). Sender,
+    recipient and subject are the sender's text too, so a marker-shaped run in
+    them is defused as well; nothing else about them changes."""
     when = datetime.fromtimestamp(row["ts"]).strftime("%a %b %-d, %Y %-I:%M %p")
     account = f"Account: {row['account']}\n" if row.get("account") else ""
     native_id = f"Account-ID: {row['account_id']}\n" if row.get("account_id") else ""
     message_id = f"Message-ID: {row['message_id']}\n" if row.get("message_id") else ""
-    return (f"{account}{native_id}From: {row['sender']}\nTo: {row['to']}\n"
-            f"Subject: {row['subject']}\nDate: {when}\n{message_id}\n{row['body']}")
+    header = neutralize(f"{account}{native_id}From: {row['sender']}\nTo: {row['to']}\n"
+                        f"Subject: {row['subject']}\nDate: {when}\n{message_id}")
+    return f"{header}\n{fence(row['body'], EMAIL_BODY)}"
 
 
 def _scan_marker_accounts(text: str) -> list[dict]:
