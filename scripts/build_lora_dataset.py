@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sqlite3
+import sys
 from pathlib import Path
 
 from service.agent.loop import SYSTEM
@@ -26,6 +28,33 @@ AUDIT_LOG = Path.home() / ".moe" / "audit.jsonl"
 
 MIN_ASSISTANT_CHARS = 8   # drop near-empty / truncated turns
 MAX_MESSAGE_CHARS = 4000  # drop runaway turns (bad for a 2.6B context budget)
+
+
+def _private_dir(path: Path) -> Path:
+    """The output directory, created owner-only (0700) when it is new.
+
+    An existing directory is left as it is (`--out ~` must not strip access
+    from the home folder); the files written into it are 0600 either way.
+    """
+    if not path.is_dir():
+        path.mkdir(mode=0o700, parents=True)
+    elif path.stat().st_mode & 0o077:
+        print(f"note: {path} is readable by other accounts; the files written "
+              "there are owner-only", file=sys.stderr)
+    return path
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Write `text` to a file that is 0600 from its first byte.
+
+    The examples are the user's own chat turns from sessions.db (with real
+    tool arguments), so they get the store's owner-only mode instead of the
+    process umask. fchmod also tightens a file an earlier run left 0644.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
 
 
 def load_audit_events() -> list[dict]:
@@ -126,26 +155,23 @@ async def main():
     ap.add_argument("--val-frac", type=float, default=0.1)
     args = ap.parse_args()
 
-    out_dir = Path(args.out).expanduser()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _private_dir(Path(args.out).expanduser())
 
-    conn = sqlite3.connect(SESSIONS_DB)
+    # Read-only: a missing store must not be created here with the umask.
+    conn = sqlite3.connect(f"file:{SESSIONS_DB}?mode=ro", uri=True)
     audit = load_audit_events()
     examples = await build_examples(conn, audit)
 
     n_val = max(1, int(len(examples) * args.val_frac))
     val, train = examples[:n_val], examples[n_val:]
 
-    (out_dir / "train.jsonl").write_text(
-        "\n".join(json.dumps(e) for e in train) + "\n"
-    )
-    (out_dir / "valid.jsonl").write_text(
-        "\n".join(json.dumps(e) for e in val) + "\n"
-    )
+    _write_private(out_dir / "train.jsonl",
+                   "\n".join(json.dumps(e) for e in train) + "\n")
+    _write_private(out_dir / "valid.jsonl",
+                   "\n".join(json.dumps(e) for e in val) + "\n")
     # mlx_lm.lora requires a test.jsonl to exist even if --test isn't passed
-    (out_dir / "test.jsonl").write_text(
-        "\n".join(json.dumps(e) for e in val[: max(1, n_val // 2)]) + "\n"
-    )
+    _write_private(out_dir / "test.jsonl",
+                   "\n".join(json.dumps(e) for e in val[: max(1, n_val // 2)]) + "\n")
 
     with_tools = sum(1 for e in examples if any("tool_calls" in m for m in e["messages"]))
     with_subset = sum(1 for e in examples if e.get("tools"))
