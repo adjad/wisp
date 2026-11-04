@@ -24,6 +24,7 @@ import os
 import re
 from contextvars import ContextVar
 from datetime import date, timedelta
+from typing import NamedTuple
 
 
 # Set by service/main.py for one /agent turn that cannot be model-led (an agent
@@ -275,6 +276,73 @@ def promise_only_reply(text: str) -> bool:
     text = (text or "").strip().replace("\u2019", "'")
     return (bool(text) and len(text) <= 400 and "?" not in text
             and bool(_PROMISE.search(text)))
+
+# A final that says a change was made: "Set a reminder tomorrow at 10 PM: …",
+# "I've added it to your calendar.", "Your reminder is set." The loop checks it
+# against the turn's own tool outcomes (2026-11-04 Ask export: "yes go ahead"
+# got "Set a reminder tomorrow at 10 PM…" with no tool call, and the user
+# looked for a reminder that never existed).
+_CLAIM_VERBS = (r"(?:set|created|added(?!\s+up\b)|scheduled|rescheduled|sent|texted|emailed|messaged|moved|deleted|"
+                r"removed|cancel+ed|booked|saved|updated|archived|forwarded|replied|"
+                r"marked\s+\S+\s+(?:as\s+)?(?:done|complete|completed|read)|"
+                r"turned\s+(?:on|off)|switched\s+(?:on|off)|muted|unmuted)")
+_CLAIM_NOUNS = r"(?:reminders?|timers?|alarms?|events?|meetings?|notes?|messages?|texts?|e-?mails?|drafts?)"
+_CLAIM_I = re.compile(r"^(?:i(?:'ve|\s+have)?|i(?:'ve|\s+have)?\s+(?:just|now|also|already|gone\s+ahead\s+and))\s+"
+                      + _CLAIM_VERBS + r"\b(?!\s+(?:aside|out|on|together|apart)\b)", re.I)
+# Subjectless or passive, only as the reply's lead: "Set a reminder for 9 PM.",
+# "Added to your calendar.", "Reminder set for Friday.", "Your note is saved."
+_CLAIM_LEAD = re.compile(
+    r"^(?:(?:created|added|scheduled|rescheduled|sent|texted|emailed|moved|deleted|removed|cancel+ed|booked|"
+    r"saved|archived|forwarded)\b(?!\s+up\b)"
+    r"|set\s+(?:up\s+)?(?:a|an|the|your)?\s*(?:reminder|timer|alarm|event)\b"
+    r"|(?:(?:the|your|a)\s+)?" + _CLAIM_NOUNS + r"\s+(?:(?:is|has\s+been|was|are|have\s+been)\s+(?:now\s+)?)?"
+    r"(?:set|created|added|scheduled|sent|booked|saved|moved|deleted|cancel+ed)\b"
+    r"|you(?:'re|\s+are)\s+all\s+set\b|all\s+set\b|done\s*[.!]*$)", re.I)
+# Not a claim: a question, a negation or a condition. A modal ("I can set…",
+# "I'll add…") never matches the claim patterns in the first place.
+_CLAIM_HEDGE = re.compile(r"\?|\b(?:not|never|nothing|n't)\b|n't\b|^(?:if|once|when|whenever|after)\b",
+                          re.I)
+_CLAIM_BACKREF = re.compile(r"\b(?:earlier|already|before|previously|last\s+time|yesterday|this\s+morning|"
+                            r"a\s+(?:moment|minute|while)\s+ago)\b", re.I)
+_CLAIM_PREFIX = re.compile(r"^\s*(?:\*\*)?(?:(?:ok(?:ay)?|sure|great|got\s+it|alright|perfect|done|yes|yep|"
+                           r"all\s+set)\s*[—–,:!.-]+\s*)+", re.I)
+
+
+class EffectClaim(NamedTuple):
+    sentence: str
+    backref: bool       # points back to an earlier turn ("I set it earlier")
+    first_person: bool  # "I've set…"; False for "Set a reminder…"/"Reminder set."
+
+
+def claimed_effect(text: str) -> EffectClaim | None:
+    """The sentence where the reply says it made a change, else None.
+    First-person claims count anywhere outside quotes, code and list items;
+    subjectless and passive ones ("Set a reminder for 9 PM.", "Reminder set.")
+    only as the reply's lead, where a narrated source line cannot be mistaken
+    for one. A subjectless lead can also be advice ("Set a reminder so you
+    don't forget"), so callers trust it only when the user asked for a change."""
+    lead = True
+    for line in (text or "").replace("’", "'").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith((">", '"', "`", "“", "-", "*", "•")) and not stripped.startswith("**"):
+            lead = False
+            continue
+        for sentence in re.split(r"(?<=[.!?])\s+", stripped):
+            body = _CLAIM_PREFIX.sub("", sentence).strip().strip("*").strip()
+            if re.fullmatch(r"(?:done|all\s+set)\s*[.!]*", sentence.strip().strip("*"), re.I):
+                body = "done"
+            if body and not _CLAIM_HEDGE.search(re.sub(r"\bdo\s+not\s+disturb\b", "", body, flags=re.I)):
+                first = bool(_CLAIM_I.search(body))
+                if first or (lead and _CLAIM_LEAD.search(body)):
+                    return EffectClaim(sentence.strip(), bool(_CLAIM_BACKREF.search(sentence)), first)
+            lead = False
+    return None
+
+
+# Says plainly that nothing happened, in place of a claim no tool backs.
+ASK_CLAIM_NOT_DONE = "I haven't done that yet: nothing was created, sent or changed."
 
 # Appended to a model-led turn's runtime prompt (the light-read style hint the
 # legacy router sets is never set on a model-led turn).

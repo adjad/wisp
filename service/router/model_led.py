@@ -618,3 +618,70 @@ def continuation_send_exemption(prompt: str, last_assistant: str | None) -> froz
         return frozenset()
     return OFFERED_SEND_CATEGORIES if _SEND_OFFER.search(last_assistant) else frozenset()
 
+
+# Creations a bare assent may reach when it answers the assistant's own offer
+# to make one ("Should I set a reminder for any of those?" -> "yes go ahead").
+# Create-only and reversible: never an update, completion, move, cancel or
+# delete, and never a send (sends keep continuation_send_exemption above).
+# add_calendar_event always shows a confirmation card (policy
+# _ALWAYS_CONFIRM_CALENDAR); a reminder, timer or note is one tap to remove.
+# 2026-11-04 Ask export: every write was forbidden on "yes go ahead", so the
+# offered reminder could not be made and the model claimed it anyway.
+_OFFER_LEAD = (r"\b(?:i\s+can|i\s+could|should\s+i|shall\s+i|want\s+me\s+to|would\s+you\s+like\s+me\s+to|"
+               r"do\s+you\s+want\s+me\s+to|like\s+me\s+to|happy\s+to)\b")
+# (tool, its verbs, its nouns). The offer is the assistant's closing question:
+# a lead ("should I", "want me to"), a verb, and the noun in that question, or
+# a pronoun ("set it anyway?") whose noun is in the sentence just before it.
+_CREATE_OFFERS = (
+    ("add_reminder", r"set|add|create|make|put", r"reminders?|alerts?"),
+    ("set_timer", r"set|start", r"timers?"),
+    ("create_note", r"make|create|save|start|jot|write", r"notes?"),
+    ("add_calendar_event", r"add|put|create|schedule|block", r"calendar|events?"),
+)
+_OFFER_PRONOUN = r"(?:it|that|this|one|them|those)"
+_REMIND_YOU = re.compile(_OFFER_LEAD + r"[^?]*\bremind\s+you\b", re.I)
+
+
+def _closing_question(last_assistant: str) -> tuple[str, str]:
+    """(the assistant's last question, the sentence just before it)."""
+    end = last_assistant.rfind("?")
+    if end < 0:
+        return "", ""
+    head = last_assistant[:end + 1]
+    sentences = [s for s in re.split(r"(?<=[.!?\n])\s+", head) if s.strip()]
+    if not sentences:
+        return "", ""
+    return sentences[-1], (sentences[-2] if len(sentences) > 1 else "")
+
+
+def answers_offer(prompt: str, last_assistant: str | None) -> bool:
+    """A bare assent ("yes", "go ahead") to the assistant's own closing offer
+    ("Should I…?", "Want me to…?"). A decline never is one."""
+    if not last_assistant or _DECLINE.search(prompt or ""):
+        return False
+    if not continuation_requires_baseline(prompt, last_assistant):
+        return False
+    question, _ = _closing_question(last_assistant)
+    return bool(question and re.search(_OFFER_LEAD, question, re.I))
+
+
+def continuation_create_exemption(prompt: str, last_assistant: str | None) -> frozenset[str]:
+    """Tool names a bare assent may still reach, when it answers the
+    assistant's OWN offer to create something. Like the send exemption above,
+    a decline never qualifies and anything that is not a bare assent or channel
+    answer is not a continuation at all (it gets the normal model-led menu).
+    Only the closing question counts: an earlier aside ("I can also set
+    reminders.") is not the offer the user is answering."""
+    if not answers_offer(prompt, last_assistant):
+        return frozenset()
+    question, before = _closing_question(last_assistant)
+    found = set()
+    for name, verbs, nouns in _CREATE_OFFERS:
+        if re.search(rf"\b(?:{verbs})\b[^?]*\b(?:{nouns})\b", question, re.I) or (
+                re.search(rf"\b(?:{verbs})\s+{_OFFER_PRONOUN}\b", question, re.I)
+                and re.search(rf"\b(?:{nouns})\b", before, re.I)):
+            found.add(name)
+    if _REMIND_YOU.search(question):
+        found.add("add_reminder")
+    return frozenset(found)
+
