@@ -3,6 +3,11 @@
 *What it does, how it works, what's broken, and how it got here.*
 Compiled 2026-08-23 from the full project history (80 Claude Code sessions,
 2026-06-29 → 2026-08-23), the codebase, and the project memory store.
+Harness behaviour in §0 scale, §1.3, §2.3–§2.5 and §3.1–§3.4 was re-verified
+against the code at `e46d4622` on 2026-11-04. Measurements taken in an earlier
+era (162 tools, Ling as the agent model) are labelled *(historical)* inline and
+were not re-run; per-machine state (memory-guard ceilings) was not re-checked.
+History (§4) is left as it was written, apart from one cross-reference.
 
 ---
 
@@ -19,7 +24,7 @@ device through **oMLX**, a local MLX-based model server.
 | **Processes** | `Wisp.app` (Swift, menu bar) → Python FastAPI backend on `:8765` → oMLX on `:8000` |
 | **Installed app** | `/Applications/Wisp.app` — bundles its own copy of `service/` and a slim `.venv`, and launches the backend itself |
 | **State** | Everything under `~/.moe/` (plus `~/.wispair/` on the Air) |
-| **Scale** | ~27k lines of Python across `service/`, 34 Swift files, 162 registered tools, 33 test files |
+| **Scale** | ~139k lines of Python across `service/`, 135 Swift files under `app/`, 93 registered tools (94 with `use_skill`), 396 `tests/test_*.py` files |
 
 The core idea and the namesake: a **Mixture-of-Experts router** classifies each
 request and dispatches it to the right local model. That premise has since
@@ -51,30 +56,40 @@ Four tiers stream out as they land, each independently failable:
 
 Deliberately **not** `⌘F`: Carbon's `RegisterEventHotKey` would claim it
 system-wide and break native find in every app. The 320 MB embedder does not
-load when Wisp opens; it loads on demand when Smart Search captures a document
-or an ambiguous tool route needs semantic retrieval. Synthesis runs on whatever
+load when Wisp opens; it loads on demand when Smart Search captures a document.
+It no longer takes part in tool routing (`models.yaml`; the packaged retrieval
+provider is lexical, §2.3). Synthesis runs on whatever
 chat model is already resident.
 
-### 1.3 Operating the Mac — 162 tools
+### 1.3 Operating the Mac — 93 tools
 
-The agent loop drives a registry of 162 tools. Each declares a safety
-`category` that the policy engine keys on.
+The agent loop drives a registry of 93 built-in tools (`len(REGISTRY)` after
+`import service.tools`); `service/skills/tools.py` adds `use_skill` at runtime
+for 94, plus whatever installed skills and MCP servers contribute. Each declares
+a safety `category` that the policy engine keys on.
+
+The registry peaked at 182. `04342402` (2026-10-13) consolidated it to 100 by
+merging single-purpose tools into argument-bound ones (`get_weather(include=…)`,
+`set_timer(kind=timer|alarm|sleep)`, `system_status(section=…)`,
+`email_triage(action=…)`, `wisp_status(topic=models|sync)`), and `80d96ea5`
+(2026-10-14) retired volume, lock, music, audio, `delete_path` and the grocery
+evidence tools at the user's request, leaving 92; one has been added since.
 
 | Area | Count | Examples |
 |---|---|---|
-| Apps, media & system control | 29 | `open_app`, `quit_app`, `window_control`, `spotify`, `music`, `run_shortcut`, `place_call`, `print_document` |
-| Web & live data | 20 | `web_fetch`, `get_weather`, `get_stock_price`, `track_flight`, `track_package`, `transit_info`, `get_sports_scores` |
-| Wisp's own assistant store | 24 | `get_upcoming`, `get_past_events`, `add_reminder`, `daily_brief`, `find_free_time`, `recall`, `remember`, `forget`, `search_coverage` |
-| Device settings & readings | 22 | `get_battery_status`, `set_volume`, `set_wifi`, `system_status`, `network_info`, `set_display`, `lock_screen` |
-| Files | 18 | `read_file`, `write_file`, `list_dir`, `find_files`, `move_path`, `organize_files`, `delete_path`, `write_document` |
-| Mail | 13 | `summarize_emails`, `view_emails`, `send_email`, `reply_to_email`, `triage_inbox`, `archive_email`, `unsubscribe` |
-| Messages & contacts | 8 | `summarize_messages`, `view_messages`, `send_message`, `lookup_contact`, `list_contacts` |
-| Timers & scheduling | 8 | `set_timer`, `set_alarm`, `stopwatch`, `schedule_task`, `schedule_send` |
-| Calendar writes | 4 | `add_calendar_event`, `update_event`, `cancel_event`, `clear_past_reminders` |
-| Notes | 4 | `create_note`, `append_note`, `search_notes`, `scan_to_note` |
-| Compute | 4 | `calculate`, `convert_units`, `world_time`, `random_pick` |
+| Apps, windows & system | 10 | `open_app`, `quit_app`, `window_control`, `toggle_setting`, `system_status`, `screen_capture`, `clipboard_read` |
+| Web, places & browsing | 9 | `web_search`, `web_fetch`, `wikipedia_summary`, `get_weather`, `get_stock_price`, `travel_time`, `search_browser_history` |
+| Wisp's own assistant store | 20 | `get_upcoming`, `get_past_events`, `daily_brief`, `get_my_day_plan`, `find_free_time`, `add_reminder`, `search_coverage` |
+| Memory & saved knowledge | 8 | `remember`, `recall`, `forget`, `search_conversations`, `save_knowledge`, `read_knowledge` |
+| Files & documents | 8 | `read_file`, `write_file`, `list_dir`, `find_files`, `move_path`, `organize_files`, `write_document`, `spreadsheet_ops` |
+| Mail | 9 | `summarize_emails`, `view_emails`, `triage_inbox`, `email_triage`, `draft_email`, `send_email`, `reply_to_email`, `forward_email` |
+| Messages & contacts | 7 | `summarize_messages`, `view_messages`, `draft_message`, `send_message`, `lookup_contact`, `manage_contacts` |
+| Calendar writes | 6 | `add_calendar_event`, `update_event`, `cancel_event`, `clear_past_reminders`, `commit_private_meeting` |
+| Timers & scheduling | 3 | `set_timer`, `manage_timers`, `schedule_send` |
+| Notes | 3 | `create_note`, `append_note`, `search_notes` |
+| Compute | 3 | `calculate`, `convert_units`, `world_time` |
 | Shell & authoring | 3 | `run_shell`, `run_applescript`, `create_tool` |
-| Wisp admin | 4 | `wisp_status`, `wisp_sync`, `wisp_skills`, `wisp_mcp` |
+| Wisp admin | 4 | `wisp_status`, `wisp_capabilities`, `wisp_skills`, `wisp_mcp` |
 
 `read_file` extracts real content from PDF, `.docx`, `.xlsx` and `.pptx` — not
 container bytes. Legacy OLE2 formats (`.doc`/`.xls`/`.ppt`) report plainly
@@ -133,10 +148,11 @@ model to actually run and verify the code it writes. The router never picks it.
 - **MCP** — any stdio server in `~/.moe/mcp.json` contributes its tools to the
   same loop. **stdio only, deliberately** — an HTTP/SSE MCP server would send
   user content off-device.
-- **Self-authored tools** — `draft_tool` generates code and writes nothing;
-  `create_tool` can only install whatever `draft_tool` most recently produced
-  for that name. The split structurally forces "shown to the user" before
-  "installed". A tool created mid-turn is usable in that same turn.
+- **Self-authored tools** — `create_tool` writes the tool with the coding
+  model and shows the generated code on its confirmation card; nothing is
+  installed until the user approves that exact code (`draft_tool`, the earlier
+  separate drafting step, is no longer registered). A tool created mid-turn is
+  usable in that same turn.
 
 ### 1.8 Safety
 
@@ -229,8 +245,26 @@ facts, the assistant store, syncs, skills, MCP, permissions, audit, and search.
 
 ### 2.3 Routing — three layers
 
-`service/router/router.py` is the largest file in the project (~2,800 lines).
-A request passes through:
+`service/router/router.py` is the largest file in the project (9,345 lines).
+
+> **Model-led routing is the packaged default.** `model_only: true` in
+> `service/config/models.yaml` (`504a2373`, the 0.5.0-rc3 default;
+> `WISP_MODEL_ONLY` or `~/.moe/config.yaml` can turn it off) sends every
+> `/agent` turn to the model and skips the layers below that answer first —
+> typed tasks, delivery workflows, router reads and `direct_calls`, verbatim
+> tool short-circuits. The router survives there only as a head start:
+> `main._ask_tool_rank` offers `ASK_PRELOAD` = 6 real schemas and up to
+> `ASK_STUBS` = 24 name-only stubs from a lexical ranking, plus the
+> `ASK_CORE_STUBS` everyday set (30 names) and any subject follow-up tools, all
+> name-only (44 tools offered on the first step in the
+> `scripts/measure_ask_history.py` setup), and the model can
+> fetch any other admitted tool's schema with `get_tool_schemas`
+> (`service/router/model_led.py`). Policy, confirmation cards and grants apply
+> to every call either way. The three layers below are the rules path
+> (`model_only: false`, or a turn whose agent role is bound to a cloud or
+> local-provider endpoint).
+
+A rules-path request passes through:
 
 1. **Typo normalization** (`_normalize_typos`) — added after "calandar"
    consistently routed to the wrong place.
@@ -242,20 +276,26 @@ A request passes through:
    inbox" completes with zero agent-loop model calls.
 3. **Semantic retrieval fallback** (`service/router/semantic.py`) — anything
    ambiguous retrieves ~10 tools by embedding similarity instead of getting a
-   static list. Each tool's aliases are embedded as **separate vectors**, scored
+   static list *(historical: the embedding era, 162 tools)*. Each tool's aliases are embedded as **separate vectors**, scored
    by MAX, which took recall from 77.5% to 100%. Retrieval costs ~31 ms warm and
    the retrieved menu is ~1,632 tokens against the static core's 3,992 — net
-   TTFT is ~250 ms *better*, not merely flat.
+   TTFT is ~250 ms *better*, not merely flat. **The packaged provider is now
+   lexical** (`tool_retrieval.provider` in `models.yaml`, read by
+   `router._semantic_core`): the live 40-tool sample scored 40/40 at ~4.4 ms
+   for the lexical top-20 against 39/40 at ~1.08 s warm for the reranker, and
+   lexical keeps no extra model resident. Embedding and reranker providers
+   remain selectable, and either falls back to lexical on failure.
 
 **No route may hand the model the full registry.** `route()` fills
 `tool_subset` by retrieval for *any* decision with `needs_tools=True` and no
-subset. Worst scoped route is ~1,580 tokens against ~14,994 unscoped.
+subset. Worst scoped route was ~1,580 tokens against ~14,994 unscoped
+*(historical: measured with 162 tools; the registry is now 93)*.
 
 Key `RouteDecision` fields, each of which encodes a hard-won lesson:
 
 | Field | Meaning |
 |---|---|
-| `tool_subset` | The exact tools the loop may offer. Narrowing is a **reliability** measure: 5–7 domain tools → 3/3 correct calls; all 44 → 2/3, reaching for unrelated tools. |
+| `tool_subset` | The exact tools the loop may offer. Narrowing is a **reliability** measure: 5–7 domain tools → 3/3 correct calls; all 44 → 2/3, reaching for unrelated tools *(historical, Ling)*. |
 | `expect_tool_first` | Forces `tool_choice="required"` + retry-and-nudge. Only set when a rule confidently detected tool intent — forcing it on a genuinely uncertain prompt got "any new ideas for the project" refused outright. |
 | `force_first_tool` | Restricts step 1 to exactly one function. oMLX's `tool_choice` is a soft nudge; this is the only real guarantee. |
 | `light_read` | Marks a warm read-out of the user's own data, which selects a different answer voice. Deliberately *not* inferred from `tool_subset` — that conflation once answered "what's my battery level" in an emoji'd calendar-readout voice. |
@@ -264,24 +304,36 @@ Key `RouteDecision` fields, each of which encodes a hard-won lesson:
 
 ### 2.4 The agent loop
 
-`service/agent/loop.py` (~2,000 lines). Per step:
+`service/agent/loop.py` (5,336 lines). Per step:
 
 - **Build the message list**, then `_fit_window()` trims it to fit, sacrificing
-  in a fixed order: output reservation (down to 600), oldest history (never the
-  system prompt, the latest user turn, or the newest tool result), then tool
-  schemas from the end (never a forced first tool, never below 4).
+  least-valuable first: oldest history (earlier user/assistant turns are
+  *condensed* into the "earlier in this conversation" digest rather than
+  dropped, then the digest's oldest lines, then older context notes; never the
+  protected system prefix, the latest user turn, or the newest tool result),
+  then tool schemas from the end (never a forced first tool, never below 4),
+  and only then the output reservation, down to `_MIN_OUTPUT_TOKENS` = 2,000
+  (raised from 600 once every role thought before answering). Model-only Ask
+  steps fit a smaller per-step budget than the window; see
+  [CONVERSATION_MEMORY_PLAN.md](CONVERSATION_MEMORY_PLAN.md#in-session-context-as-built).
 - **Sampling.** `main.py` passes no `temperature`, so oMLX's per-model profile
-  applies — *except* on a `required` tool-selection step, which is pinned to
-  greedy. That pin is load-bearing; see §3.2.
+  applies — *except* on a rules-path `required` tool-selection step, which is
+  pinned to greedy (see §3.2). Model-only turns never pin temperature and
+  state thinking ON for every tool-selection step (`model_only_enabled`).
 - **Tool execution** wrapped in a debug-capture scope, through
   `policy.decide()` → approver (with a 5-minute timeout that auto-denies) →
   `run_tool` → audit.
-- **Tool results are capped** at 12,000 chars *and the cut is announced* —
-  silent truncation is worse than slow, because the model answers from the
-  fragment as if it were complete.
-- **Narration gate.** Once every tool the model has actually *called* is clean,
-  the final narration step runs with thinking suppressed: −32% median turn time
-  at unchanged correctness. Blocked on `multi_round` routes.
+- **Tool results are capped** at 12,000 chars (`ASK_TOOL_RESULT_CHARS` = 6,000
+  on model-only Ask turns) *and the cut is announced* — silent truncation is
+  worse than slow, because the model answers from the fragment as if it were
+  complete.
+- **Narration gate (rules path).** Once every tool the model has actually
+  *called* is clean, the final narration step runs with thinking suppressed:
+  −32% median turn time at unchanged correctness *(historical, measured with
+  Ling)*. Blocked on `multi_round` routes. On the packaged default (Gemma,
+  `model_only`) narration after a tool result keeps thinking **on**: Gemma is in
+  `thinking_required_after_tool` and `model_only_narration_thinking` is true
+  (`models.yaml`), so only a tool-free direct Ask step can drop thinking.
 - **Retry ladder** with a corrective nudge that actually reaches the model
   (it previously didn't — see §4, 2026-08-09).
 - **Error translation** maps a stopped engine, a memory limit, or an over-long
@@ -294,10 +346,17 @@ The MoE premise inverted. Every text role now resolves to **one resident
 model**, because swapping cost more than specialization bought.
 
 **`service/config/models.yaml` (defaults)** — all of `fast`, `router`,
-`coding`, `reasoning`, `agent`, `general` → `Ling-3.0-tiny-oQ4e`;
-`embedding` → `Qwen3-Embedding-0.6B-4bit-DWQ`.
+`coding`, `reasoning`, `agent`, `general` → `gemma-4-E4B-it-oQ4e-mtp` (the
+default since `71e7bcb2`, 2026-10-25: the setup guide's default download, so a
+fresh install's roles name the model it just fetched); `embedding` →
+`Qwen3-Embedding-0.6B-4bit-DWQ`; `reranker` → `Qwen3-Reranker-0.6B-mlx-6bit`
+(optional, see §2.3). `model_only: true` (§2.3). Gemma returns zero tokens when
+it writes after a tool result with thinking off, so it is listed under
+`thinking_required_after_tool` and narration keeps thinking on.
 
-**`~/.moe/config.yaml` (runtime overlay, which wins)** — same, **except**:
+**`~/.moe/config.yaml` (runtime overlay, which wins)** — as recorded on
+2026-08-23, when the defaults were Ling; this is per-machine state and was not
+re-checked on 2026-11-04. Same as the defaults, **except**:
 
 | Role | Model | Note |
 |---|---|---|
@@ -305,7 +364,10 @@ model**, because swapping cost more than specialization bought.
 | `super_model` | `Qwen3.8-27B-oQ3e-mtp` | Manual escalation only |
 | `vision` | `gemma-4-E4B-it-qat-4bit` | Vestigial — there is no vision role in code |
 
-Why Ling replaced `Agents-A1-4B`, measured on six real prompts at production
+Why Ling replaced `Agents-A1-4B` (Ling was the packaged default from 2026-08-18
+until Gemma on 2026-10-25, apart from a merged Mellum default 2026-10-15 →
+10-22; every Ling figure in this document comes from that period), measured on
+six real prompts at production
 sampling: Ling won every one — 2.8s vs 4.3s (calendar), 16.5 vs 24.2 (mail +
 messages), 10.4 vs 26.0 (browser), **21.0s vs a 300s A1 timeout** (file reorg),
 5.7 vs 19.8 (organize), 4.4 vs 54.8 (vague). A1's loss is thinking time, and it
@@ -390,7 +452,9 @@ Ordered by how likely a real user is to hit it. Status is honest:
 ### 3.1 Model capability — the dominant class
 
 Nearly every remaining quality complaint traces here rather than to framework
-code. `Ling-3.0-tiny-oQ4e` is a small model doing a large job.
+code. The resident model (`Ling-3.0-tiny-oQ4e` when these rows were measured,
+`gemma-4-E4B-it-oQ4e-mtp` by default since 2026-10-25) is a small model doing a
+large job.
 
 | Issue | Status |
 |---|---|
@@ -411,7 +475,7 @@ code. `Ling-3.0-tiny-oQ4e` is a small model doing a large job.
 
 | Finding | Consequence |
 |---|---|
-| Greedy + thinking-off = **0/3 tool calls** (byte-identical clarifying question); greedy + thinking-on = 4/4 at 2.6s | Never send `enable_thinking:false` to the agent loop. Keep the greedy pin on `required` steps. |
+| Greedy + thinking-off = **0/3 tool calls** (byte-identical clarifying question); greedy + thinking-on = 4/4 at 2.6s | Never send `enable_thinking:false` to a tool-selection step. Keep the greedy pin on rules-path `required` steps; model-only turns state thinking ON for selection and run on each model's own profile instead. |
 | `thinking_budget_tokens` doesn't reduce thinking — it force-closes `<think>` and the monologue continues in `content`, where the leak guard can't catch it | Do not use it. |
 | A summary-shaped call left with thinking ON under a small `max_tokens` returns **silently empty** — the think block eats the ceiling, the guard blanks `content`, the caller's "no content" fallback discards it, and nothing errors | Any call that summarizes text already in its prompt must pass `no_thinking_kwargs(model)`, then assert on `finish_reason`. This exact bug was found in **four** places at once. |
 | oMLX `force_sampling: false` means a request-level temperature silently **wins** over the tuned per-model profile | Benchmark at production sampling or the answer inverts — a hardcoded `temperature=0.6` produced the opposite Ling-vs-A1 conclusion. |
@@ -420,7 +484,7 @@ code. `Ling-3.0-tiny-oQ4e` is a small model doing a large job.
 
 | Issue | Status |
 |---|---|
-| **Memory guard ceiling is currently configured at 10.0 GB** (`memory_guard_custom_ceiling_gb`). Ornith 7.9 GB + Ling 6.9 GB = 14.8 GB, so any coding request evicts the resident model and back. This is a knob someone set, not something oMLX computes under pressure — it read 17.75 GB earlier the same day. | **OPEN** — raising it on this 24 GB machine would let both stay resident |
+| **Memory guard ceiling was configured at 10.0 GB** *(per-machine state, 2026-08-23; not re-checked)* (`memory_guard_custom_ceiling_gb`). Ornith 7.9 GB + Ling 6.9 GB = 14.8 GB, so any coding request evicts the resident model and back. This is a knob someone set, not something oMLX computes under pressure — it read 17.75 GB earlier the same day. | **OPEN** — raising it on this 24 GB machine would let both stay resident |
 | Killing Wisp shuts down the oMLX engine, and `omlx-cli start` **cannot** revive it — only `restart` can. Symptom: `/health` 500s and `ConnectError`, while `ps` still shows an oMLX process. Check `lsof -nP -iTCP:8000 -sTCP:LISTEN`, not `ps`. | **FIXED** — `ensure_omlx()` falls back to `restart` |
 | Under load oMLX returns **200 with no `choices` key at all** | **FIXED** at source in `OMLXClient.chat()` |
 | `prefill_memory_exceeded` surfaces as a bare `400 Bad Request` that looks like a malformed request | **FIXED** by the error-translation layer |
@@ -432,7 +496,7 @@ code. `Ling-3.0-tiny-oQ4e` is a small model doing a large job.
 
 | Issue | Status |
 |---|---|
-| **"The model's memory gets lobotomized after a couple of chats"** — reported 2026-08-23, not yet diagnosed. Candidates: the history budget derived from a 16k window, the rolling summarizer, or `_fit_window` dropping history. | **OPEN, unanswered** |
+| **"The model's memory gets lobotomized after a couple of chats"** — reported 2026-08-23. Diagnosed on model-only Ask: `build_messages` kept only what fit its budget, the Ask step fit cut that to its 8,000-token step budget, and the rolling summary only starts once 48 turns are stored, so turns in between were in neither — a fact ~8 exchanges back was lost, and after a 6,000-character tool result no earlier turn survived. `326fe940` and `137fba8f` (2026-11-02) condense turns that miss the verbatim cut into an "earlier in this conversation" digest instead of dropping them and give Ask steps `ASK_HISTORY_RESERVE`; `scripts/measure_ask_history.py` (synthetic 20-exchange chat, 16,384 window) went 8/20 → 20/20 on a zero-tool step and 0/20 → 20/20 after one tool result. **Residual:** an Ask step carrying *two* capped tool results still dropped all earlier history and context notes (measured 0/20 recall). Fixed on branch `claude/memory-db-perms-history-floor`, pending review, which also makes Wisp's SQLite stores 0600. | **MITIGATED** — zero- and one-tool steps fixed on `main`; the two-result case is open until that branch merges |
 | Tool schemas, not conversation, fill the window — 57 tools ≈ 9,943 tokens, **62% of a 16k window before a single message**. Overflow surfaces as an unexplained 400. | **FIXED** by universal retrieval scoping + `_fit_window` |
 | Uncapped tool results — an 89,000-char result (~22k tokens, ~2.8 GB of KV) went into context whole and was re-paid every step | **FIXED** (12,000-char cap, announced) |
 | Background jobs contend with live turns on the single resident model: the *same* call measured **12.8s and 319.7s** on consecutive runs | **FIXED** — a foreground gate in `service/idle.py` brackets `/agent` and the scheduler skips model work while a turn is in flight. Note a harness calling `run_agent` directly bypasses the gate. |
@@ -573,7 +637,8 @@ assumption about where time went.
 quantization sweep found the hard cliff at 4 bits. Ling became the resident
 model, pinned in memory.
 
-In parallel, the tool count went from ~15 toward **162**, driven by a Capability
+In parallel, the tool count went from ~15 toward **162** (later 182, then
+consolidated to 93 in October; see §1.3), driven by a Capability
 Atlas of 561 real user requests. That scale is only tractable because of
 **semantic tool routing**, shipped the same week — and the rollout taught the
 reachability lesson three separate times before it stuck.
