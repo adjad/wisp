@@ -227,7 +227,7 @@ def test_each_marked_refusal_is_proof_and_writes_nothing(monkeypatch, name, args
     tool = REAL_TOOLS[name]
     result = asyncio.run(registry.run_tool(tool, args))
     assert registry.not_done_receipt(tool, result), result
-    assert registry.classify_tool_outcome(name, result).status == "failed"
+    assert registry.classify_tool_outcome(name, result).status in {"failed", "needs_input"}
     assert timers_alarms._TIMERS == before
 
 
@@ -379,6 +379,12 @@ def test_a_marked_refusal_never_reads_as_success():
     result = registry.not_done("Reminder set: not really")
     assert registry.classify_tool_outcome("add_reminder", result).status == "failed"
     assert registry.classify_tool_outcome("add_reminder", result, denied=True).status == "denied"
+    moved = registry.not_done("Moved “Standup” to Fri Nov 6, 9:00 AM–9:30 AM.")
+    assert registry.classify_tool_outcome("update_event", moved).status == "failed"
+    empty = registry.not_done("Nothing active matches that.")
+    assert registry.classify_tool_outcome("cancel_event", empty).status == "failed"
+    asks = registry.not_done("Several match — which one?")
+    assert registry.classify_tool_outcome("cancel_event", asks).status == "needs_input"
 
 
 def test_store_settles_not_done_apart_from_a_completed_action(tmp_path):

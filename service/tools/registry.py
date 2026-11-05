@@ -358,8 +358,10 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
     if not denied and type(result) is _OutboundUnknownResult and result.operation == tool_name:
         return ToolOutcome("unknown", text, effect, {"action_id": result.action_id})
     if not denied and type(result) is _NotDoneResult:
-        # A marked refusal never reads as success, whatever its wording.
-        return ToolOutcome("failed", text, effect)
+        # A marked refusal keeps its usual status, but never reads as success
+        # or an empty result, whatever its wording.
+        plain = classify_tool_outcome(tool_name, text)
+        return plain if plain.status in {"failed", "needs_input"} else ToolOutcome("failed", text, effect)
     if tool_name == "draft_message":
         if denied:
             return ToolOutcome("denied", text, effect)
