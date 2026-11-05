@@ -312,3 +312,17 @@ def test_selfcheck_reports_a_host_blocked_case_apart_and_the_pending_fix_unblock
     fixed = run_selfcheck(pdir, assume_host_fix=True)
     assert fixed[0]["ok"] and not fixed[0]["host_blocked"] and fixed[0]["fails"][0]["ok"]
     assert pure_writing(case["prompt"])                           # the patch was undone afterwards
+
+
+def test_a_private_world_can_pin_a_real_tool_result(pdir, monkeypatch):
+    """Wording the fakes do not reproduce reaches the model exactly; other tools stay fake."""
+    from scripts.toolbench import private, world as W
+    spec = {"today": "2026-11-04", "tool_results": {"get_stock_price": "Change: unavailable; do not infer."}}
+    w = private.build_private_world(spec)
+    fakes = W.make_fakes(w)
+    assert fakes["get_stock_price"](symbols=["X"]) == "Change: unavailable; do not infer."
+    assert "get_upcoming" in fakes and callable(fakes["get_upcoming"])
+    w.reset()
+    assert w.fixed_results == spec["tool_results"]
+    with pytest.raises(private.PrivateEvalError, match="tool_results"):
+        private.build_private_world({"today": "2026-11-04", "tool_results": {"get_stock_price": 1}})

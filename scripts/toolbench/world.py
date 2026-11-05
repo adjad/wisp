@@ -342,6 +342,9 @@ class World:
     # world (scripts/toolbench/private.py) sets its own list, [] for none.
     cards: list | None = None
     summary: str | None = None      # the Brief's one-line overview of today; None = the canonical sentence
+    # Tool name -> the exact text a real tool returned (a private world only): the fake answers with it, whatever
+    # the arguments. For wording the fakes do not reproduce, such as a quote with no previous close.
+    fixed_results: dict = field(default_factory=dict)
     scheduled_sends: list[dict] = field(default_factory=list)
     timers: list[dict] = field(default_factory=list)
     drive_files: list[dict] = field(default_factory=list)
@@ -3072,6 +3075,8 @@ def make_fakes(w: World) -> dict:
         return f"Created document “{title}” in My Drive (id {did})."
 
     fakes = {k: v for k, v in locals().items() if callable(v) and not k.startswith("_")}
+    for name, text in w.fixed_results.items():
+        fakes[name] = (lambda fixed: lambda *_a, **_k: fixed)(text)
     fakes["_move_plan"] = _move_plan   # not a tool: the decision install_hooks reuses for the loop's card
     return fakes
 

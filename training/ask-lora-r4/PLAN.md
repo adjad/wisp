@@ -443,3 +443,26 @@ The user chose the Brev A6000 for every GPU step on 2026-11-02, briefly moved th
 1. GRPO ships only if it passes every bar against base, has no regression against the SFT, and shows a significant gain named in advance.
 2. Otherwise the SFT ships, if it passed every bar.
 3. Otherwise the untuned model stays.
+
+## Live feedback on the step-1150 checkpoint (2026-11-04)
+
+**The running SFT does not change.** The build is frozen, it is about two-thirds done, and a restart would cost the full ~51 h and ~$30 for gaps a smaller patch can close. The gate decides what ships, and a third private set now covers this chat (candidate >= base; both on the pinned SHA).
+
+Counts are from the 6,098 frozen train rows.
+
+| Pattern | Cause | Rows today | Fix |
+|---|---|---|---|
+| Several day items as a run-on paragraph | `scen_r4_day.py` `other_sentence` prose shape; contradicts `ASK_STYLE_HINT` | 97 of 219 day finals with 3+ items have no list | Data: a list at 3+ items |
+| An invented "plus N more" in a final | Likely thought shorthand copied into the answer | 233 thoughts, 0 finals | Data and reward: a count must come from the tool |
+| Empty digest answered with tool workings | Empty result never taught | 0 of 14 `summarize_messages` finals are empty | Data: one short plain line; reward: no tool workings |
+| Knowledge question opens on the host's nudge | `loop.py` sends the text-call nudge as a user message, and the model replies to it | 0 formula rows; 0 rows with the nudge | Host: reword or move the nudge. Data: formula answers |
+| Unasked skill call, then "can't start" | Host's rejection says to tell the user; no goal-style ask or silent recovery was taught | 0 goal-chip rows; 0 rows with an offered-tool rejection | Host: rejection text. Data: real help, recover silently |
+| "Unchanged" when the tool says unavailable | Every training quote has a change | 17 quote finals; 0 unavailable results | Data: an unavailable field stays unavailable; reward: contradiction penalty |
+
+**Keep base chat still holds.** Emoji are in 33% and bold in 42% of after-tool finals, mostly from the base self-distill. Don't strip them everywhere; fix only the empty-result and short-answer shapes. Nothing here is measured against base yet, so whether each pattern is a regression waits for the gate.
+
+**Order.**
+1. The SFT finishes and goes through the gate unchanged, with the third private set.
+2. Host fixes land separately.
+3. Data patch: new rows, then a short continuation from the r4 adapter. This is new GPU spend and needs the user's OK.
+4. Reward terms join the GRPO reward: contradicting a tool's "unavailable" line, invented counts, tool workings in an answer, no list at 3+ items. RL only refines what the data shows, so the data patch comes first. E6a and E6b still each need the user's OK.

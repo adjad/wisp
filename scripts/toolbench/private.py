@@ -31,7 +31,8 @@ world.json format (every key optional except `today`; dates are ISO strings, clo
      "contacts":  [{"name", "full", "email", "phone"}],
      "brief":     [{"title", "source" (mail|messages|notes), "who", "due", "clock" (null = a date only),
                     "due_label"}],
-     "waiting":   [{"who", "source", "needs_reply", "summary", "title"}]}
+     "waiting":   [{"who", "source", "needs_reply", "summary", "title"}],
+     "tool_results": {"<tool name>": "the exact text the real tool returned, for wording the fakes do not reproduce"}}
 
 The world starts from the canonical synthetic world (so every fake finds the state it expects) and REPLACES the
 user-visible sources with the spec's; what the spec omits is empty, not canonical.
@@ -54,7 +55,7 @@ RUNS_DIRNAME = "runs"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _WORLD_KEYS = {"today", "now", "summary", "cards", "events", "reminders", "emails", "messages", "contacts",
-               "brief", "waiting"}
+               "brief", "waiting", "tool_results"}
 _MAIL_CATS = {"attention", "people", "accounts", "social", "news"}
 _BRIEF_SOURCES = {"mail", "messages", "notes"}
 
@@ -191,6 +192,10 @@ def build_private_world(spec: dict):
     w = W.build_world(today)
     now_clock = _clock(spec.get("now") or "08:30", "now")
     w.now = datetime.combine(today, now_clock)
+    pinned = spec.get("tool_results") or {}
+    if not isinstance(pinned, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in pinned.items()):
+        raise PrivateEvalError("tool_results: a map of tool name to the exact text it returned")
+    w.fixed_results = dict(pinned)
 
     w.events, w.past_events = [], []
     for i, e in enumerate(spec.get("events") or ()):
