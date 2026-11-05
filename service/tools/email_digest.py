@@ -37,8 +37,13 @@ Rules:
 - Exact strings matter on this tool: any money amount, percentage, phone
   number, code, date or time in the body that the digest dropped is appended
   verbatim with its sentence (bounded).
-- When a digest is in a multi-email result, the other bodies are trimmed so
-  the whole result fits the Ask cap with the digest in it.
+- Every result shares the Ask cap fairly (`fit_rows`, below), digest or no
+  digest: the loop's cap keeps the head of the result, so one huge first body
+  used to leave the model nothing else. 2026-11-04: a five-email search reached
+  the model as 6,000 chars of its first email, and the right one never arrived.
+- Markup and tracking links never reach the model (`readable_body`). They are
+  not content, and a body can be 90% of them. A sender can put HTML in a
+  text/plain part, so this goes by what the body looks like, not its MIME type.
 - Corpus runs keep today's behavior: their model calls go through a receipted
   client this module does not have.
 """
@@ -46,9 +51,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import re
 import time
 import weakref
+from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from service import idle
 from service.tools.untrusted import EMAIL_BODY, overhead
@@ -59,7 +67,13 @@ LONG_BODY_CHARS = 4000
 MAX_DIGESTS_PER_CALL = 1
 # The whole result has to fit the tightest tool-result cap (model-led Ask).
 RESULT_BUDGET_CHARS = 6000
-_MIN_OTHER_BODY_CHARS = 300
+# Below this a cut body says too little; the lowest-ranked row becomes a header
+# line instead, so the rows above it keep something worth reading.
+_MIN_BODY_SHARE = 500
+# Rows shown as one line when the bodies don't fit, at most.
+MAX_HEADER_LINES = 8
+HEADER_LINE_CHARS = 240
+_SEPARATOR_CHARS = 7  # "\n\n---\n\n"
 # What head_cut's label adds to a trimmed body.
 _CUT_LABEL_CHARS = 230
 # Each row's header lines, plus the untrusted-body fence view_emails puts
@@ -79,6 +93,9 @@ _FOOTER_TAIL_CHARS = 1500
 _FOOTER_MAX_LINE = 160
 # A reply shorter than this keeps its quoted thread (it is the substance).
 _MIN_REPLY_CHARS = 200
+# Mail.app bodies are uncapped. Markup is cleaned up to this much, off the loop.
+_CLEAN_INPUT_CHARS = 400_000
+_MAX_LINK_CHARS = 200
 
 _locks: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]" = weakref.WeakKeyDictionary()
 _cache: dict[tuple, tuple[float, str, str]] = {}
@@ -178,9 +195,215 @@ def _left_out(quoted: int, footer: int, unread: int) -> str:
 
 def head_cut(body: str, limit: int, reason: str) -> str:
     """The first `limit` chars, labelled so the model cannot take them as the whole email."""
-    kept = body[:limit].rsplit("\n", 1)[0] or body[:limit]
+    kept = body[:limit]
+    # Back up to a line end, but not so far that a long paragraph is all lost.
+    line_end = kept.rfind("\n")
+    if line_end >= limit // 2:
+        kept = kept[:line_end]
     return (f"{kept}\n\n[... {len(body) - len(kept):,} more characters of this email were "
             f"cut ({reason}). This is NOT the whole email — do not describe it as complete.]")
+
+
+# Every pattern below stops at the next "<", so each is linear on any body: no
+# nested quantifier, and hidden blocks are found with str.find, once per tag.
+_MARKUP_TAG = re.compile(
+    r"</?(?:a|p|div|span|br|hr|table|tbody|thead|tr|td|th|ul|ol|li|h[1-6]|strong|b|i|u|em|img|font|"
+    r"center|html|head|body|style|meta|blockquote|section|title)\b[^<>]*>", re.I)
+_ANY_TAG = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9:]*)\b[^<>]*>|<![^<>]*>")
+_HIDDEN_OPEN = re.compile(r"<(script|style|head|title)\b|<!--", re.I)
+_HIDDEN_CLOSE = {"!--": re.compile(r"-->"),
+                 **{name: re.compile(f"</{name}", re.I) for name in ("script", "style", "head", "title")}}
+_HREF = re.compile(r"""\bhref[ \t]*=[ \t]*["']([^"'<>]*)["']""", re.I)
+_BLOCK_TAGS = frozenset({"p", "div", "br", "hr", "tr", "table", "ul", "ol", "li", "blockquote", "section",
+                         "h1", "h2", "h3", "h4", "h5", "h6"})
+_CELL_TAGS = frozenset({"td", "th"})
+_URL = re.compile(r"https?://[^\s<>\"'()\[\]]+", re.I)
+_BARE_LINK = re.compile(r"\([ \t\n]*\[link\][ \t\n]*\)")
+_TRACKING_HOST_LABEL = re.compile(r"^(?:clicks?|track|tracking|trk|links?|lnk|ablink|url\d*|email|em)$")
+_TRACKING_DOMAINS = ("list-manage.com", "mandrillapp.com", "sendgrid.net", "sparkpostmail.com",
+                     "hubspotlinks.com", "rs6.net", "awstrack.me", "safelinks.protection.outlook.com",
+                     "urldefense.com")
+_TRACKING_PATH = re.compile(
+    r"/ls/click|/wf/click|/f/a/|/e/c/|/track/|/click(?:/|$)|[?&](?:upn|utm_\w+|mc_eid|trk|sc_cid)=", re.I)
+
+
+def is_tracking_link(url: str) -> bool:
+    """A click-tracking or campaign link: long, opaque, and useless to read."""
+    if len(url) > _MAX_LINK_CHARS:
+        return True
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return True
+    if _TRACKING_HOST_LABEL.match(host.split(".", 1)[0]) or host.endswith(_TRACKING_DOMAINS):
+        return True
+    return bool(_TRACKING_PATH.search(f"{parts.path}?{parts.query}"))
+
+
+def _looks_like_markup(body: str) -> bool:
+    """Mostly tags, not a plain email that mentions a tag or two."""
+    sample = body[:_MAX_INPUT_CHARS]
+    tags = [m.end() - m.start() for m in _MARKUP_TAG.finditer(sample)]
+    return len(tags) >= 2 and sum(tags) >= len(sample) * 0.1
+
+
+def _without_hidden_blocks(text: str) -> str:
+    parts: list[str] = []
+    position = 0
+    unclosed: set[str] = set()
+    for opening in _HIDDEN_OPEN.finditer(text):
+        name = (opening.group(1) or "!--").lower()
+        if opening.start() < position or name in unclosed:
+            continue
+        closer = _HIDDEN_CLOSE[name].search(text, opening.end())
+        if closer is None:
+            unclosed.add(name)      # So are all later ones: no second full scan.
+            continue
+        parts.append(text[position:opening.start()])
+        close_end = text.find(">", closer.start())
+        position = len(text) if close_end < 0 else close_end + 1
+    parts.append(text[position:])
+    return " ".join(parts)
+
+
+def _text_of_markup(markup: str) -> str:
+    text = re.sub(r"[\r\n\t]+", " ", _without_hidden_blocks(markup))
+    anchors: list[tuple[str, int]] = []
+
+    def replace(match: re.Match) -> str:
+        name = (match.group(2) or "").lower()
+        if name == "a":
+            if not match.group(1):
+                href = _HREF.search(match.group(0))
+                anchors.append((html.unescape(href.group(1)).strip() if href else "", match.end()))
+                return ""
+            if not anchors:
+                return ""
+            url, opened = anchors.pop()
+            shown = match.string[opened:match.start()]
+            if url.lower().startswith("mailto:"):
+                url = url[7:].split("?", 1)[0]
+            elif not url.lower().startswith(("http://", "https://")) or is_tracking_link(url):
+                return ""
+            return "" if not url or url in shown else f" ({url})"
+        if name == "li":
+            return "" if match.group(1) else "\n- "
+        if name in _BLOCK_TAGS:
+            return "\n"
+        return " " if name in _CELL_TAGS else ""
+
+    text = html.unescape(_ANY_TAG.sub(replace, text))
+    lines = [" ".join(line.split()) for line in text.split("\n")]
+    lines = [line for line in lines if line != "-"]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def readable_body(body: str) -> str:
+    """The body as a person reads it: no markup and no tracking links. Plain text
+    with neither comes back unchanged, so an exact string stays exact."""
+    unread = len(body) - _CLEAN_INPUT_CHARS
+    if unread > 0:
+        body = body[:_CLEAN_INPUT_CHARS]
+    if "<" in body and _looks_like_markup(body):
+        body = _text_of_markup(body)
+    if "://" in body:
+        body = _BARE_LINK.sub("[link]", _URL.sub(
+            lambda m: "[link]" if is_tracking_link(m.group(0)) else m.group(0), body))
+    return body + (f"\n\n[The last {unread:,} characters of this email were not read.]" if unread > 0 else "")
+
+
+def _first_hit(body: str, query: str | None) -> int:
+    """Where the lookup's phrase, or failing that its first word, is in `body`."""
+    words = [w for w in re.findall(r"\w+", query or "") if len(w) >= 3]
+    for needle in ([query] if query else []) + words:
+        found = re.search(re.escape(needle), body, re.I)
+        if found:
+            return found.start()
+    return -1
+
+
+def _cut_body(body: str, limit: int, reason: str, query: str | None) -> str:
+    """Cut to `limit` chars, labelled. If the head would lose what the lookup
+    matched, keep some head and the part around the match, so the model can see
+    why this email came back instead of taking it for an unrelated one."""
+    room = max(100, limit - _CUT_LABEL_CHARS)
+    hit = _first_hit(body, query)
+    if hit < 0 or hit + len(query or "") + 40 <= room:
+        return head_cut(body, room, reason)
+    head = body[:room // 3].rsplit("\n", 1)[0] or body[:room // 3]
+    window = room - len(head) - 40
+    start = max(len(head), hit - window // 3)
+    end = start + window
+    middle = body[start:end]
+    return (f"{head}\n\n[... {start - len(head):,} characters cut ...]\n\n{middle}\n\n"
+            f"[... {max(0, len(body) - end):,} more characters of this email were cut ({reason}). "
+            "This is NOT the whole email — do not describe it as complete.]")
+
+
+def _water_level(sizes: list[int], room: int) -> int:
+    """The most each body may keep so that short ones keep all they have and the
+    long ones split what's left evenly."""
+    left, remaining = max(0, room), len(sizes)
+    for size in sorted(sizes):
+        if size > left // remaining:
+            return left // remaining
+        left -= size
+        remaining -= 1
+    return max(sizes, default=0)
+
+
+@dataclass
+class FittedRows:
+    rows: list[dict]                        # with a body, in the order given
+    header_only: list[dict] = field(default_factory=list)  # best first
+    cut: int = 0                            # bodies shortened in `rows`
+
+
+def fit_rows(rows: list[dict], *, query: str | None = None, budget: int = RESULT_BUDGET_CHARS,
+             header_chars=None, best_first: bool = True) -> FittedRows:
+    """Share `budget` between `rows` so that one huge body can't crowd out the
+    rest: short bodies stay whole, long ones split what's left evenly, a digest
+    keeps up to half. When that leaves a body too little to read, the lowest
+    priority row goes to a header line. `best_first=False` means the list runs
+    oldest to newest, so the oldest go first."""
+    measure = header_chars or (lambda _row: _ROW_HEADER_CHARS)
+    out = [dict(r) for r in rows]
+    even = budget // max(1, len(out))
+    for row in out:
+        body = row.get("body") or ""
+        if len(body) > even and not row.get("_digested"):
+            cleaned, quoted, footer = clean_body(body[:_MAX_INPUT_CHARS], query)
+            left_out = _left_out(quoted, footer, max(0, len(body) - _MAX_INPUT_CHARS))
+            row["body"] = cleaned + (f"\n\n[{left_out}]" if left_out else "")
+    priority = list(range(len(out))) if best_first else list(reversed(range(len(out))))
+    overhead = {i: measure(out[i]) + _SEPARATOR_CHARS for i in priority}
+    kept = list(priority)
+    while True:
+        lines = min(len(out) - len(kept), MAX_HEADER_LINES) * HEADER_LINE_CHARS
+        room = budget - sum(overhead[i] for i in kept) - lines
+        digests = [i for i in kept if out[i].get("_digested")]
+        digest_share = (max(0, room) // (2 if len(kept) > 1 else 1)) // max(1, len(digests))
+        spent = sum(min(len(out[i]["body"]), digest_share) for i in digests)
+        others = [i for i in kept if i not in digests]
+        sizes = [len(out[i].get("body") or "") for i in others]
+        level = _water_level(sizes, room - spent)
+        if len(kept) == 1 or level >= _MIN_BODY_SHARE or max(sizes, default=0) <= level:
+            break
+        kept.pop()
+    alone = len(kept) == 1
+    reason = ("to fit; search for a word from the part you need" if alone else
+              "to share this result with the other emails; look this one up on its own for more")
+    cut = 0
+    for i in kept:
+        body = out[i].get("body") or ""
+        limit = digest_share if i in digests else level
+        if len(body) > limit:
+            out[i]["body"] = _cut_body(body, limit, reason, query)
+            cut += 1
+    shown = set(kept)
+    return FittedRows(rows=[out[i] for i in range(len(out)) if i in shown],
+                      header_only=[out[i] for i in priority if i not in shown], cut=cut)
 
 
 def _neutralize(text: str) -> str:
@@ -325,34 +548,21 @@ async def _digest_outcome(row: dict, *, query: str | None = None, client=None,
 
 
 async def digest_rows(rows: list[dict], *, query: str | None = None, client=None,
-                      model: str | None = None) -> list[dict]:
-    """`rows` with the newest long body digested (at most MAX_DIGESTS_PER_CALL).
-    Only when a digest was actually written are the other bodies trimmed,
-    labelled, so the whole result fits RESULT_BUDGET_CHARS with the digest in
-    it. If no digest was written (failure, pause, no local engine), the rows
-    come back exactly as given, as before digests existed; a body that is only
-    long because of its quoted thread or footer comes back cleaned."""
-    long_rows = sorted((i for i, r in enumerate(rows) if len(r.get("body") or "") > LONG_BODY_CHARS),
-                       key=lambda i: rows[i].get("ts") or 0, reverse=True)
+                      model: str | None = None, candidates: list[int] | None = None) -> list[dict]:
+    """`rows` with one long body digested (at most MAX_DIGESTS_PER_CALL): the
+    first of `candidates`, or by default the newest. If no digest was written
+    (failure, pause, no local engine) the rows come back as given; a body that is
+    only long because of its quoted thread or footer comes back cleaned. Sharing
+    the result between rows is `fit_rows`, which runs after this either way."""
+    if candidates is None:
+        candidates = sorted((i for i, r in enumerate(rows)
+                             if len(r.get("body") or "") > LONG_BODY_CHARS),
+                            key=lambda i: rows[i].get("ts") or 0, reverse=True)
     out = list(rows)
-    digested = set()
-    for i in long_rows[:MAX_DIGESTS_PER_CALL]:
+    for i in candidates[:MAX_DIGESTS_PER_CALL]:
         text, outcome = await _digest_outcome(rows[i], query=query, client=client, model=model)
         if outcome == "cleaned":
             out[i] = {**rows[i], "body": text}
         elif outcome == "digest":
-            out[i] = {**rows[i], "body": text}
-            digested.add(i)
-    others = [i for i in range(len(rows)) if i not in digested]
-    if not digested:
-        return out
-    used = sum(len(out[i]["body"]) for i in digested) + _ROW_HEADER_CHARS * len(rows)
-    per_row = max(_MIN_OTHER_BODY_CHARS,
-                  (RESULT_BUDGET_CHARS - used) // len(others)) if others else 0
-    for i in others:
-        body = out[i].get("body") or ""
-        if len(body) > per_row:
-            out[i] = {**out[i], "body": head_cut(
-                body[:_MAX_INPUT_CHARS], max(100, per_row - _CUT_LABEL_CHARS),
-                "to make room for a long email's digest; look this one up on its own for all of it")}
+            out[i] = {**rows[i], "body": text, "_digested": True}
     return out

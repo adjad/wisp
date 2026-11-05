@@ -154,7 +154,9 @@ def test_strict_email_lookup_returns_no_match_instead_of_unrelated_mail():
           patch.object(email_tools, "_parse_raw", return_value=unrelated)):
         answer = asyncio.run(email_tools.view_emails_impl(
             query="PlayStation", count=10, strict_match=True))
-    assert answer == "No emails matching “PlayStation” were found in the recent inbox Wisp searched."
+    # This text goes straight to the user, and says what was searched.
+    assert answer.startswith("No emails matching “PlayStation” were found in the recent inbox Wisp searched")
+    assert "anything older was not." in answer
 
 
 def test_literal_email_address_is_bound_without_contact_lookup():

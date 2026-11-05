@@ -263,8 +263,8 @@ SYSTEM = (
     "means the RECENT inbox: pass neither. A calendar range can be nearly empty "
     "even when the inbox is full — early on a Monday, 'this week' is a few "
     "hours long — so never conclude the user has no mail from an empty range.\n"
-    "  For 'what's unread', 'anything I haven't read', or 'what still needs a "
-    "reply', pass `unread=true` rather than guessing from subject lines.\n"
+    "  For 'what's unread' or 'anything I haven't read', pass `unread=true` "
+    "rather than guessing from subject lines.\n"
     # "messages" was leaking into the email domain — the router used to widen
     # "any messages from mom" to the mail tools as well (see _INBOUND_RE), and
     # nothing in this prompt ever said what the word means. Both ends are fixed;
