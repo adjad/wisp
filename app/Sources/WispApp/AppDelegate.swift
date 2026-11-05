@@ -417,11 +417,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.bringSetupForward() }
         }
-        // A Brief or Day row about a permission macOS was never asked for.
+        // Settings › Privacy's Permissions… and the notch's Setup row: the setup window.
         NotificationCenter.default.addObserver(
             forName: .wispOpenPermissions, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.openFirstRunSetup(at: .permissions) }
+        }
+        // A Brief, Day or Ask row about a source Wisp can't read: the notch's page.
+        NotificationCenter.default.addObserver(
+            forName: .wispOpenPermissionPage, object: nil, queue: .main
+        ) { [weak self] note in
+            let raw = note.object as? String
+            MainActor.assumeIsolated { self?.openPermissionPage(raw.flatMap(FirstRunPermissions.Item.init(rawValue:))) }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .wispStepAside, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stepAside() }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .wispStepBack, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stepBack() }
         }
         // The Brief's Gmail reconnect link (BriefFix.open), on its Google pane.
         NotificationCenter.default.addObserver(
@@ -450,6 +467,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated {
                 guard let window = note.object as? NSWindow else { return }
                 self?.noteKeyWindow(window)
+                self?.stepAside(forKey: window)
             }
         }
         let defaults = UserDefaults.standard
@@ -482,6 +500,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Wisp starts in the notch. The Wisp window opens only when asked for:
         // the Dock icon, the menu bar, or a hand-off from the notch.
         if firstRun { openFirstRunSetup() } else { showNotchTipOnce() }
+        // macOS's Quit & Reopen, from the System Settings page the notch's permission
+        // page sent the person to: back where they were, with the new answer.
+        if let item = NotchPermissionPage.takeResume(), !firstRun { openPermissionPage(item) }
         if resetPending { finishPendingReset() }
         if ignoredResetMarker { model.showTransientNotice(WispReset.ignoredMarkerNotice, duration: 15) }
     }
@@ -539,6 +560,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// brings it forward, out of the Dock if it was minimized, if it is already up.
     private func openFirstRunSetup(at step: OnboardingStep? = nil) {
         let defaults = UserDefaults.standard
+        stepAside()
         if let step { defaults.set(step.rawValue, forKey: FirstRunSetup.stepKey) }
         if let open = firstRunWindow {
             if step != nil { open.contentView = onboardingContent() }
@@ -973,6 +995,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             client.prewarmModel()
         }
         switch route {
+        case .chat, .chatList, .today, .research, .memory: stepAside()
+        case .settings, .setup, .knowYou: break
+        }
+        switch route {
         case .chat(let sessionId):
             if let sessionId { wispWindow.show(sessionId: sessionId) } else { wispWindow.show() }
         case .chatList:
@@ -1314,6 +1340,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         requestPresentation(.bar)
     }
 
+    // MARK: - Nothing opens under the panel
+
+    /// The panel's level is above every normal window, and a click leaves the
+    /// pointer inside it, so nothing closed it when one opened: a window opened
+    /// from it sat underneath ("nothing happens"), and System Settings stayed
+    /// covered through the panel's grace delay. Whatever the panel opens comes
+    /// here first, holds or no holds, since it is what the person just asked for.
+    /// Nothing in the panel is lost; it is only closed.
+    private func stepAside() {
+        switch presentation.desired {
+        case .chat: requestPresentation(.bar)
+        case .search: closeSearch()
+        case .bar, .hidden: break
+        }
+    }
+
+    /// One of Wisp's own windows took the keyboard while the panel is above it: a
+    /// window opened from a menu, the Dock or a click in it. A pin means the person
+    /// wants the panel to stay; a dialog raised above the panel (the file and save
+    /// panels) has nothing to step aside for.
+    private func stepAside(forKey window: NSWindow) {
+        guard let panel, window !== panel, window !== searchPanel, !model.collapsed, !model.pinned,
+              !model.pickingFile, Self.panelCovers(window: window.level, panel: panel.level) else { return }
+        stepAside()
+    }
+
+    /// Pure: a window at or under the panel's level is what it would cover.
+    nonisolated static func panelCovers(window: NSWindow.Level, panel: NSWindow.Level) -> Bool {
+        window.rawValue <= panel.rawValue
+    }
+
+    /// What it stepped aside for was answered (the microphone's question).
+    private func stepBack() {
+        guard presentation.desired == .bar else { return }
+        openAssistant()
+    }
+
+    /// The notch on its permission page. While setup holds the notch closed, the
+    /// setup window's own Permissions step is what can be reached.
+    private func openPermissionPage(_ item: FirstRunPermissions.Item?) {
+        if modelGateHolds { openFirstRunSetup(at: .permissions); return }
+        notchDocked = true
+        createPanelIfNeeded()
+        model.openPermissionPage(item)
+    }
+
+    /// The page again, with macOS's answer on it. Nobody may be looking, so unless
+    /// the pointer goes there it closes again on its own after a moment to read.
+    private func permissionPageComesBack() {
+        // Nobody asked for this open, so the keyboard stays with the app in front.
+        createPanelIfNeeded()
+        panel?.revealsWithoutKey = true
+        openAssistant()
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.permissionAnswerShownFor) { [weak self] in
+            guard let self else { return }
+            self.panel?.revealsWithoutKey = false
+            guard self.model.showingPermissions, !self.model.collapsed, !self.pointerInPanel() else { return }
+            self.scheduleCollapse()
+        }
+    }
+    private static let permissionAnswerShownFor: TimeInterval = 6
+
     private func finishPresentation(_ step: OverlayTransition.Step) {
         guard presentation.finish(step) else { return }
         // A pointer left resting on the bar after a close must leave the zone
@@ -1569,6 +1657,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         model.onResizeNow = { [weak self] in self?.panel?.resizeToFit() }
         model.requestExpand = { [weak self] in self?.expand() }
+        model.permissionPage.comeBack = { [weak self] in self?.permissionPageComesBack() }
         model.requestCollapse = { [weak self] in
             // An explicit close (chevron, Esc) while Getting to know you is
             // open counts as Later. Auto-collapse never reaches here: the open
@@ -2197,6 +2286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Settings is a section of the Wisp window (⌘,, the menus, the window's
     /// sidebar and footer gear, and the notch's All settings all land here).
     @objc private func openSettings() {
+        stepAside()
         wispWindow.showSettings()
     }
 
@@ -2339,6 +2429,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// person chooses to: only what is still off, each with its reason, and one
     /// system surface per click.
     private func grantMoreAccess() {
+        stepAside()
         let missing = Permissions.missingExtras()
         let alert = NSAlert()
         if let next = missing.first {
@@ -2579,6 +2670,43 @@ extension AppDelegate {
         precondition(window.model.tab == .research && !window.model.showingResearch && !window.model.willQueuePrompt,
                      "New research opens the Research prompt and frees the queue the old plan held")
         print("PASS: AppDelegate research releases the prompt queue when its tab is left or New research opens")
+    }
+
+    static func checkPermissionPageStepsAside() async {
+        let delegate = AppDelegate()
+        let model = delegate.model
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        model.collapsed = false
+        delegate.finishPresentation(opening)
+        model.tab = .brief
+        model.openPermissionPage(.calendar)
+        precondition(model.showingPermissions && model.permissionPage.focus == .calendar && model.tab == .brief,
+                     "A Brief row opens the page on its permission, on the Brief")
+        // A plain close and any way off the tab leave the page, as they do quick settings.
+        model.collapsed = true
+        precondition(!model.showingPermissions, "Closing the panel closes the page")
+        model.collapsed = false
+        model.openPermissionPage(.calendar)
+        model.tab = .day
+        precondition(!model.showingPermissions, "Another tab closes the page")
+        model.tab = .brief
+        model.openPermissionPage(nil)
+        model.showingQuickSettings = true
+        precondition(!model.showingPermissions && model.showingQuickSettings, "The gear closes the page")
+        model.openPermissionPage(.reminders)
+        precondition(model.showingPermissions && model.showingQuickSettings, "Opened from Settings, it sits over them")
+        model.closePermissionPage()
+        precondition(!model.showingPermissions && model.showingQuickSettings, "Done goes back to Settings")
+        model.showingQuickSettings = false
+        // Stepping aside ignores what holds the panel open, since the person asked for it.
+        model.input = "half a question"
+        precondition(model.holdsOpen, "Typed text holds the panel open")
+        delegate.stepAside()
+        precondition(delegate.presentation.desired == .bar, "A window or a question opening closes the panel anyway")
+        precondition(model.input == "half a question", "Nothing in the panel is lost")
+        model.input = ""
+        print("PASS: AppDelegate permission page opens in the notch and the panel steps aside for what it opens")
     }
 
     static func checkQuickSettingsSurviveCollapse() async {

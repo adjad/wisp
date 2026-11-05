@@ -359,6 +359,7 @@ struct OverlayTransitionChecks {
         await AppDelegate.checkPinnedPanelHoldsOpen()
         await AppDelegate.checkMenuHoldsCollapse()
         await AppDelegate.checkResearchReleasesQueueOffTab()
+        await AppDelegate.checkPermissionPageStepsAside()
         await AppDelegate.checkQuickSettingsSurviveCollapse()
         await AppDelegate.checkSetupCardHoldsAsk()
         await AppDelegate.checkInlineReportHoldsOpen()
