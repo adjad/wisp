@@ -1931,6 +1931,11 @@ async def run_agent(
     # grant. Only this turn's local planner may put one in ephemeral context.
     messages = _meeting_safe(messages)
     downstream_emit = emit
+    # The call being dispatched, until a tool_call announces it. A tool_result
+    # that arrives first means it was refused before reaching the policy check:
+    # the debug export gets its name and arguments from a tool_rejected event.
+    # Deliberately not a tool_call, which main records as a call that was made.
+    unannounced_call: list = [None]
     # Sources a tool couldn't read for lack of access ride on its tool_result,
     # so Ask shows the fix button whatever the model's reply says.
     from service.tools import access_needed
@@ -1939,6 +1944,13 @@ async def run_agent(
         _meeting_audit(event, **fields)
 
     async def emit(event: dict):
+        if (pending := unannounced_call[0]) is not None and event.get("id") == pending[0]:
+            if event.get("type") == "tool_call":
+                unannounced_call[0] = None
+            elif event.get("type") == "tool_result":
+                unannounced_call[0] = None
+                await downstream_emit(_meeting_safe({
+                    "type": "tool_rejected", "id": pending[0], "name": pending[1], "args": pending[2]}))
         if event.get("type") == "tool_result" and access_noted:
             event = access_needed.merged(event, access_noted)
         if event.get("type") == "text" and news_displays:
@@ -2591,6 +2603,20 @@ async def run_agent(
     def _skill_boundary(tool_name: str) -> bool:
         return tool_name in _skill_boundary_names()
 
+    def _skill_misnamed_as_tool(tool_name: str) -> bool:
+        """The model called a skill by name, or use_skill where it was not offered.
+        Nothing the user asked for was refused, so this is not a failure to report.
+        Only where skills are allowed: across the boundary the answer must stay the
+        generic refusal, or its wording would confirm which skills are installed."""
+        if not skills_allowed:
+            return False
+        if tool_name == "use_skill":
+            return True
+        if get_tool(tool_name) is not None:
+            return False
+        from service.skills import get as get_skill
+        return (get_skill(tool_name) or get_skill(tool_name.replace("_", "-"))) is not None
+
     def _admit(offered: list[dict]) -> list[dict]:
         """Drop every schema the skill boundary protects. Used at every build and rebuild."""
         blocked = _skill_boundary_names()
@@ -2857,6 +2883,7 @@ async def run_agent(
     tools_answered: set[str] = set()
     failed_tools: set[str] = set()
     hard_failed: set[str] = set()
+    skills_misnamed: set[str] = set()
     waived_tools: set[str] = set()
     attempted_tools: set[str] = set()
     tool_outcomes: list[tuple[str, object]] = []
@@ -2924,7 +2951,13 @@ async def run_agent(
             # command. Phase/prose is not permission to clear the restriction.
             shell_read = (private_shell_implementation(registered)
                           and not planned and not denied)
-            if (registered.category.endswith("read")
+            # recall's fixed nothing-found text carries no record and none of the
+            # query, so there is nothing to leak. Exact match on purpose: a result
+            # with anything else in it, or from any other tool, still latches.
+            from service.tools.memory_tools import RECALL_NOTHING_FOUND
+            read_nothing = name == "recall" and str(result) == RECALL_NOTHING_FOUND
+            if not read_nothing and (
+                    registered.category.endswith("read")
                     and registered.category != "web_read"
                     or registered.category == "screen" or shell_read
                     or name in {"recall", "search_memory", "search_conversations"}):
@@ -4328,11 +4361,15 @@ async def run_agent(
                     # A knowledge question answered with a tool call written as
                     # text: one nudge to just answer. (A personal-data question
                     # falls through to the "call the tool now" re-prompt below.)
+                    # Worded as a host note: said in the user's voice, the model
+                    # took it as the user speaking and replied to it ("It looks
+                    # like that was a math question!").
                     ask_text_call_nudged = True
                     msgs.append({"role": "assistant", "content": "(no answer yet)"})
                     msgs.append({"role": "user", "content": (
-                        "Answer my question now in plain text, from what you know. No tool "
-                        "is needed or available for this one.")})
+                        "Host note, not from the user: your last reply held no answer. "
+                        "Answer the user's question above in plain text, from what you "
+                        "know, without calling a tool. Do not mention or reply to this note.")})
                     continue
                 if (wrote_call and not text and not ask_text_call_nudged and _step < max_steps - 1
                         and asks_change):
@@ -4729,6 +4766,7 @@ async def run_agent(
             name = _clean_tool_name(tc["function"]["name"])
             from service.tools.registry import unwrap_nested_args
             args = unwrap_nested_args(get_tool(name), _parse_args(tc["function"].get("arguments", "")))
+            unannounced_call[0] = (cid, name, args)
             if discovery is not None and name == DISCOVERY_TOOL:
                 # Do not widen this step's allowed_names. A sibling real call
                 # must not gain authority from a schema request in this batch.
@@ -4972,6 +5010,28 @@ async def run_agent(
                               "performed it.)")
                     audit("reject_premature", tool=name, args=args)
                     failed_tools.add(name)
+                elif _skill_misnamed_as_tool(name):
+                    # Not a real action, so there is nothing to be honest about
+                    # failing: told "isn't available", the model reported its own
+                    # mis-call to the user ("I can't start the interview right
+                    # now"). Nothing loads here, so the skill boundary and each
+                    # skill's own trigger rules are unchanged. `internal` keeps this
+                    # note, which is for the model, out of the visible activity. A
+                    # repeat counts as a refusal, so the next step has to answer.
+                    result = (f"({name} is not an action you can call. Nothing ran and "
+                              "nothing went wrong. Do not mention it, and do not say it ran "
+                              "or that something is unavailable. Help with the request "
+                              "directly: call an offered tool if the answer depends on the "
+                              "user's own data, otherwise answer now or ask one short "
+                              "question.)")
+                    audit("reject_skill_as_tool", tool=name, args=args)
+                    hard_failed.add(name)
+                    if name in skills_misnamed:
+                        prev_step_refusals += 1
+                    skills_misnamed.add(name)
+                    await emit({"type": "tool_result", "id": cid, "result": result, "internal": True})
+                    msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                    continue
                 else:
                     if name in _WEB_LOOKUP_TOOLS:
                         # A web lookup the route did not offer is no reason to
