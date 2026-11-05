@@ -180,6 +180,14 @@ def test_summarize_emails_with_a_query_searches_read_mail_too():
     assert "Enrollment read" in out
 
 
+def test_the_agent_prompt_asks_for_unread_only_on_unread_questions():
+    # A read email can still need a reply, so that question searches both.
+    from service.agent.loop import SYSTEM
+    assert "For 'what's unread' or 'anything I haven't read', pass `unread=true`" in SYSTEM
+    assert "still needs a reply" not in SYSTEM
+    assert "'anything I need to reply to?'" in SYSTEM     # the recent inbox: pass neither
+
+
 # --- budget -------------------------------------------------------------------
 
 def test_one_huge_body_cannot_crowd_out_the_others():
