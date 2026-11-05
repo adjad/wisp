@@ -338,6 +338,7 @@ final class ReportDraft: ObservableObject {
     /// Opens a report on `key`. The same key again keeps the draft as it is.
     func open(key: String, metadata: [String: Any], details: [String: Any]? = nil) {
         guard snapshot?.key != key else { return }
+        if let dialog = saveDialog { dialog.cancel() }
         snapshot = ReportSnapshot(key: key, metadata: metadata, details: details)
         note = ""
         includeDetails = false
@@ -345,6 +346,7 @@ final class ReportDraft: ObservableObject {
     }
 
     func close() {
+        if let dialog = saveDialog { dialog.cancel() }
         snapshot = nil
         note = ""
         includeDetails = false
@@ -377,20 +379,51 @@ final class ReportDraft: ObservableObject {
         }
     }
 
-    /// Asks where to save, then writes. The caller marks itself as showing a
-    /// file panel first, so the notch doesn't take the panel's focus as "the
-    /// person left" (OverlayModel.pickingFile). Asked from the notch, which sits
-    /// at the menu bar's level, the dialog goes `above` it: at its own level it
-    /// opened behind an open notch.
-    func chooseLocationAndSave(above: NSWindow.Level? = nil) {
-        guard isOpen else { return }
+    /// The save dialog while it is up.
+    struct SaveDialog {
+        let bringForward: @MainActor () -> Void
+        let cancel: @MainActor () -> Void
+    }
+    private var saveDialog: SaveDialog?
+    /// Shows the dialog; it answers with the chosen file, or nil for Cancel. Only
+    /// the checks replace it.
+    var presentSaveDialog: @MainActor (_ name: String, _ level: NSWindow.Level?,
+                                       _ answered: @escaping @MainActor (URL?) -> Void) -> SaveDialog = ReportDraft.showSavePanel
+
+    /// Asks where to save, then writes what is previewed when the dialog answers.
+    /// The dialog runs beside the notch rather than app-modal: runModal locked the
+    /// notch until it closed. `ended` runs when it does, so a caller can mark itself
+    /// as showing a file panel until then, and the notch doesn't take the panel's
+    /// focus as "the person left" (OverlayModel.pickingFile). Asked from the notch,
+    /// which sits at the menu bar's level, the dialog goes `above` it: at its own
+    /// level it opened behind an open notch. A second click brings it forward.
+    func chooseLocationAndSave(above: NSWindow.Level? = nil, ended: @escaping @MainActor () -> Void = {}) {
+        guard let key = snapshot?.key else { ended(); return }
+        if let open = saveDialog { open.bringForward(); return }
+        let name = "Wisp-problem-\(Int(Date().timeIntervalSince1970)).json"
+        saveDialog = presentSaveDialog(name, Self.saveLevel(above: above)) { [weak self] url in
+            defer { ended() }
+            guard let self else { return }
+            self.saveDialog = nil
+            // The report can close or change while the dialog is up: nothing else is saved for it.
+            if let url, self.snapshot?.key == key { self.write(to: url) }
+        }
+    }
+
+    private static func showSavePanel(name: String, level: NSWindow.Level?,
+                                      answered: @escaping @MainActor (URL?) -> Void) -> SaveDialog {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "Wisp-problem-\(Int(Date().timeIntervalSince1970)).json"
-        if let level = Self.saveLevel(above: above) { panel.level = level }
+        panel.nameFieldStringValue = name
+        if let level { panel.level = level }
         NSApp.activate(ignoringOtherApps: true)
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        write(to: url)
+        panel.begin { response in
+            MainActor.assumeIsolated { answered(response == .OK ? panel.url : nil) }
+        }
+        return SaveDialog(bringForward: {
+            NSApp.activate(ignoringOtherApps: true)
+            panel.makeKeyAndOrderFront(nil)
+        }, cancel: { panel.cancel(nil) })
     }
 
     /// The save dialog's level: one above the window that asked, or its own.
