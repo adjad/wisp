@@ -288,6 +288,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_brief_onboarding.py",
     # rc2: an unoffered web lookup on a general-knowledge question, with a scripted model.
     "tests/test_general_knowledge_unoffered_web.py",
+    "tests/test_ask_skill_misnamed_as_tool.py",
+    "tests/test_stock_previous_close.py",
     # rc1 Ask backend: reply-needed reads stay read-only, the capability welcome, Gmail-only identity.
     "tests/test_router_reply_needed_reads.py",
     "tests/test_capability_welcome.py",
