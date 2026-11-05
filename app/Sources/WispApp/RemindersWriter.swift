@@ -200,6 +200,10 @@ final class RemindersWriter {
     }
 
     private var snapshotState = SnapshotState()
+    private var markerCleanupScheduled = false
+    private static let markerCleanupDelay: TimeInterval = 60
+    private static let markerCleanupSpacing: TimeInterval = 0.5
+    private static let maxMarkerCleanupsPerLaunch = 200
     private var consecutiveTransientReports = 0
     private static let maxTransientReports = 3
 
@@ -327,27 +331,47 @@ final class RemindersWriter {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
     }
 
-    // These actions are called only after the service has persisted an
-    // exclusive claim. The action marker lets a later read-only reconciliation
-    // find a creation whose reply was lost after EventKit saved it.
-    private func marker(_ actionID: String, kind: String) -> String {
-        "Wisp action: \(actionID)\nWisp kind: \(kind)"
-    }
-
-    private func hasMarker(_ notes: String?, actionID: String) -> Bool {
-        notes?.split(separator: "\n").first == "Wisp action: \(actionID)"
-    }
+    // These actions are called only after the service has persisted an exclusive claim.
+    // What finds a creation again after a lost reply, and what remembers its kind, is the
+    // private ledger (ReminderActionLedger.swift): new reminders carry no text of Wisp's.
+    private let ledger = ReminderActionLedger()
 
     private func commitmentKind(_ reminder: EKReminder) -> String {
-        guard reminder.notes?.split(separator: "\n").first?.hasPrefix("Wisp action: ") == true
-        else { return "reminder" }
-        let candidate = reminder.notes?.split(separator: "\n").first(where: {
-            $0.hasPrefix("Wisp kind: ")
-        }).map { String($0.dropFirst("Wisp kind: ".count)) }
-        guard let candidate,
-              ["reminder", "assignment", "exam", "meeting", "event"].contains(candidate)
-        else { return "reminder" }
-        return candidate
+        ReminderMarkerNotes.legacyKind(reminder.notes)
+            ?? ledger.entry(sourceID: reminder.calendarItemIdentifier,
+                            externalID: reminder.calendarItemExternalIdentifier)?.kind
+            ?? "reminder"
+    }
+
+    private func row(_ reminder: EKReminder) -> ReminderRow {
+        func stamp(_ date: Date?) -> String { date.map { String($0.timeIntervalSince1970) } ?? "-" }
+        func parts(_ c: DateComponents?) -> String {
+            guard let c else { return "-" }
+            return [c.year, c.month, c.day, c.hour, c.minute, c.second].map { $0.map(String.init) ?? "-" }.joined(separator: ",")
+        }
+        return ReminderRow(
+            id: reminder.calendarItemIdentifier, externalID: reminder.calendarItemExternalIdentifier,
+            title: reminder.title, notes: reminder.notes, dueMinute: dueMinute(reminder),
+            allDayDate: allDayDate(reminder), alarmCount: reminder.alarms?.count ?? 0,
+            isCompleted: reminder.isCompleted,
+            listID: reminder.calendar?.calendarIdentifier,
+            otherFacts: [
+                parts(reminder.dueDateComponents), parts(reminder.startDateComponents),
+                stamp(reminder.completionDate), String(reminder.priority),
+                reminder.url?.absoluteString ?? "-", reminder.location ?? "-",
+                reminder.timeZone?.identifier ?? "-", stamp(reminder.creationDate),
+                String(reminder.recurrenceRules?.count ?? 0),
+                (reminder.alarms ?? []).map { "\(stamp($0.absoluteDate))/\($0.relativeOffset)" }.joined(separator: ";"),
+            ])
+    }
+
+    private func createdResult(_ row: ReminderRow, dueTs: Double, title: String, dueDate: String) -> [String: Any] {
+        if !dueDate.isEmpty {
+            return ["ok": true, "status": "succeeded", "error": "", "source_id": row.id,
+                    "title": row.title ?? "", "all_day": true, "due_date": row.allDayDate ?? ""]
+        }
+        return ["ok": true, "status": "succeeded", "error": "", "source_id": row.id,
+                "title": title, "due_ts": Double(Int(dueTs / 60) * 60)]
     }
 
     private func dueMinute(_ reminder: EKReminder) -> Int? {
@@ -391,9 +415,7 @@ final class RemindersWriter {
         // EventKit does not announce this store's own writes to itself.
         defer { scheduleChangeSync() }
         guard isAuthorized else { return failure("Reminders access is unavailable") }
-        guard !actionID.isEmpty, actionID.count <= 128,
-              actionID.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || "._:-".contains($0)) })
-        else { return failure("Invalid reminder action identity") }
+        guard ReminderMarkerNotes.isValidActionID(actionID) else { return failure("Invalid reminder action identity") }
 
         if kind == "create_reminder" {
             guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -402,10 +424,10 @@ final class RemindersWriter {
                   let list = store.defaultCalendarForNewReminders() else {
                 return failure("Reminder title, due date, or destination is unavailable")
             }
+            let target = ReminderCreateTarget(title: title, dueTs: dueTs, dueDate: dueDate, kind: commitmentKind)
             let item = EKReminder(eventStore: store)
             item.title = title
             item.calendar = list
-            item.notes = marker(actionID, kind: commitmentKind)
             if let components = Self.allDayComponents(dueDate) {
                 item.dueDateComponents = components
             } else {
@@ -414,21 +436,18 @@ final class RemindersWriter {
                     [.year, .month, .day, .hour, .minute], from: due)
                 item.addAlarm(EKAlarm(absoluteDate: due))
             }
-            do { try store.save(item, commit: true) }
-            catch { return failure("Native reminder creation outcome is unknown", uncertain: true) }
-            let id = item.calendarItemIdentifier
-            guard !id.isEmpty, let readback = store.calendarItem(withIdentifier: id) as? EKReminder,
-                  readback.notes == marker(actionID, kind: commitmentKind), readback.title == title,
-                  (dueDate.isEmpty ? (dueMinute(readback) == Int(dueTs / 60) && allDayDate(readback) == nil)
-                                   : (allDayDate(readback) == dueDate && (readback.alarms ?? []).isEmpty)) else {
-                return failure("Created reminder could not be read back", uncertain: true)
+            let outcome = ReminderCreationFlow.run(
+                ledger: ledger, actionID: actionID, target: target, plannedID: item.calendarItemIdentifier,
+                save: {
+                    try store.save(item, commit: true)
+                    return (item.calendarItemIdentifier, item.calendarItemExternalIdentifier)
+                },
+                readback: { id in (store.calendarItem(withIdentifier: id) as? EKReminder).map(row) })
+            switch outcome {
+            case .refused(let message): return failure(message)
+            case .uncertain(let message): return failure(message, uncertain: true)
+            case .created(let created): return createdResult(created, dueTs: dueTs, title: title, dueDate: dueDate)
             }
-            if !dueDate.isEmpty {
-                return ["ok": true, "status": "succeeded", "error": "", "source_id": id,
-                        "title": readback.title ?? "", "all_day": true, "due_date": allDayDate(readback)!]
-            }
-            return ["ok": true, "status": "succeeded", "error": "", "source_id": id,
-                    "title": title, "due_ts": Double(Int(dueTs / 60) * 60)]
         }
 
         // An undated target (expected due time null) is allowed only for delete_reminder and
@@ -512,8 +531,8 @@ final class RemindersWriter {
     }
 
     /// Read-only recovery for a claimed write whose native reply was lost.
-    /// Creation searches the unique action marker; every other operation uses
-    /// the exact EventKit ID. No negative search result authorizes a retry.
+    /// Creation looks in the ledger, then for an old action marker; every other
+    /// operation uses the exact EventKit ID. No negative search result authorizes a retry.
     func reconcileVerified(kind: String, actionID: String, sourceID: String = "",
                            title: String = "", dueTs: Double = 0,
                            commitmentKind expectedKind: String = "reminder", dueDate: String = "") async -> [String: Any] {
@@ -524,22 +543,15 @@ final class RemindersWriter {
                 store.fetchReminders(matching: predicate) { items in continuation.resume(returning: items) }
             }
             guard let found else { return failure("Reminder reconciliation read failed", uncertain: true) }
-            let matches = found.filter { hasMarker($0.notes, actionID: actionID) }
-            guard matches.count == 1, let item = matches.first,
-                  item.title == title,
-                  (dueDate.isEmpty ? (dueMinute(item) == Int(dueTs / 60) && allDayDate(item) == nil)
-                                   : (allDayDate(item) == dueDate && (item.alarms ?? []).isEmpty)),
-                  commitmentKind(item) == expectedKind,
-                  !item.calendarItemIdentifier.isEmpty else {
+            let target = ReminderCreateTarget(title: title, dueTs: dueTs, dueDate: dueDate, kind: expectedKind)
+            guard let hit = ReminderRecovery.find(actionID: actionID, target: target,
+                                                  rows: found.map(row), ledger: ledger) else {
                 return failure("Reminder creation remains uncertain", uncertain: true)
             }
-            if !dueDate.isEmpty {
-                return ["ok": true, "status": "succeeded", "error": "", "source_id": item.calendarItemIdentifier,
-                        "title": item.title ?? "", "all_day": true, "due_date": allDayDate(item)!]
+            if hit.proof == .exactID {
+                ledger.resolve(actionID: actionID, sourceID: hit.row.id, externalID: hit.row.externalID)
             }
-            return ["ok": true, "status": "succeeded", "error": "",
-                    "source_id": item.calendarItemIdentifier, "title": title,
-                    "due_ts": Double(Int(dueTs / 60) * 60)]
+            return createdResult(hit.row, dueTs: dueTs, title: title, dueDate: dueDate)
         }
         guard !sourceID.isEmpty else { return failure("Exact reminder ID unavailable", uncertain: true) }
         let item = store.calendarItem(withIdentifier: sourceID) as? EKReminder
@@ -633,6 +645,8 @@ final class RemindersWriter {
         }
         let calendars = store.calendars(for: .reminder)
         startCompletedHistoryScan()
+        ledger.flush()
+        scheduleMarkerCleanup()
         if Self.reminderListsLookTransientlyMissing(
             calendarCount: calendars.count,
             previousRowCount: snapshotState.lastPostedReminderCount),
@@ -693,6 +707,47 @@ final class RemindersWriter {
                                             "snapshot_started_at": snapshotStartedAt],
                               startedAt: snapshotStartedAt, authoritative: true,
                               undated: undatedPayload.items, undatedTotal: undatedPayload.total)
+        }
+    }
+
+    // Old reminders lose Wisp's two note lines once per launch, one at a time, a while
+    // after launch so this never competes with the first reads.
+    private func scheduleMarkerCleanup() {
+        guard !markerCleanupScheduled, !ledger.cleanupHalted, ledger.readable else { return }
+        markerCleanupScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.markerCleanupDelay) { [weak self] in
+            self?.startMarkerCleanup()
+        }
+    }
+
+    private func startMarkerCleanup() {
+        guard isAuthorized else { markerCleanupScheduled = false; return }
+        let calendars = store.calendars(for: .reminder)
+        let writable = Set(calendars.filter(\.allowsContentModifications).map(\.calendarIdentifier))
+        guard !calendars.isEmpty else { return }
+        store.fetchReminders(matching: store.predicateForReminders(in: calendars)) { [weak self] items in
+            guard let self, let items else { return }
+            let found = ReminderMarkerCleanup.candidates(items.map(self.row), writableLists: writable)
+            DispatchQueue.main.async { self.cleanMarkers(Array(found.prefix(Self.maxMarkerCleanupsPerLaunch))) }
+        }
+    }
+
+    private func cleanMarkers(_ rows: [ReminderRow]) {
+        guard let next = rows.first else { return }
+        let step = ReminderMarkerCleanup.clean(next, ledger: ledger) { expected, notes in
+            guard let item = store.calendarItem(withIdentifier: expected.id) as? EKReminder,
+                  row(item) == expected else { return .changedSinceRead }
+            item.notes = notes
+            do { try store.save(item, commit: true) } catch { return .failed }
+            guard let readback = store.calendarItem(withIdentifier: expected.id) as? EKReminder else { return .failed }
+            return .saved(row(readback))
+        }
+        guard step == .cleaned || step == .skipped else {
+            NSLog("[Wisp] Reminder note cleanup stopped: \(step)")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.markerCleanupSpacing) { [weak self] in
+            self?.cleanMarkers(Array(rows.dropFirst()))
         }
     }
 

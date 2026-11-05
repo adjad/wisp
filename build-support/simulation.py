@@ -84,7 +84,7 @@ def main():
             ("prompt-queue", ["PromptQueue.swift", "AgentSend.swift"], "PromptQueueChecks.swift"),
             ("google-connect", ["GoogleAccountState.swift"], "GoogleConnectChecks.swift"),
             ("calendar-reader", ["WispClient.swift", "AgentSend.swift", "AssistantDelivery.swift", "CalendarReader.swift",
-                                 "CalendarMove.swift", "RemindersWriter.swift"], "CalendarReaderChecks.swift"),
+                                 "CalendarMove.swift", "RemindersWriter.swift", "ReminderActionLedger.swift"], "CalendarReaderChecks.swift"),
             ("notes-db", ["NotesDBReader.swift"], "NotesDBReaderChecks.swift"),
             ("onboarding", ["Onboarding.swift"], "OnboardingChecks.swift"),
             ("onboarding-follow-ups", ["OnboardingFollowUps.swift", "DiagnosticReport.swift"],
