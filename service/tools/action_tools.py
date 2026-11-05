@@ -314,15 +314,18 @@ def _own_address_guard(to: str, tool: str, confirmed_self_send: bool = False) ->
         return None
     if addr not in own:
         return None
-    return (f"(error: NOT sent — `{to}` is the USER'S OWN address, not a "
-            f"recipient. Their email address is in your prompt for ATTRIBUTION "
-            f"(telling their messages from other people's), never as a "
-            f"destination. If this is a MISTAKE, call `lookup_contact` with the "
-            f"person's NAME to get the real handle, then call {tool} again. If "
-            f"the user's own words just confirmed they genuinely mean to send "
-            f"to THEMSELVES, call {tool} again with confirmed_self_send=true — "
-            f"that is the only thing that changes on the retry; the same "
-            f"arguments without it will be blocked again.)")
+    return _not_sent(
+        (f"(error: NOT sent — `{to}` is the USER'S OWN address, not a "
+         f"recipient. Their email address is in your prompt for ATTRIBUTION "
+         f"(telling their messages from other people's), never as a "
+         f"destination. If this is a MISTAKE, call `lookup_contact` with the "
+         f"person's NAME to get the real handle, then call {tool} again. If "
+         f"the user's own words just confirmed they genuinely mean to send "
+         f"to THEMSELVES, call {tool} again with confirmed_self_send=true — "
+         f"that is the only thing that changes on the retry; the same "
+         f"arguments without it will be blocked again.)"),
+        question=f"{to} is your own address. Who should it go to, or do you mean to send it to yourself?",
+        needs_recipient=True)
 
 # Unfilled template placeholders — "[Your Name]", "{recipient}", "<company>".
 # Observed live: the agent model signed a real outgoing email "Best,\n[Your Name]"
@@ -497,36 +500,94 @@ def _split_recipients(value: str) -> list[str]:
     return [p.strip() for p in re.split(r"[,;]", value or "") if p.strip()]
 
 
+def _not_sent(text: str, *, question: str = "", needs_recipient: bool = False) -> str:
+    """Mark a result as proof that nothing went out (see registry._NotSentResult).
+
+    Only for a path that returns before the app-bridge call, or on the bridge's
+    own not_attempted answer. `question` is what Wisp asks the person."""
+    from service.tools.registry import _NotSentResult
+    return _NotSentResult(text, question=question, needs_recipient=needs_recipient)
+
+
 def _resolve_recipient(name: str, *, want_email: bool = False) -> tuple[str, str]:
     """A contact NAME -> (handle, ""), or ("", explanation) if it can't be
-    resolved unambiguously. The explanation is written for the model to relay.
+    resolved unambiguously. The explanation is written for the model to relay;
+    it is a lookup failure, so it also proves that nothing was sent.
     """
     from service.tools.imessage_tools import find_contacts
 
+    ask = "What email address should I use?" if want_email else "What number or address should I use?"
     matches = find_contacts(name)
     if not matches:
-        return "", (f"(no saved contact matches {name!r}, and it isn't a valid "
-                    "address. Ask the user for it — don't guess.)")
+        return "", _not_sent((f"(no saved contact matches {name!r}, and it isn't a valid "
+                              "address. Ask the user for it — don't guess.)"),
+                             question=f"I don't have a saved contact for {name}. {ask}",
+                             needs_recipient=True)
     if len(matches) > 1:
         listed = ", ".join(m["name"] for m in matches[:6])
-        return "", (f"({name!r} matches several contacts ({listed}). Ask the "
-                    "user which one they mean — do NOT pick one yourself.)")
+        return "", _not_sent((f"({name!r} matches several contacts ({listed}). Ask the "
+                              "user which one they mean — do NOT pick one yourself.)"),
+                             question=f"{name} matches several contacts: {listed}. Which one do you mean?",
+                             needs_recipient=True)
 
-    handles = matches[0]["handles"]
+    who, handles = matches[0]["name"], matches[0]["handles"]
     if want_email:
         emails = [h for h in handles if "@" in h]
         if not emails:
-            return "", (f"({matches[0]['name']} has no email address saved in "
-                        "Contacts — only a phone number. Ask the user for it.)")
+            return "", _not_sent((f"({who} has no email address saved in "
+                                  "Contacts — only a phone number. Ask the user for it.)"),
+                                 question=f"{who} has no email address saved in Contacts. {ask}",
+                                 needs_recipient=True)
         if len(set(emails)) > 1:
-            return "", (f"({matches[0]['name']} has multiple email addresses saved: "
-                        f"{', '.join(emails)}. Ask the user which address to use.)")
+            return "", _not_sent((f"({who} has multiple email addresses saved: "
+                                  f"{', '.join(emails)}. Ask the user which address to use.)"),
+                                 question=(f"{who} has several email addresses saved: "
+                                           f"{', '.join(emails)}. Which one should I use?"),
+                                 needs_recipient=True)
         return emails[0], ""
 
     handle = matches[0]["preferred"]
     if not handle:
-        return "", f"({matches[0]['name']} has no usable handle saved in Contacts.)"
+        return "", _not_sent(f"({who} has no usable handle saved in Contacts.)",
+                             question=f"{who} has no number or address saved in Contacts. {ask}",
+                             needs_recipient=True)
     return handle, ""
+
+
+def prepare_send_recipient(tool: str, args: dict) -> tuple[dict, str | None]:
+    """(args, problem): settle a send's recipient once, BEFORE its card.
+
+    A recipient that can't be resolved never becomes a card: the user isn't
+    asked to approve a send that can't happen, and is asked for the address
+    instead. An email to a name is bound to the one saved address here, so the
+    card shows where it really goes and the approved send can't resolve to
+    anything else. A text keeps its name: the tool resolves that same single
+    match again, and its receipt reads "Mom (…1234)". Only ever refuses or
+    narrows to the one address, and sends nothing; the card is unchanged.
+    """
+    if tool not in {"send_email", "send_message"}:
+        return args, None
+    to = str(args.get("to") or "").strip()
+    if tool == "send_message":
+        if to and not (_EMAIL_RE.match(to) or re.fullmatch(r"[+()\-.\s\d]{7,}", to)):
+            _, problem = _resolve_recipient(to)
+            if problem:
+                return args, problem
+        return args, _own_address_guard(to, tool, bool(args.get("confirmed_self_send")))
+    resolved: list[str] = []
+    for r in _split_recipients(to):
+        if _EMAIL_RE.match(r):
+            resolved.append(r)
+            continue
+        handle, problem = _resolve_recipient(r, want_email=True)
+        if problem:
+            return args, problem
+        resolved.append(handle)
+    if not resolved:
+        return args, None  # the tool's own "no recipient" answer covers it
+    bound = ", ".join(resolved)
+    return ({**args, "to": bound},
+            _own_address_guard(bound, tool, bool(args.get("confirmed_self_send"))))
 
 
 @register(
@@ -560,12 +621,13 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
         return msg
     subject, body = _degarble(subject), _degarble(body)
     if _unreviewed() and (_looks_truncated(subject) or _looks_truncated(body)):
-        return ("(NOT sent — the draft looks cut off mid-sentence rather than "
-                "a complete subject/body. Rewrite the complete subject and "
-                "body in send_email's arguments for the approval preview.)")
+        return _not_sent("(NOT sent — the draft looks cut off mid-sentence rather than "
+                         "a complete subject/body. Rewrite the complete subject and "
+                         "body in send_email's arguments for the approval preview.)")
     recipients = _split_recipients(to)
     if not recipients:
-        return "(no recipient — ask the user who this should go to)"
+        return _not_sent("(no recipient — ask the user who this should go to)",
+                         question="Who should it go to?", needs_recipient=True)
     # A name where an address belongs gets resolved from Contacts, same as
     # send_message. Anything still unaddressable after that is reported rather
     # than guessed at.
@@ -581,14 +643,16 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
     recipients = resolved
     bad = [r for r in recipients + _split_recipients(cc) if not _EMAIL_RE.match(r)]
     if bad:
-        return (f"(not valid email addresses: {', '.join(bad)}. Don't guess an "
-                "address — look it up in the user's mail or ask them for it.)")
+        return _not_sent((f"(not valid email addresses: {', '.join(bad)}. Don't guess an "
+                          "address — look it up in the user's mail or ask them for it.)"),
+                         question=f"{', '.join(bad)} doesn't look like an email address. What address should I use?",
+                         needs_recipient=True)
     if _unreviewed() and (holes := _unfilled_placeholders(f"{subject}\n{body}")):
-        return (f"(NOT sent — the draft still has unfilled placeholders: "
-                f"{', '.join(holes[:4])}. Rewrite it with the real values. For "
-                "the user's own name, use what you know about them from your "
-                "context, or just end the message without a signature — an "
-                "email signed '[Your Name]' is worse than one with no sign-off.)")
+        return _not_sent((f"(NOT sent — the draft still has unfilled placeholders: "
+                          f"{', '.join(holes[:4])}. Rewrite it with the real values. For "
+                          "the user's own name, use what you know about them from your "
+                          "context, or just end the message without a signature — an "
+                          "email signed '[Your Name]' is worse than one with no sign-off.)"))
 
     res = await app_request("send_email", {
         "to": recipients, "cc": _split_recipients(cc),
@@ -601,7 +665,7 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
             return _OutboundUnknownResult(
                 "Email outcome unknown — sending was not confirmed. Check Mail before trying again; do not retry automatically.",
                 operation="send_email", action_id=res.get("action_id") or "")
-        return f"(the email was NOT sent: {res.get('error') or 'unknown error'})"
+        return _not_sent(f"(the email was NOT sent: {res.get('error') or 'unknown error'})")
     return f"Email sent to {', '.join(recipients)}."
 
 
@@ -895,24 +959,24 @@ async def reply_to_email(message_id: str, body: str, reply_all: bool = False,
                          account: str = "", expected_reply: dict | None = None) -> str:
     message_id = (message_id or "").strip()
     if not message_id:
-        return ("(no message_id — call view_emails first and use the Message-ID "
-                "it prints for the email you're replying to)")
+        return _not_sent("(no message_id — call view_emails first and use the Message-ID "
+                         "it prints for the email you're replying to)")
     # Preparation already rendered these exact words. Never transform an
     # approved escape sequence or line break after the card was accepted.
     if not body.strip():
-        return "(nothing to send — the reply body is empty)"
+        return _not_sent("(nothing to send — the reply body is empty)")
     if _unreviewed() and _looks_truncated(body):
-        return ("(NOT sent — the reply looks cut off mid-sentence rather than a "
-                "complete message. Rewrite the complete body in "
-                "reply_to_email's arguments for the approval preview.)")
+        return _not_sent("(NOT sent — the reply looks cut off mid-sentence rather than a "
+                         "complete message. Rewrite the complete body in "
+                         "reply_to_email's arguments for the approval preview.)")
     if _unreviewed() and (holes := _unfilled_placeholders(body)):
-        return (f"(NOT sent — the reply still has unfilled placeholders: "
-                f"{', '.join(holes[:4])}. Rewrite it with the real values.)")
+        return _not_sent(f"(NOT sent — the reply still has unfilled placeholders: "
+                         f"{', '.join(holes[:4])}. Rewrite it with the real values.)")
     from service.tasks.reply_contract import envelope_matches, make_receipt, validate_envelope
     expected = validate_envelope(expected_reply)
     if (expected is None or expected["message_id"] != message_id
             or expected["account"] != account or not expected["content"].startswith(body)):
-        return "(reply NOT sent — resolve and preview the outgoing reply before approval)"
+        return _not_sent("(reply NOT sent — resolve and preview the outgoing reply before approval)")
     res = await app_request("reply_to_email", {
         "message_id": message_id, "body": body, "reply_all": bool(reply_all),
         "account": account, "expected_reply": expected,
@@ -920,7 +984,7 @@ async def reply_to_email(message_id: str, body: str, reply_all: bool = False,
     if res.get("ok") is not True or ("status" in res and res["status"] != "succeeded"):
         if (res.get("ok") is False and res.get("status") == "not_attempted"
                 and res.get("dispatch_started") is False):
-            return f"(reply NOT sent: {res.get('error') or 'publication did not start'})"
+            return _not_sent(f"(reply NOT sent: {res.get('error') or 'publication did not start'})")
         from service.tools.registry import _OutboundUnknownResult
         return _OutboundUnknownResult(
             "Reply outcome unknown — sending was not confirmed. Check Mail before trying again; do not retry automatically.",
@@ -1118,11 +1182,12 @@ async def email_triage(message_id: str, action: str) -> str:
 async def forward_email(message_id: str, to: str, note: str = "") -> str:
     message_id = (message_id or "").strip()
     if not message_id:
-        return ("(no message_id — call view_emails first and use the Message-ID "
-                "it prints for the email you want to forward)")
+        return _not_sent("(no message_id — call view_emails first and use the Message-ID "
+                         "it prints for the email you want to forward)")
     recipients = _split_recipients(to)
     if not recipients:
-        return "(no recipient — ask the user who this should go to)"
+        return _not_sent("(no recipient — ask the user who this should go to)",
+                         question="Who should it go to?")
     resolved: list[str] = []
     for r in recipients:
         if _EMAIL_RE.match(r):
@@ -1143,7 +1208,7 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
             return _OutboundUnknownResult(
                 "Forward outcome unknown — sending was not confirmed. Check Mail before trying again; do not retry automatically.",
                 operation="forward_email", action_id=res.get("action_id") or "")
-        return f"(the forward was NOT sent: {res.get('error') or 'unknown error'})"
+        return _not_sent(f"(the forward was NOT sent: {res.get('error') or 'unknown error'})")
     return f"Forwarded to {', '.join(resolved)}."
 
 
@@ -1174,13 +1239,14 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False) ->
         return msg
     to = (to or "").strip()
     if not to:
-        return "(no recipient — ask the user who to text)"
+        return _not_sent("(no recipient — ask the user who to text)",
+                         question="Who should I text?", needs_recipient=True)
     if _unreviewed():
         text = _degarble(text)
     if _unreviewed() and _looks_truncated(text):
-        return ("(NOT sent — the draft looks cut off mid-sentence rather than "
-                "a complete message. Rewrite the complete text in "
-                "send_message's arguments for the approval preview.)")
+        return _not_sent("(NOT sent — the draft looks cut off mid-sentence rather than "
+                         "a complete message. Rewrite the complete text in "
+                         "send_message's arguments for the approval preview.)")
 
     # Display name for the result line, kept separate from the handle actually
     # dialed — if `to` resolves from a contact name, the transcript should say
@@ -1200,10 +1266,10 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False) ->
         to = handle
 
     if not (text or "").strip():
-        return "(nothing to send — the message body is empty)"
+        return _not_sent("(nothing to send — the message body is empty)")
     if _unreviewed() and (holes := _unfilled_placeholders(text)):
-        return (f"(NOT sent — the message still has unfilled placeholders: "
-                f"{', '.join(holes[:4])}. Rewrite it with the real values.)")
+        return _not_sent(f"(NOT sent — the message still has unfilled placeholders: "
+                         f"{', '.join(holes[:4])}. Rewrite it with the real values.)")
     res = await app_request("send_message", {"to": to, "text": text})
     if res.get("ok") is not True or ("status" in res and res["status"] != "succeeded"):
         if not (res.get("ok") is False and res.get("status") == "not_attempted"
@@ -1212,7 +1278,7 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False) ->
             return _OutboundUnknownResult(
                 "Message outcome unknown — sending was not confirmed. Check Messages before trying again; do not retry automatically.",
                 operation="send_message", action_id=res.get("action_id") or "")
-        return f"(the message was NOT sent: {res.get('error') or 'unknown error'})"
+        return _not_sent(f"(the message was NOT sent: {res.get('error') or 'unknown error'})")
     return f"Message sent to {display}."
 
 

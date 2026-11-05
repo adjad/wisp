@@ -46,6 +46,57 @@ class _OutboundUnknownResult(str):
         raise AttributeError("Outbound uncertainty receipts are immutable")
 
 
+class _NotSentResult(str):
+    """Host proof that an outbound tool stopped BEFORE anything was dispatched.
+
+    The opposite of _OutboundUnknownResult, and the only thing that settles a
+    send attempt as "not sent" instead of unverified. Minted only in
+    service/tools/action_tools.py (_not_sent), on a return path that comes
+    before the app-bridge call, or when the bridge itself answers not_attempted
+    with dispatch_started false. Every other outcome (an exception, a plain
+    string, a new return path nobody marked) stays unverified and keeps the
+    chat locked: not marking something fails safe. Lost when serialized,
+    sliced or coerced to str, and never rebuilt from text.
+    """
+    __slots__ = ("_question", "_needs_recipient")
+
+    def __new__(cls, text: str, *, question: str = "", needs_recipient: bool = False):
+        instance = super().__new__(cls, text)
+        object.__setattr__(instance, "_question", question)
+        object.__setattr__(instance, "_needs_recipient", bool(needs_recipient))
+        return instance
+
+    @property
+    def question(self):
+        return self._question
+
+    @property
+    def needs_recipient(self):
+        return self._needs_recipient
+
+    def __setattr__(self, name, value):
+        raise AttributeError("Not-sent receipts are immutable")
+
+    def __delattr__(self, name):
+        raise AttributeError("Not-sent receipts are immutable")
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
+
+_NOT_SENT_TOOLS = frozenset({"send_email", "send_message", "forward_email", "reply_to_email",
+                             "schedule_send", "draft_email", "draft_message"})
+
+
+def not_sent_receipt(tool, result) -> bool:
+    """`result` is this built-in outbound tool's own proof that nothing went out."""
+    return (type(result) is _NotSentResult and getattr(tool, "name", "") in _NOT_SENT_TOOLS
+            and getattr(getattr(tool, "func", None), "__module__", "") == "service.tools.action_tools")
+
+
 # In-process host provenance only: never reconstruct this authority from wire text.
 _DRAFT_ORIGIN = object()
 
@@ -570,7 +621,8 @@ async def run_tool(tool: Tool, args: dict, *, private_shell_read_only: bool = Fa
 
     def normalize_result(res):
         # Preserve the existing display-only/public-source separation first.
-        if (type(res) is _OutboundUnknownResult or _valid_message_draft(res, tool.name)
+        if (type(res) in {_OutboundUnknownResult, _NotSentResult}
+                or _valid_message_draft(res, tool.name)
                 or isinstance(res, (DisplayOnlyToolResult, PublicSearchToolResult))):
             return res
         from service.router.model_led import BuiltinCompletion, authoritative_builtin, effectful_call

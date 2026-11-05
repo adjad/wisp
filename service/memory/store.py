@@ -627,9 +627,16 @@ class SessionStore:
                 self._db.rollback()
                 raise
 
-    def finish_model_effect(self, sid: str, claim: dict, *, verified: bool) -> bool:
-        """Settle only the exact owner/revision; a crash leaves its claim consumed."""
-        status = "completed" if verified else "uncertain"
+    def finish_model_effect(self, sid: str, claim: dict, *, verified: bool,
+                            not_sent: bool = False) -> bool:
+        """Settle only the exact owner/revision; a crash leaves its claim consumed.
+
+        not_sent is host proof that the attempt stopped before any dispatch
+        (registry._NotSentResult): terminal, so it blocks nothing, and recorded
+        apart from a completed send. Anything unproven stays "uncertain".
+        """
+        status = "completed" if verified or not_sent else "uncertain"
+        state_status = "not_sent" if not_sent and not verified else status
         with self._lock:
             try:
                 changed = self._db.execute(
@@ -637,7 +644,7 @@ class SessionStore:
                     "updated_at=? WHERE id=? AND session_id=? AND kind='model_led_effect' "
                     "AND status='running' AND json_extract(state_json,'$.request_id')=? "
                     "AND json_extract(state_json,'$.revision')=?",
-                    (status, status, time.time(), claim["effect_id"], sid,
+                    (status, state_status, time.time(), claim["effect_id"], sid,
                      claim["request_id"], claim["revision"])).rowcount
                 self._db.commit()
             except BaseException:

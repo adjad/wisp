@@ -521,7 +521,7 @@ def _format_calendar_end_times(items: list[dict], *, now: float, window_label: s
          "days": {"type": "integer",
                   "description": "how many days ahead to look (default 7, max 60)"},
          "period": {"type": "string", "description": "Exact calendar range, e.g. tomorrow, this week, this month. Overrides days."},
-         "calendar_only": {"type": "boolean", "description": "Only actual calendar events, not preparation reminders. Dated Brief items from email and texts are still listed apart."},
+         "calendar_only": {"type": "boolean", "description": "Only actual calendar events, leaving reminders out: never for a question about reminders (search_reminders answers those). Dated Brief items from email and texts are still listed apart."},
          "boundary": {"type": "string", "enum": ["start", "end"], "description": "Named Calendar time question: end returns scheduled end timestamps, never actual completion. Requires calendar_only and query. Default start preserves the agenda."},
          "query": {"type": "string", "description": "Filter titles within the requested range; bounded subject typos and test/exam synonyms are supported. Multiple matches remain distinct; ask which instead of selecting one."},
          "account": {"type": "string",
