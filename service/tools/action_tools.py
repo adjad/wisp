@@ -554,7 +554,7 @@ def _resolve_recipient(name: str, *, want_email: bool = False) -> tuple[str, str
     return handle, ""
 
 
-def prepare_send_recipient(tool: str, args: dict) -> tuple[dict, str | None]:
+def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
     """(args, problem): settle a send's recipient once, BEFORE its card.
 
     A recipient that can't be resolved never becomes a card: the user isn't
@@ -565,8 +565,11 @@ def prepare_send_recipient(tool: str, args: dict) -> tuple[dict, str | None]:
     match again, and its receipt reads "Mom (…1234)". Only ever refuses or
     narrows to the one address, and sends nothing; the card is unchanged.
     """
-    if tool not in {"send_email", "send_message"}:
+    name = getattr(tool, "name", "")
+    # Only the real tools: another tool of that name resolves its own recipient.
+    if name not in {"send_email", "send_message"} or globals().get(name) is not getattr(tool, "func", None):
         return args, None
+    tool = name
     to = str(args.get("to") or "").strip()
     if tool == "send_message":
         if to and not (_EMAIL_RE.match(to) or re.fullmatch(r"[+()\-.\s\d]{7,}", to)):

@@ -1179,6 +1179,7 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
         direct_calls=decision.direct_calls,
         required_tool_groups=decision.required_tool_groups,
         forbidden_tools=decision.forbidden_tools | ask_forbidden,
+        forbidden_reason=(M.UNRESOLVED_ACTION_REASON if unresolved_block else ""),
         conditional_tools=decision.conditional_tools,
         tool_argument_bindings=decision.tool_argument_bindings,
         strict_read_limits=decision.strict_read_limits,

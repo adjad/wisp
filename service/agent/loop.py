@@ -5159,7 +5159,7 @@ async def run_agent(
                 _no_recipient = None
                 if dec.tier is Tier.CONFIRM:
                     from service.tools.action_tools import prepare_send_recipient
-                    args, _no_recipient = prepare_send_recipient(name, args)
+                    args, _no_recipient = prepare_send_recipient(tool, args)
 
                 if dec.tier is Tier.DENY:
                     result = f"BLOCKED by safety policy: {dec.reason}"
