@@ -20,7 +20,7 @@ import time
 from datetime import date, datetime
 
 from service.publication_authority import Authority, LIVE_CLOCK, Witness, mutating, revocation
-from service import brief_pace, idle
+from service import idle
 from service.assistant.store import assistant_store
 from service.assistant.reminders import due_reminders
 from service.assistant.hub import hub
@@ -611,6 +611,7 @@ def _held_for_chat() -> bool:
     and opened Ask is looking at "Building your first Brief…"."""
     if _early_first_brief_due(datetime.now()):
         return False
+    from service import brief_pace
     return not brief_pace.may_start("daily")
 
 
