@@ -226,6 +226,15 @@ struct MarkdownChecks {
         check(body(formula) == "Slope β₁ costs $5 in\nŷ = a/b\nand x² `$z$`", "the finished stream")
 
         // Read-aloud gets the same symbols, without Markdown escapes.
+        // A model stuck in a loop: no crash, however deep, finished or still streaming.
+        for loop in ["\\frac{", "\\sqrt", "{", "x^{", "\\hat{", "\\frac{a}{", "\\text{"] {
+            let deep = String(repeating: loop, count: 50_000)
+            for reply in ["$$" + deep + "$$", "\\[" + deep] {
+                check(!prettifyMath(reply, forSpeech: true).isEmpty || loop == "{", "survives \(loop) repeated")
+            }
+        }
+        let real = #"$\frac{\sqrt{x^{2}+\frac{1}{\hat{y}_{i}}}}{2}$"#
+        check(prettifyMath(real, forSpeech: true) == "(√(x²+1/ŷᵢ))/2", "real nesting reads as before: \(prettifyMath(real, forSpeech: true))")
         check(prettifyMath("$x_{ab,c}$", forSpeech: true) == "x_(ab,c)", "speech has no escapes")
         check(prettifyMath("$x_{ab,c}$") == "x\\_(ab,c)", "display text escapes for the Markdown pass")
     }
