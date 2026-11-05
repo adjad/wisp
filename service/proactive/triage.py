@@ -198,7 +198,7 @@ def template_summary(item: dict, result: dict) -> str:
     who = guard.clean(item.get("who"), 60) or "Someone"
     topic = guard.clean(result.get("title") or "", 60).rstrip("?!.:;, ")
     if item.get("source") == "mail":
-        subject = guard.clean(item.get("title"), 90)
+        subject = guard.clean_title(item.get("title"), 90)
         return f"{who} emailed: {subject}." if subject else f"{who} emailed you."
     if (topic and topic.casefold() not in ("text conversation", who.casefold())
             and not re.search(r"\b(?:you|your|me|my|is|are|was)\b", topic, re.I)
@@ -232,7 +232,7 @@ def fallback(item: dict) -> dict | None:
         return None                      # an organization's mail needs a deadline to matter
     for line in reversed(item.get("lines") or []):
         if _ASK.search(guard.normalize_slang(line)) and not guard.has_contact_or_link(line):
-            return {"junk": False, "sensitive": False, "title": guard.clean(item.get("title"), 90),
+            return {"junk": False, "sensitive": False, "title": guard.clean_title(item.get("title"), 90),
                     "summary": "", "asks_of_me": guard.clean(line, 200), "fallback": True}
     return None
 
@@ -272,7 +272,7 @@ def critical_result(item: dict) -> dict | None:
     never a model call (the alert itself may carry the secret it reports)."""
     if not item.get("critical"):
         return None
-    title = guard.clean(item.get("title"), 90)
+    title = guard.clean_title(item.get("title"), 90)
     summary = title.removesuffix(" — review").rstrip(".") + "." if title else ""
     return {"junk": False, "sensitive": False, "title": title, "summary": summary,
             "asks_of_me": title, "critical": True}

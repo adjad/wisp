@@ -194,7 +194,9 @@ struct NotchDayView: View {
         return VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(ask.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                    Text(ask.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        .help(ask.title)
                     Text(ask.detail).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
                 }
                 Spacer(minLength: 8)
@@ -396,7 +398,9 @@ struct NotchDayView: View {
         let busy = row.todoID.map { proactive.todoBusy.contains($0) } ?? false
         return HStack(alignment: .center, spacing: 9) {
             Image(systemName: row.symbol).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
-            Text(row.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+            Text(row.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                .help(row.title)
             if !row.detail.isEmpty {
                 Text(row.detail).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
             }
