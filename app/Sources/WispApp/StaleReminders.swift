@@ -21,12 +21,16 @@ struct StaleReminderAsk: Equatable, Identifiable {
     let ageDays: Int?
     /// The service's "reason": a dated reminder a week or more past due.
     var overdue = false
+    /// The date its title names, when that has passed: "10/30".
+    var passedDate: String? = nil
     var id: String { sourceID }
 
-    /// "Added 9 days ago · Groceries", or "8 days overdue · Groceries".
+    /// "Added 9 days ago · Groceries", "8 days overdue · Groceries", or
+    /// "10/30 has passed · School".
     var detail: String {
         let plural: (Int) -> String = { $0 == 1 ? "" : "s" }
-        let age = ageDays.map { overdue ? "\($0) day\(plural($0)) overdue" : "Added \($0) day\(plural($0)) ago" }
+        let age = passedDate.map { $0 + " has passed" }
+            ?? ageDays.map { overdue ? "\($0) day\(plural($0)) overdue" : "Added \($0) day\(plural($0)) ago" }
             ?? (overdue ? "Overdue" : "No date")
         return context.isEmpty ? age : age + " · " + context
     }
@@ -40,7 +44,8 @@ struct StaleReminderAsk: Equatable, Identifiable {
                   (row["actions"] as? [String]).map({ Set($0).isSuperset(of: ["keep", "delete"]) }) ?? true else { return nil }
             return StaleReminderAsk(sourceID: id, title: title, context: row["context"] as? String ?? "",
                                     ageDays: (row["age_days"] as? NSNumber)?.intValue,
-                                    overdue: row["reason"] as? String == "overdue")
+                                    overdue: row["reason"] as? String == "overdue",
+                                    passedDate: (row["passed_date"] as? String).flatMap { $0.isEmpty ? nil : $0 })
         }
     }
 
@@ -111,7 +116,7 @@ final class StaleRemindersModel: ObservableObject {
 
     /// The section's one line about the rule, said once and never as a count of
     /// what it hides.
-    static let explanation = "Wisp leaves reminders over a week old out of your day unless you keep them."
+    static let explanation = "Wisp leaves reminders over a week old, or for a date that has passed, out of your day unless you keep them."
 
     func delete(_ ask: StaleReminderAsk) async {
         guard !deleteBlocked.contains(ask.sourceID) else { return }

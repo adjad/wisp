@@ -133,6 +133,7 @@ PROFILE_TESTS = {
         "tests/test_temporal_facts.py",
         "tests/test_daily_workspace.py",
         "tests/test_day_review_blocks.py",
+        "tests/test_day_past_purpose.py",
         "tests/test_day_remove_suggestion.py",
         "tests/test_brief_needs_you.py",
         "tests/test_day_timeline_event_fields.py",
@@ -288,6 +289,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_brief_onboarding.py",
     # rc2: an unoffered web lookup on a general-knowledge question, with a scripted model.
     "tests/test_general_knowledge_unoffered_web.py",
+    "tests/test_ask_skill_misnamed_as_tool.py",
+    "tests/test_stock_previous_close.py",
     # rc1 Ask backend: reply-needed reads stay read-only, the capability welcome, Gmail-only identity.
     "tests/test_router_reply_needed_reads.py",
     "tests/test_capability_welcome.py",
@@ -302,6 +305,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_email_summary_dedupe.py",
     # Needs you Clear / Mark done over synthetic stores and a stubbed native outbox.
     "tests/test_needs_you_clear.py",
+    # Passed events stop asking for time: synthetic titles over a scratch store; nothing native.
+    "tests/test_day_past_purpose.py",
     # Day Remove on a suggestion: kept out of Replan over a scratch store; nothing native.
     "tests/test_day_remove_suggestion.py",
     # Messages read-failure reasons over module state and an inert ASGI app; no native reader.
