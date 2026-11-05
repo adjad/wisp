@@ -468,3 +468,7 @@ Counts are from the 6,098 frozen train rows.
 4. Reward terms join the GRPO reward: contradicting a tool's "unavailable" line, invented counts, tool workings in an answer, no list at 3+ items. RL only refines what the data shows, so the data patch comes first. E6a and E6b still each need the user's OK.
 
 **RL-SCOPE waits (user, 2026-11-04).** Update `RL-SCOPE.md` only after r4 or r5 has passed the gate and been tested. Until then it stays as written. The update starts from the model that passed and from what its gate and live tests show, and covers at least the four reward terms above and the starting model.
+
+**r5 patch settings (user, 2026-11-04).** Both come from Unsloth's Gemma 4 guide, whose 75% figure has no evidence behind it, so the gate decides.
+- **Reasoning share: aim for at least 75% of the training mix having a thought.** r4 has 62% (47% at 100+ chars), and 43% of its tool-choice steps have one. Every new row gets a thought, including tool-choice steps. Sampling r4's rows favours those with thoughts. Where possible, use base's own thoughts, checked for correctness, rather than new templates. Report turn time at the gate, since longer thoughts cost speed.
+- **Learning rate: lower for the continuation.** Try 2e-5 and 5e-5 briefly and compare before committing. `train.py --resume` restores the old schedule, so the continuation needs a small change: load r4's weights only, with a new short schedule.
