@@ -192,7 +192,9 @@ struct NotchDayView: View {
         return VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(ask.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                    Text(ask.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        .help(ask.title)
                     Text(ask.detail).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
                 }
                 Spacer(minLength: 8)

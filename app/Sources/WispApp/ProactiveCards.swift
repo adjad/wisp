@@ -440,29 +440,40 @@ struct ProactiveBriefSection: View {
         }
     }
 
-    /// The other cards, by title; one tap makes it the one shown.
+    /// The other cards, by title; one tap makes it the one shown. They share a
+    /// row when every title fits whole; otherwise each takes its own line and
+    /// wraps, so a title is never cut.
     private func otherCards(_ cards: [ProactiveCard]) -> some View {
-        HStack(spacing: 6) {
-            ForEach(cards) { card in
-                Button {
-                    withAnimation(.easeOut(duration: 0.15)) { actions.heroID = card.id }
-                    model.onResize()
-                } label: {
-                    Text(card.chipTitle).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
-                        .lineLimit(1).truncationMode(.tail)
-                        .padding(.horizontal, 10).padding(.vertical, 4)
-                        .background(Capsule().fill(Theme.chipFill))
-                        .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .help(card.title)
-                .accessibilityLabel(card.title)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) {
+                ForEach(cards) { card in otherCard(card).fixedSize() }
+                Spacer(minLength: 0)
             }
-            Spacer(minLength: 0)
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(cards) { card in otherCard(card) }
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("More things Wisp caught")
+    }
+
+    private func otherCard(_ card: ProactiveCard) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 12, style: .circular)
+        return Button {
+            withAnimation(.easeOut(duration: 0.15)) { actions.heroID = card.id }
+            model.onResize()
+        } label: {
+            Text(card.chipTitle).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(shape.fill(Theme.chipFill))
+                .overlay(shape.stroke(Theme.chipStroke, lineWidth: 1))
+                .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .help(card.title)
+        .accessibilityLabel(card.title)
     }
 
     private var emptyCardsLine: String {
