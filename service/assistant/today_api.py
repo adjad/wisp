@@ -25,6 +25,9 @@ class CreateTask(BaseModel):
     # (checkin.task_origin), so a task made from a two-week-old reminder is not
     # carried as if it were new. Range-checked by today.validate_task.
     origin_ts: float | None = Field(default=None, strict=True, allow_inf_nan=False)
+    # What a kept suggestion covers, so it isn't suggested again. Range-checked by
+    # today.validate_task.
+    covers: list[str] | None = None
 
 
 class EditTask(BaseModel):

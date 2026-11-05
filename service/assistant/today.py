@@ -95,7 +95,7 @@ def validate_preferences(day, timezone, start_minute=540, end_minute=1080, not_b
 
 def validate_task(value):
     expected = {"id", "title", "day", "timezone", "kind", "duration_minutes", "priority", "due_ts", "pinned_start",
-                "status", "revision", "carried_from", "origin_ts"}
+                "status", "revision", "carried_from", "origin_ts", "covers"}
     if set(value) - expected:
         raise ValueError("Unknown task field")
     # When this task first entered a plan, kept through every carry so a task
@@ -103,6 +103,15 @@ def validate_task(value):
     origin = value.get("origin_ts")
     if origin is not None and (type(origin) not in (int, float) or not 0 < float(origin) < 253402300800):
         raise ValueError("origin_ts must be a Unix timestamp")
+    # The attention items a kept suggestion covers ("Review 8 emails" and its eight), so
+    # the planner doesn't propose them again (daily_workspace.assess). Stays on the task
+    # through a carry. Stored only when given, so every other task reads as before.
+    covers = value.get("covers")
+    if covers is not None and not (isinstance(covers, list) and len(covers) <= 200 and all(
+            isinstance(item, str) and 1 <= len(item) <= 1000 for item in covers)):
+        raise ValueError("covers must be a list of attention item ids")
+    if covers is None and "covers" in value:
+        value = {k: v for k, v in value.items() if k != "covers"}
     # The day this task was first planned for, when the evening check-in or the
     # morning carry-forward moved it (service/assistant/checkin.py). Absent or
     # None for a task still on its original day.

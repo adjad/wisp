@@ -52,6 +52,14 @@ class UndatedSnapshot:
         self.truncated = truncated
 
 
+def _passed_label(title: str, anchor: float, now: float) -> dict:
+    """``passed_date``, the date in a reminder's title that has passed as the title wrote
+    it, for a Keep/Delete question to say why it is asking. Absent when there is none."""
+    from service.assistant.stale_reminders import passed_date
+    passed = passed_date(title, anchor, now)
+    return {"passed_date": passed.label} if passed else {}
+
+
 def parse_undated_snapshot(raw, total) -> UndatedSnapshot | None:
     """Validate the optional ``undated`` list and its ``undated_total`` from a sync post.
 
@@ -2446,7 +2454,7 @@ class AssistantStore:
                 "SELECT u.source_id,u.title,u.context,u.created_ts,d.decision "
                 "FROM assistant_undated_reminders u LEFT JOIN assistant_stale_reminder_decisions d "
                 "ON d.source_id=u.source_id ORDER BY u.title COLLATE NOCASE, u.source_id").fetchall()
-        return [{**dict(r), "stale_state": classify(r["created_ts"], r["decision"], now)} for r in rows]
+        return [{**dict(r), "stale_state": classify(r["created_ts"], r["decision"], now, r["title"])} for r in rows]
 
     def undated_reminders(self, query: str = "") -> list[dict]:
         """Incomplete Apple reminders with no due date, by title then id.
@@ -2473,6 +2481,7 @@ class AssistantStore:
         asks = [{"kind": "stale_reminder", "reason": "undated", "source_id": r["source_id"],
                  "title": r["title"], "context": r["context"], "created_ts": r["created_ts"],
                  "due_ts": None, "age_days": int((now - r["created_ts"]) // 86400),
+                 **_passed_label(r["title"], r["created_ts"], now),
                  "actions": ["keep", "delete"]} for r in rows]
         overdue = self._overdue_rows(now)
         once = {r["source_id"] for r in overdue}
@@ -2482,6 +2491,7 @@ class AssistantStore:
         asks += [{"kind": "stale_reminder", "reason": "overdue", "source_id": r["source_id"],
                   "title": r["title"], "context": r["context"], "created_ts": None,
                   "due_ts": r["when_ts"], "age_days": int((now - r["when_ts"]) // 86400),
+                  **_passed_label(r["title"], r["when_ts"], now),
                   "actions": ["keep", "delete"]}
                  for r in overdue if r["stale_state"] == "ask" and counts[r["source_id"]] == 1]
         asks.sort(key=lambda a: (a["created_ts"] if a["reason"] == "undated" else a["due_ts"],
@@ -2506,21 +2516,22 @@ class AssistantStore:
             return None
         row = dict(rows[0])
         return {**row, "reason": "overdue",
-                "stale_state": classify_overdue(row["when_ts"], row["decision"], now)}
+                "stale_state": classify_overdue(row["when_ts"], row["decision"], now, row["title"])}
 
     def _overdue_rows(self, now: float | None = None) -> list[dict]:
-        """Active DATED Apple reminders at least ASK_AFTER_S overdue, with their policy
-        state. Only Reminders.app items (source 'reminders'); a Wisp-only reminder has its
-        own 14-day rule in the reminder tools."""
-        from service.assistant.stale_reminders import ASK_AFTER_S, classify_overdue
+        """Active DATED Apple reminders past due, with their policy state: under
+        ASK_AFTER_S overdue most read "fresh", but one whose title's date has passed
+        already reads "ask". Only Reminders.app items (source 'reminders'); a Wisp-only
+        reminder has its own 14-day rule in the reminder tools."""
+        from service.assistant.stale_reminders import classify_overdue
         now = time.time() if now is None else now
         with self._lock:
             rows = self._db.execute(
                 "SELECT c.id,c.source_id,c.title,c.context,c.when_ts,c.all_day,d.decision FROM scheduled_commitments c "
                 "LEFT JOIN assistant_stale_reminder_decisions d ON d.source_id=c.source_id "
                 "WHERE c.source='reminders' AND c.status='active' AND c.when_ts IS NOT NULL "
-                "AND c.when_ts<=? ORDER BY c.when_ts, c.source_id", (now - ASK_AFTER_S,)).fetchall()
-        return [{**dict(r), "stale_state": classify_overdue(r["when_ts"], r["decision"], now)}
+                "AND c.when_ts<? ORDER BY c.when_ts, c.source_id", (now,)).fetchall()
+        return [{**dict(r), "stale_state": classify_overdue(r["when_ts"], r["decision"], now, r["title"])}
                 for r in rows]
 
     def hidden_commitment_ids(self, now: float | None = None) -> set[str]:
@@ -2570,13 +2581,18 @@ class AssistantStore:
         For features that carry reminders forward on their own (the evening check-in), so
         they can drop the same items every other reader already leaves out.
         ``hidden_since`` is when the policy began hiding it: a week after it was added, or a
-        week after it fell due."""
-        from service.assistant.stale_reminders import ASK_AFTER_S, EXCLUDED_STATES
+        week after it fell due, or the end of the day its title names if that came first."""
+        from service.assistant.stale_reminders import ASK_AFTER_S, EXCLUDED_STATES, passed_date
+        clock = time.time() if now is None else now
+
+        def since(title: str, anchor: float) -> float:
+            passed = passed_date(title, anchor, clock)
+            return min(anchor + ASK_AFTER_S, passed.over_at()) if passed else anchor + ASK_AFTER_S
         out = [{"source_id": r["source_id"], "title": r["title"], "reason": "undated",
-                "stale_state": r["stale_state"], "hidden_since": r["created_ts"] + ASK_AFTER_S}
+                "stale_state": r["stale_state"], "hidden_since": since(r["title"], r["created_ts"])}
                for r in self._undated_rows(now) if r["stale_state"] in EXCLUDED_STATES]
         out += [{"source_id": r["source_id"], "title": r["title"], "reason": "overdue",
-                 "stale_state": r["stale_state"], "hidden_since": r["when_ts"] + ASK_AFTER_S}
+                 "stale_state": r["stale_state"], "hidden_since": since(r["title"], r["when_ts"])}
                 for r in self._overdue_rows(now) if r["stale_state"] in EXCLUDED_STATES]
         return out
 

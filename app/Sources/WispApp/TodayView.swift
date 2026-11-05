@@ -777,13 +777,15 @@ final class TodayModel: ObservableObject {
     }
 
     func add(title: String, kind: String, minutes: Int, priority: Int, due: Date?, pinned: Date? = nil,
-             origin: Double? = nil) async -> Bool {
+             origin: Double? = nil, covers: [String] = []) async -> Bool {
         var body: [String: Any] = ["title": title, "day": day, "timezone": timezone.identifier, "kind": kind,
                                    "duration_minutes": minutes, "priority": priority]
         if let due { body["due_ts"] = due.timeIntervalSince1970 }
         if let pinned { body["pinned_start"] = pinned.timeIntervalSince1970 }
         // When what it came from first mattered, so the morning carry-forward ages it from there.
         if let origin { body["origin_ts"] = origin }
+        // What a kept suggestion covers, so the planner doesn't suggest it again.
+        if !covers.isEmpty { body["covers"] = covers }
         return await mutate("/assistant/today/tasks", method: "POST", body: body)
     }
 

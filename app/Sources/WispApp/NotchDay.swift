@@ -471,9 +471,10 @@ struct DayTimeline: Equatable {
                            blocks: [DayBlockInput], needs: [DayNeedInput] = [], now: Double, dayStart: Double,
                            dayEnd: Double, isToday: Bool, dayClock: (Double) -> String) -> [DayFitRow] {
         var rows: [DayFitRow] = []
-        // A reminder the lane already draws as Needs you isn't still to fit.
+        // A reminder the lane already draws, as Needs you or Overdue, isn't still to fit.
         var seen = Set(blocks.map { todoKey($0.title) }
-                       + needs.filter { $0.due.map { $0 >= dayStart && $0 < dayEnd } ?? false }.map { todoKey($0.title) })
+                       + needs.filter { $0.due.map { $0 >= dayStart && $0 < dayEnd } ?? false }.map { todoKey($0.title) }
+                       + drawnOverdue(needs, blocks: blocks, now: now, isToday: isToday).map { todoKey($0.title) })
         for task in unscheduled where !isJunk(task.title) && !seen.contains(todoKey(task.title)) {
             seen.insert(todoKey(task.title))
             rows.append(DayFitRow(id: "task:" + task.id, title: task.title, detail: plainReason(task.reason).capitalizedFirst,
@@ -500,6 +501,19 @@ struct DayTimeline: Equatable {
                                   symbol: sourceSymbol(todo.source), todoID: todo.id))
         }
         return rows
+    }
+
+    /// The overdue reminders the agenda lists by name. Past `maxOverdueShown` the rest
+    /// fold into one "N more overdue" row, so those keep their place in Still to fit.
+    private static func drawnOverdue(_ needs: [DayNeedInput], blocks: [DayBlockInput], now: Double,
+                                     isToday: Bool) -> [DayNeedInput] {
+        guard isToday else { return [] }
+        let suggested = Set(blocks.compactMap { $0.kind == "suggestion" ? $0.evidenceID : nil })
+        let overdue = needs.filter { need in
+            need.source != "calendar" && !isJunk(need.title) && !suggested.contains(need.id)
+                && (need.due.map { $0 < now } ?? false)
+        }
+        return overdue.count > maxOverdueShown ? Array(overdue.prefix(maxOverdueShown - 1)) : overdue
     }
 
     // MARK: Agenda
@@ -939,8 +953,8 @@ struct DayTimeline: Equatable {
         return lines
     }
 
-    /// What Remove sends for a suggested block: every item a grouped review
-    /// covers, or the one item it came from. Nothing for any other block.
+    /// What Remove and Keep send for a suggested block: every item a grouped
+    /// review covers, or the one item it came from. Nothing for any other block.
     static func removalIDs(_ item: DayItem) -> [String] {
         guard item.style == .suggested else { return [] }
         let members = item.members.map(\.evidenceID)

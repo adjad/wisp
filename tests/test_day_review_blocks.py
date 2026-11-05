@@ -255,3 +255,97 @@ def test_withheld_subjects_read_plainly_on_the_day():
     titles = sorted(m["title"] for m in grouped[0]["members"])
     assert titles == ["Review an email from Dr. Patel", "Week 4 attendance question"]
     assert not any("details omitted" in b["title"].lower() for b in grouped)
+
+
+# From the user's Day on 2026-11-04: a kept "Review 8 emails" block at 4:20 and the same
+# block suggested again right after it at 5:05, because the planner compared each email's
+# subject with the task's title and never matched.
+TRIO = [("a", "Week 4 attendance question", "Devarsh Patel"), ("b", "Lab partner sign-up", "Mina Park"),
+        ("c", "Club budget", "Ravi Shah")]
+
+
+def kept(title, *, covers=None, status="active", day=DAY, pinned=None):
+    task = dict(id="t:" + title, title=title, day=day, timezone=ZONE, kind="task", duration_minutes=30, priority=2,
+                due_ts=None, pinned_start=at(10) if pinned is None else pinned, status=status, revision=1)
+    return task if covers is None else dict(task, covers=covers)
+
+
+def run_with(tasks, rows=TRIO):
+    base = state()
+    return assess(DAY, ZONE, dict(base, tasks=list(tasks)),
+                  dict(email=dict(ready=True, records=[email(*row) for row in rows])), now=NOW)
+
+
+def group_ids(rows=TRIO):
+    block = suggestions(run_with([], rows))[0]
+    return block["title"], [m["evidence_id"] for m in block["members"]]
+
+
+def test_a_kept_review_block_is_not_suggested_again():
+    title, ids = group_ids()
+    result = run_with([kept(title, covers=ids)])
+    assert suggestions(result) == [] and result["suggested_count"] == 0
+    # Nothing is lost: each email is still attention evidence, and the block stays.
+    assert {i["id"] for i in result["attention"]} >= set(ids)
+    assert [b["title"] for b in result["proposed_plan"]["blocks"] if b.get("task_id")] == [title]
+
+
+def test_mail_arriving_after_keep_is_suggested_alone():
+    title, ids = group_ids()
+    later = run_with([kept(title, covers=ids)], TRIO + [("d", "Thesis draft comments", "Ana Ortiz")])
+    assert [b["title"] for b in suggestions(later)] == ["Review: Thesis draft comments"]
+    # An email read since no longer changes anything about the kept block.
+    fewer = run_with([kept(title, covers=ids)], TRIO[:2])
+    assert suggestions(fewer) == []
+
+
+def test_a_finished_block_covers_its_mail_and_a_dismissed_one_does_not():
+    title, ids = group_ids()
+    assert suggestions(run_with([kept(title, covers=ids, status="done")])) == []
+    assert [b["title"] for b in suggestions(run_with([kept(title, covers=ids, status="dismissed")]))] == [title]
+
+
+def test_a_block_from_another_day_does_not_cover_today():
+    title, ids = group_ids()
+    other = kept(title, covers=ids, day="2026-10-18", pinned=at(0) - 40 * 3600)
+    assert [b["title"] for b in suggestions(run_with([other]))] == [title]
+
+
+def test_a_block_kept_before_covers_existed_still_counts():
+    title, _ = group_ids()
+    assert suggestions(run_with([kept(title)])) == []
+    # Its title's count has since drifted, as the user's Day would after new mail.
+    assert suggestions(run_with([kept("Review 8 emails · Someone, Else +1")])) == []
+    # It speaks for emails only, and a task merely mentioning emails isn't such a block.
+    assert suggestions(run_with([kept("Review 2 notes · Lab")])) != []
+    assert suggestions(run_with([kept("Review the emails from Dana")])) != []
+
+
+def test_a_kept_single_review_is_not_suggested_again():
+    rows = TRIO[:1]
+    title = suggestions(run_with([], rows))[0]["title"]
+    assert title == "Review: Week 4 attendance question"
+    assert suggestions(run_with([kept(title)], rows)) == []
+    assert suggestions(run_with([kept(title, status="done")], rows)) == []
+    assert [b["title"] for b in suggestions(run_with([kept(title, status="dismissed")], rows))] == [title]
+
+
+def test_covers_is_validated_and_survives_a_save(tmp_path):
+    import pytest
+    from service.assistant.store import AssistantStore
+    from service.assistant.today import validate_task
+    base = kept("Review 2 emails")
+    assert "covers" not in validate_task(dict(base, covers=None))
+    assert validate_task(dict(base, covers=["email:a"]))["covers"] == ["email:a"]
+    for bad in ("email:a", [1], [""], ["x"] * 201):
+        with pytest.raises(ValueError):
+            validate_task(dict(base, covers=bad))
+    store = AssistantStore(tmp_path / "assistant.db")
+    try:
+        values = {k: base[k] for k in ("title", "day", "timezone", "kind", "duration_minutes", "priority", "pinned_start")}
+        saved = store.today_save_task(dict(values, covers=["email:a"]))
+        moved = store.today_save_task({"day": "2026-10-20", "pinned_start": None}, task_id=saved["id"],
+                                      revision=saved["revision"])
+        assert moved["covers"] == ["email:a"]    # carried to tomorrow, still covers its mail
+    finally:
+        store._db.close()
