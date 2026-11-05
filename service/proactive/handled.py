@@ -4,7 +4,8 @@ A Before you ask card, a to-do or a Needs attention row about a conversation
 leaves once the user answered that conversation on their own: a text sent in
 Messages after its last incoming text, or mail sent (Gmail, Mail or a phone;
 gmail_source._sync_sent) in reply to it. A reminder or calendar card leaves
-once the same thing is on the user's own Reminders or Calendar.
+once the same thing is on the user's own Reminders or Calendar. A suggestion to
+contact someone leaves once sent mail shows the user wrote to them (sent_check).
 
 Code only, no model: the cycle's next run would see the same thing, but it can
 be an hour away. The sweep runs from the scheduler at most every SWEEP_EVERY_S.
@@ -17,7 +18,7 @@ from __future__ import annotations
 import re
 import time
 
-from service.proactive import sources
+from service.proactive import sent_check, sources
 
 SWEEP_EVERY_S = 60.0
 
@@ -42,7 +43,8 @@ def seen_entry(item: dict) -> dict | None:
         ref = item.get("ref") or {}
         return {"source": "mail", "account": str(item.get("raw_account") or ref.get("account") or ""),
                 "subject": str(ref.get("subject") or item.get("title") or ""),
-                "message_id": str(ref.get("message_id") or ""), "received_ts": float(received)}
+                "message_id": str(ref.get("message_id") or ""), "received_ts": float(received),
+                "sender": str(ref.get("to") or ""), "mentioned": sent_check.mentioned_addresses(item.get("text"))}
     return None
 
 
@@ -91,9 +93,45 @@ def _on_own_schedule(card: dict, sched: dict) -> bool:
     return judge._schedule_duplicate(f"{card.get('title') or ''} {quote}", sched)
 
 
-def retire(store, *, answered: set[str], sched: dict | None = None, now: float | None = None) -> dict:
+def entry_contacted(title, seen: dict | None, sent: list[dict], *, mine=None, now: float | None = None) -> bool:
+    """A record's "contact X" title, against what handled.py saw of its source."""
+    seen = seen or {}
+    return sent_check.already_contacted(title, received_ts=seen.get("received_ts"), sent=sent, mine=mine, now=now,
+                                        subject=str(seen.get("subject") or ""), sender=str(seen.get("sender") or ""),
+                                        mentioned=seen.get("mentioned") or ())
+
+
+def contact_work(state: dict) -> bool:
+    """Any card or to-do standing that sent mail could finish: the sweep reads
+    Apple Mail's Sent list only for these."""
+    return any(sent_check.contact_of(record.get("title")) is not None
+               for record in (state.get("cards") or []) + (state.get("todos") or []))
+
+
+def contacted_records(state: dict, seen: dict[str, dict], sent: list[dict], *, now: float | None = None) -> set[str]:
+    """Ids of the cards and to-dos whose suggested contact sent mail shows is done.
+    Never an alert, and never Wisp's own notices or held time."""
+    if not sent:
+        return set()
+    mine = sent_check.own_addresses(sent)
+    out = set()
+    for record in (state.get("cards") or []) + (state.get("todos") or []):
+        if record.get("critical") or (record.get("action") or {}).get("method") in ("undo_add", "block_time"):
+            continue
+        if sent_check.contact_of(record.get("title")) is None:
+            continue
+        for ref in _refs(record) & set(seen):
+            if entry_contacted(record.get("title"), seen[ref], sent, mine=mine, now=now):
+                out.add(str(record.get("id")))
+                break
+    return out
+
+
+def retire(store, *, answered: set[str], sched: dict | None = None, now: float | None = None,
+           contacted: set[str] | None = None) -> dict:
     """Dismiss cards and finish to-dos the user handled; mark their threads
     answered. Returns what changed, for the log and tests."""
+    contacted = contacted or set()
     now = time.time() if now is None else now
     state = store.state()
     todos = {t.get("id"): t for t in state.get("todos") or []}
@@ -105,7 +143,7 @@ def retire(store, *, answered: set[str], sched: dict | None = None, now: float |
             continue                      # Wisp's own "ADDED" notice, and held work time
         todo = todos.get(card.get("todo_id"))
         by_reply = bool(_refs(card) & answered) and _reply_work(card, todo)
-        if by_reply or (sched and _on_own_schedule(card, sched)):
+        if by_reply or card.get("id") in contacted or (sched and _on_own_schedule(card, sched)):
             store.dismiss_card(card, now)
             retired.append(card["id"])
             if todo and todo.get("id") not in done_ids:
@@ -116,7 +154,7 @@ def retire(store, *, answered: set[str], sched: dict | None = None, now: float |
         if todo.get("id") in done_ids or todo.get("source") not in ("mail", "messages"):
             continue
         reply = todo.get("kind") == "reply" or bool(_REPLY_TITLE.match(str(todo.get("title") or "")))
-        if reply and _refs(todo) & answered:
+        if (reply and _refs(todo) & answered) or todo.get("id") in contacted:
             store.set_todo_done(todo, True, now)
             done_ids.add(todo["id"])
             finished.append(todo["id"])
@@ -145,7 +183,8 @@ def sweep(store=None, *, now: float | None = None, texts=None, sent=None, sched=
     if sent is None:
         sent = sources.sent_rows()
     answered = answered_refs(seen, texts=texts, sent=sent)
-    return retire(store, answered=answered, sched=sched, now=now)
+    contacted = contacted_records(store.state(), seen, sent, now=now)
+    return retire(store, answered=answered, sched=sched, now=now, contacted=contacted)
 
 
 def due(now: float | None = None) -> bool:

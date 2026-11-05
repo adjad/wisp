@@ -40,7 +40,8 @@ import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from service.proactive import guard, handled, judge as judge_mod, prepare as prepare_mod, sources, stable, triage
+from service.proactive import (guard, handled, judge as judge_mod, prepare as prepare_mod, sent_check, sources,
+                               stable, triage)
 from service.proactive.prepare import todo_id
 
 JUDGE_EVERY_S = 30 * 60
@@ -176,7 +177,7 @@ def freeze_reply(reply_ref):
 
 
 def todo_from_item(item: dict, card_ids: dict[str, str]) -> dict:
-    return {"id": todo_id(item["primary"]), "title": guard.clean(item["title"], 120), "source": item["source"],
+    return {"id": todo_id(item["primary"]), "title": guard.clean_title(item["title"]), "source": item["source"],
             "account": item.get("account", ""), "who": item.get("who", ""), "quote": item.get("quote", ""),
             "due_ts": item.get("due_ts"), "due_label": item.get("due_label", ""), "kind": item["kind"],
             "done": False, "card_id": card_ids.get(item["primary"]),
@@ -452,7 +453,7 @@ def _threads(survivors: list[dict], now: float | None = None, tz: str = "UTC") -
         if item["source"] not in ("mail", "messages"):
             continue
         out.append({"id": "thread:" + item["id"], "source": item["source"], "account": item["account"],
-                    "who": item.get("who", ""), "title": guard.clean(result.get("title") or item.get("title"), 90),
+                    "who": item.get("who", ""), "title": guard.clean_title(result.get("title") or item.get("title"), 90),
                     "summary": guard.clean(result.get("summary") or result.get("asks_of_me")
                                            or (item.get("title") if item["source"] == "mail" else ""), 400),
                     "user_wrote": bool(item.get("user_wrote")),
@@ -630,6 +631,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
                 waiting_pool.append(found)
         ranked = with_waiting_people(ranked, waiting_pool, acct_sched, now=now, tz=tz, suppressed=suppressed,
                                      allowed=allowed, debug=waiting_debug)
+        ranked = await _without_contacted(ranked, store, now=now, debug=waiting_debug)
         _status["phase"] = "preparing"
         # Read and under a day old: still a to-do, not yet a card.
         for entry in ranked:
@@ -744,6 +746,42 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
          f"{sum(len(v) for v in cards_by_account.values())} cards{' (by rule)' if not model_ok else ''}")
     return {"ok": not yielded, "status": "yielded" if yielded else "done", "model": model_ok,
             "items": len(items), "read": len(pending), "survivors": len(survivors)}
+
+
+async def _without_contacted(ranked: list[dict], store, *, now: float, debug: list | None = None) -> list[dict]:
+    """Take out what sent mail shows the user already did: "Reach out to your TA" after
+    they wrote to the TA (sent_check). It stays away like a dismissed card, the same
+    as handled.py's sweep does for one already showing, rather than a card saying so:
+    the user finished it, and there's nothing on such a card to do but dismiss it.
+    No model, and Sent is read only when a suggestion to contact someone is here."""
+    try:
+        wanted = [e for e in ranked if e.get("item") and not e.get("critical")
+                  and sent_check.contact_of(e.get("title")) is not None]
+        if not wanted:
+            return ranked
+        sent = await sources.all_sent_rows(now)
+        if not sent:
+            return ranked                  # nothing to go on: the suggestion stands
+        mine = sent_check.own_addresses(sent)
+        gone = set()
+        for entry in wanted:
+            item = entry["item"]
+            ref = item.get("ref") or {}
+            seen = {"received_ts": item.get("received_ts"), "subject": ref.get("subject") or "",
+                    "sender": ref.get("to") or "", "mentioned": sent_check.mentioned_addresses(item.get("text"))}
+            if handled.entry_contacted(entry.get("title"), seen, sent, mine=mine, now=now):
+                store.mark_handled(entry.get("fingerprints"), entry.get("asks"), now)
+                gone.add(entry["primary"])
+                if debug is not None:
+                    debug.append({"who": item.get("who", ""), "waiting": False, "reason": "already emailed"})
+            else:
+                entry["sent_checked"] = True
+        if gone:
+            _log(f"already contacted, from sent mail: {len(gone)}")
+        return [e for e in ranked if e.get("primary") not in gone]
+    except Exception:  # noqa: BLE001 — a failed check keeps the suggestion
+        traceback.print_exc()
+        return ranked
 
 
 _REPLY_METHODS = ("email_reply", "text_reply")
@@ -990,9 +1028,9 @@ async def _sweep_handled() -> None:
     try:
         from service.proactive.store import store as default_store
         texts = await asyncio.to_thread(lambda: handled.latest_sent_texts(sources.text_records()))
-        sent = sources.sent_rows()
         store = default_store()
         now = time.time()
+        sent = await sources.all_sent_rows(now) if handled.contact_work(store.state()) else sources.sent_rows()
         tz = store.state().get("timezone") or _zone()
         own, linked = sources.own_account(), sources.gmail_accounts()
         try:

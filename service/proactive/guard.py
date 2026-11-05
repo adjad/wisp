@@ -162,6 +162,29 @@ def clean(value, limit: int = 240) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
 
 
+# A card's title wraps to two lines at this length; judge._good_title already
+# holds a model's title to 12 words, so a sensible title is never cut at all.
+TITLE_MAX = 120
+_TITLE_DANGLING = frozenset(
+    "a an the your my our their his her this that to of for on in at by with from about regarding re and or "
+    "but as into".split())
+
+
+def clean_title(value, limit: int = TITLE_MAX) -> str:
+    """A title held to `limit` at a word boundary: never "...section attenda",
+    and never a tail left hanging ("...regarding your"). No ellipsis, because the
+    same text becomes the reminder or plan item the user keeps."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    words = text[:limit + 1].split(" ")[:-1]     # the last piece may be cut mid-word
+    if not words:
+        return text[:limit]                      # one enormous word: nothing to break on
+    while len(words) > 1 and words[-1].strip(",;:-–—(").casefold() in _TITLE_DANGLING:
+        words.pop()
+    return " ".join(words).rstrip(",;:-–—( ")
+
+
 # --- due phrases ----------------------------------------------------------------
 
 _SLANG = [(re.compile(p, re.I), r) for p, r in (

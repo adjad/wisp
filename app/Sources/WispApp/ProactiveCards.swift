@@ -882,7 +882,8 @@ struct ProactiveBriefSection: View {
                     Text(todo.title).font(.wisp(size: 13.5))
                         .foregroundStyle(done ? Theme.textMuted : Theme.textPrimary)
                         .strikethrough(done, color: Theme.textMuted)
-                        .lineLimit(1)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        .help(todo.title)
                     if !sub.isEmpty && !done {
                         Text(sub).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
                     }
