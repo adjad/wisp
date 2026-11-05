@@ -202,8 +202,10 @@ final class NotchPermissionPageModel: ObservableObject {
     /// Shows the page again, once there is an answer to show (AppDelegate).
     var comeBack: () -> Void = {}
 
-    /// What the page waits for while the panel is tucked away.
-    private struct Waiting {
+    /// What the page waits for while the panel is tucked away. It lasts until the
+    /// panel has opened again, not until the answer: macOS can answer while the
+    /// panel is still rolling up, and that close must not take the page with it.
+    struct Waiting {
         let token = UUID()
         let item: Item
         let before: NotchPermissionPage.State
@@ -213,7 +215,7 @@ final class NotchPermissionPageModel: ObservableObject {
     private var waiting: Waiting?
     private var appObserver: NSObjectProtocol?
 
-    /// The panel is closing for one of the page's own actions, so the page stays.
+    /// A close under way or still to come is for one of the page's own actions, so the page stays.
     var keepsThroughClose: Bool { waiting != nil }
 
     func stillWaiting(at date: Date) -> Bool {
@@ -239,6 +241,20 @@ final class NotchPermissionPageModel: ObservableObject {
     /// System Settings (the setup window's permissionRow does the same).
     func act(_ item: Item) {
         let state = access.state(item)
+        let wait = beginWaiting(item, state: state)
+        Task { [weak self, access] in
+            if state == .notAllowed && !FirstRunPermissions.settingsThroughRequest(item) {
+                Permissions.openSettingsPane(FirstRunSetupView.settingsPane(item))
+                await access.refresh()
+            } else {
+                await access.request(item)
+            }
+            self?.answered(wait)
+        }
+    }
+
+    /// The click, before anything is asked: the page now stays through the close.
+    func beginWaiting(_ item: Item, state: NotchPermissionPage.State) -> Waiting {
         let wait = Waiting(item: item, before: state,
                            inPlace: NotchPermissionPage.answersInPlace(item, state), since: Date())
         waiting = wait
@@ -248,17 +264,13 @@ final class NotchPermissionPageModel: ObservableObject {
             NotchPermissionPage.noteResume(item)
             watchForLeavingSystemSettings()
         }
-        Task { [weak self, access] in
-            if state == .notAllowed && !FirstRunPermissions.settingsThroughRequest(item) {
-                Permissions.openSettingsPane(FirstRunSetupView.settingsPane(item))
-                await access.refresh()
-            } else {
-                await access.request(item)
-            }
-            guard let self, wait.inPlace, self.waiting?.token == wait.token else { return }
-            self.endWaiting()
-            self.comeBack()
-        }
+        return wait
+    }
+
+    /// macOS has answered the question this click asked.
+    func answered(_ wait: Waiting) {
+        guard wait.inPlace, waiting?.token == wait.token else { return }
+        comeBack()
     }
 
     /// A grant made in System Settings shows when the person leaves it. A switch
@@ -281,7 +293,6 @@ final class NotchPermissionPageModel: ObservableObject {
             await access.refresh()
             guard let self, self.waiting?.token == wait.token,
                   NotchPermissionPage.comesBack(before: wait.before, now: access.state(wait.item)) else { return }
-            self.endWaiting()
             self.comeBack()
         }
     }

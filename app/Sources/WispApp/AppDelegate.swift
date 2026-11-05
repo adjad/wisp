@@ -1374,7 +1374,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// What it stepped aside for was answered (the microphone's question).
     private func stepBack() {
         guard presentation.desired == .bar else { return }
-        openAssistant()
+        expand()
     }
 
     /// The notch on its permission page. While setup holds the notch closed, the
@@ -1389,10 +1389,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The page again, with macOS's answer on it. Nobody may be looking, so unless
     /// the pointer goes there it closes again on its own after a moment to read.
     private func permissionPageComesBack() {
+        // Still open and nothing closing it, so no opening will end the page's wait.
+        if presentation.desired == .chat && !model.collapsed {
+            model.permissionPage.panelOpened()
+            return
+        }
         // Nobody asked for this open, so the keyboard stays with the app in front.
-        createPanelIfNeeded()
         panel?.revealsWithoutKey = true
-        openAssistant()
+        // Not openAssistant: the answer can arrive during the roll-up, while
+        // model.collapsed is still false. The request outlives that step, and the
+        // page's wait keeps it through the close (NotchPermissionPageModel.Waiting).
+        expand()
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.permissionAnswerShownFor) { [weak self] in
             guard let self else { return }
             self.panel?.revealsWithoutKey = false
@@ -2706,6 +2713,39 @@ extension AppDelegate {
         precondition(delegate.presentation.desired == .bar, "A window or a question opening closes the panel anyway")
         precondition(model.input == "half a question", "Nothing in the panel is lost")
         model.input = ""
+        // macOS answers while the panel is still rolling up (a question it never
+        // showed): the page and its message come back instead of closing with it.
+        let racing = AppDelegate()
+        racing.presentation.request(.chat)
+        let racingOpen = racing.presentation.next()!
+        racing.model.collapsed = false
+        racing.finishPresentation(racingOpen)
+        racing.model.tab = .brief
+        racing.model.openPermissionPage(.calendar)
+        racing.model.permissionPage.comeBack = { [weak racing] in racing?.permissionPageComesBack() }
+        let click = racing.model.permissionPage.beginWaiting(.calendar, state: .notAsked)
+        racing.presentation.request(.bar)
+        _ = racing.presentation.next()!
+        racing.model.permissionPage.answered(click)
+        precondition(racing.presentation.desired == .chat, "An answer during the roll-up asks for the panel back")
+        racing.model.collapsed = true
+        precondition(racing.model.showingPermissions && racing.model.permissionPage.focus == .calendar,
+                     "That roll-up's end doesn't close the page")
+        racing.model.collapsed = false
+        precondition(racing.model.showingPermissions && !racing.model.permissionPage.keepsThroughClose,
+                     "The page is back, and nothing is waiting any more")
+        racing.model.collapsed = true
+        precondition(!racing.model.showingPermissions, "The next close is an ordinary one")
+        // The same answer with the panel never closed: nothing is left waiting.
+        let stayed = AppDelegate()
+        stayed.presentation.request(.chat)
+        let stayedOpen = stayed.presentation.next()!
+        stayed.model.collapsed = false
+        stayed.finishPresentation(stayedOpen)
+        stayed.model.openPermissionPage(.calendar)
+        stayed.model.permissionPage.comeBack = { [weak stayed] in stayed?.permissionPageComesBack() }
+        stayed.model.permissionPage.answered(stayed.model.permissionPage.beginWaiting(.calendar, state: .notAsked))
+        precondition(!stayed.model.permissionPage.keepsThroughClose, "An open panel has no opening to wait for")
         print("PASS: AppDelegate permission page opens in the notch and the panel steps aside for what it opens")
     }
 
