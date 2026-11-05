@@ -551,6 +551,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_model_led_effect_ownership.py",
     # Real send tools and loop with a fake bridge, synthetic contacts, scripted model.
     "tests/test_send_recipient_preflight.py",
+    # Real effect tools and loop with a fake bridge and queue, fake Notes results, scripted model.
+    "tests/test_effect_refusal_no_lock.py",
     "tests/test_model_led_1_2_5_boundaries.py",
     # httpx MockTransport only; redirect and strict-host checks never touch the network.
     "tests/test_web_strict_host.py",

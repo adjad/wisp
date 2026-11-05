@@ -17,7 +17,7 @@ import time
 from datetime import date, datetime, timedelta, timezone
 
 from service.assistant.store import assistant_store
-from service.tools.registry import EVENT_UPDATE_UNAVAILABLE, register
+from service.tools.registry import EVENT_UPDATE_UNAVAILABLE, not_done, register
 
 _KIND_LABEL = {"exam": "EXAM", "assignment": "due", "meeting": "meeting",
                "event": "event", "reminder": "reminder"}
@@ -774,23 +774,27 @@ def _reminder_due_time(when_iso: str) -> tuple[float, str]:
 async def add_reminder(title: str, when_iso: str, kind: str = "reminder", all_day: bool = False) -> str:
     from service.assistant.verified_reminders import valid_due_date, due_timestamp
     if type(all_day) is not bool or (all_day and not valid_due_date(when_iso)):
-        return '(error: all-day reminders require an explicit YYYY-MM-DD date; nothing was added.)'
+        return not_done('(error: all-day reminders require an explicit YYYY-MM-DD date; nothing was added.)',
+                        question="I didn't add that reminder: an all-day reminder needs a date. What date should I use?")
     try:
         if all_day:
             ts, when_str = due_timestamp({'all_day': True, 'due_date': when_iso}), ''
         else:
             ts, when_str = _reminder_due_time(when_iso)
     except (TypeError, ValueError, OverflowError, OSError):
-        return (f"(bad when_iso {when_iso!r} — use a valid, unambiguous local ISO "
-                "time, e.g. 2026-07-13T16:00, or an explicit UTC offset; nothing was added.)")
+        return not_done(f"(bad when_iso {when_iso!r} — use a valid, unambiguous local ISO "
+                        "time, e.g. 2026-07-13T16:00, or an explicit UTC offset; nothing was added.)",
+                        question="I couldn't read that time, so I didn't add the reminder. What date and time should I use?")
     if ((datetime.fromisoformat(when_iso).date() < datetime.now().date()) if all_day
             else ts < time.time() - 60):
-        return f"({when_iso} is in the past — not added)"
+        return not_done(f"({when_iso} is in the past — not added)",
+                        question="That time has already passed, so I didn't add the reminder. What date and time should I use?")
     clean_title = title.strip() if isinstance(title, str) else ''
     if not clean_title:
-        return "(error: a reminder title is required; nothing was added.)"
+        return not_done("(error: a reminder title is required; nothing was added.)",
+                        question="What should the reminder say?")
     if not isinstance(kind, str) or kind not in {"reminder", "assignment", "exam", "meeting", "event"}:
-        return "(error: unsupported reminder kind; nothing was added.)"
+        return not_done("(error: unsupported reminder kind; nothing was added.)")
     from service.assistant.outbox import app_connected, request as app_request
     from service.assistant.hub import hub
     if all_day:
@@ -875,8 +879,8 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
     # water the plants to water the garden" was refused as missing a time).
     rename_only = not when_iso and day not in {"today", "tomorrow"} and bool(new_title.strip())
     if not when_iso and day not in {"today", "tomorrow"} and not rename_only:
-        return ("(error: pass when_iso, or day='today'/'tomorrow', or new_title to rename; "
-                "the reminder was not changed.)")
+        return not_done("(error: pass when_iso, or day='today'/'tomorrow', or new_title to rename; "
+                        "the reminder was not changed.)")
 
     # Rescheduling a hidden overdue reminder by name is allowed (it un-hides it by moving
     # its due time); a list or search never shows it.
@@ -886,9 +890,10 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
                       if str(c.get("id") or "") == expected_id
                       or expected_id in {str(value) for value in c.get("duplicate_ids") or []}]
     if not candidates:
-        return (("(error: the selected reminder changed before it could be updated; "
-                 "nothing was changed.)") if expected_id else
-                f"Nothing active matches reminder {title!r}." if title.strip()
+        if expected_id:
+            return not_done("(error: the selected reminder changed before it could be updated; "
+                            "nothing was changed.)")
+        return (f"Nothing active matches reminder {title!r}." if title.strip()
                 else "Nothing active matches the reminder correction.")
 
     if title.strip():
@@ -901,7 +906,7 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
             choices = "; ".join(
                 f"{c['title']} ({datetime.fromtimestamp(c['when_ts']).strftime('%a %-I:%M %p')})"
                 for c in candidates[:5])
-            return f"Several reminders match “{title}”: {choices}. Which one?"
+            return not_done(f"Several reminders match “{title}”: {choices}. Which one?")
         current = candidates[0]
     else:
         # This branch is intentionally limited by the tool description and the
@@ -918,11 +923,11 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
     old_when = float(current["when_ts"])
     if when_iso:
         if valid_due_date(when_iso) and not date_only:
-            return '(error: a timed update requires a clock; nothing was changed.)'
+            return not_done('(error: a timed update requires a clock; nothing was changed.)')
         try:
             target = datetime.fromisoformat(when_iso)
         except ValueError:
-            return f"(error: bad when_iso {when_iso!r} — use e.g. 2026-08-27T09:00)"
+            return not_done(f"(error: bad when_iso {when_iso!r} — use e.g. 2026-08-27T09:00)")
     elif rename_only:
         target = datetime.fromtimestamp(old_when)
     else:
@@ -938,9 +943,9 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
         target = datetime.fromtimestamp(new_when)
     if not rename_only and ((target.date() < datetime.now().date()) if date_only
                             else new_when < time.time() - 60):
-        return (f"(error: preserving the old time would put the reminder in the past "
-                f"({target:%a %b %-d at %-I:%M %p}); ask what time today to use. "
-                "The reminder was not changed.)")
+        return not_done(f"(error: preserving the old time would put the reminder in the past "
+                        f"({target:%a %b %-d at %-I:%M %p}); ask what time today to use. "
+                        "The reminder was not changed.)")
 
     group = [current] + [row for row in
                          (assistant_store.get(cid)
@@ -954,16 +959,16 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
         # move changes nothing outside Wisp and needs no native receipt.
         manual_ids = [row["id"] for row in group if row.get("source") == "manual"]
         if not manual_ids:
-            return "(error: this item is not a Wisp or Apple reminder; nothing was changed.)"
+            return not_done("(error: this item is not a Wisp or Apple reminder; nothing was changed.)")
         if assistant_store.update_schedule(manual_ids, new_when, final_title, **date_flags) < 1:
             return "(error: the reminder changed before it could be updated; try again.)"
         from service.assistant.hub import hub
         await hub.publish({"type": "changed"})
         return f"Reminder updated: “{final_title}” — {when_label} in Wisp."
     if len(reminder_rows) > 1:
-        return "(error: several native reminders share this item; select an exact reminder before changing it.)"
+        return not_done("(error: several native reminders share this item; select an exact reminder before changing it.)")
     if any(not row.get("source_id") for row in reminder_rows):
-        return "(error: exact Reminders identity is unavailable; nothing was changed.)"
+        return not_done("(error: exact Reminders identity is unavailable; nothing was changed.)")
     from service.assistant.outbox import request as app_request
     from service.assistant.hub import hub
     for row in reminder_rows:
@@ -1012,13 +1017,14 @@ async def update_reminder(title: str = "", when_iso: str = "", day: str = "",
 async def add_calendar_event(title: str, when_iso: str,
                              duration_min: int = 60, location: str = "") -> str:
     if problem := calendar_time_problem(when_iso):
-        return problem
+        return not_done(problem, question="I couldn't use that time, so I didn't add the event. What date and time should I use?")
     when, _ = _calendar_local_start(when_iso)
     if when.timestamp() < time.time() - 60:
-        return f"({when_iso} is in the past — not added)"
+        return not_done(f"({when_iso} is in the past — not added)",
+                        question="That time has already passed, so I didn't add the event. What date and time should I use?")
     if (not isinstance(title, str) or not title.strip()
             or type(duration_min) is not int or not 1 <= duration_min <= 10080):
-        return "(error: a title and duration of 1–10080 minutes are required; nothing changed.)"
+        return not_done("(error: a title and duration of 1–10080 minutes are required; nothing changed.)")
     interval = calendar_interval_label(when_iso, duration_min)
     from service.assistant.outbox import request as app_request
     result = await app_request("create_calendar_event", {
@@ -1174,19 +1180,19 @@ async def update_event(title: str, when_iso: str, duration_min: int | None = Non
                 or abs(_calendar_local_start(when_iso)[0].timestamp() - payload["when_ts"]) >= 1
                 or not assistant_store.calendar_occurrence_current(
                     payload["source_id"], payload["expected_start_ts"], payload["expected_title"])):
-            return (f"(couldn't move “{binding['title']}”: it changed after you confirmed. "
-                    "Nothing was changed.)")
+            return not_done(f"(couldn't move “{binding['title']}”: it changed after you confirmed. "
+                            "Nothing was changed.)")
     else:
         # Only the agent loop's confirmed, bound call may move an event; any other caller
         # (a direct run_tool, a workflow executor) gets the reason and nothing runs.
         plan = event_move_plan(title, when_iso, duration_min, location, new_title, current_when_iso)
         if "error" in plan:
-            return plan["error"]
-        return ("(error: a Calendar move needs the user's confirmation of the exact event; "
-                "nothing was moved.)")
+            return not_done(plan["error"])
+        return not_done("(error: a Calendar move needs the user's confirmation of the exact event; "
+                        "nothing was moved.)")
     from service.assistant.outbox import app_connected, request as app_request
     if not await app_connected():
-        return EVENT_UPDATE_UNAVAILABLE
+        return not_done(EVENT_UPDATE_UNAVAILABLE)
     result = await app_request("move_calendar_event", payload)
     if result.get("ok") is not True:
         if result.get("status") == "unknown":
@@ -1248,12 +1254,12 @@ async def cancel_event(title: str) -> str:
         lst = "; ".join(
             f"{c['title']} ({datetime.fromtimestamp(c['when_ts']).strftime('%a %-I:%M %p')})"
             for c in matches[:5])
-        return f"Several items match “{title}”: {lst}. Which one? Please be more specific."
+        return not_done(f"Several items match “{title}”: {lst}. Which one? Please be more specific.")
     c = matches[0]
     read_only = _read_only_calendar_row(c)
     if read_only:
-        return (f"“{read_only['title']}” is on a read-only calendar; Wisp can't change it from this Mac. "
-                "Nothing was cancelled. Cancel it in Calendar if it is yours to cancel.")
+        return not_done(f"“{read_only['title']}” is on a read-only calendar; Wisp can't change it from this Mac. "
+                        "Nothing was cancelled. Cancel it in Calendar if it is yours to cancel.")
     from service.assistant.hub import hub
     error = await _retire(c)
     if error:

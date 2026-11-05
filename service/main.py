@@ -2790,8 +2790,8 @@ async def agent(body: dict[str, Any]):
                     or tool.name in {"send_message", "send_email", "reply_to_email",
                                      "forward_email", "schedule_send"})
 
-            def finish_model_action(claim, verified, *, not_sent=False):
-                return store.finish_model_effect(sid, claim, verified=verified, not_sent=not_sent)
+            def finish_model_action(claim, verified, **refusal):
+                return store.finish_model_effect(sid, claim, verified=verified, **refusal)
 
             if decision._reminder_clarification:
                 # This host boundary ran no action and admitted no tools.

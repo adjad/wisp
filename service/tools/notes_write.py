@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import subprocess
 
-from service.tools.registry import register
+from service.tools.registry import not_done, register
 
 _TIMEOUT = 25
 
@@ -77,7 +77,8 @@ def create_note(title: str, body: str = "", folder: str = "",
                 checklist: bool = False) -> str:
     title = (title or "").strip()
     if not title:
-        return "(error: create_note needs a `title`.)"
+        return not_done("(error: create_note needs a `title`.)",
+                        question="What should the note be called?")
 
     if checklist and body.strip():
         items = "".join(f"<li>{_html(ln.strip())}</li>"
@@ -106,8 +107,11 @@ def create_note(title: str, body: str = "", folder: str = "",
     if (e := _err(p)) is not None:
         return e
     if p.stdout.strip() == "NOFOLDER":
-        return (f"(There's no Notes folder called {folder!r}. "
-                f"Leave `folder` out to use the default folder.)")
+        # The script returned before its `make new note`.
+        return not_done(f"(There's no Notes folder called {folder!r}. "
+                        f"Leave `folder` out to use the default folder.)",
+                        question=f"There's no Notes folder called “{folder}”, so I didn't create the note. "
+                                 "Should I use the default folder?")
     kind = "checklist" if checklist else "note"
     return (f"Created the {kind} \"{title}\" in Notes."
             f" (It won't show up in search_notes until the next daily sync.)")
@@ -134,9 +138,11 @@ def append_note(title: str, text: str) -> str:
     title = (title or "").strip()
     text = (text or "").strip()
     if not title:
-        return "(error: append_note needs the `title` of the note to add to.)"
+        return not_done("(error: append_note needs the `title` of the note to add to.)",
+                        question="Which note should I add that to?")
     if not text:
-        return "(error: append_note needs `text` to add.)"
+        return not_done("(error: append_note needs `text` to add.)",
+                        question="What should I add to the note?")
 
     # Matching happens INSIDE AppleScript rather than by listing every note and
     # filtering here: the note bodies are the user's personal content and there
@@ -161,12 +167,16 @@ def append_note(title: str, text: str) -> str:
     if (e := _err(p)) is not None:
         return e
     out = p.stdout.strip()
+    # NONE and MANY: the script returned before its `set body`.
     if out == "NONE":
-        return f"No note has {title!r} in its title. Use create_note to start one."
+        return not_done(f"No note has {title!r} in its title. Use create_note to start one.",
+                        question=f"I couldn't find a note called “{title}”, so nothing was added. "
+                                 "Should I start a new one?")
     if out.startswith("MANY:"):
         names = [n for n in out[5:].splitlines() if n.strip()]
         listed = "\n".join(f"  - {n}" for n in names[:8])
-        return (f"Several notes match {title!r} — which one?\n{listed}")
+        return not_done(f"Several notes match {title!r} — which one?\n{listed}",
+                        question=f"Several notes match “{title}”, so nothing was added. Which one?\n{listed}")
     name = out[3:] if out.startswith("OK:") else title
     return f"Added it to \"{name}\"."
 

@@ -46,45 +46,63 @@ class _OutboundUnknownResult(str):
         raise AttributeError("Outbound uncertainty receipts are immutable")
 
 
-class _NotSentResult(str):
-    """Host proof that an outbound tool stopped BEFORE anything was dispatched.
+class _NotDoneResult(str):
+    """Host proof that an effect tool refused BEFORE any write.
 
-    The opposite of _OutboundUnknownResult, and the only thing that settles a
-    send attempt as "not sent" instead of unverified. Minted only in
-    service/tools/action_tools.py (_not_sent), on a return path that comes
-    before the app-bridge call, or when the bridge itself answers not_attempted
-    with dispatch_started false. Every other outcome (an exception, a plain
-    string, a new return path nobody marked) stays unverified and keeps the
-    chat locked: not marking something fails safe. Lost when serialized,
+    The only thing that settles an effect attempt as "not done" instead of
+    unverified, so a bad date or an ambiguous title leaves the chat usable.
+    Minted only through not_done(), on a return path that comes before the tool
+    writes anything (see _NOT_DONE_TOOLS). Every other outcome (an exception, a
+    plain string, a new return path nobody marked) stays unverified and keeps
+    the chat locked: not marking something fails safe. Lost when serialized,
     sliced or coerced to str, and never rebuilt from text.
-    """
-    __slots__ = ("_question", "_needs_recipient")
 
-    def __new__(cls, text: str, *, question: str = "", needs_recipient: bool = False):
+    `question` is what Wisp says to the person when it stops here; the text
+    itself is written for the model.
+    """
+    __slots__ = ("_question",)
+
+    def __new__(cls, text: str, *, question: str = ""):
         instance = super().__new__(cls, text)
         object.__setattr__(instance, "_question", question)
-        object.__setattr__(instance, "_needs_recipient", bool(needs_recipient))
         return instance
 
     @property
     def question(self):
         return self._question
 
-    @property
-    def needs_recipient(self):
-        return self._needs_recipient
-
     def __setattr__(self, name, value):
-        raise AttributeError("Not-sent receipts are immutable")
+        raise AttributeError("Refusal receipts are immutable")
 
     def __delattr__(self, name):
-        raise AttributeError("Not-sent receipts are immutable")
+        raise AttributeError("Refusal receipts are immutable")
 
     def __copy__(self):
         return self
 
     def __deepcopy__(self, memo):
         return self
+
+
+class _NotSentResult(_NotDoneResult):
+    """Host proof that an outbound tool stopped BEFORE anything was dispatched.
+
+    The opposite of _OutboundUnknownResult. The same fail-safe rules as
+    _NotDoneResult, with one more source: minted only in
+    service/tools/action_tools.py (_not_sent), on a return path that comes
+    before the app-bridge call, or when the bridge itself answers not_attempted
+    with dispatch_started false.
+    """
+    __slots__ = ("_needs_recipient",)
+
+    def __new__(cls, text: str, *, question: str = "", needs_recipient: bool = False):
+        instance = super().__new__(cls, text, question=question)
+        object.__setattr__(instance, "_needs_recipient", bool(needs_recipient))
+        return instance
+
+    @property
+    def needs_recipient(self):
+        return self._needs_recipient
 
 
 _NOT_SENT_TOOLS = frozenset({"send_email", "send_message", "forward_email", "reply_to_email",
@@ -95,6 +113,38 @@ def not_sent_receipt(tool, result) -> bool:
     """`result` is this built-in outbound tool's own proof that nothing went out."""
     return (type(result) is _NotSentResult and getattr(tool, "name", "") in _NOT_SENT_TOOLS
             and getattr(getattr(tool, "func", None), "__module__", "") == "service.tools.action_tools")
+
+
+# The built-in tools whose refusals are marked, and the module each must come
+# from. A tool missing here keeps locking the chat on a refusal, which is safe.
+_NOT_DONE_TOOLS = {
+    "add_reminder": "service.tools.assistant_tools",
+    "update_reminder": "service.tools.assistant_tools",
+    "add_calendar_event": "service.tools.assistant_tools",
+    "update_event": "service.tools.assistant_tools",
+    "cancel_event": "service.tools.assistant_tools",
+    "complete_reminder": "service.tools.schedule_extras",
+    "cancel_scheduled_send": "service.tools.action_tools",
+    "set_timer": "service.tools.timers_alarms",
+    "create_note": "service.tools.notes_write",
+    "append_note": "service.tools.notes_write",
+    "remember": "service.tools.memory_tools",
+}
+
+
+def not_done(text: str, *, question: str = "") -> str:
+    """Mark a refusal as proof that nothing changed (see _NotDoneResult).
+
+    Only for a path that returns before the tool writes anything. An unknown
+    or partial outcome must stay a plain string, so the chat stays locked."""
+    return _NotDoneResult(text, question=question)
+
+
+def not_done_receipt(tool, result) -> bool:
+    """`result` is this built-in tool's own proof that it changed nothing."""
+    return (type(result) is _NotDoneResult
+            and getattr(getattr(tool, "func", None), "__module__", "")
+            == _NOT_DONE_TOOLS.get(getattr(tool, "name", "")))
 
 
 # In-process host provenance only: never reconstruct this authority from wire text.
@@ -307,6 +357,9 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
         return ToolOutcome("planned", text, effect)
     if not denied and type(result) is _OutboundUnknownResult and result.operation == tool_name:
         return ToolOutcome("unknown", text, effect, {"action_id": result.action_id})
+    if not denied and type(result) is _NotDoneResult:
+        # A marked refusal never reads as success, whatever its wording.
+        return ToolOutcome("failed", text, effect)
     if tool_name == "draft_message":
         if denied:
             return ToolOutcome("denied", text, effect)
@@ -621,7 +674,7 @@ async def run_tool(tool: Tool, args: dict, *, private_shell_read_only: bool = Fa
 
     def normalize_result(res):
         # Preserve the existing display-only/public-source separation first.
-        if (type(res) in {_OutboundUnknownResult, _NotSentResult}
+        if (type(res) in {_OutboundUnknownResult, _NotSentResult, _NotDoneResult}
                 or _valid_message_draft(res, tool.name)
                 or isinstance(res, (DisplayOnlyToolResult, PublicSearchToolResult))):
             return res

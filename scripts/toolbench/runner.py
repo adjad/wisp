@@ -1113,8 +1113,8 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
             outbound=opaque_effect(tool.category) or tool.name in OPAQUE_OUTBOUND_TOOLS
             or tool.category in _OUTBOUND_CATEGORIES or tool.name in _OUTBOUND_TOOLS)
 
-    def finish_model_action(claim, verified):
-        return store.finish_model_effect(sid, claim, verified=verified)
+    def finish_model_action(claim, verified, **refusal):
+        return store.finish_model_effect(sid, claim, verified=verified, **refusal)
 
     # Answer guidance. A model-led decision has an empty subset and no direct
     # calls, so the routed web/stock synthesis hints can never apply; the Ask

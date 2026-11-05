@@ -31,7 +31,7 @@ from contextvars import ContextVar
 from typing import Iterator
 
 from service.assistant.outbox import request as app_request
-from service.tools.registry import register
+from service.tools.registry import not_done, register
 from service.tools.timeranges import WHEN_ARG
 
 _MAX_RESPONSE_CHARS = 3000
@@ -712,40 +712,44 @@ async def schedule_send(channel: str, to: str, when: str, body: str = "",
 
     channel = (channel or "").strip().lower()
     if channel not in ("email", "message"):
-        return "(channel must be 'email' or 'message')"
+        return _not_sent("(channel must be 'email' or 'message')")
     recipients = _split_recipients(to)
     if len(recipients) > 1:
-        return ("(NOT scheduled — schedule_send supports exactly one recipient. "
-                "Schedule each recipient separately; nothing was queued.)")
+        return _not_sent("(NOT scheduled — schedule_send supports exactly one recipient. "
+                         "Schedule each recipient separately; nothing was queued.)",
+                         question="I can only schedule one recipient at a time. Who should this one go to?")
     body = _degarble(body or text)
     subject = _degarble(subject)
     if not body.strip():
-        return "(nothing to send — pass `body` with the full message)"
+        return _not_sent("(nothing to send — pass `body` with the full message)",
+                         question="What should the message say?")
     if _unreviewed() and _looks_truncated(body):
-        return ("(NOT scheduled — the draft looks cut off mid-sentence. Write "
-                "the FULL text out in your reply first, then pass that same "
-                "complete text to schedule_send.)")
+        return _not_sent("(NOT scheduled — the draft looks cut off mid-sentence. Write "
+                         "the FULL text out in your reply first, then pass that same "
+                         "complete text to schedule_send.)")
     # Placeholders are rejected here exactly as they are for an immediate send:
     # nobody is going to be looking at this when it goes out, so a "[Your Name]"
     # that survives to delivery is strictly worse than one caught now.
     if _unreviewed() and (holes := _unfilled_placeholders(f"{subject}\n{body}")):
-        return (f"(NOT scheduled — the draft still has unfilled placeholders: "
-                f"{', '.join(holes[:4])}. Rewrite it with the real values.)")
+        return _not_sent(f"(NOT scheduled — the draft still has unfilled placeholders: "
+                         f"{', '.join(holes[:4])}. Rewrite it with the real values.)")
     try:
         when_dt, _when_label = resolve_when(when)
     except BadWhen as e:
-        return str(e)
+        return _not_sent(str(e), question=f"I couldn't read that time, so nothing is scheduled. What time should I send it?")
     when_ts = when_dt.timestamp()
     if when_ts <= time.time():
-        return (f"(NOT scheduled — {when!r} resolves to "
-                f"{when_dt:%a %b %-d at %-I:%M %p}, which is in the past. Ask "
-                "the user what time they actually meant, or send it now with "
-                f"{'send_email' if channel == 'email' else 'send_message'}.)")
+        return _not_sent(f"(NOT scheduled — {when!r} resolves to "
+                         f"{when_dt:%a %b %-d at %-I:%M %p}, which is in the past. Ask "
+                         "the user what time they actually meant, or send it now with "
+                         f"{'send_email' if channel == 'email' else 'send_message'}.)",
+                         question=f"That time has already passed, so nothing is scheduled. What time should I send it?")
 
     display = to
     if channel == "email":
         if not recipients:
-            return "(no recipient — ask the user who this should go to)"
+            return _not_sent("(no recipient — ask the user who this should go to)",
+                             question="Who should this go to?")
         r = recipients[0]
         if not _EMAIL_RE.match(r):
             r, problem = _resolve_recipient(r, want_email=True)
@@ -755,7 +759,8 @@ async def schedule_send(channel: str, to: str, when: str, body: str = "",
         recipient = r
     else:
         if not recipients:
-            return "(no recipient — ask the user who to text)"
+            return _not_sent("(no recipient — ask the user who to text)",
+                             question="Who should I text?")
         recipient = recipients[0]
         if not (_EMAIL_RE.match(recipient)
                 or re.fullmatch(r"[+()\-.\s\d]{7,}", recipient)):
@@ -909,16 +914,19 @@ async def cancel_scheduled_send(id: str) -> str:
     from service.assistant.outbound_queue import outbound_queue
 
     if not isinstance(id, str) or not id.strip():
-        return "Ask the user for an exact scheduled-send ID. NOT cancelled: no cancellation was applied."
+        return not_done("Ask the user for an exact scheduled-send ID. NOT cancelled: no cancellation was applied.",
+                        question="Which scheduled send should I cancel?")
+    # cancel() is one conditional UPDATE: no row back means it changed nothing.
     row = outbound_queue.cancel((id or "").strip())
     if not row:
         recorded = outbound_queue.get((id or "").strip())
         if recorded is not None:
-            prefix = ("No matches among pending sends. Already recorded as cancelled; no new cancellation was applied."
-                      if recorded["status"] == "cancelled" else
-                      "(error: NOT cancelled: this item is no longer pending. No cancellation was applied; "
-                      "this tool cannot recall an attempted send.)")
-            return prefix + "\n" + _scheduled_send_record(recorded, full_body=False)
+            record = _scheduled_send_record(recorded, full_body=False)
+            if recorded["status"] == "cancelled":
+                return ("No matches among pending sends. Already recorded as cancelled; "
+                        "no new cancellation was applied.\n" + record)
+            return not_done("(error: NOT cancelled: this item is no longer pending. No cancellation was "
+                            "applied; this tool cannot recall an attempted send.)\n" + record)
         return ("No matches for that exact scheduled-send ID. NOT cancelled: no cancellation was applied. "
                 "Absence from pending does not establish delivery; review list_scheduled_sends(status='all').")
     return f"Cancelled [{row['id']}] {row['channel']} to {row['display']}. It was still pending; Wisp will not dispatch it."

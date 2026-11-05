@@ -2,7 +2,7 @@
 import json
 import re
 
-from service.tools.registry import register as tool
+from service.tools.registry import not_done, register as tool
 from service.memory.facts import store, fingerprint, terms, claim_slot
 from service.memory.capture import current_source
 from service.memory.retrieval import retrieve, dated
@@ -47,20 +47,25 @@ def _bounded(lines, budget=12000):
 async def remember(fact: str, category: str = 'fact', supersedes_id: int | None = None) -> str:
     source = current_source.get()
     if not source or not _SAVE.search(source.get('quote', '').strip()):
-        return 'Nothing saved. Explicit saving requires the current user to ask to remember, save, update or correct a statement.'
+        return not_done('Nothing saved. Explicit saving requires the current user to ask to remember, save, update or correct a statement.',
+                        question="I didn't save that, because I only save what you ask me to remember. Should I remember it?")
     if not fact.strip() or fact not in source['quote']:
-        return 'Nothing saved. Copy the complete statement exactly from the current user request; do not infer or paraphrase.'
+        return not_done('Nothing saved. Copy the complete statement exactly from the current user request; do not infer or paraphrase.',
+                        question="I didn't save that. What exactly should I remember?")
     after = source['quote'].split(fact, 1)[1]
     if _ATTRIBUTION_RISK.search(source['quote']) or (after.strip() and not re.match(r'\s*[.!?\n]', after)
             and not (re.search(r'[.!?]\s*$', fact) and re.match(r'\s+\S', after))):
-        return 'Nothing saved. The statement is quoted, ambiguous, or missing a qualification. Use Memory review to save the intended wording explicitly.'
+        return not_done('Nothing saved. The statement is quoted, ambiguous, or missing a qualification. Use Memory review to save the intended wording explicitly.',
+                        question="I didn't save that, because the wording could be read more than one way. What exactly should I remember?")
     if supersedes_id is not None:
         old = store.get(supersedes_id)
         if not _CORRECT.search(source['quote']) or not old or old['status'] != 'active':
-            return 'Nothing changed. A correction needs an explicit current request and an active memory ID.'
+            return not_done('Nothing changed. A correction needs an explicit current request and an active memory ID.',
+                            question="I didn't change that memory. What exactly should it say?")
         old_slot, new_slot = claim_slot(old['text']), claim_slot(fact)
         if old_slot[0] and new_slot[0] and old_slot != new_slot:
-            return 'Nothing changed. These statements concern different attributes; choose the correct memory to replace.'
+            return not_done('Nothing changed. These statements concern different attributes; choose the correct memory to replace.',
+                            question="I didn't change that memory, because the new wording is about something else. Which memory did you mean?")
     try:
         with store._write():
             saved = store.add(fact, category, session_id=source.get('session_id'), evidence=[{
