@@ -548,3 +548,11 @@ Changes to the patch:
 - **No tables (user).** They won't fit well in the notch, so this replaces the table parts of the formatting section above. 3+ items with 2+ details become a list with a bold label leading each line, and samples containing a table are dropped.
 - **Size:** about 1,250 new rows, about 7,350 text rows, about 2,250 steps, about 53 A6000 hours, about $32. The early stop at step 400 costs about 9 h and $5, and also stops if tool choice is clearly behind r4's own step 400, so keep that checkpoint.
 - **Host fixes it depends on:** PR 473 (send with no recipient, locked chat) and PR 470 (answer nudge), both open on 2026-11-05. The day plan's repeated items have no fix in progress.
+
+**r5 rows use the user's own questions (user, 2026-11-05): "write the rows when you can from the messages from the debug logs."** This narrows the earlier rule that nothing from an export enters training. It covers the wording of the user's own messages only.
+- Contact names and addresses are replaced. Tool results and answers are synthetic. No real email, message or calendar content enters training or reaches the GPU box.
+- The seeds stay outside this public repo, in `~/.moe/evals/private-real-use/r5-seeds/questions.yaml`: the 34 messages from four logs, 166 training questions and 57 held-out variations across 25 question types, each with expected tools and a good-answer note.
+- Rows wait for the new pin, because tool results are rendered by the pinned code and base writes the answers. The originals are now in training, so they prove less at the gate; the held-out variations and replays of the four chats are the real test.
+- About 330 debug-log rows, about 1,400 new rows and 7,500 text rows in all, about 2,300 steps, about 54 A6000 hours, about $32.
+
+**Long email lists (RC3 coordinator's finding, 2026-11-05).** An email search returned five results, and the model described only the first and said nothing relevant existed. A separate chat is fixing result order, the 20,000-character cap and raw HTML. Training shows a model-side gap too: the 308 after-result `view_emails` rows have at most about 2,300 characters of tool text, and only 54 have 2+ emails. Add about 40 rows with long lists where the match isn't first: read every result, prefer subject matches, and never conclude "nothing relevant" from part of a list.
