@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from service import user_hours
 from service.assistant import checkin as C
 from service.assistant.store import AssistantStore
 from service.memory import profile as P
@@ -27,6 +28,8 @@ def at(day: str, hour: int, minute: int = 0) -> float:
 def _paths(tmp_path, monkeypatch):
     monkeypatch.setattr(C, "STATE_PATH", tmp_path / "checkins.json")
     monkeypatch.setattr(P, "PROFILE_PATH", tmp_path / "profile.json")
+    # These cases are written around a 9-to-6 day.
+    user_hours.save(working={"start_minute": 540, "end_minute": 1080})
 
 
 @pytest.fixture

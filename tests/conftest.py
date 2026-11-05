@@ -27,6 +27,18 @@ def explicit_legacy_router_for_rollback_suites(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolated_user_hours(tmp_path, monkeypatch):
+    # service/user_hours.py seeds its file on the first read, from the store beside
+    # it. A subfolder here, so no test reaches ~/.moe or a test's own assistant.db.
+    from service import user_hours
+    monkeypatch.setattr(user_hours, "path", lambda: tmp_path / "user-hours-state" / "user_hours.json")
+    # Delivery reads the wall clock, so no test's events should depend on when it runs.
+    # tests/test_quiet_hold.py turns this back on.
+    from service import quiet_hold
+    monkeypatch.setattr(quiet_hold, "_quiet_now", lambda: False)
+
+
+@pytest.fixture(autouse=True)
 def no_real_brief_in_schedule_reads(monkeypatch):
     # get_upcoming merges the Brief's dated to-dos from the real proactive
     # store; tests that want them turn this back on with a fake snapshot.

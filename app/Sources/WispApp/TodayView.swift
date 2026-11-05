@@ -1055,6 +1055,7 @@ struct TodayView: View {
     private func workingHours(_ plan: TodayPlan) -> some View {
         HStack {
             Text("Working hours")
+                .help("For this day. Your usual hours are in Memory › About you.")
             Picker("Start", selection: $startHour) {
                 ForEach(0..<24) { Text(TodayModel.workingHourLabel($0)).tag($0) }
             }.labelsHidden().frame(width: 170)

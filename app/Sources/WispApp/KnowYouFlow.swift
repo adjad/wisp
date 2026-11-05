@@ -1,12 +1,14 @@
 import Foundation
 
-/// "Getting to know you": the three questions Wisp asks up front so it can work
+/// "Getting to know you": the four questions Wisp asks up front so it can work
 /// for a person rather than a user. About you in the Memory window shows and
 /// edits every field. The answers live in the service's profile
 /// (service/memory/profile.py, GET/PATCH /profile) and feed every local system
 /// prompt and the morning brief's Keeping in mind section. This file is the
 /// flow's pure logic: the steps, their copy, the chips, and the patch each step
-/// saves. KnowYouView.swift draws it in the notch.
+/// saves. KnowYouView.swift draws it in the notch. The hours step is the one
+/// answer kept elsewhere (UserHours.swift, service/user_hours.py), because the
+/// planner and alerts read it, not the prompts.
 ///
 /// The flow opens straight on the first question. Whoever opened it (the
 /// offer, /about, the menu bar) already said yes, so there is no welcome screen
@@ -14,7 +16,7 @@ import Foundation
 ///
 /// Checked by tests/KnowYouChecks.swift without the app.
 enum KnowYouStep: Int, CaseIterable, Equatable {
-    case name, goals, tone, done
+    case name, goals, tone, hours, done
 
     var isQuestion: Bool { self != .done }
     static var questions: [KnowYouStep] { allCases.filter(\.isQuestion) }
@@ -25,6 +27,7 @@ enum KnowYouStep: Int, CaseIterable, Equatable {
         case .name: return "What should I call you?"
         case .goals: return "What are you working toward?"
         case .tone: return "How should I talk to you?"
+        case .hours: return "When do you work, and when should I stay quiet?"
         case .done: return "All set"
         }
     }
@@ -33,10 +36,12 @@ enum KnowYouStep: Int, CaseIterable, Equatable {
     var why: String {
         switch self {
         case .name:
-            return "Three quick questions so I can help you better. Skip any you like."
+            return "Four quick questions so I can help you better. Skip any you like."
         case .goals:
             return "Pick up to five. Your morning brief keeps one in view each day, and once a week I'll ask, with one tap, how it's going."
         case .tone: return "Pick what feels right. You can change it any time."
+        case .hours:
+            return "I'll plan your day and your brief around your working hours, and leave you be during quiet hours. Most people keep the quiet hours as they are."
         case .done:
             return "Here's what changes now. To change or erase any of it, type /about, or open About you in the Wisp window's Memory."
         }
@@ -56,7 +61,7 @@ enum KnowYouStep: Int, CaseIterable, Equatable {
         case .name: return ["name"]
         case .goals: return ["goals"]
         case .tone: return ["tone", "detail"]
-        case .done: return []
+        case .hours, .done: return []  // Hours are saved to their own setting.
         }
     }
 }
@@ -99,13 +104,14 @@ struct KnowYouFlow: Equatable {
 
     /// Where to pick up for someone who already answered some questions: the
     /// first question they have not answered, or the summary when all are. A
-    /// profile with nothing in it starts at the first question.
-    static func resume(for profile: UserProfile) -> KnowYouFlow {
+    /// profile with nothing in it starts at the first question. Someone who
+    /// answered before the hours question existed lands on it.
+    static func resume(for profile: UserProfile, hoursSet: Bool = true) -> KnowYouFlow {
         guard profile.hasContent else { return KnowYouFlow() }
         for step in KnowYouStep.questions where !profile.answered(step) {
             return KnowYouFlow(step: step)
         }
-        return KnowYouFlow(step: .done)
+        return KnowYouFlow(step: hoursSet ? .done : .hours)
     }
 }
 
@@ -233,7 +239,7 @@ struct UserProfile: Equatable {
         case .name: return !name.isEmpty
         case .goals: return !goals.isEmpty
         case .tone: return !name.isEmpty || !goals.isEmpty
-        case .done: return true
+        case .hours, .done: return true  // The profile can't say; resume(for:hoursSet:) asks.
         }
     }
 

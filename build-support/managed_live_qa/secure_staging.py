@@ -24,7 +24,7 @@ SOURCE_ALLOWLIST_V2 = (
     "service/tools/message_digest.py", "service/tools/untrusted.py", "service/assistant/brief.py",
     "service/inference/omlx_client.py", "service/inference/attributed_transport.py",
     "service/inference/local_peer.py", "service/inference/inference_errors.py",
-    "service/inference/engine_epoch.py",
+    "service/inference/engine_epoch.py", "service/user_hours.py", "service/paths.py",
 )
 SUPPORT_FILES = ("secure_backend.py", "secure_harness.py", "manifest-v2.json",
                  "native_pipe_main.swift", "native_inventory.swift")

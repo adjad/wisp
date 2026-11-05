@@ -108,14 +108,6 @@ def test_settings_roundtrip_is_private_and_validated(tmp_path):
         live.updated(Settings(), lead_minutes=True)            # bool is not a whole number
 
 
-def test_quiet_hours_wrap_midnight():
-    s = Settings(quiet_start=22, quiet_end=8)
-    at = lambda h: datetime(2026, 9, 21, h, 0, tzinfo=ZONE)
-    assert [live.in_quiet_hours(at(h), s) for h in (7, 8, 12, 21, 22, 23, 0)] == \
-        [True, False, False, False, True, True, True]
-    assert not live.in_quiet_hours(at(3), Settings(quiet_start=5, quiet_end=5))
-
-
 # ------------------------------------------------------------------- planner
 
 def item(sender="Mom", text="Meet me in the Quad at 6PM"):
@@ -270,13 +262,15 @@ async def test_bad_outcomes_are_recorded_and_never_retried(ledger, fakes, state)
     assert len(fakes.created) == 1
 
 
-async def test_quiet_hours_still_create_the_reminder_but_send_no_alert(ledger):
+async def test_the_reminder_is_made_at_night_and_its_alert_says_how_long_it_matters(ledger):
+    """The hub holds the alert in quiet hours (tests/test_quiet_hold.py), and drops it if
+    the plan has passed by the time they end."""
     night = datetime(2026, 9, 21, 22, 30, tzinfo=ZONE).timestamp()
-    led = ledger
-    led.set_meta("enabled_at", repr(night - 86400))
+    ledger.set_meta("enabled_at", repr(night - 86400))
     f = Fakes()
-    out = await run(mom_thread("Meet me in the Quad at 11:45PM", at=night), night + 60, led, f)
-    assert [o.state for o in out] == ["created"] and f.published == []
+    out = await run(mom_thread("Meet me in the Quad at 11:45PM", at=night), night + 60, ledger, f)
+    assert [o.state for o in out] == ["created"] and len(f.published) == 1
+    assert f.published[0]["relevant_until"] == datetime(2026, 9, 21, 23, 45, tzinfo=ZONE).timestamp()
 
 
 async def test_a_message_about_friday_is_reconsidered_once_friday_is_within_48_hours(ledger):

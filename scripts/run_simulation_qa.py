@@ -621,6 +621,11 @@ ADDITIONAL_FULL_TESTS = {
     # The user's profile (Getting to know you): JSON in a temp path, pure prompt/brief/
     # ranking helpers and an in-process TestClient; no model, listener or real ~/.moe.
     "tests/test_user_profile.py",
+    # Working and quiet hours, and the offer to move an event outside them: JSON in a
+    # temp path, disposable AssistantStore, in-process TestClient and Hub; no model or real ~/.moe.
+    "tests/test_user_hours.py",
+    "tests/test_hours_offers.py",
+    "tests/test_quiet_hold.py",
     # Evening check-in, carry-forward and goal pulse: disposable AssistantStore and
     # state files, in-process TestClient; no model, scheduler, hub or real ~/.moe.
     "tests/test_checkin.py",
@@ -767,6 +772,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/read-aloud-voice-contract": "native/read-aloud-voice-compile",
     "native/notch-tab-contract": "native/notch-tab-compile",
     "native/know-you-contract": "native/know-you-compile",
+    "native/user-hours-contract": "native/user-hours-compile",
 }
 
 
@@ -1049,6 +1055,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     read_aloud_voice = str(build_dir / "read-aloud-voice")
     notch_tab = str(build_dir / "notch-tab")
     know_you = str(build_dir / "know-you")
+    user_hours = str(build_dir / "user-hours")
     chat_logic = str(build_dir / "chat-logic")
     chat_store = str(build_dir / "chat-store")
     chat_debug_archive = str(build_dir / "chat-debug-archive")
@@ -1232,6 +1239,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/know-you-contract", [know_you]),
+        (
+            "native/user-hours-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/UserHours.swift",
+                "tests/UserHoursChecks.swift", "-o", user_hours,
+            ],
+        ),
+        ("native/user-hours-contract", [user_hours]),
         (
             "native/chat-logic-compile",
             [

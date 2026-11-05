@@ -151,6 +151,13 @@ def _home() -> Path:
 # Default collaborators (overridable for tests)
 # --------------------------------------------------------------------------
 
+def _user_quiet_window() -> tuple[int, int]:
+    """The person's quiet hours, for the portable behavior package (service/user_hours.py)."""
+    from service.user_hours import quiet_hours
+    quiet = quiet_hours()
+    return quiet.start_minute, quiet.end_minute
+
+
 def _default_local_factory(path: Path):
     from service.behavior.engine import BehaviorEngine
     phraser = None
@@ -158,7 +165,7 @@ def _default_local_factory(path: Path):
     if phraser_enabled():     # off by default under remote inference (titles would leave the Mac)
         from service.assistant.behavior_phraser import WispPhraser
         phraser = WispPhraser()
-    return BehaviorEngine(path, phraser=phraser)
+    return BehaviorEngine(path, phraser=phraser, quiet_hours=_user_quiet_window)
 
 
 def _default_messages() -> dict:

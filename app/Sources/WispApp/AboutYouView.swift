@@ -31,6 +31,10 @@ final class AboutYouModel: ObservableObject {
     @Published var personName = ""
     @Published var personRelation = ""
     @Published var personNote = ""
+    /// Working and quiet hours: their own setting (service/user_hours.py), edited
+    /// here so anyone past onboarding can set them. Hidden until read, like the rest.
+    @Published var hours: UserHours?
+    private var storedHours: UserHours?
 
     private let client = WispClient()
 
@@ -45,6 +49,8 @@ final class AboutYouModel: ObservableObject {
             return
         }
         apply(envelope)
+        hours = await client.userHours()
+        storedHours = hours
         error = ""
         loaded = true
     }
@@ -54,9 +60,11 @@ final class AboutYouModel: ObservableObject {
         var draft = profile
         draft.goals += pending(goalDraft, in: draft.goals)
         draft.struggles += pending(struggleDraft, in: draft.struggles)
-        return !draft.changes(since: stored).isEmpty
+        return !draft.changes(since: stored).isEmpty || hoursChanged
             || !personName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+
+    private var hoursChanged: Bool { hours != nil && hours != storedHours }
 
     private func pending(_ draft: String, in list: [String]) -> [String] {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -67,17 +75,29 @@ final class AboutYouModel: ObservableObject {
         guard loaded, !busy else { return }
         addGoal(); addStruggle(); addPerson()
         let patch = profile.changes(since: stored)
-        guard !patch.isEmpty else { return }
+        let savingHours = hoursChanged
+        guard !patch.isEmpty || savingHours else { return }
         busy = true
         defer { busy = false }
-        let result = await client.patchProfile(patch)
-        if let envelope = result.envelope {
+        if !patch.isEmpty {
+            let result = await client.patchProfile(patch)
+            guard let envelope = result.envelope else {
+                error = result.error ?? "Couldn't save. Is Wisp's service running?"
+                return
+            }
             apply(envelope)
-            error = ""
-            savedAt = Date()
-        } else {
-            error = result.error ?? "Couldn't save. Is Wisp's service running?"
         }
+        if savingHours, let hours {
+            let saved = await client.saveUserHours(hours)
+            guard let kept = saved.hours else {
+                error = saved.error ?? "Couldn't save your hours. Is Wisp's service running?"
+                return
+            }
+            self.hours = kept
+            storedHours = kept
+        }
+        error = ""
+        savedAt = Date()
     }
 
     func erase() async {
@@ -85,6 +105,8 @@ final class AboutYouModel: ObservableObject {
         defer { busy = false }
         if let envelope = await client.eraseProfile() {
             apply(envelope)
+            hours = await client.userHours()
+            storedHours = hours
             error = ""
             savedAt = nil
         } else {
@@ -168,6 +190,15 @@ struct AboutYouView: View {
                         }
                         .pickerStyle(.menu).fixedSize()
                     }
+                    if model.hours != nil {
+                        section("Your hours", detail: "Your Brief and your day plan around these. They are yours to change any time.") {
+                            UserHoursEditor(hours: Binding(get: { model.hours ?? UserHours() }, set: { model.hours = $0 }),
+                                            ink: .init(label: ChatTheme.text, muted: ChatTheme.text3, fill: ChatTheme.glass,
+                                                       stroke: ChatTheme.line, onSelected: Color.white, selected: Color.accentColor),
+                                            showsOptions: true)
+                                .frame(maxWidth: 420, alignment: .leading)
+                        }
+                    }
                     section("What Wisp should be careful about") {
                         editor($model.profile.boundaries, placeholder: "Please don't bring up… / Never… / On a bad day, just…")
                     }
@@ -206,7 +237,7 @@ struct AboutYouView: View {
                     .font(.system(size: 12)).foregroundStyle(ChatTheme.amber)
             }
             if model.loaded && !model.status.hasContent {
-                Text("Nothing here yet. Answer the three questions in the notch, or fill in whatever you like below.")
+                Text("Nothing here yet. Answer the four questions in the notch, or fill in whatever you like below.")
                     .font(.system(size: 12.5)).foregroundStyle(ChatTheme.text3)
             }
         }
