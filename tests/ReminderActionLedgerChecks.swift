@@ -66,6 +66,7 @@ private final class FakeStore {
         ledgerFile()
         markerParsing()
         cleanup()
+        damagedLedger()
         print("reminder action ledger: \(checks) checks passed")
     }
 
@@ -261,19 +262,6 @@ private final class FakeStore {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: path.deletingLastPathComponent().path)) ?? []
         check(names == ["ledger.json"], "no temp file left: \(names)")
 
-        // A file it can't read is never overwritten, and no creation runs on top of it.
-        let corrupt = newPath()
-        try? FileManager.default.createDirectory(at: corrupt.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try? Data("not json".utf8).write(to: corrupt)
-        let broken = relaunch(corrupt)
-        check(!broken.readable, "corruption is noticed")
-        check(broken.begin(actionID: day, kind: "exam", plannedID: "ek-1", at: start) == .unavailable, "no creation on top of it")
-        check(!broken.adopt(actionID: day, kind: "exam", sourceID: "a", externalID: nil, at: start), "no cleanup on top of it")
-        check((try? Data(contentsOf: corrupt)) == Data("not json".utf8), "the file is left as it was")
-        let notes = "Wisp action: \(day)\nWisp kind: exam"
-        check(ReminderRecovery.find(actionID: day, target: target, rows: [row("old", notes: notes)], ledger: broken)?.proof == .legacyMarker,
-              "old markers still reconcile without it")
-
         // The size bound drops the oldest entries.
         let bounded = ReminderActionLedger(path: newPath(), maxEntries: 8)
         for index in 0..<11 {
@@ -406,5 +394,155 @@ private final class FakeStore {
         var wrote = false
         check(ReminderMarkerCleanup.clean(original, ledger: taken, write: { _, _ in wrote = true; return .failed }) == .skipped, "skipped")
         check(!wrote, "nothing written")
+    }
+    static func write(_ bytes: Data, to path: URL, mode: mode_t = 0o644) {
+        try? FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+        // Plain open and write: FileManager.createFile fails inside the gate's sandbox.
+        let fd = open(path.path, O_WRONLY | O_CREAT | O_TRUNC, 0o600)
+        check(fd >= 0, "fixture: \(path.lastPathComponent)")
+        _ = bytes.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+        close(fd)
+        chmod(path.path, mode)
+    }
+
+    static func damagedCopy(_ path: URL) -> URL {
+        path.deletingLastPathComponent().appendingPathComponent(ReminderActionLedger.damagedFileName)
+    }
+
+    static func damagedLedger() {
+        let head = "Wisp action: \(day)\nWisp kind: exam"
+
+        // Whatever kind of damage: a new reminder still goes through, and the bytes are kept.
+        for bytes in [Data("not json".utf8), Data(), Data("[]".utf8), Data("{\"entries\":".utf8),
+                      Data([0xFF, 0xFE, 0x00, 0x80]), Data("{\"version\":1}".utf8)] {
+            let path = newPath()
+            write(bytes, to: path)
+            let ledger = relaunch(path), store = FakeStore()
+            check(ledger.readable, "a damaged file doesn't stop the ledger")
+            let made = ReminderCreationFlow.run(ledger: ledger, actionID: day, target: target, plannedID: "ek-1", now: start,
+                save: { store.save(row("ek-1")) }, readback: { id in store.rows.first { $0.id == id } })
+            guard case .created = made else { return check(false, "a new reminder still works: \(made)") }
+            check(store.saves == 1, "one save")
+            check((try? Data(contentsOf: damagedCopy(path))) == bytes, "the damaged bytes are kept as they were")
+            let mode = (try? FileManager.default.attributesOfItem(atPath: damagedCopy(path).path)[.posixPermissions]) as? Int
+            check(mode == 0o600, "the copy is owner-only, whatever it was before")
+            let after = relaunch(path)
+            check(after.readable && after.entry(day)?.sourceID == "ek-1", "the new ledger is a real one")
+            check(after.entry(sourceID: "ek-1", externalID: nil)?.kind == "exam", "and keeps kinds from here on")
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: path.deletingLastPathComponent().path))?.sorted() ?? []
+            check(names == ["ledger.json", ReminderActionLedger.damagedFileName].sorted(), "two files and no temp: \(names)")
+        }
+
+        // A later damaged file replaces the earlier copy: one copy to erase, never a pile.
+        let twice = newPath()
+        write(Data("first".utf8), to: twice)
+        _ = relaunch(twice)
+        write(Data("second".utf8), to: twice)
+        _ = relaunch(twice)
+        check((try? Data(contentsOf: damagedCopy(twice))) == Data("second".utf8), "the newest copy stays")
+
+        // A folder where the copy goes doesn't stop it either.
+        let folder = newPath()
+        write(Data("bad".utf8), to: folder)
+        try? FileManager.default.createDirectory(at: damagedCopy(folder), withIntermediateDirectories: true)
+        check(relaunch(folder).readable, "the folder is replaced")
+        check((try? Data(contentsOf: damagedCopy(folder))) == Data("bad".utf8), "by the copy")
+
+        // A link is moved as it is: what it points at keeps its bytes and its mode.
+        let linked = newPath(), target_ = scratch.appendingPathComponent("link-target-\(counter)")
+        write(Data("not json".utf8), to: target_)
+        try? FileManager.default.createDirectory(at: linked.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? FileManager.default.createSymbolicLink(at: linked, withDestinationURL: target_)
+        check(relaunch(linked).readable, "a link to junk is set aside")
+        let linkMode = (try? FileManager.default.attributesOfItem(atPath: target_.path)[.posixPermissions]) as? Int
+        check(linkMode == 0o644 && (try? Data(contentsOf: target_)) == Data("not json".utf8), "its target is untouched")
+
+        // Nothing on an existing reminder changes hands after the ledger is lost.
+        let lost = newPath()
+        let before = relaunch(lost)
+        _ = before.begin(actionID: day, kind: "exam", plannedID: "ek-1", at: start)
+        before.resolve(actionID: day, sourceID: "ek-1", externalID: "ext-ek-1")
+        write(Data("damaged".utf8), to: lost)
+        let fresh = relaunch(lost)
+        check(fresh.entry(day) == nil, "the old record is gone")
+        check(ReminderRecovery.find(actionID: day, target: target, rows: [row("ek-1")], ledger: fresh) == nil,
+              "a reply lost earlier stays unknown: it isn't claimed from identical facts")
+        check(fresh.entry(sourceID: "ek-1", externalID: "ext-ek-1") == nil, "its kind reads as a plain reminder")
+        check(ReminderRecovery.find(actionID: day, target: target, rows: [row("old", notes: head)], ledger: fresh)?.proof == .legacyMarker,
+              "an old reminder still proves itself from its own notes")
+        check(ReminderMarkerNotes.legacyKind(head) == "exam", "and keeps its kind")
+
+        // Cleanup stays off after damage, across relaunches: the file may have said to stop.
+        let off = newPath()
+        let flagged = relaunch(off)
+        flagged.haltCleanup()
+        write(Data("damaged".utf8), to: off)
+        for ledger in [relaunch(off), relaunch(off)] {
+            check(ledger.cleanupHalted, "cleanup stays off")
+            var wrote = false
+            let step = ReminderMarkerCleanup.clean(row("a", notes: head), ledger: ledger, write: { _, _ in wrote = true; return .failed })
+            check(step == .skipped && !wrote, "no reminder is touched")
+            check(ledger.entry(day) == nil, "and nothing is adopted")
+        }
+
+        // A missing ledger is a first run: cleanup still does only its exact job, and still stops itself.
+        let missing = relaunch(newPath()), text = "bring the blue folder 📁"
+        check(!missing.cleanupHalted, "a missing ledger isn't damage")
+        var cleaned = row("a", notes: head + "\n" + text)
+        let step = ReminderMarkerCleanup.clean(cleaned, ledger: missing, write: { _, notes in
+            check(notes == text, "only the two exact lines go")
+            cleaned.notes = notes
+            return .saved(cleaned)
+        })
+        check(step == .cleaned && cleaned.notes == text, "cleaned")
+        for notes in ["note\n" + head, "\n" + head, "Wisp action: \(day)\r\nWisp kind: exam", "plain"] {
+            var wrote = false
+            check(ReminderMarkerCleanup.clean(row("b", notes: notes), ledger: relaunch(newPath()),
+                                              write: { _, _ in wrote = true; return .failed }) == .skipped && !wrote,
+                  "a fresh ledger touches nothing else: \(notes.debugDescription)")
+        }
+        let halting = newPath()
+        var changed = row("a", notes: head)
+        changed.notes = nil
+        changed.title = "Changed"
+        check(ReminderMarkerCleanup.clean(row("a", notes: head), ledger: relaunch(halting), write: { _, _ in .saved(changed) }) == .halted,
+              "a differing readback stops a fresh ledger too")
+        check(relaunch(halting).cleanupHalted, "for good")
+
+        // A file that can't be read may be a passing failure: it isn't moved until a creation needs the ledger.
+        let unreadable = newPath()
+        let good = relaunch(unreadable)
+        _ = good.begin(actionID: day, kind: "exam", plannedID: "ek-1", at: start)
+        chmod(unreadable.path, 0)
+        let waiting = relaunch(unreadable)
+        check(!waiting.readable, "not readable yet")
+        check(FileManager.default.fileExists(atPath: unreadable.path) && !FileManager.default.fileExists(atPath: damagedCopy(unreadable).path),
+              "left where it is")
+        chmod(unreadable.path, 0o600)
+        waiting.flush()
+        check(waiting.readable && waiting.entry(day)?.sourceID == "ek-1", "it comes back whole, and nothing was lost")
+        chmod(unreadable.path, 0)
+        let stuck = relaunch(unreadable)
+        check(stuck.begin(actionID: "reminder:later", kind: "exam", plannedID: "ek-2", at: start) == .recorded,
+              "a creation still goes through")
+        check(FileManager.default.fileExists(atPath: damagedCopy(unreadable).path), "and the old file is kept aside")
+        check(stuck.cleanupHalted, "cleanup is off")
+
+        // A folder that can't be written can't set anything aside: nothing changes, and it recovers.
+        let locked = newPath()
+        write(Data("damaged".utf8), to: locked)
+        let directory = locked.deletingLastPathComponent()
+        chmod(directory.path, 0o500)
+        let blocked = relaunch(locked)
+        check(!blocked.readable, "still not usable")
+        check(blocked.begin(actionID: day, kind: "exam", plannedID: "ek-1", at: start) == .unavailable, "nothing runs on top of it")
+        check(!blocked.adopt(actionID: day, kind: "exam", sourceID: "a", externalID: nil, at: start), "no cleanup on top of it")
+        check((try? Data(contentsOf: locked)) == Data("damaged".utf8), "the file is as it was")
+        chmod(directory.path, 0o700)
+        check(blocked.begin(actionID: day, kind: "exam", plannedID: "ek-1", at: start) == .recorded, "and the next creation recovers")
+        check((try? Data(contentsOf: damagedCopy(locked))) == Data("damaged".utf8), "keeping the bytes")
+
+        check(!ReminderActionLedger.damagedLogLine.contains("/") && !ReminderActionLedger.damagedLogLine.contains("reminder:"),
+              "the log line names no path and no action")
     }
 }

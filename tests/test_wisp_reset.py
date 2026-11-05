@@ -39,6 +39,9 @@ DELETED = {
     "daily-workspace", "attention", "proactive",
     # outbox receipts, audit log, diagnostics, debug exports, corpus runs
     "assistant-delivery-receipts.json", "audit.jsonl", "diagnostics", "debug-exports",
+    # the reminder ledger, its set-aside copy, and a temp file a crash left behind
+    "reminder-action-ledger.json", "reminder-action-ledger.damaged.json",
+    ".reminder-action-ledger.json.0000.tmp",
     "corpus-runs", "corpus-prompts.json",
     # Google: tokens, workspace-mcp credentials and its uv install
     "gmail.json", "google_workspace", "uv",

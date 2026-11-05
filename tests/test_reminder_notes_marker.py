@@ -64,3 +64,26 @@ def test_ledger_lives_with_wisps_state_and_holds_no_title():
     assert 'environment["WISP_HOME"]' in LEDGER
     entry = _section(LEDGER, "struct Entry: Codable, Equatable {", "enum Begin")
     assert "title" not in entry.lower()
+
+
+def test_reset_removes_the_ledger_and_its_set_aside_copy_before_any_reader_loads():
+    reset = (ROOT / "app/Sources/WispApp/ResetWisp.swift").read_text()
+    files = _section(reset, "static func appFiles(", "/// Why the card can't open now")
+    for name in ('static let fileName = "reminder-action-ledger.json"',
+                 'static let damagedFileName = "reminder-action-ledger.damaged.json"'):
+        assert name in LEDGER
+    assert '".moe/reminder-action-ledger.json"' in files
+    assert '".moe/reminder-action-ledger.damaged.json"' in files
+    # The app part runs at launch, before the Reminders reader exists.
+    delegate = (ROOT / "app/Sources/WispApp/AppDelegate.swift").read_text()
+    assert delegate.index("WispResetLaunch.run(") < delegate.index("remindersWriter = RemindersWriter()")
+    # The service's pass keeps only what it names, so it erases both files too.
+    from service.wisp_reset import KEEP_ENTRIES
+    assert not {"reminder-action-ledger.json", "reminder-action-ledger.damaged.json"} & KEEP_ENTRIES
+
+
+def test_the_damaged_ledger_log_line_holds_nothing_from_the_file():
+    line = _section(LEDGER, "static let damagedLogLine = ", "\n")
+    assert "\\(" not in line
+    assert 'NSLog("%@", Self.damagedLogLine)' in LEDGER
+    assert LEDGER.count("NSLog(") == 1
