@@ -61,3 +61,9 @@ def test_unwritten_finds_finals_base_still_owes():
     done = {"messages": [{"role": "assistant", "content": "Sure."}]}
     owed = {"messages": [{"role": "assistant", "content": M.BASE_WRITES}]}
     assert M.unwritten([done, owed]) == [owed]
+
+
+def test_heldout_wordings_fold_and_skip_placeholders(monkeypatch):
+    seeds = {"shapes": [{"id": "x", "train": [], "heldout": ["What's up?", "text {person} that"]}]}
+    monkeypatch.setattr(M, "load_seeds", lambda: seeds)
+    assert M.heldout_folds() == frozenset({M.leak.fold("What's up?")})

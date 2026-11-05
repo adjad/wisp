@@ -97,6 +97,8 @@ WRITE_ALLOW: dict[str, frozenset[str]] = {
     "day_chat_r4": frozenset({"draft_message", "send_message"}),
     # Round 5 (scen_r5_*.py; loaded only under ASK_LORA_R5=1). Keep in step with each WRITE_ALLOW_R5.
     "debug_log_r5": frozenset({"add_reminder", "send_message", "send_email"}),
+    "tool_choice_r5": frozenset({"add_reminder", "update_reminder", "complete_reminder", "add_calendar_event", "cancel_event",
+                                 "send_message", "send_email", "schedule_send", "append_note", "create_note", "manage_contacts"}),
 }
 
 # Families whose examples carry earlier conversation turns (seeded sessions): the

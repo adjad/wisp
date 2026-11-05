@@ -601,6 +601,8 @@ The user: "Yes, start it", and "take note of all mistakes made by the model and 
 - The user's questions come from the local seeds file. The code holds none of their wording. Build output goes to `training/ask-lora-r5/data/`, which git ignores.
 - `leak_ok` keeps the user's own wording when it overlaps a toolbench or eval question. The gate reports overlapping cases apart.
 
+**Tool rows:** `builder/scen_r5_tools.py` builds `tool_choice_r5`: 184 turns and 365 steps, including 59 write turns. Each of the 45 direct writes has a contrast that doesn't act. Its docstring gives step 1150's failure counts. Wordings the host won't route to a tool, such as "what time is X again", were dropped; they are production gaps to check at the gate. No row of any family may ask a held-out wording; `build.py` fails the row if one does.
+
 **To do when the new pin lands (after PR 482):**
 - Rebuild. Bare assent rows can't run yet, because the pin keeps a bare "yes" read-only; they should work once PR 470 is in.
 - Update `world.py` to PR 476's result order. Subject matches rank first there, so "match not first" rows must use body-only matches or several subject matches.

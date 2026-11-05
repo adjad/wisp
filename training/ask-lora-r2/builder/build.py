@@ -116,6 +116,10 @@ def main(only=None):
     examples, metas, failures = [], [], []
     per_family_scen = Counter()
     leaks = leak.LeakIndex()
+    heldout = frozenset()
+    if os.environ.get("ASK_LORA_R5") == "1":
+        import scen_r5_debuglog
+        heldout = scen_r5_debuglog.heldout_folds()
     for family, fn in scen.FAMILIES.items():
         if only and family not in only:
             continue
@@ -125,6 +129,9 @@ def main(only=None):
         scenarios = fn(frng)
         for k, sc in enumerate(scenarios):
             sid = f"{family}-{k:03d}"
+            if heldout and leak.fold(sc.prompt) in heldout:
+                failures.append((sid, "(held-out wording)", "asks a question held out for r5's gate"))
+                continue
             leaked, score, q = leaks.leaks(sc.prompt)
             # leak_ok: the user's own wording in a round-5 row (scen_r5_debuglog). Their question stays in training on
             # purpose, and the gate reports overlapping toolbench cases apart.

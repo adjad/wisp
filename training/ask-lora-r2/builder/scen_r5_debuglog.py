@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 
 import yaml
 
+import leak
 from harness import Call, Final
 from replies import clock, join
 from scen import Scenario, fp_items, read_plan
@@ -636,6 +637,14 @@ def fam_long_email_r5(rng):
         if sc is not None:
             out.append(sc)
     return out
+
+
+def heldout_folds():
+    """Folded held-out wordings. No row of any family may ask one, or the gate's variation test proves nothing."""
+    seeds = load_seeds()
+    if seeds is None:
+        return frozenset()
+    return frozenset(leak.fold(q) for shape in seeds["shapes"] for q in shape["heldout"] if "{" not in q)
 
 
 def unwritten(rows):
