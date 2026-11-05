@@ -555,7 +555,7 @@ Changes to the patch:
 - Rows wait for the new pin, because tool results are rendered by the pinned code and base writes the answers. The originals are now in training, so they prove less at the gate; the held-out variations and replays of the four chats are the real test.
 - About 330 debug-log rows, about 1,400 new rows and 7,500 text rows in all, about 2,300 steps, about 54 A6000 hours, about $32.
 
-**Long email lists (RC3 coordinator's finding, 2026-11-05).** An email search returned five results, and the model described only the first and said nothing relevant existed. A separate chat is fixing result order, the 20,000-character cap and raw HTML. Training shows a model-side gap too: the 308 after-result `view_emails` rows have at most about 2,300 characters of tool text, and only 54 have 2+ emails. Add about 40 rows with long lists where the match isn't first: read every result, prefer subject matches, and never conclude "nothing relevant" from part of a list.
+**Long email lists (RC3 coordinator's finding, 2026-11-05).** An email search returned five results, and the model described only the first and said nothing relevant existed. A separate chat is fixing result order, the 20,000-character cap and raw HTML. Training shows a model-side gap too: the 308 after-result `view_emails` rows have at most about 2,300 characters of tool text, and only 54 have 2+ emails. Add about 40 rows with long lists where the match isn't first: read every result, prefer subject matches, and never conclude "nothing relevant" from part of a list. (Corrected below, 2026-11-05: the model gets at most 6,000 chars per result; 20,000 is the UI and debug copy.)
 
 **Toolbench uses the user's debug logs from now on (user, 2026-11-05).** "Use the ones I gave, but also ones from my computer in the downloads folder as well. Test r4 against base when its done; the same for r5 as well."
 - Before every gate, a local builder outside this repo rebuilds a private set from every `wisp-debug-*.json` in `~/Downloads`. It held 69 logs and 221 cases on 2026-11-05, 131 with recorded read results pinned through the new optional `worlds.json`. The offline self-check passes 220 of 221. The host doesn't offer `web_search` for the other case, so no model can pass it there.
@@ -582,12 +582,12 @@ Tested on step 1150 with synthetic inputs and the production prompts, one run ea
 **What it changes**
 - Toolbench scores stand. Every run used `--profile-as`, which copies base's lists, the model-led loop doesn't read this list, and the toolbench digest is a fixed stand-in. Toolbench can't see the fault either, so background calls are now a separate gate check.
 - The user's live tests of steps 400 and 1150 ran with these calls failing. The Brief's model summaries were affected too, though no export records them.
-- The 22:05 email finding was not a clean model fault. All three long `view_emails` results in that export had a failed digest and gave the model 20,000 chars of raw HTML. The one good result was 4,797 chars. Retest before blaming the model.
+- The 22:05 email finding was not a clean model fault. Three long `view_emails` results in that export had a failed digest. The model gets at most 6,000 chars per result on this path (`ASK_TOOL_RESULT_CHARS`, `loop.py:5341`); the 20,000 in the export is the UI and debug copy. On "class enrollment", the first email's raw body ran about 10,800 chars, so the model saw only that one of five, then a note saying the rest was cut. That explains the answer describing one of five. Retest before blaming the model.
 - The debug-log set no longer pins a result whose digest failed (4 calls). Those cases still score tool choice and answer checks.
 
 **Gate (r4 and r5):** run `background_probe.py` for base and the tuned model. Bars: every call finishes, JSON is valid, no digest fails, digest recall within 5 points of base.
 
 **Rostering a tuned model:** add its id to `tool_capable`, `no_thinking_capable` and `thinking_required_after_tool` in `models.yaml`, then `roles`, the catalog and its context window. `test_thinking_kwargs.py` fails if a default role's model is missing from the first two.
 
-**r5:** the about 40 long email rows stay, because the match still isn't always first, but their results should be digest-sized, about 5,000 chars, not 20,000. No cost change.
+**r5:** the about 40 long email rows stay, because the match still isn't always first. Their results should run about 5,000 to 6,000 chars, not 20,000, and some should end in the real cut note, because five normal emails can pass the cap even when the digest works. No cost change.
 
