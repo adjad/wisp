@@ -11,7 +11,9 @@ must list everything here).
 
 Only what Wisp starts on its own is held. An Ask turn and its confirmation cards,
 the outcome of an action the person took, a scheduled send, and a timer, reminder
-or event alert they set for this time all arrive as usual.
+or event alert they set for this time all arrive as usual. The exception is a result
+from another Mac or a Codex update: they wait even when the person started the job,
+because the event can't say who did.
 """
 from __future__ import annotations
 

@@ -41,6 +41,8 @@ DELETED = {
     "assistant-delivery-receipts.json", "audit.jsonl", "diagnostics", "debug-exports",
     # the reminder ledger, its set-aside copy, and a temp file a crash left behind
     "reminder-action-ledger.json", "reminder-action-ledger.damaged.json",
+    # the person's hours and the copy kept in case that file is damaged
+    "user_hours.json", "user_hours.last-good.json",
     ".reminder-action-ledger.json.0000.tmp",
     "corpus-runs", "corpus-prompts.json",
     # Google: tokens, workspace-mcp credentials and its uv install
