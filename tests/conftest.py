@@ -1,4 +1,6 @@
 """Credential recovery checks always use per-test synthetic state."""
+import sys
+
 import pytest
 
 
@@ -36,6 +38,22 @@ def isolated_user_hours(tmp_path, monkeypatch):
     # tests/test_quiet_hold.py turns this back on.
     from service import quiet_hold
     monkeypatch.setattr(quiet_hold, "_quiet_now", lambda: False)
+
+
+@pytest.fixture(autouse=True)
+def no_chat_left_over(monkeypatch):
+    # A turn a test ran stays on service/idle's clock, and brief_pace reads that as a chat
+    # still going for 3 minutes, so a later test's Brief wouldn't start.
+    from service import idle
+    monkeypatch.setattr(idle, "_foreground_turns", 0)
+    monkeypatch.setattr(idle, "_last_turn", None)
+    # Only if some test imported them: no module here needs to load for this.
+    saver = sys.modules.get("service.memory_saver")
+    if saver is not None:
+        monkeypatch.setattr(saver._state, "last_intent", None)
+    pace = sys.modules.get("service.brief_pace")
+    if pace is not None:
+        pace._holds.clear()
 
 
 @pytest.fixture(autouse=True)
