@@ -1379,7 +1379,7 @@ def test_actual_loop_authored_body_cannot_authorize_message_send(storage, monkey
     output,calls,approver,events = _knowledge_loop(monkeypatch,prompt,steps)
     assert [name for name,args in calls] == ['save_knowledge']
     assert storage.read()['records'][0]['text'] == body
-    assert any(e['type'] == 'tool_result' and 'explicitly forbidden' in e['result'] for e in events)
+    assert any(e['type'] == 'tool_result' and 'was NOT run' in e['result'] for e in events)
 
 
 def test_actual_loop_extra_action_outside_knowledge_instruction_stays_inert(storage, monkeypatch):

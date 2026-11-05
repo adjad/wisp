@@ -41,7 +41,7 @@ from pathlib import Path
 _clock = time
 
 from service.paths import MOE_DIR, private_write_bytes
-from service.tools.registry import register
+from service.tools.registry import not_done, register
 
 _STORE = MOE_DIR / "cache" / "timers.json"
 
@@ -239,24 +239,29 @@ def set_timer(kind: str = "timer", duration: str = "", time: str = "",  # noqa: 
     kind = (kind or "timer").strip().lower()
     if kind == "alarm":
         if not (time or "").strip():
-            return "(error: an alarm needs a clock `time`, e.g. '7:30am'.)"
+            return not_done("(error: an alarm needs a clock `time`, e.g. '7:30am'.)",
+                            question="What time should the alarm go off?")
         return _set_alarm(time, label, repeat_daily)
     if kind not in {"timer", "sleep"}:
-        return f"(error: unknown kind {kind!r}. Use timer, alarm, or sleep.)"
+        return not_done(f"(error: unknown kind {kind!r}. Use timer, alarm, or sleep.)")
     if not (duration or "").strip():
-        return "(error: a timer needs a `duration`, e.g. '10 minutes'.)"
+        return not_done("(error: a timer needs a `duration`, e.g. '10 minutes'.)",
+                        question="How long should it run?")
     return _set_sleep_timer(duration) if kind == "sleep" else _set_countdown(duration, label)
 
 
 def _set_countdown(duration: str, label: str = "") -> str:
     secs = _parse_duration(duration)
     if secs is None:
-        return (f"(error: I couldn't read {duration!r} as a length of time. "
-                f"Try '10 minutes', '1h30m', or '90s'.)")
+        return not_done(f"(error: I couldn't read {duration!r} as a length of time. "
+                        f"Try '10 minutes', '1h30m', or '90s'.)",
+                        question="I couldn't read that as a length of time, so I didn't set a timer. How long should it run?")
     if secs <= 0:
-        return "(error: that duration is zero or negative.)"
+        return not_done("(error: that duration is zero or negative.)",
+                        question="That isn't a length of time I can count down, so I didn't set a timer. How long should it run?")
     if secs > 24 * 3600:
-        return "(error: timers cap at 24 hours — use add_reminder for anything longer.)"
+        return not_done("(error: timers cap at 24 hours — use add_reminder for anything longer.)",
+                        question="Timers stop at 24 hours, so I didn't set one. Should I set a reminder instead?")
     tid = uuid.uuid4().hex[:8]
     _TIMERS[tid] = {"kind": "timer", "label": label.strip(),
                     "deadline": time.time() + secs, "created": time.time()}
@@ -272,15 +277,17 @@ def _set_alarm(time: str, label: str = "", repeat_daily: bool = False) -> str:  
     raw = (time or "").strip().lower().replace(".", ":")
     m = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", raw)
     if not m:
-        return (f"(error: I couldn't read {time!r} as a clock time. "
-                f"Try '7:30am' or '18:45'.)")
+        return not_done(f"(error: I couldn't read {time!r} as a clock time. "
+                        f"Try '7:30am' or '18:45'.)",
+                        question="I couldn't read that time, so I didn't set an alarm. What time should it go off?")
     hour, minute, ampm = int(m.group(1)), int(m.group(2) or 0), m.group(3)
     if ampm == "pm" and hour != 12:
         hour += 12
     elif ampm == "am" and hour == 12:
         hour = 0
     if hour > 23 or minute > 59:
-        return f"(error: {time!r} isn't a valid clock time.)"
+        return not_done(f"(error: {time!r} isn't a valid clock time.)",
+                        question="That isn't a valid time, so I didn't set an alarm. What time should it go off?")
 
     now = _dt.datetime.now()
     when = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -301,9 +308,11 @@ def _set_alarm(time: str, label: str = "", repeat_daily: bool = False) -> str:  
 def _set_sleep_timer(duration: str) -> str:
     secs = _parse_duration(duration)
     if secs is None:
-        return f"(error: I couldn't read {duration!r} as a length of time.)"
+        return not_done(f"(error: I couldn't read {duration!r} as a length of time.)",
+                        question="I couldn't read that as a length of time, so I didn't set a sleep timer. How long should it run?")
     if secs <= 0:
-        return "(error: that duration is zero or negative.)"
+        return not_done("(error: that duration is zero or negative.)",
+                        question="That isn't a length of time I can count down, so I didn't set a sleep timer. How long should it run?")
     tid = uuid.uuid4().hex[:8]
     _TIMERS[tid] = {"kind": "sleep", "label": "Sleep timer",
                     "deadline": time.time() + secs, "created": time.time()}

@@ -83,9 +83,12 @@ def test_canvas_tonight_and_messages_is_a_two_effect_contract():
     assert "send_email" not in (decision.tool_subset or [])
 
 
-def test_denied_message_or_email_terminates_after_one_confirmation():
+def test_denied_message_or_email_terminates_after_one_confirmation(monkeypatch):
     # The scripts deliberately contain three identical retries. Only the first
-    # may be consumed after the user denies it.
+    # may be consumed after the user denies it. Mom is a saved contact: a name
+    # with no contact gets a question before any card.
+    from service.tools import imessage_tools
+    monkeypatch.setattr(imessage_tools, "_name_handles", {"mom": ["+15550100123"]})
     cases = [
         ("Send Mom a test message", "send_message",
          {"to": "Mom", "text": "Test message"}),
