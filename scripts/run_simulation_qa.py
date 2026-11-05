@@ -352,6 +352,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_private_state_files.py",
     # Ask stall re-prompt, tomorrow typos and the day plan: fake model client, stubbed snapshot.
     "tests/test_ask_day_answers.py",
+    # get_my_day_plan lists each item once across sections: synthetic snapshots only.
+    "tests/test_day_plan_once_each.py",
     # Ask stall nudge (one retry on a promise-only final): fake model client, synthetic tools.
     "tests/test_ask_stall_guard.py",
     # Ask claims with no tool call, a bare "yes" to a create offer, and the
