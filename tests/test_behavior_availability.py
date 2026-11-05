@@ -1169,6 +1169,7 @@ _PUBLIC_PLANNING_SOURCES = (
     'service/tasks/__init__.py',
     'service/tasks/temporal.py',
     'service/temporal_facts.py',
+    'service/user_hours.py',  # the Day plan's usual hours; stdlib and service/paths.py only
     'service/tools/__init__.py',
     'service/tools/browser_history_tools.py',
     'service/tools/cache_store.py',

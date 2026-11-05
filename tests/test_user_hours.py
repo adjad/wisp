@@ -309,13 +309,16 @@ def test_replan_without_hours_uses_the_usual_ones(home, tmp_path, monkeypatch):
 
 
 def test_nudges_follow_the_shared_quiet_hours(home):
+    """The portable behavior package is handed the setting by the runtime that builds it."""
+    from service.assistant.behavior_runtime import _user_quiet_window
     from service.behavior.nudges import FeedbackState, select
     from service.behavior.types import Nudge
     def nudge(id_):
         return Nudge(id=id_, kind="contact_window", title="t", body="b", because="w", created_at=0.0, priority=0.5)
     def chosen(hour):
         now = datetime(2026, 11, 9, hour, tzinfo=TZ).timestamp()
-        return select([nudge("a")], now=now, tz=TZ, recent=[], fb=FeedbackState(), exists=lambda _: False)
+        return select([nudge("a")], now=now, tz=TZ, recent=[], fb=FeedbackState(), exists=lambda _: False,
+                      quiet=_user_quiet_window())
     assert chosen(12) and not chosen(23) and not chosen(7), "22:00-08:00 by default"
     U.save(quiet={"start_minute": 10 * 60, "end_minute": 14 * 60})
     assert not chosen(12) and chosen(23)

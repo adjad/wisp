@@ -87,7 +87,9 @@ class Phraser(Protocol):
 
 class BehaviorEngine:
     def __init__(self, db_path: str | Path, *, phraser: Phraser | None = None,
-                 clock=None, tz: str | None = None) -> None:
+                 clock=None, tz: str | None = None, quiet_hours=None) -> None:
+        # () -> local (start, end) minutes: the person's quiet hours, from the runtime.
+        self._quiet_hours = quiet_hours
         self._store = Store(db_path)
         from service.behavior.activity import Activity
         self._activity = Activity(self._store)
@@ -616,16 +618,17 @@ class BehaviorEngine:
                     li = self._store.last_observation("message_in", p.subject, before=now)
                     lo = self._store.last_observation("message_out", p.subject, before=now)
                     last_messages[p.subject] = (li.ts if li else None, lo.ts if lo else None)
+            quiet = self._quiet_hours() if self._quiet_hours is not None else nudge_mod.DEFAULT_QUIET
             inputs = nudge_mod.Inputs(
                 now=now, tz=self._tz, patterns=patterns, predictions=preds,
                 events={e.id: e for e in events},
                 today_events=[e for e in events if local_dt(e.ts, self._tz).date() == today],
-                last_messages=last_messages)
+                last_messages=last_messages, quiet=quiet)
             candidates = nudge_mod.build_candidates(inputs)
             fb = nudge_mod.feedback_state(self._store.feedback_since(now - nudge_mod.FEEDBACK_MEMORY_S), now)
             recent = self._store.nudges_created_since(day_start(today - timedelta(days=1), self._tz))
             chosen = nudge_mod.select(candidates, now=now, tz=self._tz, recent=recent, fb=fb,
-                                      exists=self._store.has_nudge)
+                                      exists=self._store.has_nudge, quiet=quiet)
             if self._nudge_revision() != revision:
                 return []
         created = []

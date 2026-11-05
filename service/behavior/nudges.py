@@ -5,8 +5,8 @@ Two steps, both deterministic:
 1. ``build_candidates`` proposes every nudge that would be useful right now,
    each with a deterministic id (kind + key fact: event id, contact + date,
    pattern + date) so regenerating the same situation dedupes.
-2. ``select`` applies the user's attention budget: their quiet hours
-   (service/user_hours.py), at most 4 per local day (the morning ``day_preview`` is free), one per kind per
+2. ``select`` applies the user's attention budget: quiet hours (handed in, as
+   this package reads nothing outside itself), at most 4 per local day (the morning ``day_preview`` is free), one per kind per
    3 hours, nothing expired, nothing the user muted through feedback.
    Event-keyed kinds (``habit_conflict``, ``cancel_likely``) skip the per-kind
    cooldown: each is about one specific calendar event, dedupes on that event's
@@ -24,7 +24,6 @@ import math
 from dataclasses import dataclass, field, replace
 from datetime import timedelta, tzinfo
 
-from service import user_hours
 from service.behavior import miners, predict
 from service.behavior.timeutil import (
     DAY_NAMES, at_minute, day_end, day_start, fmt_clock, fmt_range, local_dt, minute_of, when_phrase,
@@ -36,6 +35,7 @@ COOLDOWN_S = 3 * 3600
 # One nudge per calendar event (id = kind + event id, expires at event start):
 # exempt from the per-kind cooldown, not from the daily budget / quiet hours.
 EVENT_KEYED_KINDS = frozenset({"habit_conflict", "cancel_likely"})
+DEFAULT_QUIET = (22 * 60, 7 * 60)  # local (start, end) minutes; may wrap midnight
 PREVIEW_START_MIN = 5 * 60       # never before dawn, even for someone with no quiet hours
 PREVIEW_END_MIN = 10 * 60
 PREVIEW_MAX_USAGE = 2
@@ -73,6 +73,7 @@ class Inputs:
     events: dict[str, Observation]                # calendar events by id (today .. horizon)
     today_events: list[Observation]               # events on today's local date
     last_messages: dict[str, tuple[float | None, float | None]] = field(default_factory=dict)
+    quiet: tuple[int, int] = DEFAULT_QUIET
 
 
 @dataclass
@@ -270,7 +271,8 @@ def _preview_item(pr: Prediction, tz: tzinfo, patterns: dict[str, Pattern]) -> s
 
 def _day_preview(inp: Inputs) -> list[Nudge]:
     now_dt = local_dt(inp.now, inp.tz)
-    if not PREVIEW_START_MIN <= minute_of(now_dt) < PREVIEW_END_MIN or user_hours.in_quiet_hours(now_dt):
+    minute = minute_of(now_dt)
+    if not PREVIEW_START_MIN <= minute < PREVIEW_END_MIN or _in_quiet(minute, inp.quiet):
         return []
     today = now_dt.date()
     # Today's upcoming items; a contact window may already be under way.
@@ -346,14 +348,21 @@ def _free_slot(events: list[Observation], day, from_minute: int, dur: int, tz: t
     return None
 
 
+def _in_quiet(minute: int, quiet: tuple[int, int]) -> bool:
+    start, end = quiet
+    if start == end:
+        return False
+    return start <= minute < end if start < end else minute >= start or minute < end
+
+
 def select(candidates: list[Nudge], *, now: float, tz: tzinfo, recent: list[Nudge],
-           fb: FeedbackState, exists) -> list[Nudge]:
+           fb: FeedbackState, exists, quiet: tuple[int, int] = DEFAULT_QUIET) -> list[Nudge]:
     """Apply quiet hours, dedupe, expiry, mutes, the daily budget and per-kind cooldown.
 
     ``recent``: nudges already created since the start of yesterday;
     ``exists(id)``: whether a nudge id was ever created (dedupe across days)."""
     now_dt = local_dt(now, tz)
-    if user_hours.in_quiet_hours(now_dt):
+    if _in_quiet(minute_of(now_dt), quiet):
         return []
     start = day_start(now_dt.date(), tz)
     used = sum(1 for n in recent if start <= n.created_at < day_end(now_dt.date(), tz)
