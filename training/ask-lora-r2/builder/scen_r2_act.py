@@ -72,7 +72,7 @@ def _check(sc, need_load=False):
     import build
     import leak
     leaked, score, q = _leaks().leaks(sc.prompt)
-    if leaked:
+    if leaked and not getattr(sc, "leak_ok", False):
         return False, f"leak {q['id']} {score:.2f}"
     hits = leak.fact_hits(_text_of(sc))
     if hits:

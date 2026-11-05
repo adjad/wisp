@@ -151,7 +151,7 @@ def _check(sc):
         return False, f"toolbench fact in history {hits[:2]}"
     for t in getattr(sc, "history", None) or ():
         leaked, score, q = _leaks().leaks(t["user"])
-        if leaked:
+        if leaked and not getattr(sc, "leak_ok", False):
             return False, f"history prompt leaks {q['id']} {score:.2f}"
     return True, ""
 

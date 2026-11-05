@@ -126,7 +126,9 @@ def main(only=None):
         for k, sc in enumerate(scenarios):
             sid = f"{family}-{k:03d}"
             leaked, score, q = leaks.leaks(sc.prompt)
-            if leaked:
+            # leak_ok: the user's own wording in a round-5 row (scen_r5_debuglog). Their question stays in training on
+            # purpose, and the gate reports overlapping toolbench cases apart.
+            if leaked and not getattr(sc, "leak_ok", False):
                 failures.append((sid, sc.prompt, f"leaks eval {q['id']} ({score:.2f}): {q['prompt']!r}"))
                 continue
             # Round-2 scenario fields (writes.py); scen.Scenario may not declare them yet.
@@ -193,6 +195,7 @@ def main(only=None):
                               "clarify": bool(getattr(sc, "clarify", False)) and resp["kind"] == "final",
                               "unsafe_reads": list(getattr(sc, "unsafe_reads", ()) or ()),
                               "thread": getattr(sc, "thread", None), "qkind": getattr(sc, "qkind", None),
+                              "leak_ok": bool(getattr(sc, "leak_ok", False)),
                               "recall_refs": list(getattr(sc, "recall_refs", ()) or ()),
                               "recall_absent": getattr(sc, "recall_absent", None),
                               "recall_ok": list(getattr(sc, "recall_ok", ()) or ()),

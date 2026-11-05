@@ -507,7 +507,7 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
             i = max(j for j, r in enumerate(roles) if r == "user")
         prompt = msgs[i].get("content") or ""
         hit, score, q = leaks.leaks(prompt)
-        if hit:
+        if hit and not meta.get("leak_ok"):   # the user's own wording in a round-5 row is kept on purpose (build.py)
             bad("leak:toolbench_prompt" if str(q["id"]).startswith("tb:") else "leak:eval_question",
                 f"{where} {score:.2f} ~ {q['id']}")
         for val in leak.fact_hits(leak.conversation_text(ex)):

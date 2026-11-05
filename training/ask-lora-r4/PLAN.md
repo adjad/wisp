@@ -591,3 +591,20 @@ Tested on step 1150 with synthetic inputs and the production prompts, one run ea
 
 **r5:** the about 40 long email rows stay, because the match still isn't always first. Their results should run about 5,000 to 6,000 chars, not 20,000, and some should end in the real cut note, because five normal emails can pass the cap even when the digest works. No cost change.
 
+## r5's row builder and what r4 adds to it (2026-11-05)
+
+The user: "Yes, start it", and "take note of all mistakes made by the model and make sure r5 handles it".
+
+**Built so far, on the pinned code, with no model:**
+- `builder/scen_r5_debuglog.py` builds `debug_log_r5` and `long_email_r5` under `ASK_LORA_ROUND=4 ASK_LORA_R5=1`. r4's build doesn't change.
+- A dry run gave 497 steps from 259 turns, with 0 build failures. The validator found 3 adjacent duplicate thoughts in that partial build.
+- The user's questions come from the local seeds file. The code holds none of their wording. Build output goes to `training/ask-lora-r5/data/`, which git ignores.
+- `leak_ok` keeps the user's own wording when it overlaps a toolbench or eval question. The gate reports overlapping cases apart.
+
+**To do when the new pin lands (after PR 482):**
+- Rebuild. Bare assent rows can't run yet, because the pin keeps a bare "yes" read-only; they should work once PR 470 is in.
+- Update `world.py` to PR 476's result order. Subject matches rank first there, so "match not first" rows must use body-only matches or several subject matches.
+- Replace every `BASE_WRITES` final through distill. `unwritten()` must be empty in a final build.
+
+**From r4's gate:** catalog every model mistake from the toolbench and all debug-log sets, split model faults from host faults, and map each model fault to r5 rows or a bar. r5's build may change for this without another OK, unless the cost grows materially.
+

@@ -2245,6 +2245,13 @@ if _ROUND in ("3", "4"):
             FAMILIES.update(getattr(_m, "FAMILIES_R4", {}))
             for _fam, _tools in getattr(_m, "WRITE_ALLOW_R4", {}).items():
                 _writes.WRITE_ALLOW[_fam] = _writes.WRITE_ALLOW.get(_fam, frozenset()) | frozenset(_tools)
+        # Round 5 adds scen_r5_*.py to round 4's families and rules, so ASK_LORA_ROUND stays "4" and r4's build is unchanged.
+        if _os.environ.get("ASK_LORA_R5") == "1":
+            for _path in sorted(_glob.glob(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "scen_r5_*.py"))):
+                _m = _importlib.import_module(_os.path.basename(_path)[:-3])
+                FAMILIES.update(getattr(_m, "FAMILIES_R5", {}))
+                for _fam, _tools in getattr(_m, "WRITE_ALLOW_R5", {}).items():
+                    _writes.WRITE_ALLOW[_fam] = _writes.WRITE_ALLOW.get(_fam, frozenset()) | frozenset(_tools)
         # chat_voice_r4 (longer, more engaging replies; the user, 2026-11-02) replaces r3's chat voice.
         if "chat_voice_r4" in FAMILIES:
             FAMILIES.pop("chat_voice_r3", None)

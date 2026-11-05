@@ -95,6 +95,8 @@ WRITE_ALLOW: dict[str, frozenset[str]] = {
     # day conversations: a reply to a person the plan listed as waiting is a draft (the card ends the turn) or, with the
     # user's words, a carded send
     "day_chat_r4": frozenset({"draft_message", "send_message"}),
+    # Round 5 (scen_r5_*.py; loaded only under ASK_LORA_R5=1). Keep in step with each WRITE_ALLOW_R5.
+    "debug_log_r5": frozenset({"add_reminder", "send_message", "send_email"}),
 }
 
 # Families whose examples carry earlier conversation turns (seeded sessions): the
@@ -103,7 +105,9 @@ MULTITURN = frozenset({"followup_r3",
                        # round 4: seeded sessions (restraint_r4's ruled-out follow-ups; the session families)
                        "restraint_r4", "session_chat_r4", "session_recall_r4", "instructions_r4",
                        # day conversations: "and friday?" after a plan answer
-                       "day_chat_r4"})
+                       "day_chat_r4",
+                       # round 5: replays of the user's chats and continued questions
+                       "debug_log_r5"})
 
 # Picture turns card EVERY effect (policy.mark_picture_turn), reminders included: NEVER_CARD does not apply.
 PICTURE_TURN = frozenset({"picture_turn_r3"})
