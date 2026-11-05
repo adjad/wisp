@@ -597,6 +597,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_reminder_update.py",
     # Disposable SQLite claims and exact synthetic native readback; no EventKit.
     "tests/test_verified_reminders.py",
+    "tests/test_reminder_notes_marker.py",
     "tests/test_replay_failure_fixes.py",
     # Synthetic benchmark evidence, owned loopback receivers and owned child process groups only.
     "tests/test_release_performance.py",
@@ -761,6 +762,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/port-guard-contract": "native/port-guard-compile",
     "native/backend-trust-contract": "native/backend-trust-compile",
     "native/reminders-policy-contract": "native/reminders-policy-compile",
+    "native/reminder-action-ledger-contract": "native/reminder-action-ledger-compile",
     "native/calendar-move-contract": "native/calendar-move-compile",
     "native/checkin-cancel-contract": "native/checkin-cancel-compile",
     "native/privacy-relaunch-contract": "native/privacy-relaunch-compile",
@@ -1060,6 +1062,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     chat_store = str(build_dir / "chat-store")
     chat_debug_archive = str(build_dir / "chat-debug-archive")
     reminders_policy = str(build_dir / "reminders-policy")
+    reminder_action_ledger = str(build_dir / "reminder-action-ledger")
     calendar_move = str(build_dir / "calendar-move")
     checkin_cancel = str(build_dir / "checkin-cancel")
     privacy_relaunch = str(build_dir / "privacy-relaunch")
@@ -1312,10 +1315,21 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
                 TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
                 "-module-cache-path", module_cache,
                 "app/Sources/WispApp/RemindersWriter.swift",
+                "app/Sources/WispApp/ReminderActionLedger.swift",
                 "tests/RemindersPolicyChecks.swift", "-o", reminders_policy,
             ],
         ),
         ("native/reminders-policy-contract", [reminders_policy]),
+        (
+            "native/reminder-action-ledger-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/ReminderActionLedger.swift",
+                "tests/ReminderActionLedgerChecks.swift", "-o", reminder_action_ledger,
+            ],
+        ),
+        ("native/reminder-action-ledger-contract", [reminder_action_ledger]),
         (
             "native/calendar-move-compile",
             [
