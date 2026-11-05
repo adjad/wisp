@@ -1821,6 +1821,15 @@ final class OverlayModel: ObservableObject {
             rec.decisionReason = ev.str("reason")
             turnToolCalls.append(rec)
             if turnFirstTokenAt == nil { turnFirstTokenAt = Date() }
+        case "tool_rejected":
+            // Refused before it ran, so no tool_call came and none is shown. Debug
+            // Mode keeps its name and arguments; the tool_result fills in the refusal.
+            var rec = ToolCallRecord()
+            rec.callId = ev.str("id")
+            rec.name = ev.str("name")
+            rec.argsJSON = Self.prettyJSON(ev.payload["args"])
+            rec.decision = "rejected"
+            turnToolCalls.append(rec)
         case "raw_model_io":
             // Exactly what was sent to and returned by the model for this
             // completion call — see loop.py's _run_step / main.py's reasoning
@@ -1867,7 +1876,8 @@ final class OverlayModel: ObservableObject {
                 activity.append("⏱ Confirmation timed out — denied automatically")
             }
         case "tool_result":
-            activity.append("→ \(ev.str("result").prefix(60))")
+            // An `internal` result is a note to the model about its own mis-call.
+            if !ev.bool("internal") { activity.append("→ \(ev.str("result").prefix(60))") }
             for kind in AskAccess.kinds(ev.payload["needs_access"]) where !turnNeedsAccess.contains(kind) {
                 turnNeedsAccess.append(kind)
             }
