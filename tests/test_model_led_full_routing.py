@@ -654,7 +654,7 @@ def test_private_read_with_pending_owner_keeps_shell_unavailable_at_actual_execu
     # Attempted discovery AND an actual scripted direct call must be refused,
     # rather than the test passing because the model did not select the tool.
     assert len(requests) >= 4
-    assert any(e.get("type") == "tool_result" and "run_shell is explicitly forbidden" in str(e.get("result", "")).lower() for e in events)
+    assert any(e.get("type") == "tool_result" and "run_shell was not run" in str(e.get("result", "")).lower() for e in events)
     assert not any(e.get("type") == "tool_call" and e.get("name") == "run_shell" for e in events)
     assert not any(json.loads(r[0]).get("kind") == "model_led_effect" for r in
                    endpoint.store._db.execute("SELECT state_json FROM workflows WHERE session_id=?", (sid,)))

@@ -2097,7 +2097,7 @@ struct FirstRunSetupView: View {
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 OnboardingHeading(title: "Getting to know you",
-                                  subtitle: "Three quick questions, all optional. Each answer is saved when you continue.")
+                                  subtitle: "Four quick questions, all optional. Each answer is saved when you continue.")
                 KnowYouView(model: knowYou, inWindow: true)
             }
         }

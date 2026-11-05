@@ -1708,6 +1708,8 @@ class TestScheduledDelivery:
         import asyncio
         monkeypatch.setattr(hub, "_subs", {asyncio.Queue()})
         monkeypatch.setattr(B, "datetime", _clock_at(8, 5))
+        from service import idle
+        monkeypatch.setattr(idle, "_last_turn", None)   # no chat in progress (brief_pace)
 
     @staticmethod
     async def _tick():

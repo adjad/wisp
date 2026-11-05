@@ -99,6 +99,52 @@ def parse_undated_snapshot(raw, total) -> UndatedSnapshot | None:
 
 DB_PATH = MOE_DIR / "assistant.db"
 
+# What Wisp says on its own, which can wait out quiet hours in this store with the words of
+# a message, a Brief or a reminder in it: service/quiet_hold.py's list plus "reminder"
+# (tests/test_quiet_hold.py keeps the two together; the store doesn't import that module).
+# Once a row leaves 'pending', the app has it or it stopped mattering, so a trigger removes
+# the words whichever code finished it. The row stays, so its dedupe key still stops a repeat.
+HELD_EVENT_KINDS = ("attention_added", "checkin", "codex_task_update", "daily_brief", "email_summary",
+                    "google_signin_expired", "node_result", "nudge", "reminder")
+_HELD_KINDS_SQL = ",".join(f"'{kind}'" for kind in HELD_EVENT_KINDS)
+_SCRUBBED_NUDGE = '{"type":"nudge","scrubbed":true}'
+_SCRUBBED_REMINDER_TARGET = '{"type": "reminder"}'
+# A Brief composed from the combined inbox, and what else learned from or about one account.
+_ACCOUNT_DERIVED_KINDS = ("daily_brief", "email_summary", "nudge")
+_SIGNIN_EXPIRED_PREFIX = "google-signin-expired:"
+
+
+def _scrubbed_payload_sql(row: str = "") -> str:
+    """The payload a finished row keeps. Only a Brief's run (morning or evening) stays: the
+    scheduler reads it from an older version's receipt (scheduler._slot_delivered)."""
+    return (f"CASE WHEN {row}kind='daily_brief' AND json_valid({row}payload) THEN "
+            f"json_object('type',{row}kind,'part_of_day',json_extract({row}payload,'$.part_of_day'),"
+            f"'scrubbed',json('true')) ELSE json_object('type',{row}kind,'scrubbed',json('true')) END")
+
+
+def _scrubbed_target_sql(row: str = "") -> str:
+    # A reminder's target repeats its title; every other held kind's holds only ids and dates.
+    return f"CASE WHEN {row}kind='reminder' THEN '{_SCRUBBED_REMINDER_TARGET}' ELSE {row}target END"
+
+
+def _account_key(account: str) -> str:
+    return hashlib.sha256(account.strip().lower().encode()).hexdigest()[:32]
+
+
+def signin_expired_key(account: str, stamp: int) -> str:
+    """One notice per expiry. Hashed because the key outlives the notice's words."""
+    return f"{_SIGNIN_EXPIRED_PREFIX}{_account_key(account)}:{stamp}"
+
+
+def _text_of(value) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _text_of(item)]
+    if isinstance(value, list):
+        return [text for item in value for text in _text_of(item)]
+    return []
+
 # scripts/wisp_testdata.py seeds fake commitments ("Dentist Follow-up",
 # "Team Standup", "Take the laundry out"…) into this same live DB under this
 # source. Seeding is relative to the moment it ran, so a forgotten `seed-db`
@@ -313,6 +359,8 @@ class AssistantStore:
         private_sqlite_file(path)
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
+        # Removed words are overwritten in the file, not only unlinked from the row.
+        self._db.execute("PRAGMA secure_delete=ON")
         self._lock = threading.RLock()
         self._delivery_writer = Authority("assistant-nudge-writer",owner=self)
         self._delivery_writer.publish()
@@ -366,6 +414,7 @@ class AssistantStore:
                     next_order += 1
                     self._db.execute("UPDATE assistant_events SET claim_order=? WHERE id=?",
                                      (next_order, old["id"]))
+                self._scrub_finished_events()
                 self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_schedule_versions (
                     commitment_id TEXT PRIMARY KEY, version TEXT NOT NULL
                 )""")
@@ -585,13 +634,16 @@ class AssistantStore:
                 raise PublicationUnavailable("Behavior cleanup cannot join a caller transaction")
 
     def drop_behavior_events(self):
-        """Durably erase learned nudge events without joining a caller unit."""
+        """Durably erase learned nudge events without joining a caller unit. A held alert quoting
+        a text goes too: Forget shouldn't be followed by Wisp bringing up that message. Its
+        reminder was already added and stays, like everything else the person can see."""
         assert_mutation_allowed()
         with revocation(),self._lock:
             self.assert_behavior_cleanup_available()
             with self._write_transaction():
                 count = self._db.execute("DELETE FROM assistant_events WHERE kind='nudge' "
                                          "AND dedupe_key LIKE 'behavior:%'").rowcount
+                self._db.execute("DELETE FROM assistant_events WHERE kind='attention_added'")
             return int(count or 0)
 
     def forget_behavior_actions(self, owner_id):
@@ -732,6 +784,58 @@ class AssistantStore:
                 self.path, "automatic migration could not prove that every row was preserved"))
         self._db.execute("DROP TABLE commitments_old_migrating")
 
+    def _scrub_finished_events(self) -> None:
+        """Keep the words of a held event only while it waits (see HELD_EVENT_KINDS), and take
+        them out of what earlier versions finished. Rebuilt each start, so the kinds can change."""
+        self._db.execute("DROP TRIGGER IF EXISTS assistant_events_scrub_finished")
+        self._db.execute(
+            "CREATE TRIGGER assistant_events_scrub_finished AFTER UPDATE OF state ON assistant_events "
+            f"WHEN NEW.state IN ('ack','superseded') AND NEW.kind IN ({_HELD_KINDS_SQL}) BEGIN "
+            f"UPDATE assistant_events SET payload={_scrubbed_payload_sql('NEW.')},"
+            f"target={_scrubbed_target_sql('NEW.')} WHERE id=NEW.id; END")
+        self._db.execute(
+            f"UPDATE assistant_events SET payload={_scrubbed_payload_sql()},target={_scrubbed_target_sql()} "
+            f"WHERE state IN ('ack','superseded') AND kind IN ({_HELD_KINDS_SQL}) "
+            f"AND (payload<>{_scrubbed_payload_sql()} OR target<>{_scrubbed_target_sql()})")
+        for row in self._db.execute(
+                "SELECT id,dedupe_key FROM assistant_events WHERE kind='google_signin_expired' "
+                "AND dedupe_key LIKE '%@%'").fetchall():
+            _, account, stamp = (row["dedupe_key"].split(":") + ["", ""])[:3]
+            self._db.execute("UPDATE assistant_events SET dedupe_key=? WHERE id=?",
+                             (f"{_SIGNIN_EXPIRED_PREFIX}{_account_key(account)}:{stamp}", row["id"]))
+
+    def erase_held_for_account(self, account: str) -> int:
+        """Disconnect & erase: what is still waiting and came from this Google account. Its
+        sign-in notices go entirely. A Brief or mail summary is composed from the combined
+        inbox and a nudge may be learned from its calendar, with no record of which account
+        said what, so those are withdrawn too; the next run is composed without it."""
+        with self._write_transaction():
+            count = self._db.execute(
+                "DELETE FROM assistant_events WHERE kind='google_signin_expired' AND dedupe_key LIKE ?",
+                (f"{_SIGNIN_EXPIRED_PREFIX}{_account_key(account)}:%",)).rowcount
+            kinds = ",".join("?" for _ in _ACCOUNT_DERIVED_KINDS)
+            count += self._db.execute(
+                f"UPDATE assistant_events SET state='superseded' WHERE state='pending' AND kind IN ({kinds})",
+                _ACCOUNT_DERIVED_KINDS).rowcount
+            return int(count or 0)
+
+    def forget_held_matching(self, matches) -> int:
+        """The forget tool: withdraw what is waiting to be shown and says what was forgotten.
+        A reminder's notice stays: it belongs to the reminder, which the forget tool keeps."""
+        with self._write_transaction():
+            count = 0
+            for row in self._db.execute(
+                    f"SELECT id,payload FROM assistant_events WHERE state='pending' "
+                    f"AND kind IN ({_HELD_KINDS_SQL}) AND kind<>'reminder'").fetchall():
+                try:
+                    text = " ".join(_text_of(json.loads(row["payload"])))
+                except ValueError:
+                    continue
+                if matches(text):
+                    count += self._db.execute("UPDATE assistant_events SET state='superseded' WHERE id=?",
+                                              (row["id"],)).rowcount
+            return count
+
     def _migrate_calendar_results(self) -> None:
         # Prior versions wrote ok/error without a status. Only upgrade terminal
         # results whose strict types and consistency prove their meaning. Keep
@@ -804,6 +908,11 @@ class AssistantStore:
         if len(rows)>1000:
             raise PublicationUnavailable("Delivery uniqueness coverage is incomplete")
         return [dict(row) for row in rows]
+
+    @staticmethod
+    def _nudge_finished(row) -> bool:
+        """Its words are gone, so a retry has nothing to compare and nothing left to deliver."""
+        return row["state"]!="pending" and row["payload"]==_SCRUBBED_NUDGE
 
     def prepare_nudge_write(self, runtime, nudge_json, event, actions, prior, now, expires_at):
         """Prepare only immutable values and exact owned-SQL consistency facts."""
@@ -895,7 +1004,8 @@ class AssistantStore:
         event_json = json.dumps(event,sort_keys=True,allow_nan=False)
         if len(event_json.encode())>65536:
             raise PublicationUnavailable("Delivery event exceeds its bound")
-        if old_event is not None and (old_event["kind"]!="nudge" or old_event["payload"]!=event_json):
+        if old_event is not None and (old_event["kind"]!="nudge" or not (
+                old_event["payload"]==event_json or self._nudge_finished(old_event))):
             raise PublicationUnavailable("Immutable delivery identity has changed")
         data = json.dumps(dict(nudge_id=nudge["id"],nudge_json=nudge_json,event_json=event_json,
             event_id=old_event["id"] if old_event else uuid.uuid4().hex,key=key,units=units,performed=performed,
@@ -977,7 +1087,7 @@ class AssistantStore:
                     self._db.execute("INSERT INTO assistant_events(id,kind,payload,dedupe_key,target,created_at,expires_at) "
                         "VALUES(?,'nudge',?,?,'{}',?,?)",(data["event_id"],data["event_json"],data["key"],data["now"],data["expires_at"]))
                 row = self._db.execute("SELECT id,payload,state FROM assistant_events WHERE dedupe_key=?",(data["key"],)).fetchone()
-                if row is None or row["payload"]!=data["event_json"]:
+                if row is None or not (row["payload"]==data["event_json"] or self._nudge_finished(row)):
                     raise PublicationUnavailable("Canonical event was not persisted")
                 result = CommittedNudge(plan,row["id"],row["payload"],row["state"]=="pending",_delivery_issuer)
                 self._db.commit()
@@ -1097,7 +1207,7 @@ class AssistantStore:
         return '(SELECT * FROM commitments WHERE all_day=0 OR due_date IS NULL UNION ALL SELECT ' + projected + ' FROM commitments WHERE all_day=1 AND due_date IS NOT NULL)'
 
     def today_snapshot(self, day: str, timezone: str) -> dict:
-        from service.assistant.today import day_bounds
+        from service.assistant.today import day_bounds, default_preferences
         lo, hi = day_bounds(day, timezone)
         relation = self.schedule_relation(timezone)
         with self._lock, self._db:
@@ -1126,8 +1236,7 @@ class AssistantStore:
         deadlines = [c for c in commitments if c not in fixed]
         commitments = fixed + self._collapse(deadlines)
         return dict(tasks=tasks, commitments=commitments, sources=sources,
-                    preferences=json.loads(row["payload"]) if row else
-                        dict(start_minute=540, end_minute=1080, not_before=None),
+                    preferences=json.loads(row["payload"]) if row else default_preferences(day, timezone),
                     revision=row["revision"] if row else 0)
 
     def today_task(self, task_id: str) -> dict | None:
@@ -1167,6 +1276,52 @@ class AssistantStore:
                              "revision=excluded.revision,updated_at=excluded.updated_at",
                              (task["id"], task["day"], json.dumps(task, allow_nan=False), task["revision"], saved, saved))
         return task
+
+    def today_apply_working_hours(self, from_day: str, start_minute: int, end_minute: int) -> int:
+        """Carry the person's new usual hours onto days already saved, from `from_day`
+        on, so changing them in About you changes today rather than tomorrow. Other
+        per-day choices (running late, plan this day anyway) stay. A day the new hours
+        don't fit, inside a daylight-saving change, keeps what it had. Returns how many
+        days changed; each takes a new revision, as any edit of that day does."""
+        from service.assistant.today import validate_preferences
+        changed = 0
+        with self._write_transaction():
+            rows = self._db.execute("SELECT day,timezone,payload,revision FROM today_preferences WHERE day >= ?",
+                                    (from_day,)).fetchall()
+            for row in rows:
+                saved = json.loads(row["payload"])
+                if (saved.get("start_minute"), saved.get("end_minute")) == (start_minute, end_minute):
+                    continue
+                try:
+                    values = validate_preferences(row["day"], row["timezone"], **{
+                        **{k: v for k, v in saved.items() if k in ("not_before", "plan_all_day")},
+                        "start_minute": start_minute, "end_minute": end_minute})
+                except ValueError:
+                    continue
+                self._db.execute("UPDATE today_preferences SET payload=?, revision=? WHERE day=? AND timezone=?",
+                                 (json.dumps(values, allow_nan=False), row["revision"] + 1, row["day"], row["timezone"]))
+                changed += 1
+        return changed
+
+    def calendar_offer_rows(self, start_ts: float, end_ts: float) -> list[dict]:
+        """Active Calendar rows starting in a window, with what a move offer must know:
+        invitees, organizer and whether the calendar accepts changes (each None when
+        the app hasn't said), and `occurrences`, how many rows share this event's id,
+        so a repeating event can be told apart from a one-off."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT c.id,c.source_id,c.title,c.when_ts,c.all_day,e.end_ts,"
+                "i.invitee_count,i.organizer_is_user,w.writable AS calendar_writable,"
+                "(SELECT COUNT(*) FROM scheduled_commitments s WHERE s.source='calendar' "
+                " AND s.source_id=c.source_id) AS occurrences "
+                "FROM scheduled_commitments c "
+                "LEFT JOIN calendar_event_ends e ON e.commitment_id=c.id "
+                "LEFT JOIN calendar_event_invitees i ON i.commitment_id=c.id "
+                "LEFT JOIN calendar_event_writable w ON w.commitment_id=c.id "
+                "WHERE c.source='calendar' AND c.status='active' AND c.source_id IS NOT NULL AND c.source_id<>'' "
+                "AND c.when_ts >= ? AND c.when_ts < ? ORDER BY c.when_ts, c.source_id",
+                (float(start_ts), float(end_ts))).fetchall()
+        return [dict(r) for r in rows]
 
     def today_save_preferences(self, day: str, timezone: str, values: dict, revision: int) -> int:
         from service.assistant.today import RevisionConflict, validate_preferences

@@ -192,6 +192,17 @@ class ProactiveStore:
             if isinstance(fp, str) and fp:
                 data["suppressed"][fp] = now
 
+    def mark_handled(self, fingerprints, asks=(), now: float | None = None) -> None:
+        """The user already did this outside Wisp, before it got a card: it stays
+        away like a dismissed card, until a new message changes the conversation."""
+        now = time.time() if now is None else now
+        with self._lock:
+            data = self.decisions()
+            self._suppress(fingerprints, now)
+            self._suppress(asks, now)
+            self._hold_asks(data, asks, now)
+            self._write("decisions.json")
+
     def mark_unknown(self, card: dict, now: float | None = None) -> None:
         """A send whose outcome is unknown: the card stays locked, across cycles
         and restarts, until it is dismissed or its to-do marked handled."""
@@ -355,6 +366,8 @@ class ProactiveStore:
             for key in ("cards", "todos", "threads", "notes"):
                 state[key] = [x for x in state.get(key) or [] if not mine(x)]
             state["accounts"] = [a for a in state.get("accounts") or [] if str(a).casefold() != account]
+            if isinstance(state.get("seen"), dict):     # who wrote it, and what they named
+                state["seen"] = {k: v for k, v in state["seen"].items() if not mine(v)}
             for key in ("summaries", "judged"):
                 if isinstance(state.get(key), dict):
                     state[key] = {k: v for k, v in state[key].items() if str(k).casefold() != account}

@@ -151,6 +151,13 @@ def _home() -> Path:
 # Default collaborators (overridable for tests)
 # --------------------------------------------------------------------------
 
+def _user_quiet_window() -> tuple[int, int]:
+    """The person's quiet hours, for the portable behavior package (service/user_hours.py)."""
+    from service.user_hours import quiet_hours
+    quiet = quiet_hours()
+    return quiet.start_minute, quiet.end_minute
+
+
 def _default_local_factory(path: Path):
     from service.behavior.engine import BehaviorEngine
     phraser = None
@@ -158,7 +165,7 @@ def _default_local_factory(path: Path):
     if phraser_enabled():     # off by default under remote inference (titles would leave the Mac)
         from service.assistant.behavior_phraser import WispPhraser
         phraser = WispPhraser()
-    return BehaviorEngine(path, phraser=phraser)
+    return BehaviorEngine(path, phraser=phraser, quiet_hours=_user_quiet_window)
 
 
 def _default_messages() -> dict:
@@ -1831,7 +1838,7 @@ def forget_all(store, home: Path | None = None) -> dict:
     learning is on or off. Stops the runtime (waiting for a pass in flight),
     removes the untouched Wisp-created reminders/holds, closes every connection,
     deletes ``behavior.db``, ``behavior_runtime.db`` (with ``-wal``/``-shm``) and the
-    profile card cache, and drops pending nudge events. Items the user edited,
+    profile card cache, and drops nudge events and held attention alerts. Items the user edited,
     completed or moved are kept. If learning is still on, Wisp starts over from
     the next ingest."""
     global _runtime, _forgetting, _forget_owner_thread

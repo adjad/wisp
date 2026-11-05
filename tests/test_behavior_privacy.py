@@ -1420,3 +1420,19 @@ def test_retention_fails_closed_when_the_version_cannot_be_read(tmp_path, monkey
     monkeypatch.setattr(store_mod.sqlite3, "connect", real)
     assert store_mod.written_by_newer_build(tmp_path / "behavior.db") is False
     assert store_mod.written_by_newer_build(tmp_path / "missing.db") is False
+
+
+def test_a_retry_after_the_words_are_gone_delivers_nothing_and_does_not_fail(queued_delivery,store):
+    """A finished nudge keeps no text (tests/test_quiet_hold.py), so a retry has nothing to compare."""
+    rt,engine,hub,nudge,source,_ = queued_delivery
+    async def both():
+        first = await rt.deliver(store,hub,nudge,NOW)
+        store.acknowledge_event(first["event_id"],"nudge")
+        row = store.event_by_key("behavior:"+nudge.id)
+        assert row["state"]=="ack" and row["payload"]=={"type":"nudge","scrubbed":True}
+        subscriber = hub.subscribe()
+        again = await rt.deliver(store,hub,nudge,NOW)
+        assert again["event_id"]==first["event_id"] and again["scrubbed"] is True
+        assert subscriber.empty()
+    asyncio.run(both())
+    assert store.event_by_key("behavior:"+nudge.id)["state"]=="ack"

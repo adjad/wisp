@@ -97,6 +97,8 @@ PROFILE_TESTS = {
         "tests/test_email_scoping.py",
         "tests/test_live_corpus.py",
         "tests/test_long_email_digest.py",
+        # Email search: ranked, fair budget, clean text, honest coverage (synthetic mail, stub model).
+        "tests/test_email_search_ranking.py",
         # Voice input: the clip reaches only a local model with an audio encoder (stub client).
         "tests/test_voice_transcribe.py",
         # Image/video input: one dedicated vision call (stub client, synthetic media).
@@ -357,6 +359,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_private_state_files.py",
     # Ask stall re-prompt, tomorrow typos and the day plan: fake model client, stubbed snapshot.
     "tests/test_ask_day_answers.py",
+    # get_my_day_plan lists each item once across sections: synthetic snapshots only.
+    "tests/test_day_plan_once_each.py",
     # Ask stall nudge (one retry on a promise-only final): fake model client, synthetic tools.
     "tests/test_ask_stall_guard.py",
     # Ask claims with no tool call, a bare "yes" to a create offer, and the
@@ -392,10 +396,12 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_proactive_auto_add.py",
     "tests/test_proactive_clear.py",
     "tests/test_proactive_handled.py",
+    "tests/test_proactive_sent_check.py",
     "tests/test_proactive_deadlines.py",
     "tests/test_proactive_engine.py",
     "tests/test_proactive_idle_refresh.py",
     "tests/test_proactive_return_refresh.py",
+    "tests/test_brief_pace.py",
     "tests/test_proactive_mail_recall.py",
     "tests/test_proactive_past_week.py",
     "tests/test_proactive_quality.py",
@@ -554,6 +560,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_model_led_entrypoint.py",
     "tests/test_model_led_full_routing.py",
     "tests/test_model_led_effect_ownership.py",
+    # Real send tools and loop with a fake bridge, synthetic contacts, scripted model.
+    "tests/test_send_recipient_preflight.py",
+    # Real effect tools and loop with a fake bridge and queue, fake Notes results, scripted model.
+    "tests/test_effect_refusal_no_lock.py",
     "tests/test_model_led_1_2_5_boundaries.py",
     # httpx MockTransport only; redirect and strict-host checks never touch the network.
     "tests/test_web_strict_host.py",
@@ -589,6 +599,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_reminder_update.py",
     # Disposable SQLite claims and exact synthetic native readback; no EventKit.
     "tests/test_verified_reminders.py",
+    "tests/test_reminder_notes_marker.py",
     "tests/test_replay_failure_fixes.py",
     # Synthetic benchmark evidence, owned loopback receivers and owned child process groups only.
     "tests/test_release_performance.py",
@@ -603,6 +614,8 @@ ADDITIONAL_FULL_TESTS = {
     # verified-self identity, fake policy/outbox and ASGI transport; no effects.
     "tests/test_daily_workspace.py",
     "tests/test_day_review_blocks.py",
+    # Export Chat Debug Log opens no modal session: reads Swift source only.
+    "tests/test_debug_export_stays_modeless.py",
     # The Brief's "Needs you today" selection over synthetic attention items.
     "tests/test_brief_needs_you.py",
     # Day timeline Cancel/Move fields: disposable AssistantStore, the planner and
@@ -611,6 +624,11 @@ ADDITIONAL_FULL_TESTS = {
     # The user's profile (Getting to know you): JSON in a temp path, pure prompt/brief/
     # ranking helpers and an in-process TestClient; no model, listener or real ~/.moe.
     "tests/test_user_profile.py",
+    # Working and quiet hours, and the offer to move an event outside them: JSON in a
+    # temp path, disposable AssistantStore, in-process TestClient and Hub; no model or real ~/.moe.
+    "tests/test_user_hours.py",
+    "tests/test_hours_offers.py",
+    "tests/test_quiet_hold.py",
     # Evening check-in, carry-forward and goal pulse: disposable AssistantStore and
     # state files, in-process TestClient; no model, scheduler, hub or real ~/.moe.
     "tests/test_checkin.py",
@@ -746,6 +764,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/port-guard-contract": "native/port-guard-compile",
     "native/backend-trust-contract": "native/backend-trust-compile",
     "native/reminders-policy-contract": "native/reminders-policy-compile",
+    "native/reminder-action-ledger-contract": "native/reminder-action-ledger-compile",
     "native/calendar-move-contract": "native/calendar-move-compile",
     "native/checkin-cancel-contract": "native/checkin-cancel-compile",
     "native/privacy-relaunch-contract": "native/privacy-relaunch-compile",
@@ -757,6 +776,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/read-aloud-voice-contract": "native/read-aloud-voice-compile",
     "native/notch-tab-contract": "native/notch-tab-compile",
     "native/know-you-contract": "native/know-you-compile",
+    "native/user-hours-contract": "native/user-hours-compile",
 }
 
 
@@ -1039,10 +1059,12 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     read_aloud_voice = str(build_dir / "read-aloud-voice")
     notch_tab = str(build_dir / "notch-tab")
     know_you = str(build_dir / "know-you")
+    user_hours = str(build_dir / "user-hours")
     chat_logic = str(build_dir / "chat-logic")
     chat_store = str(build_dir / "chat-store")
     chat_debug_archive = str(build_dir / "chat-debug-archive")
     reminders_policy = str(build_dir / "reminders-policy")
+    reminder_action_ledger = str(build_dir / "reminder-action-ledger")
     calendar_move = str(build_dir / "calendar-move")
     checkin_cancel = str(build_dir / "checkin-cancel")
     privacy_relaunch = str(build_dir / "privacy-relaunch")
@@ -1223,6 +1245,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         ),
         ("native/know-you-contract", [know_you]),
         (
+            "native/user-hours-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/UserHours.swift",
+                "tests/UserHoursChecks.swift", "-o", user_hours,
+            ],
+        ),
+        ("native/user-hours-contract", [user_hours]),
+        (
             "native/chat-logic-compile",
             [
                 TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
@@ -1285,10 +1317,21 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
                 TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
                 "-module-cache-path", module_cache,
                 "app/Sources/WispApp/RemindersWriter.swift",
+                "app/Sources/WispApp/ReminderActionLedger.swift",
                 "tests/RemindersPolicyChecks.swift", "-o", reminders_policy,
             ],
         ),
         ("native/reminders-policy-contract", [reminders_policy]),
+        (
+            "native/reminder-action-ledger-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/ReminderActionLedger.swift",
+                "tests/ReminderActionLedgerChecks.swift", "-o", reminder_action_ledger,
+            ],
+        ),
+        ("native/reminder-action-ledger-contract", [reminder_action_ledger]),
         (
             "native/calendar-move-compile",
             [

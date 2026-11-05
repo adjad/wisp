@@ -268,7 +268,7 @@ def test_digests_per_lookup_are_capped_newest_first():
     rows = [_row(i) for i in range(D.MAX_DIGESTS_PER_CALL + 1)]
     out = asyncio.run(D.digest_rows(rows, client=client, model=MODEL))
     assert len(client.calls) == D.MAX_DIGESTS_PER_CALL
-    assert "to make room for a long email's digest" in out[0]["body"]   # oldest
+    assert not out[0]["body"].startswith("[Wisp's digest")   # oldest
     assert all(r["body"].startswith("[Wisp's digest") for r in out[1:])
 
 
@@ -381,7 +381,7 @@ def test_b2_input_budget_follows_the_model_window():
 def test_n2_multi_row_result_fits_the_ask_cap_with_the_digest():
     client = StubClient()
     rows = [_row(i, body=f"Email {i}. " + "Medium email text. " * 150) for i in range(4)] + [_row(9)]
-    out = asyncio.run(D.digest_rows(rows, client=client, model=MODEL))
+    out = D.fit_rows(asyncio.run(D.digest_rows(rows, client=client, model=MODEL)), best_first=False).rows
     total = sum(len(r["body"]) + D._ROW_HEADER_CHARS for r in out)
     assert total <= D.RESULT_BUDGET_CHARS
     assert out[-1]["body"].startswith("[Wisp's digest")

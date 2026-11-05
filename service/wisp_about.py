@@ -590,7 +590,7 @@ def identity() -> str:
     if name:
         out += ["", f"And you're {name}: you told me in Getting to know you. Type **/about** to change it."]
     else:
-        out += ["", "I don't know your name yet. Type **/about** and I'll ask three quick questions."]
+        out += ["", "I don't know your name yet. Type **/about** and I'll ask four quick questions."]
     out += ["", "Ask \"what can you do?\" for the full tour."]
     return "\n".join(out)
 

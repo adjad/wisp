@@ -95,7 +95,7 @@ def test_unoffered_forbidden_tool_is_still_refused(synthetic):
                        ask_quality=True, model_led_stub_rank=[], forbidden_tools=frozenset({"write_file"}))
     assert effects == []
     assert receipts(client.requests[1]) == []
-    assert "forbidden" in tool_results(client.requests[1])[0]
+    assert "not allowed for this request" in tool_results(client.requests[1])[0]
 
 
 def test_core_stubs_include_the_immediate_sends_and_forget():

@@ -40,6 +40,12 @@ def terms(text: str) -> list[str]:
     return list(dict.fromkeys(t for t in _norm(text).split() if len(t) > 1 and t not in _STOP))[:20]
 
 
+def names_all_terms(query: str, text: str) -> bool:
+    """What `forget` counts as a match: every meaningful word of the query, as a whole word."""
+    tokens, words = terms(query), _norm(text).split()
+    return bool(tokens) and all(t in words for t in tokens)
+
+
 def fts_query(text: str) -> str:
     return ' OR '.join('"' + t + '"' for t in terms(text))
 
@@ -321,7 +327,7 @@ class FactStore:
         tokens = terms(query)
         if not tokens:
             return 0
-        targets = [r for r in self.search(query, 1000) if all(t in _norm(r['text']).split() for t in tokens)]
+        targets = [r for r in self.search(query, 1000) if names_all_terms(query, r['text'])]
         with self._write():
             return sum(self.delete(r['id']) for r in targets)
 
