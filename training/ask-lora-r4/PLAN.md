@@ -472,3 +472,30 @@ Counts are from the 6,098 frozen train rows.
 **r5 patch settings (user, 2026-11-04).** Both come from Unsloth's Gemma 4 guide, whose 75% figure has no evidence behind it, so the gate decides.
 - **Reasoning share: aim for at least 75% of the training mix having a thought.** r4 has 62% (47% at 100+ chars), and 43% of its tool-choice steps have one. Every new row gets a thought, including tool-choice steps. Sampling r4's rows favours those with thoughts. Where possible, use base's own thoughts, checked for correctness, rather than new templates. Report turn time at the gate, since longer thoughts cost speed.
 - **Learning rate: lower for the continuation.** Try 2e-5 and 5e-5 briefly and compare before committing. `train.py --resume` restores the old schedule, so the continuation needs a small change: load r4's weights only, with a new short schedule.
+
+**Second step-1150 live test: bland at first, enjoyable later (2026-11-04).** Counts are from the frozen build; the design waits for the gate, and GPU time for the user's OK.
+
+The split is in the data. After a tool result, by the row's thought:
+
+| Thought | Rows | Mean chars | Emoji | Bold | "!" |
+|---|---|---|---|---|---|
+| Base style | 1,074 | 369 | 70% | 89% | 79% |
+| Template | 657 | 205 | 0% | 0% | 0% |
+| None | 549 | 68 | 0% | 0% | 1% |
+
+Every day row with a thought uses a template, so day answers sound flat. Thought and final come from the same row, so this shows a split by source, not that the thought causes the warmth. Replacing only the thoughts may not be enough.
+
+Changes to the patch:
+- **Day rows: base writes both the thought and the final**, kept only if the facts check out, with no repeated items and a list at 3+ items. About 250 rows, up from about 120.
+- **Sample from r4 without the day templates.** Also leave out rows with the meta-thoughts "Lead with those", "Keep every one of those" and "plus N more". "The note already exists, so append" (`thinking.py:974`) is a likely source of a thought that tried to edit a message instead of sending it; drop it too.
+- **New rows:**
+  - bare follow-ups that switch source ("and my reminders?", about 40);
+  - send only the day asked for, after reading it;
+  - send to an address the user just gave (about 30, after the host fix lands);
+  - no "and N more" in anything going to another person.
+- **Rough size:** about 750 new and 1,000 sampled rows, about 83% with a thought, about 270 steps, 6–7 h, about $4.
+- **Decision point: the adapter may be too set in the template register.** r4 trained on about 700 day rows for two epochs, so a short low-lr run may not move it. Run the continuation, then compare day answers on dev. If they haven't moved at 5e-5, stop patching and propose a full r5 from base with regenerated day families (about 51 h, about $30; needs the user's OK).
+
+For the host, not the data: `service/tools/proactive_tools.py` prints the same item under "Suggested next steps" and "Other to-dos", so the model sees repeats it then copies.
+
+Gate: a fourth private set, 8 cases from this chat, local only.
