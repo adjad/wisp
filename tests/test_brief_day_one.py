@@ -268,3 +268,16 @@ class TestDayOneRebuild:
              patch.object(sync_status, "summary_snapshot", lambda: _snapshot()):
             # The evening run is due: it reads every source fresh instead.
             assert scheduler._pending_recompose(scheduler.datetime.now()) is None
+
+
+class TestNoChatCarriesOverBetweenTests:
+    """tests/conftest.py clears it: a real turn in another test used to hold every Brief here."""
+
+    def test_a_test_runs_a_turn(self):
+        idle.begin_foreground()
+        idle.end_foreground()
+        assert idle.last_turn() is not None
+
+    def test_the_next_test_starts_with_no_chat(self):
+        from service import brief_pace
+        assert idle.last_turn() is None and brief_pace.may_start("daily")
