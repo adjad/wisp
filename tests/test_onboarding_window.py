@@ -200,6 +200,49 @@ def test_fix_links_say_where_they_go():
         assert "fix.label)" not in text, name
 
 
+def test_nothing_the_notch_opens_lands_under_it():
+    """2026-11-05: "when I click to add the permission, nothing happens - the window for
+    it is hidden under the wisp notch". The panel sits above normal windows, and the
+    click leaves the pointer inside it, so nothing closed it. Every surface now steps
+    aside first, and a fix link opens the notch's own page instead of a window."""
+    sources = _sources()
+    perms = sources["Permissions.swift"]
+    for call in ("CGRequestScreenCaptureAccess()", "AXIsProcessTrustedWithOptions("):
+        body = _body(perms, "static func requestScreenRecording()" if "CG" in call else "static func requestAccessibility()")
+        assert body.index("stepAside()") < body.index(call), call
+    fix = _body(perms, "static func openFix(")
+    assert fix.index("NotchPermissionPage.item(forFix:") < fix.index("NSWorkspace.shared.open(url)")
+    assert ".wispOpenPermissionPage" in fix and ".wispOpenPermissions" not in fix
+    request = _body(sources["FirstRunSetupView.swift"], "func request(_ item: Item) async")
+    assert request.index("Permissions.stepAside()") < request.index("NSApp.activate(ignoringOtherApps: true)")
+    voice = sources["VoiceInput.swift"]
+    start = _body(voice, "func start()")
+    assert start.index("Permissions.stepAside()") < start.index("AVCaptureDevice.requestAccess")
+    open_mic = _body(voice, "func openMicrophoneSettings()")
+    assert open_mic.index("Permissions.stepAside()") < open_mic.index("NSWorkspace.shared.open(url)")
+    # A panel it stepped aside from comes back with the answer, and never opens the mic unseen.
+    assert "if askingForMicrophone { return }" in _body(voice, "func cancel()")
+    assert start.index("Permissions.stepBack()") < start.index("self.beginRecording()")
+    app = sources["AppDelegate.swift"]
+    assert "stepAside()" in _body(app, "private func openFirstRunSetup(")
+    assert "stepAside()" in _body(app, "@objc private func openSettings()")
+    assert "stepAside()" in _body(app, "private func grantMoreAccess()")
+    assert "case .chat, .chatList, .today, .research, .memory: stepAside()" in _body(app, "private func open(_ route: WispRoute)")
+    # It overrides the holds: this is what the person just asked for.
+    assert "holdsOpen" not in _body(app, "private func stepAside()")
+    # Any window of Wisp's taking the keyboard, unless it is raised above the panel.
+    assert "self?.stepAside(forKey: window)" in app
+    # Every link reaches the page through openFix, the Brief's and the Ask's alike.
+    for name in ("OverlayView.swift", "Chat/ChatViews.swift", "NotchDayView.swift", "ProactiveCards.swift"):
+        assert "Permissions.openFix(url)" in sources[name], name
+    assert "wispOpenPermissions" not in sources["OverlayModel.swift"]
+    # The setup window stays where setup and Settings › Privacy use it.
+    assert "NotificationCenter.default.post(name: .wispOpenPermissions" in sources["SettingsView.swift"]
+    page = sources["NotchPermissionPage.swift"]
+    act = _body(page, "func act(_ item: Item)")
+    assert "access.request(item)" in act and "settingsThroughRequest" in act and "openSettingsPane" in act
+
+
 def test_only_the_explicit_finish_marks_setup_done():
     """A quit (macOS's Quit & Reopen after Full Disk Access included) or an
     early close must never end setup, even when the model can already answer:
@@ -383,6 +426,8 @@ def test_quit_and_reopen_from_system_settings_reopens_wisp_itself():
         assert body.index("PrivacyRelaunch.notePaneOpened()") < body.index(call), name
     fix = _body(perms, "static func openFix(")
     assert fix.index("PrivacyRelaunch.notePaneOpened()") < fix.index("NSWorkspace.shared.open(url)")
+    assert fix.index("stepAside()") < fix.index("NSWorkspace.shared.open(url)")
+    assert pane.index("stepAside()") < pane.index("NSWorkspace.shared.open(url)")
     for name, text in sources.items():
         for match in re.finditer(r"x-apple\.systempreferences:com\.apple\.(?:settings\.PrivacySecurity|preference\.security)", text):
             if name in ("BriefSummary.swift", "Permissions.swift"):
@@ -393,7 +438,7 @@ def test_quit_and_reopen_from_system_settings_reopens_wisp_itself():
     assert reader.index("PrivacyRelaunch.notePaneOpened()") < reader.index("AXIsProcessTrustedWithOptions(")
     brief_fda = sources["OverlayView.swift"]
     at = brief_fda.index("URL(string: BriefDetail.fullDiskAccess.url)")
-    assert "PrivacyRelaunch.notePaneOpened()" in brief_fda[at:at + 200]
+    assert "Permissions.openFix(url)" in brief_fda[at:at + 200]
     assert "PrivacyRelaunch.paneOpenedKey" in sources["ResetWisp.swift"]
 
 

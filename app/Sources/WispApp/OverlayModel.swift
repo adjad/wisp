@@ -171,6 +171,7 @@ final class OverlayModel: ObservableObject {
             // Any way off Ask (⌘1-3, a deep link, a notification) ends the
             // questionnaire; its answers so far are already saved.
             if tab != .ask { leaveKnowYou(); voice.cancel() }
+            closePermissionPage()
             showingQuickSettings = false
             onResize()
         }
@@ -190,6 +191,9 @@ final class OverlayModel: ObservableObject {
     // The gear's short list of settings, shown in place of the tab's content.
     @Published var showingQuickSettings = false {
         didSet {
+            // Every way out of the settings (a command, voice, a tab) is a way
+            // out of the page over them too, even with settings already closed.
+            if !keepingPermissionPage { closePermissionPage() }
             guard showingQuickSettings != oldValue else { return }
             // The gear during Getting to know you: step out of the flow (its
             // answers so far are saved) rather than open settings behind it.
@@ -197,6 +201,38 @@ final class OverlayModel: ObservableObject {
             onResize()
         }
     }
+    // The permission page, shown in place of the tab's content and over quick
+    // settings, so Done returns to whichever it opened from. Unlike quick settings
+    // it stays through a close made for its own action (permissionPage), which
+    // shows it again once macOS has an answer.
+    @Published private(set) var showingPermissions = false {
+        didSet {
+            guard showingPermissions != oldValue else { return }
+            if showingPermissions { leaveKnowYou() } else { permissionPage.closed() }
+            syncPermissionPoll()
+            onResize()
+        }
+    }
+    let permissionPage = NotchPermissionPageModel()
+    private var keepingPermissionPage = false
+
+    /// Opens the page, on one permission or (nil) the whole list, and the panel
+    /// if it is closed.
+    func openPermissionPage(_ item: FirstRunPermissions.Item?) {
+        permissionPage.opened(focus: item)
+        showingPermissions = true
+        onResize()
+        if collapsed { requestExpand() }
+    }
+
+    func closePermissionPage() { showingPermissions = false }
+
+    /// Its states are read only while it can be seen. Opening the panel reads
+    /// them again at once, so coming back from System Settings shows the answer.
+    private func syncPermissionPoll() {
+        if showingPermissions && !collapsed { permissionPage.access.start() } else { permissionPage.access.stop() }
+    }
+
     @Published private(set) var freeingMemory = false
     /// Quick settings' Model memory row: what the engine has resident, nil when unknown.
     @Published private(set) var modelMemory: ModelMemory?
@@ -319,9 +355,14 @@ final class OverlayModel: ObservableObject {
         didSet {
             if collapsed && !oldValue {
                 tabMemory.panelClosed(at: Date())
+                keepingPermissionPage = permissionPage.keepsThroughClose
                 showingQuickSettings = false
+                keepingPermissionPage = false
                 voice.cancel()
+            } else if !collapsed && oldValue {
+                permissionPage.panelOpened()
             }
+            syncPermissionPoll()
             onCollapsedChanged()
         }
     }
@@ -505,6 +546,8 @@ final class OverlayModel: ObservableObject {
     /// Pick the tab for an opening panel: Ask, or for a hover soon after the
     /// panel closed, the tab it closed on. An open setup card keeps it on Ask.
     func prepareTab(byHover: Bool, at date: Date = Date()) {
+        // A page set aside for System Settings is what hovering comes back to; ⌥Space means Ask.
+        if !byHover || !permissionPage.stillWaiting(at: date) { closePermissionPage() }
         tab = setupCard.tabForOpening(tabMemory.tabForOpening(current: tab, byHover: byHover, at: date))
     }
 
@@ -1474,14 +1517,14 @@ final class OverlayModel: ObservableObject {
         onResize()
     }
 
-    /// "Look" without Screen Recording: say how to turn it on and open setup's
-    /// Permissions page, whose Screen Recording row asks macOS. Wisp never shows
+    /// "Look" without Screen Recording: say how to turn it on and open the notch's
+    /// permission page, whose Screen Recording button asks macOS. Wisp never shows
     /// macOS's question itself from here (only a click on that row does; see
     /// tests/test_onboarding_window.py). Nothing is captured. True when it is on.
     private func screenRecordingReadyForLook() -> Bool {
         if CGPreflightScreenCaptureAccess() { return true }
         showTransientNotice(ScreenLook.deniedNotice, duration: 8)
-        NotificationCenter.default.post(name: .wispOpenPermissions, object: nil)
+        openPermissionPage(.screenRecording)
         return false
     }
 

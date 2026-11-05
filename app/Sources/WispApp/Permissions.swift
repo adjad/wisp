@@ -10,11 +10,11 @@ import Contacts
 // that says what it is for.
 //
 //   - Calendar, Reminders, Mail and Notes (Automation), Contacts and
-//     Notifications: their rows in the setup window's Permissions step
-//     (FirstRunPermissions.request), one click per row. The same step opens
-//     again from Settings › Privacy's Permissions…, and from a Brief or Day row
-//     that says a source isn't allowed yet (`openFix`), and from the button
-//     under an Ask reply whose tool wasn't allowed to read one (`openAskFix`).
+//     Notifications: their rows in the setup window's Permissions step and on
+//     the notch's permission page (FirstRunPermissions.request), one click per
+//     row. A Brief, Day or Ask row about a source Wisp can't read opens that page
+//     (`openFix`, NotchPermissionPage). The window's step stays for setup,
+//     Settings › Privacy's Permissions… and the menu bar.
 //   - The readers never ask: Calendar and Reminders report "not allowed yet"
 //     (RemindersWriter.Access.passive), Contacts is started with mayAsk false,
 //     and Mail and Notes skip their scripted reads until Automation has an
@@ -28,6 +28,14 @@ import Contacts
 extension Notification.Name {
     /// Opens the setup window on its Permissions step.
     static let wispOpenPermissions = Notification.Name("WispOpenPermissions")
+    /// Opens the notch on its permission page, on the Item rawValue in `object`
+    /// (the whole list when nil).
+    static let wispOpenPermissionPage = Notification.Name("WispOpenPermissionPage")
+    /// Something macOS shows is about to open: the notch panel, which sits above
+    /// normal windows, tucks away so it can't open underneath.
+    static let wispStepAside = Notification.Name("WispStepAside")
+    /// What the panel tucked away for has been answered: it can come back.
+    static let wispStepBack = Notification.Name("WispStepBack")
     /// Asks for the next extra that is still off (Settings › Privacy's More Access…).
     static let wispGrantMoreAccess = Notification.Name("WispGrantMoreAccess")
     /// Opens Settings in the Wisp window, on the pane `WispSettingsPane` names
@@ -36,26 +44,32 @@ extension Notification.Name {
 }
 
 enum Permissions {
-    /// A Brief or Day "Open … settings" link. For Calendar or Reminders that
-    /// macOS has never been asked about, System Settings doesn't list Wisp yet,
-    /// so the link opens Wisp's own Permissions step instead, where one click on
-    /// Allow asks macOS. Every other link opens as before.
+    /// Before anything macOS shows on its own: a question, a System Settings page.
+    static func stepAside() { NotificationCenter.default.post(name: .wispStepAside, object: nil) }
+
+    /// After the question it stepped aside for has an answer.
+    static func stepBack() { NotificationCenter.default.post(name: .wispStepBack, object: nil) }
+
+    /// A Brief, Day or Ask fix link. A permission opens its page in the notch,
+    /// which says what it is for and where it stands before anything else opens.
+    /// Any other System Settings page (Internet Accounts) opens directly.
     static func openFix(_ url: URL) {
-        if asksInWisp(url.absoluteString) {
-            NotificationCenter.default.post(name: .wispOpenPermissions, object: nil)
+        if let item = NotchPermissionPage.item(forFix: url.absoluteString) {
+            NotificationCenter.default.post(name: .wispOpenPermissionPage, object: item.rawValue)
         } else {
             if url.scheme == "x-apple.systempreferences" { PrivacyRelaunch.notePaneOpened() }
+            stepAside()
             NSWorkspace.shared.open(url)
         }
     }
 
-    /// The link's words: while it opens Wisp's own Permissions step, it says so
-    /// instead of naming a System Settings page it won't open.
+    /// The link's words: a permission's link opens Wisp's own page, not the
+    /// System Settings page its label names.
     static func fixLabel(_ action: BriefDetail.Action) -> String {
-        asksInWisp(action.url) ? allowInWispLabel : action.label
+        NotchPermissionPage.item(forFix: action.url) == nil ? action.label : allowLabel
     }
 
-    static let allowInWispLabel = "Allow in Wisp…"
+    static let allowLabel = "Allow…"
 
     // MARK: Ask's fix buttons
 
@@ -100,46 +114,6 @@ enum Permissions {
         case "contacts_access": return CNContactStore.authorizationStatus(for: .contacts) == .authorized
         default: return false
         }
-    }
-
-    /// Like fixLabel, and Contacts that macOS hasn't asked about yet says
-    /// "Allow in Wisp…" too: System Settings doesn't list Wisp there until it has.
-    static func askFixLabel(_ action: BriefDetail.Action) -> String {
-        contactsUndecided(action.url) ? allowInWispLabel : fixLabel(action)
-    }
-
-    /// Like openFix, with undecided Contacts opening Wisp's own Permissions step.
-    static func openAskFix(_ url: URL) {
-        if contactsUndecided(url.absoluteString) {
-            NotificationCenter.default.post(name: .wispOpenPermissions, object: nil)
-        } else {
-            openFix(url)
-        }
-    }
-
-    /// A status read only: it never asks.
-    private static func contactsUndecided(_ url: String) -> Bool {
-        url.hasSuffix("Privacy_Contacts") && CNContactStore.authorizationStatus(for: .contacts) == .notDetermined
-    }
-
-    /// Live state for needsAskingInWisp, reading only what this link is about:
-    /// Automation's check (an Apple Event query) runs only for an Automation link.
-    private static func asksInWisp(_ url: String) -> Bool {
-        needsAskingInWisp(url,
-                          calendarUndecided: url.hasSuffix("Privacy_Calendars")
-                              && EKEventStore.authorizationStatus(for: .event) == .notDetermined,
-                          remindersUndecided: url.hasSuffix("Privacy_Reminders")
-                              && EKEventStore.authorizationStatus(for: .reminder) == .notDetermined,
-                          automationUndecided: url.hasSuffix("Privacy_Automation")
-                              && FirstRunPermissions.automationStateNow(ask: false) == .notAsked)
-    }
-
-    /// Pure: whether a settings link is for a permission macOS hasn't asked about yet.
-    static func needsAskingInWisp(_ url: String, calendarUndecided: Bool, remindersUndecided: Bool,
-                                  automationUndecided: Bool = false) -> Bool {
-        (url.hasSuffix("Privacy_Calendars") && calendarUndecided)
-            || (url.hasSuffix("Privacy_Reminders") && remindersUndecided)
-            || (url.hasSuffix("Privacy_Automation") && automationUndecided)
     }
 
     /// What a Mail or Notes read says when its on-disk copy failed. When the app
@@ -223,6 +197,7 @@ enum Permissions {
         case .prompt:
             defaults.set(true, forKey: screenRecordingPromptedKey)
             PrivacyRelaunch.notePaneOpened()
+            stepAside()
             CGRequestScreenCaptureAccess()
         case .settings:
             openSettingsPane("com.apple.preference.security?Privacy_ScreenCapture")
@@ -240,6 +215,7 @@ enum Permissions {
         case .prompt:
             defaults.set(true, forKey: accessibilityPromptedKey)
             PrivacyRelaunch.notePaneOpened()
+            stepAside()
             let axOpts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
             _ = AXIsProcessTrustedWithOptions(axOpts)
         case .settings:
@@ -269,6 +245,7 @@ enum Permissions {
     static func openSettingsPane(_ path: String) {
         if let url = URL(string: "x-apple.systempreferences:\(path)") {
             PrivacyRelaunch.notePaneOpened()
+            stepAside()
             NSWorkspace.shared.open(url)
         }
     }
