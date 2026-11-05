@@ -789,9 +789,6 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
             continue
         if item["id"] in planned_ids or item["source"] in planned_sources:
             continue
-        # Mail about an event that's over stays in attention, but gets no reading block.
-        if item["needs_review"] and passed_date(item["title"], now, now):
-            continue
         if len(suggestions) >= MAX_SUGGESTIONS:
             continue
         title = item["title"]

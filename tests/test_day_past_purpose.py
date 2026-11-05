@@ -140,7 +140,7 @@ def test_policy_states():
     assert classify_overdue(DUE, None, NOW) == "fresh"
 
 
-# --- other sources: no Keep/Delete there, they just stop asking for time ------------------
+# --- other sources: to-dos stop asking for time; mail keeps its reading block --------------
 
 def _assess(tasks=(), **records):
     from service.assistant.daily_workspace import assess
@@ -157,12 +157,22 @@ def _mail(identity, subject):
                 review_reason="Review this source for requests or changes.")
 
 
-def test_mail_about_a_passed_event_gets_no_reading_block_but_stays_in_attention():
-    result = _assess(email=dict(ready=True, records=[_mail("a", "Midterm on 10/30"), _mail("b", "Midterm on 11/10"),
-                                                     _mail("c", "Your 10/30 midterm results")]))
+def test_mail_about_a_passed_event_still_gets_its_reading_block():
+    # The user's 2026-10-20 decision: an email can still need a reply after its event, and
+    # a review block has no Keep to undo a false match.
+    from service.assistant.stale_reminders import passed_date
+    subjects = ("Midterm on 10/30", "Review for the 10/30 midterm", "Midterm on 11/10")
+    assert passed_date(subjects[0], NOW, NOW) and passed_date(subjects[1], NOW, NOW)   # or this proves nothing
+    result = _assess(email=dict(ready=True, records=[_mail(s, s) for s in subjects]))
     block = [b for b in result["proposed_plan"]["blocks"] if b["kind"] == "suggestion"]
-    assert len(block) == 1 and {m["title"] for m in block[0]["members"]} == {"Midterm on 11/10", "Your 10/30 midterm results"}
-    assert {i["title"] for i in result["attention"]} >= {"Midterm on 10/30", "Midterm on 11/10"}
+    assert len(block) == 1 and {m["title"] for m in block[0]["members"]} == set(subjects)
+    assert {i["title"] for i in result["attention"]} >= set(subjects)
+
+
+def test_one_email_about_a_passed_event_still_gets_its_own_block():
+    result = _assess(email=dict(ready=True, records=[_mail("a", "Midterm on 10/30")]))
+    block = [b for b in result["proposed_plan"]["blocks"] if b["kind"] == "suggestion"]
+    assert len(block) == 1 and "Midterm on 10/30" in block[0]["title"]
 
 
 def test_todos_from_mail_and_notes_for_a_passed_event_stop_offering_time():
