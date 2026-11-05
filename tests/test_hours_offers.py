@@ -96,6 +96,12 @@ def test_a_slot_outside_the_usual_hours_is_never_named(store, monkeypatch):
     assert offer(store) is None
 
 
+def test_no_organizer_on_file_is_what_someones_own_event_looks_like(store):
+    # EventKit names no organizer on an event with no invitees (CalendarReader leaves it out).
+    sync(store, own(organizer_is_user=None))
+    assert offer(store) is not None
+
+
 # --- what it skips ----------------------------------------------------------
 
 

@@ -113,6 +113,70 @@ def test_bad_files_read_as_the_default(home, raw):
     assert U.snapshot()["working"]["start_minute"] == 540
 
 
+NO_QUIET = {"start_minute": 0, "end_minute": 0}
+
+
+@pytest.mark.parametrize("damage", ["not json", "[]", '[' * 100000, b"\xff\xfe"])
+def test_a_damaged_file_keeps_what_the_person_chose(home, damage):
+    U.save(quiet=NO_QUIET, working={"start_minute": 600, "end_minute": 900, "days": [0, 1]})
+    file = home / "user_hours.json"
+    file.write_bytes(damage if isinstance(damage, bytes) else damage.encode())
+    assert U.quiet_hours().is_empty and not U.in_quiet_hours(datetime(2026, 11, 9, 23, tzinfo=TZ))
+    assert U.working_hours().start_minute == 600 and U.working_hours().days == (0, 1)
+    assert U.is_set(), "and doesn't ask the question again"
+    U.save(offer_moves=False)
+    assert json.loads(file.read_text())["quiet"] == NO_QUIET, "the next save mends it"
+
+
+def test_a_lost_file_is_not_seeded_over_what_the_person_chose(home):
+    U.save(quiet=NO_QUIET)
+    (home / "attention").mkdir()
+    (home / "attention" / "settings.json").write_text(json.dumps({"quiet_start": 23, "quiet_end": 7}))
+    (home / "user_hours.json").unlink()
+    assert U.quiet_hours().is_empty
+
+
+def test_a_file_from_before_there_were_copies_gets_one(home):
+    file = home / "user_hours.json"
+    file.write_text(json.dumps({"version": 1, "set": True, "quiet": NO_QUIET}))
+    assert U.quiet_hours().is_empty
+    file.write_text("not json")
+    assert U.quiet_hours().is_empty
+
+
+def test_the_copy_is_owner_only_and_only_a_fallback(home):
+    U.save(quiet=NO_QUIET)
+    copy = home / "user_hours.last-good.json"
+    assert copy.stat().st_mode & 0o777 == 0o600
+    copy.write_text(json.dumps({"quiet": {"start_minute": 60, "end_minute": 120}}))
+    assert U.quiet_hours().is_empty, "a good file wins"
+
+
+def test_erasing_hours_erases_the_copy_too(home):
+    U.save(quiet=NO_QUIET)
+    U.clear()
+    (home / "user_hours.json").write_text("not json")
+    assert U.quiet_hours() == U.DEFAULT_QUIET and not U.is_set()
+
+
+def test_a_copy_that_cant_be_written_doesnt_stop_a_save(home):
+    (home / "user_hours.last-good.json").mkdir()
+    assert U.save(quiet=NO_QUIET)["quiet"] == NO_QUIET
+    assert U.quiet_hours().is_empty
+
+
+def test_both_files_damaged_read_as_the_default(home):
+    U.save(quiet=NO_QUIET)
+    (home / "user_hours.json").write_text("not json")
+    (home / "user_hours.last-good.json").write_text("[]")
+    assert U.quiet_hours() == U.DEFAULT_QUIET
+
+
+def test_reset_erases_the_copy():
+    from service.wisp_reset import KEEP_ENTRIES
+    assert "user_hours.last-good.json" not in KEEP_ENTRIES
+
+
 def test_one_bad_section_leaves_the_other(home):
     (home / "user_hours.json").write_text(json.dumps(
         {"working": {"start_minute": "x"}, "quiet": {"start_minute": 60, "end_minute": 120}}))

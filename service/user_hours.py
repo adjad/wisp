@@ -22,6 +22,10 @@ live, so nothing a person already chose is lost:
 
 Both old locations are left as they were, so rolling back loses nothing.
 
+Each write also leaves a copy beside the file, and a file that can't be read gives
+way to that copy: without it, damage would bring back night holds for someone who
+chose no quiet hours, and ask the question again. It holds the same few numbers.
+
 Reading never raises: bad, partial or missing data reads as the default for that
 section. This module imports no store and calls no model, so a scheduler tick can
 read it freely.
@@ -104,6 +108,10 @@ DEFAULT_QUIET = Hours(22 * 60, 8 * 60, ALL_DAYS)
 
 def path() -> Path:
     return moe_dir() / "user_hours.json"
+
+
+def _copy_path() -> Path:
+    return path().with_name("user_hours.last-good.json")
 
 
 # ---------------------------------------------------------------------------
@@ -213,15 +221,22 @@ def _load() -> dict:
     global _warned
     with _lock:
         target = path()
+        missing = False
         try:
             data = json.loads(target.read_text(encoding="utf-8"))
-            return data if isinstance(data, dict) else {}
+            if isinstance(data, dict):
+                if not _copy_path().exists():        # a file from before there were copies
+                    _write_copy(data)
+                return data
         except FileNotFoundError:
+            missing = True
+        except (OSError, ValueError, RecursionError):
             pass
-        except (OSError, ValueError):
+        copy = _read_copy()
+        if copy is not None:
+            return copy
+        if not missing:
             return {}                                # unreadable: defaults, until the next save
-        except RecursionError:
-            return {}
         try:
             base = target.parent
             seeded: dict = {"version": _FILE_VERSION}
@@ -249,10 +264,31 @@ def _load() -> dict:
             return {}
 
 
+def _encoded(data: dict) -> bytes:
+    return json.dumps(data, indent=1, sort_keys=True, allow_nan=False).encode("utf-8")
+
+
 def _write(data: dict) -> None:
     target = path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    private_write_bytes(target, json.dumps(data, indent=1, sort_keys=True, allow_nan=False).encode("utf-8"))
+    private_write_bytes(target, _encoded(data))
+    _write_copy(data)
+
+
+def _write_copy(data: dict) -> None:
+    """Only ever a fallback: the setting is saved whether or not this lands."""
+    try:
+        private_write_bytes(_copy_path(), _encoded(data))
+    except (OSError, ValueError, RecursionError):
+        pass
+
+
+def _read_copy() -> dict | None:
+    try:
+        data = json.loads(_copy_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return data if isinstance(data, dict) else None
 
 
 # ---------------------------------------------------------------------------
