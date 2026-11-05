@@ -234,7 +234,10 @@ def rescore(run_dir: Path, rows: list[dict]) -> tuple[list[dict], dict]:
             kept += 1
             out.append(row)
             continue
-        v = score(case, rep.traj_from_row(row, meta), registry_names=names, today=world.today,
+        today = world.today
+        if meta.get("private"):
+            today = (private.case_world(case.id) or world).today
+        v = score(case, rep.traj_from_row(row, meta), registry_names=names, today=today,
                   write_tools=writes, host_refused=refused).to_dict()
         changed += v["passed"] != row["v"]["passed"]
         out.append({**row, "v": v, "v_stored": row["v"]})
@@ -311,6 +314,9 @@ async def _recover(client, model, *, wait: float = 240.0) -> None:
 async def _one(runner, score, client, model, case, world, names, writes, args, run_id, trial,
                variant, host_refused=frozenset()) -> dict:
     """One trial, retried once after a transient engine error (409, restart, dropped stream)."""
+    if getattr(args, "private", False):
+        from scripts.toolbench import private
+        world = private.activate_case_world(runner, case.id, world)
     traj = await runner.run_case(client, model, case, world, timeout=args.timeout, max_steps=args.max_steps)
     if traj.get("error") and _TRANSIENT.search(traj["error"]):
         await _recover(client, model)

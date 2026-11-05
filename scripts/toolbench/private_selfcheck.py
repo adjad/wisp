@@ -97,8 +97,9 @@ def run_selfcheck(directory: Path, *, only: set[str] | None = None, assume_host_
         def verdict(case, entries):
             client.plan = _plan(entries)
             client.failure = ""
-            traj = asyncio.run(runner.run_case(client, CANDIDATE, case, world, timeout=60))
-            v = score(case, traj, registry_names=names, today=world.today, write_tools=writes,
+            active = private.activate_case_world(runner, case.id, world, directory)
+            traj = asyncio.run(runner.run_case(client, CANDIDATE, case, active, timeout=60))
+            v = score(case, traj, registry_names=names, today=active.today, write_tools=writes,
                       host_refused=refused)
             return v, traj
 

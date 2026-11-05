@@ -12,6 +12,8 @@ never uploaded, never copied to the A6000 or into a training build):
     cases.yaml   toolbench cases (scripts/toolbench/cases.py format), loaded as split "private"
     ideal.yaml   optional: per case a scripted ideal trajectory ("ideal") and the recorded failure ("fail"),
                  for `python -m scripts.toolbench.private_selfcheck` (no model, no network)
+    worlds.json  optional: {case id: world spec}, for a case that needs its own date and recorded tool results
+                 (a set built from many exports); any other case runs on world.json
     runs/        results of `run_toolbench.py --private` (they quote the user's data, so they stay here)
     <person>/    optional per-person subfolders for another tester's exports (README.md in the directory)
 
@@ -273,3 +275,40 @@ def build_private_world(spec: dict):
 def private_world(directory: Path | None = None):
     directory = directory or private_dir()
     return build_private_world(load_world_spec(directory))
+
+
+# ------------------------------------------------------------------ one world per case (optional)
+
+_case_worlds: dict[str, dict] = {}      # directory -> {"specs": {case id: spec}, "built": {case id: World}}
+_active_world = None
+
+
+def case_world(case_id: str, directory: Path | None = None):
+    """The case's own World from worlds.json, built once, or None when the case uses world.json."""
+    directory = directory or private_dir()
+    entry = _case_worlds.get(str(directory))
+    if entry is None:
+        path = directory / "worlds.json"
+        specs = json.loads(path.read_text()) if path.is_file() else {}
+        if not isinstance(specs, dict):
+            raise PrivateEvalError(f"{path}: a JSON object of case id to world spec")
+        entry = _case_worlds[str(directory)] = {"specs": specs, "built": {}}
+    spec = entry["specs"].get(case_id)
+    if spec is None:
+        return None
+    if case_id not in entry["built"]:
+        if not isinstance(spec, dict) or "today" not in spec or (extra := set(spec) - _WORLD_KEYS):
+            raise PrivateEvalError(f"worlds.json: bad spec for case {case_id!r}")
+        entry["built"][case_id] = build_private_world(spec)
+    return entry["built"][case_id]
+
+
+def activate_case_world(runner, case_id: str, shared, directory: Path | None = None):
+    """Install the fakes and clock of the world this case runs on, and return that world."""
+    global _active_world
+    world = case_world(case_id, directory) or shared
+    if world is not (_active_world or shared):
+        runner.install_fakes(world, seed=False)
+        runner.set_clock(world.now)
+    _active_world = world
+    return world

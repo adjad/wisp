@@ -556,3 +556,10 @@ Changes to the patch:
 - About 330 debug-log rows, about 1,400 new rows and 7,500 text rows in all, about 2,300 steps, about 54 A6000 hours, about $32.
 
 **Long email lists (RC3 coordinator's finding, 2026-11-05).** An email search returned five results, and the model described only the first and said nothing relevant existed. A separate chat is fixing result order, the 20,000-character cap and raw HTML. Training shows a model-side gap too: the 308 after-result `view_emails` rows have at most about 2,300 characters of tool text, and only 54 have 2+ emails. Add about 40 rows with long lists where the match isn't first: read every result, prefer subject matches, and never conclude "nothing relevant" from part of a list.
+
+**Toolbench uses the user's debug logs from now on (user, 2026-11-05).** "Use the ones I gave, but also ones from my computer in the downloads folder as well. Test r4 against base when its done; the same for r5 as well."
+- Before every gate, a local builder outside this repo rebuilds a private set from every `wisp-debug-*.json` in `~/Downloads`. It held 69 logs and 221 cases on 2026-11-05, 131 with recorded read results pinned through the new optional `worlds.json`. The offline self-check passes 220 of 221. The host doesn't offer `web_search` for the other case, so no model can pass it there.
+- A separate local set holds the 976-prompt corpus. It has no tool labels, so it shows regressions and answers to read, not tool choice.
+- r4 runs against base on both sets, plus the toolbench and private sets, at the pinned code. `service/`, `app/` and `build-support/` stay identical to the pin; only the harness changed. r5 runs against base and r4.
+- r5 trains only on the four latest logs' questions, and those are reported apart, so the other 65 logs stay unseen.
+- Estimated time: r4's gate about 14 h, r5's about 21 h.

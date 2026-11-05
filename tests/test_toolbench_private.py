@@ -314,6 +314,24 @@ def test_selfcheck_reports_a_host_blocked_case_apart_and_the_pending_fix_unblock
     assert pure_writing(case["prompt"])                           # the patch was undone afterwards
 
 
+def test_a_case_can_have_its_own_world(pdir):
+    """worlds.json gives one case its own date and pins; other cases stay on world.json."""
+    from scripts.toolbench import private, world as W
+    (pdir / "worlds.json").write_text(json.dumps(
+        {"own": {"today": "2026-09-20", "now": "17:09", "tool_results": {"get_stock_price": "Pinned quote."}}}))
+    private._case_worlds.clear()
+    own = private.case_world("own", pdir)
+    assert own.today.isoformat() == "2026-09-20"
+    assert W.make_fakes(own)["get_stock_price"](symbols=["X"]) == "Pinned quote."
+    assert private.case_world("own", pdir) is own
+    assert private.case_world("other", pdir) is None
+    (pdir / "worlds.json").write_text(json.dumps({"bad": {"today": "2026-09-20", "nope": 1}}))
+    private._case_worlds.clear()
+    with pytest.raises(private.PrivateEvalError, match="worlds.json"):
+        private.case_world("bad", pdir)
+    private._case_worlds.clear()
+
+
 def test_a_private_world_can_pin_a_real_tool_result(pdir, monkeypatch):
     """Wording the fakes do not reproduce reaches the model exactly; other tools stay fake."""
     from scripts.toolbench import private, world as W
