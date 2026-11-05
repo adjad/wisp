@@ -274,6 +274,10 @@ private struct LaTeXText {
     private let c: [Character]
     private let partial: Bool
     private var i = 0
+    private var depth = 0
+    /// Far past any real formula. A model stuck repeating `\frac{` can nest thousands of
+    /// levels, and each one is stack on the main thread; past this, the rest reads flat.
+    private static let maxDepth = 64
 
     static func unicode(_ source: String, partial: Bool) -> String {
         var parser = LaTeXText(c: Array(source), partial: partial)
@@ -299,7 +303,10 @@ private struct LaTeXText {
                 if inGroup { return out }
             case "{":
                 i += 1
+                guard depth < LaTeXText.maxDepth else { continue }
+                depth += 1
                 out += sequence(inGroup: true)
+                depth -= 1
             case "\\":
                 out += command(after: out)
             case "^":
@@ -326,6 +333,12 @@ private struct LaTeXText {
     private mutating func argument() -> String {
         while i < c.count, c[i].isWhitespace { i += 1 }
         guard i < c.count else { return "" }
+        guard depth < LaTeXText.maxDepth else {
+            i += 1
+            return String(c[i - 1])
+        }
+        depth += 1
+        defer { depth -= 1 }
         switch c[i] {
         case "{":
             i += 1
