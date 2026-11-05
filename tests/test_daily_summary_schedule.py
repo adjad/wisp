@@ -66,9 +66,20 @@ def _isolated(monkeypatch, tmp_path):
     monkeypatch.setattr(hub, "_store", store)
     monkeypatch.setattr(hub, "_subs", {asyncio.Queue()})
     monkeypatch.setattr(idle, "_foreground_turns", 0)
+    _chat_over(monkeypatch)
     yield store
     config._user_overlay.cache_clear()
     config.models_config.cache_clear()
+
+
+def _chat_over(monkeypatch=None) -> None:
+    """Time has passed since any turn: the chat is over (service/brief_pace.py)."""
+    if monkeypatch is None:
+        idle._last_turn = None
+    else:
+        monkeypatch.setattr(idle, "_last_turn", None)
+        from service import memory_saver
+        monkeypatch.setattr(memory_saver._state, "last_intent", None)
 
 
 async def _tick():
@@ -255,7 +266,8 @@ class TestYieldsToTheUser:
         assert cancelled == ["morning"]
         assert _published_parts(_isolated) == []
         assert scheduler._brief_attempts == {}
-        # Once the turn is over, the next tick delivers it.
+        # Once the chat is over, the next tick delivers it.
+        _chat_over()
         with patch.object(B, "_sections", AsyncMock(return_value=READY)), \
              patch.object(scheduler, "datetime", _clock_at(8, 1)):
             await _tick()
