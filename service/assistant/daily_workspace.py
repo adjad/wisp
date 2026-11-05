@@ -14,6 +14,7 @@ import math
 import re
 from zoneinfo import ZoneInfo
 
+from service.assistant.stale_reminders import passed_date
 from service.assistant.today import build_plan, day_bounds
 
 SOURCES = ("calendar", "reminders", "email", "messages", "notes")
@@ -788,6 +789,9 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
             continue
         if item["id"] in planned_ids or item["source"] in planned_sources:
             continue
+        # Mail about an event that's over stays in attention, but gets no reading block.
+        if item["needs_review"] and passed_date(item["title"], now, now):
+            continue
         if len(suggestions) >= MAX_SUGGESTIONS:
             continue
         title = item["title"]
@@ -982,6 +986,9 @@ def collect_evidence(store, state, day, timezone, *, now):
             # kept) leave the plan and its counts, along with any Wisp twin of them.
             hidden = store.hidden_commitment_ids(now)
             count -= sum(r["id"] in hidden for r in rows)
+            # A Wisp-only reminder has no Keep/Delete question, so one for an event that
+            # is over just stops asking for time. It stays where it was saved.
+            hidden |= {r["id"] for r in manual if passed_date(r["title"], r["when_ts"], now)}
             manual_count -= sum(r["id"] in hidden for r in manual)
             rows = [r for r in rows if r["id"] not in hidden]
             manual = [r for r in manual if r["id"] not in hidden]

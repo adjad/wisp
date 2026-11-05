@@ -40,6 +40,11 @@ MIDTERM = "Review all of this before your 10/30 midterm."
     ("Midterm on Oct 30", "Oct 30"),
     ("Before my 10/30/26 interview, print resume", "10/30/26"),
     ("Pack for trip 2026-10-30", "2026-10-30"),
+    # Any event after a calendar date, not a fixed list: future titles won't be midterms.
+    ("Update resume before the 10/30 career fair", "10/30"),
+    ("Practice lines before the school play on Oct 30", "Oct 30"),
+    ("Buy a gift for Sam's 10/30 housewarming", "10/30"),
+    ("Reminder: Midterm on 10/30", "10/30"),
 ])
 def test_getting_ready_for_a_passed_event_is_recognised(title, label):
     found = passed_date(title, DUE, NOW)
@@ -57,7 +62,13 @@ def test_getting_ready_for_a_passed_event_is_recognised(title, label):
     "Ask about makeup for the 10/30 midterm",
     "Reschedule missed 10/30 exam",
     "Email the prof before the 10/30 quiz",
-    "Review before Friday's midterm",               # a weekday can't be placed
+    "Finish this by Friday",
+    "Pay rent before Friday",
+    "Clean up before Friday night",                 # a weekday needs a known event
+    "Finish before 10/30 at noon",                  # says when, names no event
+    "Get this done before end of day on 10/30",
+    "Finish essay before the 10/30 lecture",        # late work can still be handed in
+    "Turn in lab before 10/30 session",
     "Review all of this before your midterm",
     "Review before your 11/10 midterm",             # still ahead
     "Review before your 11/4 midterm",              # today still counts
@@ -69,6 +80,29 @@ def test_getting_ready_for_a_passed_event_is_recognised(title, label):
 ])
 def test_anything_possibly_actionable_stays(title):
     assert passed_date(title, DUE, NOW) is None
+
+
+@pytest.mark.parametrize("title,label", [
+    ("Review before Friday's midterm", "Friday"),      # due Fri Oct 30
+    ("Prep for the interview tomorrow", "Tomorrow"),
+    ("Attend the midterm review session this Monday", "This Monday"),
+    ("Friday midterm", "Friday"),
+])
+def test_a_weekday_counts_from_the_reminders_own_time(title, label):
+    found = passed_date(title, DUE, NOW)
+    assert found is not None and found.label == label
+
+
+def test_a_weekday_is_not_over_while_any_reading_is_ahead():
+    # Due Fri Oct 30: "next Monday" could be Nov 2 or Nov 9.
+    assert passed_date("Attend the session next Monday", DUE, local(2026, 11, 1)) is None
+    assert passed_date("Attend the session next Monday", DUE, local(2026, 11, 9)) is None
+    assert passed_date("Attend the session next Monday", DUE, local(2026, 11, 10)) is not None
+    # This Friday's own day still counts as ahead.
+    assert passed_date("Review before Friday's midterm", DUE, DUE) is None
+    # With no time of its own (mail, notes) a weekday means nothing yet.
+    assert passed_date("Review before Friday's midterm", NOW, NOW) is None
+    assert passed_date("Review before your 10/30 midterm", NOW, NOW) is not None
 
 
 def test_a_yearless_date_near_new_year_means_the_nearest_one():
@@ -104,6 +138,59 @@ def test_policy_states():
     assert classify(DUE - DAY_S, "keep", NOW, MIDTERM) == "kept"
     # No title (an older caller) reads as it always did.
     assert classify_overdue(DUE, None, NOW) == "fresh"
+
+
+# --- other sources: no Keep/Delete there, they just stop asking for time ------------------
+
+def _assess(tasks=(), **records):
+    from service.assistant.daily_workspace import assess
+    from service.assistant.today import day_bounds
+    lo, hi = day_bounds("2026-11-04", "America/Los_Angeles")
+    state = dict(tasks=list(tasks), commitments=[], preferences=dict(start_minute=540, end_minute=1200, not_before=None),
+                 sources={s: dict(available=True, last_sync=NOW, snapshot_started_at=NOW,
+                                  diagnostics=dict(coverage_start=lo, coverage_end=hi)) for s in ("calendar", "reminders")})
+    return assess("2026-11-04", "America/Los_Angeles", state, records, now=NOW)
+
+
+def _mail(identity, subject):
+    return dict(id=identity, title=subject, quote=subject, sender="Pat Doe", person=True,
+                review_reason="Review this source for requests or changes.")
+
+
+def test_mail_about_a_passed_event_gets_no_reading_block_but_stays_in_attention():
+    result = _assess(email=dict(ready=True, records=[_mail("a", "Midterm on 10/30"), _mail("b", "Midterm on 11/10"),
+                                                     _mail("c", "Your 10/30 midterm results")]))
+    block = [b for b in result["proposed_plan"]["blocks"] if b["kind"] == "suggestion"]
+    assert len(block) == 1 and {m["title"] for m in block[0]["members"]} == {"Midterm on 11/10", "Your 10/30 midterm results"}
+    assert {i["title"] for i in result["attention"]} >= {"Midterm on 10/30", "Midterm on 11/10"}
+
+
+def test_todos_from_mail_and_notes_for_a_passed_event_stop_offering_time():
+    from service.proactive.cycle import without_passed_events
+    todo = lambda title, source, **more: dict(title=title, source=source, **more)
+    kept = without_passed_events({
+        "mail": todo("Study for the 10/30 quiz", "mail"),
+        "note": todo("Bring snacks for the Oct 30 potluck", "notes"),
+        "late": todo("Finish HW4 by 10/30", "mail"),
+        "ahead": todo("Study for the 11/10 quiz", "mail"),
+        "kept": todo(MIDTERM, "reminders", due_ts=DUE),     # Kept by the user, or it wouldn't be here
+        "event": todo("10/30 midterm", "calendar"),
+    }, NOW)
+    assert set(kept) == {"late", "ahead", "kept", "event"}
+
+
+def _manual(store, title):
+    return store.add_manual(title, DUE)["id"]
+
+
+def test_day_evidence_drops_a_wisp_only_reminder_for_a_passed_event(store):
+    from service.assistant.daily_workspace import collect_evidence
+    ids = [_manual(store, "Study for the 10/30 quiz"), _manual(store, "Finish HW4 by Friday")]
+    state = store.today_snapshot("2026-11-04", "America/Los_Angeles")
+    titles = {r["title"] for r in collect_evidence(store, state, "2026-11-04", "America/Los_Angeles", now=NOW)["reminders"]["records"]}
+    assert titles == {"Finish HW4 by Friday"}
+    # Display only: the row itself is untouched.
+    assert store._db.execute("SELECT status FROM scheduled_commitments WHERE id=?", (ids[0],)).fetchone()["status"] == "active"
 
 
 # --- through the store ------------------------------------------------------------------

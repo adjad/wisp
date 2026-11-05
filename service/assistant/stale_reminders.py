@@ -28,7 +28,8 @@ has passed (2026-11-04: "Review all of this before your 10/30 midterm." still of
 Plan time five days later). ``passed_date`` reads this from the title. It is deliberately
 narrow, because a miss only leaves an ordinary overdue reminder while a false match hides
 work: late work ("Finish HW4 by 10/30"), follow-ups ("Review 10/30 midterm results") and
-titles with no calendar date ("before Friday's midterm") never match.
+titles naming no event ("Finish this by Friday") never match. It reads any event after a
+calendar date, and weekdays and "tomorrow" only before a known kind of event.
 """
 from __future__ import annotations
 
@@ -50,28 +51,49 @@ _DATE = (r"(?:\d{4}-\d{1,2}-\d{1,2}(?![\d/-])|\d{1,2}/\d{1,2}(?:/\d{2,4})?(?![\d
          r"|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?"
          r"|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\.?\s+\d{1,2}(?:st|nd|rd|th)?\b(?:,?\s+\d{4}\b)?)")
 _ANY_DATE = re.compile(r"(?<![\w/-])" + _DATE, re.I)
-# Things that happen once, on their date. Not "class" or "deadline": a deadline passing
-# leaves late work to do, which is what the ordinary overdue row is for.
+_WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+_RELATIVE = rf"(?:(?:next\s+|this\s+)?(?:{'|'.join(_WEEKDAYS)})|tomorrow|tonight|today)"
+# Things that happen once, on their day. A weekday or "tomorrow" is looser than a calendar
+# date, so it needs one of these. Not "class" or "deadline": a deadline passing leaves late
+# work to do, which is what the ordinary overdue row is for.
 _EVENT = (r"(?:midterms?|exams?|finals?|quiz(?:zes)?|tests?|interviews?|appointments?|presentations?|demos?"
-          r"|flights?|trips?|recitals?|concerts?|weddings?|parties|party|meetings?|sessions?)\b")
+          r"|flights?|trips?|recitals?|concerts?|weddings?|parties|party|meetings?|sessions?|lectures?|seminars?"
+          r"|workshops?|conferences?|fairs?|ceremony|graduation|birthdays?|reunions?|games?|matches|dinners?"
+          r"|lunch(?:es)?|shows?|events?|visits?|checkups?|surgery|hearings?|rehearsals?|tours?|orientation"
+          r"|vacations?)\b")
+# After a calendar date any noun names the event ("before the 11/10 career fair"), except
+# words that only say when ("before 10/30 at noon") or carry on the sentence.
+_NOT_A_NAME = (r"(?!(?:please|at|or|and|if|so|then|to|by|on|in|noon|midnight|pm|am|morning|afternoon|evening|night"
+               r"|eod|cob|end|day|week|month|latest|anyway|if)\b)")
+_NAME = rf"{_NOT_A_NAME}[a-z][\w'-]*\b"
 _FILLER = r"(?:[\w'-]+\s+){0,3}"
-_REFERENCE = (rf"(?:(?P<first>{_DATE})(?:'s)?\s+{_FILLER}{_EVENT}"
-              rf"|{_FILLER}{_EVENT}\s*(?:on\s+|at\s+|[,(-]\s*)?(?P<second>{_DATE}))")
-_REFERENCE_ALONE = (rf"(?:{_DATE}(?:'s)?\s+{_FILLER}{_EVENT}|{_FILLER}{_EVENT}\s*(?:on\s+|at\s+|[,(-]\s*)?{_DATE})"
-                    r"[\s.!)]*$")
-_DETERMINER = r"(?:the\s+|your\s+|my\s+|our\s+)?"
-_GETS_READY = re.compile(
+_DETERMINER = r"(?:(?:the|your|my|our|[\w-]+'s)\s+)?"
+_LEADS = (
     # "… before your 10/30 midterm", "Attend the exam on Oct 30"
-    rf"(?:\b(?:before|ahead\s+of|prior\s+to|in\s+time\s+for|attend(?:ing)?|go\s+to|get\s+ready\s+for)\s+{_DETERMINER}"
-    # "Study notes for the 10/30 midterm"
-    rf"|^\s*(?:review|study|prep|prepare|practice|cram|rehearse|pack)\b[^.!?]*?\bfor\s+{_DETERMINER}"
-    # The title is just the event: "10/30 midterm", "Midterm on Oct 30"
-    rf"|^\s*{_DETERMINER}(?={_REFERENCE_ALONE})){_REFERENCE}", re.I)
-# What comes after the event, or says it isn't over, is still something to do.
+    r"\b(?:before|ahead\s+of|prior\s+to|in\s+time\s+for|attend(?:ing)?|go\s+to|get\s+ready\s+for)\s+" + _DETERMINER,
+    # "Study notes for the 10/30 midterm", "Buy a gift for Sam's 11/20 birthday"
+    r"^\s*(?:review|study|prep|prepare|practice|cram|rehearse|pack|buy|book|print|bring)\b[^.!?]*?\bfor\s+" + _DETERMINER,
+)
+_LEAD = "(?:" + "|".join(_LEADS) + ")"
+_CONNECT = r"\s*(?:on\s+|at\s+|[,(-]\s*)?"
+# The title is just the event: "10/30 midterm", "Reminder: Midterm on Oct 30"
+_ALONE_START, _ALONE_END = r"^\s*(?:reminder:\s*)?" + _DETERMINER, r"[\s.!)]*$"
+_MENTIONS = [re.compile(pattern, re.I) for pattern in (
+    rf"{_LEAD}(?P<when>{_DATE})(?:'s)?\s+{_NAME}",
+    rf"{_LEAD}{_FILLER}{_NAME}\s+on\s+(?P<when>{_DATE})",
+    rf"{_LEAD}{_FILLER}{_EVENT}{_CONNECT}(?P<when>{_DATE})",
+    rf"{_LEAD}(?P<when>{_RELATIVE})(?:'s)?\s+{_FILLER}{_EVENT}",
+    rf"{_LEAD}{_FILLER}{_EVENT}{_CONNECT}(?P<when>{_RELATIVE})\b",
+    rf"{_ALONE_START}(?P<when>{_DATE}|{_RELATIVE})(?:'s)?\s+{_FILLER}{_EVENT}{_ALONE_END}",
+    rf"{_ALONE_START}{_FILLER}{_EVENT}{_CONNECT}(?P<when>{_DATE}|{_RELATIVE}){_ALONE_END}",
+)]
+# What comes after the event, what says it isn't over, and work that can still be handed
+# in late, all leave something to do.
 _STILL_OPEN = re.compile(
     r"\b(?:after|missed|make-?up|results?|grades?|graded|regrade|corrections?|resched\w*|postponed|moved"
     r"|refunds?|receipts?|follow[- ]?up|recap|debrief|thanks?|expenses?|reimburse\w*|retakes?|redo|deadline|due"
-    r"|email|ask|call|text|message|pay|send|reply|cancel)\b", re.I)
+    r"|email|ask|call|text|message|pay|send|reply|cancel|submit|turn\s+in|hw\d*|homework|assignments?|essays?"
+    r"|rent|bills?|forms?|applications?|invoices?|taxes)\b", re.I)
 # A yearless date further than this from the reminder's own time isn't trusted to mean
 # any particular year, so the reminder is left alone.
 _YEARLESS_REACH_DAYS = 120
@@ -120,28 +142,45 @@ def _title_date(text: str, anchor: date) -> date | None:
     return nearest if abs((nearest - anchor).days) <= _YEARLESS_REACH_DAYS else None
 
 
+def _latest_day(when: str, anchor: date) -> date | None:
+    """The last day a weekday or "tomorrow" could mean, counted from the reminder's own
+    time, or None for a calendar date. "next" may be read either of two ways, so it takes
+    the later: nothing is called over while one reading is still ahead."""
+    words = when.casefold().split()
+    if words[-1] in ("today", "tonight"):
+        return anchor
+    if words[-1] == "tomorrow":
+        return anchor + timedelta(days=1)
+    if words[-1] not in _WEEKDAYS:
+        return None
+    ahead = (_WEEKDAYS.index(words[-1]) - anchor.weekday()) % 7
+    return anchor + timedelta(days=ahead + (7 if words[0] == "next" else 0))
+
+
 def passed_date(title: object, anchor_ts: object, now: float) -> PassedDate | None:
-    """The date in a reminder's title whose event is over, or None. ``anchor_ts`` is the
-    reminder's due time, or when it was written if it has no due time. The event's own day
-    still counts as ahead, and so does a second date in the title that hasn't come yet."""
+    """The day named in a title whose event is over, or None. ``anchor_ts`` is the item's
+    due time, or when it was written if it has no due time. A source with neither passes
+    ``now``, which leaves a weekday or "tomorrow" ahead and so never matches. The event's
+    own day still counts as ahead, and so does a second date in the title that hasn't
+    come yet."""
     anchor_ts = valid_created_ts(anchor_ts)
     if not isinstance(title, str) or anchor_ts is None:
         return None
     text = title[:300]
-    found = _GETS_READY.search(text)
+    found = next(filter(None, (pattern.search(text) for pattern in _MENTIONS)), None)
     if found is None or _STILL_OPEN.search(text):
         return None
     anchor = datetime.fromtimestamp(anchor_ts).date()
     today = datetime.fromtimestamp(now).date()
-    named = found.group("first") or found.group("second")
-    on = _title_date(named, anchor)
+    named = " ".join(found.group("when").split()).rstrip(".")
+    on = _latest_day(named, anchor) or _title_date(named, anchor)
     if on is None or on >= today:
         return None
     for other in _ANY_DATE.findall(text):
         other_on = _title_date(other, anchor)
         if other_on is None or other_on >= today:
             return None
-    return PassedDate(on, " ".join(named.split()).rstrip("."))
+    return PassedDate(on, named[0].upper() + named[1:] if named[0].isalpha() else named)
 
 
 def valid_created_ts(value: object) -> float | None:
