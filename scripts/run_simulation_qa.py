@@ -97,6 +97,8 @@ PROFILE_TESTS = {
         "tests/test_email_scoping.py",
         "tests/test_live_corpus.py",
         "tests/test_long_email_digest.py",
+        # Email search: ranked, fair budget, clean text, honest coverage (synthetic mail, stub model).
+        "tests/test_email_search_ranking.py",
         # Voice input: the clip reaches only a local model with an audio encoder (stub client).
         "tests/test_voice_transcribe.py",
         # Image/video input: one dedicated vision call (stub client, synthetic media).

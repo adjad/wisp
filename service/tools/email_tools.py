@@ -2145,7 +2145,7 @@ def _email_body_block(row: dict) -> str:
     account = f"Account: {row['account']}\n" if row.get("account") else ""
     native_id = f"Account-ID: {row['account_id']}\n" if row.get("account_id") else ""
     message_id = f"Message-ID: {row['message_id']}\n" if row.get("message_id") else ""
-    header = neutralize(f"{account}{native_id}From: {row['sender']}\nTo: {row['to']}\n"
+    header = neutralize(f"{account}{native_id}From: {row['sender']}\nTo: {_clip(row['to'], 240)}\n"
                         f"Subject: {row['subject']}\nDate: {when}\n{message_id}")
     return f"{header}\n{fence(row['body'], EMAIL_BODY)}"
 
@@ -3328,12 +3328,146 @@ def _matches(query: str, sender: str, to: str, subject: str, body: str) -> bool:
     return any(q in f.lower() for f in (sender, to, subject, body))
 
 
+# A search finds what's in the mail, not what's in its markup: "color" or "click"
+# must not hit every HTML email, so bodies are compared as readable_body leaves
+# them. Results are ranked because the model's view is small and what it reads
+# first is what it answers from. Oldest-first put an old promo ahead of today's
+# email with the word in its subject, and the model said nothing relevant existed.
+_INSTITUTION_DOMAIN = re.compile(r"\.(?:edu|gov|mil)(?:\.[a-z]{2})?$|\.ac\.[a-z]{2}$", re.I)
+_LIST_FOOTER_WORDS = ("unsubscribe", "email preferences", "you are receiving this", "you're receiving this")
+_SEARCH_FILLER = frozenset({"about", "any", "anything", "and", "the", "for", "from", "with", "email", "emails",
+                            "mail", "inbox", "message", "messages", "that", "this", "there", "was", "were"})
+_LIST_FOOTER_TAIL = 3000
+# Header-only matches listed under a search, at most.
+_HEADER_MATCHES_SHOWN = 3
+# Room kept for the coverage line and the freshness note around the bodies.
+_COVERAGE_CHARS = 460
+
+
+def _is_list_mail(row: dict) -> bool:
+    """Promotional or list mail, from the headers and the end of the body. A
+    school or government sender is not one unless its subject is selling, because
+    enrollment and aid mail is templated, tracked and footered too."""
+    sender, subject = row.get("sender") or "", row.get("subject") or ""
+    if _MARKETING_SUBJECT.search(subject):
+        return True
+    address = row.get("sender_address") or ""
+    if not address:
+        found = re.search(r"<([^>]+@[^>]+)>", sender)
+        address = found.group(1) if found else sender
+    if _INSTITUTION_DOMAIN.search(address.strip().lower()):
+        return False
+    if (is_broadcast(row) or is_summary_noise(sender, subject)
+            or _NEWSLETTER_RE.search(f"{sender} {address}")):
+        return True
+    tail = (row.get("body") or "")[-_LIST_FOOTER_TAIL:].casefold()
+    return any(words in tail for words in _LIST_FOOTER_WORDS)
+
+
+def _search_words(query: str) -> list[str]:
+    """The meaningful words of a query, for when the phrase itself isn't found."""
+    words = [w for w in re.findall(r"\w+", query.casefold()) if len(w) >= 3 and w not in _SEARCH_FILLER]
+    return list(dict.fromkeys(words))
+
+
+def _rank_tier(needles: list[str], header: str, other: str) -> int:
+    """0: all in the sender or subject. 1: all there or in the recipient or body.
+    2: only inside longer words ("art" in "start")."""
+    def at_word_start(needle: str, text: str) -> bool:
+        return re.search(r"(?<!\w)" + re.escape(needle), text) is not None
+    if all(at_word_start(n, header) for n in needles):
+        return 0
+    return 1 if all(at_word_start(n, header) or at_word_start(n, other) for n in needles) else 2
+
+
+def _search_rows(query: str, rows: list[dict]) -> tuple[list[dict], bool]:
+    """Rows that match, best first, with readable bodies; and whether they
+    matched by word because the exact phrase was nowhere. Read status plays no
+    part: a read email is as findable as an unread one."""
+    from service.tools.email_digest import readable_body
+
+    def search(needles: list[str]) -> list[dict]:
+        found = []
+        for row in rows:
+            sender, subject, to = (row.get(k) or "" for k in ("sender", "subject", "to"))
+            header = f"{sender} {subject}".casefold()
+            recipient = to.casefold()
+            raw = (row.get("body") or "").casefold()
+            if not all(n in header or n in recipient or n in raw for n in needles):
+                continue
+            body = readable_body(row.get("body") or "")
+            text = body.casefold()
+            if not all(n in header or n in recipient or n in text for n in needles):
+                continue            # It was only in the markup or a tracking link.
+            clean = {**row, "body": body}
+            clean["_list_mail"] = _is_list_mail(clean)
+            tier = _rank_tier(needles, header, f"{recipient} {text}")
+            found.append((tier, clean["_list_mail"], -float(row["ts"]), len(found), clean))
+        found.sort(key=lambda item: item[:4])
+        return [item[4] for item in found]
+
+    phrase = query.strip().casefold()
+    found = search([phrase]) if phrase else []
+    if found:
+        return found, False
+    words = _search_words(query)
+    return (search(words), True) if words and words != [phrase] else ([], False)
+
+
+def _header_matches(query: str, found: list[dict], account: str | None,
+                    start: float | None, end: float | None) -> tuple[list[dict], float | None]:
+    """Mail matching by sender or subject in the header caches, which reach far
+    past the saved bodies, leaving out what `found` already has; and how far back
+    those caches go. Newest first, with list mail after the rest."""
+    records = _parse_header_records(_headers) + _history_records()
+    oldest = min((r["ts"] for r in records), default=None)
+    shown = {_norm_mid(r.get("message_id") or "") for r in found} - {""}
+
+    def search(needles: list[str]) -> list[dict]:
+        hits = []
+        for record in records:
+            text = f"{record['sender']} {record.get('sender_address', '')} {record['subject']}".casefold()
+            if (all(n in text for n in needles)
+                    and (start is None or start <= record["ts"] < end)
+                    and _norm_mid(record.get("message_id") or "") not in shown):
+                hits.append(record)
+        return hits
+
+    phrase = query.strip().casefold()
+    words = _search_words(query)
+    hits = search([phrase]) if phrase else []
+    if not hits and words and words != [phrase]:
+        hits = search(words)
+    hits = _unique_records(_filter_account_records(hits, account))
+    return sorted(hits, key=lambda r: (_is_list_mail(r), -r["ts"])), oldest
+
+
+def _mail_line(row: dict) -> str:
+    """One email as a single line, for rows shown without a body."""
+    when = datetime.fromtimestamp(row["ts"]).strftime("%a %b %-d, %Y %-I:%M %p")
+    sender = row.get("sender") or "Unknown sender"
+    address = row.get("sender_address") or ""
+    if address and address not in sender:
+        sender = f"{sender} <{address}>"
+    message_id = (row.get("message_id") or "").strip()
+    line = f"- {when} | {_clip(sender, 70)} | {_clip(row.get('subject') or '(no subject)', 90)}"
+    if message_id and len(message_id) <= 60:
+        line += f" | Message-ID: {message_id}"
+    return neutralize(" ".join(line.split()))
+
+
+def _short_date(ts: float) -> str:
+    return datetime.fromtimestamp(ts).strftime("%b %-d, %Y")
+
+
 @_disclose_mail_freshness
 async def view_emails_impl(query: str | None = None, day: str | None = None,
                            count: int = 5, account: str | None = None,
                            period: str | None = None,
                            unread: bool = False,
                            strict_match: bool = False) -> str:
+    from service.tools.email_digest import (HEADER_LINE_CHARS, LONG_BODY_CHARS, MAX_HEADER_LINES,
+                                            RESULT_BUDGET_CHARS, digest_rows, fit_rows, readable_body)
     corpus_identifier = _CORPUS_MAIL_IDENTIFIER.get()
     if corpus_identifier is not None and (
             not isinstance(query, str) or query != corpus_identifier or strict_match is not True):
@@ -3361,6 +3495,8 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
                 "sync. Try again shortly, or use summarize_emails for a header digest in the "
                 "meantime.)")
     label = "your recent inbox"
+    start: float | None = None
+    end: float | None = None
     # `period` (a range) wins over `day` (one day) when both are supplied — see
     # summarize_emails for why.
     if period:
@@ -3375,16 +3511,45 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
         except ValueError:
             return f"(couldn't understand the date {day!r} — use 'today', 'yesterday', or YYYY-MM-DD)"
         rows = [r for r in rows if start <= r["ts"] < end]
+    # What a search covered, for saying so whatever it finds.
+    searched = len(rows)
+    searched_back_to = min((r["ts"] for r in rows), default=None)
+    scope = (f"from {_short_date(searched_back_to)} on" if searched_back_to is not None
+             else "") if start is None else f"in {label}"
+    by_words = False
+    header_hits: list[dict] = []
     # Scope the query before assessing read-status coverage. Unknown flags in
     # unrelated mail must not inflate the exclusion count for this lookup.
-    if query:
-        rows = [r for r in rows
-                if (_corpus_identifier_matches(corpus_identifier, r["sender"], r["to"])
-                    if corpus_identifier is not None else
-                    _matches(query, r["sender"], r["to"], r["subject"], r["body"]))]
+    if query and corpus_identifier is not None:
+        rows = [r for r in rows if _corpus_identifier_matches(corpus_identifier, r["sender"], r["to"])]
         if not rows:
             return (f"No emails matching “{query}” were found in the recent "
                     "inbox Wisp searched.")
+    elif query:
+        rows, by_words = await asyncio.to_thread(_search_rows, query, rows)
+        # Older mail keeps its sender and subject long after its text is gone.
+        # An unread search stays out of it: old read flags are only as good as
+        # the last history sync.
+        headers_back_to = None
+        if not unread:
+            header_hits, headers_back_to = await asyncio.to_thread(
+                _header_matches, query, rows, account, start, end)
+        if not rows:
+            text_scope = (f"the text of {searched} saved {'email' if searched == 1 else 'emails'} {scope}"
+                          if searched else "the saved email text, which has nothing in this range")
+            header_scope = (f", and the sender and subject of saved headers from "
+                            f"{_short_date(headers_back_to)} on" if headers_back_to is not None else "")
+            if not header_hits:
+                return (f"No emails matching “{query}” were found in the recent inbox Wisp searched: "
+                        f"{text_scope}{header_scope}. Read and unread mail were both searched; "
+                        "anything older was not.")
+            lines = "\n".join(_mail_line(r) for r in header_hits[:MAX_HEADER_LINES])
+            more = len(header_hits) - min(len(header_hits), MAX_HEADER_LINES)
+            return (f"Result coverage: nothing matching “{_clip(query, 60)}” in {text_scope}, but "
+                    f"{len(header_hits)} older {'email matches' if len(header_hits) == 1 else 'emails match'} "
+                    "by sender or subject. Only these headers are saved, not the text, so say that "
+                    f"plainly and point the user to Mail for the rest.\n\n{lines}"
+                    + (f"\n(+{more} more)" if more > 0 else ""))
     note = ""
     if unread:
         # Same rule as summarize_emails: read status only exists for what's
@@ -3413,7 +3578,11 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
                 return (f"No known unread emails matching “{query}” were found "
                         "in this raw-cache scope.")
             return f"No unread emails in {label.replace('UNREAD in ', '')}."
-    rows.sort(key=lambda r: r["ts"])
+    # A search stays best first. A plain listing stays in date order, oldest to
+    # newest, and keeps the newest.
+    ranked = bool(query) and corpus_identifier is None
+    if not ranked:
+        rows.sort(key=lambda r: r["ts"])
     if not rows:
         return (f"No emails found for {label} (note: raw content only covers "
                 "roughly the 50 most recent emails — try summarize_emails for older mail).")
@@ -3426,23 +3595,74 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
     except (TypeError, ValueError):
         limit = 5
     available = len(rows)
-    rows = rows[-limit:]
-    omitted = available - len(rows)
-    coverage = ""
-    if omitted:
-        kind = "matching emails" if query else "emails in this raw-cache scope"
-        coverage = (
-            f"Result coverage: returned {len(rows)} of {available} available {kind}; "
-            f"{omitted} older {'email was' if omitted == 1 else 'emails were'} omitted "
-            f"by count={limit}.\n\n"
-        )
+    left_out = rows[limit:] if ranked else rows[:-limit]
+    rows = rows[:limit] if ranked else rows[-limit:]
+    omitted = len(left_out)
+    omitted_kind = ("older" if not left_out or max(r["ts"] for r in left_out) <= min(r["ts"] for r in rows)
+                    else "lower-ranked")
+    if corpus_identifier is not None:
+        # Corpus runs keep their own path: raw rows, no digest, the loop's cap.
+        coverage = _omission_line(query, len(rows), available, limit, omitted, omitted_kind)
+        return note + coverage + "\n\n---\n\n".join(_email_body_block(r) for r in rows)
+    if not ranked:
+        rows = await asyncio.to_thread(
+            lambda listed: [{**r, "body": readable_body(r.get("body") or "")} for r in listed], rows)
     # A long body is digested in full rather than cut at the head by the
-    # tool-result cap (service/tools/email_digest.py).
-    from service.tools.email_digest import digest_rows
-    if corpus_identifier is None:
-        rows = await digest_rows(rows, query=query)
-    blocks = [_email_body_block(r) for r in rows]
-    return note + coverage + "\n\n---\n\n".join(blocks)
+    # tool-result cap (service/tools/email_digest.py). A search doesn't spend the
+    # call on list mail unless that is the best it has.
+    candidates = ([i for i, r in enumerate(rows) if len(r["body"]) > LONG_BODY_CHARS
+                   and (i == 0 or not r.get("_list_mail"))] if ranked else None)
+    rows = await digest_rows(rows, query=query, candidates=candidates)
+    extra_lines = [_mail_line(r) for r in header_hits[:_HEADER_MATCHES_SHOWN]]
+    reserved = (len(note) + len(email_freshness_warning(account, part="raw")) + 2
+                + (_COVERAGE_CHARS if ranked or omitted else 0)
+                + (sum(map(len, extra_lines)) + 200 if extra_lines else 0))
+    fitted = fit_rows(rows, query=query, budget=RESULT_BUDGET_CHARS - reserved, best_first=ranked,
+                      header_chars=lambda r: len(_email_body_block({**r, "body": ""})))
+    line_rows = fitted.header_only[:MAX_HEADER_LINES]
+    coverage = _omission_line(query, len(rows), available, limit, omitted, omitted_kind,
+                              ranked=ranked, by_words=by_words, unread=unread, searched=searched,
+                              scope=scope, header_only=len(fitted.header_only),
+                              listed=len(line_rows), cut=fitted.cut)
+    blocks = [_email_body_block(r) for r in fitted.rows]
+    trailer = ""
+    if line_rows:
+        trailer += ("\n\nNo room for the text of these (look one up on its own to read it):\n"
+                    + "\n".join(_clip(_mail_line(r), HEADER_LINE_CHARS) for r in line_rows))
+    if extra_lines:
+        trailer += (f"\n\n{len(header_hits)} older or other {'email matches' if len(header_hits) == 1 else 'emails match'} "
+                    "by sender or subject, headers only, text not saved:\n" + "\n".join(extra_lines))
+        if len(header_hits) > len(extra_lines):
+            trailer += f"\n(+{len(header_hits) - len(extra_lines)} more)"
+    return note + coverage + "\n\n---\n\n".join(blocks) + trailer
+
+
+def _omission_line(query: str | None, returned: int, available: int, limit: int, omitted: int,
+                   omitted_kind: str, *, ranked: bool = False, by_words: bool = False,
+                   unread: bool = False, searched: int = 0, scope: str = "", header_only: int = 0,
+                   listed: int = 0, cut: int = 0) -> str:
+    """``count`` is a display limit, not evidence that only that many matched,
+    and a body cut to fit is not the whole email. Say both, in one line, so
+    neither the model nor the user can take a partial result for a complete one.
+    A plain listing with nothing left out has nothing to say; a search always
+    does, because how much it looked through is part of the answer."""
+    if not (ranked or omitted or header_only):
+        return ""
+    kind = "matching emails" if query else "emails in this raw-cache scope"
+    parts = [f"returned {returned} of {available} available {kind}"
+             + (" (all of the words, not the exact phrase)" if by_words else "")]
+    if ranked:
+        which = "unread mail only" if unread else "read and unread"
+        parts[0] += f", best match first ({which}; searched the text of {searched} saved emails {scope})"
+    if omitted:
+        parts.append(f"{omitted} {omitted_kind} "
+                     f"{'email was' if omitted == 1 else 'emails were'} omitted by count={limit}")
+    if header_only:
+        parts.append(f"{header_only} shown only as a header line" if listed == header_only else
+                     f"{header_only} had no room for text ({listed} listed as a header line)")
+    if cut:
+        parts.append(f"{cut} {'body was' if cut == 1 else 'bodies were'} cut to fit (labelled where cut)")
+    return "Result coverage: " + "; ".join(parts) + ".\n\n"
 
 
 @register(
