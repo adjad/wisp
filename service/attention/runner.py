@@ -36,7 +36,6 @@ from datetime import datetime
 from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo
 
-from service import user_hours
 from service.attention.corpus import Snapshot
 from service.attention.detectors import UncapturedCommitment
 from service.attention.ledger import Ledger
@@ -169,11 +168,12 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
         ledger.finish(item.id, state, detail, now)
         outcomes.append(Outcome(item.id, state, plan.title, detail))
 
-        if state == "created" and not user_hours.in_quiet_hours(datetime.fromtimestamp(now, ZoneInfo(tz))):
+        if state == "created":             # in quiet hours, the hub holds this until they end
             try:
                 await publish({"type": "attention_added", "source_id": item.id, "title": plan.title,
                                "when_label": plan.when_label, "quote": plan.quote,
-                               "sender": item.sender})
+                               "sender": item.sender,
+                               "relevant_until": plan.event_ts if plan.event_ts is not None else plan.due_ts})
             except Exception:                             # noqa: BLE001 — the reminder exists regardless
                 pass
     return outcomes

@@ -9,7 +9,6 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from service import user_hours
 from service.attention import ledger as ledger_mod, live, runner
 from service.attention.corpus import Item
 from service.attention.live import Settings
@@ -263,23 +262,15 @@ async def test_bad_outcomes_are_recorded_and_never_retried(ledger, fakes, state)
     assert len(fakes.created) == 1
 
 
-async def test_quiet_hours_still_create_the_reminder_but_send_no_alert(ledger):
-    night = datetime(2026, 9, 21, 22, 30, tzinfo=ZONE).timestamp()
-    led = ledger
-    led.set_meta("enabled_at", repr(night - 86400))
-    f = Fakes()
-    out = await run(mom_thread("Meet me in the Quad at 11:45PM", at=night), night + 60, led, f)
-    assert [o.state for o in out] == ["created"] and f.published == []
-
-
-async def test_the_alert_follows_the_one_quiet_hours_setting(ledger):
-    """service/user_hours.py decides; the old fields in attention's settings no longer do."""
-    user_hours.save(quiet={"start_minute": 23 * 60, "end_minute": 6 * 60})
+async def test_the_reminder_is_made_at_night_and_its_alert_says_how_long_it_matters(ledger):
+    """The hub holds the alert in quiet hours (tests/test_quiet_hold.py), and drops it if
+    the plan has passed by the time they end."""
     night = datetime(2026, 9, 21, 22, 30, tzinfo=ZONE).timestamp()
     ledger.set_meta("enabled_at", repr(night - 86400))
     f = Fakes()
     out = await run(mom_thread("Meet me in the Quad at 11:45PM", at=night), night + 60, ledger, f)
     assert [o.state for o in out] == ["created"] and len(f.published) == 1
+    assert f.published[0]["relevant_until"] == datetime(2026, 9, 21, 23, 45, tzinfo=ZONE).timestamp()
 
 
 async def test_a_message_about_friday_is_reconsidered_once_friday_is_within_48_hours(ledger):

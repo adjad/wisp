@@ -607,9 +607,10 @@ ADDITIONAL_FULL_TESTS = {
     # ranking helpers and an in-process TestClient; no model, listener or real ~/.moe.
     "tests/test_user_profile.py",
     # Working and quiet hours, and the offer to move an event outside them: JSON in a
-    # temp path, disposable AssistantStore, in-process TestClient; no model or real ~/.moe.
+    # temp path, disposable AssistantStore, in-process TestClient and Hub; no model or real ~/.moe.
     "tests/test_user_hours.py",
     "tests/test_hours_offers.py",
+    "tests/test_quiet_hold.py",
     # Evening check-in, carry-forward and goal pulse: disposable AssistantStore and
     # state files, in-process TestClient; no model, scheduler, hub or real ~/.moe.
     "tests/test_checkin.py",

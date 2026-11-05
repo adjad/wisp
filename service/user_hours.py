@@ -2,10 +2,12 @@
 that plans or alerts.
 
 Working hours say when to plan and place things: the Day planner's default
-window, where the Brief spends its full builds, and which times Wisp will
-suggest for a move. Quiet hours say when to leave the person alone: no alerts
-and no background model work, roughly while they sleep. They are separate on
-purpose. An evening outside work can still want a reminder.
+window, where the day's Briefs go, and which times Wisp will suggest for a move.
+Quiet hours say when nothing may ask for the person's attention, roughly while
+they sleep: service/quiet_hold.py holds notifications and check-ins until they
+end. Background work carries on, and what the person starts or set for that time
+still works. They are separate on purpose. An evening outside work can still
+want a reminder.
 
 Stored in $WISP_HOME/user_hours.json, owner-only. A section that is absent means
 the default, so a person who skipped the question picks up a better default if
@@ -266,7 +268,8 @@ def working_hours() -> Hours:
 
 
 def quiet_hours() -> Hours:
-    """When to send no alerts and do no background model work. Defaults to 22:00-08:00."""
+    """When nothing may ask for attention (service/quiet_hold.py). Background work
+    carries on regardless. Defaults to 22:00-08:00."""
     try:
         return _section(_load(), "quiet", _quiet, DEFAULT_QUIET)
     except Exception:                                # noqa: BLE001 - reading never raises

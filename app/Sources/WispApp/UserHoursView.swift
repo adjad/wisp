@@ -81,8 +81,8 @@ struct UserHoursEditor: View {
                 } else {
                     row("Quiet hours", window: $hours.quiet, canEndAtMidnight: false)
                 }
-                Text(hours.quietIsOff ? "Wisp may alert you and work in the background at any time."
-                                      : "No alerts and no background work, roughly while you sleep. Evenings still get reminders.")
+                Text(hours.quietIsOff ? "Wisp may notify you at any time."
+                                      : "No notifications or pop-ups, roughly while you sleep. They wait until morning. Reminders you set still go off.")
                     .font(.system(size: 11)).foregroundStyle(ink.muted)
                     .fixedSize(horizontal: false, vertical: true)
                 if showsOptions {
