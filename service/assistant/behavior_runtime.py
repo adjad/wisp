@@ -1838,7 +1838,7 @@ def forget_all(store, home: Path | None = None) -> dict:
     learning is on or off. Stops the runtime (waiting for a pass in flight),
     removes the untouched Wisp-created reminders/holds, closes every connection,
     deletes ``behavior.db``, ``behavior_runtime.db`` (with ``-wal``/``-shm``) and the
-    profile card cache, and drops pending nudge events. Items the user edited,
+    profile card cache, and drops nudge events and held attention alerts. Items the user edited,
     completed or moved are kept. If learning is still on, Wisp starts over from
     the next ingest."""
     global _runtime, _forgetting, _forget_owner_thread

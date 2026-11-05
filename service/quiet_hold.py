@@ -5,6 +5,9 @@ notifications, sounds, notch pop-ups, check-ins. Wisp keeps working in the
 background, and nothing is lost: these events stay pending in the assistant store,
 and Hub.events delivers them on the first stream after quiet hours end (it rotates
 every 25 seconds). One that has stopped being true by then is dropped instead.
+Waiting is the only reason the words stay stored: when a row is acknowledged or
+dropped, the store removes them (HELD_EVENT_KINDS in service/assistant/store.py, which
+must list everything here).
 
 Only what Wisp starts on its own is held. An Ask turn and its confirmation cards,
 the outcome of an action the person took, a scheduled send, and a timer, reminder

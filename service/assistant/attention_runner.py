@@ -235,7 +235,7 @@ def _name_for(handle: str) -> str | None:
 async def _publish(event: dict) -> None:
     # Transient on purpose: a durable event is stored with the quote and the sender. In
     # quiet hours it must outlast this moment to be shown afterwards (service/quiet_hold.py),
-    # so it is stored then, once per message, until the app acknowledges it.
+    # so it is stored then, once per message, and its words go once it is shown or dropped.
     if quiet_hold._quiet_now():
         await hub.publish(event, dedupe_key="attention:" + str(event.get("source_id")))
     else:

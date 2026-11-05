@@ -23,6 +23,7 @@ _scratch = tempfile.TemporaryDirectory(prefix="wisp-gmail-")
 os.environ["WISP_HOME"] = _scratch.name
 
 from service import gmail_source as G
+from service.assistant.store import signin_expired_key
 from service.tools import cache_store, email_tools as E
 
 ME = "me@gmail.com"
@@ -629,6 +630,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from service.tools import email_tools as E, cache_store
 from service import gmail_source as G
+from service.assistant.store import signin_expired_key
 from service.tools.registry import REGISTRY, run_tool
 import service.tools
 body = 'UNKNOWN_ORIGIN_BODY_MUST_NOT_BE_DISPLAYED'
@@ -754,6 +756,7 @@ from service.tools import cache_store
 cache_store.CACHE_DIR = Path(sys.argv[1])
 from service.tools import email_tools as E
 from service import gmail_source as G
+from service.assistant.store import signin_expired_key
 from service.tools.registry import REGISTRY, run_tool
 E = importlib.reload(E)
 account = sys.argv[2]
@@ -3225,7 +3228,8 @@ class BuiltInGoogleClient(unittest.TestCase):
         event, kwargs = published[0]
         self.assertEqual(event["type"], "google_signin_expired")
         self.assertEqual(event["account"], ME)
-        self.assertEqual(kwargs["dedupe_key"], f"google-signin-expired:{ME}:1700000000")
+        self.assertNotIn(ME, kwargs["dedupe_key"], "the key outlives the notice's words")
+        self.assertEqual(kwargs["dedupe_key"], signin_expired_key(ME, 1700000000))
         self.assertEqual(event["title"] + ". " + event["body"],
                          "Google sign-in expired. Reconnect in Settings ▸ Google.")
 

@@ -211,3 +211,254 @@ def test_attention_alerts_are_stored_only_while_they_must_wait(monkeypatch):
     monkeypatch.setattr(Q, "_quiet_now", lambda: True)
     asyncio.run(wiring._publish({"type": "attention_added", "source_id": "m"}))
     assert seen == [{"durable": False}, {"dedupe_key": "attention:m"}]
+
+
+# --- A held event's words stay only while it waits ------------------------------------------
+
+WORD = "Marigold"           # stands for what a message, Brief or reminder really said
+PERSON = "sam@example.com"
+
+
+def words(event: dict) -> dict:
+    return event | {"quote": WORD, "sender": PERSON, "title": WORD, "text": WORD, "summary": WORD,
+                    "today_summary": WORD, "messages_summary": WORD, "context": WORD}
+
+
+def stored(store, event) -> str:
+    row = store._db.execute("SELECT payload,target,dedupe_key FROM assistant_events WHERE id=?",
+                            (event["event_id"],)).fetchone()
+    return " ".join(row)
+
+
+def on_disk(store) -> bytes:
+    """The file itself, with nothing left in a journal, as anyone reading the Mac would find it."""
+    store._db.commit()
+    path = store.path
+    store._db.close()
+    return path.read_bytes() + b"".join(p.read_bytes() for p in path.parent.glob(path.name + "-*"))
+
+
+def test_the_list_here_is_the_list_that_is_held():
+    from service.assistant.store import HELD_EVENT_KINDS
+    assert set(HELD_EVENT_KINDS) == Q.HELD_TYPES | {"reminder"}
+
+
+@pytest.mark.parametrize("event", ATTENTION, ids=ids(ATTENTION))
+def test_no_words_left_once_acknowledged(hub, quiet, event):
+    published = hub.publish_sync(words(event), target={"type": "note"})
+    assert WORD in stored(hub.store, published), "it has to wait with its words"
+    quiet["on"] = False
+    assert drain(hub)[0]["quote"] == WORD, "they reach the person"
+    hub.store.acknowledge_event(published["event_id"], event["type"])
+    row = hub.store.event(published["event_id"])
+    assert row["state"] == "ack" and row["payload"]["type"] == event["type"]
+    assert WORD not in stored(hub.store, published) and PERSON not in stored(hub.store, published)
+    assert hub.store.acknowledge_event(published["event_id"], event["type"]) is True, "a lost ack retries"
+
+
+@pytest.mark.parametrize("event", [
+    {"type": "attention_added", "source_id": "msg:1", "relevant_until": NOW - 60},
+    {"type": "checkin", "day": "2020-01-01"},
+    {"type": "daily_brief", "part_of_day": "evening", "created_at": NOW - 3 * 86400},
+], ids=lambda e: e["type"])
+def test_no_words_left_once_dropped_as_stale(hub, quiet, event):
+    published = hub.publish_sync(words(event))
+    quiet["on"] = False
+    assert drain(hub) == []
+    assert state(hub, published) == "ack"
+    assert WORD not in stored(hub.store, published)
+
+
+def test_no_words_left_once_a_newer_one_replaces_it(hub, quiet):
+    old = hub.publish_sync(words(brief()), dedupe_key="daily_brief:d:morning",
+                           target={"type": "brief", "date": "d", "part": "morning"})
+    hub.publish_sync(brief(part_of_day="evening"), dedupe_key="daily_brief:d:evening",
+                     target={"type": "brief", "date": "d", "part": "evening"})
+    assert state(hub, old) == "superseded"
+    assert WORD not in stored(hub.store, old)
+
+
+def test_no_words_left_when_finished_by_code_outside_the_store(hub, quiet):
+    """The behavior runtime retires and expires nudges with its own SQL."""
+    from service.assistant.behavior_runtime import BehaviorRuntime
+    event = hub.publish_sync(words({"type": "nudge", "nudge_id": "n"}), dedupe_key="behavior:n", expires_at=NOW - 1)
+    BehaviorRuntime.expire_events(object(), hub.store, NOW)
+    assert state(hub, event) == "superseded" and WORD not in stored(hub.store, event)
+
+
+def test_a_reminder_target_loses_its_title_too(hub, quiet):
+    event = hub.store.enqueue_event(words({"type": "reminder", "commitment_id": "c", "stage": "T-1d"}),
+                                    dedupe_key="reminder:abc",
+                                    target={"type": "reminder", "identity": [WORD.casefold(), 1], "stages": ["T-1d"]})
+    with hub.store.transaction() as db:
+        db.execute("UPDATE assistant_events SET state='superseded' WHERE id=?", (event["id"],))
+    assert hub.store.event(event["id"])["target"] == {"type": "reminder"}
+    assert WORD.casefold() not in stored(hub.store, {"event_id": event["id"]})
+
+
+def test_the_words_are_gone_from_the_file_not_only_the_row(hub, quiet):
+    published = hub.publish_sync(words({"type": "attention_added", "source_id": "msg:1", "relevant_until": NOW + 60}))
+    hub.store.acknowledge_event(published["event_id"], "attention_added")
+    disk = on_disk(hub.store)
+    assert WORD.encode() not in disk and PERSON.encode() not in disk
+
+
+def test_other_events_keep_what_they_said(hub, quiet):
+    event = hub.publish_sync({"type": "action_outcome", "text": WORD}, target={"type": "note"})
+    hub.store.acknowledge_event(event["event_id"], "action_outcome")
+    assert hub.store.event(event["event_id"])["payload"]["text"] == WORD
+
+
+def test_a_finished_event_still_stops_a_repeat(hub, quiet):
+    quiet["on"] = False
+    first = hub.publish_sync(words({"type": "attention_added", "source_id": "msg:1"}), dedupe_key="attention:msg:1")
+    assert len(drain(hub)) == 1
+    hub.store.acknowledge_event(first["event_id"], "attention_added")
+    again = hub.publish_sync(words({"type": "attention_added", "source_id": "msg:1"}), dedupe_key="attention:msg:1")
+    assert again["event_id"] == first["event_id"] and drain(hub) == []
+
+
+def test_a_brief_receipt_still_says_which_run_it_was(hub, quiet, monkeypatch):
+    """The day of an upgrade reads an older version's once-a-day receipt."""
+    day = datetime.fromtimestamp(NOW).date()
+    event = hub.publish_sync(words(brief(part_of_day="evening")), dedupe_key=f"daily_brief:{day.isoformat()}")
+    hub.store.acknowledge_event(event["event_id"], "daily_brief")
+    monkeypatch.setattr(scheduler, "assistant_store", hub.store)
+    assert scheduler._slot_delivered(day, "evening") is True
+    assert scheduler._slot_delivered(day, "morning") is False
+
+
+def test_a_restart_during_quiet_hours_loses_nothing(tmp_path, quiet):
+    path = tmp_path / "assistant.db"
+    first = Hub(AssistantStore(path))
+    published = [first.publish_sync(words(event), target={"type": "note"}) for event in ATTENTION]
+    assert drain(first) == []
+    first.store._db.close()
+
+    second = Hub(AssistantStore(path))
+    assert drain(second) == [], "still quiet after the restart"
+    third = Hub(AssistantStore(path))
+    quiet["on"] = False
+    got = {event["event_id"]: event for event in drain(third)}
+    assert set(got) == {event["event_id"] for event in published}
+    assert all(event["quote"] == WORD for event in got.values()), "with what they said"
+
+
+def _earlier_build(path, *rows) -> None:
+    """Rows as a build without the trigger left them."""
+    AssistantStore(path)._db.close()
+    import json
+    import sqlite3
+    db = sqlite3.connect(path)
+    db.execute("DROP TRIGGER assistant_events_scrub_finished")
+    for index, (kind, state_, key) in enumerate(rows):
+        db.execute("INSERT INTO assistant_events(id,kind,payload,dedupe_key,target,created_at,state) "
+                   "VALUES(?,?,?,?,?,?,?)",
+                   (f"old{index}", kind, json.dumps(words({"type": kind, "part_of_day": "morning"})), key,
+                    json.dumps({"type": "reminder", "identity": [WORD]} if kind == "reminder" else {}),
+                    NOW, state_))
+    db.commit()
+    db.close()
+
+
+def test_rows_an_earlier_build_finished_are_scrubbed(tmp_path):
+    path = tmp_path / "assistant.db"
+    _earlier_build(path, ("attention_added", "ack", "attention:msg:1"), ("nudge", "superseded", "behavior:n"),
+                   ("daily_brief", "ack", "daily_brief:2026-11-01"), ("reminder", "ack", "reminder:a"),
+                   ("email_summary", "ack", "e"), ("node_result", "ack", "node:1"), ("checkin", "ack", "checkin:d"),
+                   ("codex_task_update", "ack", "c"),
+                   ("google_signin_expired", "ack", f"google-signin-expired:{PERSON}:17"),
+                   ("attention_added", "pending", "attention:msg:2"), ("action_outcome", "ack", "o"))
+    store = AssistantStore(path)
+    rows = {row["id"]: row for row in store._db.execute("SELECT * FROM assistant_events")}
+    for key in [f"old{i}" for i in range(9)]:
+        assert WORD not in rows[key]["payload"] + rows[key]["target"], rows[key]["kind"]
+        assert PERSON not in rows[key]["payload"] + rows[key]["dedupe_key"], rows[key]["kind"]
+    assert "morning" in rows["old2"]["payload"], "a Brief's receipt still says which run"
+    assert WORD in rows["old9"]["payload"], "one still waiting keeps its words"
+    assert WORD in rows["old10"]["payload"], "and other kinds are left alone"
+
+    from service.assistant.store import signin_expired_key
+    assert rows["old8"]["dedupe_key"] == signin_expired_key(PERSON, 17), "the same key a new notice uses"
+
+    before = [tuple(row) for row in store._db.execute("SELECT * FROM assistant_events ORDER BY id")]
+    store._db.close()
+    again = AssistantStore(path)
+    assert [tuple(row) for row in again._db.execute("SELECT * FROM assistant_events ORDER BY id")] == before
+    again._db.close()
+
+
+def test_an_earlier_builds_words_are_gone_from_the_file(tmp_path):
+    path = tmp_path / "assistant.db"
+    _earlier_build(path, ("attention_added", "ack", "attention:msg:1"))
+    assert WORD.encode() in path.read_bytes()
+    assert WORD.encode() not in on_disk(AssistantStore(path))
+
+
+# --- Forget, account erase and reset --------------------------------------------------------
+
+def test_disconnecting_an_account_withdraws_what_could_have_come_from_it(hub, quiet, monkeypatch):
+    from service.assistant.store import signin_expired_key
+    from service import gmail_source, google_calendar_source as calendar
+    monkeypatch.setattr(calendar, "_store_override", hub.store)
+    theirs = hub.publish_sync({"type": "google_signin_expired", "account": PERSON, "expired_at": 1},
+                              dedupe_key=signin_expired_key(PERSON, 1))
+    other = hub.publish_sync({"type": "google_signin_expired", "account": "me@example.com", "expired_at": 1},
+                             dedupe_key=signin_expired_key("me@example.com", 1))
+    composed = [hub.publish_sync(words(event)) for event in
+                (brief(), {"type": "email_summary"}, {"type": "nudge", "nudge_id": "n"})]
+    event = hub.publish_sync(words({"type": "reminder", "stage": "T-1d", "commitment_id": "c",
+                                    "source_id": f"{calendar.PREFIX}{PERSON}:ev"}))
+    unrelated = [hub.publish_sync(words(event)) for event in
+                 ({"type": "attention_added", "source_id": "msg:1", "relevant_until": NOW + 86400},
+                  {"type": "node_result"})]
+    assert gmail_source.erase_account_data(PERSON.upper())["waiting_notices"] == "erased"
+    assert hub.store.event(theirs["event_id"]) is None
+    assert hub.store.event(event["event_id"]) is None, "the calendar's own erase covers its reminders"
+    for row in composed:
+        assert state(hub, row) == "superseded" and WORD not in stored(hub.store, row)
+    quiet["on"] = False
+    shown = {row["event_id"] for row in drain(hub)}
+    assert shown == {other["event_id"], *(row["event_id"] for row in unrelated)}, "what isn't theirs still arrives"
+
+
+def test_forget_removes_learned_nudges_and_held_alerts(hub, quiet):
+    nudge = hub.publish_sync(words({"type": "nudge", "nudge_id": "n"}), dedupe_key="behavior:n")
+    alert = hub.publish_sync(words({"type": "attention_added", "source_id": "msg:1", "relevant_until": NOW + 86400}),
+                             dedupe_key="attention:msg:1")
+    brief_row = hub.publish_sync(brief())
+    assert hub.store.drop_behavior_events() == 1, "the count still means nudges"
+    assert hub.store.event(nudge["event_id"]) is None and hub.store.event(alert["event_id"]) is None
+    assert state(hub, brief_row) == "pending"
+    assert WORD.encode() not in on_disk(hub.store)
+
+
+def test_the_forget_tool_withdraws_what_says_the_same_thing(hub, quiet, monkeypatch):
+    from service.assistant import store as assistant
+    from service.tools import memory_tools
+    monkeypatch.setattr(assistant, "assistant_store", hub.store)
+    monkeypatch.setattr(memory_tools.store, "delete_matching", lambda query: 0)
+    names = hub.publish_sync({"type": "attention_added", "source_id": "m", "quote": "my gate code is 1234",
+                              "relevant_until": NOW + 86400})
+    says_less = hub.publish_sync({"type": "email_summary", "summary": "the gate was repaired"})
+    reminder = hub.publish_sync({"type": "reminder", "stage": "T-1d", "commitment_id": "c", "title": "gate code"})
+    reply = asyncio.run(memory_tools.forget("my gate code"))
+    assert "1 notice" in reply and "No exact matching" in reply
+    assert state(hub, names) == "superseded" and "1234" not in stored(hub.store, names)
+    assert state(hub, says_less) == "pending", "every word has to match, as it does for a memory"
+    assert state(hub, reminder) == "pending", "the reminder is theirs and stays"
+    assert "Use recall" in asyncio.run(memory_tools.forget("nothing like this")), "the old answer otherwise"
+    assert hub.store.forget_held_matching(lambda text: False) == 0
+
+
+def test_reset_leaves_no_held_event_behind(tmp_path, quiet):
+    from service import wisp_reset
+    user_home = tmp_path / "user"
+    home = user_home / ".moe"
+    home.mkdir(parents=True)
+    store = AssistantStore(home / "assistant.db")
+    Hub(store).publish_sync(words({"type": "attention_added", "source_id": "m", "relevant_until": NOW + 86400}))
+    store._db.close()
+    out = wisp_reset.erase_home(home, user_home)
+    assert "assistant.db" in out["removed"] and not (home / "assistant.db").exists()
+    assert AssistantStore(home / "assistant.db").pending_events() == []
