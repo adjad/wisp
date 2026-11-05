@@ -738,6 +738,10 @@ def schedule_tick() -> None:
     if idle.foreground_busy():
         note_skip("foreground")
         return
+    from service import brief_pace
+    if not brief_pace.may_start("mail_memory"):
+        note_skip("foreground")      # the user is still chatting
+        return
     if _other_background_work():
         note_skip("other_background")
         return

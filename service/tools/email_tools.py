@@ -223,6 +223,14 @@ def cache_history_headers(history: str) -> None:
 # must preserve the last bytes and their original age, including after restart.
 _external_accounts: dict[str, dict] = {}
 _EXTERNAL_MAX_AGE = 300.0
+# How long a linked account's last good snapshot outranks a newer Mail.app read:
+# two of its own fetch intervals (gmail_source's HEADERS_EVERY, RAW_EVERY,
+# HISTORY_EVERY). Bodies are fetched every 15 minutes, so holding them to the
+# 5-minute limit above swapped every thread between the Gmail copy and the Mail.app
+# copy twice each interval, with no new mail, and each swap read as changed mail
+# to everything downstream. Failed fetches don't wait for this: they set the
+# part's error and fall back at once.
+_EXTERNAL_PART_MAX_AGE = {"headers": 600.0, "raw": 1800.0, "history": 3600.0}
 _native_headers_at = 0.0
 _native_source = ""
 # Only a cache predating both provenance files may inherit display-file age.
@@ -402,7 +410,8 @@ def _provider_selected(address: str, item: dict, part: str) -> bool:
     stamp = _source_receipt(item.get(part + "_at"))
     if part == "raw" and not stamp:
         return False  # Rejected body receipts must not shadow valid native data.
-    if item.get(part + "_verified") and not item.get(part + "_error") and 0 <= time.time() - stamp <= _EXTERNAL_MAX_AGE:
+    if (item.get(part + "_verified") and not item.get(part + "_error")
+            and 0 <= time.time() - stamp <= _EXTERNAL_PART_MAX_AGE.get(part, _EXTERNAL_MAX_AGE)):
         return True
     # A successful later native read is a better fallback than a failed provider
     # snapshot. Its server freshness is still disclosed separately.
