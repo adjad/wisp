@@ -97,6 +97,9 @@ struct VoiceCaptureChecks {
         let cut = SpokenText.plain(longReply)
         check(cut.count <= SpokenText.maxCharacters + 30 && cut.hasSuffix("The rest is on screen."), "Long replies stop at a sentence")
         check(SpokenText.plain("| a | b |\n|---|---|\n| 1 | 2 |").contains("1"), "Tables read their cells")
+        check(SpokenText.plain("The line is $$\\hat{y} = \\beta_0 + \\beta_1 x$$") == "The line is. ŷ = β₀ + β₁ x.",
+              "Math is spoken as symbols: " + SpokenText.plain("The line is $$\\hat{y} = \\beta_0 + \\beta_1 x$$"))
+        check(SpokenText.plain("It costs $5 and $10") == "It costs $5 and $10.", "Prices stay prices when spoken")
 
         print("PASS: voice capture — end of speech, WAV for the service, spoken replies")
     }

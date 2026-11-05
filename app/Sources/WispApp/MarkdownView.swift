@@ -266,7 +266,9 @@ struct MarkdownView: View {
     // Splits a non-code segment into table / list / paragraph blocks by
     // scanning line-by-line and grouping consecutive lines of the same kind.
     private func parseProse(_ seg: String) -> [Block] {
-        let lines = seg.components(separatedBy: "\n")
+        // Math first, so a formula reads the same in a paragraph, a list item or a
+        // table cell, and a `$$…$$` written across several lines is one line here.
+        let lines = prettifyMath(seg).components(separatedBy: "\n")
         var out: [Block] = []
         var para: [String] = []
         var tableLines: [String] = []
@@ -276,7 +278,7 @@ struct MarkdownView: View {
             let joined = para.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
             if !joined.isEmpty {
                 var b = Block(kind: .paragraph)
-                b.body = prettifyMath(deHTML(joined))
+                b.body = deHTML(joined)
                 out.append(b)
             }
             para.removeAll()

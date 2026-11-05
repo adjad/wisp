@@ -595,6 +595,31 @@ func dayTodoChecks(_ check: (Bool, String) -> Void, dayStart: Double, now: Doubl
                                            dayEnd: dayEnd, isToday: false, dayClock: dayClock)
     check(!elsewhere.contains { $0.id == "todo:old" }, "another day shows no overdue to-dos")
 
+    // An overdue reminder the agenda draws, with its Plan time, isn't also still to fit.
+    let backlog = (0..<5).map { DayNeedInput(id: "old\($0)", title: "Backlog \($0)", source: "reminders", due: dayStart - Double($0 + 1) * hour) }
+    let asTodos = backlog.map { DayTodoInput(id: "t" + $0.id, title: $0.title, source: "reminders", due: $0.due) }
+    let drawnOnce = DayTimeline.stillToFit(todos: Array(asTodos.prefix(3)), unscheduled: [], blocks: [], needs: Array(backlog.prefix(3)),
+                                           now: now, dayStart: dayStart, dayEnd: dayEnd, isToday: true, dayClock: dayClock)
+    check(drawnOnce.isEmpty, "overdue reminders listed by name aren't repeated: \(drawnOnce.map(\.id))")
+    let folded = DayTimeline.stillToFit(todos: asTodos, unscheduled: [], blocks: [], needs: backlog, now: now, dayStart: dayStart,
+                                        dayEnd: dayEnd, isToday: true, dayClock: dayClock)
+    check(folded.map(\.id) == ["todo:told2", "todo:told3", "todo:told4"],
+          "those folded into \"N more overdue\" keep their row: \(folded.map(\.id))")
+    let anotherDay = DayTimeline.stillToFit(todos: [], unscheduled: [(id: "t", title: "Backlog 0", reason: "")], blocks: [], needs: backlog,
+                                            now: now, dayStart: dayStart, dayEnd: dayEnd, isToday: false, dayClock: dayClock)
+    check(anotherDay.map(\.id) == ["task:t"], "another day's agenda draws no overdue, so nothing is taken out")
+
+    // The 2026-11-04 Day: an event and a kept review block, no backlog or repeat left, so
+    // the summary counts two and ends at the block.
+    let settled = DayTimeline.build(blocks: [DayBlockInput(id: "a", title: "Attendance", start: now - 15 * 60, end: nil, kind: "calendar"),
+                                             DayBlockInput(id: "r", title: "Review 8 emails · Ana, Ben +1", start: now + 60, end: now + 60 + 45 * 60,
+                                                           kind: "task", taskID: "r")],
+                                    allDay: [], needs: [], caught: [], now: now, dayStart: dayStart, dayEnd: dayEnd,
+                                    workStart: at(9), workEnd: at(18), isToday: true, clock: clock, dayClock: dayClock)
+    let settledBlurb = DayTimeline.blurb(settled, needs: [], isToday: true, endOfDay: dayEnd, clock: clock, dayStart: dayStart)
+    check(settledBlurb.contains("on the clock") && !settledBlurb.contains("overdue") && !settledBlurb.contains("suggested")
+          && settledBlurb.contains("Clear after " + clock(now + 60 + 45 * 60)), "summary after both fixes: \(settledBlurb)")
+
     // Sources and kinds.
     check(DayTimeline.sourceSymbol("mail") == "envelope" && DayTimeline.sourceSymbol("messages") == "message"
           && DayTimeline.sourceSymbol("calendar") == "calendar" && DayTimeline.sourceSymbol("reminders") == "checklist"

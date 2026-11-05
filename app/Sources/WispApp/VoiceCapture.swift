@@ -136,7 +136,8 @@ enum SpokenText {
     static func plain(_ markdown: String) -> String {
         var lines: [String] = []
         var inCode = false
-        for raw in markdown.components(separatedBy: .newlines) {
+        // Math is spoken as its symbols, never as "dollar backslash beta".
+        for raw in prettifyMath(markdown, forSpeech: true).components(separatedBy: .newlines) {
             let line = raw.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("```") { inCode.toggle(); continue }
             if inCode || line.isEmpty || line.allSatisfy({ "-*_=|:".contains($0) }) { continue }
