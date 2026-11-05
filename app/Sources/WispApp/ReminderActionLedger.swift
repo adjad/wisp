@@ -136,28 +136,74 @@ final class ReminderActionLedger {
     private var actionByExternal: [String: String] = [:]
     private var halted = false
     private var dirty = false
-    /// False when the file exists but can't be parsed. Nothing is overwritten then, and
-    /// no creation runs: a kind or an unresolved intent may be in there.
+    /// False only while the file can't be read or set aside. Nothing is overwritten then,
+    /// and no creation runs: `begin` and `flush` try again.
     private(set) var readable = true
+
+    static let fileName = "reminder-action-ledger.json"
+    /// One copy: a later damaged file replaces it. /resetwisp erases both (WispReset.appFiles,
+    /// and service/wisp_reset.py deletes everything in Wisp's home it doesn't keep).
+    static let damagedFileName = "reminder-action-ledger.damaged.json"
+    /// No path, no ID and nothing from the file: it can't name a person or a reminder.
+    static let damagedLogLine = "[Wisp] The reminder ledger was damaged; it was set aside and a new one started"
 
     static var defaultPath: URL {
         let home = ProcessInfo.processInfo.environment["WISP_HOME"].map { URL(fileURLWithPath: $0) }
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".moe")
-        return home.appendingPathComponent("reminder-action-ledger.json")
+        return home.appendingPathComponent(fileName)
     }
 
     init(path: URL = ReminderActionLedger.defaultPath, maxEntries: Int = ReminderActionLedger.defaultMaxEntries) {
         self.path = path
         self.maxEntries = maxEntries
-        guard FileManager.default.fileExists(atPath: path.path) else { return }
-        guard let data = try? Data(contentsOf: path),
-              let stored = try? JSONDecoder().decode(Stored.self, from: data) else {
+        load(settingAsideUnreadable: false)
+    }
+
+    /// A file that isn't a ledger is set aside at once and a new one started, so a damaged
+    /// file can't stop new reminders. A file that can't be read at all may be a passing
+    /// failure, so it stays until a creation needs the ledger and it still can't be read.
+    private func load(settingAsideUnreadable: Bool) {
+        guard FileManager.default.fileExists(atPath: path.path) else {
+            readable = true
+            return
+        }
+        guard let data = try? Data(contentsOf: path) else {
             readable = false
+            if settingAsideUnreadable { setAside() }
+            return
+        }
+        guard let stored = try? JSONDecoder().decode(Stored.self, from: data) else {
+            setAside()
             return
         }
         entries = Dictionary(stored.entries.map { ($0.actionID, $0) }, uniquingKeysWith: { _, last in last })
         halted = stored.cleanupHalted
+        readable = true
         reindex()
+    }
+
+    /// What this gives up: kinds of reminders made since the markers went, which read as
+    /// plain reminders from then on, and finding a creation whose reply was lost, which
+    /// stays "check Reminders". The service's claim, not this file, is what keeps a claimed
+    /// action from running twice. Cleanup stays off, since the damaged file may have been
+    /// what said to stop, and old reminders keep their kind and proof in their own notes.
+    private func setAside() {
+        let aside = path.deletingLastPathComponent().appendingPathComponent(Self.damagedFileName)
+        if rename(path.path, aside.path) != 0 {
+            // A later file replaces the earlier copy; only a folder in the way stops a rename.
+            try? FileManager.default.removeItem(at: aside)
+            guard rename(path.path, aside.path) == 0 else {
+                readable = false
+                return
+            }
+        }
+        // lstat + lchmod: a link is moved as it is, and what it points at is never changed.
+        var info = stat()
+        if lstat(aside.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG { _ = lchmod(aside.path, 0o600) }
+        readable = true
+        halted = true
+        dirty = !persist()
+        NSLog("%@", Self.damagedLogLine)
     }
 
     private func locked<T>(_ body: () -> T) -> T {
@@ -170,6 +216,7 @@ final class ReminderActionLedger {
     /// already began never saves again, whatever became of the first try.
     func begin(actionID: String, kind: String, plannedID: String, at startedAt: Date) -> Begin {
         locked {
+            if !readable { load(settingAsideUnreadable: true) }
             guard readable else { return .unavailable }
             guard entries[actionID] == nil else { return .alreadyStarted }
             entries[actionID] = Entry(actionID: actionID, kind: kind, startedAt: startedAt.timeIntervalSince1970,
@@ -218,7 +265,10 @@ final class ReminderActionLedger {
     }
 
     func flush() {
-        locked { if dirty { dirty = !persist() } }
+        locked {
+            if !readable { load(settingAsideUnreadable: false) }
+            if dirty { dirty = !persist() }
+        }
     }
 
     func entry(_ actionID: String) -> Entry? { locked { entries[actionID] } }
