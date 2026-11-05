@@ -534,3 +534,17 @@ Changes to the patch:
 - A case's shape decides: tag toolbench cases with the shape that fits (one fact, list, table, grouped, plain for outbound or a stated preference).
 - Score both directions: structure where the content needs it, and none where it doesn't.
 - The user's blind rating and a look in the notch outrank any count. Base's shares may be reported for context, never as a target.
+
+**r5 route and goals (user, 2026-11-05).** Full plan: [Ask LoRA r5 plan](https://claude.ai/artifact/7mpzA5KgM8ddjZB98WsT4Z). This replaces the patch sizing above. GPU time still needs the user's OK, and everything waits for r4's gate.
+
+- **Biggest goal: "everything in that debug log + variations of the questions I asked to work and look good in terms of style."**
+  - Training gets about 200 new rows that vary the chat's 11 question shapes and their order. They are written fresh with synthetic people and data, and nothing from the export enters training or the GPU box.
+  - Testing uses a local private set: the 11 originals, about 55 variations held out of training, and a replay of the whole chat.
+  - Proposed bar: all 11 originals pass, at least 90% of variations pass, and the user judges how the answers look.
+- **Tool calls stay a priority.** About 300 new tool-call rows cover neighboring reads, similar tools, arguments carried into a send, skipped writes and unneeded lookups. About 60 of them are writes, each with a contrast that doesn't act. That departs from r4's "no new write-heavy data" rule and needs the user's OK.
+  - Bar: right tool and arguments at or above r4's, compose at or above base's, and bad arguments at or below base's. Base, r4 and r5 all run on the same new pin.
+  - `get_my_day_plan` is in 12 of step 1150's 37 wrong-tool cases. The 7 compose cases may be test strictness, since those tests accept only `get_upcoming` or `daily_brief`. Fix those tests before r5's gate, report old and new scores, and rescore every model.
+- **Builds on r4 through data, not weights.** r5 starts from base and keeps r4's tool-call rows, builders and data fixes. At tool-choice steps it keeps r4's thought where base picks the wrong tool.
+- **No tables (user).** They won't fit well in the notch, so this replaces the table parts of the formatting section above. 3+ items with 2+ details become a list with a bold label leading each line, and samples containing a table are dropped.
+- **Size:** about 1,250 new rows, about 7,350 text rows, about 2,250 steps, about 53 A6000 hours, about $32. The early stop at step 400 costs about 9 h and $5, and also stops if tool choice is clearly behind r4's own step 400, so keep that checkpoint.
+- **Host fixes it depends on:** PR 473 (send with no recipient, locked chat) and PR 470 (answer nudge), both open on 2026-11-05. The day plan's repeated items have no fix in progress.
