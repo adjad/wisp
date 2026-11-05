@@ -537,10 +537,11 @@ def _announce_expired(email: str, stamp: int) -> None:
     (OverlayModel handles `google_signin_expired`)."""
     try:
         from service.assistant.hub import hub
+        from service.assistant.store import signin_expired_key
         hub.publish_sync({"type": "google_signin_expired", "account": email,
                           "expired_at": stamp, "title": "Google sign-in expired",
                           "body": "Reconnect in Settings ▸ Google."},
-                         dedupe_key=f"google-signin-expired:{email}:{stamp}")
+                         dedupe_key=signin_expired_key(email, stamp))
     except Exception as exc:  # noqa: BLE001 — Settings still shows Reconnect
         print(f"[gmail] expired sign-in notice failed: {type(exc).__name__}", flush=True)
 
@@ -1315,6 +1316,8 @@ def erase_account_data(account: str) -> dict:
       written from the combined inbox and may describe this account's mail.
     - proactive: `service.proactive.store.erase_account(account)` (W1's
       engine), lazily imported; "unavailable" when the engine is absent.
+    - waiting_notices: what is held for quiet hours to end and may come from it
+      (AssistantStore.erase_held_for_account).
     """
     account = account.strip().lower()
     result: dict[str, str] = {}
@@ -1358,6 +1361,12 @@ def erase_account_data(account: str) -> dict:
             result["proactive"] = "erased"
         except Exception as exc:  # noqa: BLE001
             result["proactive"] = f"failed: {type(exc).__name__}"
+    try:
+        from service.google_calendar_source import _store
+        _store().erase_held_for_account(account)
+        result["waiting_notices"] = "erased"
+    except Exception as exc:  # noqa: BLE001
+        result["waiting_notices"] = f"failed: {type(exc).__name__}"
     print(f"[gmail] erased Google account data: {result}", flush=True)
     return result
 
