@@ -438,7 +438,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             forName: .wispExportDebugLog, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.exportDebugLog() }
+            MainActor.assumeIsolated {
+                Task { @MainActor in await self?.exportDebugLog() }
+            }
         }
         // Remember which Wisp window was used last, so the Dock brings back that one.
         NotificationCenter.default.addObserver(
@@ -1970,29 +1972,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Settings › General's Export Chat Debug Log…: writes every chat since Wisp
     // opened, the open one last (every turn's model, route decision, timing,
     // tok/s, tool calls, and any errors) to ~/Downloads as JSON + a readable .txt companion, then reveals
-    // them in Finder. No-ops with a brief alert if there's no conversation yet.
+    // them in Finder. No-ops with a brief notice if there's no conversation yet.
     // Debug metadata is tracked for every turn whether or not Debug Mode is on
     // (see OverlayModel.applyDebugFields).
-    private func exportDebugLog() {
-        let alert = NSAlert()
-        switch model.exportDebugLog() {
+    //
+    // It says so without an app-modal alert. runModal locked the notch until it was
+    // answered, and from the menu bar, which never activates Wisp, macOS also bounced
+    // the Dock icon and could open the alert behind other apps, so the only way out
+    // was clicking the icon. See NonModalAlert.
+    private func exportDebugLog() async {
+        if let open = debugLogNotice { open.bringForward(); return }
+        guard !debugLogExporting else { return }
+        debugLogExporting = true
+        let result = await model.exportDebugLog(to: debugLogFolder)
+        debugLogExporting = false
+        showDebugLogNotice(result)
+    }
+
+    private var debugLogExporting = false
+    private var debugLogNotice: NonModalAlert?
+    /// Nil is Downloads; only the checks choose another folder.
+    private var debugLogFolder: URL?
+    private var revealExportedFile: (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
+
+    private func showDebugLogNotice(_ result: OverlayModel.DebugLogExport) {
+        let title: String, text: String, style: NSAlert.Style
+        var reveal: URL?
+        switch result {
         case .nothing:
-            alert.messageText = "Nothing to export yet"
-            alert.informativeText = "Start a conversation in Wisp first, then export its debug log."
-            alert.alertStyle = .informational
-            alert.runModal()
+            title = "Nothing to export yet"
+            text = "Start a conversation in Wisp first, then export its debug log."
+            style = .informational
         case .failed(let reason):
-            alert.messageText = "Couldn't save the chat debug log"
-            alert.informativeText = reason
-            alert.alertStyle = .warning
-            alert.runModal()
+            title = "Couldn't save the chat debug log"
+            text = reason
+            style = .warning
         case .saved(let url):
-            alert.messageText = "Chat debug log saved to Downloads"
-            alert.informativeText = SettingsView.debugLogPrivacyLine
-            alert.alertStyle = .informational
-            alert.runModal()
-            NSWorkspace.shared.activateFileViewerSelecting([url])
+            title = "Chat debug log saved to Downloads"
+            text = SettingsView.debugLogPrivacyLine
+            style = .informational
+            reveal = url
         }
+        let notice = NonModalAlert(title: title, text: text, style: style) { [weak self] in
+            guard let self else { return }
+            self.debugLogNotice = nil
+            // The notice took focus from an open notch without counting as the person
+            // leaving (see the panel's didResignKey), so the notch goes back to its
+            // usual auto-collapse here, before Finder takes focus.
+            if !self.model.collapsed, !self.pointerInPanel() { self.scheduleCollapse() }
+            if let reveal { self.revealExportedFile(reveal) }
+        }
+        debugLogNotice = notice
+        notice.show()
     }
 
     /// Quit Wisp after the engine and its helpers have stopped. Every quit request
@@ -2667,6 +2698,77 @@ extension AppDelegate {
         NotificationCenter.default.removeObserver(observer)
         precondition(posted == 1, "Choosing it posts the Settings button's export notification")
         print("PASS: the menu bar menu exports the chat debug log like Settings")
+    }
+
+    /// The export never runs a modal session: the notch stays live while the notice
+    /// is up, a second click starts nothing, and the notice's OK reveals the file and
+    /// hands the notch back to its usual auto-collapse.
+    static func checkDebugExportLeavesNotchLive() async {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+        NonModalAlert.activateApp = {}
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wisp-export-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        func written() -> [String] { (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.sorted() ?? [] }
+
+        let delegate = AppDelegate()
+        delegate.debugLogFolder = folder
+        var revealed: [URL] = []
+        delegate.revealExportedFile = { revealed.append($0) }
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        delegate.model.collapsed = false
+        delegate.finishPresentation(opening)
+        delegate.model.turns = [OverlayModel.Turn(role: "user", text: "hello"),
+                                OverlayModel.Turn(role: "assistant", text: "Hi.")]
+
+        await delegate.exportDebugLog()
+        precondition(NSApp.modalWindow == nil, "The saved notice must not run a modal session")
+        guard let notice = delegate.debugLogNotice else { preconditionFailure("The saved export says so") }
+        precondition(notice.window.isVisible, "The notice is on screen without being answered")
+        precondition(notice.window.level.rawValue > DisplayGeometry.shared.layout.windowLevel.rawValue,
+                     "The notice sits above the notch, never under it")
+        precondition(written().count == 2 && written().allSatisfy { $0.hasPrefix("wisp-debug-") },
+                     "One click writes the .json and the .txt")
+        precondition(revealed.isEmpty, "Finder waits for the notice, as before")
+        precondition(delegate.presentation.desired == .chat && delegate.pendingCollapse == nil,
+                     "The export leaves an open notch where it is")
+
+        // A second click brings the notice forward and exports nothing more.
+        await delegate.exportDebugLog()
+        precondition(delegate.debugLogNotice === notice && written().count == 2, "A second click starts nothing")
+
+        notice.closeButton.performClick(nil)
+        precondition(delegate.debugLogNotice == nil && !notice.window.isVisible, "OK closes the notice")
+        precondition(revealed.map(\.pathExtension) == ["json"], "OK reveals the saved .json")
+        precondition(delegate.pendingCollapse != nil, "OK hands the open notch back to its usual auto-collapse")
+        delegate.cancelScheduledCollapse()
+
+        // With the pointer on the notch, it stays.
+        let inside = AppDelegate()
+        inside.pointerInPanel = { true }
+        inside.presentation.request(.chat)
+        let insideOpening = inside.presentation.next()!
+        inside.model.collapsed = false
+        inside.finishPresentation(insideOpening)
+        await inside.exportDebugLog()
+        precondition(NSApp.modalWindow == nil, "The nothing-to-export notice must not run a modal session")
+        inside.debugLogNotice?.closeButton.performClick(nil)
+        precondition(inside.debugLogNotice == nil && inside.pendingCollapse == nil,
+                     "Closing the notice with the pointer on the notch keeps it open")
+
+        // A failed write says so the same way, and reveals nothing.
+        let failing = AppDelegate()
+        failing.debugLogFolder = folder.appendingPathComponent("missing")
+        var failedReveal = 0
+        failing.revealExportedFile = { _ in failedReveal += 1 }
+        failing.model.turns = [OverlayModel.Turn(role: "user", text: "hello")]
+        await failing.exportDebugLog()
+        precondition(NSApp.modalWindow == nil, "The failure notice must not run a modal session")
+        failing.debugLogNotice?.closeButton.performClick(nil)
+        precondition(failing.debugLogNotice == nil && failedReveal == 0, "A failed export reveals nothing")
+        print("PASS: AppDelegate debug export runs no modal session and hands the notch back")
     }
 
     static func checkMenuHoldsCollapse() async {

@@ -598,6 +598,8 @@ ADDITIONAL_FULL_TESTS = {
     # verified-self identity, fake policy/outbox and ASGI transport; no effects.
     "tests/test_daily_workspace.py",
     "tests/test_day_review_blocks.py",
+    # Export Chat Debug Log opens no modal session: reads Swift source only.
+    "tests/test_debug_export_stays_modeless.py",
     # The Brief's "Needs you today" selection over synthetic attention items.
     "tests/test_brief_needs_you.py",
     # Day timeline Cancel/Move fields: disposable AssistantStore, the planner and

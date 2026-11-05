@@ -50,13 +50,13 @@ final class OverlayModel: ObservableObject {
     // service/debug_capture.py. Kept as one
     // pretty-JSON blob per record (like argsJSON below) rather than a typed
     // breakdown, since the shape genuinely varies by kind.
-    struct ToolDebugRecord: Identifiable {
+    struct ToolDebugRecord: Identifiable, Sendable {
         let id = UUID()
         var kind: String = ""     // "source" | "model_call"
         var json: String = ""
     }
 
-    struct ToolCallRecord: Identifiable {
+    struct ToolCallRecord: Identifiable, Sendable {
         let id = UUID()
         var callId: String = ""       // correlates the tool_call/tool_result SSE pair
         var name: String = ""
@@ -73,7 +73,7 @@ final class OverlayModel: ObservableObject {
     // array (system prompt + history) and tool schemas; response is either
     // the real wire response (non-streaming reasoning path) or the
     // reassembled content/reasoning_content/tool_calls (streamed paths).
-    struct RawModelIO: Identifiable {
+    struct RawModelIO: Identifiable, Sendable {
         let id = UUID()
         var model: String = ""
         var requestJSON: String = ""
@@ -81,7 +81,7 @@ final class OverlayModel: ObservableObject {
     }
 
     // One exchange in the conversation.
-    struct Turn: Identifiable {
+    struct Turn: Identifiable, Sendable {
         let id = UUID()
         let role: String   // "user" or "assistant"
         var text: String
@@ -1618,16 +1618,41 @@ final class OverlayModel: ObservableObject {
         report.open(key: Self.reportKey(for: turn), metadata: metadata, details: details)
     }
 
-    enum DebugLogExport {
+    enum DebugLogExport: Sendable {
         case nothing
         case saved(URL)
         case failed(String)
     }
 
-    /// Writes the export to Downloads, readable only by this user. A failed write
-    /// removes what it wrote and says why; it never reports a file as saved.
-    func exportDebugLog(to directory: URL? = nil) -> DebugLogExport {
-        guard let export = debugExport() else { return .nothing }
+    /// The chats one export covers, copied on the main actor at the click, so
+    /// building and writing the files (raw model I/O can run to many megabytes)
+    /// never holds up the notch.
+    struct DebugLogSnapshot: Sendable {
+        struct Chat: Sendable {
+            let sessionId: String
+            let startedAt: Date?
+            let turns: [Turn]
+            let current: Bool
+        }
+        let chats: [Chat]
+        let currentSessionId: String
+        let droppedChats: Int
+        let droppedTurns: Int
+        let exportedAt: Date
+    }
+
+    /// Writes the export to Downloads, off the main actor.
+    func exportDebugLog(to directory: URL? = nil) async -> DebugLogExport {
+        guard let snapshot = debugLogSnapshot() else { return .nothing }
+        return await Task.detached(priority: .userInitiated) {
+            OverlayModel.writeDebugLog(snapshot, to: directory)
+        }.value
+    }
+
+    /// The export's files, readable only by this user. A failed write removes what
+    /// it wrote and says why; it never reports a file as saved.
+    nonisolated static func writeDebugLog(_ snapshot: DebugLogSnapshot, to directory: URL?) -> DebugLogExport {
+        guard let export = debugExportFiles(snapshot) else { return .nothing }
         let dir = directory ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser
         // Milliseconds and a short random suffix: two exports in one second never collide.
@@ -1637,8 +1662,8 @@ final class OverlayModel: ObservableObject {
         let textURL = dir.appendingPathComponent("\(base).txt")
         var created: [URL] = []
         do {
-            try Self.writePrivate(export.json, to: jsonURL); created.append(jsonURL)
-            try Self.writePrivate(Data(export.text.utf8), to: textURL); created.append(textURL)
+            try writePrivate(export.json, to: jsonURL); created.append(jsonURL)
+            try writePrivate(Data(export.text.utf8), to: textURL); created.append(textURL)
         } catch {
             // Only what this export created; a file already there was never opened.
             for url in created { try? FileManager.default.removeItem(at: url) }
@@ -1648,7 +1673,7 @@ final class OverlayModel: ObservableObject {
     }
 
     /// A new file with mode 0600, never one already there.
-    static func writePrivate(_ data: Data, to url: URL) throws {
+    nonisolated static func writePrivate(_ data: Data, to url: URL) throws {
         let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
@@ -1662,34 +1687,49 @@ final class OverlayModel: ObservableObject {
         }
     }
 
-    /// The export's .json and .txt: every chat left since Wisp opened (the archive,
-    /// oldest first), then the open chat. Nil when there is nothing to export yet.
+    /// Every chat left since Wisp opened (the archive, oldest first), then the open
+    /// chat. Nil when there is nothing to export yet.
+    func debugLogSnapshot(now: Date = Date()) -> DebugLogSnapshot? {
+        var chats = chatArchive.chats.map {
+            DebugLogSnapshot.Chat(sessionId: $0.sessionId, startedAt: $0.startedAt, turns: $0.turns, current: false)
+        }
+        if !turns.isEmpty && !liveChatForgotten {
+            chats.append(DebugLogSnapshot.Chat(sessionId: sessionId, startedAt: turns.compactMap(\.startedAt).min(),
+                                               turns: turns, current: true))
+        }
+        guard !chats.isEmpty else { return nil }
+        return DebugLogSnapshot(chats: chats, currentSessionId: liveChatForgotten ? "" : sessionId,
+                                droppedChats: chatArchive.droppedChats, droppedTurns: chatArchive.droppedTurns,
+                                exportedAt: now)
+    }
+
+    /// The export's .json and .txt as of now. Nil when there is nothing to export yet.
     func debugExport(now: Date = Date()) -> (json: Data, text: String)? {
+        debugLogSnapshot(now: now).flatMap { Self.debugExportFiles($0) }
+    }
+
+    /// The export's .json and .txt for a snapshot.
+    nonisolated static func debugExportFiles(_ snapshot: DebugLogSnapshot) -> (json: Data, text: String)? {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let clock = DateFormatter(); clock.dateFormat = "HH:mm:ss"
-        func chat(_ id: String, _ startedAt: Date?, _ turns: [Turn], current: Bool) -> ChatDebugExport.Chat {
-            ChatDebugExport.Chat(sessionId: id, startedAt: startedAt, current: current,
-                                 turns: turns.map { Self.debugJSON($0, iso: iso) },
-                                 transcript: Self.debugTranscript(turns, clock: clock))
+        let chats = snapshot.chats.map {
+            ChatDebugExport.Chat(sessionId: $0.sessionId, startedAt: $0.startedAt, current: $0.current,
+                                 turns: $0.turns.map { debugJSON($0, iso: iso) },
+                                 transcript: debugTranscript($0.turns, clock: clock))
         }
-        var chats = chatArchive.chats.map { chat($0.sessionId, $0.startedAt, $0.turns, current: false) }
-        if !turns.isEmpty && !liveChatForgotten {
-            chats.append(chat(sessionId, turns.compactMap(\.startedAt).min(), turns, current: true))
-        }
-        guard !chats.isEmpty else { return nil }
-        let payload = ChatDebugExport.payload(chats: chats, currentSessionId: liveChatForgotten ? "" : sessionId,
-                                              droppedChats: chatArchive.droppedChats,
-                                              droppedTurns: chatArchive.droppedTurns, exportedAt: now, iso: iso)
+        let payload = ChatDebugExport.payload(chats: chats, currentSessionId: snapshot.currentSessionId,
+                                              droppedChats: snapshot.droppedChats,
+                                              droppedTurns: snapshot.droppedTurns, exportedAt: snapshot.exportedAt, iso: iso)
         guard JSONSerialization.isValidJSONObject(payload), let jsonData = try? JSONSerialization.data(
             withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) else { return nil }
         // Human-readable companion — same data, laid out to actually read, one section per chat.
-        let text = ChatDebugExport.text(chats: chats, droppedChats: chatArchive.droppedChats,
-                                        droppedTurns: chatArchive.droppedTurns, exportedAt: now, iso: iso)
+        let text = ChatDebugExport.text(chats: chats, droppedChats: snapshot.droppedChats,
+                                        droppedTurns: snapshot.droppedTurns, exportedAt: snapshot.exportedAt, iso: iso)
         return (jsonData, text)
     }
 
-    private static func debugJSON(_ t: Turn, iso: ISO8601DateFormatter) -> [String: Any] {
+    private nonisolated static func debugJSON(_ t: Turn, iso: ISO8601DateFormatter) -> [String: Any] {
         func rounded(_ v: Double) -> Double { (v * 100).rounded() / 100 }
         var d: [String: Any] = ["role": t.role, "text": t.text]
         if let traceID = t.traceID { d["trace_id"] = traceID }
@@ -1737,7 +1777,7 @@ final class OverlayModel: ObservableObject {
     }
 
     /// One chat's turns as the export's readable text (its header is ChatDebugExport's).
-    private static func debugTranscript(_ turns: [Turn], clock: DateFormatter) -> String {
+    private nonisolated static func debugTranscript(_ turns: [Turn], clock: DateFormatter) -> String {
         var text = ""
         for t in turns {
             if t.role == "user" {
@@ -2102,7 +2142,7 @@ final class OverlayModel: ObservableObject {
     // as real JSON rather than a doubly-encoded string. Falls back to the raw
     // string if it somehow isn't parseable (shouldn't happen — it came from
     // prettyJSON itself — but the export must not crash over a debug field).
-    private static func parsedJSON(_ s: String) -> Any {
+    private nonisolated static func parsedJSON(_ s: String) -> Any {
         guard let data = s.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
         else { return s }
