@@ -4350,11 +4350,15 @@ async def run_agent(
                     # A knowledge question answered with a tool call written as
                     # text: one nudge to just answer. (A personal-data question
                     # falls through to the "call the tool now" re-prompt below.)
+                    # Worded as a host note: said in the user's voice, the model
+                    # took it as the user speaking and replied to it ("It looks
+                    # like that was a math question!").
                     ask_text_call_nudged = True
                     msgs.append({"role": "assistant", "content": "(no answer yet)"})
                     msgs.append({"role": "user", "content": (
-                        "Answer my question now in plain text, from what you know. No tool "
-                        "is needed or available for this one.")})
+                        "Host note, not from the user: your last reply held no answer. "
+                        "Answer the user's question above in plain text, from what you "
+                        "know, without calling a tool. Do not mention or reply to this note.")})
                     continue
                 if (wrote_call and not text and not ask_text_call_nudged and _step < max_steps - 1
                         and asks_change):
