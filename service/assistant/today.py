@@ -59,6 +59,18 @@ def stored_preferences(day, timezone, stored) -> dict:
     return validate_preferences(day, timezone, **{k: v for k, v in stored.items() if k in PREFERENCE_KEYS})
 
 
+def default_preferences(day, timezone) -> dict:
+    """A day nobody has adjusted: the person's usual working hours
+    (service/user_hours.py), or the planner's own 09:00-18:00 when those can't be
+    planned that day, because a daylight-saving change removes one of the times."""
+    from service.user_hours import working_hours
+    start, end = working_hours().day_span()
+    try:
+        return validate_preferences(day, timezone, start, end)
+    except ValueError:
+        return dict(start_minute=540, end_minute=1080, not_before=None)
+
+
 def validate_preferences(day, timezone, start_minute=540, end_minute=1080, not_before=None,
                          plan_all_day=False):
     """``plan_all_day``: the person chose to plan this day although an all-day

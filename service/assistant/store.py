@@ -1089,7 +1089,7 @@ class AssistantStore:
         return '(SELECT * FROM commitments WHERE all_day=0 OR due_date IS NULL UNION ALL SELECT ' + projected + ' FROM commitments WHERE all_day=1 AND due_date IS NOT NULL)'
 
     def today_snapshot(self, day: str, timezone: str) -> dict:
-        from service.assistant.today import day_bounds
+        from service.assistant.today import day_bounds, default_preferences
         lo, hi = day_bounds(day, timezone)
         relation = self.schedule_relation(timezone)
         with self._lock, self._db:
@@ -1118,8 +1118,7 @@ class AssistantStore:
         deadlines = [c for c in commitments if c not in fixed]
         commitments = fixed + self._collapse(deadlines)
         return dict(tasks=tasks, commitments=commitments, sources=sources,
-                    preferences=json.loads(row["payload"]) if row else
-                        dict(start_minute=540, end_minute=1080, not_before=None),
+                    preferences=json.loads(row["payload"]) if row else default_preferences(day, timezone),
                     revision=row["revision"] if row else 0)
 
     def today_task(self, task_id: str) -> dict | None:
@@ -1159,6 +1158,52 @@ class AssistantStore:
                              "revision=excluded.revision,updated_at=excluded.updated_at",
                              (task["id"], task["day"], json.dumps(task, allow_nan=False), task["revision"], saved, saved))
         return task
+
+    def today_apply_working_hours(self, from_day: str, start_minute: int, end_minute: int) -> int:
+        """Carry the person's new usual hours onto days already saved, from `from_day`
+        on, so changing them in About you changes today rather than tomorrow. Other
+        per-day choices (running late, plan this day anyway) stay. A day the new hours
+        don't fit, inside a daylight-saving change, keeps what it had. Returns how many
+        days changed; each takes a new revision, as any edit of that day does."""
+        from service.assistant.today import validate_preferences
+        changed = 0
+        with self._write_transaction():
+            rows = self._db.execute("SELECT day,timezone,payload,revision FROM today_preferences WHERE day >= ?",
+                                    (from_day,)).fetchall()
+            for row in rows:
+                saved = json.loads(row["payload"])
+                if (saved.get("start_minute"), saved.get("end_minute")) == (start_minute, end_minute):
+                    continue
+                try:
+                    values = validate_preferences(row["day"], row["timezone"], **{
+                        **{k: v for k, v in saved.items() if k in ("not_before", "plan_all_day")},
+                        "start_minute": start_minute, "end_minute": end_minute})
+                except ValueError:
+                    continue
+                self._db.execute("UPDATE today_preferences SET payload=?, revision=? WHERE day=? AND timezone=?",
+                                 (json.dumps(values, allow_nan=False), row["revision"] + 1, row["day"], row["timezone"]))
+                changed += 1
+        return changed
+
+    def calendar_offer_rows(self, start_ts: float, end_ts: float) -> list[dict]:
+        """Active Calendar rows starting in a window, with what a move offer must know:
+        invitees, organizer and whether the calendar accepts changes (each None when
+        the app hasn't said), and `occurrences`, how many rows share this event's id,
+        so a repeating event can be told apart from a one-off."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT c.id,c.source_id,c.title,c.when_ts,c.all_day,e.end_ts,"
+                "i.invitee_count,i.organizer_is_user,w.writable AS calendar_writable,"
+                "(SELECT COUNT(*) FROM scheduled_commitments s WHERE s.source='calendar' "
+                " AND s.source_id=c.source_id) AS occurrences "
+                "FROM scheduled_commitments c "
+                "LEFT JOIN calendar_event_ends e ON e.commitment_id=c.id "
+                "LEFT JOIN calendar_event_invitees i ON i.commitment_id=c.id "
+                "LEFT JOIN calendar_event_writable w ON w.commitment_id=c.id "
+                "WHERE c.source='calendar' AND c.status='active' AND c.source_id IS NOT NULL AND c.source_id<>'' "
+                "AND c.when_ts >= ? AND c.when_ts < ? ORDER BY c.when_ts, c.source_id",
+                (float(start_ts), float(end_ts))).fetchall()
+        return [dict(r) for r in rows]
 
     def today_save_preferences(self, day: str, timezone: str, values: dict, revision: int) -> int:
         from service.assistant.today import RevisionConflict, validate_preferences

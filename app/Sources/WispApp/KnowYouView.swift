@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// "Getting to know you" in the notch: three questions, every one optional,
+/// "Getting to know you" in the notch: four questions, every one optional,
 /// saved as you go, under a minute. The copy and order live in KnowYouFlow.swift;
 /// this file draws them on the notch's black surface in the panel's own idiom
 /// (chips, hairlines, the orb) so it feels like Wisp asking, not a form.
@@ -21,6 +21,8 @@ final class KnowYouModel: ObservableObject {
     @Published var busy = false
     @Published var error = ""
     @Published var goalDraft = ""
+    /// The hours step: prefilled, so most people just continue.
+    @Published var hours = UserHours()
     /// The service didn't answer the first read. The flow stays hidden behind a
     /// Retry, so a failed load never shows (or saves) default answers.
     @Published var loadFailed = false
@@ -48,7 +50,10 @@ final class KnowYouModel: ObservableObject {
         profile = envelope.profile
         preview = envelope.preview
         status = envelope.status
-        flow = KnowYouFlow.resume(for: envelope.profile)
+        // Hours that can't be read aren't asked about, so saved ones can't be overwritten.
+        let savedHours = await client.userHours()
+        if let savedHours { hours = savedHours }
+        flow = KnowYouFlow.resume(for: envelope.profile, hoursSet: savedHours?.isSet ?? true)
         if profile.name.isEmpty {
             profile.name = UserProfile.suggestedName(fullName: NSFullUserName())
         }
@@ -103,6 +108,17 @@ final class KnowYouModel: ObservableObject {
         if flow.step == .goals { addGoal() }
         busy = true
         defer { busy = false }
+        if flow.step == .hours {
+            let saved = await client.saveUserHours(hours)
+            if let kept = saved.hours {
+                hours = kept
+                error = ""
+                flow.advance()
+            } else {
+                error = saved.error ?? "Couldn't save your hours. They're still here; try again."
+            }
+            return
+        }
         let result = await client.patchProfile(profile.patch(for: flow.step))
         if let envelope = result.envelope {
             apply(envelope, step: flow.step)
@@ -178,9 +194,13 @@ final class KnowYouModel: ObservableObject {
         case .name: return !profile.name.trimmingCharacters(in: .whitespaces).isEmpty
         case .goals: return !profile.goals.isEmpty || !goalDraft.trimmingCharacters(in: .whitespaces).isEmpty
         case .tone: return true
+        case .hours: return hours.canSave
         default: return false
         }
     }
+
+    /// The last screen: what the answers now do, the hours only if they were saved.
+    var summaryLines: [String] { preview + (hours.isSet ? [hours.summaryLine] : []) }
 }
 
 struct KnowYouView: View {
@@ -269,7 +289,7 @@ struct KnowYouView: View {
     }
 
     /// The longest label the row can show, so the row is sized for it from the start.
-    private var progressLabelWidest: String { "Getting to know you · 3 of 3" }
+    private var progressLabelWidest: String { "Getting to know you · 4 of 4" }
 
     // MARK: Question
 
@@ -292,6 +312,7 @@ struct KnowYouView: View {
                 ScrollView(.vertical, showsIndicators: false) { goalsField }
                     .frame(maxHeight: 230)
             case .tone: toneField
+            case .hours: UserHoursEditor(hours: $model.hours)
             case .done: summary
             }
         }
@@ -412,7 +433,7 @@ struct KnowYouView: View {
 
     private var summary: some View {
         VStack(alignment: .leading, spacing: 7) {
-            ForEach(Array(model.preview.enumerated()), id: \.offset) { _, line in
+            ForEach(Array(model.summaryLines.enumerated()), id: \.offset) { _, line in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.textSecondary)
                     Text(line).font(.system(size: 12.5)).foregroundStyle(Theme.textPrimary)

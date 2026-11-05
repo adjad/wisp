@@ -36,10 +36,11 @@ from datetime import datetime
 from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo
 
+from service import user_hours
 from service.attention.corpus import Snapshot
 from service.attention.detectors import UncapturedCommitment
 from service.attention.ledger import Ledger
-from service.attention.live import (LOOKBACK_S, Plan, Settings, in_quiet_hours, items_from_records,
+from service.attention.live import (LOOKBACK_S, Plan, Settings, items_from_records,
                                     local_midnight, plan_reminder, who_label)
 from service.attention.matching import find_on_file, shares_words
 from pathlib import Path
@@ -168,7 +169,7 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
         ledger.finish(item.id, state, detail, now)
         outcomes.append(Outcome(item.id, state, plan.title, detail))
 
-        if state == "created" and not in_quiet_hours(datetime.fromtimestamp(now, ZoneInfo(tz)), settings):
+        if state == "created" and not user_hours.in_quiet_hours(datetime.fromtimestamp(now, ZoneInfo(tz))):
             try:
                 await publish({"type": "attention_added", "source_id": item.id, "title": plan.title,
                                "when_label": plan.when_label, "quote": plan.quote,

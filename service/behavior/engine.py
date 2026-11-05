@@ -592,7 +592,7 @@ class BehaviorEngine:
 
     def generate_nudges(self, now: float | None = None) -> list[Nudge]:
         """Create new nudges that are due (budget ~4/day, per-kind cooldown,
-        quiet hours 22:00-07:00 except day_preview after 07:00, mute after
+        the user's quiet hours except day_preview after they end, mute after
         feedback). Persist with increasing ``seq``; dedupe by Nudge.id.
         Returns only newly created ones."""
         now = self._now(now)

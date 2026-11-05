@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from service import user_hours
 from service.attention import ledger as ledger_mod, live, runner
 from service.attention.corpus import Item
 from service.attention.live import Settings
@@ -106,14 +107,6 @@ def test_settings_roundtrip_is_private_and_validated(tmp_path):
         live.updated(Settings(), mode="loud")
     with pytest.raises(ValueError):
         live.updated(Settings(), lead_minutes=True)            # bool is not a whole number
-
-
-def test_quiet_hours_wrap_midnight():
-    s = Settings(quiet_start=22, quiet_end=8)
-    at = lambda h: datetime(2026, 9, 21, h, 0, tzinfo=ZONE)
-    assert [live.in_quiet_hours(at(h), s) for h in (7, 8, 12, 21, 22, 23, 0)] == \
-        [True, False, False, False, True, True, True]
-    assert not live.in_quiet_hours(at(3), Settings(quiet_start=5, quiet_end=5))
 
 
 # ------------------------------------------------------------------- planner
@@ -277,6 +270,16 @@ async def test_quiet_hours_still_create_the_reminder_but_send_no_alert(ledger):
     f = Fakes()
     out = await run(mom_thread("Meet me in the Quad at 11:45PM", at=night), night + 60, led, f)
     assert [o.state for o in out] == ["created"] and f.published == []
+
+
+async def test_the_alert_follows_the_one_quiet_hours_setting(ledger):
+    """service/user_hours.py decides; the old fields in attention's settings no longer do."""
+    user_hours.save(quiet={"start_minute": 23 * 60, "end_minute": 6 * 60})
+    night = datetime(2026, 9, 21, 22, 30, tzinfo=ZONE).timestamp()
+    ledger.set_meta("enabled_at", repr(night - 86400))
+    f = Fakes()
+    out = await run(mom_thread("Meet me in the Quad at 11:45PM", at=night), night + 60, ledger, f)
+    assert [o.state for o in out] == ["created"] and len(f.published) == 1
 
 
 async def test_a_message_about_friday_is_reconsidered_once_friday_is_within_48_hours(ledger):

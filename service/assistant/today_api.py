@@ -3,7 +3,7 @@ import time
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 from service.assistant.store import assistant_store
-from service.assistant.today import RevisionConflict, build_plan
+from service.assistant.today import RevisionConflict, build_plan, default_preferences
 
 router = APIRouter(prefix="/assistant/today", tags=["today"])
 from service.assistant.daily_workspace_api import router as workspace_router
@@ -46,8 +46,9 @@ class Replan(BaseModel):
     day: str
     timezone: str
     revision: StrictInt = Field(ge=0)
-    start_minute: StrictInt = 540
-    end_minute: StrictInt = 1080
+    # Left out: the person's usual hours (service/user_hours.py).
+    start_minute: StrictInt | None = None
+    end_minute: StrictInt | None = None
     not_before: float | None = Field(default=None, strict=True, allow_inf_nan=False)
     # Plan this day although an all-day event reads like time away.
     plan_all_day: bool = Field(default=False, strict=True)
@@ -186,8 +187,12 @@ def edit_task(task_id: str, body: EditTask):
 @router.post("/replan")
 def replan(body: Replan):
     try:
-        assistant_store.today_save_preferences(body.day, body.timezone,
-            body.model_dump(exclude={"day", "timezone", "revision"}), body.revision)
+        values = body.model_dump(exclude={"day", "timezone", "revision"})
+        usual = default_preferences(body.day, body.timezone)
+        for key in ("start_minute", "end_minute"):
+            if values[key] is None:
+                values[key] = usual[key]
+        assistant_store.today_save_preferences(body.day, body.timezone, values, body.revision)
         return snapshot(body.day, body.timezone)
     except ValueError as exc:
         fail(exc)

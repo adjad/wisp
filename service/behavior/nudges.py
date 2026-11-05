@@ -5,8 +5,8 @@ Two steps, both deterministic:
 1. ``build_candidates`` proposes every nudge that would be useful right now,
    each with a deterministic id (kind + key fact: event id, contact + date,
    pattern + date) so regenerating the same situation dedupes.
-2. ``select`` applies the user's attention budget: quiet hours 22:00-07:00, at
-   most 4 per local day (the morning ``day_preview`` is free), one per kind per
+2. ``select`` applies the user's attention budget: their quiet hours
+   (service/user_hours.py), at most 4 per local day (the morning ``day_preview`` is free), one per kind per
    3 hours, nothing expired, nothing the user muted through feedback.
    Event-keyed kinds (``habit_conflict``, ``cancel_likely``) skip the per-kind
    cooldown: each is about one specific calendar event, dedupes on that event's
@@ -24,6 +24,7 @@ import math
 from dataclasses import dataclass, field, replace
 from datetime import timedelta, tzinfo
 
+from service import user_hours
 from service.behavior import miners, predict
 from service.behavior.timeutil import (
     DAY_NAMES, at_minute, day_end, day_start, fmt_clock, fmt_range, local_dt, minute_of, when_phrase,
@@ -35,8 +36,7 @@ COOLDOWN_S = 3 * 3600
 # One nudge per calendar event (id = kind + event id, expires at event start):
 # exempt from the per-kind cooldown, not from the daily budget / quiet hours.
 EVENT_KEYED_KINDS = frozenset({"habit_conflict", "cancel_likely"})
-QUIET_START_MIN = 22 * 60
-QUIET_END_MIN = 7 * 60
+PREVIEW_START_MIN = 5 * 60       # never before dawn, even for someone with no quiet hours
 PREVIEW_END_MIN = 10 * 60
 PREVIEW_MAX_USAGE = 2
 MUTE_WINDOW_S = 7 * 86400
@@ -270,7 +270,7 @@ def _preview_item(pr: Prediction, tz: tzinfo, patterns: dict[str, Pattern]) -> s
 
 def _day_preview(inp: Inputs) -> list[Nudge]:
     now_dt = local_dt(inp.now, inp.tz)
-    if not (QUIET_END_MIN <= minute_of(now_dt) < PREVIEW_END_MIN):
+    if not PREVIEW_START_MIN <= minute_of(now_dt) < PREVIEW_END_MIN or user_hours.in_quiet_hours(now_dt):
         return []
     today = now_dt.date()
     # Today's upcoming items; a contact window may already be under way.
@@ -353,8 +353,7 @@ def select(candidates: list[Nudge], *, now: float, tz: tzinfo, recent: list[Nudg
     ``recent``: nudges already created since the start of yesterday;
     ``exists(id)``: whether a nudge id was ever created (dedupe across days)."""
     now_dt = local_dt(now, tz)
-    m = minute_of(now_dt)
-    if m < QUIET_END_MIN or m >= QUIET_START_MIN:
+    if user_hours.in_quiet_hours(now_dt):
         return []
     start = day_start(now_dt.date(), tz)
     used = sum(1 for n in recent if start <= n.created_at < day_end(now_dt.date(), tz)

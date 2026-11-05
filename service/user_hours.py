@@ -298,11 +298,11 @@ def is_set() -> bool:
         return False
     if data.get("set") is True:
         return True
-    quiet = data.get("quiet") or {}
-    if quiet and (quiet.get("start_minute"), quiet.get("end_minute")) != (DEFAULT_QUIET.start_minute, DEFAULT_QUIET.end_minute):
+    quiet = _section(data, "quiet", _quiet, DEFAULT_QUIET)
+    if (quiet.start_minute, quiet.end_minute) != (DEFAULT_QUIET.start_minute, DEFAULT_QUIET.end_minute):
         return True
-    working = data.get("working") or {}
-    return bool(working) and (working.get("start_minute"), working.get("end_minute")) != (540, 1080)
+    working = _section(data, "working", _working, None)
+    return working is not None and (working.start_minute, working.end_minute) != (540, 1080)
 
 
 def snapshot() -> dict:
