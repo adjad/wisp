@@ -563,3 +563,5 @@ Changes to the patch:
 - r4 runs against base on both sets, plus the toolbench and private sets, at the pinned code. `service/`, `app/` and `build-support/` stay identical to the pin; only the harness changed. r5 runs against base and r4.
 - r5 trains only on the four latest logs' questions, and those are reported apart, so the other 65 logs stay unseen.
 - Estimated time: r4's gate about 14 h, r5's about 21 h.
+
+**r5 approved (user, 2026-11-05): "Yes, after the gate".** This covers the full retrain, about $32 of GPU time and about 60 new write rows with contrasts. Work on it starts after r4's gate, and the user still starts the A6000. RL, the safety bar and Mac time for generation remain open.
