@@ -604,8 +604,11 @@ The user: "Yes, start it", and "take note of all mistakes made by the model and 
 **Tool rows:** `builder/scen_r5_tools.py` builds `tool_choice_r5`: 184 turns and 365 steps, including 59 write turns. Each of the 45 direct writes has a contrast that doesn't act. Its docstring gives step 1150's failure counts. Wordings the host won't route to a tool, such as "what time is X again", were dropped; they are production gaps to check at the gate. No row of any family may ask a held-out wording; `build.py` fails the row if one does.
 
 **To do when the new pin lands (after PR 482):**
-- Rebuild. Bare assent rows can't run yet, because the pin keeps a bare "yes" read-only; they should work once PR 470 is in.
-- Update `world.py` to PR 476's result order. Subject matches rank first there, so "match not first" rows must use body-only matches or several subject matches.
+- Done on 722e08b9 (`training/ask-lora-r5/data/pin-722e08b9`, ignored): 226 debug-log, 40 long-list and 184 tool-choice scenarios, 875 examples, 0 build failures, validator clean. Re-run on the final pin.
+  - Bare "yes" rows now run: the offer has to read "Want me to set a reminder…?" for the host to allow `add_reminder`.
+  - With `ASK_LORA_R5=1`, `world.py` searches through the pin's own ranking and budget. Half the long lists have the real email first, and half have newsletters with the topic in their subjects ahead of it. No row reaches the "No room for the text" trailer, because PR 476 shares the budget evenly at these sizes.
+  - The validator now fails any row whose tool crashed (`tool:crashed`). A web search stand-in was crashing and six rows still answered from nothing.
+  - Under pytest, the repo's conftest may load the older service, which skips the two ranking tests. Run them with `--noconftest --rootdir=<builder>` and `WISP_REPO` set.
 - Replace every `BASE_WRITES` final through distill. `unwritten()` must be empty in a final build.
 
 **From r4's gate:** catalog every model mistake from the toolbench and all debug-log sets, split model faults from host faults, and map each model fault to r5 rows or a bar. r5's build may change for this without another OK, unless the cost grows materially.

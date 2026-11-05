@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import os
 import random
+import re
+
+import pytest
 
 os.environ.setdefault("ASK_LORA_ROUND", "4")
 os.environ.setdefault("ASK_LORA_R5", "1")
@@ -31,22 +34,44 @@ def test_topic_from_about_and_from_a_plain_question():
     assert M.topic_of("are there any fee updates") == "fee"
 
 
-def test_a_match_stays_inside_what_the_model_can_read_and_is_never_first():
+def _views(lead):
     for seed in range(12):
         ctx = M.new_ctx(random.Random(seed))
         try:
-            subject, _day, code = M.mail_list(ctx, "parking permit", size=1000)
+            subject, _day, code = M.mail_list(ctx, "parking permit", size=1000, lead=lead)
         except ValueError:
-            continue    # past the cap: the builder retries with another world
-        view = M.model_view(ctx, "parking permit")
+            continue    # past what the model reads: the builder retries with another world
+        yield subject, code, M.model_view(ctx, "parking permit")
+
+
+def _needs_ranked_host():
+    """The ranked search exists from PR #476. The repo's conftest may load an older pinned service first."""
+    from service.tools import email_tools
+    if not hasattr(email_tools, "_search_rows"):
+        pytest.skip("this service has no ranked search; run with --noconftest and WISP_REPO at a pin with PR #476")
+
+
+def test_a_subject_match_ranks_first():
+    _needs_ranked_host()
+    for subject, code, view in _views(False):
         assert code in view
-        assert view.index("Subject:") < view.index(subject)
+        assert re.findall(r"^Subject: (.*)$", view, re.M)[0] == subject
+
+
+def test_newsletters_with_the_topic_in_the_subject_rank_ahead_of_the_real_email():
+    _needs_ranked_host()
+    seen = 0
+    for subject, code, view in _views(True):
+        seen += 1
+        assert code in view
+        assert re.findall(r"^Subject: (.*)$", view, re.M)[-1] == subject
+    assert seen
 
 
 def test_no_match_never_claims_all_were_read_when_the_list_was_cut():
     ctx = M.new_ctx(random.Random(2))
-    M.mail_list(ctx, "parking permit", has_match=False, size=2000)
-    assert "were cut" in M.model_view(ctx, "parking permit")
+    M.mail_list(ctx, "parking permit", has_match=False, size=2500)
+    assert "cut to fit" in M.model_view(ctx, "parking permit")
     assert "read all" not in M.none_about(ctx, "parking permit")
 
 

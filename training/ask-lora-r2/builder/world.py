@@ -13,6 +13,7 @@ import contextlib
 import copy
 import json
 import datetime as dt
+import os
 import math
 import random
 import re
@@ -659,6 +660,47 @@ class World:
             lines.append(f"(+{len(rows) - len(shown)} more; narrow it by person or day.)")
         return "\n".join(lines)
 
+    def _view_emails_ranked(self, query, mails, count, unread):
+        """Round 5 only: a search through the pinned host's own ranking and budget (PR #476), so rows see what production
+        sends: best match first, list mail after, the 6,000-char budget shared, and header lines for what didn't fit.
+        None on an older pin without those helpers, which keeps round 4's builds unchanged."""
+        if os.environ.get("ASK_LORA_R5") != "1":
+            return None
+        try:
+            from service.tools import email_digest as ED, email_tools as ET
+            search, block, omission, line = ET._search_rows, ET._email_body_block, ET._omission_line, ET._mail_line
+            fit, budget, shown = ED.fit_rows, ED.RESULT_BUDGET_CHARS, ED.MAX_HEADER_LINES
+        except (ImportError, AttributeError):
+            return None
+        if unread:
+            mails = [m for m in mails if m.unread]
+        drows = [{"sender": f"{m.sender} <{m.addr}>", "sender_address": m.addr, "to": m.to, "subject": m.subject, "body": m.body,
+                  "ts": m.when.timestamp(), "account": m.account, "message_id": m.message_id, "unread": m.unread,
+                  "_digested": bool(getattr(m, "digested", False))} for m in mails]
+        found, by_words = search(query, drows)
+        back_to = min((r["ts"] for r in drows), default=None)
+        scope = f"from {ET._short_date(back_to)} on" if back_to is not None else ""
+        read_at = (self.now - dt.timedelta(minutes=7)).strftime("%b %-d, %Y, %-I:%M %p")
+        note = (f"Linden: Email is from Mail’s local cache. Newer messages may be missing; server freshness is unverified "
+                f"(last local read {read_at}). To check for newer mail, open Mail and let it refresh.\n\n")
+        if not found:
+            return (f"No emails matching “{query}” were found in the recent inbox Wisp searched: the text of {len(drows)} saved "
+                    f"{'email' if len(drows) == 1 else 'emails'} {scope}. Read and unread mail were both searched; anything older was not.")
+        limit, available = int(count or 5), len(found)
+        rows, left = found[:limit], found[limit:]
+        reserved = len(note) + 2 + ET._COVERAGE_CHARS
+        fitted = fit(rows, query=query, budget=budget - reserved, best_first=True,
+                     header_chars=lambda r: len(block({**r, "body": ""})))
+        lines = fitted.header_only[:shown]
+        coverage = omission(query, len(rows), available, limit, len(left), "lower-ranked", ranked=True, by_words=by_words,
+                            unread=unread, searched=len(drows), scope=scope, header_only=len(fitted.header_only),
+                            listed=len(lines), cut=fitted.cut)
+        trailer = ""
+        if lines:
+            trailer = ("\n\nNo room for the text of these (look one up on its own to read it):\n"
+                       + "\n".join(line(r)[:ED.HEADER_LINE_CHARS] for r in lines))
+        return note + coverage + "\n\n---\n\n".join(block(r) for r in fitted.rows) + trailer
+
     def t_view_emails(self, query=None, period=None, day=None, unread=False, count=5, account=None,
                       strict_match=False, mailbox=None):
         if str(mailbox or "inbox").strip().lower() == "sent":
@@ -671,6 +713,9 @@ class World:
         except BadPeriod as exc:
             return str(exc)
         rows = [m for m in self.emails if (s is None or s <= m.when < e) and m.when <= self.now]
+        ranked = self._view_emails_ranked(query, rows, count, unread) if query else None
+        if ranked is not None:
+            return ranked
         if query:
             q = query.lower()
             rows = [m for m in rows if q in (m.sender + " " + m.addr + " " + m.to + " " + m.subject + " "

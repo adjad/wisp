@@ -49,6 +49,8 @@ import random
 import re
 
 import harness as H
+import leak
+import scen_r5_debuglog
 from harness import Call, Final
 from replies import join
 from scen import Scenario
@@ -212,6 +214,8 @@ def attempt(make, rng, label, tries=8):
         why = next((v for v in (vet(s) for s in got) if v), "")
         if not why and any(s.prompt.strip().lower() in _SEEN for s in got):
             why = "duplicate prompt"
+        if not why and any(leak.fold(s.prompt) in scen_r5_debuglog.heldout_folds() for s in got):  # the gate's variation test
+            why = "a held-out wording"
         if not why:
             _SEEN.update(s.prompt.strip().lower() for s in got)
             kept = make(random.Random(seed))

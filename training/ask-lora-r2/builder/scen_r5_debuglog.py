@@ -233,7 +233,7 @@ def h_spend_day(ctx, q):
     names = [re.sub(r" \((email|text|note)\)$", "", t) for _, t in rows[:3]]
     tail = f"You have {join(names)}, so I'd plan around those and keep the gaps for whatever feels most pressing."
     return Out([[Call("get_my_day_plan", day=word)]],
-               f"{tail}\n\nWant a reminder to get ready for {title}?", "get_my_day_plan")
+               f"{tail}\n\nWant me to set a reminder to get ready for {title}?", "get_my_day_plan")
 
 
 def h_assent(ctx, q):
@@ -336,7 +336,7 @@ def h_web(ctx, q):
     low = q.lower()
     for pat, query, hit, final in WEB:
         if re.search(pat, low):
-            ctx.w.web[query] = [{"title": hit, "url": "https://example.org/news", "snippet": f"{hit}, according to today's coverage."}]
+            ctx.w.web[query] = [(hit, "https://example.org/news", f"{hit}, according to today's coverage.")]
             return Out([[Call("web_search", query=query)]], final, "web_search")
     raise ValueError("no web answer for this wording")
 
@@ -411,7 +411,9 @@ def h_channel(ctx, q):
     if "text" in q.lower():
         return Out([[Call("send_message", to=contact_of(ctx), text=ctx.draft)]], _sent_final(ctx, "text"), "send_message", ["send_message"], [True])
     if not C.PEOPLE[ctx.who][3]:
-        return Out([], f"I don't have an email saved for {name_of(ctx)}. What's the address?")
+        contact, phone = contact_of(ctx), C.PEOPLE[ctx.who][2]
+        ctx.w.overrides["lookup_contact"] = lambda args: f"{contact}: phone {phone}"
+        return Out([[Call("lookup_contact", name=contact)]], f"{name_of(ctx)}'s contact only has a phone number, no email. What's the address?", "lookup_contact")
     return Out([[Call("send_email", to=contact_of(ctx), subject="My schedule", body=ctx.draft)]], _sent_final(ctx, "email"), "send_email", ["send_email"], [True])
 
 
@@ -440,33 +442,37 @@ def model_view(ctx, topic):
 
 def none_about(ctx, topic):
     """Honest when no result matches: all of them read, or only the part that fit."""
-    if "were cut" in model_view(ctx, topic):
-        return (f"Nothing about {topic} in the part of the results I could read: those newsletters only mention it in passing. "
+    view = model_view(ctx, topic)
+    if any(sign in view for sign in ("cut to fit", "header line", "had no room", "omitted by count")):
+        return (f"Nothing about {topic} in the part of the results I could read: those newsletters only mention it. "
                 "The list got cut off, so I can't rule out an older email.")
-    return f"I read all the results and nothing is really about {topic}. A few newsletters mention it in passing, with nothing to act on."
+    return f"I read all the results and nothing is really about {topic}. The newsletters that came up only mention it, with nothing to act on."
 
 
-def mail_list(ctx, topic, *, has_match=True, size=1000):
-    """Five results: the newest mention the topic in passing, and the real match, if any, is older."""
+def mail_list(ctx, topic, *, has_match=True, size=1000, lead=None):
+    """Five results through the host's own ranking. Plain: the real email has the topic in its subject and ranks first.
+    Lead: newsletters have the topic in their subjects and rank first, and the real email only has it in its text, so
+    it comes last and the model has to read past them."""
     rng, now = ctx.rng, ctx.now
+    lead = rng.random() < 0.5 if lead is None else lead
     ctx.w.emails = [e for e in ctx.w.emails if topic.lower() not in (e.subject + e.body).lower()]
     senders = rng.sample([("Campus News", "news@linden.edu"), ("Hollis Library", "library@linden.edu"), ("Student Life", "life@linden.edu"),
                           ("Peak Climbing Gym", "hello@peakclimb.example"), ("Linden Alumni", "alumni@linden.edu")], 4)
     passing = [f"{FILLER * (size // len(FILLER))}There's a short mention of {topic} further down this newsletter, but nothing you need to act on."
                for _ in senders]
+    subjects = ([f"{topic.capitalize()} and more this week", f"This week: {topic}, events and more", f"Reminders, including {topic}", f"News roundup: {topic}"]
+                if lead else ["This week on campus", "Your weekly digest", "Spring events", "Member update"])
     for i, (name, addr) in enumerate(senders):
-        ctx.w.emails.append(Email(name, addr, rng.choice(["This week on campus", "Your weekly digest", "Spring events", "Member update"]),
-                                  now - D(hours=2 + 3 * i), passing[i], person=False))
+        ctx.w.emails.append(Email(name, addr, rng.choice(subjects), now - D(hours=2 + 3 * i), passing[i], person=False))
     if not has_match:
         ctx.w.emails.append(Email("Linden Alumni", "alumni@linden.edu", "Alumni news", now - D(days=2), passing[0], person=False))
         return None
     code, day = f"REF-{rng.randint(1000, 9999)}", (now + D(days=rng.randint(3, 9))).strftime("%A, %B %-d")
-    subject = rng.choice(MAIL_SUBJECTS).format(t=topic, T=topic.capitalize())
+    subject = "A quick question for you" if lead else rng.choice(MAIL_SUBJECTS).format(t=topic, T=topic.capitalize())
     body = f"Hi Sam, about your {topic}: please confirm by {day}. Your reference is {code}. Reply to this email with any questions."
-    # Second or third newest: never first, and still inside what the model gets (checked below).
     ctx.w.emails.append(Email("Dana Whitfield", "dana.whitfield@linden.edu", subject, now - D(hours=3 + 3 * rng.choice([0, 1])), body))
     if code not in model_view(ctx, topic):
-        raise ValueError("the match fell past the model's cap")
+        raise ValueError("the match fell past what the model can read")
     return subject, day, code
 
 
@@ -477,7 +483,7 @@ def h_email_search(ctx, q):
         return Out([[Call("view_emails", query=topic)]], none_about(ctx, topic), "view_emails")
     subject, day, code = mail_list(ctx, topic, size=ctx.rng.choice([700, 1000, 1200]))
     return Out([[Call("view_emails", query=topic)]],
-               f"Yes, Dana Whitfield emailed you: “{subject}”. Please confirm by {day}, and your reference is {code}.\n\nThe others only mention it in passing.",
+               f"Yes, Dana Whitfield emailed you: “{subject}”. Please confirm by {day}, and your reference is {code}.\n\nThe others are newsletters that only mention it.",
                "view_emails")
 
 
@@ -575,6 +581,8 @@ def attempt(make, rng, label, tries=8):
             last = f"build {exc!r:.160}"
             continue
         ok, why = F._check(sc)
+        if ok and leak.fold(sc.prompt) in heldout_folds():
+            ok, why = False, "a held-out wording"
         if ok:
             return make(random.Random(seed))
         last = why
@@ -620,9 +628,9 @@ def make_list_row(topic, ask, has_match, size, tid):
         else:
             subject, day, code = got
             final = (f"Found it. Dana Whitfield wrote “{subject}”: please confirm by {day}, and your reference is {code}.\n\n"
-                     "The newer results only mention it in passing.")
+                     "The others are newsletters that only mention it.")
         sc = Scenario(LIST_FAMILY, ask, ctx.now, ctx.w, [[Call("view_emails", query=topic)], Final(final)],
-                      "a long result list: read every result, prefer a subject match, and say nothing is relevant only after reading all")
+                      "a long result list: read every result, prefer the email written to the user over newsletters, and say nothing is relevant only after reading all")
         sc.qkind = "long_list"
         return sc
     return make
@@ -632,7 +640,7 @@ def fam_long_email_r5(rng):
     out = []
     for i in range(40):
         topic, template = LIST_TOPICS[i % len(LIST_TOPICS)], LIST_ASKS[i % len(LIST_ASKS)]
-        size = [800, 1000, 1200, 1500][i % 4]   # the larger lists pass the model's 6,000-char cap and end in the real cut note
+        size = [800, 1000, 1500, 2500][i % 4]   # the larger lists share the budget and end in the host's own cut note
         sc = attempt(make_list_row(topic, template.format(t=topic), i % 5 != 4, size, None), rng, "long_list")
         if sc is not None:
             out.append(sc)

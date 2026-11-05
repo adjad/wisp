@@ -587,6 +587,9 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
                             bad("final:empty_range", f"{where} {meta.get('id', '')} {err[:60]}")
                         for err in thinking.nofree_problems(content, [str(v) for v in results.values()]):
                             bad("final:nofree_contradiction", f"{where} {meta.get('id', '')} {err[:80]}")
+                        # A crashed stand-in tool must never reach a row: its final would answer from nothing.
+                        if any(m.get("role") == "tool" and str(m.get("content") or "").startswith("(error running") for m in msgs):
+                            bad("tool:crashed", f"{where} {meta.get('id', '')}")
                         for err in thinking.absence_problems(meta, msgs):
                             bad("final:absence_without_read", f"{where} {meta.get('id', '')} {err[:80]}")
                         try:
