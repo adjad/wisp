@@ -89,3 +89,13 @@ def test_loop_turns_thinking_on_only_after_an_outstanding_failure():
     assert "step_think_on = bool(failed_tools - tools_answered)" in src
     assert "think_on=step_think_on" in src
     assert "experiment(" not in src
+
+
+def test_default_chat_models_are_fully_rostered():
+    """A model missing from no_thinking_capable thinks through its background budgets:
+    digests, message topics and the Brief's summaries all fail (training/ask-lora-r4/PLAN.md)."""
+    packaged = config._packaged_config()
+    for role in ("agent", "fast"):
+        model = packaged["roles"][role]
+        assert model in packaged["no_thinking_capable"], f"{role}: {model}"
+        assert model in packaged["tool_capable"], f"{role}: {model}"

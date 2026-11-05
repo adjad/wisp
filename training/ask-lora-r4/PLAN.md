@@ -565,3 +565,29 @@ Changes to the patch:
 - Estimated time: r4's gate about 14 h, r5's about 21 h.
 
 **r5 approved (user, 2026-11-05): "Yes, after the gate".** This covers the full retrain, about $32 of GPU time and about 60 new write rows with contrasts. Work on it starts after r4's gate, and the user still starts the A6000. RL, the safety bar and Mac time for generation remain open.
+
+## A tuned model must be rostered before anyone judges it live (2026-11-05)
+
+The RC3 coordinator passed on a finding from PR #476: a tuned model is not in `no_thinking_capable`, so background prompts think until they run out of tokens.
+
+Tested on step 1150 with synthetic inputs and the production prompts, one run each (`background_probe.py`):
+
+| Call | Not listed (as installed) | Listed |
+| --- | --- | --- |
+| Long-email digest | 4 of 4 failed | 4 of 4 done, recall 95% |
+| Brief message summary | cut off at 512 tokens, no text | done, 46 tokens |
+| Message topics | invalid JSON | valid JSON, 30 tokens |
+| Memory capture, search answer | fine | fine |
+
+**What it changes**
+- Toolbench scores stand. Every run used `--profile-as`, which copies base's lists, the model-led loop doesn't read this list, and the toolbench digest is a fixed stand-in. Toolbench can't see the fault either, so background calls are now a separate gate check.
+- The user's live tests of steps 400 and 1150 ran with these calls failing. The Brief's model summaries were affected too, though no export records them.
+- The 22:05 email finding was not a clean model fault. All three long `view_emails` results in that export had a failed digest and gave the model 20,000 chars of raw HTML. The one good result was 4,797 chars. Retest before blaming the model.
+- The debug-log set no longer pins a result whose digest failed (4 calls). Those cases still score tool choice and answer checks.
+
+**Gate (r4 and r5):** run `background_probe.py` for base and the tuned model. Bars: every call finishes, JSON is valid, no digest fails, digest recall within 5 points of base.
+
+**Rostering a tuned model:** add its id to `tool_capable`, `no_thinking_capable` and `thinking_required_after_tool` in `models.yaml`, then `roles`, the catalog and its context window. `test_thinking_kwargs.py` fails if a default role's model is missing from the first two.
+
+**r5:** the about 40 long email rows stay, because the match still isn't always first, but their results should be digest-sized, about 5,000 chars, not 20,000. No cost change.
+
