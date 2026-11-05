@@ -445,8 +445,11 @@ final class OverlayModel: ObservableObject {
     /// panel, which must not read as the person leaving, and opens above it.
     func saveReport(_ draft: ReportDraft) {
         pickingFile = true
-        defer { pickingFile = false }
-        draft.chooseLocationAndSave(above: DisplayGeometry.shared.layout.windowLevel)
+        draft.chooseLocationAndSave(above: DisplayGeometry.shared.layout.windowLevel) { [weak self] in
+            guard let self else { return }
+            // The attach dialog can be up beside it, and marks the same flag.
+            self.pickingFile = self.filePicker != nil
+        }
     }
 
     /// Which report a reply's "Report a problem" opens: its trace (or, for a

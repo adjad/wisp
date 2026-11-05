@@ -438,8 +438,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             forName: .wispExportDebugLog, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                Task { @MainActor in await self?.exportDebugLog() }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.exportDebugLog()
             }
         }
         // Remember which Wisp window was used last, so the Dock brings back that one.
@@ -2642,6 +2643,35 @@ extension AppDelegate {
         delegate.prepareTodayInNotch()
         precondition(model.tab == .day && !model.showingQuickSettings, "A clicked notification lands on Day")
         print("PASS: AppDelegate setup card opens on Ask, holds the panel until Done or Later; notifications open Day")
+    }
+
+    /// Saving a report from the notch holds the notch for as long as the dialog is
+    /// up, not just for the click, and lets go however the dialog ends.
+    static func checkReportSaveHoldsUntilAnswered() {
+        let model = AppDelegate().model
+        let draft = model.report
+        draft.open(key: "chat:save", metadata: [:])
+        var answer: (@MainActor (URL?) -> Void)?
+        var shown = 0, forward = 0, cancelled = 0
+        draft.presentSaveDialog = { _, level, answered in
+            shown += 1
+            answer = answered
+            precondition((level?.rawValue ?? 0) > DisplayGeometry.shared.layout.windowLevel.rawValue,
+                         "From the notch the dialog sits above it")
+            return ReportDraft.SaveDialog(bringForward: { forward += 1 }, cancel: { cancelled += 1; answered(nil) })
+        }
+        model.saveReport(draft)
+        precondition(model.pickingFile && model.holdsOpen && shown == 1, "The dialog's focus is not the person leaving")
+        model.saveReport(draft)
+        precondition(shown == 1 && forward == 1 && model.pickingFile, "A second click brings the open dialog forward")
+        answer?(nil)
+        precondition(!model.pickingFile, "Answering it lets go of the notch")
+        model.saveReport(draft)
+        draft.close()
+        precondition(cancelled == 1 && !model.pickingFile, "Closing the report closes its dialog and lets go")
+        model.saveReport(draft)
+        precondition(shown == 2 && !model.pickingFile, "With no report open nothing is asked or held")
+        print("PASS: AppDelegate a report's save dialog holds the notch until it ends, however it ends")
     }
 
     static func checkInlineReportHoldsOpen() async {

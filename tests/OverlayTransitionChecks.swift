@@ -362,6 +362,7 @@ struct OverlayTransitionChecks {
         await AppDelegate.checkQuickSettingsSurviveCollapse()
         await AppDelegate.checkSetupCardHoldsAsk()
         await AppDelegate.checkInlineReportHoldsOpen()
+        await AppDelegate.checkReportSaveHoldsUntilAnswered()
         await chatArchiveChecks()
         await AppDelegate.checkMenuExportsDebugLog()
         #endif

@@ -1,10 +1,12 @@
-"""Export Chat Debug Log keeps the notch live.
+"""Export Chat Debug Log and a report's save dialog keep the notch live.
 
 runModal on the export's alert locked the notch until it was answered. From the
 menu bar, which never activates Wisp, macOS also bounced the Dock icon and could
 open the alert behind other apps, so the only way out was clicking the icon. The
-behavior is exercised by scripts/test_overlay_transition.sh, which CI does not
-run, so this holds the shape in CI. Reads source only.
+report's save dialog locked the notch the same way. The export's behavior is
+exercised by scripts/test_overlay_transition.sh, which CI does not run, so this
+holds the shape in CI, as it does for the dialog that scripts/test_diagnostic_report.sh
+exercises through a stand-in. Reads source only.
 """
 import re
 from pathlib import Path
@@ -36,3 +38,14 @@ def test_export_builds_and_writes_off_the_main_actor():
     for signature in ("nonisolated static func writeDebugLog(", "nonisolated static func writePrivate(",
                       "nonisolated static func debugExportFiles("):
         assert signature in model
+
+
+def test_report_save_dialog_opens_no_modal_session():
+    report = (APP / "DiagnosticReport.swift").read_text()
+    assert "runModal(" not in report
+    panel = _body(report, "private static func showSavePanel(")
+    assert "panel.begin {" in panel
+    # The notch stays held until the dialog ends, not just for the click.
+    model = (APP / "OverlayModel.swift").read_text()
+    save = _body(model, "func saveReport(_ draft: ReportDraft) {")
+    assert "defer" not in save and "self.pickingFile = self.filePicker != nil" in save
