@@ -23,6 +23,7 @@ final class KnowYouModel: ObservableObject {
     @Published var goalDraft = ""
     /// The hours step: prefilled, so most people just continue.
     @Published var hours = UserHours()
+    private var savedHours = UserHours()
     /// The service didn't answer the first read. The flow stays hidden behind a
     /// Retry, so a failed load never shows (or saves) default answers.
     @Published var loadFailed = false
@@ -51,9 +52,9 @@ final class KnowYouModel: ObservableObject {
         preview = envelope.preview
         status = envelope.status
         // Hours that can't be read aren't asked about, so saved ones can't be overwritten.
-        let savedHours = await client.userHours()
-        if let savedHours { hours = savedHours }
-        flow = KnowYouFlow.resume(for: envelope.profile, hoursSet: savedHours?.isSet ?? true)
+        let readHours = await client.userHours()
+        if let readHours { hours = readHours; savedHours = readHours }
+        flow = KnowYouFlow.resume(for: envelope.profile, hoursSet: readHours?.isSet ?? true)
         if profile.name.isEmpty {
             profile.name = UserProfile.suggestedName(fullName: NSFullUserName())
         }
@@ -65,7 +66,11 @@ final class KnowYouModel: ObservableObject {
     func back() { error = ""; flow.back() }
     /// Leave this answer unsaved and move on. On the last question that is the
     /// summary, which shows only what was saved.
-    func skip() { error = ""; flow.advance() }
+    func skip() {
+        error = ""
+        if flow.step == .hours { hours = savedHours }  // Skip keeps what's saved, not the pickers.
+        flow.advance()
+    }
 
     /// Not now: close the questions and say where they are. Answers already
     /// saved stay saved; the service counts it as Later.
@@ -112,6 +117,7 @@ final class KnowYouModel: ObservableObject {
             let saved = await client.saveUserHours(hours)
             if let kept = saved.hours {
                 hours = kept
+                savedHours = kept
                 error = ""
                 flow.advance()
             } else {

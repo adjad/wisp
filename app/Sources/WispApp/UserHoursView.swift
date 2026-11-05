@@ -156,14 +156,20 @@ struct UserHoursEditor: View {
 final class HoursOfferModel: ObservableObject {
     @Published private(set) var offer: HoursMoveOffer?
     private var checkedAt: Date?
+    private var checking = false
     private let client = WispClient()
     private static let checkEvery: TimeInterval = 15 * 60
 
     func refresh(now: Date = Date()) async {
+        if checking { return }
         if let last = checkedAt, now.timeIntervalSince(last) < Self.checkEvery { return }
-        checkedAt = now
+        checking = true
+        defer { checking = false }
         let reply = await client.hoursOffer()
-        if reply.answered { offer = reply.offer }
+        // A service still starting says nothing about the offer: ask again next refresh.
+        guard reply.answered else { return }
+        checkedAt = now
+        offer = reply.offer
     }
 
     /// Keep it where it is: the service won't ask about this event again.

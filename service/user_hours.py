@@ -230,7 +230,12 @@ def _load() -> dict:
             if working is not None:
                 seeded["working"] = {**working, "days": list(DEFAULT_WORKING.days)}
             if trusted:
-                _write(seeded)
+                try:
+                    _write(seeded)
+                except OSError as exc:               # still the person's values; next read retries
+                    if not _warned:
+                        _warned = True
+                        _log.warning("user_hours: could not save the setting: %s", exc)
             elif not _warned:
                 _warned = True
                 _log.warning("user_hours: the Day planner's saved hours could not be read yet; will retry")

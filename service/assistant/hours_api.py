@@ -6,6 +6,7 @@ records that it was taken to Ask, where the move has its own confirmation.
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -121,8 +122,9 @@ async def patch_hours(request: Request) -> dict:
 async def offer(request: Request) -> dict:
     body = await _body(request, OfferRequest)
     _zone(body.timezone)
-    return {"offer": hours_offers.next_offer(assistant_store, body.timezone, now=time.time(),
-                                             behavior=_availability())}
+    # Plans several days to find a free slot, so not on the event loop.
+    return {"offer": await asyncio.to_thread(hours_offers.next_offer, assistant_store, body.timezone,
+                                             now=time.time(), behavior=_availability())}
 
 
 def _offer_id(value: str) -> str:
