@@ -418,11 +418,39 @@ def _provider_selected(address: str, item: dict, part: str) -> bool:
     native_stamp = _source_receipt({"raw": _native_raw_at, "history": _native_history_at}.get(part, _native_headers_at))
     native = {"raw": _swift_raw, "history": _swift_history}.get(part, _swift_headers)
     records = native.split(_RAW_RS if part == "raw" else "\n")
-    matched = any(_covered_source(*_source_identity(record, raw=part == "raw"), address, item)
-                  for record in records if record.strip())
-    if matched and _native_source == "mail_app" and native_stamp > stamp:
+    covered = [record for record in records if record.strip()
+               and _covered_source(*_source_identity(record, raw=part == "raw"), address, item)]
+    if covered and _native_source == "mail_app" and native_stamp > stamp:
         return False
+    # Mail closed, or not yet scriptable: when the index was read says nothing,
+    # because it only moves while Mail runs. The mail itself decides, or a sign-in
+    # that stopped working would hide what Mail fetched after it, for good.
+    if covered and _native_source == "local_index" and item.get(part + "_error"):
+        separator = _RAW_RS if part == "raw" else "\n"
+        return _newest_mail(covered, part) <= _newest_mail((item.get(part) or "").split(separator), part)
     return True
+
+
+# A sender can date a message years ahead, and a Gmail copy of it may not be in
+# the snapshot, so a date past this much ahead of now never counts as newer mail.
+_MAIL_DATE_SKEW = 86400.0
+
+
+def _newest_mail(records, part: str) -> float:
+    """The newest believable message date among one source's records, or 0."""
+    limit = time.time() + _MAIL_DATE_SKEW
+    newest = 0.0
+    for record in records:
+        if part == "raw":
+            try:
+                stamp = float(record.strip().split(_RAW_FS, 1)[0])
+            except ValueError:
+                continue
+        else:
+            stamp = _row_ts(record)
+        if newest < stamp <= limit:
+            newest = stamp
+    return newest
 
 
 def _compose_source(native: str, part: str) -> str:
@@ -787,6 +815,18 @@ def _raw_scan_warning(account: str | None = None) -> str:
                 "saved bodies do not establish current inbox coverage.")
 
 
+def _open_mail_hint(address: str, error: str) -> str:
+    """Reconnecting isn't the only way to newer mail when Mail holds this account
+    too: said only while Mail isn't being read, and only for a sign-in that needs
+    the person. A timeout clears by itself."""
+    if "reconnect" not in error.casefold() or _email_read_source == "mail_app":
+        return ""
+    item = _external_accounts.get(address) or {}
+    if not any(_covered_source(row["name"], row["id"], address, item) for row in native_email_accounts()):
+        return ""
+    return " Mail on this Mac also has this account, so opening Mail gets newer mail without reconnecting."
+
+
 def email_freshness_warning(account: str | None = None, *, part: str = "headers") -> str:
     details = email_source_details(account, part=part)
     warnings = []
@@ -800,7 +840,8 @@ def email_freshness_warning(account: str | None = None, *, part: str = "headers"
         if item["source"] == "gmail":
             reason = item["error"] or "a current Google refresh has not completed"
             kind = "Gmail history cache" if part == "history" else "Gmail cache"
-            warnings.append(f"{item['account']}: {kind} is stale or unverified; last successful refresh {last}. {reason}.")
+            warnings.append(f"{item['account']}: {kind} is stale or unverified; last successful refresh {last}. {reason}."
+                            + _open_mail_hint(item["account"], item["error"]))
         else:
             failure = f" The latest Mail refresh failed: {item['error']}." if item["error"] else ""
             warnings.append(f"{item['account']}: Email is from Mail’s local cache. Newer messages may be missing; "
