@@ -234,6 +234,15 @@ def deterministic_todos(sched: dict, notes: list[dict], now: float, tz: str) -> 
     return out
 
 
+def without_passed_events(todos: dict[str, dict], now: float) -> dict[str, dict]:
+    """A to-do read from mail, texts or notes for an event that's over offers nothing to
+    fit in. Reminders are settled by their own Keep/Delete question; a Kept one stays."""
+    from service.assistant.stale_reminders import passed_date
+    return {key: todo for key, todo in todos.items()
+            if todo.get("source") in ("calendar", "reminders")
+            or not passed_date(todo.get("title"), todo.get("due_ts") or now, now)}
+
+
 # --- one cycle ---------------------------------------------------------------------------------
 
 
@@ -1296,6 +1305,7 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
         else:
             merged[todo["id"]] = dict(todo)
     done = store.done_todos(now)
+    merged = without_passed_events(merged, now)
     for todo_id_, entry in done.items():
         if todo_id_ in merged:
             merged[todo_id_]["done"] = True

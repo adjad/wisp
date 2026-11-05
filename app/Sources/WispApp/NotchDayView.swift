@@ -346,7 +346,8 @@ struct NotchDayView: View {
 
     private func stillToFit(_ plan: TodayPlan) -> [DayFitRow] {
         let bounds = today.dayInterval
-        let blocks = plan.displayBlocks.map { DayBlockInput(id: $0.id, title: $0.title, start: $0.start, end: $0.end, kind: $0.kind) }
+        let blocks = plan.displayBlocks.map { DayBlockInput(id: $0.id, title: $0.title, start: $0.start, end: $0.end, kind: $0.kind,
+                                                            evidenceID: $0.evidence_id) }
         return DayTimeline.stillToFit(
             todos: dayTodos(plan),
             unscheduled: plan.displayUnscheduled.map { (id: $0.task_id, title: $0.title, reason: $0.reason) },
@@ -854,7 +855,8 @@ struct NotchDayView: View {
             _ = await today.add(title: item.title, kind: source?.task_kind ?? "task", minutes: length,
                                 priority: source?.priority ?? 2,
                                 due: source?.due_ts.flatMap { $0 > now ? Date(timeIntervalSince1970: $0) : nil },
-                                pinned: Date(timeIntervalSince1970: start))
+                                pinned: Date(timeIntervalSince1970: start),
+                                covers: DayTimeline.removalIDs(item))
         }
     }
 
