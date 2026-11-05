@@ -14,6 +14,9 @@ import json
 import os
 import sys
 import tempfile
+from pathlib import Path
+
+import pytest
 
 os.environ.setdefault("WISP_HOME", tempfile.mkdtemp(prefix="wisp-skill-misnamed-"))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -85,9 +88,14 @@ def _results(events):
     return [e for e in events if e.get("type") == "tool_result"]
 
 
-def setup_module():
-    skills.load()
-    assert skills.get("interview-me") is not None, "the bundled skill this file relies on"
+@pytest.fixture(autouse=True)
+def installed_skill(monkeypatch):
+    # The real bundled file, parsed without skills.load(), which would reload every
+    # skill's tools in the shared registry for the tests that run after this file.
+    path = Path(skills.__file__).parent / "bundled" / "interview-me" / "SKILL.md"
+    skill = skills._parse(path, bundled=True)
+    assert skill is not None
+    monkeypatch.setitem(skills._skills, "interview-me", skill)
 
 
 def test_a_skill_called_by_name_gets_a_recoverable_note():

@@ -2940,7 +2940,13 @@ async def run_agent(
             # command. Phase/prose is not permission to clear the restriction.
             shell_read = (private_shell_implementation(registered)
                           and not planned and not denied)
-            if (registered.category.endswith("read")
+            # recall's fixed nothing-found text carries no record and none of the
+            # query, so there is nothing to leak. Exact match on purpose: a result
+            # with anything else in it, or from any other tool, still latches.
+            from service.tools.memory_tools import RECALL_NOTHING_FOUND
+            read_nothing = name == "recall" and str(result) == RECALL_NOTHING_FOUND
+            if not read_nothing and (
+                    registered.category.endswith("read")
                     and registered.category != "web_read"
                     or registered.category == "screen" or shell_read
                     or name in {"recall", "search_memory", "search_conversations"}):
