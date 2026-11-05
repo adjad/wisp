@@ -466,3 +466,5 @@ Counts are from the 6,098 frozen train rows.
 2. Host fixes land separately.
 3. Data patch: new rows, then a short continuation from the r4 adapter. This is new GPU spend and needs the user's OK.
 4. Reward terms join the GRPO reward: contradicting a tool's "unavailable" line, invented counts, tool workings in an answer, no list at 3+ items. RL only refines what the data shows, so the data patch comes first. E6a and E6b still each need the user's OK.
+
+**RL-SCOPE waits (user, 2026-11-04).** Update `RL-SCOPE.md` only after r4 or r5 has passed the gate and been tested. Until then it stays as written. The update starts from the model that passed and from what its gate and live tests show, and covers at least the four reward terms above and the starting model.
