@@ -243,6 +243,30 @@ def test_nothing_the_notch_opens_lands_under_it():
     assert "access.request(item)" in act and "settingsThroughRequest" in act and "openSettingsPane" in act
 
 
+def test_a_fast_answer_keeps_the_page_through_the_panels_close():
+    """Release Auditor on #487: macOS can answer while the panel is still rolling up (a
+    question it never showed). The wait must last until the panel has opened again, or
+    the close dismisses the page and its "macOS didn't show its question" never shows.
+    Motion check: AppDelegate.checkPermissionPageStepsAside."""
+    sources = _sources()
+    page = sources["NotchPermissionPage.swift"]
+    assert "endWaiting" not in _body(page, "func act(_ item: Item)"), "the answer doesn't end the wait"
+    answered = _body(page, "func answered(_ wait: Waiting)")
+    assert "comeBack()" in answered and "endWaiting" not in answered
+    forward = _body(page, "private func appCameForward(")
+    assert "comeBack()" in forward and "endWaiting" not in forward
+    # Only the panel opening (or the person leaving the page) ends it.
+    assert "endWaiting()" in _body(page, "func panelOpened()") and "endWaiting()" in _body(page, "func closed()")
+    app = sources["AppDelegate.swift"]
+    # model.collapsed is still false during a roll-up, so openAssistant would do nothing.
+    for name in ("private func permissionPageComesBack()", "private func stepBack()"):
+        body = _body(app, name)
+        assert "openAssistant()" not in body and "expand()" in body, name
+    back = _body(app, "private func permissionPageComesBack()")
+    assert "presentation.desired == .chat && !model.collapsed" in back
+    assert "model.permissionPage.panelOpened()" in back, "an open panel has no opening to end the wait"
+
+
 def test_only_the_explicit_finish_marks_setup_done():
     """A quit (macOS's Quit & Reopen after Full Disk Access included) or an
     early close must never end setup, even when the model can already answer:
