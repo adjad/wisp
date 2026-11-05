@@ -95,6 +95,16 @@ def test_a_reply_to_the_sender_is_not_contacting_the_ta():
     assert not contacted(LONG, [row(f"Lee <{SENDER}>", "Re: Attendance this quarter")])
 
 
+def test_sharing_the_source_with_someone_else_is_not_contacting_the_ta():
+    subject = "Attendance this quarter"
+    assert not contacted(LONG, [row("Dana <dana@school.edu>", f"Fwd: {subject}")]), "a forward to a classmate"
+    assert not contacted(LONG, [row(f"Lee <{SENDER}>, Dana <dana@school.edu>", f"Re: {subject}")]), "reply all"
+    assert not contacted("Contact your TA about the midterm regrade request",
+                         [row("pat@gmail.com", "Fwd: Midterm regrade request")],
+                         subject="Midterm regrade request"), "three topic words, but only the source again"
+    assert contacted(LONG, [row("Priya (Section TA) <p@gmail.com>", f"Fwd: {subject}")]), "forwarded to the TA herself"
+
+
 def test_a_note_to_self_is_not_contacting_anyone():
     assert not contacted(LONG, [row(ME, "Attendance in discussion section")])
 
@@ -121,6 +131,16 @@ def test_a_named_person_by_display_name_or_address(to):
 def test_a_named_person_with_a_vague_subject_counts_and_an_unrelated_one_does_not():
     assert contacted("Email Priya Shah about the visa form", [row("Priya Shah <p@school.edu>", "Quick question")])
     assert not contacted("Email Priya Shah about the visa form", [row("Priya Shah <p@school.edu>", "Lunch on Friday")])
+
+
+@pytest.mark.parametrize("subject", ["午餐", "Обед", "دعوة", "Dîner vendredi"])
+def test_a_subject_in_another_script_is_not_a_vague_one(subject):
+    assert not contacted("Email Priya Shah about the visa form", [row("Priya Shah <p@school.edu>", subject)])
+
+
+def test_a_topic_in_another_script_can_match():
+    assert contacted("Email Priya Shah about the 签证 form", [row("Priya Shah <p@school.edu>", "签证")])
+    assert contacted("Email Priya Shah about the visa form", [row("Priya Shah <p@school.edu>", "")]), "no subject"
 
 
 def test_someone_else_with_the_same_topic_does_not_stand_in_for_a_named_person():
@@ -214,8 +234,14 @@ def test_a_failed_read_keeps_what_was_known_and_never_raises(native, monkeypatch
 
     async def broken(days, timeout=8.0):
         raise bridge.BridgeError("app_not_connected")
-    monkeypatch.setattr(bridge, "read_sent", broken)
+    tried = []
+
+    async def noted(days, timeout=8.0):
+        tried.append(days)
+        return await broken(days, timeout)
+    monkeypatch.setattr(bridge, "read_sent", noted)
     assert len(asyncio.run(sources.all_sent_rows(NOW + 3600))) == 1
+    assert tried, "it did try again"
 
 
 def test_no_app_and_no_gmail_is_simply_no_rows(monkeypatch):
@@ -275,6 +301,14 @@ def test_an_alert_and_wisps_own_notices_are_never_retired(store, identity):
         out = handled.contacted_records({"cards": [record]}, state["seen"],
                                         [row("Priya Shah <pshah@school.edu>", "Section attendance")], now=NOW)
         assert out == set()
+
+
+def test_a_mail_entry_saved_before_senders_were_kept_waits_for_the_next_cycle(store, identity):
+    state = store.state()
+    old = {REF: {k: v for k, v in state["seen"][REF].items() if k not in ("sender", "mentioned")}}
+    sent = [row("Priya Shah <pshah@school.edu>", "Section attendance")]
+    assert handled.contacted_records(state, old, sent, now=NOW) == set()
+    assert handled.contacted_records(state, state["seen"], sent, now=NOW) == {"card:ta", "todo:ta"}
 
 
 def test_contact_work_is_what_gates_reading_apple_mail(store):

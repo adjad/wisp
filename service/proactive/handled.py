@@ -121,6 +121,8 @@ def contacted_records(state: dict, seen: dict[str, dict], sent: list[dict], *, n
         if sent_check.contact_of(record.get("title")) is None:
             continue
         for ref in _refs(record) & set(seen):
+            if seen[ref].get("source") == "mail" and "sender" not in seen[ref]:
+                continue                  # saved before senders were kept; the next cycle adds it
             if entry_contacted(record.get("title"), seen[ref], sent, mine=mine, now=now):
                 out.add(str(record.get("id")))
                 break

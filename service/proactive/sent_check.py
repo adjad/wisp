@@ -20,8 +20,9 @@ date keeps the suggestion. How a person is matched, strongest first:
 - A role ("your section TA"): headers can't say who holds a role, so the recipient
   needs outside evidence: the role word in their name or address, their address
   appearing in the source message, or the source sender's organization. Then the
-  subject has to be about the topic. Replying to the sender doesn't count; the card
-  told the user to contact someone else.
+  subject has to be about the topic. Replying to the sender doesn't count, the card
+  told the user to contact someone else, and neither does sharing the source itself
+  with someone only the organization ties to the role.
 - No such evidence: the subject alone has to say it clearly, three topic words at
   least, one of them specific. A named person who didn't get the mail isn't rescued
   by this; emailing Dana about the lease doesn't mean Sam was told.
@@ -133,7 +134,9 @@ def _singular(word: str) -> str:
 def _words(text) -> set[str]:
     """The words that can say what a subject is about."""
     bare = _COURSE_CODE.sub(" ", str(text or ""))
-    found = {_singular(w) for w in re.findall(r"[a-z][a-z'’-]+", bare.casefold()) if len(w) >= 3}
+    # Any script's letters: a subject in another language says something, it isn't vague.
+    words = re.findall(r"[^\W\d_][\w'’-]*", bare.casefold())
+    found = {_singular(w) for w in words if len(w) >= 3 or not w.isascii()}
     return found - _NOT_TOPIC
 
 
@@ -179,19 +182,16 @@ def _names_match(names: frozenset, name: str, address: str) -> bool:
     return len(names) == 1 and len(ordered[0]) >= 4 and len(bare) == len(ordered[0]) + 1 and bare[1:] == ordered[0]
 
 
-def _role_evidence(contact: Contact, name: str, address: str, sender: str, mentioned) -> bool:
-    if address in mentioned:
-        return True
+def _holds_role(contact: Contact, name: str, address: str, mentioned) -> bool:
+    """Something ties this recipient to the role itself."""
     tokens, _ = _identity_tokens(name, address)
-    if {_singular(t) for t in tokens} & (contact.words & {_singular(r) for r in _ROLES}):
-        return True
-    organization = _organization(sender)
-    return bool(organization) and _organization(address) == organization
+    return address in mentioned or bool({_singular(t) for t in tokens}
+                                        & (contact.words & {_singular(r) for r in _ROLES}))
 
 
-def _about_topic(subject_words: set[str], topic_words: set[str], same_subject: bool) -> bool:
+def _about_topic(subject_words: set[str], topic_words: set[str]) -> bool:
     overlap = subject_words & topic_words
-    return same_subject or bool(overlap - _GENERIC) or len(overlap) >= 2
+    return bool(overlap - _GENERIC) or len(overlap) >= 2
 
 
 def matches(contact: Contact, row: dict, *, subject: str, sender: str, mentioned, mine) -> bool:
@@ -214,8 +214,16 @@ def matches(contact: Contact, row: dict, *, subject: str, sender: str, mentioned
     others = [(n, a) for n, a in people if a != sender]
     if not others or not topic_words:
         return False
-    if contact.kind == "role" and any(_role_evidence(contact, n, a, sender, mentioned) for n, a in others):
-        return _about_topic(sent_words, topic_words, same_subject)
+    if contact.kind == "role" and any(_holds_role(contact, n, a, mentioned) for n, a in others):
+        return same_subject or _about_topic(sent_words, topic_words)
+    # The source's own subject, forwarded or replied to all, to someone nothing ties to
+    # the role: sharing the message with a classmate isn't contacting the TA.
+    if same_subject:
+        return False
+    organization = _organization(sender)
+    if (contact.kind == "role" and organization and len(others) == len(people)
+            and any(_organization(a) == organization for _, a in others)):
+        return _about_topic(sent_words, topic_words)
     overlap = sent_words & topic_words
     return len(overlap) >= 3 and bool(overlap - _GENERIC)
 
