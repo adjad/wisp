@@ -481,6 +481,28 @@ def _group_reviews(suggestions, by_id):
     return out, {group["id"]: listed}
 
 
+# A kept group block saved before tasks recorded what they cover, or one typed by hand.
+_REVIEW_BLOCK_TITLE = re.compile(r"\s*review\s+\d+\s+(emails?|messages?|notes?|items?)\b", re.I)
+_REVIEW_BLOCK_SOURCES = {"email": {"email"}, "message": {"messages"}, "note": {"notes"},
+                         "item": set(_GROUPED_SOURCES)}
+
+
+def _planned_reviews(tasks, day):
+    """(item ids, sources) the day's kept or finished blocks already give time to. A block
+    the user dismissed gives none, so its items can be suggested again. A block with no
+    record of its items covers its whole source, rather than double it."""
+    ids, sources = set(), set()
+    for task in tasks:
+        if task.get("status") not in ("active", "done") or task.get("day") != day:
+            continue
+        if task.get("covers"):
+            ids.update(task["covers"])
+        elif (block := _REVIEW_BLOCK_TITLE.match(str(task.get("title") or ""))):
+            noun = block.group(1).casefold().removesuffix("s")
+            sources |= _REVIEW_BLOCK_SOURCES[noun]
+    return ids, sources
+
+
 # Titles that aren't a thing to do, as the notch's DayTimeline.isJunk reads them.
 _JUNK_TITLES = {"nothing", "none", "n/a", "na", "null", "nil", "no", "yes", "ok", "okay", "untitled",
                 "new reminder", "tbd", "todo", "to do", "asdf", "idk", "nothing really", "nothing much",
@@ -743,6 +765,10 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     # title as an active authored task. Cross-source evidence is not otherwise
     # merged by title: two equally named source records can be different tasks.
     authored = {clean(t["title"]).casefold() for t in state["tasks"] if t["status"] == "active"}
+    # A review the user finished today isn't owed another block today either.
+    reviewed = authored | {clean(t["title"]).casefold() for t in state["tasks"]
+                           if t["status"] == "done" and t.get("day") == day}
+    planned_ids, planned_sources = _planned_reviews(state["tasks"], day)
     # An invitation or a note about a calendar event is already on the day as that
     # event, so it never also becomes a review block.
     events = {_event_key(c.get("title")) for c in state["commitments"] if c.get("source") == "calendar"}
@@ -760,6 +786,8 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
         if removed and item["id"] in removed:
             removed_today.append(item["id"])
             continue
+        if item["id"] in planned_ids or item["source"] in planned_sources:
+            continue
         if len(suggestions) >= MAX_SUGGESTIONS:
             continue
         title = item["title"]
@@ -773,9 +801,12 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
         # not an invented assignment or a fabricated deadline.
         if item["source"] == "reminders" and item["due_ts"] is None:
             continue
-        suggested_titles.add(title_key)
         planned_title = item.get("planning_title") or (review_title(title, item.get("sender") or "")
                                                        if item["needs_review"] else title)
+        # A kept block is titled as the suggestion was: "Review: <subject>".
+        if clean(planned_title).casefold() in (reviewed if item["needs_review"] else authored):
+            continue
+        suggested_titles.add(title_key)
         suggestions.append(dict(id="daily:" + item["id"], title=planned_title, day=day,
             timezone=timezone, kind=item.get("task_kind", "task"), duration_minutes=item["suggested_minutes"],
             priority=item["priority"], due_ts=item["due_ts"] if item["due_ts"] and item["due_ts"] > max(now, lo) else None,
