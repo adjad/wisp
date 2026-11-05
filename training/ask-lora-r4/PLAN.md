@@ -501,3 +501,25 @@ For the host, not the data: `service/tools/proactive_tools.py` prints the same i
 Gate: a fourth private set, 8 cases from this chat, local only.
 
 **What counts toward the 75%.** A thought that only copies the tool's items into a list doesn't count, however long it is. In the same chat, a 1,377-char list copy added nothing, while a 2,155-char thought that worked out who said what preceded the answer the user enjoyed. Base-style alone isn't enough either: one such thought ended in a tool-workings leak on an empty result, so the empty-result rows stay.
+
+**Formatting (user, 2026-11-04): answers should be organized and good looking: tables, lists, bullets.**
+
+r4 has trained structure away. Share of answers on the full toolbench (466 cases, step 1150):
+
+| | Base | Step 1150 |
+|---|---|---|
+| Bullets | 30% | 8% |
+| Bold | 66% | 14% |
+| Tables | 0% | 0% |
+
+Training has 0 tables in 3,145 finals. Neither model uses one today, so tables have to be taught; the base can't supply them unprompted, and `ASK_STYLE_HINT` only mentions a short bullet list and caps answers at 4 sentences.
+
+`MarkdownView.swift` on main draws GFM tables as a wrapping grid, flat lists and bold. It has no heading block, so `###` shows as text, and indented bullets flatten.
+
+Changes to the patch:
+- **Structure by shape:** one fact stays a sentence. 3+ items with one field get a list. 3+ items with 2+ fields (time and event, sender and subject, item and due date) get a table of at most 3 columns. Bold a short label to group sections; no headings or nested bullets.
+- **Generation:** base writes these with a formatting instruction used only while generating. The row's prompt stays the production prompt. About 100 table rows, plus the day rows above with structure required.
+- **Never structured:** anything sent to another person, read-aloud voice answers, and any answer where the user asked for a format or no lists. Standing instructions win. Voice needs checking in the data before generation.
+- **Rough size:** about 850 new and 1,000 sampled rows, about 6–7 h, about $4–5.
+- **Prompt:** leave `ASK_STYLE_HINT` alone first, since the system prompt has little token headroom. If tables don't appear, propose a small edit through a code chat.
+- **Gate:** report bullet, bold and table share against base, and include list and schedule answers in the user's blind rating. Check real tables in the notch by eye, since it is narrow.
