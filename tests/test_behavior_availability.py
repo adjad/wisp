@@ -1704,12 +1704,12 @@ def main():
     c = inactivity_case()
     try:
         task = c.store.today_save_task(dict(title='Fitting full-day authored work', day='2026-10-19', timezone=ZONE,
-            duration_minutes=9*60, due_ts=None, pinned_start=None))
+            duration_minutes=8*60, due_ts=None, pinned_start=None))
         c.seed(); snap, ws, _ = c.read(day='2026-10-19')
         assert len(snap['windows']) == 1 and not ws['tentative_count']
         assert not any(t['task_id'] == task['id'] for t in ws['proposed_plan']['unscheduled']), ws['proposed_plan']['unscheduled']
         authored_blocks = [b for b in ws['proposed_plan']['blocks'] if b.get('task_id') == task['id']]
-        assert len(authored_blocks) == 1 and authored_blocks[0]['end'] - authored_blocks[0]['start'] == 9*3600
+        assert len(authored_blocks) == 1 and authored_blocks[0]['end'] - authored_blocks[0]['start'] == 8*3600
         assert any(t['task_id'] != task['id'] for t in ws['proposed_plan']['unscheduled'])
         passed('Actual fitting authored full-day work takes precedence over optional computer-inactivity guidance; source suggestion correctly waits')
     finally:
