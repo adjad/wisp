@@ -499,3 +499,5 @@ Changes to the patch:
 For the host, not the data: `service/tools/proactive_tools.py` prints the same item under "Suggested next steps" and "Other to-dos", so the model sees repeats it then copies.
 
 Gate: a fourth private set, 8 cases from this chat, local only.
+
+**What counts toward the 75%.** A thought that only copies the tool's items into a list doesn't count, however long it is. In the same chat, a 1,377-char list copy added nothing, while a 2,155-char thought that worked out who said what preceded the answer the user enjoyed. Base-style alone isn't enough either: one such thought ended in a tool-workings leak on an empty result, so the empty-result rows stay.
