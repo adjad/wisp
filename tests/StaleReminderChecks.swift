@@ -32,6 +32,17 @@ func staleReminderChecks(_ check: (Bool, String) -> Void) {
     check(mixed?.map(\.detail) == ["8 days overdue · Home", "1 day overdue", "Added 9 days ago"],
           "overdue and undated details: \(mixed?.map(\.detail) ?? [])")
     check(asks?.allSatisfy { !$0.overdue } == true, "no reason (an older service) reads as undated")
+    // A reminder whose title's date has passed says that, not how long it's been.
+    let passed = StaleReminderAsk.parse(["asks": [
+        ["source_id": "p1", "title": "Review before your 10/30 midterm", "context": "School", "reason": "overdue",
+         "age_days": 5, "passed_date": "10/30", "actions": ["keep", "delete"]],
+        ["source_id": "p2", "title": "Study for the Oct 30 quiz", "reason": "undated", "age_days": 6,
+         "passed_date": "Oct 30", "actions": ["keep", "delete"]],
+        ["source_id": "p3", "title": "Return book", "reason": "undated", "age_days": 9, "passed_date": NSNull(),
+         "actions": ["keep", "delete"]],
+    ]])
+    check(passed?.map(\.detail) == ["10/30 has passed · School", "Oct 30 has passed", "Added 9 days ago"],
+          "passed-date details: \(passed?.map(\.detail) ?? [])")
 
     // Failures in plain words; the service's detail wins.
     check(StaleReminderAsk.failure(status: 409, detail: "Reminders hasn't synced recently; nothing was deleted.", deleting: true)
