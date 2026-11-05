@@ -523,3 +523,14 @@ Changes to the patch:
 - **Rough size:** about 850 new and 1,000 sampled rows, about 6–7 h, about $4–5.
 - **Prompt:** leave `ASK_STYLE_HINT` alone first, since the system prompt has little token headroom. If tables don't appear, propose a small edit through a code chat.
 - **Gate:** report bullet, bold and table share against base, and include list and schedule answers in the user's blind rating. Check real tables in the notch by eye, since it is narrow.
+
+**r5 priorities (user, 2026-11-05): "make sure the answer is actually helpful, warm, and pleasing to read."** This replaces earlier orderings.
+1. Helpful: the answer does what was asked and uses the right source.
+2. Warm and pleasing to read: the base voice, organized for the content.
+3. Real reasoning behind the answer.
+4. Safety and honesty stay, at lower priority: no extra row budget, and existing rows and host confirmations remain.
+
+**Styling is judged per answer, not by a share (user).** "Bullets and bold should not appear in X% of cases - they should appear when it is right for them to be there." This replaces the formatting shares and the bullet and bold bars above.
+- A case's shape decides: tag toolbench cases with the shape that fits (one fact, list, table, grouped, plain for outbound or a stated preference).
+- Score both directions: structure where the content needs it, and none where it doesn't.
+- The user's blind rating and a look in the notch outrank any count. Base's shares may be reported for context, never as a target.
