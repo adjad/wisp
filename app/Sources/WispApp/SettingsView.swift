@@ -227,6 +227,7 @@ final class SettingsLoader: ObservableObject {
     @Published private(set) var saveWhenAwayPending = false
     @Published private(set) var saveMemory: Bool?
     @Published private(set) var saveMemoryPending = false
+    @Published private(set) var saveMemoryDetail: SaveMemoryDetail?
     // The Daily Summary's morning and evening hours, as the service confirmed them.
     @Published private(set) var briefTimes: WispClient.BriefTimes?
     @Published private(set) var briefTimesPending = false
@@ -1124,8 +1125,10 @@ final class SettingsLoader: ObservableObject {
     func refreshSaveMemory() async {
         guard !saveMemoryPending else { return }
         let confirmed = await client.saveMemoryState()
+        let detail = await client.saveMemoryDetail()
         guard !saveMemoryPending else { return }
         saveMemory = confirmed
+        saveMemoryDetail = detail
     }
 
     /// One change at a time, like Save power; the row shows what the service confirmed.
@@ -1135,6 +1138,7 @@ final class SettingsLoader: ObservableObject {
         Task {
             var confirmed = await self.client.setSaveMemory(on)
             if confirmed == nil { confirmed = await self.client.saveMemoryState() }
+            self.saveMemoryDetail = await self.client.saveMemoryDetail()
             self.saveMemory = confirmed
             self.saveMemoryPending = false
         }

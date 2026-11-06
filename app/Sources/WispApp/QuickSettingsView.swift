@@ -172,8 +172,9 @@ struct QuickSettingsView: View {
     }
 
     private var saveMemoryRow: some View {
-        row("Save memory", help: QuickSettingsText.saveMemoryHelp) {
-            Text(QuickSettingsText.saveMemory(on: settings.saveMemory, pending: settings.saveMemoryPending))
+        row("Save memory", help: QuickSettingsText.saveMemoryHelp(detail: settings.saveMemoryDetail)) {
+            Text(QuickSettingsText.saveMemory(on: settings.saveMemory, pending: settings.saveMemoryPending,
+                                              detail: settings.saveMemoryDetail))
         } control: {
             if settings.saveMemory != nil {
                 Toggle("Save memory", isOn: Binding(get: { settings.saveMemory == true },
