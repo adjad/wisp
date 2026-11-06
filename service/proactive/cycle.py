@@ -1492,7 +1492,10 @@ def google_mail_status(now: float | None = None) -> tuple[list[str], list[str], 
 
     Unread: every other connected account, unless Mail.app's current, fresh
     header snapshot holds parsed header rows for that same account
-    (_mail_app_read_accounts); then Mail.app's read stands for it.
+    (_mail_app_read_accounts) and that is the copy Wisp shows; then Mail.app's
+    read stands for it. After a Google error other than an expired sign-in Wisp
+    keeps showing the Gmail snapshot (email_tools._provider_selected), so what
+    Mail.app read can't vouch for it.
 
     Reasons: "reconnect" when the person has to act (an expired sign-in, a
     sign-in without mail access, or one that needs reconnecting), else
@@ -1526,7 +1529,9 @@ def google_mail_status(now: float | None = None) -> tuple[list[str], list[str], 
         held = _mail_app_read_accounts(now)    # once per call, never per account
         for email in unchecked:
             item = mail._external_accounts.get(email) or {}
-            if not any(mail._covered_source(label, native_id, email, item) for label, native_id in held):
+            showing_gmail = item.get("headers_error") and not accounts[email].get("auth_expired")
+            if showing_gmail or not any(mail._covered_source(label, native_id, email, item)
+                                        for label, native_id in held):
                 unread.append(email)
     reasons = {email: _unread_reason(email, accounts[email], gmail_source._errors.get(email, ""),
                                      (mail._external_accounts.get(email) or {}).get("headers_error", ""))

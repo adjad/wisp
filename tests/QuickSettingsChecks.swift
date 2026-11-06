@@ -29,6 +29,37 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(memoryHelp.contains("Off keeps the model loaded, except after you hide the notch"),
           "Save memory help says what off still does")
 
+    // Save memory on the user's oMLX: the row never promises memory it can't free.
+    let omlx = SaveMemoryDetail(applies: true, onOMLX: true)
+    check(QuickSettingsText.saveMemory(on: true, pending: false, detail: omlx).contains("Gemma memory"),
+          "on oMLX it names the Gemma")
+    let omlxHelp = QuickSettingsText.saveMemoryHelp(detail: omlx)
+    check(omlxHelp.contains("only ever unloads that one model") && omlxHelp.contains("another app has used")
+          && omlxHelp.contains("unless another model is loaded"), "the oMLX help says what it leaves alone")
+    let holding = SaveMemoryDetail(applies: true, otherApp: true, onOMLX: true)
+    check(QuickSettingsText.saveMemory(on: true, pending: false, detail: holding).contains("another app"),
+          "another app's use is what keeps it loaded")
+    check(QuickSettingsText.saveMemory(on: false, pending: false, detail: holding) == "Wisp's model stays loaded",
+          "off stays off while another app uses it")
+    for why in ["not_gemma", "pinned", "not_omlx", "not_reported"] {
+        let blocked = SaveMemoryDetail(applies: false, whyNot: why)
+        for on in [true, false] {
+            let line = QuickSettingsText.saveMemory(on: on, pending: false, detail: blocked)
+            check(line.hasPrefix("Not active") && !line.contains("Frees"), "\(why) says it isn't active")
+        }
+        check(QuickSettingsText.saveMemoryHelp(detail: blocked).contains("isn't freeing any memory"),
+              "\(why) help doesn't promise memory")
+        check(QuickSettingsText.saveMemory(on: nil, pending: false, detail: blocked) == "Not confirmed",
+              "\(why) with an unconfirmed switch stays unconfirmed")
+    }
+    check(QuickSettingsText.saveMemoryHelp(detail: SaveMemoryDetail(applies: true)) == memoryHelp,
+          "the built-in engine keeps the general help")
+    check(QuickSettingsText.saveMemoryHelp(detail: nil) == memoryHelp, "no reply keeps the general help")
+    let reply = #"{"save_memory":true,"applies":false,"why_not":"not_gemma","engine":"omlx","other_app":false}"#
+    check(SaveMemoryDetail(json: Data(reply.utf8))
+          == SaveMemoryDetail(applies: false, whyNot: "not_gemma", onOMLX: true), "the reply parses")
+    check(SaveMemoryDetail(json: Data(#"{"save_memory":true}"#.utf8)) == nil, "no applies, no detail")
+
     // Save power: says it saves power on battery and while away; unconfirmed
     // is never "off"; the help names the 15 W and 10 W caps and what they cover
     // (background work always, the Brief after 10 minutes away), that light GPU

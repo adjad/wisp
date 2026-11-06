@@ -818,6 +818,16 @@ final class WispClient {
         return Self.flag("save_memory", in: data)
     }
 
+    /// The whole GET /memory_saver reply, or nil when it can't be read. The app
+    /// turns it into a SaveMemoryDetail; this file is compiled on its own by the
+    /// native contract checks, without QuickSettingsText.swift.
+    func saveMemoryReply() async -> Data? {
+        let url = Self.baseURL.appendingPathComponent("memory_saver")
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return data
+    }
+
     // POST /memory_saver -> turn "Save memory" on or off. Returns the flag the
     // service confirmed, or nil when the reply was lost or unreadable.
     func setSaveMemory(_ on: Bool) async -> Bool? {
