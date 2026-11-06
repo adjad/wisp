@@ -1125,10 +1125,10 @@ final class SettingsLoader: ObservableObject {
     func refreshSaveMemory() async {
         guard !saveMemoryPending else { return }
         let confirmed = await client.saveMemoryState()
-        let detail = await client.saveMemoryDetail()
+        let reply = await client.saveMemoryReply()
         guard !saveMemoryPending else { return }
         saveMemory = confirmed
-        saveMemoryDetail = detail
+        saveMemoryDetail = reply.flatMap { SaveMemoryDetail(json: $0) }
     }
 
     /// One change at a time, like Save power; the row shows what the service confirmed.
@@ -1138,7 +1138,7 @@ final class SettingsLoader: ObservableObject {
         Task {
             var confirmed = await self.client.setSaveMemory(on)
             if confirmed == nil { confirmed = await self.client.saveMemoryState() }
-            self.saveMemoryDetail = await self.client.saveMemoryDetail()
+            self.saveMemoryDetail = await self.client.saveMemoryReply().flatMap { SaveMemoryDetail(json: $0) }
             self.saveMemory = confirmed
             self.saveMemoryPending = false
         }
