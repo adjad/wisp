@@ -482,8 +482,11 @@ async def tick(client, now: float | None = None, *, pressure: str | None = None,
             return KEEP
         await client.unload(model)
         idle.forget(model)
-        note_parked("pressure" if level in (WARN, CRITICAL) else
-                    "batch done" if action == CLOSE_WINDOW else "idle", now)
+        if action == CLOSE_WINDOW:
+            reason = "pressure" if level in (WARN, CRITICAL) else "batch done"
+        else:                          # warn parks on the ordinary timer
+            reason = "pressure" if level == CRITICAL else "idle"
+        note_parked(reason, now)
         log.info("memory saver: unloaded %s (%s)", model, _state.last_reason)
     elif action == OPEN_WINDOW:
         if view is not None and view.others:

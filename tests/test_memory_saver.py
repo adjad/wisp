@@ -118,6 +118,7 @@ def test_warn_pressure_doesnt_park_sooner_than_five_minutes():
     assert tick(c, 12 * MIN, pressure=M.WARN) == M.KEEP
     assert tick(c, 14 * MIN, pressure=M.WARN) == M.KEEP
     assert tick(c, 15 * MIN, pressure=M.WARN) == M.PARK
+    assert M._state.last_reason == "idle"
 
 
 def test_unknown_pressure_never_parks_early():
