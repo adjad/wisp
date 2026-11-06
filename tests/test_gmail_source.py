@@ -235,6 +235,74 @@ class GmailSource(unittest.TestCase):
         self.assertIn("reconnect", output)
         self.assertEqual(E._external_accounts[ME]["headers_at"], stamp)
 
+    def expire_sign_in(self, part="headers"):
+        E.external_email_error(ME, part, "Google sign-in expired; reconnect this account in Settings ▸ Google")
+
+    def test_expired_sign_in_does_not_hide_newer_mail_in_the_local_index(self):
+        now = time.time()
+        self.publish(headers=header(subject="Last Gmail copy", stamp=now - 7200))
+        self.expire_sign_in()
+        # Mail ran after the sign-in stopped working, then closed. Or it is open
+        # but not scriptable yet (a new build), which also reads the index.
+        E.cache_emails(header(subject="Fetched by Mail afterwards", stamp=now - 3600))
+        E.set_email_availability(True, read_source="local_index")
+        subjects = [row["subject"] for row in E._parse_header_records(E._headers)]
+        self.assertEqual(subjects, ["Fetched by Mail afterwards"])
+        warning = E.email_freshness_warning()
+        self.assertIn("reconnect", warning)
+        self.assertIn("Mail’s local cache", warning)
+
+    def test_expired_sign_in_keeps_a_newer_gmail_copy_over_an_older_local_index(self):
+        # What the Mac had on the day: Mail closed before the last Gmail refresh.
+        now = time.time()
+        self.publish(headers=header(subject="Last Gmail copy", stamp=now - 3600))
+        self.expire_sign_in()
+        E.cache_emails(header(subject="Older in Mail", stamp=now - 7200))
+        E.set_email_availability(True, read_source="local_index")
+        self.assertEqual([row["subject"] for row in E._parse_header_records(E._headers)], ["Last Gmail copy"])
+
+    def test_a_future_dated_message_does_not_make_the_local_index_newer(self):
+        now = time.time()
+        self.publish(headers=header(subject="Last Gmail copy", stamp=now - 3600))
+        self.expire_sign_in()
+        E.cache_emails("\n".join([header(subject="Dated years ahead", stamp=now + 4 * 365 * 86400),
+                                  header(subject="Older in Mail", stamp=now - 7200)]))
+        E.set_email_availability(True, read_source="local_index")
+        self.assertEqual([row["subject"] for row in E._parse_header_records(E._headers)], ["Last Gmail copy"])
+
+    def test_expired_sign_in_does_not_hide_newer_bodies_saved_from_mail(self):
+        now = time.time()
+        self.publish(raw=G.raw_record(msg("old", "Last Gmail body", stamp=now - 7200), ME))
+        self.expire_sign_in("raw")
+        E.cache_raw_emails(G.raw_record(msg("new", "Body saved from Mail", stamp=now - 3600), ME))
+        E.set_email_availability(True, read_source="local_index")
+        E._recompose_all()
+        self.assertEqual([row["subject"] for row in E._parse_raw()], ["Body saved from Mail"])
+
+    def test_a_healthy_gmail_snapshot_still_outranks_the_local_index(self):
+        now = time.time()
+        self.publish(headers=header(subject="Current Gmail copy", stamp=now - 7200))
+        E.cache_emails(header(subject="In Mail", stamp=now - 3600))
+        E.set_email_availability(True, read_source="local_index")
+        self.assertEqual([row["subject"] for row in E._parse_header_records(E._headers)], ["Current Gmail copy"])
+
+    def test_expired_sign_in_says_opening_mail_also_works_when_mail_has_the_account(self):
+        self.publish(headers=header(subject="Last Gmail copy"))
+        self.expire_sign_in()
+        E.set_email_availability(True, read_source="local_index")
+        self.assertNotIn("opening Mail", E.email_freshness_warning())    # Mail doesn't hold this account
+        E.cache_emails(header(subject="In Mail", stamp=time.time() - 86400))
+        self.assertIn("opening Mail gets newer mail", E.email_freshness_warning())
+        E.set_email_availability(True, read_source="mail_app")           # already read live
+        self.assertNotIn("opening Mail", E.email_freshness_warning())
+
+    def test_a_refresh_timeout_does_not_offer_mail_as_a_way_round(self):
+        self.publish(headers=header(subject="Last Gmail copy"))
+        E.cache_emails(header(subject="In Mail", stamp=time.time() - 86400))
+        E.set_email_availability(True, read_source="local_index")
+        E.external_email_error(ME, "headers", "Google refresh timed out; showing the last available cache")
+        self.assertNotIn("opening Mail", E.email_freshness_warning())
+
     def test_timeout_marks_cached_snapshot_stale(self):
         self.publish(headers=header())
         async def slow(*args):
