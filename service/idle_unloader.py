@@ -4,7 +4,8 @@ an unloaded model just reloads, at the usual cold-start cost, the next time
 it's actually needed.
 
 The keep-warm chat model is exempt from that timer; "Save memory"
-(service.memory_saver) decides when it goes, on the same poll.
+(service.memory_saver) decides when it goes, on the same poll, and on the user's
+oMLX.app only if it is a Gemma that no other app has used lately.
 """
 from __future__ import annotations
 
