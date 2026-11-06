@@ -66,12 +66,12 @@ def tick(client, now, pressure=M.NORMAL):
 
 # --- parking ----------------------------------------------------------------------
 
-def test_the_model_stays_for_30_minutes_after_a_turn_then_parks():
+def test_the_model_stays_for_5_minutes_after_a_turn_then_parks():
     c = FakeClient()
     idle._last_turn = 0.0
-    assert tick(c, 29 * MIN) == M.KEEP
+    assert tick(c, 4.5 * MIN) == M.KEEP
     assert MODEL in c.loaded
-    assert tick(c, 30 * MIN) == M.PARK
+    assert tick(c, 5 * MIN) == M.PARK
     assert c.calls == [("unload", MODEL)] and M._state.parked
 
 
@@ -110,20 +110,20 @@ def test_critical_pressure_parks_after_two_quiet_minutes():
     assert M._state.last_reason == "pressure"
 
 
-def test_warn_pressure_waits_ten_minutes():
+def test_warn_pressure_doesnt_park_sooner_than_five_minutes():
     # Warn is routine on a 16 GB Mac: parking 2 minutes after every question would
     # make most questions pay the reload.
     c = FakeClient()
     idle._last_turn = 10 * MIN
     assert tick(c, 12 * MIN, pressure=M.WARN) == M.KEEP
-    assert tick(c, 19 * MIN, pressure=M.WARN) == M.KEEP
-    assert tick(c, 20 * MIN, pressure=M.WARN) == M.PARK
+    assert tick(c, 14 * MIN, pressure=M.WARN) == M.KEEP
+    assert tick(c, 15 * MIN, pressure=M.WARN) == M.PARK
 
 
 def test_unknown_pressure_never_parks_early():
     c = FakeClient()
     idle._last_turn = 0.0
-    assert tick(c, 10 * MIN, pressure=M.UNKNOWN) == M.KEEP
+    assert tick(c, 4 * MIN, pressure=M.UNKNOWN) == M.KEEP
 
 
 def test_a_model_wisp_did_not_park_is_left_alone():
@@ -179,10 +179,9 @@ def test_a_user_who_comes_back_during_a_window_keeps_the_model():
     tick(c, 30 * MIN)
     tick(c, 90 * MIN)
     idle._last_turn = 91 * MIN
-    assert tick(c, 100 * MIN) == M.KEEP and M._state.window_started is None
+    assert tick(c, 95 * MIN) == M.KEEP and M._state.window_started is None
     assert not M._state.parked
-    assert tick(c, 120 * MIN) == M.KEEP
-    assert tick(c, 121 * MIN) == M.PARK
+    assert tick(c, 96 * MIN) == M.PARK
 
 
 def test_a_turn_that_reloads_a_parked_model_clears_parked():
@@ -213,25 +212,93 @@ def _window_then_user_returns(c):
     assert tick(c, 301 * MIN) == M.KEEP and not M._state.parked
 
 
-def test_an_idle_park_counts_its_hour_from_the_park_not_an_old_window():
+def test_a_window_overdue_at_a_park_still_waits_before_reloading():
+    # The last window is hours old, but the model was only just unloaded.
     c = FakeClient()
     _window_then_user_returns(c)
-    assert tick(c, 330 * MIN) == M.PARK
+    assert tick(c, 305 * MIN) == M.PARK
     loads = c.calls.count(("load", MODEL))
-    assert tick(c, 330.5 * MIN) == M.LEAVE
-    assert tick(c, 389 * MIN) == M.LEAVE
+    assert tick(c, 305.5 * MIN) == M.LEAVE
+    assert tick(c, 319 * MIN) == M.LEAVE
     assert c.calls.count(("load", MODEL)) == loads
-    assert tick(c, 390 * MIN) == M.OPEN_WINDOW
+    assert tick(c, 320 * MIN) == M.OPEN_WINDOW
 
 
-def test_the_notch_x_counts_its_hour_from_the_x_not_an_old_window():
+def test_the_notch_x_waits_before_a_window_too():
     c = FakeClient()
     _window_then_user_returns(c)
     c.loaded.discard(MODEL)                  # /unload_agent
     M.note_notch_hidden(now=310 * MIN)
     assert tick(c, 310.5 * MIN) == M.LEAVE
-    assert tick(c, 369 * MIN) == M.LEAVE
-    assert tick(c, 370 * MIN) == M.OPEN_WINDOW
+    assert tick(c, 324 * MIN) == M.LEAVE
+    assert tick(c, 325 * MIN) == M.OPEN_WINDOW
+
+
+def _use_every(c, gap, minutes):
+    """Ticks every 30 s for `minutes`, with a turn loading the model every `gap`
+    minutes. The minutes each window opened, and the minutes of each park."""
+    windows, parks = [], []
+    for half in range(minutes * 2):
+        now = half / 2 * MIN
+        if half % (gap * 2) == 0:
+            c.loaded.add(MODEL)
+            idle._last_turn = now
+        action = tick(c, now)
+        if action == M.OPEN_WINDOW:
+            windows.append(now / MIN)
+        elif action in (M.PARK, M.CLOSE_WINDOW):
+            parks.append(now / MIN)
+    return windows, parks
+
+
+@pytest.mark.parametrize("gap", [25, 30, 45])
+def test_regular_use_still_gets_a_window_about_once_an_hour(gap):
+    # Each turn leaves only 5 minutes on the model, and the Brief and mail memory
+    # wait out the chat first. If a park restarted the hour, someone who uses Wisp
+    # more often than hourly would never get a window.
+    windows, parks = _use_every(FakeClient(), gap, 6 * 60)
+    assert len(windows) >= 4
+    assert all(b - a >= M.BATCH_EVERY_S / MIN for a, b in zip(windows, windows[1:]))
+    # A window never reloads what was only just unloaded.
+    assert all(w - max(p for p in parks if p < w) >= M.BATCH_AFTER_PARK_S / MIN for w in windows)
+
+
+@pytest.mark.parametrize("gap", [10, 20])
+def test_steady_turns_get_no_extra_loads(gap):
+    # Too soon after each park for a window: the turns are the only loads.
+    windows, parks = _use_every(FakeClient(), gap, 3 * 60)
+    assert windows == []
+    assert len(parks) == 3 * 60 / gap
+
+
+def test_when_steady_use_stops_the_overdue_window_comes_soon():
+    c = FakeClient()
+    _use_every(c, 20, 3 * 60)                # the last turn at 160, parked at 165
+    assert M._state.parked and M._state.parked_at == 165 * MIN
+    assert tick(c, 179 * MIN) == M.LEAVE
+    assert tick(c, 180 * MIN) == M.OPEN_WINDOW
+
+
+def test_background_calls_alone_dont_bring_the_model_back_or_hold_it():
+    # Wisp's own calls between turns: the park still lands at 5 minutes.
+    c = FakeClient()
+    idle._last_turn = 0.0
+    for minute in (1, 2, 3, 4):
+        idle.begin(MODEL)
+        idle.end(MODEL)
+        assert tick(c, minute * MIN) == M.KEEP
+    assert tick(c, 5 * MIN) == M.PARK
+    assert ("unload", MODEL) in c.calls
+    assert tick(c, 5.5 * MIN) == M.LEAVE
+
+
+def test_a_generation_running_at_five_minutes_only_delays_the_park():
+    c = FakeClient()
+    idle._last_turn = 0.0
+    idle._in_flight[MODEL] = 1
+    assert tick(c, 5 * MIN) == M.KEEP
+    idle._in_flight[MODEL] = 0
+    assert tick(c, 5.5 * MIN) == M.PARK
 
 
 def test_a_window_closed_by_pressure_still_counts_from_that_window():
@@ -549,10 +616,10 @@ def otick(client, now, *, wall=None, pressure=M.NORMAL):
                               wall=WALL + now if wall is None else wall))
 
 
-def test_omlx_parks_a_tuned_gemma_after_30_minutes_and_nothing_else(on_omlx):
+def test_omlx_parks_a_tuned_gemma_after_5_minutes_and_nothing_else(on_omlx):
     c = FakeOmlx()
-    assert otick(c, 29 * MIN) == M.KEEP and c.calls == []
-    assert otick(c, 31 * MIN) == M.PARK
+    assert otick(c, 4 * MIN) == M.KEEP and c.calls == []
+    assert otick(c, 6 * MIN) == M.PARK
     assert c.calls == [("unload", GEMMA)] and M._state.parked
     assert M.state()["applies"] is True and M.state()["engine"] == "omlx"
 
@@ -657,14 +724,23 @@ def test_omlx_wisps_own_background_calls_never_hold_the_park(on_omlx):
     # The mail walk touched the model two minutes apart for hours on 2026-11-05 with
     # nobody using Wisp. Those are Wisp's own, and must not keep the model forever.
     c = FakeOmlx()
-    for minute in range(2, 30, 2):
+    for minute in (2, 4):
         idle.begin(GEMMA)
         idle.end(GEMMA)
         idle._own_access[GEMMA] = WALL + minute * MIN
         c.access[GEMMA] = WALL + minute * MIN + 1.0       # the lease ends just after
         assert otick(c, minute * MIN + 30) == M.KEEP
     assert M._state.other_app_at is None
-    assert otick(c, 31 * MIN) == M.PARK
+    assert otick(c, 6 * MIN) == M.PARK
+
+
+def test_omlx_another_apps_use_still_holds_for_30_minutes(on_omlx):
+    assert M.OTHER_APP_HOLD_S == 30 * 60
+    c = FakeOmlx()
+    c.access[GEMMA] = WALL + 2 * MIN
+    assert otick(c, 3 * MIN) == M.KEEP and M._state.other_app_at is not None
+    assert otick(c, 31 * MIN) == M.KEEP and c.calls == []
+    assert otick(c, 33 * MIN) == M.PARK
 
 
 def test_omlx_wisps_own_load_never_looks_like_another_app(on_omlx):
