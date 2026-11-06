@@ -58,6 +58,9 @@ IMPORTANT rules:
     request landing in the milliseconds between that read and the unload can still
     be aborted (it gets a 409 and can retry); oMLX has no atomic unload-if-idle
     over HTTP.
+- The same holds beyond Save memory there. A turn never unloads (omlx_client), the
+  notch's X follows the Gemma rule (omlx_x_hold), and the idle timer only releases a
+  model Wisp itself asked for this run that no other app has used (wisp_may_release).
 """
 from __future__ import annotations
 
@@ -179,6 +182,7 @@ class _State:
     omlx_model: str | None = None        # the chat model the last look at oMLX.app was about
     omlx_block: str | None = None        # why Save memory can't act on it (None: it can)
     other_app_at: float | None = None    # when another app last used it (oMLX's wall clock)
+    not_ours: set[str] = field(default_factory=set)  # resident on oMLX.app, not Wisp's doing
 
 
 _state = _State(started=time.monotonic(), started_wall=time.time())
@@ -320,21 +324,66 @@ async def _quiet_on_omlx(client, model: str, seen: dict) -> bool:
     model since the tick's read. POST /unload aborts running requests, whoever's they
     are, and last_access stops moving during one long generation. Anything unclear
     is a no: the next tick asks again."""
+    if not await engine_idle(client):
+        return False
     try:
-        counts = await client.engine_activity()
         fresh = await _look_at_omlx(client, model)
     except Exception as exc:  # noqa: BLE001 — unknown means don't unload
-        log.info("memory saver: oMLX activity unreadable: %s", type(exc).__name__)
+        log.info("memory saver: oMLX list unreadable: %s", type(exc).__name__)
         return False
-    for key in ("active_requests", "waiting_requests"):
-        value = counts.get(key)
-        if type(value) is not int or value != 0:
-            return False
     return (fresh.block is None and fresh.row.get("loaded") is True
             and _stamp(fresh.row) is not None
             and _stamp(fresh.row) == _stamp(seen)
             # The reads above awaited: a turn or a hold may have started meanwhile.
             and not (idle.foreground_busy() or idle.in_flight(model) > 0 or held()))
+
+
+def note_omlx_rows(rows: list) -> None:
+    """Keep track of which resident models aren't Wisp's. One seen resident before
+    Wisp ever asked for it, or stamped later than Wisp's own last request, stays
+    someone else's until it leaves, even if Wisp uses it meanwhile."""
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+            continue
+        model = row["id"]
+        if not (row.get("loaded") or row.get("is_loading")):
+            _state.not_ours.discard(model)
+        elif idle.own_access_active(model):
+            continue                   # mid-request: the stamp is Wisp's own
+        else:
+            ours, access = idle.own_access(model), _stamp(row)
+            if ours is None or (access is not None and access > ours + OWN_ACCESS_SLOP_S):
+                _state.not_ours.add(model)
+
+
+def wisp_may_release(row: dict) -> bool:
+    """Wisp itself asked for this resident model, and no other app has used it since."""
+    model = row.get("id")
+    ours, access = idle.own_access(model), _stamp(row)
+    return (ours is not None and model not in _state.not_ours and not row.get("pinned")
+            and (access is None or access <= ours + OWN_ACCESS_SLOP_S))
+
+
+async def engine_idle(client) -> bool:
+    """oMLX shows nothing running or waiting, for any client or model. Unknown is no."""
+    try:
+        counts = await client.engine_activity()
+    except Exception as exc:  # noqa: BLE001 — unknown means don't unload
+        log.info("memory saver: oMLX activity unreadable: %s", type(exc).__name__)
+        return False
+    return all(type(counts.get(key)) is int and counts[key] == 0
+               for key in ("active_requests", "waiting_requests"))
+
+
+async def omlx_x_hold(client, model: str, wall: float | None = None) -> str | None:
+    """Why the notch's X must leave `model` alone on oMLX.app, or None if it may
+    unload it: the same rule as Save memory, Gemma only and held by another app."""
+    view = await _look_at_omlx(client, model)
+    if view.block is not None:
+        return view.block
+    if _other_app_recent(model, view.row, time.time() if wall is None else wall):
+        return "other_app"
+    return None if await _quiet_on_omlx(client, model, view.row) else "busy"
 
 
 def _acts_on_omlx() -> bool:
