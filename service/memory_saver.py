@@ -61,6 +61,7 @@ IMPORTANT rules:
 - The same holds beyond Save memory there. A turn never unloads (omlx_client), the
   notch's X follows the Gemma rule (omlx_x_hold), and the idle timer only releases a
   model Wisp itself asked for this run that no other app has used (wisp_may_release).
+  Resident-only background work runs beside another app's model (other_apps_models).
 """
 from __future__ import annotations
 
@@ -279,6 +280,7 @@ class _OmlxView:
 async def _look_at_omlx(client, model: str) -> _OmlxView:
     """One read of oMLX's model list, and what it means for Save memory."""
     rows = [r for r in (await client.status()).get("models", []) if isinstance(r, dict)]
+    note_omlx_rows(rows)
     row = next((r for r in rows if r.get("id") == model), None)
     others = [r["id"] for r in rows
               if r.get("id") != model and (r.get("loaded") or r.get("is_loading"))]
@@ -354,6 +356,14 @@ def note_omlx_rows(rows: list) -> None:
             ours, access = idle.own_access(model), _stamp(row)
             if ours is None or (access is not None and access > ours + OWN_ACCESS_SLOP_S):
                 _state.not_ours.add(model)
+
+
+def other_apps_models(client) -> set[str]:
+    """Models resident on the user's oMLX.app that aren't Wisp's. Background work on
+    Wisp's already-loaded chat model doesn't wait for them, or it would stall for as
+    long as another app keeps one loaded. The accepted cost: a background prefill can
+    make oMLX evict such a model if it's idle and memory is tight."""
+    return set(_state.not_ours) if omlx_app(client) else set()
 
 
 def wisp_may_release(row: dict) -> bool:

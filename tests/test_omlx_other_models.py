@@ -623,3 +623,138 @@ def test_the_route_on_the_bundled_engine_never_asks_for_a_hold(main_module, monk
     result = _route(main_module, monkeypatch, c)
     assert result == {"unloaded": [GEMMA]}
     assert c.unloads == [GEMMA]
+
+
+# --- background work beside another app's model -------------------------------------
+# The user's decision: "Yes, let it run". It stays resident-only, and still gives way
+# to Wisp's own turns and held work. oMLX can evict the idle model at prefill.
+
+BG_CHAT = "gemma-4-E4B-it-oQ4e-mtp"
+BG_OTHER = "Qwen3.6-27B-oQ3.5e"
+BG_OWN = "Fake-Embedder"
+
+
+class Background:
+    """oMLX.app as the background jobs see it, with their model call recorded."""
+    managed = True
+    base_url = "http://127.0.0.1:8000"
+
+    def __init__(self, loaded, *, base_url=None):
+        from service.inference.providers import provider
+        self.provider = provider("omlx")
+        self.loaded = list(loaded)
+        self.chats = []
+        self.load_calls = []
+        if base_url:
+            self.base_url = base_url
+
+    def keep_warm(self):
+        return {BG_CHAT}
+
+    async def loaded_models(self):
+        return list(self.loaded)
+
+    async def status(self):
+        return {"models": [{"id": m, "loaded": True, "is_loading": False, "pinned": False,
+                            "config_model_type": "gemma4" if m == BG_CHAT else "qwen3_5",
+                            "last_access": WALL - 3600} for m in self.loaded]}
+
+    async def load(self, model):
+        self.load_calls.append(model)
+
+    async def unload(self, model):
+        raise AssertionError(f"background work must not unload {model}")
+
+    async def chat(self, model, messages, **kwargs):
+        self.chats.append(model)
+        return {"choices": [{"finish_reason": "stop", "message": {"content": "Mostly school mail"}}]}
+
+
+@pytest.fixture
+def background(on_omlx, monkeypatch):
+    import service.config as config
+    from service.assistant import brief
+    from service.inference import remote_policy
+    from service.mail_memory import runner
+    monkeypatch.setattr(config, "role_to_model", lambda role: BG_CHAT)
+    monkeypatch.setattr(config, "no_thinking_capable", lambda: [BG_CHAT])
+    monkeypatch.setattr(config, "thinks_explicitly", lambda name: False)
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: None)
+    monkeypatch.setattr(runner, "_model_key", lambda: BG_CHAT)
+    M._state.started_wall = WALL
+
+    def use(client):
+        monkeypatch.setattr(brief, "_c", lambda: client)
+        return client
+    return use
+
+
+def _gist(abort=lambda: False):
+    from service.assistant import mail_gists
+    return asyncio.run(mail_gists._resident_reply("s", "m", abort))
+
+
+def _walk():
+    from service.mail_memory import runner
+    return asyncio.run(runner._stand_down())
+
+
+def _seen(client):
+    """One Save memory tick, which is what notices whose models are resident."""
+    asyncio.run(M.tick(client, 1.0, pressure=M.NORMAL, wall=WALL + 1.0))
+
+
+def test_background_runs_beside_another_apps_model(background):
+    c = background(Background([BG_CHAT, BG_OTHER]))
+    _seen(c)
+    assert _gist() == "Mostly school mail" and c.chats == [BG_CHAT]
+    assert _walk() is None
+    assert c.load_calls == []
+
+
+def test_background_still_waits_when_the_chat_model_isnt_loaded(background):
+    c = background(Background([BG_OTHER]))
+    _seen(c)
+    assert _gist() is None and c.chats == []
+    assert _walk() == "not_resident"
+    assert c.load_calls == []                 # waiting, never loading
+
+
+def test_background_still_gives_way_to_a_turn_beside_another_apps_model(background):
+    c = background(Background([BG_CHAT, BG_OTHER]))
+    _seen(c)
+    assert _gist(abort=lambda: True) is None and c.chats == []
+    idle.begin_foreground()
+    try:
+        assert _walk() == "busy"
+    finally:
+        idle.end_foreground()
+
+
+def test_background_still_waits_for_wisps_own_extra_model(background):
+    # Wisp's own embedder isn't another app's. The idle timer clears it, as before.
+    c = background(Background([BG_CHAT, BG_OWN]))
+    with idle.own_request(BG_OWN):
+        pass
+    _seen(c)
+    assert BG_OWN not in M._state.not_ours
+    assert _gist() is None and c.chats == []
+    assert _walk() == "not_resident"
+
+
+def test_background_on_the_bundled_engine_still_stands_down(background, monkeypatch):
+    from service.engine import BUNDLED_PORT, mode
+    monkeypatch.setattr(mode, "is_bundled", lambda: True)
+    c = background(Background([BG_CHAT, BG_OTHER], base_url=f"http://127.0.0.1:{BUNDLED_PORT}"))
+    M._state.not_ours.add(BG_OTHER)            # even if something had marked it
+    assert M.other_apps_models(c) == set()
+    assert _gist() is None and c.chats == []
+    assert _walk() == "not_resident"
+
+
+def test_a_tick_notices_another_apps_model_even_with_the_idle_timer_off(background, monkeypatch):
+    # idle_unloader.run skips its own read when the timer is off; the tick still looks.
+    monkeypatch.setattr(idle, "_idle_minutes", 0.0)
+    c = background(Background([BG_CHAT, BG_OTHER]))
+    _seen(c)
+    assert BG_OTHER in M.other_apps_models(c)
