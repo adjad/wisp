@@ -483,6 +483,9 @@ ADDITIONAL_FULL_TESTS = {
     # Save memory: a fake client and clock, settings in tmp_path; one read-only
     # sysctl of macOS memory pressure (unknown when denied), no engine or model.
     "tests/test_memory_saver.py",
+    # Other models on the user's oMLX.app: fake clients and mock transports, settings
+    # in tmp_path, no engine, model or port. Same one read-only sysctl as above.
+    "tests/test_omlx_other_models.py",
     # On-demand Gemma 4 encoders: the engine overlay's state machine on a fake mlx
     # and fake model (one in-process thread pool), and the service's prewarm on a
     # fake client. No engine, model, GPU or port.
