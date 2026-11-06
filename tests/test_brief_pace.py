@@ -482,12 +482,15 @@ def test_the_copy_of_a_mail_stays_put_when_no_mail_arrives(two_copies):
     assert _copy_shown(E) == "google"
 
 
-def test_a_failed_google_fetch_still_falls_back_at_once(two_copies):
+def test_only_an_expired_sign_in_falls_back_at_once(two_copies):
     E, clock, address, _ = two_copies
     clock.at += 60
     E._native_raw_at = clock.at
     clock.at += 1
     E.external_email_error(address, "raw", "Google could not be reached")
+    assert _copy_shown(E) == "google"
+    E._external_accounts[address]["auth_expired"] = True
+    E._recompose_all()
     assert _copy_shown(E) == "native"
 
 
