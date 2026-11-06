@@ -174,7 +174,7 @@ _TOWARD_SOMEONE = r"(?i)(?:reply|respond|answer|text|email|write back|send|forwa
 
 
 def _topic(result: dict, item: dict, names: list[str]) -> str:
-    topic = guard.clean(result.get("title") or "", 60).rstrip("?!.:;, ")
+    topic = guard.clean_title(result.get("title") or "", 60).rstrip("?!.:;, ")
     topic = re.sub(r"(?i)^(?:a |the )?(?:discussion|conversation|chat|talk|question|update|email|text)s? "
                    r"(?:about|on|regarding|re:?)\s+", "", topic).strip()
     if (not topic or guard.names_user(topic, names) or len(topic.split()) > 5
@@ -199,7 +199,7 @@ def reply_title(item: dict, result: dict, names: list[str]) -> str:
 def action_title(kind: str, item: dict, result: dict, names: list[str]) -> str:
     """A verb-first to-do built by code: the user's own ask when it reads as
     one, else the action toward the other party (who comes from the source)."""
-    asks = guard.clean(result.get("asks_of_me"), 90)
+    asks = guard.clean_title(result.get("asks_of_me"), 90)
     if _MISCREDIT.search(asks) or _VAGUE.match(asks) or len(asks.split()) > 12:
         asks = ""                        # vague, miscredited, or someone else's whole question
     if not item.get("person", True):
@@ -207,7 +207,7 @@ def action_title(kind: str, item: dict, result: dict, names: list[str]) -> str:
         if asks and not re.match(_TOWARD_SOMEONE, asks) and not guard.names_user(asks, names) \
                 and (re.findall(r"[a-z']+", asks.casefold())[:1] or [""])[0] in VERBS:
             return asks[:1].upper() + asks[1:]
-        topic = guard.clean(result.get("title") or item.get("title") or "", 60).rstrip("?!.:;, ")
+        topic = guard.clean_title(result.get("title") or item.get("title") or "", 60).rstrip("?!.:;, ")
         return f"Review {topic[:1].lower() + topic[1:] if topic[1:2].islower() else topic}" if topic else ""
     first = re.findall(r"[a-z']+", asks.casefold())[:1]
     if asks and first and first[0] in VERBS and not guard.names_user(asks, names):
@@ -215,7 +215,7 @@ def action_title(kind: str, item: dict, result: dict, names: list[str]) -> str:
     who = _first(item.get("who", "")) if item.get("source") in ("mail", "messages") else ""
     if who and guard.names_user(who, names):
         who = ""
-    topic = guard.clean(result.get("title") or "", 60).rstrip("?!.:;, ")
+    topic = guard.clean_title(result.get("title") or "", 60).rstrip("?!.:;, ")
     if guard.names_user(topic, names) or (topic and topic.casefold() in ("text conversation", "email thread")):
         topic = ""
     if topic and item.get("source") == "messages" and topic.casefold() == (item.get("title") or "").casefold():
@@ -329,7 +329,7 @@ def _finalize_item(raw: dict, primary: dict, extra: list[dict], *, item: dict, r
     if item.get("critical"):
         # A critical account alert: code's fixed title and sentence only,
         # never the judge's words or a quote, and nothing to reply to.
-        title = guard.clean(item.get("title"), 90)
+        title = guard.clean_title(item.get("title"), 90)
         if not title:
             return None
         return dict(title=title, kind="read", why=guard.clean(result.get("summary"), 200), due_ts=None,
@@ -346,7 +346,7 @@ def _finalize_item(raw: dict, primary: dict, extra: list[dict], *, item: dict, r
     if kind == "reply" and item.get("replied") and item["source"] in ("mail", "messages"):
         return None                               # they already answered
     names = _user_names()
-    title = guard.clean(raw.get("title"), 90)
+    title = guard.clean_title(raw.get("title"))
     if not _good_title(title, source_text, allowed, names) or (
             not item.get("person", True) and re.match(_TOWARD_SOMEONE, title)):
         title = action_title(kind, item, result, names)

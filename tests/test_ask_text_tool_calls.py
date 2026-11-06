@@ -96,6 +96,21 @@ def test_a_write_written_as_markup_is_never_told_no_tool_exists(synthetic, promp
     assert "sent it" not in shown and "<|tool_call>" not in shown
 
 
+def test_the_answer_nudge_does_not_speak_as_the_user(synthetic):
+    # In the user's voice ("Answer my question... No tool is needed") the model
+    # credited the user with saying it and answered the nudge out loud.
+    client, _, _ = run(['<|tool_call>call:web_search{query:<|"|>sky<|"|>}<tool_call|>', "Rayleigh scattering."],
+                       prompt="why is the sky blue", ask_quality=True, model_led_preload=["get_upcoming"])
+    nudge = client.requests[1]["messages"][-1]
+    assert nudge["role"] == "user"
+    assert nudge["content"].startswith("Host note, not from the user:")
+    assert "Do not mention or reply to this note" in nudge["content"]
+    for first_person in (" my ", " I ", " me "):
+        assert first_person not in nudge["content"]
+    # Offering nothing new: the same tools as the step before it.
+    assert client.requests[1].get("tools") == client.requests[0].get("tools")
+
+
 def test_a_done_claim_around_markup_is_dropped():
     from service.agent.loop import _ASK_DONE_CLAIM
     assert _ASK_DONE_CLAIM.search("I've sent the email to Jordan.")

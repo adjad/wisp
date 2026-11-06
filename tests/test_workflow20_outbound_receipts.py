@@ -133,7 +133,8 @@ def test_no_subscriber_wrapper_stays_failed_without_uncertainty(monkeypatch, ope
     sink.has_subscribers = False
     result = asyncio.run(R.run_tool(R.get_tool(operation), ARGS[operation]))
     assert R.classify_tool_outcome(operation, result).status == "failed"
-    assert type(result) is str and "not sent" in result.lower()
+    # Proof that nothing went out, so it can't lock the chat; never "unknown".
+    assert type(result) is R._NotSentResult and "not sent" in result.lower()
     assert sink.effects == []
 
 

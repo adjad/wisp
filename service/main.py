@@ -102,7 +102,8 @@ from service.agent.planner import enabled_from_env as planner_enabled_from_env
 # registry at import time, so it must load with the real registry.
 from service.router import reranker as _reranker
 from service.model_only import model_only_enabled
-from service.router.model_led import (continuation_requires_baseline, continuation_send_exemption,
+from service.router.model_led import (continuation_create_exemption, continuation_requires_baseline,
+                                      continuation_send_exemption,
                                       model_led_enabled, needs_effect_owner,
                                       fresh_personal_obligation, memory_excluded, opaque_effect, personal_communication_request,
                                       OPAQUE_OUTBOUND_TOOLS, PRIVATE_EGRESS_TOOLS, registry_specs)
@@ -508,6 +509,8 @@ from service.assistant.checkin_api import router as checkin_router
 app.include_router(checkin_router)
 from service.assistant.email_reply_api import router as email_reply_router
 app.include_router(email_reply_router)
+from service.assistant.hours_api import router as hours_router
+app.include_router(hours_router)
 from service.proactive.api import router as proactive_router
 app.include_router(proactive_router)
 app.include_router(__import__("service.engine.api", fromlist=["router"]).router)
@@ -1637,6 +1640,9 @@ MODEL_LED_UNTRUSTED_WEB_HINT = (
 UNRESOLVED_ACTION_NOTICE = (
     "An earlier action in this chat may not have finished, so I can't take new "
     "actions here until it's checked. Check that it did what you wanted, then start a new chat.")
+UNRESOLVED_ACTION_REASON = (
+    "an earlier action in this chat has an unconfirmed outcome, so new actions are held "
+    "until the user has checked it")
 
 
 def _answer_prefixed(emit, prefix: str):
@@ -1724,6 +1730,40 @@ def _model_led_preload(prompt: str) -> list[str]:
     except Exception:  # noqa: BLE001 — a missing head start must never fail the turn
         return []
 
+_DRAFT_NOTE_CHARS = 600
+
+
+def _draft_turn_note(to: str, text: str) -> str:
+    """The stored assistant turn for a reply that ended on a message-draft card.
+    States only what the host knows: a draft was shown and this reply sent
+    nothing (the card's own Send button is a separate, later action)."""
+    body = " ".join(text.split())
+    if len(body) > _DRAFT_NOTE_CHARS:
+        body = body[:_DRAFT_NOTE_CHARS - 1].rstrip() + "…"
+    who = to.strip() or "the recipient"
+    return (f"Drafted a text to {who} for you to review: \u201c{body}\u201d "
+            "This reply sent nothing; the draft card's Send button sends it.")
+
+
+def _earlier_effects(sid: str) -> bool:
+    """An earlier assistant turn of this chat called a change tool (its stored
+    tool digest names one). Host-only input to run_agent's unbacked-claim
+    guard: "I set that earlier" may stand after a real earlier write. Any
+    failure counts as no earlier write, which only keeps the guard strict."""
+    try:
+        from service.tools.registry import REGISTRY
+        for turn in store.turns_from(sid, 0):
+            if turn.get("role") != "assistant" or not turn.get("tool_digest"):
+                continue
+            for name in str(turn["tool_digest"]).split(","):
+                tool = REGISTRY.get(name.strip())
+                if tool is not None and needs_effect_owner(tool.category):
+                    return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
 def _previous_user_text(messages: list[dict], current: dict) -> str:
     """The user's last prompt before this turn, for a bare follow-up ("and saturday?")."""
     for message in reversed(messages):
@@ -1779,6 +1819,10 @@ def _ask_tool_rank(prompt: str, previous: str = "") -> tuple[list[str], list[str
                                  ("search_reminders", reminders_first(prompt))):
                 if wanted and lead in REGISTRY:
                     head = [lead, *(n for n in head if n != lead)]
+        from service.model_only import reply_reads
+        if lead_reads := [n for n in reply_reads(prompt) if n in REGISTRY]:
+            # A reply draft reads the conversation it answers before drafting.
+            head = [*lead_reads, *(n for n in head if n not in lead_reads)]
         preload = head[:ASK_PRELOAD]
         try:
             ranked = _reranker.ranked_lexical_candidates(text, writing=writing,
@@ -1912,7 +1956,7 @@ async def agent(body: dict[str, Any]):
 
     # Collected for persistence after the turn finishes.
     captured: dict[str, Any] = {
-        "text": "", "deltas": [], "tools": [],
+        "text": "", "deltas": [], "tools": [], "draft": None,
         "tool_calls": [], "tool_results": [], "denied": False,
     }
     tool_names_by_id: dict[str, str] = {}
@@ -1955,6 +1999,8 @@ async def agent(body: dict[str, Any]):
             captured["deltas"].append(ev.get("text", ""))
         elif t == "text":
             captured["text"] = ev.get("text", "")
+        elif t == "message_draft":
+            captured["draft"] = (str(ev.get("to") or ""), str(ev.get("text") or ""))
         elif t == "tool_call":
             name = ev.get("name", "?")
             captured["tools"].append(name)
@@ -2489,6 +2535,9 @@ async def agent(body: dict[str, Any]):
             # last_tools lets a bare scope fragment ("from yesterday") continue
             # the previous turn's light-read domain instead of defaulting to the agent model.
             unresolved_block = False
+            offered_creations: frozenset[str] = frozenset()
+            draft_awaiting: dict | None = None
+            draft_bound = False
             if workflow_turn and workflow_turn.decision:
                 decision = workflow_turn.decision
                 await emit({"type": "workflow", "event": workflow_turn.event,
@@ -2505,9 +2554,24 @@ async def agent(body: dict[str, Any]):
                     from service.tools.registry import REGISTRY
                     exempt = (frozenset() if task_owner_verdict == "ambiguous" or unresolved_block
                               else continuation_send_exemption(prompt, last_assistant))
+                    # "Should I set a reminder?" -> "yes": that one creation
+                    # stays reachable (and leads the head start below), or
+                    # the offered reminder cannot be made at all.
+                    offered_creations = (frozenset() if task_owner_verdict == "ambiguous" or unresolved_block
+                                         else continuation_create_exemption(prompt, last_assistant))
                     forbidden |= frozenset(t.name for t in registry_specs(REGISTRY)
                                            if needs_effect_owner(t.category)
-                                           and t.category not in exempt)
+                                           and t.category not in exempt
+                                           and t.name not in offered_creations)
+                # The send that stopped last turn for want of a recipient. Never
+                # while an earlier outcome is unknown: that lock is never lifted
+                # by an address, and its tools stay forbidden above.
+                if sess and not test_mode and not unresolved_block:
+                    from service.memory.subject import awaiting_send, resume_binding
+                    if draft_awaiting := awaiting_send(store, sid):
+                        if bound := resume_binding(draft_awaiting, prompt):
+                            bindings = {**bindings, draft_awaiting["tool"]: bound}
+                            draft_bound = True
                 decision = RouteDecision(
                     role="agent", model=model_led_target.model, needs_tools=True,
                     source="model_led", route_source="model_led_discovery",
@@ -2698,6 +2762,10 @@ async def agent(body: dict[str, Any]):
                     subject_msg, subject_tools = subject_message(store, sid)
                     if subject_msg:
                         messages.insert(1, subject_msg)
+                    if draft_awaiting:
+                        from service.memory.subject import awaiting_message
+                        messages.insert(1, awaiting_message(draft_awaiting, bound=draft_bound))
+                        subject_tools = [draft_awaiting["tool"], *subject_tools]
                 if task_owner_verdict != "none":
                     messages.insert(1, {"role": "system", "content": (
                         "An older task is still pending; this turn did not advance it. "
@@ -2724,8 +2792,8 @@ async def agent(body: dict[str, Any]):
                     or tool.name in {"send_message", "send_email", "reply_to_email",
                                      "forward_email", "schedule_send"})
 
-            def finish_model_action(claim, verified):
-                return store.finish_model_effect(sid, claim, verified=verified)
+            def finish_model_action(claim, verified, **refusal):
+                return store.finish_model_effect(sid, claim, verified=verified, **refusal)
 
             if decision._reminder_clarification:
                 # This host boundary ran no action and admitted no tools.
@@ -2818,6 +2886,21 @@ async def agent(body: dict[str, Any]):
                 ask_quality = model_only and model_led_turn
                 previous_prompt = _previous_user_text(messages, user_msg) if ask_quality else ""
                 ask_preload, ask_stub_rank = _ask_tool_rank(prompt, previous_prompt) if ask_quality else ([], [])
+                if ask_quality and offered_creations:
+                    # A bare "yes" ranks nothing lexically ("yes go ahead" led
+                    # with world_time and get_stock_price): the offered
+                    # creation's real schema leads instead of a name stub.
+                    from service.model_only import ASK_PRELOAD
+                    lead = sorted(offered_creations)
+                    ask_preload = [*lead, *(n for n in ask_preload if n not in lead)][:ASK_PRELOAD]
+                    ask_stub_rank = [n for n in ask_stub_rank if n not in lead]
+                if ask_quality and draft_bound:
+                    # A bare address ranks nothing useful lexically: the send
+                    # it answers leads with its real schema.
+                    from service.model_only import ASK_PRELOAD
+                    lead = [draft_awaiting["tool"]]
+                    ask_preload = [*lead, *(n for n in ask_preload if n not in lead)][:ASK_PRELOAD]
+                    ask_stub_rank = [n for n in ask_stub_rank if n not in lead]
                 if ask_quality and subject_tools:
                     ask_stub_rank = list(dict.fromkeys([*ask_stub_rank, *subject_tools]))
                 if ask_quality:
@@ -2902,6 +2985,8 @@ async def agent(body: dict[str, Any]):
                                         ask_direct=ask_direct,
                                         model_led_stub_rank=(ask_stub_rank
                                                              if ask_quality else None),
+                                        earlier_effects=bool(ask_quality and sess
+                                                             and _earlier_effects(sid)),
                                         private_shell_history=turn_private_shell_history if model_led_turn else None,
                                         fresh_personal_scope=(fresh_personal_obligation(prompt, last_tools or "")
                                                               if model_led_turn else None),
@@ -2918,6 +3003,7 @@ async def agent(body: dict[str, Any]):
                                         direct_calls=decision.direct_calls,
                                         required_tool_groups=decision.required_tool_groups,
                                         forbidden_tools=decision.forbidden_tools | ask_forbidden,
+                                        forbidden_reason=(UNRESOLVED_ACTION_REASON if unresolved_block else ""),
                                         conditional_tools=decision.conditional_tools,
                                         tool_argument_bindings=decision.tool_argument_bindings,
                                         strict_read_limits=decision.strict_read_limits,
@@ -3086,6 +3172,11 @@ async def agent(body: dict[str, Any]):
                 reply = captured["text"] or "".join(captured["deltas"])
                 from service.tools.registry import DisplayOnlyToolResult
                 persisted_reply = reply if isinstance(reply, DisplayOnlyToolResult) else reply.strip()
+                if not persisted_reply and captured["draft"] is not None:
+                    # A draft turn ends on the card, with no prose. Stored
+                    # empty, the next turn saw an unanswered request and no
+                    # draft (2026-11-04: "can you text mom this").
+                    persisted_reply = _draft_turn_note(*captured["draft"])
                 digest = ", ".join(dict.fromkeys(captured["tools"])) or None
                 persist_user_turn()
                 store.add_turn(sid, "assistant", persisted_reply, tool_digest=digest)

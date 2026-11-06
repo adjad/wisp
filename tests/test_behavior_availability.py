@@ -1169,6 +1169,7 @@ _PUBLIC_PLANNING_SOURCES = (
     'service/tasks/__init__.py',
     'service/tasks/temporal.py',
     'service/temporal_facts.py',
+    'service/user_hours.py',  # the Day plan's usual hours; stdlib and service/paths.py only
     'service/tools/__init__.py',
     'service/tools/browser_history_tools.py',
     'service/tools/cache_store.py',
@@ -1179,6 +1180,7 @@ _PUBLIC_PLANNING_SOURCES = (
     'service/tools/notes_tools.py',
     'service/tools/registry.py',
     'service/tools/timeranges.py',
+    'service/tools/untrusted.py',  # email_tools fences bodies with it; stdlib only, no effects
 )
 
 
@@ -1702,12 +1704,12 @@ def main():
     c = inactivity_case()
     try:
         task = c.store.today_save_task(dict(title='Fitting full-day authored work', day='2026-10-19', timezone=ZONE,
-            duration_minutes=9*60, due_ts=None, pinned_start=None))
+            duration_minutes=8*60, due_ts=None, pinned_start=None))
         c.seed(); snap, ws, _ = c.read(day='2026-10-19')
         assert len(snap['windows']) == 1 and not ws['tentative_count']
         assert not any(t['task_id'] == task['id'] for t in ws['proposed_plan']['unscheduled']), ws['proposed_plan']['unscheduled']
         authored_blocks = [b for b in ws['proposed_plan']['blocks'] if b.get('task_id') == task['id']]
-        assert len(authored_blocks) == 1 and authored_blocks[0]['end'] - authored_blocks[0]['start'] == 9*3600
+        assert len(authored_blocks) == 1 and authored_blocks[0]['end'] - authored_blocks[0]['start'] == 8*3600
         assert any(t['task_id'] != task['id'] for t in ws['proposed_plan']['unscheduled'])
         passed('Actual fitting authored full-day work takes precedence over optional computer-inactivity guidance; source suggestion correctly waits')
     finally:

@@ -33,8 +33,10 @@ class Settings:
     mode: str = "shadow"
     capture_events: bool = False  # separate Calendar + email authority; legacy live stays reminders only
     daily_cap: int = 3          # reminders created (and alerts sent) per local day
-    quiet_start: int = 22       # local hour; alerts are suppressed from here...
-    quiet_end: int = 8          # ...until here (wraps midnight)
+    # Only read once, to seed service/user_hours.py, which now decides quiet hours.
+    # Kept so a settings file written by any build still validates, and for rollback.
+    quiet_start: int = 22
+    quiet_end: int = 8
     lead_minutes: int = 30      # reminder fires this long before a timed event
     default_hour: int = 9       # reminder hour for a date with no clock time
 
@@ -108,14 +110,6 @@ def items_from_records(records: list[dict]) -> list[Item]:
         items.append(Item(f"msg:{guid}", "messages", ts, direction, str(r.get("sender") or ""),
                           str(r.get("conversation") or ""), text))
     return items
-
-
-def in_quiet_hours(now: datetime, s: Settings) -> bool:
-    if s.quiet_start == s.quiet_end:
-        return False
-    h = now.hour
-    return (s.quiet_start <= h < s.quiet_end if s.quiet_start < s.quiet_end
-            else h >= s.quiet_start or h < s.quiet_end)
 
 
 def local_midnight(now_ts: float, tz: str) -> float:

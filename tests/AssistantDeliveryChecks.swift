@@ -83,7 +83,44 @@ final class ReceiptServer {
 
 @main
 struct AssistantDeliveryChecks {
+    /// Receipts name the user's reminders and events: the file is 0600 from the first
+    /// byte under a 022 umask, a 0644 one an older build left is replaced by a 0600 one,
+    /// and no temp file is left behind.
+    static func receiptFileIsOwnerOnly() {
+        let dir = URL(fileURLWithPath: ProcessInfo.processInfo.environment["TMPDIR"] ?? NSTemporaryDirectory())
+            .appendingPathComponent("wisp-delivery-receipts-\(getpid())")
+        try? FileManager.default.removeItem(at: dir)
+        try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let previous = umask(0o022)
+        defer { umask(previous) }
+        func mode(_ path: String) -> Int {
+            var info = stat()
+            return lstat(path, &info) == 0 ? Int(info.st_mode & 0o777) : -1
+        }
+        let receipts = dir.appendingPathComponent("assistant-delivery-receipts.json")
+        precondition(AssistantDelivery.writeOwnerOnly(Data("{}".utf8), to: receipts))
+        precondition(mode(receipts.path) == 0o600, "a new receipts file is owner-only")
+        chmod(receipts.path, 0o644)
+        precondition(AssistantDelivery.writeOwnerOnly(Data("{\"a\":1}".utf8), to: receipts))
+        precondition(mode(receipts.path) == 0o600, "an older 0644 receipts file is replaced by a 0600 one")
+        precondition((try? String(contentsOf: receipts, encoding: .utf8)) == "{\"a\":1}")
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        precondition(names == ["assistant-delivery-receipts.json"], "no temp file left: \(names)")
+        chmod(receipts.path, 0o644)
+        AssistantDelivery.tightenOwnerOnly(receipts)
+        precondition(mode(receipts.path) == 0o600, "a loose receipts file is tightened when loaded")
+        let outside = dir.appendingPathComponent("outside.json")
+        try! Data("{}".utf8).write(to: outside)
+        chmod(outside.path, 0o644)
+        let link = dir.appendingPathComponent("linked.json")
+        try! FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        AssistantDelivery.tightenOwnerOnly(link)
+        precondition(mode(outside.path) == 0o644, "tightening never follows a symlink")
+    }
+
     @MainActor static func main() async throws {
+        receiptFileIsOwnerOnly()
         let facts = CalendarCreationFacts(title: "Exam", start: 2e9, end: 2e9 + 3600, allDay: false)
         var saves = 0
         let saveThenThrow = CalendarCreationReceipt.perform(expected: facts, save: {

@@ -29,7 +29,7 @@ import threading
 import time
 from pathlib import Path
 
-from service.paths import MOE_DIR
+from service.paths import MOE_DIR, private_write_bytes, tighten_private_file
 from service.publication_authority import Authority, Witness, assert_mutation_allowed, revocation
 
 GRANTS_PATH = MOE_DIR / "grants.json"
@@ -63,7 +63,13 @@ _NEVER_GRANTABLE = {"send_email", "send_message", "create_tool",
                     # Always confirmed on model-led turns, where the model
                     # picks the exact item (model_led.MODEL_LED_ALWAYS_CONFIRM_TOOLS);
                     # an "always allow" offered there could never be honoured.
-                    "cancel_scheduled_send", "delete_knowledge", "edit_knowledge"}
+                    "cancel_scheduled_send", "delete_knowledge", "edit_knowledge",
+                    # A contact card is what every later send to that person
+                    # resolves through, so one approved add_phone is not
+                    # agreement to the next (policy._ALWAYS_CONFIRM_CONTACTS).
+                    # Its category already refuses an allow; named here too so
+                    # the refusal holds before the registry has loaded the tool.
+                    "manage_contacts"}
 
 # Tools that absorbed several single-purpose tools in the 100-tool
 # consolidation: (argument that selects the behaviour, its default, the
@@ -128,6 +134,9 @@ def _known_cache(data) -> bool:
 
 
 def _load_snapshot() -> tuple[dict, bool]:
+    # Grants name web hosts, folders and programs the user allowed; a file an
+    # older build wrote 0644 is tightened when it is read (never via a link).
+    tighten_private_file(GRANTS_PATH)
     try:
         if GRANTS_PATH.exists():
             duplicate = False
@@ -178,10 +187,12 @@ def _save() -> None:
         _publication.withdraw()
         _proof_known = False
         try:
-            GRANTS_PATH.parent.mkdir(parents=True, exist_ok=True)
             payload = json.dumps(_CACHE, indent=2)
-            if GRANTS_PATH.write_text(payload) == len(payload):
-                _proof_known = _known_cache(_CACHE)
+            # Owner-only and atomic: a reader sees the old grants or the new
+            # ones, never a torn file. Any failure raises, so _proof_known
+            # stays False exactly as a short write left it before.
+            private_write_bytes(GRANTS_PATH, payload.encode("utf-8"))
+            _proof_known = _known_cache(_CACHE)
         except Exception:  # noqa: BLE001
             pass
 
@@ -202,7 +213,7 @@ def scope_for(tool: str, args: dict) -> str:
                 from service.tools.system_extras import setting_key
                 return setting_key(value)
             return value.strip().lower()
-        if tool in ("web_fetch", "http_request"):
+        if tool == "web_fetch":
             from urllib.parse import urlparse
             return (urlparse(str(args.get("url", ""))).hostname or "").lower()
         if tool in ("write_file", "read_file"):

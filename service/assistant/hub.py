@@ -12,6 +12,8 @@ import time
 import threading
 import json
 
+from service import quiet_hold
+
 # The server ends each app event stream on a timer (events(rotate_after=...))
 # and the app re-subscribes 3s later (OverlayModel.startAssistant). A
 # subscriber gone for less than this is treated as reconnecting, not absent.
@@ -148,6 +150,12 @@ class Hub:
         def deliverable(event: dict) -> bool:
             event_id = event.get('event_id')
             if event_id:
+                # Quiet hours: left pending, so a later stream's replay delivers it.
+                if quiet_hold.held(event, self.store):
+                    return False
+                if quiet_hold.stale(event):
+                    self.store.acknowledge_event(event_id, event['type'])
+                    return False
                 if event_id in seen or not self.store.event_attempt(event_id):
                     return False
                 seen.add(event_id)

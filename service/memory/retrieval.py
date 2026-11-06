@@ -116,31 +116,28 @@ def _strict_passages(sessions, facts, query, limit, exclude_session):
     return result
 
 
-def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=15, strict=False,
-             mail_facts=None):
-    """`strict=True` is opt-in: every significant term must match, not any one.
-    `mail_facts`: whether facts learned only from mail may be returned. None reads
-    `mail_facts_allowed` (False unless a local turn opted in); only a caller that
-    knows its reader is local (the app's own Memory window, a local prompt) passes True."""
-    mail_facts = mail_facts_allowed.get() if mail_facts is None else bool(mail_facts)
-    if facts is None:
-        from service.memory.facts import store as facts
-    if sessions is None:
-        from service.memory.store import store as sessions
-    from service.memory.queue import MemoryQueue
-    from service.memory.capture import current_source
-    source = current_source.get() or {}
-    if strict and query.strip():
-        rows = _strict_facts(facts, query, limit)
-        passages = _strict_passages(sessions, facts, query, limit, source.get('session_id', '')) \
-            if include_passages and terms(query) else []
-    else:
-        rows = facts.search(query, limit) if query.strip() else facts.all(limit)
-        passages = MemoryQueue(sessions).search(query, facts, limit, user_only=True,
-            exclude_session=source.get('session_id', '')) if include_passages and terms(query) else []
-    passages = [r for r in passages if 'prefer' not in r['text'].casefold() or _in_scope(r['text'], query)]
-    # A changed/deleted source is not valid evidence even if its old FTS text
-    # was previously extracted. Explicit/reviewed saves survive source removal.
+def _any_term_facts(facts, query, limit):
+    """Active saved facts sharing at least ONE term, in the OR form's bm25 order,
+    each carrying the query terms it really contains (`matched_terms`).
+
+    The strict path's light-stem rule confirms each term, so the FTS porter
+    stemmer's loose hits (generate ~ general) are not offered as matches. The
+    candidate pool is wider than `limit` to leave room for that filter and for the
+    validity checks the caller applies afterwards."""
+    from service.tools.notes_tools import all_terms_match as stems_match
+    wanted = terms(query)
+    result = []
+    for row in facts.search(query, max(50, limit * 10)):
+        hit = [t for t in wanted if stems_match([t], row['text'])]
+        if hit:
+            result.append({**row, 'matched_terms': hit})
+    return result
+
+
+def _valid_facts(rows, query, facts, sessions, mail_facts):
+    """Rows this reader may see. A changed/deleted source is not valid evidence even
+    if its old FTS text was previously extracted. Explicit/reviewed saves survive
+    source removal; preferences need their scope; mail-only facts need a local reader."""
     valid = []
     for row in rows:
         if query.strip() and row['category'] == 'preference' and not _in_scope(row['text'], query):
@@ -161,10 +158,72 @@ def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=1
             if not supported:
                 continue
         valid.append(row)
-    return {'facts': valid, 'passages': passages, 'debug': {
+    return valid
+
+
+def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=15, strict=False,
+             mail_facts=None, any_term_fallback=0):
+    """`strict=True` is opt-in: every significant term must match, not any one.
+    `mail_facts`: whether facts learned only from mail may be returned. None reads
+    `mail_facts_allowed` (False unless a local turn opted in); only a caller that
+    knows its reader is local (the app's own Memory window, a local prompt) passes True.
+
+    `any_term_fallback=N` (strict only, opt-in): when NOTHING contains every term,
+    return up to N saved facts sharing some of the terms, with `result['fallback']`
+    True and `matched_terms` on each row, so the caller can present them as possible
+    matches rather than answers. Ordinary questions carry a term the stored wording
+    lacks: terms("what's my sister's name?") is ['sister', 'name'] and the saved
+    'My sister is Ana' has no 'name', so the all-terms recall answered 'no memory'.
+    Facts only, never conversation passages: passages are the high-volume source
+    whose one-word hits were the reported failure strict mode exists for (a
+    passage with only 'order' answering 'amazon order'); saved facts are few,
+    user-stated, and pass the same validity filters as a strict hit."""
+    mail_facts = mail_facts_allowed.get() if mail_facts is None else bool(mail_facts)
+    if facts is None:
+        from service.memory.facts import store as facts
+    if sessions is None:
+        from service.memory.store import store as sessions
+    from service.memory.queue import MemoryQueue
+    from service.memory.capture import current_source
+    source = current_source.get() or {}
+    if strict and query.strip():
+        # Over-fetch, then cut AFTER the validity filters: a top `limit` made up
+        # entirely of facts hidden from this reader must not hide a valid one
+        # just past it, and then let the fallback claim nothing matched.
+        rows = _strict_facts(facts, query, max(limit * 4, 50))
+        passages = _strict_passages(sessions, facts, query, limit, source.get('session_id', '')) \
+            if include_passages and terms(query) else []
+    else:
+        rows = facts.search(query, limit) if query.strip() else facts.all(limit)
+        passages = MemoryQueue(sessions).search(query, facts, limit, user_only=True,
+            exclude_session=source.get('session_id', '')) if include_passages and terms(query) else []
+    passages = [r for r in passages if 'prefer' not in r['text'].casefold() or _in_scope(r['text'], query)]
+    valid = _valid_facts(rows, query, facts, sessions, mail_facts)
+    if strict and query.strip():
+        valid = valid[:max(1, min(1000, limit))]
+    fallback = False
+    # Only a miss AFTER the validity filters falls back, and the fallback rows pass
+    # the same filters, so a hidden mail-only or unsupported fact is never reached
+    # through it. Forgotten and superseded facts are excluded by facts.search's
+    # status filter (forgetting also blanks their text). With one term the
+    # any-term set IS the strict set, so there is nothing to fall back to.
+    if strict and any_term_fallback and not valid and not passages and len(terms(query)) > 1:
+        valid = _valid_facts(_any_term_facts(facts, query, any_term_fallback),
+                             query, facts, sessions, mail_facts)[:max(1, any_term_fallback)]
+        fallback = bool(valid)
+        # The strict pre-filter is the index's porter AND query; the confirming
+        # rule is the light stem. They disagree on irregular forms (pay ~ paid),
+        # so a fact holding every term can miss the strict path and arrive here.
+        # Such a row is a full match: return it as one, not as a "possible" one.
+        wanted = set(terms(query))
+        full = [r for r in valid if wanted <= set(r['matched_terms'])]
+        if full:
+            valid, fallback = full, False
+    reason = ('strict query match' if strict else 'query match') if terms(query) else 'explicit browse'
+    return {'facts': valid, 'passages': passages, 'fallback': fallback, 'debug': {
         'provider': 'lexical', 'fact_ids': [r['id'] for r in valid],
         'passage_ids': [f"{r['session_id']}:{r['turn_idx']}" for r in passages],
-        'reason': ('strict query match' if strict else 'query match') if terms(query) else 'explicit browse',
+        'reason': 'any-term fallback' if fallback else reason,
     }}
 
 

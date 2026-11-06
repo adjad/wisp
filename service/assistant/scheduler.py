@@ -201,8 +201,8 @@ async def run() -> None:
         # asks the Swift app for current Calendar, Reminders, Mail and Messages
         # reads, and a user's own mail/message question waits on those too. So
         # it runs as a single-flight background task that never starts while
-        # the user is waiting and stands down if they start a turn mid-run
-        # (_start_daily_brief).
+        # the user is waiting or chatting (brief_pace) and stands down if they
+        # start a turn mid-run (_start_daily_brief).
         #
         # _fire_scheduled_sends below is deliberately NOT gated: it does no
         # model work, and a send the user scheduled for 6pm should go at 6pm
@@ -239,7 +239,8 @@ async def run() -> None:
             pass
         # The Brief's MAIL and TEXTS overviews (mail_gists.py): one bounded
         # background model call at a time, only while nobody is waiting, and
-        # only for a source whose mail or texts changed.
+        # only for a source whose mail or texts changed, once the chat has gone
+        # quiet (brief_pace).
         try:
             from service.assistant import mail_gists
             mail_gists.schedule_tick()
@@ -247,7 +248,9 @@ async def run() -> None:
             pass
         # The proactive engine (service/proactive/cycle.py): triage, judge and
         # prepare "Before you ask" cards on the resident model, single-flight,
-        # only while nobody is waiting, never alongside a gist call. About
+        # only while nobody is waiting or chatting, never alongside a gist call,
+        # with a minimum gap between builds. By day the model builds it about four
+        # times, across the working hours (brief_pace.automatic_plan). Otherwise, about
         # hourly, at the first tick the Mac has sat idle 10 min, it regenerates
         # the whole Brief (cards, then every gist) when something changed:
         # cycle.idle_refresh. Coming back to a stale Brief (a relaunch, an
@@ -398,6 +401,8 @@ def _brief_date() -> date | None:
     if not _last_brief_loaded:
         _last_brief_loaded = True
         try:
+            from service.paths import tighten_private_file
+            tighten_private_file(_brief_state_path())
             with _brief_state_path().open() as f:
                 _last_brief = date.fromisoformat(json.load(f)["last_brief"])
         except Exception:  # noqa: BLE001 — absent or corrupt is simply "never"
@@ -409,10 +414,9 @@ def _record_brief_date(day: date) -> None:
     global _last_brief
     _last_brief = day
     try:
-        path = _brief_state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w") as f:
-            json.dump({"last_brief": day.isoformat()}, f)
+        from service.paths import private_write_bytes
+        private_write_bytes(_brief_state_path(),
+                            json.dumps({"last_brief": day.isoformat()}).encode("utf-8"))
     except Exception:  # noqa: BLE001 — an unwritable state file must not stop the brief
         pass
 
@@ -533,7 +537,8 @@ def first_brief_building(now: datetime | None = None) -> bool:
     out (the Brief then names the summary times instead). Also False while the
     run is held for first-launch permissions, since nothing is being built
     then. A run that stood down for the user's own turn still counts: it
-    starts again as soon as that turn ends."""
+    starts again once the chat goes quiet, or as soon as the turn ends when it
+    is the install's first summary."""
     now = now or datetime.now()
     first = assistant_store.first_launch_at()
     if first is None or (datetime.fromtimestamp(first).date() != now.date()
@@ -600,12 +605,23 @@ def _awaiting_first_permission(now_ts: float) -> bool:
     return bool(_never_answered_sources())
 
 
+def _held_for_chat() -> bool:
+    """The user is mid-chat, so a summary shouldn't land now (its source reads and
+    its "ready" notice). Not the install's first one: someone who just finished setup
+    and opened Ask is looking at "Building your first Brief…"."""
+    if _early_first_brief_due(datetime.now()):
+        return False
+    from service import brief_pace
+    return not brief_pace.may_start("daily")
+
+
 def _start_daily_brief() -> asyncio.Task | None:
     """Start the due Daily Summary run in the background, at most one at a time.
 
-    Never while the user is waiting on a turn, and never before the app is
-    connected: only the app can read Calendar, Reminders, Mail and Messages, so
-    a run without it could only hold back, and would spend a retry doing so."""
+    Never while the user is waiting on a turn or still chatting, and never before
+    the app is connected: only the app can read Calendar, Reminders, Mail and
+    Messages, so a run without it could only hold back, and would spend a retry
+    doing so."""
     global _brief_task
     if _brief_task is not None and not _brief_task.done():
         return None
@@ -616,6 +632,8 @@ def _start_daily_brief() -> asyncio.Task | None:
         return None
     if _awaiting_first_permission(time.time()):
         return None   # not an attempt: the run is still due once the grace ends
+    if _held_for_chat():
+        return None   # not an attempt: the run is still due once the chat goes quiet
     _brief_task = asyncio.get_running_loop().create_task(_run_daily_brief(*slot))
     return _brief_task
 
@@ -691,7 +709,7 @@ def _start_day_one_recompose() -> asyncio.Task | None:
     if idle.foreground_busy() or not hub.has_subscribers:
         return None
     pending = _pending_recompose(datetime.now())
-    if pending is None:
+    if pending is None or _held_for_chat():
         return None
     _brief_task = asyncio.get_running_loop().create_task(_run_daily_brief(*pending))
     return _brief_task

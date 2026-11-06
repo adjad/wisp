@@ -263,8 +263,8 @@ SYSTEM = (
     "means the RECENT inbox: pass neither. A calendar range can be nearly empty "
     "even when the inbox is full — early on a Monday, 'this week' is a few "
     "hours long — so never conclude the user has no mail from an empty range.\n"
-    "  For 'what's unread', 'anything I haven't read', or 'what still needs a "
-    "reply', pass `unread=true` rather than guessing from subject lines.\n"
+    "  For 'what's unread' or 'anything I haven't read', pass `unread=true` "
+    "rather than guessing from subject lines.\n"
     # "messages" was leaking into the email domain — the router used to widen
     # "any messages from mom" to the mail tools as well (see _INBOUND_RE), and
     # nothing in this prompt ever said what the word means. Both ends are fixed;
@@ -1169,6 +1169,39 @@ def _est_tokens(obj) -> int:
     return len(json.dumps(strip(obj))) // 4 + images * _IMAGE_TOKENS
 
 
+# Context notes _fit_window keeps until everything else in step 1 is gone: they
+# keep the model oriented (what "her" means, what is unverified, what not to
+# resend), and each costs one line. Matched by the text their writers open with:
+# service/main.py's model-led notes and service/memory/subject.hint.
+_KEPT_NOTE_PREFIXES = (
+    "Conversation and remembered facts are unverified context",
+    "Host-recorded prior action attempts",
+    "An older task is still pending",
+    "Current subject from the last turns",
+)
+# The digest keeps this many of its newest lines before older tool traffic of
+# the current turn is cleared. Measured (scripts/measure_ask_history.py): an Ask
+# step carrying two capped tool results used to lose the digest, the notes and
+# every earlier turn, and recalled 0 of 20 planted facts.
+_DIGEST_FLOOR_LINES = 4
+# An older tool result of the current turn is first cut to this many characters
+# (about 375 estimated tokens), and cleared to a placeholder only if that is not
+# enough. The newest result is never touched.
+_OLDER_RESULT_CHARS = 1500
+_TRIMMED_RESULT_MARK = "\n[…"
+_TRIMMED_RESULT_TAIL = ("{n} more characters cut to fit the context window; call the tool "
+                        "again for the full result.]")
+_CLEARED_RESULT_HEAD = "[Older tool result cleared to fit the context window"
+_CLEARED_RESULT = (_CLEARED_RESULT_HEAD + " ({n} characters). Call the tool again if you "
+                   "still need it; its call is kept above.]")
+
+
+def _is_kept_note(m: dict) -> bool:
+    content = m.get("content")
+    return (m.get("role") == "system" and isinstance(content, str)
+            and content.startswith(_KEPT_NOTE_PREFIXES))
+
+
 def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
                 model: str, force_first_tool: str | None, *,
                 protected_prefix_count: int = 1, context_window: int | None = None,
@@ -1177,16 +1210,25 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
     """Trim a request until prompt + output fits the model's context window.
 
     Order of sacrifice, LEAST VALUABLE FIRST:
-      1. the OLDEST history turns — never the required system prefix (rules the model
-         needs), never the last user message (the actual request), and never
-         the most recent tool result (what the current step is reasoning about).
-         A plain user/assistant turn before the request is CONDENSED, not
-         dropped: it leaves one line in the "earlier in this conversation"
-         digest (memory/context.py), which is how a fact stated twenty
-         exchanges ago is still in the request. Then the digest's oldest
-         lines; then the older context notes (system messages after the
-         prefix: host notes, the summary, the digest itself); then everything
-         else oldest-first
+      1. history and this turn's older traffic — never the required system
+         prefix (rules the model needs), never the request (by identity, see
+         history_end), and never the most recent tool result (what the
+         current step is reasoning about). In order:
+           a0. this turn's OLDER tool results are cut to _OLDER_RESULT_CHARS;
+           a.  plain user/assistant turns before the request are CONDENSED,
+               not dropped: each leaves one line in the "earlier in this
+               conversation" digest (memory/context.py), which is how a fact
+               stated twenty exchanges ago is still in the request;
+           b.  older tool results are cleared to a one-line placeholder (the
+               call stays, so the model knows it already ran);
+           c.  the digest's oldest lines down to _DIGEST_FLOOR_LINES, and the
+               context notes outside the floor (the rolling summary);
+           d.  this turn's older traffic, oldest first;
+           e.  only then the conversation floor: the rest of the digest, then
+               the kept notes (_KEPT_NOTE_PREFIXES).
+         Before this order, one step carrying two capped results lost every
+         earlier turn, the safety notes and the digest while keeping a stale
+         result the model had already read (0 of 20 planted facts recalled).
       2. TOOL SCHEMAS, from the end of the list
       3. the OUTPUT reservation, down to _MIN_OUTPUT_TOKENS
 
@@ -1222,7 +1264,9 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
     (run_agent knows it: everything it appends comes after). Only messages
     before it condense; this turn's later traffic (tool calls, results, host
     nudges) is dropped, never written into the digest. Without it, condensing
-    stops at the first tool call or result.
+    stops at the first tool call or result. The message just before it is the
+    request, and it is protected even after a host nudge (also role "user")
+    becomes the last user message.
     """
     from service.config import model_context_window
 
@@ -1260,12 +1304,19 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
     # reason the ordering comment calls history "least valuable first".
     last_user = max((i for i, m in enumerate(msgs) if m.get("role") == "user"),
                     default=-1)
+    # The last user message is not always the request: a host nudge ("Nothing
+    # was read yet. Call X now…") is role "user" too, and once one is appended
+    # the request this turn answers would lose its protection. history_end
+    # points just past the request, so protect that message by identity too.
+    request = (history_end - 1
+               if history_end is not None and 0 < history_end <= len(msgs)
+               and msgs[history_end - 1].get("role") == "user" else last_user)
 
     # 1. Drop the oldest droppable history.
     def droppable(i: int) -> bool:
         if i < protected_prefix_count:  # required system/runtime blocks
             return False
-        if i == last_user:               # the request being answered
+        if i in (last_user, request):    # the request being answered
             return False
         if i >= len(msgs) - 2:           # newest tool result / current exchange
             return False
@@ -1288,13 +1339,49 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
     boundary = min(history_end if history_end is not None else first_traffic, first_traffic)
 
     def pop(at: int) -> None:
-        nonlocal overhead, last_user, boundary
+        nonlocal overhead, last_user, request, boundary
         overhead -= _msg_tokens(msgs[at])
         msgs.pop(at)
         if at < last_user:               # indices shifted under us
             last_user -= 1
+        if at < request:
+            request -= 1
         if at < boundary:
             boundary -= 1
+
+    def reduce_older_results(keep_chars: int | None) -> None:
+        """Shorten (keep_chars) or clear (None) this turn's older tool results,
+        oldest first, while over budget. The newest result is never touched:
+        droppable() protects the last two messages."""
+        nonlocal overhead
+        for k in range(protected_prefix_count, len(msgs)):
+            if not over():
+                return
+            m = msgs[k]
+            content = m.get("content")
+            if (m.get("role") != "tool" or not droppable(k) or not isinstance(content, str)
+                    or content.startswith(_CLEARED_RESULT_HEAD)):
+                continue
+            if keep_chars is None:
+                head, mark, tail = content.partition(_TRIMMED_RESULT_MARK)
+                cut = re.match(r"(\d+) more characters cut", tail) if mark else None
+                size = len(head) + int(cut.group(1)) if cut else len(content)
+                new = _CLEARED_RESULT.format(n=size)
+            elif _TRIMMED_RESULT_MARK in content or len(content) <= keep_chars:
+                continue
+            else:
+                new = (content[:keep_chars] + _TRIMMED_RESULT_MARK
+                       + _TRIMMED_RESULT_TAIL.format(n=len(content) - keep_chars))
+            reduced = {**m, "content": new}
+            if _msg_tokens(reduced) >= _msg_tokens(m):
+                continue
+            overhead += _msg_tokens(reduced) - _msg_tokens(m)
+            msgs[k] = reduced
+
+    # 1a0. Shorten this turn's OLDER tool results first. The model already read
+    # each one in the step that followed it, so its head is usually what still
+    # matters; an earlier turn of the conversation cannot be fetched again.
+    reduce_older_results(_OLDER_RESULT_CHARS)
 
     # 1a. Condense the conversation's earlier turns into the digest, oldest
     # first. Never this turn's own traffic after its request (see history_end).
@@ -1316,32 +1403,47 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
             msgs.insert(i, {"role": "system", "content": digest_content([line])})
             overhead += _msg_tokens(msgs[i])
             last_user += 1
+            if i <= request:
+                request += 1
             boundary += 1
             i += 1
         else:
             set_digest(at, cap_digest(digest_lines(msgs[at]) + [line]))
 
-    # 1b. Then the digest's oldest lines, and only then the context notes
-    # (host notes such as "do not repeat these unverified sends", the summary,
-    # the digest itself), oldest first.
-    at = next((j for j in range(protected_prefix_count, last_user) if is_digest(msgs[j])), None)
-    while over() and at is not None and droppable(at) and len(digest_lines(msgs[at])) > 1:
-        set_digest(at, digest_lines(msgs[at])[1:])
+    def floor_item(m: dict) -> bool:
+        return is_digest(m) or _is_kept_note(m)
+
+    def trim_digest(keep: int) -> None:
+        at = next((j for j in range(protected_prefix_count, len(msgs)) if is_digest(msgs[j])), None)
+        while over() and at is not None and droppable(at) and len(digest_lines(msgs[at])) > keep:
+            set_digest(at, digest_lines(msgs[at])[1:])
+
+    # 1b. Then clear this turn's OLDER tool results (already shortened in 1a0)
+    # to a placeholder, oldest first. The call stays, so the transcript is well
+    # formed and the model can see it already ran; an exact re-read is served
+    # from the turn's read cache.
+    reduce_older_results(None)
+
+    # 1c. Then the digest's oldest lines down to its floor, and the context
+    # notes that are not part of the floor (the rolling summary), oldest first.
+    trim_digest(_DIGEST_FLOOR_LINES)
     i = 1
-    while over() and i < last_user:
-        if not droppable(i) or msgs[i].get("role") != "system":
+    while over() and i < len(msgs):
+        m = msgs[i]
+        if not droppable(i) or m.get("role") != "system" or floor_item(m):
             i += 1
             continue
         pop(i)
 
-    # 1c. Then anything else droppable, oldest first (this turn's own traffic
-    # before the newest result). A tool call goes only together with all of
-    # its results, and never while one of them is protected: a result without
-    # its call, or a call missing a result, is a malformed transcript.
+    # 1d. Then anything else droppable outside the floor, oldest first (this
+    # turn's own traffic before the newest result). A tool call goes only
+    # together with all of its results, and never while one of them is
+    # protected: a result without its call, or a call missing a result, is a
+    # malformed transcript.
     i = 1
     while over() and i < len(msgs):
         m = msgs[i]
-        if not droppable(i) or m.get("role") == "tool":
+        if not droppable(i) or m.get("role") == "tool" or floor_item(m):
             i += 1
             continue
         if m.get("tool_calls"):
@@ -1353,6 +1455,16 @@ def _fit_window(msgs: list[dict], schemas: list[dict], max_tokens: int,
                 continue
             for _ in range(end - i):
                 pop(i)
+            continue
+        pop(i)
+
+    # 1e. Only now the conversation floor: the digest's remaining lines, then
+    # the digest and the kept notes themselves, oldest first.
+    trim_digest(1)
+    i = 1
+    while over() and i < len(msgs):
+        if not droppable(i) or msgs[i].get("role") != "system":
+            i += 1
             continue
         pop(i)
 
@@ -1415,7 +1527,12 @@ def _fit_tool_result(result: str, name: str, limit: int = _MAX_TOOL_RESULT_CHARS
     if len(result) <= limit:
         return result
     kept = result[:limit].rsplit("\n", 1)[0]
-    return (f"{kept}\n\n[... {len(result) - len(kept):,} more characters were cut "
+    # A cut inside a fenced page or email body would leave the note below
+    # inside the fence, where the model is told to read it as untrusted data.
+    from service.tools.untrusted import close_open_fences
+    cut = len(result) - len(kept)
+    kept = close_open_fences(kept)
+    return (f"{kept}\n\n[... {cut:,} more characters were cut "
             f"to fit. This is NOT all of it — do not describe what you have as "
             f"complete. If you need what's missing, call {name} again with "
             f"narrower arguments (e.g. a `query`, a `day`, or a smaller "
@@ -1516,10 +1633,14 @@ def _readable_results(results: list[tuple[str, str]]) -> list[tuple[str, str]]:
     Messages verification codes.
     """
     from service.tools.task_evidence import render_evidence_text
+    from service.tools.untrusted import unfence
     out = []
     for name, result in results:
         if name == "collect_task_evidence" and (text := render_evidence_text(result)):
             result = text
+        elif isinstance(result, str) and not isinstance(result, DisplayOnlyToolResult):
+            # The untrusted-content fence lines are for the model, not the user.
+            result = unfence(result)
         out.append((name, result))
     return out
 
@@ -1641,6 +1762,8 @@ async def run_agent(
     direct_calls: list[tuple[str, dict]] | None = None,
     required_tool_groups: tuple[frozenset[str], ...] = (),
     forbidden_tools: frozenset[str] = frozenset(),
+    # Why this turn holds every effect tool, in words true to tell the model.
+    forbidden_reason: str = "",
     conditional_tools: tuple[tuple[str, str, str, object], ...] = (),
     tool_argument_bindings: dict[str, dict] | None = None,
     # Frozen per-tool budgets for strict router-direct private reads. Empty on
@@ -1707,6 +1830,10 @@ async def run_agent(
     # read (see the latches below and policy.mark_picture_turn).
     picture_reading: str | None = None,
     picture_label: str | None = None,
+    # Host-only: an earlier turn of this chat ran a change (its stored tool
+    # digest names a write). Lets "I set that earlier" stand on an ask_quality
+    # final with no write this turn; never from the HTTP body or the model.
+    earlier_effects: bool = False,
     # This turn's access notes, from _access_notes_scoped; never passed by callers.
     _access_noted: list[dict] | None = None,
 ) -> str:
@@ -1804,6 +1931,11 @@ async def run_agent(
     # grant. Only this turn's local planner may put one in ephemeral context.
     messages = _meeting_safe(messages)
     downstream_emit = emit
+    # The call being dispatched, until a tool_call announces it. A tool_result
+    # that arrives first means it was refused before reaching the policy check:
+    # the debug export gets its name and arguments from a tool_rejected event.
+    # Deliberately not a tool_call, which main records as a call that was made.
+    unannounced_call: list = [None]
     # Sources a tool couldn't read for lack of access ride on its tool_result,
     # so Ask shows the fix button whatever the model's reply says.
     from service.tools import access_needed
@@ -1812,6 +1944,13 @@ async def run_agent(
         _meeting_audit(event, **fields)
 
     async def emit(event: dict):
+        if (pending := unannounced_call[0]) is not None and event.get("id") == pending[0]:
+            if event.get("type") == "tool_call":
+                unannounced_call[0] = None
+            elif event.get("type") == "tool_result":
+                unannounced_call[0] = None
+                await downstream_emit(_meeting_safe({
+                    "type": "tool_rejected", "id": pending[0], "name": pending[1], "args": pending[2]}))
         if event.get("type") == "tool_result" and access_noted:
             event = access_needed.merged(event, access_noted)
         if event.get("type") == "text" and news_displays:
@@ -2188,14 +2327,25 @@ async def run_agent(
             # message draft, an outbound-unknown marker) are str subclasses,
             # and str() would reduce them to text no receipt check accepts.
             outcome = classify_tool_outcome(tool.name, result)
-            # Unknown extension actions default to 'read' in the legacy outcome
-            # classifier. That default is not a verified mutation receipt.
-            from service.router.model_led import trusted_effect_receipt
-            verified = trusted_effect_receipt(tool, outcome, result)
-            if not finish_effect(claim, verified):
-                return "(error: Action was attempted but its durable receipt could not be recorded. Do not retry.)"
-            if not verified:
-                return "(error: Action did not return a verified completion receipt; do not retry.)\n" + str(result)
+            from service.tools.registry import not_done_receipt, not_sent_receipt
+            refusal = ({"not_sent": True} if not_sent_receipt(tool, result)
+                       else {"not_done": True} if not_done_receipt(tool, result) else None)
+            if refusal:
+                # The tool proved it stopped before doing anything (no address,
+                # a bad date, several matches): settled as such, so it can't
+                # lock the chat, and the model is told the plain truth. Only
+                # these typed results get here; anything else stays below.
+                if not finish_effect(claim, False, **refusal):
+                    return "(error: Action was attempted but its durable receipt could not be recorded. Do not retry.)"
+            else:
+                # Unknown extension actions default to 'read' in the legacy outcome
+                # classifier. That default is not a verified mutation receipt.
+                from service.router.model_led import trusted_effect_receipt
+                verified = trusted_effect_receipt(tool, outcome, result)
+                if not finish_effect(claim, verified):
+                    return "(error: Action was attempted but its durable receipt could not be recorded. Do not retry.)"
+                if not verified:
+                    return "(error: Action did not return a verified completion receipt; do not retry.)\n" + str(result)
         if tool.name == "plan_meeting" and isinstance(result, str):
             prefix = "Private meeting proposal: "
             try:
@@ -2356,6 +2506,52 @@ async def run_agent(
     if ask_quality:
         from service.model_only import capability_question
         _ask_capability_prompt = capability_question(memory_query)
+    # ask_quality: did the user ask for a change this turn? Their own words
+    # name one, or they said "yes" to the assistant's own offer ("Should I set
+    # a reminder?"). A claim the model makes on any other turn is never turned
+    # into a call: the nudge below is only for a change the user asked for.
+    _ask_wanted_change = False
+    if ask_quality:
+        from service.router.model_led import answers_offer as _answers_offer
+        from service.router.router import has_write_intent as _has_write_intent
+        _ask_wanted_change = bool(_has_write_intent(memory_query)
+                                  or _answers_offer(guard_prompt, guard_last_assistant))
+
+    def _ask_unbacked_claim(text: str):
+        """The sentence of an ask_quality final that says a change was made
+        when this turn attempted none (2026-11-04 export: "yes go ahead" ->
+        "Set a reminder tomorrow at 10 PM…", zero tool calls). An attempted
+        change is not this guard's: _verified_final checks its receipt."""
+        if not ask_quality or test_mode or ask_direct:
+            return None
+        if any(outcome.effect != "read" for _, outcome in tool_outcomes):
+            return None
+        from service.model_only import claimed_effect, claimed_item, pure_writing
+        if pure_writing(memory_query):
+            return None
+        claim = claimed_effect(text)
+        if claim is None:
+            return None
+        if earlier_effects and (claim.backref or not _ask_wanted_change):
+            # "I set that earlier", or "Yes, I sent it." to "did you text
+            # her?": an earlier turn of this chat did run a change.
+            return None
+        if not claim.first_person and not _ask_wanted_change:
+            return None  # "Set a reminder so you don't forget" is advice
+        if not _ask_wanted_change and not claimed_item(claim.sentence):
+            return None  # "I've sent you the list below." on a read-only turn
+        return claim
+
+    def _ask_offers_change(step_schemas) -> bool:
+        """This step offers some change tool (a real schema or a name stub)."""
+        from service.router.model_led import needs_effect_owner
+        for schema in step_schemas or ():
+            tool_name = schema["function"]["name"]
+            registered = get_tool(tool_name)
+            if (registered is not None and tool_name not in forbidden_tools
+                    and needs_effect_owner(registered.category)):
+                return True
+        return False
 
     def _ask_short_question(text: str) -> bool:
         """A one-line clarifying question back to the user, not an answer."""
@@ -2408,6 +2604,20 @@ async def run_agent(
 
     def _skill_boundary(tool_name: str) -> bool:
         return tool_name in _skill_boundary_names()
+
+    def _skill_misnamed_as_tool(tool_name: str) -> bool:
+        """The model called a skill by name, or use_skill where it was not offered.
+        Nothing the user asked for was refused, so this is not a failure to report.
+        Only where skills are allowed: across the boundary the answer must stay the
+        generic refusal, or its wording would confirm which skills are installed."""
+        if not skills_allowed:
+            return False
+        if tool_name == "use_skill":
+            return True
+        if get_tool(tool_name) is not None:
+            return False
+        from service.skills import get as get_skill
+        return (get_skill(tool_name) or get_skill(tool_name.replace("_", "-"))) is not None
 
     def _admit(offered: list[dict]) -> list[dict]:
         """Drop every schema the skill boundary protects. Used at every build and rebuild."""
@@ -2675,6 +2885,7 @@ async def run_agent(
     tools_answered: set[str] = set()
     failed_tools: set[str] = set()
     hard_failed: set[str] = set()
+    skills_misnamed: set[str] = set()
     waived_tools: set[str] = set()
     attempted_tools: set[str] = set()
     tool_outcomes: list[tuple[str, object]] = []
@@ -2742,7 +2953,13 @@ async def run_agent(
             # command. Phase/prose is not permission to clear the restriction.
             shell_read = (private_shell_implementation(registered)
                           and not planned and not denied)
-            if (registered.category.endswith("read")
+            # recall's fixed nothing-found text carries no record and none of the
+            # query, so there is nothing to leak. Exact match on purpose: a result
+            # with anything else in it, or from any other tool, still latches.
+            from service.tools.memory_tools import RECALL_NOTHING_FOUND
+            read_nothing = name == "recall" and str(result) == RECALL_NOTHING_FOUND
+            if not read_nothing and (
+                    registered.category.endswith("read")
                     and registered.category != "web_read"
                     or registered.category == "screen" or shell_read
                     or name in {"recall", "search_memory", "search_conversations"}):
@@ -2816,6 +3033,17 @@ async def run_agent(
         done = [outcome.text for name, outcome in tool_outcomes
                 if name in _EFFECT_TOOLS and outcome.status == "succeeded"]
         return "\n".join([*dict.fromkeys(done), text]) if done else text
+
+    def _stopped_text(stopped_tool, result) -> str:
+        """What the person reads when a write stops the turn. A proven refusal
+        says what is needed to go on; nothing else may imply that nothing happened."""
+        from service.tools.registry import not_done_receipt, not_sent_receipt
+        if not_sent_receipt(stopped_tool, result):
+            return "I haven't sent anything. " + (result.question or _user_facing_failure(result))
+        if not_done_receipt(stopped_tool, result):
+            return result.question or _user_facing_failure(result)
+        return ("The action did not return a verified success. I stopped without retrying.\n"
+                + _user_facing_failure(result))
 
     def _reminder_update_receipts() -> str | None:
         """Project update-only effects; model prose is not an effect receipt."""
@@ -3183,8 +3411,7 @@ async def run_agent(
             failed_tools.add(_name)
             if _direct_outcome.effect != "read":
                 response = (_reminder_update_receipts() or
-                            _earlier_effect_receipts(
-                                "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(_result)))
+                            _earlier_effect_receipts(_stopped_text(_registry().get(_name), _result)))
                 await emit({"type": "text", "text": response})
                 await emit({"type": "done"})
                 return response
@@ -3557,6 +3784,7 @@ async def run_agent(
     ask_text_call_nudged = False
     ask_guard_retried = False
     ask_stall_nudged = False
+    ask_claim_nudged = False
     ask_scale = 1.0
     ask_tool_calls: Counter = Counter()
     ask_blocked: set[str] = set()
@@ -4145,11 +4373,15 @@ async def run_agent(
                     # A knowledge question answered with a tool call written as
                     # text: one nudge to just answer. (A personal-data question
                     # falls through to the "call the tool now" re-prompt below.)
+                    # Worded as a host note: said in the user's voice, the model
+                    # took it as the user speaking and replied to it ("It looks
+                    # like that was a math question!").
                     ask_text_call_nudged = True
                     msgs.append({"role": "assistant", "content": "(no answer yet)"})
                     msgs.append({"role": "user", "content": (
-                        "Answer my question now in plain text, from what you know. No tool "
-                        "is needed or available for this one.")})
+                        "Host note, not from the user: your last reply held no answer. "
+                        "Answer the user's question above in plain text, from what you "
+                        "know, without calling a tool. Do not mention or reply to this note.")})
                     continue
                 if (wrote_call and not text and not ask_text_call_nudged and _step < max_steps - 1
                         and asks_change):
@@ -4227,6 +4459,24 @@ async def run_agent(
                     msgs.append({"role": "user", "content": (
                         "You said you would look, but nothing has run yet. Call the tool "
                         "now, or answer from what you already have.")})
+                    continue
+                if (not ask_claim_nudged and _ask_wanted_change and step_schemas
+                        and choice != "none" and _step < max_steps - 1
+                        and _ask_offers_change(step_schemas)
+                        and (claim := _ask_unbacked_claim(text)) is not None):
+                    # The user asked for the change and the reply says it is
+                    # done, but nothing ran. One nudge, tool choice left to the
+                    # model: the step offers only what the turn already
+                    # allowed, so this cannot widen what may run. A reply that
+                    # still claims it is corrected before it is published.
+                    ask_claim_nudged = True
+                    audit("ask_claim_nudge", step=_step)
+                    if content_streamed:
+                        await emit({"type": "clear_answer"})
+                    msgs.append({"role": "assistant", "content": text})
+                    msgs.append({"role": "user", "content": (
+                        "Nothing has run yet, so that was not done. If I asked for it, call the "
+                        "tool for it now. Otherwise reply without saying it was done.")})
                     continue
             unmet = _unmet_group()
             candidates = _unmet_candidates(unmet)
@@ -4326,6 +4576,15 @@ async def run_agent(
                 audit("ask_unknown_personal_fact", step=_step)
                 from service.model_only import ASK_UNKNOWN_MESSAGE
                 text = ASK_UNKNOWN_MESSAGE
+            if _ask_unbacked_claim(text) is not None:
+                # Still claims a change no tool made: say plainly it was not
+                # done, never the claim (the user looked for a reminder that
+                # did not exist).
+                from service.model_only import ASK_CLAIM_NOT_DONE
+                audit("ask_claim_not_done", step=_step, nudged=ask_claim_nudged)
+                if content_streamed:
+                    await emit({"type": "clear_answer"})
+                text = ASK_CLAIM_NOT_DONE
             # Publish once, after checking receipts and obligations.
             verified = _verified_final(text)
             if verified != text:
@@ -4519,6 +4778,7 @@ async def run_agent(
             name = _clean_tool_name(tc["function"]["name"])
             from service.tools.registry import unwrap_nested_args
             args = unwrap_nested_args(get_tool(name), _parse_args(tc["function"].get("arguments", "")))
+            unannounced_call[0] = (cid, name, args)
             if discovery is not None and name == DISCOVERY_TOOL:
                 # Do not widen this step's allowed_names. A sibling real call
                 # must not gain authority from a schema request in this batch.
@@ -4629,8 +4889,17 @@ async def run_agent(
                 continue
 
             if name in forbidden_tools:
-                result = (f"({name} is explicitly forbidden by the user's constraints for "
-                          "this request. Do not call it and do not claim it ran.)")
+                # Most of this set is not the user's doing: a personal question
+                # bars the web, and an action with an unconfirmed outcome holds
+                # every new action. Told "the user's constraints", the model
+                # told the user that sending email broke its security guidelines
+                # (2026-11-04 export). Say only what is true.
+                from service.router.model_led import needs_effect_owner
+                _ft = get_tool(name)
+                _held = (forbidden_reason if forbidden_reason and _ft is not None
+                         and needs_effect_owner(_ft.category) else "it is not allowed for this request")
+                result = (f"({name} was NOT run: {_held}. Do not call it and do not claim it "
+                          "ran. Do not say the user or a security rule forbade it.)")
                 audit("reject_forbidden", tool=name, args=args)
                 hard_failed.add(name)
                 await emit({"type": "tool_result", "id": cid, "result": result})
@@ -4753,6 +5022,28 @@ async def run_agent(
                               "performed it.)")
                     audit("reject_premature", tool=name, args=args)
                     failed_tools.add(name)
+                elif _skill_misnamed_as_tool(name):
+                    # Not a real action, so there is nothing to be honest about
+                    # failing: told "isn't available", the model reported its own
+                    # mis-call to the user ("I can't start the interview right
+                    # now"). Nothing loads here, so the skill boundary and each
+                    # skill's own trigger rules are unchanged. `internal` keeps this
+                    # note, which is for the model, out of the visible activity. A
+                    # repeat counts as a refusal, so the next step has to answer.
+                    result = (f"({name} is not an action you can call. Nothing ran and "
+                              "nothing went wrong. Do not mention it, and do not say it ran "
+                              "or that something is unavailable. Help with the request "
+                              "directly: call an offered tool if the answer depends on the "
+                              "user's own data, otherwise answer now or ask one short "
+                              "question.)")
+                    audit("reject_skill_as_tool", tool=name, args=args)
+                    hard_failed.add(name)
+                    if name in skills_misnamed:
+                        prev_step_refusals += 1
+                    skills_misnamed.add(name)
+                    await emit({"type": "tool_result", "id": cid, "result": result, "internal": True})
+                    msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                    continue
                 else:
                     if name in _WEB_LOOKUP_TOOLS:
                         # A web lookup the route did not offer is no reason to
@@ -4934,10 +5225,21 @@ async def run_agent(
                 await emit({"type": "tool_call", "id": cid, "name": name,
                             "args": args, "decision": dec.tier.value, "reason": dec.reason})
 
+                # Settle a send's recipient before its card, as bind_event_move
+                # does for a move: a failure is the tool result (no card to
+                # approve), and an email is bound to the one saved address.
+                _no_recipient = None
+                if dec.tier is Tier.CONFIRM:
+                    from service.tools.action_tools import prepare_send_recipient
+                    args, _no_recipient = prepare_send_recipient(tool, args)
+
                 if dec.tier is Tier.DENY:
                     result = f"BLOCKED by safety policy: {dec.reason}"
                     audit("deny", tool=name, args=args, reason=dec.reason)
                     ask_blocked.add(name)
+                elif _no_recipient:
+                    result = _no_recipient
+                    audit("recipient_preflight", tool=name, args=args, reason=str(_no_recipient))
                 # A draft with an unfilled "[Your Name]" slot, or a body cut off
                 # mid-sentence, must never REACH the confirmation card: the card
                 # is where the user's judgement is asked for, and these checks
@@ -5122,7 +5424,9 @@ async def run_agent(
             # whole thing went into the context and swamped it). Raised so the
             # export reflects what the model actually saw.
             await emit({"type": "tool_result", "id": cid, "result": result[:20000],
-                        **({"debug": dbg} if dbg else {})})
+                        **({"debug": dbg} if dbg else {}),
+                        **({"awaiting_recipient": True}
+                           if getattr(result, "needs_recipient", False) else {})})
             outcome = _record_outcome(
                 name, result, args=args,
                 denied=(dec.tier is Tier.DENY or
@@ -5177,9 +5481,8 @@ async def run_agent(
                 if outcome.effect != "read":
                     # Retrying a write after an uncertain response can create
                     # duplicates; let the user correct the arguments first.
-                    response = (_reminder_update_receipts() or
-                                _earlier_effect_receipts(
-                                    "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(result)))
+                    response = (_reminder_update_receipts()
+                                or _earlier_effect_receipts(_stopped_text(tool, result)))
                     await emit({"type": "text", "text": response})
                     await emit({"type": "done"})
                     return response

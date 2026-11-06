@@ -24,21 +24,29 @@ IMPORTANT rules:
   down when one starts (it stays armed and tries again). It also waits until
   the user's arrival (the arm, the notch opening, an intent, a turn) is
   SETTLE_S old: someone who just opened Wisp is about to ask something, and a
-  cancelled request may not stop the engine generating. Its model calls go
-  through cycle.resident_reply, under the Brief's Save power cap.
+  cancelled request may not stop the engine generating. schedule_tick also holds
+  it until the chat has gone quiet, and for the minimum gap after a build
+  (service/brief_pace.py). Its model calls go through cycle.resident_reply, under
+  the Brief's Save power cap.
 - While it runs it keeps the model resident (memory_saver.hold), at most
   RUN_MAX_S for the cycle and the gists together, so a park between two calls
   can't leave half the Brief by rule. A cycle that fell back to rules anyway
   doesn't count. Whatever ends a run, a still-owed catch-up backs off.
+- By day the scheduled builds stand in for this catch-up (brief_pace.automatic_plan,
+  cycle._build_tick): what is owed is settled by the next one, and the Brief says
+  "updating" only when one may run. This run itself is for quiet hours, a new
+  install, and a Brief the model hasn't read for a day.
 - A finished catch-up counts as the hour's idle refresh, and tells the app
   "changed" so an open notch shows it at once.
 - While it is running, or for UPDATING_FOR_S after the notch opened on a stale
   Brief, workspace.proactive says `updating`, so the Brief says "Updating your
-  Brief…" instead of passing the old cards off as current.
+  Brief…" instead of passing the old cards off as current. Not while a chat holds
+  the catch-up back: nothing is updating then, and it would look as if it were.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -143,7 +151,15 @@ def updating(now: float | None = None) -> bool:
     if _running:
         return True
     now = time.time() if now is None else now
-    return _armed is not None and _opened_at is not None and 0 <= now - _opened_at < UPDATING_FOR_S
+    if _armed is None or _opened_at is None or not 0 <= now - _opened_at < UPDATING_FOR_S:
+        return False
+    from service import brief_pace
+    if brief_pace.chat_recent():
+        return False
+    try:
+        return brief_pace.automatic_plan(now, _store().state()) != "light"
+    except Exception:  # noqa: BLE001 — unreadable: as if a build may run
+        return True
 
 
 def status() -> dict:
@@ -164,12 +180,12 @@ def _arrived(now: float) -> float:
     return min(ages) if ages else float("inf")
 
 
-async def _model_ready() -> bool:
+async def _model_ready(*, window_ok: bool = False) -> bool:
     """The chat model is resident, no batch window is open, and memory isn't
     tight: the only time a catch-up may start. Never loads anything."""
     from service import memory_saver
-    if memory_saver.batch_window_open() or memory_saver.pressure_level() in (memory_saver.WARN,
-                                                                            memory_saver.CRITICAL):
+    if (not window_ok and memory_saver.batch_window_open()) or memory_saver.pressure_level() in (
+            memory_saver.WARN, memory_saver.CRITICAL):
         return False
     from service.assistant.brief import _c
     from service.config import role_to_model
@@ -180,6 +196,38 @@ async def _model_ready() -> bool:
         return role_to_model("fast") in set(await _c().loaded_models())
     except Exception:  # noqa: BLE001 — an unreachable engine: not now
         return False
+
+
+async def model_ready() -> bool:
+    """For the day's builds: resident (a batch window's model counts) and memory
+    isn't tight. Never loads anything."""
+    return await _model_ready(window_ok=True)
+
+
+@contextlib.contextmanager
+def building():
+    """A scheduled build is running: the Brief says so, and the model stays resident."""
+    global _running
+    from service.memory_saver import hold
+    _running = True
+    try:
+        with hold():
+            yield
+    finally:
+        _running = False
+
+
+def caught_up() -> None:
+    """A scheduled build read everything; no catch-up is owed."""
+    global _armed, _opened_at
+    _armed, _opened_at = None, None
+
+
+async def announce() -> None:
+    try:
+        await _announce()
+    except Exception:  # noqa: BLE001 — the app's next read shows it anyway
+        pass
 
 
 async def _announce() -> None:

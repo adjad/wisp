@@ -112,7 +112,7 @@ def choose(item: dict, *, now: float, tz: str, linked: set[str], handle: str | N
     event = None
     if kind in ("meet", "call") and future_clock:
         zone = ZoneInfo(tz)
-        event = {"title": guard.clean(item["title"], 120), "start_ts": float(item["due_ts"]), "duration_min": 30,
+        event = {"title": guard.clean_title(item["title"]), "start_ts": float(item["due_ts"]), "duration_min": 30,
                  "day": datetime.fromtimestamp(item["due_ts"], zone).date().isoformat(), "timezone": tz,
                  "all_day": False}
     if source == "mail" and kind in ("reply", "meet", "call") and not replied and raw.get("reply_ref"):
@@ -140,14 +140,14 @@ def choose(item: dict, *, now: float, tz: str, linked: set[str], handle: str | N
         return "calendar_event", {"recipient": "", "event": event, "envelope": {"kind": "calendar", **event}}
     times = [t for t in _reminder_times(item, now, tz) if t > now] if source != "reminders" else []
     if times:
-        title = guard.clean(item["title"], 120)
+        title = guard.clean_title(item["title"])
         envelope = {"kind": "reminder", "title": title, "due_ts": times[0]}
         if len(times) > 1:
             envelope["alerts"] = [{"title": title, "due_ts": t} for t in times]
         return "reminder", {"recipient": "", "event": None, "envelope": envelope}
     if source in ("reminders", "notes") or kind in ("errand", "task", "meet", "call"):
         return "add_to_day", {"recipient": "", "event": None,
-                              "envelope": {"kind": "add_to_day", "title": guard.clean(item["title"], 200),
+                              "envelope": {"kind": "add_to_day", "title": guard.clean_title(item["title"], 200),
                                            "due_ts": item.get("due_ts")}}
     return "read", {"recipient": "", "event": None, "envelope": {"kind": "read"}}
 
@@ -311,12 +311,18 @@ def _read_button(plan: dict) -> str:
 def _headline(item: dict, method: str = "") -> str:
     """For a reply, the headline names the same person the button and the
     recipient do: the conversation's other party, from the source."""
-    title = guard.clean(item["title"], 70)
+    # The whole title: the card wraps it (ProactiveCards). This was cut at 70
+    # characters while everything downstream of it kept 90.
+    title = guard.clean_title(item["title"])
     if method in ("email_reply", "text_reply"):
         first = _first_name(item.get("who", "")) or guard.clean(item.get("who"), 30)
         if not first or not title.casefold().startswith(f"reply to {first.casefold()}"):
             title = f"Reply to {first}" if first else "Reply"
     return title[:1].upper() + title[1:]
+
+
+def _listed(parts: list[str]) -> str:
+    return " and ".join(parts) if len(parts) < 3 else f"{', '.join(parts[:-1])} and {parts[-1]}"
 
 
 def body(item: dict, method: str, plan: dict, sched: dict, now: float, tz: str) -> str:
@@ -326,6 +332,8 @@ def body(item: dict, method: str, plan: dict, sched: dict, now: float, tz: str) 
     who = guard.clean(item.get("who"), 40)
     noun = _NOUN.get(item["source"], "message")
     checked = [f"the {noun} from {who}" if who and item["source"] in ("mail", "messages") else f"your {noun}"]
+    if item.get("sent_checked"):
+        checked.append("your sent mail")
     target_day = datetime.fromtimestamp(item["due_ts"], zone).date() if item.get("due_ts") else \
         datetime.fromtimestamp(now, zone).date()
     events = [e for e in sched.get("calendar", []) if datetime.fromtimestamp(e["when_ts"], zone).date() == target_day]
@@ -345,7 +353,7 @@ def body(item: dict, method: str, plan: dict, sched: dict, now: float, tz: str) 
     }[method]
     if method in ("email_reply", "text_reply") and plan.get("event"):
         work += " and a calendar hold"
-    sentences = ([lead.rstrip(".") + "."] if lead else []) + [f"I checked {' and '.join(checked)}.", work + "."]
+    sentences = ([lead.rstrip(".") + "."] if lead else []) + [f"I checked {_listed(checked)}.", work + "."]
     return " ".join(sentences)
 
 
@@ -391,7 +399,7 @@ async def prepare(items: list[dict], sched: dict, reply_fn, abort, *, now: float
             cards.append({
                 "id": card_id(fingerprint, "read"),
                 "meta": meta_line(item, now, tz),
-                "title": guard.clean(item["title"], 90),
+                "title": guard.clean_title(item["title"]),
                 "body": body(item, "read", plan, sched, now, tz),
                 "why": guard.clean(item.get("why"), 200),
                 "account": item.get("account", ""),

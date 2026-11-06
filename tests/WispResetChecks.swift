@@ -210,7 +210,9 @@ enum WispResetChecks {
         check(WispReset.appFiles(home: "/Users/someone", bundleID: WispReset.bundleID) == [
             "/Users/someone/Library/Caches/com.wisp.assistant",
             "/Users/someone/Library/HTTPStorages/com.wisp.assistant",
-            "/Users/someone/Library/Application Support/Wisp/battery_history.json"], "the app's caches")
+            "/Users/someone/Library/Application Support/Wisp/battery_history.json",
+            "/Users/someone/.moe/reminder-action-ledger.json",
+            "/Users/someone/.moe/reminder-action-ledger.damaged.json"], "the app's caches and the reminder ledger")
         check(WispReset.appFiles(home: "/Users/someone", bundleID: nil).isEmpty
               && WispReset.appFiles(home: "/Users/someone", bundleID: "com.apple.Terminal").isEmpty,
               "never another bundle's files")

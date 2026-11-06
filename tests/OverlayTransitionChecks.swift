@@ -279,8 +279,8 @@ struct OverlayTransitionChecks {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wisp-export-\(UUID().uuidString)")
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
-        guard case .saved(let saved) = model.exportDebugLog(to: folder) else { return check(false, "The export saves") }
-        guard case .saved(let again) = model.exportDebugLog(to: folder), again != saved else {
+        guard case .saved(let saved) = await model.exportDebugLog(to: folder) else { return check(false, "The export saves") }
+        guard case .saved(let again) = await model.exportDebugLog(to: folder), again != saved else {
             return check(false, "A second export in the same second saves beside the first")
         }
         let written = (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.sorted() ?? []
@@ -290,9 +290,30 @@ struct OverlayTransitionChecks {
             let mode = (try? FileManager.default.attributesOfItem(atPath: folder.appendingPathComponent(name).path))?[.posixPermissions] as? Int
             check(mode == 0o600, "\(name) is readable only by this user")
         }
-        guard case .failed(let reason) = model.exportDebugLog(to: folder.appendingPathComponent("missing")), !reason.isEmpty else {
+        guard case .failed(let reason) = await model.exportDebugLog(to: folder.appendingPathComponent("missing")), !reason.isEmpty else {
             return check(false, "A write that fails says so")
         }
+
+        // The files are the snapshot's, byte for byte, written off the main actor.
+        let fixed = Date(timeIntervalSince1970: 2_000)
+        let separate = folder.appendingPathComponent("byte-for-byte")
+        try? FileManager.default.createDirectory(at: separate, withIntermediateDirectories: true)
+        guard let snapshot = model.debugLogSnapshot(now: fixed), let expected = model.debugExport(now: fixed),
+              case .saved(let jsonURL) = OverlayModel.writeDebugLog(snapshot, to: separate) else {
+            return check(false, "The snapshot exports")
+        }
+        check((try? Data(contentsOf: jsonURL)) == expected.json, "The .json is what the export built")
+        check((try? String(contentsOf: jsonURL.deletingPathExtension().appendingPathExtension("txt"), encoding: .utf8)) == expected.text,
+              "The .txt is what the export built")
+        var finished = false
+        let running = Task { @MainActor in
+            _ = await model.exportDebugLog(to: separate)
+            finished = true
+        }
+        await Task.yield()
+        check(!finished, "The main actor runs on while the export builds and writes")
+        await running.value
+        check(finished, "The export finishes")
 
         model.newChat()
         check(model.debugExport() != nil, "After New chat the archive still exports")
@@ -338,15 +359,20 @@ struct OverlayTransitionChecks {
         await AppDelegate.checkPinnedPanelHoldsOpen()
         await AppDelegate.checkMenuHoldsCollapse()
         await AppDelegate.checkResearchReleasesQueueOffTab()
+        await AppDelegate.checkPermissionPageStepsAside()
         await AppDelegate.checkQuickSettingsSurviveCollapse()
         await AppDelegate.checkSetupCardHoldsAsk()
         await AppDelegate.checkInlineReportHoldsOpen()
+        await AppDelegate.checkReportSaveHoldsUntilAnswered()
         await chatArchiveChecks()
         await AppDelegate.checkMenuExportsDebugLog()
         await AppDelegate.checkMenuChecksForUpdates()
         #endif
         if ProcessInfo.processInfo.environment["WISP_MOTION_NATIVE_CHECK"] == "1" {
             await nativeChecks()
+            #if WISP_MOTION_APP_DELEGATE_CHECKS
+            await AppDelegate.checkDebugExportLeavesNotchLive()
+            #endif
         }
     }
 }

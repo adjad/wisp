@@ -35,6 +35,8 @@ struct NotchDayView: View {
     @State private var showAllStale = false
     // Old undated reminders to keep or delete (StaleReminders.swift).
     @ObservedObject private var staleReminders = DayCards.staleReminders
+    // The offer to move an event outside working hours (UserHoursView.swift).
+    @ObservedObject private var hoursOffer = DayCards.hoursOffer
     // To-dos the proactive engine found (ProactiveCards.swift): check-offs and
     // Add to Day are shared with the Brief.
     @ObservedObject private var proactive = ProactiveActions.shared
@@ -192,7 +194,9 @@ struct NotchDayView: View {
         return VStack(alignment: .leading, spacing: 2) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(ask.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                    Text(ask.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        .help(ask.title)
                     Text(ask.detail).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
                 }
                 Spacer(minLength: 8)
@@ -288,6 +292,16 @@ struct NotchDayView: View {
                 .help("Stretch today's working hours to midnight and place your tasks")
             }
         }
+        if today.isShowingCurrentDay, let offer = hoursOffer.offer {
+            HoursOfferRow(offer: offer, timezone: today.timezone, clock: today.clock,
+                          isToday: { today.dayInterval.contains(Date(timeIntervalSince1970: $0)) },
+                          onMove: { request in
+                              model.askAbout(request)
+                              Task { await hoursOffer.taken(); model.onResize() }
+                          },
+                          onKeep: { Task { await hoursOffer.keep(); model.onResize() } })
+                .transaction { $0.animation = nil }
+        }
         if let movingEvent {
             // The check-in card's Move sub-panel, for a block picked on the timeline.
             CheckInMovePanel(model: checkIn, event: movingEvent, day: today.day, timezone: today.timezone,
@@ -346,7 +360,8 @@ struct NotchDayView: View {
 
     private func stillToFit(_ plan: TodayPlan) -> [DayFitRow] {
         let bounds = today.dayInterval
-        let blocks = plan.displayBlocks.map { DayBlockInput(id: $0.id, title: $0.title, start: $0.start, end: $0.end, kind: $0.kind) }
+        let blocks = plan.displayBlocks.map { DayBlockInput(id: $0.id, title: $0.title, start: $0.start, end: $0.end, kind: $0.kind,
+                                                            evidenceID: $0.evidence_id) }
         return DayTimeline.stillToFit(
             todos: dayTodos(plan),
             unscheduled: plan.displayUnscheduled.map { (id: $0.task_id, title: $0.title, reason: $0.reason) },
@@ -383,7 +398,9 @@ struct NotchDayView: View {
         let busy = row.todoID.map { proactive.todoBusy.contains($0) } ?? false
         return HStack(alignment: .center, spacing: 9) {
             Image(systemName: row.symbol).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).frame(width: 15)
-            Text(row.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+            Text(row.title).font(.wisp(size: 13)).foregroundStyle(Theme.textPrimary)
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                .help(row.title)
             if !row.detail.isEmpty {
                 Text(row.detail).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
             }
@@ -852,7 +869,8 @@ struct NotchDayView: View {
             _ = await today.add(title: item.title, kind: source?.task_kind ?? "task", minutes: length,
                                 priority: source?.priority ?? 2,
                                 due: source?.due_ts.flatMap { $0 > now ? Date(timeIntervalSince1970: $0) : nil },
-                                pinned: Date(timeIntervalSince1970: start))
+                                pinned: Date(timeIntervalSince1970: start),
+                                covers: DayTimeline.removalIDs(item))
         }
     }
 
@@ -1112,6 +1130,7 @@ struct DayRefreshLoop: ViewModifier {
 enum DayCards {
     static var attention = AttentionModel()
     static var staleReminders = StaleRemindersModel(baseURL: WispClient.baseURL)
+    static let hoursOffer = HoursOfferModel()
     private static var refreshedAt: Date?
 
     /// At most once a minute (the old per-tab cadence) unless forced: the loop
@@ -1121,6 +1140,9 @@ enum DayCards {
         refreshedAt = now
         await attention.refresh()
         await staleReminders.refresh()
+        #if !WISP_NOTCH_QA
+        await hoursOffer.refresh()
+        #endif
     }
 
     #if WISP_NOTCH_QA

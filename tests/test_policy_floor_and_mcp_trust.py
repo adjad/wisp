@@ -180,17 +180,18 @@ def test_operand_extraction_covers_path_named_and_explicit_name_bearing_write_to
     assert len(saved) == 2
     pathish = re.compile(r"path|file|dir|folder|dest|source|src|target|archive|output", re.I)
     uncovered = {}
-    assert policy._PATH_NAME_TOOLS == {"uninstall_app"}
+    # uninstall_app (a bare app `name` joined onto /Applications) was the one
+    # location outside _PATH_ARG_KEYS; its special case left with the tool.
+    assert not hasattr(policy, "_PATH_NAME_TOOLS") and "uninstall_app" not in REGISTRY
     for name, tool in REGISTRY.items():
         if tool.category not in ("fs_write", "fs_delete"):
             continue
         props = (tool.parameters or {}).get("properties", {})
         missing = [key for key, spec in props.items()
-                   if (pathish.search(key) or (name == "uninstall_app" and key == "name"))
+                   if pathish.search(key)
                    and spec.get("type") in ("string", "array")
                    and key not in policy._PATH_ARG_KEYS
-                   and (name, key) not in metadata
-                   and not (name in policy._PATH_NAME_TOOLS and key == "name")]
+                   and (name, key) not in metadata]
         if missing:
             uncovered[name] = missing
     assert not uncovered, f"path-bearing arguments outside the protected-path floor: {uncovered}"
@@ -513,8 +514,8 @@ def test_explicit_full_access_floor_override_is_unchanged(organize_policy_paths,
     assert _schema_decision("write_file", {"path": str(protected / "x"), "content": "x"}).tier == policy.Tier.ALLOW
 
 
-# archive_files, convert_file and encrypt_file were retired; policy.py keeps
-# their output-naming branches, but there is no registered schema left to drive.
+# archive_files, convert_file and encrypt_file were retired, and their
+# output-naming branches left policy.py with them (no registered schema drove them).
 _DERIVED_CASES = [
     "document", "document_upper", "sheet", "sheet_upper", "move_directory", "move_slash",
     "organize_relative", "organize_absolute", "organize_glob",

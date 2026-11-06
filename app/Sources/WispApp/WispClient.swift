@@ -1228,7 +1228,42 @@ final class WispClient {
         let dir = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser
         let target = dir.appendingPathComponent("\(safe.isEmpty ? "wisp-research" : String(safe)).md")
-        do { try data.write(to: target); return target } catch { return nil }
+        do { try Self.writeOwnerOnly(data, to: target); return target } catch { return nil }
+    }
+
+    /// Replaces `url` with `data`, mode 0600 from the first byte. Used for files of the
+    /// user's own data (a research report; delivery receipts). The bytes go to a new temp
+    /// file beside `url`, created 0600 (O_CREAT | O_EXCL | O_NOFOLLOW, so never an existing
+    /// file or a link), fsync-ed, then renamed over `url`: a reader sees the old file or the
+    /// new one, a file an earlier build left 0644 is replaced by a 0600 one, and a symlink
+    /// at `url` is replaced, never written through. Nothing is chmod-ed after a byte is
+    /// written. On failure the temp file is removed and `url` is unchanged.
+    nonisolated static func writeOwnerOnly(_ data: Data, to url: URL) throws {
+        func failure() -> POSIXError { POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        let temporary = url.deletingLastPathComponent()
+            .appendingPathComponent("." + url.lastPathComponent + "." + UUID().uuidString + ".tmp").path
+        let fd = open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw failure() }
+        var error: POSIXError?
+        // Exactly 0600 whatever the umask, before any byte is written.
+        if fchmod(fd, 0o600) != 0 { error = failure() }
+        if error == nil {
+            // write(2) may write less than asked or be interrupted: continue until done.
+            error = data.withUnsafeBytes { buffer -> POSIXError? in
+                var offset = 0
+                while offset < buffer.count {
+                    let count = Darwin.write(fd, buffer.baseAddress! + offset, buffer.count - offset)
+                    if count > 0 { offset += count; continue }
+                    if count < 0 && errno == EINTR { continue }
+                    return count < 0 ? failure() : POSIXError(.EIO)
+                }
+                return nil
+            }
+        }
+        if error == nil, fsync(fd) != 0 { error = failure() }
+        close(fd)
+        if error == nil, rename(temporary, url.path) != 0 { error = failure() }
+        if let error { unlink(temporary); throw error }
     }
 
     // MARK: - Smart Search

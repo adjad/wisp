@@ -154,6 +154,7 @@ enum NotchQADriver {
             windows[name] = window
         }
         quickSettings(width: width, model: model, offscreen: offscreen)
+        permissionPages(width: width, offscreen: offscreen)
         if !offscreen { app.activate(ignoringOtherApps: true) }
         Task { @MainActor in
             await working.refresh()
@@ -310,6 +311,57 @@ enum NotchQADriver {
             windows[name] = window
         }
     }
+
+    /// The permission page, each state a row can be in. `narrow` is the panel on
+    /// the smallest screen it opens on (SurfaceLayout's 320 pt floor), `light` the
+    /// same page with the Mac in light appearance, which the notch's tokens ignore.
+    static func permissionPages(width: CGFloat, offscreen: Bool = false) {
+        typealias Item = FirstRunPermissions.Item
+        var every: [Item: FirstRunPermissions.State] = [.calendar: .notAsked, .reminders: .notAllowed, .mail: .allowed,
+            .messages: .notAsked, .fullDiskAccess: .notAllowed, .contacts: .notAsked, .notifications: .allowed,
+            .screenRecording: .notAsked, .accessibility: .notAllowed]
+        var off = every
+        off[.fullDiskAccess] = .notAllowed
+        every[.calendar] = .allowed
+        let scenes: [(name: String, focus: Item?, states: [Item: FirstRunPermissions.State], asking: Set<Item>,
+                      waiting: Set<Item>, readable: Bool, width: CGFloat, scheme: ColorScheme)] = [
+            ("permission-calendar", .calendar, off, [], [], true, width, .dark),
+            ("permission-calendar-allowed", .calendar, every, [], [], true, width, .dark),
+            ("permission-fda", .fullDiskAccess, off, [], [], true, width, .dark),
+            ("permission-mail-waiting", .mail, off.merging([.mail: .notAsked]) { $1 }, [], [.mail], true, width, .dark),
+            ("permission-asking", .reminders, off.merging([.reminders: .notAsked]) { $1 }, [.reminders], [], true, width, .dark),
+            ("permission-contacts-waits", .contacts, off, [], [], false, width, .dark),
+            ("permission-list", nil, off, [], [], true, width, .dark),
+            ("permission-fda-narrow", .fullDiskAccess, off, [], [], true, 320, .dark),
+            ("permission-screen-narrow", .screenRecording, off, [], [], true, 320, .dark),
+            ("permission-calendar-light", .calendar, off, [], [], true, width, .light),
+        ]
+        for scene in scenes {
+            let pageModel = OverlayModel()
+            pageModel.tab = .brief
+            pageModel.permissionPage.opened(focus: scene.focus)
+            pageModel.permissionPage.access.qaShow(states: scene.states, asking: scene.asking, waiting: scene.waiting,
+                                                   messagesReadable: scene.readable)
+            let window = NSWindow(contentRect: NSRect(x: 80, y: 80, width: scene.width, height: 760),
+                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            let content = VStack(alignment: .leading, spacing: 0) {
+                Color.clear.frame(height: 44)
+                NotchPermissionsView(model: pageModel).padding(.top, 12)
+            }
+            .padding(EdgeInsets(top: 18, leading: 22, bottom: 16, trailing: 22))
+            .frame(width: scene.width, alignment: .topLeading)
+            .background(Theme.surface)
+            .environment(\.colorScheme, scene.scheme)
+            let host = NSHostingView(rootView: content)
+            window.contentView = host
+            window.setContentSize(host.fittingSize)
+            if !offscreen { window.makeKeyAndOrderFront(nil) }
+            windows[scene.name] = window
+            permissionModels.append(pageModel)
+        }
+    }
+    /// The page's models outlive the capture, as the windows do.
+    private static var permissionModels: [OverlayModel] = []
 
     /// Which `workspace.proactive` the fixture carries.
     enum ProactiveFixture { case ready, working, none }

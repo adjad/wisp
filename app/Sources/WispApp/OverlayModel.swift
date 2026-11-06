@@ -50,13 +50,13 @@ final class OverlayModel: ObservableObject {
     // service/debug_capture.py. Kept as one
     // pretty-JSON blob per record (like argsJSON below) rather than a typed
     // breakdown, since the shape genuinely varies by kind.
-    struct ToolDebugRecord: Identifiable {
+    struct ToolDebugRecord: Identifiable, Sendable {
         let id = UUID()
         var kind: String = ""     // "source" | "model_call"
         var json: String = ""
     }
 
-    struct ToolCallRecord: Identifiable {
+    struct ToolCallRecord: Identifiable, Sendable {
         let id = UUID()
         var callId: String = ""       // correlates the tool_call/tool_result SSE pair
         var name: String = ""
@@ -73,7 +73,7 @@ final class OverlayModel: ObservableObject {
     // array (system prompt + history) and tool schemas; response is either
     // the real wire response (non-streaming reasoning path) or the
     // reassembled content/reasoning_content/tool_calls (streamed paths).
-    struct RawModelIO: Identifiable {
+    struct RawModelIO: Identifiable, Sendable {
         let id = UUID()
         var model: String = ""
         var requestJSON: String = ""
@@ -81,7 +81,7 @@ final class OverlayModel: ObservableObject {
     }
 
     // One exchange in the conversation.
-    struct Turn: Identifiable {
+    struct Turn: Identifiable, Sendable {
         let id = UUID()
         let role: String   // "user" or "assistant"
         var text: String
@@ -171,6 +171,7 @@ final class OverlayModel: ObservableObject {
             // Any way off Ask (⌘1-3, a deep link, a notification) ends the
             // questionnaire; its answers so far are already saved.
             if tab != .ask { leaveKnowYou(); voice.cancel() }
+            closePermissionPage()
             showingQuickSettings = false
             onResize()
         }
@@ -190,6 +191,9 @@ final class OverlayModel: ObservableObject {
     // The gear's short list of settings, shown in place of the tab's content.
     @Published var showingQuickSettings = false {
         didSet {
+            // Every way out of the settings (a command, voice, a tab) is a way
+            // out of the page over them too, even with settings already closed.
+            if !keepingPermissionPage { closePermissionPage() }
             guard showingQuickSettings != oldValue else { return }
             // The gear during Getting to know you: step out of the flow (its
             // answers so far are saved) rather than open settings behind it.
@@ -197,6 +201,38 @@ final class OverlayModel: ObservableObject {
             onResize()
         }
     }
+    // The permission page, shown in place of the tab's content and over quick
+    // settings, so Done returns to whichever it opened from. Unlike quick settings
+    // it stays through a close made for its own action (permissionPage), which
+    // shows it again once macOS has an answer.
+    @Published private(set) var showingPermissions = false {
+        didSet {
+            guard showingPermissions != oldValue else { return }
+            if showingPermissions { leaveKnowYou() } else { permissionPage.closed() }
+            syncPermissionPoll()
+            onResize()
+        }
+    }
+    let permissionPage = NotchPermissionPageModel()
+    private var keepingPermissionPage = false
+
+    /// Opens the page, on one permission or (nil) the whole list, and the panel
+    /// if it is closed.
+    func openPermissionPage(_ item: FirstRunPermissions.Item?) {
+        permissionPage.opened(focus: item)
+        showingPermissions = true
+        onResize()
+        if collapsed { requestExpand() }
+    }
+
+    func closePermissionPage() { showingPermissions = false }
+
+    /// Its states are read only while it can be seen. Opening the panel reads
+    /// them again at once, so coming back from System Settings shows the answer.
+    private func syncPermissionPoll() {
+        if showingPermissions && !collapsed { permissionPage.access.start() } else { permissionPage.access.stop() }
+    }
+
     @Published private(set) var freeingMemory = false
     /// Quick settings' Model memory row: what the engine has resident, nil when unknown.
     @Published private(set) var modelMemory: ModelMemory?
@@ -319,9 +355,14 @@ final class OverlayModel: ObservableObject {
         didSet {
             if collapsed && !oldValue {
                 tabMemory.panelClosed(at: Date())
+                keepingPermissionPage = permissionPage.keepsThroughClose
                 showingQuickSettings = false
+                keepingPermissionPage = false
                 voice.cancel()
+            } else if !collapsed && oldValue {
+                permissionPage.panelOpened()
             }
+            syncPermissionPoll()
             onCollapsedChanged()
         }
     }
@@ -445,8 +486,11 @@ final class OverlayModel: ObservableObject {
     /// panel, which must not read as the person leaving, and opens above it.
     func saveReport(_ draft: ReportDraft) {
         pickingFile = true
-        defer { pickingFile = false }
-        draft.chooseLocationAndSave(above: DisplayGeometry.shared.layout.windowLevel)
+        draft.chooseLocationAndSave(above: DisplayGeometry.shared.layout.windowLevel) { [weak self] in
+            guard let self else { return }
+            // The attach dialog can be up beside it, and marks the same flag.
+            self.pickingFile = self.filePicker != nil
+        }
     }
 
     /// Which report a reply's "Report a problem" opens: its trace (or, for a
@@ -502,6 +546,8 @@ final class OverlayModel: ObservableObject {
     /// Pick the tab for an opening panel: Ask, or for a hover soon after the
     /// panel closed, the tab it closed on. An open setup card keeps it on Ask.
     func prepareTab(byHover: Bool, at date: Date = Date()) {
+        // A page set aside for System Settings is what hovering comes back to; ⌥Space means Ask.
+        if !byHover || !permissionPage.stillWaiting(at: date) { closePermissionPage() }
         tab = setupCard.tabForOpening(tabMemory.tabForOpening(current: tab, byHover: byHover, at: date))
     }
 
@@ -1471,14 +1517,14 @@ final class OverlayModel: ObservableObject {
         onResize()
     }
 
-    /// "Look" without Screen Recording: say how to turn it on and open setup's
-    /// Permissions page, whose Screen Recording row asks macOS. Wisp never shows
+    /// "Look" without Screen Recording: say how to turn it on and open the notch's
+    /// permission page, whose Screen Recording button asks macOS. Wisp never shows
     /// macOS's question itself from here (only a click on that row does; see
     /// tests/test_onboarding_window.py). Nothing is captured. True when it is on.
     private func screenRecordingReadyForLook() -> Bool {
         if CGPreflightScreenCaptureAccess() { return true }
         showTransientNotice(ScreenLook.deniedNotice, duration: 8)
-        NotificationCenter.default.post(name: .wispOpenPermissions, object: nil)
+        openPermissionPage(.screenRecording)
         return false
     }
 
@@ -1618,16 +1664,41 @@ final class OverlayModel: ObservableObject {
         report.open(key: Self.reportKey(for: turn), metadata: metadata, details: details)
     }
 
-    enum DebugLogExport {
+    enum DebugLogExport: Sendable {
         case nothing
         case saved(URL)
         case failed(String)
     }
 
-    /// Writes the export to Downloads, readable only by this user. A failed write
-    /// removes what it wrote and says why; it never reports a file as saved.
-    func exportDebugLog(to directory: URL? = nil) -> DebugLogExport {
-        guard let export = debugExport() else { return .nothing }
+    /// The chats one export covers, copied on the main actor at the click, so
+    /// building and writing the files (raw model I/O can run to many megabytes)
+    /// never holds up the notch.
+    struct DebugLogSnapshot: Sendable {
+        struct Chat: Sendable {
+            let sessionId: String
+            let startedAt: Date?
+            let turns: [Turn]
+            let current: Bool
+        }
+        let chats: [Chat]
+        let currentSessionId: String
+        let droppedChats: Int
+        let droppedTurns: Int
+        let exportedAt: Date
+    }
+
+    /// Writes the export to Downloads, off the main actor.
+    func exportDebugLog(to directory: URL? = nil) async -> DebugLogExport {
+        guard let snapshot = debugLogSnapshot() else { return .nothing }
+        return await Task.detached(priority: .userInitiated) {
+            OverlayModel.writeDebugLog(snapshot, to: directory)
+        }.value
+    }
+
+    /// The export's files, readable only by this user. A failed write removes what
+    /// it wrote and says why; it never reports a file as saved.
+    nonisolated static func writeDebugLog(_ snapshot: DebugLogSnapshot, to directory: URL?) -> DebugLogExport {
+        guard let export = debugExportFiles(snapshot) else { return .nothing }
         let dir = directory ?? FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser
         // Milliseconds and a short random suffix: two exports in one second never collide.
@@ -1637,8 +1708,8 @@ final class OverlayModel: ObservableObject {
         let textURL = dir.appendingPathComponent("\(base).txt")
         var created: [URL] = []
         do {
-            try Self.writePrivate(export.json, to: jsonURL); created.append(jsonURL)
-            try Self.writePrivate(Data(export.text.utf8), to: textURL); created.append(textURL)
+            try writePrivate(export.json, to: jsonURL); created.append(jsonURL)
+            try writePrivate(Data(export.text.utf8), to: textURL); created.append(textURL)
         } catch {
             // Only what this export created; a file already there was never opened.
             for url in created { try? FileManager.default.removeItem(at: url) }
@@ -1648,7 +1719,7 @@ final class OverlayModel: ObservableObject {
     }
 
     /// A new file with mode 0600, never one already there.
-    static func writePrivate(_ data: Data, to url: URL) throws {
+    nonisolated static func writePrivate(_ data: Data, to url: URL) throws {
         let fd = open(url.path, O_WRONLY | O_CREAT | O_EXCL, 0o600)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
@@ -1662,34 +1733,49 @@ final class OverlayModel: ObservableObject {
         }
     }
 
-    /// The export's .json and .txt: every chat left since Wisp opened (the archive,
-    /// oldest first), then the open chat. Nil when there is nothing to export yet.
+    /// Every chat left since Wisp opened (the archive, oldest first), then the open
+    /// chat. Nil when there is nothing to export yet.
+    func debugLogSnapshot(now: Date = Date()) -> DebugLogSnapshot? {
+        var chats = chatArchive.chats.map {
+            DebugLogSnapshot.Chat(sessionId: $0.sessionId, startedAt: $0.startedAt, turns: $0.turns, current: false)
+        }
+        if !turns.isEmpty && !liveChatForgotten {
+            chats.append(DebugLogSnapshot.Chat(sessionId: sessionId, startedAt: turns.compactMap(\.startedAt).min(),
+                                               turns: turns, current: true))
+        }
+        guard !chats.isEmpty else { return nil }
+        return DebugLogSnapshot(chats: chats, currentSessionId: liveChatForgotten ? "" : sessionId,
+                                droppedChats: chatArchive.droppedChats, droppedTurns: chatArchive.droppedTurns,
+                                exportedAt: now)
+    }
+
+    /// The export's .json and .txt as of now. Nil when there is nothing to export yet.
     func debugExport(now: Date = Date()) -> (json: Data, text: String)? {
+        debugLogSnapshot(now: now).flatMap { Self.debugExportFiles($0) }
+    }
+
+    /// The export's .json and .txt for a snapshot.
+    nonisolated static func debugExportFiles(_ snapshot: DebugLogSnapshot) -> (json: Data, text: String)? {
         let iso = ISO8601DateFormatter()
         iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let clock = DateFormatter(); clock.dateFormat = "HH:mm:ss"
-        func chat(_ id: String, _ startedAt: Date?, _ turns: [Turn], current: Bool) -> ChatDebugExport.Chat {
-            ChatDebugExport.Chat(sessionId: id, startedAt: startedAt, current: current,
-                                 turns: turns.map { Self.debugJSON($0, iso: iso) },
-                                 transcript: Self.debugTranscript(turns, clock: clock))
+        let chats = snapshot.chats.map {
+            ChatDebugExport.Chat(sessionId: $0.sessionId, startedAt: $0.startedAt, current: $0.current,
+                                 turns: $0.turns.map { debugJSON($0, iso: iso) },
+                                 transcript: debugTranscript($0.turns, clock: clock))
         }
-        var chats = chatArchive.chats.map { chat($0.sessionId, $0.startedAt, $0.turns, current: false) }
-        if !turns.isEmpty && !liveChatForgotten {
-            chats.append(chat(sessionId, turns.compactMap(\.startedAt).min(), turns, current: true))
-        }
-        guard !chats.isEmpty else { return nil }
-        let payload = ChatDebugExport.payload(chats: chats, currentSessionId: liveChatForgotten ? "" : sessionId,
-                                              droppedChats: chatArchive.droppedChats,
-                                              droppedTurns: chatArchive.droppedTurns, exportedAt: now, iso: iso)
+        let payload = ChatDebugExport.payload(chats: chats, currentSessionId: snapshot.currentSessionId,
+                                              droppedChats: snapshot.droppedChats,
+                                              droppedTurns: snapshot.droppedTurns, exportedAt: snapshot.exportedAt, iso: iso)
         guard JSONSerialization.isValidJSONObject(payload), let jsonData = try? JSONSerialization.data(
             withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) else { return nil }
         // Human-readable companion — same data, laid out to actually read, one section per chat.
-        let text = ChatDebugExport.text(chats: chats, droppedChats: chatArchive.droppedChats,
-                                        droppedTurns: chatArchive.droppedTurns, exportedAt: now, iso: iso)
+        let text = ChatDebugExport.text(chats: chats, droppedChats: snapshot.droppedChats,
+                                        droppedTurns: snapshot.droppedTurns, exportedAt: snapshot.exportedAt, iso: iso)
         return (jsonData, text)
     }
 
-    private static func debugJSON(_ t: Turn, iso: ISO8601DateFormatter) -> [String: Any] {
+    private nonisolated static func debugJSON(_ t: Turn, iso: ISO8601DateFormatter) -> [String: Any] {
         func rounded(_ v: Double) -> Double { (v * 100).rounded() / 100 }
         var d: [String: Any] = ["role": t.role, "text": t.text]
         if let traceID = t.traceID { d["trace_id"] = traceID }
@@ -1737,7 +1823,7 @@ final class OverlayModel: ObservableObject {
     }
 
     /// One chat's turns as the export's readable text (its header is ChatDebugExport's).
-    private static func debugTranscript(_ turns: [Turn], clock: DateFormatter) -> String {
+    private nonisolated static func debugTranscript(_ turns: [Turn], clock: DateFormatter) -> String {
         var text = ""
         for t in turns {
             if t.role == "user" {
@@ -1821,6 +1907,15 @@ final class OverlayModel: ObservableObject {
             rec.decisionReason = ev.str("reason")
             turnToolCalls.append(rec)
             if turnFirstTokenAt == nil { turnFirstTokenAt = Date() }
+        case "tool_rejected":
+            // Refused before it ran, so no tool_call came and none is shown. Debug
+            // Mode keeps its name and arguments; the tool_result fills in the refusal.
+            var rec = ToolCallRecord()
+            rec.callId = ev.str("id")
+            rec.name = ev.str("name")
+            rec.argsJSON = Self.prettyJSON(ev.payload["args"])
+            rec.decision = "rejected"
+            turnToolCalls.append(rec)
         case "raw_model_io":
             // Exactly what was sent to and returned by the model for this
             // completion call — see loop.py's _run_step / main.py's reasoning
@@ -1867,7 +1962,8 @@ final class OverlayModel: ObservableObject {
                 activity.append("⏱ Confirmation timed out — denied automatically")
             }
         case "tool_result":
-            activity.append("→ \(ev.str("result").prefix(60))")
+            // An `internal` result is a note to the model about its own mis-call.
+            if !ev.bool("internal") { activity.append("→ \(ev.str("result").prefix(60))") }
             for kind in AskAccess.kinds(ev.payload["needs_access"]) where !turnNeedsAccess.contains(kind) {
                 turnNeedsAccess.append(kind)
             }
@@ -2008,6 +2104,16 @@ final class OverlayModel: ObservableObject {
                 turns.append(t)
                 answered(answer, question: turns.dropLast().last(where: { $0.role == "user" })?.text, isError: false)
                 answer = ""
+            } else if let draft = messageDraft {
+                // A draft turn ends on its card with no prose. Without a turn
+                // here the request read as unanswered once the next message
+                // cleared the card, and Debug exports dropped it (2026-11-04).
+                let who = draft.to.isEmpty ? "the recipient" : draft.to
+                var t = Turn(role: "assistant",
+                             text: "Drafted a text to \(who). It goes only when you tap Send.",
+                             activity: activity)
+                applyDebugFields(to: &t)
+                turns.append(t)
             }
             activity = []
             phase = .done
@@ -2092,7 +2198,7 @@ final class OverlayModel: ObservableObject {
     // as real JSON rather than a doubly-encoded string. Falls back to the raw
     // string if it somehow isn't parseable (shouldn't happen — it came from
     // prettyJSON itself — but the export must not crash over a debug field).
-    private static func parsedJSON(_ s: String) -> Any {
+    private nonisolated static func parsedJSON(_ s: String) -> Any {
         guard let data = s.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
         else { return s }

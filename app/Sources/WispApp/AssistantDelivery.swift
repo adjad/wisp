@@ -289,6 +289,7 @@ final class AssistantDelivery {
     init(path: URL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".moe/assistant-delivery-receipts.json")) {
         self.path = path
+        Self.tightenOwnerOnly(path)
         if FileManager.default.fileExists(atPath: path.path) {
             if let data = try? Data(contentsOf: path),
                let saved = try? JSONSerialization.jsonObject(with: data) as? [String: [String: Any]] {
@@ -307,11 +308,28 @@ final class AssistantDelivery {
             // Receipt-file key order is not part of the delivery protocol. Keep
             // canonical sorting in fingerprint(), where payload identity needs it.
             let data = try JSONSerialization.data(withJSONObject: next)
-            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: path, options: [.atomic])
+            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            guard Self.writeOwnerOnly(data, to: path) else { return false }
             receipts = next
             return true
         } catch { return false }
+    }
+
+    /// Receipts name the user's reminders and events: replaced atomically, 0600 from the
+    /// first byte (WispClient.writeOwnerOnly), so one an older build wrote 0644 is
+    /// replaced by a 0600 one.
+    nonisolated static func writeOwnerOnly(_ data: Data, to url: URL) -> Bool {
+        (try? WispClient.writeOwnerOnly(data, to: url)) != nil
+    }
+
+    /// A receipts file an older build wrote 0644 is made 0600 when it is loaded, not only
+    /// on the next delivery. lstat + lchmod: a symlink is never followed, nothing is opened.
+    nonisolated static func tightenOwnerOnly(_ url: URL) {
+        var info = stat()
+        guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_mode & 0o077 != 0 else { return }
+        _ = lchmod(url.path, 0o600)
     }
 
     private func showUnknown(_ id: String, kind: String,

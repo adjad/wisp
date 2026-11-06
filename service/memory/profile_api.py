@@ -50,4 +50,12 @@ def dismiss_profile() -> dict[str, Any]:
 
 @router.delete("")
 def delete_profile() -> dict[str, Any]:
-    return _payload(P.clear())
+    profile = P.clear()
+    # Asked in the same questions, so Erase covers it. A failure here must not
+    # report the erase of the answers as failed.
+    try:
+        from service import user_hours
+        user_hours.clear()
+    except OSError:
+        pass
+    return _payload(profile)

@@ -11,17 +11,21 @@ struct KnowYouChecks {
             if !condition { fputs("FAIL: \(message)\n", stderr); exit(1) }
         }
 
-        // The steps, in order: three questions, then a summary. Under a minute.
+        // The steps, in order: four questions, then a summary. Under a minute.
         // Whoever opened the flow already said yes, so it starts on the name.
         check(KnowYouStep.allCases.first == .name && KnowYouStep.allCases.last == .done, "the name first, summary last")
-        check(KnowYouStep.questions == [.name, .goals, .tone], "three questions: name, goals, tone")
+        check(KnowYouStep.questions == [.name, .goals, .tone, .hours], "four questions: name, goals, tone, hours")
         for step in KnowYouStep.allCases {
             check(!step.title.isEmpty && !step.why.isEmpty, "\(step) has a title and a reason")
-            check(step.isQuestion == !step.fields.isEmpty, "\(step) saves fields exactly when it is a question")
+            // Hours are saved to their own setting (UserHours.swift), never to the profile.
+            check(step == .hours ? step.fields.isEmpty : step.isQuestion == !step.fields.isEmpty,
+                  "\(step) saves profile fields exactly when it is a profile question")
         }
         check(KnowYouStep.tone.fields == ["tone", "detail"], "the tone step saves tone and detail")
-        check(KnowYouStep.name.why.contains("Three quick questions") && KnowYouStep.name.why.contains("Skip"),
-              "the first question promises three quick, skippable questions")
+        check(KnowYouStep.name.why.contains("Four quick questions") && KnowYouStep.name.why.contains("Skip"),
+              "the first question promises four quick, skippable questions")
+        check(UserProfile().patch(for: .hours).isEmpty, "the hours step never writes to the profile")
+        check(KnowYouStep.hours.why.contains("quiet hours"), "the hours question says what quiet hours are for")
         check(KnowYouStep.goals.why.contains("one tap"), "the goals question says the weekly pulse is one tap")
         check(KnowYouStep.done.why.contains("/about") && !KnowYouStep.done.why.contains("Memory →"),
               "the summary names a way back a notch-first user can find")
@@ -50,11 +54,11 @@ struct KnowYouChecks {
         flow.advance()
         check(flow.isDone, "advance on the summary stays")
         flow.back()
-        check(flow.step == .tone && flow.isLastQuestion, "back from the summary returns to the last question")
-        flow.back(); flow.back()
+        check(flow.step == .hours && flow.isLastQuestion, "back from the summary returns to the last question")
+        flow.back(); flow.back(); flow.back()
         check(flow.step == .name, "back walks every question to the first")
-        check(KnowYouFlow(step: .goals).progress == 1.0 / 3.0, "progress counts answered questions")
-        var skipping = KnowYouFlow(step: .tone)
+        check(KnowYouFlow(step: .goals).progress == 1.0 / 4.0, "progress counts answered questions")
+        var skipping = KnowYouFlow(step: .hours)
         skipping.advance()
         check(skipping.isDone, "skipping the last question lands on the summary")
 
@@ -65,6 +69,10 @@ struct KnowYouChecks {
         check(KnowYouFlow.resume(for: profile).step == .goals, "a named profile resumes at goals")
         profile.goals = ["Ship it"]
         check(KnowYouFlow.resume(for: profile).isDone, "tone counts as answered once a name or goal is; a full profile resumes at the summary")
+        check(KnowYouFlow.resume(for: profile, hoursSet: false).step == .hours,
+              "someone who answered before the hours question existed is asked it next")
+        check(KnowYouFlow.resume(for: UserProfile(), hoursSet: false).step == .name,
+              "an empty profile still starts at the first question")
         profile = UserProfile()
         profile.struggles = ["Email"]
         check(KnowYouFlow.resume(for: profile).step == .name, "fields About you edits do not count as the opening questions")

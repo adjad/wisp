@@ -19,10 +19,9 @@ assistant.db, which already store conversation and commitment data unencrypted.
 """
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-from service.paths import MOE_DIR
+from service.paths import MOE_DIR, private_write_bytes
 
 CACHE_DIR = MOE_DIR / "cache"
 
@@ -44,11 +43,11 @@ def save(name: str, text: str) -> None:
     break the sync that produced the data — the in-memory cache is still
     correct either way, it just won't survive the next restart."""
     try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
-        p = _path(name)
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(text or "", encoding="utf-8")
-        os.chmod(tmp, 0o600)
-        tmp.replace(p)   # atomic — a crash mid-write can't truncate the cache
+        # Contacts, messages and mail text: 0600 from the first byte (the temp
+        # file used to be written 0644 and chmod-ed after), and atomic, so a
+        # crash mid-write can't truncate the cache.
+        private_write_bytes(_path(name), (text or "").encode("utf-8"))
+        # The temp name builds before this used, which a crash could leave 0644.
+        _path(name).with_suffix(".tmp").unlink(missing_ok=True)
     except Exception:  # noqa: BLE001
         pass

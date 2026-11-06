@@ -26,6 +26,8 @@ final class VoiceInput: ObservableObject {
     var onTranscript: (String) -> Void = { _ in }
 
     private var recorder: VoiceRecorder?
+    /// macOS's question is up. The panel closing for it isn't the person leaving.
+    private var askingForMicrophone = false
     private var request: Task<Void, Never>?
     private var clearFailure: Task<Void, Never>?
 
@@ -57,9 +59,17 @@ final class VoiceInput: ObservableObject {
         case .notDetermined:
             // The person pressed the mic, so this is the one moment Wisp asks.
             state = .listening
+            // The panel tucks away so macOS's question can't open under it, and
+            // comes back with the answer. This listen survives that close
+            // (cancel), and the mic opens only once the panel, and its meter, is back.
+            askingForMicrophone = true
+            Permissions.stepAside()
             AVCaptureDevice.requestAccess(for: .audio) { granted in
                 Task { @MainActor [weak self] in
-                    guard let self, self.state == .listening, self.recorder == nil else { return }
+                    guard let self else { return }
+                    self.askingForMicrophone = false
+                    Permissions.stepBack()
+                    guard self.state == .listening, self.recorder == nil else { return }
                     if granted { self.beginRecording() } else { self.refused() }
                 }
             }
@@ -82,6 +92,7 @@ final class VoiceInput: ObservableObject {
 
     /// Stop without sending anything (Esc, closing the panel, typing).
     func cancel() {
+        if askingForMicrophone { return }
         recorder?.stop()
         recorder = nil
         request?.cancel()
@@ -96,6 +107,8 @@ final class VoiceInput: ObservableObject {
 
     func openMicrophoneSettings() {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone") {
+            PrivacyRelaunch.notePaneOpened()
+            Permissions.stepAside()
             NSWorkspace.shared.open(url)
         }
     }

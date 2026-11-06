@@ -128,6 +128,33 @@ def sent_rows() -> list[dict]:
         return []
 
 
+# How often Apple Mail's Sent list is read for "already contacted" (sent_check): a
+# request to the app, which reads Mail's own index on disk. Never a network call.
+NATIVE_SENT_EVERY_S = 300.0
+NATIVE_SENT_DAYS = 8                     # Gmail's window (gmail_source.SENT_DAYS); outlasts MAIL_WINDOW_S
+_native_sent: list[dict] = []
+_native_sent_at: float | None = None
+
+
+async def all_sent_rows(now: float | None = None) -> list[dict]:
+    """sent_rows() plus Apple Mail's Sent mailboxes, headers only, for sent_check.
+
+    sent_rows alone misses every account that isn't Google-linked. Read at most every
+    NATIVE_SENT_EVERY_S, and only when a suggestion needs it. A read that fails keeps
+    the last list: what's in it was sent either way, and no list means no match."""
+    global _native_sent, _native_sent_at
+    now = time.time() if now is None else now
+    if _native_sent_at is None or not 0 <= now - _native_sent_at < NATIVE_SENT_EVERY_S:
+        _native_sent_at = now
+        try:
+            from service.mail_memory import bridge
+            rows, _capped = await bridge.read_sent(NATIVE_SENT_DAYS)
+            _native_sent = rows
+        except Exception:  # noqa: BLE001 — the app is away or Mail can't be read right now
+            pass
+    return sent_rows() + list(_native_sent)
+
+
 def answered_by_sent(sent: list[dict], *, account: str, subject: str, message_id: str, after: float) -> bool:
     """The user sent mail in this thread after its last incoming message: a
     reply to that exact message, or one in the same account under the same
@@ -791,10 +818,14 @@ def schedule(store, now: float, tz: str, *, own: str | None = None, linked: set[
         hidden = store.hidden_commitment_ids(now)
     except Exception:  # noqa: BLE001
         hidden = set()
+    from service.assistant.stale_reminders import passed_date
     calendar, reminders, past = [], [], []
     linked_set = {str(a).casefold() for a in linked}
     for row in rows:
         if row.get("id") in hidden or not _finite(row.get("when_ts")):
+            continue
+        # A Wisp-only reminder for an event that's over (Apple ones reach here only if Kept).
+        if row.get("source") == "manual" and passed_date(row.get("title"), row["when_ts"], now):
             continue
         entry = dict(id=str(row["id"]), title=clean(row.get("title"), 200), when_ts=float(row["when_ts"]),
                      all_day=bool(row.get("all_day")), source=row.get("source"),

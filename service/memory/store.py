@@ -50,7 +50,7 @@ import json
 import hashlib
 from pathlib import Path
 
-from service.paths import MOE_DIR
+from service.paths import MOE_DIR, private_sqlite_file
 
 DB_PATH = MOE_DIR / "sessions.db"
 
@@ -111,6 +111,7 @@ _CORPUS_TITLE_SQL = f"title LIKE '{CORPUS_TITLE}%'"
 class SessionStore:
     def __init__(self, path: Path = DB_PATH) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
+        private_sqlite_file(path)
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(_SCHEMA)
@@ -626,9 +627,19 @@ class SessionStore:
                 self._db.rollback()
                 raise
 
-    def finish_model_effect(self, sid: str, claim: dict, *, verified: bool) -> bool:
-        """Settle only the exact owner/revision; a crash leaves its claim consumed."""
-        status = "completed" if verified else "uncertain"
+    def finish_model_effect(self, sid: str, claim: dict, *, verified: bool,
+                            not_sent: bool = False, not_done: bool = False) -> bool:
+        """Settle only the exact owner/revision; a crash leaves its claim consumed.
+
+        not_sent is host proof that the attempt stopped before any dispatch
+        (registry._NotSentResult), and not_done that another effect refused
+        before any write (registry._NotDoneResult). Both are terminal, so they
+        block nothing, and recorded apart from a completed action. Anything
+        unproven stays "uncertain".
+        """
+        status = "completed" if verified or not_sent or not_done else "uncertain"
+        state_status = ("not_sent" if not_sent else "not_done" if not_done else status
+                        ) if not verified else status
         with self._lock:
             try:
                 changed = self._db.execute(
@@ -636,7 +647,7 @@ class SessionStore:
                     "updated_at=? WHERE id=? AND session_id=? AND kind='model_led_effect' "
                     "AND status='running' AND json_extract(state_json,'$.request_id')=? "
                     "AND json_extract(state_json,'$.revision')=?",
-                    (status, status, time.time(), claim["effect_id"], sid,
+                    (status, state_status, time.time(), claim["effect_id"], sid,
                      claim["request_id"], claim["revision"])).rowcount
                 self._db.commit()
             except BaseException:

@@ -24,6 +24,7 @@ import os
 import re
 from contextvars import ContextVar
 from datetime import date, timedelta
+from typing import NamedTuple
 
 
 # Set by service/main.py for one /agent turn that cannot be model-led (an agent
@@ -140,9 +141,11 @@ ASK_CORE_STUBS = frozenset({
 DAY_PLAN_TOOL = "get_my_day_plan"
 _WHEN = (r"(?:today|tonight|tomorrow|(?:this|next)\s+(?:week(?:end)?|month)|the\s+week(?:end)?"
          r"|(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b")
-# "and saturday?", "what about friday", "how about this week", "I mean this week"
-_DAY_FOLLOWUP = re.compile(r"(?:and|what\s+about|how\s+about|i\s+mean|same\s+for)\s+(?:for\s+|on\s+)?"
-                           + _WHEN + r"\s*\??$", re.I)
+# "and saturday?", "what about friday", "I mean this week", and corrections:
+# "actually saturday", "no, friday", "i meant tomorrow", "no wait, saturday"
+_DAY_FOLLOWUP = re.compile(r"(?:(?:no|nah|sorry|oops)[\s,]+)?(?:wait[\s,]+)?"
+                           r"(?:(?:and|what\s+about|how\s+about|i\s+mean[t]?|same\s+for|actually)[\s,]+)?"
+                           r"(?:for\s+|on\s+)?" + _WHEN + r"\s*[?.!]?$", re.I)
 _DAY_PLAN = re.compile(
     r"\bwhat\s+(?:should|do|must|can)\s+i\s+(?:do|focus on|work on|tackle|get done|prioriti[sz]e)\b"
     r"|\bwhat(?:['’]?s| is)\s+on\s+my\s+(?:plate|list|agenda|to-?do)"
@@ -273,6 +276,83 @@ def promise_only_reply(text: str) -> bool:
     text = (text or "").strip().replace("\u2019", "'")
     return (bool(text) and len(text) <= 400 and "?" not in text
             and bool(_PROMISE.search(text)))
+
+# A final that says a change was made: "Set a reminder tomorrow at 10 PM: …",
+# "I've added it to your calendar.", "Your reminder is set." The loop checks it
+# against the turn's own tool outcomes (2026-11-04 Ask export: "yes go ahead"
+# got "Set a reminder tomorrow at 10 PM…" with no tool call, and the user
+# looked for a reminder that never existed).
+_CLAIM_VERBS = (r"(?:set|created|added(?!\s+up\b)|scheduled|rescheduled|sent|texted|emailed|messaged|moved|deleted|"
+                r"removed|cancel+ed|booked|saved|updated|archived|forwarded|replied|"
+                r"marked\s+\S+\s+(?:as\s+)?(?:done|complete|completed|read)|"
+                r"turned\s+(?:on|off)|switched\s+(?:on|off)|muted|unmuted)")
+_CLAIM_NOUNS = r"(?:reminders?|timers?|alarms?|events?|meetings?|notes?|messages?|texts?|e-?mails?|drafts?)"
+_CLAIM_I = re.compile(r"^(?:i(?:'ve|\s+have)?|i(?:'ve|\s+have)?\s+(?:just|now|also|already|gone\s+ahead\s+and))\s+"
+                      + _CLAIM_VERBS + r"\b(?!\s+(?:aside|out|on|together|apart)\b)", re.I)
+# Subjectless or passive, only as the reply's lead: "Set a reminder for 9 PM.",
+# "Added to your calendar.", "Reminder set for Friday.", "Your note is saved."
+_CLAIM_LEAD = re.compile(
+    r"^(?:(?:created|added|scheduled|rescheduled|sent|texted|emailed|moved|deleted|removed|cancel+ed|booked|"
+    r"saved|archived|forwarded)\b(?!\s+up\b)"
+    r"|set\s+(?:up\s+)?(?:a|an|the|your)?\s*(?:reminder|timer|alarm|event)\b"
+    r"|(?:(?:the|your|a)\s+)?" + _CLAIM_NOUNS + r"\s+(?:(?:is|has\s+been|was|are|have\s+been)\s+(?:now\s+)?)?"
+    r"(?:set|created|added|scheduled|sent|booked|saved|moved|deleted|cancel+ed)\b"
+    r"|you(?:'re|\s+are)\s+all\s+set\b|all\s+set\b|done\s*[.!]*$)", re.I)
+# Not a claim: a question, a negation or a condition. A modal ("I can set…",
+# "I'll add…") never matches the claim patterns in the first place.
+_CLAIM_HEDGE = re.compile(r"\?|\b(?:not|never|nothing|n't)\b|n't\b|^(?:if|once|when|whenever|after)\b",
+                          re.I)
+_CLAIM_BACKREF = re.compile(r"\b(?:earlier|already|before|previously|last\s+time|yesterday|this\s+morning|"
+                            r"a\s+(?:moment|minute|while)\s+ago)\b", re.I)
+_CLAIM_PREFIX = re.compile(r"^\s*(?:\*\*)?(?:(?:ok(?:ay)?|sure|great|got\s+it|alright|perfect|done|yes|yep|"
+                           r"all\s+set)\s*[—–,:!.-]+\s*)+", re.I)
+
+
+class EffectClaim(NamedTuple):
+    sentence: str
+    backref: bool       # points back to an earlier turn ("I set it earlier")
+    first_person: bool  # "I've set…"; False for "Set a reminder…"/"Reminder set."
+
+
+def claimed_effect(text: str) -> EffectClaim | None:
+    """The sentence where the reply says it made a change, else None.
+    First-person claims count anywhere outside quotes, code and list items;
+    subjectless and passive ones ("Set a reminder for 9 PM.", "Reminder set.")
+    only as the reply's lead, where a narrated source line cannot be mistaken
+    for one. A subjectless lead can also be advice ("Set a reminder so you
+    don't forget"), so callers trust it only when the user asked for a change."""
+    lead = True
+    for line in (text or "").replace("’", "'").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith((">", '"', "`", "“", "-", "*", "•")) and not stripped.startswith("**"):
+            lead = False
+            continue
+        for sentence in re.split(r"(?<=[.!?])\s+", stripped):
+            body = _CLAIM_PREFIX.sub("", sentence).strip().strip("*").strip()
+            if re.fullmatch(r"(?:done|all\s+set)\s*[.!]*", sentence.strip().strip("*"), re.I):
+                body = "done"
+            if body and not _CLAIM_HEDGE.search(re.sub(r"\bdo\s+not\s+disturb\b", "", body, flags=re.I)):
+                first = bool(_CLAIM_I.search(body))
+                if first or (lead and _CLAIM_LEAD.search(body)):
+                    return EffectClaim(sentence.strip(), bool(_CLAIM_BACKREF.search(sentence)), first)
+            lead = False
+    return None
+
+
+_CLAIM_ITEM = re.compile(r"\b" + _CLAIM_NOUNS + r"\b|\b(?:to|from|off)\s+(?:your|the|my)\s+calendar\b|\bdo\s+not\s+disturb\b|\bfocus\b|"
+                         r"\b(?:texted|emailed|messaged)\b", re.I)
+
+
+def claimed_item(sentence: str) -> bool:
+    """The claim names a thing a tool makes or sends (a reminder, a text, the
+    calendar), not just a phrase like "I've sent you the list below"."""
+    return bool(_CLAIM_ITEM.search(sentence or ""))
+
+
+# Says plainly that nothing happened, in place of a claim no tool backs.
+ASK_CLAIM_NOT_DONE = "I haven't done that yet: nothing was created, sent or changed."
 
 # Appended to a model-led turn's runtime prompt (the light-read style hint the
 # legacy router sets is never set on a model-led turn).
@@ -412,6 +492,17 @@ def web_degradation_hint(tool: str, result: str) -> str:
             "specifics such as scores, dates or prices that are not in the results above.)")
 
 
+# Replying is a destination and draws on the message replied to, in any form:
+# "draft a message responding to trishe" read nothing and drafted nothing
+# (2026-11-02 r3). The verbs need only "to"; the nouns ("a response to", "an
+# answer to") need a person or a message after it, so "the public response to
+# the policy" stays plain writing.
+_REPLY_TO = (r"(?:\b(?:repl(?:y|ies|ied|ying)|respon(?:d|ds|ded|ding))\s+to\b"
+             r"|\b(?:response|answer|reply)\s+to\s+(?:[\w.-]+['’]s\b|(?:my|his|her|their|the|this|that|"
+             r"your)\s+(?:e-?mail|message|text|dm|thread|note|invite|post)\b|(?:my\s+)?(?:mom|mum|dad|"
+             r"mother|father|sister|brother|boss|manager|professor|prof|teacher|landlord|roommate|"
+             r"friend|wife|husband|partner|girlfriend|boyfriend)\b|(?-i:[A-Z][\w.'-]*)\b|(?:him|her|them)\b)"
+             r"|\banswer(?:ing)?\s+(?:him|her|them)\b)")
 _COMPOSE = re.compile(r"^\s*(?:please\s+)?(?:can you\s+|could you\s+)?(?:write|compose|draft|come up with)\b", re.I)
 # A destination is somewhere the text goes: a named recipient ("an email to
 # Priya"), a send/reply verb, or a place it is saved. The noun alone ("a
@@ -423,6 +514,7 @@ _DESTINATION = re.compile(
     # draft_email). A "note to my professor" is still only text to write.
     r"|(?i:\b(?:e-?mail|text|message|imessage|dm)\s+to\s+(?:my\s+|the\s+|our\s+)?[a-z][\w.'-]*)"
     r"|(?i:\b(?:send|sent|reply|respond|forward|post\s+(?:it|this)|share)\b)"
+    r"|(?i:" + _REPLY_TO + r")"
     r"|(?i:\b(?:in|to|into)\s+(?:my\s+)?(?:notes?|notes app|a file|calendar|reminders?)\b)"
     r"|(?i:\b(?:save|file|document|doc|calendar|reminder|clipboard)\b)"
     r"|\b(?i:text|e-?mail|message)\s+[A-Z][\w.'-]*")
@@ -450,7 +542,7 @@ _STORED_CONTENT = re.compile(
     r"messages?|texts?|chats?|reminders?|to-?dos?|docs?|documents?|files?|folder|drafts?|"
     r"meetings?|events?|plans?|conversations?|browsing|history)\b"
     r"|\b(?:based on|using|from|according to|summari[sz]e|summary of|recap of)\b"
-    r"|\b(?:reply|respond|answer)\s+to\b"
+    r"|" + _REPLY_TO +
     r"|\b[\w.-]+['’]s\s+(?:e-?mail|message|text|note|doc|document|post|invite)\b"
     r"|\bthe\s+(?:doc|document|file|attachment|e-?mail|thread|message|text|note|"
     r"meeting|call|invite|spreadsheet|pdf|deck)\b"
@@ -461,6 +553,20 @@ _STORED_CONTENT = re.compile(
 _WRITING = re.compile(
     r"^\s*(?:please\s+)?(?:can you\s+|could you\s+|would you\s+)?(?:help me\s+)?"
     r"(?:write|compose|draft|come up with|pen)\b", re.I)
+
+
+def reply_reads(prompt: str) -> list[str]:
+    """The conversation a reply draft answers is read first: "draft a message
+    responding to trishe" needs her thread before draft_message. An email
+    reply reads mail, a text or message reply reads Messages, otherwise both."""
+    text = prompt or ""
+    if not (_WRITING.match(text) or _COMPOSE.match(text)) or not re.search(_REPLY_TO, text, re.I):
+        return []
+    if re.search(r"\be-?mails?\b", text, re.I):
+        return ["view_emails"]
+    if re.search(r"\b(?:text|message|imessage|dm|chat|group)s?\b", text, re.I):
+        return ["view_messages"]
+    return ["view_messages", "view_emails"]
 
 
 def pure_writing(prompt: str) -> bool:

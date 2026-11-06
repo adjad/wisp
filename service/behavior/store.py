@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
+import stat
 import threading
 import time
 import uuid
@@ -29,6 +31,36 @@ log = logging.getLogger(__name__)
 
 
 _WARNED_NEWER: set[str] = set()
+
+
+def _private_sqlite_file(path: str) -> None:
+    """Owner-only (0600) database file and sidecars, before SQLite opens it.
+
+    The same rule as service.paths.private_sqlite_file, kept local because this
+    package imports only the standard library (tests/test_behavior_boundary.py).
+    behavior.db holds what the engine learned about the user's days; it used to
+    be created with the process umask, 0644, readable by other accounts."""
+    if path == ":memory:":
+        return
+    try:
+        os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600))
+    except FileExistsError:
+        pass                                  # an existing file (or link): tightened below
+    except OSError as exc:
+        log.warning("could not create %s privately: %s", path, exc)
+        return
+    for candidate in (path, path + "-wal", path + "-shm", path + "-journal"):
+        # lstat + chmod(follow_symlinks=False): a symlinked file is refused, not
+        # followed, and nothing is opened, so no POSIX lock another connection
+        # in this process holds on the database is dropped by a close.
+        try:
+            info = os.lstat(candidate)
+            if stat.S_ISREG(info.st_mode) and info.st_mode & 0o077:
+                os.chmod(candidate, 0o600, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            log.warning("could not make %s owner-only: %s", candidate, exc)
 
 
 def written_by_newer_build(path: Path) -> bool:
@@ -177,7 +209,10 @@ class Store:
 
     def _open(self, db_path: str, *, create: bool = True) -> None:
         """Connect. With ``create=False`` nothing is written (not even the WAL switch), so a
-        file this build must not touch can still be read for its version."""
+        file this build must not touch can still be read for its version. The
+        file's mode is still made owner-only: that changes who can read it, not
+        what it holds."""
+        _private_sqlite_file(db_path)
         self._conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
         self._conn.row_factory = sqlite3.Row
         if create:

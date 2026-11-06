@@ -42,7 +42,7 @@ def test_no_settings_or_setup_window_is_built():
 
 def test_every_way_into_settings_lands_in_the_wisp_window():
     app = _read("AppDelegate.swift")
-    assert _body(app, "@objc private func openSettings()").strip("{} \n") == "wispWindow.showSettings()"
+    assert _body(app, "@objc private func openSettings()").strip("{} \n").split() == ["stepAside()", "wispWindow.showSettings()"]
     route = _body(app, "private func open(_ route: WispRoute)")
     assert "case .settings:\n            openSettings()" in route
     # ⌘, in the app menu and the menu bar icon's Settings… both use openSettings.

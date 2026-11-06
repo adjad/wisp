@@ -111,9 +111,13 @@ def set_browser_history_enabled(enabled: bool) -> None:
 
 
 def _delete_history_files(browsers) -> None:
+    from service.paths import private_temp_files
     for browser in browsers:
         for suffix in ("txt", "tmp"):
             (cache_store.CACHE_DIR / f"browser_history_{browser}.{suffix}").unlink(missing_ok=True)
+        # A save that died before its rename leaves an owner-only temp copy.
+        for leftover in private_temp_files(cache_store.CACHE_DIR / f"browser_history_{browser}.txt"):
+            leftover.unlink(missing_ok=True)
 
 
 @mutating

@@ -1,3 +1,4 @@
+import AppKit
 import EventKit
 import Foundation
 
@@ -238,17 +239,88 @@ struct FirstRunSetupChecks {
             let denied = RemindersWriter.Access.passive(status: .deniedOrRestricted, source: source)
             check(!denied.needsRequest && denied.reason?.contains("turned off") == true, "\(source.name) denied: Settings")
         }
-        // A Brief or Day link for a permission macOS never asked about opens Wisp's own row.
-        check(Permissions.needsAskingInWisp(BriefDetail.calendarsAccess.url, calendarUndecided: true, remindersUndecided: false)
-              && !Permissions.needsAskingInWisp(BriefDetail.calendarsAccess.url, calendarUndecided: false, remindersUndecided: true)
-              && Permissions.needsAskingInWisp(BriefDetail.remindersAccess.url, calendarUndecided: false, remindersUndecided: true)
-              && !Permissions.needsAskingInWisp(BriefDetail.fullDiskAccess.url, calendarUndecided: true, remindersUndecided: true),
-              "Undecided Calendar or Reminders: Wisp's Permissions step; anything else: System Settings")
-        check(Permissions.needsAskingInWisp(BriefDetail.automationAccess.url, calendarUndecided: false,
-                                            remindersUndecided: false, automationUndecided: true)
-              && !Permissions.needsAskingInWisp(BriefDetail.automationAccess.url, calendarUndecided: true,
-                                                remindersUndecided: true, automationUndecided: false),
-              "Undecided Automation: Wisp's Mail & Notes row; decided: System Settings")
+        // A Brief, Day or Ask link for a permission opens the notch's page on it; any
+        // other System Settings page still opens directly, under its own words.
+        check(NotchPermissionPage.item(forFix: BriefDetail.calendarsAccess.url) == .calendar
+              && NotchPermissionPage.item(forFix: BriefDetail.remindersAccess.url) == .reminders
+              && NotchPermissionPage.item(forFix: BriefDetail.automationAccess.url) == .mail
+              && NotchPermissionPage.item(forFix: BriefDetail.fullDiskAccess.url) == .fullDiskAccess
+              && NotchPermissionPage.item(forFix: BriefDetail.contactsAccess.url) == .contacts
+              && NotchPermissionPage.item(forFix: Permissions.contactsAccess.url) == .contacts,
+              "Every permission link names its permission")
+        check(NotchPermissionPage.item(forFix: BriefDetail.internetAccounts.url) == nil
+              && NotchPermissionPage.item(forFix: BriefDetail.googleSettings.url) == nil,
+              "Internet Accounts and Google aren't permissions")
+        check(Permissions.fixLabel(BriefDetail.calendarsAccess) == Permissions.allowLabel
+              && Permissions.fixLabel(BriefDetail.fullDiskAccess) == Permissions.allowLabel
+              && Permissions.fixLabel(BriefDetail.internetAccounts) == BriefDetail.internetAccounts.label
+              && Permissions.fixLabel(BriefDetail.googleSettings) == BriefDetail.googleSettings.label,
+              "A link says Allow… when it opens the page, and where it goes otherwise")
+        // The page: every permission says what it is for, and the button fits its state.
+        for item in FirstRunPermissions.Item.allCases {
+            check(!NotchPermissionPage.title(item).isEmpty && !NotchPermissionPage.purpose(item).isEmpty
+                  && !NotchPermissionPage.symbol(item).isEmpty, "\(item.rawValue) says what it is")
+            check(NotchPermissionPage.action(item, .allowed) == nil && NotchPermissionPage.action(item, .checking) == nil
+                  && NotchPermissionPage.action(item, .notOnThisMac) == nil, "\(item.rawValue) with nothing to do offers nothing")
+            check(NotchPermissionPage.action(item, .notAllowed) == .openSettings, "\(item.rawValue) turned down: System Settings")
+            check(!NotchPermissionPage.answersInPlace(item, .notAllowed), "\(item.rawValue): a Settings page has no answer to wait for")
+            check(NotchPermissionPage.order(focus: item).first == item
+                  && Set(NotchPermissionPage.order(focus: item)) == Set(FirstRunPermissions.Item.allCases)
+                  && NotchPermissionPage.order(focus: item).count == FirstRunPermissions.Item.allCases.count,
+                  "\(item.rawValue) leads a page that still lists each once")
+            for state in [FirstRunPermissions.State.notAsked, .notAllowed, .allowed, .notOnThisMac] {
+                check(!NotchPermissionPage.next(item, state).isEmpty, "\(item.rawValue) says what happens next")
+            }
+        }
+        check(NotchPermissionPage.action(.fullDiskAccess, .notAsked) == .openSettings
+              && NotchPermissionPage.action(.calendar, .notAsked) == .allow
+              && NotchPermissionPage.action(.mail, .notAsked, waiting: true) == .askAgain
+              && NotchPermissionPage.action(.contacts, .notAsked, contactsWait: true) == nil,
+              "Full Disk Access has no question; a waiting question can be asked again; Contacts can wait for Full Disk Access")
+        check(NotchPermissionPage.actionTitle(.allow, asking: true) == "Asking…"
+              && NotchPermissionPage.actionTitle(.openSettings) == "Open System Settings", "Button words")
+        check(NotchPermissionPage.answersInPlace(.calendar, .notAsked) && NotchPermissionPage.answersInPlace(.mail, .notAsked)
+              && !NotchPermissionPage.answersInPlace(.fullDiskAccess, .notAsked)
+              && !NotchPermissionPage.answersInPlace(.screenRecording, .notAsked)
+              && !NotchPermissionPage.answersInPlace(.accessibility, .notAsked),
+              "Only a question Wisp can hear the answer to brings the panel straight back")
+        check(NotchPermissionPage.comesBack(before: .notAsked, now: .allowed)
+              && NotchPermissionPage.comesBack(before: .notAllowed, now: .allowed)
+              && !NotchPermissionPage.comesBack(before: .allowed, now: .allowed)
+              && !NotchPermissionPage.comesBack(before: .notAsked, now: .notAllowed)
+              && !NotchPermissionPage.comesBack(before: .notAllowed, now: .notAllowed),
+              "Leaving System Settings brings the panel back only for a new yes")
+        check(NotchPermissionPage.next(.fullDiskAccess, .notAllowed).contains(NotchPermissionPage.relaunchNote)
+              && NotchPermissionPage.next(.screenRecording, .notAsked).contains(NotchPermissionPage.relaunchNote)
+              && !NotchPermissionPage.next(.calendar, .notAllowed).contains(NotchPermissionPage.relaunchNote),
+              "Only the permissions that can quit Wisp warn about it")
+        check(NotchPermissionPage.next(.mail, .notAsked, waiting: true) == FirstRunPermissions.automationWaitingNote
+              && NotchPermissionPage.next(.mail, .notAsked, reset: true) == FirstRunPermissions.automationResetNote
+              && NotchPermissionPage.next(.calendar, .notAsked, unanswered: true).contains("didn't show"),
+              "A question that hasn't landed says so")
+        // Quit & Reopen brings the page back once, only soon after the Settings page opened.
+        let resume = UserDefaults(suiteName: "wisp.permissionPage.checks.\(UUID().uuidString)")!
+        let clicked = Date(timeIntervalSince1970: 1_000_000)
+        NotchPermissionPage.noteResume(.fullDiskAccess, defaults: resume, now: clicked)
+        check(NotchPermissionPage.takeResume(defaults: resume, now: clicked.addingTimeInterval(60)) == .fullDiskAccess
+              && NotchPermissionPage.takeResume(defaults: resume, now: clicked.addingTimeInterval(61)) == nil,
+              "The page comes back once")
+        NotchPermissionPage.noteResume(.fullDiskAccess, defaults: resume, now: clicked)
+        check(NotchPermissionPage.takeResume(defaults: resume, now: clicked.addingTimeInterval(PrivacyRelaunch.paneWindow + 1)) == nil,
+              "A stale mark brings back nothing")
+        NotchPermissionPage.noteResume(.fullDiskAccess, defaults: resume, now: clicked)
+        NotchPermissionPage.clearResume(defaults: resume)
+        check(NotchPermissionPage.takeResume(defaults: resume, now: clicked) == nil, "Leaving the page clears the mark")
+        check(NotchPermissionPage.stillWaiting(since: clicked, at: clicked.addingTimeInterval(NotchTabMemory.hoverWindow))
+              && !NotchPermissionPage.stillWaiting(since: clicked, at: clicked.addingTimeInterval(NotchTabMemory.hoverWindow + 1)),
+              "A page set aside lasts as long as the tab memory")
+        check(WispReset.firstRunMarkers.contains(NotchPermissionPage.resumeItemKey)
+              && WispReset.firstRunMarkers.contains(NotchPermissionPage.resumeAtKey), "A reset removes the mark")
+        // The panel gets out of the way of what's under it, and not of what's above it.
+        let panelLevel = DisplayGeometry.shared.layout.windowLevel
+        check(AppDelegate.panelCovers(window: .normal, panel: panelLevel) && AppDelegate.panelCovers(window: .modalPanel, panel: panelLevel)
+              && !AppDelegate.panelCovers(window: NSWindow.Level(panelLevel.rawValue + 1), panel: panelLevel),
+              "Normal windows and alerts are under the panel; raised dialogs aren't")
         // Mail or Notes open with Automation never decided: point at Wisp's row, not "Open Mail".
         let closed = (kind: "full_disk_access", reason: "Wisp reads Mail while Mail is open. Open Mail, or …")
         let unasked = Permissions.unaskedAutomation(app: "Mail", appRunning: true, automationDecided: false, failure: closed)

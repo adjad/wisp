@@ -1014,7 +1014,8 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
                                     knowledge_question, pure_writing, wisp_self_hint,
                                     wisp_self_question)
     from service.router.model_led import (OPAQUE_OUTBOUND_TOOLS, PRIVATE_EGRESS_TOOLS,
-                                          continuation_requires_baseline, continuation_send_exemption,
+                                          continuation_create_exemption, continuation_requires_baseline,
+                                          continuation_send_exemption,
                                           fresh_personal_obligation,
                                           memory_excluded, needs_effect_owner, opaque_effect,
                                           personal_communication_request, registry_specs)
@@ -1064,11 +1065,15 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
     pending_effects = store.pending_model_effects(sid)
     # model_only never interprets an old owner, so task_owner_verdict stays "none".
     unresolved_block = bool(store.unresolved_action(sid))
+    offered_creations: frozenset[str] = frozenset()
     if continuation_requires_baseline(prompt, last_assistant) or unresolved_block:
         exempt = (frozenset() if unresolved_block
                   else continuation_send_exemption(prompt, last_assistant))
+        offered_creations = (frozenset() if unresolved_block
+                             else continuation_create_exemption(prompt, last_assistant))
         forbidden |= frozenset(t.name for t in registry_specs(REGISTRY)
-                               if needs_effect_owner(t.category) and t.category not in exempt)
+                               if needs_effect_owner(t.category) and t.category not in exempt
+                               and t.name not in offered_creations)
     decision = RouteDecision(
         role="agent", model=target.model, needs_tools=True,
         source="model_led", route_source="model_led_discovery",
@@ -1108,8 +1113,8 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
             outbound=opaque_effect(tool.category) or tool.name in OPAQUE_OUTBOUND_TOOLS
             or tool.category in _OUTBOUND_CATEGORIES or tool.name in _OUTBOUND_TOOLS)
 
-    def finish_model_action(claim, verified):
-        return store.finish_model_effect(sid, claim, verified=verified)
+    def finish_model_action(claim, verified, **refusal):
+        return store.finish_model_effect(sid, claim, verified=verified, **refusal)
 
     # Answer guidance. A model-led decision has an empty subset and no direct
     # calls, so the routed web/stock synthesis hints can never apply; the Ask
@@ -1117,6 +1122,11 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
     guidance: list[str] = []
     hints: list[str] = ["style"]
     ask_preload, ask_stub_rank = M._ask_tool_rank(prompt)
+    if offered_creations:
+        from service.model_only import ASK_PRELOAD
+        lead = sorted(offered_creations)
+        ask_preload = [*lead, *(n for n in ask_preload if n not in lead)][:ASK_PRELOAD]
+        ask_stub_rank = [n for n in ask_stub_rank if n not in lead]
     if subject_tools:
         ask_stub_rank = list(dict.fromkeys([*ask_stub_rank, *subject_tools]))
     guidance.insert(0, ASK_STYLE_HINT)
@@ -1158,6 +1168,7 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
         ask_quality=True,
         ask_direct=ask_direct,
         model_led_stub_rank=ask_stub_rank,
+        earlier_effects=M._earlier_effects(sid),
         private_shell_history=private_shell_history,
         fresh_personal_scope=fresh_scope,
         claim_effect=claim_model_action,
@@ -1168,6 +1179,7 @@ def prepare_turn(client, prompt: str, history=(), *, req_id: str | None = None) 
         direct_calls=decision.direct_calls,
         required_tool_groups=decision.required_tool_groups,
         forbidden_tools=decision.forbidden_tools | ask_forbidden,
+        forbidden_reason=(M.UNRESOLVED_ACTION_REASON if unresolved_block else ""),
         conditional_tools=decision.conditional_tools,
         tool_argument_bindings=decision.tool_argument_bindings,
         strict_read_limits=decision.strict_read_limits,

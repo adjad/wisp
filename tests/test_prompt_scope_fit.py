@@ -194,17 +194,18 @@ def test_rules_cover_later_steps_after_protected_history_is_freed(monkeypatch, f
     assert seen_growth  # the scenario the finding described actually occurred
 
 
-def test_rules_cover_nudged_retries_that_evict_the_pasted_question(monkeypatch):
-    """A retry nudge is a user-role message, so it becomes the protected user
-    message and the original (long) question becomes droppable; the retry can
-    then offer more tools than the first attempt (third audit finding)."""
+def test_rules_cover_nudged_retries_and_keep_the_pasted_question(monkeypatch):
+    """A retry nudge is a user-role message. It used to become the only
+    protected user message, so the original (long) question became droppable
+    and a retry could evict it to offer more tools (third audit finding). The
+    request is now protected by identity (history_end), so every retry still
+    carries it, and the rules still cover whatever each retry offers."""
     monkeypatch.setattr(skills, "skills_context_block", lambda *args: "")
     pasted = "pasted text " * 1500 + "\nFile this for me."
 
     async def emit(event):
         pass
 
-    seen_growth = False
     for window in range(6_000, 10_000, 100):
         monkeypatch.setattr(config, "model_context_window", lambda model, w=window: w)
         client = ScriptedClient()  # never calls a tool, so every attempt is nudged
@@ -216,9 +217,8 @@ def test_rules_cover_nudged_retries_that_evict_the_pasted_question(monkeypatch):
         assert any(m["role"] == "user" and m["content"] != pasted
                    for m in client.requests[-1]["messages"])  # a nudge was sent
         _assert_rules_cover_every_request(client)
-        if len(client.requests[-1]["tools"]) > len(client.requests[0]["tools"]):
-            seen_growth = True
-    assert seen_growth
+        for request in client.requests:  # the question survives every retry
+            assert any(m.get("content") == pasted for m in request["messages"])
 
 
 def test_rules_cover_a_required_group_tool_the_fit_would_drop(monkeypatch):
@@ -233,6 +233,10 @@ def test_rules_cover_a_required_group_tool_the_fit_would_drop(monkeypatch):
 
 def test_model_led_discovery_keeps_the_skills_catalog(monkeypatch):
     monkeypatch.setattr(config, "model_context_window", lambda model: 50_000)
+    # The case this is about: use_skill isn't on the table yet. Importing service.skills.tools
+    # registers it, so without this the result depended on what another test had imported.
+    from service.tools.registry import REGISTRY
+    monkeypatch.delitem(REGISTRY, "use_skill", raising=False)
     calls = []
 
     def recorder(*args):

@@ -26,13 +26,12 @@ from datetime import date, datetime, timedelta
 import json
 import logging
 import math
-import os
 import threading
 import time
 from zoneinfo import ZoneInfo
 
 from service.assistant.stale_reminders import ASK_AFTER_S, DAY_S, EXCLUDED_STATES, valid_created_ts
-from service.paths import MOE_DIR
+from service.paths import MOE_DIR, private_write_bytes, tighten_private_file
 
 _log = logging.getLogger(__name__)
 
@@ -54,6 +53,9 @@ _lock = threading.Lock()
 
 
 def _read_state() -> dict:
+    # The file names the user's tasks and what they decided about them; one
+    # an older build wrote 0644 is tightened the next time it is read.
+    tighten_private_file(STATE_PATH)
     try:
         raw = json.loads(STATE_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -64,11 +66,11 @@ def _read_state() -> dict:
 
 
 def _write_state(state: dict) -> None:
-    STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_PATH.with_suffix(".json.tmp")
-    with open(tmp, "w", encoding="utf-8") as handle:
-        json.dump(state, handle, indent=2, ensure_ascii=False, allow_nan=False)
-    os.replace(tmp, STATE_PATH)
+    # Owner-only from the first byte, replaced atomically (service.paths).
+    text = json.dumps(state, indent=2, ensure_ascii=False, allow_nan=False)
+    private_write_bytes(STATE_PATH, text.encode("utf-8"))
+    # The temp name builds before this used, which a crash could leave 0644.
+    STATE_PATH.with_suffix(".json.tmp").unlink(missing_ok=True)
 
 
 def _day_state(state: dict, day: str) -> dict:

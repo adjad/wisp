@@ -9,14 +9,22 @@ Rules:
   resident model, one request at a time): a cycle waits for a running gist
   call and holds the next one off while it works.
 - A scheduled tick runs only while nobody is waiting (idle.foreground_busy)
-  and the app is listening; it stands down when a turn starts. "Analyze now"
-  forces a full cycle that waits out a turn instead of giving up.
+  and the app is listening; it stands down when a turn starts. It also waits
+  until the chat has gone quiet, and after a cycle that used the model it waits
+  out a minimum gap (service/brief_pace.py). "Analyze now" skips both, and forces
+  a full cycle that waits out a turn instead of giving up.
 - Triage is incremental: an item is read once per content hash
   (store.triage_*). The judge and prepare run when their inputs changed, and
   at least every 30 minutes.
 - With no model available the cycle still works by rule: calendar, reminders
   and Notes to-dos are deterministic, and each item's own verbatim ask stands
   in for its triage, so a model outage never hides a to-do.
+- By day the model builds the Brief about four times, placed across the working
+  hours (brief_pace.automatic_plan, _build_tick). Between those builds a "light"
+  cycle keeps it current with no model call (run_cycle(light=True)): what the user
+  handled, deadline slots and threads read by rule. Its cards, to-dos and summary
+  stay as the last build wrote them. The rules below still apply in quiet hours, on
+  a new install, and after a day with no build ("as_is").
 - About hourly, while the user is away from the keyboard (HID idle ≥ 10 min,
   the same "away" the background GPU cap uses), the whole Brief regenerates:
   a forced cycle, then every mail/texts overview (idle_refresh). Only when its
@@ -40,7 +48,9 @@ import traceback
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from service.proactive import guard, handled, judge as judge_mod, prepare as prepare_mod, sources, stable, triage
+from service import brief_pace
+from service.proactive import (guard, handled, judge as judge_mod, prepare as prepare_mod, sent_check, sources,
+                               stable, triage)
 from service.proactive.prepare import todo_id
 
 JUDGE_EVERY_S = 30 * 60
@@ -176,7 +186,7 @@ def freeze_reply(reply_ref):
 
 
 def todo_from_item(item: dict, card_ids: dict[str, str]) -> dict:
-    return {"id": todo_id(item["primary"]), "title": guard.clean(item["title"], 120), "source": item["source"],
+    return {"id": todo_id(item["primary"]), "title": guard.clean_title(item["title"]), "source": item["source"],
             "account": item.get("account", ""), "who": item.get("who", ""), "quote": item.get("quote", ""),
             "due_ts": item.get("due_ts"), "due_label": item.get("due_label", ""), "kind": item["kind"],
             "done": False, "card_id": card_ids.get(item["primary"]),
@@ -231,6 +241,15 @@ def deterministic_todos(sched: dict, notes: list[dict], now: float, tz: str) -> 
                     "kind": "task", "done": False, "card_id": None,
                     "fingerprints": [f"{note['id']}:{note['hash']}"]})
     return out
+
+
+def without_passed_events(todos: dict[str, dict], now: float) -> dict[str, dict]:
+    """A to-do read from mail, texts or notes for an event that's over offers nothing to
+    fit in. Reminders are settled by their own Keep/Delete question; a Kept one stays."""
+    from service.assistant.stale_reminders import passed_date
+    return {key: todo for key, todo in todos.items()
+            if todo.get("source") in ("calendar", "reminders")
+            or not passed_date(todo.get("title"), todo.get("due_ts") or now, now)}
 
 
 # --- one cycle ---------------------------------------------------------------------------------
@@ -452,7 +471,7 @@ def _threads(survivors: list[dict], now: float | None = None, tz: str = "UTC") -
         if item["source"] not in ("mail", "messages"):
             continue
         out.append({"id": "thread:" + item["id"], "source": item["source"], "account": item["account"],
-                    "who": item.get("who", ""), "title": guard.clean(result.get("title") or item.get("title"), 90),
+                    "who": item.get("who", ""), "title": guard.clean_title(result.get("title") or item.get("title"), 90),
                     "summary": guard.clean(result.get("summary") or result.get("asks_of_me")
                                            or (item.get("title") if item["source"] == "mail" else ""), 400),
                     "user_wrote": bool(item.get("user_wrote")),
@@ -478,9 +497,10 @@ async def run_cycle(*, now: float | None = None, tz: str | None = None, account:
                     force: bool = False, patient: bool = False, reply_fn=None, abort=None,
                     collect=None, schedule_fn=None, store=None, resolve=None, linked: set[str] | None = None,
                     own: str | None = None, allowed: set[str] | None = None, freeze=None,
-                    deadline_fn=None, autoadd_fn=None) -> dict:
+                    deadline_fn=None, autoadd_fn=None, light: bool = False) -> dict:
     """One full cycle. Every dependency can be injected (tests use a fake model
-    and fixture sources); production reads the caches and the resident model."""
+    and fixture sources); production reads the caches and the resident model.
+    `light` makes no model call and leaves what the model wrote in place."""
     global _running
     if _running:
         return {"ok": False, "status": "busy"}
@@ -492,7 +512,7 @@ async def run_cycle(*, now: float | None = None, tz: str | None = None, account:
                             deadline_fn=deadline_fn if deadline_fn is not None else
                             (_default_deadlines if schedule_fn is None else None),
                             autoadd_fn=autoadd_fn if autoadd_fn is not None else
-                            (_default_autoadd if schedule_fn is None else None))
+                            (_default_autoadd if schedule_fn is None else None), light=light)
     except Exception as exc:  # noqa: BLE001 — a failed cycle leaves the last good output in place
         traceback.print_exc()
         _status.update(state="error", error=type(exc).__name__, finished_at=time.time())
@@ -502,13 +522,21 @@ async def run_cycle(*, now: float | None = None, tz: str | None = None, account:
 
 
 async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, schedule_fn, store, resolve,
-                 linked, own, allowed, freeze, deadline_fn=None, autoadd_fn=None) -> dict:
+                 linked, own, allowed, freeze, deadline_fn=None, autoadd_fn=None, light=False) -> dict:
     from service.proactive.store import store as default_store
     store = store or default_store()
     now = time.time() if now is None else now
     tz = tz or _zone()
     abort = abort or _foreground
-    reply_fn = reply_fn or resident_reply
+    answer = reply_fn or resident_reply
+    answered = 0
+
+    async def reply_fn(system, material, abort, tokens):
+        nonlocal answered
+        reply = await answer(system, material, abort, tokens)
+        answered += reply is not None
+        return reply
+
     linked = sources.gmail_accounts() if linked is None else linked
     own = sources.own_account() if own is None else own
     allowed = triage.allowed_words() if allowed is None else allowed
@@ -532,7 +560,8 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
             continue
         pending.append(item)
     _status["progress"] = {"done": 0, "total": len(pending)}
-    model_ok, yielded = True, False
+    # Light: a new item is read by rule until the next build reads it properly.
+    model_ok, yielded = not light, False
     offline_results: dict[str, dict] = {}
     for index, item in enumerate(pending):
         if model_ok and not await _wait_out_turn(abort, patient):
@@ -579,7 +608,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
     summaries = dict(previous.get("summaries") or {})
     debug_by_account: dict = dict(previous.get("debug") or {})
     _status["phase"] = "judging"
-    for acct in accounts:
+    for acct in () if light else accounts:
         mine = [s for s in survivors if (s["item"].get("account") or own) == acct]
         acct_sched = _account_schedule(sched, acct, own)
         key = _digest({"s": _key_items(mine),
@@ -630,6 +659,7 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
                 waiting_pool.append(found)
         ranked = with_waiting_people(ranked, waiting_pool, acct_sched, now=now, tz=tz, suppressed=suppressed,
                                      allowed=allowed, debug=waiting_debug)
+        ranked = await _without_contacted(ranked, store, now=now, debug=waiting_debug)
         _status["phase"] = "preparing"
         # Read and under a day old: still a to-do, not yet a card.
         for entry in ranked:
@@ -701,8 +731,9 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
     # 4. Auto-add (autoadd.py): a missed, time-sensitive event or deadline goes
     # on Calendar/Reminders through the verified writes, then a "Wisp did this"
     # card leads. Never once a turn has started; every write re-checks it.
-    await _auto_add(cards_by_account, accounts, own, survivors, sched, now=now, tz=tz, store=store,
-                    abort=abort, autoadd_fn=None if yielded or abort() else autoadd_fn)
+    if not light:      # acting waits for a build; without it the cards stay as they are
+        await _auto_add(cards_by_account, accounts, own, survivors, sched, now=now, tz=tz, store=store,
+                        abort=abort, autoadd_fn=None if yielded or abort() else autoadd_fn)
     # What Wisp looked at, bulk mail it skipped included. An injected collect
     # (tests) reports nothing, so its items stand in.
     if not looked:
@@ -729,10 +760,14 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         cards=[c for a in accounts for c in cards_by_account.get(a, [])],
         todos=[t for a in accounts for t in todos_by_account.get(a, [])],
         notes=[{k: n[k] for k in ("id", "title", "account", "who", "hash")} for n in notes],
-        threads=_threads(survivors, now, tz), summaries=summaries, judged=judged, model=model_ok,
+        threads=_threads(survivors, now, tz), summaries=summaries, judged=judged,
+        model=bool(previous.get("model")) if light else model_ok,
         # When the model last read it: a rules-only cycle (the model parked) keeps
         # as_of current, so return_refresh judges staleness by this instead.
         **({"model_as_of": now} if model_ok else {}),
+        # A finished cycle that really used the model starts the gap before the next
+        # automatic one (brief_pace). One that only read the caches doesn't.
+        **({"build_at": now + (time.time() - started)} if answered and not yielded else {}),
         # What handled.py needs to see the user answer a conversation themselves.
         seen={i["id"]: e for i in items if (i.get("account") or own) not in erased
               and (e := handled.seen_entry(i)) is not None},
@@ -741,9 +776,46 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
         stats={a: _looked_stats(looked.get(a)) for a in sorted(set(accounts) | (set(looked) - erased))})
     _status.update(state="idle" if not yielded else "idle", phase="", finished_at=time.time())
     _log(f"cycle done: {len(items)} items, {len(pending)} read, {len(survivors)} kept, "
-         f"{sum(len(v) for v in cards_by_account.values())} cards{' (by rule)' if not model_ok else ''}")
+         f"{sum(len(v) for v in cards_by_account.values())} cards"
+         f"{' (between builds)' if light else ' (by rule)' if not model_ok else ''}")
     return {"ok": not yielded, "status": "yielded" if yielded else "done", "model": model_ok,
             "items": len(items), "read": len(pending), "survivors": len(survivors)}
+
+
+async def _without_contacted(ranked: list[dict], store, *, now: float, debug: list | None = None) -> list[dict]:
+    """Take out what sent mail shows the user already did: "Reach out to your TA" after
+    they wrote to the TA (sent_check). It stays away like a dismissed card, the same
+    as handled.py's sweep does for one already showing, rather than a card saying so:
+    the user finished it, and there's nothing on such a card to do but dismiss it.
+    No model, and Sent is read only when a suggestion to contact someone is here."""
+    try:
+        wanted = [e for e in ranked if e.get("item") and not e.get("critical")
+                  and sent_check.contact_of(e.get("title")) is not None]
+        if not wanted:
+            return ranked
+        sent = await sources.all_sent_rows(now)
+        if not sent:
+            return ranked                  # nothing to go on: the suggestion stands
+        mine = sent_check.own_addresses(sent)
+        gone = set()
+        for entry in wanted:
+            item = entry["item"]
+            ref = item.get("ref") or {}
+            seen = {"received_ts": item.get("received_ts"), "subject": ref.get("subject") or "",
+                    "sender": ref.get("to") or "", "mentioned": sent_check.mentioned_addresses(item.get("text"))}
+            if handled.entry_contacted(entry.get("title"), seen, sent, mine=mine, now=now):
+                store.mark_handled(entry.get("fingerprints"), entry.get("asks"), now)
+                gone.add(entry["primary"])
+                if debug is not None:
+                    debug.append({"who": item.get("who", ""), "waiting": False, "reason": "already emailed"})
+            else:
+                entry["sent_checked"] = True
+        if gone:
+            _log(f"already contacted, from sent mail: {len(gone)}")
+        return [e for e in ranked if e.get("primary") not in gone]
+    except Exception:  # noqa: BLE001 — a failed check keeps the suggestion
+        traceback.print_exc()
+        return ranked
 
 
 _REPLY_METHODS = ("email_reply", "text_reply")
@@ -975,6 +1047,49 @@ async def _return_tick() -> None:
         await _tick()
 
 
+async def _light_tick() -> None:
+    """Between builds: the Brief kept current with no model call."""
+    global _next_tick_at
+    await run_cycle(light=True)
+    _next_tick_at = time.time() + IDLE_GAP_S
+
+
+async def _build_tick() -> None:
+    """One of the day's builds: read what changed, then rewrite the overviews whose
+    mail or texts changed. With nothing changed it costs no model call. Waits for a
+    resident model and never loads one, so it can't defeat Save memory; a light
+    tick keeps the Brief current meanwhile, and the build stays due."""
+    global _next_tick_at
+    from service.proactive import return_refresh
+    from service.proactive.store import store as default_store
+    if not await return_refresh.model_ready():
+        await _light_tick()
+        return
+    store = default_store()
+    now = time.time()
+    _log("building the Brief (a scheduled time passed)")
+    deadline = time.monotonic() + return_refresh.RUN_MAX_S
+    with return_refresh.building():
+        try:
+            result = await asyncio.wait_for(run_cycle(), return_refresh.RUN_MAX_S)
+        except asyncio.TimeoutError:
+            result = {"status": "timeout"}
+        if not isinstance(result, dict) or result.get("status") != "done" or result.get("model") is False:
+            _next_tick_at = time.time() + TICK_GAP_S     # a turn, or the model left: still due
+            return
+        try:
+            from service.assistant import mail_gists
+            await asyncio.wait_for(mail_gists.refresh_changed(), max(0.0, deadline - time.monotonic()))
+        except asyncio.TimeoutError:
+            _log("the overviews ran out of time; they keep their last text")
+        except Exception:  # noqa: BLE001 — the cards are fresh; the overviews keep their last text
+            traceback.print_exc()
+    store.save_state(built_for=now, idle_refresh_at=now, idle_refresh_inputs=refresh_inputs(store, now))
+    return_refresh.caught_up()
+    _next_tick_at = time.time() + IDLE_GAP_S
+    await return_refresh.announce()
+
+
 async def _tick() -> None:
     global _next_tick_at, _rerun
     result = await run_cycle()
@@ -990,9 +1105,9 @@ async def _sweep_handled() -> None:
     try:
         from service.proactive.store import store as default_store
         texts = await asyncio.to_thread(lambda: handled.latest_sent_texts(sources.text_records()))
-        sent = sources.sent_rows()
         store = default_store()
         now = time.time()
+        sent = await sources.all_sent_rows(now) if handled.contact_work(store.state()) else sources.sent_rows()
         tz = store.state().get("timezone") or _zone()
         own, linked = sources.own_account(), sources.gmail_accounts()
         try:
@@ -1046,15 +1161,39 @@ def schedule_tick() -> asyncio.Task | None:
         catch_up = return_refresh.due()
     except Exception:  # noqa: BLE001 — the hourly idle refresh still catches up
         catch_up = False
+    state: dict = {}
     try:
         from service.proactive.store import store as default_store
         refresh = idle_refresh_due(time.time(), default_store())
+        state = default_store().state()
     except Exception:  # noqa: BLE001
         refresh = False
+    plan = brief_pace.automatic_plan(time.time(), state)
+    if plan != "as_is":
+        refresh = catch_up = False      # by day the scheduled builds cover both
+    if plan == "light":
+        # No model call, so no chat rule: only never during a turn, and not unasked.
+        if time.time() < _next_tick_at:
+            return None
+        if _foreground():
+            _stood_down("a turn is in progress")
+            return None
+        if not hub.has_subscribers:
+            _stood_down("the app isn't connected to the event stream")
+            return None
+        _task = asyncio.create_task(_light_tick())
+        return _task
+    last_build = state.get("build_at")
     if not refresh and not catch_up and time.time() < _next_tick_at:
         return None
-    if _foreground():
-        _stood_down("a turn is in progress")
+    if not brief_pace.build_gap_passed(last_build):
+        # Whatever is due stays due: this catch-up, refresh or tick runs as one
+        # build once the gap is over, and reads whatever mail came meanwhile.
+        _stood_down("the Brief was built a few minutes ago")
+        return None
+    in_turn = _foreground()
+    if not brief_pace.may_start("cycle") or in_turn:
+        _stood_down("a turn is in progress" if in_turn else "the user was just chatting")
         return None
     if not hub.has_subscribers:
         _stood_down("the app isn't connected to the event stream")
@@ -1065,7 +1204,8 @@ def schedule_tick() -> asyncio.Task | None:
             return None
     except Exception:  # noqa: BLE001
         pass
-    _task = asyncio.create_task(_return_tick() if catch_up else _idle_tick() if refresh else _tick())
+    _task = asyncio.create_task(_build_tick() if plan == "build" else _return_tick() if catch_up
+                                else _idle_tick() if refresh else _tick())
     return _task
 
 
@@ -1258,6 +1398,7 @@ def snapshot(*, account: str | None = None, now: float | None = None, tz: str | 
         else:
             merged[todo["id"]] = dict(todo)
     done = store.done_todos(now)
+    merged = without_passed_events(merged, now)
     for todo_id_, entry in done.items():
         if todo_id_ in merged:
             merged[todo_id_]["done"] = True

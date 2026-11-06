@@ -122,6 +122,9 @@ struct OverlayView: View {
             } else if let knowYou = model.knowYou {
                 // Getting to know you takes the tab's place until Done or a tab.
                 KnowYouView(model: knowYou)
+            } else if model.showingPermissions {
+                // A permission row's page, like quick settings, in the tab's place.
+                tabScroll { NotchPermissionsView(model: model) }
             } else if model.showingQuickSettings {
                 QuickSettingsView(model: model, settings: settings).padding(.top, 12)
             } else {
@@ -353,7 +356,7 @@ struct OverlayView: View {
         let selected = model.tab.stripTab == tab
         let count = tab == .day ? todayCount : 0
         let shortcut = tab.title + (tab.shortcutDigit.map { " (⌘" + String($0) + ")" } ?? "")
-        return Button { model.leaveKnowYou(); model.tab = tab } label: {
+        return Button { model.leaveKnowYou(); model.closePermissionPage(); model.tab = tab } label: {
             HStack(spacing: 5) {
                 Text(tab.title).font(.wisp(.footnote, weight: .medium))
                 if count > 0 { countBadge(count, selected: selected) }
@@ -944,7 +947,7 @@ struct OverlayView: View {
             HStack(spacing: 8) {
                 ForEach(fixes, id: \.url) { fix in
                     if let url = URL(string: fix.url) {
-                        NotchChrome.small(Permissions.askFixLabel(fix)) { Permissions.openAskFix(url) }
+                        NotchChrome.small(Permissions.fixLabel(fix)) { Permissions.openFix(url) }
                     }
                 }
             }
@@ -1359,9 +1362,9 @@ struct SourceSyncTip: View {
             // instead of a bare "Unavailable" the user can't act on.
             ForEach(sources.filter(\.needsFullDiskAccess)) { source in
                 Button {
-                    if let url = URL(string: BriefDetail.fullDiskAccess.url) { NSWorkspace.shared.open(url) }
+                    if let url = URL(string: BriefDetail.fullDiskAccess.url) { Permissions.openFix(url) }
                 } label: {
-                    Text("\(source.label) needs Full Disk Access. \(BriefDetail.fullDiskAccess.label)")
+                    Text("\(source.label) needs Full Disk Access. \(Permissions.fixLabel(BriefDetail.fullDiskAccess))")
                         .lineLimit(2)
                 }
                 .buttonStyle(.plain)
