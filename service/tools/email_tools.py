@@ -100,6 +100,9 @@ _email_reason: str = ""
 # "". mail_not_configured arrives with available=True: the script ran, but this
 # Mac has no Mail accounts, so a "ready" inbox is not one Wisp could read.
 _email_reason_kind: str = ""
+# macOS refused Wisp Mail, and no read through Mail has worked since. Outlives
+# Mail closing, when the next read of its index clears the reason above.
+_mail_automation_refused: bool = False
 # Reserved for a reader explicitly reporting work in flight. A successful
 # local-index read is NOT still syncing, regardless of its modification time.
 _email_sync_pending: bool = False
@@ -315,7 +318,7 @@ def configure_external_accounts(accounts: dict[str, dict]) -> None:
         selected[key] = {**old, "mail_account_id": native_id,
                          "mail_account_name": native_name or old.get("mail_account_name", ""),
                          "headers": old.get("headers"), "history": old.get("history"),
-                         "raw": old.get("raw")}
+                         "raw": old.get("raw"), "auth_expired": bool(config.get("auth_expired"))}
     _external_accounts = selected
     _refresh_native_bindings()
     _recompose_all()
@@ -423,9 +426,11 @@ def _provider_selected(address: str, item: dict, part: str) -> bool:
     if covered and _native_source == "mail_app" and native_stamp > stamp:
         return False
     # Mail closed, or not yet scriptable: when the index was read says nothing,
-    # because it only moves while Mail runs. The mail itself decides, or a sign-in
-    # that stopped working would hide what Mail fetched after it, for good.
-    if covered and _native_source == "local_index" and item.get(part + "_error"):
+    # because it only moves while Mail runs. So the mail itself decides, but only
+    # for a sign-in that has expired, which nothing short of a reconnect ends. Any
+    # other Google error clears by itself, and the snapshot may hold mail that Mail
+    # doesn't have, so it stays, with its stale warning.
+    if covered and _native_source == "local_index" and item.get("auth_expired"):
         separator = _RAW_RS if part == "raw" else "\n"
         return _newest_mail(covered, part) <= _newest_mail((item.get(part) or "").split(separator), part)
     return True
@@ -597,7 +602,7 @@ def set_email_availability(available: bool, reason: str = "",
     """Record whether the Swift MailReader's last sync could read the inbox,
     and the reader's reason_kind when it named one."""
     global _email_available, _email_reason, _email_sync_pending, _email_read_source, _email_reason_kind
-    global _native_headers_at, _native_source
+    global _native_headers_at, _native_source, _mail_automation_refused
     with _raw_snapshot_lock:
         changed = _email_available is not available or _raw_availability.token() is None
         if changed:
@@ -608,6 +613,10 @@ def set_email_availability(available: bool, reason: str = "",
         _email_reason_kind = kind if re.fullmatch(r"[a-z_]{1,40}", kind) else ""
         _email_sync_pending = syncing and available
         _email_read_source = read_source if read_source in {"local_index", "mail_app"} else ""
+        if available is False and _email_reason_kind == "mail_automation":
+            _mail_automation_refused = True
+        elif available and _email_read_source == "mail_app":
+            _mail_automation_refused = False
         if available and not syncing:
             _native_headers_at = time.time()
             _native_source = _email_read_source
@@ -815,16 +824,17 @@ def _raw_scan_warning(account: str | None = None) -> str:
                 "saved bodies do not establish current inbox coverage.")
 
 
-def _open_mail_hint(address: str, error: str) -> str:
-    """Reconnecting isn't the only way to newer mail when Mail holds this account
-    too: said only while Mail isn't being read, and only for a sign-in that needs
-    the person. A timeout clears by itself."""
-    if "reconnect" not in error.casefold() or _email_read_source == "mail_app":
-        return ""
+def _open_mail_hint(address: str) -> str:
+    """Reconnecting isn't the only way to newer mail when Mail holds an account
+    whose sign-in expired: said only while Mail isn't being read, and never once
+    macOS has refused Wisp Mail. macOS can't say so while Mail is closed, so before
+    the first refusal this is "can", not a promise."""
     item = _external_accounts.get(address) or {}
+    if not item.get("auth_expired") or _email_read_source == "mail_app" or _mail_automation_refused:
+        return ""
     if not any(_covered_source(row["name"], row["id"], address, item) for row in native_email_accounts()):
         return ""
-    return " Mail on this Mac also has this account, so opening Mail gets newer mail without reconnecting."
+    return " Mail on this Mac also has this account, so opening Mail can get newer mail without reconnecting."
 
 
 def email_freshness_warning(account: str | None = None, *, part: str = "headers") -> str:
@@ -841,7 +851,7 @@ def email_freshness_warning(account: str | None = None, *, part: str = "headers"
             reason = item["error"] or "a current Google refresh has not completed"
             kind = "Gmail history cache" if part == "history" else "Gmail cache"
             warnings.append(f"{item['account']}: {kind} is stale or unverified; last successful refresh {last}. {reason}."
-                            + _open_mail_hint(item["account"], item["error"]))
+                            + _open_mail_hint(item["account"]))
         else:
             failure = f" The latest Mail refresh failed: {item['error']}." if item["error"] else ""
             warnings.append(f"{item['account']}: Email is from Mail’s local cache. Newer messages may be missing; "
