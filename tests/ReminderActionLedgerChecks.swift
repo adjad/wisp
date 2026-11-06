@@ -485,6 +485,69 @@ private final class FakeStore {
             check(ledger.entry(day) == nil, "and nothing is adopted")
         }
 
+        // One bad entry costs that entry: the rest stay, and so does what the file says about cleanup.
+        let goodEntry = #"{"actionID":"\#(day)","kind":"exam","startedAt":1900000000,"sourceID":"ek-1","externalID":"ext-ek-1"}"#
+        let otherEntry = #"{"actionID":"reminder:other","kind":"meeting","startedAt":1900000001,"sourceID":"ek-2"}"#
+        let badEntry = #"{"actionID":"reminder:bad","startedAt":"yesterday"}"#
+        for halted in [false, true] {
+            let partial = newPath(), body = #"{"version":1,"entries":[\#(goodEntry),\#(badEntry),7,\#(otherEntry)],"cleanupHalted":\#(halted)}"#
+            write(Data(body.utf8), to: partial)
+            let salvaged = relaunch(partial)
+            check(salvaged.readable, "a bad entry doesn't stop the ledger")
+            check(salvaged.entry(day)?.kind == "exam" && salvaged.entry(day)?.externalID == "ext-ek-1", "a good entry stays whole")
+            check(salvaged.entry(sourceID: "ek-2", externalID: nil)?.kind == "meeting", "and is found by its reminder")
+            check(salvaged.entry("reminder:bad") == nil, "the bad one is gone")
+            check(salvaged.cleanupHalted == halted, "cleanup keeps the setting the file states: \(halted)")
+            check((try? Data(contentsOf: damagedCopy(partial))) == Data(body.utf8), "the file is still kept as it was")
+            check(salvaged.begin(actionID: day, kind: "exam", plannedID: "ek-9", at: start) == .alreadyStarted,
+                  "a kept entry still stops a second save")
+            let after = relaunch(partial)
+            check(after.entry(day)?.sourceID == "ek-1" && after.entry("reminder:other") != nil && after.cleanupHalted == halted,
+                  "and it all reached the disk")
+            check((try? Data(contentsOf: damagedCopy(partial))) == Data(body.utf8), "so the next launch finds nothing to set aside")
+            var wrote = false
+            let cleaning = row("old", notes: "Wisp action: reminder:older\nWisp kind: exam")
+            let step = ReminderMarkerCleanup.clean(cleaning, ledger: after, write: { expected, notes in
+                wrote = true
+                var saved = expected
+                saved.notes = notes
+                return .saved(saved)
+            })
+            check(step == (halted ? .skipped : .cleaned) && wrote == !halted, "older reminders are cleaned only if it was on")
+        }
+
+        // Without a flag to read, it stays off. Entries still come through.
+        for flag in [#""#, #","cleanupHalted":"no""#, #","cleanupHalted":null"#, #","cleanupHalted":0"#] {
+            let unstated = newPath()
+            write(Data(#"{"version":1,"entries":[\#(goodEntry),\#(badEntry)]\#(flag)}"#.utf8), to: unstated)
+            let ledger = relaunch(unstated)
+            check(ledger.cleanupHalted, "no readable flag, no cleanup: \(flag)")
+            check(ledger.entry(day)?.kind == "exam", "the good entry stays: \(flag)")
+            check(relaunch(unstated).cleanupHalted, "and that's on disk: \(flag)")
+        }
+
+        // Anything without the ledger's shape says nothing, even a flag that says go.
+        for body in [#"{"entries":3,"cleanupHalted":false}"#, #"{"cleanupHalted":false}"#, #"[{"cleanupHalted":false}]"#,
+                     #"{"entries":[\#(goodEntry)],"cleanupHalted":false"#] {
+            let shapeless = newPath()
+            write(Data(body.utf8), to: shapeless)
+            let ledger = relaunch(shapeless)
+            check(ledger.readable && ledger.cleanupHalted && ledger.entry(day) == nil, "not a ledger: \(body)")
+        }
+
+        // A failure to move the file never costs the copy already kept.
+        let stuckMove = newPath()
+        write(Data("second".utf8), to: stuckMove)
+        write(Data("first".utf8), to: damagedCopy(stuckMove))
+        let moved = ReminderActionLedger.moveAside(stuckMove.path, to: damagedCopy(stuckMove).path) { from, to in
+            from == stuckMove.path ? -1 : rename(from, to)
+        }
+        check(!moved, "the move fails")
+        check((try? Data(contentsOf: damagedCopy(stuckMove))) == Data("first".utf8), "the earlier copy is still there")
+        check((try? Data(contentsOf: stuckMove)) == Data("second".utf8), "the file is where it was")
+        let afterFailure = (try? FileManager.default.contentsOfDirectory(atPath: stuckMove.deletingLastPathComponent().path))?.sorted() ?? []
+        check(afterFailure == ["ledger.json", ReminderActionLedger.damagedFileName].sorted(), "and nothing is left over: \(afterFailure)")
+
         // A missing ledger is a first run: cleanup still does only its exact job, and still stops itself.
         let missing = relaunch(newPath()), text = "bring the blue folder 📁"
         check(!missing.cleanupHalted, "a missing ledger isn't damage")

@@ -124,6 +124,26 @@ final class ReminderActionLedger {
         var cleanupHalted: Bool
     }
 
+    /// What a file that fails that decode still says, when it still has the ledger's shape:
+    /// each entry that reads, and the cleanup flag only if it's there as a true or false.
+    private struct Salvaged: Decodable {
+        let entries: [Entry]
+        let cleanupHalted: Bool?
+
+        private enum CodingKeys: String, CodingKey { case entries, cleanupHalted }
+
+        private struct Readable: Decodable {
+            let entry: Entry?
+            init(from decoder: Decoder) { entry = try? Entry(from: decoder) }
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            entries = try container.decode([Readable].self, forKey: .entries).compactMap(\.entry)
+            cleanupHalted = try? container.decode(Bool.self, forKey: .cleanupHalted)
+        }
+    }
+
     /// A reminder due far off still needs its kind, so this is a size bound rather than an
     /// age: the oldest entries go first.
     static let defaultMaxEntries = 4096
@@ -159,9 +179,10 @@ final class ReminderActionLedger {
         load(settingAsideUnreadable: false)
     }
 
-    /// A file that isn't a ledger is set aside at once and a new one started, so a damaged
-    /// file can't stop new reminders. A file that can't be read at all may be a passing
-    /// failure, so it stays until a creation needs the ledger and it still can't be read.
+    /// A file that isn't a ledger is set aside at once and a new one started from whatever
+    /// of it still reads, so a damaged file can't stop new reminders. A file that can't be
+    /// read at all may be a passing failure, so it stays until a creation needs the ledger
+    /// and it still can't be read.
     private func load(settingAsideUnreadable: Bool) {
         guard FileManager.default.fileExists(atPath: path.path) else {
             readable = true
@@ -173,7 +194,7 @@ final class ReminderActionLedger {
             return
         }
         guard let stored = try? JSONDecoder().decode(Stored.self, from: data) else {
-            setAside()
+            setAside(keeping: try? JSONDecoder().decode(Salvaged.self, from: data))
             return
         }
         entries = Dictionary(stored.entries.map { ($0.actionID, $0) }, uniquingKeysWith: { _, last in last })
@@ -182,28 +203,45 @@ final class ReminderActionLedger {
         reindex()
     }
 
-    /// What this gives up: kinds of reminders made since the markers went, which read as
-    /// plain reminders from then on, and finding a creation whose reply was lost, which
-    /// stays "check Reminders". The service's claim, not this file, is what keeps a claimed
-    /// action from running twice. Cleanup stays off, since the damaged file may have been
-    /// what said to stop, and old reminders keep their kind and proof in their own notes.
-    private func setAside() {
+    /// What this gives up, for the entries that don't read: their kinds, which read as plain
+    /// reminders from then on, and finding a creation whose reply was lost, which stays
+    /// "check Reminders". The service's claim, not this file, is what keeps a claimed action
+    /// from running twice. Cleanup keeps the setting the file states; with none to read it
+    /// stays off, since the damaged part may have been what said to stop, and old reminders
+    /// keep their kind and proof in their own notes.
+    private func setAside(keeping salvaged: Salvaged? = nil) {
         let aside = path.deletingLastPathComponent().appendingPathComponent(Self.damagedFileName)
-        if rename(path.path, aside.path) != 0 {
-            // A later file replaces the earlier copy; only a folder in the way stops a rename.
-            try? FileManager.default.removeItem(at: aside)
-            guard rename(path.path, aside.path) == 0 else {
-                readable = false
-                return
-            }
+        guard Self.moveAside(path.path, to: aside.path) else {
+            readable = false
+            return
         }
         // lstat + lchmod: a link is moved as it is, and what it points at is never changed.
         var info = stat()
         if lstat(aside.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG { _ = lchmod(aside.path, 0o600) }
         readable = true
-        halted = true
+        if let salvaged {
+            entries = Dictionary(salvaged.entries.map { ($0.actionID, $0) }, uniquingKeysWith: { _, last in last })
+            reindex()
+        }
+        halted = salvaged?.cleanupHalted ?? true
         dirty = !persist()
         NSLog("%@", Self.damagedLogLine)
+    }
+
+    /// A later file replaces the earlier copy, which a plain rename does. Only something a
+    /// rename can't replace, a folder, needs moving first, and whatever held the name goes
+    /// back if the file still can't move: a failure here never costs the earlier copy.
+    static func moveAside(_ source: String, to aside: String,
+                          rename move: (String, String) -> Int32 = { Darwin.rename($0, $1) }) -> Bool {
+        if move(source, aside) == 0 { return true }
+        let held = aside + "." + UUID().uuidString + ".tmp"
+        guard move(aside, held) == 0 else { return false }
+        guard move(source, aside) == 0 else {
+            _ = move(held, aside)
+            return false
+        }
+        try? FileManager.default.removeItem(atPath: held)
+        return true
     }
 
     private func locked<T>(_ body: () -> T) -> T {

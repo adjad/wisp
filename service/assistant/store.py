@@ -11,6 +11,7 @@ via notify_log so a restart never re-fires a stage that already went out.
 """
 from __future__ import annotations
 
+import logging
 import os
 import json
 import math
@@ -98,6 +99,7 @@ def parse_undated_snapshot(raw, total) -> UndatedSnapshot | None:
                            total > len(raw) or len(rows) > UNDATED_MAX)
 
 DB_PATH = MOE_DIR / "assistant.db"
+_log = logging.getLogger(__name__)
 
 # What Wisp says on its own, which can wait out quiet hours in this store with the words of
 # a message, a Brief or a reminder in it: service/quiet_hold.py's list plus "reminder"
@@ -107,6 +109,7 @@ DB_PATH = MOE_DIR / "assistant.db"
 HELD_EVENT_KINDS = ("attention_added", "checkin", "codex_task_update", "daily_brief", "email_summary",
                     "google_signin_expired", "node_result", "nudge", "reminder")
 _HELD_KINDS_SQL = ",".join(f"'{kind}'" for kind in HELD_EVENT_KINDS)
+_SCRUB_TRIGGER = "assistant_events_scrub_finished"
 _SCRUBBED_NUDGE = '{"type":"nudge","scrubbed":true}'
 _SCRUBBED_REMINDER_TARGET = '{"type": "reminder"}'
 # A Brief composed from the combined inbox, and what else learned from or about one account.
@@ -161,6 +164,7 @@ QA_SEED_SOURCE = "wisp_seed"
 MANUAL_SOURCE = "manual"
 # assistant_completion keys owned by this module (see AssistantStore.__init__).
 FIRST_LAUNCH_KEY = "install:first_launch_at"
+OLD_TEXT_CLEARED_KEY = "store:old_text_cleared"
 CALENDAR_BASELINE_KEY = "reminders:first_calendar_baseline"
 
 
@@ -356,6 +360,7 @@ class AssistantStore:
         path = path.expanduser().resolve()
         self.path = path
         path.parent.mkdir(parents=True, exist_ok=True)
+        new_file = not path.exists() or path.stat().st_size == 0
         private_sqlite_file(path)
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
@@ -502,6 +507,9 @@ class AssistantStore:
                     stamp = time.time()
                     self._db.execute("INSERT OR IGNORE INTO assistant_completion VALUES (?,?,?)",
                                      (FIRST_LAUNCH_KEY, "0" if used else repr(stamp), stamp))
+                if new_file:                      # nothing older in it to clear
+                    self._db.execute("INSERT OR IGNORE INTO assistant_completion VALUES (?,?,?)",
+                                     (OLD_TEXT_CLEARED_KEY, "1", time.time()))
                 self._migrate_unique_constraint()
                 cols = {r["name"] for r in self._db.execute("PRAGMA table_info(commitments)")}
                 for column in ("organizer", "account", "due_date"):
@@ -577,9 +585,29 @@ class AssistantStore:
                 self._db.execute('CREATE TEMP VIEW scheduled_commitments AS '
                     'SELECT * FROM commitments WHERE all_day=0 OR due_date IS NULL '
                     'UNION ALL SELECT ' + projected + ' FROM commitments WHERE all_day=1 AND due_date IS NOT NULL')
+            self._clear_old_text()
         except BaseException:
             self._db.close()
             raise
+
+    def _clear_old_text(self) -> None:
+        """Once per database, rebuild the file. secure_delete only covers what this store
+        removes from now on: what earlier builds deleted or overwrote still sits in free
+        pages and in the unused space of live ones. Someone else holding the file just
+        puts this off to the next start, without delaying this one much."""
+        if self.completion(OLD_TEXT_CLEARED_KEY) is not None:
+            return
+        try:
+            self._db.execute("PRAGMA busy_timeout=250")
+            self._db.execute("VACUUM")
+        except sqlite3.Error as exc:
+            _log.warning("assistant store: old text not cleared yet: %s", exc)
+            return
+        finally:
+            self._db.execute("PRAGMA busy_timeout=5000")   # sqlite3.connect's own default
+        with self._db:
+            self._db.execute("INSERT OR IGNORE INTO assistant_completion VALUES (?,?,?)",
+                             (OLD_TEXT_CLEARED_KEY, "1", time.time()))
 
     def _validate_behavior_receipt_schema(self):
         # This new, solely owned schema has no historical alternative forms.
@@ -786,13 +814,21 @@ class AssistantStore:
 
     def _scrub_finished_events(self) -> None:
         """Keep the words of a held event only while it waits (see HELD_EVENT_KINDS), and take
-        them out of what earlier versions finished. Rebuilt each start, so the kinds can change."""
-        self._db.execute("DROP TRIGGER IF EXISTS assistant_events_scrub_finished")
-        self._db.execute(
-            "CREATE TRIGGER assistant_events_scrub_finished AFTER UPDATE OF state ON assistant_events "
+        them out of what earlier versions finished. The pass over the table shares a transaction
+        with installing the trigger, so finding this exact trigger proves the pass ran and that
+        the trigger has caught every row since. New kinds or a new payload shape change its text,
+        which runs the pass once more."""
+        trigger = (
+            f"CREATE TRIGGER {_SCRUB_TRIGGER} AFTER UPDATE OF state ON assistant_events "
             f"WHEN NEW.state IN ('ack','superseded') AND NEW.kind IN ({_HELD_KINDS_SQL}) BEGIN "
             f"UPDATE assistant_events SET payload={_scrubbed_payload_sql('NEW.')},"
             f"target={_scrubbed_target_sql('NEW.')} WHERE id=NEW.id; END")
+        installed = self._db.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?",
+                                     (_SCRUB_TRIGGER,)).fetchone()
+        if installed is not None and installed[0] == trigger:
+            return
+        self._db.execute(f"DROP TRIGGER IF EXISTS {_SCRUB_TRIGGER}")
+        self._db.execute(trigger)
         self._db.execute(
             f"UPDATE assistant_events SET payload={_scrubbed_payload_sql()},target={_scrubbed_target_sql()} "
             f"WHERE state IN ('ack','superseded') AND kind IN ({_HELD_KINDS_SQL}) "

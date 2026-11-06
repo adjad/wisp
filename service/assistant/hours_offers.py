@@ -11,7 +11,7 @@ this errs hard towards saying nothing. An event is only offered when it is:
 - a one-off: repeating events are skipped, because a class or a standing practice
   is at that time on purpose;
 - theirs alone: no invitees, not organized by someone else, on a calendar that
-  accepts changes. Anything unknown counts as no;
+  accepts changes. An unknown count or calendar counts as no;
 - timed, under MAX_EVENT_HOURS long, and entirely outside working hours on a
   working day (a Saturday is not "outside working hours" to anyone);
 - worth a move: not a meal, workout or night out (PERSONAL_WORDS), starts at
@@ -100,6 +100,8 @@ def skip_reason(event: dict, work: user_hours.Hours, zone: ZoneInfo, *, now: flo
         return "calendar is read-only or unknown"
     if event.get("invitee_count") != 0:
         return "has invitees, or unknown"
+    # Not "unknown counts as no": with no invitees EventKit usually names no organizer at
+    # all, so that's what the person's own events look like (CalendarReader leaves it out).
     if event.get("organizer_is_user") == 0:
         return "organized by someone else"
     if (event.get("occurrences") or 0) > 1:

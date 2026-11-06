@@ -462,3 +462,138 @@ def test_reset_leaves_no_held_event_behind(tmp_path, quiet):
     out = wisp_reset.erase_home(home, user_home)
     assert "assistant.db" in out["removed"] and not (home / "assistant.db").exists()
     assert AssistantStore(home / "assistant.db").pending_events() == []
+
+
+# --- start-up cost and what earlier builds left in the file ----------------------------------
+
+def _finished_behind_the_triggers_back(path) -> None:
+    """A finished row the trigger never saw: if a start scrubs it, that start went over the table."""
+    import json
+    import sqlite3
+    db = sqlite3.connect(path)
+    db.execute("INSERT INTO assistant_events(id,kind,payload,dedupe_key,target,created_at,state) "
+               "VALUES('unseen','nudge',?,'behavior:unseen','{}',?,'ack')", (json.dumps(words({"type": "nudge"})), NOW))
+    db.commit()
+    db.close()
+
+
+def _payload(path, row_id: str) -> str:
+    import sqlite3
+    db = sqlite3.connect(path)
+    try:
+        return db.execute("SELECT payload FROM assistant_events WHERE id=?", (row_id,)).fetchone()[0]
+    finally:
+        db.close()
+
+
+def _schema_version(path) -> int:
+    import sqlite3
+    db = sqlite3.connect(path)
+    try:
+        return db.execute("PRAGMA schema_version").fetchone()[0]
+    finally:
+        db.close()
+
+
+def test_a_later_start_doesnt_go_over_the_table_or_rewrite_the_schema(tmp_path):
+    path = tmp_path / "assistant.db"
+    AssistantStore(path)._db.close()
+    _finished_behind_the_triggers_back(path)
+    version = _schema_version(path)
+    AssistantStore(path)._db.close()
+    assert WORD in _payload(path, "unseen")
+    assert _schema_version(path) == version
+
+
+def test_a_changed_trigger_goes_over_the_table_again(tmp_path):
+    import sqlite3
+    path = tmp_path / "assistant.db"
+    AssistantStore(path)._db.close()
+    _finished_behind_the_triggers_back(path)
+    db = sqlite3.connect(path)
+    db.execute("DROP TRIGGER assistant_events_scrub_finished")
+    db.execute("CREATE TRIGGER assistant_events_scrub_finished AFTER UPDATE OF state ON assistant_events "
+               "WHEN NEW.kind='nudge' BEGIN UPDATE assistant_events SET payload='{}' WHERE id=NEW.id; END")
+    db.commit()
+    db.close()
+    AssistantStore(path)._db.close()
+    assert WORD not in _payload(path, "unseen"), "an earlier build's list of kinds"
+    db = sqlite3.connect(path)
+    db.execute("UPDATE assistant_events SET state='pending',payload=? WHERE id='unseen'", (WORD,))
+    db.execute("UPDATE assistant_events SET state='ack' WHERE id='unseen'")
+    db.commit()
+    db.close()
+    assert WORD not in _payload(path, "unseen"), "and the trigger now is this build's"
+
+
+def _freed_by_an_earlier_build(path) -> None:
+    """Text deleted without secure_delete, as every build before it did."""
+    import sqlite3
+    db = sqlite3.connect(path)
+    db.execute("PRAGMA secure_delete=OFF")
+    db.execute("CREATE TABLE IF NOT EXISTS gone(text TEXT)")
+    db.executemany("INSERT INTO gone VALUES(?)", [(WORD * 200,)] * 20)
+    db.commit()
+    db.execute("DROP TABLE gone")
+    db.commit()
+    db.close()
+
+
+def _forget_it_was_cleared(path) -> None:
+    from service.assistant.store import OLD_TEXT_CLEARED_KEY
+    import sqlite3
+    db = sqlite3.connect(path)
+    db.execute("DELETE FROM assistant_completion WHERE key=?", (OLD_TEXT_CLEARED_KEY,))
+    db.commit()
+    db.close()
+
+
+def test_text_an_earlier_build_freed_is_cleared_once(tmp_path):
+    from service.assistant.store import OLD_TEXT_CLEARED_KEY
+    path = tmp_path / "assistant.db"
+    first = Hub(AssistantStore(path))
+    kept = [first.publish_sync({"type": "nudge", "nudge_id": str(i), "title": "stays"}) for i in range(3)]
+    order = [row["id"] for row in first.store._db.execute("SELECT id FROM assistant_events ORDER BY rowid")]
+    first.store._db.close()
+    _forget_it_was_cleared(path)
+    _freed_by_an_earlier_build(path)
+    assert WORD.encode() in path.read_bytes()
+
+    upgraded = AssistantStore(path)
+    assert upgraded.completion(OLD_TEXT_CLEARED_KEY) is not None
+    assert [row["id"] for row in upgraded._db.execute("SELECT id FROM assistant_events ORDER BY rowid")] == order
+    assert all(upgraded.event(event["event_id"]) for event in kept), "everything still in use stays"
+    assert upgraded._db.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+    assert WORD.encode() not in on_disk(upgraded)
+
+    _freed_by_an_earlier_build(path)
+    size = path.stat().st_size
+    AssistantStore(path)._db.close()
+    assert WORD.encode() in path.read_bytes() and path.stat().st_size == size, "only the once"
+
+
+def test_a_new_file_has_nothing_to_clear(tmp_path):
+    from service.assistant.store import OLD_TEXT_CLEARED_KEY
+    store = AssistantStore(tmp_path / "assistant.db")
+    assert store.completion(OLD_TEXT_CLEARED_KEY) is not None
+    store._db.close()
+
+
+def test_someone_holding_the_file_only_puts_the_clearing_off(tmp_path):
+    from service.assistant.store import OLD_TEXT_CLEARED_KEY
+    import sqlite3
+    path = tmp_path / "assistant.db"
+    store = AssistantStore(path)
+    store._db.execute("DELETE FROM assistant_completion WHERE key=?", (OLD_TEXT_CLEARED_KEY,))
+    store._db.commit()
+    reader = sqlite3.connect(path)
+    reader.execute("BEGIN")
+    reader.execute("SELECT * FROM assistant_completion").fetchone()
+    store._clear_old_text()
+    assert store.completion(OLD_TEXT_CLEARED_KEY) is None, "it tries again next start"
+    assert store._db.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
+    reader.rollback()
+    reader.close()
+    store._clear_old_text()
+    assert store.completion(OLD_TEXT_CLEARED_KEY) is not None
+    store._db.close()

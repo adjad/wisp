@@ -233,6 +233,10 @@ def test_rules_cover_a_required_group_tool_the_fit_would_drop(monkeypatch):
 
 def test_model_led_discovery_keeps_the_skills_catalog(monkeypatch):
     monkeypatch.setattr(config, "model_context_window", lambda model: 50_000)
+    # The case this is about: use_skill isn't on the table yet. Importing service.skills.tools
+    # registers it, so without this the result depended on what another test had imported.
+    from service.tools.registry import REGISTRY
+    monkeypatch.delitem(REGISTRY, "use_skill", raising=False)
     calls = []
 
     def recorder(*args):

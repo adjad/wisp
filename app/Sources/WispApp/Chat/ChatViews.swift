@@ -669,7 +669,7 @@ struct ChatMessageRow: View {
             HStack(spacing: 8) {
                 ForEach(fixes, id: \.url) { fix in
                     if let url = URL(string: fix.url) {
-                        ChatCardButton(title: Permissions.askFixLabel(fix)) { Permissions.openAskFix(url) }
+                        ChatCardButton(title: Permissions.fixLabel(fix)) { Permissions.openFix(url) }
                     }
                 }
             }
