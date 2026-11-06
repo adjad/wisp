@@ -722,7 +722,7 @@ def resolve_when(clock: _dt.datetime | None, iso: str, prompt: str, seed: str, s
                                              f"It's {wd} today; a bare '{word}' is the next one, {day}."]))
         elif delta == 6:
             parts.append(pick(seed + "wd1", [f"{wd} was yesterday, so '{word}' means the coming one, {day}.",
-                                             f"Today is {fmt_day(today)}; {wd} just passed, so it's {day}."]))
+                                             f"Today is {fmt_day(today)}; {wd} just passed, so the next one is {day}."]))
         else:
             parts.append(pick(seed + "wd", [f"Today is {fmt_day(today)}, so '{word}' is {day}.",
                                             f"From {fmt_day(today)}, the next {wd} is {day}.",

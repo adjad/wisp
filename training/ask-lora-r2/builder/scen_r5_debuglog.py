@@ -37,7 +37,7 @@ from scen_r4_daychat import populate
 D = dt.timedelta
 FAMILY = "debug_log_r5"
 LIST_FAMILY = "long_email_r5"
-WRITE_ALLOW_R5 = {FAMILY: frozenset({"add_reminder", "send_message", "send_email"})}
+WRITE_ALLOW_R5 = {FAMILY: frozenset({"add_reminder", "add_calendar_event", "draft_message", "send_message", "send_email"})}
 SEEDS = os.environ.get("ASK_LORA_R5_SEEDS") or os.path.expanduser("~/.moe/evals/private-real-use/r5-seeds/questions.yaml")
 BASE_WRITES = "Base writes this answer."
 DROPPED: list = []
@@ -47,7 +47,7 @@ HIM = ["dad", "theo"]
 EMAIL_TO = ["dad", "maya", "theo", "carmen", "nadia", "priya"]
 INDEX = {"S&P": ("^GSPC", "S&P 500", 5871.20, 5842.10), "DOW": ("^DJI", "Dow", 43120.50, 43310.25),
          "NASDAQ": ("^IXIC", "Nasdaq", 18944.75, 18790.40), "MARKET": ("^GSPC", "S&P 500", 5871.20, 5842.10)}
-STOCKS = {"TESLA": "TSLA"}
+STOCKS = {"TESLA": "TSLA", "MICRON": "MU", "SANDISK": "SNDK", "VICOR": "VICR"}
 WEB = [(r"president", "current US president", "President Dana Ellison", "The president is Dana Ellison."),
        (r"prime minister", "current prime minister", "Prime Minister Elise Moreau", "The prime minister is Elise Moreau."),
        (r"super bowl", "last super bowl winner", "The Portland Pilots won the last Super Bowl", "The Portland Pilots won the last one."),
@@ -408,7 +408,7 @@ def h_channel(ctx, q):
         ctx.who = ctx.rng.choice(EMAIL_TO)
     if not ctx.draft:
         ctx.draft = plain_schedule(ctx, read_plan(ctx.w, "tomorrow"), "tomorrow")
-    if "text" in q.lower():
+    if "text" in q.lower() or "message" in q.lower():
         return Out([[Call("send_message", to=contact_of(ctx), text=ctx.draft)]], _sent_final(ctx, "text"), "send_message", ["send_message"], [True])
     if not C.PEOPLE[ctx.who][3]:
         contact, phone = contact_of(ctx), C.PEOPLE[ctx.who][2]
@@ -487,6 +487,199 @@ def h_email_search(ctx, q):
                "view_emails")
 
 
+# ------------------------------------------------------------------------- the other debug logs' question types
+HEADLINES = [("City council", "The council approved a new transit budget after a long debate."),
+             ("Weather", "A cold front is bringing heavy rain to the northwest this weekend."),
+             ("Markets", "Stocks ended mixed as investors waited on a central bank decision."),
+             ("Science", "Researchers reported a new way to recycle battery materials."),
+             ("Sports", "The league announced its schedule for next season."),
+             ("Health", "A large study linked regular walking to better sleep.")]
+PLACE = re.compile(r"\b(iran|nepal|ukraine)\b")
+DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+TIME = re.compile(r"(\d{1,2})(?:\s*-\s*(\d{1,2}))?\s*(am|pm)")
+
+
+def _tomorrow(low):
+    return bool(re.search(r"\b(tomorrow|tommorow|tmrow|tmrw)\b", low))
+
+
+def h_news(ctx, q):
+    rows = ctx.rng.sample(HEADLINES, 3)
+    query = "top news today"
+    ctx.w.web[query] = [(f"{a}: {b}", f"https://example.org/news/{i}", b) for i, (a, b) in enumerate(rows)]
+    ctx.last_facts = rows
+    return Out([[Call("web_search", query=query)]], "Here's what's in the news today:\n" + bullets(rows), "web_search")
+
+
+def _place_read(ctx, q):
+    m = PLACE.search(q.lower())
+    if not m:
+        raise ValueError("no place in this wording")
+    name = m[1].title()
+    query, fact = f"{name} news", f"Talks between officials in {name} resumed this week, and aid groups said deliveries have picked up."
+    ctx.w.web[query] = [(f"{name}: talks resume", "https://example.org/world", fact)]
+    return Call("web_search", query=query), fact
+
+
+def h_place_news(ctx, q):
+    call, fact = _place_read(ctx, q)
+    return Out([[call]], fact, "web_search")
+
+
+def h_place_news_send(ctx, q):
+    _need_person(ctx)
+    call, fact = _place_read(ctx, q)
+    return Out([[call], [Call("send_message", to=contact_of(ctx), text=fact)]], _sent_final(ctx, "text"), "send_message", ["send_message"], [True])
+
+
+def _range(low):
+    if _tomorrow(low):
+        return {"period": "tomorrow"}, "tomorrow", 1
+    if "month" in low:
+        return {"period": "this month"}, "this month", 31
+    return {"period": "this week"}, "this week", 7
+
+
+def _event_rows(ctx, args, span):
+    text = ctx.w.t_get_upcoming(calendar_only=True, **args)
+    end = ctx.now + D(days=span)
+    return [(f"{e.start:%a} {clock(e.start)}", e.title) for e in sorted(ctx.w.events, key=lambda e: e.start)
+            if ctx.now < e.start <= end and e.title in text]
+
+
+def h_calendar_range(ctx, q):
+    args, word, span = _range(q.lower())
+    rows = _event_rows(ctx, args, span)
+    args = {**args, "calendar_only": True}
+    ctx.last_when = word
+    if not rows:
+        return Out([[Call("get_upcoming", **args)]], f"Nothing on your calendar {word}.", "get_upcoming")
+    ctx.last_facts = rows
+    return Out([[Call("get_upcoming", **args)]], f"On your calendar {word}:\n" + bullets(rows), "get_upcoming")
+
+
+def h_plan_named(ctx, q):
+    day = next((d for d in DAYS if d in q.lower()), None)
+    if not day:
+        raise ValueError("no day in this wording")
+    return _plan(ctx, day, f"Here's {day.title()}:", day.title())
+
+
+def h_stock_quote(ctx, q):
+    up = q.upper()
+    syms = [sym for word, sym in STOCKS.items() if word in up]
+    if not syms:
+        raise ValueError("no stock in this wording")
+    for sym in syms:
+        name = next(w for w, s in STOCKS.items() if s == sym).title()
+        C.TICKS.setdefault(sym, (name, name, 182.40, 180.15))
+    src = C.src_stock(ctx.rng, ctx.w, ctx.now, syms)
+    return Out([src.calls], src.text, "get_stock_price")
+
+
+def h_attention(ctx, q):
+    return _plan(ctx, "today", "Here's what needs you first:", "today")
+
+
+def h_know_me(ctx, q):
+    ctx.w.memories = list(ctx.w.memories) + ["You prefer window seats on flights.", "You're allergic to shellfish.", "Your sister's name is Lena."]
+    return Out([[Call("recall", query="")]], BASE_WRITES, "recall")
+
+
+def h_weather_week(ctx, q):
+    m = re.search(r"weather in ([a-z ]+?) for", q.lower())
+    if not m:
+        raise ValueError("no city in this wording")
+    city = m[1].title()
+    days = [((ctx.now + D(days=i)).strftime("%a"), 58 + i, 44 + i, "Partly cloudy" if i % 2 else "Light rain", 20 + 10 * (i % 3)) for i in range(1, 6)]
+    ctx.w.weather[city] = {"label": city, "now_f": 55, "desc": "Cloudy", "feels_f": 53, "hum": 70, "wind": 6, "days": days}
+    rows = [(d[0], f"{d[1]}° high, {d[2]}° low, {d[3].lower()}") for d in days]
+    return Out([[Call("get_weather", location=city, period="this week")]], f"This week in {city}:\n" + bullets(rows), "get_weather")
+
+
+def h_find_time(ctx, q):
+    m = re.search(r"(\d+)-minute", q)
+    mins = int(m[1]) if m else 60
+    text = ctx.w.t_find_free_time(period="tomorrow", minutes=mins)
+    slots = re.findall(r"(\d{1,2}:\d\d [AP]M–\d{1,2}:\d\d [AP]M) \(", text)
+    if not slots:
+        raise ValueError("no open slot")
+    call = Call("find_free_time", period="tomorrow", minutes=mins)
+    if len(slots) == 1:
+        return Out([[call]], f"Tomorrow's opening is {slots[0]}.", "find_free_time")
+    return Out([[call]], "You have room tomorrow at these times:\n" + "\n".join(f"- {x}" for x in slots[:5]), "find_free_time")
+
+
+def _when(ctx, low):
+    m = TIME.search(low)
+    if not m:
+        raise ValueError("no time in this wording")
+    hour = int(m[1]) % 12 + (12 if m[3] == "pm" else 0)
+    end = int(m[2]) % 12 + (12 if m[3] == "pm" else 0) if m[2] else hour + 1
+    day = ctx.now.date() + D(days=1)
+    for i, name in enumerate(DAYS):
+        if re.search(rf"\b{name}\b", low):
+            day = ctx.now.date() + D(days=(i - ctx.now.weekday() - 1) % 7 + 1)
+    return dt.datetime.combine(day, dt.time(hour)), (end - hour) * 60
+
+
+def _title(low):
+    m = re.search(r"(?:pm|am) to (.+)$", low) or re.search(r"\bfor ((?:(?!this |tomorrow|tommorow)[a-z0-9 ])+?) from ", low)
+    if not m:
+        raise ValueError("no title in this wording")
+    return m[1].strip().capitalize()
+
+
+def h_add_reminder_said(ctx, q):
+    low = q.lower()
+    when, _ = _when(ctx, low)
+    title = _title(low)
+    call = Call("add_reminder", title=title, when_iso=when.strftime("%Y-%m-%dT%H:%M"))
+    return Out([[call]], f"Reminder set for {when:%A} at {clock(when)}: {title}.", "add_reminder")
+
+
+def h_add_event_said(ctx, q):
+    low = q.lower()
+    when, mins = _when(ctx, low)
+    title = _title(low)
+    call = Call("add_calendar_event", title=title, when_iso=when.strftime("%Y-%m-%dT%H:%M"), duration_min=mins)
+    return Out([[call]], f"{title} is on your calendar for {when:%A} at {clock(when)}.", "add_calendar_event", ["add_calendar_event"], [True])
+
+
+def _flat(text):
+    return re.sub(r"\s*\n- ", "; ", text.replace("**", "")).strip()
+
+
+def h_send_summary(ctx, q):
+    _need_person(ctx)
+    read = h_messages(ctx, q) if "messages" in q.lower() else h_emails(ctx, q)
+    body = _flat(read.final)
+    send = [Call("send_message", to=contact_of(ctx), text=body)]
+    return Out([*read.steps, send], _sent_final(ctx, "text"), "send_message", ["send_message"], [True])
+
+
+def h_send_calendar_range(ctx, q):
+    _need_person(ctx)
+    m = re.search(r"next (\d+|two) (days|weeks)", q.lower())
+    span = 14 if not m else (14 if m[1] == "two" else int(m[1]))
+    rows = _event_rows(ctx, {"days": span}, span)
+    if not rows:
+        raise ValueError("nothing to send")
+    body = "My schedule: " + "; ".join(f"{a}: {b}" for a, b in rows) + "."
+    read, send = Call("get_upcoming", days=span, calendar_only=True), Call("send_message", to=contact_of(ctx), text=body)
+    return Out([[read], [send]], _sent_final(ctx, "text"), "send_message", ["send_message"], [True])
+
+
+def h_draft_reply(ctx, q):
+    _need_person(ctx)
+    name, first = C.PEOPLE[ctx.who][1], C.PEOPLE[ctx.who][4]
+    said = "Are you around Friday? I could use a hand moving a few boxes."
+    ctx.w.messages.append(Msg(name, name, said, ctx.now - D(hours=4), unread=True))
+    text = f"Hi {first}, yes, I can help on Friday. What time works for you?"
+    steps = [[Call("view_messages", conversation=contact_of(ctx))], [Call("draft_message", to=contact_of(ctx), text=text)]]
+    return Out(steps, None, "draft_message")    # the host ends the turn with the editable draft card
+
+
 HANDLERS = {"greeting": h_greeting, "plan_today": h_plan_today, "plan_tomorrow": h_plan_tomorrow, "plan_week": h_plan_week,
             "month_ahead": h_month_ahead, "spend_day": h_spend_day, "assent_to_offer": h_assent, "dont_see_it": h_dont_see,
             "reformat": h_reformat, "messages_overview": h_messages, "person_said": h_person, "follow_emails": h_emails,
@@ -494,6 +687,12 @@ HANDLERS = {"greeting": h_greeting, "plan_today": h_plan_today, "plan_tomorrow":
             "goal_chip": h_base, "current_fact": h_web, "market_move": h_market, "send_this": h_send_this,
             "send_schedule_day": h_send_day, "send_schedule_week": h_send_week, "channel_switch": h_channel,
             "supplied_address": h_address, "email_topic_search": h_email_search}
+HANDLERS.update({"news_today": h_news, "place_news": h_place_news, "place_news_send": h_place_news_send, "email_overview": h_emails,
+                 "reminders_overview": h_reminders, "calendar_range": h_calendar_range, "plan_named_day": h_plan_named,
+                 "stock_quote": h_stock_quote, "attention": h_attention, "know_me": h_know_me, "capability": h_base,
+                 "weather_week": h_weather_week, "find_time": h_find_time, "add_reminder_said": h_add_reminder_said,
+                 "add_event_said": h_add_event_said, "send_summary": h_send_summary, "send_calendar_range": h_send_calendar_range,
+                 "draft_reply": h_draft_reply})
 # A shape that continues a conversation runs this one first when it is built alone.
 BEFORE = {"reformat": "plan_week", "send_this": "plan_today", "assent_to_offer": "spend_day", "dont_see_it": "assent_to_offer",
           "channel_switch": "send_schedule_day", "supplied_address": "send_schedule_day", "follow_emails": "messages_overview",
@@ -601,6 +800,12 @@ def fam_debug_log_r5(rng, *, chain_runs=2, single_runs=1):
                 sc = attempt(make_chain(chain, i, shapes, f"r5-{name}-{run}"), rng, shapes[q])
                 if sc is not None:
                     out.append(sc)
+    # The other logs' chats, cut where a message has no row or is held out. Once each: they lean on the shapes above.
+    for name, chain in seeds.get("chains_once", {}).items():
+        for i, q in enumerate(chain):
+            sc = attempt(make_chain(chain, i, shapes, f"r5-{name}"), rng, shapes[q])
+            if sc is not None:
+                out.append(sc)
     for run in range(single_runs):
         for shape in seeds["shapes"]:
             for j, q in enumerate(shape["train"]):

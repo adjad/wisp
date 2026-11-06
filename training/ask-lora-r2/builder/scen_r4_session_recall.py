@@ -2152,7 +2152,10 @@ def s4_didask(yes):
         if any(_has(topics, a) for a in aliases[k]):     # the recap must not name the topic it denies
             return None
         prompt = rng.choice(["have we talked about {w} yet", "did {w} come up earlier", "has {w} come up in this chat"]).format(w=word)
-        final = fin(rng, f"No, we haven't touched on {word} in this chat. So far we've covered {topics}.", f"Not yet. We've only been over {topics}.")
+        opts = [f"No, we haven't touched on {word} in this chat. So far we've covered {topics}.", f"Not yet. We've only been over {topics}."]
+        if _r5():
+            opts += [t.format(W=cap1(word), word=word, topics=topics) for t in DID_NO_R5]
+        final = fin(rng, *opts)
         return sc_(rng, prompt, now, w, [Final(final)], "'did I ask about X' when it did not come up: a plain no with what was covered", seq, "s4_did_no",
                    no_call=True, must=[e["keys"][0] for e in _uniq(seq)], anchor=0, min_final=1)
     return make
@@ -2341,9 +2344,9 @@ def s5_missing(i):
         text = w.handle("recall", {"query": stem})
         assert "No matching memory" in text, text
         hist = fillers(rng, rng.choice([3, 4, 5]))
-        final = fin(rng, *[t.format(x=x, X=cap1(x)) for t in UNSTORED_FINALS])
+        final = fin(rng, *[t.format(x=x, X=cap1(x)) for t in (UNSTORED_FINALS_R5 if _r5() else UNSTORED_FINALS)])
         return sc_(rng, prompt, now, w, [[Call("recall", query=stem)], Final(final)],
-                   "nothing stored: one broad recall, then a plain 'I don't have it' with an offer to remember, no write", hist, "s5_missing",
+                   "nothing stored: one broad recall, then a plain 'I don't have it'" + ("" if _r5() else " with an offer to remember") + ", no write", hist, "s5_missing",
                    first="recall", args={"query": stem}, min_final=40, anchor=0)
     return make
 
@@ -2842,6 +2845,37 @@ NEVER_USER_FINALS = [
     "We haven't talked about {x} in this chat, and there's nothing saved about it. Tell me and I'll keep it for next time.",
     "You haven't told me {x} in this chat, and nothing is saved either. If you share it, I'll remember it.",
 ]
+# Round 5 (ASK_LORA_R5=1). The r4 Mac gate answered ordinary chat as a memory lookup ("Our memory has nothing saved for
+# 'rough day'", 29 of 333 replies against base's 1), and 23 finals of the two lists above and below are the likely teacher.
+# The r5 lists keep the honest "not in this chat" only where the prompt really asks about something earlier or about a
+# personal fact, vary the wording, never offer to save, and name memory only for the prompts that ask about stored facts.
+NEVER_USER_FINALS_R5 = [
+    "You haven't mentioned {x} in this chat, and I don't have it on file either.",
+    "I don't have {x}. You haven't told me in this chat, and it isn't in anything I keep.",
+    "We haven't talked about {x} in this chat, and I can't find it on my side.",
+    "Not that I can see. You haven't shared {x} in this chat, and nothing I hold covers it.",
+    "I don't have {x} yet, since you haven't said in this chat. It isn't stored on my side either.",
+]
+NEVER_ASST_FINALS_R5 = [
+    "We haven't talked about {x} in this chat, so I haven't recommended one. We've covered {t}.",
+    "I didn't mention {x}, at least not in this chat. What we've been over is {t}.",
+    "I haven't said anything about {x} here. So far the chat has been about {t}.",
+    "I don't think I mentioned {x} in this chat. We've covered {t}, if one of those is what you were after.",
+    "I haven't mentioned {x} anywhere in this chat. What we've been through is {t}.",
+]
+UNSTORED_FINALS_R5 = [
+    "I don't have {x} saved anywhere.",
+    "{X} isn't something I have stored.",
+    "I can't find {x} in anything I've saved.",
+    "There's nothing on file for {x} yet.",
+    "I don't have {x}, and it isn't in what I've saved.",
+]
+DID_NO_R5 = ["{W} hasn't come up in this chat. So far we've covered {topics}.", "No, not {word}. We've only been over {topics}.",
+             "I haven't brought up {word} here. We've covered {topics}."]
+
+
+def _r5() -> bool:
+    return os.environ.get("ASK_LORA_R5") == "1"
 
 
 def l_never_user(i, digest):
@@ -2854,7 +2888,7 @@ def l_never_user(i, digest):
         w.memories = rng.sample(OTHER_MEM, 2)
         text = w.handle("recall", {"query": stem})
         assert "No matching memory" in text, text
-        final = fin(rng, *[t.format(x=x) for t in NEVER_USER_FINALS])
+        final = fin(rng, *[t.format(x=x, X=cap1(x)) for t in (NEVER_USER_FINALS_R5 if _r5() else NEVER_USER_FINALS)])
         return mkl(rng, prompt, now, w, [[Call("recall", query=stem)], Final(final)],
                    "a personal fact never said in a LONG chat and not stored: one broad recall, then an honest 'not in this chat, not saved', no invention",
                    hist, "l_never_user", digest, first="recall", args={"query": stem}, min_final=40, anchor=0, stem=stem, must=["this chat"])
@@ -2889,7 +2923,7 @@ def l_never_asst(i, digest):
         now, w = base(rng)
         picks = rng.sample(hist, 3)
         topics = join([e["topic"] for e in picks])
-        final = fin(rng, *[t.format(x=x, t=topics) for t in NEVER_ASST_FINALS])
+        final = fin(rng, *[t.format(x=x, t=topics) for t in (NEVER_ASST_FINALS_R5 if _r5() else NEVER_ASST_FINALS)])
         return mkl(rng, prompt, now, w, [Final(final)], "something the assistant never suggested, in a LONG chat: a plain 'I didn't', with what was covered",
                    hist, "l_never_asst", digest, no_call=True, must=[e["keys"][0] for e in picks], min_final=1, anchor=0,
                    absent=absent)

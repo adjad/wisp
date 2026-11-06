@@ -96,20 +96,22 @@ WRITE_ALLOW: dict[str, frozenset[str]] = {
     # user's words, a carded send
     "day_chat_r4": frozenset({"draft_message", "send_message"}),
     # Round 5 (scen_r5_*.py; loaded only under ASK_LORA_R5=1). Keep in step with each WRITE_ALLOW_R5.
-    "debug_log_r5": frozenset({"add_reminder", "send_message", "send_email"}),
+    "debug_log_r5": frozenset({"add_reminder", "add_calendar_event", "draft_message", "send_message", "send_email"}),
     "tool_choice_r5": frozenset({"add_reminder", "update_reminder", "complete_reminder", "add_calendar_event", "cancel_event",
-                                 "send_message", "send_email", "schedule_send", "append_note", "create_note", "manage_contacts"}),
+                                 "send_message", "send_email", "schedule_send", "append_note", "create_note", "manage_contacts",
+                                 "clear_past_reminders", "manage_timers", "set_timer", "forget", "remember", "toggle_setting",
+                                 "update_event", "draft_email", "draft_message"}),
 }
 
 # Families whose examples carry earlier conversation turns (seeded sessions): the
 # validator reads the LAST user message as the prompt and allows earlier user turns.
-MULTITURN = frozenset({"followup_r3",
+MULTITURN = frozenset({"followup_r3", "chat_contrast_r5",
                        # round 4: seeded sessions (restraint_r4's ruled-out follow-ups; the session families)
                        "restraint_r4", "session_chat_r4", "session_recall_r4", "instructions_r4",
                        # day conversations: "and friday?" after a plan answer
                        "day_chat_r4",
                        # round 5: replays of the user's chats and continued questions
-                       "debug_log_r5"})
+                       "debug_log_r5", "tool_choice_r5"})
 
 # Picture turns card EVERY effect (policy.mark_picture_turn), reminders included: NEVER_CARD does not apply.
 PICTURE_TURN = frozenset({"picture_turn_r3"})

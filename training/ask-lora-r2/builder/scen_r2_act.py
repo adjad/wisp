@@ -17,6 +17,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import json
+import os
 import random
 import re
 
@@ -200,6 +201,10 @@ def mk(family, prompt, now, w, steps, notes, *, approve=None, cards=None, profil
     sc = Scenario(family, prompt, now, w, steps, notes, **kw)
     sc.approve = approve
     sc.expect_cards = list(cards or [])
+    if os.environ.get("ASK_LORA_R5") == "1":
+        # Since 6f1c10ee (2026-11-04) every contact write is confirmed, in every access mode.
+        sc.expect_cards += [c.name for step in steps if isinstance(step, list) for c in step
+                            if c.name == "manage_contacts" and c.name not in sc.expect_cards]
     sc.must_see = list(must_see)
     return sc
 

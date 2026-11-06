@@ -1820,7 +1820,27 @@ _apply_cap()
 RECALL_KINDS = frozenset({"rec_user", "rec_asst", "rec_both"})   # = DIST/choose.py RECALL_KINDS
 
 
+# Round 5: the r4 gate's chat came out short and flat (multi-turn median 137 characters against base's 419; emoji 24% against
+# 53%) because every final here was scripted. Only a reply that must restate the chat exactly stays scripted (a recall, a
+# standing instruction, a "did we say"); building on context, an emotional thread and a casual factual follow-up are
+# written by base, so the voice is base's own.
+BASE_KINDS = frozenset({"build", "emo", "fact", "close"})
+RECALLISH = re.compile(r"\b(did we say|did you say|we said|sum up|remind me|what was the|what is the plan|the plan now|"
+                       r"order of things|how much did we|surprise plan|start to finish|again\b)", re.I)
+BASE_MOVED: "collections.Counter" = None
+
+
+def _base_writes(q) -> bool:
+    import os
+    if os.environ.get("ASK_LORA_R5") != "1":
+        return False
+    return q["kind"] in BASE_KINDS and not RECALLISH.search(q["prompt"])
+
+
 def fam_session_chat_r4(rng):
+    global BASE_MOVED
+    from collections import Counter
+    BASE_MOVED = Counter()
     _check_family()
     out, bad = [], []
     for q in QS:
@@ -1856,6 +1876,14 @@ def fam_session_chat_r4(rng):
         if not ok:
             bad.append(f"[{q['thread']}/{q['kind']}] {prompt!r}: {why}")
             continue
+        if _base_writes(q):
+            # Round 5 (ASK_LORA_R5=1): base writes this reply. The scripted final above passed every check, so the
+            # guards on invented context still ran on it; it stays on the row as the reference the distill step checks
+            # base's text against (refs and names from the history, `ok` numbers, no machinery).
+            from scen_r5_debuglog import BASE_WRITES
+            sc.steps = [Final(BASE_WRITES)]
+            sc.base_ref = dict(scripted=q["final"], ref=tuple(q["ref"]), ok=tuple(q["ok"]), kind=q["kind"])
+            BASE_MOVED[q["kind"]] += 1
         out.append(sc)
     assert not bad, "dry-run failures:\n" + "\n".join(bad)
     return out

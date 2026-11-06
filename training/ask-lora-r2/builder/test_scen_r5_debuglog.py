@@ -92,3 +92,16 @@ def test_heldout_wordings_fold_and_skip_placeholders(monkeypatch):
     seeds = {"shapes": [{"id": "x", "train": [], "heldout": ["What's up?", "text {person} that"]}]}
     monkeypatch.setattr(M, "load_seeds", lambda: seeds)
     assert M.heldout_folds() == frozenset({M.leak.fold("What's up?")})
+
+
+def test_new_shapes_all_have_handlers():
+    needed = {"news_today", "place_news", "place_news_send", "email_overview", "reminders_overview", "calendar_range", "plan_named_day",
+              "stock_quote", "attention", "know_me", "capability", "weather_week", "find_time", "add_reminder_said", "add_event_said",
+              "send_summary", "send_calendar_range", "draft_reply"}
+    assert needed <= set(M.HANDLERS)
+
+
+def test_reminder_and_event_wording_parses():
+    assert M._title("create a reminder for tomorrow from 6-7pm to go to chess club in room 206") == "Go to chess club in room 206"
+    assert M._title("create a calendar event this wednesday for chess club meeting from 7-8pm") == "Chess club meeting"
+    assert M.TIME.search("from 6-7pm").groups() == ("6", "7", "pm")

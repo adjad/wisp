@@ -24,6 +24,11 @@ for _line in open(os.path.join(DATASET_DIR, "eval_questions.jsonl")):
     _QIDS.setdefault(_q["prompt"].strip().lower(), _q["id"])
 
 
+def _list_cap(n):
+    """r4 cut lists to n and ended with "plus N more". r5 lists everything the tool returned."""
+    return 10 ** 6 if os.environ.get("ASK_LORA_R5") == "1" else n
+
+
 def qid(prompt):
     return _QIDS.get(prompt.strip().lower())
 
@@ -476,8 +481,8 @@ def inbox_reply(w, now, rng, *, label=None, rows=None, short=False):
     senders = sorted({m.sender for m in news})
     end = lambda s: s if s.endswith(".") else s + "."
     if people:
-        items = [f"{m.sender} (“{m.subject}”{', unread' if m.unread else ''})" for m in people[:4]]
-        extra = f", plus {len(people) - 4} more" if len(people) > 4 else ""
+        items = [f"{m.sender} (“{m.subject}”{', unread' if m.unread else ''})" for m in people[:_list_cap(4)]]
+        extra = f", plus {len(people) - 4} more" if len(people) > _list_cap(4) else ""
         if len(items) >= 4:
             body = "From people:\n" + "\n".join(f"- {i}" for i in items) + (f"\n…plus {len(people) - 4} more." if extra else "")
         else:
@@ -516,10 +521,10 @@ def reminders_reply(rows_due, undated, now, rng, *, filt=None, what="open to-dos
     tags += [(r.title, "no due date") for r in undated]
     n_over = sum(r.due < now for r in rows_due)
     head = lead or (f"You have {len(tags)} {what}" + (f", {n_over} overdue" if n_over and "overdue" not in what else ""))
-    shown = tags[:8]
+    shown = tags[:_list_cap(8)]
     if len(shown) >= 4:
         out = head + ":\n" + "\n".join(f"- {t}: {tag}" for t, tag in shown)
-        if len(tags) > 8:
+        if len(tags) > _list_cap(8):
             out += f"\n…plus {len(tags) - 8} more."
         return out
     return head + ": " + join(f"{t} ({tag})" for t, tag in shown) + "."
@@ -788,9 +793,9 @@ def fam_multi(rng):
         about_mail = any(k in p for k in ("email", "emial", "mail")) and "text" not in p and "messages" not in p
         if about_mail:
             if emails_in:
-                items = [d[len("an email from "):] for _, d in emails_in[:6]]
+                items = [d[len("an email from "):] for _, d in emails_in[:_list_cap(6)]]
                 reply = listing(f"{cap1(plural(len(emails_in), 'email'))} arrived {span}", items)
-                if len(emails_in) > 6:
+                if len(emails_in) > _list_cap(6):
                     reply += f" Plus {len(emails_in) - 6} more." if len(items) < 4 else f"\n…plus {len(emails_in) - 6} more."
                 if texts_in:
                     reply += f" A text arrived too, {texts_in[0][1][len('a text '):]}."
@@ -810,8 +815,8 @@ def fam_multi(rng):
                 reply = P(rng, f"Nothing new {span} across your email, texts and notes.",
                           f"All quiet {span}. No new emails, texts or notes.")
             else:
-                shown = [t for _, t in allitems[:6]]
-                more = len(allitems) - 6
+                shown = [t for _, t in allitems[:_list_cap(6)]]
+                more = len(allitems) - _list_cap(6)
                 if len(shown) >= 4:
                     reply = f"{cap1(span)} you got:\n" + "\n".join(f"- {cap1(t)}" for t in shown)
                     if more > 0:
@@ -892,7 +897,8 @@ def fam_grounded(rng):
                 if pu:
                     reply += ":\n" + "\n".join(f"- {m.sender}: “{m.subject}”" for m in pu)
                     if len(un) > len(pu):
-                        reply += f"\n…and {len(un) - len(pu)} more from newsletters and updates."
+                        reply += (f"\nThe other {len(un) - len(pu)} are newsletters and updates." if os.environ.get("ASK_LORA_R5") == "1"
+                              else f"\n…and {len(un) - len(pu)} more from newsletters and updates.")
                 else:
                     reply += ", all from newsletters and updates."
         args = {"unread": True} if "unread msgs" in p or "unread messages" in p else {}
@@ -945,12 +951,12 @@ def fam_grounded(rng):
             reply = f"Nothing was scheduled {scope}, and I can't see completed tasks."
         else:
             if days == 7:
-                items = [f"{t:%a} {clock(t)}: {title}" + (" (reminder)" if rem else "") for t, title, rem in rows[:6]]
+                items = [f"{t:%a} {clock(t)}: {title}" + (" (reminder)" if rem else "") for t, title, rem in rows[:_list_cap(6)]]
             else:
-                items = [f"{title} at {clock(t)}" + (" (reminder)" if rem else "") for t, title, rem in sorted(rows[:6])]
+                items = [f"{title} at {clock(t)}" + (" (reminder)" if rem else "") for t, title, rem in sorted(rows[:_list_cap(6)])]
             if len(items) >= 4:
                 reply = lead.rstrip(":") + ":\n" + "\n".join(f"- {i}" for i in items)
-                if len(rows) > 6:
+                if len(rows) > _list_cap(6):
                     reply += f"\n…plus {len(rows) - 6} more."
             else:
                 reply = lead + ": " + join(items) + "."

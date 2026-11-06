@@ -658,3 +658,39 @@ Explicit chat checks fell too: all checks passed in 27/45 conversations against 
 **Picker budget for r5 (corrects the earlier estimate).** Decoding costs 0.15 s per token and base writes about 246 tokens, so one generation takes about 38 s, not 7.5 s. Run r5's text picker on base plus about 3 checkpoints in two processes, about 8–10 h and $5–6. That's an estimate, and two processes haven't been measured.
 
 The mistake list (459 r4 failures) is local only, at `~/.moe/evals/r4-gate/mistakes/r4-all-failures.jsonl`.
+
+## r5's safety bar is relaxed (user, 2026-11-06)
+
+The user: "I agree on relaxing the safety bar - i personally have never ran into a safety issue since switting to gemma."
+
+- **New bar for r5:** unsafe calls to tools with real effects (sends, deletes, settings, saves and other writes: `runner.write_tool_names()` plus `organize_files`) stay at or below base's. Unsafe calls to read-only tools are reported and don't fail the gate.
+- **Unchanged:** the `safety` category bar, the rest of this plan's bars, and RL-SCOPE, which stays as it is until a model passes.
+- **On r4's numbers:** base has 3 unsafe writes and 9 unsafe reads, and r4 has 23 and 4, so r4 would still fail. r5's write rows are still needed. `organize_files` counts as a write here (2 of r4's), because a delete request is what makes it unsafe, even though `write_tool_names()` judges it with empty arguments and lists it as a read. The gate's count must do the same.
+
+## r5 against Google's tuning guide (user, 2026-11-06)
+
+The user asked r5 to follow https://gemma.ai/tuning/ and said the older ai.google.dev guide is deprecated and must not be used. Read: tuning overview, QLoRA, vision QLoRA, audio QLoRA, full fine-tune, Gemma Trainer, prompt formatting, thinking, function calling, best practices, MTP, QAT. The vision token budget page holds only a demo, so it gave no numbers.
+
+**Already the same:** completion-only loss; transformers >= 5.10.1, peft >= 0.19; r=16, alpha=16, dropout 0.05; lr 2e-4; fused AdamW; grad clip 0.3 (vision page); `<turn|>` and `<|tool_response>` as stops; image before text; rows rendered with the model's own template; sampling 1.0 / 0.95 / 64 on the chat model; greedy for voice; base and tuned model compared on the same prompts, with success, failure and boundary cases.
+
+**Different, and staying that way:**
+
+| Item | Guide | r5 | Why |
+|---|---|---|---|
+| Quantized training | 4-bit NF4 | bf16 base | The guide uses 4-bit to save memory. The A6000 fits bf16, and 4-bit only adds an approximation. |
+| Schedule | QLoRA: constant. Audio: cosine, 3% warmup | cosine, 3% warmup | Both are Google's. r5 matches the audio page. |
+| Epochs | 3 (QLoRA, vision), 4 (audio) | 2 | Validation loss rises after epoch 1 or 2 in every table Google prints. A third epoch would add about $16 for steps its own tables suggest overfit. |
+| Picking | best eval loss, on the audio page | behaviour picker | r3's lowest-loss checkpoint was not its best one. |
+| Audio LoRA | r=32, alpha=64 | r=16, alpha=16, shared | One adapter serves text, vision and audio. The audio page's model is E2B and its task is Japanese transcription. |
+| Full tuning | Gemma 3 270m example | not used | LoRA is what ships. |
+
+**Different, and open:**
+
+1. **Thoughts between tool calls (`service/agent/loop.py:4557`).** Google says not to strip thoughts between calls inside one model turn. Wisp appends `{"role": "assistant", "content", "tool_calls"}` and drops `reasoning_content`, so the model loses its reasoning at each step. The chat template would render a kept thought (`thinking_gate`: any message after the last user turn). Training rows match production and also drop it. On the r4 gate's trials, base passes 75% with one tool round, 61% with two and 55% with three or more; r4 passes 78%, 53% and 48%. Those longer cases are also harder, so this doesn't show the cause. **Test on base first; it would be a service change and rows must match whatever ships.** Decide before base generation.
+2. **`modules_to_save=["lm_head", "embed_tokens"]` with weight tying (QLoRA and vision pages).** The audio page doesn't list it, and no page says why it's there. It would train the full 262,144-token embedding table, far more parameters than the LoRA itself. The MTP page says the drafter shares that table, so speculative decoding could slow; output shouldn't change, since the target checks every token. Left out unless the user wants it tested.
+3. **One system turn.** Google says instructions, thinking and tools should sit in one consolidated system turn. Thinking and tools do. Wisp also sends the date and the unverified-context note as later `system` messages, which render as extra system turns, and rows match that. It's kept so the prompt prefix stays cacheable, so it's report-only for r5.
+4. **Image tokens.** Google says higher budgets help OCR and document parsing. Wisp sends a flat 280 (`service/vision.py:74`, the model's `max_soft_tokens`). It may matter for r4's document facts loss (1.000 to 0.944), but base had 1.000 at 280, so it can't be the whole cause. Not an r5 training change.
+5. **QAT weights.** At 4-bit the QAT page says to prefer a QAT build over a generic Q4, and `-qat-q4_0-unquantized` exists for conversions such as MLX. No page says how this interacts with fine-tuning, and base would change too. Not in r5.
+6. **DPO.** The Gemma Trainer page lists DPO and reward modeling alongside SFT, without values. It's one more option for r5's open RL decision.
+
+**Start small.** The overview says to add data until the task is met. r5's stop at step 400 (about 9 h, $5) is that check.

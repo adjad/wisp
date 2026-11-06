@@ -25,6 +25,7 @@ does not show.
 from __future__ import annotations
 
 import datetime as dt
+import os
 import re
 import zlib
 
@@ -786,10 +787,54 @@ def say_entry(e, loc=False):
     return f"“{title}” at {t} (from {src_kind(src)})" if t else f"“{title}” (from {src_kind(src)})"
 
 
+def r5():
+    """Round 5 (ASK_LORA_R5=1): a final lists what the tool returned and never counts what it did not ("and N more")."""
+    return os.environ.get("ASK_LORA_R5") == "1"
+
+
+def cut_note(rng, plan):
+    """Round 5: the plain sentence that says a list the host cut stays cut, and how to see the rest. Empty under r4 and when
+    nothing was cut. It draws from ``rng`` only when a list was cut, so rows without a cut keep their wording."""
+    if not r5() or not plan.more:
+        return ""
+    m, out = plan.more, []
+    if plan.kind == "day" and m.get("day"):
+        n = len(plan.days[0][1]) if plan.days else 5
+        out.append(rng.choice([
+            f"That's the first {n} for {plan.word}; ask for your calendar on its own to see the rest.",
+            f"The plan cut the list for {plan.word} after {n} items, so some aren't shown here; ask for just your calendar to see them all.",
+            f"The list stops at {n} items for {plan.word} and was cut there; asking for your calendar alone will show everything."]))
+    elif plan.kind == "range" and plan.more_by_day:
+        names = [d.lower() if d in ("Today", "Tomorrow") else d for d in plan.more_by_day]
+        days, one = join(names), len(names) == 1
+        that = "that day" if one else "one of those days"
+        out.append(rng.choice([
+            f"The list was cut off for {days}; ask about {that} to see all of it.",
+            f"Not every item for {days} is shown, since the list was cut there; ask for a single day to see the rest.",
+            f"The plan lists less than {days} holds, so ask for {'that day' if one else 'one of them'} on its own to see everything."]))
+    if m.get("overdue"):
+        n = len(plan.overdue)
+        out.append(rng.choice([f"Only the first {n} overdue items are listed; ask for your reminders to see the rest.",
+                               f"The overdue list was cut after {n}; your reminders will show the rest."]))
+    if m.get("waiting"):
+        n = len(plan.waiting)
+        out.append(rng.choice([f"Only the first {n} people waiting on a reply are listed; ask about your messages to see the rest.",
+                               f"The list of people waiting on you was cut after {n}; ask about your messages for the rest."]))
+    if m.get("other"):
+        n = len(plan.other)
+        out.append(rng.choice([f"Only the first {n} other to-dos are listed; ask for your reminders to see the rest.",
+                               f"The other to-dos were cut after {n}; your reminders will show the rest."]))
+    if m.get("truncated") and not out:
+        out.append(rng.choice(["The list was cut off there; ask about a single day to see everything.",
+                               "That list was cut short; ask for one day at a time to see all of it."]))
+    return " ".join(out)
+
+
 def join_more(xs, more=0):
-    """``join`` for a list that a '..and N more' follows: commas only, so 'A, B, and 2 more' never reads 'A and B, and 2 more'."""
+    """``join`` for a list that a '..and N more' follows: commas only, so 'A, B, and 2 more' never reads 'A and B, and 2 more'.
+    Round 5 says nothing of the count (``cut_note`` does)."""
     xs = list(xs)
-    if not more:
+    if not more or r5():
         return join(xs)
     return ", ".join(xs) + f", and {more} more"
 
@@ -852,7 +897,7 @@ def narrate_day(rng, plan, *, bullets=None):
         return rng.choice([f"Nothing is on the clock, waiting or open {w}.", f"Nothing is time-bound, waiting or open {w}."])
     if timed:
         phrases = [say_entry(e) for e in timed]
-        if plan.more.get("day"):
+        if plan.more.get("day") and not r5():
             phrases.append(f"{plan.more['day']} more")
         if not bullets:
             tmpl = PLAN_LEADS_TODAY if w == "today" else PLAN_LEADS_TOMORROW if w == "tomorrow" else PLAN_LEADS_DAY
@@ -873,10 +918,13 @@ def narrate_day(rng, plan, *, bullets=None):
         lead = rng.choice([counted if timed else f"{W} has nothing on the clock, but there's more:",
                            f"Here's {w}:" if w in ("today", "tomorrow") else f"Here's {W}:"])
         rows = [f"- {say_entry(e)[:1].upper()}{say_entry(e)[1:]}" for e in timed]
-        if n_more:
+        if n_more and not r5():
             rows.append(f"- And {n_more} more after that")
         rows += ["- " + x for x in extra]
-        return lead + "\n" + "\n".join(rows)
+        note = cut_note(rng, plan)
+        return lead + "\n" + "\n".join(rows) + (("\n\n" + note) if note else "")
+    if r5():
+        return " ".join(x for x in parts + extra + [cut_note(rng, plan)] if x)
     return " ".join(parts + extra)
 
 
@@ -903,7 +951,7 @@ def narrate_today(rng, plan, now, mode="left"):
         return rng.choice([f"Nothing is on the clock, waiting or open {word}.", f"Nothing is time-bound, waiting or open {word}."])
     if ahead:
         phrases = [say_entry(e) for e in ahead]
-        if plan.more.get("day"):
+        if plan.more.get("day") and not r5():
             phrases.append(f"{plan.more['day']} more")
         lead = rng.choice(["Tonight you have ", "This evening: ", "On for tonight: "]) if mode == "tonight" else \
             rng.choice(["Still ahead today: ", "Left today: ", "For the rest of today you have "])
@@ -922,12 +970,17 @@ def narrate_today(rng, plan, now, mode="left"):
             parts.append(" ".join(say_wait(x) + "." for x in plan.waiting))
         if plan.other:
             parts.append(other_sentence(rng, plan))
-    return " ".join(parts)
+    if r5() and plan.more:
+        parts.append(cut_note(rng, plan))
+    return " ".join(p for p in parts if p)
 
 
 def trim_day(entries, cap=3):
     """At most ``cap`` of a day's lines for a week answer: the mail / text / note items first (they are what the calendar
-    does not show), then the earliest of the rest, in the plan's order. Returns (shown, how many were left out)."""
+    does not show), then the earliest of the rest, in the plan's order. Returns (shown, how many were left out).
+    Round 5 lists every item the plan returned."""
+    if r5():
+        return list(entries), 0
     if len(entries) <= cap:
         return list(entries), 0
     brief = [e for e in entries if e[2] in ("email", "text", "note")]
@@ -944,7 +997,7 @@ def narrate_range(rng, plan):
         shown, hidden = trim_day(entries)
         hidden += plan.more_by_day.get(title, 0)
         lines.append(f"- {title}: " + "; ".join(say_entry(e)[:1].upper() + say_entry(e)[1:] for e in shown)
-                     + (f"; and {hidden} more" if hidden else ""))
+                     + (f"; and {hidden} more" if hidden and not r5() else ""))
     tail = []
     if plan.overdue:
         tail.append("- Overdue: " + say_over(plan.overdue))
@@ -952,14 +1005,15 @@ def narrate_range(rng, plan):
         tail.append("- " + " ".join(say_wait(x) + "." for x in plan.waiting))
     if plan.other:
         tail.append("- Also open: " + say_other(plan.other, with_day=False, more=plan.more.get("other", 0)))
-    if plan.more.get("truncated"):
+    if plan.more.get("truncated") and not r5():
         tail.append("- and a few more that the list cut off")
     if not lines and not tail:
         return rng.choice([f"Nothing is scheduled, due or waiting {plan.word}.", f"{cap1(plan.word)} is clear: nothing scheduled, due or waiting."])
     lead = rng.choice([f"Here's {plan.word}:", f"{cap1(plan.word)} looks like this:", f"For {plan.word}:"])
     if not lines:
         lead = f"Nothing is on the calendar {plan.word}, but there's more:"
-    return lead + "\n" + "\n".join(lines + tail)
+    note = cut_note(rng, plan)
+    return lead + "\n" + "\n".join(lines + tail) + (("\n\n" + note) if note else "")
 
 
 def brief_sentence(rng, b):

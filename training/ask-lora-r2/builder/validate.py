@@ -446,6 +446,42 @@ FINAL_LEAK = re.compile(r"\{\"|\bUNTRUSTED\b|haven['’]t checked (?:a |any )?cu
 CHAT_RECEIPT = re.compile(r"\b(?:didn['’]t|did not|won['’]t|haven['’]t) (?:send|sent|save|saved|add|added|set|"
                           r"schedule|search|look)\w*\b|\bnothing (?:was|got) (?:sent|saved|added)\b|"
                           r"couldn['’]t find any (?:web )?results", re.I)
+# Round 5 (ASK_LORA_R5=1 only; r4 builds validate as before). A final never counts a list's remainder ("and 3 more",
+# "plus 3 more": r4's cut-off lists, 9 of its 13 debug-log losses), and a final with no tool call in its turn never answers
+# ordinary chat as a memory lookup (r4's "Our memory has nothing saved for 'rough day'") unless the row is a real recall question.
+# The checks take plain text, so the later step that splices base's own finals into BASE_WRITES rows can call
+# ``final_problems_r5`` on each candidate text too.
+R5_MORE = re.compile(r"(?i)\b(?:and|plus) \d+ more\b")
+R5_MEMORY_STALL = re.compile(r"(?i)\b(?:nothing (?:was |is )?saved|didn['’]?t save|nothing(?:['’]s| is| was)? in your memory|"
+                             r"we haven['’]?t talked about)\b")
+# meta qkind of a real recall question (build.py copies it from the scenario): scen_r4_session_recall._recall_labels sets
+# rec_user / rec_asst / rec_none, scen_r4_session_chat.Q and scen_r4_devsets add rec_both. Every other qkind (build, emo,
+# fact, close, agenda re-reads, ...) is not a recall. No family marks a recall as a whole: recall families mix both.
+R5_RECALL_QKINDS = frozenset({"rec_user", "rec_asst", "rec_both", "rec_none"})
+
+
+def r5_enabled() -> bool:
+    return os.environ.get("ASK_LORA_R5") == "1"
+
+
+def is_recall_row(meta) -> bool:
+    meta = meta or {}
+    return meta.get("qkind") in R5_RECALL_QKINDS or bool(meta.get("recall_refs")) or bool(meta.get("recall_absent"))
+
+
+def final_problems_r5(text: str, meta=None, had_tool_call: bool = False) -> list[tuple[str, str]]:
+    """Round-5 problems of one final's text: [(key, matched text)]. ``had_tool_call``: the final's turn called any tool.
+    Works on any text, so it also checks finals written later (base's text spliced into a BASE_WRITES row)."""
+    out = []
+    m = R5_MORE.search(text or "")
+    if m:
+        out.append(("final:and_n_more", m.group(0)))
+    m = R5_MEMORY_STALL.search(text or "")
+    if m and not had_tool_call and not is_recall_row(meta):
+        out.append(("final:memory_stall", m.group(0)))
+    return out
+
+
 LAST_WARNINGS: list[str] = []     # validate_file's warnings for the last file (selftest reads them)
 
 
@@ -619,6 +655,9 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
                 bad("bad_role", f"{where}:{j}")
         if pending:
             bad("call_without_tool_result", where)
+        if r5_enabled() and msgs[-1].get("role") == "assistant" and not msgs[-1].get("tool_calls"):
+            for key, hit_text in final_problems_r5(msgs[-1].get("content") or "", meta, bool(calls)):
+                bad(key, f"{where} {meta.get('id', '')} {hit_text!r}")
         # writes, approval cards and denials, against the example's meta line
         names = [name for _, name in calls]
         # manage_timers is one tool for reads and writes: list/stopwatch_read are reads (as build.py records them)

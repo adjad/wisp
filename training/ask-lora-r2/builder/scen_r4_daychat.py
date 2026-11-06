@@ -22,7 +22,9 @@ calendar events and reminders. The target turn is one of:
   names the dated Brief items it lists apart; a past day reads get_past_events.
 
 The final of every plan answer is written from the plan the world printed (``scen_r4_day.Plan``): no item is named that the
-plan does not list, a count comes from the printed lines, and a truncated list says "and N more".
+plan does not list, a count comes from the printed lines, and a truncated list says "and N more". Round 5 (ASK_LORA_R5=1)
+lists every item the tool returned and, where the host cut a list, says so plainly with how to see the rest, never "and N more"
+(``scen_r4_day.cut_note``).
 """
 from __future__ import annotations
 

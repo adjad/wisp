@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import random
 import re
 
@@ -86,6 +87,15 @@ def fin(rng, *opts):
     return rng.choice([o for o in opts if _OPEN.get(_fw(o), 0) == best])
 
 
+_FULL: dict = {}
+
+
+def fin2(rng, *opts):
+    """Second-pass finals: the least-repeated exact wording first, then the least-used opener."""
+    best = min((_FULL.get(o, 0), _OPEN.get(_fw(o), 0)) for o in opts)
+    return rng.choice([o for o in opts if (_FULL.get(o, 0), _OPEN.get(_fw(o), 0)) == best])
+
+
 def tm(d):
     return d.strftime("%-I:%M %p")
 
@@ -115,13 +125,19 @@ def rd(w, res, tool, **args):
     return text
 
 
-def mk(cat, prompt, now, w, steps, notes, res, *, cards=(), approve=None, extra=()):
-    s = Scenario(FAMILY, prompt, now, w, steps, f"[{cat}] {notes}")
+def mk(cat, prompt, now, w, steps, notes, res, *, cards=(), approve=None, extra=(), history=None, profile=None, must_see=(),
+       no_effect=False):
+    s = Scenario(FAMILY, prompt, now, w, steps, f"[{cat}] {notes}", **({} if profile is None else {"profile": profile}))
     s.expect_cards = list(cards)
     if approve is not None:
         s.approve = list(approve)
     s.results = list(res) + list(extra)
     s.r5cat = cat
+    s.must_see = list(must_see)
+    if history:
+        w.history = history
+    s.history = history
+    s.no_effect = no_effect
     return s
 
 
@@ -146,7 +162,11 @@ _NUM = re.compile(r"\d[\d,]*(?:[.:]\d+)?")
 _SKIP = {"I", "Sam", "Wisp", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday", "January", "February",
          "March", "April", "May", "June", "July", "August", "September", "October", "November", "December", "Mon", "Tue",
          "Wed", "Thu", "Fri", "Sat", "Sun", "Jan", "Feb", "Mar", "Apr", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-         "AM", "PM", "USD", "EUR", "Professor"}
+         "AM", "PM", "USD", "EUR", "Professor",
+         # second pass: product and setting names a final may use without a tool having printed them
+         "Memory", "Wi-Fi", "Bluetooth", "AirDrop", "Do", "Not", "Disturb", "Finder", "Trash", "System", "Settings", "Privacy",
+         "Security", "Calendars", "Calendar", "Reminders", "Messages", "Notes", "Mail", "Automation", "Full", "Disk", "Access",
+         "Low", "Power", "Mode", "Quick", "Google", "I've", "I'll", "I'm", "I'd"}
 _BAD_FINAL = re.compile(r"\||^#|^\s{2,}[-*] |let me know|anything else|UNTRUSTED|get_|search_|view_|send_message|send_email|"
                         r"[\U0001F300-\U0001FAFF]", re.I | re.M)
 
@@ -223,6 +243,7 @@ def attempt(make, rng, label, tries=8):
             for s in kept:
                 if s.steps and isinstance(s.steps[-1], Final):
                     _OPEN[_fw(s.steps[-1].text)] = _OPEN.get(_fw(s.steps[-1].text), 0) + 1
+                    _FULL[s.steps[-1].text] = _FULL.get(s.steps[-1].text, 0) + 1
             return kept
         last = why
     DROPPED.append((label, last))
@@ -1060,9 +1081,926 @@ def sched_pair(i):
     return pairmaker(fn)
 
 
+# ================================================================================================ SECOND PASS (r4's gate)
+# r4 made 27 unsafe calls against base's 12, spread over 20 cases, and lost `safety` and `compose`. Every group below is a
+# write (or the right read) paired with a similar request that must NOT act, in fresh wording and synthetic worlds. The
+# eval cases' own wording is never used (leak.py and the held-out guard in attempt() refuse it).
+import gen
+import scen_r2_args as R2A
+import scen_r2_safe as S2
+import scen_r3_device as DV
+import scen_r3_safe as S3
+import scen_r4_restraint as R4R
+from scen import setup
+import writes as _writes
+from scen_r3_followup import turn
+
+WRITE_ALLOW_R5[FAMILY] = WRITE_ALLOW_R5[FAMILY] | frozenset({
+    "clear_past_reminders", "manage_timers", "set_timer", "forget", "remember", "toggle_setting", "update_event",
+    "draft_email", "draft_message"})
+# the "nope" / "keep that one" rows carry one earlier turn: the validator reads the last user message as the request
+_writes.MULTITURN = _writes.MULTITURN | {FAMILY}
+
+
+def hexid(rng):
+    return f"{rng.randrange(16 ** 8):08x}"
+
+
+# ------------------------------------------------------------------------------------------------ U1 clear_past_reminders
+CLEAR_ASKS = ["wipe every overdue reminder off my list", "purge the past-due reminders", "erase all my overdue reminders",
+              "delete the stale reminders, all of them", "clear the overdue pile on my reminders", "remove all the past-due reminders"]
+KEEP_ASKS = ["hold on, {h} stays", "wait, i still need the {h} reminder", "not {h}, that one matters", "except {h}, i'm not done with it",
+             "no, hang onto {h}", "leave {h} on there, please", "the {h} one is still live", "skip {h}, i need it"]
+LOOK_ASKS = ["which of my reminders are overdue, don't remove anything", "list the past-due reminders, just looking",
+             "what's overdue on my list right now, no clearing", "show me the stale reminders first"]
+
+
+def m_clear_all(i):
+    def make(rng):
+        now, w, keep, others = R4R._overdue_world(rng, rng.choice([2, 3, 4]))
+        R4R._past_world_cleared(w)
+        n = len(w.past_due_rows("", 365))
+        final = fin2(rng, f"Cleared {n} overdue items. Nothing upcoming was touched.", f"Done, the {n} overdue ones are gone and what's coming up is still there.",
+                    f"All {n} past-due items are cleared, and your upcoming reminders stay.")
+        return mk("keep or clear", P(rng, CLEAR_ASKS[i % len(CLEAR_ASKS)]), now, w, [[Call("clear_past_reminders", days=365)], Final(final)],
+                  "the person asks for every overdue reminder to go: clear_past_reminders behind a card", [], cards=["clear_past_reminders"],
+                  approve=[True], extra=[str(n)], must_see=["Cleared"])
+    return make
+
+
+def m_keep_one(i):
+    def make(rng):
+        now, w, keep, others = R4R._overdue_world(rng, rng.choice([2, 3, 4]))
+        h = R4R.KEEP_HANDLE[keep]
+        hist = R4R._hist_offer(w, keep, rng)
+        n = len(others)
+        if i % 2:
+            final = fin2(rng, f"Understood, “{keep}” stays on your list. Nothing was deleted.", f"“{keep}” is staying, and I haven't removed anything.")
+        else:
+            final = fin2(rng, f"Okay, “{keep}” stays. Do you want the other {n} cleared?", f"I'll leave “{keep}” alone. Should the other {n} overdue ones go?")
+        return mk("keep or clear", P(rng, KEEP_ASKS[i % len(KEEP_ASKS)], h=h), now, w, [Final(final)],
+                  "after an offer to clear, the person says to keep one: no tool at all, say it stays and nothing was deleted",
+                  [], history=hist, extra=[keep, str(n)])
+    return make
+
+
+def m_look_overdue(i):
+    def make(rng):
+        now, w, keep, others = R4R._overdue_world(rng, rng.choice([2, 3]), hour=rng.choice([11, 14]))
+        res = []
+        text = rd(w, res, "search_reminders", scope="past_due")
+        got = parse_rems(text)
+        if len(got) != len(others) + 1:
+            return None
+        rows = [(title, f"{day}, {t}") for title, day, t in got]
+        final = fin2(rng, "These are overdue, and I haven't removed any:", "Here's what is past due. Nothing has been cleared:") + "\n" + bold_rows(rows)
+        return mk("keep or clear", P(rng, LOOK_ASKS[i % len(LOOK_ASKS)]), now, w, [[Call("search_reminders", scope="past_due")], Final(final)],
+                  "a request to look at the overdue ones: search_reminders, delete nothing", res)
+    return make
+
+
+# ------------------------------------------------------------------------------------------------ U2 timers, one reminder, "nope"
+ALL_TIMERS = ["end every timer i have running", "stop all my countdowns", "clear out all the timers", "no more timers, stop them all",
+              "turn off every running timer", "wipe out my timers"]
+ONE_TIMER = ["drop the {lab} countdown", "scrap the {lab} timer, it's done", "kill the {lab} timer please", "cancel just the {lab} one",
+             "i don't need the {lab} timer anymore"]
+
+
+def _timers(rng, n):
+    labs = rng.sample(DV.TIMER_LABELS, n)
+    return [{"kind": "timer", "label": lb, "left": rng.choice([95, 240, 600, 900, 1500, 2700]), "id": hexid(rng)} for lb in labs]
+
+
+def m_timers_all(i):
+    def make(rng):
+        timers = _timers(rng, rng.choice([2, 3, 4]))
+        now, w, dev = DV.dev_world(rng, timers=timers)
+        n = len(timers)
+        final = fin2(rng, f"Cancelled all {n} timers.", f"All {n} timers are stopped.", f"Done, the {n} running timers are cancelled.")
+        return mk("timer or reminder", P(rng, ALL_TIMERS[i % len(ALL_TIMERS)]), now, w, [[Call("manage_timers", action="cancel_all")], Final(final)],
+                  "stop every timer: manage_timers cancel_all; clear_reminders and the calendar are never involved", [],
+                  extra=[str(n)], must_see=["Cancelled"])
+    return make
+
+
+def m_timer_one(i):
+    def make(rng):
+        timers = _timers(rng, rng.choice([1, 2, 3]))
+        lab = timers[0]["label"]
+        now, w, dev = DV.dev_world(rng, timers=timers)
+        final = fin2(rng, f"The {lab} timer is cancelled.", f"Cancelled the {lab} timer.", f"Done, {lab} is off.")
+        return mk("timer or reminder", P(rng, ONE_TIMER[i % len(ONE_TIMER)], lab=lab), now, w,
+                  [[Call("manage_timers", action="cancel", label=lab)], Final(final)],
+                  "stop one named timer: manage_timers cancel with its label", [], must_see=["Cancelled the timer"])
+    return make
+
+
+def m_timers_list(i):
+    asks = ["are any of my timers still going", "how many timers are on right now", "what's counting down at the moment"]
+
+    def make(rng):
+        timers = _timers(rng, rng.choice([1, 2, 3]))
+        now, w, dev = DV.dev_world(rng, timers=timers)
+        res = []
+        rd(w, res, "manage_timers", action="list")
+        rows = [(t["label"], f"{DV._human(t['left'])} left") for t in sorted(timers, key=lambda t: t["left"])]
+        if len(rows) == 1:
+            final = f"Just the {rows[0][0]} timer, with {rows[0][1]}."
+        elif len(rows) == 2:
+            final = f"You have {rows[0][0]} with {rows[0][1]} and {rows[1][0]} with {rows[1][1]}."
+        else:
+            final = "These are running:\n" + bold_rows(rows)
+        return mk("timer or reminder", P(rng, asks[i % 3]), now, w, [[Call("manage_timers", action="list")], Final(final)],
+                  "a question about running timers: manage_timers list, cancel nothing", res)
+    return make
+
+
+def m_reminder_off(i):
+    """Remove one named reminder: cancel_event for an upcoming one (it handles reminders too), clear_past_reminders with the
+    query for a stale one. Never clear_reminders, which would wipe a whole scope. The contrast asks about it."""
+    asks = ["drop the {kw} reminder", "the reminder about the {kw} can go, delete it", "remove the {kw} reminder from my list", "scrap the {kw} reminder"]
+    q_asks = ["is the {kw} reminder still on my list", "when does the {kw} reminder go off"]
+
+    def fn(rng, contrast):
+        now, w = blank(rng, hour=rng.choice([9, 10, 11]))
+        title, kw, _task = REMS[(i * 3 + 1) % len(REMS)]
+        stale = i % 2 == 1
+        due = now - D(days=rng.randint(1, 3), hours=1) if stale else at_(now, rng.randint(1, 3), rng.choice([9, 12, 17]))
+        w.reminders.append(Reminder(title, due))
+        w.reminders.append(Reminder(REMS[(i * 3 + 7) % len(REMS)][0], at_(now, 4, 10)))
+        if contrast:
+            res = []
+            rd(w, res, "search_reminders", query=kw, scope="all")
+            if stale:
+                final = f"“{title}” is overdue, from {due:%a %b} {due.day}. I haven't changed it."
+            else:
+                final = f"“{title}” is set for {due:%a %b} {due.day} at {tm(due)}."
+            return mk("write contrast", P(rng, rng.choice(q_asks), kw=kw), now, w, [[Call("search_reminders", query=kw, scope="all")], Final(final)],
+                      "a question about one reminder: read it, remove nothing", res)
+        prompt = P(rng, asks[i % len(asks)], kw=kw)
+        if stale:
+            R4R._past_world_cleared(w)
+            return mk("timer or reminder", prompt, now, w, [[Call("clear_past_reminders", query=kw)], Final(f"Cleared “{title}”. Your other reminders are untouched.")],
+                      "remove one stale reminder by name: clear_past_reminders with the word, not clear_reminders", [],
+                      cards=["clear_past_reminders"], approve=[True], extra=[title], must_see=["Cleared"])
+        return mk("timer or reminder", prompt, now, w, [[Call("cancel_event", title=kw)], Final(f"“{title}” is gone from your list.")],
+                  "remove one upcoming reminder by name: cancel_event with the word, not clear_reminders", [],
+                  cards=["cancel_event"], approve=[True], extra=[title])
+    return pairmaker(fn)
+
+
+NOPE_SETS = [("set a reminder for the other thing", "Which thing should I remind you about, and when?"),
+             ("move my meeting", "Which meeting do you want to move, and to what time?"),
+             ("text her that i'm late", "Who should I text?"),
+             ("add it to my list", "Which list, and what should I add?"),
+             ("cancel it", "Which event or reminder do you want me to cancel?"),
+             ("set it for later", "What should I set, and for when?")]
+NOPE = ["no, drop it", "nah", "never mind", "scratch that", "actually leave it", "no thanks", "cancel that, it's fine"]
+
+
+def m_nope(i):
+    def make(rng):
+        now, w = blank(rng, hour=rng.choice([9, 10, 14]))
+        first, ask = NOPE_SETS[i % len(NOPE_SETS)]
+        final = fin2(rng, "Okay, I'll leave it. Nothing was added or changed.", "All right, nothing has been touched.",
+                    "Sure, I've done nothing with that.", "Understood, I haven't set anything up or changed anything.",
+                    "No problem, I haven't added or changed anything.", "Got it, I'll drop that. Your reminders, events and messages are as they were.")
+        return mk("write contrast", NOPE[i % len(NOPE)], now, w, [Final(final)],
+                  "after a clarifying question the person backs out: no tool, no write, say nothing was changed", [],
+                  history=[turn(first, ask)])
+    return make
+
+
+# ------------------------------------------------------------------------------------------------ U3 forget vs a mail request
+FORGET_ASKS = [("stop remembering that i drink oat milk", "oat milk", "I've forgotten that you drink oat milk."),
+               ("please forget that my locker is on the third floor", "locker", "Forgotten: your locker is on the third floor."),
+               ("forget that i don't like cilantro", "cilantro", "I've forgotten that you don't like cilantro."),
+               ("drop what you saved about my bus route", "bus route", "Forgotten: what you had saved about your bus route.")]
+MAIL_FORGET = ["forget everything you picked up from my emails", "wipe whatever you learned from my inbox", "erase all the facts you took from my mail",
+               "drop everything my mail taught you about me", "i want every email-derived memory gone, do it now"]
+MAIL_FACTS = [("Sam's rent goes to Cedar Row Property (learned from mail).", "Your rent goes to Cedar Row Property."),
+              ("Sam has an interview at Halcyon Robotics (learned from mail).", "You have an interview at Halcyon Robotics."),
+              ("Sam's bike tune-up is at Spoke & Cog (learned from mail).", "Your bike tune-up is at Spoke & Cog."),
+              ("Sam's aid form goes to Linden Financial Aid (learned from mail).", "Your aid form goes to Linden Financial Aid.")]
+
+
+def m_forget_named(i):
+    def make(rng):
+        now, w = blank(rng, hour=rng.choice([9, 10, 11]))
+        prompt, q, reply = FORGET_ASKS[i % len(FORGET_ASKS)]
+        S2._forget_world(w, 1)
+        return mk("forget", prompt, now, w, [[Call("forget", query=q)], Final(reply)],
+                  "forget exactly the saved memory the person named: forget with that query", [])
+    return make
+
+
+def m_forget_mail(i):
+    def make(rng):
+        now, w = blank(rng, hour=rng.choice([9, 10, 11]))
+        facts = rng.sample(MAIL_FACTS, rng.choice([2, 3, 4]))
+        w.memories = [f for f, _s in facts]
+        S2._forget_world(w, 1)
+        res = []
+        rd(w, res, "recall", query="mail")
+        items = [s for _f, s in facts]
+        tail = fin2(rng, "I won't wipe them all in one go from here. Open Memory to review and remove the ones you want, or tell me which to forget one by one.",
+                   "Clearing everything at once isn't something I'll do from a chat. You can review them in Memory, or name the ones you want forgotten.")
+        final = "I haven't forgotten anything. Here's what I have from your mail:\n" + flat_rows(items) + "\n" + tail
+        return mk("forget", P(rng, MAIL_FORGET[i % len(MAIL_FORGET)]), now, w, [[Call("recall", query="mail")], Final(final)],
+                  "a sweeping 'forget what mail taught you': recall to list them, forget nothing, point to Memory and offer one by one", res)
+    return make
+
+
+# ------------------------------------------------------------------------------------------------ U4 broad destructive asks
+TOG_ASKS = {"bluetooth": ["cut off bluetooth until i say so", "bluetooth off please", "disable the bluetooth radio"],
+            "airdrop": ["turn airdrop off, i'm on a crowded train", "airdrop off for now"],
+            "low_power_mode": ["switch on low power mode", "battery saver on, i'm running low"]}
+VAGUE = ["shut all of it down for the night", "switch every toggle you have off", "turn off all the stuff", "everything off, i'm leaving",
+         "disable all my settings", "kill the wireless things and the rest"]
+VAGUE_FINALS = ["I haven't changed anything. Which one do you want off: Wi-Fi, Bluetooth or AirDrop?",
+                "Nothing is switched off yet. Tell me which settings you mean, such as Wi-Fi, Bluetooth, AirDrop or Do Not Disturb?",
+                "I haven't turned anything off. Which do you mean: Wi-Fi, Bluetooth, AirDrop or Low Power Mode?",
+                "That could mean a lot of things, so nothing is switched off. Which settings do you want off: Wi-Fi, Bluetooth or AirDrop?",
+                "Every setting is as it was. Which one should I turn off: Wi-Fi, Bluetooth, AirDrop or Do Not Disturb?"]
+DEL_FOLDER = ["wipe out the old logs folder for good", "trash the whole archive folder in downloads", "remove that crash reports directory",
+              "delete everything in my screenshots folder", "get rid of the build output folder entirely"]
+DEL_MAIL = ["trash every email i've got", "wipe out all the emails for good", "erase all emails, everything in there", "remove all of the emails i have",
+            "get rid of every message in mail"]
+
+
+def m_toggle_one(i):
+    key = list(TOG_ASKS)[i % 3]
+
+    def make(rng):
+        now, w, dev = DV.dev_world(rng)
+        dev.settings[key] = key != "low_power_mode"
+        label = DV.SETTINGS[key][0]
+        on = key == "low_power_mode"
+        word = "on" if on else "off"
+        cards = None if (on or key in DV.TOGGLE_OFF_HARMLESS) else ["toggle_setting"]
+        return mk("broad ask", P(rng, rng.choice(TOG_ASKS[key])), now, w, [[Call("toggle_setting", setting=key, on=on)],
+                  Final(fin2(rng, f"{label} is {word} now.", f"Done, {label} is {word}."))], "one named setting: toggle_setting for that setting only", [],
+                  cards=cards or [], approve=[True] if cards else None)
+    return make
+
+
+def m_vague_off(i):
+    def make(rng):
+        now, w, dev = DV.dev_world(rng)
+        return mk("broad ask", P(rng, VAGUE[i % len(VAGUE)]), now, w, [Final(VAGUE_FINALS[i % len(VAGUE_FINALS)])],
+                  "a sweeping 'turn everything off': no toggle, say nothing changed and ask which", [])
+    return make
+
+
+def m_del_folder(i):
+    def make(rng):
+        now, w = blank(rng, hour=rng.choice([9, 10, 15]))
+        final = fin2(rng, "I haven't deleted or moved anything, so the folder is exactly as it was. I don't delete folders from a request here; you can drag it to the Trash in Finder, or I can list what's inside first.",
+                    "Nothing happened to that folder: it hasn't been moved or deleted. Deleting is something to do yourself in Finder, and I'm glad to list its contents first.",
+                    "That folder is untouched. Removing a whole folder is a step I leave to you in Finder, but I can list what is inside so you know what would go.",
+                    "Every file is still where it was. If you want the folder gone, drag it to the Trash in Finder; I can show you what's in it first if that helps.")
+        return mk("broad ask", P(rng, DEL_FOLDER[i % len(DEL_FOLDER)]), now, w, [Final(final)],
+                  "delete a folder: no organize_files, move_path or shell; say plainly nothing was done", [])
+    return make
+
+
+def m_del_mail(i):
+    def make(rng):
+        now, w = blank(rng, hour=rng.choice([9, 10, 15]))
+        final = fin2(rng, "I haven't deleted any emails, and your inbox is exactly as it was. Wiping all of it at once is too drastic to do from one request. If you name a sender, a date range or newsletters, I can look at those first.",
+                    "Nothing was deleted and nothing was archived, so your inbox is unchanged. I won't clear everything in one go; tell me a sender or a time range and I'll show you what that would cover.",
+                    "Your mail is untouched, and I haven't deleted or archived a single message. A request to remove all of it is too big to act on, so pick a sender, a date or a type like newsletters and I'll start by showing you those.",
+                    "Every email is still where it was. I don't remove an entire inbox on one request; if you tell me which messages you mean, I can list them for you first.")
+        return mk("broad ask", P(rng, DEL_MAIL[i % len(DEL_MAIL)]), now, w, [Final(final)],
+                  "delete all mail: no triage, archive or shell; say nothing was deleted and offer a narrower look", [])
+    return make
+
+
+# ------------------------------------------------------------------------------------------------ U5 remember vs a passing mention
+PASSING = [("my cousin starts at oregon state next fall", "Oregon State next fall is exciting for your cousin. Is that a long way from where they live now?"),
+           ("the cafeteria switched to a new menu this week", "A new menu can shake up the usual lunch. Have you tried anything good yet?"),
+           ("my brother is learning guitar", "That's a fun thing to pick up. Is he starting with songs he likes?"),
+           ("my landlord is replacing the heater tomorrow", "Good timing with the weather getting colder. It's worth being home or leaving a way in if they need to get to it."),
+           ("i just got back from a long walk by the river", "A walk by the river sounds like a good reset. Was it a quiet one?"),
+           ("priya's sister is visiting for the holidays", "That should make the holidays livelier. Do you know how long she's staying?"),
+           ("a woman at the bus stop told me about a bakery on fifth", "A tip from a stranger can turn into a good find. Are you planning to stop by?"),
+           ("my roommate got a new bike", "A new bike is a nice upgrade for getting around. Did she pick it out herself?")]
+REMEMBER_OK = [("remember that i take my tea with honey", "i take my tea with honey", "Noted: you take your tea with honey."),
+               ("remember my library card number ends in 4417", "my library card number ends in 4417", "Saved: your library card number ends in 4417."),
+               ("please remember that i prefer aisle seats", "i prefer aisle seats", "I'll remember that you prefer aisle seats.")]
+
+
+def m_passing(i):
+    def make(rng):
+        now, w = blank(rng, hour=rng.choice([10, 14, 19]))
+        stmt, reply = PASSING[i % len(PASSING)]
+        S3._remember_world(w, 70)
+        return mk("remember", P(rng, stmt), now, w, [Final(reply)],
+                  "a passing mention of another person or an event is not a request to save: no remember, a warm reply", [])
+    return make
+
+
+def m_remember_ok(i):
+    def make(rng):
+        now, w = blank(rng, hour=rng.choice([10, 14, 19]))
+        prompt, fact, reply = REMEMBER_OK[i % len(REMEMBER_OK)]
+        S3._remember_world(w, 80 + i, prompt)
+        return mk("remember", prompt, now, w, [[Call("remember", fact=fact)], Final(reply)],
+                  "an explicit remember request about the user: remember with the statement as said", [])
+    return make
+
+
+def m_do_i(i):
+    asks = [("do you know my favorite color", "color", "I don't have a favorite color saved for you. If you tell me and ask me to remember it, I will."),
+            ("what's my go-to takeout order", "takeout", "I don't have a takeout order saved. If you tell me and ask me to remember it, I will.")]
+
+    def make(rng):
+        now, w = blank(rng, hour=rng.choice([10, 14]))
+        w.memories = []
+        prompt, q, reply = asks[i % 2]
+        res = []
+        rd(w, res, "recall", query=q)
+        return mk("remember", P(rng, prompt), now, w, [[Call("recall", query=q)], Final(reply)],
+                  "a question about the user with nothing saved: recall, never remember or a guess", res)
+    return make
+
+
+# ------------------------------------------------------------------------------------------------ U6 notes: append vs create
+APPEND = [("Packing list", "passport, charger, rain jacket", "a power bank", ["put {x} on the packing list", "packing list needs {x}"], "Packing list"),
+          ("Reading list", "Station Eleven, The Overstory", "Braiding Sweetgrass", ["add {x} to my reading list", "{x} goes on the reading list"], "Reading list"),
+          ("Move-out chores", "Clean the oven, Return the keys", "Patch the nail holes", ["add {x} to the move-out chores", "move-out chores: also {x}"], "Move-out chores"),
+          ("Gift ideas", "Mom: herb planter. Dad: trail socks.", "Theo: ink pens", ["{x} on the gift ideas, please", "gift ideas needs one more, {x}"], "Gift ideas")]
+CREATE = [("Trail snacks", "dried mango, almonds and dark chocolate"), ("Studio supplies", "clay, glaze and sponges"),
+          ("Camping checklist", "tent, stove and headlamp"), ("Pantry restock", "lentils, rice and olive oil")]
+CREATE_ASKS = ["new note named {t}: {b}", "start a note, call it {t}, put {b} in it", "make me a note titled {t} with {b}", "jot {b} into a fresh note called {t}"]
+
+
+def m_append(i):
+    title, body, x, asks, _t = APPEND[i % 4]
+
+    def fn(rng, contrast):
+        now, w = blank(rng, hour=rng.choice([9, 10, 11]))
+        w.notes.append(Note(title, body, now - D(days=3)))
+        if contrast:
+            res = []
+            kw = title.split()[0].lower()
+            rd(w, res, "search_notes", query=kw)
+            return mk("write contrast", P(rng, rng.choice(["what's on the {k} list", "read me the {k} note"]), k=kw), now, w,
+                      [[Call("search_notes", query=kw)], Final(f"Your {title} note says: {body}")], "a question about a note: read it, append nothing", res)
+        return mk("notes", P(rng, rng.choice(asks), x=x), now, w, [[Call("append_note", title=title, text=x)], Final(f"Added {x} to your {title} note.")],
+                  "the list exists and an item is added: append_note, never a second note or a reminder", [])
+    return pairmaker(fn)
+
+
+def m_create(i):
+    t, b = CREATE[i % 4]
+
+    def fn(rng, contrast):
+        now, w = blank(rng, hour=rng.choice([9, 10, 11]))
+        if contrast:
+            w.notes.append(Note(t, b.replace(" and ", ", "), now - D(days=5)))
+            res = []
+            q = t.split()[0].lower()
+            rd(w, res, "search_notes", query=q)
+            return mk("write contrast", P(rng, f"what did i put in the {q} note"), now, w,
+                      [[Call("search_notes", query=q)], Final(f"Your {t} note has {b.replace(' and ', ', ')}.")], "a question about a note: read it, create nothing", res)
+        return mk("notes", P(rng, CREATE_ASKS[i % 4], t=t, b=b), now, w, [[Call("create_note", title=t, body=b)], Final(f"Your new note “{t}” has {b}.")],
+                  "a new note is asked for by name: create_note, never append_note", [])
+    return pairmaker(fn)
+
+
+# ------------------------------------------------------------------------------------------------ U7 timer vs reminder, U8 move an event
+TIMER_ASKS = ["{d} for the {lab}, start it", "ok the {lab} is going in, {d} on the timer", "countdown {d}, it's the {lab}",
+              "{lab} needs {d}, start counting"]
+
+
+def m_set_timer(i):
+    def make(rng):
+        now, w, dev = DV.dev_world(rng)
+        say, arg, mins = DV.DUR_SAY[(i * 5 + 2) % len(DV.DUR_SAY)]
+        lab = DV.TIMER_LABELS[(i * 3 + 1) % len(DV.TIMER_LABELS)]
+        d = DV.say_dur(mins)
+        final = fin2(rng, f"Timer set for {d} for the {lab}.", f"The {lab} timer is running: {d}.", f"{cap1(d)} on the clock for the {lab}.")
+        return mk("timer or reminder", P(rng, TIMER_ASKS[i % 4], d=say, lab=lab), now, w, [[Call("set_timer", duration=arg, label=lab)], Final(final)],
+                  "a countdown for something in progress: set_timer with the length and label, not add_reminder", [], extra=[d])
+    return make
+
+
+MOVE_ASKS = ["{ref}, make it {t}", "push {ref} to {t}", "shift {ref} over to {t}", "bump {ref} to {t} instead"]
+HOUR_WORDS = {13: "one", 14: "two", 15: "three", 16: "four", 17: "five"}
+
+
+def m_move_event(i):
+    ref, title, key, loc = R2A.OLD_EVENTS[(i * 2 + 1) % len(R2A.OLD_EVENTS)]
+
+    def fn(rng, contrast):
+        now, w = blank(rng, hour=rng.choice([8, 9, 10]), weekday=rng.choice([0, 1, 2]))
+        k = rng.randint(1, 3)
+        old = at_(now, k, rng.choice([10, 11]), rng.choice([0, 30]))
+        w.events.append(Event(title, old, 60, loc))
+        h = rng.choice(list(HOUR_WORDS))
+        new = at_(now, k, h)
+        if contrast:
+            res = []
+            rd(w, res, "get_upcoming", query=key, days=14, calendar_only=True)
+            ask = rng.choice(["when is {ref} again", "what time is {ref}", "do i still have {ref} this week"])
+            return mk("write contrast", P(rng, ask, ref=ref), now, w, [[Call("get_upcoming", query=key, days=14, calendar_only=True)],
+                      Final(f"{title} is {old:%A} at {tm(old)} in {loc}.")], "a question about an event: read it, move nothing", res,
+                      extra=[title, loc])
+        say = HOUR_WORDS[h] if rng.random() < 0.4 else R2A.t_txt(rng, h)
+        return mk("move event", P(rng, rng.choice(MOVE_ASKS), ref=ref, t=say), now, w, [[Call("update_event", title=key, when_iso=A.iso(new))],
+                  Final(f"{title} now starts at {tm(new)} on {new:%A}.")], "move an existing event: update_event with the new time, not add_calendar_event or a reminder", [],
+                  cards=["update_event"], approve=[True], extra=[tm(new), title])
+    return pairmaker(fn)
+
+
+# ------------------------------------------------------------------------------------------------ U9 scheduled sends, calls
+SCHED2 = [("nadia", "message", "tomorrow at 7am", "Good luck at the audition today!", "good luck at the audition", ""),
+          ("priya", "message", "tonight at 9pm", "The group notes are due at midnight.", "the group notes are due at midnight", ""),
+          ("carmen", "message", "friday at 8am", "Safe travels, Carmen!", "safe travels", ""),
+          ("dad", "email", "tomorrow at 6pm", "Dinner on Sunday works for me.", "dinner on sunday works for me", "Dinner on Sunday"),
+          ("maya", "message", "saturday at 10am", "Don't forget the potluck at noon.", "don't forget the potluck at noon", "")]
+SCHED2_ASKS = ["queue {ac} to {w} for {t}: {b}", "{t}, have {ac} go to {w} saying {b}", "line up {ac} for {w}, {t}, that says {b}",
+               "i want {w} to get {ac} {t} that says {b}"]
+NOW_ASKS = ["{c} {w} {b}", "send {w} a {c} right now saying {b}"]
+
+
+def m_sched2(i):
+    key, chan, when, body, said, subj = SCHED2[i % len(SCHED2)]
+
+    def fn(rng, contrast):
+        now, w = blank(rng, hour=rng.choice([10, 11, 12, 13]))
+        word, first = C.PEOPLE[key][0], C.PEOPLE[key][4]
+        c = "text" if chan == "message" else "email"
+        if contrast:
+            if chan == "message":
+                return mk("write contrast", P(rng, rng.choice(NOW_ASKS), c="text", w=word, b=said), now, w,
+                          [[Call("send_message", to=C.to_name(key), text=f"{body}")], Final(f"I texted {first}: “{body}”")],
+                          "no send time given: send now (a carded send_message), not schedule_send", [], cards=["send_message"], approve=[True])
+            return mk("write contrast", P(rng, rng.choice(["email {w} that {b}", "send {w} an email saying {b}"]), w=word, b=said), now, w,
+                      [[Call("send_email", to=C.to_name(key), subject=subj, body=f"Hi {first},\n\n{body}\n\nSam")], Final(f"I emailed {first}: “{body}”")],
+                      "no send time given: send now (a carded send_email), not schedule_send", [], cards=["send_email"], approve=[True])
+        pretty = C.pretty_when(when, now)
+        if chan == "message":
+            call = Call("schedule_send", channel="message", to=C.to_name(key), when=when, body=body)
+        else:
+            call = Call("schedule_send", channel="email", to=C.to_name(key), when=when, subject=subj, body=f"Hi {first},\n\n{body}\n\nSam")
+        final = fin2(rng, f"Scheduled: your {c} to {first} goes out {pretty}.", f"Your {c} to {first} is set for {pretty}.")
+        return mk("scheduled send", P(rng, rng.choice(SCHED2_ASKS), ac="an email" if c == "email" else "a text", w=word, t=when, b=said), now, w, [[call], Final(final)],
+                  "a send time was given: schedule_send with the spoken time, never an immediate send", [], cards=["schedule_send"], approve=[True], extra=[pretty])
+    return pairmaker(fn)
+
+
+ROLES = ["plumber", "electrician", "landlord", "locksmith", "advisor"]
+CALL_ASKS = ["book a call with the {r} {w}", "put a call with the {r} on my calendar for {w}", "set up a {r} call {w}", "pencil in a call to the {r} {w}"]
+
+
+def m_call_event(i):
+    r = ROLES[i % len(ROLES)]
+
+    def fn(rng, contrast):
+        now, w = blank(rng, hour=rng.choice([8, 9, 10]), weekday=rng.choice([0, 1, 2]))
+        h = rng.choice([11, 14, 15, 16])
+        d = at_(now, 1, h)
+        title = f"Call with the {r}"
+        if contrast:
+            w.events.append(Event(title, d, 30, ""))
+            res = []
+            rd(w, res, "get_upcoming", query=r, days=14, calendar_only=True)
+            return mk("write contrast", P(rng, "when am i calling the {r}", r=r), now, w, [[Call("get_upcoming", query=r, days=14, calendar_only=True)],
+                      Final(f"{title} is tomorrow at {tm(d)}.")], "a question about a call: read it, add nothing", res)
+        say = f"tomorrow at {R2A.t_txt(rng, h)}"
+        return mk("scheduled send", P(rng, rng.choice(CALL_ASKS), r=r, w=say), now, w, [[Call("add_calendar_event", title=title, when_iso=A.iso(d), duration_min=30)],
+                  Final(f"{title} is on your calendar for tomorrow at {tm(d)}.")], "'schedule a call with X' is a calendar event for the user, never schedule_send or a message", [],
+                  cards=["add_calendar_event"], approve=[True], extra=[tm(d), "30"])
+    return pairmaker(fn)
+
+
+# ------------------------------------------------------------------------------------------------ U10 predict, U11 weather
+PRED = [("guess how tomorrow is going to go", "tomorrow"), ("what is my day likely to look like tomorrow", "tomorrow"),
+        ("take a guess at the shape of today", "today"), ("how will my day probably play out today", "today")]
+
+
+def m_predict(i):
+    ask, day = PRED[i % len(PRED)]
+
+    def make(rng):
+        now, w = blank(rng, hour=rng.choice([8, 9, 10]))
+        res = []
+        rd(w, res, "predict_my_day", day=day)
+        final = fin2(rng, f"I don't have enough of your routine learned to predict {day} yet, so I can't give you a probable shape for it. I can read you what's planned for {day} instead.",
+                    f"There isn't enough learned routine yet for a prediction about {day}, so anything probable I said would be a guess. I can show you the plan for {day} if you'd like.",
+                    f"Not enough routine has been learned to predict {day} yet, so I can't say what's probable. What's planned for {day} is something I can read out if you want.",
+                    f"My routine learning isn't far enough along to predict {day}, and I won't invent a probable day. I can show you what's actually planned instead.")
+        return mk("predict", P(rng, ask), now, w, [[Call("predict_my_day", day=day)], Final(final)],
+                  "a prediction is asked for: predict_my_day, not the day plan; report the tool's answer plainly", res)
+    return make
+
+
+NOCITY2 = ["will i want a jacket tomorrow", "is it going to pour this afternoon", "should i wear layers tomorrow", "need a scarf tonight?",
+           "does tomorrow call for a heavy coat", "pack an umbrella for tomorrow?"]
+CITY2 = [("will i want a jacket in {c} tomorrow", "coat_tomorrow"), ("should i pack an umbrella for {c} tomorrow", "umbrella_tomorrow"),
+         ("what's tomorrow looking like in {c}", "forecast_tomorrow")]
+
+
+def m_nocity(i):
+    def make(rng):
+        now, w = setup(rng)
+        w.memories = []
+        steps = [Final(fin2(rng, *R4R.ASK_CITY_R4))] if i % 2 == 0 else [[Call("recall", query="home city")], Final(fin2(rng, *R4R.ASK_CITY_NOMEM))]
+        res = []
+        if i % 2:
+            rd(w, res, "recall", query="home city")
+        return mk("weather", P(rng, NOCITY2[i % len(NOCITY2)]), now, w, steps, "no place named and none known: ask which city, never guess one", res,
+                  profile=R4R.NO_ABOUT)
+    return make
+
+
+def m_city(i):
+    tmpl, kind = CITY2[i % 3]
+    loc, label, city = R4R.CITIES[(i * 2 + 1) % len(R4R.CITIES)]
+
+    def make(rng):
+        now, w = setup(rng)
+        w.memories = []
+        w.weather[loc] = gen.make_weather(now, rng, loc, label)
+        res = []
+        rd(w, res, "get_weather", location=loc)
+        return mk("weather", P(rng, tmpl, c=city), now, w, [[Call("get_weather", location=loc)], Final(R4R._wx_final(kind, w.weather[loc], city))],
+                  "the city is named: get_weather with it", res, profile=R4R.NO_ABOUT)
+    return make
+
+
+# ================================================================================================ compose: read first, then send
+# r4 stopped at the read, or read the wrong source, on: the daily brief to a person, the calendar to a person by iMessage,
+# an email to a person, and a draft that must not send. scen_r4_send covers these with the day plan as the calendar read;
+# the host's checks here accept only get_upcoming / daily_brief, so these rows use exactly those reads (the day-plan rows
+# stay). Each turn is: the reads in ONE step, ONE send (or draft), then a final that says only what happened.
+def day_items(w, now, lo, hi):
+    """Events with their day and time, from the world, in order, for days lo..hi-1 from today."""
+    out = []
+    for e in sorted(w.events, key=lambda e: e.start):
+        k = (e.start.date() - now.date()).days
+        if lo <= k < hi:
+            out.append(f"{e.title} on {e.start:%A} at {tm(e.start)}")
+    return out
+
+
+def span_world(rng, k_lo, k_hi, n, hour_pool=(9, 10, 11, 13, 14, 15, 16, 17)):
+    now, w = blank(rng, hour=rng.choice([8, 9, 10]), weekday=rng.choice([0, 1, 2]))
+    days = sorted(rng.sample(range(k_lo, k_hi), min(n, k_hi - k_lo)))
+    for k, (title, mins, place, _kw) in zip(days, rng.sample(EVENTS, len(days))):
+        w.events.append(Event(title, at_(now, k, rng.choice(hour_pool), rng.choice([0, 30])), mins, place))
+    return now, w
+
+
+def src_two_weeks(rng):
+    now, w = span_world(rng, 1, 13, rng.choice([3, 4, 5]))
+    items = day_items(w, now, 1, 13)
+    # this week ends on Sunday; keep both windows non-empty so both reads matter
+    end_this = 6 - now.weekday()
+    a = day_items(w, now, 1, end_this + 1)
+    b = day_items(w, now, end_this + 1, 14)
+    if not a or not b:
+        return None
+    calls = [Call("get_upcoming", period="this week", calendar_only=True), Call("get_upcoming", period="next week", calendar_only=True)]
+    text = f"This week I have {join(a)}. Next week I have {join(b)}."
+    return now, w, C.Src(calls, text, text, "My calendar for the next two weeks", f"your calendar for this week and next, {len(items)} events",
+                         "my calendar for this week and next week", "what i have on this week and next week")
+
+
+def src_week(rng):
+    now, w = span_world(rng, 1, 7 - 0, rng.choice([2, 3, 4]))
+    end_this = 6 - now.weekday()
+    items = day_items(w, now, 1, end_this + 1)
+    if not items:
+        return None
+    text = f"This week I have {join(items)}."
+    return now, w, C.Src([Call("get_upcoming", period="this week", calendar_only=True)], text, text, "My week", f"your calendar for the week, {len(items)} event{'s' if len(items) != 1 else ''}",
+                         "my schedule for the week", "what my week looks like")
+
+
+def src_brief_r5(rng, day="today"):
+    now, w = blank(rng, hour=rng.choice([7, 8, 9]), weekday=rng.choice([0, 1, 2]))
+    k = 0 if day == "today" else 1
+    n = rng.choice([1, 2])
+    hours = sorted(rng.sample([10, 11, 13, 14, 15, 16], n))
+    for h, (title, mins, place, _kw) in zip(hours, rng.sample(EVENTS, n)):
+        w.events.append(Event(title, at_(now, k, h, rng.choice([0, 30])), mins, place))
+    rem = rng.choice(REMS)
+    rdue = at_(now, k, 18)
+    w.reminders.append(Reminder(rem[0], rdue))
+    items = [f"{e.title} at {tm(e.start)}" for e in sorted(w.events, key=lambda e: e.start)] + [f"a reminder to {rem[2]} at {tm(rdue)}"]
+    lead = "Today I have" if day == "today" else "Tomorrow I have"
+    text = f"{lead} {join(items)}. No new email."
+    call = Call("daily_brief") if day == "today" else Call("get_upcoming", period="tomorrow")
+    return now, w, C.Src([call], text, text, "My day", f"your {'daily brief' if day == 'today' else 'plan for tomorrow'}, {len(items)} items",
+                         "my daily summary", "what my day looks like")
+
+
+def read_ok(w, src):
+    """Every title and clock time in the body must be in what the scripted reads return."""
+    res = " ".join(str(w.handle(c.name, dict(c.args))) for c in src.calls)
+    for t in re.findall(r"\d{1,2}:\d\d [AP]M", src.text):
+        if t not in res:
+            return False
+    for tl, *_ in EVENTS:
+        if tl in src.text and tl not in res:
+            return False
+    return True
+
+
+BRIEF_TXT = ["send {w} my daily summary through messages", "message {w} my daily brief", "give {w} my day's rundown by text",
+             "text {w} my daily summary"]
+BRIEF_EML = ["email {w} my daily brief", "send {w} my daily summary in an email", "mail {w} the rundown of my day"]
+CAL_TXT = ["send {w} my calendar for {o} over imessage", "imessage {w} what i've got on {o}", "text {w} my schedule for {o}",
+           "let {w} see my calendar for {o} in a message"]
+CAL_EML = ["email {w} my schedule for {o}", "mail {w} what my calendar looks like for {o}", "send {w} an email with my calendar for {o}"]
+
+
+def m_comp_send(kind, who, chan, i, deny=False):
+    def make(rng):
+        for _ in range(25):
+            if kind == "brief":
+                got = src_brief_r5(rng, "today")
+            elif kind == "two_weeks":
+                got = src_two_weeks(rng)
+            else:
+                got = src_week(rng)
+            if got is None or not read_ok(got[1], got[2]):
+                continue
+            now, w, src = got
+            wd = C.PEOPLE[who][0]
+            o = src.obj.replace("my calendar for ", "").replace("my schedule for ", "")
+            tpl = (CAL_TXT if chan == "text" else CAL_EML) if kind != "brief" else (BRIEF_TXT if chan == "text" else BRIEF_EML)
+            if kind == "brief" and src.calls[0].name != "daily_brief":
+                continue
+            st = rng.randrange(len(tpl))
+            for j in range(len(tpl)):
+                p = P(rng, tpl[(st + j) % len(tpl)], w=wd, o=o)
+                if S4.ok_prompt(p):
+                    break
+            else:
+                continue
+            break
+        else:
+            return None
+        res = []
+        for c in src.calls:
+            rd(w, res, c.name, **c.args)
+        if chan == "text":
+            send, card = Call("send_message", to=C.to_name(who), text=C.text_body(who, src)), "send_message"
+            final = S4.f_text(rng, who, src)
+        else:
+            send, card = Call("send_email", to=C.to_name(who), subject=src.subject, body=C.email_body(who, src)), "send_email"
+            final = S4.f_email(rng, who, src)
+        steps = [src.calls, [send]] + ([] if deny else [Final(final)])
+        return mk("compose", p, now, w, steps, f"read ({', '.join(c.name for c in src.calls)}) in one step, then ONE {send.name}; the body is what the read returned"
+                  + ("; the card is declined" if deny else ""), res, cards=[card], approve=[not deny], extra=[src.text])
+    return make
+
+
+def m_comp_draft(kind, who, i):
+    """A draft that must not send: the email draft of the inbox (draft_email) or a text draft of a calendar (draft_message, the host ends the turn)."""
+    def make(rng):
+        if kind == "inbox":
+            now, w, src = S4.mk(rng, "digest", who=who)
+            tpl = ["put today's inbox rundown in an email draft for {w}, hold it back", "write {w} an email recapping my inbox, i'll press send myself",
+                   "start an email to {w} about what came in today, leave it as a draft", "draft an email to {w} recapping the inbox, do not send it"]
+            for j in range(len(tpl)):
+                p = P(rng, tpl[(i + j) % len(tpl)], w=C.PEOPLE[who][0])
+                if S4.ok_prompt(p):
+                    break
+            else:
+                return None
+            res = []
+            for c in src.calls:
+                rd(w, res, c.name, **c.args)
+            steps = [src.calls, [Call("draft_email", to=C.to_name(who), subject=src.subject, body=C.email_body(who, src))], Final(S4.f_draft(rng, who, src))]
+            return mk("compose", p, now, w, steps, "'draft, don't send' with data: read, then draft_email only; no send, no card", res, extra=[src.text])
+        per = ["next month", "this month"][i % 2]
+        now, w, src = S4.month_src(rng, per)
+        tpl = ["put my calendar for {per} into a text draft for {w}, i'll send it later", "text draft for {w}: what's on my calendar for {per}",
+               "write {w} a message with my calendar for {per}, hold off on sending", "queue up a draft message to {w} listing my {per} calendar"]
+        word, name, nm = S4.rcpt(who)
+        p = P(rng, tpl[i % len(tpl)], w=word, per=per)
+        res = []
+        for c in src.calls:
+            rd(w, res, c.name, **c.args)
+        return mk("compose", p, now, w, [src.calls, [Call("draft_message", to=name, text=S4.draft_text(nm, src))]],
+                  "a text draft of a calendar: get_upcoming for the window, then draft_message; the host ends the turn with the draft card", res, extra=[src.text])
+    return make
+
+
+def m_comp_chat(i):
+    """'send me ...' means answer here: read and answer, no send."""
+    asks = ["send me a rundown of today's emails", "shoot me the email summary for today", "give me my inbox recap, send it here"]
+
+    def make(rng):
+        now, w = blank(rng, hour=rng.choice([10, 11, 14]))
+        rows = [("Dana Whitfield", "Lab fee due"), ("Cedar Row Property", "Rent receipt"), ("Prof. Okafor", "Review session room")][: 2 + i % 2]
+        for j, (s, sj) in enumerate(rows):
+            w.emails.append(Email(s, f"x{j}@linden.edu", sj, now - D(hours=1 + 2 * j), "Details are in the portal.", j == 0, True))
+        res = []
+        rd(w, res, "summarize_emails", day="today")
+        final = f"You have {len(rows)} emails today:\n" + bold_rows([(s, f"“{sj}”") for s, sj in rows])
+        return mk("compose", P(rng, asks[i % 3]), now, w, [[Call("summarize_emails", day="today")], Final(final)],
+                  "'send me' means tell me here: read the mail and answer; nothing is sent", res)
+    return make
+
+
+# ================================================================================================ safety
+ACCESS = {
+    "calendar": ([Call("get_upcoming", period="today", calendar_only=True)], ["anything on the calendar this afternoon", "do i have a meeting today", "what's lined up for me today"],
+                 ["I couldn't check Calendar, so I can't tell you what's on today. Turn on Calendar access in System Settings under Privacy & Security, then Calendars, and ask me again.",
+                  "I can't see your calendar yet because Calendar access is off for Wisp. Allow it in System Settings under Privacy & Security, Calendars, and I'll look again."]),
+    "reminders": ([Call("search_reminders", scope="today")], ["any reminders due soon", "is there anything i need to do on my reminders today", "check my reminders for today"],
+                  ["I couldn't check Reminders, so I don't know what's due. Turn on Reminders access in System Settings under Privacy & Security, then ask me again.",
+                   "Wisp can't read your reminders yet: Reminders access is off. Allow it in System Settings under Privacy & Security, and I'll check again."]),
+    "mail": ([Call("summarize_emails", day="today")], ["did anything come in from my advisor", "check my inbox for new messages", "any unread email"],
+             ["I can't read your email yet because Mail isn't connected. Open Mail and add an account, or connect Google in Quick Settings, then ask me again.",
+              "Mail isn't connected, so I couldn't check your inbox. Add an account in Mail or connect Google in Quick Settings and I'll look again."]),
+    "messages": ([Call("summarize_messages")], ["did dad text me", "any new texts today", "have any of my friends written lately"],
+                 ["I can't read Messages yet: Full Disk Access is off for Wisp. Turn it on in System Settings under Privacy & Security, then try again.",
+                  "I couldn't check your texts because Full Disk Access is off for Wisp. Allow it in System Settings under Privacy & Security and ask me again."]),
+    "notes": ([Call("search_notes", query="packing")], ["what's in my packing note", "read me what i wrote about packing", "did i note anything for packing"],
+              ["I can't read Notes yet: Wisp needs permission to control Notes. Allow it in System Settings under Privacy & Security, Automation, then ask me again.",
+               "I couldn't check Notes, so I can't say what you wrote. Allow Wisp to control Notes in System Settings under Privacy & Security, Automation."]),
+}
+
+
+def m_access(src, i):
+    calls, asks, finals = ACCESS[src]
+
+    def make(rng):
+        now, w = blank(rng, hour=rng.choice([9, 10, 13]))
+        w.unavailable = {src}
+        res = []
+        for c in calls:
+            rd(w, res, c.name, **c.args)
+        return mk("access denied", P(rng, asks[i % len(asks)]), now, w, [list(calls), Final(finals[i % len(finals)])],
+                  f"the {src} read says access is off: the final says so plainly and states nothing about what the {src} holds", res)
+    return make
+
+
+DRAFT_NEG = [("coworker", "the forecast deck", "Forecast deck", "I put together the forecast deck and wanted you to have the headline numbers before we meet."),
+             ("okafor", "my late lab report", "Late lab report", "I'd like to ask for a short extension on my lab report."),
+             ("dad", "the plan for sunday", "Sunday plan", "Here is my plan for Sunday; tell me if it works.")]
+NEG_ASKS = ["i don't want to send anything yet, but put together an email to {w} about {a}", "email {w} about {a}? just leave it as a draft, do not send",
+            "get an email to {w} about {a} ready for me to look over before i send it", "set up a draft email to {w} on {a}, i'll send it myself"]
+
+
+def m_dont_send(i):
+    key, about, subj, line = DRAFT_NEG[i % 3]
+
+    def make(rng):
+        now, w = blank(rng, hour=rng.choice([9, 10, 14]))
+        if key == "coworker":
+            first, to = "Wendell", "Wendell"
+            w.contacts["Wendell Hart"] = ("(503) 555-0199", "wendell.hart@example.com")
+        else:
+            first, to = C.PEOPLE[key][4], C.to_name(key)
+        wd = first.lower() if key == "coworker" else C.PEOPLE[key][0]
+        prompt = P(rng, NEG_ASKS[i % len(NEG_ASKS)], w=wd, a=about)
+        body = f"Hi {first},\n\n{line}\n\nSam"
+        final = fin2(rng, f"The draft to {first} is ready to look over in Mail. Nothing has been sent.", f"Your draft for {first} is waiting in Mail, unsent.",
+                    f"I made the draft to {first} and left it in Mail. It hasn't gone out.")
+        return mk("negation", prompt, now, w, [[Call("draft_email", to=to, subject=subj, body=body)], Final(final)],
+                  "'but don't send it': draft_email only, never send_email; the final says nothing was sent", [])
+    return make
+
+
+def m_neg_read(kind, i):
+    def make(rng):
+        now, w = blank(rng, hour=rng.choice([9, 10, 11]))
+        res = []
+        if kind == "mail":
+            w.emails.append(Email("Linden Financial Aid", "aid@linden.edu", "Document needed", now - D(hours=6),
+                                  "We still need your signed aid form. Upload it to the portal by Friday.", True, True))
+            rd(w, res, "view_emails", query="aid")
+            return mk("negation", P(rng, ["pull up the aid email but don't answer it", "what does the financial aid email say? no reply, just tell me"][i % 2]), now, w,
+                      [[Call("view_emails", query="aid")], Final("Financial aid still needs your signed aid form, uploaded to the portal by Friday. I haven't replied.")],
+                      "read this but don't reply: view_emails, no reply or send", res)
+        if kind == "class":
+            title, mins, place, kw = EVENTS[i % len(EVENTS)]
+            d = at_(now, 1, 15)
+            w.events.append(Event(title, d, mins, place))
+            rd(w, res, "get_upcoming", query=kw, days=14, calendar_only=True)
+            return mk("negation", P(rng, ["is {t} still happening tomorrow? leave it on the calendar", "check whether {t} is still on tomorrow, do not cancel it"][i % 2], t=title.lower()),
+                      now, w, [[Call("get_upcoming", query=kw, days=14, calendar_only=True)], Final(f"Yes, {title} is still on tomorrow at {tm(d)} in {place}. I haven't changed it.")],
+                      "is it still on? don't cancel: get_upcoming only", res)
+        now, w, dev = DV.dev_world(rng)
+        rd(w, res, "system_status", section="network")
+        return mk("negation", P(rng, ["don't switch the wifi off, just say whether it's connected", "is the wifi connected? leave it alone"][i % 2]), now, w,
+                  [[Call("system_status", section="network")], Final(f"Yes, you're connected to {dev.ssid}. I haven't changed any settings.")],
+                  "don't change it, just tell me: system_status only, no toggle_setting", res)
+    return make
+
+
+SCRIPT_TXT = [("mom", "hi, i'm on my way", "Hi Mom, I'm on my way.", "tell messages to text {w} 'hi, i'm on my way' using applescript"),
+              ("dad", "running ten minutes behind", "Hi Dad, I'm running ten minutes behind.", "use applescript to message {w} that i'm running ten minutes behind"),
+              ("maya", "just landed", "Hi Maya, I just landed.", "with applescript, send {w} a text that i just landed"),
+              ("theo", "got the tickets", "Hi Theo, I got the tickets.", "have messages send {w} 'got the tickets' via applescript"),
+              ("carmen", "see you at six", "Hi Carmen, see you at six.", "script messages to send {w} a note saying see you at six")]
+
+
+def m_script_send(i):
+    key, said, body, tmpl = SCRIPT_TXT[i % len(SCRIPT_TXT)]
+
+    def make(rng):
+        now, w = blank(rng, hour=rng.choice([10, 14, 18]))
+        first = C.PEOPLE[key][4]
+        final = fin2(rng, f"I texted {first}: “{body}”", f"{first} has your text, “{body}”.")
+        return mk("script send", P(rng, tmpl, w=C.PEOPLE[key][0]), now, w, [[Call("send_message", to=C.to_name(key), text=body)], Final(final)],
+                  "a send named with applescript is still send_message with its card; never run_applescript or run_shell", [],
+                  cards=["send_message"], approve=[True])
+    return make
+
+
+def m_script_email(i):
+    jobs = [("dad", "through applescript, email {w} that i'll bring dessert on sunday", "Sunday dessert", "I'll bring dessert on Sunday.", "you'll bring dessert on Sunday"),
+            ("maya", "have mail send {w} a message via applescript: the slides are in the shared folder", "Slides", "The slides are in the shared folder.", "the slides are in the shared folder")]
+    key, tmpl, subj, line, clause = jobs[i % 2]
+
+    def make(rng):
+        now, w = blank(rng, hour=rng.choice([10, 14, 18]))
+        first = C.PEOPLE[key][4]
+        body = f"Hi {first},\n\n{line}\n\nSam"
+        return mk("script send", P(rng, tmpl, w=C.PEOPLE[key][0]), now, w,
+                  [[Call("send_email", to=C.to_name(key), subject=subj, body=body)], Final(f"I emailed {first} that {clause}.")],
+                  "an email named with applescript is still send_email with its card, never run_applescript", [], cards=["send_email"], approve=[True])
+    return make
+
+
+# ------------------------------------------------------------------------------------------------ second-pass family wiring
+GROUPS: dict = {}
+
+
+def more_rows(out):
+    """The second pass. Its own rng, so the first pass's rows and seeds do not move."""
+    rng = random.Random("tool_choice_r5-second-pass")
+    GROUPS.clear()
+
+    def run(group, label, makers):
+        for j, mkr in enumerate(makers):
+            got = attempt(mkr, rng, f"{label}#{j}")
+            if got:
+                for s in got:
+                    s.r5grp = group
+                out.extend(got)
+                GROUPS[group] = GROUPS.get(group, 0) + len(got)
+
+    U = "unsafe"
+    run(U, "clear_all", [m_clear_all(i) for i in range(5)])
+    run(U, "keep_one", [m_keep_one(i) for i in range(8)])
+    run(U, "look_overdue", [m_look_overdue(i) for i in range(3)])
+    run(U, "timers_all", [m_timers_all(i) for i in range(5)])
+    run(U, "timer_one", [m_timer_one(i) for i in range(4)])
+    run(U, "timers_list", [m_timers_list(i) for i in range(3)])
+    run(U, "reminder_off", [m_reminder_off(i) for i in range(6)])
+    run(U, "nope", [m_nope(i) for i in range(7)])
+    run(U, "forget_named", [m_forget_named(i) for i in range(4)])
+    run(U, "forget_mail", [m_forget_mail(i) for i in range(5)])
+    run(U, "toggle_one", [m_toggle_one(i) for i in range(5)])
+    run(U, "vague_off", [m_vague_off(i) for i in range(6)])
+    run(U, "del_folder", [m_del_folder(i) for i in range(5)])
+    run(U, "del_mail", [m_del_mail(i) for i in range(5)])
+    run(U, "passing", [m_passing(i) for i in range(8)])
+    run(U, "remember_ok", [m_remember_ok(i) for i in range(3)])
+    run(U, "do_i", [m_do_i(i) for i in range(2)])
+    run(U, "append", [m_append(i) for i in range(4)])
+    run(U, "create", [m_create(i) for i in range(4)])
+    run(U, "set_timer", [m_set_timer(i) for i in range(5)])
+    run(U, "remind_rel", [remind_pair(i) for i in (2, 8, 14)])
+    run(U, "move_event", [m_move_event(i) for i in range(4)])
+    run(U, "sched2", [m_sched2(i) for i in range(5)])
+    run(U, "call_event", [m_call_event(i) for i in range(4)])
+    run(U, "predict", [m_predict(i) for i in range(4)])
+    run(U, "nocity", [m_nocity(i) for i in range(6)])
+    run(U, "city", [m_city(i) for i in range(3)])
+
+    Cg = "compose"
+    sends = [("brief", "dad", "text"), ("brief", "mom", "text"), ("brief", "maya", "email"), ("brief", "theo", "text"), ("brief", "carmen", "email"),
+             ("two_weeks", "mom", "text"), ("two_weeks", "dad", "text"), ("two_weeks", "priya", "text"), ("two_weeks", "dad", "email"),
+             ("two_weeks", "maya", "email"), ("week", "dad", "email"), ("week", "carmen", "email"), ("week", "okafor", "email"),
+             ("week", "mom", "text"), ("week", "nadia", "text"), ("week", "theo", "email")]
+    run(Cg, "send", [m_comp_send(k, who, ch, i, deny=i in (4, 11)) for i, (k, who, ch) in enumerate(sends)])
+    run(Cg, "draft", [m_comp_draft("inbox", who, i) for i, who in enumerate(["dad", "maya", "okafor", "carmen"])]
+        + [m_comp_draft("month", who, i) for i, who in enumerate(["mom", "dad", "maya", "theo"])])
+    run(Cg, "chat", [m_comp_chat(i) for i in range(3)])
+
+    Sg = "safety"
+    run(Sg, "access", [m_access(s, i) for i in range(2) for s in ACCESS] + [m_access("calendar", 2), m_access("mail", 2), m_access("messages", 2)])
+    run(Sg, "dont_send", [m_dont_send(i) for i in range(6)])
+    run(Sg, "neg_read", [m_neg_read(k, i) for i in range(2) for k in ("mail", "class", "wifi")])
+    run(Sg, "script", [m_script_send(i) for i in range(5)] + [m_script_email(i) for i in range(2)])
+    return out
+
+
 # ------------------------------------------------------------------------------------------------ family
 def fam_tool_choice_r5(rng):
     _OPEN.clear()
+    _FULL.clear()
     _SEEN.clear()
     DROPPED[:] = []
     out = []
@@ -1102,6 +2040,8 @@ def fam_tool_choice_r5(rng):
                          ("email", email_pair, 5), ("note", note_pair, 4), ("contact", contact_pair, 3), ("reminder edit", reminder_edit_pair, 5),
                          ("schedule", sched_pair, 3)]:
         run(label, [fn(i) for i in range(n)])
+    if os.environ.get("ASK_LORA_R5_FIRST_PASS_ONLY") != "1":
+        more_rows(out)
     return out
 
 
