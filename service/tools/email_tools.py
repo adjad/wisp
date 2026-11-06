@@ -231,8 +231,8 @@ _EXTERNAL_MAX_AGE = 300.0
 # HISTORY_EVERY). Bodies are fetched every 15 minutes, so holding them to the
 # 5-minute limit above swapped every thread between the Gmail copy and the Mail.app
 # copy twice each interval, with no new mail, and each swap read as changed mail
-# to everything downstream. Failed fetches don't wait for this: they set the
-# part's error and fall back at once.
+# to everything downstream. An expired sign-in doesn't wait for this: it falls
+# back at once. Any other failed fetch keeps its snapshot (_provider_selected).
 _EXTERNAL_PART_MAX_AGE = {"headers": 600.0, "raw": 1800.0, "history": 3600.0}
 _native_headers_at = 0.0
 _native_source = ""
@@ -416,21 +416,21 @@ def _provider_selected(address: str, item: dict, part: str) -> bool:
     if (item.get(part + "_verified") and not item.get(part + "_error")
             and 0 <= time.time() - stamp <= _EXTERNAL_PART_MAX_AGE.get(part, _EXTERNAL_MAX_AGE)):
         return True
-    # A successful later native read is a better fallback than a failed provider
-    # snapshot. Its server freshness is still disclosed separately.
+    # A successful later native read is a better fallback than a snapshot that has
+    # only aged, or whose sign-in expired, which nothing short of a reconnect ends.
+    # Any other Google error keeps the snapshot, with its stale warning: it clears
+    # by itself, and the snapshot may hold mail that Mail doesn't have.
     native_stamp = _source_receipt({"raw": _native_raw_at, "history": _native_history_at}.get(part, _native_headers_at))
     native = {"raw": _swift_raw, "history": _swift_history}.get(part, _swift_headers)
     records = native.split(_RAW_RS if part == "raw" else "\n")
     covered = [record for record in records if record.strip()
                and _covered_source(*_source_identity(record, raw=part == "raw"), address, item)]
-    if covered and _native_source == "mail_app" and native_stamp > stamp:
+    expired = item.get("auth_expired")
+    if covered and _native_source == "mail_app" and native_stamp > stamp and (expired or not item.get(part + "_error")):
         return False
     # Mail closed, or not yet scriptable: when the index was read says nothing,
-    # because it only moves while Mail runs. So the mail itself decides, but only
-    # for a sign-in that has expired, which nothing short of a reconnect ends. Any
-    # other Google error clears by itself, and the snapshot may hold mail that Mail
-    # doesn't have, so it stays, with its stale warning.
-    if covered and _native_source == "local_index" and item.get("auth_expired"):
+    # because it only moves while Mail runs. So the mail itself decides.
+    if covered and _native_source == "local_index" and expired:
         separator = _RAW_RS if part == "raw" else "\n"
         return _newest_mail(covered, part) <= _newest_mail((item.get(part) or "").split(separator), part)
     return True

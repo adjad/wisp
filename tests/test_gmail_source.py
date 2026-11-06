@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import dataclasses
+import itertools
 import json
 import os
 import subprocess
@@ -252,8 +253,8 @@ class GmailSource(unittest.TestCase):
                       "Google refresh timed out; showing the last available cache",
                       "Google token refresh failed", "messages: HTTP 500",
                       "Gmail read access is missing; reconnect this account in Settings ▸ Google"):
-            for part in ("headers", "history", "raw"):
-                with self.subTest(error=error, part=part):
+            for part, source in itertools.product(("headers", "history", "raw"), ("local_index", "mail_app")):
+                with self.subTest(error=error, part=part, source=source):
                     if part == "raw":
                         self.publish(raw=G.raw_record(msg("old", "Last Gmail copy", stamp=now - 7200), ME))
                         E.cache_raw_emails(G.raw_record(msg("new", "Newer in Mail", stamp=now - 3600), ME))
@@ -264,7 +265,7 @@ class GmailSource(unittest.TestCase):
                         self.publish(headers=header(subject="Last Gmail copy", stamp=now - 7200))
                         E.cache_emails(header(subject="Newer in Mail", stamp=now - 3600))
                     E.external_email_error(ME, part, error)
-                    E.set_email_availability(True, read_source="local_index")
+                    E.set_email_availability(True, read_source=source)
                     self.assertEqual(self.composed_subjects(part), ["Last Gmail copy"])
                     warning = E.email_freshness_warning(part=part)
                     self.assertIn("stale or unverified", warning)
@@ -272,6 +273,11 @@ class GmailSource(unittest.TestCase):
                     self.assertNotIn("opening Mail", warning)
 
     def test_expired_sign_in_switches_to_mail_for_every_part(self):
+        for source in ("local_index", "mail_app"):
+            with self.subTest(source=source):
+                self.check_expired_sign_in_switches(source)
+
+    def check_expired_sign_in_switches(self, source):
         now = time.time()
         self.publish(headers=header(subject="Last Gmail copy", stamp=now - 7200),
                      history=header(subject="Last Gmail copy", stamp=now - 7200),
@@ -281,7 +287,7 @@ class GmailSource(unittest.TestCase):
         E.cache_emails(header(subject="Newer in Mail", stamp=now - 3600))
         E.cache_history_headers(header(subject="Newer in Mail", stamp=now - 3600))
         E.cache_raw_emails(G.raw_record(msg("new", "Newer in Mail", stamp=now - 3600), ME))
-        E.set_email_availability(True, read_source="local_index")
+        E.set_email_availability(True, read_source=source)
         for part in ("headers", "history", "raw"):
             with self.subTest(part=part):
                 self.assertEqual(self.composed_subjects(part), ["Newer in Mail"])
@@ -1056,7 +1062,7 @@ print('fresh process retained original native fallback')
         self.assertNotIn("Private Google message", output)
         self.assertNotIn("Settings ▸ Google", output)
 
-    def test_failed_google_refresh_attempts_new_native_fallback_before_old_provider_cache(self):
+    def test_failed_google_refresh_keeps_provider_cache_over_a_new_native_read(self):
         self.accounts[ME]["mail_account_id"] = "native-A"
         E.configure_external_accounts(self.accounts)
         E.cache_emails(header("Personal", "Old native copy", native_id="native-A"))
@@ -1070,8 +1076,8 @@ print('fresh process retained original native fallback')
         with patch.object(G, "_sync_headers", AsyncMock(side_effect=G.GmailError("Google offline"))), \
              patch("service.assistant.hub.hub.publish", native):
             output = asyncio.run(E.summarize_emails(account=ME))
-        self.assertIn("New native fallback", output)
-        self.assertNotIn("Old provider copy", output)
+        self.assertIn("Old provider copy", output)
+        self.assertNotIn("New native fallback", output)
         self.assertIn("Google offline", output)
 
     def test_no_gmail_failed_empty_or_marker_only_cache_cannot_claim_empty_inbox(self):
@@ -1351,14 +1357,25 @@ print('fresh process retained original native fallback')
         asyncio.run(run())
         self.assertIn("New header during history", E._headers)
 
-    def test_newer_native_success_is_not_hidden_by_failed_provider(self):
+    def test_newer_native_read_replaces_a_provider_only_once_its_sign_in_expired(self):
         self.publish(headers=header(subject="Old provider copy"))
         E.external_email_error(ME, "headers", "offline")
         E.cache_emails(header(subject="Newer native email"))
         E.set_email_availability(True, read_source="mail_app")
+        self.assertIn("Old provider copy", E._headers)
+        self.assertNotIn("Newer native email", E._headers)
+        self.assertIn("offline", E.email_freshness_warning())
+        self.expire_sign_in()
         self.assertIn("Newer native email", E._headers)
         self.assertNotIn("Old provider copy", E._headers)
-        self.assertIn("offline", E.email_freshness_warning())
+
+    def test_a_read_through_mail_still_replaces_a_snapshot_that_only_aged(self):
+        self.publish(headers=header(subject="Aged provider copy"))
+        E._external_accounts[ME]["headers_at"] = time.time() - 3600     # no error, just old
+        E.cache_emails(header(subject="Newer native email"))
+        E.set_email_availability(True, read_source="mail_app")
+        self.assertIn("Newer native email", E._headers)
+        self.assertNotIn("Aged provider copy", E._headers)
 
     def test_reconnect_during_fetch_rejects_previous_token_generation(self):
         async def run():
@@ -1486,13 +1503,16 @@ print('fresh process retained original native fallback')
                 self.assertEqual(len(rows), 1)
                 self.assertNotEqual(rows[0]["account_id"], "native-B")
 
-    def test_failure_immediately_selects_newer_native_after_provider_success(self):
+    def test_only_an_expired_sign_in_immediately_selects_newer_native(self):
         self.publish(headers=header(subject="Provider old"))
         E.cache_emails(header(subject="Native new"))
         E.set_email_availability(True, read_source="mail_app")
         self.assertIn("Provider old", E._headers)
         original = E._external_accounts[ME]["headers_at"]
         E.external_email_error(ME, "headers", "offline after native read")
+        self.assertIn("Provider old", E._headers)
+        self.assertNotIn("Native new", E._headers)
+        self.expire_sign_in()
         self.assertIn("Native new", E._headers)
         self.assertNotIn("Provider old", E._headers)
         self.assertEqual(E._external_accounts[ME]["headers_at"], original)
@@ -1593,6 +1613,10 @@ print('fresh process retained original native fallback')
         E.cache_emails(header(ME, "New native fallback", native_id="native-A"))
         E.set_email_availability(True, read_source="mail_app")
         E.external_email_error(ME, "headers", "offline")
+        for selector in (ME, "native-A"):
+            rows = E._filter_account_records(E._parse_header_records(E._headers), selector)
+            self.assertEqual(rows[0]["subject"], "Provider by exact address")
+        self.expire_sign_in()
         for selector in (ME, "native-A"):
             rows = E._filter_account_records(E._parse_header_records(E._headers), selector)
             self.assertEqual(rows[0]["subject"], "New native fallback")
