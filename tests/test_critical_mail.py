@@ -303,7 +303,7 @@ def test_open_in_mail_hands_back_the_emails_own_link():
 
     mail_link = "message://%3Cc1%40x%3E"
     assert fire(mail_link) == {"ok": True, "status": "succeeded", "open_url": mail_link, "result": "open_in_mail"}
-    gmail_link = "https://mail.google.com/mail/u/me%40gmail.com/#search/rfc822msgid%3Ac1%40x"
+    gmail_link = "https://mail.google.com/mail/u/0/?authuser=me@gmail.com#search/rfc822msgid%3Ac1%40x"
     assert fire(gmail_link)["result"] == "open_in_gmail" and fire(gmail_link)["open_url"] == gmail_link
     # Only the shapes Wisp builds itself: never a link that came from somewhere else.
     for other in ("https://evil.example/x", "file:///etc/passwd", "", None):

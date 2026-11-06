@@ -265,6 +265,12 @@ def test_policy_deny_refuses(world, monkeypatch):
     assert world.bridge.sends() == []
 
 
+def test_gmail_link_keeps_the_address_and_message_id_intact():
+    url = api.open_url({"account": "me+school@gmail.com", "message_id": "<a+b/c@mail.example>"}, gmail=True)
+    assert url == ("https://mail.google.com/mail/u/0/?authuser=me%2Bschool@gmail.com"
+                   "#search/rfc822msgid%3Aa%2Bb%2Fc%40mail.example")
+
+
 def test_read_only_gmail_account_is_send_unavailable(world, monkeypatch):
     row = {**ROW, "account": "judge@gmail.com", "account_id": "judge@gmail.com"}
     monkeypatch.setattr(api, "_mail_rows", lambda: [row])
@@ -272,7 +278,8 @@ def test_read_only_gmail_account_is_send_unavailable(world, monkeypatch):
     d = draft(world, {"message_id": MID, "account": "judge@gmail.com", "account_id": "judge@gmail.com"})
     assert d["ok"] and d["draft"]
     assert d["can_send"] is False and d["send_unavailable"] is True and d["envelope"] is None
-    assert d["open_url"].startswith("https://mail.google.com/mail/u/judge@gmail.com/")
+    # An address in the path is Gmail's "Temporary Error (404)"; only authuser picks the account.
+    assert d["open_url"].startswith("https://mail.google.com/mail/u/0/?authuser=judge@gmail.com#search/")
     assert "rfc822msgid" in d["open_url"] and d["open_label"] == "Open in Gmail"
     assert d["to"] == ["reply@dan.example"]
     assert world.bridge.calls == []          # Mail is never asked about a Gmail-only message
