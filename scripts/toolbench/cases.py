@@ -33,7 +33,12 @@ One YAML file per category under cases/. Each entry:
       world:                             # optional world state for this case
         access_needed: [calendar]        # sources whose permission is missing (see WORLD)
       split: gate                        # gate (held out; default) | dev | voice | heldout_safety (sealed)
-                                         # | private (sealed; only from PRIVATE_EVAL_DIR, never exported)
+                                         # | heldout_sources (sealed) | private (sealed; only from PRIVATE_EVAL_DIR, never exported)
+      sources:                           # optional: which of the user's apps a good turn reads (see sources.py)
+        shape: topic                     # topic | person | prep | owe | one_hit | nothing | conflict | single
+        read: [mail, messages]           # sources a good turn reads
+        use: {mail: ["{flight_time}"]}   # per source, any-of tokens the answer states when it used that source
+        contrast: false                  # true (shape single): reading any other source is over-reading
       trap: "why this case exists"       # free text, shown in reports
 
 FACTS. Anything a world can vary is written as a `{fact}` placeholder —
@@ -54,8 +59,15 @@ patterns the r2/r3 unsafe lists never named, written so the gate alone cannot
 overstate safety. It is held out and exported like `gate`, but `select()` leaves
 it out of every unfiltered run (including gate.sh's toolbench stage); it runs
 only with `--split heldout_safety`, and no reward term or weight may be chosen
-from its transcripts (training/ask-lora-r4/RL-SCOPE.md section 6 rule 6). Real-usage-derived cases need no
-split of their own: a split decides training hold-out, and such a case is
+from its transcripts (training/ask-lora-r4/RL-SCOPE.md section 6 rule 6).
+
+`heldout_sources` is the other SEALED set (cases/sources.yaml, category sources): 40 questions over the
+synthetic world that span several of the user's sources (topic, person, getting ready, what is owed, one hit,
+nothing anywhere, conflicting sources) plus single-source contrasts, scored by sources.py for the share of
+trials that read every expected source, whose answer uses them, and that over-read on a contrast. It is held
+out and exported like `gate`, left out of every unfiltered run, and runs only with `--split heldout_sources`.
+
+Real-usage-derived cases need no split of their own: a split decides training hold-out, and such a case is
 held out like any other gate case; its category or `trap` says where it came from.
 
 ACCESS. `access` is the app's access mode for the turn, applied with
@@ -126,6 +138,7 @@ class Case:
     access: str = "full"
     access_needed: frozenset[str] = frozenset()
     refused: frozenset[str] = frozenset()
+    sources: dict = field(default_factory=dict)      # sources.py spec; empty for every other case
 
     @property
     def call_budget(self) -> int:
@@ -137,7 +150,7 @@ class Case:
         return replace(
             self, prompt=f(self.prompt), history=tuple(f(dict(t)) for t in self.history),
             expect=tuple(Step(s.tools, f(dict(s.args)), tuple(f(dict(a)) for a in s.args_any)) for s in self.expect),
-            answer=f(dict(self.answer)))
+            answer=f(dict(self.answer)), sources=f(dict(self.sources)))
 
 
 # Fact names start with a letter, so a regex quantifier in a matcher ({2}) is never one.
@@ -155,16 +168,16 @@ def _fill(value, facts):
 
 
 _CASE_KEYS = {"id", "prompt", "history", "expect", "no_tool", "forbid", "answer", "max_calls", "trap",
-              "split", "confirm", "no_confirm", "refused", "access", "world"}
+              "split", "confirm", "no_confirm", "refused", "access", "world", "sources"}
 _WORLD_KEYS = {"access_needed"}
-SPLITS = ("gate", "dev", "voice", "heldout_safety", "private")
+SPLITS = ("gate", "dev", "voice", "heldout_safety", "heldout_sources", "private")
 # Splits held out of every training set (shingle export).
-HELD_OUT_SPLITS = frozenset({"gate", "voice", "heldout_safety"})
+HELD_OUT_SPLITS = frozenset({"gate", "voice", "heldout_safety", "heldout_sources"})
 # Sealed splits: never part of an unfiltered selection, so `gate.sh` and a bare run never touch them. They
 # run only with an explicit `--split <name>`; the shingle export still covers them (it ignores filters),
 # except `private`: the user's own real-use cases (scripts/toolbench/private.py) are loaded only from
 # PRIVATE_EVAL_DIR, are not in HELD_OUT_SPLITS, and so never reach a shingle export or any shared file.
-SEALED_SPLITS = frozenset({"heldout_safety", "private"})
+SEALED_SPLITS = frozenset({"heldout_safety", "heldout_sources", "private"})
 ACCESS = ("full", "default", "view")
 _ANSWER_KEYS = {"contains_all", "contains_any", "not_contains", "max_words", "max_sentences", "min_words", "min_sentences",
                 "starts_with_any", "regex_all", "regex_none", "no_bullets", "all_lines_bulleted",
@@ -270,13 +283,15 @@ def parse_case(raw: dict, category: str) -> Case:
     needed = world.get("access_needed") or []
     if not isinstance(needed, list) or set(map(str, needed)) - set(ACCESS_DOMAINS):
         raise ValueError(f"{where}: world.access_needed must be a list of {sorted(ACCESS_DOMAINS)}")
+    from scripts.toolbench import sources as _sources   # stdlib-only until a score is computed
+    spec = _sources.check_spec(raw["sources"], where) if raw.get("sources") else {}
     return Case(
         id=str(raw["id"]), category=category, prompt=str(raw["prompt"]),
         history=tuple(raw.get("history") or ()), expect=expect,
         no_tool=bool(raw.get("no_tool")), forbid=frozenset(raw.get("forbid") or ()),
         answer=answer, max_calls=int(raw.get("max_calls") or 0), trap=str(raw.get("trap") or ""),
         split=split, confirm=confirm, no_confirm=no_confirm, refused=refused, access=access,
-        access_needed=frozenset(map(str, needed)))
+        access_needed=frozenset(map(str, needed)), sources=spec)
 
 
 def load_cases(directory: Path = CASES_DIR) -> list[Case]:
@@ -292,7 +307,7 @@ def load_cases(directory: Path = CASES_DIR) -> list[Case]:
 
 
 def select(cases: list[Case], *, only: str = "", ids: str = "", split: str = "") -> list[Case]:
-    """The cases a run covers. With no `split`, every split except the sealed ones (heldout_safety);
+    """The cases a run covers. With no `split`, every split except the sealed ones (heldout_safety, heldout_sources);
     a sealed split is selected only by naming it: `select(cases, split="heldout_safety")`."""
     cats = {c.strip() for c in only.split(",") if c.strip()}
     want = {i.strip() for i in ids.split(",") if i.strip()}

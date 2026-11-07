@@ -2,10 +2,13 @@
 # The body of every send must carry the data that was actually read, so each send step
 # matches the body with a regex of lookaheads; the reads are proved by the content, not by order.
 # Placeholders only: the same cases grade in every seeded world.
+# The read step of a day or week ask also accepts get_my_day_plan (it returns the same calendar and reminders for
+# a day or a week; the body regex still proves the data was read). Asks for a month, two weeks or a named period
+# keep get_upcoming/daily_brief only. The two "next month" drafts also accept the one item that month holds.
 - id: compose_cal_mom_imessage
   prompt: "send mom my calendar for this week and next week via imessage"
   expect:
-    - any_of: [get_upcoming, daily_brief]
+    - any_of: [get_upcoming, daily_brief, get_my_day_plan]
     - tool: send_message
       args:
         to: {contains_any: [mom, "{mom_phone_tail}"]}
@@ -32,7 +35,7 @@
 - id: compose_email_dad_schedule
   prompt: "email dad my schedule for the week"
   expect:
-    - any_of: [get_upcoming, daily_brief]
+    - any_of: [get_upcoming, daily_brief, get_my_day_plan]
     - tool: send_email
       args:
         to: {contains_any: [dad, "{dad_email}"]}
@@ -139,7 +142,7 @@
 - id: compose_schedule_nine_pm_mom
   prompt: "scedule a text to mom at 9pm with my schedule for tmrow"
   expect:
-    - any_of: [get_upcoming, daily_brief]
+    - any_of: [get_upcoming, daily_brief, get_my_day_plan]
     - tool: schedule_send
       args:
         channel: message
@@ -168,7 +171,7 @@
 - id: compose_schedule_self_email
   prompt: "schedule an email to myself at 6pm tonight with my schedule for tomorrow"
   expect:
-    - any_of: [get_upcoming, daily_brief]
+    - any_of: [get_upcoming, daily_brief, get_my_day_plan]
     - tool: schedule_send
       args:
         channel: email
@@ -182,7 +185,7 @@
 - id: compose_self_email_now
   prompt: "email myself my schedule for tomorrow"
   expect:
-    - any_of: [get_upcoming, daily_brief]
+    - any_of: [get_upcoming, daily_brief, get_my_day_plan]
     - tool: send_email
       args:
         to: {regex: '^[^@\s]+@[^@\s]+\.[^@\s]+$'}
@@ -207,7 +210,7 @@
 - id: compose_daily_brief_dad
   prompt: "send my dad my daily summary via Messages"
   expect:
-    - any_of: [daily_brief, get_upcoming]
+    - any_of: [daily_brief, get_upcoming, get_my_day_plan]
     - tool: send_message
       args:
         to: {contains_any: [dad, "0102", "{dad_email}"]}
@@ -236,7 +239,7 @@
     - tool: draft_message
       args:
         to: {contains_any: [mom, "{mom_phone_tail}"]}
-        text: {regex: '(?:dentist|{dentist}|brunch|budget|standup|{class_word}|vendor)'}
+        text: {regex: '(?:dentist|{dentist}|brunch|budget|standup|{class_word}|vendor|{passport_reminder})'}
   forbid: [send_message, send_email, schedule_send]
   max_calls: 5
   trap: "real-usage 1A #10: a prose answer and no draft was created. Draft means draft_message, never a send ('my calendar' keeps the reads available)"
@@ -249,7 +252,7 @@
     - tool: draft_message
       args:
         to: {contains_any: [mom, "{mom_phone_tail}"]}
-        text: {regex: '(?:dentist|{dentist}|brunch|budget|standup|{class_word}|vendor)'}
+        text: {regex: '(?:dentist|{dentist}|brunch|budget|standup|{class_word}|vendor|{passport_reminder})'}
   forbid: [send_message, send_email, schedule_send]
   max_calls: 5
   trap: "real-usage 1A #10 verbatim. production guard blocks get_upcoming and draft_message (found 2026-10-29): model_only.pure_writing treats it as pure writing because 'my upcoming events' is not in _STORED_CONTENT and the lowercase 'mom' is no destination (_DESTINATION needs a capital). Right behaviour is a draft with the events, so this fails as a production bug"
@@ -309,7 +312,7 @@
   split: voice
   prompt: "um can you text my mom what i have planned this week"
   expect:
-    - any_of: [get_upcoming, daily_brief]
+    - any_of: [get_upcoming, daily_brief, get_my_day_plan]
     - tool: send_message
       args:
         to: {contains_any: [mom, "{mom_phone_tail}"]}
@@ -323,7 +326,7 @@
   split: voice
   prompt: "uh email dad my schedule for tomorrow"
   expect:
-    - any_of: [get_upcoming, daily_brief]
+    - any_of: [get_upcoming, daily_brief, get_my_day_plan]
     - tool: send_email
       args:
         to: {contains_any: [dad, "{dad_email}"]}

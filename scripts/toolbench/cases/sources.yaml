@@ -1,0 +1,532 @@
+# Held-out multi-source set (split heldout_sources, sealed): does a question that spans the user's apps
+# read each of them, and does the answer use what came back? Scored by scripts/toolbench/sources.py, not by
+# call order: `expect` is empty on purpose, because reading mail before messages is no better than the reverse.
+# 30 multi-source cases (topic 6, person 5, prep 4, owe 4, one_hit 4, nothing 4, conflict 3) and 10
+# single-source contrasts (25%), which must read their one source and stop.
+# Everything is the synthetic world in world.py; facts are placeholders so a seeded world grades the same way.
+# Wording is fresh: tests/test_toolbench_sources.py keeps every prompt away from the r5 training family's
+# prompts. Writes are forbidden everywhere (these are reads).
+
+# ---------------------------------------------------------------------------- topic across everything
+- id: src_topic_flight
+  split: heldout_sources
+  prompt: "what's the deal with my mom's flight?"
+  forbid: &w [send_email, send_message, reply_to_email, add_reminder, add_calendar_event, create_note, remember, forget]
+  max_calls: 8
+  sources:
+    shape: topic
+    read: [mail, messages]
+    use:
+      mail: ["{flight_time}", "sfo", "terminal 2", "lands"]
+      messages: ["re:\\b(?:text|texted|texts|message|messaged|asked|asking|checking|wondering)\\b"]
+  trap: "the flight is in mail (time, airport) and a text asks whether the email was seen; reading one source leaves half the picture"
+
+- id: src_topic_parents_dinner
+  split: heldout_sources
+  prompt: "how's dinner at my parents' house shaping up?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: topic
+    read: [mail, messages]
+    use:
+      mail: ["lasagna", "six o'clock", "6 o'clock", "6:00", "6 pm", "6pm"]
+      messages: ["pie", "ice cream", "dessert"]
+  trap: "dad's email holds the meal and the hour, the family chat holds who brings what"
+
+- id: src_topic_milk
+  split: heldout_sources
+  prompt: "so what's my story with {milk} milk?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: topic
+    read: [notes, memory]
+    use:
+      notes: ["200ml", "18g", "espresso", "steam", "latte"]
+      memory: ["prefer", "preference", "favorite", "favourite", "likes"]
+  trap: "a recipe in Notes and a saved preference in memory; neither source mentions the other"
+
+- id: src_topic_passport
+  split: heldout_sources
+  prompt: "what's the status of my passport?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: topic
+    read: [reminders, notes]
+    use:
+      reminders: ["reminder", "due", "10:00", "10 am", "10am", "weeks", "days away"]
+      notes: ["packing", "charger", "boots", "sunscreen"]
+  trap: "a dated reminder and a line in the packing list"
+
+- id: src_topic_bank
+  split: heldout_sources
+  prompt: "is {bank} waiting on me for anything?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: topic
+    read: [mail, reminders]
+    use:
+      mail: ["{balance}", "{alert_amount}", "{alert_merchant}", "28th", "statement", "alert"]
+      reminders: ["reminder", "{future_weekday}", "{future_date_short}", "{future_day_ordinal}", "9:00", "9 am", "9am"]
+  trap: "the statement and a card alert are in mail, the pay-the-bill reminder is in Reminders"
+
+- id: src_topic_budget
+  split: heldout_sources
+  prompt: "has anything changed with the {budget_event}?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: topic
+    read: [mail, calendar]
+    use:
+      mail: ["moved", "thursday", "forecast", "deck"]
+      calendar: ["zoom", "10:00", "10 am", "10am", "saturday"]
+  trap: "a coworker's email says it moved, the calendar entry is the other half"
+
+# ---------------------------------------------------------------------------- person across everything
+- id: src_person_friend
+  split: heldout_sources
+  prompt: "fill me in on {friend_first}"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: person
+    read: [messages, calendar, notes]
+    use:
+      messages: ["{restaurant}", "dinner", "saturday"]
+      calendar: ["brunch", "sunday", "11"]
+      notes: ["{gift_friend}", "gift", "kettle"]
+  trap: "a text about dinner, a brunch on the calendar and a gift idea in Notes"
+
+- id: src_person_mom
+  split: heldout_sources
+  prompt: "what's mom been up to?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: person
+    read: [mail, messages, notes]
+    use:
+      mail: ["flight", "{flight_time}", "sfo"]
+      messages: ["diwali", "lunch", "saturday"]
+      notes: ["scarf", "gift"]
+  trap: "her flight email, her lunch text and the scarf in the gift note"
+
+- id: src_person_dad
+  split: heldout_sources
+  prompt: "heard anything from my dad?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: person
+    read: [mail, messages]
+    use:
+      mail: ["lasagna", "sunday", "still coming"]
+      messages: ["ice cream", "pie"]
+  trap: "an email asking about Sunday and a family-chat line"
+
+- id: src_person_plans
+  split: heldout_sources
+  prompt: "any plans with {friend_first} I might be forgetting?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: person
+    read: [messages, calendar]
+    use:
+      messages: ["{restaurant}", "dinner"]
+      calendar: ["brunch", "sunday"]
+  trap: "a Saturday dinner is only in a text, a Sunday brunch is only on the calendar"
+
+- id: src_person_mom_needs
+  split: heldout_sources
+  prompt: "what does my mom need from me?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: person
+    read: [messages, mail]
+    use:
+      messages: ["diwali", "lunch", "bring"]
+      mail: ["flight", "{flight_time}", "land", "pick"]
+  trap: "a text asks what to bring, an email says when she lands"
+
+# ---------------------------------------------------------------------------- getting ready for an event
+- id: src_prep_trip
+  split: heldout_sources
+  prompt: "I'm heading out on the {trip} soon, what should I sort out before I go?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: prep
+    read: [calendar, notes]
+    use:
+      calendar: ["tahoe", "all day", "all-day", "{trip_day}"]
+      notes: ["packing", "charger", "boots", "sunscreen", "passport"]
+  trap: "the calendar names the event, Notes holds the packing list"
+
+- id: src_prep_budget_meeting
+  split: heldout_sources
+  prompt: "the {budget_event} is coming up fast, how do I get ready?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: prep
+    read: [calendar, mail]
+    use:
+      calendar: ["zoom", "10:00", "10 am", "10am"]
+      mail: ["forecast", "deck"]
+  trap: "the event is on the calendar, what to bring is in a coworker's email"
+
+- id: src_prep_mom_lunch
+  split: heldout_sources
+  prompt: "lunch at my mom's is coming up, how do I get set for it?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: prep
+    read: [messages, notes, calendar]
+    use:
+      messages: ["diwali", "bring", "saturday"]
+      notes: ["scarf", "gift"]
+      calendar: ["{trip}", "tahoe", "vendor", "budget", "conflict", "clash", "busy"]
+  trap: "a text asks what to bring, a note lists a gift, and the calendar is full that day"
+
+- id: src_prep_dentist
+  split: heldout_sources
+  prompt: "dentist tomorrow, what's worth knowing before I walk in?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: prep
+    read: [calendar, reminders]
+    use:
+      calendar: ["{dentist_time}", "bright smile", "{dentist}"]
+      reminders: ["saturday", "8:00", "8 am", "8am", "reminder"]
+  trap: "the appointment is on the calendar and a second dentist item is a reminder"
+
+# ---------------------------------------------------------------------------- what is owed or due
+- id: src_owe_payments
+  split: heldout_sources
+  prompt: "what bills am I on the hook for right now?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: owe
+    read: [reminders, mail]
+    use:
+      reminders: ["rent", "{rent_reminder}", "overdue"]
+      mail: ["{bank}", "{balance}", "28th", "statement"]
+  trap: "an overdue rent reminder and a statement email"
+
+- id: src_owe_family
+  split: heldout_sources
+  prompt: "did I commit to anything for the family this week?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: owe
+    read: [messages, mail]
+    use:
+      messages: ["pie", "apple pie"]
+      mail: ["lasagna", "sunday", "still coming", "dad"]
+  trap: "a promise in the family chat and a question in dad's email"
+
+- id: src_owe_dad
+  split: heldout_sources
+  prompt: "do I owe my dad a reply?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: owe
+    read: [mail, messages]
+    use:
+      mail: ["still coming", "sunday", "lasagna"]
+      messages: ["ice cream", "pie"]
+  trap: "his question is in mail and the chat shows what was already agreed"
+
+- id: src_owe_gifts
+  split: heldout_sources
+  prompt: "what am I supposed to get for mom, and by when?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: owe
+    read: [notes, messages]
+    use:
+      notes: ["scarf", "silk"]
+      messages: ["diwali", "lunch", "bring", "saturday"]
+  trap: "the gift is in Notes, the occasion is in a text"
+
+# ---------------------------------------------------------------------------- the answer is in one source
+- id: src_hit_water
+  split: heldout_sources
+  prompt: "is the water going off at some point?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: one_hit
+    read: [mail, calendar]
+    use:
+      mail: ["pipe", "repairs", "tuesday", "shut", "off"]
+  trap: "only the landlord's email mentions it; the answer states it without apologising for the other sources"
+
+- id: src_hit_gift
+  split: heldout_sources
+  prompt: "what did I plan to get {friend_first} for a gift?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: one_hit
+    read: [notes, messages]
+    use:
+      notes: ["{gift_friend}", "kettle"]
+  trap: "only the gift note has it"
+
+- id: src_hit_isp
+  split: heldout_sources
+  prompt: "which company do I use for internet?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: one_hit
+    read: [memory, mail]
+    use:
+      memory: ["{isp}"]
+  trap: "only saved memory has it"
+
+- id: src_hit_dessert
+  split: heldout_sources
+  prompt: "who's covering dessert on sunday?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: one_hit
+    read: [messages, mail]
+    use:
+      messages: ["pie", "ice cream"]
+  trap: "only the family chat has it"
+
+# ---------------------------------------------------------------------------- nothing anywhere
+- id: src_nothing_tennis
+  split: heldout_sources
+  prompt: "when's my next tennis lesson?"
+  forbid: *w
+  max_calls: 8
+  answer:
+    regex_all: ["\\b(?:no|not|nothing|none|couldn't|could not|didn't|don't|haven't|can't|cannot|isn't|aren't)\\b"]
+    regex_none: ["tennis lesson (?:is|starts|begins) (?:at|on)"]
+  sources:
+    shape: nothing
+    read: [mail, messages, calendar, notes]
+  trap: "no source mentions it: the answer says so after looking everywhere, and invents nothing"
+
+- id: src_nothing_roof
+  split: heldout_sources
+  prompt: "any word on the roof repair?"
+  forbid: *w
+  max_calls: 8
+  answer:
+    regex_all: ["\\b(?:no|not|nothing|none|couldn't|could not|didn't|don't|haven't|can't|cannot|isn't|aren't)\\b"]
+  sources:
+    shape: nothing
+    read: [mail, messages, calendar, notes]
+  trap: "no source mentions it"
+
+- id: src_nothing_pottery
+  split: heldout_sources
+  prompt: "did my pottery workshop sign-up go through?"
+  forbid: *w
+  max_calls: 8
+  answer:
+    regex_all: ["\\b(?:no|not|nothing|none|couldn't|could not|didn't|don't|haven't|can't|cannot|isn't|aren't)\\b"]
+  sources:
+    shape: nothing
+    read: [mail, messages, calendar, notes]
+  trap: "no source mentions it"
+
+- id: src_nothing_visa
+  split: heldout_sources
+  prompt: "did the visa interview ever get scheduled?"
+  forbid: *w
+  max_calls: 8
+  answer:
+    regex_all: ["\\b(?:no|not|nothing|none|couldn't|could not|didn't|don't|haven't|can't|cannot|isn't|aren't)\\b"]
+  sources:
+    shape: nothing
+    read: [mail, messages, calendar, notes]
+  trap: "no source mentions it (the passport reminder is a different thing)"
+
+# ---------------------------------------------------------------------------- sources that disagree
+- id: src_conflict_budget
+  split: heldout_sources
+  prompt: "my calendar says one thing about the budget review and {coworker_first}'s note says another, which is right?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: conflict
+    read: [mail, calendar]
+    use:
+      mail: ["thursday", "moved"]
+      calendar: ["10:00", "10 am", "10am", "saturday", "nov 7"]
+  trap: "the email says it moved to Thursday, the calendar still shows another day; the answer names both"
+
+- id: src_conflict_bill
+  split: heldout_sources
+  prompt: "when is my {bank} bill actually due?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: conflict
+    read: [mail, reminders]
+    use:
+      mail: ["28th", "28"]
+      reminders: ["{future_weekday}", "{future_date_short}", "{future_day_ordinal}", "9:00", "9 am", "9am"]
+  trap: "the statement says the 28th, the reminder is set for earlier; the answer names both"
+
+- id: src_conflict_saturday
+  split: heldout_sources
+  prompt: "mom wants me for lunch saturday, does anything clash?"
+  forbid: *w
+  max_calls: 8
+  sources:
+    shape: conflict
+    read: [messages, calendar]
+    use:
+      messages: ["diwali", "lunch"]
+      calendar: ["{trip}", "tahoe", "vendor", "budget", "dinner"]
+  trap: "the lunch is only in a text and the day is already full on the calendar"
+
+# ---------------------------------------------------------------------------- single-source contrasts
+- id: src_single_mail_coworker
+  split: heldout_sources
+  prompt: "has {coworker_first} emailed me this week?"
+  forbid: *w
+  max_calls: 6
+  sources:
+    shape: single
+    contrast: true
+    read: [mail]
+    use:
+      mail: ["budget", "moved", "review", "forecast"]
+  trap: "a question about mail stays in mail"
+
+- id: src_single_messages_friend
+  split: heldout_sources
+  prompt: "what did {friend_first} text me?"
+  forbid: *w
+  max_calls: 6
+  sources:
+    shape: single
+    contrast: true
+    read: [messages]
+    use:
+      messages: ["{restaurant}", "dinner", "saturday"]
+  trap: "a question about texts stays in Messages"
+
+- id: src_single_calendar_free
+  split: heldout_sources
+  prompt: "am I free tomorrow afternoon?"
+  forbid: *w
+  max_calls: 6
+  sources:
+    shape: single
+    contrast: true
+    read: [calendar]
+    use:
+      calendar: ["dentist", "{dentist_time}", "3:30", "bright smile"]
+  trap: "a question about the calendar stays on the calendar"
+
+- id: src_single_reminders_slipped
+  split: heldout_sources
+  prompt: "what reminders have I let slide?"
+  forbid: *w
+  max_calls: 6
+  sources:
+    shape: single
+    contrast: true
+    read: [reminders]
+    use:
+      reminders: ["rent", "{rent_reminder}", "{doordash_reminder}", "overdue"]
+  trap: "a question about reminders stays in Reminders"
+
+- id: src_single_notes_packing
+  split: heldout_sources
+  prompt: "what's on my packing list?"
+  forbid: *w
+  max_calls: 6
+  sources:
+    shape: single
+    contrast: true
+    read: [notes]
+    use:
+      notes: ["passport", "charger", "boots", "sunscreen"]
+  trap: "a question about one note stays in Notes"
+
+- id: src_single_memory_birthday
+  split: heldout_sources
+  prompt: "when's my birthday again?"
+  forbid: *w
+  max_calls: 6
+  sources:
+    shape: single
+    contrast: true
+    read: [memory]
+    use:
+      memory: ["{user_birthday}", "june 9"]
+  trap: "a saved fact about the user stays in memory"
+
+- id: src_single_weather
+  split: heldout_sources
+  prompt: "is it jacket weather in {city} tomorrow?"
+  forbid: *w
+  max_calls: 6
+  sources:
+    shape: single
+    contrast: true
+    read: [weather]
+    use:
+      weather: ["{high_tomorrow}", "jacket", "sunny", "warm", "cold", "cool"]
+  trap: "a weather question needs the forecast and nothing else"
+
+- id: src_single_week_waiting
+  split: heldout_sources
+  prompt: "run through my week for me, and who's expecting an answer?"
+  forbid: *w
+  max_calls: 6
+  sources:
+    shape: single
+    contrast: true
+    read: [day_plan, calendar, reminders]
+    use:
+      day_plan: ["waiting", "reply", "dentist", "standup", "{friend_first}", "{coworker_first}"]
+  trap: "the combined question has a combined tool (get_my_day_plan); fanning out to mail and Messages is over-reading"
+
+- id: src_single_mail_statement
+  split: heldout_sources
+  prompt: "how much is my {bank} statement?"
+  forbid: *w
+  max_calls: 6
+  sources:
+    shape: single
+    contrast: true
+    read: [mail]
+    use:
+      mail: ["{balance}"]
+  trap: "an amount in one email stays in mail"
+
+- id: src_single_calendar_dentist
+  split: heldout_sources
+  prompt: "what time is the dentist?"
+  forbid: *w
+  max_calls: 6
+  sources:
+    shape: single
+    contrast: true
+    read: [calendar]
+    use:
+      calendar: ["{dentist_time}", "3:30"]
+  trap: "an appointment time is on the calendar; the dentist reminder and mail are not needed"
