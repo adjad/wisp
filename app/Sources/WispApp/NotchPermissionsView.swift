@@ -1,42 +1,56 @@
 import SwiftUI
 
 /// The permission page, in place of the tab's content like quick settings: a
-/// title and Done on top, then labelled cards. The panel is non-activating, so
-/// nothing here opens a sheet, an alert or a popup menu.
+/// title and Done that stay put, then one line for each permission, which opens to
+/// say what it's for and what happens next. It scrolls past `cap`. The panel is
+/// non-activating, so nothing here opens a sheet, an alert or a popup menu.
 struct NotchPermissionsView: View {
     @ObservedObject var model: OverlayModel
     @ObservedObject var page: NotchPermissionPageModel
     @ObservedObject var access: FirstRunPermissions
+    /// The page's room under the header (SurfaceLayout.pageContentCap).
+    let cap: CGFloat?
+    /// The title row's laid-out height, which grows with Text size.
+    @State private var titleHeight: CGFloat = 0
 
     typealias Item = NotchPermissionPage.Item
 
-    init(model: OverlayModel) {
+    private static let spacing: CGFloat = 12
+
+    init(model: OverlayModel, cap: CGFloat? = nil) {
         self.model = model
         page = model.permissionPage
         access = model.permissionPage.access
+        self.cap = cap
     }
 
-    private var others: [Item] { NotchPermissionPage.order(focus: page.focus).filter { $0 != page.focus } }
+    private var openRow: Item? {
+        NotchPermissionPage.openRow(page.rowChoice, focus: page.focus,
+                                    reporting: Item.allCases.first(where: hasReport),
+                                    fullDiskAccess: access.state(.fullDiskAccess))
+    }
+
+    /// The row has news about the person's last click, not just the usual next step.
+    private func hasReport(_ item: Item) -> Bool {
+        access.waiting.contains(item) || access.resetItems.contains(item) || access.unanswered[item] == true
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: Self.spacing) {
             HStack {
                 Text(page.focus.map(NotchPermissionPage.title) ?? "Mac permissions")
                     .font(.wisp(.headline, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
-                Button("Done") { model.closePermissionPage() }
-                    .buttonStyle(.plain).font(.wisp(.callout)).foregroundStyle(Theme.textSecondary)
+                NotchSettingsChrome.doneButton { model.closePermissionPage() }
                     .keyboardShortcut(.cancelAction)
                     .help("Close this page and go back to \(model.showingQuickSettings ? "Settings" : model.tab.stripTab.title)")
             }
-            if let focus = page.focus { focusCard(focus) }
-            NotchSettingsChrome.group(page.focus == nil ? "Permissions" : "Other permissions") {
-                ForEach(Array(others.enumerated()), id: \.element) { index, item in
-                    if index > 0 { NotchSettingsChrome.hairline }
-                    row(item)
-                }
-            }
+            .background(GeometryReader { geo in
+                Color.clear.onAppear { titleHeight = geo.size.height }
+                    .onChange(of: geo.size.height) { titleHeight = geo.size.height }
+            })
+            CappedScroll(cap: cap.map(scrollCap), reveals: true) { rows }
         }
         .onChange(of: access.states) { _, _ in model.onResize() }
         .onChange(of: access.waiting) { _, _ in model.onResize() }
@@ -45,120 +59,134 @@ struct NotchPermissionsView: View {
         .accessibilityLabel("Mac permissions")
     }
 
-    // MARK: The permission it opened on
-
-    private func focusCard(_ item: Item) -> some View {
-        let state = access.state(item)
-        let action = self.action(item)
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Image(systemName: NotchPermissionPage.symbol(item)).font(.wisp(.body))
-                    .foregroundStyle(Theme.textSecondary).frame(width: 18).accessibilityHidden(true)
-                Text(NotchPermissionPage.purpose(item)).font(.wisp(.reading)).foregroundStyle(Theme.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            let next = self.next(item)
-            if !next.isEmpty {
-                Text(next).font(.wisp(.body)).foregroundStyle(Theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, 26)
-            }
-            // Beside the state where both fit, under it where they don't, so a narrow
-            // panel never breaks a word to make room.
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    status(item, state)
-                    Spacer(minLength: 8)
-                    focusAction(item, action)
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    status(item, state)
-                    focusAction(item, action)
-                }
-            }
-            .padding(.leading, 26)
-        }
-        .padding(.horizontal, 14).padding(.vertical, 12)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.raised))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.hairline, lineWidth: 1))
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel(NotchPermissionPage.title(item))
-        .accessibilityValue(statusText(item, state))
+    /// What's left for the rows under the title.
+    private func scrollCap(_ cap: CGFloat) -> CGFloat {
+        max(cap - titleHeight - Self.spacing, SurfaceLayout.minTabScroll)
     }
 
-    // MARK: The rest
-
-    private func row(_ item: Item) -> some View {
-        let state = access.state(item)
-        let action = self.action(item)
-        return VStack(alignment: .leading, spacing: 6) {
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .center, spacing: 10) {
-                    rowLabel(item, state)
-                    Spacer(minLength: 8)
-                    rowAction(item, action)
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    rowLabel(item, state)
-                    rowAction(item, action).padding(.leading, 28)
-                }
-            }
-            // Every one says what it is for: a list of switch names can't be chosen from.
-            Text(NotchPermissionPage.purpose(item)).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.leading, 28)
-            let next = self.next(item)
-            if action != nil || item == .contacts, !next.isEmpty, needsSaying(item, state) {
-                Text(next).font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.leading, 28)
+    private var rows: some View {
+        NotchSettingsChrome.card {
+            ForEach(Array(NotchPermissionPage.order(focus: page.focus).enumerated()), id: \.element) { index, item in
+                if index > 0 { NotchSettingsChrome.hairline }
+                row(item)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    // MARK: A row
+
+    private func row(_ item: Item) -> some View {
+        let state = access.state(item)
+        let open = openRow == item
+        return VStack(alignment: .leading, spacing: 0) {
+            summary(item, state, open: open)
+            if open { detail(item) }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(NotchPermissionPage.title(item))
-        .accessibilityValue(statusText(item, state))
     }
 
-    @ViewBuilder private func focusAction(_ item: Item, _ action: NotchPermissionPage.Action?) -> some View {
-        if let action {
-            primaryButton(NotchPermissionPage.actionTitle(action, asking: access.asking.contains(item))) { page.act(item) }
-                .keyboardShortcut(.defaultAction)
-                .disabled(access.asking.contains(item))
-                .accessibilityLabel(actionLabel(action, item))
-        }
-    }
-
-    private func rowLabel(_ item: Item, _ state: FirstRunPermissions.State) -> some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: NotchPermissionPage.symbol(item)).font(.wisp(.body))
-                .foregroundStyle(Theme.textMuted).frame(width: 18).accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(NotchPermissionPage.title(item)).font(.wisp(.reading, weight: .medium))
-                    .foregroundStyle(Theme.textPrimary)
-                status(item, state)
+    /// One line where it all fits, then two, then three, so a narrow panel or large
+    /// text never breaks a word or pushes a button out of reach. The button behind it is the whole row,
+    /// so what sits on top lets clicks through, except the row's own action.
+    private func summary(_ item: Item, _ state: FirstRunPermissions.State, open: Bool) -> some View {
+        let action = self.action(item)
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                name(item).allowsHitTesting(false)
+                Spacer(minLength: 8)
+                status(item, state).allowsHitTesting(false)
+                rowAction(item, action)
+                chevron(open: open)
             }
-            .fixedSize()
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 10) {
+                    name(item).allowsHitTesting(false)
+                    Spacer(minLength: 8)
+                    chevron(open: open)
+                }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        status(item, state).allowsHitTesting(false)
+                        Spacer(minLength: 8)
+                        rowAction(item, action)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        status(item, state).allowsHitTesting(false)
+                        rowAction(item, action)
+                    }
+                }
+                .padding(.leading, 28)
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .frame(minHeight: 26)
+        .padding(.horizontal, 14).padding(.vertical, 5)
+        .background {
+            Button {
+                page.toggleRow(item, open: openRow)
+            } label: {
+                Color.clear.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
             .help(NotchPermissionPage.purpose(item))
+            .accessibilityLabel(NotchPermissionPage.title(item))
+            .accessibilityValue("\(statusText(item, state)), \(open ? "open" : "closed")")
+            .accessibilityHint(open ? "Hides what this is for" : "Shows what this is for and what happens next")
         }
     }
 
+    private func name(_ item: Item) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: NotchPermissionPage.symbol(item)).font(.wisp(.body))
+                .foregroundStyle(Theme.textSecondary).frame(width: 18)
+            Text(NotchPermissionPage.title(item)).font(.wisp(.reading, weight: .medium))
+                .foregroundStyle(Theme.textPrimary)
+        }
+        .fixedSize()
+        // The row's button says this, with the state.
+        .accessibilityHidden(true)
+    }
+
+    private func chevron(open: Bool) -> some View {
+        Image(systemName: open ? "chevron.down" : "chevron.right")
+            .font(.wisp(.footnote, weight: .semibold)).foregroundStyle(Theme.textMuted)
+            .frame(width: 12)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+    }
+
+    /// What it's for, and what happens next in the state it's in.
+    private func detail(_ item: Item) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(NotchPermissionPage.purpose(item))
+            let next = self.next(item)
+            if !next.isEmpty { Text(next) }
+        }
+        .font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.leading, 42).padding(.trailing, 14).padding(.bottom, 10)
+        .revealInPanel("permission-detail-\(item.rawValue)")
+    }
+
+    /// The button stays on the row, closed or open. Return presses the one the page
+    /// opened for, and hovering it says what's about to happen.
     @ViewBuilder private func rowAction(_ item: Item, _ action: NotchPermissionPage.Action?) -> some View {
         if let action {
-            NotchSettingsChrome.pill(NotchPermissionPage.actionTitle(action, asking: access.asking.contains(item)),
-                                     primary: true) { page.act(item) }
+            let button = NotchSettingsChrome.pill(NotchPermissionPage.actionTitle(action, asking: access.asking.contains(item)),
+                                                  primary: true) { page.act(item) }
                 .disabled(access.asking.contains(item))
+                .help(next(item))
                 .accessibilityLabel(actionLabel(action, item))
+            if item == page.focus {
+                button.keyboardShortcut(.defaultAction)
+            } else {
+                button
+            }
         }
-    }
-
-    /// In the list, the next step shows only where it changes what the person
-    /// does; the usual "macOS asks" would repeat under every row.
-    private func needsSaying(_ item: Item, _ state: FirstRunPermissions.State) -> Bool {
-        access.waiting.contains(item) || access.resetItems.contains(item) || access.unanswered[item] == true
-            || contactsWait(item) || state == .notAllowed || item == .fullDiskAccess
     }
 
     // MARK: Pieces
@@ -183,16 +211,18 @@ struct NotchPermissionsView: View {
         return state == .checking ? "Checking…" : FirstRunPermissions.label(item, state)
     }
 
-    /// The state in words, with a mark, so color never carries it alone.
+    /// The state in words, with a mark, so color never carries it alone. The row's
+    /// button says it to VoiceOver.
     private func status(_ item: Item, _ state: FirstRunPermissions.State) -> some View {
         HStack(spacing: 4) {
-            if state == .allowed { Image(systemName: "checkmark").accessibilityHidden(true) }
-            if state == .notAllowed { Image(systemName: "exclamationmark.circle").accessibilityHidden(true) }
+            if state == .allowed { Image(systemName: "checkmark") }
+            if state == .notAllowed { Image(systemName: "exclamationmark.circle") }
             Text(statusText(item, state))
         }
         .fixedSize()
         .font(.wisp(.footnote, weight: state == .allowed ? .medium : .regular))
         .foregroundStyle(state == .allowed ? Theme.good : state == .notAllowed ? Theme.warn : Theme.textMuted)
+        .accessibilityHidden(true)
     }
 
     private func actionLabel(_ action: NotchPermissionPage.Action, _ item: Item) -> String {
@@ -202,18 +232,6 @@ struct NotchPermissionsView: View {
         case .askAgain: return "Ask again for \(title)"
         case .openSettings: return "Open System Settings for \(title)"
         }
-    }
-
-    /// The Report a problem card's primary button.
-    private func primaryButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title).font(.wisp(.body, weight: .semibold)).foregroundStyle(Color.black)
-                .padding(.horizontal, 12).padding(.vertical, 5)
-                .background(Capsule().fill(Color.white))
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .fixedSize()
     }
 
     /// VoiceOver hears the answer without hunting for it.

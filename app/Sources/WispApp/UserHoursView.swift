@@ -17,6 +17,16 @@ extension WispClient {
         return (UserHours(json: object), nil)
     }
 
+    /// When the Brief updates: the saved hours, or the message to show. Empty goes
+    /// back to the default day.
+    func saveBriefTimes(_ minutes: [Int]) async -> (hours: UserHours?, error: String?) {
+        let reply = await hoursRequest("PATCH", path: "assistant/hours", body: ["brief_times": minutes])
+        guard let object = reply.object else {
+            return (nil, reply.error ?? "Couldn't save those times. Wisp's service didn't answer.")
+        }
+        return (UserHours(json: object), nil)
+    }
+
     /// The offer to show now. nil means the service didn't answer, not "no offer".
     func hoursOffer() async -> (offer: HoursMoveOffer?, answered: Bool) {
         let reply = await hoursRequest("POST", path: "assistant/hours/offer",

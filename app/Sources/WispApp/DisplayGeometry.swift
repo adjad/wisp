@@ -225,6 +225,23 @@ struct SurfaceLayout: Equatable {
         return max(room.rounded(.down), Self.minTabScroll)
     }
 
+    /// Permissions and Settings are lists to glance at, so they stop well before
+    /// the screen does: 60% of its height (670 pt on a 1117 pt screen, 589 on 982).
+    static let pageScreenShare: CGFloat = 0.6
+
+    /// The tallest the panel gets on those two pages.
+    var maxPagePanelHeight: CGFloat {
+        min((screenFrame.height * Self.pageScreenShare).rounded(.down), maxPanelHeight)
+    }
+
+    /// What those pages get under the header before they scroll. The page keeps
+    /// its own title row fixed, so this is the title and the scroll together.
+    func pageContentCap(headerHeight: CGFloat) -> CGFloat {
+        let room = maxPagePanelHeight - contentTopInset - headerHeight.rounded(.up)
+            - Self.tabTopPadding - Self.panelBottomPadding
+        return max(room.rounded(.down), Self.minTabScroll)
+    }
+
     /// Frame of the expanded panel for a given content height: centred on the
     /// anchor, hanging from the top, and never taller than the screen.
     func expandedFrame(contentHeight: CGFloat) -> CGRect {

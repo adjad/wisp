@@ -277,6 +277,20 @@ struct FirstRunSetupChecks {
               && NotchPermissionPage.action(.mail, .notAsked, waiting: true) == .askAgain
               && NotchPermissionPage.action(.contacts, .notAsked, contactsWait: true) == nil,
               "Full Disk Access has no question; a waiting question can be asked again; Contacts can wait for Full Disk Access")
+        // One line each: which row explains itself without a click.
+        func open(_ choice: NotchPermissionPage.RowChoice = .automatic, focus: FirstRunPermissions.Item? = nil,
+                  reporting: FirstRunPermissions.Item? = nil, fda: FirstRunPermissions.State = .allowed) -> FirstRunPermissions.Item? {
+            NotchPermissionPage.openRow(choice, focus: focus, reporting: reporting, fullDiskAccess: fda)
+        }
+        check(open() == nil, "Everything allowed: every row is closed")
+        check(open(fda: .notAllowed) == .fullDiskAccess && open(fda: .notAsked) == .fullDiskAccess,
+              "Full Disk Access explains itself while it's off")
+        check(open(fda: .checking) == nil && open(fda: .notOnThisMac) == nil, "Not while it's unknown or not needed")
+        check(open(focus: .calendar, fda: .notAllowed) == .calendar, "A Brief link opens the permission it's about")
+        check(open(focus: .fullDiskAccess) == .fullDiskAccess, "Full Disk Access from a link stays open when allowed")
+        check(open(reporting: .mail, fda: .notAllowed) == .mail, "macOS not showing its question beats the usual explanation")
+        check(open(.chosen(.contacts), focus: .calendar, fda: .notAllowed) == .contacts, "A click wins")
+        check(open(.chosen(nil), focus: .calendar, fda: .notAllowed) == nil, "Closing the open row keeps it closed")
         check(NotchPermissionPage.actionTitle(.allow, asking: true) == "Asking…"
               && NotchPermissionPage.actionTitle(.openSettings) == "Open System Settings", "Button words")
         check(NotchPermissionPage.answersInPlace(.calendar, .notAsked) && NotchPermissionPage.answersInPlace(.mail, .notAsked)

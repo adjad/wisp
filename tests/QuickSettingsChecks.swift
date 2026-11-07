@@ -102,7 +102,29 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(QuickSettingsText.learning(enabled: true, changing: true, status: "Turning learning on. Waiting for confirmation…",
                                      remote: false, phraser: true).text.hasPrefix("Turning learning on"), "a change in flight shows its status")
 
-    check(QuickSettingsText.brief(pending: false, confirmed: true) == "Shows up in Brief, and in a notification", "brief line")
+    check(QuickSettingsText.brief(pending: false, confirmed: true) == "In Brief, and as a notification", "daily summary line")
+    // The Brief's own pace: the row says the person's hours, and never invents any.
+    check(QuickSettingsText.briefUpdates(hours: "9 AM to 5 PM") == "About 4 times a day, 9 AM to 5 PM", "Brief updates line")
+    check(QuickSettingsText.briefUpdates(hours: nil) == "About 4 times a day, across your working hours",
+          "no answer from the service names no hours")
+    check(QuickSettingsText.briefUpdates(chosen: "9 AM and 1 PM") == "At 9 AM and 1 PM", "chosen Brief times")
+    check(QuickSettingsText.briefUpdatesHelp.contains("a chat comes first"), "the help says a chat comes first")
+    check(QuickSettingsText.dailySummaryHelp.contains("doesn't change when the Brief updates"),
+          "the summary's times don't claim to set the Brief")
+
+    // One section at a time; a Text size change rebuilds the panel and must keep it.
+    check(QuickSettingsSection.allCases.map(\.title) == ["General", "Brief", "Voice", "Power", "Advanced"], "the five sections")
+    check(QuickSettingsSection.voice.contents.contains("Text size"), "the Voice section says it holds Text size")
+    let sectionSuite = "wisp.quick-settings-section-check"
+    if let sectionDefaults = UserDefaults(suiteName: sectionSuite) {
+        sectionDefaults.removePersistentDomain(forName: sectionSuite)
+        check(QuickSettingsSection.saved(in: sectionDefaults) == .general, "General until one is chosen")
+        QuickSettingsSection.voice.save(in: sectionDefaults)
+        check(QuickSettingsSection.saved(in: sectionDefaults) == .voice, "the last section comes back")
+        sectionDefaults.set("gone", forKey: QuickSettingsSection.defaultsKey)
+        check(QuickSettingsSection.saved(in: sectionDefaults) == .general, "an unknown section reads as General")
+        sectionDefaults.removePersistentDomain(forName: sectionSuite)
+    }
     check(QuickSettingsText.brief(pending: false, confirmed: false).contains("not confirmed"), "unconfirmed brief times")
     check(QuickSettingsText.brief(pending: true, confirmed: true).hasPrefix("Saving"), "brief times saving")
 

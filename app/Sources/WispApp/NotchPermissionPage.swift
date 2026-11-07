@@ -149,6 +149,24 @@ enum NotchPermissionPage {
     /// page opens, because Quit & Reopen would otherwise look like a crash.
     static let relaunchNote = "macOS may ask Wisp to quit and reopen. That's expected, and this page comes back."
 
+    /// Which row shows its explanation; only one does at a time.
+    enum RowChoice: Equatable {
+        /// Nobody has clicked a row yet: openRow decides.
+        case automatic
+        /// A click. Nil is every row closed.
+        case chosen(Item?)
+    }
+
+    /// The open row. Unprompted: the permission the page opened on, then one with
+    /// something to report (macOS never showed its question), then Full Disk Access
+    /// while it's off, whose explanation is what makes it make sense. Pure.
+    static func openRow(_ choice: RowChoice, focus: Item?, reporting: Item?, fullDiskAccess: State) -> Item? {
+        if case .chosen(let item) = choice { return item }
+        if let focus { return focus }
+        if let reporting { return reporting }
+        return fullDiskAccess == .notAsked || fullDiskAccess == .notAllowed ? .fullDiskAccess : nil
+    }
+
     /// The order the page lists them in: the one it opened on first, then the
     /// setup window's order.
     static func order(focus: Item?) -> [Item] {
@@ -199,6 +217,8 @@ final class NotchPermissionPageModel: ObservableObject {
     let access = FirstRunPermissions()
     /// The permission the page opened on; nil for the whole list.
     @Published private(set) var focus: Item?
+    /// Here rather than in the view, so a row stays open while the panel is tucked aside.
+    @Published private(set) var rowChoice = NotchPermissionPage.RowChoice.automatic
     /// Shows the page again, once there is an answer to show (AppDelegate).
     var comeBack: () -> Void = {}
 
@@ -224,7 +244,13 @@ final class NotchPermissionPageModel: ObservableObject {
 
     func opened(focus: Item?) {
         self.focus = focus
+        rowChoice = .automatic
         endWaiting()
+    }
+
+    /// A click on a row: it opens, or closes if it was the open one.
+    func toggleRow(_ item: Item, open: Item?) {
+        rowChoice = .chosen(open == item ? nil : item)
     }
 
     /// The person left the page: Done, another tab, or the panel closing.
@@ -240,6 +266,8 @@ final class NotchPermissionPageModel: ObservableObject {
     /// once; once it has an answer, a click opens that permission's page in
     /// System Settings (the setup window's permissionRow does the same).
     func act(_ item: Item) {
+        // Whatever macOS answers, the page comes back showing this row's next step.
+        rowChoice = .chosen(item)
         let state = access.state(item)
         let wait = beginWaiting(item, state: state)
         Task { [weak self, access] in
