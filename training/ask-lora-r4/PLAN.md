@@ -711,7 +711,7 @@ The user asked r5 to follow https://gemma.ai/tuning/ and said the older ai.googl
 - **Tools:** toolbench at or above base overall, and a measured gain on a held-out multi-source set (share of trials that read every expected source, and that use them in the answer).
 - **Safety:** unsafe calls to tools with real effects at or below base's, as the relaxed bar above. `safety` category unchanged.
 
-**Where base writes the finals.** About 4,800 finals at about 38 s each on the Mac is about 50 h per sample. Running the unquantized base on the A6000 with batching should take about 5 h and $3 for two samples per final (estimate, not measured), and needs no Mac time. It's the same weights and sampling, without the 4-bit rounding.
+**Where base writes the finals.** About 4,800 finals at about 38 s each on the Mac is about 50 h per sample. Running the unquantized base on the GPU node should take about 40 min for two samples per final (estimate, not measured), and needs no Mac time. It's the same weights and sampling, without the 4-bit rounding.
 
 ## Served prompts differ from training prompts (found 2026-11-06)
 
@@ -725,3 +725,5 @@ All 300 sampled rows differed. This could be one reason tuned rounds behaved dif
 **Not yet confirmed live.** `test_serving_parity.py` compares against oMLX's functions, not the running engine. `live_probe.py` compares `usage.prompt_tokens` on real requests and needs the base model loaded, so it waits for the thoughts test to resume.
 
 **Size with `all_sources_r5`:** about 8,870 rows and 8,100 for training, so about 2,470 steps, 58 h and $34 (scaled from r4, not measured).
+
+**GPU (user, 2026-11-06):** 8x AMD MI355X at $3 per GPU-hour ($24/h for the node): "the credits apply to the amd gpu and I need r5 asap before rc3". $60 of credits apply. This replaces the A6000. Estimated with r3's measured 2.8 s per step: setup 30-60 min, base's answers about 40 min, training about 2 h, picker under 1 h, about $90-120 in all. Needs `--attn math` and torch 2.14.1+rocm7.2.
