@@ -57,7 +57,7 @@ need_setup() { [ -x "$RUN" ] && [ -f "$WISP/SETUP_DONE" ] || die "run '$0 setup'
 # the one that had stopped thinking). A non-eval snapshot step only adds a cheap multimodal-only eval (train.py), ~0.5 min.
 SAVE_CKPTS="${SAVE_CKPTS:-8}"
 SAVE_EVERY="${SAVE_EVERY:-}"             # empty: derived in 'train' from the number of text rows
-export GLOBAL_BATCH=8 LR=2e-4 NPROC=1
+export GLOBAL_BATCH=8 LR=2e-4 NPROC="${NPROC:-1}"
 train_args() {                           # $1 = --save-every steps
   echo "--epochs 2 --attn $ATTN --eval-every $EVAL_EVERY --save-every $1 --dev-text-max $DEV_TEXT_MAX \
 --vision-weight 0.12 --audio-weight 0.06 --anchor-kl 0.5 --seed $SEED --attn-parity-strict"
