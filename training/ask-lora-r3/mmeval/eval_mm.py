@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -79,10 +80,25 @@ def check_gpu(device: int) -> None:
         die(f"a bf16 matmul failed on {name}: {type(e).__name__}: {e}")
 
 
+def restrict_to_math_if_asked(cuda, env=os.environ) -> bool:
+    """WISP_ATTN=math (train.py's setting for gfx950): only torch's math SDPA backend stays on, so no fused kernel can
+    return wrong results here while training avoided it. Returns whether it applied."""
+    if (env.get("WISP_ATTN") or "").strip().lower() != "math":
+        return False
+    for name in ("enable_flash_sdp", "enable_mem_efficient_sdp", "enable_cudnn_sdp"):
+        if hasattr(cuda, name):
+            getattr(cuda, name)(False)
+    if hasattr(cuda, "enable_math_sdp"):
+        cuda.enable_math_sdp(True)
+    return True
+
+
 def load_base(base: Path, device: int):
     import torch
     import transformers
     from transformers import AutoProcessor, AutoTokenizer
+    if restrict_to_math_if_asked(torch.backends.cuda):
+        print("attention: math SDPA only (WISP_ATTN=math)", flush=True)
     cls = next((getattr(transformers, n) for n in ("AutoModelForMultimodalLM", "AutoModelForImageTextToText")
                 if hasattr(transformers, n)), None)
     if cls is None:

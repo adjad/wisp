@@ -8,7 +8,8 @@
 #   bash run_r5.sh finals PARTIAL [OUT_DIR]   base writes the final answers (../gpu/run_finals.sh), default ~/wisp/finals
 #   bash run_r5.sh unpack SHA | preflight | smoke | train [resume-dir] | status     as run_sft.sh, on all GPUs
 #   bash run_r5.sh unzip-pickers    as run_sft.sh
-#   bash run_r5.sh pick             base + up to MAX_CKPTS (3) candidates, one GPU each, then run_sft.sh's decision
+#   bash run_r5.sh pick             base + up to MAX_CKPTS (3) candidates, one GPU each, PICK_BATCH (8) generations
+#                                   together, then run_sft.sh's decision
 #   bash run_r5.sh picked | merge [ckpt] | package | bundle | stage2      as run_sft.sh
 #
 # Early stop: `status` shows the step. Stop at step 400 by killing the pid in ~/wisp/gemma/ask-lora/train.pid, then check
@@ -57,7 +58,7 @@ pick)
     HIP_VISIBLE_DEVICES=$i CUDA_VISIBLE_DEVICES=$i "$PY" "$MM/pick_text.py" generate --base "$BASE" --ckpt-root "$OUT" "${ARGS[@]}" \
         --data "$MM/data/text-dev.jsonl" --out "$D" --limit "${DEV_STEPS:-360}" --samples "${SAMPLES:-1}" \
         --samples-safety "${SAMPLES_SAFETY:-3}" --samples-absence "${SAMPLES_ABSENCE:-3}" --safety-steps "${SAFETY_STEPS:-60}" \
-        --absence-steps "${ABSENCE_STEPS:-60}" --device 0 > "$PK/text-$name.log" 2>&1 &
+        --absence-steps "${ABSENCE_STEPS:-60}" --batch "${PICK_BATCH:-8}" --device 0 > "$PK/text-$name.log" 2>&1 &
     PIDS+=($!); i=$(( i + 1 ))
   done
   for p in "${PIDS[@]}"; do wait "$p" || die "a picker process failed (see $PK/*.log)"; done

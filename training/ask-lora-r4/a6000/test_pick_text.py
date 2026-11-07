@@ -475,8 +475,8 @@ def test_samples_per_slice_and_the_plan():
     pp = T.probe_plan(plan, cfg, passes=7)
     assert (pp["safety_steps"], pp["absence_steps"], pp["other_steps"]) == (60, 60, 240)
     assert pp["generations_per_pass"] == 240 + 180 + 180 == 600
-    assert pp["hours"] == 8.75                                                                  # 600 x 7.5 s x 7 passes
-    assert T.probe_plan(plan, {"other": 1, "safety": 1, "absence": 1}, passes=7)["hours"] == 5.25    # the one-sample probe it replaces
+    assert pp["hours"] == 44.33                                                                 # 600 x 38 s x 7 passes, one at a time
+    assert T.probe_plan(plan, {"other": 1, "safety": 1, "absence": 1}, passes=7)["hours"] == 26.6    # the one-sample probe it replaces
     uncapped = T.sample_plan(big, 360, {"safety": 0, "absence": 0})
     assert len(uncapped) == 360 and sum(r["family"] == "safe_restraint" for r in uncapped) > 60       # no cap: proportional
     small = T.sample_plan(gate_rows(), 40)                                                      # slices smaller than the cap are kept whole
@@ -544,7 +544,9 @@ def test_base_and_candidates_use_the_same_seed_for_each_step_and_sample():
     again = {(r["id"], k): T.row_seed(20261102, r["id"], k) for r in rows for k in range(T.samples_for(r, cfg))}
     assert seeds == again and len(set(seeds.values())) == len(seeds)                           # distinct per (step, sample), identical per run
     src = (HERE / "pick_text.py").read_text()
-    assert "torch.manual_seed(row_seed(a.seed, row[\"id\"], s))" in src                         # the one place seeds are set, no checkpoint in it
+    assert src.count("torch.manual_seed(") == 1 and "torch.manual_seed(seed)" in src            # the one place seeds are set
+    assert 'row_seed(a.seed, rows[group[0][0]]["id"], group[0][1])' in src                      # from the group alone, no checkpoint in it
+    assert 'row_seed(a.seed, rows[i]["id"], s)' in src                                          # and per row when a group is split
 
 
 def test_run_info_fixes_the_steps_and_samples_for_scoring():
@@ -925,7 +927,7 @@ def test_r3_brev_edits_are_backward_compatible():
 
 def test_run_sft_matches_r3_effective_batch():
     sh = (HERE / "run_sft.sh").read_text()
-    assert "GLOBAL_BATCH=8" in sh and "LR=2e-4" in sh and "NPROC=1" in sh and "--epochs 2" in sh
+    assert "GLOBAL_BATCH=8" in sh and "LR=2e-4" in sh and 'NPROC="${NPROC:-1}"' in sh and "--epochs 2" in sh
     assert "--attn-parity-strict" in sh and 'PIN_TORCH="2.11.0"' in sh and 'PIN_TRANSFORMERS="5.22.1"' in sh and 'PIN_PEFT="0.21.2"' in sh
     r = subprocess.run(["bash", "-n", str(HERE / "run_sft.sh")], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
@@ -950,6 +952,70 @@ def test_run_sft_saves_many_checkpoints_and_runs_both_stages():
     assert 'PRIVATE_EVAL_DIR' in sh and "never on the GPU box" in sh
     for step in ("stage2)", "merge)", "picked)"):
         assert step in sh
+
+
+def test_plan_batches_groups_close_lengths_and_keeps_every_item():
+    items = [(0, 0), (1, 0), (1, 1), (2, 0), (3, 0)]
+    lengths = [900, 100, 500, 110]
+    groups = T.plan_batches(items, lengths, 2)
+    assert groups == [[(1, 0), (1, 1)], [(3, 0), (2, 0)], [(0, 0)]]
+    assert sorted(x for g in groups for x in g) == items
+    assert T.plan_batches(items, lengths, 1) == [[x] for x in items], "batch 1 keeps row order"
+    assert groups == T.plan_batches(list(reversed(items)), lengths, 2), "the groups depend only on the rows"
+
+
+def test_pad_left_ends_every_sequence_at_the_last_column():
+    assert T.pad_left([[5, 6, 7], [8]], 0) == [[5, 6, 7], [0, 0, 8]]
+
+
+def test_trim_generated_stops_at_the_first_stop_and_drops_padding():
+    assert T.trim_generated([9, 106, 0, 0], T.STOP_IDS, 0) == [9, 106]
+    assert T.trim_generated([9, 8, 0, 0], T.STOP_IDS, 0) == [9, 8], "cut by max tokens while others ran on"
+    assert T.trim_generated([9, 8], T.STOP_IDS, 0) == [9, 8]
+    assert T.trim_generated([50], T.STOP_IDS, 0) == [50]
+
+
+def test_batch_check_allows_one_near_tie_but_not_a_padding_fault():
+    prompts = [[1], [2], [3], [4]]
+    good = lambda g: [[p[0]] * 30 for p in g]                                    # noqa: E731
+    assert T.batch_check(prompts, good) == [True] * 4
+
+    def one_flip(group):
+        out = good(group)
+        if len(group) > 1:
+            out[1][5] = 99
+        return out
+    assert T.batch_check_passes(T.batch_check(prompts, one_flip))
+
+    def broken(group):
+        return good(group) if len(group) == 1 else [[99] * 30 for _ in group]
+    assert not T.batch_check_passes(T.batch_check(prompts, broken))
+    assert not T.batch_check_passes([])
+
+
+def test_picker_uses_math_attention_when_training_did():
+    sys.path.insert(0, str(TRAINING / "ask-lora-r3" / "mmeval"))
+    import eval_mm as EM
+
+    class Backend:
+        def __init__(self):
+            self.calls = {}
+
+        def __getattr__(self, name):
+            if name.startswith("enable_"):
+                return lambda v: self.calls.__setitem__(name, v)
+            raise AttributeError(name)
+    b = Backend()
+    assert EM.restrict_to_math_if_asked(b, {"WISP_ATTN": " Math "})
+    assert b.calls["enable_flash_sdp"] is False and b.calls["enable_mem_efficient_sdp"] is False and b.calls["enable_math_sdp"] is True
+    c = Backend()
+    assert not EM.restrict_to_math_if_asked(c, {"WISP_ATTN": "sdpa"}) and not c.calls
+    assert not EM.restrict_to_math_if_asked(c, {}) and not c.calls
+
+
+def test_run_r5_batches_the_picker():
+    sh = (TRAINING / "ask-lora-r5" / "mi355x" / "run_r5.sh").read_text()
+    assert '--batch "${PICK_BATCH:-8}"' in sh and "WISP_ATTN=math" in sh
 
 
 if __name__ == "__main__":

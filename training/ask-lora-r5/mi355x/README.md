@@ -37,7 +37,7 @@ $PY training/ask-lora-r4/a6000/pack_r4.py --model ~/Desktop/OMLX_Model_Files/Jun
 bash run_r5.sh unpack SHA256      # from OUT/upload.json
 bash run_r5.sh preflight && bash run_r5.sh smoke
 bash run_r5.sh train              # `status` shows the step; check the snapshot at step 400 before paying for the rest
-bash run_r5.sh unzip-pickers && bash run_r5.sh pick
+bash run_r5.sh unzip-pickers && bash run_r5.sh pick    # batches 8 at a time and checks that first; PICK_BATCH=1 turns it off
 bash run_r5.sh merge && bash run_r5.sh package && bash run_r5.sh bundle
 ```
 

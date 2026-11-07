@@ -17,6 +17,7 @@ checkpoint, scores every generation with grpo/reward.py, and a checkpoint is INE
 
 Sampling is per slice: 3 samples on the safety slice and on the absence-possible steps, 1 elsewhere, with the same seed per
 (step, sample) for the base and every checkpoint; the two slices are capped at 60 steps each. Rates, not raw counts, are compared.
+With --batch N the base and every checkpoint get the same groups and one seed per group instead.
 
 MISSING DATA IS A FAILURE, never a pass: no base generations, too few steps for a metric (--min-steps), no safety rows, a
 sample that was not generated, a metric absent from the results file.
@@ -632,7 +633,63 @@ def _encode(tok, proc, prompt: str, device: int):
     return enc
 
 
-SECS_PER_GENERATION = 7.5          # ~3.5 s prefill of a 6.5k-token prompt + ~100 tokens at 40 ms (README, estimate.picker_text_hours)
+SECS_PER_GENERATION = 38.0         # one at a time, measured on the A6000 2026-11-05: 1.4 s prefill + 246 tokens at 0.15 s
+BATCH_CHECK_STEPS, BATCH_CHECK_AGREE, BATCH_CHECK_PROMPTS = 48, 24, 4
+
+
+def work_items(rows: list[dict], cfg: dict | None, families) -> list[tuple[int, int]]:
+    """(row index, sample) for everything one pass generates, in row order."""
+    return [(i, s) for i, row in enumerate(rows) for s in range(samples_for(row, cfg, families))]
+
+
+def plan_batches(items: list[tuple[int, int]], lengths: list[int], batch: int) -> list[list[tuple[int, int]]]:
+    """Groups of up to `batch` items, closest prompt lengths together to limit padding. The groups depend only on the
+    rows, so the base and every checkpoint get the same groups and the same seeds. Batch 1 keeps row order."""
+    if batch <= 1:
+        return [[it] for it in items]
+    ordered = sorted(items, key=lambda it: (lengths[it[0]], it[0], it[1]))
+    return [ordered[i:i + batch] for i in range(0, len(ordered), batch)]
+
+
+def pad_left(seqs: list[list[int]], pad: int) -> list[list[int]]:
+    """Left padding: every sequence ends at the last column, which is where generate continues from."""
+    width = max(len(q) for q in seqs)
+    return [[pad] * (width - len(q)) + list(q) for q in seqs]
+
+
+def trim_generated(ids: list[int], stops, pad: int) -> list[int]:
+    """One sequence's new tokens, through its first stop token. A batch pads a finished sequence until the longest ends."""
+    out = []
+    for t in ids:
+        out.append(t)
+        if t in stops:
+            return out
+    while out and out[-1] == pad:
+        out.pop()
+    return out
+
+
+def batch_check(prompts: list, gen, agree: int = BATCH_CHECK_AGREE) -> list[bool]:
+    """For each prompt, whether its first `agree` greedy tokens are the same alone and in a left-padded batch. `gen` takes a
+    list of prompts and returns their new tokens."""
+    alone = [gen([p])[0] for p in prompts]
+    together = gen(prompts)
+    return [a[:agree] == b[:agree] for a, b in zip(alone, together)]
+
+
+def batch_check_passes(results: list[bool]) -> bool:
+    """bf16 rounding can flip one near-tie, so one miss is allowed. A padding or mask fault breaks nearly all of them."""
+    return bool(results) and sum(results) >= len(results) - 1
+
+
+def generate_ids(m, torch, encs: list[dict], pad: int, seed: int, device, gen_kw: dict, max_new: int) -> list[list[int]]:
+    """Generate for one group. `encs` holds one dict of token lists per prompt, such as input_ids and attention_mask."""
+    enc = {k: torch.tensor(pad_left([e[k] for e in encs], pad if k == "input_ids" else 0), device=device) for k in encs[0]}
+    width = enc["input_ids"].shape[1]
+    torch.manual_seed(seed)
+    with torch.no_grad():
+        out = m.generate(**enc, max_new_tokens=max_new, eos_token_id=list(STOP_IDS), pad_token_id=pad, **gen_kw)
+    return [trim_generated(row.tolist(), STOP_IDS, pad) for row in out[:, width:]]
 
 
 def sample_cfg(a) -> dict:
@@ -675,7 +732,8 @@ def cmd_generate(a) -> int:
     plan = probe_plan(rows, cfg, fams, len(names))
     print(f"{plan['steps']} dev steps ({plan['safety_steps']} safety x {cfg['safety']} samples, {plan['absence_steps']} "
           f"absence-possible x {cfg['absence']}, {plan['other_steps']} other x {cfg['other']}) = {plan['generations_per_pass']} "
-          f"generations per pass x {len(names)} passes: {names}; about {plan['hours']} h at {SECS_PER_GENERATION} s each")
+          f"generations per pass x {len(names)} passes: {names}; about {plan['hours']} h one at a time at {SECS_PER_GENERATION} s "
+          f"each, running batch {a.batch}")
     EM.check_gpu(a.device)
     tok, proc, model = EM.load_base(Path(a.base), a.device)
     real = [n for n in names if n != BASE]
@@ -698,38 +756,67 @@ def cmd_generate(a) -> int:
     (out / "text_run_info.json").write_text(json.dumps({
         "base": str(a.base), "ckpt_root": str(ckpt_root), "checkpoints": names, "steps": len(rows), "samples": cfg,
         "step_ids": [r["id"] for r in rows], "safety_families": sorted(fams), "plan": plan,
-        "decoding": "greedy" if a.greedy else SAMPLING, "max_new_tokens": a.max_new, "seed": a.seed,
+        "decoding": "greedy" if a.greedy else SAMPLING, "max_new_tokens": a.max_new, "seed": a.seed, "batch": a.batch,
         "reward_py": R.__file__, "when": time.strftime("%FT%T")}, indent=1))
     gen_kw = {"do_sample": False, "temperature": None, "top_p": None, "top_k": None} if a.greedy \
         else {"do_sample": True, **SAMPLING}
 
+    pad = 0 if tok.pad_token_id is None else tok.pad_token_id
+    encs = []
+    for row in rows:
+        enc = _encode(tok, proc, row["prompt"], a.device)
+        encs.append({k: v[0].tolist() for k, v in enc.items()})
+        if {len(v) for v in encs[-1].values()} != {enc["input_ids"].shape[1]}:
+            die(f"{row['id']}: the encoded prompt has a field that isn't per token: {sorted(encs[-1])}")
+    lengths = [len(e["input_ids"]) for e in encs]
+    batches = plan_batches(work_items(rows, cfg, fams), lengths, a.batch)
+    if a.batch > 1 and not a.no_batch_check:
+        ordered = sorted(range(len(rows)), key=lengths.__getitem__)
+        picked = [encs[ordered[round(k * (len(ordered) - 1) / (BATCH_CHECK_PROMPTS - 1))]] for k in range(BATCH_CHECK_PROMPTS)]
+        greedy = {"do_sample": False, "temperature": None, "top_p": None, "top_k": None}
+        res = batch_check(picked, lambda group: generate_ids(m, torch, group, pad, 0, a.device, greedy, BATCH_CHECK_STEPS))
+        print(f"batch check: {sum(res)} of {len(res)} prompts agree on their first {BATCH_CHECK_AGREE} tokens", flush=True)
+        if not batch_check_passes(res):
+            die("batched generation disagrees with one at a time; rerun with --batch 1 (PICK_BATCH=1 in run_r5.sh)")
+
+    def group_records(ck: str, todo: list[tuple[int, int]], seed: int) -> list[dict]:
+        t0 = time.monotonic()
+        try:
+            new = generate_ids(m, torch, [encs[i] for i, _ in todo], pad, seed, a.device, gen_kw, a.max_new)
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            if len(todo) > 1:             # the group didn't fit: each on its own, as a one-at-a-time run would
+                return [r for i, s in todo for r in group_records(ck, [(i, s)], row_seed(a.seed, rows[i]["id"], s))]
+            new = None
+            err = "OutOfMemoryError"
+        except Exception as e:  # noqa: BLE001 - recorded, scored as malformed, never as an answer
+            new = None
+            err = f"{type(e).__name__}: {e}"[:300]
+        secs = round((time.monotonic() - t0) / len(todo), 2)
+        recs = []
+        for k, (i, s) in enumerate(todo):
+            rec = {"ckpt": ck, "id": rows[i]["id"], "sample": s}
+            if new is None:
+                rec["error"] = err
+            else:
+                rec["raw"] = tok.decode(new[k], skip_special_tokens=False)
+                rec["tokens"] = len(new[k])
+            rec["secs"] = secs
+            rec["batch"] = len(todo)
+            recs.append(rec)
+        return recs
+
     def run(ck: str) -> None:
-        for i, row in enumerate(rows):
-            for s in range(samples_for(row, cfg, fams)):
-                if (ck, row["id"], s) in done:
-                    continue
-                t0 = time.monotonic()
-                rec = {"ckpt": ck, "id": row["id"], "sample": s}
-                try:
-                    enc = _encode(tok, proc, row["prompt"], a.device)
-                    n = enc["input_ids"].shape[1]
-                    torch.manual_seed(row_seed(a.seed, row["id"], s))
-                    with torch.no_grad():
-                        out_ids = m.generate(**enc, max_new_tokens=a.max_new, eos_token_id=list(STOP_IDS),
-                                             pad_token_id=tok.pad_token_id, **gen_kw)
-                    rec["raw"] = tok.decode(out_ids[0, n:], skip_special_tokens=False)
-                    rec["tokens"] = int(out_ids.shape[1] - n)
-                except torch.cuda.OutOfMemoryError:
-                    torch.cuda.empty_cache()
-                    rec["error"] = "OutOfMemoryError"
-                except Exception as e:  # noqa: BLE001 - recorded, scored as malformed, never as an answer
-                    rec["error"] = f"{type(e).__name__}: {e}"[:300]
-                rec["secs"] = round(time.monotonic() - t0, 2)
+        for n, group in enumerate(batches):
+            todo = [it for it in group if (ck, rows[it[0]]["id"], it[1]) not in done]
+            if not todo:
+                continue
+            for rec in group_records(ck, todo, row_seed(a.seed, rows[group[0][0]]["id"], group[0][1])):
                 fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 fh.flush()
-                if i % 10 == 0 or "error" in rec:
+                if n % 10 == 0 or "error" in rec:
                     shown = (rec.get("raw") or rec["error"]).replace("\n", " ")
-                    print(f"{ck:>12} {i + 1:>4}/{len(rows)} {row['id'][:34]:<34} {rec['secs']:5.1f}s | {shown[:90]}", flush=True)
+                    print(f"{ck:>12} {n + 1:>4}/{len(batches)} {rec['id'][:34]:<34} {rec['secs']:5.1f}s | {shown[:90]}", flush=True)
 
     for ck in names:
         if ck == BASE:
@@ -1012,6 +1099,8 @@ def main() -> int:
     g.add_argument("--safety-families", help="comma list of families on the safety slice (default: the r3/r4 unsafe patterns)")
     g.add_argument("--seed", type=int, default=20261102)
     g.add_argument("--device", type=int, default=0)
+    g.add_argument("--batch", type=int, default=1, help="generations run together (1 = one at a time, each with its own seed)")
+    g.add_argument("--no-batch-check", action="store_true", help="skip the check that batched and single generation agree")
     s = sub.add_parser("score", help="re-score DIR/text_answers.jsonl")
     common(s)
     s.add_argument("--data", required=True)
