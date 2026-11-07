@@ -498,6 +498,24 @@ def test_route_refuses_bad_values_and_saves_nothing(api, home, body):
     assert U.is_set() is False
 
 
+def test_route_saves_and_clears_brief_times(api):
+    reply = api.patch("/assistant/hours", json={"brief_times": [780, 540]})
+    assert reply.status_code == 200
+    body = reply.json()
+    assert body["brief_times"] == [540, 780] and body["is_set"] is False
+    assert U.chosen_brief_times() == (540, 780) and api.published == [{"type": "changed"}]
+    assert api.get("/assistant/hours").json()["brief_times"] == [540, 780]
+    assert api.patch("/assistant/hours", json={"offer_moves": False}).json()["brief_times"] == [540, 780]
+    assert api.patch("/assistant/hours", json={"brief_times": []}).json()["brief_times"] is None
+    assert U.chosen_brief_times() is None
+
+
+@pytest.mark.parametrize("times", ["540", ["540"], [540.5], [True], [-1], [1440], list(range(0, 540, 60))])
+def test_route_refuses_bad_brief_times_and_saves_nothing(api, times):
+    assert api.patch("/assistant/hours", json={"brief_times": times}).status_code == 422
+    assert U.chosen_brief_times() is None
+
+
 def test_route_refuses_a_web_page(api):
     assert api.patch("/assistant/hours", json={"offer_moves": False}, headers={"Origin": "null"}).status_code == 403
     assert api.patch("/assistant/hours", content="{}", headers={"Content-Type": "text/plain"}).status_code == 415
