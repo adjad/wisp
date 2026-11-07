@@ -20,7 +20,7 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(QuickSettingsText.saveMemory(on: nil, pending: false) == "Not confirmed", "unconfirmed Save memory is never off")
     check(QuickSettingsText.saveMemory(on: true, pending: true).hasPrefix("Updating"), "a pending Save memory change waits")
     let memoryHelp = QuickSettingsText.saveMemoryHelp
-    check(memoryHelp.contains("5.5 GB") && memoryHelp.contains("30 minutes without using Wisp")
+    check(memoryHelp.contains("5.5 GB") && memoryHelp.contains("5 minutes without using Wisp")
           && memoryHelp.contains("sooner when your Mac runs low on memory"),
           "Save memory help names the size and when it unloads")
     check(memoryHelp.contains("Research and Smart Search keep it loaded"), "Save memory help says running work holds it")

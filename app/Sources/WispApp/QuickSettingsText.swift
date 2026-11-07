@@ -178,7 +178,7 @@ enum QuickSettingsText {
         }
     }
 
-    static let saveMemoryHelp = "Wisp's model uses about 5.5 GB of memory. After 30 minutes without using "
+    static let saveMemoryHelp = "Wisp's model uses about 5.5 GB of memory. After 5 minutes without using "
         + "Wisp, or sooner when your Mac runs low on memory, Wisp unloads it so other apps get that "
         + "memory back. Research and Smart Search keep it loaded while they run. Opening Ask or the "
         + "Wisp window loads it again while you type; a question asked right away waits about 6 "
@@ -208,7 +208,7 @@ enum QuickSettingsText {
         }
         guard detail.onOMLX else { return saveMemoryHelp }
         return """
-            Wisp's Gemma chat model uses about 5.5 GB of memory. After 30 minutes without using Wisp, or \
+            Wisp's Gemma chat model uses about 5.5 GB of memory. After 5 minutes without using Wisp, or \
             sooner when your Mac runs low on memory, Wisp unloads it from your oMLX app so other apps get \
             that memory back. Save memory only ever unloads that one model. It waits while another app \
             has used the model in the last 30 minutes. Research and Smart Search keep it loaded while \
