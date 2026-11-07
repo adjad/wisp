@@ -818,6 +818,9 @@ def main(argv=None):
     args = ap.parse_args(argv)
     paths = args.paths or [os.path.join(OUT, x) for x in ("train.jsonl", "valid.jsonl", "all.jsonl")
                            if os.path.exists(os.path.join(OUT, x))]
+    if r5_enabled():    # what build.py gets through scen: picture turns may write, and they card every effect
+        import scen_r5_picture
+        writes.WRITE_ALLOW = {**writes.WRITE_ALLOW, **scen_r5_picture.WRITE_ALLOW_R5}
     leaks = leak.LeakIndex()
     ident = identity_tokens()
     deny = None

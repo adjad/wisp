@@ -5,7 +5,7 @@
 #
 #   bash run_r5.sh setup            ROCm torch (rocm7.2 index first), transformers 5.22.1, peft 0.21.2, the 16 GB base
 #   bash run_r5.sh check            GPUs and versions
-#   bash run_r5.sh finals PARTIAL   base writes the final answers (../gpu/run_finals.sh)
+#   bash run_r5.sh finals PARTIAL [OUT_DIR]   base writes the final answers (../gpu/run_finals.sh), default ~/wisp/finals
 #   bash run_r5.sh unpack SHA | preflight | smoke | train [resume-dir] | status     as run_sft.sh, on all GPUs
 #   bash run_r5.sh unzip-pickers    as run_sft.sh
 #   bash run_r5.sh pick             base + up to MAX_CKPTS (3) candidates, one GPU each, then run_sft.sh's decision
@@ -33,9 +33,11 @@ check)
   "$PY" -c "import torch,transformers,peft;print('torch',torch.__version__,'hip',torch.version.hip,'gpus',torch.cuda.device_count());print('transformers',transformers.__version__,'peft',peft.__version__)"
   "$PY" -c "import torch,sys;v=torch.__version__;sys.exit(0 if v.startswith('2.14.') and 'rocm7.2' in v else print('WARNING: r3 measured torch 2.14.1+rocm7.2 good and AMD 2.11.0+rocm7.13.0 bad; this is',v))" ;;
 finals)
-  [ -n "${2:-}" ] || die "usage: $0 finals PARTIAL.jsonl"
+  [ -n "${2:-}" ] || die "usage: $0 finals PARTIAL.jsonl [OUT_DIR]"
   G="$HERE/run_finals.sh"; [ -f "$G" ] || G="$HERE/../gpu/run_finals.sh"
-  ATTN=math NPROC="$NPROC" bash "$G" "$2" ;;
+  FO="${3:-$WISP/finals}"; mkdir -p "$FO" || die "cannot make $FO"
+  [ ! -f "$HERE/finals.r4reuse.jsonl" ] || [ -f "$FO/finals.r4reuse.jsonl" ] || cp "$HERE/finals.r4reuse.jsonl" "$FO/" || die "reuse copy failed"
+  ATTN=math NPROC="$NPROC" bash "$G" "$2" "$FO" ;;
 pick)
   [ -f "$MM/pick_text.py" ] && [ -f "$MM/eval_mm.py" ] && [ -f "$MM/data/text-dev.jsonl" ] || die "run '$0 unzip-pickers' first"
   [ -d "$OUT/ckpt" ] || [ -d "$OUT/final" ] || die "no checkpoints under $OUT"

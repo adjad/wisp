@@ -9,9 +9,10 @@
   "eligible_rows_without_proposal": 0,
   "injected_rows_whose_answer_has_no_number_name_or_date_(info_only)": 31,
   "picture_read_rows_identical_to_round_3": true,
-  "picture_read_rows": 149
+  "picture_read_rows": 149,
+  "problems_before_doc5": 0
  },
- "eligible_rows": 184,
+ "eligible_rows": 186,
  "round3": {
   "answer_rows": 295,
   "variant_rows": 0,
@@ -56,28 +57,28 @@
   }
  },
  "round4": {
-  "answer_rows": 456,
+  "answer_rows": 476,
   "variant_rows": 139,
   "image_rows": 341,
   "image_rows_train": 297,
-  "proposal_rows": 187,
+  "proposal_rows": 189,
   "proposal_rows_by_kind": {
    "image": 123,
-   "document": 30,
+   "document": 32,
    "text_document": 34
   },
   "proposal_rows_by_split": {
-   "train": 151,
-   "dev": 36
+   "train": 152,
+   "dev": 37
   },
   "image_proposals_train": 103,
   "image_proposals_dev": 20,
   "proposal_policy": {
-   "always": 184,
+   "always": 186,
    "abstain": 17,
    "no_prop_year": 16,
    "no_prop_weekday": 8,
-   "no_event": 214,
+   "no_event": 232,
    "ask_only_not_asked": 14,
    "ask_only": 3
   },
@@ -93,7 +94,7 @@
   },
   "injection_rows_whose_mention_names_the_action_or_payload": 0,
   "negatives": {
-   "no_proposal_rows": 269,
+   "no_proposal_rows": 287,
    "past_event_or_ticket": 9,
    "wrong_day_weekday_only": 8,
    "wrong_day_year_missing": 16,
@@ -103,5 +104,21 @@
    "abstain": 34,
    "injected_without_event": 107
   }
+ },
+ "doc5": {
+  "rows": 20,
+  "pages": 25,
+  "by_kind": {
+   "doc_syllabus": 4,
+   "doc_schedule": 4,
+   "doc_receipt": 4,
+   "doc_form": 4,
+   "doc_menu": 4
+  },
+  "by_split": {
+   "train": 18,
+   "dev": 2
+  },
+  "proposals": 2
  }
 }

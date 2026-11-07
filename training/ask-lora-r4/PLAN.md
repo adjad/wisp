@@ -686,7 +686,7 @@ The user asked r5 to follow https://gemma.ai/tuning/ and said the older ai.googl
 
 **Different, and open:**
 
-1. **Thoughts between tool calls (`service/agent/loop.py:4557`).** Google says not to strip thoughts between calls inside one model turn. Wisp appends `{"role": "assistant", "content", "tool_calls"}` and drops `reasoning_content`, so the model loses its reasoning at each step. The chat template would render a kept thought (`thinking_gate`: any message after the last user turn). Training rows match production and also drop it. On the r4 gate's trials, base passes 75% with one tool round, 61% with two and 55% with three or more; r4 passes 78%, 53% and 48%. Those longer cases are also harder, so this doesn't show the cause. **Test on base first; it would be a service change and rows must match whatever ships.** Decide before base generation.
+1. **Thoughts between tool calls (`service/agent/loop.py:4557`).** Google says not to strip thoughts between calls inside one model turn. Wisp appends `{"role": "assistant", "content", "tool_calls"}` and drops `reasoning_content`, so the model loses its reasoning at each step. The chat template would render a kept thought (`thinking_gate`: any message after the last user turn). Training rows match production and also drop it. On the r4 gate's trials, base passes 75% with one tool round, 61% with two and 55% with three or more; r4 passes 78%, 53% and 48%. Those longer cases are also harder, so this doesn't show the cause. **Tested 2026-11-06, and the test didn't test it:** see "Thoughts test" below. The engine drops the thought anyway, so r5's rows stay without prior thoughts, which is what's served.
 2. **`modules_to_save=["lm_head", "embed_tokens"]` with weight tying (QLoRA and vision pages).** The audio page doesn't list it, and no page says why it's there. It would train the full 262,144-token embedding table, far more parameters than the LoRA itself. The MTP page says the drafter shares that table, so speculative decoding could slow; output shouldn't change, since the target checks every token. Left out unless the user wants it tested.
 3. **One system turn.** Wisp sends the date and the unverified-context note as later `system` messages, but oMLX joins adjacent ones before rendering, so the served prompt has one system turn, as Google asks. Training didn't match that; see "Served prompts" below.
 4. **Image tokens.** Google says higher budgets help OCR and document parsing. Wisp sends a flat 280 (`service/vision.py:74`, the model's `max_soft_tokens`). It may matter for r4's document facts loss (1.000 to 0.944), but base had 1.000 at 280, so it can't be the whole cause. Not an r5 training change.
@@ -720,10 +720,33 @@ The user asked r5 to follow https://gemma.ai/tuning/ and said the older ai.googl
 - **System messages:** training had the base system turn with tools, then separate `<|turn>system` turns for the date and notes. Served, they're joined into one turn, with tools after all of it.
 - **Tool schemas:** served schemas have sorted keys, a description on every nested schema and required parameter, and `description` renamed to `param_description`. Median difference on 300 sampled rows: 39 tokens more.
 
-All 300 sampled rows differed. This could be one reason tuned rounds behaved differently once served, but nothing has measured that. **Fixed for r5:** `render.py` copies those steps, and `test_serving_parity.py` compares against oMLX's own code (1,000 of 1,000 sampled rows identical). r4's data can no longer be reproduced with this `render.py`.
+All 300 sampled rows differed. This could be one reason tuned rounds behaved differently once served, but nothing has measured that. **Fixed for r5:** `render.py` copies those steps, and `test_serving_parity.py` compares against oMLX's own code. r4's data can no longer be reproduced with this `render.py`.
 
-**Not yet confirmed live.** `test_serving_parity.py` compares against oMLX's functions, not the running engine. `live_probe.py` compares `usage.prompt_tokens` on real requests and needs the base model loaded, so it waits for the thoughts test to resume.
+**Confirmed live, 2026-11-06.** The first check used the wrong extractor: the server calls `omlx/adapter/gemma4.py:extract_gemma4_messages` for Gemma 4, not `extract_multimodal_content`. That extractor folds tool results onto the calling turn and parses JSON ones into objects, which changed 2.5% of sampled prompts. `render.py` now does the same. All 8,873 prompts in the 7e442f2d build are byte-identical to oMLX's own code, and `usage.prompt_tokens` from the running engine matched on 14 of 14 rows (10 with JSON results, 4 with text).
+
+## Thoughts test (2026-11-06): inconclusive
+
+The aim was to see whether keeping Gemma's thoughts between tool calls within one turn improves tool calling. It didn't test that. **The live engine discards `reasoning_content` on assistant messages:** `extract_gemma4_messages` builds each assistant turn without it, on purpose ("Per Gemma 4's multi-turn rule"). An 80-repeat thought changed the prompt by 0 tokens (66 against 66; 61 against 61 with thinking off), with and without `preserve_thinking`. The "kept" arm sent thoughts that never reached the model.
+
+Results on 97 cases, 3 trials each, 290 paired after dropping one pause artifact:
+
+| | control | "kept" |
+|---|---|---|
+| pass | 134 (46.2%) | 147 (50.7%), sign test p=.124 |
+| right tool (only one arm right) | 18 | 43, p=.002 |
+| right arguments (only one arm right) | 20 | 42, p=.007 |
+| turn p50 | 11.4 s | 11.4 s |
+
+The two arms should have behaved the same apart from client-side estimates, so these gaps can't be credited to thoughts. Control spanned AC power, a 6-hour pause and an engine restart; "kept" ran on battery. The first 66 trials were level at 31 and 30, and the gap came after. **For the gate:** two arms with the same prompts reached p=.002 on a sub-metric, so one sub-metric's p-value isn't enough on its own.
+
+**What a real test needs:** a patch to `extract_gemma4_messages` that passes `reasoning_content` through (the template renders it when present), with the user's OK and Wisp closed. If it helped, service, engine and rows would all change. Separate from r5, which trains on what's served today.
 
 **Size with `all_sources_r5`:** about 8,870 rows and 8,100 for training, so about 2,470 steps, 58 h and $34 (scaled from r4, not measured).
+
+**Picture-direct rows:** 20 `doc5_*` rows (`vision/make_doc5.py`) answer whole-group questions about a scanned page, for r4's 76-character syllabus miss. Each lists every fact asked for.
+
+**Scan before upload (2026-11-06):** names, emails and phone numbers from the private real-use set and every debug log in `~/Downloads` were checked against `partial.jsonl`, the reuse file, and the vision and audio rows. No emails or real names; the hits were the synthetic persona, public places, common phrases and timestamps.
+
+**Node steps:** `ask-lora-r5/mi355x/README.md`. A dry run on the Mac went through choose, finish, validate and pack. It removed 424 placeholder rows with no answer yet and 19 rows from 12 questions close to toolbench cases. The build's check missed those because the pin's toolbench lacks this branch's cases, so `finish_r5.py` checks again. Nothing has run on the node yet.
 
 **GPU (user, 2026-11-06):** 8x AMD MI355X at $3 per GPU-hour ($24/h for the node): "the credits apply to the amd gpu and I need r5 asap before rc3". $60 of credits apply. This replaces the A6000. Estimated with r3's measured 2.8 s per step: setup 30-60 min, base's answers 1-3 h (decode speed unmeasured; a short run on the node decides), training about 2 h, picker under 1 h, about $110-170 in all. Needs `--attn math` and torch 2.14.1+rocm7.2.

@@ -416,7 +416,7 @@
 
 - id: src_single_messages_friend
   split: heldout_sources
-  prompt: "what did {friend_first} text me?"
+  prompt: "where did my text thread with {friend_first} leave off?"
   forbid: *w
   max_calls: 6
   sources:
