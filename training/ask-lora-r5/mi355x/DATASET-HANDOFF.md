@@ -1,8 +1,8 @@
 # r5 dataset handoff, 2026-11-07
 
-**The dataset isn't complete, and nothing trained.** Base hasn't written its answers yet, and that needs a GPU no one has authorized here. Everything that needs no GPU is done and checked. No model was loaded, no node was started, and oMLX on port 8000 wasn't used.
+**The dataset isn't complete, and nothing trained.** Base hasn't written its answers yet. On 2026-11-07 the user chose one RTX A6000 for that generation, and only that, and started the instance themselves. Everything that needs no GPU is done and checked. oMLX on port 8000 wasn't used.
 
-Audited commit: `786122746d1c1abd9719559344a41b7d03e915e0`. Output folder (git-ignored): `training/ask-lora-r5/data/r5-prep/`. Hashes: `SHA256SUMS` in that folder. `prep_r5.sh` rebuilds all of it except the served-prompt check.
+Audited commit: `786122746d1c1abd9719559344a41b7d03e915e0`. Rows rebuilt on a clean commit, the one after this file's last change (see "Provenance"). Output folder (git-ignored): `training/ask-lora-r5/data/r5-prep/`. Hashes: `SHA256SUMS` in that folder. `prep_r5.sh` rebuilds all of it except the served-prompt check.
 
 ## What exists now
 
@@ -15,23 +15,24 @@ Audited commit: `786122746d1c1abd9719559344a41b7d03e915e0`. Output folder (git-i
 | Finals still to generate | 3,081 | 701 have no text at all; 2,380 hold scripted text base should replace |
 | Tool steps (calls and loads) | 3,994 | call targets stay scripted; base's thought is added where its call matches |
 | Tool steps with no thought after a tool result | 146 | need base's thought, or the row and its turn leave the build |
-| Finals with no thought after a tool result | 825 | waiting for base |
+| Finals with no thought after a tool result | 1,011 | waiting for base: 825 hold scripted text, 186 hold the placeholder |
+| All rows ending in an empty thought after a tool result | 1,157 | 1,011 + 146; equals `rendered_shapes.forced_empty`, and `finish_r5.py` stops if they ever differ |
 
 Token shares below describe this state, so they aren't the final distribution. A row holding "Base writes this answer." counts as about 6 tokens, which is why `chat_contrast_r5` and `memory_contrast_r5` show very high per-token weight. Recount with `report_r5.py` once base's answers exist.
 
 ## The exact compute dependency
 
-Generation needs a GPU, and none is authorized for this step: the MI355X node isn't started, and the Mac's oMLX can't be used without contending with Wisp. Once the user starts the node, follow `README.md`, using `r5-kit.tgz` from the output folder:
+Generation needs a GPU; the Mac's oMLX can't be used without contending with Wisp. **Decided 2026-11-07:** the user chose an RTX A6000 (about $0.60/h) over the MI355X, for generation only, in their words "Yes, use the A6000". The quote they saw was roughly 15-25 h with batching, up to about 4 days without, roughly $10-60 for answers plus tool-step thoughts, so `TRACES=1` is inside that OK. That quote came from r4's picker speed on the A6000, not a measurement of `gen_finals.py`: if the smoke's measured speed projects past about $60 or 4 days, the full run doesn't start. Follow `README.md`'s A6000 section, using `r5-kit.tgz` from the output folder:
 
-1. Base's answers: 3,081 finals. Speed on this node is still unmeasured, so the first command measures it.
-2. Base's thoughts at tool steps (`TRACES=1`): 3,994 steps, about 1-2 h more (unmeasured), about $24-48. This needs the user's OK for the cost, and I recommend it (below).
+1. Base's answers: 3,081 finals. The smoke step measures the speed first.
+2. Base's thoughts at tool steps (`TRACES=1`): 3,994 steps.
 3. Back on the Mac: `finish_r5.py`, then `validate.py` must exit 0, then `report_r5.py`.
 
 Training stays a separate decision and isn't part of this.
 
-## Decisions for the user
+## Decisions: two made, one recorded
 
-**1. The overlap rule removes most of the debug-log family.** Applied as instructed, with no exemption: 572 of 762 `debug_log_r5` rows leave. The user earlier called that family r5's biggest goal, and the private test sets come from the same logs. 190 rows stay, and some question types lose all or nearly all their rows. Of the 572:
+**1. The overlap rule: decided 2026-11-07, keep it strict.** The user chose "Keep it strict", relayed by the RC3 coordinator. `--keep-own-wording` isn't used, so all 813 removals stand and every test question still counts as unseen. What that costs, for the record: 572 of 762 `debug_log_r5` rows leave. The user earlier called that family r5's biggest goal, and the private test sets come from the same logs. 190 rows stay, and some question types lose all or nearly all their rows. Of the 572:
 
 | Overlaps with | Rows |
 | --- | --- |
@@ -40,11 +41,19 @@ Training stays a separate decision and isn't part of this.
 | Public only | 35 |
 | Audit evidence, private and public | 23 |
 
-`seal_r5.py --keep-own-wording` restores the 325 private-only rows, listed apart in `kept_known_overlaps`. Those test questions would then no longer count as unseen, so results on them must be reported separately. It's cheapest to decide before node time, since generation is paid per row. I built with the strict rule.
+`seal_r5.py --keep-own-wording` would have restored the 325 private-only rows, and those test questions would then no longer count as unseen. The user declined it.
 
-**2. `TRACES=1`.** See "Thoughts at tool steps" for why I recommend it.
+**2. `TRACES=1`: decided 2026-11-07, yes**, inside the A6000 quote above. See "Thoughts at tool steps" for why.
 
 **3. Runtime mode, recorded.** Rows are pinned to the installed oMLX text path with earlier in-turn reasoning dropped: both Wisp (`service/agent/loop.py`) and the engine (`omlx/adapter/gemma4.py`) drop it, so histories carry no earlier thoughts. All 8,492 prompts match oMLX byte for byte. The running thoughts test doesn't change this today. If the user later changes the runtime to send thoughts back, the histories must be regenerated before generating answers.
+
+## Provenance
+
+Each `stats.json` now names the code its own step ran on (`ask-lora-r2/builder/code_provenance.py`), at the top as `code_head`, `code_dirty`, and, when training/ had uncommitted code, `code_dirty_sha256` and `code_dirty_files`. Earlier steps stay under `provenance.build`, `provenance.seal` and `provenance.finish`, and no step copies another's head. The previous build said `78612274` while it ran on the changes later committed as `cf86db0d`, and its `service_head` was blank, because the builder asked git about the pinned copy's folder, which git doesn't track.
+
+The rebuild ran build, seal and finish on one clean commit, named in each step's `provenance` in `prep-INCOMPLETE/stats.json`, with `code_dirty` false. Its rows are byte-identical to the earlier build's: `all.jsonl`, the splits, `partial.jsonl`, provenance, drops, the overlap manifest, chosen finals and the token reports all hash the same. So the served-prompt check, the contract verification and the 40-record review still describe these rows. Any tracked change under training/, even a Markdown file, makes a step dirty: that rule is strict on purpose.
+
+**Service code.** The rows' prompts and tools come from the pinned copy `data/pin-7e442f2d`. Its 460 files match `7e442f2de513115f99e23e2fb3b5054a1cfc96d8` blob for blob across `service/` and `scripts/`, so `service_head` is that commit; the pin's tree hash is `pin_tree_sha256`. A pin that differed would get no `service_head` and list each differing file. On the node, which has no git, `r5-kit.tgz` carries `CODE_PROVENANCE.json` naming the code it was packed from. `finish_r5.py` runs on the Mac and records its own head.
 
 ## Which rows the overlap rule affects
 
