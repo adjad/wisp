@@ -22,12 +22,12 @@ class ModelMemoryLimitError(ModelLoadError):
 
     reason = "model_memory_limit"
 
-    def __init__(self) -> None:
-        super().__init__(
+    def __init__(self, message: str | None = None) -> None:
+        super().__init__(message or (
             "Wisp's model couldn't load in the memory this Mac has free right now. "
             "Quit some apps, then try again. If it keeps happening, choose a smaller "
             "model in Wisp's Settings → Models."
-        )
+        ))
 
 
 SETUP_NEEDED_MESSAGE = ("Wisp's model isn't downloaded yet. To finish setup, open Wisp's "

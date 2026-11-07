@@ -215,7 +215,8 @@ enum QuickSettingsText {
             they run. Opening Ask or the Wisp window loads it again while you type, unless another model \
             is loaded in oMLX; a question asked right away waits about 6 seconds. While it's unloaded, \
             the Brief and other background work catch up about once an hour, unless another model is \
-            loaded. Off keeps the model loaded, except after you hide the notch with its X.
+            loaded. Off keeps the model loaded, except after you hide the notch with its X, unless \
+            another app has used it in the last 30 minutes.
             """
     }
 
