@@ -682,6 +682,15 @@ final class FirstRunPermissions: ObservableObject {
     private var poll: Task<Void, Never>?
 
     func state(_ item: Item) -> State { states[item] ?? .checking }
+#if WISP_NOTCH_QA
+    /// The notch's render fixture: fixed states, nothing read from this Mac.
+    func qaShow(states: [Item: State], asking: Set<Item> = [], waiting: Set<Item> = [], messagesReadable: Bool = true) {
+        self.states = states
+        self.asking = asking
+        self.waiting = waiting
+        self.messagesReadable = messagesReadable
+    }
+#endif
     /// The step's footer: every row is optional, so no "N of M" score, only how
     /// many could still be switched on (a Mac without Messages data is not one).
     /// A Contacts row waiting on Full Disk Access has no button of its own, so
@@ -831,6 +840,9 @@ final class FirstRunPermissions: ObservableObject {
         asking.insert(item)
         askTokens[item] = token
         defer { if askTokens[item] == token { asking.remove(item); askTokens[item] = nil } }
+        // The notch panel sits above normal windows: it tucks away first, so what
+        // macOS shows next can't open under it.
+        Permissions.stepAside()
         // A prompt for an app that isn't frontmost can open behind whatever the
         // person clicked into during the download (the RemindersWriter pattern).
         NSApp.activate(ignoringOtherApps: true)
@@ -2097,7 +2109,7 @@ struct FirstRunSetupView: View {
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 OnboardingHeading(title: "Getting to know you",
-                                  subtitle: "Three quick questions, all optional. Each answer is saved when you continue.")
+                                  subtitle: "Four quick questions, all optional. Each answer is saved when you continue.")
                 KnowYouView(model: knowYou, inWindow: true)
             }
         }

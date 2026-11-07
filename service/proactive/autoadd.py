@@ -271,7 +271,7 @@ def _title(item: dict, sentence: str, quote: str, kind: str, word: str) -> str:
                      f"{noun.capitalize()} with {first}" if first and kind == "calendar" else noun.capitalize())
         if code_text and code_text.replace(" ", "").casefold() not in title.replace(" ", "").casefold():
             title = f"{code_text} {title}"
-    title = guard.clean(title, 80)
+    title = guard.clean_title(title, 80)
     return title[:1].upper() + title[1:] if title else ""
 
 
@@ -615,7 +615,7 @@ def done_card(record: dict, now: float) -> dict:
     return {
         "id": "card:" + _digest(record["fingerprint"], "undo_add"),
         "meta": meta,
-        "title": guard.clean(title, 110),
+        "title": guard.clean_title(title),
         "body": body,
         "why": "It was time-sensitive and still waiting on you, so Wisp added it. Undo removes exactly what Wisp added.",
         "account": record.get("account", ""),
@@ -655,7 +655,7 @@ def tap_card(plan: dict, now: float) -> dict:
     return {
         "id": card_id(plan["item_fingerprint"], method),
         "meta": f"{datetime.fromtimestamp(at, zone):%a}".upper() + (" · MAIL" if plan["source"] == "mail" else " · TEXTS"),
-        "title": guard.clean(plan["title"], 90),
+        "title": guard.clean_title(plan["title"]),
         "body": f"From {origin} {_received_words(plan['received_ts'], now, plan['timezone'])}: “{plan['quote']}” {did}",
         "why": "Time-sensitive and still waiting on you.",
         "account": plan.get("account", ""),

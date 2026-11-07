@@ -35,6 +35,56 @@ struct DiagnosticReportChecks {
 
     /// The inline report: one draft at a time, an immutable snapshot taken at
     /// open with details off, and a preview that is exactly the saved bytes.
+    /// The dialog is modeless, so the report can change while it is up.
+    @MainActor static func saveDialogChecks(root: URL) throws {
+        let folder = root.appendingPathComponent("save-dialog")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let draft = ReportDraft()
+        var answer: (@MainActor (URL?) -> Void)?
+        var shown = 0, forward = 0, cancelled = 0, ended = 0
+        draft.presentSaveDialog = { _, _, answered in
+            shown += 1
+            answer = answered
+            return ReportDraft.SaveDialog(bringForward: { forward += 1 }, cancel: { cancelled += 1 })
+        }
+        draft.chooseLocationAndSave { ended += 1 }
+        check(shown == 0 && ended == 1, "with no report open nothing is asked")
+
+        draft.open(key: "a", metadata: [:])
+        draft.chooseLocationAndSave { ended += 1 }
+        draft.chooseLocationAndSave { ended += 100 }
+        check(shown == 1 && forward == 1 && ended == 1, "a second click brings the open dialog forward")
+        draft.note = "written while the dialog was up"
+        let kept = folder.appendingPathComponent("kept.json")
+        answer?(kept)
+        check(ended == 2 && draft.status == "Saved kept.json", "the answer ends the dialog and saves")
+        check(try Data(contentsOf: kept) == draft.encoded(), "what is written is what is previewed when it answers")
+
+        draft.chooseLocationAndSave { ended += 1 }
+        answer?(nil)
+        check(shown == 2 && ended == 3 && draft.status == "Saved kept.json", "Cancel writes nothing")
+
+        draft.chooseLocationAndSave { ended += 1 }
+        let closed = folder.appendingPathComponent("closed.json")
+        draft.close()
+        check(cancelled == 1, "closing the report cancels its dialog")
+        answer?(closed)
+        check(ended == 4 && !FileManager.default.fileExists(atPath: closed.path), "a closed report is not saved")
+
+        draft.open(key: "a", metadata: [:])
+        draft.chooseLocationAndSave { ended += 1 }
+        let other = folder.appendingPathComponent("other.json")
+        draft.open(key: "a", metadata: [:])
+        check(cancelled == 1, "the same report again leaves its dialog up")
+        draft.open(key: "b", metadata: [:])
+        check(cancelled == 2, "another report cancels the first one's dialog")
+        answer?(other)
+        check(ended == 5 && !FileManager.default.fileExists(atPath: other.path), "a dialog never saves another report")
+
+        draft.chooseLocationAndSave { ended += 1 }
+        check(shown == 5, "after it ends, a new dialog opens")
+    }
+
     @MainActor static func draftChecks(root: URL) throws {
         let directory = root.appendingPathComponent("drafts")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -451,6 +501,7 @@ struct DiagnosticReportChecks {
         check(DiagnosticReport.journal(traceID: keepers) != nil)
 
         try MainActor.assumeIsolated { try draftChecks(root: root) }
+        try MainActor.assumeIsolated { try saveDialogChecks(root: root) }
         // Asked from the notch (menu-bar level), the save dialog opens above it, not behind.
         check(ReportDraft.saveLevel(above: .statusBar)!.rawValue > NSWindow.Level.statusBar.rawValue
               && ReportDraft.saveLevel(above: .floating)!.rawValue > NSWindow.Level.floating.rawValue

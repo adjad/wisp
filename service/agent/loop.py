@@ -263,8 +263,8 @@ SYSTEM = (
     "means the RECENT inbox: pass neither. A calendar range can be nearly empty "
     "even when the inbox is full — early on a Monday, 'this week' is a few "
     "hours long — so never conclude the user has no mail from an empty range.\n"
-    "  For 'what's unread', 'anything I haven't read', or 'what still needs a "
-    "reply', pass `unread=true` rather than guessing from subject lines.\n"
+    "  For 'what's unread' or 'anything I haven't read', pass `unread=true` "
+    "rather than guessing from subject lines.\n"
     # "messages" was leaking into the email domain — the router used to widen
     # "any messages from mom" to the mail tools as well (see _INBOUND_RE), and
     # nothing in this prompt ever said what the word means. Both ends are fixed;
@@ -1762,6 +1762,8 @@ async def run_agent(
     direct_calls: list[tuple[str, dict]] | None = None,
     required_tool_groups: tuple[frozenset[str], ...] = (),
     forbidden_tools: frozenset[str] = frozenset(),
+    # Why this turn holds every effect tool, in words true to tell the model.
+    forbidden_reason: str = "",
     conditional_tools: tuple[tuple[str, str, str, object], ...] = (),
     tool_argument_bindings: dict[str, dict] | None = None,
     # Frozen per-tool budgets for strict router-direct private reads. Empty on
@@ -1929,6 +1931,11 @@ async def run_agent(
     # grant. Only this turn's local planner may put one in ephemeral context.
     messages = _meeting_safe(messages)
     downstream_emit = emit
+    # The call being dispatched, until a tool_call announces it. A tool_result
+    # that arrives first means it was refused before reaching the policy check:
+    # the debug export gets its name and arguments from a tool_rejected event.
+    # Deliberately not a tool_call, which main records as a call that was made.
+    unannounced_call: list = [None]
     # Sources a tool couldn't read for lack of access ride on its tool_result,
     # so Ask shows the fix button whatever the model's reply says.
     from service.tools import access_needed
@@ -1937,6 +1944,13 @@ async def run_agent(
         _meeting_audit(event, **fields)
 
     async def emit(event: dict):
+        if (pending := unannounced_call[0]) is not None and event.get("id") == pending[0]:
+            if event.get("type") == "tool_call":
+                unannounced_call[0] = None
+            elif event.get("type") == "tool_result":
+                unannounced_call[0] = None
+                await downstream_emit(_meeting_safe({
+                    "type": "tool_rejected", "id": pending[0], "name": pending[1], "args": pending[2]}))
         if event.get("type") == "tool_result" and access_noted:
             event = access_needed.merged(event, access_noted)
         if event.get("type") == "text" and news_displays:
@@ -2313,14 +2327,25 @@ async def run_agent(
             # message draft, an outbound-unknown marker) are str subclasses,
             # and str() would reduce them to text no receipt check accepts.
             outcome = classify_tool_outcome(tool.name, result)
-            # Unknown extension actions default to 'read' in the legacy outcome
-            # classifier. That default is not a verified mutation receipt.
-            from service.router.model_led import trusted_effect_receipt
-            verified = trusted_effect_receipt(tool, outcome, result)
-            if not finish_effect(claim, verified):
-                return "(error: Action was attempted but its durable receipt could not be recorded. Do not retry.)"
-            if not verified:
-                return "(error: Action did not return a verified completion receipt; do not retry.)\n" + str(result)
+            from service.tools.registry import not_done_receipt, not_sent_receipt
+            refusal = ({"not_sent": True} if not_sent_receipt(tool, result)
+                       else {"not_done": True} if not_done_receipt(tool, result) else None)
+            if refusal:
+                # The tool proved it stopped before doing anything (no address,
+                # a bad date, several matches): settled as such, so it can't
+                # lock the chat, and the model is told the plain truth. Only
+                # these typed results get here; anything else stays below.
+                if not finish_effect(claim, False, **refusal):
+                    return "(error: Action was attempted but its durable receipt could not be recorded. Do not retry.)"
+            else:
+                # Unknown extension actions default to 'read' in the legacy outcome
+                # classifier. That default is not a verified mutation receipt.
+                from service.router.model_led import trusted_effect_receipt
+                verified = trusted_effect_receipt(tool, outcome, result)
+                if not finish_effect(claim, verified):
+                    return "(error: Action was attempted but its durable receipt could not be recorded. Do not retry.)"
+                if not verified:
+                    return "(error: Action did not return a verified completion receipt; do not retry.)\n" + str(result)
         if tool.name == "plan_meeting" and isinstance(result, str):
             prefix = "Private meeting proposal: "
             try:
@@ -2579,6 +2604,20 @@ async def run_agent(
 
     def _skill_boundary(tool_name: str) -> bool:
         return tool_name in _skill_boundary_names()
+
+    def _skill_misnamed_as_tool(tool_name: str) -> bool:
+        """The model called a skill by name, or use_skill where it was not offered.
+        Nothing the user asked for was refused, so this is not a failure to report.
+        Only where skills are allowed: across the boundary the answer must stay the
+        generic refusal, or its wording would confirm which skills are installed."""
+        if not skills_allowed:
+            return False
+        if tool_name == "use_skill":
+            return True
+        if get_tool(tool_name) is not None:
+            return False
+        from service.skills import get as get_skill
+        return (get_skill(tool_name) or get_skill(tool_name.replace("_", "-"))) is not None
 
     def _admit(offered: list[dict]) -> list[dict]:
         """Drop every schema the skill boundary protects. Used at every build and rebuild."""
@@ -2846,6 +2885,7 @@ async def run_agent(
     tools_answered: set[str] = set()
     failed_tools: set[str] = set()
     hard_failed: set[str] = set()
+    skills_misnamed: set[str] = set()
     waived_tools: set[str] = set()
     attempted_tools: set[str] = set()
     tool_outcomes: list[tuple[str, object]] = []
@@ -2913,7 +2953,13 @@ async def run_agent(
             # command. Phase/prose is not permission to clear the restriction.
             shell_read = (private_shell_implementation(registered)
                           and not planned and not denied)
-            if (registered.category.endswith("read")
+            # recall's fixed nothing-found text carries no record and none of the
+            # query, so there is nothing to leak. Exact match on purpose: a result
+            # with anything else in it, or from any other tool, still latches.
+            from service.tools.memory_tools import RECALL_NOTHING_FOUND
+            read_nothing = name == "recall" and str(result) == RECALL_NOTHING_FOUND
+            if not read_nothing and (
+                    registered.category.endswith("read")
                     and registered.category != "web_read"
                     or registered.category == "screen" or shell_read
                     or name in {"recall", "search_memory", "search_conversations"}):
@@ -2987,6 +3033,17 @@ async def run_agent(
         done = [outcome.text for name, outcome in tool_outcomes
                 if name in _EFFECT_TOOLS and outcome.status == "succeeded"]
         return "\n".join([*dict.fromkeys(done), text]) if done else text
+
+    def _stopped_text(stopped_tool, result) -> str:
+        """What the person reads when a write stops the turn. A proven refusal
+        says what is needed to go on; nothing else may imply that nothing happened."""
+        from service.tools.registry import not_done_receipt, not_sent_receipt
+        if not_sent_receipt(stopped_tool, result):
+            return "I haven't sent anything. " + (result.question or _user_facing_failure(result))
+        if not_done_receipt(stopped_tool, result):
+            return result.question or _user_facing_failure(result)
+        return ("The action did not return a verified success. I stopped without retrying.\n"
+                + _user_facing_failure(result))
 
     def _reminder_update_receipts() -> str | None:
         """Project update-only effects; model prose is not an effect receipt."""
@@ -3354,8 +3411,7 @@ async def run_agent(
             failed_tools.add(_name)
             if _direct_outcome.effect != "read":
                 response = (_reminder_update_receipts() or
-                            _earlier_effect_receipts(
-                                "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(_result)))
+                            _earlier_effect_receipts(_stopped_text(_registry().get(_name), _result)))
                 await emit({"type": "text", "text": response})
                 await emit({"type": "done"})
                 return response
@@ -4317,11 +4373,15 @@ async def run_agent(
                     # A knowledge question answered with a tool call written as
                     # text: one nudge to just answer. (A personal-data question
                     # falls through to the "call the tool now" re-prompt below.)
+                    # Worded as a host note: said in the user's voice, the model
+                    # took it as the user speaking and replied to it ("It looks
+                    # like that was a math question!").
                     ask_text_call_nudged = True
                     msgs.append({"role": "assistant", "content": "(no answer yet)"})
                     msgs.append({"role": "user", "content": (
-                        "Answer my question now in plain text, from what you know. No tool "
-                        "is needed or available for this one.")})
+                        "Host note, not from the user: your last reply held no answer. "
+                        "Answer the user's question above in plain text, from what you "
+                        "know, without calling a tool. Do not mention or reply to this note.")})
                     continue
                 if (wrote_call and not text and not ask_text_call_nudged and _step < max_steps - 1
                         and asks_change):
@@ -4718,6 +4778,7 @@ async def run_agent(
             name = _clean_tool_name(tc["function"]["name"])
             from service.tools.registry import unwrap_nested_args
             args = unwrap_nested_args(get_tool(name), _parse_args(tc["function"].get("arguments", "")))
+            unannounced_call[0] = (cid, name, args)
             if discovery is not None and name == DISCOVERY_TOOL:
                 # Do not widen this step's allowed_names. A sibling real call
                 # must not gain authority from a schema request in this batch.
@@ -4828,8 +4889,17 @@ async def run_agent(
                 continue
 
             if name in forbidden_tools:
-                result = (f"({name} is explicitly forbidden by the user's constraints for "
-                          "this request. Do not call it and do not claim it ran.)")
+                # Most of this set is not the user's doing: a personal question
+                # bars the web, and an action with an unconfirmed outcome holds
+                # every new action. Told "the user's constraints", the model
+                # told the user that sending email broke its security guidelines
+                # (2026-11-04 export). Say only what is true.
+                from service.router.model_led import needs_effect_owner
+                _ft = get_tool(name)
+                _held = (forbidden_reason if forbidden_reason and _ft is not None
+                         and needs_effect_owner(_ft.category) else "it is not allowed for this request")
+                result = (f"({name} was NOT run: {_held}. Do not call it and do not claim it "
+                          "ran. Do not say the user or a security rule forbade it.)")
                 audit("reject_forbidden", tool=name, args=args)
                 hard_failed.add(name)
                 await emit({"type": "tool_result", "id": cid, "result": result})
@@ -4952,6 +5022,28 @@ async def run_agent(
                               "performed it.)")
                     audit("reject_premature", tool=name, args=args)
                     failed_tools.add(name)
+                elif _skill_misnamed_as_tool(name):
+                    # Not a real action, so there is nothing to be honest about
+                    # failing: told "isn't available", the model reported its own
+                    # mis-call to the user ("I can't start the interview right
+                    # now"). Nothing loads here, so the skill boundary and each
+                    # skill's own trigger rules are unchanged. `internal` keeps this
+                    # note, which is for the model, out of the visible activity. A
+                    # repeat counts as a refusal, so the next step has to answer.
+                    result = (f"({name} is not an action you can call. Nothing ran and "
+                              "nothing went wrong. Do not mention it, and do not say it ran "
+                              "or that something is unavailable. Help with the request "
+                              "directly: call an offered tool if the answer depends on the "
+                              "user's own data, otherwise answer now or ask one short "
+                              "question.)")
+                    audit("reject_skill_as_tool", tool=name, args=args)
+                    hard_failed.add(name)
+                    if name in skills_misnamed:
+                        prev_step_refusals += 1
+                    skills_misnamed.add(name)
+                    await emit({"type": "tool_result", "id": cid, "result": result, "internal": True})
+                    msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                    continue
                 else:
                     if name in _WEB_LOOKUP_TOOLS:
                         # A web lookup the route did not offer is no reason to
@@ -5133,10 +5225,21 @@ async def run_agent(
                 await emit({"type": "tool_call", "id": cid, "name": name,
                             "args": args, "decision": dec.tier.value, "reason": dec.reason})
 
+                # Settle a send's recipient before its card, as bind_event_move
+                # does for a move: a failure is the tool result (no card to
+                # approve), and an email is bound to the one saved address.
+                _no_recipient = None
+                if dec.tier is Tier.CONFIRM:
+                    from service.tools.action_tools import prepare_send_recipient
+                    args, _no_recipient = prepare_send_recipient(tool, args)
+
                 if dec.tier is Tier.DENY:
                     result = f"BLOCKED by safety policy: {dec.reason}"
                     audit("deny", tool=name, args=args, reason=dec.reason)
                     ask_blocked.add(name)
+                elif _no_recipient:
+                    result = _no_recipient
+                    audit("recipient_preflight", tool=name, args=args, reason=str(_no_recipient))
                 # A draft with an unfilled "[Your Name]" slot, or a body cut off
                 # mid-sentence, must never REACH the confirmation card: the card
                 # is where the user's judgement is asked for, and these checks
@@ -5321,7 +5424,9 @@ async def run_agent(
             # whole thing went into the context and swamped it). Raised so the
             # export reflects what the model actually saw.
             await emit({"type": "tool_result", "id": cid, "result": result[:20000],
-                        **({"debug": dbg} if dbg else {})})
+                        **({"debug": dbg} if dbg else {}),
+                        **({"awaiting_recipient": True}
+                           if getattr(result, "needs_recipient", False) else {})})
             outcome = _record_outcome(
                 name, result, args=args,
                 denied=(dec.tier is Tier.DENY or
@@ -5376,9 +5481,8 @@ async def run_agent(
                 if outcome.effect != "read":
                     # Retrying a write after an uncertain response can create
                     # duplicates; let the user correct the arguments first.
-                    response = (_reminder_update_receipts() or
-                                _earlier_effect_receipts(
-                                    "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(result)))
+                    response = (_reminder_update_receipts()
+                                or _earlier_effect_receipts(_stopped_text(tool, result)))
                     await emit({"type": "text", "text": response})
                     await emit({"type": "done"})
                     return response

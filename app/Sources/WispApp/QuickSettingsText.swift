@@ -1,5 +1,35 @@
 import Foundation
 
+/// What `GET /memory_saver` says beyond the switch itself: whether Save memory can
+/// act right now, so its row never promises memory it can't free.
+struct SaveMemoryDetail: Equatable {
+    var applies: Bool
+    /// `not_gemma`, `pinned`, `not_reported` or `not_omlx`; nil when `applies`.
+    var whyNot: String?
+    /// Another app used the model on the user's oMLX in the last 30 minutes.
+    var otherApp: Bool
+    /// Wisp runs on the user's own oMLX app, not its built-in engine.
+    var onOMLX: Bool
+
+    init(applies: Bool, whyNot: String? = nil, otherApp: Bool = false, onOMLX: Bool = false) {
+        self.applies = applies
+        self.whyNot = whyNot
+        self.otherApp = otherApp
+        self.onOMLX = onOMLX
+    }
+
+    /// Nil when the reply doesn't say whether Save memory applies.
+    init?(json data: Data) {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let applies = obj["applies"] as? NSNumber,
+              CFGetTypeID(applies) == CFBooleanGetTypeID() else { return nil }
+        self.init(applies: applies.boolValue,
+                  whyNot: obj["why_not"] as? String,
+                  otherApp: (obj["other_app"] as? NSNumber)?.boolValue ?? false,
+                  onOMLX: (obj["engine"] as? String) == "omlx")
+    }
+}
+
 /// What the local engine has resident, from the service's `/models/memory`.
 /// `bytes` is nil when the engine measured no footprint for a model, and the
 /// whole value is nil when the service can't say (a remote engine, or the read
@@ -88,10 +118,22 @@ enum QuickSettingsText {
         + "with your own oMLX app, nothing is."
 
     /// "Save memory"'s line, neutral like Save power's.
-    static func saveMemory(on: Bool?, pending: Bool) -> String {
+    static func saveMemory(on: Bool?, pending: Bool, detail: SaveMemoryDetail? = nil) -> String {
         if pending { return "Updating · waiting for confirmation…" }
+        if on != nil, let detail, !detail.applies {
+            switch detail.whyNot {
+            case "not_gemma"?: return "Not active · Wisp's chat model in oMLX isn't a Gemma"
+            case "pinned"?: return "Not active · Wisp's chat model is pinned in oMLX"
+            case "not_omlx"?: return "Not active · Wisp's chat model doesn't run in oMLX"
+            default: return "Not active · oMLX isn't reporting this model's use"
+            }
+        }
         switch on {
-        case true?: return "Frees Wisp's model memory while you're not using it"
+        case true?:
+            if detail?.otherApp == true { return "Keeping it loaded · another app used it recently" }
+            return detail?.onOMLX == true
+                ? "Frees Wisp's Gemma memory while you're not using it"
+                : "Frees Wisp's model memory while you're not using it"
         case false?: return "Wisp's model stays loaded"
         case nil: return "Not confirmed"
         }
@@ -103,6 +145,40 @@ enum QuickSettingsText {
         + "Wisp window loads it again while you type; a question asked right away waits about 6 "
         + "seconds. While it's unloaded, the Brief and other background work catch up about once an "
         + "hour. Off keeps the model loaded, except after you hide the notch with its X."
+
+    /// The help for what Save memory can do right now. No reply yet: the general one.
+    static func saveMemoryHelp(detail: SaveMemoryDetail?) -> String {
+        guard let detail else { return saveMemoryHelp }
+        if !detail.applies {
+            switch detail.whyNot {
+            case "not_gemma"?:
+                return "This switch isn't freeing any memory right now. In your oMLX app, Save memory "
+                    + "only unloads a Gemma chat model, and Wisp's chat model isn't one. It starts "
+                    + "working if you choose a Gemma as Wisp's chat model."
+            case "pinned"?:
+                return "This switch isn't freeing any memory right now, because Wisp's chat model is "
+                    + "pinned in your oMLX app. It starts working if you unpin it there."
+            case "not_omlx"?:
+                return "This switch isn't freeing any memory right now, because Wisp's chat model "
+                    + "doesn't run in oMLX or Wisp's built-in engine, so Wisp has nothing to unload."
+            default:
+                return "This switch isn't freeing any memory right now. Wisp needs your oMLX app to "
+                    + "report what the model is and when it was last used, so it never unloads a "
+                    + "model another app is using, and it isn't reporting that."
+            }
+        }
+        guard detail.onOMLX else { return saveMemoryHelp }
+        return """
+            Wisp's Gemma chat model uses about 5.5 GB of memory. After 30 minutes without using Wisp, or \
+            sooner when your Mac runs low on memory, Wisp unloads it from your oMLX app so other apps get \
+            that memory back. Save memory only ever unloads that one model. It waits while another app \
+            has used the model in the last 30 minutes. Research and Smart Search keep it loaded while \
+            they run. Opening Ask or the Wisp window loads it again while you type, unless another model \
+            is loaded in oMLX; a question asked right away waits about 6 seconds. While it's unloaded, \
+            the Brief and other background work catch up about once an hour, unless another model is \
+            loaded. Off keeps the model loaded, except after you hide the notch with its X.
+            """
+    }
 
     /// Learn my routines' line, and the trailing "stays on this Mac" when
     /// nothing learned is sent anywhere.

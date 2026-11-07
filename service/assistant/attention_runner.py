@@ -16,6 +16,7 @@ from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from service import quiet_hold
 from service.assistant.hub import hub
 from service.assistant.store import assistant_store
 from service.attention.detectors import local_timezone, matches_clock
@@ -232,10 +233,13 @@ def _name_for(handle: str) -> str | None:
 
 
 async def _publish(event: dict) -> None:
-    # Transient on purpose. A durable event is stored (with the quote and the sender) and
-    # replayed to the app until it acknowledges it, and the app does not yet know this
-    # type, so it never would: the rows would pile up in assistant.db without expiry.
-    await hub.publish(event, durable=False)
+    # Transient on purpose: a durable event is stored with the quote and the sender. In
+    # quiet hours it must outlast this moment to be shown afterwards (service/quiet_hold.py),
+    # so it is stored then, once per message, and its words go once it is shown or dropped.
+    if quiet_hold._quiet_now():
+        await hub.publish(event, dedupe_key="attention:" + str(event.get("source_id")))
+    else:
+        await hub.publish(event, durable=False)
 
 
 async def run_tick(now: float | None = None) -> list:

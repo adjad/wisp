@@ -903,6 +903,43 @@ def _quote_report(result: dict, label: str, *, now: float | None = None) -> str:
     return "\n".join(lines)
 
 
+async def _with_previous_close(result: dict, symbol: str) -> dict:
+    """Add the prior session's close when the 5-day chart leaves it out.
+
+    Yahoo's multi-day chart no longer sends ``previousClose`` for any symbol, and
+    a daily bar's stamp is its session open, so no bar can certify itself: every
+    quote reported its change as unavailable. The 1-day chart's
+    ``chartPreviousClose`` is the close before that one session. It counts only
+    when it describes the same session and matches the 5-day chart's own prior
+    bar, so two responses have to agree; anything else leaves the honest
+    "unavailable". ``chartPreviousClose`` of the 5-day chart is older and is never
+    used.
+    """
+    try:
+        meta = result["meta"]
+        regular_time = _market_number(meta.get("regularMarketTime"))
+        if regular_time is None or _market_number(meta.get("previousClose")) is not None:
+            return result
+        tz = str(meta.get("exchangeTimezoneName") or "UTC")
+        prior = _previous_session_close(result, regular_time, tz)
+        if prior is None or prior[0] is None or prior[0] <= 0:
+            return result
+        response = await _yahoo_get(
+            f"https://query1.finance.yahoo.com/v8/finance/chart/{quote(symbol)}?range=1d&interval=1d")
+        if isinstance(response, str) or response.status_code >= 400:
+            return result
+        day_meta = response.json()["chart"]["result"][0]["meta"]
+        close = _market_number(day_meta.get("chartPreviousClose"))
+        day_time = _market_number(day_meta.get("regularMarketTime"))
+        if (close is None or close <= 0 or day_time is None
+                or _market_day(day_time, tz) != _market_day(regular_time, tz)
+                or not _market_prices_agree(close, prior[0])):
+            return result
+        return {**result, "meta": {**meta, "previousClose": close}}
+    except Exception:  # noqa: BLE001 — a missing baseline must never lose the quote
+        return result
+
+
 async def _one_quote(query: str) -> str:
     resolved = await _resolve_symbol(query)
     if isinstance(resolved, str):
@@ -925,6 +962,7 @@ async def _one_quote(query: str) -> str:
     except Exception:  # noqa: BLE001
         return f"{symbol}: (quote data missing or in an unexpected shape)"
     label = f"{symbol} ({name})" if name and name != symbol else symbol
+    result = await _with_previous_close(result, symbol)
     try:
         return _quote_report(result, label)
     except Exception:  # noqa: BLE001

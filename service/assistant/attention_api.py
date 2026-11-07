@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictBool
 
 from service.assistant import attention_runner as runner
+from service import user_hours
 from service.attention.live import MODES, load_settings, local_midnight, save_settings, settings_path, updated
 from service.paths import MOE_DIR
 
@@ -66,8 +67,9 @@ def status():
                       if r['source_id'].startswith('preview:')}
     recent = [r for r in recent if not r['source_id'].startswith('capture:')
               and r['source_id'] not in paired_sources][:20]
+    quiet = user_hours.quiet_hours()
     return {
-        "settings": asdict(settings),
+        "settings": {**asdict(settings), "quiet_start": quiet.start_minute // 60, "quiet_end": quiet.end_minute // 60},
         "modes": list(MODES),
         "created_today": ledger.created_count_since(since),
         # Only rows the app shows: an `already_on_file` or in-flight row would crowd them out.
@@ -91,6 +93,12 @@ def put_settings(body: SettingsPatch):
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     save_settings(settings_path(MOE_DIR), new)
+    if "quiet_start" in changes or "quiet_end" in changes:
+        # This route still takes quiet hours; there is one setting (service/user_hours.py).
+        current = user_hours.quiet_hours()
+        user_hours.save(quiet={
+            "start_minute": changes["quiet_start"] * 60 if "quiet_start" in changes else current.start_minute,
+            "end_minute": changes["quiet_end"] * 60 if "quiet_end" in changes else current.end_minute})
     if new.mode == "live" and new.capture_events and (old.mode != "live" or not old.capture_events):
         runner.get_ledger().set_meta("capture_enabled_at", repr(time.time()))
         runner.get_ledger().set_meta("capture_live", "live")

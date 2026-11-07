@@ -152,7 +152,101 @@ struct MarkdownChecks {
         check(same(grown.cachedBlocks(), grown.blocks()), "grown text is parsed, not served stale")
     }
 
+    static func mathChecks() {
+        func body(_ text: String) -> String { visibleText(parse(text)) }
+        func same(_ text: String, _ message: String) {
+            check(body(text) == text, "\(message): \(body(text))")
+        }
+
+        // The reply that prompted this, in all four delimiters.
+        check(body("$$\\hat{y} = \\beta_0 + \\beta_1 x$$") == "ŷ = β₀ + β₁ x", "display dollars")
+        check(body("\\[\\hat{y} = \\beta_0\\]") == "ŷ = β₀", "display brackets")
+        check(body("where $\\beta_1$ is the slope") == "where β₁ is the slope", "inline dollars")
+        check(body("where \\(\\beta_1\\) is the slope") == "where β₁ is the slope", "inline parens")
+
+        // List items and table cells convert too, inside bold.
+        let items = parse("*   **$\\hat{y}$** is the prediction")
+        check(items[0].listItems.first?.text == "**ŷ** is the prediction", "math in a bold list item")
+        let table = parse("| term | meaning |\n|---|---|\n| $\\beta_0$ | intercept |")
+        check(table[0].tableRows[1][0] == "β₀", "math in a table cell")
+
+        // Display math stands on its own line, even mid-sentence or across lines.
+        check(body("So:\n$$\nE = mc^2\n$$\nDone") == "So:\nE = mc²\nDone", "multi-line display")
+        check(body("So $$a = b$$ then") == "So\na = b\nthen", "mid-sentence display is its own line")
+        check(body("Thus $$a = b$$.") == "Thus\na = b.", "punctuation stays with the formula")
+
+        // Common notation.
+        check(body("$\\frac{1}{n}$") == "1/n", "plain fraction")
+        check(body("$\\frac{a+b}{2}$") == "(a+b)/2", "compound fraction keeps its parentheses")
+        check(body("$\\sqrt{x}$ and $\\sqrt{x+1}$") == "√x and √(x+1)", "roots")
+        check(body("$\\sum_{i=1}^{n} x_i$") == "Σᵢ₌₁ⁿ xᵢ", "sum with limits")
+        check(body("$a \\leq b \\neq c \\cdot d$") == "a ≤ b ≠ c · d", "operators")
+        check(body("$\\bar{x}$") == "x̄", "bar")
+        check(body("$\\mathbb{R}^2$") == "ℝ²", "blackboard bold")
+        check(body("$x_{ab,c}$") == "x\\_(ab,c)", "no glyph falls back to notation")
+        check(body("$\\left( a \\right)$") == "( a )", "sizing commands disappear")
+        check(body("$\\text{slope} = 2$") == "slope = 2", "text wrapper")
+        check(body("$\\unknowncmd{x}$") == "unknowncmdx", "an unknown command loses only its backslash")
+        check(inlineEscapeSurvives(), "a formula's underscore is not Markdown emphasis")
+
+        // Prices and other dollars are prose.
+        same("It costs $5 and $10 today", "two prices")
+        same("Between $5-$10 or $5/$10", "price ranges")
+        same("$20/month and $30/month", "monthly prices")
+        same("Pay $100 for the US$", "prose between dollars")
+        same("Use $HOME/$PATH and echo $a$b", "shell variables")
+        same("That costs $$ and $$ more", "dollar slang")
+        check(body("Paid \\$5 for $x$") == "Paid \\$5 for x", "an escaped dollar is not a delimiter")
+        check(body("It is $5 and $x^2$ later") == "It is $5 and x² later", "a price before real math")
+        check(body("See \\[1\\] and \\[link\\](u)") == "See \\[1\\] and \\[link\\](u)", "escaped brackets stay prose")
+
+        // Code is never touched, in either form.
+        same("Run `$x$` and `\\frac{a}{b}` and `x^2` here", "inline code")
+        same("Unclosed `$\\beta$", "an inline code span still streaming")
+        let fenced = parse("$x$\n```\n$$\\beta$$ costs $5 x^2\n```\n$y$")
+        check(fenced.filter { if case .code = $0.kind { return true }; return false }.first?.body
+              == "$$\\beta$$ costs $5 x^2", "fenced code")
+        check(paragraphBodies(fenced) == ["x", "y"], "prose around a fence still converts")
+        check(parse("```\n$$\\beta").first?.body == "$$\\beta", "a fence still streaming")
+
+        // While streaming: never a crash, no half command, and a price is never
+        // converted on the way to its final form.
+        check(body("$$\\hat{y} = \\beta_0 + \\bet") == "ŷ = β₀ +", "unclosed display, command still arriving")
+        check(body("$$a = b$") == "a = b", "half a closing delimiter")
+        check(body("\\[a = b") == "a = b", "unclosed display bracket")
+        check(body("\\(\\beta") == "β", "unclosed inline parens")
+        check(body("where $\\beta_1 is") == "where β₁ is", "an unclosed backslash command can't be a price")
+        check(body("$$\\frac{a}{") == "a/", "unclosed group")
+        check(body("Text\n\n$$a = b\n\nNext") == "Text\n\na = b\n\nNext", "unclosed display stops at the paragraph")
+        same("It costs $5", "an unclosed price")
+        same("It costs $", "a lone dollar")
+        same("$$", "a lone double dollar")
+        let formula = "Slope $\\beta_1$ costs $5 in $$\\hat{y} = \\frac{a}{b}$$ and \\(x^2\\) `$z$`"
+        for count in 0...formula.count { _ = parse(String(formula.prefix(count))) }
+        check(body(formula) == "Slope β₁ costs $5 in\nŷ = a/b\nand x² `$z$`", "the finished stream")
+
+        // Read-aloud gets the same symbols, without Markdown escapes.
+        // A model stuck in a loop: no crash, however deep, finished or still streaming.
+        for loop in ["\\frac{", "\\sqrt", "{", "x^{", "\\hat{", "\\frac{a}{", "\\text{"] {
+            let deep = String(repeating: loop, count: 50_000)
+            for reply in ["$$" + deep + "$$", "\\[" + deep] {
+                check(!prettifyMath(reply, forSpeech: true).isEmpty || loop == "{", "survives \(loop) repeated")
+            }
+        }
+        let real = #"$\frac{\sqrt{x^{2}+\frac{1}{\hat{y}_{i}}}}{2}$"#
+        check(prettifyMath(real, forSpeech: true) == "(√(x²+1/ŷᵢ))/2", "real nesting reads as before: \(prettifyMath(real, forSpeech: true))")
+        check(prettifyMath("$x_{ab,c}$", forSpeech: true) == "x_(ab,c)", "speech has no escapes")
+        check(prettifyMath("$x_{ab,c}$") == "x\\_(ab,c)", "display text escapes for the Markdown pass")
+    }
+
+    static func inlineEscapeSurvives() -> Bool {
+        let opts = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        guard let parsed = try? AttributedString(markdown: prettifyMath("$a*b*c_{xy,z}$"), options: opts) else { return false }
+        return String(parsed.characters) == "a*b*c_(xy,z)"
+    }
+
     static func main() {
+        mathChecks()
         solitaryPipeAndOrderingChecks()
         tableValidationChecks()
         growingPrefixChecks()

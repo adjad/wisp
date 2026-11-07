@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import dataclasses
+import itertools
 import json
 import os
 import subprocess
@@ -23,6 +24,7 @@ _scratch = tempfile.TemporaryDirectory(prefix="wisp-gmail-")
 os.environ["WISP_HOME"] = _scratch.name
 
 from service import gmail_source as G
+from service.assistant.store import signin_expired_key
 from service.tools import cache_store, email_tools as E
 
 ME = "me@gmail.com"
@@ -55,7 +57,8 @@ class GmailSource(unittest.TestCase):
         self.enterContext(patch.multiple(E, _headers="", _history="", _raw_emails="", _swift_headers="",
             _swift_history="", _swift_raw="", _external_accounts={}, _headers_sync_generation=0,
             _email_available=None, _email_read_source="", _email_reason="", _email_sync_pending=False,
-            _native_headers_at=0.0, _native_raw_at=0.0, _native_source="", _swift_identity=[], _identity_emails=[]))
+            _native_headers_at=0.0, _native_raw_at=0.0, _native_source="", _swift_identity=[], _identity_emails=[],
+            _mail_automation_refused=False))
         self.enterContext(patch.multiple(G, _last={}, _errors={}, _access={}, _epochs={}, _locks={}, _raw={},
                                         _meta={}, _pending_flow=None, _flow_generation=0,
                                         _authorization={"state": "idle", "generation": 0, "error": ""}))
@@ -233,6 +236,168 @@ class GmailSource(unittest.TestCase):
         self.assertIn("last successful refresh", output)
         self.assertIn("reconnect", output)
         self.assertEqual(E._external_accounts[ME]["headers_at"], stamp)
+
+    def expire_sign_in(self, part="headers"):
+        self.accounts[ME]["auth_expired"] = int(time.time())
+        E.configure_external_accounts(self.accounts)
+        E.external_email_error(ME, part, "Google sign-in expired; reconnect this account in Settings ▸ Google")
+
+    def composed_subjects(self, part="headers"):
+        if part == "raw":
+            return [row["subject"] for row in E._parse_raw()]
+        return [row["subject"] for row in E._parse_header_records(E._history if part == "history" else E._headers)]
+
+    def test_other_google_errors_keep_the_gmail_snapshot_over_newer_local_mail(self):
+        now = time.time()
+        for error in ("Google could not be reached; try again when online",
+                      "Google refresh timed out; showing the last available cache",
+                      "Google token refresh failed", "messages: HTTP 500",
+                      "Gmail read access is missing; reconnect this account in Settings ▸ Google"):
+            for part, source in itertools.product(("headers", "history", "raw"), ("local_index", "mail_app")):
+                with self.subTest(error=error, part=part, source=source):
+                    if part == "raw":
+                        self.publish(raw=G.raw_record(msg("old", "Last Gmail copy", stamp=now - 7200), ME))
+                        E.cache_raw_emails(G.raw_record(msg("new", "Newer in Mail", stamp=now - 3600), ME))
+                    elif part == "history":
+                        self.publish(history=header(subject="Last Gmail copy", stamp=now - 7200))
+                        E.cache_history_headers(header(subject="Newer in Mail", stamp=now - 3600))
+                    else:
+                        self.publish(headers=header(subject="Last Gmail copy", stamp=now - 7200))
+                        E.cache_emails(header(subject="Newer in Mail", stamp=now - 3600))
+                    E.external_email_error(ME, part, error)
+                    E.set_email_availability(True, read_source=source)
+                    self.assertEqual(self.composed_subjects(part), ["Last Gmail copy"])
+                    warning = E.email_freshness_warning(part=part)
+                    self.assertIn("stale or unverified", warning)
+                    self.assertIn(error, warning)
+                    self.assertNotIn("opening Mail", warning)
+
+    def test_expired_sign_in_switches_to_mail_for_every_part(self):
+        for source in ("local_index", "mail_app"):
+            with self.subTest(source=source):
+                self.check_expired_sign_in_switches(source)
+
+    def check_expired_sign_in_switches(self, source):
+        now = time.time()
+        self.publish(headers=header(subject="Last Gmail copy", stamp=now - 7200),
+                     history=header(subject="Last Gmail copy", stamp=now - 7200),
+                     raw=G.raw_record(msg("old", "Last Gmail copy", stamp=now - 7200), ME))
+        for part in ("headers", "history", "raw"):
+            self.expire_sign_in(part)
+        E.cache_emails(header(subject="Newer in Mail", stamp=now - 3600))
+        E.cache_history_headers(header(subject="Newer in Mail", stamp=now - 3600))
+        E.cache_raw_emails(G.raw_record(msg("new", "Newer in Mail", stamp=now - 3600), ME))
+        E.set_email_availability(True, read_source=source)
+        for part in ("headers", "history", "raw"):
+            with self.subTest(part=part):
+                self.assertEqual(self.composed_subjects(part), ["Newer in Mail"])
+
+    def test_a_network_drop_on_an_expired_sign_in_stays_on_mail(self):
+        # The flag decides, not the last error: a refresh of an expired sign-in
+        # that can't reach Google overwrites "expired" with a network error.
+        now = time.time()
+        self.publish(headers=header(subject="Last Gmail copy", stamp=now - 7200))
+        self.expire_sign_in()
+        E.cache_emails(header(subject="Newer in Mail", stamp=now - 3600))
+        E.set_email_availability(True, read_source="local_index")
+        E.external_email_error(ME, "headers", "Google could not be reached; try again when online")
+        self.assertEqual(self.composed_subjects(), ["Newer in Mail"])
+
+    def test_reconnecting_ends_the_switch_to_mail(self):
+        now = time.time()
+        self.publish(headers=header(subject="Last Gmail copy", stamp=now - 7200))
+        self.expire_sign_in()
+        E.cache_emails(header(subject="Newer in Mail", stamp=now - 3600))
+        E.set_email_availability(True, read_source="local_index")
+        self.assertEqual(self.composed_subjects(), ["Newer in Mail"])
+        del self.accounts[ME]["auth_expired"]     # a new sign-in writes a record without it
+        E.configure_external_accounts(self.accounts)
+        self.assertEqual(self.composed_subjects(), ["Last Gmail copy"])
+        self.assertNotIn("opening Mail", E.email_freshness_warning())
+
+    def test_a_refused_read_of_mail_stops_the_open_mail_hint(self):
+        self.publish(headers=header(subject="Last Gmail copy"))
+        self.expire_sign_in()
+        E.cache_emails(header(subject="In Mail", stamp=time.time() - 86400))
+        E.set_email_availability(True, read_source="local_index")
+        self.assertIn("opening Mail can get newer mail", E.email_freshness_warning())
+        # Opened Mail, and macOS refused Wisp (-1743 in MailReader.scriptFailure).
+        E.set_email_availability(False, "Wisp isn't allowed to read Mail yet.", reason_kind="mail_automation")
+        self.assertNotIn("opening Mail", E.email_freshness_warning())
+        # Mail closed again: the index reads fine, and the refusal still stands.
+        E.set_email_availability(True, read_source="local_index")
+        self.assertNotIn("opening Mail", E.email_freshness_warning())
+        # A slow Mail isn't a refusal, and a later read through Mail ends it.
+        E.set_email_availability(False, "Mail was too slow to answer.")
+        self.assertNotIn("opening Mail", E.email_freshness_warning())
+        E.set_email_availability(True, read_source="mail_app")
+        E.set_email_availability(True, read_source="local_index")
+        self.assertIn("opening Mail can get newer mail", E.email_freshness_warning())
+
+    def test_expired_sign_in_does_not_hide_newer_mail_in_the_local_index(self):
+        now = time.time()
+        self.publish(headers=header(subject="Last Gmail copy", stamp=now - 7200))
+        self.expire_sign_in()
+        # Mail ran after the sign-in stopped working, then closed. Or it is open
+        # but not scriptable yet (a new build), which also reads the index.
+        E.cache_emails(header(subject="Fetched by Mail afterwards", stamp=now - 3600))
+        E.set_email_availability(True, read_source="local_index")
+        subjects = [row["subject"] for row in E._parse_header_records(E._headers)]
+        self.assertEqual(subjects, ["Fetched by Mail afterwards"])
+        warning = E.email_freshness_warning()
+        self.assertIn("reconnect", warning)
+        self.assertIn("Mail’s local cache", warning)
+
+    def test_expired_sign_in_keeps_a_newer_gmail_copy_over_an_older_local_index(self):
+        # What the Mac had on the day: Mail closed before the last Gmail refresh.
+        now = time.time()
+        self.publish(headers=header(subject="Last Gmail copy", stamp=now - 3600))
+        self.expire_sign_in()
+        E.cache_emails(header(subject="Older in Mail", stamp=now - 7200))
+        E.set_email_availability(True, read_source="local_index")
+        self.assertEqual([row["subject"] for row in E._parse_header_records(E._headers)], ["Last Gmail copy"])
+
+    def test_a_future_dated_message_does_not_make_the_local_index_newer(self):
+        now = time.time()
+        self.publish(headers=header(subject="Last Gmail copy", stamp=now - 3600))
+        self.expire_sign_in()
+        E.cache_emails("\n".join([header(subject="Dated years ahead", stamp=now + 4 * 365 * 86400),
+                                  header(subject="Older in Mail", stamp=now - 7200)]))
+        E.set_email_availability(True, read_source="local_index")
+        self.assertEqual([row["subject"] for row in E._parse_header_records(E._headers)], ["Last Gmail copy"])
+
+    def test_expired_sign_in_does_not_hide_newer_bodies_saved_from_mail(self):
+        now = time.time()
+        self.publish(raw=G.raw_record(msg("old", "Last Gmail body", stamp=now - 7200), ME))
+        self.expire_sign_in("raw")
+        E.cache_raw_emails(G.raw_record(msg("new", "Body saved from Mail", stamp=now - 3600), ME))
+        E.set_email_availability(True, read_source="local_index")
+        E._recompose_all()
+        self.assertEqual([row["subject"] for row in E._parse_raw()], ["Body saved from Mail"])
+
+    def test_a_healthy_gmail_snapshot_still_outranks_the_local_index(self):
+        now = time.time()
+        self.publish(headers=header(subject="Current Gmail copy", stamp=now - 7200))
+        E.cache_emails(header(subject="In Mail", stamp=now - 3600))
+        E.set_email_availability(True, read_source="local_index")
+        self.assertEqual([row["subject"] for row in E._parse_header_records(E._headers)], ["Current Gmail copy"])
+
+    def test_expired_sign_in_says_opening_mail_also_works_when_mail_has_the_account(self):
+        self.publish(headers=header(subject="Last Gmail copy"))
+        self.expire_sign_in()
+        E.set_email_availability(True, read_source="local_index")
+        self.assertNotIn("opening Mail", E.email_freshness_warning())    # Mail doesn't hold this account
+        E.cache_emails(header(subject="In Mail", stamp=time.time() - 86400))
+        self.assertIn("opening Mail can get newer mail", E.email_freshness_warning())
+        E.set_email_availability(True, read_source="mail_app")           # already read live
+        self.assertNotIn("opening Mail", E.email_freshness_warning())
+
+    def test_a_refresh_timeout_does_not_offer_mail_as_a_way_round(self):
+        self.publish(headers=header(subject="Last Gmail copy"))
+        E.cache_emails(header(subject="In Mail", stamp=time.time() - 86400))
+        E.set_email_availability(True, read_source="local_index")
+        E.external_email_error(ME, "headers", "Google refresh timed out; showing the last available cache")
+        self.assertNotIn("opening Mail", E.email_freshness_warning())
 
     def test_timeout_marks_cached_snapshot_stale(self):
         self.publish(headers=header())
@@ -629,6 +794,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from service.tools import email_tools as E, cache_store
 from service import gmail_source as G
+from service.assistant.store import signin_expired_key
 from service.tools.registry import REGISTRY, run_tool
 import service.tools
 body = 'UNKNOWN_ORIGIN_BODY_MUST_NOT_BE_DISPLAYED'
@@ -754,6 +920,7 @@ from service.tools import cache_store
 cache_store.CACHE_DIR = Path(sys.argv[1])
 from service.tools import email_tools as E
 from service import gmail_source as G
+from service.assistant.store import signin_expired_key
 from service.tools.registry import REGISTRY, run_tool
 E = importlib.reload(E)
 account = sys.argv[2]
@@ -895,7 +1062,7 @@ print('fresh process retained original native fallback')
         self.assertNotIn("Private Google message", output)
         self.assertNotIn("Settings ▸ Google", output)
 
-    def test_failed_google_refresh_attempts_new_native_fallback_before_old_provider_cache(self):
+    def test_failed_google_refresh_keeps_provider_cache_over_a_new_native_read(self):
         self.accounts[ME]["mail_account_id"] = "native-A"
         E.configure_external_accounts(self.accounts)
         E.cache_emails(header("Personal", "Old native copy", native_id="native-A"))
@@ -909,8 +1076,8 @@ print('fresh process retained original native fallback')
         with patch.object(G, "_sync_headers", AsyncMock(side_effect=G.GmailError("Google offline"))), \
              patch("service.assistant.hub.hub.publish", native):
             output = asyncio.run(E.summarize_emails(account=ME))
-        self.assertIn("New native fallback", output)
-        self.assertNotIn("Old provider copy", output)
+        self.assertIn("Old provider copy", output)
+        self.assertNotIn("New native fallback", output)
         self.assertIn("Google offline", output)
 
     def test_no_gmail_failed_empty_or_marker_only_cache_cannot_claim_empty_inbox(self):
@@ -1190,14 +1357,25 @@ print('fresh process retained original native fallback')
         asyncio.run(run())
         self.assertIn("New header during history", E._headers)
 
-    def test_newer_native_success_is_not_hidden_by_failed_provider(self):
+    def test_newer_native_read_replaces_a_provider_only_once_its_sign_in_expired(self):
         self.publish(headers=header(subject="Old provider copy"))
         E.external_email_error(ME, "headers", "offline")
         E.cache_emails(header(subject="Newer native email"))
         E.set_email_availability(True, read_source="mail_app")
+        self.assertIn("Old provider copy", E._headers)
+        self.assertNotIn("Newer native email", E._headers)
+        self.assertIn("offline", E.email_freshness_warning())
+        self.expire_sign_in()
         self.assertIn("Newer native email", E._headers)
         self.assertNotIn("Old provider copy", E._headers)
-        self.assertIn("offline", E.email_freshness_warning())
+
+    def test_a_read_through_mail_still_replaces_a_snapshot_that_only_aged(self):
+        self.publish(headers=header(subject="Aged provider copy"))
+        E._external_accounts[ME]["headers_at"] = time.time() - 3600     # no error, just old
+        E.cache_emails(header(subject="Newer native email"))
+        E.set_email_availability(True, read_source="mail_app")
+        self.assertIn("Newer native email", E._headers)
+        self.assertNotIn("Aged provider copy", E._headers)
 
     def test_reconnect_during_fetch_rejects_previous_token_generation(self):
         async def run():
@@ -1325,13 +1503,16 @@ print('fresh process retained original native fallback')
                 self.assertEqual(len(rows), 1)
                 self.assertNotEqual(rows[0]["account_id"], "native-B")
 
-    def test_failure_immediately_selects_newer_native_after_provider_success(self):
+    def test_only_an_expired_sign_in_immediately_selects_newer_native(self):
         self.publish(headers=header(subject="Provider old"))
         E.cache_emails(header(subject="Native new"))
         E.set_email_availability(True, read_source="mail_app")
         self.assertIn("Provider old", E._headers)
         original = E._external_accounts[ME]["headers_at"]
         E.external_email_error(ME, "headers", "offline after native read")
+        self.assertIn("Provider old", E._headers)
+        self.assertNotIn("Native new", E._headers)
+        self.expire_sign_in()
         self.assertIn("Native new", E._headers)
         self.assertNotIn("Provider old", E._headers)
         self.assertEqual(E._external_accounts[ME]["headers_at"], original)
@@ -1432,6 +1613,10 @@ print('fresh process retained original native fallback')
         E.cache_emails(header(ME, "New native fallback", native_id="native-A"))
         E.set_email_availability(True, read_source="mail_app")
         E.external_email_error(ME, "headers", "offline")
+        for selector in (ME, "native-A"):
+            rows = E._filter_account_records(E._parse_header_records(E._headers), selector)
+            self.assertEqual(rows[0]["subject"], "Provider by exact address")
+        self.expire_sign_in()
         for selector in (ME, "native-A"):
             rows = E._filter_account_records(E._parse_header_records(E._headers), selector)
             self.assertEqual(rows[0]["subject"], "New native fallback")
@@ -3186,6 +3371,12 @@ class BuiltInGoogleClient(unittest.TestCase):
         self.assertNotEqual(other["state"], "expired")
         self.assertNotIn("me-refresh", json.dumps(G.status()))
 
+    def test_a_real_invalid_grant_reaches_the_mail_fallback(self):
+        self.expire(ME)
+        E.configure_external_accounts(G.connected_accounts())
+        self.assertIs(E._external_accounts[ME]["auth_expired"], True)
+        self.assertIs(E._external_accounts[JUDGE]["auth_expired"], False)
+
     def test_reconnect_clears_the_expired_state(self):
         self.expire(ME)
         token = {"refresh_token": "fresh-refresh", "access_token": "fake", "scope": G.SCOPE}
@@ -3225,7 +3416,8 @@ class BuiltInGoogleClient(unittest.TestCase):
         event, kwargs = published[0]
         self.assertEqual(event["type"], "google_signin_expired")
         self.assertEqual(event["account"], ME)
-        self.assertEqual(kwargs["dedupe_key"], f"google-signin-expired:{ME}:1700000000")
+        self.assertNotIn(ME, kwargs["dedupe_key"], "the key outlives the notice's words")
+        self.assertEqual(kwargs["dedupe_key"], signin_expired_key(ME, 1700000000))
         self.assertEqual(event["title"] + ". " + event["body"],
                          "Google sign-in expired. Reconnect in Settings ▸ Google.")
 

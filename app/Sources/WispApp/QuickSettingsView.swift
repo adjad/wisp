@@ -45,6 +45,12 @@ struct QuickSettingsView: View {
                 fullAccessRow
                 hairline
                 learningRow
+                hairline
+                row("Mac permissions", help: "What Wisp can reach on this Mac, and the one thing to do for each that's off.") {
+                    Text("Calendar, Mail, Full Disk Access and more")
+                } control: {
+                    pillButton("Review") { model.openPermissionPage(nil) }
+                }
             }
             group("Daily brief") { briefRow }
             if google.showsRow {
@@ -166,8 +172,9 @@ struct QuickSettingsView: View {
     }
 
     private var saveMemoryRow: some View {
-        row("Save memory", help: QuickSettingsText.saveMemoryHelp) {
-            Text(QuickSettingsText.saveMemory(on: settings.saveMemory, pending: settings.saveMemoryPending))
+        row("Save memory", help: QuickSettingsText.saveMemoryHelp(detail: settings.saveMemoryDetail)) {
+            Text(QuickSettingsText.saveMemory(on: settings.saveMemory, pending: settings.saveMemoryPending,
+                                              detail: settings.saveMemoryDetail))
         } control: {
             if settings.saveMemory != nil {
                 Toggle("Save memory", isOn: Binding(get: { settings.saveMemory == true },
@@ -331,20 +338,11 @@ struct QuickSettingsView: View {
 
     // MARK: Pieces
 
-    /// A labelled card: rows separated by hairlines.
     private func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title.uppercased()).font(.wisp(.footnote, weight: .semibold)).kerning(1)
-                .foregroundStyle(Theme.textMuted).padding(.leading, 4)
-                .accessibilityAddTraits(.isHeader)
-            VStack(spacing: 0) { content() }
-                .background(RoundedRectangle(cornerRadius: 14).fill(Theme.raised))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.hairline, lineWidth: 1))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-        }
+        NotchSettingsChrome.group(title, content: content)
     }
 
-    private var hairline: some View { Rectangle().fill(Theme.hairline).frame(height: 1) }
+    private var hairline: some View { NotchSettingsChrome.hairline }
 
     private func row<Detail: View, Control: View>(_ title: String, help: String,
                                                   @ViewBuilder detail: () -> Detail,
@@ -363,6 +361,28 @@ struct QuickSettingsView: View {
     }
 
     private func pillButton(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> some View {
+        NotchSettingsChrome.pill(title, primary: primary, action: action)
+    }
+}
+
+/// The card, hairline and pill quick settings and the permission page share.
+enum NotchSettingsChrome {
+    /// A labelled card: rows separated by hairlines.
+    static func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title.uppercased()).font(.wisp(.footnote, weight: .semibold)).kerning(1)
+                .foregroundStyle(Theme.textMuted).padding(.leading, 4)
+                .accessibilityAddTraits(.isHeader)
+            VStack(spacing: 0) { content() }
+                .background(RoundedRectangle(cornerRadius: 14).fill(Theme.raised))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.hairline, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+        }
+    }
+
+    static var hairline: some View { Rectangle().fill(Theme.hairline).frame(height: 1) }
+
+    static func pill(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title).font(.wisp(.body)).foregroundStyle(primary ? Theme.textPrimary : Theme.textSecondary)
                 .padding(.horizontal, 12).padding(.vertical, 5)

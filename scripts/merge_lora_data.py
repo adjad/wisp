@@ -17,7 +17,59 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from pathlib import Path
+
+
+def _private_mkdirs(path: Path) -> None:
+    """Create `path` and every missing parent, each 0700.
+
+    mkdir(mode=..., parents=True) gives the mode only to the last directory;
+    the parents it creates get the umask's (0755). Directories that already
+    exist are left as they are.
+    """
+    missing = []
+    while not os.path.lexists(path):
+        missing.append(path)
+        path = path.parent
+    for directory in reversed(missing):
+        try:
+            directory.mkdir(mode=0o700)
+        except FileExistsError:
+            pass
+
+
+def _private_dir(path: Path) -> Path:
+    """The output directory, created owner-only (0700) when it is new.
+
+    An existing directory is left as it is (`--out ~` must not strip access
+    from the home folder); the files written into it are 0600 either way.
+    """
+    if not path.is_dir():
+        _private_mkdirs(path)
+    elif path.stat().st_mode & 0o077:
+        print(f"note: {path} is readable by other accounts; the files written "
+              "there are owner-only", file=sys.stderr)
+    return path
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Write `text` to a file that is 0600 from its first byte.
+
+    The examples are the user's own chat turns from sessions.db (with real
+    tool arguments), so they get the store's owner-only mode instead of the
+    process umask. fchmod also tightens a file an earlier run left 0644.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        f = os.fdopen(fd, "w")
+    except BaseException:
+        os.close(fd)              # fdopen did not take ownership of it
+        raise
+    with f:
+        f.write(text)
 
 
 def load_jsonl(path: Path) -> list[dict]:
@@ -40,8 +92,7 @@ def main() -> int:
 
     harvest_dir = Path(args.harvest).expanduser()
     real_dir = Path(args.real_usage).expanduser()
-    out_dir = Path(args.out).expanduser()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _private_dir(Path(args.out).expanduser())
 
     harvest = load_jsonl(harvest_dir / "harvest_sft.jsonl")
     # NOT test.jsonl — build_lora_dataset.py's test.jsonl is a copy of a
@@ -57,10 +108,10 @@ def main() -> int:
     n_val = max(1, int(len(examples) * args.val_frac))
     val, train = examples[:n_val], examples[n_val:]
 
-    (out_dir / "train.jsonl").write_text("\n".join(json.dumps(e) for e in train) + "\n")
-    (out_dir / "valid.jsonl").write_text("\n".join(json.dumps(e) for e in val) + "\n")
-    (out_dir / "test.jsonl").write_text(
-        "\n".join(json.dumps(e) for e in val[: max(1, n_val // 2)]) + "\n")
+    _write_private(out_dir / "train.jsonl", "\n".join(json.dumps(e) for e in train) + "\n")
+    _write_private(out_dir / "valid.jsonl", "\n".join(json.dumps(e) for e in val) + "\n")
+    _write_private(out_dir / "test.jsonl",
+                   "\n".join(json.dumps(e) for e in val[: max(1, n_val // 2)]) + "\n")
 
     print(f"harvest: {len(harvest)} ({dropped} dropped as contaminated)")
     print(f"real usage: {len(real)}")

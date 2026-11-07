@@ -661,6 +661,13 @@ class OMLXClient:
         s = await self.status()
         return [m["id"] for m in s["models"] if m.get("loaded", False)]
 
+    async def engine_activity(self) -> dict[str, Any]:
+        """oMLX's whole-server counters (GET /api/status), for every client and
+        model: active_requests and waiting_requests. Read-only."""
+        if not self.provider.omlx_health:
+            raise EndpointConfigurationError("Provider has no oMLX residency API")
+        return await self._readiness_mapping("/api/status", 64 * 1024)
+
     async def unload(self, model: str) -> None:
         if not self.managed:
             raise EndpointConfigurationError("Only managed local models can be unloaded")
@@ -671,7 +678,7 @@ class OMLXClient:
     async def load(self, model: str) -> None:
         if not self.managed:
             raise EndpointConfigurationError("Only managed local models can be loaded")
-        with engine_epoch.operation():
+        with engine_epoch.operation(), idle.own_load(self.activity_key(model)):
             r = await self._client.post(f"/v1/models/{model}/load")
         if r.status_code == 507:
             # The managed engine refused admission. Do not echo its diagnostics

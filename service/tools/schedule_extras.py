@@ -32,7 +32,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from service.assistant.store import AssistantStore
-from service.tools.registry import register
+from service.tools.registry import not_done, register
 
 _store = AssistantStore()
 
@@ -427,7 +427,8 @@ def _fmt_day(d: dt.date, today: dt.date) -> str:
 async def complete_reminder(title: str, expected_id: str = "") -> str:
     needle = (title or "").strip().lower()
     if not needle:
-        return "(error: complete_reminder needs part of the reminder's `title`.)"
+        return not_done("(error: complete_reminder needs part of the reminder's `title`.)",
+                        question="Which reminder is done?")
 
     reminder_sources = {"manual", "reminders"}
     rows = [row for row in _store.active_future(horizon_days=365)
@@ -444,15 +445,15 @@ async def complete_reminder(title: str, expected_id: str = "") -> str:
                 or expected_id in {str(value) for value in row.get("duplicate_ids") or []}]
     if not hits:
         if expected_id:
-            return ("(error: the selected reminder changed before it could be completed; "
-                    "nothing was changed.)")
+            return not_done("(error: the selected reminder changed before it could be completed; "
+                            "nothing was changed.)")
         from service.tools.title_match import near_miss_note
         return (f"Nothing active matches {title!r}. "
                 f"Ask me what's upcoming if you're not sure of the wording."
                 + near_miss_note(title, [r.get("title") or "" for r in rows]))
     if len(hits) > 1:
         listed = "\n".join(f"  - {r['title']} ({_fmt_time(r['when_ts'])})" for r in hits[:8])
-        return f"Several match {title!r} — which one?\n{listed}"
+        return not_done(f"Several match {title!r} — which one?\n{listed}")
 
     _, message = await complete_commitment(hits[0])
     return message

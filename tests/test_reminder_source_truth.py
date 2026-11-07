@@ -613,6 +613,7 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
         ["swiftc", "-parse-as-library", "-swift-version", "5",
          "-module-cache-path", str(tmp_path / "module-cache"),
          str(root / "app/Sources/WispApp/RemindersWriter.swift"),
+         str(root / "app/Sources/WispApp/ReminderActionLedger.swift"),
          str(harness), "-o", str(binary)],
         check=True, capture_output=True, text=True, timeout=300,
     )

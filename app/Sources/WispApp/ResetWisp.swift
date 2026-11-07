@@ -68,6 +68,7 @@ enum WispReset {
         "wisp.browserBridge.enabledProfiles.v1", "wisp.mailAccountLabels.identity.v1",
         "wisp.shuttingDownPID", "wisp.backendStartFailed", "wisp.backendRefused", "wisp.restartBackend",
         PrivacyRelaunch.paneOpenedKey,
+        NotchPermissionPage.resumeItemKey, NotchPermissionPage.resumeAtKey,
     ]
     /// Per-account "Not now" notes in Settings ▸ Google (one key per account).
     static let markerPrefixes = ["wisp.", "Wisp"]
@@ -362,12 +363,16 @@ enum WispReset {
     /// Set once an ignored marker was reported, so it is said only once.
     static let ignoredMarkerReportedKey = "wisp.reset.ignoredMarkerReported"
 
-    /// Wisp's own app files outside ~/.moe that a reset removes: its URL cache and
-    /// cookies, and the battery graph. Only for Wisp's own bundle id.
+    /// Wisp's own app files that a reset removes: its URL cache and cookies, and the battery
+    /// graph, all outside ~/.moe. The reminder ledger and its set-aside copy are inside it,
+    /// so the service erases them too, but the app goes first: the old process can still
+    /// write the ledger after the service's first pass, and the Reminders reader must not
+    /// load that into memory and write it back. Only for Wisp's own bundle id.
     static func appFiles(home: String, bundleID: String?) -> [String] {
         guard bundleID == Self.bundleID else { return [] }
         return ["Library/Caches/\(Self.bundleID)", "Library/HTTPStorages/\(Self.bundleID)",
-                "Library/Application Support/Wisp/battery_history.json"]
+                "Library/Application Support/Wisp/battery_history.json",
+                ".moe/reminder-action-ledger.json", ".moe/reminder-action-ledger.damaged.json"]
             .map { (home as NSString).appendingPathComponent($0) }
     }
 

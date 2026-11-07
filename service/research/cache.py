@@ -10,11 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 from pathlib import Path
 
-from service.paths import MOE_DIR
+from service.paths import MOE_DIR, STALE_TEMP_S, private_write_bytes
 
 CACHE_DIR = MOE_DIR / "research_cache"
 _TTL_SECONDS = 6 * 3600
@@ -51,11 +50,8 @@ def put(canonical_url: str, *, url: str, title: str, text: str,
     data = {"url": url, "canonical_url": canonical_url, "title": title, "text": text,
             "content_type": content_type, "published_at": published_at,
             "via_archive": via_archive, "cached_at": time.time()}
-    path.write_text(json.dumps(data), encoding="utf-8")
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
+    # What the user researched: owner-only from the first byte, written atomically.
+    private_write_bytes(path, json.dumps(data).encode("utf-8"))
 
 
 def purge_older_than(days: float = _MAX_AGE_DAYS) -> int:
@@ -68,6 +64,14 @@ def purge_older_than(days: float = _MAX_AGE_DAYS) -> int:
             if entry.stat().st_mtime < cutoff:
                 entry.unlink()
                 removed += 1
+        except OSError:
+            continue
+    # Temp copies a write left by dying before its rename (private_write_bytes).
+    stale = time.time() - STALE_TEMP_S
+    for entry in CACHE_DIR.glob(".*.json.*.tmp"):
+        try:
+            if entry.lstat().st_mtime < stale:
+                entry.unlink()
         except OSError:
             continue
     return removed

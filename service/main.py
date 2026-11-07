@@ -509,6 +509,8 @@ from service.assistant.checkin_api import router as checkin_router
 app.include_router(checkin_router)
 from service.assistant.email_reply_api import router as email_reply_router
 app.include_router(email_reply_router)
+from service.assistant.hours_api import router as hours_router
+app.include_router(hours_router)
 from service.proactive.api import router as proactive_router
 app.include_router(proactive_router)
 app.include_router(__import__("service.engine.api", fromlist=["router"]).router)
@@ -1638,6 +1640,9 @@ MODEL_LED_UNTRUSTED_WEB_HINT = (
 UNRESOLVED_ACTION_NOTICE = (
     "An earlier action in this chat may not have finished, so I can't take new "
     "actions here until it's checked. Check that it did what you wanted, then start a new chat.")
+UNRESOLVED_ACTION_REASON = (
+    "an earlier action in this chat has an unconfirmed outcome, so new actions are held "
+    "until the user has checked it")
 
 
 def _answer_prefixed(emit, prefix: str):
@@ -2531,6 +2536,8 @@ async def agent(body: dict[str, Any]):
             # the previous turn's light-read domain instead of defaulting to the agent model.
             unresolved_block = False
             offered_creations: frozenset[str] = frozenset()
+            draft_awaiting: dict | None = None
+            draft_bound = False
             if workflow_turn and workflow_turn.decision:
                 decision = workflow_turn.decision
                 await emit({"type": "workflow", "event": workflow_turn.event,
@@ -2556,6 +2563,15 @@ async def agent(body: dict[str, Any]):
                                            if needs_effect_owner(t.category)
                                            and t.category not in exempt
                                            and t.name not in offered_creations)
+                # The send that stopped last turn for want of a recipient. Never
+                # while an earlier outcome is unknown: that lock is never lifted
+                # by an address, and its tools stay forbidden above.
+                if sess and not test_mode and not unresolved_block:
+                    from service.memory.subject import awaiting_send, resume_binding
+                    if draft_awaiting := awaiting_send(store, sid):
+                        if bound := resume_binding(draft_awaiting, prompt):
+                            bindings = {**bindings, draft_awaiting["tool"]: bound}
+                            draft_bound = True
                 decision = RouteDecision(
                     role="agent", model=model_led_target.model, needs_tools=True,
                     source="model_led", route_source="model_led_discovery",
@@ -2746,6 +2762,10 @@ async def agent(body: dict[str, Any]):
                     subject_msg, subject_tools = subject_message(store, sid)
                     if subject_msg:
                         messages.insert(1, subject_msg)
+                    if draft_awaiting:
+                        from service.memory.subject import awaiting_message
+                        messages.insert(1, awaiting_message(draft_awaiting, bound=draft_bound))
+                        subject_tools = [draft_awaiting["tool"], *subject_tools]
                 if task_owner_verdict != "none":
                     messages.insert(1, {"role": "system", "content": (
                         "An older task is still pending; this turn did not advance it. "
@@ -2772,8 +2792,8 @@ async def agent(body: dict[str, Any]):
                     or tool.name in {"send_message", "send_email", "reply_to_email",
                                      "forward_email", "schedule_send"})
 
-            def finish_model_action(claim, verified):
-                return store.finish_model_effect(sid, claim, verified=verified)
+            def finish_model_action(claim, verified, **refusal):
+                return store.finish_model_effect(sid, claim, verified=verified, **refusal)
 
             if decision._reminder_clarification:
                 # This host boundary ran no action and admitted no tools.
@@ -2872,6 +2892,13 @@ async def agent(body: dict[str, Any]):
                     # creation's real schema leads instead of a name stub.
                     from service.model_only import ASK_PRELOAD
                     lead = sorted(offered_creations)
+                    ask_preload = [*lead, *(n for n in ask_preload if n not in lead)][:ASK_PRELOAD]
+                    ask_stub_rank = [n for n in ask_stub_rank if n not in lead]
+                if ask_quality and draft_bound:
+                    # A bare address ranks nothing useful lexically: the send
+                    # it answers leads with its real schema.
+                    from service.model_only import ASK_PRELOAD
+                    lead = [draft_awaiting["tool"]]
                     ask_preload = [*lead, *(n for n in ask_preload if n not in lead)][:ASK_PRELOAD]
                     ask_stub_rank = [n for n in ask_stub_rank if n not in lead]
                 if ask_quality and subject_tools:
@@ -2976,6 +3003,7 @@ async def agent(body: dict[str, Any]):
                                         direct_calls=decision.direct_calls,
                                         required_tool_groups=decision.required_tool_groups,
                                         forbidden_tools=decision.forbidden_tools | ask_forbidden,
+                                        forbidden_reason=(UNRESOLVED_ACTION_REASON if unresolved_block else ""),
                                         conditional_tools=decision.conditional_tools,
                                         tool_argument_bindings=decision.tool_argument_bindings,
                                         strict_read_limits=decision.strict_read_limits,

@@ -19,9 +19,13 @@ stands in (`mail_prose`).
 
 Rules:
 - IMPORTANT: written in the background, never on a user's turn. The scheduler
-  starts a tick only while nobody is waiting (`idle.foreground_busy`), and a
+  starts a tick only while nobody is waiting (`idle.foreground_busy`) and the
+  chat has gone quiet (`service/brief_pace.py`), and a
   tick stands down before its model call if a turn has started. Each time it
   stands down for a new reason it logs one line saying why.
+- By day they are written by the Brief's builds (`refresh_changed`), about four a
+  day. In between, a row whose mail changed shows its deterministic sentence once
+  the text is out of date (`overview`), so new mail still appears with no model.
 - IMPORTANT: one model call per tick, for one overview whose inputs changed,
   at most every `_REWRITE_S` per overview and `_MIN_GAP_S` between calls.
 - IMPORTANT: its own background request, not the 12 s user-facing summary
@@ -777,7 +781,12 @@ async def refresh(now: float | None = None, *, synth=None, abort=None, force: bo
     return True
 
 
-async def refresh_all(now: float | None = None, *, synth=None, abort=None) -> int:
+async def refresh_changed(now: float | None = None, *, synth=None, abort=None) -> int:
+    """One of the day's Brief builds: rewrite only the overviews whose inputs changed."""
+    return await refresh_all(now, synth=synth, abort=abort, force=False)
+
+
+async def refresh_all(now: float | None = None, *, synth=None, abort=None, force: bool = True) -> int:
     """The hourly idle refresh (service/proactive/cycle.py): rewrite every
     overview, fresh or not, one call after another. Holds this module's own
     tick off meanwhile (one resident model, one request at a time) and stops
@@ -795,7 +804,7 @@ async def refresh_all(now: float | None = None, *, synth=None, abort=None) -> in
         for kind in KINDS:
             if abort():
                 break
-            written += bool(await refresh(now, synth=synth, abort=abort, force=True, kind=kind))
+            written += bool(await refresh(now, synth=synth, abort=abort, force=force, kind=kind))
     finally:
         if _task is asyncio.current_task():
             _task = None
@@ -843,11 +852,17 @@ def schedule_tick() -> asyncio.Task | None:
         return None
     if _remote_background_paused():
         return None
+    from service import brief_pace
+    if _load() and brief_pace.between_builds():
+        return None                  # by day the Brief's builds write these (refresh_changed)
     if idle.foreground_busy():
         _stood_down("a turn is in progress")
         return None
     if not hub.has_subscribers:
         _stood_down("the app isn't connected to the event stream")
+        return None
+    if not brief_pace.may_start("gists"):
+        _stood_down("the user was just chatting")
         return None
     _task = asyncio.create_task(refresh())
     return _task

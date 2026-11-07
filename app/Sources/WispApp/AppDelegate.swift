@@ -417,11 +417,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.bringSetupForward() }
         }
-        // A Brief or Day row about a permission macOS was never asked for.
+        // Settings › Privacy's Permissions… and the notch's Setup row: the setup window.
         NotificationCenter.default.addObserver(
             forName: .wispOpenPermissions, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.openFirstRunSetup(at: .permissions) }
+        }
+        // A Brief, Day or Ask row about a source Wisp can't read: the notch's page.
+        NotificationCenter.default.addObserver(
+            forName: .wispOpenPermissionPage, object: nil, queue: .main
+        ) { [weak self] note in
+            let raw = note.object as? String
+            MainActor.assumeIsolated { self?.openPermissionPage(raw.flatMap(FirstRunPermissions.Item.init(rawValue:))) }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .wispStepAside, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stepAside() }
+        }
+        NotificationCenter.default.addObserver(
+            forName: .wispStepBack, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stepBack() }
         }
         // The Brief's Gmail reconnect link (BriefFix.open), on its Google pane.
         NotificationCenter.default.addObserver(
@@ -438,7 +455,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             forName: .wispExportDebugLog, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.exportDebugLog() }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.exportDebugLog()
+            }
         }
         // Remember which Wisp window was used last, so the Dock brings back that one.
         NotificationCenter.default.addObserver(
@@ -447,6 +467,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated {
                 guard let window = note.object as? NSWindow else { return }
                 self?.noteKeyWindow(window)
+                self?.stepAside(forKey: window)
             }
         }
         let defaults = UserDefaults.standard
@@ -479,6 +500,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Wisp starts in the notch. The Wisp window opens only when asked for:
         // the Dock icon, the menu bar, or a hand-off from the notch.
         if firstRun { openFirstRunSetup() } else { showNotchTipOnce() }
+        // macOS's Quit & Reopen, from the System Settings page the notch's permission
+        // page sent the person to: back where they were, with the new answer.
+        if let item = NotchPermissionPage.takeResume(), !firstRun { openPermissionPage(item) }
         if resetPending { finishPendingReset() }
         if ignoredResetMarker { model.showTransientNotice(WispReset.ignoredMarkerNotice, duration: 15) }
     }
@@ -536,6 +560,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// brings it forward, out of the Dock if it was minimized, if it is already up.
     private func openFirstRunSetup(at step: OnboardingStep? = nil) {
         let defaults = UserDefaults.standard
+        stepAside()
         if let step { defaults.set(step.rawValue, forKey: FirstRunSetup.stepKey) }
         if let open = firstRunWindow {
             if step != nil { open.contentView = onboardingContent() }
@@ -970,6 +995,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             client.prewarmModel()
         }
         switch route {
+        case .chat, .chatList, .today, .research, .memory: stepAside()
+        case .settings, .setup, .knowYou: break
+        }
+        switch route {
         case .chat(let sessionId):
             if let sessionId { wispWindow.show(sessionId: sessionId) } else { wispWindow.show() }
         case .chatList:
@@ -1311,6 +1340,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         requestPresentation(.bar)
     }
 
+    // MARK: - Nothing opens under the panel
+
+    /// The panel's level is above every normal window, and a click leaves the
+    /// pointer inside it, so nothing closed it when one opened: a window opened
+    /// from it sat underneath ("nothing happens"), and System Settings stayed
+    /// covered through the panel's grace delay. Whatever the panel opens comes
+    /// here first, holds or no holds, since it is what the person just asked for.
+    /// Nothing in the panel is lost; it is only closed.
+    private func stepAside() {
+        switch presentation.desired {
+        case .chat: requestPresentation(.bar)
+        case .search: closeSearch()
+        case .bar, .hidden: break
+        }
+    }
+
+    /// One of Wisp's own windows took the keyboard while the panel is above it: a
+    /// window opened from a menu, the Dock or a click in it. A pin means the person
+    /// wants the panel to stay; a dialog raised above the panel (the file and save
+    /// panels) has nothing to step aside for.
+    private func stepAside(forKey window: NSWindow) {
+        guard let panel, window !== panel, window !== searchPanel, !model.collapsed, !model.pinned,
+              !model.pickingFile, Self.panelCovers(window: window.level, panel: panel.level) else { return }
+        stepAside()
+    }
+
+    /// Pure: a window at or under the panel's level is what it would cover.
+    nonisolated static func panelCovers(window: NSWindow.Level, panel: NSWindow.Level) -> Bool {
+        window.rawValue <= panel.rawValue
+    }
+
+    /// What it stepped aside for was answered (the microphone's question).
+    private func stepBack() {
+        guard presentation.desired == .bar else { return }
+        expand()
+    }
+
+    /// The notch on its permission page. While setup holds the notch closed, the
+    /// setup window's own Permissions step is what can be reached.
+    private func openPermissionPage(_ item: FirstRunPermissions.Item?) {
+        if modelGateHolds { openFirstRunSetup(at: .permissions); return }
+        notchDocked = true
+        createPanelIfNeeded()
+        model.openPermissionPage(item)
+    }
+
+    /// The page again, with macOS's answer on it. Nobody may be looking, so unless
+    /// the pointer goes there it closes again on its own after a moment to read.
+    private func permissionPageComesBack() {
+        // Still open and nothing closing it, so no opening will end the page's wait.
+        if presentation.desired == .chat && !model.collapsed {
+            model.permissionPage.panelOpened()
+            return
+        }
+        // Nobody asked for this open, so the keyboard stays with the app in front.
+        panel?.revealsWithoutKey = true
+        // Not openAssistant: the answer can arrive during the roll-up, while
+        // model.collapsed is still false. The request outlives that step, and the
+        // page's wait keeps it through the close (NotchPermissionPageModel.Waiting).
+        expand()
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.permissionAnswerShownFor) { [weak self] in
+            guard let self else { return }
+            self.panel?.revealsWithoutKey = false
+            guard self.model.showingPermissions, !self.model.collapsed, !self.pointerInPanel() else { return }
+            self.scheduleCollapse()
+        }
+    }
+    private static let permissionAnswerShownFor: TimeInterval = 6
+
     private func finishPresentation(_ step: OverlayTransition.Step) {
         guard presentation.finish(step) else { return }
         // A pointer left resting on the bar after a close must leave the zone
@@ -1566,6 +1664,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         model.onResizeNow = { [weak self] in self?.panel?.resizeToFit() }
         model.requestExpand = { [weak self] in self?.expand() }
+        model.permissionPage.comeBack = { [weak self] in self?.permissionPageComesBack() }
         model.requestCollapse = { [weak self] in
             // An explicit close (chevron, Esc) while Getting to know you is
             // open counts as Later. Auto-collapse never reaches here: the open
@@ -1970,29 +2069,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Settings › General's Export Chat Debug Log…: writes every chat since Wisp
     // opened, the open one last (every turn's model, route decision, timing,
     // tok/s, tool calls, and any errors) to ~/Downloads as JSON + a readable .txt companion, then reveals
-    // them in Finder. No-ops with a brief alert if there's no conversation yet.
+    // them in Finder. No-ops with a brief notice if there's no conversation yet.
     // Debug metadata is tracked for every turn whether or not Debug Mode is on
     // (see OverlayModel.applyDebugFields).
-    private func exportDebugLog() {
-        let alert = NSAlert()
-        switch model.exportDebugLog() {
+    //
+    // It says so without an app-modal alert. runModal locked the notch until it was
+    // answered, and from the menu bar, which never activates Wisp, macOS also bounced
+    // the Dock icon and could open the alert behind other apps, so the only way out
+    // was clicking the icon. See NonModalAlert.
+    private func exportDebugLog() async {
+        if let open = debugLogNotice { open.bringForward(); return }
+        guard !debugLogExporting else { return }
+        debugLogExporting = true
+        let result = await model.exportDebugLog(to: debugLogFolder)
+        debugLogExporting = false
+        showDebugLogNotice(result)
+    }
+
+    private var debugLogExporting = false
+    private var debugLogNotice: NonModalAlert?
+    /// Nil is Downloads; only the checks choose another folder.
+    private var debugLogFolder: URL?
+    private var revealExportedFile: (URL) -> Void = { NSWorkspace.shared.activateFileViewerSelecting([$0]) }
+
+    private func showDebugLogNotice(_ result: OverlayModel.DebugLogExport) {
+        let title: String, text: String, style: NSAlert.Style
+        var reveal: URL?
+        switch result {
         case .nothing:
-            alert.messageText = "Nothing to export yet"
-            alert.informativeText = "Start a conversation in Wisp first, then export its debug log."
-            alert.alertStyle = .informational
-            alert.runModal()
+            title = "Nothing to export yet"
+            text = "Start a conversation in Wisp first, then export its debug log."
+            style = .informational
         case .failed(let reason):
-            alert.messageText = "Couldn't save the chat debug log"
-            alert.informativeText = reason
-            alert.alertStyle = .warning
-            alert.runModal()
+            title = "Couldn't save the chat debug log"
+            text = reason
+            style = .warning
         case .saved(let url):
-            alert.messageText = "Chat debug log saved to Downloads"
-            alert.informativeText = SettingsView.debugLogPrivacyLine
-            alert.alertStyle = .informational
-            alert.runModal()
-            NSWorkspace.shared.activateFileViewerSelecting([url])
+            title = "Chat debug log saved to Downloads"
+            text = SettingsView.debugLogPrivacyLine
+            style = .informational
+            reveal = url
         }
+        let notice = NonModalAlert(title: title, text: text, style: style) { [weak self] in
+            guard let self else { return }
+            self.debugLogNotice = nil
+            // The notice took focus from an open notch without counting as the person
+            // leaving (see the panel's didResignKey), so the notch goes back to its
+            // usual auto-collapse here, before Finder takes focus.
+            if !self.model.collapsed, !self.pointerInPanel() { self.scheduleCollapse() }
+            if let reveal { self.revealExportedFile(reveal) }
+        }
+        debugLogNotice = notice
+        notice.show()
     }
 
     /// Quit Wisp after the engine and its helpers have stopped. Every quit request
@@ -2165,6 +2293,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Settings is a section of the Wisp window (⌘,, the menus, the window's
     /// sidebar and footer gear, and the notch's All settings all land here).
     @objc private func openSettings() {
+        stepAside()
         wispWindow.showSettings()
     }
 
@@ -2307,6 +2436,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// person chooses to: only what is still off, each with its reason, and one
     /// system surface per click.
     private func grantMoreAccess() {
+        stepAside()
         let missing = Permissions.missingExtras()
         let alert = NSAlert()
         if let next = missing.first {
@@ -2549,6 +2679,76 @@ extension AppDelegate {
         print("PASS: AppDelegate research releases the prompt queue when its tab is left or New research opens")
     }
 
+    static func checkPermissionPageStepsAside() async {
+        let delegate = AppDelegate()
+        let model = delegate.model
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        model.collapsed = false
+        delegate.finishPresentation(opening)
+        model.tab = .brief
+        model.openPermissionPage(.calendar)
+        precondition(model.showingPermissions && model.permissionPage.focus == .calendar && model.tab == .brief,
+                     "A Brief row opens the page on its permission, on the Brief")
+        // A plain close and any way off the tab leave the page, as they do quick settings.
+        model.collapsed = true
+        precondition(!model.showingPermissions, "Closing the panel closes the page")
+        model.collapsed = false
+        model.openPermissionPage(.calendar)
+        model.tab = .day
+        precondition(!model.showingPermissions, "Another tab closes the page")
+        model.tab = .brief
+        model.openPermissionPage(nil)
+        model.showingQuickSettings = true
+        precondition(!model.showingPermissions && model.showingQuickSettings, "The gear closes the page")
+        model.openPermissionPage(.reminders)
+        precondition(model.showingPermissions && model.showingQuickSettings, "Opened from Settings, it sits over them")
+        model.closePermissionPage()
+        precondition(!model.showingPermissions && model.showingQuickSettings, "Done goes back to Settings")
+        model.showingQuickSettings = false
+        // Stepping aside ignores what holds the panel open, since the person asked for it.
+        model.input = "half a question"
+        precondition(model.holdsOpen, "Typed text holds the panel open")
+        delegate.stepAside()
+        precondition(delegate.presentation.desired == .bar, "A window or a question opening closes the panel anyway")
+        precondition(model.input == "half a question", "Nothing in the panel is lost")
+        model.input = ""
+        // macOS answers while the panel is still rolling up (a question it never
+        // showed): the page and its message come back instead of closing with it.
+        let racing = AppDelegate()
+        racing.presentation.request(.chat)
+        let racingOpen = racing.presentation.next()!
+        racing.model.collapsed = false
+        racing.finishPresentation(racingOpen)
+        racing.model.tab = .brief
+        racing.model.openPermissionPage(.calendar)
+        racing.model.permissionPage.comeBack = { [weak racing] in racing?.permissionPageComesBack() }
+        let click = racing.model.permissionPage.beginWaiting(.calendar, state: .notAsked)
+        racing.presentation.request(.bar)
+        _ = racing.presentation.next()!
+        racing.model.permissionPage.answered(click)
+        precondition(racing.presentation.desired == .chat, "An answer during the roll-up asks for the panel back")
+        racing.model.collapsed = true
+        precondition(racing.model.showingPermissions && racing.model.permissionPage.focus == .calendar,
+                     "That roll-up's end doesn't close the page")
+        racing.model.collapsed = false
+        precondition(racing.model.showingPermissions && !racing.model.permissionPage.keepsThroughClose,
+                     "The page is back, and nothing is waiting any more")
+        racing.model.collapsed = true
+        precondition(!racing.model.showingPermissions, "The next close is an ordinary one")
+        // The same answer with the panel never closed: nothing is left waiting.
+        let stayed = AppDelegate()
+        stayed.presentation.request(.chat)
+        let stayedOpen = stayed.presentation.next()!
+        stayed.model.collapsed = false
+        stayed.finishPresentation(stayedOpen)
+        stayed.model.openPermissionPage(.calendar)
+        stayed.model.permissionPage.comeBack = { [weak stayed] in stayed?.permissionPageComesBack() }
+        stayed.model.permissionPage.answered(stayed.model.permissionPage.beginWaiting(.calendar, state: .notAsked))
+        precondition(!stayed.model.permissionPage.keepsThroughClose, "An open panel has no opening to wait for")
+        print("PASS: AppDelegate permission page opens in the notch and the panel steps aside for what it opens")
+    }
+
     static func checkQuickSettingsSurviveCollapse() async {
         let delegate = AppDelegate()
         let model = delegate.model
@@ -2613,6 +2813,35 @@ extension AppDelegate {
         print("PASS: AppDelegate setup card opens on Ask, holds the panel until Done or Later; notifications open Day")
     }
 
+    /// Saving a report from the notch holds the notch for as long as the dialog is
+    /// up, not just for the click, and lets go however the dialog ends.
+    static func checkReportSaveHoldsUntilAnswered() {
+        let model = AppDelegate().model
+        let draft = model.report
+        draft.open(key: "chat:save", metadata: [:])
+        var answer: (@MainActor (URL?) -> Void)?
+        var shown = 0, forward = 0, cancelled = 0
+        draft.presentSaveDialog = { _, level, answered in
+            shown += 1
+            answer = answered
+            precondition((level?.rawValue ?? 0) > DisplayGeometry.shared.layout.windowLevel.rawValue,
+                         "From the notch the dialog sits above it")
+            return ReportDraft.SaveDialog(bringForward: { forward += 1 }, cancel: { cancelled += 1; answered(nil) })
+        }
+        model.saveReport(draft)
+        precondition(model.pickingFile && model.holdsOpen && shown == 1, "The dialog's focus is not the person leaving")
+        model.saveReport(draft)
+        precondition(shown == 1 && forward == 1 && model.pickingFile, "A second click brings the open dialog forward")
+        answer?(nil)
+        precondition(!model.pickingFile, "Answering it lets go of the notch")
+        model.saveReport(draft)
+        draft.close()
+        precondition(cancelled == 1 && !model.pickingFile, "Closing the report closes its dialog and lets go")
+        model.saveReport(draft)
+        precondition(shown == 2 && !model.pickingFile, "With no report open nothing is asked or held")
+        print("PASS: AppDelegate a report's save dialog holds the notch until it ends, however it ends")
+    }
+
     static func checkInlineReportHoldsOpen() async {
         let delegate = AppDelegate()
         let model = delegate.model
@@ -2667,6 +2896,77 @@ extension AppDelegate {
         NotificationCenter.default.removeObserver(observer)
         precondition(posted == 1, "Choosing it posts the Settings button's export notification")
         print("PASS: the menu bar menu exports the chat debug log like Settings")
+    }
+
+    /// The export never runs a modal session: the notch stays live while the notice
+    /// is up, a second click starts nothing, and the notice's OK reveals the file and
+    /// hands the notch back to its usual auto-collapse.
+    static func checkDebugExportLeavesNotchLive() async {
+        _ = NSApplication.shared
+        NSApp.setActivationPolicy(.accessory)
+        NonModalAlert.activateApp = {}
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("wisp-export-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        func written() -> [String] { (try? FileManager.default.contentsOfDirectory(atPath: folder.path))?.sorted() ?? [] }
+
+        let delegate = AppDelegate()
+        delegate.debugLogFolder = folder
+        var revealed: [URL] = []
+        delegate.revealExportedFile = { revealed.append($0) }
+        delegate.presentation.request(.chat)
+        let opening = delegate.presentation.next()!
+        delegate.model.collapsed = false
+        delegate.finishPresentation(opening)
+        delegate.model.turns = [OverlayModel.Turn(role: "user", text: "hello"),
+                                OverlayModel.Turn(role: "assistant", text: "Hi.")]
+
+        await delegate.exportDebugLog()
+        precondition(NSApp.modalWindow == nil, "The saved notice must not run a modal session")
+        guard let notice = delegate.debugLogNotice else { preconditionFailure("The saved export says so") }
+        precondition(notice.window.isVisible, "The notice is on screen without being answered")
+        precondition(notice.window.level.rawValue > DisplayGeometry.shared.layout.windowLevel.rawValue,
+                     "The notice sits above the notch, never under it")
+        precondition(written().count == 2 && written().allSatisfy { $0.hasPrefix("wisp-debug-") },
+                     "One click writes the .json and the .txt")
+        precondition(revealed.isEmpty, "Finder waits for the notice, as before")
+        precondition(delegate.presentation.desired == .chat && delegate.pendingCollapse == nil,
+                     "The export leaves an open notch where it is")
+
+        // A second click brings the notice forward and exports nothing more.
+        await delegate.exportDebugLog()
+        precondition(delegate.debugLogNotice === notice && written().count == 2, "A second click starts nothing")
+
+        notice.closeButton.performClick(nil)
+        precondition(delegate.debugLogNotice == nil && !notice.window.isVisible, "OK closes the notice")
+        precondition(revealed.map(\.pathExtension) == ["json"], "OK reveals the saved .json")
+        precondition(delegate.pendingCollapse != nil, "OK hands the open notch back to its usual auto-collapse")
+        delegate.cancelScheduledCollapse()
+
+        // With the pointer on the notch, it stays.
+        let inside = AppDelegate()
+        inside.pointerInPanel = { true }
+        inside.presentation.request(.chat)
+        let insideOpening = inside.presentation.next()!
+        inside.model.collapsed = false
+        inside.finishPresentation(insideOpening)
+        await inside.exportDebugLog()
+        precondition(NSApp.modalWindow == nil, "The nothing-to-export notice must not run a modal session")
+        inside.debugLogNotice?.closeButton.performClick(nil)
+        precondition(inside.debugLogNotice == nil && inside.pendingCollapse == nil,
+                     "Closing the notice with the pointer on the notch keeps it open")
+
+        // A failed write says so the same way, and reveals nothing.
+        let failing = AppDelegate()
+        failing.debugLogFolder = folder.appendingPathComponent("missing")
+        var failedReveal = 0
+        failing.revealExportedFile = { _ in failedReveal += 1 }
+        failing.model.turns = [OverlayModel.Turn(role: "user", text: "hello")]
+        await failing.exportDebugLog()
+        precondition(NSApp.modalWindow == nil, "The failure notice must not run a modal session")
+        failing.debugLogNotice?.closeButton.performClick(nil)
+        precondition(failing.debugLogNotice == nil && failedReveal == 0, "A failed export reveals nothing")
+        print("PASS: AppDelegate debug export runs no modal session and hands the notch back")
     }
 
     static func checkMenuHoldsCollapse() async {
