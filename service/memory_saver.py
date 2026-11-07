@@ -31,8 +31,13 @@ IMPORTANT rules:
   A batch window loads the model about once an hour so that work catches up,
   then parks it again. Background calls never extend a park timer: only the
   user's turns and intent do.
-- Memory pressure parks early: critical after PRESSURE_GRACE_S, warn (routine
-  on a 16 GB Mac) after WARN_GRACE_S. Either holds batch windows off.
+- A park doesn't restart the hour between windows. The stretch after a turn is
+  only PARK_AFTER_S long, and the Brief and mail memory wait out the chat first, so
+  someone who uses Wisp every half hour needs the window as much as someone away.
+  A window waits BATCH_AFTER_PARK_S after a park, so it never reloads what was just
+  unloaded, and windows stay at most one an hour.
+- Memory pressure: critical parks after PRESSURE_GRACE_S. Warn (routine on a 16 GB
+  Mac) doesn't park any sooner than PARK_AFTER_S. Either holds batch windows off.
 - Intent (the app opening Ask or the Wisp window, the Ask hotkeys) loads the
   model early so the reload hides behind typing, and holds it INTENT_HOLD_S.
 - The "Save memory" switch (on by default) turns parking and batch windows off;
@@ -51,13 +56,17 @@ IMPORTANT rules:
     make oMLX evict its least recently used model. A turn loads as it always has.
   - oMLX's last_access counts every client's requests, without saying whose. Later
     than Wisp's own last request means another app used the model, and that holds
-    the park for the same PARK_AFTER_S, under memory pressure too. Wisp's own
+    the park for OTHER_APP_HOLD_S, under memory pressure too. Wisp's own
     background calls are its own, so they never hold it.
   - POST /unload aborts running requests, so a park first re-reads oMLX's counters
     for requests in flight and refuses on anything but a clear zero. An app's
     request landing in the milliseconds between that read and the unload can still
     be aborted (it gets a 409 and can retry); oMLX has no atomic unload-if-idle
     over HTTP.
+- The same holds beyond Save memory there. A turn never unloads (omlx_client), the
+  notch's X follows the Gemma rule (omlx_x_hold), and the idle timer only releases a
+  model Wisp itself asked for this run that no other app has used (wisp_may_release).
+  Resident-only background work runs beside another app's model (other_apps_models).
 """
 from __future__ import annotations
 
@@ -78,15 +87,15 @@ from service.paths import MOE_DIR
 log = logging.getLogger(__name__)
 
 # No turn for this long parks the model.
-PARK_AFTER_S = 30 * 60
+PARK_AFTER_S = 5 * 60
 # Intent without a turn keeps the model this long.
 INTENT_HOLD_S = 5 * 60
-# Under memory pressure, park once the user has been quiet this long: critical
-# soon, warn (which a 16 GB Mac reaches in ordinary use) later.
+# At critical memory pressure, park once the user has been quiet this long.
 PRESSURE_GRACE_S = 2 * 60
-WARN_GRACE_S = 10 * 60
 # While parked, a batch window opens at most this often.
 BATCH_EVERY_S = 60 * 60
+# A window never opens sooner than this after a park.
+BATCH_AFTER_PARK_S = 15 * 60
 # A window stays open at least BATCH_MIN_S, closes once background calls have
 # been quiet for BATCH_QUIET_S, and never stays open past BATCH_MAX_S. The minimum
 # outlasts the longest wait a job takes after a "not loaded" stand-down (the
@@ -97,6 +106,8 @@ BATCH_EVERY_S = 60 * 60
 BATCH_MIN_S = 6 * 60
 BATCH_QUIET_S = 4 * 60
 BATCH_MAX_S = 15 * 60
+# On oMLX.app, another app's use of the model holds a park this long.
+OTHER_APP_HOLD_S = 30 * 60
 # oMLX stamps last_access when a request's lease ends, a moment after Wisp's call
 # returns. A stamp later than Wisp's own by more than this was someone else's.
 OWN_ACCESS_SLOP_S = 5.0
@@ -173,12 +184,13 @@ class _State:
     parked_at: float | None = None
     last_intent: float | None = None
     window_started: float | None = None  # a batch window is open
-    last_window: float | None = None     # when the window that last parked it opened
+    last_window: float | None = None     # when the last window opened (before any: the first park)
     last_reason: str = ""
     started_wall: float = 0.0            # wall clock at started, for oMLX's last_access
     omlx_model: str | None = None        # the chat model the last look at oMLX.app was about
     omlx_block: str | None = None        # why Save memory can't act on it (None: it can)
     other_app_at: float | None = None    # when another app last used it (oMLX's wall clock)
+    not_ours: set[str] = field(default_factory=set)  # resident on oMLX.app, not Wisp's doing
 
 
 _state = _State(started=time.monotonic(), started_wall=time.time())
@@ -275,6 +287,7 @@ class _OmlxView:
 async def _look_at_omlx(client, model: str) -> _OmlxView:
     """One read of oMLX's model list, and what it means for Save memory."""
     rows = [r for r in (await client.status()).get("models", []) if isinstance(r, dict)]
+    note_omlx_rows(rows)
     row = next((r for r in rows if r.get("id") == model), None)
     others = [r["id"] for r in rows
               if r.get("id") != model and (r.get("loaded") or r.get("is_loading"))]
@@ -299,7 +312,7 @@ def _stamp(row: dict) -> float | None:
 
 
 def _other_app_recent(model: str, row: dict, wall: float) -> bool:
-    """Another app used the model within PARK_AFTER_S.
+    """Another app used the model within OTHER_APP_HOLD_S.
 
     Run every tick, so a use is remembered even if one of Wisp's own later replaces
     it in last_access. A use and a later one of Wisp's inside a single tick can't be
@@ -312,7 +325,7 @@ def _other_app_recent(model: str, row: dict, wall: float) -> bool:
         if access > ours + OWN_ACCESS_SLOP_S:
             _state.other_app_at = max(_state.other_app_at or 0.0, access)
     at = _state.other_app_at
-    return at is not None and wall - at < PARK_AFTER_S
+    return at is not None and wall - at < OTHER_APP_HOLD_S
 
 
 async def _quiet_on_omlx(client, model: str, seen: dict) -> bool:
@@ -320,21 +333,74 @@ async def _quiet_on_omlx(client, model: str, seen: dict) -> bool:
     model since the tick's read. POST /unload aborts running requests, whoever's they
     are, and last_access stops moving during one long generation. Anything unclear
     is a no: the next tick asks again."""
+    if not await engine_idle(client):
+        return False
     try:
-        counts = await client.engine_activity()
         fresh = await _look_at_omlx(client, model)
     except Exception as exc:  # noqa: BLE001 — unknown means don't unload
-        log.info("memory saver: oMLX activity unreadable: %s", type(exc).__name__)
+        log.info("memory saver: oMLX list unreadable: %s", type(exc).__name__)
         return False
-    for key in ("active_requests", "waiting_requests"):
-        value = counts.get(key)
-        if type(value) is not int or value != 0:
-            return False
     return (fresh.block is None and fresh.row.get("loaded") is True
             and _stamp(fresh.row) is not None
             and _stamp(fresh.row) == _stamp(seen)
             # The reads above awaited: a turn or a hold may have started meanwhile.
             and not (idle.foreground_busy() or idle.in_flight(model) > 0 or held()))
+
+
+def note_omlx_rows(rows: list) -> None:
+    """Keep track of which resident models aren't Wisp's. One seen resident before
+    Wisp ever asked for it, or stamped later than Wisp's own last request, stays
+    someone else's until it leaves, even if Wisp uses it meanwhile."""
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str):
+            continue
+        model = row["id"]
+        if not (row.get("loaded") or row.get("is_loading")):
+            _state.not_ours.discard(model)
+        elif idle.own_access_active(model):
+            continue                   # mid-request: the stamp is Wisp's own
+        else:
+            ours, access = idle.own_access(model), _stamp(row)
+            if ours is None or (access is not None and access > ours + OWN_ACCESS_SLOP_S):
+                _state.not_ours.add(model)
+
+
+def other_apps_models(client) -> set[str]:
+    """Models resident on the user's oMLX.app that aren't Wisp's. Background work on
+    Wisp's already-loaded chat model doesn't wait for them, or it would stall for as
+    long as another app keeps one loaded. The accepted cost: a background prefill can
+    make oMLX evict such a model if it's idle and memory is tight."""
+    return set(_state.not_ours) if omlx_app(client) else set()
+
+
+def wisp_may_release(row: dict) -> bool:
+    """Wisp itself asked for this resident model, and no other app has used it since."""
+    model = row.get("id")
+    ours, access = idle.own_access(model), _stamp(row)
+    return (ours is not None and model not in _state.not_ours and not row.get("pinned")
+            and (access is None or access <= ours + OWN_ACCESS_SLOP_S))
+
+
+async def engine_idle(client) -> bool:
+    """oMLX shows nothing running or waiting, for any client or model. Unknown is no."""
+    try:
+        counts = await client.engine_activity()
+    except Exception as exc:  # noqa: BLE001 — unknown means don't unload
+        log.info("memory saver: oMLX activity unreadable: %s", type(exc).__name__)
+        return False
+    return all(type(counts.get(key)) is int and counts[key] == 0
+               for key in ("active_requests", "waiting_requests"))
+
+
+async def omlx_x_hold(client, model: str, wall: float | None = None) -> str | None:
+    """Why the notch's X must leave `model` alone on oMLX.app, or None if it may
+    unload it: the same rule as Save memory, Gemma only and held by another app."""
+    view = await _look_at_omlx(client, model)
+    if view.block is not None:
+        return view.block
+    if _other_app_recent(model, view.row, time.time() if wall is None else wall):
+        return "other_app"
+    return None if await _quiet_on_omlx(client, model, view.row) else "busy"
 
 
 def _acts_on_omlx() -> bool:
@@ -360,17 +426,15 @@ def note_intent(now: float | None = None) -> None:
     _state.last_intent = time.monotonic() if now is None else now
 
 
-def note_parked(reason: str, now: float | None = None, *, window_closed: bool = False) -> None:
+def note_parked(reason: str, now: float | None = None) -> None:
     """The chat model was unloaded on Wisp's side (here, or /unload_agent).
 
-    The next window is an hour after this park, unless the park closed a window
-    (for any reason, pressure included): then an hour after that window opened.
-    Without the reset, a window from the morning would reload the model on the
-    tick after an evening park."""
+    The next window is an hour after the last one opened, or after the first park
+    if none has, and at least BATCH_AFTER_PARK_S after this park (decide)."""
     _state.parked = True
     _state.parked_at = time.monotonic() if now is None else now
-    if not window_closed:
-        _state.last_window = None
+    if _state.last_window is None:
+        _state.last_window = _state.parked_at
     _state.window_started = None
     _state.last_reason = reason
 
@@ -394,7 +458,6 @@ def decide(*, now: float, loaded: bool, busy: bool, pressure: str, enabled: bool
     # Warn keeps windows shut too. On a 16 GB Mac warn is routine, so there the
     # resident-only background work often waits for the next use of Wisp.
     tight = pressure in (WARN, CRITICAL)
-    grace = PRESSURE_GRACE_S if pressure == CRITICAL else WARN_GRACE_S
     if loaded:
         if busy:
             return KEEP
@@ -405,7 +468,7 @@ def decide(*, now: float, loaded: bool, busy: bool, pressure: str, enabled: bool
             if tight or age >= BATCH_MAX_S or (age >= BATCH_MIN_S and quiet):
                 return CLOSE_WINDOW
             return KEEP
-        if tight and since_user >= grace:
+        if pressure == CRITICAL and since_user >= PRESSURE_GRACE_S:
             return PARK
         if _since_turn(now) >= PARK_AFTER_S and _since_intent(now) >= INTENT_HOLD_S:
             return PARK
@@ -415,9 +478,11 @@ def decide(*, now: float, loaded: bool, busy: bool, pressure: str, enabled: bool
     if not _state.parked or busy or tight:
         return LEAVE
     last = _state.last_window if _state.last_window is not None else _state.parked_at
-    if last is None or now - last >= BATCH_EVERY_S:
-        return OPEN_WINDOW
-    return LEAVE
+    if last is not None and now - last < BATCH_EVERY_S:
+        return LEAVE
+    if _state.parked_at is not None and now - _state.parked_at < BATCH_AFTER_PARK_S:
+        return LEAVE
+    return OPEN_WINDOW
 
 
 async def tick(client, now: float | None = None, *, pressure: str | None = None,
@@ -476,9 +541,11 @@ async def tick(client, now: float | None = None, *, pressure: str | None = None,
             return KEEP
         await client.unload(model)
         idle.forget(model)
-        note_parked("pressure" if level in (WARN, CRITICAL) else
-                    "batch done" if action == CLOSE_WINDOW else "idle", now,
-                    window_closed=action == CLOSE_WINDOW)
+        if action == CLOSE_WINDOW:
+            reason = "pressure" if level in (WARN, CRITICAL) else "batch done"
+        else:                          # warn parks on the ordinary timer
+            reason = "pressure" if level == CRITICAL else "idle"
+        note_parked(reason, now)
         log.info("memory saver: unloaded %s (%s)", model, _state.last_reason)
     elif action == OPEN_WINDOW:
         if view is not None and view.others:
@@ -609,7 +676,7 @@ def state() -> dict:
     return {"save_memory": save_memory(), "applies": applies, "why_not": why_not,
             "engine": "bundled" if bundled_engine() else "omlx" if omlx_app() else "remote",
             "parked": _state.parked,
-            "other_app": applies and at is not None and time.time() - at < PARK_AFTER_S,
+            "other_app": applies and at is not None and time.time() - at < OTHER_APP_HOLD_S,
             "batch_window": _state.window_started is not None,
             "pressure": pressure_level(), "held": held(),
             "minutes_since_turn": round(_since_turn(now) / 60, 1),

@@ -1181,9 +1181,12 @@ final class SettingsLoader: ObservableObject {
     }
 
     #if WISP_NOTCH_QA || WISP_CHAT_QA
-    func qaShow(fullAccess: Bool?, briefTimes: WispClient.BriefTimes?) {
+    func qaShow(fullAccess: Bool?, briefTimes: WispClient.BriefTimes?,
+                saveWhenAway: Bool? = nil, saveMemory: Bool? = nil) {
         self.fullAccess = fullAccess
         self.briefTimes = briefTimes
+        self.saveWhenAway = saveWhenAway
+        self.saveMemory = saveMemory
     }
     #endif
 

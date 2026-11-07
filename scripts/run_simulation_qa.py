@@ -353,6 +353,9 @@ ADDITIONAL_FULL_TESTS = {
     # Owner-only (0600) SQLite stores: every store opened under tmp_path with a
     # 022 umask; no model, network or user data.
     "tests/test_private_sqlite_files.py",
+    # The send queue overwrites what it removes: an assistant.db in tmp_path, no
+    # network, engine or real send.
+    "tests/test_outbound_queue_secure_delete.py",
     # Owner-only (0600) state files and logs (checkins, audit, grants, caches,
     # timers, research cache, script outputs): tmp_path, 022 umask; no model,
     # network or user data.
@@ -483,6 +486,9 @@ ADDITIONAL_FULL_TESTS = {
     # Save memory: a fake client and clock, settings in tmp_path; one read-only
     # sysctl of macOS memory pressure (unknown when denied), no engine or model.
     "tests/test_memory_saver.py",
+    # Other models on the user's oMLX.app: fake clients and mock transports, settings
+    # in tmp_path, no engine, model or port. Same one read-only sysctl as above.
+    "tests/test_omlx_other_models.py",
     # On-demand Gemma 4 encoders: the engine overlay's state machine on a fake mlx
     # and fake model (one in-process thread pool), and the service's prewarm on a
     # fake client. No engine, model, GPU or port.

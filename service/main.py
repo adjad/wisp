@@ -1398,6 +1398,12 @@ async def unload_agent() -> dict[str, Any]:
     model = target.model
     loaded = await client.loaded_models()
     if model in loaded:
+        from service import memory_saver as saver
+        if saver.omlx_app(client):
+            # The user's oMLX.app: Gemma only, and not while another app is using it.
+            held = await saver.omlx_x_hold(client, model)
+            if held is not None:
+                return {"unloaded": [], "held": held}
         await client.unload(model)
         if model == role_to_model("fast"):
             # Every text role is the chat model now, so with Save memory on this parks

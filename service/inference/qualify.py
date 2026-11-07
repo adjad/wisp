@@ -32,6 +32,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from service.config import LOCAL_PROVIDER_QUALIFICATION_SCHEMA as QUALIFICATION_SCHEMA
+from service import idle
 from service.config.endpoints import Endpoint, EndpointConfigurationError, Target
 from service.inference.omlx_client import OMLXClient
 
@@ -120,6 +121,12 @@ def _filler(tokens_per_char: float, tokens: int, needle: str) -> str:
 
 async def _completion(http: httpx.AsyncClient, ep: Endpoint, model: str, content: str,
                       max_tokens: int = 4) -> dict[str, Any] | None:
+    with idle.own_request(model):
+        return await _completion_body(http, ep, model, content, max_tokens)
+
+
+async def _completion_body(http: httpx.AsyncClient, ep: Endpoint, model: str, content: str,
+                           max_tokens: int) -> dict[str, Any] | None:
     async with http.stream(
             "POST", ep.base_url + ep.api_prefix + "/chat/completions",
             json={"model": model, "max_tokens": max_tokens, "stream": False, "temperature": 0,

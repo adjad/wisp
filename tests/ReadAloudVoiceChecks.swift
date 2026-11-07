@@ -76,6 +76,19 @@ struct ReadAloudVoiceChecks {
         check(ReadAloudVoice.rateMultiple(0.1) == ReadAloudVoice.rateRange.lowerBound, "Rate floored")
         check(ReadAloudVoice.rateMultiple(1.25) == 1.25, "Rate kept")
 
+        // The notch's chips and labels.
+        check(ReadAloudVoice.rateChoices.allSatisfy { ReadAloudVoice.rateRange.contains($0) } && ReadAloudVoice.rateChoices.contains(1),
+              "Rate chips are in range, with Normal")
+        check(ReadAloudVoice.rateText(1) == "Normal" && ReadAloudVoice.rateText(1.15) == "115% of normal", "Rate words")
+        let eddyUS = ReadAloudVoice.Candidate(id: "e.us", name: "Eddy", language: "en-US", quality: 0, gender: .unspecified)
+        let eddyGB = ReadAloudVoice.Candidate(id: "e.gb", name: "Eddy", language: "en-GB", quality: 0, gender: .unspecified)
+        let ava = ReadAloudVoice.Candidate(id: "a", name: "Ava", language: "en-US", quality: 2, gender: .female)
+        check(ReadAloudVoice.shortLabel(eddyGB, among: [eddyUS, eddyGB, ava]) == "Eddy · GB", "A shared name shows its region")
+        check(ReadAloudVoice.shortLabel(ava, among: [eddyUS, eddyGB, ava]) == "Ava · Premium", "A better voice says so")
+        check(ReadAloudVoice.onlyBasicVoices([eddyUS, eddyGB]), "Only basic voices")
+        check(!ReadAloudVoice.onlyBasicVoices([eddyUS, ava]), "A premium voice is enough")
+        check(ReadAloudVoice.downloadPane.hasPrefix("x-apple.systempreferences:"), "The download link is System Settings")
+
         print("read-aloud voice checks passed")
     }
 }
