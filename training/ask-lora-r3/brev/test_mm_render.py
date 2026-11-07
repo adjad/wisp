@@ -5,7 +5,7 @@
 
 Uses only the Gemma tokenizer + chat template + processor_config.json from the local oQ4e build (or the bf16
 dir) and a 3-row fixture it writes itself. It shows:
- 1. text rows are byte-identical to r2's renderer (hash over the whole r2 train and valid sets, and over
+ 1. text rows are byte-identical to r2's renderer given oMLX's prepared request (hash over the whole r2 train and valid sets, and over
     the train.jsonl / dev.jsonl members of the zip render.py writes);
  2. an image row renders to ONE `<|image|>` placeholder per image, thinking OFF, and packs into the zip;
  3. the offline image-token expansion equals transformers' own size formula (executed from its source);
@@ -198,10 +198,12 @@ def main() -> int:
     r2_render = _load("r2_render", R2 / "brev/render.py")
     for split in ("train", "valid"):
         raw = [(json.loads(e), json.loads(m)) for e, m in zip(open(R2 / f"{split}.jsonl"), open(R2 / f"{split}.meta.jsonl"))]
-        a = sha([r2_render.render(tok, e, m) for e, m in raw])
+        # r2's renderer on the request as oMLX prepares it: since r5 that's the only intended difference.
+        a = sha([r2_render.render(tok, {**e, "messages": r3_render.serving_messages(r3_render.to_template(e["messages"])),
+                                        "tools": r3_render.serving_tools(e["tools"])}, m) for e, m in raw])
         b = sha([r3_render.render(tok, e, m) for e, m in raw])
         print(f"text hash {split}: {len(raw)} rows, r2 {a[:16]} r3 {b[:16]}")
-        assert a == b, f"{split}: text rows differ from r2's renderer"
+        assert a == b, f"{split}: text rows differ from r2's renderer on the served request"
 
     # ---- 2. render the fixture + the zip
     rows, files = r3_render.load_vision_rows(vfile)
@@ -264,11 +266,11 @@ def main() -> int:
             with zipfile.ZipFile(r2zip) as z2:
                 same = hashlib.sha256(z2.read("train.jsonl")).hexdigest() == zip_train_sha
             print(f"r3 zip train.jsonl == r2's shipped zip train.jsonl: {same}")
-        # train.jsonl member is exactly r2 renderer output over r2's train set (re-hash independent of the zip)
+        # train.jsonl member is exactly render() output over r2's train set (re-hash independent of the zip)
         raw = [(json.loads(e), json.loads(m)) for e, m in zip(open(R2 / "train.jsonl"), open(R2 / "train.meta.jsonl"))]
         assert zip_train_sha == hashlib.sha256(
-            "".join(json.dumps(r2_render.render(tok, e, m), ensure_ascii=False) + "\n" for e, m in raw).encode()).hexdigest()
-        print("zip train.jsonl is byte-identical to r2 renderer output: OK")
+            "".join(json.dumps(r3_render.render(tok, e, m), ensure_ascii=False) + "\n" for e, m in raw).encode()).hexdigest()
+        print("zip train.jsonl is byte-identical to render() output: OK")
 
     # ---- 3. offline soft-token count == transformers' own formula
     cfg = r3_train.image_config(M)
