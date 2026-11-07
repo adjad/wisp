@@ -125,7 +125,7 @@ to start it again. The first start after a restart takes a little longer while t
 - **Slash commands.** Type `/` in Ask to see them, including `/today`, `/about` (tell Wisp about
   you), `/report` (report a problem) and `/resetwisp`.
 - **Voice and accessibility.** Answers to spoken questions are read aloud. Wisp follows Reduce
-  Motion, Increase Contrast and VoiceOver, and **Settings ▸ Voice & accessibility** sets the text
+  Motion, Increase Contrast and VoiceOver, and the notch's **Settings ▸ Voice** sets the text
   size.
 
 ### Connect Google (optional)

@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The notch gear's short list: the settings people flip from week to week, in
-/// three groups (Permissions, Daily brief, Advanced) with one line each.
+/// The notch gear's short list: the settings people flip from week to week, one
+/// section at a time under a switcher that stays put, scrolling past `cap`.
 /// Everything that needs a form, a key, OAuth or widens what Wisp reads (models,
 /// Google, cloud keys, privacy sources such as browser history and contacts,
 /// the source controls under Memory › Routines) stays in Settings, in the Wisp window.
@@ -17,88 +17,61 @@ struct QuickSettingsView: View {
     @ObservedObject var settings: SettingsLoader
     /// Off only in the render fixture, which never contacts the service.
     var refreshes = true
+    /// The page's room under the header (SurfaceLayout.pageContentCap).
+    var cap: CGFloat?
+    /// The section showing, as last left.
+    @State var section = QuickSettingsSection.saved()
     /// The brief time whose inline hour list is open.
     @State var picking: BriefSlot?
+    /// "9 AM to 5 PM" for the Brief updates row; nil until the service says.
+    @State var workingHours: String?
+    /// The title and switcher's laid-out height, which grows with Text size.
+    @State private var fixedHeight: CGFloat = 0
     /// Decides whether the Google row shows at all (new users only).
-    @StateObject private var google = NotchGoogleModel()
+    @StateObject var google = NotchGoogleModel()
     @AppStorage(VoiceReplyMode.defaultsKey) private var voiceRepliesRaw = VoiceReplyMode.afterVoice.rawValue
     /// The panel's Text size scale (Theme.textScale reads the same key).
     @AppStorage(Theme.textSizeKey) private var textSize: Double = 1.0
 
     enum BriefSlot { case morning, evening }
 
+    private static let spacing: CGFloat = 12
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("Settings").font(.wisp(.headline, weight: .semibold)).foregroundStyle(Theme.textPrimary)
-                Spacer()
-                Button("Done") { model.showingQuickSettings = false }
-                    .buttonStyle(.plain).font(.wisp(.callout)).foregroundStyle(Theme.textSecondary)
-                    .keyboardShortcut(.cancelAction)
-                    .help("Close settings and go back to \(model.tab.stripTab.title)")
-            }
-            if let notice = model.transientNotice {
-                Text(notice).font(.wisp(.footnote)).foregroundStyle(Theme.bad)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            group("Permissions") {
-                fullAccessRow
-                hairline
-                learningRow
-                hairline
-                row("Mac permissions", help: "What Wisp can reach on this Mac, and the one thing to do for each that's off.") {
-                    Text("Calendar, Mail, Full Disk Access and more")
-                } control: {
-                    pillButton("Review") { model.openPermissionPage(nil) }
+        VStack(alignment: .leading, spacing: Self.spacing) {
+            VStack(alignment: .leading, spacing: Self.spacing) {
+                HStack {
+                    Text("Settings").font(.wisp(.headline, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                        .accessibilityAddTraits(.isHeader)
+                    Spacer()
+                    Button("Done") { model.showingQuickSettings = false }
+                        .buttonStyle(.plain).font(.wisp(.callout)).foregroundStyle(Theme.textSecondary)
+                        .keyboardShortcut(.cancelAction)
+                        .help("Close settings and go back to \(model.tab.stripTab.title)")
                 }
-            }
-            group("Daily brief") { briefRow }
-            if google.showsRow {
-                // The user's deliberate exception for the very first connect
-                // only: a new user with no Google account (and an OAuth client
-                // to use) gets one Connect button. Once any account is
-                // connected there is no Google row here at all; accounts and
-                // Disconnect & erase live in Settings ▸ Google
-                // (NotchGoogleVisibility).
-                group("Google") { NotchConnectGoogle(model: google) }
-            }
-            group("Voice & accessibility") {
-                voiceRepliesRow
-                hairline
-                textSizeRow
-            }
-            group("Power") {
-                saveWhenAwayRow
-                hairline
-                saveMemoryRow
-            }
-            group("Setup") {
-                row("Setup", help: QuickSettingsText.setupHelp) {
-                    Text("Permissions, Google, About you and How to use")
-                } control: {
-                    pillButton("Open") { NotificationCenter.default.post(name: .wispOpenPermissions, object: nil) }
+                if let notice = model.transientNotice {
+                    Text(notice).font(.wisp(.footnote)).foregroundStyle(Theme.bad)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                sectionSwitcher
             }
-            group("Advanced") {
-                row("Reply details", help: "Open each reply's model, route, timing and tool calls by default (Debug Mode).") {
-                    Text("Model, timing and tools under each reply")
-                } control: {
-                    Toggle("Reply details", isOn: $model.debugMode).toggleStyle(NotchSwitch())
-                }
-                hairline
-                memoryRow
-            }
-            HStack {
-                Text("Models, Google, privacy, activity").font(.wisp(.callout)).foregroundStyle(Theme.textSecondary)
-                Spacer()
-                pillButton("All settings  ⌘,", primary: true) { WispRouter.shared.open(.settings) }
-            }
-            .padding(.horizontal, 4)
+            .background(GeometryReader { geo in
+                Color.clear.onAppear { fixedHeight = geo.size.height }
+                    .onChange(of: geo.size.height) { fixedHeight = geo.size.height }
+            })
+            CappedScroll(cap: cap.map(scrollCap), reveals: true) { scrollingPart }
+        }
+        .onChange(of: section) { _, chosen in
+            picking = nil
+            chosen.save()
         }
         .task {
             guard refreshes else { return }
             await settings.refreshQuick()
             await model.refreshModelMemory()
+            workingHours = await WispClient().userHours().map {
+                "\(UserHours.clock($0.working.start)) to \(UserHours.clock($0.working.end))"
+            }
         }
         // A reply or a brief may have loaded a model while this is open.
         .onChange(of: model.conversationSettled) { _, settled in
@@ -114,7 +87,147 @@ struct QuickSettingsView: View {
         }
     }
 
+    // MARK: Sections
+
+    /// What's left under the title and switcher.
+    private func scrollCap(_ cap: CGFloat) -> CGFloat {
+        max(cap - fixedHeight - Self.spacing, SurfaceLayout.minTabScroll)
+    }
+
+    private var scrollingPart: some View {
+        VStack(alignment: .leading, spacing: Self.spacing) {
+            sectionCard
+            HStack {
+                Text("Models, Google, privacy, activity").font(.wisp(.callout)).foregroundStyle(Theme.textSecondary)
+                Spacer()
+                pillButton("All settings  ⌘,", primary: true) { WispRouter.shared.open(.settings) }
+            }
+            .padding(.horizontal, 4)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// One row where all five fit, two where they don't (a narrow panel, large text).
+    private var sectionSwitcher: some View {
+        ViewThatFits(in: .horizontal) {
+            sectionButtons(QuickSettingsSection.allCases)
+            VStack(alignment: .leading, spacing: 4) {
+                sectionButtons(Array(QuickSettingsSection.allCases.prefix(3)))
+                sectionButtons(Array(QuickSettingsSection.allCases.dropFirst(3)))
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Settings sections")
+    }
+
+    private func sectionButtons(_ sections: [QuickSettingsSection]) -> some View {
+        HStack(spacing: 0) {
+            ForEach(sections) { option in
+                let chosen = option == section
+                Button { section = option } label: {
+                    Text(option.title)
+                        .font(.wisp(.body, weight: chosen ? .semibold : .regular))
+                        .foregroundStyle(chosen ? Color.black : Theme.textSecondary)
+                        .padding(.horizontal, 12).padding(.vertical, 5)
+                        .background(Capsule().fill(chosen ? Color.white : Color.clear))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .fixedSize()
+                .help(option.contents)
+                .accessibilityHint(option.contents)
+                .accessibilityAddTraits(chosen ? [.isButton, .isSelected] : .isButton)
+            }
+        }
+        .padding(1)
+        .overlay(Capsule().strokeBorder(Theme.chipStroke, lineWidth: 1))
+    }
+
+    /// Every section is laid out and only the chosen one shows, so the card, and the
+    /// panel with it, keeps one height as the person moves between them. A hidden
+    /// section takes no clicks, keyboard focus or VoiceOver.
+    private var sectionCard: some View {
+        NotchSettingsChrome.card {
+            ZStack(alignment: .top) {
+                ForEach(QuickSettingsSection.allCases) { option in
+                    if option == section {
+                        rows(option)
+                    } else {
+                        rows(option).hidden()
+                    }
+                }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(section.title)
+    }
+
+    private func rows(_ section: QuickSettingsSection) -> some View {
+        VStack(spacing: 0) {
+            switch section {
+            case .general:
+                fullAccessRow
+                hairline
+                learningRow
+                hairline
+                macPermissionsRow
+                hairline
+                setupRow
+                if google.showsRow {
+                    // The user's deliberate exception for the very first connect
+                    // only: a new user with no Google account (and an OAuth client
+                    // to use) gets one Connect button. Once any account is
+                    // connected there is no Google row here at all; accounts and
+                    // Disconnect & erase live in Settings ▸ Google
+                    // (NotchGoogleVisibility).
+                    hairline
+                    NotchConnectGoogle(model: google)
+                }
+            case .brief:
+                dailySummaryRow
+                hairline
+                briefUpdatesRow
+            case .voice:
+                voiceRepliesRow
+                hairline
+                textSizeRow
+            case .power:
+                saveWhenAwayRow
+                hairline
+                saveMemoryRow
+            case .advanced:
+                replyDetailsRow
+                hairline
+                memoryRow
+            }
+        }
+    }
+
     // MARK: Rows
+
+    private var macPermissionsRow: some View {
+        row("Mac permissions", help: "What Wisp can reach on this Mac, and the one thing to do for each that's off.") {
+            Text("Calendar, Mail, Full Disk Access and more")
+        } control: {
+            pillButton("Review") { model.openPermissionPage(nil) }
+        }
+    }
+
+    private var setupRow: some View {
+        row("Setup", help: QuickSettingsText.setupHelp) {
+            Text("Permissions, Google, About you and How to use")
+        } control: {
+            pillButton("Open") { NotificationCenter.default.post(name: .wispOpenPermissions, object: nil) }
+        }
+    }
+
+    private var replyDetailsRow: some View {
+        row("Reply details", help: "Open each reply's model, route, timing and tool calls by default (Debug Mode).") {
+            Text("Model, timing and tools under each reply")
+        } control: {
+            Toggle("Reply details", isOn: $model.debugMode).toggleStyle(NotchSwitch())
+        }
+    }
 
     /// When Wisp says its answer out loud (VoiceReplyMode). Three chips, not a
     /// menu: the panel is non-activating, so no popup.
@@ -242,9 +355,18 @@ struct QuickSettingsView: View {
         }
     }
 
-    @ViewBuilder private var briefRow: some View {
-        row("Composed twice a day",
-            help: "Wisp composes your Daily Summary each morning and evening.") {
+    /// How often the Brief updates. It follows the working hours, which are set in
+    /// the Wisp window, so nothing here changes it.
+    private var briefUpdatesRow: some View {
+        row("Brief updates", help: QuickSettingsText.briefUpdatesHelp) {
+            Text(QuickSettingsText.briefUpdates(hours: workingHours))
+        } control: {
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder private var dailySummaryRow: some View {
+        row("Daily summary", help: QuickSettingsText.dailySummaryHelp) {
             Text(QuickSettingsText.brief(pending: settings.briefTimesPending, confirmed: settings.briefTimes != nil))
         } control: {
             if let times = settings.briefTimes {
@@ -304,7 +426,7 @@ struct QuickSettingsView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(slot == .morning ? "Morning" : "Evening") brief, \(QuickSettingsText.hourLabel(hour))")
+        .accessibilityLabel("\(slot == .morning ? "Morning" : "Evening") summary, \(QuickSettingsText.hourLabel(hour))")
         .accessibilityHint(open ? "Closes the time list" : "Shows the times to choose from")
     }
 
@@ -333,29 +455,36 @@ struct QuickSettingsView: View {
         .padding(.horizontal, 14).padding(.top, 2).padding(.bottom, 11)
         .disabled(settings.briefTimesPending)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(slot == .morning ? "Morning brief times" : "Evening brief times")
+        .accessibilityLabel(slot == .morning ? "Morning summary times" : "Evening summary times")
     }
 
     // MARK: Pieces
-
-    private func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        NotchSettingsChrome.group(title, content: content)
-    }
 
     private var hairline: some View { NotchSettingsChrome.hairline }
 
     private func row<Detail: View, Control: View>(_ title: String, help: String,
                                                   @ViewBuilder detail: () -> Detail,
                                                   @ViewBuilder control: () -> Control) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.wisp(.reading, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                detail().font(.wisp(.body)).foregroundStyle(Theme.textSecondary).lineLimit(2).truncationMode(.middle)
-            }
-            .help(help)
-            Spacer(minLength: 12)
-            control()
+        let label = VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.wisp(.reading, weight: .medium)).foregroundStyle(Theme.textPrimary)
+            detail().font(.wisp(.body)).foregroundStyle(Theme.textSecondary).lineLimit(2).truncationMode(.middle)
         }
+        .help(help)
+        // Beside its control while the words keep room to read; under them on the
+        // narrowest panel or at large text, where a row would otherwise break words
+        // and push its control off the edge, out of the scroll's reach.
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 12) {
+                label.frame(minWidth: 150, idealWidth: 150, alignment: .leading)
+                Spacer(minLength: 12)
+                control()
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                label
+                control()
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14).padding(.vertical, 11)
         .accessibilityElement(children: .contain)
     }
@@ -367,17 +496,12 @@ struct QuickSettingsView: View {
 
 /// The card, hairline and pill quick settings and the permission page share.
 enum NotchSettingsChrome {
-    /// A labelled card: rows separated by hairlines.
-    static func group<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(title.uppercased()).font(.wisp(.footnote, weight: .semibold)).kerning(1)
-                .foregroundStyle(Theme.textMuted).padding(.leading, 4)
-                .accessibilityAddTraits(.isHeader)
-            VStack(spacing: 0) { content() }
-                .background(RoundedRectangle(cornerRadius: 14).fill(Theme.raised))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.hairline, lineWidth: 1))
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-        }
+    /// A card: rows separated by hairlines.
+    static func card<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(spacing: 0) { content() }
+            .background(RoundedRectangle(cornerRadius: 14).fill(Theme.raised))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.hairline, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
     static var hairline: some View { Rectangle().fill(Theme.hairline).frame(height: 1) }

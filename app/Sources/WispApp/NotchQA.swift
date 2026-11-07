@@ -16,6 +16,11 @@ enum NotchQADriver {
                          ?? FileManager.default.currentDirectoryPath, isDirectory: true)
         try? FileManager.default.createDirectory(at: outDir, withIntermediateDirectories: true)
         let offscreen = ProcessInfo.processInfo.environment["WISP_QA_OFFSCREEN"] == "1"
+        // WISP_NOTCH_QA_PAGES=1: only Permissions and Settings, measured (NotchQAPages).
+        if ProcessInfo.processInfo.environment["WISP_NOTCH_QA_PAGES"] == "1" {
+            NotchQAPages.run(outDir: outDir)
+            return
+        }
         // WISP_NOTCH_QA_ONBOARDING=1: only the onboarding window's steps (NotchQAOnboarding).
         if ProcessInfo.processInfo.environment["WISP_NOTCH_QA_ONBOARDING"] == "1" {
             NotchQAOnboarding.run(outDir: outDir, offscreen: offscreen)
@@ -298,6 +303,7 @@ enum NotchQADriver {
                 // The notch header (orb, tabs, buttons) is about 44 pt tall.
                 Color.clear.frame(height: 44)
                 QuickSettingsView(model: model, settings: loader, refreshes: false,
+                                  section: unconfirmed ? .brief : .general,
                                   picking: unconfirmed ? .morning : nil).padding(.top, 12)
             }
             .padding(EdgeInsets(top: 18, leading: 22, bottom: 16, trailing: 22))

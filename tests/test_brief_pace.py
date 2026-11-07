@@ -9,6 +9,7 @@ import os
 import tempfile
 import time
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 _scratch = tempfile.TemporaryDirectory(prefix="wisp-brief-pace-tests-")
@@ -189,6 +190,15 @@ def test_a_daily_summary_waits_for_the_chat(monkeypatch):
     assert scheduler._brief_attempts.get(slot, 0) == 0     # waiting costs no retry
     _chatted(P.CHAT_QUIET_S + 1)
     assert asyncio.run(go()) is not None and run.await_count == 1
+
+
+def test_settings_says_how_often_the_brief_really_updates():
+    """Quick settings said "Composed twice a day" long after the Brief moved to
+    about four builds across the working hours. The row has to track the number."""
+    text = (Path(__file__).resolve().parents[1] / "app/Sources/WispApp/QuickSettingsText.swift").read_text()
+    assert f"About {P.BUILDS_PER_DAY} times a day" in text
+    assert f"about {P.BUILDS_PER_DAY} times a day" in text
+    assert "twice a day" not in text
 
 
 def test_the_first_ever_summary_only_waits_for_the_turn(monkeypatch):

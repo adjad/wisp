@@ -81,6 +81,45 @@ struct EncoderResidency: Equatable {
     }
 }
 
+/// Quick settings shows one section at a time. Every setting lives in exactly one.
+enum QuickSettingsSection: String, CaseIterable, Identifiable {
+    case general, brief, voice, power, advanced
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .brief: return "Brief"
+        case .voice: return "Voice"
+        case .power: return "Power"
+        case .advanced: return "Advanced"
+        }
+    }
+
+    /// What's inside, for the button's tooltip and VoiceOver: a section's name
+    /// alone doesn't say where Text size went.
+    var contents: String {
+        switch self {
+        case .general: return "Full access, Learn my routines, Mac permissions and Setup"
+        case .brief: return "Daily summary and Brief updates"
+        case .voice: return "Read answers aloud and Text size"
+        case .power: return "Save power and Save memory"
+        case .advanced: return "Reply details and Model memory"
+        }
+    }
+
+    /// The section last shown. A Text size change rebuilds the panel, and it must
+    /// not throw the person back to General.
+    static let defaultsKey = "wisp.quickSettings.section"
+
+    static func saved(in defaults: UserDefaults = .standard) -> QuickSettingsSection {
+        defaults.string(forKey: defaultsKey).flatMap(QuickSettingsSection.init(rawValue:)) ?? .general
+    }
+
+    func save(in defaults: UserDefaults = .standard) { defaults.set(rawValue, forKey: Self.defaultsKey) }
+}
+
 /// Quick settings' one-line descriptions. Each keeps the states the service can
 /// be in (waiting for confirmation, not confirmed) instead of guessing "off".
 enum QuickSettingsText {
@@ -195,10 +234,25 @@ enum QuickSettingsText {
         }
     }
 
+    /// The Daily Summary's line. Its two times set only this: the Brief itself
+    /// updates across the working hours (briefUpdates).
     static func brief(pending: Bool, confirmed: Bool) -> String {
         if pending { return "Saving · waiting for confirmation…" }
-        return confirmed ? "Shows up in Brief, and in a notification" : "Times not confirmed · check again"
+        return confirmed ? "In Brief, and as a notification" : "Times not confirmed · check again"
     }
+
+    static let dailySummaryHelp = "Sets when Wisp sends your Daily Summary each morning and evening. "
+        + "It doesn't change when the Brief updates."
+
+    /// How often the Brief updates (service/brief_pace.py, BUILDS_PER_DAY;
+    /// tests/test_brief_pace.py holds the number to it). `hours` is "9 AM to 5 PM",
+    /// or nil when the service didn't say.
+    static func briefUpdates(hours: String?) -> String {
+        "About 4 times a day, " + (hours ?? "across your working hours")
+    }
+
+    static let briefUpdatesHelp = "Wisp updates your Brief about 4 times a day, spread across your "
+        + "working hours. Change them in the Wisp window, under About you › Your hours."
 
     /// Model memory's line, and how full the bar is (nil hides it): only from
     /// sizes the engine measured.
