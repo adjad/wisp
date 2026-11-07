@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 import statistics
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -89,13 +90,33 @@ def counted(build: Path) -> dict:
             "families": {k: dict(v) | ({"final_chars_median": statistics.median(lens[k])} if lens[k] else {}) for k, v in sorted(fam.items())}}
 
 
-def refresh(build, *, status: str, extra: dict | None = None) -> dict:
-    """Recount stats.json from the rows, keep the build's own head fields, and bind it to the rows' hashes."""
+def step_provenance() -> dict:
+    """The code this step is running on, never an earlier step's (code_provenance.py)."""
+    builder = Path(__file__).resolve().parents[2] / "ask-lora-r2" / "builder"
+    if str(builder) not in sys.path:
+        sys.path.insert(0, str(builder))
+    try:
+        import code_provenance
+    except ImportError:
+        kit = Path(__file__).with_name("CODE_PROVENANCE.json")
+        return json.loads(kit.read_text()) | {"code_source": "kit CODE_PROVENANCE.json"} if kit.is_file() else {"code_head": "unknown", "code_source": "no provenance helper"}
+    return code_provenance.describe(Path(__file__).parent)
+
+
+def refresh(build, *, status: str, step: str, extra: dict | None = None) -> dict:
+    """Recount stats.json from the rows and bind it to the rows' hashes. ``code_*`` at the top is this step's code;
+    ``provenance`` keeps every earlier step's under its own name, and ``service_head`` is the build's (it shaped the prompts)."""
     build = Path(build)
     path = build / "stats.json"
     old = json.loads(path.read_text()) if path.is_file() else {}
     fresh = counted(build)
-    stats = {k: old[k] for k in ("code_head", "service_head") if k in old} | fresh | {"status": status} | (extra or {})
+    history = dict(old.get("provenance") or {})
+    if not history and "code_head" in old:
+        history["build"] = {k: old[k] for k in ("code_head", "service_head") if k in old} | {"note": "recorded before code_provenance.py"}
+    mine = step_provenance()
+    history[step] = mine
+    built = history.get("build") or {}
+    stats = mine | {k: built[k] for k in built if k.startswith(("service_", "pin_"))} | fresh | {"status": status, "provenance": history} | (extra or {})
     if "thinking" in old:
         stats["builder_thinking_before_answers"] = old["thinking"]
     elif "builder_thinking_before_answers" in old:

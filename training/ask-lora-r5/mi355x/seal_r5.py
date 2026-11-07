@@ -210,7 +210,7 @@ def main(argv=None) -> int:
                 "kept_known_overlaps": [{"turn": k, "family": t["family"], "rows": t["rows"], "current": t["current"],
                                          "history": t["history"]} for k, t in sorted(kept_known.items())]}
     (build / "overlap_manifest.json").write_text(json.dumps(manifest, indent=1, ensure_ascii=False) + "\n")
-    r5_stats.refresh(build, status="sealed_source_build")
+    r5_stats.refresh(build, status="sealed_source_build", step="seal")
     print(json.dumps({k: manifest[k] for k in ("rows_before", "rows_removed", "turns_removed", "index_sizes", "by_family")}))
     return 0
 

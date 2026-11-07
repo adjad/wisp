@@ -460,12 +460,10 @@ def write_manifest(metas, train_idx, valid_idx):
 
 
 def write_stats(metas, train_idx, valid_idx):
-    """stats.json: the counts the README quotes, plus the code head they came from."""
-    import subprocess
-    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=H.boot.REPO).stdout.strip()
-    # the code that shaped the prompts and tools: the last commit touching service/
-    service = subprocess.run(["git", "log", "-1", "--format=%H", "--", "service"], capture_output=True, text=True,
-                             cwd=H.boot.REPO).stdout.strip()
+    """stats.json: the counts the README quotes, plus the code this build ran on (code_provenance.py): the training repo's head
+    with a dirty marker, and the service code that shaped the prompts and tools, checked file by file when it's a pinned copy."""
+    import code_provenance
+    prov = code_provenance.describe(os.path.dirname(os.path.abspath(__file__)), H.boot.REPO)
     turns = {m["id"].rsplit("-s", 1)[0]: m for m in metas}
     split_of = {i: "train" for i in train_idx} | {i: "valid" for i in valid_idx}
     fam = defaultdict(lambda: Counter())
@@ -490,7 +488,7 @@ def write_stats(metas, train_idx, valid_idx):
                       "train_think": sum(bool(metas[i].get("think")) for i in train_idx),
                       "valid_think": sum(bool(metas[i].get("think")) for i in valid_idx),
                       "by_step_kind": {k: dict(v) for k, v in sorted(by_kind.items(), key=lambda kv: str(kv[0]))}}
-    stats = {"code_head": head, "service_head": service, "examples": len(metas), "turns": len(turns),
+    stats = prov | {"provenance": {"build": prov}, "examples": len(metas), "turns": len(turns),
              "train": len(train_idx), "valid": len(valid_idx),
              "by_target": dict(Counter(m["target_kind"] for m in metas)),
              "paraphrased_turns": sum(1 for m in turns.values() if m.get("paraphrase_of")),

@@ -144,15 +144,26 @@ def contract_failures(out: Path) -> dict:
     return bad
 
 
-def forced_empty_rows(out: Path) -> set:
-    """Rows that would supervise an immediately closed thought."""
+def forced_empty_rows(out: Path, *, placeholders: bool = False) -> set:
+    """Rows that would supervise an immediately closed thought: by default those with text, or with ``placeholders`` only
+    the placeholder finals in that state (they have no text yet, so they're counted but never dropped for it)."""
     ids = set()
     with open(out / "all.jsonl") as fr, open(out / "meta.jsonl") as fm:
         for a, b in zip(fr, fm, strict=True):
             ex, m = json.loads(a), json.loads(b)
-            if r5_stats.is_forced(ex, m) and not m.get("think") and ex["messages"][-1].get("content") != PLACEHOLDER:
+            if r5_stats.is_forced(ex, m) and not m.get("think") and (ex["messages"][-1].get("content") == PLACEHOLDER) == placeholders:
                 ids.add(m["id"])
     return ids
+
+
+def forced_empty_counts(forced_empty: set, forced_placeholders: set, never_sampled: set, awaiting_traces: set, dropped: set) -> dict:
+    """Every kept row that still ends in an empty thought after a tool result, by what it waits for. The two totals add up to
+    stats' rendered_shapes forced_empty, and finish refuses a build where they don't."""
+    scripted = (forced_empty & never_sampled) - dropped
+    placeholder = forced_placeholders - dropped
+    return {"forced_empty_awaiting_base": len(scripted | placeholder),
+            "forced_empty_awaiting_base_by_text": {"scripted_final": len(scripted - placeholder), "placeholder_final": len(placeholder)},
+            "forced_tool_steps_awaiting_traces": len(awaiting_traces - dropped)}
 
 
 def turn_of(row_id: str) -> str:
@@ -230,6 +241,7 @@ def main(argv=None) -> int:
     # step is the same in a pipeline check with no --traces. A dropped tool step takes its whole turn: a chain with a hole in it
     # isn't a chain, and the earlier steps' thoughts name dates only the missing call can vouch for.
     forced_empty = forced_empty_rows(out)
+    forced_placeholders = forced_empty_rows(out, placeholders=True)
     tool_steps = target_kinds(out)
     awaiting_traces = {i for i in forced_empty if tool_steps.get(i) != "final"} if a.allow_incomplete and not a.traces else set()
     for i in forced_empty - never_sampled - awaiting_traces:
@@ -263,11 +275,14 @@ def main(argv=None) -> int:
             shutil.copy2(src, out / name)
     drop_reasons = dict(Counter(drops.values()).most_common())
     status = "incomplete_no_base_answers" if incomplete else "complete"
-    stats = r5_stats.refresh(out, status=status, extra={"drops": drop_reasons, "placeholders_left": len(set(left)),
+    stats = r5_stats.refresh(out, status=status, step="finish", extra={"drops": drop_reasons, "placeholders_left": len(set(left)),
                                                        "chosen_answers": len(chosen), "base_traces": len(traces),
                                                        "unsampled_scripted_finals": unsampled_scripted,
-                                                       "forced_empty_awaiting_base": len((forced_empty & never_sampled) - set(drops)),
-                                                       "forced_tool_steps_awaiting_traces": len(awaiting_traces - set(drops))})
+                                                       **forced_empty_counts(forced_empty, forced_placeholders, never_sampled, awaiting_traces, set(drops))})
+    shapes = stats["rendered_shapes"].get("forced_empty", 0)
+    accounted = stats["forced_empty_awaiting_base"] + stats["forced_tool_steps_awaiting_traces"]
+    if accounted != shapes:
+        sys.exit(f"finish_r5: {shapes} rows end in an empty thought after a tool result, but only {accounted} are accounted for")
     print(json.dumps({"status": status, "drops": drop_reasons, "removed": removed, "rows": {k: stats[k] for k in ("examples", "train", "valid")},
                       "by_origin": stats["by_origin"], "by_trace_origin": stats["by_trace_origin"]}))
     return 0

@@ -58,12 +58,16 @@ def test_placeholder_matches_builder():
 
 def test_stats_count_the_rows_not_the_old_file(tmp_path):
     _build(tmp_path, [_row("a-s0"), _row("b-s0", family="g")])
-    s = r5_stats.refresh(tmp_path, status="complete")
-    assert s["examples"] == 2 and s["train"] == 2 and s["code_head"] == "abc"
+    s = r5_stats.refresh(tmp_path, status="complete", step="finish")
+    assert s["examples"] == 2 and s["train"] == 2
+    # this step's code, never the build's: the build's head stays under its own name
+    assert s["code_head"] == r5_stats.step_provenance()["code_head"] != "abc"
+    assert s["provenance"]["build"]["code_head"] == "abc" and s["provenance"]["finish"]["code_head"] == s["code_head"]
     assert s["by_origin"] == {"scripted": 2}
     assert s["files_sha256"]["all.jsonl"] == r5_stats.sha256(tmp_path / "all.jsonl")
     F.drop_rows(tmp_path, {"b-s0"})
-    assert r5_stats.refresh(tmp_path, status="complete")["examples"] == 1
+    again = r5_stats.refresh(tmp_path, status="complete", step="finish")
+    assert again["examples"] == 1 and again["provenance"]["build"]["code_head"] == "abc"
 
 
 def test_origins_are_visible():
@@ -132,6 +136,19 @@ def test_an_unsampled_forced_row_waits_and_a_failed_one_drops(tmp_path, monkeypa
     stats = json.load(open(tmp_path / "o" / "stats.json"))
     assert stats["status"] == "incomplete_no_base_answers" and stats["unsampled_scripted_finals"] == 1
     assert stats["forced_empty_awaiting_base"] == 1 and stats["drops"] == {"forced_empty_thought": 1} and stats["examples"] == 1
+
+
+def test_placeholder_finals_after_a_tool_result_are_counted_as_waiting(tmp_path, monkeypatch):
+    """The coordinator's catch: placeholder finals with no thought after a tool result were left out of the waiting count, so it
+    didn't add up to rendered_shapes forced_empty."""
+    monkeypatch.setattr(F, "leaking_turns", lambda out: set())
+    rows = [_row("p-s1", msgs=TOOL_MSG, content=F.PLACEHOLDER), _row("a-s1", msgs=TOOL_MSG)] + _chain("t", TOOL_MSG)
+    assert F.main(_finish_inputs(tmp_path, rows, ["p-s1", "a-s1"], ["p-s1", "a-s1"]) + ["--allow-incomplete"]) == 0
+    stats = json.load(open(tmp_path / "o" / "stats.json"))
+    assert stats["forced_empty_awaiting_base"] == 2
+    assert stats["forced_empty_awaiting_base_by_text"] == {"scripted_final": 1, "placeholder_final": 1}
+    assert stats["forced_tool_steps_awaiting_traces"] == 1
+    assert stats["rendered_shapes"]["forced_empty"] == 3 and stats["drops"] == {}
 
 
 def _chain(prefix, final_msgs):

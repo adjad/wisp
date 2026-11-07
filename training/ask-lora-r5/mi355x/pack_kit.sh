@@ -15,5 +15,7 @@ cp "$HERE/run_r5.sh" "$T/ask-lora-r4/a6000/run_sft.sh" "$T/ask-lora-r3/brev/vm-s
    "$T/ask-lora-r3/brev/render.py" "$K/"
 cp "$BUILD/partial.jsonl" "$K/partial.jsonl"
 cp "$REUSE" "$K/finals.r4reuse.jsonl"
+# The node has no git: this names the code the kit was packed from, with a dirty marker if it wasn't committed.
+"${PY:-python3}" "$T/ask-lora-r2/builder/code_provenance.py" "$HERE" > "$K/CODE_PROVENANCE.json"
 tar -C "$W" -czf "$DEST" r5
 shasum -a 256 "$DEST"; ls -lh "$DEST"
