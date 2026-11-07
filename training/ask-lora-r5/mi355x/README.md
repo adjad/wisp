@@ -14,6 +14,26 @@ bash training/ask-lora-r5/mi355x/pack_kit.sh BUILD_DIR REUSE_FILE training/ask-l
 
 `seal_r5.py` removes every turn close to a test question, before any node time goes to it, and lists them in `overlap_manifest.json`.
 
+## On the RTX A6000: base's answers only (the user's choice, 2026-11-07)
+
+About $0.60/h. Generation only: `run_r5.sh` refuses training commands on an NVIDIA box. The user starts and stops the instance; nobody enters credentials for them. Synthetic tool results only, nothing private goes up: just `r5-kit.tgz`. The base isn't gated, so setup downloads it with no token.
+
+```bash
+# on the Mac
+scp r5-kit.tgz mild-indigo-moose:~/                     # the brev ssh alias
+# on the box
+nvidia-smi                                               # must say RTX A6000
+tar -xzf r5-kit.tgz && cd r5
+bash run_r5.sh setup && bash run_r5.sh check             # torch 2.11.0+cu128, transformers 5.22.1, peft 0.21.2, the base
+SELFCHECK=1 bash run_r5.sh finals partial.jsonl          # ATTN=sdpa by default: batched = single AND sdpa = math, or nothing runs batched
+# if it fails: SELFCHECK=1 ATTN=math ..., and use ATTN=math for everything after
+BATCH=4 LIMIT=8 bash run_r5.sh finals partial.jsonl      # speed; try BATCH=8 too if memory allows (nvidia-smi)
+BATCH=4 K=1 TOPUP=0 FAMILIES=all_sources_r5,memory_contrast_r5,write_contrast_r5 LIMIT=40 bash run_r5.sh finals partial.jsonl
+tmux new -d -s r5 'TRACES=1 BATCH=4 bash run_r5.sh finals partial.jsonl > ~/wisp/finals/run.log 2>&1'   # survives an SSH drop; rerun resumes
+```
+
+The full run starts only if the smoke's measured speed projects answers plus tool-step thoughts within about $60 and about 4 days. Otherwise the box stays idle and the coordinator decides. Then download `~/wisp/finals/{chosen.jsonl,drop.ids,stats.json,rejections.jsonl,generation.*.json,traces.chosen.jsonl,traces.stats.json}` and follow "On the Mac: the final build".
+
 ## On the node: base's answers
 
 ```bash

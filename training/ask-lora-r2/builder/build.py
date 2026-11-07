@@ -11,10 +11,14 @@ import sys
 import traceback
 from collections import Counter, defaultdict
 
+import code_provenance
 import harness as H
 import leak
 import scen
 import thinking
+
+# Taken when the build starts, so a file edited while it runs can't change what the build says it ran on.
+PROVENANCE = code_provenance.describe(os.path.dirname(os.path.abspath(__file__)), H.boot.REPO)
 
 # ASK_LORA_OUT points a later round (round 3: training/ask-lora-r3) at its own data dir.
 OUT = os.environ.get("ASK_LORA_OUT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -462,8 +466,7 @@ def write_manifest(metas, train_idx, valid_idx):
 def write_stats(metas, train_idx, valid_idx):
     """stats.json: the counts the README quotes, plus the code this build ran on (code_provenance.py): the training repo's head
     with a dirty marker, and the service code that shaped the prompts and tools, checked file by file when it's a pinned copy."""
-    import code_provenance
-    prov = code_provenance.describe(os.path.dirname(os.path.abspath(__file__)), H.boot.REPO)
+    prov = PROVENANCE
     turns = {m["id"].rsplit("-s", 1)[0]: m for m in metas}
     split_of = {i: "train" for i in train_idx} | {i: "valid" for i in valid_idx}
     fam = defaultdict(lambda: Counter())

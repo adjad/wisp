@@ -1,5 +1,6 @@
 #!/bin/bash
-# r5 on an 8x AMD MI355X node ($3 per GPU-hour, $24/h; the user's choice, 2026-11-06). A thin layer over
+# r5 on an 8x AMD MI355X node ($3 per GPU-hour, $24/h; the user's choice, 2026-11-06), or base's answers only on one RTX A6000
+# (about $0.60/h; the user's choice for generation, 2026-11-07; nothing trains there). A thin layer over
 # ../../ask-lora-r4/a6000/run_sft.sh with what this hardware needs: --attn math (gfx950's fused SDPA backward fails the LoRA
 # grad-cosine check) and one training process per GPU. r3 ran this hardware at 2.8 s per step (2026-11-02).
 #
@@ -18,7 +19,13 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SFT="$HERE/run_sft.sh"; [ -f "$SFT" ] || SFT="$HERE/../../ask-lora-r4/a6000/run_sft.sh"
 [ -f "$SFT" ] || { echo "FAIL: run_sft.sh not found next to run_r5.sh" >&2; exit 1; }
-export ATTN=math WISP_ATTN=math NPROC="${NPROC:-8}" GPU_ARCH=gfx950
+# Hardware. NVIDIA (the RTX A6000, sm_86, chosen for r5's generation on 2026-11-07): run_sft.sh's pinned cu128 stack, one GPU,
+# attention sdpa by default, which SELFCHECK compares with math before any answer is kept. AMD (the 8x MI355X): math only.
+if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
+  HW=cuda; ATTN="${ATTN:-sdpa}"; export ATTN WISP_ATTN="$ATTN" NPROC="${NPROC:-$(nvidia-smi -L | grep -c '^GPU')}"
+else
+  HW=rocm; export ATTN=math WISP_ATTN=math NPROC="${NPROC:-8}" GPU_ARCH=gfx950
+fi
 
 WISP="${WISP:-$HOME/wisp}"; PY="$WISP/venv/bin/python"; TD="$WISP/gemma"; OUT="$TD/ask-lora-out"; MM="$WISP/mmeval"; PK="$TD/pick"
 SEED=20261029
@@ -27,18 +34,23 @@ die() { echo "FAIL: $*" >&2; exit 1; }
 
 case "${1:-help}" in
 setup)
+  if [ "$HW" = cuda ]; then PIN=1 bash "$SFT" setup; exit $?; fi       # torch 2.11.0+cu128, transformers 5.22.1, peft 0.21.2
   export PIN=0 TRANSFORMERS_SPEC='transformers==5.22.1' PEFT_SPEC='peft==0.21.2'
   bash "$SFT" setup ;;
 check)
   "$WISP/run.sh" gemma check
-  "$PY" -c "import torch,transformers,peft;print('torch',torch.__version__,'hip',torch.version.hip,'gpus',torch.cuda.device_count());print('transformers',transformers.__version__,'peft',peft.__version__)"
-  "$PY" -c "import torch,sys;v=torch.__version__;sys.exit(0 if v.startswith('2.14.') and 'rocm7.2' in v else print('WARNING: r3 measured torch 2.14.1+rocm7.2 good and AMD 2.11.0+rocm7.13.0 bad; this is',v))" ;;
+  "$PY" -c "import torch,transformers,peft;print('torch',torch.__version__,'cuda',torch.version.cuda,'hip',torch.version.hip,'gpus',torch.cuda.device_count(),torch.cuda.get_device_name(0));print('transformers',transformers.__version__,'peft',peft.__version__)"
+  if [ "$HW" = cuda ]; then
+    "$PY" -c "import torch,sys;v=torch.__version__;sys.exit(0 if v.startswith('2.11.0') and 'cu128' in v else print('WARNING: the A6000 pin is torch 2.11.0+cu128; this is',v))"
+  else
+    "$PY" -c "import torch,sys;v=torch.__version__;sys.exit(0 if v.startswith('2.14.') and 'rocm7.2' in v else print('WARNING: r3 measured torch 2.14.1+rocm7.2 good and AMD 2.11.0+rocm7.13.0 bad; this is',v))"
+  fi ;;
 finals)
   [ -n "${2:-}" ] || die "usage: $0 finals PARTIAL.jsonl [OUT_DIR]"
   G="$HERE/run_finals.sh"; [ -f "$G" ] || G="$HERE/../gpu/run_finals.sh"
   FO="${3:-$WISP/finals}"; mkdir -p "$FO" || die "cannot make $FO"
   [ ! -f "$HERE/finals.r4reuse.jsonl" ] || [ -f "$FO/finals.r4reuse.jsonl" ] || cp "$HERE/finals.r4reuse.jsonl" "$FO/" || die "reuse copy failed"
-  ATTN=math NPROC="$NPROC" bash "$G" "$2" "$FO" ;;
+  ATTN="$ATTN" NPROC="$NPROC" bash "$G" "$2" "$FO" ;;
 pick)
   [ -f "$MM/pick_text.py" ] && [ -f "$MM/eval_mm.py" ] && [ -f "$MM/data/text-dev.jsonl" ] || die "run '$0 unzip-pickers' first"
   [ -d "$OUT/ckpt" ] || [ -d "$OUT/final" ] || die "no checkpoints under $OUT"
@@ -78,5 +90,6 @@ PYI
   cat "$PK/picked.table.md"
   [ $rc -eq 0 ] && { say "TOP:"; cat "$PK/picked.path"; } || { say "NO CHECKPOINT QUALIFIES (exit $rc): don't merge; bring $PK back to the Mac"; exit $rc; } ;;
 *)
+  [ "$HW" = rocm ] || die "on this NVIDIA box r5 only generates base's answers (setup, check, finals); '$1' isn't allowed here"
   exec bash "$SFT" "$@" ;;
 esac

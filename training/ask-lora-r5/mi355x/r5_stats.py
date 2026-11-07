@@ -103,6 +103,10 @@ def step_provenance() -> dict:
     return code_provenance.describe(Path(__file__).parent)
 
 
+# Taken when the step starts (seal_r5 and finish_r5 import this first), not when it writes its stats.
+STEP_PROVENANCE = step_provenance()
+
+
 def refresh(build, *, status: str, step: str, extra: dict | None = None) -> dict:
     """Recount stats.json from the rows and bind it to the rows' hashes. ``code_*`` at the top is this step's code;
     ``provenance`` keeps every earlier step's under its own name, and ``service_head`` is the build's (it shaped the prompts)."""
@@ -113,7 +117,7 @@ def refresh(build, *, status: str, step: str, extra: dict | None = None) -> dict
     history = dict(old.get("provenance") or {})
     if not history and "code_head" in old:
         history["build"] = {k: old[k] for k in ("code_head", "service_head") if k in old} | {"note": "recorded before code_provenance.py"}
-    mine = step_provenance()
+    mine = STEP_PROVENANCE
     history[step] = mine
     built = history.get("build") or {}
     stats = mine | {k: built[k] for k in built if k.startswith(("service_", "pin_"))} | fresh | {"status": status, "provenance": history} | (extra or {})

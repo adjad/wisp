@@ -332,8 +332,14 @@ class HFGenerator:
         self.model.eval()
         self.device, self.pad = device, 0
 
-    def __call__(self, prompts: list[list[int]], seed: int, greedy: bool = False, max_new: int = MAX_NEW) -> list[list[int]]:
+    def __call__(self, prompts: list[list[int]], seed: int, greedy: bool = False, max_new: int = MAX_NEW,
+                 reference: bool = False) -> list[list[int]]:
+        """``reference``: decode with torch's math SDPA backend only, whatever --attn chose (selfcheck's yardstick)."""
         torch = self.torch
+        if reference:
+            from torch.nn.attention import SDPBackend, sdpa_kernel
+            with sdpa_kernel(SDPBackend.MATH):
+                return self(prompts, seed, greedy, max_new)
         torch.manual_seed(seed)
         n, width = len(prompts), max(len(p) for p in prompts)
         ids = torch.full((n, width), self.pad, dtype=torch.long)
@@ -349,9 +355,11 @@ class HFGenerator:
         return out[:, width:].tolist()
 
 
-def selfcheck(rows: list[dict], tok, gen, count: int = 4, steps: int = 48, agree: int = 24, log=print) -> bool:
+def selfcheck(rows: list[dict], tok, gen, count: int = 4, steps: int = 48, agree: int = 24, log=print,
+              attn_reference: bool = False) -> bool:
     """Greedy decoding of `count` prompts of different lengths, alone and as one left-padded batch: the first
-    `agree` tokens must be identical for every prompt."""
+    `agree` tokens must be identical for every prompt. With ``attn_reference`` (any --attn but math, such as sdpa on an
+    A6000), each prompt alone must also match torch's math attention, so a wrong fused kernel can't write the answers."""
     picked = sorted(rows, key=lambda r: len(prompt_for(tok, r)))
     picked = [picked[round(i * (len(picked) - 1) / max(count - 1, 1))] for i in range(min(count, len(picked)))]
     prompts = [tok(prompt_for(tok, r), add_special_tokens=False).input_ids for r in picked]
@@ -362,6 +370,12 @@ def selfcheck(rows: list[dict], tok, gen, count: int = 4, steps: int = 48, agree
         same = a[:agree] == b[:agree]
         ok &= same
         log(f"selfcheck {r['meta']['id']}: {len(p)} prompt tokens, first {agree} tokens {'match' if same else 'DIFFER'}")
+    if attn_reference:
+        for r, p, a in zip(picked, prompts, alone):
+            m = gen([p], 0, greedy=True, max_new=steps, reference=True)[0]
+            same = a[:agree] == m[:agree]
+            ok &= same
+            log(f"selfcheck {r['meta']['id']}: attention vs math reference, first {agree} tokens {'match' if same else 'DIFFER'}")
     return ok
 
 
@@ -402,7 +416,15 @@ def main(argv=None) -> int:
         sys.exit("the base's chat template differs from the one the dataset is rendered with")
     gen = HFGenerator(a.base, a.attn)
     if a.selfcheck:
-        return 0 if selfcheck(rows[:200], tok, gen) else 1
+        ok = selfcheck(rows[:200], tok, gen, attn_reference=a.attn != "math")
+        if ok:                                  # run_finals.sh needs this before BATCH>1 or an attention other than math
+            import torch
+            os.makedirs(a.out_dir, exist_ok=True)
+            with open(os.path.join(a.out_dir, f"PASS.{a.attn}.json"), "w") as f:
+                json.dump({"attn": a.attn, "torch": torch.__version__, "gpu": torch.cuda.get_device_name(0),
+                           "batched_matches_single": True, "matches_math_reference": True if a.attn != "math" else None}, f, indent=1)
+        print(f"selfcheck {'PASS' if ok else 'FAIL'} (attn {a.attn})", flush=True)
+        return 0 if ok else 1
     if a.limit:
         rows = shard_rows(rows, shard, nshards)[:a.limit]
         shard, nshards = 0, 1

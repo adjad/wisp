@@ -233,6 +233,18 @@ def test_selfcheck_detects_a_batch_that_disagrees(tok):
     assert not G.selfcheck(rows, tok, drift, log=silent)
 
 
+@needs_tok
+def test_selfcheck_compares_other_attention_with_math(tok):
+    rows = [mk(i) for i in range(5)]
+
+    def wrong_kernel(prompts, seed, greedy=False, max_new=0, reference=False):
+        return [[9] * 30 if reference else [7] * 30 for _ in prompts]
+    assert G.selfcheck(rows, tok, wrong_kernel, log=silent)                      # batching alone can't see it
+    assert not G.selfcheck(rows, tok, wrong_kernel, log=silent, attn_reference=True)
+    right = lambda prompts, seed, greedy=False, max_new=0, reference=False: [[7] * 30 for _ in prompts]  # noqa: E731
+    assert G.selfcheck(rows, tok, right, log=silent, attn_reference=True)
+
+
 # ---------------------------------------------------------------- the r5 choose step
 GOOD = "You have one email from Dana Whitfield about the permit. Reply is due soon."
 

@@ -4,7 +4,7 @@
 #
 #   run_finals.sh PARTIAL OUT_DIR
 #
-# Env: ATTN=math (sdpa|math|eager)   NPROC=<GPUs> (default: every GPU torch sees)   BATCH=1 (see gen_finals.py)
+# Env: ATTN=math (sdpa|math|eager; anything but math, or BATCH>1, needs SELFCHECK's PASS file first)   NPROC=<GPUs> (default: every GPU torch sees)   BATCH=1 (see gen_finals.py)
 #      K=1   TOPUP=4 (extra samples per no-pass id; 0 = none)   BASE=<model dir> (default: ~/wisp/gemma/base_path)
 #      FAMILIES=a,b   LIMIT=N (smoke: first N rows of one shard, into OUT_DIR/smoke, no choose)
 #      WISP_WORK=~/wisp (the setup's venv)   SELFCHECK=1 (batched vs single greedy check on GPU 0, then exit)
@@ -30,6 +30,10 @@ FAM=(); [ -z "${FAMILIES:-}" ] || FAM=(--families "$FAMILIES")
 if [ -n "${SELFCHECK:-}" ]; then
   exec "$PY" "$HERE/gen_finals.py" --partial "$PARTIAL" --out-dir "$OUT/selfcheck" --base "$BASE" --gpu 0 \
     --attn "$ATTN" --selfcheck ${FAM[@]+"${FAM[@]}"}
+fi
+# Batching, or an attention other than math, only after SELFCHECK passed for that attention on this box.
+if [ "$BATCH" -gt 1 ] || [ "$ATTN" != math ]; then
+  [ -f "$OUT/selfcheck/PASS.$ATTN.json" ] || { echo "FAIL: BATCH=$BATCH ATTN=$ATTN needs a passing 'SELFCHECK=1 ATTN=$ATTN' first ($OUT/selfcheck/PASS.$ATTN.json)"; exit 1; }
 fi
 if [ -n "${LIMIT:-}" ]; then
   echo "== smoke: $LIMIT rows, K=$K, batch $BATCH, attn $ATTN on GPU 0"
