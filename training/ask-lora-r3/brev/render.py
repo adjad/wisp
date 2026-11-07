@@ -35,7 +35,8 @@ enable_thinking=False), into vision_train.jsonl / vision_dev.jsonl:
 carries ONE `<|image|>` placeholder per image, exactly what the chat template emits; the Gemma
 processor expands it to `<|image>` + N x `<|image|>` + `<image|>` at train time (train.py). The
 images travel in the zip under vision/<path>, and each row's `images` are those in-zip paths.
-train.jsonl and dev.jsonl are produced by the same code as in r2 and stay byte-identical.
+train.jsonl and dev.jsonl come from render() below. Through r4 it applied the template to the raw request; since r5
+it first does what oMLX does (serving_messages, serving_tools), so r4's data can't be reproduced with this file.
 
 picture_read rows (kind "picture_read", same file): the READ call of #436, service/vision._read. The system turn is
 vision._READ_SYSTEM, the user turn the image(s) + 'The person's request, for context only...' + the TEXT/DESCRIPTION
@@ -154,12 +155,77 @@ def to_template(messages: list[dict]) -> list[dict]:
     return out
 
 
+def serving_messages(messages: list[dict]) -> list[dict]:
+    """Adjacent system messages joined with a blank line, as oMLX does before it applies the template
+    (api.utils._merge_consecutive_system_messages). test_serving_parity.py checks this against oMLX's code."""
+    out: list[dict] = []
+    for m in messages:
+        if m.get("role") == "system" and out and out[-1].get("role") == "system":
+            out[-1] = {"role": "system", "content": out[-1]["content"] + "\n\n" + m["content"]}
+        else:
+            out.append(dict(m))
+    return out
+
+
+def _schema_copy(value, *, is_schema: bool):
+    """oMLX's api.tool_calling._copy_schema_with_template_defaults: object keys sorted, every schema gets a
+    string description."""
+    if isinstance(value, dict):
+        copied = {}
+        for key in sorted(value):
+            child = value[key]
+            if key == "properties" and isinstance(child, dict):
+                copied[key] = {name: _schema_copy(child[name], is_schema=True) for name in sorted(child)}
+            elif key in {"items", "additionalProperties", "contains", "propertyNames", "not", "if", "then", "else"}:
+                copied[key] = _schema_copy(child, is_schema=True)
+            elif key in {"oneOf", "anyOf", "allOf", "prefixItems"} and isinstance(child, list):
+                copied[key] = [_schema_copy(item, is_schema=True) for item in child]
+            else:
+                copied[key] = _schema_copy(child, is_schema=False)
+        if is_schema:
+            d = copied.get("description")
+            copied["description"] = "" if d is None else d if isinstance(d, str) else str(d)
+        return copied
+    if isinstance(value, list):
+        return [_schema_copy(item, is_schema=False) for item in value]
+    return value
+
+
+def serving_tools(tools: list[dict] | None) -> list[dict] | None:
+    """Tool schemas as oMLX hands them to Gemma's template (api.tool_calling.convert_tools_for_template, then
+    enrich_tool_params_for_gemma4): keys sorted, a parameter named `description` becomes `param_description`,
+    and a parameter with no description gets one. test_serving_parity.py checks this against oMLX's code."""
+    if not tools:
+        return None
+    out = []
+    for tool in tools:
+        f = tool["function"]
+        d = f.get("description", "")
+        params = _schema_copy(f.get("parameters") or {"type": "object", "properties": {}}, is_schema=False)
+        if "properties" in params:
+            required = list(params.get("required", []))
+            props, kept = {}, []
+            for name, spec in params["properties"].items():
+                spec = dict(spec)
+                new = "param_description" if name == "description" else name
+                if not spec.get("description"):
+                    label = "REQUIRED. " if name in required else ""
+                    spec["description"] = f"{label}The '{name}' value (type: {spec.get('type', 'string')})"
+                props[new] = spec
+                if name in required:
+                    kept.append(new)
+            params["properties"], params["required"] = props, kept
+        out.append({"type": "function", "function": {"name": f.get("name", ""), "parameters": params,
+                                                     "description": "" if d is None else d if isinstance(d, str) else str(d)}})
+    return out
+
+
 def render(tok, ex: dict, meta: dict) -> dict:
     """One prompt/completion row. meta `think` (bool) and `thought` (str or null) pick the completion's shape
     (see the module docstring); a meta without `think` renders as NO THINK."""
-    messages = to_template(ex["messages"])
+    messages = serving_messages(to_template(ex["messages"]))
     kwargs = dict(meta.get("chat_template_kwargs") or {})
-    tools = ex["tools"] or None
+    tools = serving_tools(ex["tools"])
     sid = meta.get("id")
     think, text = bool(meta.get("think")), meta.get("thought")
     if think and not (isinstance(text, str) and text.strip()):

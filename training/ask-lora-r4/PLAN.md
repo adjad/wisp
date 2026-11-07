@@ -688,9 +688,40 @@ The user asked r5 to follow https://gemma.ai/tuning/ and said the older ai.googl
 
 1. **Thoughts between tool calls (`service/agent/loop.py:4557`).** Google says not to strip thoughts between calls inside one model turn. Wisp appends `{"role": "assistant", "content", "tool_calls"}` and drops `reasoning_content`, so the model loses its reasoning at each step. The chat template would render a kept thought (`thinking_gate`: any message after the last user turn). Training rows match production and also drop it. On the r4 gate's trials, base passes 75% with one tool round, 61% with two and 55% with three or more; r4 passes 78%, 53% and 48%. Those longer cases are also harder, so this doesn't show the cause. **Test on base first; it would be a service change and rows must match whatever ships.** Decide before base generation.
 2. **`modules_to_save=["lm_head", "embed_tokens"]` with weight tying (QLoRA and vision pages).** The audio page doesn't list it, and no page says why it's there. It would train the full 262,144-token embedding table, far more parameters than the LoRA itself. The MTP page says the drafter shares that table, so speculative decoding could slow; output shouldn't change, since the target checks every token. Left out unless the user wants it tested.
-3. **One system turn.** Google says instructions, thinking and tools should sit in one consolidated system turn. Thinking and tools do. Wisp also sends the date and the unverified-context note as later `system` messages, which render as extra system turns, and rows match that. It's kept so the prompt prefix stays cacheable, so it's report-only for r5.
+3. **One system turn.** Wisp sends the date and the unverified-context note as later `system` messages, but oMLX joins adjacent ones before rendering, so the served prompt has one system turn, as Google asks. Training didn't match that; see "Served prompts" below.
 4. **Image tokens.** Google says higher budgets help OCR and document parsing. Wisp sends a flat 280 (`service/vision.py:74`, the model's `max_soft_tokens`). It may matter for r4's document facts loss (1.000 to 0.944), but base had 1.000 at 280, so it can't be the whole cause. Not an r5 training change.
 5. **QAT weights.** At 4-bit the QAT page says to prefer a QAT build over a generic Q4, and `-qat-q4_0-unquantized` exists for conversions such as MLX. No page says how this interacts with fine-tuning, and base would change too. Not in r5.
 6. **DPO.** The Gemma Trainer page lists DPO and reward modeling alongside SFT, without values. It's one more option for r5's open RL decision.
 
 **Start small.** The overview says to add data until the task is met. r5's stop at step 400 (about 9 h, $5) is that check.
+
+## What r5 is for (user, 2026-11-06)
+
+"in all here is what I want from r5: same base gemma talking style/formatting, ttft(excluding thinking) can be the same idc about it, better tool calling(already decent enough rn) but more would be nice - using all of my sources would be better."
+
+**Priorities, in order:**
+
+1. **Base's voice and formatting.** Every final answer is base-written from the same tool results, not only about half as in r4. Scripted finals remain only where base's answer fails a check, such as a cut list ("and N more") or a memory lookup in answer to chat.
+2. **Better tool calling, above all using every relevant source.** Of 4,650 turns in the 9197d295 build, only 50 read two or more sources. `all_sources_r5` adds 149 turns (318 rows): 120 read two or more sources, the rest stay on one source or a combined tool on purpose. Every final is base-written.
+3. **Speed needs no gain.** TTFT and decode are report-only unless they get more than 10% worse.
+
+**Replaces r4's gain bars.** r5 needs no required gain in writes, session or other categories. Each must not regress against base. Bars for r5:
+
+- **Style:** judge no worse than base, median reply 0.8 to 1.25 times base's, emoji and bold shares close to base's, non-replies and memory-stall chat at or below base's, no tables.
+- **Tools:** toolbench at or above base overall, and a measured gain on a held-out multi-source set (share of trials that read every expected source, and that use them in the answer).
+- **Safety:** unsafe calls to tools with real effects at or below base's, as the relaxed bar above. `safety` category unchanged.
+
+**Where base writes the finals.** About 4,800 finals at about 38 s each on the Mac is about 50 h per sample. Running the unquantized base on the A6000 with batching should take about 5 h and $3 for two samples per final (estimate, not measured), and needs no Mac time. It's the same weights and sampling, without the 4-bit rounding.
+
+## Served prompts differ from training prompts (found 2026-11-06)
+
+`render.py` applied the chat template to the raw request. oMLX first changes the request (`prepare_system_messages_for_template`, `convert_tools_for_template`, `enrich_tool_params_for_gemma4`), so every round through r4 trained on prompts that weren't the ones served, despite the comment saying byte for byte. The check at the time only compared two renderings made by the same code.
+
+- **System messages:** training had the base system turn with tools, then separate `<|turn>system` turns for the date and notes. Served, they're joined into one turn, with tools after all of it.
+- **Tool schemas:** served schemas have sorted keys, a description on every nested schema and required parameter, and `description` renamed to `param_description`. Median difference on 300 sampled rows: 39 tokens more.
+
+All 300 sampled rows differed. This could be one reason tuned rounds behaved differently once served, but nothing has measured that. **Fixed for r5:** `render.py` copies those steps, and `test_serving_parity.py` compares against oMLX's own code (1,000 of 1,000 sampled rows identical). r4's data can no longer be reproduced with this `render.py`.
+
+**Not yet confirmed live.** `test_serving_parity.py` compares against oMLX's functions, not the running engine. `live_probe.py` compares `usage.prompt_tokens` on real requests and needs the base model loaded, so it waits for the thoughts test to resume.
+
+**Size with `all_sources_r5`:** about 8,870 rows and 8,100 for training, so about 2,470 steps, 58 h and $34 (scaled from r4, not measured).
