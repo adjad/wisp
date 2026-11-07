@@ -467,11 +467,11 @@ final class OverlayModel: ObservableObject {
 
     // True while auto-collapse must hold off: the panel is pinned, a file
     // dialog it opened is up, there is an edit the person hasn't finished
-    // (typed input, a message draft being edited), or the setup card is open.
-    // A mid-task generation does not count; the notch bar's dot shows it is
-    // still working.
+    // (typed input, a message draft being edited), the setup card is open, or an
+    // answer is being written (the person is waiting for it, and said so).
     var holdsOpen: Bool {
-        pinned || pickingFile || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
+        answerInFlight
+            || pinned || pickingFile || !input.trimmingCharacters(in: .whitespaces).isEmpty || messageDraft?.isEditing == true
             || voice.isActive || speaker.speaking
             || (tab == .day && !todayTaskTitle.trimmingCharacters(in: .whitespaces).isEmpty)
             || knowYou != nil
@@ -550,6 +550,9 @@ final class OverlayModel: ObservableObject {
         if !byHover || !permissionPage.stillWaiting(at: date) { closePermissionPage() }
         tab = setupCard.tabForOpening(tabMemory.tabForOpening(current: tab, byHover: byHover, at: date))
     }
+
+    /// An answer is on its way, or waiting on the person's confirmation.
+    var answerInFlight: Bool { [Phase.routing, .working, .streaming, .confirming].contains(phase) }
 
     /// False while a turn is in flight. The Wisp window and the chat switcher
     /// read the saved history, which the service writes only at the end of a turn.

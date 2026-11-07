@@ -117,10 +117,7 @@ struct ReadAloudVoiceSettings: View {
         .onAppear { voices = ReadAloudVoice.installed() }
     }
 
-    private var rateLabel: String {
-        let multiple = ReadAloudVoice.rateMultiple(rate)
-        return abs(multiple - 1) < 0.001 ? "Normal" : "\(Int((multiple * 100).rounded()))% of normal"
-    }
+    private var rateLabel: String { ReadAloudVoice.rateText(ReadAloudVoice.rateMultiple(rate)) }
 
     private func label(_ voice: ReadAloudVoice.Candidate) -> String {
         let code = voice.language.split(separator: "-").dropFirst().first.map(String.init)

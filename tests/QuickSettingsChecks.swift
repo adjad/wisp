@@ -107,6 +107,8 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(QuickSettingsText.briefUpdates(hours: "9 AM to 5 PM") == "About 4 times a day, 9 AM to 5 PM", "Brief updates line")
     check(QuickSettingsText.briefUpdates(hours: nil) == "About 4 times a day, across your working hours",
           "no answer from the service names no hours")
+    check(QuickSettingsText.briefUpdates(chosen: "9 AM and 1 PM") == "At 9 AM and 1 PM", "chosen Brief times")
+    check(QuickSettingsText.briefUpdatesHelp.contains("a chat comes first"), "the help says a chat comes first")
     check(QuickSettingsText.dailySummaryHelp.contains("doesn't change when the Brief updates"),
           "the summary's times don't claim to set the Brief")
 

@@ -23,8 +23,16 @@ struct QuickSettingsView: View {
     @State var section = QuickSettingsSection.saved()
     /// The brief time whose inline hour list is open.
     @State var picking: BriefSlot?
-    /// "9 AM to 5 PM" for the Brief updates row; nil until the service says.
-    @State var workingHours: String?
+    /// The working hours and chosen Brief times; nil until the service says.
+    @State var hours: UserHours?
+    /// The voice list is open.
+    @State var choosingVoice = false
+    @State private var briefTimesError: String?
+    @State private var briefTimesSaving = false
+    @State private var voices: [ReadAloudVoice.Candidate] = []
+    @StateObject private var voicePreview = ReadAloudPreview()
+    @AppStorage(ReadAloudVoice.defaultsKey) private var voiceChoice = ""
+    @AppStorage(ReadAloudVoice.rateKey) private var voiceRate = 1.0
     /// The title and switcher's laid-out height, which grows with Text size.
     @State private var fixedHeight: CGFloat = 0
     /// Decides whether the Google row shows at all (new users only).
@@ -44,8 +52,7 @@ struct QuickSettingsView: View {
                     Text("Settings").font(.wisp(.headline, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                         .accessibilityAddTraits(.isHeader)
                     Spacer()
-                    Button("Done") { model.showingQuickSettings = false }
-                        .buttonStyle(.plain).font(.wisp(.callout)).foregroundStyle(Theme.textSecondary)
+                    NotchSettingsChrome.doneButton { model.showingQuickSettings = false }
                         .keyboardShortcut(.cancelAction)
                         .help("Close settings and go back to \(model.tab.stripTab.title)")
                 }
@@ -63,15 +70,17 @@ struct QuickSettingsView: View {
         }
         .onChange(of: section) { _, chosen in
             picking = nil
+            choosingVoice = false
+            voicePreview.stop()
             chosen.save()
         }
+        .onAppear { voices = ReadAloudVoice.installed() }
+        .onDisappear { voicePreview.stop() }
         .task {
             guard refreshes else { return }
             await settings.refreshQuick()
             await model.refreshModelMemory()
-            workingHours = await WispClient().userHours().map {
-                "\(UserHours.clock($0.working.start)) to \(UserHours.clock($0.working.end))"
-            }
+            hours = await WispClient().userHours()
         }
         // A reply or a brief may have loaded a model while this is open.
         .onChange(of: model.conversationSettled) { _, settled in
@@ -189,6 +198,10 @@ struct QuickSettingsView: View {
                 briefUpdatesRow
             case .voice:
                 voiceRepliesRow
+                hairline
+                voiceChoiceRow
+                hairline
+                speakingRateRow
                 hairline
                 textSizeRow
             case .power:
@@ -357,12 +370,231 @@ struct QuickSettingsView: View {
 
     /// How often the Brief updates. It follows the working hours, which are set in
     /// the Wisp window, so nothing here changes it.
-    private var briefUpdatesRow: some View {
+    @ViewBuilder private var briefUpdatesRow: some View {
+        let chosen = hours?.briefTimes
         row("Brief updates", help: QuickSettingsText.briefUpdatesHelp) {
-            Text(QuickSettingsText.briefUpdates(hours: workingHours))
+            if let chosen {
+                Text(QuickSettingsText.briefUpdates(chosen: UserHours.clockList(chosen)))
+            } else {
+                Text(QuickSettingsText.briefUpdates(hours: hours.map {
+                    "\(UserHours.clock($0.working.start)) to \(UserHours.clock($0.working.end))"
+                }))
+            }
         } control: {
-            EmptyView()
+            if let hours {
+                HStack(spacing: 6) {
+                    choiceChip("Automatic", chosen: chosen == nil) { saveBriefTimes([]) }
+                    choiceChip("Choose times", chosen: chosen != nil) {
+                        if chosen == nil { saveBriefTimes(hours.suggestedBriefTimes) }
+                    }
+                }
+                .disabled(briefTimesSaving)
+            }
         }
+        if let error = briefTimesError {
+            Text(error).font(.wisp(.footnote)).foregroundStyle(Theme.bad)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 14).padding(.bottom, 8)
+        }
+        if let hours {
+            briefHourGrid(hours)
+            if let chosen, chosen.count >= hours.maxBriefTimes {
+                Text("Up to \(hours.maxBriefTimes) a day. Turn one off to choose another.")
+                    .font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
+                    .padding(.horizontal, 14).padding(.bottom, 11)
+            }
+        }
+    }
+
+    /// A morning line and an afternoon line, where they fit; four across where they
+    /// don't. On Automatic it shows about when the day's updates fall, and pressing an
+    /// hour starts choosing from there.
+    private func briefHourGrid(_ hours: UserHours) -> some View {
+        let start = hours.briefTimes ?? hours.suggestedBriefTimes
+        return ViewThatFits(in: .horizontal) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 4) {
+                    Text("AM").frame(width: 26, alignment: .leading)
+                    ForEach(0..<12, id: \.self) { briefHourButton($0, hours: hours, start: start).frame(minWidth: 34) }
+                }
+                HStack(spacing: 4) {
+                    Text("PM").frame(width: 26, alignment: .leading)
+                    ForEach(12..<24, id: \.self) { briefHourButton($0, hours: hours, start: start).frame(minWidth: 34) }
+                }
+            }
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 4), spacing: 4) {
+                ForEach(0..<24, id: \.self) { hour in
+                    briefHourButton(hour, hours: hours, start: start, withPeriod: true)
+                }
+            }
+        }
+        .font(.wisp(.footnote)).foregroundStyle(Theme.textMuted)
+        .padding(.horizontal, 14).padding(.bottom, start.count >= hours.maxBriefTimes ? 4 : 11)
+        .disabled(briefTimesSaving)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Brief update times")
+    }
+
+    private func briefHourButton(_ hour: Int, hours: UserHours, start: [Int], withPeriod: Bool = false) -> some View {
+        let minute = hour * 60
+        let on = start.contains(minute)
+        let picked = on && hours.briefTimes != nil
+        var from = hours
+        from.briefTimes = start
+        let next = from.briefTimes(toggling: minute)
+        return Button {
+            if let next { saveBriefTimes(next) }
+        } label: {
+            Text(withPeriod ? QuickSettingsText.hourLabel(hour) : QuickSettingsText.hourLabel(hour).split(separator: " ").first.map(String.init) ?? "")
+                .monospacedDigit()
+                .font(.wisp(.body, weight: picked ? .semibold : .regular))
+                .foregroundStyle(picked ? Color.black : Theme.textPrimary)
+                .frame(maxWidth: .infinity).padding(.vertical, 3)
+                .background(RoundedRectangle(cornerRadius: 7).fill(
+                    picked ? Theme.textPrimary : on ? Color.white.opacity(0.24) : Theme.chipFill))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(next == nil)
+        .accessibilityLabel(QuickSettingsText.hourLabel(hour))
+        .accessibilityAddTraits(picked ? [.isButton, .isSelected] : .isButton)
+    }
+
+    private func saveBriefTimes(_ minutes: [Int]) {
+        guard refreshes else { return }
+        briefTimesSaving = true
+        briefTimesError = nil
+        Task {
+            let reply = await WispClient().saveBriefTimes(minutes)
+            briefTimesSaving = false
+            if let saved = reply.hours { hours = saved } else { briefTimesError = reply.error }
+        }
+    }
+
+    // MARK: Voice
+
+    /// What the picker offers here: everything but the novelty voices (Zarvox, Bells…),
+    /// which All settings still lists.
+    private var listedVoices: [ReadAloudVoice.Candidate] {
+        ReadAloudVoice.listed(voices, preferredLanguage: Locale.preferredLanguages.first ?? "en").filter { !$0.isNovelty }
+    }
+
+    private var voiceLine: String {
+        if voiceChoice == ReadAloudVoice.systemChoice { return "Your Mac's system voice" }
+        if let saved = listedVoices.first(where: { $0.id == voiceChoice })
+            ?? voices.first(where: { $0.id == voiceChoice }) {
+            return ReadAloudVoice.shortLabel(saved, among: listedVoices)
+        }
+        return ReadAloudVoice.automatic(voices).map { "Automatic · \($0.name)" } ?? "Automatic"
+    }
+
+    @ViewBuilder private var voiceChoiceRow: some View {
+        row("Voice", help: "The voice Wisp reads answers with. It stays on this Mac. The same choice is in All settings › General › Voice.") {
+            Text(voiceLine)
+        } control: {
+            HStack(spacing: 6) {
+                pillButton(voicePreview.speaking ? "Stop" : "Hear it") {
+                    if voicePreview.speaking { voicePreview.stop() } else { voicePreview.play(choice: voiceChoice, rate: voiceRate) }
+                }
+                .accessibilityLabel(voicePreview.speaking ? "Stop the sample" : "Hear this voice")
+                pillButton(choosingVoice ? "Close" : "Change") { choosingVoice.toggle() }
+                    .accessibilityLabel(choosingVoice ? "Close the voice list" : "Change the voice")
+            }
+        }
+        if choosingVoice { voiceList.revealInPanel("voice-list") }
+    }
+
+    private var voiceList: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ScrollView(.vertical) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 4)], spacing: 4) {
+                    voiceChip(ReadAloudVoice.automatic(voices).map { "Automatic · \($0.name)" } ?? "Automatic", id: "")
+                    voiceChip("System voice", id: ReadAloudVoice.systemChoice)
+                    ForEach(listedVoices, id: \.id) { voice in
+                        voiceChip(ReadAloudVoice.shortLabel(voice, among: listedVoices), id: voice.id)
+                    }
+                }
+            }
+            .frame(height: 104 * Theme.textScale)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    voiceDownloadNote
+                    Spacer(minLength: 8)
+                    voiceDownloadButton
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    voiceDownloadNote
+                    voiceDownloadButton
+                }
+            }
+        }
+        .padding(.horizontal, 14).padding(.bottom, 11)
+    }
+
+    private var voiceDownloadNote: some View {
+        Text(ReadAloudVoice.onlyBasicVoices(listedVoices)
+             ? "These are all basic voices. Natural ones are a free download in System Settings."
+             : "More natural voices are a free download in System Settings.")
+            .font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(minWidth: 150, idealWidth: 150, alignment: .leading)
+            .help("System Settings › Accessibility › Spoken Content › System Voice › Manage Voices.")
+    }
+
+    private var voiceDownloadButton: some View {
+        pillButton("Get voices") {
+            if let url = URL(string: ReadAloudVoice.downloadPane) { Permissions.openFix(url) }
+        }
+        .accessibilityLabel("Get more voices in System Settings")
+    }
+
+    private func voiceChip(_ title: String, id: String) -> some View {
+        let chosen = voiceChoice == id
+            || (id.isEmpty && voiceChoice != ReadAloudVoice.systemChoice && !voices.contains { $0.id == voiceChoice })
+        return Button {
+            voiceChoice = id
+            voicePreview.stop()
+        } label: {
+            Text(title).lineLimit(1).font(.wisp(.body, weight: chosen ? .semibold : .regular))
+                .foregroundStyle(chosen ? Color.black : Theme.textPrimary)
+                .frame(maxWidth: .infinity).padding(.vertical, 4).padding(.horizontal, 6)
+                .background(RoundedRectangle(cornerRadius: 7).fill(chosen ? Theme.textPrimary : Theme.chipFill))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(chosen ? [.isButton, .isSelected] : .isButton)
+    }
+
+    /// How fast it reads. Chips, like the rows around it: the panel is non-activating,
+    /// and a slider's drag is untested there. All settings has the slider.
+    private var speakingRateRow: some View {
+        let multiple = ReadAloudVoice.rateMultiple(voiceRate)
+        return row("Speaking rate", help: "How fast Wisp reads answers aloud. Hear it with the Voice row's button.") {
+            Text(ReadAloudVoice.rateText(multiple))
+        } control: {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 4) { rateChips(ReadAloudVoice.rateChoices, multiple: multiple) }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 4) { rateChips(Array(ReadAloudVoice.rateChoices.prefix(3)), multiple: multiple) }
+                    HStack(spacing: 4) { rateChips(Array(ReadAloudVoice.rateChoices.dropFirst(3)), multiple: multiple) }
+                }
+            }
+        }
+    }
+
+    private func rateChips(_ choices: [Double], multiple: Double) -> some View {
+        ForEach(choices, id: \.self) { choice in
+            let on = abs(choice - multiple) < 0.001
+            pillButton(choice == 1 ? "Normal" : "\(Int((choice * 100).rounded()))%", primary: on) { voiceRate = choice }
+                .accessibilityLabel(ReadAloudVoice.rateText(choice))
+                .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
+        }
+    }
+
+    /// A pill that shows which of two is on.
+    private func choiceChip(_ title: String, chosen: Bool, action: @escaping () -> Void) -> some View {
+        pillButton(title, primary: chosen, action: action)
+            .accessibilityAddTraits(chosen ? [.isButton, .isSelected] : .isButton)
     }
 
     @ViewBuilder private var dailySummaryRow: some View {
@@ -505,6 +737,18 @@ enum NotchSettingsChrome {
     }
 
     static var hairline: some View { Rectangle().fill(Theme.hairline).frame(height: 1) }
+
+    /// How the page closes, so it can be found at a glance. Esc does the same.
+    static func doneButton(action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text("Done").font(.wisp(.callout, weight: .semibold)).foregroundStyle(Color.black)
+                .padding(.horizontal, 14).padding(.vertical, 5)
+                .background(Capsule().fill(Color.white))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+    }
 
     static func pill(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {

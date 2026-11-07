@@ -81,6 +81,51 @@ def test_same_start_and_end_is_an_empty_window():
     assert not U.Hours(0, 0).contains(0)
 
 
+def test_no_chosen_brief_times_by_default(home):
+    assert U.chosen_brief_times() is None
+    snapshot = U.snapshot()
+    assert snapshot["brief_times"] is None and snapshot["max_brief_times"] == U.MAX_BRIEF_TIMES
+
+
+def test_chosen_brief_times_save_sorted_and_clear(home):
+    U.save(brief_times=[780, 540, 540])
+    assert U.chosen_brief_times() == (540, 780)
+    assert U.snapshot()["brief_times"] == [540, 780]
+    U.save(brief_times=[])
+    assert U.chosen_brief_times() is None
+
+
+def test_chosen_brief_times_leave_the_hours_question_and_settings_alone(home):
+    U.save(brief_times=[540])
+    assert U.is_set() is False, "choosing Brief times doesn't answer the hours question"
+    U.save(working={"start_minute": 600, "end_minute": 900})
+    assert U.chosen_brief_times() == (540,), "saving the hours keeps the times"
+    assert U.is_set() is True
+
+
+@pytest.mark.parametrize("bad", [[1440], [-1], ["540"], [5.5], [True], list(range(0, 9 * 60, 60))])
+def test_bad_chosen_brief_times_are_refused_and_change_nothing(home, bad):
+    U.save(brief_times=[540])
+    with pytest.raises(ValueError):
+        U.save(brief_times=bad)
+    assert U.chosen_brief_times() == (540,)
+
+
+@pytest.mark.parametrize("stored", ["nine", [9999], [], {"a": 1}, list(range(0, 900, 60))])
+def test_damaged_chosen_brief_times_read_as_the_default_day(home, stored):
+    U.save(brief_times=[540])
+    data = json.loads(U.path().read_text())
+    data["brief_times"] = stored
+    U.path().write_text(json.dumps(data))
+    assert U.chosen_brief_times() is None
+
+
+def test_erasing_about_you_clears_chosen_brief_times(home):
+    U.save(brief_times=[540])
+    U.clear()
+    assert U.chosen_brief_times() is None
+
+
 def test_day_span_never_wraps():
     assert U.Hours(540, 1020).day_span() == (540, 1020)
     assert U.Hours(22 * 60, 6 * 60).day_span() == (0, 6 * 60), "the longer side of a night shift"
@@ -280,7 +325,8 @@ def test_skipping_the_step_saves_nothing_and_changes_nothing(home):
     """Skip in the flow makes no request at all, so this is the state it leaves."""
     assert U.snapshot() == {"working": {"start_minute": 540, "end_minute": 1020, "days": [0, 1, 2, 3, 4]},
                             "quiet": {"start_minute": 1320, "end_minute": 480},
-                            "offer_moves": True, "is_set": False}
+                            "offer_moves": True, "is_set": False,
+                            "brief_times": None, "max_brief_times": U.MAX_BRIEF_TIMES}
 
 
 def test_saving_one_part_keeps_the_rest_and_counts_as_answered(home):

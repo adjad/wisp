@@ -52,6 +52,9 @@ WEEKDAYS = (0, 1, 2, 3, 4)
 _FILE_VERSION = 1
 _MIGRATION_ROWS = 30            # recent Day rows considered when seeding working hours
 _PLAN_TONIGHT_END = MINUTES_PER_DAY  # "Plan tonight" stretches one day to midnight
+# Chosen Brief times: each is a build on the resident model, which the default day
+# keeps to four (service/brief_pace.py), so a list can't turn into hourly rebuilds.
+MAX_BRIEF_TIMES = 8
 _lock = threading.RLock()
 
 
@@ -147,6 +150,16 @@ def _quiet(section: dict) -> Hours:
     """Quiet hours run every day; start == end is allowed and means none."""
     return Hours(_minute(section.get("start_minute"), upper=MINUTES_PER_DAY - 1),
                  _minute(section.get("end_minute"), upper=MINUTES_PER_DAY - 1), ALL_DAYS)
+
+
+def _brief_times(value) -> tuple[int, ...]:
+    """Minutes after midnight, in clock order, without repeats. At least one."""
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("Brief times must be a list of minutes.")
+    minutes = tuple(sorted({_minute(item, upper=MINUTES_PER_DAY - 1) for item in value}))
+    if not 1 <= len(minutes) <= MAX_BRIEF_TIMES:
+        raise ValueError(f"Choose between 1 and {MAX_BRIEF_TIMES} Brief times.")
+    return minutes
 
 
 def _section(data: dict, name: str, parse, default: Hours) -> Hours:
@@ -325,6 +338,16 @@ def in_working_hours(moment: datetime | None = None) -> bool:
     return working_hours().contains_time(_moment(moment))
 
 
+def chosen_brief_times() -> tuple[int, ...] | None:
+    """The times the person chose for the Brief to update, or None: the default
+    day, spread across the working hours (brief_pace.brief_times). Bad data is None."""
+    try:
+        chosen = _load().get("brief_times")
+        return None if chosen is None else _brief_times(chosen)
+    except Exception:                                # noqa: BLE001 - reading never raises
+        return None
+
+
 def offers_moves() -> bool:
     """Whether Wisp may offer to move an event that falls outside working hours."""
     try:
@@ -355,7 +378,9 @@ def snapshot() -> dict:
     return {"working": {"start_minute": working.start_minute, "end_minute": working.end_minute,
                         "days": list(working.days)},
             "quiet": {"start_minute": quiet.start_minute, "end_minute": quiet.end_minute},
-            "offer_moves": offers_moves(), "is_set": is_set()}
+            "offer_moves": offers_moves(), "is_set": is_set(),
+            "brief_times": list(chosen) if (chosen := chosen_brief_times()) else None,
+            "max_brief_times": MAX_BRIEF_TIMES}
 
 
 # ---------------------------------------------------------------------------
@@ -363,9 +388,10 @@ def snapshot() -> dict:
 
 
 def save(*, working: dict | None = None, quiet: dict | None = None, offer_moves: bool | None = None,
-         now: float | None = None) -> dict:
+         brief_times: list | None = None, now: float | None = None) -> dict:
     """Save what was given and keep the rest. Raises ValueError on a bad value,
-    leaving the file as it was."""
+    leaving the file as it was. An empty `brief_times` goes back to the default day.
+    It says nothing about the hours question, so alone it doesn't answer it."""
     if offer_moves is not None and type(offer_moves) is not bool:
         raise ValueError("offer_moves must be true or false.")
     with _lock:
@@ -379,7 +405,14 @@ def save(*, working: dict | None = None, quiet: dict | None = None, offer_moves:
             data["quiet"] = {"start_minute": parsed.start_minute, "end_minute": parsed.end_minute}
         if offer_moves is not None:
             data["offer_moves"] = offer_moves
-        data.update(version=_FILE_VERSION, set=True, updated_at=time.time() if now is None else now)
+        if brief_times is not None:
+            if brief_times:
+                data["brief_times"] = list(_brief_times(brief_times))
+            else:
+                data.pop("brief_times", None)
+        if working is not None or quiet is not None or offer_moves is not None or brief_times is None:
+            data["set"] = True
+        data.update(version=_FILE_VERSION, updated_at=time.time() if now is None else now)
         _write(data)
     return snapshot()
 

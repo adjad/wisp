@@ -103,7 +103,7 @@ enum QuickSettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "Full access, Learn my routines, Mac permissions and Setup"
         case .brief: return "Daily summary and Brief updates"
-        case .voice: return "Read answers aloud and Text size"
+        case .voice: return "Read answers aloud, Voice, Speaking rate and Text size"
         case .power: return "Save power and Save memory"
         case .advanced: return "Reply details and Model memory"
         }
@@ -251,8 +251,13 @@ enum QuickSettingsText {
         "About 4 times a day, " + (hours ?? "across your working hours")
     }
 
-    static let briefUpdatesHelp = "Wisp updates your Brief about 4 times a day, spread across your "
-        + "working hours. Change them in the Wisp window, under About you › Your hours."
+    /// `times` is "9 AM, 1 PM and 5 PM".
+    static func briefUpdates(chosen times: String) -> String { "At " + times }
+
+    static let briefUpdatesHelp = "Automatic updates your Brief about 4 times a day, spread across your "
+        + "working hours (About you › Your hours in the Wisp window). Or choose the times yourself. Either "
+        + "way a chat comes first: an update that's due waits until you've stopped chatting for a few "
+        + "minutes, and it's never skipped."
 
     /// Model memory's line, and how full the bar is (nil hides it): only from
     /// sizes the engine measured.

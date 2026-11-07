@@ -42,8 +42,7 @@ struct NotchPermissionsView: View {
                     .font(.wisp(.headline, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
-                Button("Done") { model.closePermissionPage() }
-                    .buttonStyle(.plain).font(.wisp(.callout)).foregroundStyle(Theme.textSecondary)
+                NotchSettingsChrome.doneButton { model.closePermissionPage() }
                     .keyboardShortcut(.cancelAction)
                     .help("Close this page and go back to \(model.showingQuickSettings ? "Settings" : model.tab.stripTab.title)")
             }

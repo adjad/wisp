@@ -81,6 +81,24 @@ struct UserHoursChecks {
         check(request == "Move this calendar event to Tuesday, Nov 10 at 9:00 AM, keeping it 45 minutes: "
               + "“Thesis 'review'” on Monday, Nov 9 at 7:30 PM [calendar event EK-1]", "the Ask request: \(request)")
 
+        // Chosen Brief times: nil is the default day, and bad rows never count.
+        check(UserHours(json: [:]).briefTimes == nil, "no chosen times by default")
+        check(UserHours(json: ["brief_times": NSNull()]).briefTimes == nil, "null is the default day")
+        check(UserHours(json: ["brief_times": [540, 9999, 540, 60]]).briefTimes == [60, 540], "chosen times parse in order")
+        check(UserHours(json: ["brief_times": [Int]()]).briefTimes == nil, "none chosen is the default day")
+        check(UserHours().suggestedBriefTimes == [540, 720, 840, 1020], "the default day to the nearest hour: \(UserHours().suggestedBriefTimes)")
+        var chosenHours = UserHours()
+        chosenHours.briefTimes = [540]
+        check(chosenHours.briefTimes(toggling: 540) == nil, "the last time can't be switched off")
+        check(chosenHours.briefTimes(toggling: 600) == [540, 600], "a time switches on")
+        chosenHours.briefTimes = [60, 120, 180, 240, 300, 360, 420, 480]
+        check(chosenHours.briefTimes(toggling: 600) == nil, "no more than the limit")
+        check(chosenHours.briefTimes(toggling: 60)?.count == 7, "one off at the limit")
+        check(chosenHours.patch(timezone: "UTC")["brief_times"] == nil, "saving the hours never touches the chosen times")
+        check(UserHours.clockList([540]) == "9 AM", "one time")
+        check(UserHours.clockList([540, 780]) == "9 AM and 1 PM", "two times")
+        check(UserHours.clockList([540, 780, 1020]) == "9 AM, 1 PM and 5 PM", "three times")
+
         print("UserHoursChecks: \(count) checks passed")
     }
 }

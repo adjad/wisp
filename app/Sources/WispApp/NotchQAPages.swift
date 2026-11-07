@@ -96,7 +96,8 @@ enum NotchQAPages {
 
     private static func settings(_ name: String, _ layout: SurfaceLayout, header: CGFloat,
                                  section: QuickSettingsSection, known: Bool = true,
-                                 picking: QuickSettingsView.BriefSlot? = nil, width: CGFloat? = nil) {
+                                 picking: QuickSettingsView.BriefSlot? = nil, chosenTimes: [Int]? = nil,
+                                 choosingVoice: Bool = false, width: CGFloat? = nil) {
         // A new user: no account yet, and a client to connect with.
         let google = NotchGoogleModel()
         if !known {
@@ -114,7 +115,8 @@ enum NotchQAPages {
         kept.append(loader)
         add(name, layout, header: header, width: width) { cap in
             QuickSettingsView(model: model, settings: loader, refreshes: false, cap: cap, section: section,
-                              picking: picking, workingHours: "9 AM to 5 PM", google: google)
+                              picking: picking, hours: { var hours = UserHours(); hours.briefTimes = chosenTimes; return hours }(),
+                              choosingVoice: choosingVoice, google: google)
         }
     }
 
@@ -137,12 +139,18 @@ enum NotchQAPages {
                 }
                 settings("settings-\(screen)-general-new-user", l, header: header, section: .general, known: false)
                 settings("settings-\(screen)-brief-hours", l, header: header, section: .brief, picking: .morning)
+                settings("settings-\(screen)-brief-chosen", l, header: header, section: .brief, chosenTimes: [540, 780, 1020])
+                settings("settings-\(screen)-brief-chosen-hours", l, header: header, section: .brief, picking: .morning,
+                         chosenTimes: [540, 780, 1020])
+                settings("settings-\(screen)-voice-list", l, header: header, section: .voice, choosingVoice: true)
             }
             // The panel's 320 pt floor.
             let small = layout(1352, 878)
             permissions("permissions-320-shot", small, header: header, focus: nil, states: shot, width: 320)
             settings("settings-320-general", small, header: header, section: .general, width: 320)
             settings("settings-320-voice", small, header: header, section: .voice, width: 320)
+            settings("settings-320-brief-chosen", small, header: header, section: .brief, chosenTimes: [540, 780, 1020], width: 320)
+            settings("settings-320-voice-list", small, header: header, section: .voice, choosingVoice: true, width: 320)
 
             // A CappedScroll learns its content's height over a pass or two.
             for _ in 0..<3 {

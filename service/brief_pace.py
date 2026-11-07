@@ -24,10 +24,14 @@ IMPORTANT rules:
   "light", a cycle with no model call (cycle.run_cycle(light=True)), and the mail
   rows already show new mail in plain sentences. A time missed while the Mac was
   asleep is caught up once, by one build.
+- The person can choose the times instead (user_hours.chosen_brief_times, the
+  notch's Settings > Brief). They replace the spread across the working hours and
+  nothing else: every rule here still holds, so a chosen time that lands in a chat
+  waits like any build, and is never lost.
 - Quiet hours are not gated: the user asked that background work carries on as it
   does while they sleep. "as_is" is the path as it was before this cap, with the
   chat and gap rules above. Nothing in a cycle alerts anyone (it only tells an
-  open app to re-read).
+  open app to re-read). A chosen time in quiet hours builds at that time as well.
 - A new install, or a Brief the model hasn't read for a day, is also "as_is": it
   needs its build now, and a model outage still shows to-dos by rule.
 - "Analyze now" and connecting a Google account are the user asking: they never
@@ -126,7 +130,18 @@ def brief_times(start_minute: int = DEFAULT_START_MINUTE, end_minute: int = DEFA
     return sorted({round(start_minute + span * index / steps) % 1440 for index in range(max(1, builds))})
 
 
+def _chosen_times() -> tuple[int, ...] | None:
+    try:
+        from service.user_hours import chosen_brief_times
+        return chosen_brief_times()
+    except Exception:  # noqa: BLE001 — unreadable: the default day
+        return None
+
+
 def todays_brief_times() -> list[int]:
+    chosen = _chosen_times()
+    if chosen:
+        return list(chosen)
     try:
         from service.user_hours import working_hours
         hours = working_hours()
@@ -169,13 +184,17 @@ def automatic_plan(now: float | None = None, state: dict | None = None) -> str:
     rules above). `state` is the proactive store's."""
     now = time.time() if now is None else now
     state = state or {}
-    if _in_quiet_hours(now) or _in_setup(now):
+    quiet = _in_quiet_hours(now)
+    # A chosen time in quiet hours isn't left to the night's idle refresh.
+    if (quiet and not _chosen_times()) or _in_setup(now):
         return "as_is"
     model_as_of = state.get("model_as_of")
     if not _is_stamp(model_as_of) or not 0 <= now - model_as_of < LONG_ABSENCE_S:
         return "as_is"
     stamps = [stamp for stamp in (state.get("build_at"), state.get("built_for")) if _is_stamp(stamp)]
-    return "build" if slot_due(max(stamps) if stamps else None, now) else "light"
+    if slot_due(max(stamps) if stamps else None, now):
+        return "build"
+    return "as_is" if quiet else "light"
 
 
 def between_builds(now: float | None = None) -> bool:

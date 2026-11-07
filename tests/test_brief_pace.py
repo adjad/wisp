@@ -192,6 +192,91 @@ def test_a_daily_summary_waits_for_the_chat(monkeypatch):
     assert asyncio.run(go()) is not None and run.await_count == 1
 
 
+def _chose(monkeypatch, *minutes):
+    from service import user_hours
+    monkeypatch.setattr(user_hours, "chosen_brief_times", lambda: tuple(minutes) or None)
+
+
+def _at(hour: int, minute: int = 0) -> float:
+    return datetime(2026, 11, 4, hour, minute).timestamp()
+
+
+def test_chosen_times_replace_the_spread_across_working_hours(monkeypatch):
+    _chose(monkeypatch, 8 * 60, 13 * 60)
+    assert P.todays_brief_times() == [8 * 60, 13 * 60]
+
+
+def test_no_chosen_times_keeps_the_default_day(monkeypatch):
+    _chose(monkeypatch)
+    from service.user_hours import working_hours
+    hours = working_hours()
+    assert P.todays_brief_times() == P.brief_times(hours.start_minute, hours.end_minute)
+
+
+def test_a_chosen_time_makes_the_day_build_and_nothing_else_does(monkeypatch):
+    _chose(monkeypatch, 13 * 60)
+    monkeypatch.setattr(P, "_in_quiet_hours", lambda now: False)
+    monkeypatch.setattr(P, "_in_setup", lambda now: False)
+    now = _at(13, 5)
+    state = {"model_as_of": now - 3600, "build_at": _at(11)}
+    assert P.automatic_plan(now, state) == "build"
+    assert P.automatic_plan(now, {**state, "build_at": _at(13, 1)}) == "light", "covered once built"
+    # Between chosen times new mail never starts the model, though 2:20 is a default slot.
+    later = _at(14, 30)
+    assert P.automatic_plan(later, {"model_as_of": later - 3600, "build_at": _at(13, 1)}) == "light"
+
+
+def test_a_chosen_time_that_lands_in_a_chat_waits_and_is_not_lost(monkeypatch):
+    _chose(monkeypatch, 13 * 60)
+    monkeypatch.setattr(P, "_in_quiet_hours", lambda now: False)
+    monkeypatch.setattr(P, "_in_setup", lambda now: False)
+    now = _at(13)
+    state = {"model_as_of": now - 3600, "build_at": _at(11)}
+    assert P.automatic_plan(now, state) == "build"
+    _chatted(5)
+    assert not P.may_start("cycle"), "a chat comes first"
+    # Still owed, an hour later, once the chat is over.
+    later = _at(14)
+    assert P.automatic_plan(later, {**state, "model_as_of": later - 3600}) == "build"
+    _chatted(P.CHAT_QUIET_S + 1)
+    assert P.may_start("cycle")
+
+
+def test_a_chosen_time_in_quiet_hours_builds_at_that_time(monkeypatch):
+    _chose(monkeypatch, 3 * 60)
+    monkeypatch.setattr(P, "_in_quiet_hours", lambda now: True)
+    monkeypatch.setattr(P, "_in_setup", lambda now: False)
+    now = _at(3, 5)
+    assert P.automatic_plan(now, {"model_as_of": now - 3600, "build_at": _at(1)}) == "build"
+    # Covered: the night goes on as it always has, because background work isn't gated.
+    assert P.automatic_plan(now, {"model_as_of": now - 3600, "build_at": _at(3, 1)}) == "as_is"
+
+
+def test_a_long_absence_stays_as_is_even_with_a_chosen_time(monkeypatch):
+    _chose(monkeypatch, 3 * 60)
+    monkeypatch.setattr(P, "_in_setup", lambda now: False)
+    now = _at(3, 5)
+    state = {"model_as_of": now - P.LONG_ABSENCE_S - 1, "build_at": _at(1)}
+    for quiet in (True, False):
+        monkeypatch.setattr(P, "_in_quiet_hours", lambda now, quiet=quiet: quiet)
+        assert P.automatic_plan(now, state) == "as_is"
+
+
+def test_quiet_hours_without_chosen_times_stay_as_they_were(monkeypatch):
+    _chose(monkeypatch)
+    monkeypatch.setattr(P, "_in_quiet_hours", lambda now: True)
+    monkeypatch.setattr(P, "_in_setup", lambda now: False)
+    now = _at(3)
+    assert P.automatic_plan(now, {"model_as_of": now - 3600, "build_at": _at(1)}) == "as_is"
+
+
+def test_setup_stays_as_is_even_with_chosen_times(monkeypatch):
+    _chose(monkeypatch, 13 * 60)
+    monkeypatch.setattr(P, "_in_quiet_hours", lambda now: True)
+    monkeypatch.setattr(P, "_in_setup", lambda now: True)
+    assert P.automatic_plan(_at(13), {}) == "as_is"
+
+
 def test_settings_says_how_often_the_brief_really_updates():
     """Quick settings said "Composed twice a day" long after the Brief moved to
     about four builds across the working hours. The row has to track the number."""
