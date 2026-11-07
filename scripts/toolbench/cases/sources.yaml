@@ -89,7 +89,7 @@
 # ---------------------------------------------------------------------------- person across everything
 - id: src_person_friend
   split: heldout_sources
-  prompt: "fill me in on {friend_first}"
+  prompt: "pull together everything going on with {friend_first}"
   forbid: *w
   max_calls: 8
   sources:
@@ -170,7 +170,7 @@
 
 - id: src_prep_budget_meeting
   split: heldout_sources
-  prompt: "the {budget_event} is coming up fast, how do I get ready?"
+  prompt: "the {budget_event} is coming up fast, what should I line up first?"
   forbid: *w
   max_calls: 8
   sources:
@@ -183,7 +183,7 @@
 
 - id: src_prep_mom_lunch
   split: heldout_sources
-  prompt: "lunch at my mom's is coming up, how do I get set for it?"
+  prompt: "lunch at my mom's is coming up, anything I should sort out beforehand?"
   forbid: *w
   max_calls: 8
   sources:
@@ -211,7 +211,7 @@
 # ---------------------------------------------------------------------------- what is owed or due
 - id: src_owe_payments
   split: heldout_sources
-  prompt: "what bills am I on the hook for right now?"
+  prompt: "which bills have I yet to pay at the moment?"
   forbid: *w
   max_calls: 8
   sources:
@@ -276,7 +276,7 @@
 
 - id: src_hit_gift
   split: heldout_sources
-  prompt: "what did I plan to get {friend_first} for a gift?"
+  prompt: "what gift idea did I land on for {friend_first}?"
   forbid: *w
   max_calls: 8
   sources:
@@ -481,7 +481,7 @@
 
 - id: src_single_weather
   split: heldout_sources
-  prompt: "is it jacket weather in {city} tomorrow?"
+  prompt: "will {city} be cold enough for a jacket tomorrow?"
   forbid: *w
   max_calls: 6
   sources:
@@ -494,7 +494,7 @@
 
 - id: src_single_week_waiting
   split: heldout_sources
-  prompt: "run through my week for me, and who's expecting an answer?"
+  prompt: "walk me through the coming week, and who's expecting an answer?"
   forbid: *w
   max_calls: 6
   sources:
@@ -520,7 +520,7 @@
 
 - id: src_single_calendar_dentist
   split: heldout_sources
-  prompt: "what time is the dentist?"
+  prompt: "when's my dentist visit?"
   forbid: *w
   max_calls: 6
   sources:
