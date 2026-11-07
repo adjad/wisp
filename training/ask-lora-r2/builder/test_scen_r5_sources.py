@@ -22,7 +22,7 @@ from harness import Final, is_write  # noqa: E402
 
 EMOJI = re.compile("[\U0001F300-\U0001FAFF☀-➿⭐️‍]")
 TABLE = re.compile(r"^\s*\|", re.M)
-MULTI = ("topic", "person", "prep", "owe", "one_hit", "nothing", "conflict", "weather")
+MULTI = ("topic", "person", "prep", "owe", "one_hit", "nothing", "conflict", "weather", "failed", "conflict_amount")
 
 
 @pytest.fixture(scope="module")
@@ -56,7 +56,7 @@ def test_every_final_is_written_by_base_and_nothing_writes(rows):
 
 def test_turn_count_and_every_shape_is_present(rows):
     total = sum(turns(s) for s in rows)
-    assert 280 <= total <= 350, total
+    assert 280 <= total <= 400, total
     per = Counter(s.shape for s in rows)
     for shape, quota in M.QUOTA.items():
         assert per[shape] >= (quota if shape != "single" else 24), (shape, per[shape])
@@ -209,3 +209,46 @@ def test_tool_names_are_real_tools_in_the_pinned_service():
     names = set(REGISTRY) if not hasattr(REGISTRY, "names") else set(REGISTRY.names())
     for tool in M.TOOL_SOURCE:
         assert tool in names, tool
+
+
+# ---- the gold contract (2026-11-07 audit): each row carries what its answer has to say, for the chooser and the validator
+def test_every_row_has_a_contract(rows):
+    for sc in rows:
+        ref = sc.base_ref
+        assert ref["kind"] == "all_sources" and ref["read"], sc.prompt
+        for key in ("hit", "empty", "failed", "conflict", "events", "prohibit", "all_of", "must_say_absent"):
+            assert key in ref, (key, sc.prompt)
+        assert ref["must_say_absent"] == (sc.shape == "nothing"), sc.prompt
+
+
+def test_contract_facts_are_in_the_tool_results(rows):
+    for sc in rows:
+        text = " ".join(sc.results).lower()
+        for source, facts in sc.base_ref["hit"].items():
+            assert any(f.lower() in text for f in facts), (sc.prompt, source, facts)
+
+
+def test_single_rows_need_facts_and_forbid_what_nothing_read(rows):
+    singles = shape_of(rows, "single")
+    assert sum(bool(s.base_ref["hit"] or s.base_ref["all_of"]) for s in singles) == len(singles)
+    assert sum(bool(s.base_ref["prohibit"]) for s in singles) >= 8
+    for sc in singles:
+        text = " ".join(sc.results).lower()
+        assert not any(p.lower() in text for p in sc.base_ref["prohibit"]), sc.prompt
+
+
+def test_conflict_rows_name_both_values(rows):
+    for sc in shape_of(rows, "conflict") + shape_of(rows, "conflict_amount"):
+        c = sc.base_ref["conflict"]
+        text = " ".join(sc.results)
+        assert c["old"] in text and c["new"] in text and c["old"] != c["new"], sc.prompt
+
+
+def test_failed_rows_show_the_hosts_own_words(rows):
+    failed = shape_of(rows, "failed")
+    assert len({next(iter(s.base_ref["failed"])) for s in failed}) >= 4
+    for sc in failed:
+        source = next(iter(sc.base_ref["failed"]))
+        assert source not in sc.base_ref["hit"] and source not in sc.base_ref["read"], sc.prompt
+        assert len(sc.base_ref["hit"]) >= 1, sc.prompt
+        assert any(("can't read" in r or "could not check" in r or "isn't connected" in r) for r in sc.results), sc.prompt

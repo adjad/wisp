@@ -20,6 +20,10 @@ the out dir (so it also resumes under another shard count).
     gen_finals.py --partial partial.jsonl --out-dir raw --base <model dir> --gpu 3 --shard 3/8 --k 2
     gen_finals.py ... --ids need.ids --k 6          # top-up: samples 2..5 for the ids in need.ids only
 
+``--targets calls`` samples base at the tool-call steps instead (traces.*.jsonl). ``choose_traces.py`` keeps base's own
+thought only where base's own call matches the scripted one. Each run writes ``generation.<targets>.json``: model files,
+template, code hashes and settings, which are the provenance of every sample in that directory.
+
 Batching is off (``--batch 1``): one sequence at a time per GPU. ``--batch N`` pads on the left, sorts a window of
 prompts by length and runs N together; run ``--selfcheck`` first to confirm batched greedy decoding equals one-at-a-time
 decoding on the box before using it. Run through run_finals.sh.
@@ -69,11 +73,17 @@ def has_media(row: dict) -> bool:
     return False
 
 
-def select_rows(rows: list[dict]) -> tuple[list[dict], list[str]]:
-    """(final-answer rows in partial order, ids skipped for media)."""
+def is_call(row: dict) -> bool:
+    last = (row.get("messages") or [{}])[-1]
+    return last.get("role") == "assistant" and bool(last.get("tool_calls"))
+
+
+def select_rows(rows: list[dict], targets: str = "finals") -> tuple[list[dict], list[str]]:
+    """(rows of the target kind in partial order, ids skipped for media)."""
+    keep = is_call if targets == "calls" else is_final
     out, skipped = [], []
     for r in rows:
-        if not is_final(r):
+        if not keep(r):
             continue
         if has_media(r):
             skipped.append(r["meta"]["id"])
@@ -99,9 +109,9 @@ def read_jsonl(path):
                     continue          # a line cut off by a kill
 
 
-def done_pairs(out_dir: str) -> set[tuple[str, int]]:
+def done_pairs(out_dir: str, prefix: str = "finals") -> set[tuple[str, int]]:
     done = set()
-    for p in sorted(glob.glob(os.path.join(out_dir, "finals.*.jsonl"))):
+    for p in sorted(glob.glob(os.path.join(out_dir, f"{prefix}.*.jsonl"))):
         for d in read_jsonl(p):
             if not d.get("error") and "id" in d and "k" in d:
                 done.add((d["id"], d["k"]))
@@ -214,12 +224,36 @@ def seed_for(items: list) -> int:
 
 
 # ------------------------------------------------------------------ driver (generate_fn is injectable for tests)
+def sha256_file(path) -> str | None:
+    p = Path(path)
+    if not p.is_file():
+        return None
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def provenance(base: str, targets: str, attn: str, batch: int, k: int) -> dict:
+    """What every sample of this run came from: the model's files, the template, the code and the settings."""
+    import render
+    b = Path(base)
+    out = {"targets": targets, "model": MODEL, "base_dir": b.name, "sampling": SAMPLING, "max_new_tokens": MAX_NEW,
+           "stop_ids": list(STOP_IDS), "attn": attn, "batch": batch, "k": k,
+           "config_sha256": sha256_file(b / "config.json"), "weights_index_sha256": sha256_file(b / "model.safetensors.index.json"),
+           "template_sha256": sha256_file(b / "chat_template.jinja"), "tokenizer_sha256": sha256_file(b / "tokenizer.json"),
+           "gen_finals_sha256": sha256_file(__file__), "render_sha256": sha256_file(render.__file__),
+           "serving": "installed oMLX text path: prior in-turn reasoning dropped"}
+    return out
+
+
 def run(rows: list[dict], tok, generate_fn, out_dir: str, shard: int, nshards: int, k: int,
-        batch: int = 1, attn: str = "math", log=print) -> dict:
+        batch: int = 1, attn: str = "math", log=print, prefix: str = "finals") -> dict:
     """generate_fn(list of prompt id lists, seed) -> list of generated id lists (may carry trailing padding)."""
     os.makedirs(out_dir, exist_ok=True)
     mine = shard_rows(rows, shard, nshards)
-    done = done_pairs(out_dir)
+    done = done_pairs(out_dir, prefix)
     todo = todo_list(mine, k, done)
     log(f"shard {shard}/{nshards}: {len(mine)} prompts x {k} = {len(mine) * k}; "
         f"{sum(1 for r in mine for kk in range(k) if (r['meta']['id'], kk) in done)} done, {len(todo)} to go")
@@ -228,7 +262,7 @@ def run(rows: list[dict], tok, generate_fn, out_dir: str, shard: int, nshards: i
     for kk, r in todo:
         p = prompt_for(tok, r)
         items.append((kk, r, tok(p, add_special_tokens=False).input_ids, p.endswith(FORCED)))
-    path = os.path.join(out_dir, f"finals.s{shard}of{nshards}.jsonl")
+    path = os.path.join(out_dir, f"{prefix}.s{shard}of{nshards}.jsonl")
     t0, n, toks, errors = time.monotonic(), 0, 0, 0
     with open(path, "a", encoding="utf-8") as f:
         for grp in windows(items, batch):
@@ -341,6 +375,8 @@ def main(argv=None) -> int:
     ap.add_argument("--gpu", type=int, help="GPU index (sets HIP_VISIBLE_DEVICES and CUDA_VISIBLE_DEVICES)")
     ap.add_argument("--attn", default=os.environ.get("ATTN") or "math", choices=("sdpa", "math", "eager"))
     ap.add_argument("--batch", type=int, default=1)
+    ap.add_argument("--targets", default="finals", choices=("finals", "calls"),
+                    help="finals: answers; calls: base's own thought at each tool-call step (traces.*.jsonl)")
     ap.add_argument("--families", help="comma-separated meta.family values (default: all)")
     ap.add_argument("--ids", help="file of meta ids, one per line; other rows are skipped (top-up)")
     ap.add_argument("--limit", type=int, default=0, help="first N rows of this shard only (smoke test)")
@@ -349,7 +385,8 @@ def main(argv=None) -> int:
     if a.gpu is not None:                       # before torch is imported
         os.environ["HIP_VISIBLE_DEVICES"] = os.environ["CUDA_VISIBLE_DEVICES"] = str(a.gpu)
     shard, nshards = (int(x) for x in a.shard.split("/"))
-    rows, skipped = select_rows(list(read_jsonl(a.partial)))
+    rows, skipped = select_rows(list(read_jsonl(a.partial)), a.targets)
+    prefix = "traces" if a.targets == "calls" else "finals"
     if a.families:
         fams = set(a.families.split(","))
         rows = [r for r in rows if r["meta"]["family"] in fams]
@@ -369,8 +406,11 @@ def main(argv=None) -> int:
     if a.limit:
         rows = shard_rows(rows, shard, nshards)[:a.limit]
         shard, nshards = 0, 1
+    os.makedirs(a.out_dir, exist_ok=True)
+    with open(os.path.join(a.out_dir, f"generation.{a.targets}.json"), "w") as f:
+        json.dump(provenance(a.base, a.targets, a.attn, a.batch, a.k), f, indent=1)
     run(rows, tok, lambda p, s: gen(p, s), a.out_dir, shard, nshards, a.k, a.batch, a.attn,
-        log=lambda s: print(s, flush=True))
+        log=lambda s: print(s, flush=True), prefix=prefix)
     return 0
 
 

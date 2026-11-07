@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """r5's choose step over gen_finals.py's samples: r4's choose.py plus r5's own final checks.
 
-A sample passes when r4's ``choose.reject_reasons`` finds nothing AND ``final_problems_r5`` finds nothing AND the
-output carries no stray channel marker. The first passing sample by k is chosen per id, as in choose.py, and the
+A sample passes when r4's ``choose.reject_reasons`` finds nothing AND ``final_problems_r5`` finds nothing AND
+``source_contract.final_problems`` finds nothing (the row's gold contract and the facts in its tool results) AND the
+output carries no stray channel marker. On a row with a gold contract, an honest "I couldn't find any ..." after a read
+isn't a stall: the contract decides whether it's true. The first passing sample by k is chosen per id, as in choose.py, and the
 chosen file has the same format, so splice.py takes it unchanged.
 
 Only rows whose target is a final answer are considered. Per family it reports how many ids passed and how many stay
@@ -30,6 +32,7 @@ import tempfile
 from collections import Counter
 
 import choose  # noqa: E402  (r4)
+import source_contract  # noqa: E402  (shared with builder/validate.py)
 
 BASE_WRITES = "Base writes this answer."          # scen_r5_debuglog.BASE_WRITES
 # --- copied from builder/validate.py (final_problems_r5); test_gen_finals.py compares them when validate imports
@@ -70,34 +73,52 @@ def had_tool_call(row: dict) -> bool:
     return any(m.get("role") == "assistant" and m.get("tool_calls") for m in msgs[last_user + 1:])
 
 
+REJECTIONS: list[dict] = []          # one line per rejected sample, for the rejection manifest
+
+
 def make_reject(stall_ok_after_tool: bool = False):
     def reject(rec: dict, row: dict) -> list[str]:
         out = ORIG_REJECT(rec, row)
         tool = had_tool_call(row)
-        if stall_ok_after_tool and tool:
+        gold = row["meta"].get("gold") or {}
+        if tool and (stall_ok_after_tool or gold.get("kind") in ("all_sources", "memory_contrast")):
             out = [x for x in out if x != "stall"]
         if rec.get("channel_leak"):
             out.append("channel_leak")
         out += [k for k, _ in final_problems_r5(rec.get("content") or "", row["meta"], tool)]
+        out += [k for k, _ in source_contract.final_problems(rec.get("content") or "", row["meta"], row["messages"][:-1])]
+        if out:
+            REJECTIONS.append({"id": row["meta"]["id"], "family": row["meta"]["family"], "k": rec.get("k"), "reasons": out})
         return out
     return reject
+
+
+def gold_refs(rows: list[dict]) -> dict:
+    """session_chat_r4's recall facts now travel in meta.gold, so r5's chooser checks them without refs.py's map."""
+    refs = {r["meta"]["id"]: r["meta"]["gold"] for r in rows if (r["meta"].get("gold") or {}).get("ref") is not None}
+    return {i: {"kind": g["kind"], "ref": list(g["ref"]), "ok": list(g.get("ok") or [])} for i, g in refs.items()}
 
 
 def choose_r5(partial: str, raws: list[str], k=None, hash_check=True, refs=(), stall_ok_after_tool=False):
     """-> (final rows, chosen {id: record}, stats). choose.run's own stats plus the r5 report."""
     finals = [r for r in choose.read_jsonl(partial) if is_final(r)]
+    REJECTIONS.clear()
     tmp = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8")
+    tmp_refs = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8")
     try:
         for r in finals:
             tmp.write(json.dumps(r, ensure_ascii=False) + "\n")
         tmp.close()
+        json.dump(gold_refs(finals), tmp_refs)
+        tmp_refs.close()
         choose.reject_reasons = make_reject(stall_ok_after_tool)
         try:
-            _, chosen, stats = choose.run(tmp.name, raws, k, hash_check, list(refs))
+            _, chosen, stats = choose.run(tmp.name, raws, k, hash_check, [tmp_refs.name, *refs])
         finally:
             choose.reject_reasons = ORIG_REJECT
     finally:
         os.unlink(tmp.name)
+        os.unlink(tmp_refs.name)
     stats["r5"] = report(finals, chosen, stats)
     return finals, chosen, stats
 
@@ -163,6 +184,7 @@ def main(argv=None) -> int:
     ap.add_argument("--out-stats", required=True)
     ap.add_argument("--out-nopass-ids")
     ap.add_argument("--out-drop-ids")
+    ap.add_argument("--out-rejections", help="jsonl: id, family, k, reasons of every rejected sample")
     ap.add_argument("--k", type=int, default=None, help="only samples with k < K")
     ap.add_argument("--tool-names", help="JSON list of every live tool name (refs.py --registry-out)")
     ap.add_argument("--refs", action="append", default=[])
@@ -179,6 +201,10 @@ def main(argv=None) -> int:
                 f.write(json.dumps(chosen[r["meta"]["id"]], ensure_ascii=False) + "\n")
     with open(a.out_stats, "w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=False, indent=1)
+    if a.out_rejections:
+        with open(a.out_rejections, "w", encoding="utf-8") as f:
+            for r in REJECTIONS:
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
     for path, ids in ((a.out_nopass_ids, stats["r5"]["no_pass_ids"]), (a.out_drop_ids, stats["r5"]["drop_ids"])):
         if path:
             with open(path, "w") as f:

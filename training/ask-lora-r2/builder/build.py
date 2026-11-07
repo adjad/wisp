@@ -206,7 +206,8 @@ def main(only=None):
                               "recall_refs": list(getattr(sc, "recall_refs", ()) or ()),
                               "recall_absent": getattr(sc, "recall_absent", None),
                               "recall_ok": list(getattr(sc, "recall_ok", ()) or ()),
-                              "anchor_pos": getattr(sc, "anchor_pos", None)})
+                              "anchor_pos": getattr(sc, "anchor_pos", None),
+                              "gold": getattr(sc, "base_ref", None)})
             think_turn(examples[first_new:], metas[first_new:], failures)
     return examples, metas, failures, per_family_scen
 

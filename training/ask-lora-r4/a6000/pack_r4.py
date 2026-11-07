@@ -46,6 +46,20 @@ def die(msg: str):
     sys.exit(f"pack_r4: {msg}")
 
 
+def stats_problem(data: Path) -> str | None:
+    """r5: refuse a build whose status says it isn't finished, or whose stats no longer describe its rows. r4's own build has
+    no status field and is left alone. The audit found a dry package with 8,430 rows under a nested count of 8,873."""
+    stats = json.loads((data / "stats.json").read_text())
+    if "status" not in stats:
+        return None
+    if stats["status"] != "complete":
+        return f"{data} is {stats['status']}, not complete: base's answers are missing, so it can't be packed"
+    rows = count_lines(data / "train.jsonl") + count_lines(data / "valid.jsonl")
+    if stats.get("examples") != rows:
+        return f"stats.json says {stats.get('examples')} examples but the splits hold {rows}: run finish_r5.py"
+    return None
+
+
 def nonempty(p: Path) -> bool:
     return p.is_file() and p.stat().st_size > 0
 
@@ -182,6 +196,9 @@ def main() -> int:
         return 0
     grpo = pick_grpo_dir(a.grpo_dir)
     out = Path(a.out_dir)
+    problem = stats_problem(data)
+    if problem:
+        die(problem)
     out.mkdir(parents=True, exist_ok=True)
     zip_path, upload_json = out / "ask-lora-data.zip", out / "upload-zip.json"
 

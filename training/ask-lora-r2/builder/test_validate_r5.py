@@ -125,3 +125,33 @@ def test_r4_wording_is_unchanged_without_r5(monkeypatch):
     monkeypatch.delenv("ASK_LORA_R5", raising=False)
     plan = S.Plan(CUT_DAY)
     assert "and 2 more" in S.narrate_day(random.Random(1), plan) or "And 2 more" in S.narrate_day(random.Random(1), plan)
+
+
+# ---- the 2026-11-07 audit's probe: a generic reply on a question spanning several sources passed this validator
+_GOLD = {"kind": "all_sources", "shape": "topic", "hit": {"mail": ["Dr. Ahn"], "notes": ["night guard"]}, "empty": [], "read": ["mail", "notes"],
+         "events": [], "failed": {}, "conflict": None, "prohibit": [], "all_of": [], "must_say_absent": False}
+_MSGS = [{"role": "system", "content": "s"}, {"role": "user", "content": "anything about the dentist"},
+         {"role": "assistant", "content": "", "tool_calls": [{"id": "c", "type": "function", "function": {"name": "view_emails", "arguments": {}}}]},
+         {"role": "tool", "tool_call_id": "c", "content": "From Dr. Ahn: your visit is booked. Note: ask about the night guard."},
+         {"role": "assistant", "content": "x"}]
+
+
+def test_generic_answer_fails_final_validation():
+    meta = {"id": "all_sources_r5-000-s1", "family": "all_sources_r5", "gold": _GOLD}
+    keys = [k for k, _ in V.gold_problems_r5("Everything looks good. You are all set.", meta, _MSGS)]
+    assert "final:source:missing:mail" in keys and "final:source:missing:notes" in keys
+    assert "final:fact:invented_action" in keys
+
+
+def test_correct_answer_passes_final_validation():
+    meta = {"id": "all_sources_r5-000-s1", "family": "all_sources_r5", "gold": _GOLD}
+    assert V.gold_problems_r5("Dr. Ahn wrote that your visit is booked, and your note says to ask about the night guard.", meta, _MSGS) == []
+
+
+def test_a_contract_family_without_a_contract_fails():
+    keys = [k for k, _ in V.gold_problems_r5("Dr. Ahn wrote.", {"id": "a", "family": "all_sources_r5"}, _MSGS)]
+    assert keys == ["gold:missing"]
+
+
+def test_a_waiting_placeholder_isnt_judged_here():
+    assert V.gold_problems_r5(V.R5_PLACEHOLDER, {"id": "a", "family": "all_sources_r5", "gold": _GOLD}, _MSGS) == []

@@ -1166,7 +1166,7 @@ def _relay_send(rng, i):
                  "send receipt names the recipient (and the resolved number)")
     who, first, addr = pick(rng, [c for c in CONTACT_MAIL if c[0] != "Maya Chen"])
     subj, body, said = pick(rng, [("Meeting Thursday", f"Hi {first},\n\nCan we meet Thursday afternoon to go over the project?\n\nSam", "asking to meet Thursday afternoon about the project"),
-                                  ("Receipt", f"Hi {first},\n\nI sent the $30 for the gift.\n\nSam", "that i sent the $30 for the gift")])
+                                  ("Gift", f"Hi {first},\n\nI sent the $30 for the gift.\n\nSam", "that i sent the $30 for the gift")])
     prompt = pick(rng, [f"email {first} {said}", f"send an email to {first}, {said}"])
     final = fin(rng, f"Emailed {first} at {addr} with the subject “{subj}”.", f"The email to {first} ({addr}) went out: “{subj}”.",
                 f"Email to {addr} sent, subject “{subj}”.")

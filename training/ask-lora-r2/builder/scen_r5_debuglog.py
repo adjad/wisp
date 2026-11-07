@@ -81,6 +81,8 @@ class Ctx:
     channel_asked: bool = False
     offer: tuple | None = None
     draft: str = ""
+    draft_read: str = ""     # the plan read behind ``draft`` when no earlier reply shows it, so a resend has to read it again
+    last_channel: str = ""   # how the last send went, so "as a text" after a text isn't taken for a switch
 
 
 def load_seeds():
@@ -179,7 +181,7 @@ def plain_schedule(ctx, plan, day_word):
     if not pairs:
         raise ValueError("nothing to send")
     items = [f"{p} {h}" if h else p for h, p in pairs]
-    return f"{day_word.capitalize()} I have {join(items)}."
+    return f"{day_word.capitalize()}: {join(items)}."     # reminders read as commands, so "I have Hand in the form" won't do
 
 
 # ------------------------------------------------------------------------------------ handlers
@@ -372,7 +374,7 @@ def h_send_this(ctx, q):
     if not ctx.last_facts:
         raise ValueError("nothing shown")
     text = "; ".join(f"{a}: {b}" for a, b in ctx.last_facts) + "."
-    ctx.draft = text
+    ctx.draft, ctx.draft_read, ctx.last_channel = text, "", "text"
     return Out([[Call("send_message", to=contact_of(ctx), text=text)], ], _sent_final(ctx, "text"), "send_message", ["send_message"], [True])
 
 
@@ -380,10 +382,11 @@ def _send_schedule(ctx, q, arg, word):
     _need_person(ctx)
     plan = read_plan(ctx.w, arg)
     text = plain_schedule(ctx, plan, word)
-    ctx.draft = text
+    ctx.draft, ctx.draft_read = text, arg
     ctx.last_when = word
     read = [Call("get_my_day_plan", day=arg)]
     low = q.lower()
+    ctx.last_channel = "email" if "email" in low else "text"
     if "email" in low:
         mail = C.PEOPLE[ctx.who][3]
         if not mail:
@@ -403,25 +406,34 @@ def h_send_week(ctx, q):
     return _send_schedule(ctx, q, "this_week", "this week")
 
 
+def _resend(ctx, call):
+    """Production history keeps only the earlier reply ("Sent to Dad by text."), so a body no reply showed is read again this turn."""
+    return ([[Call("get_my_day_plan", day=ctx.draft_read)]] if ctx.draft_read else []) + [[call]]
+
+
 def h_channel(ctx, q):
     if not ctx.who:
         ctx.who = ctx.rng.choice(EMAIL_TO)
     if not ctx.draft:
-        ctx.draft = plain_schedule(ctx, read_plan(ctx.w, "tomorrow"), "tomorrow")
-    if "text" in q.lower() or "message" in q.lower():
-        return Out([[Call("send_message", to=contact_of(ctx), text=ctx.draft)]], _sent_final(ctx, "text"), "send_message", ["send_message"], [True])
+        ctx.draft, ctx.draft_read = plain_schedule(ctx, read_plan(ctx.w, "tomorrow"), "tomorrow"), "tomorrow"
+    wanted = "text" if "text" in q.lower() or "message" in q.lower() else "email"
+    if wanted == ctx.last_channel:
+        raise ValueError("already sent that way: this is a repeat, not a switch")
+    ctx.last_channel = wanted
+    if wanted == "text":
+        return Out(_resend(ctx, Call("send_message", to=contact_of(ctx), text=ctx.draft)), _sent_final(ctx, "text"), "send_message", ["send_message"], [True])
     if not C.PEOPLE[ctx.who][3]:
         contact, phone = contact_of(ctx), C.PEOPLE[ctx.who][2]
         ctx.w.overrides["lookup_contact"] = lambda args: f"{contact}: phone {phone}"
         return Out([[Call("lookup_contact", name=contact)]], f"{name_of(ctx)}'s contact only has a phone number, no email. What's the address?", "lookup_contact")
-    return Out([[Call("send_email", to=contact_of(ctx), subject="My schedule", body=ctx.draft)]], _sent_final(ctx, "email"), "send_email", ["send_email"], [True])
+    return Out(_resend(ctx, Call("send_email", to=contact_of(ctx), subject="My schedule", body=ctx.draft)), _sent_final(ctx, "email"), "send_email", ["send_email"], [True])
 
 
 def h_address(ctx, q):
     found = re.search(r"[\w.]+@[\w.]+\w", q)
     if not found or not ctx.draft:
         raise ValueError("no address or draft")
-    return Out([[Call("send_email", to=found[0], subject="My schedule", body=ctx.draft)]], f"Sent to {found[0]}.", "send_email", ["send_email"], [True])
+    return Out(_resend(ctx, Call("send_email", to=found[0], subject="My schedule", body=ctx.draft)), f"Sent to {found[0]}.", "send_email", ["send_email"], [True])
 
 
 def topic_of(q):

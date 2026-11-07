@@ -234,7 +234,7 @@ def test_selfcheck_detects_a_batch_that_disagrees(tok):
 
 
 # ---------------------------------------------------------------- the r5 choose step
-GOOD = "You have one email from Dana Whitfield about the permit. Reply is due Thursday."
+GOOD = "You have one email from Dana Whitfield about the permit. Reply is due soon."
 
 
 def samples(path, rows, texts, reasoning="because"):
@@ -334,3 +334,69 @@ def test_reuse_r4_takes_only_matching_base_answers():
     assert reuse_r4.reused(row, {"a-1": {**good, "completion": "scripted answer<turn|>"}}) is None   # r4 kept the script
     other = {**row, "meta": {"id": "a-1", "family": "session_chat_r4"}}
     assert reuse_r4.reused(other, {"a-1": good}) is None                                         # the family that lost base's voice
+
+
+# ------------------------------------------------------------------ the audit's probe, and base's traces at tool steps
+def _source_row():
+    gold = {"kind": "all_sources", "shape": "topic", "hit": {"mail": ["Dr. Ahn"], "notes": ["night guard"]}, "empty": [], "read": ["mail", "notes"],
+            "events": [], "failed": {}, "conflict": None, "prohibit": [], "all_of": [], "must_say_absent": False}
+    msgs = [{"role": "system", "content": SYS}, {"role": "user", "content": "anything about the dentist"}, CALL,
+            {"role": "tool", "tool_call_id": "c1", "content": "From Dr. Ahn: your visit. Note: ask about the night guard."},
+            {"role": "assistant", "content": G_PLACEHOLDER}]
+    return {"meta": {"id": "all_sources_r5-000-s1", "family": "all_sources_r5", "gold": gold, "think": False, "thought": None}, "messages": msgs, "tools": TOOLS}
+
+
+G_PLACEHOLDER = c5.BASE_WRITES
+
+
+def test_chooser_rejects_the_audit_probe_and_takes_a_real_answer():
+    row = _source_row()
+    reject = c5.make_reject()
+    bad = {"content": "Everything looks good. You are all set.", "reasoning": "I should summarize the relevant observations clearly.", "finish_reason": "stop", "k": 0}
+    why = reject(bad, row)
+    assert "source:missing:mail" in why and "source:missing:notes" in why
+    good = {"content": "Dr. Ahn wrote about your visit, and your note says to ask about the night guard.", "reasoning": "Two sources hit.", "finish_reason": "stop", "k": 0}
+    assert reject(good, row) == []
+
+
+def test_honest_not_found_isnt_a_stall_on_a_contract_row():
+    row = _source_row()
+    row["meta"]["gold"] = dict(row["meta"]["gold"], hit={}, empty=["mail"], read=["mail"], must_say_absent=True)
+    rec = {"content": "I couldn't find anything about that in your email.", "reasoning": "It came back empty.", "finish_reason": "stop", "k": 0}
+    assert c5.make_reject()(rec, row) == []
+
+
+def test_recall_facts_reach_the_chooser():
+    row = _source_row()
+    row["meta"]["gold"] = {"kind": "rec_user", "ref": ["Mudroom"], "ok": []}
+    assert c5.gold_refs([row]) == {row["meta"]["id"]: {"kind": "rec_user", "ref": ["Mudroom"], "ok": []}}
+
+
+def test_trace_is_kept_only_when_base_reached_the_same_call():
+    import choose_traces as T
+    h = gen.request_hash([{"role": "user", "content": "q"}], TOOLS)
+    row = {"meta": {"id": "a-s0", "family": "f"}, "tools": TOOLS, "messages": [{"role": "user", "content": "q"}, CALL]}
+    call = {"type": "function", "function": {"name": "view_emails", "arguments": '{query:<|"|>Permit<|"|>}'}}
+    ok = {"reasoning": "They asked about the permit, so I should read their mail.", "tool_calls": [call], "content": "", "finish_reason": "stop", "request_hash": h}
+    assert T.reject_reasons(ok, row) == []
+    other = dict(ok, tool_calls=[{"type": "function", "function": {"name": "view_messages", "arguments": "{}"}}])
+    assert T.reject_reasons(other, row) == ["call_mismatch"]
+    wrong_arg = dict(ok, tool_calls=[{"type": "function", "function": {"name": "view_emails", "arguments": '{query:<|"|>rent<|"|>}'}}])
+    assert T.reject_reasons(wrong_arg, row) == ["call_mismatch"]
+    assert "no_thought" in T.reject_reasons(dict(ok, reasoning=None), row)
+    assert "no_call" in T.reject_reasons(dict(ok, tool_calls=[]), row)
+    assert "stale_hash" in T.reject_reasons(dict(ok, request_hash="x"), row)
+
+
+def test_parallel_calls_match_in_any_order():
+    import choose_traces as T
+    want = [("view_emails", {"query": "trip"}), ("search_notes", {"query": "trip"})]
+    got = [{"function": {"name": "search_notes", "arguments": '{query:<|"|>trip<|"|>}'}}, {"function": {"name": "view_emails", "arguments": '{query:<|"|>Trip<|"|>,count:5}'}}]
+    assert T.calls_match(got, want)
+    assert not T.calls_match(got[:1], want)
+
+
+def test_generator_can_target_call_rows():
+    rows = [mk(1), {"meta": {"id": "c", "family": "f"}, "tools": TOOLS, "messages": [{"role": "user", "content": "q"}, CALL]}]
+    got, _ = G.select_rows(rows, "calls")
+    assert [r["meta"]["id"] for r in got] == ["c"]

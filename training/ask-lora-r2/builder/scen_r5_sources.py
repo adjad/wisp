@@ -18,6 +18,9 @@ What this family teaches (about 300 turns, one example per model step):
 - ``nothing``  the topic or person is nowhere: every named source was read and the answer says it looked there.
 - ``conflict`` an email moved a time the calendar still shows: calendar and mail are both read, and the answer names both.
 - ``weather``  an outdoor event and the forecast: the calendar and the weather in one step.
+- ``failed``   one source can't be read (its access is off, in the host's own words) and the others hit: the answer gives what
+               it found and says which source it couldn't check. A failed read isn't "nothing there".
+- ``conflict_amount`` a note and a newer email disagree on an amount: both read, the answer names both.
 - ``single``   the contrast, about a fifth of the rows: "any emails from theo" stays mail only, "what's on my calendar
                tomorrow" stays calendar only, "what's the weather" stays weather, and the same for texts, notes and reminders.
                A combined tool that truly covers the question is ONE call to it: ``get_my_day_plan`` for what is due this week
@@ -29,8 +32,10 @@ search_notes, get_upcoming, search_reminders, recall, get_weather, get_my_day_pl
 Every final is ``BASE_WRITES`` (scen_r5_debuglog): base writes the answer later, so the user keeps Gemma's own voice and
 formatting. The scripted part is the tool calls and the tool results. ``sc.must_see`` lists a fact per source that hit, which
 ``scen_r2_act._check`` requires in the tool results, and ``sc.base_ref`` carries ``hit`` (source -> any-of tokens a good
-answer states), ``empty`` (sources read that returned nothing) and ``read`` so the later check can tell whether base's answer
-used each source and whether it apologised for an empty one.
+answer states), ``empty`` (sources read that returned nothing), ``read``, ``failed`` (sources that couldn't be read), ``conflict``,
+``events`` (each calendar item's day and time), ``all_of`` (items every one of which the answer lists) and ``prohibit`` (facts only
+an unread source holds). ``build.py`` saves it as ``meta.gold``, and ``gpu/source_contract.py`` checks base's answer against it in
+the chooser and again in the final validation.
 
 Everything is synthetic (invented names, dates and contents from the world helpers). The family is gated on ASK_LORA_R5=1 by
 scen.py's FAMILIES_R5 auto-registration and seeded from the family name (build.py).
@@ -41,6 +46,7 @@ import scen  # noqa: F401  (first: an import cycle otherwise)
 
 import datetime as dt
 import random
+import re
 
 import leak
 import scen_r2_act as A
@@ -64,7 +70,7 @@ TOOL_SOURCE = {"view_emails": "mail", "summarize_emails": "mail", "view_messages
                "web_search": "web", "get_weather": "weather", "get_my_day_plan": "day_plan", "get_recent_activity": "activity"}
 COMBINED = frozenset({"day_plan", "activity"})
 QUOTA = {"topic": 24, "person": 20, "prep": 20, "owe": 12, "one_hit": 16, "nothing": 12, "conflict": 10, "weather": 6,
-         "single": 28}
+         "single": 28, "failed": 16, "conflict_amount": 6}
 
 
 # ------------------------------------------------------------------------------------------------ banks
@@ -326,8 +332,15 @@ def new_world(rng, avoid=()):
     return now, w
 
 
-def mk(shape, prompt, now, w, steps, notes, res, *, hit=None, empty=(), read=(), profile=None):
-    """hit: source -> any-of tokens a good answer states (the first is also required in the tool results)."""
+def events_gold(w, titles):
+    """The contract's view of calendar items: the day and time an answer must not change."""
+    return [dict(title=e.title, day=e.start.strftime("%A"), time=T.tm(e.start)) for e in w.events if e.title in titles]
+
+
+def mk(shape, prompt, now, w, steps, notes, res, *, hit=None, empty=(), read=(), profile=None, events=(), failed=None,
+       conflict=None, prohibit=(), all_of=(), must_say_absent=False):
+    """hit: source -> any-of tokens a good answer states (the first is also required in the tool results). The rest is the
+    gold contract gpu/source_contract.py enforces: see this module's docstring."""
     s = Scenario(FAMILY, prompt, now, w, steps, f"[{shape}] {notes}", **({} if profile is None else {"profile": profile}))
     s.expect_cards = []
     s.approve = None
@@ -339,7 +352,9 @@ def mk(shape, prompt, now, w, steps, notes, res, *, hit=None, empty=(), read=(),
     s.no_effect = True
     s.thread, s.qkind = None, f"sources_{shape}"
     s.shape = shape
-    s.base_ref = dict(kind="all_sources", shape=shape, hit=hit, empty=list(empty), read=list(read), scripted=None)
+    s.base_ref = dict(kind="all_sources", shape=shape, hit=hit, empty=list(empty), read=list(read), scripted=None,
+                      events=list(events), failed=dict(failed or {}), conflict=conflict, prohibit=list(prohibit),
+                      all_of=list(all_of), must_say_absent=bool(must_say_absent))
     return s
 
 
@@ -447,7 +462,8 @@ def m_topic(shape, bi, pi, si):
                   {"topic": "a topic across everything: every independent source read in one step, then the answer",
                    "one_hit": "the topic is in one source: all read, the empty ones are not apologised for",
                    "nothing": "the topic is nowhere: all read, the answer says where it looked"}[shape],
-                  res, hit=hit, empty=empty, read=called)
+                  res, hit=hit, empty=empty, read=called, must_say_absent=nothing,
+                  events=events_gold(w, [hit["calendar"][0]]) if "calendar" in hit else ())
     return make
 
 
@@ -498,7 +514,8 @@ def m_person(shape, pi, phi, si):
         empty = [s for s in ("messages", "mail", "calendar", "reminders") if s not in present]
         return mk("person", P(rng, tmpl, n=n), now, w, [calls, Final(BASE_WRITES)],
                   "a person across everything: their texts, mail, calendar and reminders read in one step",
-                  res, hit=hit, empty=empty, read=["messages", "mail", "calendar", "reminders"])
+                  res, hit=hit, empty=empty, read=["messages", "mail", "calendar", "reminders"],
+                  events=events_gold(w, [hit["calendar"][0]]) if "calendar" in hit else ())
     return make
 
 
@@ -514,7 +531,8 @@ def m_person_missing(mi, phi):
         run_calls(w, calls, res)
         return mk("nothing", P(rng, tmpl, n=q), now, w, [calls, Final(BASE_WRITES)],
                   "a person who is nowhere: every named source read, the answer says it looked and found nothing",
-                  res, hit={}, empty=["messages", "mail", "calendar", "reminders"], read=["messages", "mail", "calendar", "reminders"])
+                  res, hit={}, empty=["messages", "mail", "calendar", "reminders"], read=["messages", "mail", "calendar", "reminders"],
+                  must_say_absent=True)
     return make
 
 
@@ -574,7 +592,8 @@ def m_prep(bi, mode, phi, si):
         hit["calendar"] = [p["title"], T.tm(start)]
         return mk("prep", prompt, now, w, [[first], calls2, Final(BASE_WRITES)],
                   "getting ready: the calendar first, then mail, notes and reminders using the names and subject the event gives",
-                  res, hit=hit, empty=empty, read=["calendar"] + [TOOL_SOURCE[c.name] for c in calls2])
+                  res, hit=hit, empty=empty, read=["calendar"] + [TOOL_SOURCE[c.name] for c in calls2],
+                  events=events_gold(w, [p["title"]]))
     return make
 
 
@@ -654,10 +673,23 @@ def m_conflict(bi, phi, si, with_text):
         run_calls(w, calls, res)
         sc = mk("conflict", P(rng, tmpl, x=say), now, w, [calls, Final(BASE_WRITES)],
                 "the calendar and an email disagree on a time: both read, the answer names both times",
-                res, hit=hit, empty=[], read=[TOOL_SOURCE[c.name] for c in calls])
+                res, hit=hit, empty=[], read=[TOOL_SOURCE[c.name] for c in calls],
+                conflict=dict(old=T.tm(old), new=T.tm(new)), events=events_gold(w, [title]))
         sc.base_ref["old"], sc.base_ref["new"] = T.tm(old), T.tm(new)
         return sc
     return make
+
+
+def forecast_facts(text, day):
+    """Any-of facts from one day's forecast line of a get_weather result: its sky, its high, its chance of rain."""
+    m = re.search(rf"forecast \({day.isoformat()}\): high (\d+)°F / low \d+°F, ([^,]+), (\d+)% chance", text)
+    return [m.group(2), f"{m.group(1)}°", f"{m.group(3)}% chance"] if m else []
+
+
+def now_facts(text):
+    """Any-of facts from a get_weather result's current line."""
+    m = re.search(r"now: (\d+)°F \(.*?\), ([^,]+), feels like", text)
+    return [m.group(2), f"{m.group(1)}°"] if m else []
 
 
 def m_weather(oi, phi, mode):
@@ -673,9 +705,72 @@ def m_weather(oi, phi, mode):
         res = []
         run_calls(w, calls, res)
         d = "tomorrow" if k == 1 else start.strftime("%A").lower()
+        # A forecast covers a few days: past that the answer can't state one, so the contract asks only for the calendar.
+        facts = forecast_facts(res[1], start.date())
+        hit = {"calendar": [title, T.tm(start)]} | ({"weather": facts} if facts else {})
         return mk("weather", P(rng, tmpl, x=spoken, d=d), now, w, [calls, Final(BASE_WRITES)],
                   "an outdoor event and the forecast: the calendar and the weather in one step",
-                  res, hit={"calendar": [title, T.tm(start)], "weather": ["forecast"]}, empty=[], read=["calendar", "weather"])
+                  res, hit=hit, empty=[], read=["calendar", "weather"], events=events_gold(w, [title]))
+    return make
+
+
+# ---- one source can't be read. The words are the host's own (world.py): a failed read is not "nothing there".
+FAILED_WORDS = {"calendar": "Calendar access is off", "reminders": "Reminders access is off", "mail": "Mail isn't connected",
+                "messages": "Full Disk Access is off", "notes": "Notes automation is off"}
+
+
+def m_failed(bi, phi, si):
+    b = TOPICS[bi % len(TOPICS)]
+    tmpl = TOPIC_PH[phi % len(TOPIC_PH)]
+    say = b["say"][si % len(b["say"])]
+    off = ("calendar", "mail", "messages", "reminders", "notes")[bi % 5]
+
+    def make(rng):
+        now, w = new_world(rng, [b["kw"]])
+        called = ["mail", "messages", "notes", "calendar"] + (["reminders"] if off == "reminders" or rng.random() < .5 else [])
+        others = [s for s in called if s != off]
+        present = rng.sample(others, min(len(others), rng.choice([2, 2, 3])))
+        start = T.at_(now, rng.randint(2, 5), b["event"][3], b["event"][4])
+        ctx = ctx_of(start)
+        hit = {s: put_topic(rng, now, w, b, s, start, ctx) for s in present}
+        w.unavailable = {off}
+        calls = [CALL_OF[s](b["kw"]) for s in order(rng, called)]
+        res = []
+        run_calls(w, calls, res)
+        return mk("failed", P(rng, tmpl, x=say), now, w, [calls, Final(BASE_WRITES)],
+                  f"{off} can't be read: the answer gives what the others hold and says {off} wasn't checked",
+                  res, hit=hit, empty=[s for s in others if s not in present], read=others, failed={off: FAILED_WORDS[off]},
+                  events=events_gold(w, [hit["calendar"][0]]) if "calendar" in hit else ())
+    return make
+
+
+# ---- a note and a newer email disagree on an amount. (topic index, old amount in the note, new amount, what it is)
+AMOUNT_CONFLICT = [(1, "$890", "$940", "double room"), (7, "$119", "$149", "battery swap"), (9, "$48", "$54", "tickets"),
+                   (12, "$85", "$95", "permit renewal"), (13, "$59", "$64", "membership"), (2, "$96", "$104", "balance per person"),
+                   (6, "$28", "$30", "hourly pay"), (10, "$45", "$60", "inspection fee")]
+AMOUNT_PH = ["how much is {x} now", "what's the cost for {x} these days", "double check the price on {x}",
+             "what am i paying for {x}", "what's the price of {x} at this point", "has the price on {x} changed"]
+
+
+def m_conflict_amount(i, phi, si):
+    bi, old, new, what = AMOUNT_CONFLICT[i % len(AMOUNT_CONFLICT)]
+    b = TOPICS[bi]
+    say = b["say"][si % len(b["say"])]
+    tmpl = AMOUNT_PH[phi % len(AMOUNT_PH)]
+
+    def make(rng):
+        now, w = new_world(rng, [b["kw"]])
+        kw = b["kw"]
+        s, a = b["mail"][0], b["mail"][1]
+        w.notes.append(Note(kw.capitalize(), f"{kw.capitalize()}: {what} is {old}.", now - D(days=rng.randint(5, 12))))
+        w.emails.append(Email(s, a, f"New {kw} pricing", now - D(hours=rng.randint(3, 30)),
+                              f"Please note the {what} for your {kw} is now {new}, up from {old}.", True, True))
+        calls = [CALL_OF["notes"](kw), CALL_OF["mail"](kw)]
+        res = []
+        run_calls(w, calls, res)
+        return mk("conflict_amount", P(rng, tmpl, x=say), now, w, [calls, Final(BASE_WRITES)],
+                  "a note and a newer email disagree on an amount: both read, the answer names both and says which is newer",
+                  res, hit={"mail": [new], "notes": [old]}, empty=[], read=["notes", "mail"], conflict=dict(old=old, new=new))
     return make
 
 
@@ -711,66 +806,93 @@ def m_single(kind, i):
     def make(rng):
         if kind == "mail_person":
             p = PEOPLE[i % len(PEOPLE)]
-            now, w, _h = full_person_world(rng, p)
+            now, w, h = full_person_world(rng, p)
             call = Call("view_emails", query=p["q"])
             prompt = P(rng, MAIL_FROM[(i // len(PEOPLE)) % len(MAIL_FROM)], n=p["say"][0])
-            return one(prompt, now, w, call, "mail", "emails from a person: mail only, though texts and calendar mention them too")
+            return one(prompt, now, w, call, "mail", "emails from a person: mail only, though texts and calendar mention them too", h)
         if kind == "mail_topic":
             b = TOPICS[i % len(TOPICS)]
-            now, w, _h = full_topic_world(rng, b)
+            now, w, h = full_topic_world(rng, b)
             prompt = P(rng, MAIL_ABOUT[(i // len(TOPICS)) % len(MAIL_ABOUT)], x=b["say"][0])
-            return one(prompt, now, w, CALL_OF["mail"](b["kw"]), "mail", "emails about a topic: mail only")
+            return one(prompt, now, w, CALL_OF["mail"](b["kw"]), "mail", "emails about a topic: mail only", h)
         if kind == "cal":
             b = TOPICS[i % len(TOPICS)]
-            now, w, _h = full_topic_world(rng, b)
+            now, w, h = full_topic_world(rng, b)
             k = rng.randint(1, 4)
-            for title, mins, place, _kw in rng.sample(T.EVENTS, 2):
+            picked = rng.sample(T.EVENTS, 2)
+            for title, mins, place, _kw in picked:
                 w.events.append(Event(title, T.at_(now, k, rng.choice([9, 13, 16]), 0), mins, place))
             period = "tomorrow" if k == 1 else T.at_(now, k, 9).strftime("%A").lower()
             d = "tomorrow" if k == 1 else "on " + period
+            titles = [t for t, *_ in picked]
             return one(P(rng, CAL_PH[i % len(CAL_PH)], d=d), now, w, Call("get_upcoming", period=period, calendar_only=True),
-                       "calendar", "a calendar question: calendar only, not the day plan or mail")
+                       "calendar", "a calendar question: calendar only, not the day plan or mail",
+                       {k_: v for k_, v in h.items() if k_ != "calendar"}, all_of=titles, events=events_gold(w, titles))
         if kind == "msg":
             p = [q for q in PEOPLE if q["msg"]][i % 6]
-            now, w, _h = full_person_world(rng, p)
+            now, w, h = full_person_world(rng, p)
             return one(P(rng, MSG_PH[(i // 6) % len(MSG_PH)], n=p["say"][0]), now, w, Call("view_messages", conversation=p["conv"]),
-                       "messages", "texts from a person: messages only")
+                       "messages", "texts from a person: messages only", h)
         if kind == "notes":
             b = TOPICS[i % len(TOPICS)]
-            now, w, _h = full_topic_world(rng, b)
+            now, w, h = full_topic_world(rng, b)
             return one(P(rng, NOTE_PH[i % len(NOTE_PH)], x=b["say"][0]), now, w, CALL_OF["notes"](b["kw"]),
-                       "notes", "a notes question: notes only")
+                       "notes", "a notes question: notes only", h)
         if kind == "rem":
             b = TOPICS[i % len(TOPICS)]
-            now, w, _h = full_topic_world(rng, b)
+            now, w, h = full_topic_world(rng, b)
             return one(P(rng, REM_PH[i % len(REM_PH)], x=b["say"][0]), now, w, CALL_OF["reminders"](b["kw"]),
-                       "reminders", "a reminders question: reminders only")
+                       "reminders", "a reminders question: reminders only", h)
         if kind == "weather":
             now, w = new_world(rng, [])
             w.memories = []
-            return one(P(rng, WX_PH[i % len(WX_PH)]), now, w, Call("get_weather", location="Portland,OR"), "weather",
-                       "a weather question with a known home city: get_weather only")
+            sc = one(P(rng, WX_PH[i % len(WX_PH)]), now, w, Call("get_weather", location="Portland,OR"), "weather",
+                     "a weather question with a known home city: get_weather only")
+            facts = now_facts(sc.results[0]) + forecast_facts(sc.results[0], now.date())
+            sc.base_ref["hit"] = {"weather": facts}
+            sc.must_see = facts[:1]
+            return sc
         if kind == "plan":
             ask, day = PLAN_PH[i % len(PLAN_PH)]
             now, w = new_world(rng, [])
             for title, mins, place, _kw in rng.sample(T.EVENTS, 2):
                 w.events.append(Event(title, T.at_(now, rng.randint(1, 4), rng.choice([10, 14, 16]), 0), mins, place))
-            w.reminders.append(Reminder(rng.choice(T.REMS)[0], T.at_(now, 0 if day == "today" else rng.randint(1, 3), 17)))
-            return one(ask, now, w, Call("get_my_day_plan", day=day), "day_plan",
-                       "the day plan covers due dates and people waiting: one call to it, not a read of each app")
+            rem = rng.choice(T.REMS)[0]
+            w.reminders.append(Reminder(rem, T.at_(now, 0 if day == "today" else rng.randint(1, 3), 17)))
+            sc = one(ask, now, w, Call("get_my_day_plan", day=day), "day_plan",
+                     "the day plan covers due dates and people waiting: one call to it, not a read of each app")
+            sc.base_ref["hit"] = {"day_plan": plan_facts(sc.results[0])}
+            sc.must_see = sc.base_ref["hit"]["day_plan"][:1]
+            return sc
         now, w = new_world(rng, [])
         b = TOPICS[i % len(TOPICS)]
         w.emails.append(Email("Hollis Library", "library@linden.edu", "Overdue notice", now - D(hours=3), "Your book is overdue.", True, True))
         w.messages.append(Msg("Maya Chen", "Maya Chen", "are you home for dinner?", now - D(hours=2), unread=True))
-        return one(ACT_PH[i % len(ACT_PH)], now, w, Call("get_recent_activity"), "activity",
-                   "what's new across apps: the combined activity tool in one call")
+        sc = one(ACT_PH[i % len(ACT_PH)], now, w, Call("get_recent_activity"), "activity",
+                 "what's new across apps: the combined activity tool in one call")
+        sc.base_ref["hit"] = {"activity": ["Overdue notice", "Hollis Library", "home for dinner", "Maya"]}
+        sc.must_see = ["Overdue notice"]
+        return sc
     return make
 
 
-def one(prompt, now, w, call, src, notes):
+def plan_facts(text):
+    """Any-of facts from a day plan result: the titles of its dated items and the people waiting."""
+    out = re.findall(r"^- (?:[\d: apm]+· )?(.+?) \((?:calendar|reminder)\)", text, re.M)
+    return list(dict.fromkeys(out)) or [text.splitlines()[0]]
+
+
+def one(prompt, now, w, call, src, notes, world_hit=None, all_of=(), events=()):
+    """A single-source row. ``world_hit`` holds a fact per source of the world: the source asked about is the answer's, and
+    the others can't be in the answer, because nothing read them."""
     res = []
     run_calls(w, [call], res)
-    return mk("single", prompt, now, w, [[call], Final(BASE_WRITES)], notes, res, hit={}, empty=[], read=[src])
+    world_hit = world_hit or {}
+    hit = {src: world_hit[src]} if src in world_hit else {}
+    text = " ".join(res).lower()
+    prohibit = [v[0] for k, v in world_hit.items() if k != src and v[0].lower() not in text and k != "calendar"]
+    return mk("single", prompt, now, w, [[call], Final(BASE_WRITES)], notes, res, hit=hit, empty=[], read=[src],
+              prohibit=prohibit, all_of=all_of, events=events)
 
 
 # ------------------------------------------------------------------------------------------------ family
@@ -824,6 +946,10 @@ def specs():
         out["conflict"].append(m_conflict(n, n, n // len(CONFLICT_TOPICS), n % 4 == 3))
     for n in range(12):
         out["weather"].append(m_weather(n, n, "tomorrow" if n % 3 == 0 else "weekday"))
+    for n in range(26):
+        out["failed"].append(m_failed(n, n * 2 + 3, n // len(TOPICS)))
+    for n in range(10):
+        out["conflict_amount"].append(m_conflict_amount(n, n, n // 3))
     kinds = ["mail_person", "mail_topic", "cal", "msg", "notes", "rem", "weather", "plan", "activity"]
     wanted = {"mail_person": 3, "mail_topic": 3, "cal": 4, "msg": 4, "notes": 3, "rem": 2, "weather": 3, "plan": 5, "activity": 3}
     for kind in kinds:
@@ -854,6 +980,15 @@ def fam_all_sources_r5(rng):
         if sc is not None:
             per_kind[kind] = per_kind.get(kind, 0) + 1
             out.append(sc)
+    for shape in ("failed", "conflict_amount"):        # after the others, so the rows above keep their ids and seeds
+        kept = []
+        for i, make in enumerate(plan[shape]):
+            if len(kept) >= QUOTA[shape]:
+                break
+            sc = _try(rng, make, f"{shape}#{i}")
+            if sc is not None:
+                kept.append(sc)
+        out += kept
     return out
 
 

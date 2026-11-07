@@ -482,6 +482,32 @@ def final_problems_r5(text: str, meta=None, had_tool_call: bool = False) -> list
     return out
 
 
+def _source_contract():
+    """gpu/source_contract.py, the one implementation the chooser and this validator share."""
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "ask-lora-r5", "gpu", "source_contract.py")
+    spec = importlib.util.spec_from_file_location("source_contract", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+# Families whose every final must carry a gold contract: a row without one can't be checked, so it fails.
+R5_GOLD_FAMILIES = frozenset({"all_sources_r5", "chat_contrast_r5", "memory_contrast_r5", "write_contrast_r5"})
+R5_PLACEHOLDER = "Base writes this answer."     # scen_r5_debuglog.BASE_WRITES: a build still waiting for base's answers
+
+
+def gold_problems_r5(content: str, meta: dict, msgs: list) -> list[tuple[str, str]]:
+    """The contract and grounding problems of one final, keyed for the validator's report. A placeholder isn't checked
+    here: finish_r5.py refuses a final build that still has one."""
+    if content == R5_PLACEHOLDER:
+        return []
+    out = []
+    if meta.get("family") in R5_GOLD_FAMILIES and not meta.get("gold"):
+        out.append(("gold:missing", str(meta.get("id"))))
+    return out + [(f"final:{k}", d) for k, d in _source_contract().final_problems(content, meta, msgs[:-1])]
+
+
 LAST_WARNINGS: list[str] = []     # validate_file's warnings for the last file (selftest reads them)
 
 
@@ -658,6 +684,10 @@ def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
         if r5_enabled() and msgs[-1].get("role") == "assistant" and not msgs[-1].get("tool_calls"):
             for key, hit_text in final_problems_r5(msgs[-1].get("content") or "", meta, bool(calls)):
                 bad(key, f"{where} {meta.get('id', '')} {hit_text!r}")
+            # a base-written answer (or a scripted one in a family with a contract) has to say what its sources said
+            if meta.get("distilled") or meta.get("family") in R5_GOLD_FAMILIES:
+                for key, detail in gold_problems_r5(msgs[-1].get("content") or "", meta, msgs):
+                    bad(key, f"{where} {meta.get('id', '')} {str(detail)[:80]!r}")
         # writes, approval cards and denials, against the example's meta line
         names = [name for _, name in calls]
         # manage_timers is one tool for reads and writes: list/stopwatch_read are reads (as build.py records them)

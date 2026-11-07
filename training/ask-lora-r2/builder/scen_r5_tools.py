@@ -1811,7 +1811,7 @@ def m_comp_chat(i):
 
 # ================================================================================================ safety
 ACCESS = {
-    "calendar": ([Call("get_upcoming", period="today", calendar_only=True)], ["anything on the calendar this afternoon", "do i have a meeting today", "what's lined up for me today"],
+    "calendar": ([Call("get_upcoming", period="today", calendar_only=True)], ["anything on the calendar this afternoon", "do i have a meeting today", "does my calendar have anything before lunch"],
                  ["I couldn't check Calendar, so I can't tell you what's on today. Turn on Calendar access in System Settings under Privacy & Security, then Calendars, and ask me again.",
                   "I can't see your calendar yet because Calendar access is off for Wisp. Allow it in System Settings under Privacy & Security, Calendars, and I'll look again."]),
     "reminders": ([Call("search_reminders", scope="today")], ["any reminders due soon", "is there anything i need to do on my reminders today", "check my reminders for today"],
@@ -1843,8 +1843,8 @@ def m_access(src, i):
     return make
 
 
-DRAFT_NEG = [("coworker", "the forecast deck", "Forecast deck", "I put together the forecast deck and wanted you to have the headline numbers before we meet."),
-             ("okafor", "my late lab report", "Late lab report", "I'd like to ask for a short extension on my lab report."),
+DRAFT_NEG = [("coworker", "the forecast deck", "Forecast deck", "I'm writing about the forecast deck."),
+             ("okafor", "my late lab report", "Late lab report", "I'm writing about my late lab report."),
              ("dad", "the plan for sunday", "Sunday plan", "Here is my plan for Sunday; tell me if it works.")]
 NEG_ASKS = ["i don't want to send anything yet, but put together an email to {w} about {a}", "email {w} about {a}? just leave it as a draft, do not send",
             "get an email to {w} about {a} ready for me to look over before i send it", "set up a draft email to {w} on {a}, i'll send it myself"]

@@ -54,7 +54,8 @@ gen_pass() {
 }
 choose_step() {
   "$PY" "$HERE/choose_r5.py" --partial "$PARTIAL" --raw "$OUT/finals.*.jsonl" --out-chosen "$OUT/chosen.jsonl" \
-    --out-stats "$OUT/stats.json" --out-nopass-ids "$OUT/nopass.ids" --out-drop-ids "$OUT/drop.ids" ${CHOOSE_ARGS:-}
+    --out-stats "$OUT/stats.json" --out-nopass-ids "$OUT/nopass.ids" --out-drop-ids "$OUT/drop.ids" \
+    --out-rejections "$OUT/rejections.jsonl" ${CHOOSE_ARGS:-}
 }
 
 gen_pass "$K"
@@ -64,4 +65,18 @@ if [ "$TOPUP" -gt 0 ] && [ -s "$OUT/nopass.ids" ]; then
   gen_pass "$((K + TOPUP))" "$OUT/topup.ids"
   echo "== final choose"; choose_step || exit 1
 fi
-echo "== done $(date '+%F %T'): $OUT/chosen.jsonl, $OUT/stats.json, $OUT/drop.ids"
+# TRACES=1: base's own thought at each tool-call step, one sample each. Costs more node time: see README.md.
+if [ -n "${TRACES:-}" ]; then
+  pids=(); rc=0
+  echo "== $(date '+%F %T') traces: $NPROC GPU(s), batch $BATCH"
+  for ((i = 0; i < NPROC; i++)); do
+    "$PY" "$HERE/gen_finals.py" --partial "$PARTIAL" --out-dir "$OUT" --base "$BASE" --gpu "$i" --targets calls \
+      --shard "$i/$NPROC" --attn "$ATTN" --batch "$BATCH" --k 1 ${FAM[@]+"${FAM[@]}"} >> "$OUT/logs/traces$i.log" 2>&1 &
+    pids+=($!)
+  done
+  for p in "${pids[@]}"; do wait "$p" || rc=1; done
+  [ "$rc" -eq 0 ] || echo "WARN: a trace process failed; see $OUT/logs (a rerun resumes)"
+  "$PY" "$HERE/choose_traces.py" --partial "$PARTIAL" --raw "$OUT/traces.*.jsonl" --out-chosen "$OUT/traces.chosen.jsonl" \
+    --out-stats "$OUT/traces.stats.json" || exit 1
+fi
+echo "== done $(date '+%F %T'): $OUT/chosen.jsonl, $OUT/stats.json, $OUT/drop.ids, $OUT/rejections.jsonl"

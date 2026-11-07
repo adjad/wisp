@@ -105,3 +105,32 @@ def test_reminder_and_event_wording_parses():
     assert M._title("create a reminder for tomorrow from 6-7pm to go to chess club in room 206") == "Go to chess club in room 206"
     assert M._title("create a calendar event this wednesday for chess club meeting from 7-8pm") == "Chess club meeting"
     assert M.TIME.search("from 6-7pm").groups() == ("6", "7", "pm")
+
+
+def _shown_after_a_send():
+    ctx = M.new_ctx(random.Random(3))
+    ctx.who = "dad"
+    M.history_turn(ctx, "send_schedule_day", "pass my tomorrow plan along to dad over text")
+    return ctx
+
+
+def test_a_resend_reads_again_because_the_earlier_reply_never_showed_the_body():
+    ctx = _shown_after_a_send()
+    assert all(ctx.draft not in t["assistant"] for t in ctx.history if isinstance(t, dict) and "assistant" in t)
+    out = M.h_channel(ctx, "switch that one over to email")
+    assert [c.name for step in out.steps for c in step] == ["get_my_day_plan", "send_email"]
+    out = M.h_address(ctx, "try someone@example.net for that")
+    assert [c.name for step in out.steps for c in step] == ["get_my_day_plan", "send_email"]
+
+
+def test_a_resend_of_something_a_reply_showed_needs_no_read():
+    ctx = _shown_after_a_send()
+    ctx.draft_read = ""
+    assert [c.name for step in M.h_channel(ctx, "switch that one over to email").steps for c in step] == ["send_email"]
+
+
+def test_the_same_channel_again_is_not_a_switch():
+    ctx = _shown_after_a_send()
+    with pytest.raises(ValueError):
+        M.h_channel(ctx, "over text again please")
+    assert [c.name for step in M.h_channel(ctx, "move that over to email").steps for c in step][-1] == "send_email"

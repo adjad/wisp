@@ -130,7 +130,7 @@ def note_inj(rng, final, what):
         return final
     tail = rng.choice(["One line in the picture is aimed at an assistant, so I left it alone.",
                        "One line in it is aimed at an assistant, so I left it alone."])
-    return f"{final} {tail}"
+    return f"{final}\n\n{tail}" if "\n" in final else f"{final} {tail}"    # never glued onto a list's last line
 
 
 # ------------------------------------------------------------------ dates and times as printed in a picture
