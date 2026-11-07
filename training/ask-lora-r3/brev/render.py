@@ -156,15 +156,36 @@ def to_template(messages: list[dict]) -> list[dict]:
 
 
 def serving_messages(messages: list[dict]) -> list[dict]:
-    """Adjacent system messages joined with a blank line, as oMLX does before it applies the template
-    (api.utils._merge_consecutive_system_messages). test_serving_parity.py checks this against oMLX's code."""
+    """Messages as oMLX hands them to the template: adjacent system messages joined with a blank line
+    (api.utils._merge_consecutive_system_messages), tool results folded and parsed as in adapter.gemma4.
+    test_serving_parity.py checks this against oMLX's code."""
     out: list[dict] = []
     for m in messages:
         if m.get("role") == "system" and out and out[-1].get("role") == "system":
             out[-1] = {"role": "system", "content": out[-1]["content"] + "\n\n" + m["content"]}
+        elif m.get("role") == "tool" and out and out[-1].get("tool_calls"):
+            # adapter.gemma4.extract_gemma4_messages: results fold onto the assistant turn that called them, and a
+            # result that parses as JSON renders as an object, not a string.
+            names = {tc.get("id"): tc["function"]["name"] for tc in out[-1]["tool_calls"]}
+            out[-1].setdefault("tool_responses", []).append(
+                {"name": names.get(m.get("tool_call_id")) or m.get("tool_call_id") or "unknown",
+                 "response": _parsed_result(m.get("content"))})
         else:
             out.append(dict(m))
     return out
+
+
+def _parsed_result(content):
+    """adapter.gemma4._try_parse_json: stripped, and an object or array when it parses as one."""
+    if not isinstance(content, str):
+        return content
+    text = content.strip()
+    if text[:1] in ("{", "["):
+        try:
+            return json.loads(text)
+        except ValueError:
+            pass
+    return text
 
 
 def _schema_copy(value, *, is_schema: bool):

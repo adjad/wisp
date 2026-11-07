@@ -16,13 +16,14 @@ import render as rd  # noqa: E402
 
 from omlx.api.openai_models import Message  # noqa: E402
 from omlx.api.tool_calling import convert_tools_for_template, enrich_tool_params_for_gemma4  # noqa: E402
-from omlx.api.utils import extract_multimodal_content, prepare_system_messages_for_template  # noqa: E402
+from omlx.adapter.gemma4 import extract_gemma4_messages  # noqa: E402
+from omlx.api.utils import prepare_system_messages_for_template  # noqa: E402
 from transformers import AutoTokenizer  # noqa: E402
 
 
 def served_prompt(tok, messages, tools, kwargs):
-    extracted = extract_multimodal_content([Message(**m) for m in messages], None, tok,
-                                           native_reasoning_content=True, consolidate_system_messages=False)
+    # The engine's own extractor for Gemma 4 (adapter.output_parser.detect_message_extractor), not the generic ones.
+    extracted = extract_gemma4_messages([Message(**m) for m in messages], None, tok, consolidate_system_messages=False)
     # oMLX turns preserve_thinking on for this template (model_discovery.detect_preserve_thinking).
     served_kwargs = {**kwargs, "preserve_thinking": True}
     served_tools = enrich_tool_params_for_gemma4(convert_tools_for_template(tools)) if tools else None
