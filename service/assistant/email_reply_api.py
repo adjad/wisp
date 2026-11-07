@@ -395,11 +395,14 @@ def _is_gmail_link(account: str) -> bool:
 
 
 def open_url(ref: dict, *, gmail: bool) -> str:
-    """A URL that opens the original message: Gmail web for a Gmail link, else Mail.app."""
+    """A URL that opens the original message: Gmail web for a Gmail link, else Mail.app.
+
+    Gmail picks the account from `authuser`. The path takes only a number:
+    /mail/u/<address>/ gets its "Temporary Error (404)" page, signed in or not."""
     mid = ref["message_id"].strip().strip("<>")
     if gmail:
-        return (f"https://mail.google.com/mail/u/{quote(ref['account'], safe='@')}"
-                f"/#search/rfc822msgid%3A{quote(mid, safe='')}")
+        return (f"https://mail.google.com/mail/u/0/?authuser={quote(ref['account'], safe='@')}"
+                f"#search/rfc822msgid%3A{quote(mid, safe='')}")
     return f"message://%3C{quote(mid, safe='@')}%3E"
 
 

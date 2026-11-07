@@ -100,6 +100,9 @@ _email_reason: str = ""
 # "". mail_not_configured arrives with available=True: the script ran, but this
 # Mac has no Mail accounts, so a "ready" inbox is not one Wisp could read.
 _email_reason_kind: str = ""
+# macOS refused Wisp Mail, and no read through Mail has worked since. Outlives
+# Mail closing, when the next read of its index clears the reason above.
+_mail_automation_refused: bool = False
 # Reserved for a reader explicitly reporting work in flight. A successful
 # local-index read is NOT still syncing, regardless of its modification time.
 _email_sync_pending: bool = False
@@ -228,8 +231,8 @@ _EXTERNAL_MAX_AGE = 300.0
 # HISTORY_EVERY). Bodies are fetched every 15 minutes, so holding them to the
 # 5-minute limit above swapped every thread between the Gmail copy and the Mail.app
 # copy twice each interval, with no new mail, and each swap read as changed mail
-# to everything downstream. Failed fetches don't wait for this: they set the
-# part's error and fall back at once.
+# to everything downstream. An expired sign-in doesn't wait for this: it falls
+# back at once. Any other failed fetch keeps its snapshot (_provider_selected).
 _EXTERNAL_PART_MAX_AGE = {"headers": 600.0, "raw": 1800.0, "history": 3600.0}
 _native_headers_at = 0.0
 _native_source = ""
@@ -315,7 +318,7 @@ def configure_external_accounts(accounts: dict[str, dict]) -> None:
         selected[key] = {**old, "mail_account_id": native_id,
                          "mail_account_name": native_name or old.get("mail_account_name", ""),
                          "headers": old.get("headers"), "history": old.get("history"),
-                         "raw": old.get("raw")}
+                         "raw": old.get("raw"), "auth_expired": bool(config.get("auth_expired"))}
     _external_accounts = selected
     _refresh_native_bindings()
     _recompose_all()
@@ -413,16 +416,46 @@ def _provider_selected(address: str, item: dict, part: str) -> bool:
     if (item.get(part + "_verified") and not item.get(part + "_error")
             and 0 <= time.time() - stamp <= _EXTERNAL_PART_MAX_AGE.get(part, _EXTERNAL_MAX_AGE)):
         return True
-    # A successful later native read is a better fallback than a failed provider
-    # snapshot. Its server freshness is still disclosed separately.
+    # A successful later native read is a better fallback than a snapshot that has
+    # only aged, or whose sign-in expired, which nothing short of a reconnect ends.
+    # Any other Google error keeps the snapshot, with its stale warning: it clears
+    # by itself, and the snapshot may hold mail that Mail doesn't have.
     native_stamp = _source_receipt({"raw": _native_raw_at, "history": _native_history_at}.get(part, _native_headers_at))
     native = {"raw": _swift_raw, "history": _swift_history}.get(part, _swift_headers)
     records = native.split(_RAW_RS if part == "raw" else "\n")
-    matched = any(_covered_source(*_source_identity(record, raw=part == "raw"), address, item)
-                  for record in records if record.strip())
-    if matched and _native_source == "mail_app" and native_stamp > stamp:
+    covered = [record for record in records if record.strip()
+               and _covered_source(*_source_identity(record, raw=part == "raw"), address, item)]
+    expired = item.get("auth_expired")
+    if covered and _native_source == "mail_app" and native_stamp > stamp and (expired or not item.get(part + "_error")):
         return False
+    # Mail closed, or not yet scriptable: when the index was read says nothing,
+    # because it only moves while Mail runs. So the mail itself decides.
+    if covered and _native_source == "local_index" and expired:
+        separator = _RAW_RS if part == "raw" else "\n"
+        return _newest_mail(covered, part) <= _newest_mail((item.get(part) or "").split(separator), part)
     return True
+
+
+# A sender can date a message years ahead, and a Gmail copy of it may not be in
+# the snapshot, so a date past this much ahead of now never counts as newer mail.
+_MAIL_DATE_SKEW = 86400.0
+
+
+def _newest_mail(records, part: str) -> float:
+    """The newest believable message date among one source's records, or 0."""
+    limit = time.time() + _MAIL_DATE_SKEW
+    newest = 0.0
+    for record in records:
+        if part == "raw":
+            try:
+                stamp = float(record.strip().split(_RAW_FS, 1)[0])
+            except ValueError:
+                continue
+        else:
+            stamp = _row_ts(record)
+        if newest < stamp <= limit:
+            newest = stamp
+    return newest
 
 
 def _compose_source(native: str, part: str) -> str:
@@ -569,7 +602,7 @@ def set_email_availability(available: bool, reason: str = "",
     """Record whether the Swift MailReader's last sync could read the inbox,
     and the reader's reason_kind when it named one."""
     global _email_available, _email_reason, _email_sync_pending, _email_read_source, _email_reason_kind
-    global _native_headers_at, _native_source
+    global _native_headers_at, _native_source, _mail_automation_refused
     with _raw_snapshot_lock:
         changed = _email_available is not available or _raw_availability.token() is None
         if changed:
@@ -580,6 +613,10 @@ def set_email_availability(available: bool, reason: str = "",
         _email_reason_kind = kind if re.fullmatch(r"[a-z_]{1,40}", kind) else ""
         _email_sync_pending = syncing and available
         _email_read_source = read_source if read_source in {"local_index", "mail_app"} else ""
+        if available is False and _email_reason_kind == "mail_automation":
+            _mail_automation_refused = True
+        elif available and _email_read_source == "mail_app":
+            _mail_automation_refused = False
         if available and not syncing:
             _native_headers_at = time.time()
             _native_source = _email_read_source
@@ -787,6 +824,19 @@ def _raw_scan_warning(account: str | None = None) -> str:
                 "saved bodies do not establish current inbox coverage.")
 
 
+def _open_mail_hint(address: str) -> str:
+    """Reconnecting isn't the only way to newer mail when Mail holds an account
+    whose sign-in expired: said only while Mail isn't being read, and never once
+    macOS has refused Wisp Mail. macOS can't say so while Mail is closed, so before
+    the first refusal this is "can", not a promise."""
+    item = _external_accounts.get(address) or {}
+    if not item.get("auth_expired") or _email_read_source == "mail_app" or _mail_automation_refused:
+        return ""
+    if not any(_covered_source(row["name"], row["id"], address, item) for row in native_email_accounts()):
+        return ""
+    return " Mail on this Mac also has this account, so opening Mail can get newer mail without reconnecting."
+
+
 def email_freshness_warning(account: str | None = None, *, part: str = "headers") -> str:
     details = email_source_details(account, part=part)
     warnings = []
@@ -800,7 +850,8 @@ def email_freshness_warning(account: str | None = None, *, part: str = "headers"
         if item["source"] == "gmail":
             reason = item["error"] or "a current Google refresh has not completed"
             kind = "Gmail history cache" if part == "history" else "Gmail cache"
-            warnings.append(f"{item['account']}: {kind} is stale or unverified; last successful refresh {last}. {reason}.")
+            warnings.append(f"{item['account']}: {kind} is stale or unverified; last successful refresh {last}. {reason}."
+                            + _open_mail_hint(item["account"]))
         else:
             failure = f" The latest Mail refresh failed: {item['error']}." if item["error"] else ""
             warnings.append(f"{item['account']}: Email is from Mail’s local cache. Newer messages may be missing; "

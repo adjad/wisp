@@ -227,6 +227,7 @@ final class SettingsLoader: ObservableObject {
     @Published private(set) var saveWhenAwayPending = false
     @Published private(set) var saveMemory: Bool?
     @Published private(set) var saveMemoryPending = false
+    @Published private(set) var saveMemoryDetail: SaveMemoryDetail?
     // The Daily Summary's morning and evening hours, as the service confirmed them.
     @Published private(set) var briefTimes: WispClient.BriefTimes?
     @Published private(set) var briefTimesPending = false
@@ -1124,8 +1125,10 @@ final class SettingsLoader: ObservableObject {
     func refreshSaveMemory() async {
         guard !saveMemoryPending else { return }
         let confirmed = await client.saveMemoryState()
+        let reply = await client.saveMemoryReply()
         guard !saveMemoryPending else { return }
         saveMemory = confirmed
+        saveMemoryDetail = reply.flatMap { SaveMemoryDetail(json: $0) }
     }
 
     /// One change at a time, like Save power; the row shows what the service confirmed.
@@ -1135,6 +1138,7 @@ final class SettingsLoader: ObservableObject {
         Task {
             var confirmed = await self.client.setSaveMemory(on)
             if confirmed == nil { confirmed = await self.client.saveMemoryState() }
+            self.saveMemoryDetail = await self.client.saveMemoryReply().flatMap { SaveMemoryDetail(json: $0) }
             self.saveMemory = confirmed
             self.saveMemoryPending = false
         }
@@ -1177,9 +1181,12 @@ final class SettingsLoader: ObservableObject {
     }
 
     #if WISP_NOTCH_QA || WISP_CHAT_QA
-    func qaShow(fullAccess: Bool?, briefTimes: WispClient.BriefTimes?) {
+    func qaShow(fullAccess: Bool?, briefTimes: WispClient.BriefTimes?,
+                saveWhenAway: Bool? = nil, saveMemory: Bool? = nil) {
         self.fullAccess = fullAccess
         self.briefTimes = briefTimes
+        self.saveWhenAway = saveWhenAway
+        self.saveMemory = saveMemory
     }
     #endif
 

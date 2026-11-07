@@ -4,7 +4,14 @@ an unloaded model just reloads, at the usual cold-start cost, the next time
 it's actually needed.
 
 The keep-warm chat model is exempt from that timer; "Save memory"
-(service.memory_saver) decides when it goes, on the same poll.
+(service.memory_saver) decides when it goes, on the same poll, and on the user's
+oMLX.app only if it is a Gemma that no other app has used lately.
+
+On oMLX.app other apps' models are not this timer's to touch: it only releases a
+model Wisp itself asked for this run (the Smart Search embedder, a role's model)
+that no other app has used since. Without that release the embedder would stay
+beside the chat model, and background work stands down while anything else is
+resident (mail_gists, mail_memory).
 """
 from __future__ import annotations
 
@@ -32,8 +39,17 @@ async def run(client: OMLXClient, poll_seconds: float = 30.0) -> None:
             continue
         cutoff = time.monotonic() - minutes * 60
 
+        on_omlx_app = memory_saver.omlx_app(client)
+        releasable: set[str] = set()
         try:
-            loaded = await client.loaded_models()
+            if on_omlx_app:
+                rows = (await client.status())["models"]
+                memory_saver.note_omlx_rows(rows)
+                loaded = [r["id"] for r in rows if r.get("loaded", False)]
+                releasable = {r["id"] for r in rows
+                              if r.get("loaded", False) and memory_saver.wisp_may_release(r)}
+            else:
+                loaded = await client.loaded_models()
         except Exception:  # noqa: BLE001 — oMLX being briefly unreachable isn't fatal
             continue
 
@@ -44,6 +60,8 @@ async def run(client: OMLXClient, poll_seconds: float = 30.0) -> None:
             # idle-unloading by design — the whole point is that they stay
             # resident for an instant response.
             if model in keep_warm:
+                continue
+            if on_omlx_app and model not in releasable:
                 continue
             last = idle.last_used(model)
             if last is None:
@@ -60,6 +78,9 @@ async def run(client: OMLXClient, poll_seconds: float = 30.0) -> None:
                 # do. Leave it resident; it'll be reconsidered once idle.
                 continue
             if last < cutoff:
+                # /unload aborts running requests, whoever's they are.
+                if on_omlx_app and not await memory_saver.engine_idle(client):
+                    continue
                 try:
                     await client.unload(model)
                 except Exception:  # noqa: BLE001

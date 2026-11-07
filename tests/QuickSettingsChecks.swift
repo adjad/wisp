@@ -20,7 +20,7 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(QuickSettingsText.saveMemory(on: nil, pending: false) == "Not confirmed", "unconfirmed Save memory is never off")
     check(QuickSettingsText.saveMemory(on: true, pending: true).hasPrefix("Updating"), "a pending Save memory change waits")
     let memoryHelp = QuickSettingsText.saveMemoryHelp
-    check(memoryHelp.contains("5.5 GB") && memoryHelp.contains("30 minutes without using Wisp")
+    check(memoryHelp.contains("5.5 GB") && memoryHelp.contains("5 minutes without using Wisp")
           && memoryHelp.contains("sooner when your Mac runs low on memory"),
           "Save memory help names the size and when it unloads")
     check(memoryHelp.contains("Research and Smart Search keep it loaded"), "Save memory help says running work holds it")
@@ -28,6 +28,37 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
           "Save memory help names the reload, the wait and the catch-up")
     check(memoryHelp.contains("Off keeps the model loaded, except after you hide the notch"),
           "Save memory help says what off still does")
+
+    // Save memory on the user's oMLX: the row never promises memory it can't free.
+    let omlx = SaveMemoryDetail(applies: true, onOMLX: true)
+    check(QuickSettingsText.saveMemory(on: true, pending: false, detail: omlx).contains("Gemma memory"),
+          "on oMLX it names the Gemma")
+    let omlxHelp = QuickSettingsText.saveMemoryHelp(detail: omlx)
+    check(omlxHelp.contains("only ever unloads that one model") && omlxHelp.contains("another app has used")
+          && omlxHelp.contains("unless another model is loaded"), "the oMLX help says what it leaves alone")
+    let holding = SaveMemoryDetail(applies: true, otherApp: true, onOMLX: true)
+    check(QuickSettingsText.saveMemory(on: true, pending: false, detail: holding).contains("another app"),
+          "another app's use is what keeps it loaded")
+    check(QuickSettingsText.saveMemory(on: false, pending: false, detail: holding) == "Wisp's model stays loaded",
+          "off stays off while another app uses it")
+    for why in ["not_gemma", "pinned", "not_omlx", "not_reported"] {
+        let blocked = SaveMemoryDetail(applies: false, whyNot: why)
+        for on in [true, false] {
+            let line = QuickSettingsText.saveMemory(on: on, pending: false, detail: blocked)
+            check(line.hasPrefix("Not active") && !line.contains("Frees"), "\(why) says it isn't active")
+        }
+        check(QuickSettingsText.saveMemoryHelp(detail: blocked).contains("isn't freeing any memory"),
+              "\(why) help doesn't promise memory")
+        check(QuickSettingsText.saveMemory(on: nil, pending: false, detail: blocked) == "Not confirmed",
+              "\(why) with an unconfirmed switch stays unconfirmed")
+    }
+    check(QuickSettingsText.saveMemoryHelp(detail: SaveMemoryDetail(applies: true)) == memoryHelp,
+          "the built-in engine keeps the general help")
+    check(QuickSettingsText.saveMemoryHelp(detail: nil) == memoryHelp, "no reply keeps the general help")
+    let reply = #"{"save_memory":true,"applies":false,"why_not":"not_gemma","engine":"omlx","other_app":false}"#
+    check(SaveMemoryDetail(json: Data(reply.utf8))
+          == SaveMemoryDetail(applies: false, whyNot: "not_gemma", onOMLX: true), "the reply parses")
+    check(SaveMemoryDetail(json: Data(#"{"save_memory":true}"#.utf8)) == nil, "no applies, no detail")
 
     // Save power: says it saves power on battery and while away; unconfirmed
     // is never "off"; the help names the 15 W and 10 W caps and what they cover
@@ -71,7 +102,29 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(QuickSettingsText.learning(enabled: true, changing: true, status: "Turning learning on. Waiting for confirmation…",
                                      remote: false, phraser: true).text.hasPrefix("Turning learning on"), "a change in flight shows its status")
 
-    check(QuickSettingsText.brief(pending: false, confirmed: true) == "Shows up in Brief, and in a notification", "brief line")
+    check(QuickSettingsText.brief(pending: false, confirmed: true) == "In Brief, and as a notification", "daily summary line")
+    // The Brief's own pace: the row says the person's hours, and never invents any.
+    check(QuickSettingsText.briefUpdates(hours: "9 AM to 5 PM") == "About 4 times a day, 9 AM to 5 PM", "Brief updates line")
+    check(QuickSettingsText.briefUpdates(hours: nil) == "About 4 times a day, across your working hours",
+          "no answer from the service names no hours")
+    check(QuickSettingsText.briefUpdates(chosen: "9 AM and 1 PM") == "At 9 AM and 1 PM", "chosen Brief times")
+    check(QuickSettingsText.briefUpdatesHelp.contains("a chat comes first"), "the help says a chat comes first")
+    check(QuickSettingsText.dailySummaryHelp.contains("doesn't change when the Brief updates"),
+          "the summary's times don't claim to set the Brief")
+
+    // One section at a time; a Text size change rebuilds the panel and must keep it.
+    check(QuickSettingsSection.allCases.map(\.title) == ["General", "Brief", "Voice", "Power", "Advanced"], "the five sections")
+    check(QuickSettingsSection.voice.contents.contains("Text size"), "the Voice section says it holds Text size")
+    let sectionSuite = "wisp.quick-settings-section-check"
+    if let sectionDefaults = UserDefaults(suiteName: sectionSuite) {
+        sectionDefaults.removePersistentDomain(forName: sectionSuite)
+        check(QuickSettingsSection.saved(in: sectionDefaults) == .general, "General until one is chosen")
+        QuickSettingsSection.voice.save(in: sectionDefaults)
+        check(QuickSettingsSection.saved(in: sectionDefaults) == .voice, "the last section comes back")
+        sectionDefaults.set("gone", forKey: QuickSettingsSection.defaultsKey)
+        check(QuickSettingsSection.saved(in: sectionDefaults) == .general, "an unknown section reads as General")
+        sectionDefaults.removePersistentDomain(forName: sectionSuite)
+    }
     check(QuickSettingsText.brief(pending: false, confirmed: false).contains("not confirmed"), "unconfirmed brief times")
     check(QuickSettingsText.brief(pending: true, confirmed: true).hasPrefix("Saving"), "brief times saving")
 

@@ -82,6 +82,7 @@ struct DisplayGeometryChecks {
 
         let real = SurfaceLayout.make(for: notched(1512, 982))
         tabScrollCapChecks()
+        pageCapChecks()
 
         // Built-in displays without a notch (M1 Air, 13"/M2 13" Pro, iMac 24"): nothing
         // drawn; the menu-bar icon and an invisible top-edge zone stand in. Default
@@ -429,6 +430,26 @@ struct DisplayGeometryChecks {
               "Floor on a tiny display")
     }
 
+    /// 2026-11-06: Permissions and Settings took 80% and 87% of a 1117 pt screen.
+    /// The two pages stop at 60% of the screen, then scroll, on every display.
+    static func pageCapChecks() {
+        let header: CGFloat = 30
+        let insets = SurfaceLayout.tabTopPadding + SurfaceLayout.panelBottomPadding
+        for (name, d, limit) in [("MBP 16", notched(1728, 1117), 670), ("MBP 14", notched(1512, 982), 589),
+                                 ("MBP 14 larger text", notched(1352, 878), 526)] as [(String, DisplayMetrics, CGFloat)] {
+            let l = SurfaceLayout.make(for: d)
+            check(l.maxPagePanelHeight == limit, "\(name): page limit \(l.maxPagePanelHeight)")
+            let cap = l.pageContentCap(headerHeight: header)
+            check(cap == limit - l.contentTopInset - header - insets, "\(name): page cap \(cap)")
+            check(l.contentTopInset + header + insets + cap <= limit, "\(name): a capped page stays under the limit")
+            check(l.pageContentCap(headerHeight: header + 10) == cap - 10, "\(name): header grows, the page's room shrinks")
+        }
+        // A display with little room above the bottom margin keeps the panel's own limit.
+        let tiny = SurfaceLayout.make(for: monitor(800, 200))
+        check(tiny.maxPagePanelHeight <= tiny.maxPanelHeight, "the page limit never passes the panel's")
+        check(tiny.pageContentCap(headerHeight: header) == SurfaceLayout.minTabScroll, "Floor on a tiny display")
+    }
+
     /// The overlay wraps Brief and Day, and only them, in the capped scroll.
     static func tabScrollSourceChecks() {
         let app = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
@@ -444,6 +465,15 @@ struct DisplayGeometryChecks {
         check(overlay.contains("CappedScroll(cap: layout.tabScrollCap(headerHeight: headerHeight), reveals: true)"),
               "the tab scroll is capped from the display's geometry")
         check(overlay.contains("bottom: SurfaceLayout.panelBottomPadding"), "the cap and the panel share one bottom padding")
+        // Permissions and Settings are capped at the page limit and scroll inside themselves.
+        check(overlay.contains("NotchPermissionsView(model: model, cap: layout.pageContentCap(headerHeight: headerHeight))"),
+              "Permissions gets the page cap")
+        check(overlay.contains("QuickSettingsView(model: model, settings: settings,\n                                  cap: layout.pageContentCap(headerHeight: headerHeight))"),
+              "Settings gets the page cap")
+        for page in ["NotchPermissionsView.swift", "QuickSettingsView.swift"] {
+            let text = (try? String(contentsOf: app.appendingPathComponent(page), encoding: .utf8)) ?? ""
+            check(text.contains("CappedScroll(cap: cap.map(scrollCap), reveals: true)"), "\(page) scrolls inside the cap")
+        }
         // The header is outside the scroll, so it stays put.
         let panel = overlay.components(separatedBy: "private var expandedPanel: some View {")[1]
         check(panel.hasPrefix("\n        VStack(alignment: .leading, spacing: 0) {\n            header\n"), "header stays fixed")

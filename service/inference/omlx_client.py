@@ -31,6 +31,11 @@ from .inference_errors import (EngineGuardUnavailableError, ModelLoadError, Mode
                                ModelNotDownloadedError)
 
 
+_OMLX_OTHERS_FULL = ("Wisp's model couldn't load, because other models in oMLX are using "
+                     "the memory and are pinned or running. Unload one in oMLX, or wait for "
+                     "it to finish, then try again.")
+
+
 def _model_label(model: str) -> str:
     """The catalog's display name for a model id ("Gemma 4 E4B"), else the id.
     Optional import: the mini bundle ships this module without service.setup."""
@@ -661,6 +666,13 @@ class OMLXClient:
         s = await self.status()
         return [m["id"] for m in s["models"] if m.get("loaded", False)]
 
+    async def engine_activity(self) -> dict[str, Any]:
+        """oMLX's whole-server counters (GET /api/status), for every client and
+        model: active_requests and waiting_requests. Read-only."""
+        if not self.provider.omlx_health:
+            raise EndpointConfigurationError("Provider has no oMLX residency API")
+        return await self._readiness_mapping("/api/status", 64 * 1024)
+
     async def unload(self, model: str) -> None:
         if not self.managed:
             raise EndpointConfigurationError("Only managed local models can be unloaded")
@@ -671,7 +683,7 @@ class OMLXClient:
     async def load(self, model: str) -> None:
         if not self.managed:
             raise EndpointConfigurationError("Only managed local models can be loaded")
-        with engine_epoch.operation():
+        with engine_epoch.operation(), idle.own_load(self.activity_key(model)):
             r = await self._client.post(f"/v1/models/{model}/load")
         if r.status_code == 507:
             # The managed engine refused admission. Do not echo its diagnostics
@@ -778,10 +790,14 @@ class OMLXClient:
         await memory_saver.settle_prewarm()
         loop = asyncio.get_running_loop()
         keep = {model} if exclusive else (self._keep_warm | {model})
+        # On the user's oMLX.app other apps may be using what's loaded, and a turn
+        # never unloads there. oMLX evicts idle models itself when a load or a prefill
+        # needs the room, and refuses (507, or 400 at prefill) rather than overcommit.
+        on_omlx_app = memory_saver.omlx_app(self)
         loaded = set(await self.loaded_models())
 
         # 1. Evict everything not in the keep set (no-op if nothing to evict).
-        to_evict = loaded - keep
+        to_evict = set() if on_omlx_app else loaded - keep
         for m in to_evict:
             await self.unload(m)
 
@@ -818,7 +834,12 @@ class OMLXClient:
             if emit:
                 await emit({"type": "status", "text": (
                     f"Loading {label}… The first answer after a rest takes a little longer.")})
-            await self.load(model)
+            try:
+                await self.load(model)
+            except ModelMemoryLimitError:
+                if on_omlx_app and loaded - {model}:
+                    raise ModelMemoryLimitError(_OMLX_OTHERS_FULL) from None
+                raise
             start = loop.time()
             deadline = start + settle_timeout
             while loop.time() < deadline:
@@ -840,7 +861,8 @@ class OMLXClient:
         #    already have — no extra fetch needed to check this. Skipped when
         #    exclusive: the whole point of that mode is NOT to have the summarizer
         #    resident while this model is active (see the docstring).
-        if not exclusive:
+        #    Nor while another model is on the user's oMLX.app: a load can evict it.
+        if not exclusive and not (on_omlx_app and loaded - self._keep_warm - {model}):
             for k in self._keep_warm - loaded - {model}:
                 try:
                     await self.load(k)

@@ -382,6 +382,23 @@ def _mail_app(monkeypatch, E, now, headers):
     E._refresh_native_bindings()   # as cache_emails does on every Mail.app post
 
 
+def test_mail_app_vouches_for_an_account_only_when_its_copy_is_the_one_shown(monkeypatch, tmp_path):
+    import json
+    from service import gmail_source
+    from service.proactive import cycle
+    now = 1_790_000_000.0
+    E = _google_accounts(monkeypatch, tmp_path, now, fresh=[], stale=["work@gmail.com"])
+    _mail_app(monkeypatch, E, now, _h2("work@gmail.com", "UUID-W"))
+    # A Google error keeps the Gmail snapshot on screen, so Mail.app's read can't vouch.
+    E._external_accounts["work@gmail.com"]["headers_error"] = "Google could not be reached; try again when online"
+    assert cycle.google_mail_status(now) == ([], ["work@gmail.com"], {"work@gmail.com": "syncing"})
+    # An expired sign-in switches to Mail.app's copy, so its read stands.
+    config = json.loads(gmail_source.CONFIG_PATH.read_text())
+    config["accounts"]["work@gmail.com"]["auth_expired"] = int(now)
+    gmail_source.CONFIG_PATH.write_text(json.dumps(config))
+    assert cycle.google_mail_status(now) == ([], [], {})
+
+
 def test_mail_app_covers_a_stale_google_account_only_with_header_rows_it_read(monkeypatch, tmp_path):
     from service.proactive import cycle
     now = 1_790_000_000.0
