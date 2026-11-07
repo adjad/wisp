@@ -228,6 +228,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Whoever was shutting down is gone now.
         UserDefaults.standard.removeObject(forKey: Self.shuttingDownPIDKey)
+        // Sparkle starts after a reset ran, so it reads the cleared settings. With
+        // automatic checks off (the default) starting it contacts nothing.
+        SoftwareUpdater.shared.start()
         // Port 8000 belongs to oMLX and is deliberately NOT policed here: it used to be
         // cleared by killing whatever listened (which took out MTPLX and Homebrew oMLX
         // along with the odd stray server). oMLX's own peer attribution refuses an
@@ -1161,9 +1164,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Report a Problem…", action: #selector(reportProblem), keyEquivalent: "")
         menu.addItem(withTitle: Self.exportDebugLogTitle, action: #selector(exportDebugLogFromMenu), keyEquivalent: "")
             .toolTip = SettingsView.debugLogPrivacyLine
+        // Validated by the updater: disabled in a build without an update feed.
+        let updates = menu.addItem(withTitle: SoftwareUpdate.menuTitle,
+                                   action: #selector(SoftwareUpdater.checkForUpdates(_:)), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Wisp", action: #selector(quit), keyEquivalent: "q")
         for item in menu.items { item.target = self }
+        updates.target = SoftwareUpdater.shared
+        if !SoftwareUpdater.shared.isAvailable { updates.toolTip = SoftwareUpdate.unavailableNote }
         // Attach the menu only on right-click; left-click toggles the panel.
         statusItem?.menu = nil
         rightClickMenu = menu
@@ -2956,6 +2964,27 @@ extension AppDelegate {
         NotificationCenter.default.removeObserver(observer)
         precondition(posted == 1, "Choosing it posts the Settings button's export notification")
         print("PASS: the menu bar menu exports the chat debug log like Settings")
+    }
+
+    /// Check for Updates… sits under the debug export and goes to the one updater.
+    /// Without Sparkle (these checks' compile) or without a feed it is disabled.
+    static func checkMenuChecksForUpdates() {
+        let delegate = AppDelegate()
+        delegate.buildMenu()
+        let items = delegate.rightClickMenu?.items ?? []
+        guard let index = items.firstIndex(where: { $0.title == SoftwareUpdate.menuTitle }) else {
+            preconditionFailure("The menu bar menu has Check for Updates…")
+        }
+        precondition(index > 0 && items[index - 1].title == exportDebugLogTitle,
+                     "Check for Updates… follows Export Chat Debug Log…")
+        let item = items[index]
+        precondition(item.target === SoftwareUpdater.shared
+                     && item.action == #selector(SoftwareUpdater.checkForUpdates(_:)),
+                     "The item runs the shared updater's check")
+        precondition(!SoftwareUpdater.shared.isAvailable && !SoftwareUpdater.shared.validateMenuItem(item)
+                     && item.toolTip == SoftwareUpdate.unavailableNote,
+                     "A build that cannot update shows the item disabled, saying why")
+        print("PASS: the menu bar menu offers Check for Updates… next to the debug export")
     }
 
     /// The export never runs a modal session: the notch stays live while the notice

@@ -2235,8 +2235,10 @@ print('external venv readable; private home and writes denied')
         workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
         signed = workflow.index("\n  release:\n")
         adhoc = workflow.index("\n  publish-ad-hoc-release:\n")
+        update = workflow.index("\n  publish-update-release:\n")
         self.assertLess(signed, adhoc)
-        return workflow, workflow[signed:adhoc], workflow[adhoc:]
+        self.assertLess(adhoc, update)
+        return workflow, workflow[signed:adhoc], workflow[adhoc:update]
 
     def workflow_step(self, section, name):
         marker = f"      - name: {name}\n"
@@ -2263,8 +2265,10 @@ print('external venv readable; private home and writes denied')
                          "dependencies.json", "simulation-qa.json"):
             self.assertIn(f"dist/candidate/{evidence}\n", diagnostics)
         self.assertNotIn("*.zip", diagnostics)
-        self.assertEqual(workflow.count("environment: release"), 1)
+        # The Developer ID release and the in-app update publication.
+        self.assertEqual(workflow.count("environment: release"), 2)
         self.assertNotIn("environment:", adhoc)
+        self.assertIn("environment: release", self.workflow_job(workflow, "publish-update-release"))
 
     def adhoc_fixture(self, features=None):
         checkout = self.root
@@ -2539,22 +2543,41 @@ print('external venv readable; private home and writes denied')
 
     def test_every_ci_build_receives_only_the_google_client_secret_on_its_build_step(self):
         workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
-        self.assertEqual(workflow.count(GOOGLE_CLIENT_SECRET_LINE), 4)
+        self.assertEqual(workflow.count(GOOGLE_CLIENT_SECRET_LINE), 5)
         steps = {"preview": "Build, sign and smoke-test preview from source",
                  "full": "Build and verify from source",
                  "release": "Rebuild approved source with strict validation",
-                 "publish-ad-hoc-release": "Rebuild ad-hoc source with strict validation"}
+                 "publish-ad-hoc-release": "Rebuild ad-hoc source with strict validation",
+                 "publish-update-release": "Rebuild update source with strict validation"}
         for job, name in steps.items():
             step = self.workflow_step(self.workflow_job(workflow, job), name)
             self.assertIn(GOOGLE_CLIENT_SECRET_LINE, step)
             self.assertEqual(step.count("secrets."), 1, job)
+
+    def test_update_publication_is_opt_in_from_main_and_fails_closed(self):
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        job = self.workflow_job(workflow, "publish-update-release")
+        self.assertIn("    needs: full\n", job)
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.publish_update && !inputs.publish "
+                      "&& !inputs.publish_ad_hoc && github.ref == 'refs/heads/main'", job)
+        self.assertIn("    permissions:\n      contents: write\n      actions: read\n", job)
+        # The key check runs first, before checkout or any rebuild.
+        first = self.workflow_step(job, "Require the update signing key")
+        self.assertLess(job.index("Require the update signing key"), job.index("actions/checkout"))
+        self.assertIn('test -n "$SPARKLE_ED_PRIVATE_KEY" ||', first)
+        publish = self.workflow_step(job, "Sign, publish the release, then the appcast")
+        self.assertIn('./scripts/wisp-build release-update --output dist/candidate --label "$UPDATE_LABEL"', publish)
+        self.assertNotIn("${{ inputs.update_label }} ", publish.split("run:")[1])   # label only via env
+        self.assertEqual(job.count("secrets.SPARKLE_ED_PRIVATE_KEY"), 2)
+        diagnostics = self.workflow_step(job, "Upload update publication diagnostics")
+        self.assertNotIn("*.zip", diagnostics)
 
     def test_every_ci_build_stages_the_pinned_engine(self):
         """A release made by CI must carry the engine: every build command passes --fetch-engine."""
         workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
         commands = [line.strip() for line in workflow.splitlines()
                     if "./scripts/wisp-build preview" in line or "./scripts/wisp-build all" in line]
-        self.assertEqual(len(commands), 4)          # PR preview, full, release rebuild, ad-hoc rebuild
+        self.assertEqual(len(commands), 5)          # PR preview, full, release, ad-hoc and update rebuilds
         for command in commands:
             self.assertIn("--fetch-engine", command)
             self.assertNotIn("--engine-app", command)

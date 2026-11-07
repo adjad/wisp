@@ -25,6 +25,7 @@ import zipfile
 
 import engine as engine_build
 import engine_licenses
+import sparkle
 import uv_tool
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -533,6 +534,8 @@ def plist(meta: dict) -> dict:
         "NSContactsUsageDescription": "Wisp reads your contacts to show names instead of phone numbers in messages.",
         "NSMicrophoneUsageDescription": "Wisp listens only while you ask by voice (the mic or ⌥⇧Space). Your question is turned into text on this Mac; Wisp keeps no recording and never sends it off your Mac.",
         "WispSourceCommit": meta["commit"], "WispPreviewBuild": bool(meta["dirty"] or meta.get("preview")),
+        # In-app updates (build-support/sparkle.py): no network contact unless asked, no profile.
+        **sparkle.info_plist(CONFIG),
     }
 
 
@@ -639,6 +642,11 @@ def assemble(runner, binary, destination, meta, offline=False, engine_app=None, 
     (contents / "MacOS").mkdir(parents=True)
     backend.mkdir(parents=True)
     shutil.copy2(binary, contents / "MacOS" / "Wisp")
+    # SwiftPM leaves Sparkle.framework next to the executable it linked.
+    try:
+        meta["sparkle"] = sparkle.stage(bundle, binary.parent, CONFIG)
+    except sparkle.SparkleError as exc:
+        raise BuildError(str(exc)) from None
     corpus = ROOT / "app/Sources/WispApp/Resources/assistant-task-corpus-v1.jsonl"
     if not corpus.is_file():
         raise BuildError("Missing source assistant task corpus")
@@ -757,6 +765,11 @@ def validate_structure(bundle: Path, meta: dict):
         if not os.access(bundle / name, os.X_OK):
             raise BuildError(f"Bundle program is not executable: {name}")
     validate_google_oauth_client(bundle, meta)
+    if "sparkle" in meta:            # metadata from before in-app updates has no record
+        try:
+            sparkle.validate(bundle, meta["sparkle"], CONFIG)
+        except sparkle.SparkleError as exc:
+            raise BuildError(str(exc)) from None
     if "uv" in meta:                 # metadata from before bundled uv has no record
         try:
             uv_tool.validate(bundle, meta["uv"])
@@ -813,6 +826,11 @@ def validate_native(runner, bundle, meta):
         system_only = all(dep.startswith(("/usr/lib/", "/System/Library/")) for dep in dependencies)
         if absolute_rpaths and not system_only:
             raise BuildError(f"Absolute rpath with non-system dependencies in {path.relative_to(bundle)}")
+        if meta.get("sparkle") and path == bundle / "Contents/MacOS/Wisp":
+            try:
+                sparkle.check_linkage(text, log.read_text())
+            except sparkle.SparkleError as exc:
+                raise BuildError(str(exc)) from None
         rows.append({"path": str(path.relative_to(bundle)), "minimum_macos": versions,
                      "install_id": identity.group(1) if identity else None,
                      "dependencies": dependencies, "unused_rpaths": absolute_rpaths})
@@ -841,6 +859,19 @@ def scan_host_paths(bundle):
                 raise BuildError(f"Host build path in distributable Mach-O: {path.relative_to(bundle)}")
 
 
+def resolves_in_bundle(bundle, path, dependency, rpaths):
+    """An @rpath dependency found inside the bundle through a relative search path."""
+    if not dependency.startswith("@rpath/"):
+        return False
+    for rpath in rpaths:
+        for prefix, base in (("@executable_path", bundle / "Contents/MacOS"), ("@loader_path", path.parent)):
+            if rpath == prefix or rpath.startswith(prefix + "/"):
+                target = (base / rpath[len(prefix):].lstrip("/") / dependency[len("@rpath/"):]).resolve()
+                if target.is_relative_to(bundle.resolve()) and target.is_file():
+                    return True
+    return False
+
+
 def prepare_native_for_signing(runner, bundle):
     for i, path in enumerate(p for p in bundle.rglob("*") if is_macho(p)):
         if not engine_build.is_engine_target(bundle, path):
@@ -857,8 +888,12 @@ def prepare_native_for_signing(runner, bundle):
             # @rpath/libmlx.dylib, which dyld resolves to the image `import mlx.core` already
             # loaded (same install name). Removing the dead absolute paths is therefore safe,
             # but only for the engine and only for @rpath names, never for absolute libraries.
+            # The app's own @rpath frameworks (Sparkle) resolve inside the bundle through a
+            # relative search path; the absolute toolchain paths in front of it would only
+            # let dyld look outside the bundle first, so they go too.
             if external and not (engine_build.is_engine_target(bundle, path)
-                                 and all(dep.startswith("@rpath/") for dep in external)):
+                                 and all(dep.startswith("@rpath/") for dep in external)) \
+                    and not all(resolves_in_bundle(bundle, path, dep, rpaths) for dep in external):
                 raise BuildError("Cannot remove an absolute search path used by non-system dependencies")
             for rpath in absolute:
                 runner.run(f"remove-unused-rpath-{i}", ["/usr/bin/install_name_tool", "-delete_rpath", rpath, path])
@@ -1395,7 +1430,8 @@ def main():
         print("Wisp build driver requires Python 3.9 or newer", file=sys.stderr)
         return 2
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("command", nargs="?", default="all", choices=("all", "doctor", "lock", "bootstrap", "test", "swift", "verify", "release", "release-ad-hoc", "qa-assemble", "preview"))
+    p.add_argument("command", nargs="?", default="all", choices=("all", "doctor", "lock", "bootstrap", "test", "swift", "verify", "release", "release-ad-hoc", "qa-assemble", "preview",
+                                                             "appcast", "release-update"))
     p.add_argument("--dry-run", action="store_true", help="Print plan without downloads, writes or external release calls")
     p.add_argument("--offline", action="store_true")
     p.add_argument("--allow-dirty", action="store_true", help="Local preview only; never eligible for publication")
@@ -1423,6 +1459,15 @@ def main():
                    help="Independently reviewed canonical inventory digest for --qa-runtime")
     p.add_argument("--production-sha",
                    help="Exact production candidate SHA qualified by managed QA")
+    # In-app updates (build-support/update_release.py, docs/updates.md).
+    p.add_argument("--label", help="appcast/release-update: public name of this build, e.g. 0.5.0-rc1-beta2")
+    p.add_argument("--channel", choices=("stable", "beta"),
+                   help="appcast/release-update: Sparkle channel (default: beta for a suffixed label)")
+    p.add_argument("--feed", type=Path, help="appcast: the current appcast.xml to add this build to")
+    p.add_argument("--update-output", type=Path, help="appcast: new directory for the ZIP and signed appcast")
+    p.add_argument("--ed-key-file", type=Path,
+                   help="appcast: EdDSA private key file (default: the login keychain's Sparkle key)")
+    p.add_argument("--repository", help="appcast: owner/name hosting the release (default adjad/wisp)")
     args = p.parse_args()
     if args.jobs is not None and args.jobs < 1:
         p.error("--jobs must be at least 1")
@@ -1477,6 +1522,10 @@ def main():
         if args.command == "release":
             from release import release
             release(runner, args)
+            return 0
+        if args.command in ("appcast", "release-update"):
+            import update_release
+            (update_release.appcast if args.command == "appcast" else update_release.release_update)(runner, args)
             return 0
         if args.command in ("all", "bootstrap", "preview") or (args.command == "test" and not args.test_python):
             check_locks()
