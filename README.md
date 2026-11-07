@@ -3,7 +3,7 @@
 **A private assistant that lives in your Mac's notch, keeps track of what needs you, and does the
 busywork. Its AI runs on your Mac, so your mail, texts and calendar never go to a cloud.**
 
-[Download Wisp](https://github.com/adjad/wisp/releases) · [What's new in 0.5.0-dev4](docs/releases/0.5.0-dev4.md) · Apple silicon, macOS 26.2+
+[Download Wisp](https://github.com/adjad/wisp/releases/latest) · [What's new in 0.5.0-rc1](docs/releases/0.5.0-rc1.md) · Apple silicon, macOS 26.2+
 
 ## The problem
 
@@ -77,7 +77,7 @@ by default), and your Brief and answers fit you.
 
 Wisp isn't notarized by Apple yet, so macOS blocks the first open. You only allow it once:
 
-1. Download the ZIP from [Releases](https://github.com/adjad/wisp/releases), unzip it, and drag
+1. Download the ZIP from the [latest release](https://github.com/adjad/wisp/releases/latest), unzip it, and drag
    **Wisp.app** into **Applications**.
 2. Open Wisp. When macOS says it can't verify the app, click **Done**.
 3. Open **System Settings ▸ Privacy & Security**, scroll to the bottom, and click **Open Anyway**
@@ -85,7 +85,8 @@ Wisp isn't notarized by Apple yet, so macOS blocks the first open. You only allo
 
 On macOS 14 and earlier, Control-click **Wisp.app** and choose **Open** instead. If macOS still
 refuses, run `xattr -dr com.apple.quarantine /Applications/Wisp.app` in Terminal. Updating from an
-earlier build? Quit the old Wisp first.
+earlier build? Wisp doesn't update itself yet, so download the new ZIP, quit the old Wisp, and
+replace it in **Applications**.
 
 ### First run
 
