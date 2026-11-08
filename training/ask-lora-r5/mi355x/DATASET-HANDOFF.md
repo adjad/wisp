@@ -30,7 +30,7 @@ Generation needs a GPU; the Mac's oMLX can't be used without contending with Wis
 
 Training stays a separate decision and isn't part of this.
 
-## Decisions: two made, one recorded
+## Decisions: three made, one recorded
 
 **1. The overlap rule: decided 2026-11-07, keep it strict.** The user chose "Keep it strict", relayed by the RC3 coordinator. `--keep-own-wording` isn't used, so all 813 removals stand and every test question still counts as unseen. What that costs, for the record: 572 of 762 `debug_log_r5` rows leave. The user earlier called that family r5's biggest goal, and the private test sets come from the same logs. 190 rows stay, and some question types lose all or nearly all their rows. Of the 572:
 
@@ -45,7 +45,9 @@ Training stays a separate decision and isn't part of this.
 
 **2. `TRACES=1`: decided 2026-11-07, yes**, inside the A6000 quote above. See "Thoughts at tool steps" for why.
 
-**3. Runtime mode, recorded.** Rows are pinned to the installed oMLX text path with earlier in-turn reasoning dropped: both Wisp (`service/agent/loop.py`) and the engine (`omlx/adapter/gemma4.py`) drop it, so histories carry no earlier thoughts. All 8,492 prompts match oMLX byte for byte. The running thoughts test doesn't change this today. If the user later changes the runtime to send thoughts back, the histories must be regenerated before generating answers.
+**3. Chat rows base answers with a web search: decided 2026-11-07, let them drop.** The user chose "Let them drop", relayed by the RC3 coordinator. Scope: `chat_direct_r4` and `knowledge_direct` finals (the row wants text) where base called `web_search`. When no sample passes and any sample called `web_search`, `choose_r5.py` puts the row in `drop.ids` and `web_search_drop_ids`, never back to its scripted text, and the call is still a rejection, not a pass. `finish_r5.py` drops it as `base_answered_with_web_search`, and the finished `stats.json` reports `web_search_drop` with each family's drops and the rows it has left. Rows where base called another tool (`wikipedia_summary`, `public_web`, `convert_units`, `calculate`) aren't in the decision's scope: they keep the old rule, staying scripted, and are counted per family in `scripted_kept_after_tool`. On the first 1,648 answers: `chat_direct_r4` 58 of 88 passed, 27 drop for web search, 3 stay scripted; `knowledge_direct` 57 of 86 passed, 14 drop, 15 stay scripted. The top-up round can still rescue a row, since only a row with no passing sample drops.
+
+**4. Runtime mode, recorded.** Rows are pinned to the installed oMLX text path with earlier in-turn reasoning dropped: both Wisp (`service/agent/loop.py`) and the engine (`omlx/adapter/gemma4.py`) drop it, so histories carry no earlier thoughts. All 8,492 prompts match oMLX byte for byte. The running thoughts test doesn't change this today. If the user later changes the runtime to send thoughts back, the histories must be regenerated before generating answers.
 
 ## Provenance
 
@@ -142,6 +144,7 @@ The heavy lock belongs to the thoughts test and I never touched it. These were s
 ## Known limits
 
 - About 95 first-step rows read email alone for a question that names no source, such as a booking code (mostly `mail_r3` and `lookup_answers_r4`). Mail is the likely home for most of them, and they serve as single-source contrast, but they do pull against "use all my sources". I left them, and the source gain is measured on the held-out set.
+- Out-of-memory on the A6000 (fixed for the top-up and traces passes): halving split a batch of 16 long prompts down to one, but the halves ran inside the `except` block, whose traceback kept the failed batch's KV cache, so a single 7.6k-token prompt still failed with 46.7 GiB held. 32 answers in the first pass (22 `gather_then_send_r4`, 8 `restraint_r4`, 2 `session_chat_r4`) were written as errors. Errors never count as done, so the top-up round regenerates them with the fix (halves now run after the failed batch is released). Any that still fail stay as no-pass rows and are counted.
 - Scripted finals and scripted tool-step thoughts are templated, and some read as instructions rather than reasoning. They're placeholders for base's text. Any that remain after generation are counted in `stats.json`, and a high count should stop the build for review.
 
 ## 40-record review

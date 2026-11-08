@@ -151,6 +151,34 @@ def test_placeholder_finals_after_a_tool_result_are_counted_as_waiting(tmp_path,
     assert stats["rendered_shapes"]["forced_empty"] == 3 and stats["drops"] == {}
 
 
+def test_chat_rows_base_web_searched_drop_with_their_own_reason_and_counts(tmp_path, monkeypatch):
+    """The user's decision on chat_direct_r4 / knowledge_direct: a row base answered with web_search drops, never back to its
+    scripted text, and the finished stats say how many each family has left."""
+    monkeypatch.setattr(F, "leaking_turns", lambda out: set())
+    rows = [_row("c-s0", family="chat_direct_r4"), _row("d-s0", family="chat_direct_r4"), _row("k-s0", family="knowledge_direct"),
+            _row("x-s0", content=F.PLACEHOLDER)]
+    args = _finish_inputs(tmp_path, rows, [], ["c-s0", "k-s0", "x-s0"])
+    (tmp_path / "stats.json").write_text(json.dumps({"r5": {"families": {
+        "chat_direct_r4": {"no_samples": [], "drop_web_search": ["c-s0"]}, "knowledge_direct": {"no_samples": [], "drop_web_search": ["k-s0"]},
+        "fam": {"no_samples": [], "drop": ["x-s0"]}}}}))
+    assert F.main(args) == 0
+    stats = json.load(open(tmp_path / "o" / "stats.json"))
+    assert stats["status"] == "complete" and stats["examples"] == 1
+    assert stats["drops"] == {"base_answered_with_web_search": 2, "no_base_answer_passed": 1}
+    assert stats["web_search_drop"] == {"dropped": 2, "families": {"chat_direct_r4": {"dropped_web_search": 1, "rows_left": 1},
+                                                                    "knowledge_direct": {"dropped_web_search": 1, "rows_left": 0}}}
+    reasons = {r["id"]: r["reason"] for r in map(json.loads, open(tmp_path / "o" / "drop_manifest.jsonl"))}
+    assert reasons == {"c-s0": "base_answered_with_web_search", "k-s0": "base_answered_with_web_search", "x-s0": "no_base_answer_passed"}
+
+
+def test_a_web_search_drop_missing_from_drop_ids_stops_the_build(tmp_path, monkeypatch):
+    monkeypatch.setattr(F, "leaking_turns", lambda out: set())
+    args = _finish_inputs(tmp_path, [_row("c-s0", family="chat_direct_r4")], [], [])
+    (tmp_path / "stats.json").write_text(json.dumps({"r5": {"families": {"chat_direct_r4": {"no_samples": [], "drop_web_search": ["c-s0"]}}}}))
+    with pytest.raises(SystemExit):
+        F.main(args)
+
+
 def _chain(prefix, final_msgs):
     first = _row(f"{prefix}-s0", kind="load", content="", think=True, thought="Load it for Monday, February 15, 2027.")
     call = _row(f"{prefix}-s1", msgs=TOOL_MSG, kind="call", content="")

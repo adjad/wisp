@@ -42,6 +42,7 @@ sys.path.insert(0, str(TRAINING / "ask-lora-r5" / "gpu"))
 os.environ.setdefault("ASK_LORA_ROUND", "4")
 os.environ.setdefault("ASK_LORA_R5", "1")
 
+import choose_r5  # noqa: E402
 import r5_stats  # noqa: E402
 import source_contract  # noqa: E402
 
@@ -124,6 +125,20 @@ def never_sampled_ids(stats_path) -> set:
     if rep is None:
         sys.exit(f"finish_r5: {stats_path} has no r5 family report; pass choose_r5.py's --out-stats")
     return {i for f in rep.values() for i in f.get("no_samples", [])}
+
+
+def web_search_drops(stats_path) -> dict:
+    """choose_r5's chat and knowledge rows base answered with a web search, which the user chose to drop: {id: family}."""
+    rep = json.load(open(stats_path)).get("r5") or {}
+    return {i: name for name, f in (rep.get("families") or {}).items() for i in f.get("drop_web_search", [])}
+
+
+def web_search_report(dropped: dict, out: Path, families) -> dict:
+    """Per family: finals dropped because base answered with a web search, and the rows each family has left."""
+    left = Counter(json.loads(line)["family"] for line in open(out / "meta.jsonl"))
+    per = Counter(dropped.values())
+    return {"dropped": sum(per.values()),
+            "families": {f: {"dropped_web_search": per.get(f, 0), "rows_left": left.get(f, 0)} for f in sorted(families)}}
 
 
 def load_chosen(path) -> dict:
@@ -229,12 +244,16 @@ def main(argv=None) -> int:
 
     # Never sampled is not the same as sampled and failed. choose_r5 lists both in drop.ids, so the stats tell them apart.
     never_sampled = never_sampled_ids(a.choose_stats)
+    web = web_search_drops(a.choose_stats)
     known_placeholders = set(placeholders_left(out))
     drops: dict[str, str] = {}
     for line in open(a.drop):
         i = line.strip()
         if i and i not in never_sampled:
-            drops[i] = "no_base_answer_passed"
+            drops[i] = "base_answered_with_web_search" if i in web else "no_base_answer_passed"
+    missing = sorted(set(web) - set(drops))
+    if missing:
+        sys.exit(f"finish_r5: {len(missing)} web-search drops in the choose stats are missing from {a.drop}, such as {missing[:3]}")
     for i in leaking_turns(out):
         drops.setdefault(i, "close_to_test_question")
     # A final base hasn't written yet has no thought *yet*: it only earns this drop once base has been asked and failed. A tool
@@ -278,6 +297,7 @@ def main(argv=None) -> int:
     stats = r5_stats.refresh(out, status=status, step="finish", extra={"drops": drop_reasons, "placeholders_left": len(set(left)),
                                                        "chosen_answers": len(chosen), "base_traces": len(traces),
                                                        "unsampled_scripted_finals": unsampled_scripted,
+                                                       "web_search_drop": web_search_report(web, out, set(web.values()) | choose_r5.WEB_SEARCH_DROP_FAMILIES),
                                                        **forced_empty_counts(forced_empty, forced_placeholders, never_sampled, awaiting_traces, set(drops))})
     shapes = stats["rendered_shapes"].get("forced_empty", 0)
     accounted = stats["forced_empty_awaiting_base"] + stats["forced_tool_steps_awaiting_traces"]

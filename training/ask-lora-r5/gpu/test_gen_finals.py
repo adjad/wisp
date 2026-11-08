@@ -285,6 +285,37 @@ def test_choose_r5_rejects_and_reports(tmp_path):
     assert choose.reject_reasons is c5.ORIG_REJECT                               # the patch is undone
 
 
+def test_chat_rows_base_answers_with_web_search_drop(tmp_path):
+    """The user's decision (2026-11-07, "Let them drop"): chat_direct_r4 / knowledge_direct rows base answers with web_search
+    drop instead of keeping their scripted text. A web_search call never passes; other tools and other families keep the old rule."""
+    rows = [mk(1, "chat_direct_r4"), mk(2, "chat_direct_r4"), mk(3, "knowledge_direct"), mk(4, "knowledge_direct"),
+            mk(5, "chat_direct_r4"), mk(6, "web_r3")]
+    partial = tmp_path / "partial.jsonl"
+    partial.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    web = [{"type": "function", "function": {"name": "web_search", "arguments": "{}"}}]
+    wiki = [{"type": "function", "function": {"name": "wikipedia_summary", "arguments": "{}"}}]
+    calls = {("chat_direct_r4-001", 0): web, ("knowledge_direct-003", 1): web, ("knowledge_direct-004", 0): wiki, ("web_r3-006", 0): web}
+    texts = {"chat_direct_r4-001": [""], "chat_direct_r4-002": [GOOD], "knowledge_direct-003": ["Here are 2, and 5 more.", ""],
+             "knowledge_direct-004": [""], "chat_direct_r4-005": ["<|tool_call>call:web_search{queries:[x]}"], "web_r3-006": [""]}
+    with open(tmp_path / "raw.jsonl", "w") as f:
+        for r in rows:
+            for k, t in enumerate(texts[r["meta"]["id"]]):
+                f.write(json.dumps({"id": r["meta"]["id"], "family": r["meta"]["family"], "k": k,
+                                    "request_hash": gen.request_hash(r["messages"][:-1], r["tools"]), "content": t, "reasoning": "r",
+                                    "tool_calls": calls.get((r["meta"]["id"], k), []), "finish_reason": "stop"}) + "\n")
+    _, chosen, stats = c5.choose_r5(str(partial), [str(tmp_path / "raw.jsonl")])
+    r5 = stats["r5"]
+    assert set(chosen) == {"chat_direct_r4-002"}
+    assert r5["web_search_drop_ids"] == ["chat_direct_r4-001", "chat_direct_r4-005", "knowledge_direct-003"]
+    assert set(r5["drop_ids"]) == set(r5["web_search_drop_ids"])
+    cd, kd = r5["families"]["chat_direct_r4"], r5["families"]["knowledge_direct"]
+    assert cd["drop_web_search"] == ["chat_direct_r4-001", "chat_direct_r4-005"] and cd["scripted_kept"] == [] and cd["to_drop"] == 2
+    assert kd["drop_web_search"] == ["knowledge_direct-003"]                 # one sample searched: enough
+    assert kd["scripted_kept"] == ["knowledge_direct-004"] and kd["scripted_kept_after_tool"] == {"wikipedia_summary": 1}
+    assert r5["families"]["web_r3"]["scripted_kept"] == ["web_r3-006"]       # not a chat family: the old rule
+    assert "3 chat/knowledge rows base answered with a web search" in c5.summary(r5)
+
+
 def test_choose_r5_memory_stall_allowed_after_a_tool_call_and_for_recall():
     rec = {"id": "x", "k": 0, "content": "Nothing was saved in your memory yet.", "reasoning": "r",
            "tool_calls": [], "finish_reason": "stop"}
@@ -429,6 +460,33 @@ def test_an_out_of_memory_batch_is_halved_not_lost(tok, tmp_path):
     recs = [json.loads(l) for l in open(tmp_path / "finals.s0of1.jsonl")]
     assert len(recs) == 8 and not any(r.get("error") for r in recs)
     assert sizes[0] == 8 and max(sizes[1:]) <= 4 and sizes.count(2) == 4
+
+
+def test_halves_run_after_the_failed_batch_is_released():
+    """The A6000 bug: halves ran inside the except block, whose traceback kept the failed batch's KV cache alive, so even one
+    prompt ran out of memory. Each half must start with no exception in flight and the failed call's frame gone."""
+    import gc
+    import weakref
+    alive, seen = [], []
+
+    class Cache:
+        pass
+
+    def gen(prompts, seed):
+        seen.append((len(prompts), sys.exc_info()[0], [r() is not None for r in alive]))
+        if len(prompts) > 1:
+            cache = Cache()                      # stands in for the batch's KV cache, referenced only by this frame
+            alive.append(weakref.ref(cache))
+            raise RuntimeError("CUDA out of memory.")
+        return [[1] for _ in prompts]
+    gc.disable()                                 # the fix must not lean on gc running by chance
+    try:
+        G.generate_halving(gen, [(0, {"meta": {"id": str(i)}}, [1, 2], False) for i in range(4)], log=silent)
+    finally:
+        gc.enable()
+    assert [n for n, _, _ in seen] == [4, 2, 1, 1, 2, 1, 1]
+    assert all(exc is None for _, exc, _ in seen)
+    assert all(not any(flags) for n, _, flags in seen if n == 1)
 
 
 def test_other_errors_are_not_retried_by_halving():

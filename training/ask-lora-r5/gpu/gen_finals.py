@@ -35,6 +35,7 @@ import _paths  # noqa: F401  (sys.path for gen.py / render.py)
 import argparse
 import glob
 import hashlib
+import gc
 import json
 import os
 import re
@@ -261,13 +262,21 @@ def generate_halving(generate_fn, grp: list, log=print) -> list:
         if len(grp) == 1 or not is_oom(exc):
             raise
         log(f"out of memory on a batch of {len(grp)} (longest prompt {max(len(g[2]) for g in grp)} tokens): halving")
-        try:
-            import torch
+    # Halve only once out of the except block. Inside it, the traceback still held the failed batch's tensors (its KV cache),
+    # so empty_cache freed nothing and a single 7.6k-token prompt then failed with 46.7 GiB held (the A6000 run, 2026-11-08).
+    free_gpu_memory()
+    mid = len(grp) // 2
+    return generate_halving(generate_fn, grp[:mid], log) + generate_halving(generate_fn, grp[mid:], log)
+
+
+def free_gpu_memory() -> None:
+    gc.collect()                      # the failed call's frames can sit in reference cycles
+    try:
+        import torch
+        if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        except Exception:  # noqa: BLE001  (no torch in the Mac tests)
-            pass
-        mid = len(grp) // 2
-        return generate_halving(generate_fn, grp[:mid], log) + generate_halving(generate_fn, grp[mid:], log)
+    except Exception:  # noqa: BLE001  (no torch in the Mac tests)
+        pass
 
 
 def run(rows: list[dict], tok, generate_fn, out_dir: str, shard: int, nshards: int, k: int,
