@@ -1013,6 +1013,34 @@ def test_picker_uses_math_attention_when_training_did():
     assert not EM.restrict_to_math_if_asked(c, {}) and not c.calls
 
 
+def test_out_of_memory_returns_before_the_group_is_split():
+    """The retry must not run inside the except block, whose traceback keeps the failed group's KV cache alive."""
+    import gc
+    import weakref
+    alive = []
+
+    class OOM(RuntimeError):
+        pass
+
+    class Cache:
+        pass
+
+    def gen():
+        cache = Cache()                  # stands in for the group's KV cache, referenced only by this frame
+        alive.append(weakref.ref(cache))
+        raise OOM("CUDA out of memory.")
+    gc.disable()
+    try:
+        new, err = T.generate_or_error(gen, OOM)
+        assert sys.exc_info()[0] is None and alive[0]() is None
+    finally:
+        gc.enable()
+    assert (new, err) == (None, T.OOM)
+    assert T.generate_or_error(lambda: [[1]], OOM) == ([[1]], None)
+    new, err = T.generate_or_error(lambda: (_ for _ in ()).throw(ValueError("bad")), OOM)
+    assert new is None and err == "ValueError: bad"
+
+
 def test_run_r5_batches_the_picker():
     sh = (TRAINING / "ask-lora-r5" / "mi355x" / "run_r5.sh").read_text()
     assert '--batch "${PICK_BATCH:-8}"' in sh and "WISP_ATTN=math" in sh

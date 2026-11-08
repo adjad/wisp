@@ -14,9 +14,9 @@ bash training/ask-lora-r5/mi355x/pack_kit.sh BUILD_DIR REUSE_FILE training/ask-l
 
 `seal_r5.py` removes every turn close to a test question, before any node time goes to it, and lists them in `overlap_manifest.json`.
 
-## On the RTX A6000: base's answers only (the user's choice, 2026-11-07)
+## On the RTX A6000: base's answers (the user's choice, 2026-11-07)
 
-About $0.60/h. Generation only: `run_r5.sh` refuses training commands on an NVIDIA box. The user starts and stops the instance; nobody enters credentials for them. Synthetic tool results only, nothing private goes up: just `r5-kit.tgz`. The base isn't gated, so setup downloads it with no token.
+About $0.60-0.68/h. The user starts and stops the instance; nobody enters credentials for them. Synthetic tool results only, nothing private goes up: just `r5-kit.tgz`. The base isn't gated, so setup downloads it with no token.
 
 ```bash
 # on the Mac
@@ -33,6 +33,22 @@ tmux new -d -s r5 'TRACES=1 BATCH=4 bash run_r5.sh finals partial.jsonl > ~/wisp
 ```
 
 The full run starts only if the smoke's measured speed projects answers plus tool-step thoughts within about $60 and about 4 days. Otherwise the box stays idle and the coordinator decides. Then download `~/wisp/finals/{chosen.jsonl,drop.ids,stats.json,rejections.jsonl,generation.*.json,traces.chosen.jsonl,traces.stats.json}` and follow "On the Mac: the final build".
+
+## On the RTX A6000: training (the user's choice, 2026-11-08)
+
+Training needs its own explicit OK, after the gate fixes in `DATASET-HANDOFF.md`. One GPU runs the same recipe as the node: batch 8 is 1 row x 8 accumulation steps either way (`run_sft.sh`). Upload the three zips from "On the Mac: the final build" to `~/wisp/uploads`, plus a kit from this commit or later.
+
+```bash
+bash run_r5.sh setup && bash run_r5.sh check     # skip setup on a box that already ran it; driver 570+ for cu128
+bash run_r5.sh unpack SHA256 && bash run_r5.sh preflight
+bash run_r5.sh smoke             # strict sdpa-vs-math parity (exit 8: ATTN=math for everything after), peak memory under 40 GiB,
+                                 # and its tok/s: rerun ../../ask-lora-r4/a6000/estimate.py with it before paying for the run
+bash run_r5.sh train             # background; `status` for the step; check the snapshot at step 400 first
+bash run_r5.sh unzip-pickers && bash run_r5.sh pick    # one model after another on GPU 0, 8 generations together
+bash run_r5.sh merge && bash run_r5.sh package && bash run_r5.sh bundle
+```
+
+Estimate before smoke measures it (estimate.py, r2's 624 tok/s on this card, about 4,360 rows of 6,650 tokens): training about 28 h (25-34), and about 40 h (35-48) with the picker, merge and download, about $24-27. Disk: about 7 GB of packages, the 15 GB base, small adapters, and 16 GB for each merged model. On a 100 GB disk, merge one checkpoint at a time (`merge CKPT`) and download it before the next, or merge on the Mac with `../../ask-lora-r3/brev/merge_mac.py`.
 
 ## On the node: base's answers
 

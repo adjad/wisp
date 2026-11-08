@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import gc
 import importlib.util
 import json
 import math
@@ -682,6 +683,27 @@ def batch_check_passes(results: list[bool]) -> bool:
     return bool(results) and sum(results) >= len(results) - 1
 
 
+OOM = "OutOfMemoryError"
+
+
+def generate_or_error(generate, oom_type) -> tuple[list | None, str | None]:
+    """(tokens, None), or (None, the error). It returns out of the except block instead of retrying inside it: there the
+    traceback still holds the failed group's KV cache, so on a 48 GB card even one prompt alone ran out of memory (the same
+    bug r5's base answers hit on the A6000, 2026-11-08). The caller frees memory, then splits the group."""
+    try:
+        return generate(), None
+    except oom_type:
+        return None, OOM
+    except Exception as e:  # noqa: BLE001 - recorded, scored as malformed, never as an answer
+        return None, f"{type(e).__name__}: {e}"[:300]
+
+
+def free_gpu_memory(torch) -> None:
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
 def generate_ids(m, torch, encs: list[dict], pad: int, seed: int, device, gen_kw: dict, max_new: int) -> list[list[int]]:
     """Generate for one group. `encs` holds one dict of token lists per prompt, such as input_ids and attention_mask."""
     enc = {k: torch.tensor(pad_left([e[k] for e in encs], pad if k == "input_ids" else 0), device=device) for k in encs[0]}
@@ -781,17 +803,13 @@ def cmd_generate(a) -> int:
 
     def group_records(ck: str, todo: list[tuple[int, int]], seed: int) -> list[dict]:
         t0 = time.monotonic()
-        try:
-            new = generate_ids(m, torch, [encs[i] for i, _ in todo], pad, seed, a.device, gen_kw, a.max_new)
-        except torch.cuda.OutOfMemoryError:
-            torch.cuda.empty_cache()
+        new, err = generate_or_error(
+            lambda: generate_ids(m, torch, [encs[i] for i, _ in todo], pad, seed, a.device, gen_kw, a.max_new),
+            torch.cuda.OutOfMemoryError)
+        if err == OOM:
+            free_gpu_memory(torch)
             if len(todo) > 1:             # the group didn't fit: each on its own, as a one-at-a-time run would
                 return [r for i, s in todo for r in group_records(ck, [(i, s)], row_seed(a.seed, rows[i]["id"], s))]
-            new = None
-            err = "OutOfMemoryError"
-        except Exception as e:  # noqa: BLE001 - recorded, scored as malformed, never as an answer
-            new = None
-            err = f"{type(e).__name__}: {e}"[:300]
         secs = round((time.monotonic() - t0) / len(todo), 2)
         recs = []
         for k, (i, s) in enumerate(todo):

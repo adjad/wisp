@@ -1,26 +1,30 @@
 #!/bin/bash
-# r5 on an 8x AMD MI355X node ($3 per GPU-hour, $24/h; the user's choice, 2026-11-06), or base's answers only on one RTX A6000
-# (about $0.60/h; the user's choice for generation, 2026-11-07; nothing trains there). A thin layer over
-# ../../ask-lora-r4/a6000/run_sft.sh with what this hardware needs: --attn math (gfx950's fused SDPA backward fails the LoRA
-# grad-cosine check) and one training process per GPU. r3 ran this hardware at 2.8 s per step (2026-11-02).
+# r5 on one RTX A6000 (about $0.60/h): base's answers (the user's choice, 2026-11-07) and training (the user's choice,
+# 2026-11-08, replacing the AMD node for training). The 8x AMD MI355X path ($24/h) still works. A thin layer over
+# ../../ask-lora-r4/a6000/run_sft.sh, the one-GPU A6000 recipe (batch 8 = 1 row x 8 accumulation, so the same optimizer steps
+# on one GPU or eight), with what each card needs: on the MI355X --attn math (gfx950's fused SDPA backward fails the LoRA
+# grad-cosine check) and one training process per GPU; on the A6000 sdpa, which smoke's strict parity check compares with
+# math before anything trains (exit 8: rerun everything with ATTN=math).
 #
-#   bash run_r5.sh setup            ROCm torch (rocm7.2 index first), transformers 5.22.1, peft 0.21.2, the 16 GB base
+#   bash run_r5.sh setup            the pinned stack (A6000: torch 2.11.0+cu128; MI355X: ROCm, rocm7.2 index first),
+#                                   transformers 5.22.1, peft 0.21.2, the 16 GB base
 #   bash run_r5.sh check            GPUs and versions
 #   bash run_r5.sh finals PARTIAL [OUT_DIR]   base writes the final answers (../gpu/run_finals.sh), default ~/wisp/finals
-#   bash run_r5.sh unpack SHA | preflight | smoke | train [resume-dir] | status     as run_sft.sh, on all GPUs
+#   bash run_r5.sh unpack SHA | preflight | smoke | train [resume-dir] | status     as run_sft.sh, on every GPU
 #   bash run_r5.sh unzip-pickers    as run_sft.sh
-#   bash run_r5.sh pick             base + up to MAX_CKPTS (3) candidates, one GPU each, PICK_BATCH (8) generations
-#                                   together, then run_sft.sh's decision
+#   bash run_r5.sh pick             base + up to MAX_CKPTS (3) candidates, PICK_BATCH (8) generations together, then
+#                                   run_sft.sh's decision. With a GPU for each model and mmeval, they run side by side;
+#                                   with fewer (the A6000), one after another on GPU 0
 #   bash run_r5.sh picked | merge [ckpt] | package | bundle | stage2      as run_sft.sh
 #
 # Early stop: `status` shows the step. Stop at step 400 by killing the pid in ~/wisp/gemma/ask-lora/train.pid, then check
-# that snapshot before paying for the rest. Never leave the node idle: it bills while idle.
+# that snapshot before paying for the rest. The box bills while idle.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SFT="$HERE/run_sft.sh"; [ -f "$SFT" ] || SFT="$HERE/../../ask-lora-r4/a6000/run_sft.sh"
 [ -f "$SFT" ] || { echo "FAIL: run_sft.sh not found next to run_r5.sh" >&2; exit 1; }
-# Hardware. NVIDIA (the RTX A6000, sm_86, chosen for r5's generation on 2026-11-07): run_sft.sh's pinned cu128 stack, one GPU,
-# attention sdpa by default, which SELFCHECK compares with math before any answer is kept. AMD (the 8x MI355X): math only.
+# Hardware. NVIDIA (the RTX A6000, sm_86): run_sft.sh's pinned cu128 stack, one GPU, attention sdpa by default, which
+# SELFCHECK (answers) and smoke (training) compare with math first. AMD (the 8x MI355X): math only.
 if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
   HW=cuda; ATTN="${ATTN:-sdpa}"; export ATTN WISP_ATTN="$ATTN" NPROC="${NPROC:-$(nvidia-smi -L | grep -c '^GPU')}"
 else
@@ -57,23 +61,35 @@ pick)
   BASE="$(cat "$TD/base_path")"; mkdir -p "$PK/text"
   CK="${CKPTS:-$("$PY" "$MM/pick_text.py" candidates --ckpt-root "$OUT" --max "${MAX_CKPTS:-3}" --min-frac "${MIN_FRAC:-0.45}")}" || die "no candidates"
   [ -n "$CK" ] || die "no candidate checkpoints"
-  say "candidates: $CK, plus the base; each on its own GPU, mmeval on the last GPU"
+  say "candidates: $CK, plus the base"
   GATE=(); [ -f "$MM/data/gate_vision/cases.json" ] && GATE+=(--vision-cases "$MM/data/gate_vision/cases.json")
   [ -f "$MM/data/gate_audio/truth.json" ] && GATE+=(--audio-truth "$MM/data/gate_audio/truth.json")
-  LAST=$(( NPROC - 1 ))
-  HIP_VISIBLE_DEVICES=$LAST CUDA_VISIBLE_DEVICES=$LAST "$PY" "$MM/eval_mm.py" --base "$BASE" --ckpt-root "$OUT" --ckpts "$CK" --data "$MM/data" \
-      "${GATE[@]}" --seed $SEED --out "$PK/mmeval" > "$PK/mmeval.log" 2>&1 &
-  PIDS=($!); i=0
+  # Side by side needs a GPU for each model plus one for mmeval; otherwise (one A6000) one after another on GPU 0.
+  NMODELS=$(( $(tr ',' '\n' <<< "$CK" | grep -c .) + 1 ))
+  if [ "$NPROC" -gt "$NMODELS" ]; then SEQ=0; LAST=$(( NPROC - 1 )); else SEQ=1; LAST=0; fi
+  say "$NMODELS models on $NPROC GPU(s): $([ $SEQ = 1 ] && echo 'one after another' || echo 'side by side')"
+  PIDS=()
+  on_gpu() {      # GPU LOG COMMAND...: in the background on its own GPU, or in the foreground on GPU 0
+    local g=$1 log=$2; shift 2
+    if [ "$SEQ" = 1 ]; then
+      HIP_VISIBLE_DEVICES=0 CUDA_VISIBLE_DEVICES=0 "$@" > "$log" 2>&1 || die "$(basename "$log" .log) failed (tail $log)"
+    else
+      HIP_VISIBLE_DEVICES=$g CUDA_VISIBLE_DEVICES=$g "$@" > "$log" 2>&1 & PIDS+=($!)
+    fi
+  }
+  on_gpu "$LAST" "$PK/mmeval.log" "$PY" "$MM/eval_mm.py" --base "$BASE" --ckpt-root "$OUT" --ckpts "$CK" --data "$MM/data" \
+      ${GATE[@]+"${GATE[@]}"} --seed $SEED --out "$PK/mmeval"
+  i=0
   for name in base ${CK//,/ }; do
     D="$PK/text-$name"; mkdir -p "$D"
     if [ "$name" = base ]; then ARGS=(--ckpts base); else ARGS=(--ckpts "$name" --no-base); fi
-    HIP_VISIBLE_DEVICES=$i CUDA_VISIBLE_DEVICES=$i "$PY" "$MM/pick_text.py" generate --base "$BASE" --ckpt-root "$OUT" "${ARGS[@]}" \
+    on_gpu "$i" "$PK/text-$name.log" "$PY" "$MM/pick_text.py" generate --base "$BASE" --ckpt-root "$OUT" "${ARGS[@]}" \
         --data "$MM/data/text-dev.jsonl" --out "$D" --limit "${DEV_STEPS:-360}" --samples "${SAMPLES:-1}" \
         --samples-safety "${SAMPLES_SAFETY:-3}" --samples-absence "${SAMPLES_ABSENCE:-3}" --safety-steps "${SAFETY_STEPS:-60}" \
-        --absence-steps "${ABSENCE_STEPS:-60}" --batch "${PICK_BATCH:-8}" --device 0 > "$PK/text-$name.log" 2>&1 &
-    PIDS+=($!); i=$(( i + 1 ))
+        --absence-steps "${ABSENCE_STEPS:-60}" --batch "${PICK_BATCH:-8}" --device 0
+    i=$(( i + 1 ))
   done
-  for p in "${PIDS[@]}"; do wait "$p" || die "a picker process failed (see $PK/*.log)"; done
+  for p in ${PIDS[@]+"${PIDS[@]}"}; do wait "$p" || die "a picker process failed (see $PK/*.log)"; done
   cat "$PK"/text-*/text_answers.jsonl > "$PK/text/text_answers.jsonl"
   "$PY" - "$PK" "$CK" <<'PYI'
 import json, sys
@@ -90,6 +106,5 @@ PYI
   cat "$PK/picked.table.md"
   [ $rc -eq 0 ] && { say "TOP:"; cat "$PK/picked.path"; } || { say "NO CHECKPOINT QUALIFIES (exit $rc): don't merge; bring $PK back to the Mac"; exit $rc; } ;;
 *)
-  [ "$HW" = rocm ] || die "on this NVIDIA box r5 only generates base's answers (setup, check, finals); '$1' isn't allowed here"
   exec bash "$SFT" "$@" ;;
 esac
