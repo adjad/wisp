@@ -23,6 +23,7 @@ from gen import request_hash  # noqa: E402
 
 _ARG = re.compile(r'([A-Za-z_][\w]*)\s*:\s*(?:<\|"\|>(.*?)<\|"\|>|([^,{}]+))', re.S)
 MIN_WORDS, MAX_WORDS = 4, 300
+NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 
 
 def read_jsonl(path):
@@ -36,16 +37,31 @@ def read_jsonl(path):
 
 
 def fold(value) -> str:
-    return re.sub(r"\s+", " ", str(value).strip().strip('"').lower())
+    """One comparable form per value. ``False`` and ``0`` are values, not absence: ``calendar_only=false`` is a different read
+    from ``calendar_only=true``. Booleans fold to true/false and numbers to one form, so ``3``, ``3.0`` and ``"3"`` agree."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    text = re.sub(r"\s+", " ", str(value).strip().strip('"').lower())
+    if NUMBER.fullmatch(text):
+        n = float(text)
+        return str(int(n)) if n.is_integer() else repr(n)
+    return text
+
+
+def absent(value) -> bool:
+    """Only an unset value: null, an empty string, an empty list. Never False or 0."""
+    return value is None or (isinstance(value, (str, list, dict)) and not (value.strip() if isinstance(value, str) else value))
 
 
 def parse_args(raw) -> dict:
     """Gemma's `{key:<|"|>value<|"|>,n:3}` call text, loosely: each top-level key to its folded value."""
     if isinstance(raw, dict):
-        return {k: fold(v) for k, v in raw.items()}
+        return {k: fold(v) for k, v in raw.items() if not absent(v)}
     out = {}
     for key, quoted, plain in _ARG.findall(str(raw or "")):
-        out[key] = fold(quoted if quoted else plain)
+        value = quoted if quoted else plain
+        if not absent(value):
+            out[key] = fold(value)
     return out
 
 
@@ -55,25 +71,35 @@ def scripted_calls(row: dict) -> list[tuple[str, dict]]:
         fn = tc["function"]
         args = fn.get("arguments")
         args = json.loads(args) if isinstance(args, str) else (args or {})
-        out.append((fn["name"], {k: fold(v) for k, v in args.items() if v not in (None, "", False)}))
+        out.append((fn["name"], {k: fold(v) for k, v in args.items() if not absent(v)}))
     return out
 
 
-def calls_match(base_calls: list[dict], want: list[tuple[str, dict]]) -> bool:
-    """The same tools, each with the same scripted values. Base may add an argument the script leaves out. Order is free,
-    because parallel reads have none."""
+def call_problem(base_calls: list[dict], want: list[tuple[str, dict]]) -> str | None:
+    """None when base made the scripted calls: the same tools, each with exactly the scripted values (False and 0 included)
+    and no other set argument. An extra argument fails: the schemas declare no defaults, so ``calendar_only``, ``unread``,
+    ``count``, ``account`` or ``cc`` can't be shown to leave the call's scope alone, and reasoning that chose them explains
+    a different call. Order is free, because parallel reads have none.
+    -> "call_mismatch" (other tools or values) or "call_extra_argument" (the scripted values plus more)."""
     got = [(c["function"]["name"], parse_args(c["function"].get("arguments"))) for c in base_calls or []]
     if sorted(n for n, _ in got) != sorted(n for n, _ in want):
-        return False
-    left = list(got)
+        return "call_mismatch"
+    left, extra = list(got), False
     for name, args in want:
-        for i, (n, a) in enumerate(left):
-            if n == name and all(a.get(k) == v for k, v in args.items()):
-                left.pop(i)
-                break
-        else:
-            return False
-    return True
+        exact = [i for i, (n, a) in enumerate(left) if n == name and a == args]
+        if exact:
+            left.pop(exact[0])
+            continue
+        wider = [i for i, (n, a) in enumerate(left) if n == name and all(a.get(k) == v for k, v in args.items())]
+        if not wider:
+            return "call_mismatch"
+        left.pop(wider[0])
+        extra = True
+    return "call_extra_argument" if extra else None
+
+
+def calls_match(base_calls: list[dict], want: list[tuple[str, dict]]) -> bool:
+    return call_problem(base_calls, want) is None
 
 
 def reject_reasons(rec: dict, row: dict) -> list[str]:
@@ -93,8 +119,8 @@ def reject_reasons(rec: dict, row: dict) -> list[str]:
         out.append("text_with_call")           # production's tool steps carry no text beside the call
     if not rec.get("tool_calls"):
         out.append("no_call")
-    elif not calls_match(rec["tool_calls"], scripted_calls(row)):
-        out.append("call_mismatch")
+    elif problem := call_problem(rec["tool_calls"], scripted_calls(row)):
+        out.append(problem)
     if rec.get("request_hash") != request_hash(row["messages"][:-1], row.get("tools")):
         out.append("stale_hash")
     return out

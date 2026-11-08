@@ -434,9 +434,54 @@ def test_trace_is_kept_only_when_base_reached_the_same_call():
 def test_parallel_calls_match_in_any_order():
     import choose_traces as T
     want = [("view_emails", {"query": "trip"}), ("search_notes", {"query": "trip"})]
-    got = [{"function": {"name": "search_notes", "arguments": '{query:<|"|>trip<|"|>}'}}, {"function": {"name": "view_emails", "arguments": '{query:<|"|>Trip<|"|>,count:5}'}}]
+    got = [{"function": {"name": "search_notes", "arguments": '{query:<|"|>trip<|"|>}'}}, {"function": {"name": "view_emails", "arguments": '{query:<|"|>Trip<|"|>}'}}]
     assert T.calls_match(got, want)
     assert not T.calls_match(got[:1], want)
+
+
+def _call(name, text):
+    return {"function": {"name": name, "arguments": text}}
+
+
+def _scripted(name, args):
+    import choose_traces as T
+    return T.scripted_calls({"messages": [{"role": "assistant", "content": "", "tool_calls": [{"function": {"name": name, "arguments": args}}]}]})
+
+
+def test_false_and_zero_are_values_that_must_match():
+    """The bug: scripted calendar_only=false (and 0) was dropped before comparing, so base's calendar_only=true matched and
+    its reasoning was paired with a narrower read."""
+    import choose_traces as T
+    want = _scripted("get_upcoming", {"calendar_only": False, "days": 7})
+    assert T.call_problem([_call("get_upcoming", "{calendar_only:true,days:7}")], want) == "call_mismatch"
+    assert T.call_problem([_call("get_upcoming", "{days:7}")], want) == "call_mismatch"           # the scripted false must be stated
+    assert T.call_problem([_call("get_upcoming", "{calendar_only:false,days:7}")], want) is None
+    assert T.call_problem([_call("get_upcoming", {"calendar_only": False, "days": 7.0})], want) is None   # parsed args, 7.0 == 7
+    off = _scripted("toggle_setting", {"setting": "wifi", "on": False})
+    assert T.call_problem([_call("toggle_setting", '{setting:<|"|>wifi<|"|>,on:true}')], off) == "call_mismatch"
+    zero = _scripted("clear_past_reminders", {"days": 0})
+    assert T.call_problem([_call("clear_past_reminders", "{days:3}")], zero) == "call_mismatch"
+    assert T.call_problem([_call("clear_past_reminders", "{days:0}")], zero) is None
+
+
+def test_extra_set_arguments_change_the_call():
+    import choose_traces as T
+    want = _scripted("get_upcoming", {"query": "dentist"})
+    assert T.call_problem([_call("get_upcoming", '{query:<|"|>dentist<|"|>,calendar_only:true}')], want) == "call_extra_argument"
+    assert T.call_problem([_call("get_upcoming", '{query:<|"|>dentist<|"|>,calendar_only:false}')], want) == "call_extra_argument"
+    assert T.call_problem([_call("get_upcoming", '{query:<|"|>dentist<|"|>,days:0}')], want) == "call_extra_argument"
+    assert T.call_problem([_call("get_upcoming", '{query:<|"|>dentist<|"|>,account:<|"|><|"|>}')], want) is None   # unset
+    empty = _scripted("search_reminders", {"query": "", "scope": "open"})
+    assert T.call_problem([_call("search_reminders", '{scope:<|"|>open<|"|>}')], empty) is None
+
+
+def test_extra_argument_is_its_own_rejection():
+    import choose_traces as T
+    h = gen.request_hash([{"role": "user", "content": "q"}], TOOLS)
+    row = {"meta": {"id": "a-s0", "family": "f"}, "tools": TOOLS, "messages": [{"role": "user", "content": "q"}, CALL]}
+    rec = {"reasoning": "They asked about the permit, so I should read their mail.", "content": "", "finish_reason": "stop", "request_hash": h,
+           "tool_calls": [_call("view_emails", '{query:<|"|>Permit<|"|>,unread:true}')]}
+    assert T.reject_reasons(rec, row) == ["call_extra_argument"]
 
 
 def test_generator_can_target_call_rows():
