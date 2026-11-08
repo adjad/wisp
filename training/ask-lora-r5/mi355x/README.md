@@ -70,7 +70,7 @@ Read `stats.json`. Download `chosen.jsonl`, `drop.ids`, `stats.json`, `rejection
 ```bash
 PY=~/Desktop/MOE_Project/.venv/bin/python
 $PY training/ask-lora-r5/mi355x/finish_r5.py --build BUILD_DIR --chosen chosen.jsonl --drop drop.ids --rejections rejections.jsonl \
-    --choose-stats stats.json [--traces traces.chosen.jsonl] --out FINAL
+    --choose-stats stats.json [--traces traces.chosen.jsonl] --wisp-repo PIN_DIR --out FINAL     # drops base rows the validator flags
 (cd training/ask-lora-r2/builder && ASK_LORA_ROUND=4 ASK_LORA_R5=1 ASK_LORA_OUT=FINAL WISP_REPO=PIN_DIR $PY validate.py)
 $PY training/ask-lora-r5/mi355x/report_r5.py --build FINAL --model MODEL_DIR --out FINAL/report --r4-zip training/ask-lora-r4/a6000/out/ask-lora-data.zip
 $PY training/ask-lora-r4/a6000/pack_r4.py --model ~/Desktop/OMLX_Model_Files/Jundot/gemma-4-E4B-it-oQ4e-mtp --data FINAL --out-dir OUT --no-estimate

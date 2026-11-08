@@ -16,6 +16,13 @@ TOOL_MSG = [{"role": "system", "content": "s"}, {"role": "user", "content": "q"}
             {"role": "tool", "tool_call_id": "c", "content": "r"}]
 
 
+@pytest.fixture(autouse=True)
+def _no_real_validator(request, monkeypatch):
+    """The real validate.py imports the pinned service; these tests stub it unless they test it."""
+    if request.node.name != "test_validator_failures_maps_lines_to_base_rows_only":
+        monkeypatch.setattr(F, "validator_failures", lambda out, repo: {})
+
+
 def _write(d, ids, content="ok", extra=None):
     for s, meta in F.SPLITS.items():
         (d / f"{s}.jsonl").write_text("".join(json.dumps({"messages": [{"role": "assistant", "content": content}]}) + "\n" for _ in ids))
@@ -241,3 +248,39 @@ def test_seal_refuses_the_pin(tmp_path, monkeypatch):
 @pytest.mark.parametrize("name", ["finish_r5.py", "seal_r5.py"])
 def test_docstrings_name_the_rule(name):
     assert "test question" in (F.HERE / name).read_text()
+
+
+def test_base_rows_the_validator_flags_drop_and_scripted_ones_stay(tmp_path, monkeypatch):
+    """The user's call, 2026-11-08 ("Drop them"): a base answer that passed the chooser but fails the builder's validator leaves
+    the build with its keys; a flagged base tool step takes its turn; a flagged scripted row stays so validation still fails."""
+    monkeypatch.setattr(F, "leaking_turns", lambda out: set())
+    rows = [_row("a-s0", distilled=True), _row("s-s0")] + _chain("t", TOOL_MSG)
+    rows[3][1].update(think=True, thought="Read it now.", distilled=True)           # t-s1: base's tool-step thought
+    flagged = {"a-s0": ["injection:payload_in_reply"], "t-s1": ["think:injection_payload"]}
+    monkeypatch.setattr(F, "validator_failures", lambda out, repo: flagged)
+    assert F.main(_finish_inputs(tmp_path, rows, [], [])) == 0
+    assert [json.loads(m)["id"] for m in open(tmp_path / "o" / "meta.jsonl")] == ["s-s0"]
+    man = {r["id"]: r for r in map(json.loads, open(tmp_path / "o" / "drop_manifest.jsonl"))}
+    assert {i: r["reason"] for i, r in man.items()} == {"a-s0": "validator_failed_after_choose", "t-s1": "validator_failed_after_choose",
+                                                       "t-s0": "turn_lost_a_tool_step", "t-s2": "turn_lost_a_tool_step"}
+    assert man["a-s0"]["problems"] == ["injection:payload_in_reply"]
+
+
+def test_validator_failures_maps_lines_to_base_rows_only(tmp_path, monkeypatch):
+    stub = tmp_path / "validate.py"
+    stub.write_text("import json, sys\n"
+                    "out = sys.argv[sys.argv.index('--problems-out') + 1]\n"
+                    "rows = [{'file': 'all.jsonl', 'line': 1, 'key': 'x', 'where': 'all.jsonl:1 a'},\n"
+                    "        {'file': 'all.jsonl', 'line': 2, 'key': 'y', 'where': 'all.jsonl:2:3 b'},\n"
+                    "        {'file': 'all.jsonl', 'line': 1, 'key': 'z', 'where': 'all.jsonl:1 c'}]\n"
+                    "open(out, 'w').write(''.join(json.dumps(r) + '\\n' for r in rows)); sys.exit(1)\n")
+    monkeypatch.setattr(F, "VALIDATE", stub)
+    _build(tmp_path / "b", [_row("base-s0", distilled=True), _row("scripted-s0")])
+    assert F.validator_failures(tmp_path / "b", "/pin") == {"base-s0": ["x", "z"]}
+    with pytest.raises(SystemExit):
+        F.validator_failures(tmp_path / "b", None)                                 # never against this checkout
+
+
+def test_validate_writes_every_problem_line():
+    src = (F.VALIDATE).read_text()
+    assert "--problems-out" in src and "on_bad=record if sink else None" in src

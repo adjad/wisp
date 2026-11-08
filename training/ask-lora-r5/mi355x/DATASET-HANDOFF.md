@@ -1,6 +1,26 @@
 # r5 dataset handoff, 2026-11-07
 
-**The dataset isn't complete, and nothing trained.** Base hasn't written its answers yet. On 2026-11-07 the user chose one RTX A6000 for that generation, and only that, and started the instance themselves. Everything that needs no GPU is done and checked. oMLX on port 8000 wasn't used.
+## Built 2026-11-08: the finished dataset
+
+**The dataset is complete and validated. Nothing trained**; training needs its own OK, after the owners' fixes under "Separate from this dataset". Output (git-ignored): `training/ask-lora-r5/data/r5-final/`, from the box's `~/wisp/finals/` in `data/a6000-finals/` (14 files, each matching the box's sha256). The box ran `data/r5-prep/sealed` (`partial.jsonl` sha256 `7bb07887…`).
+
+| | Result |
+| --- | --- |
+| Rows | 7,926: train 7,189, valid 737; 45 families; status `complete` |
+| `validate.py` (pin `data/pin-7e442f2d`) | exit 0, no problems, 0 prompt groups in both splits. The private-results denylist didn't run: no askeval `results.jsonl` on this Mac |
+| Final answers | base 4,108 (2,715 new, 1,393 reused from r4), scripted 84 |
+| Tool-step thoughts | 860 of 3,994 from base. Base reached the scripted call on its own only that often: 1,009 picked another tool (`lookup_contact` before `send_message`, `get_upcoming` for `get_my_day_plan`), 1,173 the same tool with other values. Ignoring spacing would add only 7 |
+| Removed | 568: 378 with no thought after a tool result (122 rows, 256 more from their turns), 84 with no passing base answer, 55 chat and knowledge rows base answered with a tool, 51 failing the validator |
+| Tool drops | `chat_direct_r4` 27 (web_search 26, wikipedia_summary 2, public_web 1, use_skill 1), 61 left; `knowledge_direct` 28 (web_search 16, wikipedia_summary 13, calculate 3, convert_units 3, public_web 1), 67 left |
+| sha256 | all `2d3f2937…`, train `00e03ce8…`, valid `7144e85d…` |
+
+**Decided 2026-11-08:** base answers that passed the box's chooser but fail the builder's validator drop, in the user's words "Drop them". There were 51, all base-written finals: 36 repeat a planted instruction's payload in the reply or thought, 15 say Wisp can't do something without a read, and 1 quotes a toolbench fact. `finish_r5.py --wisp-repo PIN` now runs the validator and drops such rows with their keys in `drop_manifest.jsonl`; a scripted row it flags stays, so validation still fails on it.
+
+The second 40-record review (`report/sample40.jsonl`, 23 of 40 base-written) found nothing blocking: base's voice is intact, and no dates, amounts or calls are wrong. Minor: one scripted thought says "next month" over a `summarize_emails` call for this month, and one base thought calls Sam "her".
+
+## Before generation (2026-11-07)
+
+**The dataset wasn't complete then, and nothing trained.** Base hasn't written its answers yet. On 2026-11-07 the user chose one RTX A6000 for that generation, and only that, and started the instance themselves. Everything that needs no GPU is done and checked. oMLX on port 8000 wasn't used.
 
 Audited commit: `786122746d1c1abd9719559344a41b7d03e915e0`. Rows rebuilt on a clean commit, the one after this file's last change (see "Provenance"). Output folder (git-ignored): `training/ask-lora-r5/data/r5-prep/`. Hashes: `SHA256SUMS` in that folder. `prep_r5.sh` rebuilds all of it except the served-prompt check.
 

@@ -10,8 +10,11 @@ Steps, in order:
 3. Mark every row's origin (see ``r5_stats``).
 4. Remove rows, each with its reason in ``drop_manifest.jsonl``: answers still the placeholder, questions close to a test
    question (no exemption), an empty thought after a tool result with nothing to replace it (a tool step takes its whole turn with
-   it), and any chosen answer that fails ``source_contract`` here even though it passed the chooser (which means the two have
-   drifted).
+   it), any chosen answer that fails ``source_contract`` here even though it passed the chooser (which means the two have
+   drifted), and any base-written row the builder's ``validate.py`` flags (the user's call, 2026-11-08: "Drop them"). The box's
+   chooser doesn't run the builder's checks, so base can pass it while repeating a planted instruction, claiming it lacks a tool
+   without looking, or quoting a toolbench fact. A flagged tool step takes its turn with it. A scripted row the validator flags
+   stays, so validation still fails on it: that's a build bug, not base's answer.
 5. Refuse a build that still holds a placeholder, and recount ``stats.json`` from the rows left.
 
 **A build is ``complete`` only when every final was actually sampled.** Without ``--allow-incomplete``, finals that base never
@@ -47,6 +50,7 @@ import r5_stats  # noqa: E402
 import source_contract  # noqa: E402
 
 SPLICE = TRAINING / "ask-lora-r4" / "distill" / "splice.py"
+VALIDATE = TRAINING / "ask-lora-r2" / "builder" / "validate.py"
 PLACEHOLDER = r5_stats.PLACEHOLDER    # scen_r5_debuglog.BASE_WRITES; test_finish_r5.py compares them
 SPLITS = {"all": "meta.jsonl", "train": "train.meta.jsonl", "valid": "valid.meta.jsonl"}    # split -> its meta file
 REUSE_MODEL = "r4-served-base"
@@ -165,6 +169,30 @@ def contract_failures(out: Path) -> dict:
     return bad
 
 
+def validator_failures(out: Path, wisp_repo: str | None) -> dict:
+    """id -> the validator's problem keys, for each base-written row (``distilled``) it flags in ``all.jsonl``. It runs against
+    the pinned service code the rows were built from, never this checkout's."""
+    if not wisp_repo:
+        sys.exit("finish_r5: pass --wisp-repo PIN_DIR (or set WISP_REPO): the validator must check against the build's pin")
+    sink = out / "validate.problems.jsonl"
+    env = {**os.environ, "ASK_LORA_ROUND": "4", "ASK_LORA_R5": "1", "ASK_LORA_OUT": str(out), "WISP_REPO": wisp_repo}
+    r = subprocess.run([sys.executable, str(VALIDATE), str(out / "all.jsonl"), "--problems-out", str(sink)], env=env,
+                       cwd=VALIDATE.parent, capture_output=True, text=True)
+    if r.returncode not in (0, 1) or not sink.exists():
+        sys.exit(f"finish_r5: validate.py crashed (exit {r.returncode}): {r.stderr[-600:]}")
+    keys: dict[int, set] = {}
+    for p in map(json.loads, open(sink)):
+        if p.get("file") == "all.jsonl" and p.get("line"):
+            keys.setdefault(p["line"], set()).add(p["key"])
+    bad = {}
+    for ln, line in enumerate(open(out / "meta.jsonl"), 1):
+        if ln in keys:
+            m = json.loads(line)
+            if m.get("distilled"):
+                bad[m["id"]] = sorted(keys[ln])
+    return bad
+
+
 def forced_empty_rows(out: Path, *, placeholders: bool = False) -> set:
     """Rows that would supervise an immediately closed thought: by default those with text, or with ``placeholders`` only
     the placeholder finals in that state (they have no text yet, so they're counted but never dropped for it)."""
@@ -227,6 +255,7 @@ def main(argv=None) -> int:
     ap.add_argument("--rejections")
     ap.add_argument("--choose-stats", required=True, help="choose_r5.py's --out-stats: tells never sampled from sampled and failed")
     ap.add_argument("--allow-incomplete", action="store_true", help="for checking the pipeline only: the output can't be packed")
+    ap.add_argument("--wisp-repo", default=os.environ.get("WISP_REPO"), help="the build's pinned service code, for validate.py")
     a = ap.parse_args(argv)
     out = Path(a.out)
     if out.exists():
@@ -278,6 +307,13 @@ def main(argv=None) -> int:
     failures = contract_failures(out)
     for i in failures:
         drops.setdefault(i, "contract_failed_after_choose")
+    for i, keys in validator_failures(out, a.wisp_repo).items():
+        failures.setdefault(i, keys)
+        drops.setdefault(i, "validator_failed_after_choose")
+        if tool_steps.get(i) != "final":
+            for other in tool_steps:
+                if turn_of(other) == turn_of(i):
+                    drops.setdefault(other, "turn_lost_a_tool_step")
 
     # Rows nothing has answered block a complete build. In a pipeline check they stay visible and are counted.
     unsampled = sorted((known_placeholders & never_sampled) - set(drops))

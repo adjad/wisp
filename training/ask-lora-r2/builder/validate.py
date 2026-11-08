@@ -524,12 +524,14 @@ def load_meta(path, meta_path=AUTO, bad=None):
     return metas
 
 
-def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO):
+def validate_file(path, leaks, ident, deny, wl, meta_path=AUTO, on_bad=None):
     problems, samples = Counter(), {}
 
     def bad(key, where):
         problems[key] += 1
         samples.setdefault(key, where)
+        if on_bad:
+            on_bad(key, where)
 
     metas = load_meta(path, meta_path, bad)
     turn_ctx = turn_contexts(path, metas) if metas else {}
@@ -845,7 +847,10 @@ def main(argv=None):
                     help="also render each example with this model's chat template (repeatable; with two or more, "
                          "the rendered prompt and completion must match byte for byte). Reads template/tokenizer "
                          "files only, never weights.")
+    ap.add_argument("--problems-out", metavar="JSONL",
+                    help="also write every problem as {file, line, key, where}, one per line (finish_r5.py drops by it)")
     args = ap.parse_args(argv)
+    sink = open(args.problems_out, "w", encoding="utf-8") if args.problems_out else None
     paths = args.paths or [os.path.join(OUT, x) for x in ("train.jsonl", "valid.jsonl", "all.jsonl")
                            if os.path.exists(os.path.join(OUT, x))]
     if r5_enabled():    # what build.py gets through scen: picture turns may write, and they card every effect
@@ -862,7 +867,11 @@ def main(argv=None):
     print(f"live registry: {len(REGISTRY)} tools, {len(CATALOG.families)} families")
     failed = False
     for p in paths:
-        n, problems, samples = validate_file(p, leaks, ident, deny, PUBLIC_WORDS)
+        def record(key, where, _f=os.path.basename(p)):
+            ln = where.split()[0].split(":")
+            sink.write(json.dumps({"file": _f, "line": int(ln[1]) if len(ln) > 1 and ln[1].isdigit() else None,
+                                   "key": key, "where": where}) + "\n")
+        n, problems, samples = validate_file(p, leaks, ident, deny, PUBLIC_WORDS, on_bad=record if sink else None)
         print(f"{os.path.basename(p)}: {n} examples, problems: {dict(problems) or 'none'}")
         for k, v in list(samples.items())[:30]:
             print("   ", k, "->", v)
@@ -881,6 +890,8 @@ def main(argv=None):
         both = turn_groups(tm) & turn_groups(vm)
         print(f"split: {len(both)} prompt groups in both train and valid")
         failed |= bool(both)
+    if sink:
+        sink.close()
     sys.exit(1 if failed else 0)
 
 
