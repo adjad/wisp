@@ -21,7 +21,8 @@ from collections import Counter
 
 from gen import request_hash  # noqa: E402
 
-_ARG = re.compile(r'([A-Za-z_][\w]*)\s*:\s*(?:<\|"\|>(.*?)<\|"\|>|([^,{}]+))', re.S)
+Q = '<|"|>'                              # Gemma's string delimiter in call text
+BARE = {"true": True, "false": False, "null": None, "none": None}
 MIN_WORDS, MAX_WORDS = 4, 300
 NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 
@@ -38,10 +39,16 @@ def read_jsonl(path):
 
 def fold(value) -> str:
     """One comparable form per value. ``False`` and ``0`` are values, not absence: ``calendar_only=false`` is a different read
-    from ``calendar_only=true``. Booleans fold to true/false and numbers to one form, so ``3``, ``3.0`` and ``"3"`` agree."""
+    from ``calendar_only=true``. Booleans fold to true/false and numbers to one form, so ``3``, ``3.0`` and ``"3"`` agree.
+    A list folds to its set of folded items (symbols, ``include``, tool families and query lists carry no order); an object
+    to its sorted keys. Unset items and keys are left out."""
     if isinstance(value, bool):
         return "true" if value else "false"
-    text = re.sub(r"\s+", " ", str(value).strip().strip('"').lower())
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(sorted({fold(v) for v in value if not absent(v)})) + "]"
+    if isinstance(value, dict):
+        return "{" + ",".join(f"{k}:{fold(v)}" for k, v in sorted(value.items()) if not absent(v)) + "}"
+    text = re.sub(r"\s+", " ", str(value).strip().lower())
     if NUMBER.fullmatch(text):
         n = float(text)
         return str(int(n)) if n.is_integer() else repr(n)
@@ -53,16 +60,87 @@ def absent(value) -> bool:
     return value is None or (isinstance(value, (str, list, dict)) and not (value.strip() if isinstance(value, str) else value))
 
 
-def parse_args(raw) -> dict:
-    """Gemma's `{key:<|"|>value<|"|>,n:3}` call text, loosely: each top-level key to its folded value."""
-    if isinstance(raw, dict):
-        return {k: fold(v) for k, v in raw.items() if not absent(v)}
-    out = {}
-    for key, quoted, plain in _ARG.findall(str(raw or "")):
-        value = quoted if quoted else plain
-        if not absent(value):
-            out[key] = fold(value)
-    return out
+class CallSyntaxError(ValueError):
+    pass
+
+
+def _value(t: str, i: int):
+    """One value of Gemma's call syntax at t[i] -> (python value, index after it)."""
+    while i < len(t) and t[i].isspace():
+        i += 1
+    if t.startswith(Q, i):
+        end = t.find(Q, i + len(Q))
+        if end < 0:
+            raise CallSyntaxError("unclosed string")
+        return t[i + len(Q):end], end + len(Q)
+    if i < len(t) and t[i] == '"':                       # JSON-style string, in case base writes one
+        try:
+            v, end = json.JSONDecoder().raw_decode(t, i)
+        except json.JSONDecodeError as exc:
+            raise CallSyntaxError(str(exc)) from exc
+        return v, end
+    if i < len(t) and t[i] in "[{":
+        close, items, obj = ("]" if t[i] == "[" else "}"), [], {}
+        i += 1
+        while True:
+            while i < len(t) and t[i].isspace():
+                i += 1
+            if i >= len(t):
+                raise CallSyntaxError("unclosed " + close)
+            if t[i] == close:
+                return (items if close == "]" else obj), i + 1
+            if close == "]":
+                v, i = _value(t, i)
+                items.append(v)
+            else:
+                k, i = _key(t, i)
+                v, i = _value(t, i)
+                obj[k] = v
+            while i < len(t) and t[i].isspace():
+                i += 1
+            if i < len(t) and t[i] == ",":
+                i += 1
+            elif i >= len(t) or t[i] != close:
+                raise CallSyntaxError(f"expected , or {close} at {i}")
+    m = re.compile(r"[^,\]}]*").match(t, i)
+    word = m.group(0).strip()
+    if not word:
+        raise CallSyntaxError(f"no value at {i}")
+    return BARE.get(word.lower(), word), m.end()
+
+
+def _key(t: str, i: int):
+    m = re.compile(r'\s*(?:<\|"\|>([^<]*?)<\|"\|>|"([^"]*)"|([A-Za-z_][\w.-]*))\s*:').match(t, i)
+    if not m:
+        raise CallSyntaxError(f"no key at {i}")
+    return next(g for g in m.groups() if g is not None), m.end()
+
+
+def parse_call_text(raw: str) -> dict:
+    """Gemma's ``{key:<|"|>text<|"|>,n:3,flag:false,items:[<|"|>a<|"|>]}`` (or JSON) -> a dict of python values.
+    Raises CallSyntaxError on anything else, so a malformed call can never match."""
+    text = (raw or "").strip()
+    if not text:
+        return {}
+    try:
+        v = json.loads(text)
+    except json.JSONDecodeError:
+        v, end = _value(text, 0)
+        if text[end:].strip():
+            raise CallSyntaxError("text after the arguments") from None
+    if not isinstance(v, dict):
+        raise CallSyntaxError("arguments are not an object")
+    return v
+
+
+def parse_args(raw) -> dict | None:
+    """Each set top-level argument to its folded value; None when the call text can't be parsed."""
+    if not isinstance(raw, dict):
+        try:
+            raw = parse_call_text(str(raw or ""))
+        except CallSyntaxError:
+            return None
+    return {k: fold(v) for k, v in raw.items() if not absent(v)}
 
 
 def scripted_calls(row: dict) -> list[tuple[str, dict]]:
@@ -71,7 +149,7 @@ def scripted_calls(row: dict) -> list[tuple[str, dict]]:
         fn = tc["function"]
         args = fn.get("arguments")
         args = json.loads(args) if isinstance(args, str) else (args or {})
-        out.append((fn["name"], {k: fold(v) for k, v in args.items() if not absent(v)}))
+        out.append((fn["name"], parse_args(args)))
     return out
 
 
@@ -80,9 +158,10 @@ def call_problem(base_calls: list[dict], want: list[tuple[str, dict]]) -> str | 
     and no other set argument. An extra argument fails: the schemas declare no defaults, so ``calendar_only``, ``unread``,
     ``count``, ``account`` or ``cc`` can't be shown to leave the call's scope alone, and reasoning that chose them explains
     a different call. Order is free, because parallel reads have none.
-    -> "call_mismatch" (other tools or values) or "call_extra_argument" (the scripted values plus more)."""
+    -> "call_mismatch" (other tools or values, or call text that doesn't parse) or "call_extra_argument" (the scripted
+    values plus more)."""
     got = [(c["function"]["name"], parse_args(c["function"].get("arguments"))) for c in base_calls or []]
-    if sorted(n for n, _ in got) != sorted(n for n, _ in want):
+    if any(a is None for _, a in got) or sorted(n for n, _ in got) != sorted(n for n, _ in want):
         return "call_mismatch"
     left, extra = list(got), False
     for name, args in want:

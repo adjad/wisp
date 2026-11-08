@@ -475,6 +475,46 @@ def test_extra_set_arguments_change_the_call():
     assert T.call_problem([_call("search_reminders", '{scope:<|"|>open<|"|>}')], empty) is None
 
 
+def test_list_arguments_compare_as_sets_of_values():
+    """Lists used to fold to two different strings (Python's repr vs Gemma's text), so 149 of 3,994 calls identical to the
+    script could never keep base's thought."""
+    import choose_traces as T
+    want = _scripted("get_stock_price", {"symbols": ["AAPL", "MSFT"]})
+    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>AAPL<|"|>,<|"|>MSFT<|"|>]}')], want) is None
+    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>msft<|"|>, <|"|>aapl<|"|>]}')], want) is None   # no order
+    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>AAPL<|"|>]}')], want) == "call_mismatch"
+    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>AAPL<|"|>,<|"|>MSFT<|"|>,<|"|>TSLA<|"|>]}')], want) == "call_mismatch"
+    schemas = _scripted("get_tool_schemas", {"families": ["mail"], "tools": []})
+    assert T.call_problem([_call("get_tool_schemas", '{families:[<|"|>mail<|"|>]}')], schemas) is None              # [] is unset
+    assert T.call_problem([_call("get_tool_schemas", '{families:[<|"|>mail<|"|>],tools:[<|"|>send_email<|"|>]}')], schemas) == "call_extra_argument"
+
+
+def test_call_text_parses_strictly():
+    import choose_traces as T
+    assert T.parse_args('{query:<|"|>Note: a, b} c<|"|>,count:5,unread:false}') == {"query": "note: a, b} c", "count": "5", "unread": "false"}
+    assert T.parse_args('{"query": "permit", "count": 5}') == {"query": "permit", "count": "5"}
+    assert T.parse_args("{a:{b:1,c:[x, y]},d:null}") == {"a": "{b:1,c:[x,y]}"}
+    for broken in ('{query:<|"|>oops}', "{query:x", "{query:x} trailing", "[1,2]", "{:x}"):
+        assert T.parse_args(broken) is None, broken
+    want = _scripted("view_emails", {"query": "permit"})
+    assert T.call_problem([_call("view_emails", '{query:<|"|>permit')], want) == "call_mismatch"
+
+
+@needs_tok
+def test_every_scripted_call_shape_round_trips_through_the_template(tok):
+    """A call rendered by Gemma's own template and read back by gen_finals' parser must match its script exactly."""
+    import render
+    args = [{"query": "permit", "count": 0, "unread": False}, {"symbols": ["AAPL", "MSFT"], "period": "1d"},
+            {"families": ["mail", "calendar"], "tools": []}, {"value": 3.5, "from_unit": "mi", "to_unit": "km"},
+            {"body": 'Hi, "Dana": see you at 3:00, {ok}?'}, {}]
+    for i, a in enumerate(args):
+        call = {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "view_emails", "arguments": a}}]}
+        row = {"meta": {"id": f"rt-{i}", "family": "f"}, "tools": TOOLS, "messages": [{"role": "system", "content": SYS}, {"role": "user", "content": "q"}, call]}
+        comp = render.render(tok, {"messages": row["messages"], "tools": TOOLS}, {**row["meta"], "think": False, "thought": None})["completion"]
+        import choose_traces as T
+        assert T.call_problem(G.parse_output(comp, False)["tool_calls"], T.scripted_calls(row)) is None, (a, comp)
+
+
 def test_extra_argument_is_its_own_rejection():
     import choose_traces as T
     h = gen.request_hash([{"role": "user", "content": "q"}], TOOLS)
