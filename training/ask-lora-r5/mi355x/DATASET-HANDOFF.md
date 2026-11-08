@@ -45,7 +45,14 @@ Training stays a separate decision and isn't part of this.
 
 **2. `TRACES=1`: decided 2026-11-07, yes**, inside the A6000 quote above. See "Thoughts at tool steps" for why.
 
-**3. Chat rows base answers with a web search: decided 2026-11-07, let them drop.** The user chose "Let them drop", relayed by the RC3 coordinator. Scope: `chat_direct_r4` and `knowledge_direct` finals (the row wants text) where base called `web_search`. When no sample passes and any sample called `web_search`, `choose_r5.py` puts the row in `drop.ids` and `web_search_drop_ids`, never back to its scripted text, and the call is still a rejection, not a pass. `finish_r5.py` drops it as `base_answered_with_web_search`, and the finished `stats.json` reports `web_search_drop` with each family's drops and the rows it has left. Rows where base called another tool (`wikipedia_summary`, `public_web`, `convert_units`, `calculate`) aren't in the decision's scope: they keep the old rule, staying scripted, and are counted per family in `scripted_kept_after_tool`. On the first 1,648 answers: `chat_direct_r4` 58 of 88 passed, 27 drop for web search, 3 stay scripted; `knowledge_direct` 57 of 86 passed, 14 drop, 15 stay scripted. The top-up round can still rescue a row, since only a row with no passing sample drops.
+**3. Chat rows base answers with a tool call: decided 2026-11-07, drop them.** The user chose "Let them drop" for `web_search`, then "Drop them too" for every other tool, both relayed by the RC3 coordinator. Scope: `chat_direct_r4` and `knowledge_direct` finals (the row wants text). When no sample passes and any sample called any tool (`web_search`, `wikipedia_summary`, `public_web`, `convert_units`, `calculate`, anything else), `choose_r5.py` puts the row in `drop.ids` and `tool_drop_ids`, never back to its scripted text. A call is still a rejection, not a pass, and `drop_tool` records the tools each row's samples called. `finish_r5.py` drops these rows as `base_answered_with_tool`. The finished `stats.json` reports `tool_drop`, with each family's drops, `by_tool` (a row whose samples called two tools counts under both) and `rows_left`. A chat row that failed in text only still stays scripted.
+
+On the first 1,904 answers (rows that never passed, before the top-up round):
+
+| Family | Passed | Drops | Drops by tool | Still scripted |
+| --- | --- | --- | --- | --- |
+| `chat_direct_r4` | 58 of 88 | 30 | `web_search` 27, `get_upcoming` 1, `wikipedia_summary` 1, `public_web` 1 | 0 |
+| `knowledge_direct` | 57 of 86 | 29 | `web_search` 14, `wikipedia_summary` 8, `convert_units` 3, `public_web` 2, `calculate` 2 | 0 |
 
 **4. Runtime mode, recorded.** Rows are pinned to the installed oMLX text path with earlier in-turn reasoning dropped: both Wisp (`service/agent/loop.py`) and the engine (`omlx/adapter/gemma4.py`) drop it, so histories carry no earlier thoughts. All 8,492 prompts match oMLX byte for byte. The running thoughts test doesn't change this today. If the user later changes the runtime to send thoughts back, the histories must be regenerated before generating answers.
 

@@ -11,10 +11,11 @@ Only rows whose target is a final answer are considered. Per family it reports h
 scripted because no sample passed. A row whose scripted target is the BASE_WRITES placeholder with no passing sample
 cannot stay (a final build must not contain the placeholder): those ids go to ``--out-drop-ids`` and the stats.
 
-Chat and knowledge rows base answers with a web search drop too (the user's decision, 2026-11-07: "Let them drop"). In
-``WEB_SEARCH_DROP_FAMILIES``, a final with no passing sample where any sample called a ``WEB_SEARCH_TOOLS`` tool goes to
-``--out-drop-ids`` and ``web_search_drop_ids``, never back to its scripted text; the call is still a rejection, not a pass.
-Rows that stay scripted after base called some other tool are counted per family in ``scripted_kept_after_tool``.
+Chat and knowledge rows base answers with a tool drop too (the user's decisions, 2026-11-07: "Let them drop" for
+web_search, then "Drop them too" for every other tool). In ``TOOL_DROP_FAMILIES``, a final with no passing sample where any
+sample called any tool goes to ``--out-drop-ids`` and ``tool_drop_ids``, never back to its scripted text; the call is still a
+rejection, not a pass. ``drop_tool`` maps each such id to the tools its samples called. In other families, rows that stay
+scripted after base called a tool are counted per family in ``scripted_kept_after_tool``.
 
     choose_r5.py --partial partial.jsonl --raw 'raw/finals.*.jsonl' --out-chosen chosen.jsonl --out-stats stats.json \\
         [--out-nopass-ids need.ids] [--out-drop-ids drop.ids] [--k 6] [--stall-ok-after-tool] [--tool-names f.json]
@@ -95,8 +96,7 @@ def empty_result(row: dict) -> bool:
 
 
 REJECTIONS: list[dict] = []          # one line per rejected sample, for the rejection manifest
-WEB_SEARCH_DROP_FAMILIES = frozenset({"chat_direct_r4", "knowledge_direct"})
-WEB_SEARCH_TOOLS = frozenset({"web_search"})
+TOOL_DROP_FAMILIES = frozenset({"chat_direct_r4", "knowledge_direct"})
 TEXT_CALL = re.compile(r"<\|tool_call>\s*call:([A-Za-z_][\w.-]*)")
 
 
@@ -157,14 +157,14 @@ def choose_r5(partial: str, raws: list[str], k=None, hash_check=True, refs=(), s
 
 def report(finals: list[dict], chosen: dict, stats: dict) -> dict:
     fams: dict[str, dict] = {}
-    all_drop, all_nopass, all_web = [], [], []
+    all_drop, all_nopass, all_tool = [], [], []
     tools_by_id: dict[str, set] = {}
     for rej in REJECTIONS:
         tools_by_id.setdefault(rej["id"], set()).update(rej.get("tools") or [])
     for r in finals:
         m = r["meta"]
         f = fams.setdefault(m["family"], {"final_rows": 0, "passed": 0, "no_samples": [], "scripted_kept": [],
-                                          "drop": [], "drop_web_search": [], "stall_only_after_tool": [],
+                                          "drop": [], "drop_tool": {}, "stall_only_after_tool": [],
                                           "scripted_kept_after_tool": Counter()})
         f["final_rows"] += 1
         if m["id"] in chosen:
@@ -172,9 +172,9 @@ def report(finals: list[dict], chosen: dict, stats: dict) -> dict:
             continue
         all_nopass.append(m["id"])
         called = tools_by_id.get(m["id"], set())
-        if m["family"] in WEB_SEARCH_DROP_FAMILIES and called & WEB_SEARCH_TOOLS:
-            f["drop_web_search"].append(m["id"])
-            all_web.append(m["id"])
+        if m["family"] in TOOL_DROP_FAMILIES and called:
+            f["drop_tool"][m["id"]] = sorted(called)
+            all_tool.append(m["id"])
             all_drop.append(m["id"])
         elif r["messages"][-1]["content"] == BASE_WRITES:
             f["drop"].append(m["id"])
@@ -191,10 +191,10 @@ def report(finals: list[dict], chosen: dict, stats: dict) -> dict:
     for name, f in fams.items():
         f["rejects_by_reason"] = (stats["families"].get(name) or {}).get("rejects_by_reason", {})
         f["still_scripted"] = len(f["scripted_kept"])
-        f["to_drop"] = len(f["drop"]) + len(f["drop_web_search"])
+        f["to_drop"] = len(f["drop"]) + len(f["drop_tool"])
         f["scripted_kept_after_tool"] = dict(f["scripted_kept_after_tool"].most_common())
     return {"families": fams, "final_rows": len(finals), "passed": len(chosen), "no_pass_ids": sorted(all_nopass),
-            "drop_ids": sorted(all_drop), "web_search_drop_ids": sorted(all_web),
+            "drop_ids": sorted(all_drop), "tool_drop_ids": sorted(all_tool),
             "rejects_by_reason": _sum_reasons(fams)}
 
 
@@ -214,10 +214,10 @@ def summary(rep: dict) -> str:
                  f"{sum(f['still_scripted'] for f in rep['families'].values()):8} {len(rep['drop_ids']):5}")
     lines.append(f"rejects by reason: {rep['rejects_by_reason']}")
     if rep["drop_ids"]:
-        lines.append(f"DROP {len(rep['drop_ids'])} rows (BASE_WRITES or web search, no passing sample): "
+        lines.append(f"DROP {len(rep['drop_ids'])} rows (BASE_WRITES or a chat tool call, no passing sample): "
                      + ", ".join(rep["drop_ids"][:20]) + (" ..." if len(rep["drop_ids"]) > 20 else ""))
-    if rep.get("web_search_drop_ids"):
-        lines.append(f"of those, {len(rep['web_search_drop_ids'])} chat/knowledge rows base answered with a web search")
+    if rep.get("tool_drop_ids"):
+        lines.append(f"of those, {len(rep['tool_drop_ids'])} chat/knowledge rows base answered with a tool call")
     return "\n".join(lines)
 
 

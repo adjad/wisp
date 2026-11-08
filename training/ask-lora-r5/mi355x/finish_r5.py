@@ -127,18 +127,24 @@ def never_sampled_ids(stats_path) -> set:
     return {i for f in rep.values() for i in f.get("no_samples", [])}
 
 
-def web_search_drops(stats_path) -> dict:
-    """choose_r5's chat and knowledge rows base answered with a web search, which the user chose to drop: {id: family}."""
+def tool_drops(stats_path) -> dict:
+    """choose_r5's chat and knowledge rows base answered with a tool call, which the user chose to drop:
+    {id: (family, tools its samples called)}."""
     rep = json.load(open(stats_path)).get("r5") or {}
-    return {i: name for name, f in (rep.get("families") or {}).items() for i in f.get("drop_web_search", [])}
+    return {i: (name, list(tools)) for name, f in (rep.get("families") or {}).items() for i, tools in (f.get("drop_tool") or {}).items()}
 
 
-def web_search_report(dropped: dict, out: Path, families) -> dict:
-    """Per family: finals dropped because base answered with a web search, and the rows each family has left."""
+def tool_drop_report(dropped: dict, out: Path, families) -> dict:
+    """Per family: finals dropped because base answered with a tool call, how many of them called each tool (a row whose
+    samples called two tools counts under both), and the rows each family has left."""
     left = Counter(json.loads(line)["family"] for line in open(out / "meta.jsonl"))
-    per = Counter(dropped.values())
+    per, by_tool = Counter(), {}
+    for fam, tools in dropped.values():
+        per[fam] += 1
+        by_tool.setdefault(fam, Counter()).update(tools)
     return {"dropped": sum(per.values()),
-            "families": {f: {"dropped_web_search": per.get(f, 0), "rows_left": left.get(f, 0)} for f in sorted(families)}}
+            "families": {f: {"dropped": per.get(f, 0), "by_tool": dict((by_tool.get(f) or Counter()).most_common()),
+                             "rows_left": left.get(f, 0)} for f in sorted(families)}}
 
 
 def load_chosen(path) -> dict:
@@ -244,16 +250,16 @@ def main(argv=None) -> int:
 
     # Never sampled is not the same as sampled and failed. choose_r5 lists both in drop.ids, so the stats tell them apart.
     never_sampled = never_sampled_ids(a.choose_stats)
-    web = web_search_drops(a.choose_stats)
+    tooled = tool_drops(a.choose_stats)
     known_placeholders = set(placeholders_left(out))
     drops: dict[str, str] = {}
     for line in open(a.drop):
         i = line.strip()
         if i and i not in never_sampled:
-            drops[i] = "base_answered_with_web_search" if i in web else "no_base_answer_passed"
-    missing = sorted(set(web) - set(drops))
+            drops[i] = "base_answered_with_tool" if i in tooled else "no_base_answer_passed"
+    missing = sorted(set(tooled) - set(drops))
     if missing:
-        sys.exit(f"finish_r5: {len(missing)} web-search drops in the choose stats are missing from {a.drop}, such as {missing[:3]}")
+        sys.exit(f"finish_r5: {len(missing)} tool-call drops in the choose stats are missing from {a.drop}, such as {missing[:3]}")
     for i in leaking_turns(out):
         drops.setdefault(i, "close_to_test_question")
     # A final base hasn't written yet has no thought *yet*: it only earns this drop once base has been asked and failed. A tool
@@ -297,7 +303,7 @@ def main(argv=None) -> int:
     stats = r5_stats.refresh(out, status=status, step="finish", extra={"drops": drop_reasons, "placeholders_left": len(set(left)),
                                                        "chosen_answers": len(chosen), "base_traces": len(traces),
                                                        "unsampled_scripted_finals": unsampled_scripted,
-                                                       "web_search_drop": web_search_report(web, out, set(web.values()) | choose_r5.WEB_SEARCH_DROP_FAMILIES),
+                                                       "tool_drop": tool_drop_report(tooled, out, {f for f, _ in tooled.values()} | choose_r5.TOOL_DROP_FAMILIES),
                                                        **forced_empty_counts(forced_empty, forced_placeholders, never_sampled, awaiting_traces, set(drops))})
     shapes = stats["rendered_shapes"].get("forced_empty", 0)
     accounted = stats["forced_empty_awaiting_base"] + stats["forced_tool_steps_awaiting_traces"]

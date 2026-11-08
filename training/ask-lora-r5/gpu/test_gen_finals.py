@@ -285,18 +285,21 @@ def test_choose_r5_rejects_and_reports(tmp_path):
     assert choose.reject_reasons is c5.ORIG_REJECT                               # the patch is undone
 
 
-def test_chat_rows_base_answers_with_web_search_drop(tmp_path):
-    """The user's decision (2026-11-07, "Let them drop"): chat_direct_r4 / knowledge_direct rows base answers with web_search
-    drop instead of keeping their scripted text. A web_search call never passes; other tools and other families keep the old rule."""
+def test_chat_rows_base_answers_with_any_tool_drop(tmp_path):
+    """The user's decisions (2026-11-07): chat_direct_r4 / knowledge_direct rows base answers with web_search ("Let them drop")
+    or any other tool ("Drop them too") drop instead of keeping their scripted text. A call never passes. A chat row that failed
+    in text only, and other families, keep the old rule."""
     rows = [mk(1, "chat_direct_r4"), mk(2, "chat_direct_r4"), mk(3, "knowledge_direct"), mk(4, "knowledge_direct"),
-            mk(5, "chat_direct_r4"), mk(6, "web_r3")]
+            mk(5, "chat_direct_r4"), mk(6, "web_r3"), mk(7, "knowledge_direct")]
     partial = tmp_path / "partial.jsonl"
     partial.write_text("".join(json.dumps(r) + "\n" for r in rows))
     web = [{"type": "function", "function": {"name": "web_search", "arguments": "{}"}}]
     wiki = [{"type": "function", "function": {"name": "wikipedia_summary", "arguments": "{}"}}]
-    calls = {("chat_direct_r4-001", 0): web, ("knowledge_direct-003", 1): web, ("knowledge_direct-004", 0): wiki, ("web_r3-006", 0): web}
+    calls = {("chat_direct_r4-001", 0): web, ("knowledge_direct-003", 1): web, ("knowledge_direct-004", 0): wiki,
+             ("knowledge_direct-004", 1): web, ("web_r3-006", 0): web}
     texts = {"chat_direct_r4-001": [""], "chat_direct_r4-002": [GOOD], "knowledge_direct-003": ["Here are 2, and 5 more.", ""],
-             "knowledge_direct-004": [""], "chat_direct_r4-005": ["<|tool_call>call:web_search{queries:[x]}"], "web_r3-006": [""]}
+             "knowledge_direct-004": ["", ""], "chat_direct_r4-005": ["<|tool_call>call:convert_units{value:3}"], "web_r3-006": [""],
+             "knowledge_direct-007": ["Here are 2, and 5 more."]}
     with open(tmp_path / "raw.jsonl", "w") as f:
         for r in rows:
             for k, t in enumerate(texts[r["meta"]["id"]]):
@@ -306,14 +309,17 @@ def test_chat_rows_base_answers_with_web_search_drop(tmp_path):
     _, chosen, stats = c5.choose_r5(str(partial), [str(tmp_path / "raw.jsonl")])
     r5 = stats["r5"]
     assert set(chosen) == {"chat_direct_r4-002"}
-    assert r5["web_search_drop_ids"] == ["chat_direct_r4-001", "chat_direct_r4-005", "knowledge_direct-003"]
-    assert set(r5["drop_ids"]) == set(r5["web_search_drop_ids"])
+    assert r5["tool_drop_ids"] == ["chat_direct_r4-001", "chat_direct_r4-005", "knowledge_direct-003", "knowledge_direct-004"]
+    assert set(r5["drop_ids"]) == set(r5["tool_drop_ids"])
     cd, kd = r5["families"]["chat_direct_r4"], r5["families"]["knowledge_direct"]
-    assert cd["drop_web_search"] == ["chat_direct_r4-001", "chat_direct_r4-005"] and cd["scripted_kept"] == [] and cd["to_drop"] == 2
-    assert kd["drop_web_search"] == ["knowledge_direct-003"]                 # one sample searched: enough
-    assert kd["scripted_kept"] == ["knowledge_direct-004"] and kd["scripted_kept_after_tool"] == {"wikipedia_summary": 1}
+    assert cd["drop_tool"] == {"chat_direct_r4-001": ["web_search"], "chat_direct_r4-005": ["convert_units"]}   # unparsed call text too
+    assert cd["scripted_kept"] == [] and cd["to_drop"] == 2
+    assert kd["drop_tool"] == {"knowledge_direct-003": ["web_search"],                      # one sample called a tool: enough
+                               "knowledge_direct-004": ["web_search", "wikipedia_summary"]}
+    assert kd["scripted_kept"] == ["knowledge_direct-007"] and kd["scripted_kept_after_tool"] == {}   # failed in text only
     assert r5["families"]["web_r3"]["scripted_kept"] == ["web_r3-006"]       # not a chat family: the old rule
-    assert "3 chat/knowledge rows base answered with a web search" in c5.summary(r5)
+    assert r5["families"]["web_r3"]["scripted_kept_after_tool"] == {"web_search": 1}
+    assert "4 chat/knowledge rows base answered with a tool call" in c5.summary(r5)
 
 
 def test_choose_r5_memory_stall_allowed_after_a_tool_call_and_for_recall():
