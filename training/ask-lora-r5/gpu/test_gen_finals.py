@@ -412,3 +412,31 @@ def test_generator_can_target_call_rows():
     rows = [mk(1), {"meta": {"id": "c", "family": "f"}, "tools": TOOLS, "messages": [{"role": "user", "content": "q"}, CALL]}]
     got, _ = G.select_rows(rows, "calls")
     assert [r["meta"]["id"] for r in got] == ["c"]
+
+
+@needs_tok
+def test_an_out_of_memory_batch_is_halved_not_lost(tok, tmp_path):
+    rows = [mk(i) for i in range(8)]
+    sizes = []
+    inner = fake_model(tok)
+
+    def small_only(prompts, seed):
+        sizes.append(len(prompts))
+        if len(prompts) > 2:
+            raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        return inner(prompts, seed)
+    G.run(rows, tok, small_only, str(tmp_path), 0, 1, 1, batch=8, log=silent)
+    recs = [json.loads(l) for l in open(tmp_path / "finals.s0of1.jsonl")]
+    assert len(recs) == 8 and not any(r.get("error") for r in recs)
+    assert sizes[0] == 8 and max(sizes[1:]) <= 4 and sizes.count(2) == 4
+
+
+def test_other_errors_are_not_retried_by_halving():
+    calls = []
+
+    def broken(prompts, seed):
+        calls.append(len(prompts))
+        raise ValueError("bad prompt")
+    with pytest.raises(ValueError):
+        G.generate_halving(broken, [(0, {"meta": {"id": str(i)}}, [1, 2], False) for i in range(4)], log=silent)
+    assert calls == [4]

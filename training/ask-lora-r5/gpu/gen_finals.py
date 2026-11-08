@@ -248,6 +248,28 @@ def provenance(base: str, targets: str, attn: str, batch: int, k: int) -> dict:
     return out
 
 
+def is_oom(exc: BaseException) -> bool:
+    return "out of memory" in repr(exc).lower() or type(exc).__name__ == "OutOfMemoryError"
+
+
+def generate_halving(generate_fn, grp: list, log=print) -> list:
+    """One batch; if it runs out of GPU memory, each half is generated on its own (down to one prompt), so a group of long
+    prompts can't cost a run of errors. A half gets its own seed, like any batch."""
+    try:
+        return generate_fn([g[2] for g in grp], seed_for(grp))
+    except Exception as exc:  # noqa: BLE001
+        if len(grp) == 1 or not is_oom(exc):
+            raise
+        log(f"out of memory on a batch of {len(grp)} (longest prompt {max(len(g[2]) for g in grp)} tokens): halving")
+        try:
+            import torch
+            torch.cuda.empty_cache()
+        except Exception:  # noqa: BLE001  (no torch in the Mac tests)
+            pass
+        mid = len(grp) // 2
+        return generate_halving(generate_fn, grp[:mid], log) + generate_halving(generate_fn, grp[mid:], log)
+
+
 def run(rows: list[dict], tok, generate_fn, out_dir: str, shard: int, nshards: int, k: int,
         batch: int = 1, attn: str = "math", log=print, prefix: str = "finals") -> dict:
     """generate_fn(list of prompt id lists, seed) -> list of generated id lists (may carry trailing padding)."""
@@ -268,7 +290,7 @@ def run(rows: list[dict], tok, generate_fn, out_dir: str, shard: int, nshards: i
         for grp in windows(items, batch):
             ts = time.monotonic()
             try:
-                outs = generate_fn([g[2] for g in grp], seed_for(grp))
+                outs = generate_halving(generate_fn, grp, log)
                 if len(outs) != len(grp):
                     raise RuntimeError(f"generate returned {len(outs)} sequences for {len(grp)} prompts")
                 errors = 0

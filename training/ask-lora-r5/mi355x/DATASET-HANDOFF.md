@@ -120,6 +120,8 @@ Data can't fix these, and they block a trustworthy gate:
 - `a6000/pick_text.py:1095`: the picker's 384-token budget truncates long reasoners.
 - `a6000/pick_text.py:596`: checkpoints before 45% of training are excluded.
 - Reliable save-and-stop, and thought retention, need their own checks.
+- The toolbench leak (earlier questions returning as HISTORICAL MEMORY) is fixed in adjad/wisp#499, not merged yet. r5's rows don't carry it: a read-only scan of every r5 file found 0 such rows, since the builder gives each scenario a fresh WISP_HOME. But the gate runs this branch's own `runner.py`, so merge main in after #499 lands (`tests/test_toolbench.py` may conflict at its end), and don't compare r2-r4 gate numbers with post-fix runs.
+- Thought retention was tested for real on 2026-11-07: keeping thoughts between tool calls had no detectable effect on base (582 turns, 50.2% vs 48.5%, p=.62), so the runtime mode above stands.
 
 ## Validation run
 
