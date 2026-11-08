@@ -95,10 +95,20 @@ def amounts(text: str) -> set[str]:
     return {_amount(m) for m in AMOUNT.findall(text or "")}
 
 
+TIME_RANGE = re.compile(r"(?<![\d:/$.])(\d{1,2})(?::(\d{2}))?\s*(?:-|–|—|to|until|till)\s*\d{1,2}(?::\d{2})?\s*([ap])\.?\s?m\b", re.I)
+BARE_AT_HOUR = re.compile(r"\b(?:at|by|around|from|after|before)\s+(\d{1,2})\b(?![:\d.]|\s*(?:[ap]\.?\s?m\b|%|minutes?|mins?|hours?|days?|weeks?|people|points?))", re.I)
+# Money read without a '$': two decimals ('4.75', '460.62') or a currency word ('460 USD', 'USD 12', '30 dollars').
+MONEY_NUMBER = re.compile(r"(?<![\d.,:$])(\d{1,3}(?:,\d{3})+|\d+)(\.\d\d)(?![\d.])|"
+                          r"(?<![\d.,:$])(\d{1,3}(?:,\d{3})+|\d+)(\.\d\d)?\s*(?:usd|dollars?|bucks)\b|"
+                          r"\b(?:usd|us\$)\s*(\d{1,3}(?:,\d{3})+|\d+)(\.\d\d)?", re.I)
+PERCENT = re.compile(r"(\d+(?:\.\d+)?)\s*(?:%|percent\b)", re.I)
+
+
 def times(text: str) -> set[str]:
-    """Clock times with a meridiem, as 'H:MM a'. 'noon' is 12:00 p."""
+    """Clock times with a meridiem, as 'H:MM a'. 'noon' is 12:00 p. In a range ('6-8 AM') the start shares the end's."""
     low = text or ""
     out = {f"{int(h)}:{mm or '00'} {ap.lower()}" for h, mm, ap in TIME.findall(low)}
+    out |= {f"{int(h)}:{mm or '00'} {ap.lower()}" for h, mm, ap in TIME_RANGE.findall(low)}
     if re.search(r"\bnoon\b", low, re.I):
         out.add("12:00 p")
     return out
@@ -242,19 +252,36 @@ def _known_dates(context: str, clock: dt.datetime | None) -> tuple[set[str], set
     return wd, md
 
 
-def _derived_amounts(known: set[str], context: str) -> set[str]:
-    """Sums, differences and small multiples of stated amounts: arithmetic on what was read is not an invention."""
-    vals = [float(a) for a in known]
-    ints = {int(w) for w in re.findall(r"\b(\d{1,2})\b", context) if 1 < int(w) <= 20}
-    ints |= {2, 3, 4, 5, 6}
+def context_numbers(context: str) -> set[str]:
+    """Money the context states without a '$': '460.62 USD' and a receipt's '4.75'. Dates and clock digits aren't money."""
     out = set()
+    for a1, b1, a2, b2, a3, b3 in MONEY_NUMBER.findall(context or ""):
+        a, b = (a1, b1) if a1 else (a2, b2) if a2 else (a3, b3)
+        out.add(_amount(a.replace(",", "") + (b or "")))
+    return out
+
+
+def _derived_amounts(known: set[str], context: str) -> set[str]:
+    """Sums, differences, small multiples and stated percentages of stated amounts, and a split of any of those: arithmetic
+    on what was read or asked is not an invention ('20% tip on $84, split three ways' is $100.80 and $33.60)."""
+    vals = [float(a) for a in known if a.replace(".", "", 1).isdigit()]
+    ints = {int(w) for w in re.findall(r"\b(\d{1,2})\b", context) if 1 < int(w) <= 20}
+    ints |= {2, 3, 4, 5, 6, 12, 52}                   # 12 months and 52 weeks a year
+    pcts = {float(p) for p in PERCENT.findall(context)}
+    base = set(vals)
     for a in vals:
+        for b in vals:
+            base.add(a + b)
+            base.add(abs(a - b))
+        for p in pcts:
+            base.add(a * p / 100)
+            base.add(a * (1 + p / 100))
+            base.add(a * (1 - p / 100))
+    out = set(base)
+    for a in base:
         for n in ints:
             out.add(a * n)
             out.add(a / n)
-        for b in vals:
-            out.add(a + b)
-            out.add(abs(a - b))
     return {_amount(f"{x:.2f}") for x in out} | {str(int(x)) for x in out if float(x).is_integer()}
 
 
@@ -286,19 +313,22 @@ def grounding_problems(text: str, messages: list[dict], wrote: bool, read_result
     out = []
     t = text or ""
     context = _context_text(messages)
-    known = amounts(context)
+    known = amounts(context) | context_numbers(context)
     extra = amounts(t) - known
     if extra:
         derived = _derived_amounts(known, context)
         out += [("fact:wrong_amount", f"${a}") for a in sorted(extra) if a not in derived]
     known_t, known_c = times(context), bare_clocks(context)
+    bare_hours = {int(h) for h in BARE_AT_HOUR.findall(context) if 1 <= int(h) <= 12}   # "Thursday at 10", "free at 2"
     for tm in sorted(times(t)):
         # 5 PM is right for "5:00 PM"; a meridiem the context only gives as 17:00 is left alone
-        if tm not in known_t and tm.split()[0] not in known_c and not _hour_only_known(tm, context):
+        if (tm not in known_t and tm.split()[0] not in known_c and not _hour_only_known(tm, context)
+                and not (tm.split(":")[1].startswith("00") and int(tm.split(":")[0]) in bare_hours)):
             out.append(("fact:wrong_time", tm))
     out += date_problems(t, context, clock_of(messages))
     if not wrote:
-        g = INVENTED.search(t)
+        low_ctx = context.lower()
+        g = next((m for m in INVENTED.finditer(t) if m.group(0).lower() not in low_ctx), None)   # quoting a read isn't a claim
         if g:
             out.append(("fact:invented_action", g.group(0)))
     joined = "\n".join(read_results)

@@ -73,6 +73,22 @@ def had_tool_call(row: dict) -> bool:
     return any(m.get("role") == "assistant" and m.get("tool_calls") for m in msgs[last_user + 1:])
 
 
+EMPTY_RESULT = re.compile(r"(?i)\A\W*(?:no|nothing)\b|\bno (?:\w+ ){0,3}(?:matching|matches|found|results?)\b|\b0 results\b|"
+                          r"\bwere(?:n['’]t| not)? found\b|\bnothing (?:scheduled|active|found|matches)\b")
+
+
+def empty_result(row: dict) -> bool:
+    """This turn's last tool result says it found nothing: an honest "I couldn't find it" is then the right answer, not a
+    stall. The row's contract and the other checks still decide whether the rest of the reply is true."""
+    msgs = row["messages"][:-1]
+    tools = [m for m in msgs if m.get("role") == "tool"]
+    if not tools or msgs[-1].get("role") != "tool":
+        return False
+    c = tools[-1].get("content")
+    text = c if isinstance(c, str) else " ".join(p.get("text", "") for p in c or [] if isinstance(p, dict))
+    return bool(EMPTY_RESULT.search(text or ""))
+
+
 REJECTIONS: list[dict] = []          # one line per rejected sample, for the rejection manifest
 
 
@@ -81,7 +97,7 @@ def make_reject(stall_ok_after_tool: bool = False):
         out = ORIG_REJECT(rec, row)
         tool = had_tool_call(row)
         gold = row["meta"].get("gold") or {}
-        if tool and (stall_ok_after_tool or gold.get("kind") in ("all_sources", "memory_contrast")):
+        if tool and (stall_ok_after_tool or gold.get("kind") in ("all_sources", "memory_contrast") or empty_result(row)):
             out = [x for x in out if x != "stall"]
         if rec.get("channel_leak"):
             out.append("channel_leak")

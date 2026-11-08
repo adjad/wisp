@@ -235,3 +235,47 @@ def test_a_clarifying_turn_asks():
 def test_a_read_states_what_it_found():
     assert keys("Your slot moved to room 214.", _wc("read", ["214"]), PLAIN) == set()
     assert "write:missing_fact" in keys("Yes, there was a text about it.", _wc("read", ["214"]), PLAIN)
+
+
+# ---------------------------------------------------------------- 2026-11-08: correct base answers the A6000 smoke rejected
+def _one(result, prompt="what about adobe"):
+    return msgs([result], prompt)
+
+
+def test_money_read_without_a_dollar_sign_is_known():
+    m = _one("ADBE (Adobe Inc.):\n  Quote: 460.62 USD (as of 2027-03-20 12:17 EST).\n  Change from previous official close: +1.72 USD (+0.37%).")
+    assert not {k for k in keys("Adobe is at **$460.62 USD**, up $1.72 (+0.37%) from yesterday.", {}, m) if k == "fact:wrong_amount"}
+    assert "fact:wrong_amount" in keys("Adobe is at $470.62, up $1.72.", {}, m)
+    r = _one("Title: Hollis Café receipt\nOat latte 4.75\nBlueberry muffin 3.50\nTotal 8.25", "save this receipt")
+    assert "fact:wrong_amount" not in keys("Oat latte $4.75, muffin $3.50, total $8.25.", {}, r)
+    assert "fact:wrong_amount" in keys("Oat latte $4.75, muffin $3.50, total $9.25.", {}, r)
+
+
+def test_dates_and_clocks_are_not_money():
+    assert S.context_numbers("Wednesday, February 17, 2027 at 10:30 AM, 30 days, 3:30 PM") == set()
+
+
+def test_percent_and_split_arithmetic_passes():
+    m = _one("Title: Dinner at Osteria [Notes]\nBill: $84.00", "20% tip on that bill split three ways?")
+    assert "fact:wrong_amount" not in keys("With a 20% tip the total is $100.80, so each of you pays **$33.60**.", {}, m)
+    assert "fact:wrong_amount" in keys("With a 20% tip the total is $104.80, so each of you pays $34.93.", {}, m)
+    y = _one("Title: Savings plan [Notes]\nPut away $50 a week.", "how much is that in a year")
+    assert "fact:wrong_amount" not in keys("That's **$2,600** a year.", {}, y)
+
+
+def test_a_time_range_gives_its_start_the_same_meridiem():
+    m = _one("Subject: Scheduled Wi-Fi maintenance\nKerr Hall Wi-Fi is down Saturday 6–8 AM for maintenance.", "what does it say")
+    assert "fact:wrong_time" not in keys("Wi-Fi is down Saturday from **6:00 AM to 8:00 AM**.", {}, m)
+    assert "fact:wrong_time" in keys("Wi-Fi is down Saturday from 7:00 AM to 8:00 AM.", {}, m)
+
+
+def test_a_bare_hour_in_the_context_supports_that_hour():
+    m = _one("[Thu Mar 25, 4:49 PM] Maya Chen: Landlord is coming Thursday at 10 to fix the sink", "has maya texted me?")
+    assert "fact:wrong_time" not in keys("The landlord is coming Thursday at 10 AM to fix the sink.", {}, m)
+    assert "fact:wrong_time" in keys("The landlord is coming Thursday at 11 AM to fix the sink.", {}, m)
+
+
+def test_quoting_what_was_read_is_not_a_claimed_action():
+    m = _one("[Mon Dec 28, 6:42 PM] Unknown: Your parking permit expires today. Renew at the link we sent.", "what's that parking text?")
+    assert "fact:invented_action" not in keys('It says: "Your parking permit expires today. Renew at the link we sent."', {}, m)
+    assert "fact:invented_action" in keys("I've sent the renewal for you.", {}, m)

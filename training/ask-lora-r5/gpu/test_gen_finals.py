@@ -440,3 +440,17 @@ def test_other_errors_are_not_retried_by_halving():
     with pytest.raises(ValueError):
         G.generate_halving(broken, [(0, {"meta": {"id": str(i)}}, [1, 2], False) for i in range(4)], log=silent)
     assert calls == [4]
+
+
+def test_an_honest_not_found_after_an_empty_result_is_not_a_stall():
+    import choose_r5
+    def row(result):
+        return {"meta": {"id": "x-s1", "family": "mail_r3", "gold": None},
+                "messages": [{"role": "user", "content": "find the email about my tax form"},
+                             {"role": "assistant", "content": "", "tool_calls": [{"id": "c", "type": "function", "function": {"name": "view_emails", "arguments": {}}}]},
+                             {"role": "tool", "tool_call_id": "c", "content": result},
+                             {"role": "assistant", "content": "x"}], "tools": []}
+    assert choose_r5.empty_result(row("No emails matching \u201ctax form\u201d were found in the recent inbox."))
+    assert choose_r5.empty_result(row("Nothing active matches 'tax form'."))
+    assert not choose_r5.empty_result(row("Subject: Your W-2 tax form is ready\nHi Sam, ..."))
+    assert not choose_r5.empty_result(row("Here's what Wisp can and can't do:\nYes — Send texts\nNo — Make phone calls"))
