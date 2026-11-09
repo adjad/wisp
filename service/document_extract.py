@@ -19,7 +19,9 @@ Rules:
   2026-10-28).
 - pypdf's decompression ceilings drop from 75 MB to PDF_STREAM_BYTES.
 - Extraction stops once MAX_TEXT_CHARS is reached (pages, paragraphs, slides
-  and rows alike) and walks at most MAX_PDF_PAGES PDF pages.
+  and rows alike) and walks at most MAX_PDF_PAGES PDF pages. Large mode raises
+  those three limits (LARGE_TEXT_CHARS, LARGE_PDF_PAGES, LARGE_DOCUMENT_BYTES)
+  and nothing else: the ZIP and stream bounds above stay exactly as tight.
 - Every failure is a ValueError with a plain sentence for the person.
 """
 from __future__ import annotations
@@ -38,6 +40,11 @@ from zipfile import BadZipFile, ZIP_DEFLATED, ZIP_STORED, ZipFile
 MAX_DOCUMENT_BYTES = 20 * 1024 * 1024
 MAX_TEXT_CHARS = 24_000
 MAX_PDF_PAGES = 60
+# Large mode (argv[2] == "large"): a document read in full by service/large_document.py,
+# which condenses it before any model sees it, so far more can be pulled out.
+LARGE_TEXT_CHARS = 600_000
+LARGE_PDF_PAGES = 1500
+LARGE_DOCUMENT_BYTES = 32 * 1024 * 1024
 # ZIP bounds. The entry count and total are looser than linked_documents'
 # because a real deck carries many parts and images. What a parser builds a
 # tree from is every NON-media part (XML, whatever its extension: a ".bin" part
@@ -77,10 +84,11 @@ class _Enough(Exception):
 class _Text:
     """Collects text up to the cap, then stops the walk."""
 
-    def __init__(self, limit: int = MAX_TEXT_CHARS):
+    def __init__(self, limit: int | None = None):
         self.parts: list[str] = []
         self.size = 0
-        self.limit = limit
+        # Read at call time, so the current cap applies, not the one at import.
+        self.limit = MAX_TEXT_CHARS if limit is None else limit
 
     def add(self, text: str) -> None:
         if not text:
@@ -192,7 +200,7 @@ def zip_guard(data: bytes) -> None:
 
 # --- the formats ------------------------------------------------------------------
 
-def _pdf(data: bytes) -> tuple[str, bool]:
+def _pdf(data: bytes, limit: int | None = None, pages: int | None = None) -> tuple[str, bool]:
     from pypdf import PdfReader, filters
     for name in ("ZLIB_MAX_OUTPUT_LENGTH", "LZW_MAX_OUTPUT_LENGTH", "RUN_LENGTH_MAX_OUTPUT_LENGTH",
                  "JBIG2_MAX_OUTPUT_LENGTH", "MAX_DECLARED_STREAM_LENGTH", "MAX_ARRAY_BASED_STREAM_OUTPUT_LENGTH"):
@@ -207,26 +215,27 @@ def _pdf(data: bytes) -> tuple[str, bool]:
                 pass
         if reader.is_encrypted:
             raise ValueError("That PDF is password-protected. Wisp can't read it without the password.")
-        out = _Text()
+        out = _Text(limit)
+        max_pages = MAX_PDF_PAGES if pages is None else pages
         total = len(reader.pages)
         try:
             for index, page in enumerate(reader.pages):
-                if index >= MAX_PDF_PAGES:
+                if index >= max_pages:
                     return out.joined("\n\n"), True
                 out.add((page.extract_text() or "").strip())
         except _Enough:
             return out.joined("\n\n"), True
-        return out.joined("\n\n"), total > MAX_PDF_PAGES
+        return out.joined("\n\n"), total > max_pages
     except ValueError:
         raise
     except Exception:  # noqa: BLE001 — a damaged PDF is unreadable, never a crash
         raise ValueError("That PDF couldn't be read. It may be damaged.") from None
 
 
-def _docx(data: bytes) -> tuple[str, bool]:
+def _docx(data: bytes, limit: int | None = None) -> tuple[str, bool]:
     from docx import Document
     doc = Document(io.BytesIO(data))
-    out = _Text()
+    out = _Text(limit)
     try:
         for paragraph in doc.paragraphs:
             if paragraph.text.strip():
@@ -241,10 +250,10 @@ def _docx(data: bytes) -> tuple[str, bool]:
     return out.joined(), False
 
 
-def _xlsx(data: bytes) -> tuple[str, bool]:
+def _xlsx(data: bytes, limit: int | None = None) -> tuple[str, bool]:
     from openpyxl import load_workbook
     book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-    out = _Text()
+    out = _Text(limit)
     try:
         for sheet in book.worksheets:
             out.add(f"[Sheet: {sheet.title}]")
@@ -259,10 +268,10 @@ def _xlsx(data: bytes) -> tuple[str, bool]:
     return out.joined(), False
 
 
-def _pptx(data: bytes) -> tuple[str, bool]:
+def _pptx(data: bytes, limit: int | None = None) -> tuple[str, bool]:
     from pptx import Presentation
     deck = Presentation(io.BytesIO(data))
-    out = _Text()
+    out = _Text(limit)
     try:
         for i, slide in enumerate(deck.slides, 1):
             lines = [shape.text_frame.text for shape in slide.shapes
@@ -334,10 +343,13 @@ def _plain_text(data: bytes) -> str:
     return data.decode("latin-1")
 
 
-def extract_text(name: str, data: bytes) -> tuple[str, bool]:
+def extract_text(name: str, data: bytes, large: bool = False) -> tuple[str, bool]:
     """(text, cut short) for a document's bytes, or ValueError with a plain sentence."""
-    if len(data) > MAX_DOCUMENT_BYTES:
-        raise ValueError("That document is too large for Wisp to read (20 MB at most).")
+    max_bytes = LARGE_DOCUMENT_BYTES if large else MAX_DOCUMENT_BYTES
+    limit = LARGE_TEXT_CHARS if large else MAX_TEXT_CHARS
+    pages = LARGE_PDF_PAGES if large else MAX_PDF_PAGES
+    if len(data) > max_bytes:
+        raise ValueError(f"That document is too large for Wisp to read ({max_bytes // (1024 * 1024)} MB at most).")
     kind = _kind(name)
     if kind in _LEGACY:
         raise ValueError(f"Wisp can't read old .{kind} files. Save it as {_LEGACY[kind]} and try again.")
@@ -346,15 +358,15 @@ def extract_text(name: str, data: bytes) -> tuple[str, bool]:
     cut = False
     try:
         if kind == "pdf":
-            text, cut = _pdf(data)
+            text, cut = _pdf(data, limit, pages)
             if not text.strip():
                 raise ValueError("That PDF has no text Wisp can read (it looks scanned).")
         elif kind == "docx":
-            text, cut = _docx(data)
+            text, cut = _docx(data, limit)
         elif kind == "xlsx":
-            text, cut = _xlsx(data)
+            text, cut = _xlsx(data, limit)
         elif kind == "pptx":
-            text, cut = _pptx(data)
+            text, cut = _pptx(data, limit)
         elif kind in _HTML:
             text = _html(data)
         elif kind in _TEXTUTIL:
@@ -369,8 +381,8 @@ def extract_text(name: str, data: bytes) -> tuple[str, bool]:
         raise ValueError(DAMAGED) from None
     if not text.strip():
         raise ValueError("That document has no text Wisp can read.")
-    if len(text) > MAX_TEXT_CHARS:
-        text, cut = text[:MAX_TEXT_CHARS], True
+    if len(text) > limit:
+        text, cut = text[:limit], True
     return text, cut
 
 
@@ -383,12 +395,13 @@ def _limit_self() -> None:
 
 
 def main() -> None:
-    """Child entry: argv[1] is the file name, stdin the bytes; one JSON line out."""
+    """Child entry: argv[1] is the file name, argv[2] `large` for large mode, stdin the bytes."""
     _limit_self()
     name = sys.argv[1] if len(sys.argv) > 1 else ""
-    data = sys.stdin.buffer.read(MAX_DOCUMENT_BYTES + 1)
+    large = len(sys.argv) > 2 and sys.argv[2] == "large"
+    data = sys.stdin.buffer.read((LARGE_DOCUMENT_BYTES if large else MAX_DOCUMENT_BYTES) + 1)
     try:
-        text, cut = extract_text(name, data)
+        text, cut = extract_text(name, data, large)
         result = {"text": text, "cut": cut}
     except ValueError as error:
         result = {"error": str(error) or DAMAGED}
