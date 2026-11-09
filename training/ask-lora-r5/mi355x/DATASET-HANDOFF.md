@@ -1,6 +1,56 @@
 # r5 dataset handoff, 2026-11-07
 
-## Built 2026-11-08: the finished dataset
+## Rebuilt 2026-11-09: reviewed, leak-checked, ready for a separately authorized pilot
+
+**Current build. Nothing trained.** Output (git-ignored): `data/r5-final/`, packed in `data/r5-pack/`, built from clean commit `6ae48e03` (`code_dirty` false). Earlier builds are kept as `data/r5-final.7ec9725e`, `.e4af60f9` and `.edbbd77f`, with matching `r5-pack.*`.
+
+| | Result |
+| --- | --- |
+| Rows | 7,673: train 6,968, valid 705; 45 families, none lost; status `complete` |
+| Provenance | base-written finals 3,918 (2,590 new, 1,328 reused from r4), scripted finals 41, scripted calls 3,714 |
+| `validate.py` (pin `data/pin-7e442f2d`) | exit 0, no problems, 0 prompt groups in both splits |
+| sha256 | all `edc973c8…`, train `79c018ef…`, valid `cf5bc6cb…` |
+| Packed | `ask-lora-data.zip` `b890d9415aebd4cfa158b7f9f0198197b5133df498dfa395da883c7e67bc3cb7` (the unpack sha256), `mmeval-data.zip` `116d4bcc…`, `pickers.zip` `b287fcf8…` |
+| Estimate (A6000, $0.60/h, r2's 624 tok/s) | 2,126 steps, 98.1 M tokens: training about 46 h, $28; about 58 h, $35 with picker, merge and download. Not yet measured on this card for this data |
+
+**Removed: 821 rows.** `turn_lost_a_tool_step` 252, `semantic_review` 192, `forced_empty_thought` 120, `base_answered_with_tool` 98, `no_base_answer_passed` 84, `validator_failed_after_choose` 51, `turn_lost_semantic_review` 24. Reasons per row are in `drop_manifest.jsonl`; `semantic_review.jsonl` (committed) holds every review decision.
+
+**Semantic review (`semantic_review.jsonl`, 485 decisions).** Every final was read against its context, then every drop and every action or restraint flag was adjudicated a second time. All retained tool-step thoughts were read against their calls. A fresh reviewer then read 40 random records and 30 targeted ones.
+
+- DROP 192: VOICE 60 (third-person "Sam" while speaking to Sam), CONTEXT 45, THOUGHT 26, INTENT 22, ACTION 18, USEFUL 11, RESTRAINT 6, SYNTHESIS 2, PRIVACY 2. INTENT, ACTION and RESTRAINT drop the whole turn (24 more rows); the others drop the row. Most in `chat_voice_r4` 27, `tool_choice_r5` 16, `chat_contrast_r5` 11, `day_answers_r4` 11, `day_chat_r4` 11.
+- REPLACE 3: another saved sample of the same prompt, passing the chooser's own checks and hash. NO_TRACE 11: base's thought refused, scripted call kept. KEEP 43 and NOTE 239 are looked-at flags left in, with reasons.
+- `chat_voice_r4-265-s0` ("rps time, and I'm going rock") is dropped: no saved sample answers it as a game.
+- The "next month" thought over a "this month" email call (`gather_then_send_r4-173-s0`, `-176-s0`) is not an error: "next month" belongs to the calendar lookup the user asked for next month, and both calls match. Kept.
+- 22 thoughts saying the answer "leads to the provided response" are dropped as a generation artifact. Thoughts with base's Constraint Checklist style or some dithering are kept: that's base's own voice, and the call is right.
+- 1 flag named an id not in this build (`debug_log_r5-014-s1`) and was discarded.
+
+**`choose_traces` repair.** Comparison is typed and structural: `["a,b"]` and `["a","b"]` differ; list order, duplicates, empty values, `false` and `0` are kept; malformed or ambiguous arguments fail. Parallel reads may reorder; writes and argument lists may not. A key on one side only matches only when its value is that tool's own Python default. Case folds only for `get_my_day_plan.day` and `find_free_time.period`, which those tools case-fold themselves. A thought that names a one-sided argument with its value is rejected (`thought_other_argument`).
+
+Actual impact against the box's 860 retained traces: 799 kept, 61 lost (case on arguments stored as typed), 114 gained through default equivalence, and no retained trace affected by a list collision, reorder or duplicate. Retained tool-step thoughts: 860 on the box, 913 with the typed matcher, 827 after the thought rule, 816 after NO_TRACE, **807 in final rows** after drops.
+
+**Reasoning targets and loss (train, 6,965 of 6,968 rows; 3 exceed the trainer's max_len).** Full tables and exact rendered examples: `data/r5-final/report/final-checks/audit/`.
+
+- Thoughts: base 4,282, scripted 1,245, absent 1,438. All absent thoughts are first-step (1,423 calls, 7 loads, 8 finals), all scripted. Across all splits `first_no_think` is 1,595.
+- Tool-call rows are 48.5% of rows but 20.5% of the 1.28 M supervised tokens. The loss is a per-row mean, so the effective share is the row share, and each single-call token carries about 6.7 times the average weight. 64% of supervised tokens are inside the thought channel. Final-after-tool rows are 38% of rows and 55% of tokens.
+- Post-tool closure: 3,312 rows follow a tool result, all thought-forced; **0 immediately closed thoughts**.
+- Date consistency: 23 candidates remain from a mechanical scan, each read and judged a false alarm (the thought names another day legitimately).
+- Crusoe's study used Gemma 31B, so its findings are a hypothesis on E4B, not a result. A non-empty thought doesn't prove quality. **LR, weights and KL are unchanged**: text KL anchoring is still off (`--anchor-text-frac 0`), LR 2e-4, rank 16.
+
+**Leakage.**
+
+| Check | State |
+| --- | --- |
+| Overlap: public eval and rebuilt toolbench (with history), r4 chat eval, private cases (with history), audit prompts | COMPLETE, 0 hits |
+| Private-results denylist (8 real-run files, 874 rows) | COMPLETE, exit 4: 230 rows contain a denylist token; 0 emails, 0 phrases. Every hit is a whole-word name also in the toolbench world or the committed builders that invent the training world. 2 rows whose token had no synthetic source were dropped. The 230 are coincident names, not excused: the owner decides whether to keep them |
+| `validate.py --private-results` | Not run with the private files: its rule would flag the same synthetic names |
+
+**Harness (separate commits; no dataset change).** Gate: PASS needs all mandatory evidence, missing evidence is INCOMPLETE (exit 3). Picker: steps 50, 100, 200 kept as candidates, truncation recorded, budget calibrated from the dev targets, one run id with fresh base/candidate pairing required. Trainer: `--snapshot-steps`, save-and-pause at step 400 or on a pause file, `run_r5.sh pause|resume`. #499 and current `origin/main` are merged in.
+
+**Tested offline only.** The decision logic and shell paths have unit tests. The train loop wiring, the multi-rank pause exit, `torch.load` on resume and the picker's generate path have never run: no torch or GPU was used.
+
+**Remaining before a pilot:** a separate OK from the user; the user's call on the 230 denylist name rows; an A6000 the user starts. The first real pause and resume is the pilot's own first test.
+
+## Built 2026-11-08: the build before review (superseded)
 
 **The dataset is complete and validated. Nothing trained**; training needs its own OK, after the owners' fixes under "Separate from this dataset". Output (git-ignored): `training/ask-lora-r5/data/r5-final/`, from the box's `~/wisp/finals/` in `data/a6000-finals/` (14 files, each matching the box's sha256). The box ran `data/r5-prep/sealed` (`partial.jsonl` sha256 `7bb07887…`).
 
