@@ -46,6 +46,7 @@ import unicodedata
 
 WEB_PAGE = "web page"
 EMAIL_BODY = "email body"
+EMAIL_ATTACHMENT = "email attachment"
 
 # Angle brackets and double angles as they read after NFKC, then every raw
 # character whose NFKC form contains one: fullwidth ＜＞, small ﹤﹥, U+2329/232A
@@ -121,7 +122,7 @@ def overhead(kind: str) -> int:
     return len(begin_marker(kind)) + len(end_marker(kind)) + 2
 
 
-_KINDS = (WEB_PAGE, EMAIL_BODY)
+_KINDS = (WEB_PAGE, EMAIL_BODY, EMAIL_ATTACHMENT)
 
 
 def unfence(text: str) -> str:

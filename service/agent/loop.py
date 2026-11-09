@@ -1539,6 +1539,19 @@ def _fit_tool_result(result: str, name: str, limit: int = _MAX_TOOL_RESULT_CHARS
             f"`count`) rather than assuming the rest is empty.]")
 
 
+def mark_attachment_turn(tool_name: str, args: dict) -> None:
+    """Reading attachment contents makes the rest of the turn a picture turn
+    (every change, send or lookup asks first, with no Always allow). Called in
+    the turn's own task right before the tool runs: a ContextVar set inside the
+    tool would not outlive its call. Listing names only reads no content."""
+    if tool_name != "read_email_attachments":
+        return
+    if isinstance(args, dict) and args.get("list_only") is True:
+        return
+    from service.safety.policy import mark_picture_turn
+    mark_picture_turn()
+
+
 # How each source is introduced when several are merged into a fallback answer.
 # Named per tool rather than printed as a bare function name: the user is
 # reading this, and "From your calendar:" is an answer while "get_upcoming:" is
@@ -1550,6 +1563,7 @@ _SOURCE_LABELS = {
     "search_notes": "From your notes",
     "summarize_emails": "From your email",
     "view_emails": "From your email",
+    "read_email_attachments": "From your email attachments",
     "summarize_messages": "From your messages",
     "view_messages": "From your messages",
     "lookup_contact": "From your contacts",
@@ -2304,6 +2318,7 @@ async def run_agent(
             from service.safety.policy import turn_reads_untrusted
             if turn_reads_untrusted(tool.name, tool.category, args):
                 untrusted_read_in_turn[0] = True
+            mark_attachment_turn(tool.name, args)
             from service.research.web import strict_host_fetch
             # Tools run one at a time; a note left by a prefetch or a call
             # that emitted no result must not ride on this call's result.
