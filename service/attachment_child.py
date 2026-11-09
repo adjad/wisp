@@ -64,6 +64,7 @@ TILE_OVERLAP = 0.08
 FLAT_SHARE = 0.62
 FLAT_DIFF = 3
 MAX_PDF_PAGE_IMAGES = 6
+PDF_IMAGE_STREAM_BYTES = 64 * 1024 * 1024
 _SIPS = "/usr/bin/sips"
 _SIPS_TIMEOUT_S = 20.0
 _SIPS_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C"}
@@ -108,16 +109,18 @@ _INNOCENT_SUFFIXES = frozenset({
     "txt", "xls", "xlsx", "zip",
 })
 # Characters that make a name read differently from what it is.
-_DECEPTIVE = re.compile("[‪-‮⁦-⁩‎‏]")
+_DECEPTIVE = re.compile("[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c\ufeff]")
 
 
 def _suffix(name: str) -> str:
-    return PurePath(name or "").suffix.lower().lstrip(".")
+    # Windows ignores spaces and dots at the end of a name, so "run.exe " is still run.exe.
+    return PurePath((name or "").rstrip(" .")).suffix.lower().lstrip(".")
 
 
 def _pretty(text: str, limit: int = 120) -> str:
     """A file or entry name for display: no control or direction-changing characters."""
-    cleaned = _DECEPTIVE.sub("", "".join(c if c.isprintable() else " " for c in str(text or "")))
+    # Direction-changing characters go first: they are unprintable, and would otherwise become a space.
+    cleaned = "".join(c if c.isprintable() else " " for c in _DECEPTIVE.sub("", str(text or "")))
     return " ".join(cleaned.split())[:limit]
 
 
@@ -151,7 +154,10 @@ def _zip_listing(data: bytes) -> dict:
         return {"zip_error": True}
     names = [info.filename for info in infos]
     # A bundle shows once, as the bundle, rather than as hundreds of inner files.
-    risky = sorted({_pretty(n) for n in names if not n.endswith("/") and _suffix(n) in _RISKY_SUFFIXES})
+    # An Office file's own .bin parts (printer settings, OLE objects) are not a hidden program.
+    office = "[Content_Types].xml" in names
+    risky = sorted({_pretty(n) for n in names if not n.endswith("/") and _suffix(n) in _RISKY_SUFFIXES
+                    and not (office and _suffix(n) == "bin")})
     macros = any(PurePath(n).name.lower() == "vbaproject.bin" for n in names)
     return {"entries": [_pretty(n) for n in names[:MAX_ZIP_NAMES]], "entry_count": len(names),
             "risky_entries": risky[:12], "macros": macros,
@@ -165,7 +171,7 @@ def inspect(name: str, data: bytes) -> dict:
     out: dict = {"real_type": label, "family": family, "warnings": []}
     if _DECEPTIVE.search(name or ""):
         out["warnings"].append("Its name contains hidden characters that change how it reads.")
-    parts = PurePath(name or "").name.lower().split(".")
+    parts = [part.strip() for part in PurePath((name or "").rstrip(" .")).name.lower().split(".")]
     if len(parts) >= 3 and parts[-1] in _RISKY_SUFFIXES and parts[-2] in _INNOCENT_SUFFIXES:
         out["warnings"].append(f"Its name is made to look like a .{parts[-2]}, but it ends in .{parts[-1]}.")
     if family == "program" and suffix in _INNOCENT_SUFFIXES:
@@ -272,7 +278,7 @@ def _open_picture(data: bytes, workdir: str):
             if image.format == "JPEG":
                 image.draft("RGB", (MAX_WORKING_SIDE, MAX_WORKING_SIDE))
             image.load()
-        except (Image.DecompressionBomb, Image.DecompressionBombError):
+        except (Image.DecompressionBombWarning, Image.DecompressionBombError):
             raise ValueError("That picture is too large for Wisp to read.") from None
         except UnidentifiedImageError:
             image = _through_sips(data, workdir)
@@ -305,8 +311,13 @@ def tiles(data: bytes, workdir: str = "") -> dict:
 def pdf_pages(data: bytes) -> dict:
     """The largest image on each of the first pages of a scanned PDF, as data URLs."""
     from PIL import Image
-    from pypdf import PdfReader
+    from pypdf import PdfReader, filters
     Image.MAX_IMAGE_PIXELS = MAX_PIXELS
+    # Stream ceilings well below pypdf's 75 MB default; a scanned page is a big raster, so more than text gets.
+    for limit in ("ZLIB_MAX_OUTPUT_LENGTH", "LZW_MAX_OUTPUT_LENGTH", "RUN_LENGTH_MAX_OUTPUT_LENGTH",
+                  "JBIG2_MAX_OUTPUT_LENGTH", "MAX_DECLARED_STREAM_LENGTH", "MAX_ARRAY_BASED_STREAM_OUTPUT_LENGTH"):
+        if hasattr(filters, limit):
+            setattr(filters, limit, PDF_IMAGE_STREAM_BYTES)
     try:
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted:
@@ -353,6 +364,8 @@ def main() -> None:
         result = {"error": str(error) or "That file couldn't be read."}
     except MemoryError:
         result = {"error": "That file is too large for Wisp to read."}
+    except Exception:  # noqa: BLE001 — a parser's surprise is an unreadable file, never a traceback
+        result = {"error": "That file couldn't be read. It may be damaged."}
     sys.stdout.write(json.dumps(result))
     sys.stdout.flush()
 

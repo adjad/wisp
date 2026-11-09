@@ -88,6 +88,7 @@ def is_specific(question: str | None) -> bool:
 class _Sheet:
     name: str
     rows: list[list[str]]
+    cut: bool = False       # more than MAX_TABLE_ROWS rows: the rest were not counted
 
 
 def _sheets(text: str, kind: str) -> list[_Sheet]:
@@ -98,14 +99,17 @@ def _sheets(text: str, kind: str) -> list[_Sheet]:
                     for row in csv.reader(io.StringIO(text), delimiter=delimiter) if any(c.strip() for c in row)]
         except csv.Error:
             rows = []
-        return [_Sheet("", rows[:MAX_TABLE_ROWS])] if rows else []
+        return [_Sheet("", rows[:MAX_TABLE_ROWS], len(rows) > MAX_TABLE_ROWS)] if rows else []
     sheets: list[_Sheet] = []
     for line in text.split("\n"):
         title = re.match(r"^\[Sheet: (.*)\]$", line)
         if title:
             sheets.append(_Sheet(title.group(1), []))
-        elif line.strip() and sheets and len(sheets[-1].rows) < MAX_TABLE_ROWS:
-            sheets[-1].rows.append([cell.strip() for cell in line.split(" | ")])
+        elif line.strip() and sheets:
+            if len(sheets[-1].rows) < MAX_TABLE_ROWS:
+                sheets[-1].rows.append([cell.strip() for cell in line.split(" | ")])
+            else:
+                sheets[-1].cut = True
     return [sheet for sheet in sheets if sheet.rows]
 
 
@@ -137,8 +141,13 @@ def _sheet_outline(sheet: _Sheet) -> str:
         present = [row[index] for row in body if index < len(row) and row[index].strip()]
         numbers = [n for n in map(_number, present) if n is not None]
         if len(numbers) >= _MIN_NUMERIC_ROWS and len(numbers) >= len(present) * _MIN_NUMERIC_SHARE:
-            totals.append(f"{column or f'column {index + 1}'}: total {_format_number(math.fsum(numbers))}, "
-                          f"lowest {_format_number(min(numbers))}, highest {_format_number(max(numbers))}")
+            label = column or f"column {index + 1}"
+            spread = f"lowest {_format_number(min(numbers))}, highest {_format_number(max(numbers))}"
+            if all("%" in cell for cell in present if _number(cell) is not None):
+                # A total of percentages means nothing; their spread does.
+                totals.append(f"{label} (percent): {spread}")
+            else:
+                totals.append(f"{label}: total {_format_number(math.fsum(numbers))}, {spread}")
     if totals:
         lines.append("Worked out from every row: " + "; ".join(totals[:10]) + ".")
     return "\n".join(lines)
@@ -170,16 +179,19 @@ def condense_table(text: str, kind: str, question: str | None, budget: int) -> C
     sheets = _sheets(text, kind)
     if not sheets:
         return None
-    outlines = [_sheet_outline(sheet) for sheet in sheets[:MAX_SHEETS_SHOWN]]
+    profiled = sheets[:MAX_SHEETS_SHOWN]
+    outlines = [_sheet_outline(sheet) for sheet in profiled]
     parts = ["\n\n".join(outlines)]
-    if len(sheets) > MAX_SHEETS_SHOWN:
-        parts.append(f"(+{len(sheets) - MAX_SHEETS_SHOWN} more sheets not profiled)")
-    room = max(0, budget - len(parts[0]) - 200)
-    each = room // max(1, min(len(sheets), MAX_SHEETS_SHOWN))
+    skipped = len(sheets) - len(profiled)
+    if skipped:
+        parts.append(f"(+{skipped} more sheets not profiled)")
+    # Each block of rows carries a title line: leave room for them so the cut below never bites.
+    room = max(0, budget - len(parts[0]) - 120 * len(profiled) - 100)
+    each = room // max(1, len(profiled))
     specific = is_specific(question)
-    total_rows = sum(len(sheet.rows) - 1 for sheet in sheets)
+    total_rows = sum(len(sheet.rows) - 1 for sheet in profiled)
     shown = matched = 0
-    for sheet in sheets[:MAX_SHEETS_SHOWN]:
+    for sheet in profiled:
         header = _line(sheet.rows[0])
         rows: list[str] = []
         if specific:
@@ -205,7 +217,13 @@ def condense_table(text: str, kind: str, question: str | None, budget: int) -> C
         note = f"Searched all {total_rows:,} rows and none matched the question. Totals above use every row."
     else:
         note = f"Showing the first {shown:,} of {total_rows:,} rows. Totals above use every row."
-    return Condensed(joined, note, complete=shown >= total_rows)
+    complete = shown >= total_rows and not skipped
+    if skipped:
+        note += f" {skipped} more sheet{'' if skipped == 1 else 's'} were not read."
+    if any(sheet.cut for sheet in profiled):
+        note += f" A sheet with more than {MAX_TABLE_ROWS:,} rows was counted only as far as that."
+        complete = False
+    return Condensed(joined, note, complete=complete)
 
 
 # --- search -----------------------------------------------------------------------
@@ -263,9 +281,12 @@ def plan_parts(text: str, *, passes: int = MAX_PASSES, size: int = PASS_CHARS) -
         count = max(1, math.ceil(length / size))
         step = length / count
         spans = [(int(i * step), int((i + 1) * step)) for i in range(count)]
+        spans[-1] = (spans[-1][0], length)
     else:
         gap = (length - size) / max(1, passes - 1) if passes > 1 else 0
         spans = [(int(i * gap), int(i * gap) + size) for i in range(passes)]
+        if passes > 1:
+            spans[-1] = (length - size, length)     # float rounding must not leave the last window short
     return [(_snap(text, a), _snap(text, b) if b < length else length) for a, b in spans]
 
 
@@ -322,9 +343,13 @@ async def read_in_parts(text: str, name: str, question: str | None, budget: int,
     if done == len(plan) and share >= 0.995:
         note = f"Read the whole file in {done} part{'' if done == 1 else 's'}; these are notes on it."
         complete = True
+    elif done == len(plan):
+        note = (f"Read {done} part{'' if done == 1 else 's'} spread evenly through the file, about "
+                f"{max(1, round(share * 100))}% of it; the rest was not read.")
+        complete = False
     else:
-        note = (f"Read {done} evenly spaced part{'' if done == 1 else 's'}, about {max(1, round(share * 100))}% "
-                "of the file; the rest was not read.")
+        note = (f"Read {done} of {len(plan)} parts, about {max(1, round(share * 100))}% of the file; "
+                "the rest was not read.")
         complete = False
     return Condensed("\n\n".join(notes)[:budget], note, complete=complete)
 

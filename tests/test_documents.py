@@ -47,7 +47,9 @@ def run(coro):
 
 
 @pytest.fixture(autouse=True)
-def foreground_reset():
+def foreground_reset(monkeypatch):
+    # A semaphore binds to the first event loop that has to wait on it; every test runs its own loop.
+    monkeypatch.setattr(D, "_ONE_AT_A_TIME", asyncio.Semaphore(1))
     yield
     idle._foreground_turns = 0
 
@@ -196,13 +198,91 @@ def test_one_no_tools_call_with_the_text_quoted_as_untrusted():
     assert idle._foreground_turns == 0
 
 
-def test_a_long_document_is_cut_and_the_answer_says_so():
+def test_a_document_over_the_window_is_condensed_and_the_answer_says_how(monkeypatch):
+    # Over MAX_TEXT_CHARS the text is no longer cut to its first part: it is read in parts (a general
+    # request), one notes call each, and one answer from the notes. The reply ends with the coverage note.
     client = StubClient(reply="Mostly about rent.")
-    long = ("Rent is due monthly. " * 3000).encode()
+    long = ("Rent is due monthly. " * 3000).encode()          # 63,000 characters
     result = run(D.answer_request("?", {"name": "long.txt", "data": b64(long)}, client=client, model=MODEL))
+    assert len(client.calls) == 5                              # four notes calls and the answer
+    sent = client.calls[-1]["messages"][1]["content"]
+    assert len(sent) < D.MAX_TEXT_CHARS + 1000 and "only its first part" not in sent
+    assert "condensed for you: Read the whole file in 4 parts; these are notes on it." in sent
+    assert "[Part 1 of 4]" in sent
+    assert result.answer == "Mostly about rent.\n\n(Read the whole file in 4 parts; these are notes on it.)"
+    assert D.TRUNCATED not in result.answer and idle._foreground_turns == 0
+
+
+def test_a_specific_question_about_a_long_document_searches_it_with_one_model_call():
+    client = StubClient(reply="Ninety days.")
+    text = ("The committee reviewed the routine maintenance schedule. " * 4000
+            + "\n\nThe termination notice period is ninety days.\n\n"
+            + "The committee reviewed the routine maintenance schedule. " * 4000)
+    result = run(D.answer_request("What is the termination notice period?",
+                                  {"name": "contract.txt", "data": b64(text.encode())}, client=client, model=MODEL))
+    assert len(client.calls) == 1
+    assert "termination notice period is ninety days" in client.calls[0]["messages"][1]["content"]
+    assert result.answer.startswith("Ninety days.") and "Searched the whole file" in result.answer
+    assert D.TRUNCATED not in result.answer
+
+
+def test_a_spreadsheet_over_the_window_is_profiled_in_code():
+    from openpyxl import Workbook
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Sales"
+    sheet.append(["Order", "City", "Amount"])
+    for i in range(1, 1501):
+        sheet.append([f"order-{i}", "Berlin" if i == 777 else "Paris", i])
+    out = io.BytesIO()
+    book.save(out)
+    client = StubClient(reply="Total is 1,125,750.")
+    result = run(D.answer_request("What is the total amount?", {"name": "sales.xlsx", "data": b64(out.getvalue())},
+                                  client=client, model=MODEL))
     sent = client.calls[0]["messages"][1]["content"]
-    assert len(sent) < D.MAX_TEXT_CHARS + 1000 and "only its first part" in sent
-    assert result.answer == "Mostly about rent." + D.TRUNCATED
+    assert len(client.calls) == 1 and "Amount: total 1,125,750" in sent
+    assert result.answer.startswith("Total is") and "Totals above use every row" in result.answer
+
+
+def test_a_document_longer_than_large_mode_reads_says_its_end_was_not_searched():
+    client = StubClient()
+    huge = ("Routine line of the minutes. " * 25000).encode()        # 725,000 characters > LARGE_TEXT_CHARS
+    result = run(D.answer_request("What is this?", {"name": "huge.txt", "data": b64(huge)},
+                                  client=client, model=MODEL))
+    assert "its end was not searched" in result.answer
+
+
+def test_the_large_path_extends_the_deadline_and_counts_from_the_start(monkeypatch):
+    seen = []
+    real = D.local_chat
+
+    async def spy(client, model, messages, max_tokens, deadline):
+        seen.append(deadline - time.monotonic())
+        return await real(client, model, messages, max_tokens, deadline)
+    monkeypatch.setattr(D, "local_chat", spy)
+    run(D.answer_request("?", {"name": "long.txt", "data": b64(("Rent is due monthly. " * 3000).encode())},
+                         client=StubClient(), model=MODEL))
+    assert seen and all(100 < left <= D._LARGE_TIMEOUT_S for left in seen)
+    seen.clear()
+    run(D.answer_request("?", {"name": "short.txt", "data": b64(b"short")}, client=StubClient(), model=MODEL))
+    assert seen and all(left <= D._TIMEOUT_S for left in seen)
+
+
+def test_a_short_document_behaves_exactly_as_before():
+    client = StubClient(reply="Short.")
+    result = run(D.answer_request("?", {"name": "short.txt", "data": b64(b"A short note about rent.")},
+                                  client=client, model=MODEL))
+    assert len(client.calls) == 1 and result.answer == "Short."
+    sent = client.calls[0]["messages"][1]["content"]
+    assert "condensed" not in sent and "first part" not in sent
+
+
+def test_the_notes_calls_are_not_recorded_with_the_document_text():
+    recorded = []
+    with patch("service.debug_capture.record", lambda *a, **k: recorded.append(k)):
+        run(D.answer_request("?", {"name": "long.txt", "data": b64(("Secret salary 120k. " * 3500).encode())},
+                             client=StubClient(), model=MODEL))
+    assert recorded and "Secret salary" not in json.dumps(recorded)
 
 
 def test_debug_capture_omits_the_document_text():
@@ -662,3 +742,161 @@ def test_without_a_child_only_plain_formats_fall_back_to_a_thread(monkeypatch):
     with pytest.raises(ValueError, match="couldn't start its document reader"):
         run(D.extract_async("Lease.docx", docx_bytes("x")))
     assert run(D.extract_async("notes.html", b"<p>hi</p>"))[0] == "hi"
+
+
+# ------------------------------------------------- large mode, run_child, local_chat
+
+def test_large_mode_raises_only_the_three_limits():
+    assert (E.LARGE_TEXT_CHARS, E.LARGE_PDF_PAGES, E.LARGE_DOCUMENT_BYTES) == (600_000, 1500, 32 * 1024 * 1024)
+    big = ("A line of text.\n" * 80_000).encode()                       # 1.28 million characters
+    small, small_cut = E.extract_text("big.txt", big)
+    large, large_cut = E.extract_text("big.txt", big, True)
+    assert len(small) == E.MAX_TEXT_CHARS and small_cut
+    assert len(large) == E.LARGE_TEXT_CHARS and large_cut
+    with pytest.raises(ValueError, match="20 MB at most"):
+        E.extract_text("a.txt", b"x" * (E.MAX_DOCUMENT_BYTES + 1))
+    assert E.extract_text("a.txt", b"x" * (E.MAX_DOCUMENT_BYTES + 1), True)[0]
+    with pytest.raises(ValueError, match="32 MB at most"):
+        E.extract_text("a.txt", b"x" * (E.LARGE_DOCUMENT_BYTES + 1), True)
+
+
+def test_the_text_collector_reads_its_default_limit_when_made(monkeypatch):
+    monkeypatch.setattr(E, "MAX_TEXT_CHARS", 77)
+    assert E._Text().limit == 77 and E._Text(5).limit == 5
+
+
+def test_large_mode_walks_more_pdf_pages_and_docx_paragraphs(monkeypatch):
+    monkeypatch.setattr(E, "MAX_PDF_PAGES", 2)
+    from pypdf import PdfWriter
+    writer = PdfWriter()
+    for _ in range(4):
+        writer.add_blank_page(200, 200)
+    blank = io.BytesIO()
+    writer.write(blank)
+    with pytest.raises(ValueError, match="no text"):
+        E.extract_text("p.pdf", blank.getvalue())
+    many = docx_bytes(*[f"Paragraph {i} " + "x" * 200 for i in range(400)])
+    assert len(E.extract_text("long.docx", many)[0]) <= E.MAX_TEXT_CHARS + 300
+    text, cut = E.extract_text("long.docx", many, True)
+    assert "Paragraph 399" in text and not cut
+
+
+def test_the_child_receives_large_as_argv_and_reads_the_larger_limits(monkeypatch):
+    seen = {}
+    real = D.run_child
+
+    async def spy(code, argv, data, *, timeout, fallback=None):
+        seen["argv"] = argv
+        return await real(code, argv, data, timeout=timeout, fallback=fallback)
+    monkeypatch.setattr(D, "run_child", spy)
+    big = ("A line of text.\n" * 40_000).encode()
+    text, cut = run(D.extract_async("big.txt", big, large=True))
+    assert seen["argv"] == ["big.txt", "large"] and len(text) == E.LARGE_TEXT_CHARS and cut
+    text, cut = run(D.extract_async("big.txt", big))
+    assert seen["argv"] == ["big.txt"] and len(text) == D.MAX_TEXT_CHARS and cut
+
+
+def test_extract_async_in_a_thread_fallback_honours_large(monkeypatch):
+    async def no_exec(*a, **k):
+        raise PermissionError("sandbox")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", no_exec)
+    big = ("A line of text.\n" * 40_000).encode()
+    assert len(run(D.extract_async("big.txt", big, large=True))[0]) == E.LARGE_TEXT_CHARS
+    assert len(run(D.extract_async("big.txt", big))[0]) == D.MAX_TEXT_CHARS
+
+
+@CHILD
+def test_run_child_returns_the_childs_json_and_turns_its_error_into_a_valueerror():
+    code = "import sys, json; sys.stdin.buffer.read(); print(json.dumps({'ok': sys.argv[1:]}))"
+    assert run(D.run_child(code, ["a", "b"], b"x", timeout=20)) == {"ok": ["a", "b"]}
+    failing = "import sys, json; sys.stdin.buffer.read(); print(json.dumps({'error': 'It is broken.'}))"
+    with pytest.raises(ValueError, match="It is broken."):
+        run(D.run_child(failing, [], b"x", timeout=20))
+    with pytest.raises(ValueError, match="too large or complex"):
+        run(D.run_child("import sys; sys.stdin.buffer.read(); print('not json')", [], b"x", timeout=20))
+    with pytest.raises(ValueError, match="damaged"):
+        run(D.run_child("import sys; sys.stdin.buffer.read(); print('[1]')", [], b"x", timeout=20))
+
+
+@CHILD
+def test_run_child_and_extract_async_share_one_at_a_time(monkeypatch):
+    code = ("import sys, time, json; sys.stdin.buffer.read(); time.sleep(0.6); "
+            "print(json.dumps({'text': 'x', 'cut': False}))")
+    monkeypatch.setattr(D, "_CHILD", code)
+
+    async def go():
+        started = time.monotonic()
+        await asyncio.gather(D.run_child(code, [], b"x", timeout=20), D.extract_async("a.txt", b"x"))
+        return time.monotonic() - started
+    assert run(go()) >= 1.1                     # one after the other, not together
+
+
+def test_run_child_without_a_fallback_says_it_could_not_start(monkeypatch):
+    async def no_exec(*a, **k):
+        raise PermissionError("sandbox")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", no_exec)
+    with pytest.raises(ValueError, match="couldn't start its document reader"):
+        run(D.run_child("pass", [], b"x", timeout=5))
+    with pytest.raises(ValueError, match="couldn't start its document reader"):
+        run(D.run_attachment_child("inspect", "a.exe", b"MZ", timeout=5))
+
+
+@CHILD
+def test_run_child_kills_a_child_that_outlives_its_deadline():
+    started = time.monotonic()
+    with pytest.raises(ValueError, match="took too long"):
+        run(D.run_child("import sys, time; sys.stdin.buffer.read(); time.sleep(30)", [], b"x", timeout=0.5))
+    assert time.monotonic() - started < 5
+
+
+def test_local_model_is_the_public_resolver_and_refuses_with_the_documents_wording(monkeypatch):
+    monkeypatch.setattr(V, "_resolve", lambda: ("client", "model"))
+    assert D.local_model() == ("client", "model")
+
+    def refuse():
+        raise V.VisionUnavailable("Wisp reads pictures only with a model on this Mac.")
+    monkeypatch.setattr(V, "_resolve", refuse)
+    with pytest.raises(V.VisionUnavailable, match="reads documents only with a model on this Mac"):
+        D.local_model()
+
+
+def test_local_chat_is_one_gated_no_tools_thinking_off_call_returning_text():
+    client = StubClient(reply="<think>hmm</think>The answer.")
+    deadline = time.monotonic() + 30
+    messages = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+    gate = []
+    real_begin = idle.begin_foreground
+    with patch.object(idle, "begin_foreground", lambda: (gate.append(1), real_begin())[1]):
+        reply = run(D.local_chat(client, MODEL, messages, 123, deadline))
+    assert reply == "The answer." and len(client.calls) == 1 and gate
+    call = client.calls[0]
+    assert call["max_tokens"] == 123 and call["temperature"] == 0 and "tools" not in call
+    assert call["chat_template_kwargs"] == {"enable_thinking": False}
+    assert call["engine_headers"] == {"X-oMLX-Cache-Store": "off"} and idle._foreground_turns == 0
+
+
+def test_local_chat_waits_for_a_busy_model_and_gives_up_at_the_deadline():
+    client = StubClient()
+    with patch.object(idle, "in_flight", lambda key: 1), pytest.raises(TimeoutError, match="model busy"):
+        run(D.local_chat(client, MODEL, [{"role": "user", "content": "u"}], 10, time.monotonic() + 0.3))
+    assert not client.calls and idle._foreground_turns == 0
+
+
+def test_local_chat_never_records_the_messages_text():
+    recorded = []
+    with patch("service.debug_capture.record", lambda *a, **k: recorded.append(k)):
+        run(D.local_chat(StubClient(), MODEL, [{"role": "system", "content": "rules"},
+                                               {"role": "user", "content": "secret salary 120k"}], 10,
+                         time.monotonic() + 30))
+    assert recorded and "secret salary" not in json.dumps(recorded)
+
+
+def test_read_file_points_to_attaching_a_picture_and_no_longer_denies_vision(tmp_path):
+    from service.tools import builtin
+    picture = tmp_path / "shot.png"
+    picture.write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR" + b"\x00" * 40)
+    reply = builtin.read_file(str(picture))
+    assert "attach the picture in Ask" in reply and "no vision model" not in reply
+    from service.tools.registry import get_tool
+    description = get_tool("read_file").description
+    assert "no vision model" not in description and "attach the picture in Ask" in description

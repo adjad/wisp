@@ -365,8 +365,9 @@ _STRUCTURED_READERS = {
     "read_file",
     "Read and return the contents of a file — plain text, or a PDF/.docx/"
     ".xlsx/.pptx (real text is extracted, not raw bytes). Scanned/image-only "
-    "PDFs and image files CANNOT be read (Wisp has no vision model); say so "
-    "plainly rather than trying another tool. Older .doc/.xls/.ppt (no 'x') "
+    "PDFs and image files CANNOT be read by this tool; say so plainly rather "
+    "than trying another tool, and tell the person they can attach the picture "
+    "in Ask for Wisp to look at it. Older .doc/.xls/.ppt (no 'x') "
     "are NOT supported — tell the user to re-save as the newer format.",
     {"type": "object",
      "properties": {"path": {"type": "string"}},
@@ -439,9 +440,9 @@ def read_file(path: str) -> str:
     if b"\x00" in raw[:8192]:
         kind = p.suffix.lstrip(".") or "binary"
         return (f"({p} is a {kind} file, not text — Wisp can't read its contents. "
-                "Image files in particular cannot be read at all: there is no "
-                "vision model. Tell the user this plainly; do not retry with "
-                "another tool.)")
+                "This tool cannot read image files: tell the user this plainly and "
+                "that they can attach the picture in Ask for Wisp to look at it; "
+                "do not retry with another tool.)")
 
     return _clip(raw.decode("utf-8", errors="replace"))
 
