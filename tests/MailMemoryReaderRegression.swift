@@ -350,6 +350,245 @@ enum MailMemoryReaderRegression {
             check(r.isEmpty, "no Sent mailbox: an empty answer")
         } else { check(false, "no Sent mailbox reads") }
 
+        // MARK: Attachments (kind "attachments" and "attachment")
+
+        func attachmentsRequest(_ over: [String: Any] = [:]) -> [String: Any] {
+            var base: [String: Any] = ["type": "mail_memory_read", "request_id": "abcdefghijklmnop", "kind": "attachments",
+                                       "terms": ["lease"], "since": 0, "until": 0, "rfc_ids": [], "limit": 50]
+            for (k, v) in over { base[k] = v }
+            return base
+        }
+        func attachmentRequest(_ over: [String: Any] = [:]) -> [String: Any] {
+            var base: [String: Any] = ["type": "mail_memory_read", "request_id": "abcdefghijklmnop", "kind": "attachment",
+                                       "rowid": 10, "attachment_id": "1"]
+            for (k, v) in over { base[k] = v }
+            return base
+        }
+        let parsed = MailMemoryReader.request(attachmentsRequest(["since": 5.5, "until": 9, "rfc_ids": ["<a@x>"], "limit": 400]))
+        check(parsed?.kind == "attachments" && parsed?.terms == ["lease"] && parsed?.since == 5.5 && parsed?.until == 9
+              && parsed?.rfcIDs == ["<a@x>"] && parsed?.limit == 400, "attachments request parses")
+        check(MailMemoryReader.request(attachmentsRequest(["terms": [], "event_id": "e1"]))?.terms == [],
+              "attachments request: no terms, hub event_id tolerated")
+        check(MailMemoryReader.request(attachmentsRequest(["terms": ["a", "b", "c", "d", "e"]])) != nil, "five terms allowed")
+        check(MailMemoryReader.request(attachmentsRequest(["terms": ["a", "b", "c", "d", "e", "f"]])) == nil, "six terms refused")
+        check(MailMemoryReader.request(attachmentsRequest(["terms": [1, 2]])) == nil, "non-string terms refused")
+        check(MailMemoryReader.request(attachmentsRequest(["terms": "lease"])) == nil, "terms must be an array")
+        check(MailMemoryReader.request(attachmentsRequest(["rfc_ids": (0..<40).map { "<\($0)@x>" }])) != nil, "40 RFC ids allowed")
+        check(MailMemoryReader.request(attachmentsRequest(["rfc_ids": (0..<41).map { "<\($0)@x>" }])) == nil, "41 RFC ids refused")
+        check(MailMemoryReader.request(attachmentsRequest(["limit": 0])) == nil, "limit 0 refused")
+        check(MailMemoryReader.request(attachmentsRequest(["limit": 401])) == nil, "limit 401 refused")
+        check(MailMemoryReader.request(attachmentsRequest(["limit": "5"])) == nil, "limit must be a number")
+        check(MailMemoryReader.request(attachmentsRequest(["since": -1])) == nil, "negative since refused")
+        check(MailMemoryReader.request(attachmentsRequest(["until": "never"])) == nil, "until must be a number")
+        check(MailMemoryReader.request(attachmentsRequest(["path": "/etc"])) == nil, "attachments: extra key refused")
+        var missingTerms = attachmentsRequest()
+        missingTerms["terms"] = nil
+        check(MailMemoryReader.request(missingTerms) == nil, "attachments: a missing key refused")
+        check(MailMemoryReader.request(attachmentRequest())?.attachmentID == "1"
+              && MailMemoryReader.request(attachmentRequest())?.rowid == 10, "attachment request parses")
+        check(MailMemoryReader.request(attachmentRequest(["attachment_id": "A1.b_c-2"])) != nil, "id characters allowed")
+        for bad in ["../x", "a/b", "", "a b", "a\\b", "..%2f", String(repeating: "a", count: 41), "x\0y", "é"] {
+            check(MailMemoryReader.request(attachmentRequest(["attachment_id": bad])) == nil, "attachment_id refused: \(bad)")
+        }
+        check(MailMemoryReader.request(attachmentRequest(["attachment_id": String(repeating: "a", count: 40)])) != nil,
+              "40-character id allowed")
+        check(MailMemoryReader.request(attachmentRequest(["rowid": 0])) == nil, "attachment: rowid must be positive")
+        check(MailMemoryReader.request(attachmentRequest(["terms": []])) == nil, "attachment: extra key refused")
+        var noID = attachmentRequest()
+        noID["attachment_id"] = nil
+        check(MailMemoryReader.request(noID) == nil, "attachment: id required")
+
+        // Hidden mailboxes and LIKE escaping.
+        for u in ["imap://A/Trash", "imap://A/%5BGmail%5D/Trash", "imap://A/[Gmail]/Spam", "imap://A/Junk",
+                  "imap://A/Junk%20E-mail", "imap://A/Junk%20Email", "imap://A/Deleted%20Messages",
+                  "imap://A/Deleted%20Items", "imap://A/Bin", "imap://A/Drafts", "imap://A/%5BGmail%5D/Drafts",
+                  "imap://A/INBOX/Trash", "ews://A/Deleted%20Items/", "imap://A/trash"] {
+            check(MailMemoryReader.isHiddenMailbox(url: u), "hidden: \(u)")
+        }
+        for u in ["imap://A/INBOX", "imap://A/Sent%20Messages", "imap://A/%5BGmail%5D/All%20Mail", "imap://A/Spam%20filters",
+                  "imap://A/Trashed%20ideas", "imap://A/Trash/Old", "imap://A/Binder", "imap://A/Draftsmen", "imap://Trash", ""] {
+            check(!MailMemoryReader.isHiddenMailbox(url: u), "not hidden: \(u)")
+        }
+        check(MailMemoryReader.likePattern("50%_off\\") == "%50\\%\\_off\\\\%", "LIKE terms are escaped")
+
+        // Fixture mail folder: one Gmail account, hidden folders, labels, files on disk.
+        let attRoot = "\(root)/attachments"
+        try FileManager.default.createDirectory(atPath: "\(attRoot)/V10/MailData", withIntermediateDirectories: true)
+        let attDB = makeDB("attachmentfixture", """
+        CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY, url TEXT);
+        CREATE TABLE subjects (ROWID INTEGER PRIMARY KEY, subject TEXT);
+        CREATE TABLE addresses (ROWID INTEGER PRIMARY KEY, address TEXT, comment TEXT);
+        CREATE TABLE labels (message_id INTEGER, mailbox_id INTEGER);
+        CREATE TABLE messages (ROWID INTEGER PRIMARY KEY, subject INTEGER, sender INTEGER, date_received REAL,
+          mailbox INTEGER, deleted INTEGER, global_message_id INTEGER);
+        CREATE TABLE message_global_data (ROWID INTEGER PRIMARY KEY, message_id_header TEXT);
+        CREATE TABLE attachments (ROWID INTEGER PRIMARY KEY, message INTEGER, attachment_id TEXT, name TEXT);
+        INSERT INTO message_global_data VALUES (1, '<a@x>'), (2, '<b@x>');
+        INSERT INTO mailboxes VALUES (1, 'imap://GM/%5BGmail%5D/All%20Mail'), (2, 'imap://GM/INBOX'),
+          (3, 'imap://GM/%5BGmail%5D/Sent%20Mail'), (4, 'imap://GM/%5BGmail%5D/Trash'), (5, 'imap://GM/Junk'),
+          (6, 'imap://GM/%5BGmail%5D/Drafts'), (7, 'imap://GM/%5BGmail%5D/Spam'), (8, 'imap://GM/Spam%20filters');
+        INSERT INTO subjects VALUES (1, 'Lease renewal'), (2, 'Taxes 50%_off'), (3, 'Hidden'), (4, 'Filters'),
+          (5, 'Sent'), (6, 'Old'), (7, 'Linked');
+        INSERT INTO addresses VALUES (1, 'leasing@harbor.example', 'Harbor Homes'), (2, 'me@example.com', 'Me');
+        INSERT INTO messages VALUES (10, 1, 1, \(now - 86400), 2, 0, 1);
+        INSERT INTO messages VALUES (11, 2, 2, \(now - 3600), 3, 0, 2);
+        INSERT INTO messages VALUES (12, 3, 1, \(now - 100), 4, 0, NULL);
+        INSERT INTO messages VALUES (13, 3, 1, \(now - 100), 5, 0, NULL);
+        INSERT INTO messages VALUES (14, 3, 1, \(now - 100), 6, 0, NULL);
+        INSERT INTO messages VALUES (15, 3, 1, \(now - 100), 7, 0, NULL);
+        INSERT INTO messages VALUES (16, 3, 1, \(now - 100), 2, 1, NULL);
+        INSERT INTO messages VALUES (17, 4, 2, \(now - 5000), 8, 0, NULL);
+        INSERT INTO messages VALUES (18, 3, 1, \(now - 100), 1, 0, NULL);
+        INSERT INTO messages VALUES (19, 5, 2, \(now - 7200), 1, 0, NULL);
+        INSERT INTO messages VALUES (20, 6, 2, \(now - 400 * 86400), 2, 0, NULL);
+        INSERT INTO labels VALUES (18, 4), (19, 3);
+        INSERT INTO attachments VALUES (1, 10, '1', 'lease.pdf'), (2, 10, '2', 'photo.png'),
+          (3, 11, '1', 'tax_50%_form.xlsx'), (4, 12, '1', 'trash.pdf'), (5, 13, '1', 'junk.pdf'),
+          (6, 14, '1', 'draft.pdf'), (7, 15, '1', 'spam.pdf'), (8, 16, '1', 'deleted.pdf'),
+          (9, 17, '1', 'filters.txt'), (10, 18, '1', 'labelled-trash.pdf'), (11, 19, '1', 'sent.pdf'),
+          (12, 20, '1', 'old.pdf'), (13, 17, '2', 'big.bin'), (14, 11, '2', 'link.txt');
+        """)
+        try FileManager.default.copyItem(atPath: attDB, toPath: "\(attRoot)/V10/MailData/Envelope Index")
+        let store = "\(attRoot)/V10/GM/[Gmail].mbox/All Mail.mbox/STORE/Data/0"
+        for rowid in [10, 11, 12, 16, 17, 20] { try emlx("\(store)/Messages/\(rowid).partial.emlx", "Subject: x\r\n\r\ny") }
+        func put(_ rel: String, _ bytes: Data) throws {
+            let path = "\(store)/Attachments/\(rel)"
+            try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
+                                                    withIntermediateDirectories: true)
+            try bytes.write(to: URL(fileURLWithPath: path))
+        }
+        try put("10/1/lease.pdf", Data("PDFDATA".utf8))
+        try put("11/1/tax_50%_form.xlsx", Data("SHEET".utf8))
+        try put("17/1/filters.txt", Data("hello".utf8))
+        // Files for rows that must never be returned: hidden, deleted or labelled-away mail.
+        for rel in ["12/1/trash.pdf", "16/1/deleted.pdf"] { try put(rel, Data("secret".utf8)) }
+        // A file over the cap (sparse, nothing real is written).
+        let bigPath = "\(store)/Attachments/17/2/big.bin"
+        try FileManager.default.createDirectory(atPath: (bigPath as NSString).deletingLastPathComponent,
+                                                withIntermediateDirectories: true)
+        try Data().write(to: URL(fileURLWithPath: bigPath))
+        let big = try FileHandle(forWritingTo: URL(fileURLWithPath: bigPath))
+        try big.truncate(atOffset: UInt64(MailMemoryReader.maxAttachmentBytes) + 1)
+        try big.close()
+        // Symlinks: a file link, and a message folder that points outside the Mail folder.
+        let outside = "\(root)/outside"
+        try FileManager.default.createDirectory(atPath: "\(outside)/1", withIntermediateDirectories: true)
+        try Data("outside secret".utf8).write(to: URL(fileURLWithPath: "\(outside)/secret.txt"))
+        try Data("outside old".utf8).write(to: URL(fileURLWithPath: "\(outside)/1/old.pdf"))
+        try FileManager.default.createDirectory(atPath: "\(store)/Attachments/11/2", withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: "\(store)/Attachments/11/2/link.txt",
+                                                   withDestinationPath: "\(outside)/secret.txt")
+        try FileManager.default.createSymbolicLink(atPath: "\(store)/Attachments/20", withDestinationPath: outside)
+
+        func listing(_ over: [String: Any]) -> [String: Any] {
+            let pair = makeReader(attRoot)
+            return pair.1.ask(pair.0, attachmentsRequest(over))
+        }
+        func names(_ reply: [String: Any]) -> [String] {
+            (reply["rows"] as? [[String: Any]] ?? []).map { $0["name"] as? String ?? "" }
+        }
+        let all = listing(["terms": []])
+        let allRows = all["rows"] as? [[String: Any]] ?? []
+        check(all["ok"] as? Bool == true && all["capped"] as? Bool == false && all["kind"] as? String == "attachments"
+              && all["request_id"] as? String == "abcdefghijklmnop", "attachments reply answers its request: \(all)")
+        check(names(all) == ["tax_50%_form.xlsx", "link.txt", "filters.txt", "big.bin", "sent.pdf", "lease.pdf", "photo.png", "old.pdf"],
+              "newest first; trash, junk, drafts, spam, deleted and trash-labelled are excluded: \(names(all))")
+        let byName = Dictionary(uniqueKeysWithValues: allRows.map { ($0["name"] as? String ?? "", $0) })
+        check(byName["lease.pdf"]?["on_disk"] as? Bool == true && byName["lease.pdf"]?["size"] as? Int == 7,
+              "on_disk true with the real size")
+        check(byName["photo.png"]?["on_disk"] as? Bool == false && byName["photo.png"]?["size"] as? Int == 0,
+              "on_disk false when Mail did not save it")
+        check(byName["sent.pdf"]?["on_disk"] as? Bool == false, "on_disk false when the message has no .emlx")
+        check(byName["link.txt"]?["on_disk"] as? Bool == false, "a symlinked file is not on disk")
+        check(byName["old.pdf"]?["on_disk"] as? Bool == false, "a symlinked message folder is not on disk")
+        check(byName["lease.pdf"]?["box"] as? String == "other" && byName["tax_50%_form.xlsx"]?["box"] as? String == "sent"
+              && byName["sent.pdf"]?["box"] as? String == "sent" && byName["filters.txt"]?["box"] as? String == "other",
+              "box: sent by mailbox or label, else other")
+        if let lease = byName["lease.pdf"] {
+            check(lease["rowid"] as? Int64 == 10 && lease["attachment_id"] as? String == "1"
+                  && lease["account"] as? String == "GM" && lease["subject"] as? String == "Lease renewal"
+                  && lease["sender"] as? String == "leasing@harbor.example" && lease["sender_name"] as? String == "Harbor Homes"
+                  && lease["rfc_message_id"] as? String == "<a@x>" && abs((lease["ts"] as? Double ?? 0) - (now - 86400)) < 1,
+                  "row fields: \(lease)")
+        } else { check(false, "lease.pdf row present") }
+        check(names(listing(["terms": ["filters"]])) == ["filters.txt", "big.bin"], "a folder merely named like spam is read")
+        check(names(listing(["terms": ["lease"]])) == ["lease.pdf", "photo.png"], "term matches the subject")
+        check(names(listing(["terms": ["LEASE"]])) == ["lease.pdf", "photo.png"], "terms are case-insensitive")
+        check(names(listing(["terms": ["lease", "photo"]])) == ["photo.png"], "every term must match")
+        check(names(listing(["terms": ["harbor"]])) == ["lease.pdf", "photo.png"], "term matches the sender name")
+        check(names(listing(["terms": ["leasing@"]])) == ["lease.pdf", "photo.png"], "term matches the sender address")
+        check(names(listing(["terms": ["xlsx"]])) == ["tax_50%_form.xlsx"], "term matches the attachment name")
+        check(names(listing(["terms": ["50%"]])) == ["tax_50%_form.xlsx", "link.txt"], "% is literal")
+        check(names(listing(["terms": ["%"]])) == ["tax_50%_form.xlsx", "link.txt"], "a lone % is not a wildcard")
+        check(names(listing(["terms": ["_"]])) == ["tax_50%_form.xlsx", "link.txt"], "a lone _ is not a wildcard")
+        check(names(listing(["terms": ["lease_pdf"]])).isEmpty, "_ does not match any character")
+        check(names(listing(["terms": ["' OR 1=1 --"]])).isEmpty, "a quote is just text")
+        check((listing(["terms": ["x'); DROP TABLE attachments; --"]])["ok"] as? Bool) == true
+              && names(listing(["terms": []])).count == 8, "injection leaves the index intact")
+        check(names(listing(["terms": [], "since": now - 100_000, "until": now - 6000])) == ["sent.pdf", "lease.pdf", "photo.png"],
+              "since and until bound the date")
+        check(names(listing(["terms": [], "since": now - 4000])) == ["tax_50%_form.xlsx", "link.txt"], "since only")
+        check(names(listing(["terms": [], "rfc_ids": ["<a@x>"]])) == ["lease.pdf", "photo.png"], "rfc_ids filter")
+        check(names(listing(["terms": [], "rfc_ids": ["<a@x>", "<b@x>"]])).count == 4, "several rfc_ids")
+        check(names(listing(["terms": [], "rfc_ids": ["<nope@x>"]])).isEmpty, "unknown rfc_id: nothing")
+        check(names(listing(["terms": [], "rfc_ids": ["<a@x>' OR '1'='1"]])).isEmpty, "rfc_ids are bound")
+        let few = listing(["terms": [], "limit": 3])
+        check(names(few).count == 3 && few["capped"] as? Bool == true, "limit caps and says so")
+        let exact = listing(["terms": [], "limit": 8])
+        check(names(exact).count == 8 && exact["capped"] as? Bool == false, "exactly the limit is not capped")
+
+        // One attachment's bytes.
+        func fetch(_ rowid: Int, _ id: String, root: String = attRoot) -> [String: Any] {
+            let pair = makeReader(root)
+            return pair.1.ask(pair.0, attachmentRequest(["rowid": rowid, "attachment_id": id]))
+        }
+        let got = fetch(10, "1")
+        check(got["ok"] as? Bool == true && got["name"] as? String == "lease.pdf" && got["size"] as? Int == 7
+              && (got["data_b64"] as? String).flatMap({ Data(base64Encoded: $0) }) == Data("PDFDATA".utf8)
+              && got["kind"] as? String == "attachment", "attachment bytes returned: \(got.keys.sorted())")
+        check(fetch(10, "2")["error"] as? String == "not_on_disk", "a row Mail did not save: not_on_disk")
+        check(fetch(10, "9")["error"] as? String == "not_found", "no such attachment: not_found")
+        check(fetch(999, "1")["error"] as? String == "not_found", "no such message: not_found")
+        for (rowid, why) in [(12, "trash"), (13, "junk"), (14, "drafts"), (15, "spam"), (16, "deleted"), (18, "trash label")] {
+            let reply = fetch(rowid, "1")
+            check(reply["ok"] as? Bool == false && reply["error"] as? String == "not_found", "\(why) is never read: \(reply["error"] ?? "?")")
+        }
+        let tooBig = fetch(17, "2")
+        check(tooBig["error"] as? String == "too_large", "over the cap: too_large (\(tooBig["error"] ?? "-"))")
+        check(fetch(17, "1")["data_b64"] as? String == Data("hello".utf8).base64EncodedString(),
+              "a folder merely named like spam is read")
+        check(fetch(11, "2")["error"] as? String == "not_on_disk", "a symlinked file is refused")
+        check(fetch(20, "1")["error"] as? String == "not_on_disk", "a symlinked folder outside Mail is refused")
+        check(fetch(19, "1")["error"] as? String == "not_on_disk", "a message without an .emlx: not_on_disk")
+        check(fetch(10, "1", root: "\(root)/nowhere")["error"] as? String == "no_mail_index", "no Mail folder: no_mail_index")
+        let noAttachmentTable = makeReader("\(root)/unsupported")
+        let unsupportedAttachments = noAttachmentTable.1.ask(noAttachmentTable.0, attachmentsRequest())
+        check(unsupportedAttachments["ok"] as? Bool == false && unsupportedAttachments["error"] as? String == "unsupported_schema",
+              "no attachments table: unsupported_schema")
+        do { _ = try MailMemoryReader.attachmentRows(dbPath: bare, terms: [], since: 0, until: 0, rfcIDs: [], limit: 5) { _, _, _ in nil }
+             check(false, "a schema without attachments throws") }
+        catch { check((error as? MailMemoryReader.IndexFailure) == .unsupportedSchema, "attachmentRows: unsupported_schema") }
+        do { _ = try MailMemoryReader.attachmentRows(dbPath: junk, terms: [], since: 0, until: 0, rfcIDs: [], limit: 5) { _, _, _ in nil }
+             check(false, "a junk file throws") }
+        catch { check((error as? MailMemoryReader.IndexFailure) == .unreadable, "attachmentRows: not a database is unreadable") }
+
+        // Path guard, directly: separators, dot names and ids that climb out are refused.
+        let emlxPath = "\(store)/Messages/10.partial.emlx"
+        let version = "\(attRoot)/V10"
+        check(MailMemoryReader.attachmentFile(emlxPath: emlxPath, versionDirectory: version, rowid: 10,
+                                              attachmentID: "1", name: "lease.pdf")?.size == 7, "guard accepts the real file")
+        for (id, name) in [("1", "../1/lease.pdf"), ("1", ".."), ("1", "."), ("1", ""), ("1", "a/b"), ("..", "lease.pdf"),
+                           (".", "lease.pdf"), ("../1", "lease.pdf"), ("1", "lease.pdf\0x")] {
+            check(MailMemoryReader.attachmentFile(emlxPath: emlxPath, versionDirectory: version, rowid: 10,
+                                                  attachmentID: id, name: name) == nil, "guard refuses id \(id) name \(name)")
+        }
+        check(MailMemoryReader.attachmentFile(emlxPath: emlxPath, versionDirectory: "\(root)/V9", rowid: 10,
+                                              attachmentID: "1", name: "lease.pdf") == nil, "outside the version folder is refused")
+        check(MailMemoryReader.attachmentFile(emlxPath: emlxPath, versionDirectory: version, rowid: 10,
+                                              attachmentID: "1", name: "missing.pdf") == nil, "a missing file is refused")
+        check(MailMemoryReader.attachmentFile(emlxPath: emlxPath, versionDirectory: version, rowid: 10,
+                                              attachmentID: "1", name: "..") == nil, "a directory is never a file")
+
         if failures > 0 { print("\(failures) failure(s)"); exit(1) }
         print("MailMemoryReader: \(total) checks passed")
     }

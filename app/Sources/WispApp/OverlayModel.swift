@@ -1322,7 +1322,7 @@ final class OverlayModel: ObservableObject {
                         return nil
                     }
                     guard !Task.isCancelled,
-                          let jpeg = MediaAttachment.downscaleJPEG(contentsOf: url) else {
+                          let jpeg = MediaAttachment.detailJPEG(contentsOf: url) else {
                         await self?.showTransientNotice("Wisp couldn't read that image.")
                         return nil
                     }
@@ -1370,7 +1370,7 @@ final class OverlayModel: ObservableObject {
     /// An image pasted or dragged in as pixels (no file).
     func attachPasted(imageData: Data, source: MediaAttachment.Source) {
         cancelAttachmentRead()
-        guard let jpeg = MediaAttachment.downscaleJPEG(imageData) else {
+        guard let jpeg = MediaAttachment.detailJPEG(imageData) else {
             showTransientNotice("Wisp couldn't read that image.")
             return
         }

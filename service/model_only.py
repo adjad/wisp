@@ -130,7 +130,7 @@ ASK_CORE_STUBS = frozenset({
     "web_search", "get_weather", "recall", "remember", "daily_brief",
     "collect_task_evidence", "lookup_contact", "set_timer", "system_status",
     "wisp_capabilities", "draft_email", "draft_message", "calculate", "world_time",
-    "get_my_day_plan",
+    "get_my_day_plan", "read_email_attachments",
     # Toolbench 2026-10-31: the immediate sends, forget, notes and free time were
     # missing, so "tell him yes", "forget that I..." and "email dad" reached only
     # draft_* or an invented memory.forget.
@@ -795,6 +795,35 @@ def mail_first(prompt: str) -> bool:
     ("When is the W-9 due?", "Did my order ship?"): view_emails leads the
     head start, so the web is not the first place looked."""
     return bool(_MAILISH.search(prompt or "")) and asks_personal_data(prompt)
+
+
+# An attachment is named, or a kind of file is said to be in or from an email.
+_ATTACHMENT_WORD = re.compile(r"\b(?:attachments?|attached|attaching)\b", re.I)
+_FILE_KIND = (r"(?:pdf|pdfs|spreadsheet|spreadsheets|excel|xlsx?|docx?|word\s+doc(?:ument)?|"
+              r"document|slides?|powerpoint|pptx?|screenshot|screenshots|picture|pictures|"
+              r"photo|photos|image|images|scan|csv|invoice\s+pdf|file|files)")
+_FILE_IN_EMAIL = re.compile(
+    rf"\b{_FILE_KIND}\b[^.?!]{{0,40}}\b(?:(?:in|from|on|inside)\s+(?:(?:that|this|the|an?|my|her|his|their|\w+'s)\s+)*"
+    r"e-?mails?|(?:e-?mail(?:ed)?|sent|sends|send)\s+(?:me|us|over)|(?:e-?mail(?:ed)?|sent)\b)", re.I)
+_EMAIL_THEN_FILE = re.compile(
+    rf"\b(?:e-?mail(?:ed)?|sent)\s+(?:me|us)\s+(?:a\s+|the\s+|an\s+)?{_FILE_KIND}\b", re.I)
+# "email Sam the file" / "attach this to my note" are actions on a file, not a read.
+_ATTACH_ACTION = re.compile(
+    r"^\s*(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:attach|e-?mail|send|forward|add)\b"
+    r"(?!.*\b(?:what|which|read|open|summari[sz]e|tell\s+me|show\s+me)\b)", re.I)
+
+
+def attachment_first(prompt: str) -> bool:
+    """A prompt that asks about a file inside an email ("what's in the
+    attachment", "read the PDF John emailed me"): read_email_attachments leads
+    the head start. Sending or attaching a file is not a read of one."""
+    text = prompt or ""
+    if _ATTACHMENT_WORD.search(text):
+        return not _ATTACH_ACTION.search(text) or bool(
+            re.search(r"\b(?:what|which|read|open|summari[sz]e|tell\s+me|show\s+me|in\s+the\s+attach)", text, re.I))
+    if _ATTACH_ACTION.search(text):
+        return False
+    return bool(_FILE_IN_EMAIL.search(text) or _EMAIL_THEN_FILE.search(text))
 
 
 # "When is my midterm?" was offered no calendar tool and ended in "I don't

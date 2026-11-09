@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import re
 import secrets
 
 _pending: dict[str, tuple[str, asyncio.Future]] = {}
@@ -130,3 +131,72 @@ async def read_sent(days: int, timeout: float = 8.0) -> tuple[list[dict], bool]:
     if reply.get("ok") is not True:
         raise BridgeError(str(reply.get("error") or "sent_failed")[:40])
     return _sent_rows(reply), reply.get("capped") is True
+
+
+# --- attachments (MailMemoryReader kinds `attachments` and `attachment`) -----------
+
+_ATTACHMENT_ID = re.compile(r"^[0-9A-Za-z._-]{1,40}$")
+ATTACHMENT_TERMS_MAX = 5
+ATTACHMENT_RFC_IDS_MAX = 40
+ATTACHMENT_LIMIT_MAX = 400
+
+
+def norm_rfc(value) -> str:
+    """An RFC Message-ID without brackets, casefolded: the key both sources share."""
+    return str(value or "").strip().strip("<>").strip().casefold()
+
+
+def _attachment_rows(reply: dict) -> list[dict]:
+    out = []
+    for r in reply.get("rows") or []:
+        if not isinstance(r, dict):
+            continue
+        try:
+            rowid = int(r["rowid"])
+            ts = float(r["ts"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        attachment_id = str(r.get("attachment_id") or "")
+        name = str(r.get("name") or "")[:255]
+        if rowid <= 0 or not _ATTACHMENT_ID.match(attachment_id) or not name:
+            continue
+        size = r.get("size")
+        out.append({"rowid": rowid, "ts": ts, "account": str(r.get("account") or "")[:80],
+                    "box": "sent" if r.get("box") == "sent" else "other",
+                    "subject": str(r.get("subject") or "")[:300], "sender": str(r.get("sender") or "")[:200],
+                    "sender_name": str(r.get("sender_name") or "")[:200],
+                    "rfc_message_id": str(r.get("rfc_message_id") or "")[:300],
+                    "attachment_id": attachment_id, "name": name, "on_disk": r.get("on_disk") is True,
+                    "size": size if type(size) is int and size >= 0 else 0})
+    return out
+
+
+async def read_attachment_index(terms: list[str], since: float, until: float, rfc_ids: list[str],
+                                limit: int = 300, timeout: float = 10.0) -> tuple[list[dict], bool]:
+    """Apple Mail's attachments, one row per file, newest first, and whether the app capped
+    the list. Every term must match subject, sender or file name; `rfc_ids` (when given)
+    restricts it to those messages. Raises BridgeError."""
+    cleaned = [str(t).strip()[:80] for t in terms or [] if str(t).strip()][:ATTACHMENT_TERMS_MAX]
+    bare = list(dict.fromkeys(b for b in (norm_rfc(i) for i in rfc_ids or []) if b))
+    # Both forms go to the app: Mail stores some Message-IDs with brackets and some without.
+    both = [form for b in bare[:ATTACHMENT_RFC_IDS_MAX // 2] for form in (b, f"<{b}>")]
+    reply = await _ask("attachments", timeout, terms=cleaned, since=float(since or 0), until=float(until or 0),
+                       rfc_ids=both, limit=max(1, min(int(limit), ATTACHMENT_LIMIT_MAX)))
+    if reply.get("ok") is not True:
+        raise BridgeError(str(reply.get("error") or "attachments_failed")[:40])
+    return _attachment_rows(reply), reply.get("capped") is True
+
+
+async def read_attachment(rowid: int, attachment_id: str, timeout: float = 45.0) -> tuple[bytes | None, str, str]:
+    """(data, name, why_not): the saved copy's bytes, or (None, "", the app's reason such as
+    `not_on_disk` or `too_large`). Raises BridgeError only when the app can't be asked."""
+    if int(rowid) <= 0 or not _ATTACHMENT_ID.match(str(attachment_id or "")):
+        return None, "", "not_found"
+    reply = await _ask("attachment", timeout, rowid=int(rowid), attachment_id=str(attachment_id))
+    if reply.get("ok") is not True:
+        return None, "", str(reply.get("error") or "attachment_failed")[:40]
+    try:
+        data = base64.b64decode(str(reply.get("data_b64") or ""), validate=True)
+    except ValueError:
+        return None, "", "bad_base64"
+    return data, str(reply.get("name") or "")[:255], ""

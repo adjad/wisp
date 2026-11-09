@@ -339,9 +339,9 @@ enum ScreenSnapshot {
     static func captureWindowJPEG(_ window: ScreenLook.Window) -> Data? {
         guard CGPreflightScreenCaptureAccess(),
               let image = CGWindowListCreateImage(.null, .optionIncludingWindow, CGWindowID(window.number),
-                                                  [.boundsIgnoreFraming, .nominalResolution])
+                                                  [.boundsIgnoreFraming, .bestResolution])
         else { return nil }
-        return MediaAttachment.downscaleJPEG(image)
+        return MediaAttachment.detailJPEG(image)
     }
 
     /// The windows among `windows` that their own browser reports incognito.
@@ -432,8 +432,8 @@ enum ScreenSnapshot {
         let created: CFArray? = ids.withUnsafeMutableBufferPointer { CFArrayCreate(nil, $0.baseAddress, $0.count, nil) }
         guard let array = created,
               let image = CGImage(windowListFromArrayScreenBounds: rect, windowArray: array,
-                                  imageOption: [.boundsIgnoreFraming, .nominalResolution])
+                                  imageOption: [.boundsIgnoreFraming, .bestResolution])
         else { return nil }
-        return MediaAttachment.downscaleJPEG(image)
+        return MediaAttachment.detailJPEG(image)
     }
 }
