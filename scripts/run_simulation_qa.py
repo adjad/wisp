@@ -111,6 +111,12 @@ PROFILE_TESTS = {
         "tests/test_effect_dedupe.py",
         # Document input: text extracted in memory, one no-tools call (stub client, synthetic files).
         "tests/test_documents.py",
+        # Email attachments and large files: the isolated reader, condensing, the tool and its
+        # safety wiring (synthetic files, fake Mail and Gmail, stub model).
+        "tests/test_attachment_child.py",
+        "tests/test_email_attachment_tool.py",
+        "tests/test_large_document.py",
+        "tests/test_mail_attachments.py",
         "tests/test_corpus_prompts.py",
         "tests/test_corpus_reasoning_export.py",
         "tests/test_gmail_source.py",
