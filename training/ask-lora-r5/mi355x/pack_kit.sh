@@ -11,7 +11,7 @@ W="$(mktemp -d "${TMPDIR:-/tmp}/r5kit.XXXXXX")" || exit 1; trap 'rm -rf "$W"' EX
 K="$W/r5"; mkdir -p "$K"
 cp "$HERE/run_r5.sh" "$T/ask-lora-r4/a6000/run_sft.sh" "$T/ask-lora-r3/brev/vm-setup.sh" \
    "$T/ask-lora-r5/gpu/gen_finals.py" "$T/ask-lora-r5/gpu/run_finals.sh" "$T/ask-lora-r5/gpu/choose_r5.py" \
-   "$T/ask-lora-r5/gpu/_paths.py" "$T/ask-lora-r5/gpu/source_contract.py" "$T/ask-lora-r5/gpu/choose_traces.py" "$T/ask-lora-r4/distill/gen.py" "$T/ask-lora-r4/distill/choose.py" \
+   "$T/ask-lora-r5/gpu/_paths.py" "$T/ask-lora-r5/gpu/source_contract.py" "$T/ask-lora-r5/gpu/choose_traces.py" "$T/ask-lora-r5/gpu/tool_specs.json" "$T/ask-lora-r4/distill/gen.py" "$T/ask-lora-r4/distill/choose.py" \
    "$T/ask-lora-r3/brev/render.py" "$K/"
 cp "$BUILD/partial.jsonl" "$K/partial.jsonl"
 cp "$REUSE" "$K/finals.r4reuse.jsonl"

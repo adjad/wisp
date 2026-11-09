@@ -1,0 +1,727 @@
+{
+ "add_calendar_event": {
+  "category": "calendar_write",
+  "read": false,
+  "defaults": {
+   "duration_min": 60,
+   "location": ""
+  }
+ },
+ "add_reminder": {
+  "category": "assistant_write",
+  "read": false,
+  "defaults": {
+   "kind": "reminder",
+   "all_day": false
+  }
+ },
+ "append_note": {
+  "category": "notes_write",
+  "read": false,
+  "defaults": {}
+ },
+ "calculate": {
+  "category": "compute",
+  "read": true,
+  "defaults": {}
+ },
+ "cancel_event": {
+  "category": "calendar_write",
+  "read": false,
+  "defaults": {}
+ },
+ "cancel_scheduled_send": {
+  "category": "assistant_write",
+  "read": false,
+  "defaults": {}
+ },
+ "clear_past_reminders": {
+  "category": "calendar_write",
+  "read": false,
+  "defaults": {
+   "query": "",
+   "days": 365
+  }
+ },
+ "clear_reminders": {
+  "category": "calendar_write",
+  "read": false,
+  "defaults": {
+   "query": "",
+   "expected_ids": null
+  }
+ },
+ "clipboard_read": {
+  "category": "system_read",
+  "read": true,
+  "defaults": {}
+ },
+ "clipboard_write": {
+  "category": "system_write",
+  "read": false,
+  "defaults": {}
+ },
+ "collect_task_evidence": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {
+   "period": "today",
+   "email_account": "",
+   "chat_id": "",
+   "query": "",
+   "include_overdue": true,
+   "include_undated": true,
+   "include_calendar": true,
+   "include_reminders": true,
+   "include_email": true,
+   "include_messages": true,
+   "include_notes": true
+  }
+ },
+ "commit_private_meeting": {
+  "category": "calendar_write",
+  "read": false,
+  "defaults": {}
+ },
+ "complete_reminder": {
+  "category": "assistant_write",
+  "read": false,
+  "defaults": {
+   "expected_id": ""
+  }
+ },
+ "contact_dates": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {
+   "days": 30
+  }
+ },
+ "convert_units": {
+  "category": "compute",
+  "read": true,
+  "defaults": {}
+ },
+ "correct_pattern": {
+  "category": "assistant_write",
+  "read": false,
+  "defaults": {
+   "pattern_id": null,
+   "text": null
+  }
+ },
+ "create_note": {
+  "category": "notes_write",
+  "read": false,
+  "defaults": {
+   "body": "",
+   "folder": "",
+   "checklist": false
+  }
+ },
+ "create_tool": {
+  "category": "tool_authoring",
+  "read": false,
+  "defaults": {
+   "description": "",
+   "task": "",
+   "parameters": null,
+   "read_scopes": null,
+   "write_scopes": null
+  }
+ },
+ "daily_brief": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {
+   "location": "",
+   "days": 1,
+   "include_activity": true,
+   "period": "",
+   "account": "",
+   "query": "",
+   "reminder_days": 7,
+   "include_overdue": null,
+   "include_undated": null,
+   "include_calendar": true,
+   "include_reminders": true,
+   "include_email": true,
+   "include_messages": true,
+   "include_weather": true
+  }
+ },
+ "delete_knowledge": {
+  "category": "fs_delete",
+  "read": false,
+  "defaults": {}
+ },
+ "describe_me": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {
+   "subject": null
+  }
+ },
+ "draft_email": {
+  "category": "email_draft",
+  "read": false,
+  "defaults": {
+   "cc": ""
+  }
+ },
+ "draft_message": {
+  "category": "messages_draft",
+  "read": false,
+  "defaults": {}
+ },
+ "edit_knowledge": {
+  "category": "fs_write",
+  "read": false,
+  "defaults": {}
+ },
+ "email_triage": {
+  "category": "email_triage",
+  "read": false,
+  "defaults": {}
+ },
+ "find_files": {
+  "category": "fs_read",
+  "read": true,
+  "defaults": {
+   "folder": "",
+   "kind": "",
+   "content": false
+  }
+ },
+ "find_free_time": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {
+   "days": 3,
+   "minutes": 30,
+   "day_start": 9,
+   "day_end": 18,
+   "period": ""
+  }
+ },
+ "find_place": {
+  "category": "web_read",
+  "read": true,
+  "defaults": {
+   "radius_km": 3.0
+  }
+ },
+ "forget": {
+  "category": "fs_delete",
+  "read": false,
+  "defaults": {}
+ },
+ "forward_email": {
+  "category": "email_send",
+  "read": false,
+  "defaults": {
+   "note": ""
+  }
+ },
+ "get_my_day_plan": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {
+   "day": "today"
+  }
+ },
+ "get_past_events": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {
+   "days": 30,
+   "query": null,
+   "account": null,
+   "include_holidays": false
+  }
+ },
+ "get_recent_activity": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {
+   "hours": 24,
+   "limit": 20
+  }
+ },
+ "get_stock_price": {
+  "category": "web_read",
+  "read": true,
+  "defaults": {
+   "period": ""
+  }
+ },
+ "get_upcoming": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {
+   "days": 7,
+   "account": null,
+   "include_holidays": false,
+   "period": "",
+   "calendar_only": false,
+   "query": "",
+   "boundary": "start"
+  }
+ },
+ "get_weather": {
+  "category": "web_read",
+  "read": true,
+  "defaults": {
+   "period": "",
+   "include": null
+  }
+ },
+ "list_contacts": {
+  "category": "messages_read",
+  "read": true,
+  "defaults": {
+   "query": ""
+  }
+ },
+ "list_dir": {
+  "category": "fs_read",
+  "read": true,
+  "defaults": {
+   "recursive": false,
+   "max_depth": 3,
+   "details": false,
+   "sort": "name"
+  }
+ },
+ "list_running_apps": {
+  "category": "system_read",
+  "read": true,
+  "defaults": {}
+ },
+ "list_scheduled_sends": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {
+   "status": "pending",
+   "count": 20,
+   "id": ""
+  }
+ },
+ "lookup_contact": {
+  "category": "messages_read",
+  "read": true,
+  "defaults": {}
+ },
+ "manage_contacts": {
+  "category": "messages_write",
+  "read": false,
+  "defaults": {
+   "value": ""
+  }
+ },
+ "manage_timers": {
+  "category": "timer_write",
+  "read": false,
+  "defaults": {
+   "action": "list",
+   "label": ""
+  }
+ },
+ "move_path": {
+  "category": "fs_write",
+  "read": false,
+  "defaults": {}
+ },
+ "my_patterns": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {}
+ },
+ "open_app": {
+  "category": "app_control",
+  "read": false,
+  "defaults": {
+   "target": null
+  }
+ },
+ "organize_files": {
+  "category": "fs_write",
+  "read": false,
+  "defaults": {
+   "confirm": false,
+   "preview_token": "",
+   "group_by": ""
+  }
+ },
+ "plan_meeting": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {
+   "when_iso": "",
+   "after_event_title": "",
+   "event_period": "",
+   "expected_event_id": "",
+   "offset_minutes": 0
+  }
+ },
+ "predict_my_day": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {
+   "day": "tomorrow"
+  }
+ },
+ "quit_app": {
+  "category": "app_control",
+  "read": false,
+  "defaults": {}
+ },
+ "read_file": {
+  "category": "fs_read",
+  "read": true,
+  "defaults": {}
+ },
+ "read_knowledge": {
+  "category": "fs_read",
+  "read": true,
+  "defaults": {
+   "query": "",
+   "kind": "",
+   "record_id": "",
+   "limit": 20
+  }
+ },
+ "recall": {
+  "category": "fs_read",
+  "read": true,
+  "defaults": {
+   "query": ""
+  }
+ },
+ "remember": {
+  "category": "fs_write",
+  "read": false,
+  "defaults": {
+   "category": "fact",
+   "supersedes_id": null
+  }
+ },
+ "reply_to_email": {
+  "category": "email_send",
+  "read": false,
+  "defaults": {
+   "reply_all": false,
+   "account": "",
+   "expected_reply": null
+  }
+ },
+ "route_to_arrive": {
+  "category": "web_read",
+  "read": true,
+  "defaults": {
+   "timezone": "",
+   "origin": "",
+   "buffer_minutes": 0
+  }
+ },
+ "run_applescript": {
+  "category": "shell",
+  "read": false,
+  "defaults": {}
+ },
+ "run_shell": {
+  "category": "shell",
+  "read": false,
+  "defaults": {}
+ },
+ "save_knowledge": {
+  "category": "fs_write",
+  "read": false,
+  "defaults": {
+   "text": "",
+   "kind": "knowledge",
+   "source_type": "user_request",
+   "source_id": "",
+   "container_id": ""
+  }
+ },
+ "scan_subscriptions": {
+  "category": "email_read",
+  "read": true,
+  "defaults": {
+   "limit": 15
+  }
+ },
+ "schedule_send": {
+  "category": "scheduled_send",
+  "read": false,
+  "defaults": {
+   "body": "",
+   "text": "",
+   "subject": ""
+  }
+ },
+ "screen_capture": {
+  "category": "system_write",
+  "read": false,
+  "defaults": {
+   "region": "screen",
+   "path": ""
+  }
+ },
+ "search_browser_history": {
+  "category": "browser_history_read",
+  "read": true,
+  "defaults": {
+   "query": null,
+   "count": null,
+   "period": null,
+   "day": null
+  }
+ },
+ "search_conversations": {
+  "category": "fs_read",
+  "read": true,
+  "defaults": {
+   "query": "",
+   "limit": 15,
+   "session_id": null,
+   "turn_idx": null
+  }
+ },
+ "search_coverage": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {
+   "source": ""
+  }
+ },
+ "search_notes": {
+  "category": "notes_read",
+  "read": true,
+  "defaults": {
+   "query": null,
+   "count": null,
+   "period": null,
+   "day": null
+  }
+ },
+ "search_reminders": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {
+   "query": "",
+   "scope": "all"
+  }
+ },
+ "send_email": {
+  "category": "email_send",
+  "read": false,
+  "defaults": {
+   "cc": "",
+   "confirmed_self_send": false
+  }
+ },
+ "send_message": {
+  "category": "messages_send",
+  "read": false,
+  "defaults": {
+   "confirmed_self_send": false
+  }
+ },
+ "set_timer": {
+  "category": "timer_write",
+  "read": false,
+  "defaults": {
+   "kind": "timer",
+   "duration": "",
+   "time": "",
+   "label": "",
+   "repeat_daily": false
+  }
+ },
+ "spreadsheet_ops": {
+  "category": "fs_write",
+  "read": false,
+  "defaults": {
+   "rows": null
+  }
+ },
+ "summarize_emails": {
+  "category": "email_read",
+  "read": true,
+  "defaults": {
+   "day": null,
+   "count": 20,
+   "account": null,
+   "period": null,
+   "unread": false,
+   "query": null
+  }
+ },
+ "summarize_messages": {
+  "category": "messages_read",
+  "read": true,
+  "defaults": {
+   "day": null,
+   "count": 30,
+   "period": null,
+   "conversation": null,
+   "unread": false
+  }
+ },
+ "system_status": {
+  "category": "system_read",
+  "read": true,
+  "defaults": {
+   "section": "overview"
+  }
+ },
+ "text_to_speech": {
+  "category": "app_control",
+  "read": false,
+  "defaults": {
+   "voice": "",
+   "save_to": ""
+  }
+ },
+ "toggle_setting": {
+  "category": "system_write",
+  "read": false,
+  "defaults": {}
+ },
+ "travel_time": {
+  "category": "web_read",
+  "read": true,
+  "defaults": {}
+ },
+ "triage_inbox": {
+  "category": "email_read",
+  "read": true,
+  "defaults": {
+   "count": 40
+  }
+ },
+ "update_event": {
+  "category": "calendar_write",
+  "read": false,
+  "defaults": {
+   "duration_min": null,
+   "location": "",
+   "new_title": "",
+   "current_when_iso": ""
+  }
+ },
+ "update_reminder": {
+  "category": "assistant_write",
+  "read": false,
+  "defaults": {
+   "title": "",
+   "when_iso": "",
+   "day": "",
+   "new_title": "",
+   "expected_id": ""
+  }
+ },
+ "use_skill": {
+  "category": "assistant_read",
+  "read": true,
+  "defaults": {}
+ },
+ "view_emails": {
+  "category": "email_read",
+  "read": true,
+  "defaults": {
+   "query": null,
+   "day": null,
+   "count": 5,
+   "account": null,
+   "period": null,
+   "unread": false,
+   "strict_match": false,
+   "mailbox": null
+  }
+ },
+ "view_messages": {
+  "category": "messages_read",
+  "read": true,
+  "defaults": {
+   "query": null,
+   "day": null,
+   "count": 20,
+   "period": null,
+   "unread": false,
+   "conversation": null
+  }
+ },
+ "web_fetch": {
+  "category": "web_read",
+  "read": true,
+  "defaults": {}
+ },
+ "web_search": {
+  "category": "web_read",
+  "read": true,
+  "defaults": {
+   "limit": 6
+  }
+ },
+ "wikipedia_summary": {
+  "category": "web_read",
+  "read": true,
+  "defaults": {}
+ },
+ "window_control": {
+  "category": "app_control",
+  "read": false,
+  "defaults": {
+   "app": ""
+  }
+ },
+ "wisp_capabilities": {
+  "category": "wisp_admin",
+  "read": false,
+  "defaults": {
+   "query": "",
+   "topic": ""
+  }
+ },
+ "wisp_mcp": {
+  "category": "wisp_admin",
+  "read": false,
+  "defaults": {}
+ },
+ "wisp_skills": {
+  "category": "wisp_admin",
+  "read": false,
+  "defaults": {}
+ },
+ "wisp_status": {
+  "category": "wisp_admin",
+  "read": false,
+  "defaults": {
+   "topic": "models"
+  }
+ },
+ "world_time": {
+  "category": "compute",
+  "read": true,
+  "defaults": {
+   "place": "",
+   "compare_to": ""
+  }
+ },
+ "write_document": {
+  "category": "fs_write",
+  "read": false,
+  "defaults": {
+   "paragraphs": null,
+   "bullets": null
+  }
+ },
+ "write_file": {
+  "category": "fs_write",
+  "read": false,
+  "defaults": {}
+ }
+}

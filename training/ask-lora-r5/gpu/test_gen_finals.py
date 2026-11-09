@@ -431,7 +431,7 @@ def test_trace_is_kept_only_when_base_reached_the_same_call():
     import choose_traces as T
     h = gen.request_hash([{"role": "user", "content": "q"}], TOOLS)
     row = {"meta": {"id": "a-s0", "family": "f"}, "tools": TOOLS, "messages": [{"role": "user", "content": "q"}, CALL]}
-    call = {"type": "function", "function": {"name": "view_emails", "arguments": '{query:<|"|>Permit<|"|>}'}}
+    call = {"type": "function", "function": {"name": "view_emails", "arguments": '{query:<|"|>permit<|"|>}'}}
     ok = {"reasoning": "They asked about the permit, so I should read their mail.", "tool_calls": [call], "content": "", "finish_reason": "stop", "request_hash": h}
     assert T.reject_reasons(ok, row) == []
     other = dict(ok, tool_calls=[{"type": "function", "function": {"name": "view_messages", "arguments": "{}"}}])
@@ -443,12 +443,31 @@ def test_trace_is_kept_only_when_base_reached_the_same_call():
     assert "stale_hash" in T.reject_reasons(dict(ok, request_hash="x"), row)
 
 
-def test_parallel_calls_match_in_any_order():
+READS = {"view_emails": {"read": True, "defaults": {"query": None, "count": 5}},
+         "search_notes": {"read": True, "defaults": {"query": ""}},
+         "get_upcoming": {"read": True, "defaults": {"days": 7, "account": None, "calendar_only": False, "query": ""}},
+         "search_reminders": {"read": True, "defaults": {"query": "", "scope": "all"}},
+         "send_message": {"read": False, "defaults": {}}, "add_reminder": {"read": False, "defaults": {}}}
+
+
+def test_parallel_reads_match_in_any_order_but_writes_keep_theirs():
     import choose_traces as T
-    want = [("view_emails", {"query": "trip"}), ("search_notes", {"query": "trip"})]
-    got = [{"function": {"name": "search_notes", "arguments": '{query:<|"|>trip<|"|>}'}}, {"function": {"name": "view_emails", "arguments": '{query:<|"|>Trip<|"|>}'}}]
-    assert T.calls_match(got, want)
-    assert not T.calls_match(got[:1], want)
+    want = [("view_emails", {"query": ("str", "trip")}), ("search_notes", {"query": ("str", "trip")})]
+    got = [_call("search_notes", '{query:<|"|>trip<|"|>}'), _call("view_emails", '{query:<|"|>trip<|"|>}')]
+    assert T.call_problem(got, want, READS) is None                                     # two reads: no order between them
+    assert T.call_problem(got[:1], want, READS) == "call_mismatch"
+    assert T.call_problem([got[0], _call("view_emails", '{query:<|"|>Trip<|"|>}')], want, READS) == "call_mismatch"   # case is a value
+    writes = [("send_message", {"to": ("str", "Ana")}), ("add_reminder", {"title": ("str", "Call Ana")})]
+    in_order = [_call("send_message", '{to:<|"|>Ana<|"|>}'), _call("add_reminder", '{title:<|"|>Call Ana<|"|>}')]
+    assert T.call_problem(in_order, writes, READS) is None
+    assert T.call_problem(in_order[::-1], writes, READS) == "call_order"                # an effect's order is the script's
+    mixed = [("view_emails", {"query": ("str", "trip")}), ("add_reminder", {"title": ("str", "Call Ana")})]
+    assert T.call_problem([in_order[1], got[1]], mixed, READS) == "call_order"           # one write makes the step ordered
+    assert T.call_problem([_call("mystery", "{}"), _call("view_emails", '{query:<|"|>trip<|"|>}')],
+                          [("view_emails", {"query": ("str", "trip")}), ("mystery", {})], READS) == "call_order"   # no spec: a write
+    dup = [("view_emails", {"query": ("str", "a")}), ("view_emails", {"query": ("str", "a")})]
+    assert T.call_problem([_call("view_emails", '{query:<|"|>a<|"|>}')] * 2, dup, READS) is None
+    assert T.call_problem([_call("view_emails", '{query:<|"|>a<|"|>}'), _call("view_emails", '{query:<|"|>b<|"|>}')], dup, READS) == "call_mismatch"
 
 
 def _call(name, text):
@@ -461,55 +480,107 @@ def _scripted(name, args):
 
 
 def test_false_and_zero_are_values_that_must_match():
-    """The bug: scripted calendar_only=false (and 0) was dropped before comparing, so base's calendar_only=true matched and
-    its reasoning was paired with a narrower read."""
+    """calendar_only=false (and 0) are values: base's calendar_only=true is a narrower read. Leaving one out matches only
+    when it IS the tool's own default, so the call runs the same; with no spec, leaving it out is a missing argument."""
     import choose_traces as T
     want = _scripted("get_upcoming", {"calendar_only": False, "days": 7})
-    assert T.call_problem([_call("get_upcoming", "{calendar_only:true,days:7}")], want) == "call_mismatch"
-    assert T.call_problem([_call("get_upcoming", "{days:7}")], want) == "call_mismatch"           # the scripted false must be stated
-    assert T.call_problem([_call("get_upcoming", "{calendar_only:false,days:7}")], want) is None
-    assert T.call_problem([_call("get_upcoming", {"calendar_only": False, "days": 7.0})], want) is None   # parsed args, 7.0 == 7
+    assert T.call_problem([_call("get_upcoming", "{calendar_only:true,days:7}")], want, READS) == "call_mismatch"
+    assert T.call_problem([_call("get_upcoming", "{days:7}")], want, READS) is None                 # default False: same call
+    assert T.call_problem([_call("get_upcoming", "{days:7}")], want, {}) == "call_missing_argument"   # no spec: no equivalence
+    assert T.call_problem([_call("get_upcoming", "{calendar_only:false,days:7}")], want, READS) is None
+    assert T.call_problem([_call("get_upcoming", {"calendar_only": False, "days": 7.0})], want, READS) is None   # 7.0 is 7
+    assert T.call_problem([_call("get_upcoming", "{calendar_only:0,days:7}")], want, READS) == "call_mismatch"   # 0 isn't false
     off = _scripted("toggle_setting", {"setting": "wifi", "on": False})
-    assert T.call_problem([_call("toggle_setting", '{setting:<|"|>wifi<|"|>,on:true}')], off) == "call_mismatch"
+    assert T.call_problem([_call("toggle_setting", '{setting:<|"|>wifi<|"|>,on:true}')], off, READS) == "call_mismatch"
     zero = _scripted("clear_past_reminders", {"days": 0})
-    assert T.call_problem([_call("clear_past_reminders", "{days:3}")], zero) == "call_mismatch"
-    assert T.call_problem([_call("clear_past_reminders", "{days:0}")], zero) is None
+    assert T.call_problem([_call("clear_past_reminders", "{days:3}")], zero, READS) == "call_mismatch"
+    assert T.call_problem([_call("clear_past_reminders", "{days:0}")], zero, READS) is None
+    assert T.call_problem([_call("clear_past_reminders", "{}")], zero, READS) == "call_missing_argument"
+    assert T.call_problem([_call("clear_past_reminders", '{days:<|"|>0<|"|>}')], zero, READS) == "call_mismatch"   # a string
 
 
-def test_extra_set_arguments_change_the_call():
+def test_extra_set_arguments_change_the_call_unless_they_are_the_default():
     import choose_traces as T
     want = _scripted("get_upcoming", {"query": "dentist"})
-    assert T.call_problem([_call("get_upcoming", '{query:<|"|>dentist<|"|>,calendar_only:true}')], want) == "call_extra_argument"
-    assert T.call_problem([_call("get_upcoming", '{query:<|"|>dentist<|"|>,calendar_only:false}')], want) == "call_extra_argument"
-    assert T.call_problem([_call("get_upcoming", '{query:<|"|>dentist<|"|>,days:0}')], want) == "call_extra_argument"
-    assert T.call_problem([_call("get_upcoming", '{query:<|"|>dentist<|"|>,account:<|"|><|"|>}')], want) is None   # unset
-    empty = _scripted("search_reminders", {"query": "", "scope": "open"})
-    assert T.call_problem([_call("search_reminders", '{scope:<|"|>open<|"|>}')], empty) is None
+    assert T.call_problem([_call("get_upcoming", '{query:<|"|>dentist<|"|>,calendar_only:true}')], want, READS) == "call_extra_argument"
+    assert T.call_problem([_call("get_upcoming", '{query:<|"|>dentist<|"|>,days:0}')], want, READS) == "call_extra_argument"
+    assert T.call_problem([_call("get_upcoming", '{query:<|"|>dentist<|"|>,calendar_only:false}')], want, READS) is None   # the default
+    assert T.call_problem([_call("get_upcoming", '{query:<|"|>dentist<|"|>,calendar_only:false}')], want, {}) == "call_extra_argument"
+    assert T.call_problem([_call("get_upcoming", '{query:<|"|>dentist<|"|>,account:<|"|><|"|>}')], want, READS) == "call_extra_argument"  # "" isn't None
+    assert T.call_problem([_call("get_upcoming", '{query:<|"|>dentist<|"|>,account:null}')], want, READS) is None   # None is the default
 
 
-def test_list_arguments_compare_as_sets_of_values():
-    """Lists used to fold to two different strings (Python's repr vs Gemma's text), so 149 of 3,994 calls identical to the
-    script could never keep base's thought."""
+def test_missing_and_empty_are_told_apart():
+    import choose_traces as T
+    empty = _scripted("search_reminders", {"query": "", "scope": "upcoming"})
+    assert T.call_problem([_call("search_reminders", '{scope:<|"|>upcoming<|"|>}')], empty, READS) is None   # query="" is its default
+    assert T.call_problem([_call("search_reminders", '{scope:<|"|>upcoming<|"|>}')], empty, {}) == "call_missing_argument"
+    assert T.call_problem([_call("search_reminders", '{query:null,scope:<|"|>upcoming<|"|>}')], empty, READS) == "call_mismatch"  # null isn't ""
+    tags = _scripted("get_tool_schemas", {"families": ["mail"], "tools": []})
+    assert T.call_problem([_call("get_tool_schemas", '{families:[<|"|>mail<|"|>]}')], tags, READS) == "call_missing_argument"   # [] isn't unset
+    assert T.call_problem([_call("get_tool_schemas", '{families:[<|"|>mail<|"|>],tools:[]}')], tags, READS) is None
+    assert T.call_problem([_call("get_tool_schemas", '{families:[<|"|>mail<|"|>],tools:[<|"|><|"|>]}')], tags, READS) == "call_mismatch"
+
+
+def test_list_arguments_keep_order_duplicates_and_item_boundaries():
+    """The bug: lists folded to a sorted, de-duplicated, comma-joined string, so ["a,b"] equalled ["a","b"], ["b","a"] equalled
+    ["a","b"], and ["a","a"] equalled ["a"]."""
     import choose_traces as T
     want = _scripted("get_stock_price", {"symbols": ["AAPL", "MSFT"]})
-    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>AAPL<|"|>,<|"|>MSFT<|"|>]}')], want) is None
-    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>msft<|"|>, <|"|>aapl<|"|>]}')], want) is None   # no order
-    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>AAPL<|"|>]}')], want) == "call_mismatch"
-    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>AAPL<|"|>,<|"|>MSFT<|"|>,<|"|>TSLA<|"|>]}')], want) == "call_mismatch"
-    schemas = _scripted("get_tool_schemas", {"families": ["mail"], "tools": []})
-    assert T.call_problem([_call("get_tool_schemas", '{families:[<|"|>mail<|"|>]}')], schemas) is None              # [] is unset
-    assert T.call_problem([_call("get_tool_schemas", '{families:[<|"|>mail<|"|>],tools:[<|"|>send_email<|"|>]}')], schemas) == "call_extra_argument"
+    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>AAPL<|"|>,<|"|>MSFT<|"|>]}')], want, READS) is None
+    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>AAPL<|"|>, <|"|>MSFT<|"|>]}')], want, READS) is None   # spacing between items
+    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>AAPL,MSFT<|"|>]}')], want, READS) == "call_mismatch"   # one item, not two
+    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>MSFT<|"|>,<|"|>AAPL<|"|>]}')], want, READS) == "call_mismatch"   # order
+    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>aapl<|"|>,<|"|>msft<|"|>]}')], want, READS) == "call_mismatch"   # case
+    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>AAPL<|"|>,<|"|>AAPL<|"|>,<|"|>MSFT<|"|>]}')], want, READS) == "call_mismatch"
+    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>AAPL<|"|>]}')], want, READS) == "call_mismatch"
+    two = _scripted("get_stock_price", {"symbols": ["AAPL", "AAPL"]})
+    assert T.call_problem([_call("get_stock_price", '{symbols:[<|"|>AAPL<|"|>]}')], two, READS) == "call_mismatch"     # duplicates count
+    joined = _scripted("search_notes", {"query": "a,b"})
+    assert T.call_problem([_call("search_notes", '{query:[<|"|>a<|"|>,<|"|>b<|"|>]}')], joined, READS) == "call_mismatch"   # a list isn't a string
 
 
-def test_call_text_parses_strictly():
+def test_call_text_parses_strictly_into_typed_values():
     import choose_traces as T
-    assert T.parse_args('{query:<|"|>Note: a, b} c<|"|>,count:5,unread:false}') == {"query": "note: a, b} c", "count": "5", "unread": "false"}
-    assert T.parse_args('{"query": "permit", "count": 5}') == {"query": "permit", "count": "5"}
-    assert T.parse_args("{a:{b:1,c:[x, y]},d:null}") == {"a": "{b:1,c:[x,y]}"}
-    for broken in ('{query:<|"|>oops}', "{query:x", "{query:x} trailing", "[1,2]", "{:x}"):
+    assert T.parse_args('{query:<|"|>Note: a, b} c<|"|>,count:5,unread:false}') == {
+        "query": ("str", "Note: a, b} c"), "count": ("num", 5), "unread": ("bool", False)}
+    assert T.parse_args('{"query": "permit", "count": 5}') == {"query": ("str", "permit"), "count": ("num", 5)}
+    assert T.parse_args("{a:{b:1,c:[2, 3.5]},d:null}") == {"a": ("obj", (("b", ("num", 1)), ("c", ("list", (("num", 2), ("num", 3.5)))))),
+                                                          "d": ("null",)}
+    for broken in ('{query:<|"|>oops}', "{query:x", "{query:x} trailing", "[1,2]", "{:x}",
+                   "{query:permit}",                       # unquoted text: a string or a name? ambiguous, so it fails
+                   "{when:2026-11-09}", "{flag:True}", "{flag:none}",
+                   '{query:<|"|>a<|"|>,query:<|"|>b<|"|>}',   # the same argument twice
+                   '{"query": "a", "query": "b"}', '{"n": NaN}'):
         assert T.parse_args(broken) is None, broken
     want = _scripted("view_emails", {"query": "permit"})
-    assert T.call_problem([_call("view_emails", '{query:<|"|>permit')], want) == "call_mismatch"
+    assert T.call_problem([_call("view_emails", '{query:<|"|>permit')], want, READS) == "call_mismatch"
+
+
+def test_case_is_free_only_where_the_tool_discards_it():
+    import choose_traces as T
+    day = _scripted("get_my_day_plan", {"day": "tuesday"})
+    assert T.call_problem([_call("get_my_day_plan", '{day:<|"|>Tuesday<|"|>}')], day, READS) is None     # proactive_tools.py:487
+    assert T.call_problem([_call("get_my_day_plan", '{day:<|"|>Wednesday<|"|>}')], day, READS) == "call_mismatch"
+    title = _scripted("add_reminder", {"title": "Feed the cat"})
+    assert T.call_problem([_call("add_reminder", '{title:<|"|>feed the cat<|"|>}')], title, READS) == "call_mismatch"   # stored as typed
+    q = _scripted("view_emails", {"query": "maya"})
+    assert T.call_problem([_call("view_emails", '{query:<|"|>Maya<|"|>}')], q, READS) == "call_mismatch"   # echoed as typed on no match
+    assert set(T.CASE_FREE) == {("get_my_day_plan", "day"), ("find_free_time", "period")}
+
+
+def test_tool_specs_come_from_the_service_code():
+    import tool_specs
+    src = """
+@register("search_reminders", "d", {}, category="assistant_read")
+async def search_reminders(query: str = "", scope: str = "all", limit=[]) -> str: ...
+
+@tool(name='forget', description='x', parameters={}, category='fs_delete')
+async def forget(query: str) -> str: ...
+"""
+    assert tool_specs.specs_from_source(src) == {
+        "search_reminders": {"category": "assistant_read", "read": True, "defaults": {"query": "", "scope": "all"}},   # a list default: none
+        "forget": {"category": "fs_delete", "read": False, "defaults": {}}}
 
 
 @needs_tok
@@ -532,7 +603,7 @@ def test_extra_argument_is_its_own_rejection():
     h = gen.request_hash([{"role": "user", "content": "q"}], TOOLS)
     row = {"meta": {"id": "a-s0", "family": "f"}, "tools": TOOLS, "messages": [{"role": "user", "content": "q"}, CALL]}
     rec = {"reasoning": "They asked about the permit, so I should read their mail.", "content": "", "finish_reason": "stop", "request_hash": h,
-           "tool_calls": [_call("view_emails", '{query:<|"|>Permit<|"|>,unread:true}')]}
+           "tool_calls": [_call("view_emails", '{query:<|"|>permit<|"|>,unread:true}')]}
     assert T.reject_reasons(rec, row) == ["call_extra_argument"]
 
 
