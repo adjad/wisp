@@ -407,3 +407,180 @@ def test_leak_check_notices_a_copy():
     index = leak.LeakIndex([leak._entry("x", prompt)], toolbench=False)
     assert index.leaks(prompt)[0] and index.leaks(prompt.upper() + "?")[0]
     assert not index.leaks("anything about the dentist")[0]
+
+
+# --------------------------------------------------------------------------------------------- three-state verdict
+B_MODEL, C_MODEL = "base-m", "cand-m"
+REPLY = "A friendly, ordinary answer that is long enough to count as a normal reply here."
+
+
+def _tb_rows(models=(B_MODEL, C_MODEL), trials=(1, 2), cases=(("c1", "mail"), ("c2", "safety")), passed=None):
+    out = []
+    for m in models:
+        for cid, cat in cases:
+            for t in trials:
+                r = row(m, cid, category=cat, passed=True if passed is None else passed(m, cid, t))
+                r["trial"] = t
+                out.append(r)
+    return out
+
+
+def _write_run(d: Path, rows, meta="default"):
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "results.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    if meta == "default":
+        meta = {"run": d.name, "case_sessions": "cleared_per_case"}
+    if meta is not None:
+        (d / "meta.json").write_text(json.dumps(meta))
+    return d
+
+
+def _chat_rows(models=(B_MODEL, C_MODEL), turns=((("u1", 0)), ("u1", 1)), text=REPLY):
+    return [{"model": m, "unit": u, "sample": 0, "variant": 0, "turn": t, "reply": text, "error": None,
+             "timeout": False, "metrics": {"tool_calls": []}} for m in models for u, t in turns]
+
+
+def _judge(path: Path, verdict="PASS", base=B_MODEL, cand=C_MODEL, wins=9, losses=1):
+    path.write_text(json.dumps({"base": base, "cand": cand, "wins": wins, "losses": losses, "ties": 0, "p": 0.02,
+                                "verdict": verdict}))
+    return path
+
+
+@pytest.fixture
+def gate(tmp_path, monkeypatch):
+    monkeypatch.setattr(S, "write_names", lambda: frozenset({"send_message"}))
+    monkeypatch.setattr(S, "recall_turns", lambda p: set())
+    sources_stub = {"reads_all": 0.9, "uses_all": 0.8, "reads_and_uses": 0.7, "over_read": 0.1}
+    monkeypatch.setattr(S, "sources_summary", lambda d, rows, meta: {
+        B_MODEL: {**sources_stub, "reads_all": 0.5, "uses_all": 0.4}, C_MODEL: sources_stub})
+
+    def run(*, tb=None, tb_meta="default", chat="ok", sources="ok", judge="ok", extra=()):
+        tb_dir = _write_run(tmp_path / "tb", _tb_rows() if tb is None else tb, tb_meta)
+        argv = ["--toolbench", str(tb_dir), "--json-out", str(tmp_path / "out.json")]
+        if chat:
+            p = tmp_path / "replies.jsonl"
+            p.write_text("".join(json.dumps(r) + "\n" for r in (_chat_rows() if chat == "ok" else chat)))
+            argv += ["--chateval", str(p)]
+        if sources:
+            argv += ["--sources", str(_write_run(tmp_path / "src", _tb_rows(cases=(("s1", "sources"),)) if sources == "ok" else sources))]
+        if judge:
+            argv += ["--judge", str(_judge(tmp_path / "judge.json") if judge == "ok" else judge)]
+        code = S.main(argv + list(extra))
+        return code, json.loads((tmp_path / "out.json").read_text())
+    return run
+
+
+def _bar_of(res, fragment):
+    return next(b for b in res["bars"] if fragment in b["name"])
+
+
+def test_all_evidence_passing_is_exit_0(gate, capsys):
+    code, res = gate()
+    assert code == 0 and res["verdict"] == "PASS"
+    assert all(b["ok"] for b in res["bars"] if b["mandatory"]), [b for b in res["bars"] if b["ok"] is not True]
+    assert "RESULT: PASS" in capsys.readouterr().out
+
+
+def test_over_reading_is_report_only(gate):
+    _code, res = gate()
+    assert _bar_of(res, "over-reading")["mandatory"] is False
+    assert all(b["mandatory"] for b in res["bars"] if "over-reading" not in b["name"])
+
+
+def test_one_failing_bar_is_exit_1(gate, capsys):
+    rows = _tb_rows(passed=lambda m, cid, t: not (m == C_MODEL and cid == "c1"))
+    code, res = gate(tb=rows)
+    assert code == 1 and res["verdict"] == "FAIL"
+    assert _bar_of(res, "pass rate overall")["ok"] is False
+    assert "RESULT: FAIL" in capsys.readouterr().out
+
+
+def test_failing_judge_is_exit_1(gate):
+    code, _res = gate(judge=_judge(Path(tempfile.mkdtemp()) / "j.json", wins=1, losses=9))
+    assert code == 1
+
+
+def test_judge_bar_is_no_worse_not_judge_pairs_stricter_verdict(gate):
+    """PLAN's bar is "no worse than base". judge_pairs' own verdict needs a significant win, so it is shown and doesn't decide."""
+    code, res = gate(judge=_judge(Path(tempfile.mkdtemp()) / "j.json", wins=5, losses=5, verdict="FAIL"))
+    assert code == 0 and _bar_of(res, "blind judge")["ok"] is True and "stricter verdict: FAIL" in _bar_of(res, "blind judge")["detail"]
+
+
+@pytest.mark.parametrize("kwargs,bar,needle", [
+    ({"chat": ""}, "median reply", "--chateval"),
+    ({"chat": ""}, "no tables", "--chateval"),
+    ({"sources": ""}, "reading every expected source", "--sources"),
+    ({"judge": ""}, "blind judge", "--judge"),
+])
+def test_missing_evidence_is_exit_3(gate, capsys, kwargs, bar, needle):
+    code, res = gate(**kwargs)
+    assert code == 3 and res["verdict"] == "INCOMPLETE"
+    b = _bar_of(res, bar)
+    assert b["ok"] is None and needle in b["detail"]
+    out = capsys.readouterr().out
+    assert "RESULT: INCOMPLETE" in out and "MISSING EVIDENCE" in out and b["name"] in out
+
+
+def test_no_chateval_makes_every_style_bar_missing(gate):
+    _code, res = gate(chat="")
+    names = ("median reply", "emoji share", "bold share", "non-replies", "memory-stall", "no tables")
+    assert all(_bar_of(res, n)["ok"] is None for n in names)
+
+
+def test_empty_safety_slice_is_missing_not_a_pass(gate):
+    rows = _tb_rows(cases=(("c1", "mail"),))
+    code, res = gate(tb=rows)
+    assert code == 3 and _bar_of(res, "safety category")["ok"] is None
+
+
+def test_zero_scored_trials_for_a_model_is_missing(gate):
+    rows = [r for r in _tb_rows() if r["model"] == B_MODEL] + [
+        {**r, "v": {**r["v"], "excluded": True}} for r in _tb_rows() if r["model"] == C_MODEL]
+    code, res = gate(tb=rows)
+    assert code == 3
+    for frag in ("pass rate overall", "safety category", "unsafe calls"):
+        assert _bar_of(res, frag)["ok"] is None
+
+
+def test_zero_replies_or_zero_base_median_is_missing(gate):
+    code, res = gate(chat=[r for r in _chat_rows() if r["model"] == B_MODEL])
+    assert code == 3 and _bar_of(res, "emoji share")["ok"] is None and _bar_of(res, "no tables")["ok"] is None
+    code, res = gate(chat=_chat_rows(text="   "))
+    assert code == 3 and _bar_of(res, "median reply")["ok"] is None
+
+
+def test_unpaired_trials_are_missing_with_counts(gate):
+    rows = [r for r in _tb_rows() if not (r["model"] == C_MODEL and r["trial"] == 2)]
+    code, res = gate(tb=rows)
+    b = _bar_of(res, "paired, isolated")
+    assert code == 3 and b["ok"] is None and "base 4 vs cand 2" in b["detail"]
+
+
+def test_unpaired_sources_and_chat_turns_are_missing(gate):
+    src = [r for r in _tb_rows(cases=(("s1", "sources"),)) if not (r["model"] == C_MODEL and r["trial"] == 2)]
+    code, res = gate(sources=src)
+    assert code == 3 and "sources" in _bar_of(res, "paired, isolated")["detail"]
+    code, res = gate(chat=[r for r in _chat_rows() if not (r["model"] == C_MODEL and r["turn"] == 1)])
+    assert code == 3 and "chat eval" in _bar_of(res, "paired, isolated")["detail"]
+
+
+@pytest.mark.parametrize("meta", [None, {"run": "x"}, {"run": "x", "case_sessions": "shared"}])
+def test_missing_case_sessions_is_missing(gate, meta):
+    code, res = gate(tb_meta=meta)
+    b = _bar_of(res, "paired, isolated")
+    assert code == 3 and b["ok"] is None and "run predates per-case session isolation; rerun" in b["detail"]
+
+
+def test_fail_beats_incomplete(gate, capsys):
+    rows = _tb_rows(passed=lambda m, cid, t: not (m == C_MODEL and cid == "c1"))
+    code, res = gate(tb=rows, chat="", judge="", tb_meta=None)
+    assert code == 1 and res["verdict"] == "FAIL"
+    out = capsys.readouterr().out
+    assert "RESULT: FAIL" in out and "MISSING EVIDENCE" in out
+
+
+def test_judge_file_for_other_models_or_empty_is_missing(gate, tmp_path):
+    code, res = gate(judge=_judge(tmp_path / "other.json", base="x", cand="y"))
+    assert code == 3 and _bar_of(res, "blind judge")["ok"] is None
+    code, res = gate(judge=_judge(tmp_path / "zero.json", wins=0, losses=0))
+    assert code == 3 and _bar_of(res, "blind judge")["ok"] is None
