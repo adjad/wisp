@@ -37,10 +37,13 @@ asked for. Both talk to the same service and the same saved chats.
   window.
 - **Keep open** (pin, ⌘P). Any edit in progress also holds the panel open: typed
   input, a message draft, a Day task, an open setup card or an open report.
-- **Quick settings** (the gear or `/settings`), in three cards: Permissions (Full
-  access, Learn my routines), Daily brief (the AM and PM times, each opening an
-  inline hour list) and Advanced (Reply details, which is Debug Mode, and Model
-  memory). Model memory shows what the engine measured from `GET /models/memory`,
+- **Quick settings** (the gear or `/settings`), one section at a time under a
+  switcher that stays put: General (Full access, Learn my routines, Mac permissions,
+  Setup), Brief (the Daily summary's two times, each opening an inline hour list, and
+  how often the Brief updates), Voice (Read answers aloud, Text size), Power (Save
+  power, Save memory) and Advanced (Reply details, which is Debug Mode, and Model
+  memory). It and the permission page stop at 60% of the screen's height, then scroll.
+  Model memory shows what the engine measured from `GET /models/memory`,
   and no number or bar when it measured nothing. Everything that needs a form, a
   key, OAuth or widens what Wisp reads stays in Settings (⌘,).
 - **First-run setup**: on a Mac that can't answer yet, the first launch opens Ask

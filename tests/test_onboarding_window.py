@@ -723,7 +723,7 @@ def test_setup_can_be_changed_from_the_menu_for_two_days_and_the_notch_always():
     assert "if defaults.object(forKey: FirstRunSetup.doneAtKey) == nil" in closed
     assert "openFirstRunSetup(at: .permissions)" in _body(app, "@objc private func changeSetupFromMenu()")
     quick = sources["QuickSettingsView.swift"]
-    setup = quick[quick.index('group("Setup")'):quick.index('group("Advanced")')]
+    setup = _body(quick, "private var setupRow: some View")
     assert "NotificationCenter.default.post(name: .wispOpenPermissions" in setup
     # No time limit in the notch.
     assert "doneAt" not in setup and "offersChangeSetup" not in quick

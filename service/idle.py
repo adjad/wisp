@@ -74,6 +74,7 @@ def forget(model: str) -> None:
 @contextlib.contextmanager
 def own_load(model: str):
     """Wisp is asking the engine to load `model`, which stamps its last_access."""
+    _own_access[model] = time.time()
     _own_loads[model] = _own_loads.get(model, 0) + 1
     try:
         yield
@@ -84,6 +85,11 @@ def own_load(model: str):
             _own_loads[model] = remaining
         else:
             _own_loads.pop(model, None)
+
+
+# A request of Wisp's own that doesn't go through OMLXClient.chat (an embedding, a
+# rerank, a model test). oMLX loads the model on demand for it, so it is the same.
+own_request = own_load
 
 
 def own_access(model: str) -> float | None:

@@ -1962,3 +1962,137 @@ def test_world_date_pins_a_weekend_run_with_brief_cases_to_monday():
     assert run_toolbench.world_date("", brief, today=wed) is None            # a weekday keeps the real date
     assert run_toolbench.world_date("", other, today=sat) is None            # other categories are untouched
     assert run_toolbench.world_date("2026-11-04", brief, today=sat) == date(2026, 11, 4)   # explicit wins
+
+
+# ------------------------------------------------ no case reaches a later case
+
+def _step1_requests(runner, client, world, cases) -> dict[str, str]:
+    """Each case's first model request (messages, offered schemas, thinking
+    flag), serialized, from a one-entry text plan. Step 1 is what the model sees
+    before anything it does can change the prompt."""
+    import asyncio
+    import json
+    out = {}
+    client.capture = True
+    try:
+        for c in cases:
+            client.plan, client.failure = [{"text": "ok"}], ""
+            t = asyncio.run(runner.run_case(client, CANDIDATE, c, world, timeout=60))
+            assert t["steps"], (c.id, t["error"])
+            out[c.id] = json.dumps(t["steps"][0]["request"], sort_keys=True, ensure_ascii=False)
+    finally:
+        client.capture = False
+    return out
+
+
+def _gate_step1_digests() -> dict[str, str]:
+    """Run in a fresh process (tests below): the gate's step 1 digests. The
+    import of this module already pointed WISP_HOME at a new throwaway home."""
+    import hashlib
+    import json
+    import socket
+    from scripts.toolbench import runner
+    from scripts.toolbench.cases import select
+    from service import config
+    from service.config.endpoints import role_target
+    settings = Path(os.environ["WISP_HOME"]).parent / "model_settings.json"
+    settings.write_text(json.dumps({"models": {GEMMA: {"max_context_window": 16384},
+                                               CANDIDATE: {"max_context_window": 9000}}}))
+    config.OMLX_MODEL_SETTINGS = settings
+
+    def refuse(sock, address):
+        raise PermissionError(f"test: network to {address!r} is blocked")
+    socket.socket.connect = socket.socket.connect_ex = refuse
+    runner.pin_endpoint(runner.DEFAULT_OMLX_PORT)
+    world = build_world(TODAY)
+    runner.install_fakes(world)
+    runner.bind_model(CANDIDATE, profile_as=GEMMA)
+    client = runner.scripted_client_class()(api_key="toolbench-test", target=role_target("agent"))
+    runner.set_clock(world.now)
+    gate = [c.bind(world.facts) for c in select(load_cases(), split="gate")]
+    # Two passes in one process, then a digest per case of each.
+    first = _step1_requests(runner, client, world, gate)
+    second = _step1_requests(runner, client, world, gate)
+    sha = lambda s: hashlib.sha256(s.encode()).hexdigest()  # noqa: E731
+    return {"first": {k: sha(v) for k, v in first.items()},
+            "second": {k: sha(v) for k, v in second.items()},
+            "passages": sorted(k for k, v in first.items() if "[user passage " in v)}
+
+
+def test_gate_step1_is_byte_identical_on_repeat_and_across_hash_seeds():
+    """Every gate case's step 1 request is the same on a repeat pass in one
+    process, and in two processes with different PYTHONHASHSEED values.
+
+    Before runner.forget_sessions, each case left a session in the shared
+    throwaway store and production's memory block quoted it as HISTORICAL
+    MEMORY ("[user passage ...]") in later cases, so later trials and later
+    models saw different prompts from earlier ones."""
+    import json
+    import subprocess
+    from scripts.toolbench.cases import select
+    runs = {}
+    for seed in ("0", "1"):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("WISP_")}
+        env["PYTHONHASHSEED"] = seed
+        proc = subprocess.run(
+            [sys.executable, "-c",
+             "import json, sys; sys.path.insert(0, 'tests'); import test_toolbench as T; "
+             "print('DIGESTS ' + json.dumps(T._gate_step1_digests()))"],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=1800)
+        assert proc.returncode == 0, proc.stderr[-4000:]
+        line = next(x for x in proc.stdout.splitlines() if x.startswith("DIGESTS "))
+        runs[seed] = json.loads(line[len("DIGESTS "):])
+    gate = {c.id for c in select(load_cases(), split="gate")}
+    for seed, run in runs.items():
+        assert set(run["first"]) == gate, seed
+        assert not run["passages"], (seed, run["passages"][:10])
+        changed = sorted(k for k in gate if run["first"][k] != run["second"][k])
+        assert not changed, (seed, len(changed), changed[:10])
+    across = sorted(k for k in gate if runs["0"]["first"][k] != runs["1"]["first"][k])
+    assert not across, (len(across), across[:10])
+
+
+def test_a_case_never_sees_an_earlier_case_but_keeps_its_own_history(bench):
+    """An earlier case's question never reaches a later prompt; a case's own
+    `history` still does, from its own session."""
+    runner, world, client = bench["runner"], bench["world"], bench["client"]
+    earlier = parse_case({"id": "e", "prompt": "Remind me about the Zanzibar ferry tickets",
+                          "history": [{"user": "Did the Zanzibar ferry tickets arrive?",
+                                       "assistant": "Not yet."}],
+                          "no_tool": True}, "chat")
+    later = parse_case({"id": "l", "prompt": "What about the Zanzibar ferry tickets?",
+                        "history": [{"user": "I booked a hotel in Stone Town.", "assistant": "Noted."}],
+                        "no_tool": True}, "chat")
+    reqs = _step1_requests(runner, client, world, [earlier, later])
+    assert "Did the Zanzibar ferry tickets arrive?" in reqs["e"]
+    assert "Did the Zanzibar ferry tickets arrive?" not in reqs["l"]
+    assert "[user passage " not in reqs["l"]
+    assert "I booked a hotel in Stone Town." in reqs["l"]
+    from service.memory.store import store
+    assert len(store.list_sessions()) == 1          # only the last case's own session is left
+
+
+def test_forget_sessions_refuses_outside_the_isolated_home(monkeypatch):
+    from scripts.toolbench import runner
+    from service import paths
+    from service.memory.store import store
+    sid = store.create_session()
+    for home in (Path.home() / ".moe", Path.home() / ".moe" / "sub", Path(tempfile.mkdtemp()) / ".moe"):
+        monkeypatch.setattr(paths, "MOE_DIR", home)
+        with pytest.raises(RuntimeError, match="refusing to delete sessions"):
+            runner.forget_sessions()
+    assert store.get_session(sid) is not None
+    monkeypatch.undo()
+    assert runner.forget_sessions() >= 1 and store.get_session(sid) is None
+
+
+def test_compare_warns_when_one_run_predates_clean_sessions(tmp_path):
+    import json
+    from scripts import run_toolbench
+    from scripts.toolbench.runner import CASE_SESSIONS
+    old, new, new2 = tmp_path / "old", tmp_path / "new", tmp_path / "new2"
+    for d, meta in ((old, {}), (new, {"case_sessions": CASE_SESSIONS}), (new2, {"case_sessions": CASE_SESSIONS})):
+        d.mkdir()
+        (d / "meta.json").write_text(json.dumps(meta))
+    assert "old" in run_toolbench._sessions_note(old, new) and "not comparable" in run_toolbench._sessions_note(new, old)
+    assert run_toolbench._sessions_note(new, new2) == "" and run_toolbench._sessions_note(old, old) == ""

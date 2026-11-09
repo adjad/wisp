@@ -118,7 +118,7 @@ enum Theme {
     static var controlFill: Color { Color(white: increaseContrast ? 0.3 : 0.17) }
 
     // MARK: - Text size
-    // "Text size" in Settings > Voice & accessibility. Stored as the scale
+    // "Text size" in the notch's Settings > Voice. Stored as the scale
     // itself under this key; Font.wisp multiplies every font by it, in the
     // notch and in the Wisp window.
     static let textSizeKey = "WispTextSize"

@@ -262,7 +262,9 @@ def _model_free(key: str) -> bool:
 
 async def _stand_down() -> str | None:
     """Why the fast model can't take a call now, or None when it can: a remote-only
-    profile, the model not resident, something else resident, or the model busy."""
+    profile, the model not resident, something else resident (another app's model on
+    the user's oMLX.app doesn't count), or the model busy."""
+    from service import memory_saver
     from service.inference.remote_policy import remote_only_profile
     if remote_only_profile() is not None:
         return "remote_only"
@@ -275,7 +277,7 @@ async def _stand_down() -> str | None:
         warm = set(client.keep_warm())
     except Exception:  # noqa: BLE001
         warm = set()
-    if model not in loaded or loaded - warm - {model}:
+    if model not in loaded or loaded - warm - {model} - memory_saver.other_apps_models(client):
         return "not_resident"
     if not _model_free(_model_key()):
         return "busy"

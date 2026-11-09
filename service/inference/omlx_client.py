@@ -31,6 +31,11 @@ from .inference_errors import (EngineGuardUnavailableError, ModelLoadError, Mode
                                ModelNotDownloadedError)
 
 
+_OMLX_OTHERS_FULL = ("Wisp's model couldn't load, because other models in oMLX are using "
+                     "the memory and are pinned or running. Unload one in oMLX, or wait for "
+                     "it to finish, then try again.")
+
+
 def _model_label(model: str) -> str:
     """The catalog's display name for a model id ("Gemma 4 E4B"), else the id.
     Optional import: the mini bundle ships this module without service.setup."""
@@ -785,10 +790,14 @@ class OMLXClient:
         await memory_saver.settle_prewarm()
         loop = asyncio.get_running_loop()
         keep = {model} if exclusive else (self._keep_warm | {model})
+        # On the user's oMLX.app other apps may be using what's loaded, and a turn
+        # never unloads there. oMLX evicts idle models itself when a load or a prefill
+        # needs the room, and refuses (507, or 400 at prefill) rather than overcommit.
+        on_omlx_app = memory_saver.omlx_app(self)
         loaded = set(await self.loaded_models())
 
         # 1. Evict everything not in the keep set (no-op if nothing to evict).
-        to_evict = loaded - keep
+        to_evict = set() if on_omlx_app else loaded - keep
         for m in to_evict:
             await self.unload(m)
 
@@ -825,7 +834,12 @@ class OMLXClient:
             if emit:
                 await emit({"type": "status", "text": (
                     f"Loading {label}… The first answer after a rest takes a little longer.")})
-            await self.load(model)
+            try:
+                await self.load(model)
+            except ModelMemoryLimitError:
+                if on_omlx_app and loaded - {model}:
+                    raise ModelMemoryLimitError(_OMLX_OTHERS_FULL) from None
+                raise
             start = loop.time()
             deadline = start + settle_timeout
             while loop.time() < deadline:
@@ -847,7 +861,8 @@ class OMLXClient:
         #    already have — no extra fetch needed to check this. Skipped when
         #    exclusive: the whole point of that mode is NOT to have the summarizer
         #    resident while this model is active (see the docstring).
-        if not exclusive:
+        #    Nor while another model is on the user's oMLX.app: a load can evict it.
+        if not exclusive and not (on_omlx_app and loaded - self._keep_warm - {model}):
             for k in self._keep_warm - loaded - {model}:
                 try:
                     await self.load(k)

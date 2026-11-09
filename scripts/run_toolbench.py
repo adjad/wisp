@@ -277,6 +277,24 @@ def _report(run_dir: Path, *, stored: bool) -> list[dict]:
     return rows
 
 
+def _sessions_note(*run_dirs: Path) -> str:
+    """A warning when a run predates per-case session clearing (runner.CASE_SESSIONS).
+
+    Before it, every case's question stayed in the run's session store and came
+    back as HISTORICAL MEMORY in later cases' prompts, so those pass rates are not
+    comparable with a run that cleared sessions per case."""
+    from scripts.toolbench.runner import CASE_SESSIONS
+    old = []
+    for d in run_dirs:
+        meta = json.loads((d / "meta.json").read_text()) if (d / "meta.json").exists() else {}
+        if meta.get("case_sessions") != CASE_SESSIONS:
+            old.append(d.name)
+    if not old or len(old) == len(run_dirs):
+        return ""
+    return (f"WARNING: {', '.join(old)} ran before each case got a clean session store (earlier cases' "
+            "questions reached later prompts). These pass rates are not comparable; rerun it.")
+
+
 def _agent_model() -> str:
     from service.config import _packaged_config
     return str(_packaged_config()["roles"]["agent"])
@@ -416,6 +434,11 @@ async def _trials(args, cases, runner, world, names) -> int:
         run_id = prior[0]["run"] if prior else out.name
         done = {(r.get("base_model", r["model"]), r.get("variant", "default"), r["case"], r["trial"])
                 for r in prior}
+        started = json.loads((out / "meta.json").read_text()) if (out / "meta.json").exists() else {}
+        if started.get("case_sessions") != runner.CASE_SESSIONS:
+            print(f"refusing to resume {out}: it started before each case got a clean session store, "
+                  "so its earlier trials saw other cases' questions in their prompts. Start a new run.")
+            return 2
         print(f"resuming {out}: {len(done)} trials already recorded")
     else:
         run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -434,7 +457,7 @@ async def _trials(args, cases, runner, world, names) -> int:
             "world_seed": args.world_seed, "thinking": variants,
             "split": ("private" if args.private else args.split or "all"),
             "path": "model_led", "profile_as": args.profile_as or None, "omlx_port": args.omlx_port,
-            "cleared_env": sorted(runner.CLEARED_ENV),
+            "cleared_env": sorted(runner.CLEARED_ENV), "case_sessions": runner.CASE_SESSIONS,
             "access": dict(sorted(Counter(c.access for c in cases).items())),
             "now": world.now.isoformat(), "seed_base": args.seed_base, "seeds": seeds,
             "engine_settings": settings, "engine_parity": parity,
@@ -567,6 +590,8 @@ def main() -> int:
             print(rep.render(cur))
             if args.compare:
                 print("\n" + rep.compare(_report(Path(args.compare).expanduser(), stored=args.stored), cur))
+                if note := _sessions_note(Path(args.compare).expanduser(), Path(args.report).expanduser()):
+                    print("\n" + note)
         except PrivateEvalError as e:
             print(f"refusing to rescore a private run: {e}")
             return 2

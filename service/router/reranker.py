@@ -178,10 +178,17 @@ async def _evict_embedder_locked(client: httpx.AsyncClient, headers: dict[str, s
         status = await client.get("/v1/models/status", headers=headers)
         if status.status_code != 200:
             return
-        loaded = {m.get("id") for m in status.json().get("models", []) if m.get("loaded")}
+        rows = status.json().get("models", [])
+        loaded = {m.get("id") for m in rows if m.get("loaded")}
         model = embedding_model()
         if model not in loaded:
             return
+        from service import memory_saver
+        if memory_saver.omlx_app():
+            # The user's oMLX.app: only an embedder Wisp itself brought in.
+            memory_saver.note_omlx_rows(rows)
+            if not any(m.get("id") == model and memory_saver.wisp_may_release(m) for m in rows):
+                return
         await client.post(f"/v1/models/{model}/unload", headers=headers)
         for _ in range(50):
             await asyncio.sleep(0.1)

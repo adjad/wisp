@@ -34,7 +34,8 @@ Rules:
   model whose thinking can't be turned off, the think block too), and a
   `_TIMEOUT_S` deadline. A user's turn that starts mid-call cancels it.
 - IMPORTANT: never loads or evicts a model. A tick runs only when the fast-role
-  model is already resident and nothing else but keep-warm models is.
+  model is already resident and nothing else but keep-warm models is. Another app's
+  model on the user's oMLX.app doesn't count (memory_saver.other_apps_models).
 - IMPORTANT: a gist is display text only. Mail and texts are untrusted; nothing
   here calls a tool or acts on what a gist says. A gist is one short line.
 - IMPORTANT: the texts gist names topics, never people's words: a written
@@ -612,9 +613,10 @@ async def _resident_reply(system: str, material: str, abort, *,
     """The model's reply, or None to stand down without spending anything.
 
     Never loads or evicts: the fast-role model must already be resident, with
-    nothing else but keep-warm models. A user's turn that starts before or
-    during the call wins: the request is cancelled.
+    nothing else but keep-warm models or another app's model on the user's oMLX.app.
+    A user's turn that starts before or during the call wins: the request is cancelled.
     """
+    from service import memory_saver
     from service.assistant.brief import _c
     from service.config import role_to_model, thinking_kwargs
     from service.inference.remote_policy import remote_only_profile
@@ -648,8 +650,9 @@ async def _resident_reply(system: str, material: str, abort, *,
     if model not in loaded:
         _stood_down(f"the fast model ({model}) isn't loaded; loaded: {sorted(loaded) or 'nothing'}")
         return None
-    if loaded - warm - {model}:
-        _stood_down(f"another model is resident: {sorted(loaded - warm - {model})}")
+    others = loaded - warm - {model} - memory_saver.other_apps_models(client)
+    if others:
+        _stood_down(f"another model is resident: {sorted(others)}")
         return None
     if abort():
         _stood_down("a turn is in progress")

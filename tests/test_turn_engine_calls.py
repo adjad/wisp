@@ -219,6 +219,10 @@ def engine(monkeypatch, tmp_path):
     monkeypatch.setattr(CredentialTransport, "handle_async_request", through_fake)
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", through_fake)
 
+    # These pin the residency contract of an engine Wisp owns. On the user's oMLX.app
+    # a turn never unloads: see the on_omlx_app tests at the end of this file.
+    from service import memory_saver
+    monkeypatch.setattr(memory_saver, "omlx_app", lambda client=None: False)
     client = OMLXClient(base_url=BASE, api_key="test-key")
     client.set_keep_warm({MODEL})            # what main.lifespan configures
     store = SessionStore(tmp_path / "sessions.db")
@@ -1172,3 +1176,57 @@ def test_bundled_refusal_says_momentary_only_for_transient_reasons():
         # The desktop oMLX keeps its own message: Wisp.app is not the fix there.
         assert str(refusal(reason, 8000)) == at.REFUSED_MESSAGE
     assert str(refusal("connected_peer_changed", at.BUNDLED_PORT)) == at.BUNDLED_REFUSED_MESSAGE
+
+
+# ------------------------------------------------ the user's own oMLX.app
+
+@pytest.fixture
+def on_omlx_app(engine, monkeypatch):
+    """The same engine, as Wisp sees the user's oMLX.app: other models aren't Wisp's."""
+    from service import memory_saver
+    monkeypatch.setattr(memory_saver, "omlx_app", lambda client=None: True)
+    return engine
+
+
+def test_omlx_app_a_swap_loads_beside_the_other_model(on_omlx_app, instant_sleep):
+    on_omlx_app.fake.loaded = {OTHER}
+    on_omlx_app.fake.load_after_polls = 2
+    endpoint_turn("hello")
+    seq = on_omlx_app.fake.sequence()
+    assert "unload" not in seq
+    assert seq.index("load") < seq.index("chat") and seq.count("chat") == 1
+    assert on_omlx_app.fake.loaded == {OTHER, MODEL}
+
+
+def test_omlx_app_a_turn_with_tools_never_unloads(on_omlx_app, monkeypatch, instant_sleep):
+    tools = register_tools(monkeypatch)
+    on_omlx_app.fake.loaded = {OTHER}
+    on_omlx_app.fake.script = [["fake_a"], None]
+    loop_turn(on_omlx_app, tools)
+    seq = on_omlx_app.fake.sequence()
+    assert "unload" not in seq and seq.count("chat") == 2
+    assert "status" in seq[seq.index("chat") + 1:]      # still checks before the next step
+    assert on_omlx_app.fake.loaded == {OTHER, MODEL}
+
+
+def test_omlx_app_an_exclusive_check_leaves_the_other_model(on_omlx_app):
+    on_omlx_app.fake.loaded = {MODEL, EMBEDDER}
+
+    async def go():
+        turn = TurnInferenceClient(on_omlx_app.client, main.ensure_omlx)
+        await turn.ensure_only(MODEL, exclusive=True)
+        await turn.ensure_only(MODEL, exclusive=True)
+    asyncio.run(go())
+    assert "unload" not in on_omlx_app.fake.sequence()
+    assert on_omlx_app.fake.loaded == {MODEL, EMBEDDER}
+
+
+def test_omlx_app_a_model_change_in_one_turn_keeps_both(on_omlx_app):
+    async def go():
+        turn = TurnInferenceClient(on_omlx_app.client, main.ensure_omlx)
+        await turn.ensure_only(MODEL, exclusive=True)
+        await turn.ensure_only(OTHER, exclusive=True)
+    asyncio.run(go())
+    seq = on_omlx_app.fake.sequence()
+    assert "unload" not in seq and "load" in seq
+    assert on_omlx_app.fake.loaded == {MODEL, OTHER}

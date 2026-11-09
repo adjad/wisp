@@ -81,6 +81,45 @@ struct EncoderResidency: Equatable {
     }
 }
 
+/// Quick settings shows one section at a time. Every setting lives in exactly one.
+enum QuickSettingsSection: String, CaseIterable, Identifiable {
+    case general, brief, voice, power, advanced
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .brief: return "Brief"
+        case .voice: return "Voice"
+        case .power: return "Power"
+        case .advanced: return "Advanced"
+        }
+    }
+
+    /// What's inside, for the button's tooltip and VoiceOver: a section's name
+    /// alone doesn't say where Text size went.
+    var contents: String {
+        switch self {
+        case .general: return "Full access, Learn my routines, Mac permissions and Setup"
+        case .brief: return "Daily summary and Brief updates"
+        case .voice: return "Read answers aloud, Voice, Speaking rate and Text size"
+        case .power: return "Save power and Save memory"
+        case .advanced: return "Reply details and Model memory"
+        }
+    }
+
+    /// The section last shown. A Text size change rebuilds the panel, and it must
+    /// not throw the person back to General.
+    static let defaultsKey = "wisp.quickSettings.section"
+
+    static func saved(in defaults: UserDefaults = .standard) -> QuickSettingsSection {
+        defaults.string(forKey: defaultsKey).flatMap(QuickSettingsSection.init(rawValue:)) ?? .general
+    }
+
+    func save(in defaults: UserDefaults = .standard) { defaults.set(rawValue, forKey: Self.defaultsKey) }
+}
+
 /// Quick settings' one-line descriptions. Each keeps the states the service can
 /// be in (waiting for confirmation, not confirmed) instead of guessing "off".
 enum QuickSettingsText {
@@ -139,7 +178,7 @@ enum QuickSettingsText {
         }
     }
 
-    static let saveMemoryHelp = "Wisp's model uses about 5.5 GB of memory. After 30 minutes without using "
+    static let saveMemoryHelp = "Wisp's model uses about 5.5 GB of memory. After 5 minutes without using "
         + "Wisp, or sooner when your Mac runs low on memory, Wisp unloads it so other apps get that "
         + "memory back. Research and Smart Search keep it loaded while they run. Opening Ask or the "
         + "Wisp window loads it again while you type; a question asked right away waits about 6 "
@@ -169,14 +208,15 @@ enum QuickSettingsText {
         }
         guard detail.onOMLX else { return saveMemoryHelp }
         return """
-            Wisp's Gemma chat model uses about 5.5 GB of memory. After 30 minutes without using Wisp, or \
+            Wisp's Gemma chat model uses about 5.5 GB of memory. After 5 minutes without using Wisp, or \
             sooner when your Mac runs low on memory, Wisp unloads it from your oMLX app so other apps get \
             that memory back. Save memory only ever unloads that one model. It waits while another app \
             has used the model in the last 30 minutes. Research and Smart Search keep it loaded while \
             they run. Opening Ask or the Wisp window loads it again while you type, unless another model \
             is loaded in oMLX; a question asked right away waits about 6 seconds. While it's unloaded, \
             the Brief and other background work catch up about once an hour, unless another model is \
-            loaded. Off keeps the model loaded, except after you hide the notch with its X.
+            loaded. Off keeps the model loaded, except after you hide the notch with its X, unless \
+            another app has used it in the last 30 minutes.
             """
     }
 
@@ -195,10 +235,30 @@ enum QuickSettingsText {
         }
     }
 
+    /// The Daily Summary's line. Its two times set only this: the Brief itself
+    /// updates across the working hours (briefUpdates).
     static func brief(pending: Bool, confirmed: Bool) -> String {
         if pending { return "Saving · waiting for confirmation…" }
-        return confirmed ? "Shows up in Brief, and in a notification" : "Times not confirmed · check again"
+        return confirmed ? "In Brief, and as a notification" : "Times not confirmed · check again"
     }
+
+    static let dailySummaryHelp = "Sets when Wisp sends your Daily Summary each morning and evening. "
+        + "It doesn't change when the Brief updates."
+
+    /// How often the Brief updates (service/brief_pace.py, BUILDS_PER_DAY;
+    /// tests/test_brief_pace.py holds the number to it). `hours` is "9 AM to 5 PM",
+    /// or nil when the service didn't say.
+    static func briefUpdates(hours: String?) -> String {
+        "About 4 times a day, " + (hours ?? "across your working hours")
+    }
+
+    /// `times` is "9 AM, 1 PM and 5 PM".
+    static func briefUpdates(chosen times: String) -> String { "At " + times }
+
+    static let briefUpdatesHelp = "Automatic updates your Brief about 4 times a day, spread across your "
+        + "working hours (About you › Your hours in the Wisp window). Or choose the times yourself. Either "
+        + "way a chat comes first: an update that's due waits until you've stopped chatting for a few "
+        + "minutes, and it's never skipped."
 
     /// Model memory's line, and how full the bar is (nil hides it): only from
     /// sizes the engine measured.

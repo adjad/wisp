@@ -266,6 +266,9 @@ class MailNamesTheGmailAccountGoogle(unittest.TestCase):
         self.base = time.time() - 86400
         self.enterContext(patch.object(E, "_external_accounts", {}))
         self.enterContext(patch.object(E, "_swift_headers", ""))
+        # A Mail read left by an earlier test would outrank this test's Gmail snapshot.
+        self.enterContext(patch.object(E, "_native_source", ""))
+        self.enterContext(patch.object(E, "_native_headers_at", 0.0))
         self.enterContext(patch.object(E, "native_email_accounts", lambda: [
             {"id": "MAIL-G", "name": "Google"}, {"id": "MAIL-W", "name": "Work"}]))
 

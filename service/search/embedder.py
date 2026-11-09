@@ -19,6 +19,7 @@ from collections import OrderedDict
 import httpx
 
 from service.config.quarantine import guard_client
+from service import idle
 from service.inference import engine_epoch
 
 from service.config import models_config, omlx_api_key, omlx_base_url
@@ -85,7 +86,7 @@ async def _embed(texts: list[str], *, timeout: float, target: Target | None = No
         return []
     # The engine loads the embedder on demand; a readiness proof is stale while
     # this runs and after it.
-    with engine_epoch.operation():
+    with engine_epoch.operation(), idle.own_request((target or embedding_target()).model):
         return await _embed_batches(texts, timeout=timeout, target=target)
 
 

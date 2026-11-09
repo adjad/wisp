@@ -72,6 +72,8 @@ class OutboundQueue:
         private_sqlite_file(path)
         self._db = sqlite3.connect(str(path), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
+        # This shares assistant.db with the store, and the setting is per connection.
+        self._db.execute("PRAGMA secure_delete=ON")
         self._db.executescript(_SCHEMA)
         # CREATE TABLE IF NOT EXISTS will not add a column to a database made
         # by an earlier build, so bring `notified_at` forward explicitly.

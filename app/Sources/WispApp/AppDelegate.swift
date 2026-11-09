@@ -100,6 +100,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menuTracking = false
     // An auto-collapse came due while that menu was open and was held back.
     private var collapseHeldForMenu = false
+    /// A close that an answer in flight held off. Once the answer is done the panel
+    /// stays this long for reading it, and then closes unless the pointer came back.
+    private var collapseHeldForAnswer = false
+    private var answerReadDelay: TimeInterval = 60
+    private var answerEnded: AnyCancellable?
     // Whether the pointer is over the expanded panel. Replaceable so the motion
     // checks, which host no real panel, can exercise both answers.
     private var pointerInPanel: () -> Bool = { false }
@@ -1362,7 +1367,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// panels) has nothing to step aside for.
     private func stepAside(forKey window: NSWindow) {
         guard let panel, window !== panel, window !== searchPanel, !model.collapsed, !model.pinned,
-              !model.pickingFile, Self.panelCovers(window: window.level, panel: panel.level) else { return }
+              !model.pickingFile, !model.answerInFlight,
+              Self.panelCovers(window: window.level, panel: panel.level) else { return }
         stepAside()
     }
 
@@ -1512,9 +1518,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pendingCollapse?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.model.collapsed else { return }
-            // Don't hide a pinned panel or an unfinished edit (typed input, a
-            // message draft being edited) out from under the user; a mid-task
-            // generation is fine (the notch bar's dot shows it's still working).
+            // Don't hide a pinned panel, an unfinished edit (typed input, a
+            // message draft being edited) or an answer being written out from
+            // under the user.
+            if self.model.answerInFlight { self.collapseHeldForAnswer = true; return }
             if self.model.holdsOpen { return }
             // A menu opened from the panel (the chat switcher) runs outside it,
             // so the pointer leaving the panel is not the person leaving. Hold
@@ -1524,6 +1531,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         pendingCollapse = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.autoCollapseDelay, execute: work)
+    }
+
+    /// The answer a close was held for is done. The person left while it was being
+    /// written, so 3 seconds is too short to read it, and the panel shouldn't stay over
+    /// their work for good either.
+    private func answerSettled() {
+        guard collapseHeldForAnswer else { return }
+        collapseHeldForAnswer = false
+        guard !model.collapsed, !pointerInPanel() else { return }
+        pendingCollapse?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.model.collapsed, !self.menuTracking else { return }
+            if self.model.answerInFlight { self.collapseHeldForAnswer = true; return }
+            if self.model.holdsOpen { return }
+            self.collapse()
+        }
+        pendingCollapse = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + answerReadDelay, execute: work)
+    }
+
+    /// Watches for the end of the answer a close is waiting on. @Published sends
+    /// before the value is stored, so this reads it on the next turn.
+    private func watchForAnswerEnding() {
+        guard answerEnded == nil else { return }
+        answerEnded = model.$phase.receive(on: DispatchQueue.main).sink { [weak self] _ in
+            guard let self, !self.model.answerInFlight else { return }
+            self.answerSettled()
+        }
     }
 
     private func pointerEnteredPanel() {
@@ -1758,6 +1793,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // panel (HoverView), not SwiftUI's flaky .onHover. Entering the bar
         // expands; entering the open panel cancels a pending collapse; leaving
         // the open panel arms the 2s grace timer so it retreats into the notch.
+        watchForAnswerEnding()
         panel?.onMouseEnter = { [weak self] in self?.pointerEnteredPanel() }
         panel?.onMouseExit = { [weak self] in
             guard let self, !self.model.collapsed else { return }
@@ -2616,13 +2652,37 @@ extension AppDelegate {
         addingTask.model.todayTaskTitle = "Lab report draft"
         let picking = opened()
         picking.model.pickingFile = true
-        for delegate in [idle, pinned, typing, editing, addingTask, picking] { delegate.scheduleCollapse() }
+        let inFlight: [OverlayModel.Phase] = [.routing, .working, .streaming, .confirming]
+        let answering = inFlight.map { phase -> AppDelegate in
+            let delegate = opened()
+            delegate.model.phase = phase
+            return delegate
+        }
+        for delegate in [idle, pinned, typing, editing, addingTask, picking] + answering { delegate.scheduleCollapse() }
         try? await Task.sleep(for: .seconds(autoCollapseDelay + 0.5))
         precondition(idle.presentation.desired == .bar, "Control: an idle panel must auto-collapse")
         for (delegate, what) in [(pinned, "a pin"), (typing, "typed input"), (editing, "a draft being edited"),
                                  (addingTask, "a Day task being typed"), (picking, "an open file dialog")] {
             precondition(delegate.presentation.desired == .chat, "\(what) must hold the panel open")
         }
+        for delegate in answering {
+            precondition(delegate.presentation.desired == .chat && delegate.collapseHeldForAnswer,
+                         "An answer being written must hold the panel open (\(delegate.model.phase))")
+        }
+        // Done: it stays long enough to read, then closes; the pointer coming back keeps it.
+        let reading = answering[2]
+        reading.answerReadDelay = 0.3
+        reading.watchForAnswerEnding()
+        reading.model.phase = .done
+        try? await Task.sleep(for: .seconds(0.1))
+        precondition(!reading.collapseHeldForAnswer && reading.presentation.desired == .chat,
+                     "A finished answer stays up to be read")
+        try? await Task.sleep(for: .seconds(0.5))
+        precondition(reading.presentation.desired == .bar, "A finished answer doesn't hold the panel forever")
+        // An explicit close still closes, and a window of Wisp's doesn't during an answer.
+        let closing = answering[0]
+        closing.collapse()
+        precondition(closing.presentation.desired == .bar, "The chevron, Esc and the hotkey still close during an answer")
         pinned.collapse()
         precondition(!pinned.model.pinned, "An explicit collapse must unpin")
         precondition(pinned.presentation.desired == .bar, "An explicit collapse still collapses a pinned panel")

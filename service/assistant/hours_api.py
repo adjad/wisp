@@ -39,6 +39,8 @@ class Patch(BaseModel):
     working: Working | None = None
     quiet: Quiet | None = None
     offer_moves: StrictBool | None = None
+    # When the Brief updates. Empty goes back to the default day; user_hours checks the rest.
+    brief_times: list[StrictInt] | None = Field(default=None, max_length=user_hours.MAX_BRIEF_TIMES)
     # The app's own zone, so today's plan picks up new hours at once.
     timezone: str | None = Field(default=None, max_length=100)
 
@@ -106,7 +108,7 @@ async def patch_hours(request: Request) -> dict:
     try:
         result = user_hours.save(working=body.working.model_dump() if body.working else None,
                                  quiet=body.quiet.model_dump() if body.quiet else None,
-                                 offer_moves=body.offer_moves)
+                                 offer_moves=body.offer_moves, brief_times=body.brief_times)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     if body.working and zone is not None:

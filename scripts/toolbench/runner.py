@@ -6,6 +6,9 @@ ISOLATION — `isolate()` must run before anything under `service` is imported:
     sessions and grants are empty and nothing under the real ~/.moe is written.
     HOME is left alone: the oMLX settings and runtime authorization live there
     and the client needs them to reach the engine at all.
+  * run_case deletes every session in that store before each case
+    (forget_sessions), so no earlier case's question reaches a later case's
+    prompt as HISTORICAL MEMORY. The case's own `history` is seeded after it.
   * Every WISP_* switch that changes turn behaviour is cleared (_BEHAVIOUR_ENV),
     so the packaged models.yaml / policy.yaml defaults apply as on a fresh
     install: model_only on, narration thinking per models.yaml, full access.
@@ -973,6 +976,43 @@ class Turn:
     unresolved_block: bool
 
 
+# Recorded in meta.json as "case_sessions". Runs without it let earlier cases'
+# questions into later prompts (forget_sessions), so their pass rates are not
+# comparable with runs that have it.
+CASE_SESSIONS = "cleared_per_case"
+
+
+def forget_sessions() -> int:
+    """Delete every session in the isolated store. Returns how many were removed.
+
+    Each case must start with no past conversations. Production's memory block
+    (service.memory.retrieval via MemoryQueue.search) quotes user turns from
+    OTHER sessions as HISTORICAL MEMORY, and every case leaves a session behind
+    (its seeded `history`, its persisted request). Without this, a case's
+    question came back in later cases' system prompts: on a repeat pass step 1
+    changed in 68 of 97 cases, and later trials and later models saw different
+    prompts from earlier ones. A case's own `history` is seeded after this, in
+    the new session prepare_turn creates, so it is kept.
+
+    Refuses unless the store lives in the home service.paths resolved (WISP_HOME
+    at import, which isolate() points at a throwaway directory) and that home is
+    not the real ~/.moe: this deletes chats, and must only ever touch a throwaway.
+    """
+    from service import paths
+    from service.memory.store import store
+    home = Path(paths.MOE_DIR).resolve()
+    db = Path(next((r[2] for r in store._db.execute("PRAGMA database_list") if r[1] == "main"), "") or "")
+    real = (Path.home() / ".moe").resolve()
+    if (not db.name or home == real or home.is_relative_to(real)
+            or not db.resolve().is_relative_to(home) or db.resolve().is_relative_to(real)):
+        raise RuntimeError(f"toolbench: refusing to delete sessions outside an isolated Wisp home "
+                           f"(home={str(home)!r}, store={str(db)!r})")
+    ids = [s["id"] for s in store.list_sessions(limit=1_000_000)]
+    for sid in ids:
+        store.delete_session(sid)
+    return len(ids)
+
+
 def _seed_session(history) -> str:
     """A real session in the isolated store holding the case's earlier turns,
     so history, last_assistant and last_tools come from production's store."""
@@ -1226,6 +1266,8 @@ async def run_case(client, model: str, case, world, *, timeout: float, max_steps
         # Rebinding here would silently drop a --profile-as treatment.
         raise RuntimeError(f"agent role is {role_target('agent').model!r}, not {model!r}: "
                            "call runner.bind_model(model, profile_as=...) before run_case")
+    # No earlier case's conversation may reach this case's prompt (forget_sessions).
+    forget_sessions()
     t0 = time.monotonic()
     try:
         with access_mode(access):

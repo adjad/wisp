@@ -43,6 +43,11 @@ struct UserHours: Equatable {
     var offerMoves = true
     /// The person answered, rather than these being the defaults.
     var isSet = false
+    /// The times chosen for the Brief to update, minutes after midnight in clock
+    /// order; nil is the default day across the working hours. PATCHed on its own
+    /// (WispClient.saveBriefTimes), so saving the hours never touches it.
+    var briefTimes: [Int]?
+    var maxBriefTimes = 8
 
     init() {}
 
@@ -56,6 +61,43 @@ struct UserHours: Equatable {
         if let window = Window(json: json["quiet"]) { quiet = window }
         offerMoves = json["offer_moves"] as? Bool ?? true
         isSet = json["is_set"] as? Bool ?? false
+        if let chosen = json["brief_times"] as? [Any] {
+            let minutes = chosen.compactMap { ($0 as? NSNumber)?.intValue }.filter { (0..<1440).contains($0) }
+            if !minutes.isEmpty { briefTimes = Array(Set(minutes)).sorted() }
+        }
+        if let most = (json["max_brief_times"] as? NSNumber)?.intValue, most > 0 { maxBriefTimes = most }
+    }
+
+    /// The whole hours to start from on choosing times: the default day
+    /// (service/brief_pace.py, brief_times) to the nearest hour.
+    var suggestedBriefTimes: [Int] {
+        let span = ((working.end - working.start) % 1440 + 1440) % 1440
+        let builds = 4
+        let minutes = (0..<builds).map { step -> Int in
+            let minute = Double(working.start) + Double(span) * Double(step) / Double(builds - 1)
+            return (Int((minute / 60).rounded()) * 60) % 1440
+        }
+        return Array(Set(minutes)).sorted()
+    }
+
+    /// One hour's button on or off, never leaving none or passing the limit.
+    func briefTimes(toggling minute: Int) -> [Int]? {
+        var chosen = Set(briefTimes ?? [])
+        if chosen.contains(minute) {
+            guard chosen.count > 1 else { return nil }
+            chosen.remove(minute)
+        } else {
+            guard chosen.count < maxBriefTimes else { return nil }
+            chosen.insert(minute)
+        }
+        return chosen.sorted()
+    }
+
+    /// "9 AM, 1 PM and 5 PM".
+    static func clockList(_ minutes: [Int]) -> String {
+        let clocks = minutes.map(clock)
+        guard let last = clocks.last else { return "" }
+        return clocks.count == 1 ? last : clocks.dropLast().joined(separator: ", ") + " and " + last
     }
 
     /// Whether this can be saved: the service refuses anything else.

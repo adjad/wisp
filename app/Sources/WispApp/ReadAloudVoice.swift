@@ -88,6 +88,34 @@ enum ReadAloudVoice {
         return .system
     }
 
+    /// System Settings › Accessibility › Spoken Content, where Manage Voices is.
+    static let downloadPane = "x-apple.systempreferences:com.apple.preference.universalaccess?SpeakableItems"
+
+    /// The notch's speaking rate chips. Settings' slider can land between them.
+    static let rateChoices: [Double] = [0.75, 0.9, 1, 1.15, 1.3, 1.5]
+
+    static func rateText(_ multiple: Double) -> String {
+        abs(multiple - 1) < 0.001 ? "Normal" : "\(Int((multiple * 100).rounded()))% of normal"
+    }
+
+    /// The name on a notch chip, with the region where one name has several, and
+    /// the quality when it's better than basic.
+    static func shortLabel(_ voice: Candidate, among voices: [Candidate]) -> String {
+        var parts = [voice.name]
+        if voices.filter({ $0.name == voice.name }).count > 1,
+           let region = voice.language.split(whereSeparator: { $0 == "-" || $0 == "_" }).dropFirst().first {
+            parts.append(String(region).uppercased())
+        }
+        if voice.quality > 0 { parts.append(voice.qualityLabel) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// True when every voice the notch lists is basic quality, so the natural ones
+    /// are still to be downloaded.
+    static func onlyBasicVoices(_ voices: [Candidate]) -> Bool {
+        !voices.contains { $0.quality > 0 && !$0.isNovelty }
+    }
+
     /// The saved rate multiple, within range; 1 when unset or unreadable.
     static func rateMultiple(_ stored: Double?) -> Double {
         guard let stored, stored.isFinite, stored > 0 else { return 1 }

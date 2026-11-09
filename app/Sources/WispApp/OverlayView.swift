@@ -20,7 +20,7 @@ struct OverlayView: View {
     @FocusState private var focused: Bool
     @State private var breathe = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    // Text size (Settings > Voice & accessibility) and Increase Contrast both
+    // Text size (the notch's Settings > Voice) and Increase Contrast both
     // change values that child views read when they are built, so a change
     // rebuilds the panel's content once. Cheap: both are rare, deliberate.
     @AppStorage(Theme.textSizeKey) private var textSize: Double = 1.0
@@ -109,12 +109,19 @@ struct OverlayView: View {
         .padding(.top, SurfaceLayout.tabTopPadding)
     }
 
+    private func noteHeader(_ height: CGFloat) {
+        headerHeight = height
+        #if WISP_NOTCH_QA
+        NotchQAPages.liveHeader = height
+        #endif
+    }
+
     private var expandedPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
                 .background(GeometryReader { geo in
-                    Color.clear.onAppear { headerHeight = geo.size.height }
-                        .onChange(of: geo.size.height) { headerHeight = geo.size.height }
+                    Color.clear.onAppear { noteHeader(geo.size.height) }
+                        .onChange(of: geo.size.height) { noteHeader(geo.size.height) }
                 })
             if model.resetCard != nil {
                 // /resetwisp's confirmation takes the tab's place until Cancel.
@@ -124,9 +131,12 @@ struct OverlayView: View {
                 KnowYouView(model: knowYou)
             } else if model.showingPermissions {
                 // A permission row's page, like quick settings, in the tab's place.
-                tabScroll { NotchPermissionsView(model: model) }
+                NotchPermissionsView(model: model, cap: layout.pageContentCap(headerHeight: headerHeight))
+                    .padding(.top, SurfaceLayout.tabTopPadding)
             } else if model.showingQuickSettings {
-                QuickSettingsView(model: model, settings: settings).padding(.top, 12)
+                QuickSettingsView(model: model, settings: settings,
+                                  cap: layout.pageContentCap(headerHeight: headerHeight))
+                    .padding(.top, SurfaceLayout.tabTopPadding)
             } else {
             switch model.tab {
             case .ask:
