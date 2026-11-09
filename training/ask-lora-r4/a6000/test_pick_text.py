@@ -196,7 +196,12 @@ def gate_rows(n_call=16, n_narr=24, n_chat=24, n_safe=16) -> list[dict]:
     return rows
 
 
-def ggens(rows, ck, thought=THOUGHT, empty_post=0, reply_short=False, unsafe=0, absence=0, forbidden=0, drop=()):
+def ggens(*a, **kw):
+    """Fake generations stamped with one run id: `pick` refuses answers it can't show came from one fresh paired run."""
+    return [dict(r, run_id="r1") for r in _ggens(*a, **kw)]
+
+
+def _ggens(rows, ck, thought=THOUGHT, empty_post=0, reply_short=False, unsafe=0, absence=0, forbidden=0, drop=()):
     """Fake generations for the gate dev set. `empty_post`: that many narrate finals skip the thought; `reply_short`: every
     answer is much shorter; `unsafe`: that many safety calls run trash_path; `absence`: that many chat finals claim an empty
     inbox; `forbidden`: that many safety calls run send_email (the label's forbidden tool)."""
@@ -514,17 +519,22 @@ def test_multi_sample_metrics_weight_steps_equally_and_count_missing_samples():
     assert T.summarize(R, rows, cut)["x"]["n_missing"] == 0
 
 
+def _no_pairing(metrics):
+    """For a test of rate arithmetic with unequal sample counts on purpose: real picks must pair, and `pick` refuses when they don't."""
+    return {k: {f: v for f, v in m.items() if f != "coverage_hash"} for k, m in metrics.items()}
+
+
 def test_gates_compare_rates_not_raw_counts():
     rows = gate_rows()
     # the base was sampled 3x (6/48 unsafe, 9/72 absence), the candidate 1x (2/16, 3/24): 3x the raw counts, the same rates
     answers = multi(rows, "base", 3, unsafe=2, absence=3) + ggens(rows, "same_rate", unsafe=2, absence=3)
-    m = T.summarize(R, rows, answers)
+    m = _no_pairing(T.summarize(R, rows, answers))
     assert m["base"]["unsafe_safety_n"] == 6 and m["same_rate"]["unsafe_safety_n"] == 2
     chosen, table = T.select(m, None)
     assert chosen == "same_rate", [t["reasons"] for t in table]
     # the other way round: the candidate has the larger raw count (3 samples) at the same rate -> still passes
     answers = ggens(rows, "base", unsafe=2, absence=3) + multi(rows, "more_gens", 3, unsafe=2, absence=3)
-    assert T.select(T.summarize(R, rows, answers), None)[0] == "more_gens"
+    assert T.select(_no_pairing(T.summarize(R, rows, answers)), None)[0] == "more_gens"
     # one step of slack is 1/n_steps of RATE, whatever the number of samples: 16 safety steps -> +6.25 points
     base_rate = 2 / 16
     for unsafe, ok in ((2, True), (3, True), (4, False)):
@@ -1044,6 +1054,215 @@ def test_out_of_memory_returns_before_the_group_is_split():
 def test_run_r5_batches_the_picker():
     sh = (TRAINING / "ask-lora-r5" / "mi355x" / "run_r5.sh").read_text()
     assert '--batch "${PICK_BATCH:-8}"' in sh and "WISP_ATTN=math" in sh
+
+
+# ------------------------------------------------------------------ early steps, truncation, budget, fresh paired runs
+
+def _fake_ckpt_root(tmp, steps, total=1000):
+    root = Path(tmp) / "out"
+    for n in steps:
+        d = root / "ckpt" / (n if isinstance(n, str) else f"step-{n:05d}")
+        d.mkdir(parents=True)
+        (d / "adapter_config.json").write_text("{}")
+    (root / "train.log.jsonl").write_text(json.dumps({"event": "start", "steps": total}) + "\n")
+    return root
+
+
+def test_include_steps_adds_early_checkpoints_and_never_thins_them():
+    names = [f"step-{n:05d}" for n in (50, 100, 200, 300, 450, 500, 600, 700, 800, 900, 1000)]
+    got = T.candidate_names(names, 1000, 0.45, 3, include_steps=[50, 100, 200])
+    assert got[:3] == ["step-00050", "step-00100", "step-00200"]                    # first, in step order, none thinned
+    assert got[-1] == "step-01000" and len(got) == 3 + 3                            # max_n still limits the late pool only
+    assert T.candidate_names(names, 1000, 0.45, 3) == got[3:]                       # default: unchanged behaviour
+    assert T.candidate_names(names, 1000, 0.45, 3, include_steps=[500]).count("step-00500") <= 1   # no duplicates
+    assert T.candidate_names(["step-00100"], 1000, include_steps=[50, 100, 200]) == ["step-00100"]   # absent ones are skipped
+    assert T.parse_include_steps("50, 100,step-00200,50") == [50, 100, 200] and T.parse_include_steps(None) == []
+
+
+def test_candidates_cli_include_steps_and_generate_still_takes_any_checkpoint():
+    with tempfile.TemporaryDirectory() as d:
+        root = _fake_ckpt_root(d, [50, 100, 150, 450, 700, 1000])
+        rc, so, se = _run_main(["candidates", "--ckpt-root", str(root), "--max", "2", "--include-steps", "50,100,200"])
+        assert rc == 0 and so.strip() == "step-00050,step-00100,step-00450,step-01000" and "200" in se
+        rc, so, _ = _run_main(["candidates", "--ckpt-root", str(root), "--max", "2"])
+        assert so.strip() == "step-00450,step-01000"
+    src = (HERE / "pick_text.py").read_text()
+    assert "bad = [n for n in names if n not in dirs]" in src                      # --ckpts checks only that the adapter exists
+
+
+def test_was_truncated_reads_the_tokens_before_trimming():
+    stops = T.STOP_IDS
+    assert T.was_truncated([5, 6, 7, 8], stops, 4)                    # ran to the budget, no stop
+    assert not T.was_truncated([5, 6, 7, 106], stops, 4)              # the stop is the last token of the budget: finished
+    assert not T.was_truncated([5, 1, 0, 0], stops, 4)                # EOS then padding (a batch finished early)
+    assert not T.was_truncated([5, 6], stops, 4)                      # shorter than the budget: stopped
+    assert not T.was_truncated([5, 6, 7, 50], stops, 4)               # <|tool_response>
+
+
+def test_truncation_stats_and_summary_report_it_per_model():
+    rows = gate_rows()
+    base = [dict(r, run_id="r1", truncated=False, max_new_tokens=512) for r in ggens(rows, "base")]
+    cand = [dict(r, run_id="r1", truncated=(i < 3), max_new_tokens=512) for i, r in enumerate(ggens(rows, "step-00100"))]
+    st = T.truncation_stats(base + cand)
+    assert st["base"] == {"n": 80, "n_flagged": 80, "truncated": 0, "rate": 0.0}
+    assert st["step-00100"]["truncated"] == 3 and abs(st["step-00100"]["rate"] - 3 / 80) < 1e-9
+    assert T.truncation_stats(ggens(rows, "old"))["old"]["rate"] is None                     # legacy answers: unknown, not zero
+    m = T.summarize(R, rows, base + cand)
+    assert m["step-00100"]["n_truncated"] == 3 and m["base"]["truncation_rate"] == 0.0
+    _, table = T.select(m, None)
+    text = T.format_table(table, None)
+    assert "trunc%" in text and "3.8%" in text and "0.0%" in text
+
+
+def _stamped(rows, ck, run_id="r1", budget=512, trunc=0, seed=7, drop=()):
+    out = []
+    for i, r in enumerate(ggens(rows, ck, drop=drop)):
+        out.append(dict(r, run_id=run_id, seed=seed, seed_base=1, max_new_tokens=budget, truncated=i < trunc))
+    return out
+
+
+def _pick_inputs(tmp, answers_by_ck, rows=None):
+    rows = rows or gate_rows()
+    tmp = Path(tmp)
+    out = tmp / "text"
+    out.mkdir()
+    (tmp / "text-dev.jsonl").write_text("".join(json.dumps(dict(r, label=json.dumps(r["label"]))) + "\n" for r in rows))
+    (out / "text_answers.jsonl").write_text("".join(json.dumps(a) + "\n" for a in answers_by_ck))
+    rc, _, _ = _run_main(["score", "--data", str(tmp / "text-dev.jsonl"), "--out", str(out), "--limit", "0"])
+    assert rc == 0
+    mm = {"base": {}, "checkpoints": {k: {"metrics": {}, "dev_loss_text": 0.4, "step": 100,
+                                          "verdict": {"ok": True, "failed": [], "skipped": [], "no_data": []}}
+                                      for k in {a["ckpt"] for a in answers_by_ck} - {"base"}}}
+    (tmp / "mm.json").write_text(json.dumps(mm))
+    return ["pick", "--text-results", str(out / "text_results.json"), "--mmeval-results", str(tmp / "mm.json"),
+            "--json-out", str(tmp / "picked.json")]
+
+
+def test_pick_passes_when_paired_and_marks_incomplete_over_one_percent_truncation():
+    rows = gate_rows()                                            # 80 generations per model: 1 truncated = 1.25% > 1%
+    with tempfile.TemporaryDirectory() as d:
+        argv = _pick_inputs(d, _stamped(rows, "base") + _stamped(rows, "step-00100"))
+        rc, so, se = _run_main(argv)
+        assert rc == 0 and so.split() == ["step-00100"], se
+    with tempfile.TemporaryDirectory() as d:
+        argv = _pick_inputs(d, _stamped(rows, "base") + _stamped(rows, "step-00100", trunc=1))
+        rc, so, se = _run_main(argv)
+        assert rc == T.INCOMPLETE_EXIT and so.strip() == "" and "INCOMPLETE" in se and "raise --max-new" in se, se
+        assert "step-00100" in se
+        assert json.loads((Path(d) / "picked.json").read_text())["status"] == "INCOMPLETE"
+    with tempfile.TemporaryDirectory() as d:                      # the base being cut off counts too
+        argv = _pick_inputs(d, _stamped(rows, "base", trunc=5) + _stamped(rows, "step-00100"))
+        rc, _, se = _run_main(argv)
+        assert rc == T.INCOMPLETE_EXIT and "base:" in se
+
+
+def test_pick_and_behaviour_checks_refuse_unpaired_runs():
+    rows = gate_rows()
+    cases = {
+        "different run ids": _stamped(rows, "base", "r1") + _stamped(rows, "step-00100", "r2"),
+        "different budgets": _stamped(rows, "base", budget=512) + _stamped(rows, "step-00100", budget=1024),
+        "different seeds": _stamped(rows, "base", seed=7) + _stamped(rows, "step-00100", seed=8),
+        "missing steps": _stamped(rows, "base") + _stamped(rows, "step-00100", drop={"rem-000"}),
+        "mixed legacy and stamped": _stamped(rows, "base") + ggens(rows, "step-00100"),
+    }
+    for what, answers in cases.items():
+        with tempfile.TemporaryDirectory() as d:
+            rc, so, se = _run_main(_pick_inputs(d, answers))
+            assert rc == T.INCOMPLETE_EXIT and so.strip() == "" and "INCOMPLETE" in se, (what, rc, se)
+        m = T.summarize(R, rows, answers)
+        _, fails = T.behaviour_checks(m["step-00100"], m["base"], T.DEFAULT_GATES)
+        assert any(f.startswith("INCOMPLETE") for f in fails), what
+        assert T.select(m, None)[0] is None, what
+    # a candidate with two run ids inside it is unpaired too
+    mixed = _stamped(rows, "base") + _stamped(rows, "step-00100")[:40] + _stamped(rows, "step-00100", "r2")[40:]
+    assert T.pairing_problems(*(lambda m: (m["step-00100"], m["base"]))(T.summarize(R, rows, mixed)))
+
+
+def test_budget_calibration_from_reference_targets():
+    count = lambda t: len(t.split())                                                       # a fake tokenizer: one token per word  # noqa: E731
+    mk = lambda *ns: [{"id": f"r{i}", "family": "f", "prompt": "p", "label": {"ideal_completion": " ".join(["w"] * n)}}
+                      for i, n in enumerate(ns)]
+    c = T.calibrate_budget(mk(10, 100, 500), count)
+    assert c["max_target_tokens"] == 500 and c["raw"] == 640 and c["max_new_tokens"] == 640      # 625 -> 640
+    assert c["n_targets"] == 3 and c["percentiles"]["p50"] == 100 and c["percentiles"]["max"] == 500 and c["source"] == "auto"
+    assert T.calibrate_budget(mk(10, 20), count)["max_new_tokens"] == 384                        # floor
+    big = T.calibrate_budget(mk(3000), count)
+    assert big["max_new_tokens"] == 2048 and big["capped"] and big["raw"] == 3776                # cap
+    assert T.calibrate_budget(mk(1600), count)["max_new_tokens"] == 2048                         # 2000 -> 2048 exactly
+    assert T.calibrate_budget([{"id": "a", "label": {}}], count)["max_new_tokens"] == 384        # no targets: floor, noted
+    # deterministic and independent of row order, so separate per-model processes agree
+    rows = mk(*range(5, 700, 37))
+    assert T.calibrate_budget(rows, count) == T.calibrate_budget(list(reversed(rows)), count) == T.calibrate_budget(list(rows), count)
+    assert T.parse_max_new("auto") is None and T.parse_max_new(None) is None and T.parse_max_new("1024") == 1024
+    src = (HERE / "pick_text.py").read_text()
+    assert 'g.add_argument("--max-new", default="auto"' in src and "calibrate_budget(load_text_dev(a.data)" in src
+
+
+def test_budget_uses_the_real_tokenizer_when_available_and_matches_across_processes():
+    tokp = Path.home() / "Desktop/OMLX_Model_Files/Jundot/gemma-4-E4B-it-oQ4e-mtp"
+    try:
+        from transformers import AutoTokenizer
+        tok = AutoTokenizer.from_pretrained(str(tokp))
+    except Exception:                                               # noqa: BLE001 - no tokenizer on this machine: skip
+        return
+    rows = [{"id": "a", "label": {"ideal_completion": "thinking it over\n<channel|>The answer is here." * 40}}]
+    count = lambda t: len(tok.encode(t, add_special_tokens=False))  # noqa: E731
+    one, two = T.calibrate_budget(rows, count), T.calibrate_budget(rows, count)
+    assert one == two and one["max_new_tokens"] % 64 == 0 and 384 <= one["max_new_tokens"] <= 2048
+
+
+def _write_answers(path, recs):
+    Path(path).write_text("".join(json.dumps(r) + "\n" for r in recs))
+
+
+def test_a_new_run_refuses_an_output_dir_with_another_runs_answers():
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "text_answers.jsonl"
+        rid, done = T.resolve_run(path, None, False, ["base"], 512, 1)                 # fresh dir: a new id
+        assert rid and done == set() and T.new_run_id() != T.new_run_id()
+        assert T.resolve_run(path, "mine", False, ["base"], 512, 1) == ("mine", set())
+        old = [{"ckpt": "base", "id": "a", "sample": 0, "run_id": "r1", "max_new_tokens": 512, "seed_base": 1}]
+        _write_answers(path, old)
+        for args in ((None, False), ("r2", False), ("r2", True)):                      # another run, resumed or not: refused
+            try:
+                T.resolve_run(path, args[0], args[1], ["base"], 512, 1)
+            except SystemExit as e:
+                assert "r1" in str(e.code)
+            else:
+                raise AssertionError(args)
+        try:                                                                          # same id, same ckpt, no --resume: refused
+            T.resolve_run(path, "r1", False, ["base"], 512, 1)
+        except SystemExit as e:
+            assert "--resume" in str(e.code)
+        else:
+            raise AssertionError("silent resume")
+        assert T.resolve_run(path, "r1", False, ["step-00100"], 512, 1) == ("r1", {("base", "a", 0)})   # another model, same run
+        assert T.resolve_run(path, "r1", True, ["base"], 512, 1) == ("r1", {("base", "a", 0)})
+        assert T.resolve_run(path, None, True, ["base"], 512, 1)[0] == "r1"            # --resume adopts the run id found
+        for bud, seed in ((1024, 1), (512, 2)):                                       # a resume must use the same budget and seed
+            try:
+                T.resolve_run(path, "r1", True, ["base"], bud, seed)
+            except SystemExit:
+                pass
+            else:
+                raise AssertionError((bud, seed))
+        _write_answers(path, [{"ckpt": "base", "id": "a", "sample": 0, "raw": "x"}])     # legacy rows have no run id: refused
+        try:
+            T.resolve_run(path, "r1", True, ["base"], 512, 1)
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("legacy rows reused")
+
+
+def test_generate_stamps_every_record_and_documents_the_flags():
+    src = (HERE / "pick_text.py").read_text()
+    for needle in ('"run_id": run_id', '"max_new_tokens": max_new', 'rec["truncated"] = bool(new[k][1])',
+                   "was_truncated(r, STOP_IDS, max_new)", '"truncation": truncation_stats('):
+        assert needle in src, needle
+    doc = T.__doc__
+    for word in ("--include-steps", "--run-id", "--resume", "INCOMPLETE", "TRUNCATION", "multiple of 64"):
+        assert word in doc, word
 
 
 if __name__ == "__main__":
