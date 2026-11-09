@@ -61,9 +61,11 @@ def test_forget_states_its_narrow_scope():
 
 
 def test_sharpened_descriptions_did_not_grow_the_schema_budget():
-    # 40,605 characters across 93 built-in tools before this change.
+    # 40,605 characters across 93 built-in tools before this change. The 94th
+    # tool, read_email_attachments, adds its description (long on purpose: a
+    # terse one loses to view_emails) and a note on view_emails: 41,063 in all.
     builtin = [t for t in REGISTRY.values() if t.category not in {"skill_tool", "mcp_read", "mcp_action"}]
-    assert sum(len(t.description or "") for t in builtin) <= 40_605
+    assert sum(len(t.description or "") for t in builtin) <= 41_063
 
 
 def test_retrieval_text_stays_pinned_so_rankings_do_not_move():

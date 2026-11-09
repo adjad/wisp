@@ -32,6 +32,63 @@ struct MediaAttachmentChecks {
         return (w, h)
     }
 
+    /// Large screens: the detail JPEG keeps up to 4096 px and steps down to fit 6 MB.
+    static func detailChecks() {
+        check(MediaAttachment.maxDetailSide == 4096, "detail side is 4096")
+        check(MediaAttachment.detailStepSides == [2600, MediaAttachment.maxImageSide], "step-down sides are 2600 then 1568")
+        check(MediaAttachment.maxDetailBytes == 6 * 1024 * 1024, "detail limit is 6 MB")
+
+        // The step-down helper, with a fake encoder so sizes are exact.
+        var tried: [Int] = []
+        let first = MediaAttachment.stepDown(limit: 100) { side in tried.append(side); return Data(count: 50) }
+        check(first?.count == 50 && tried == [4096], "the largest side is used when it fits: \(tried)")
+        tried = []
+        let second = MediaAttachment.stepDown(limit: 100) { side in
+            tried.append(side)
+            return Data(count: side == 4096 ? 500 : 80)
+        }
+        check(second?.count == 80 && tried == [4096, 2600], "steps down to 2600 when 4096 is over: \(tried)")
+        tried = []
+        let third = MediaAttachment.stepDown(limit: 100) { side in
+            tried.append(side)
+            return Data(count: side == 1568 ? 90 : 500)
+        }
+        check(third?.count == 90 && tried == [4096, 2600, 1568], "steps down to maxImageSide: \(tried)")
+        let stuck = MediaAttachment.stepDown(limit: 100) { side in Data(count: side) }
+        check(stuck?.count == 1568, "still over at the end: the smallest one comes back")
+        let skipped = MediaAttachment.stepDown(limit: 100) { side in side == 4096 ? nil : Data(count: 10) }
+        check(skipped?.count == 10, "a side that fails to encode is skipped")
+        check(MediaAttachment.stepDown(limit: 100) { _ in nil } == nil, "nothing encodes: nil")
+        check(MediaAttachment.stepDown(limit: 100, sides: []) { _ in Data(count: 1) } == nil, "no sides: nil")
+
+        // The real encoder: 4096 px for a big picture, never upscaled, memory only.
+        let large = makeImage(width: 5000, height: 3000)
+        let detail = MediaAttachment.detailJPEG(large)
+        check(detail != nil && size(of: detail!)?.0 == 4096, "a 5000 px picture is kept at 4096: \(String(describing: detail.flatMap(size(of:))))")
+        check(detail.map { $0.count <= MediaAttachment.maxDetailBytes } == true, "the detail JPEG fits 6 MB")
+        check(detail.map { $0.prefix(2) == Data([0xFF, 0xD8]) } == true, "the detail output is a JPEG")
+        let small = MediaAttachment.detailJPEG(makeImage(width: 1000, height: 500))
+        check(small.flatMap(size(of:)).map { $0.0 == 1000 && $0.1 == 500 } == true, "a small picture is never upscaled")
+        check(MediaAttachment.detailJPEG(Data("not an image".utf8)) == nil, "non-image data is nil")
+        let ctx = CGContext(data: nil, width: 4500, height: 1000, bitsPerComponent: 8, bytesPerRow: 0,
+                            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        ctx.setFillColor(CGColor(red: 0.9, green: 0.1, blue: 0.1, alpha: 1))
+        ctx.fill(CGRect(x: 0, y: 0, width: 4500, height: 1000))
+        let fromImage = ctx.makeImage().flatMap { MediaAttachment.detailJPEG($0) }
+        check(fromImage.flatMap(size(of:)).map { $0.0 == 4096 && $0.1 == 910 } == true,
+              "a decoded capture keeps 4096 px: \(String(describing: fromImage.flatMap(size(of:))))")
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("wisp-detail-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("wide.png")
+        try? large.write(to: file)
+        let fromFile = MediaAttachment.detailJPEG(contentsOf: file)
+        check(fromFile.flatMap(size(of:))?.0 == 4096, "a file is read at 4096 px by ImageIO")
+        check(MediaAttachment.detailJPEG(contentsOf: dir.appendingPathComponent("missing.png")) == nil, "a missing file is nil")
+        // The old helper still caps at 1568.
+        check(size(of: MediaAttachment.downscaleJPEG(large)!)?.0 == MediaAttachment.maxImageSide, "downscaleJPEG still caps at 1568")
+    }
+
     static func main() {
         // A big image shrinks to the longest side, keeping its aspect ratio, as JPEG.
         let big = makeImage(width: 4000, height: 3000)
@@ -111,6 +168,7 @@ struct MediaAttachmentChecks {
         } else {
             check(false, "could not build the URL check image")
         }
+        detailChecks()
         print("MediaAttachmentChecks passed")
     }
 }

@@ -568,3 +568,257 @@ def test_an_answer_says_when_the_clips_sound_was_dropped(checkpoint):
         result = run(V.answer_request("?", video=silent, client=StubClient(checkpoint(), reply="A slide."),
                                       model=MODEL))
     assert result.answer == "A slide."       # a silent clip is not a dropped one
+
+
+# ------------------------------------------------- large pictures: overview plus sections
+
+V_TILE = V.TILE_WHEN_SIDE
+
+
+def jpeg_url(w: int = 64, h: int = 48, colour="white") -> str:
+    import io
+    from PIL import Image
+    out = io.BytesIO()
+    Image.new("RGB", (w, h), colour).save(out, "JPEG")
+    return url(out.getvalue(), "jpeg")
+
+
+def screen_png(w: int = 2400, h: int = 1500) -> bytes:
+    import io
+    from PIL import Image, ImageDraw
+    image = Image.new("RGB", (w, h), "white")
+    draw = ImageDraw.Draw(image)
+    for row in range(0, h - 30, 28):
+        draw.text((20, row), f"Line {row}: the quarterly figures are listed below", fill="black")
+    out = io.BytesIO()
+    image.save(out, "PNG")
+    return out.getvalue()
+
+
+def fake_child(result=None, error=None):
+    """A stand-in for documents.run_attachment_child that records what it was asked."""
+    calls = []
+
+    async def child(job, name, data, *, timeout):
+        calls.append((job, name, len(data), timeout))
+        if error:
+            raise error
+        return result
+    child.calls = calls
+    return child
+
+
+SECTIONS = {"width": 2400, "height": 1500, "tiled": True,
+            "images": [jpeg_url(), jpeg_url(w=70), jpeg_url(w=72), jpeg_url(w=74), jpeg_url(w=76)]}
+
+
+def user_parts(call):
+    parts = call["messages"][1]["content"]
+    return [p for p in parts if p["type"] == "image_url"], parts[-1]["text"]
+
+
+def test_a_screen_sized_image_reaches_the_model_as_overview_plus_sections_in_one_call(checkpoint):
+    client = StubClient(checkpoint(), reply="A table of figures.")
+    child = fake_child(SECTIONS)
+    with patch("service.documents.run_attachment_child", child):
+        result = run(V.answer("What does it say?", [url(screen_png())], client=client, model=MODEL))
+    assert result.answer == "A table of figures."
+    assert len(child.calls) == 1 and child.calls[0][0] == "tiles" and child.calls[0][1] == "picture.png"
+    assert len(client.calls) == 1                                    # one model call, not one per section
+    images, text = user_parts(client.calls[0])
+    assert [p["image_url"]["url"] for p in images] == SECTIONS["images"]
+    assert "first image is the whole picture" in text and "4 are zoomed sections" in text
+    assert "reading order" in text and "What does it say?" in text
+    system = client.calls[0]["messages"][0]["content"]
+    assert "zoomed sections" in system and "untrusted" in system
+    assert client.calls[0]["max_tokens"] == 700
+    assert client.calls[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "tools" not in client.calls[0]
+
+
+def test_sections_get_five_more_seconds_each(checkpoint):
+    seen = []
+    real = asyncio.wait_for
+
+    async def spy(awaitable, timeout):
+        seen.append(timeout)
+        return await real(awaitable, timeout)
+    with patch("service.documents.run_attachment_child", fake_child(SECTIONS)), patch.object(asyncio, "wait_for", spy):
+        run(V.answer("?", [url(screen_png())], client=StubClient(checkpoint()), model=MODEL))
+        run(V.answer("?", [url()], client=StubClient(checkpoint()), model=MODEL))
+    sectioned, plain = seen[-2], seen[-1]
+    assert 45 + 20 - 2 < sectioned <= 45 + 20 and 45 - 2 < plain <= 45
+
+
+def test_a_small_image_is_still_one_image_and_starts_no_child(checkpoint):
+    client = StubClient(checkpoint())
+    child = fake_child(error=AssertionError("a small picture must not start a child"))
+    with patch("service.documents.run_attachment_child", child):
+        run(V.answer("What is this?", [url()], client=client, model=MODEL))
+        run(V.answer("What is this?", [url(png(V_TILE, 40))], client=client, model=MODEL))      # exactly at the limit
+    assert not child.calls and len(client.calls) == 2
+    for call in client.calls:
+        images, text = user_parts(call)
+        assert len(images) == 1 and "whole picture" not in text
+        assert call["max_tokens"] == 400 and "zoomed sections" not in call["messages"][0]["content"]
+
+
+def test_one_pixel_over_the_limit_asks_the_child(checkpoint):
+    child = fake_child(SECTIONS)
+    with patch("service.documents.run_attachment_child", child):
+        run(V.answer("?", [url(png(V_TILE + 1, 40))], client=StubClient(checkpoint()), model=MODEL))
+        run(V.answer("?", [url(png(40, V_TILE + 1))], client=StubClient(checkpoint()), model=MODEL))
+    assert len(child.calls) == 2
+
+
+@pytest.mark.parametrize("child", [
+    fake_child(error=ValueError("That picture couldn't be read.")),
+    fake_child(error=OSError("no child")),
+    fake_child(error=RuntimeError("anything at all")),
+    fake_child(result={"width": 1, "height": 1, "tiled": False, "images": [jpeg_url()]}),
+    fake_child(result={"tiled": True, "images": [jpeg_url()]}),                         # one image is not sections
+    fake_child(result={"tiled": True, "images": [jpeg_url(), "data:text/html;base64,AAAA"]}),
+    fake_child(result={"tiled": True, "images": [jpeg_url(), "not a url"]}),
+    fake_child(result={"tiled": True, "images": [jpeg_url(), 5]}),
+    fake_child(result={"tiled": True, "images": [jpeg_url()] * 10}),
+    fake_child(result={"tiled": True, "images": "oops"}),
+    fake_child(result={})])
+def test_a_failed_expansion_falls_back_to_the_original_image(checkpoint, child):
+    client = StubClient(checkpoint(), reply="A page of figures.")
+    original = url(screen_png())
+    with patch("service.documents.run_attachment_child", child):
+        result = run(V.answer("What does it say?", [original], client=client, model=MODEL))
+    assert result.answer == "A page of figures." and len(child.calls) == 1
+    images, text = user_parts(client.calls[0])
+    assert [p["image_url"]["url"] for p in images] == [original]
+    assert "whole picture" not in text and client.calls[0]["max_tokens"] == 400
+
+
+def test_expand_picture_never_raises_and_returns_the_original_on_any_failure():
+    original = url(screen_png())
+    with patch("service.documents.run_attachment_child", fake_child(error=ValueError("x"))):
+        assert run(V.expand_picture(original)) == [original]
+    assert run(V.expand_picture("not a data url")) == ["not a data url"]
+    with patch("service.documents.run_attachment_child", fake_child(SECTIONS)):
+        assert run(V.expand_picture(original)) == SECTIONS["images"]
+
+
+def test_expand_picture_hands_the_child_a_bounded_deadline():
+    child = fake_child(SECTIONS)
+    with patch("service.documents.run_attachment_child", child):
+        run(V.expand_picture(url(screen_png())))
+    assert child.calls[0][3] == V._TILE_TIMEOUT_S <= 30
+
+
+def test_clips_and_scanned_pages_are_never_expanded(checkpoint):
+    child = fake_child(error=AssertionError("only a single still is expanded"))
+    big = url(screen_png())
+    with patch("service.documents.run_attachment_child", child):
+        run(V.answer("?", [big], scanned_document="Scan.pdf", client=StubClient(checkpoint()), model=MODEL))
+        run(V.answer("?", [big], video_seconds=5, client=StubClient(checkpoint()), model=MODEL))
+        run(V.answer("?", [big, big], client=StubClient(checkpoint()), model=MODEL))
+    assert not child.calls
+
+
+def test_read_picture_reads_a_large_screen_as_overview_plus_sections(checkpoint):
+    client = StubClient(checkpoint(), reply="TEXT:\nFigures\nDESCRIPTION:\nA table.")
+    child = fake_child(SECTIONS)
+    with patch("service.documents.run_attachment_child", child):
+        reading = run(V.read_picture("add this to my calendar", url(screen_png()), label="Numbers",
+                                     client=client, model=MODEL))
+    assert reading.startswith("TEXT:") and len(client.calls) == 1
+    images, text = user_parts(client.calls[0])
+    assert len(images) == 5 and "first image is the whole picture" in text and "shows in two sections once" in text
+    assert client.calls[0]["max_tokens"] == V.READ_SECTIONS_MAX_TOKENS == 1400
+    system = client.calls[0]["messages"][0]["content"]
+    assert '"Numbers"' in system and "zoomed sections" in system
+
+
+def test_read_picture_keeps_one_image_for_a_small_or_failed_picture(checkpoint):
+    for child, picture in ((fake_child(error=AssertionError("no child")), url()),
+                           (fake_child(error=ValueError("x")), url(screen_png()))):
+        client = StubClient(checkpoint(), reply="TEXT:\nhi\nDESCRIPTION:\nA note.")
+        with patch("service.documents.run_attachment_child", child):
+            run(V.read_picture("add this", picture, client=client, model=MODEL))
+        images, text = user_parts(client.calls[0])
+        assert len(images) == 1 and "whole picture" not in text
+        assert client.calls[0]["max_tokens"] == V.READ_MAX_TOKENS == 700
+        assert "a picture the person attached" in client.calls[0]["messages"][0]["content"]
+
+
+def test_read_images_reads_prepared_images_with_the_callers_description(checkpoint):
+    client = StubClient(checkpoint(), reply="TEXT:\nInvoice 4411\nDESCRIPTION:\nA scanned invoice.")
+    pages = [jpeg_url(), jpeg_url(w=50)]
+    reading = run(V.read_images("what is the total", pages, what='page 1 of the scan "bill.pdf"', client=client,
+                                model=MODEL))
+    assert reading.startswith("TEXT:") and len(client.calls) == 1
+    images, text = user_parts(client.calls[0])
+    assert len(images) == 2 and "whole picture" not in text
+    system = client.calls[0]["messages"][0]["content"]
+    assert 'page 1 of the scan "bill.pdf"' in system and "a picture the person attached" not in system
+    assert "untrusted" in system and client.calls[0]["max_tokens"] == 700
+    assert client.calls[0]["chat_template_kwargs"] == {"enable_thinking": False} and "tools" not in client.calls[0]
+
+
+def test_read_images_with_sections_says_so_and_allows_more_words(checkpoint):
+    client = StubClient(checkpoint(), reply="TEXT:\nx\nDESCRIPTION:\ny")
+    run(V.read_images("?", SECTIONS["images"], what="a picture from an email", sections=True, client=client,
+                      model=MODEL))
+    _, text = user_parts(client.calls[0])
+    assert "first image is the whole picture" in text and client.calls[0]["max_tokens"] == 1400
+    assert "a picture from an email" in client.calls[0]["messages"][0]["content"]
+    # One image cannot be "sections".
+    client = StubClient(checkpoint(), reply="TEXT:\nx\nDESCRIPTION:\ny")
+    run(V.read_images("?", [jpeg_url()], what="a picture", sections=True, client=client, model=MODEL))
+    assert client.calls[0]["max_tokens"] == 700
+
+
+def test_read_images_takes_at_most_nine_and_checks_every_one(checkpoint):
+    client = StubClient(checkpoint())
+    run(V.read_images("?", [jpeg_url()] * 9, what="pages", client=client, model=MODEL))
+    with pytest.raises(ValueError, match="at most 9"):
+        run(V.read_images("?", [jpeg_url()] * 10, what="pages", client=client, model=MODEL))
+    with pytest.raises(ValueError, match="no picture"):
+        run(V.read_images("?", [], what="pages", client=client, model=MODEL))
+    with pytest.raises(ValueError):
+        run(V.read_images("?", [jpeg_url(), "data:image/gif;base64,AAAA"], what="pages", client=client, model=MODEL))
+    assert len(client.calls) == 1
+
+
+def test_read_images_gives_images_only_to_a_model_with_eyes(checkpoint):
+    client = StubClient(checkpoint(vision=False), model_type="llm")
+    with pytest.raises(V.VisionUnavailable, match="can't see pictures"):
+        run(V.read_images("?", [jpeg_url()], what="pages", client=client, model=MODEL))
+    assert not client.calls
+    refusal = V.VisionUnavailable("Wisp reads pictures only with a model on this Mac.")
+    with patch.object(V, "_resolve", side_effect=refusal), pytest.raises(V.VisionUnavailable, match="on this Mac"):
+        run(V.read_images("?", [jpeg_url()], what="pages"))
+
+
+def test_read_images_cleans_the_description_and_never_records_the_pictures(checkpoint):
+    recorded = []
+    client = StubClient(checkpoint(), reply="TEXT:\nx\nDESCRIPTION:\ny")
+    with patch("service.debug_capture.record", lambda *a, **k: recorded.append(k)):
+        run(V.read_images("?", [jpeg_url()], what="page\n1\x00 of a scan", client=client, model=MODEL))
+    assert "\x00" not in client.calls[0]["messages"][0]["content"] and recorded
+    assert "base64" not in json.dumps(recorded) and idle._foreground_turns == 0
+
+
+def _child_can_start() -> bool:
+    import subprocess
+    import sys
+    try:
+        return subprocess.run([sys.executable, "-I", "-c", "print(1)"], capture_output=True,
+                              timeout=20).stdout.strip() == b"1"
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+@pytest.mark.skipif(not _child_can_start(), reason="this sandbox can't start a child process")
+def test_a_real_screen_goes_through_the_real_child_into_one_call(checkpoint):
+    client = StubClient(checkpoint(), reply="A table.")
+    run(V.answer("What does it say?", [url(screen_png(2400, 1500))], client=client, model=MODEL))
+    images, text = user_parts(client.calls[0])
+    assert len(client.calls) == 1 and 3 <= len(images) <= 9 and "first image is the whole picture" in text
+    for part in images:
+        V.decode_image(part["image_url"]["url"])

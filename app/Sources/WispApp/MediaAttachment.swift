@@ -12,11 +12,19 @@ import UniformTypeIdentifiers
 //    is kept.
 //  - Images are downscaled to at most 1568 px on the longest side before base64,
 //    never upscaled, and always re-encoded as JPEG (so EXIF location is dropped).
+//    Screen captures and attached pictures use `detailJPEG` instead: up to 4096 px,
+//    stepping down to 2600 then 1568 until at most 6 MB; the backend cuts those up.
 //  - A clip is sampled frames + audio, never motion; the UI says so.
 
 enum MediaAttachment {
     static let maxImageSide = 1568
     static let jpegQuality = 0.8
+    /// Large screens and big pictures keep more pixels: the backend cuts a picture this
+    /// size into overlapping sections (service/vision.py) instead of squinting at one
+    /// 1568 px thumbnail.
+    static let maxDetailSide = 4096
+    static let detailStepSides = [2600, maxImageSide]
+    static let maxDetailBytes = 6 * 1024 * 1024
 
     /// Re-encodes `data` as a JPEG no larger than `maxSide` on the longest side.
     /// Nil when the data is not an image the system can decode.
@@ -60,6 +68,37 @@ enum MediaAttachment {
     static func downscaleJPEG(_ image: CGImage, maxSide: Int = maxImageSide, quality: Double = jpegQuality) -> Data? {
         guard let full = jpegData(image, quality: 0.95) else { return nil }
         return downscaleJPEG(full, maxSide: maxSide, quality: quality)
+    }
+
+    /// A JPEG at `maxDetailSide`, stepping down to 2600 and then `maxImageSide` until it is
+    /// at most `maxDetailBytes`. Still memory only.
+    static func detailJPEG(_ image: CGImage) -> Data? {
+        guard let full = jpegData(image, quality: 0.95) else { return nil }
+        return detailJPEG(full)
+    }
+
+    static func detailJPEG(_ data: Data) -> Data? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return stepDown { downscaleJPEG(source: source, maxSide: $0, quality: jpegQuality) }
+    }
+
+    static func detailJPEG(contentsOf url: URL) -> Data? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return stepDown { downscaleJPEG(source: source, maxSide: $0, quality: jpegQuality) }
+    }
+
+    /// Tries each side from `maxDetailSide` down and returns the first encoding within
+    /// `limit` bytes. If even the last is over, that smallest one is returned. Nil only when
+    /// nothing encodes.
+    static func stepDown(limit: Int = maxDetailBytes, sides: [Int] = [maxDetailSide] + detailStepSides,
+                         encode: (Int) -> Data?) -> Data? {
+        var smallest: Data?
+        for side in sides {
+            guard let out = encode(side) else { continue }
+            if out.count <= limit { return out }
+            smallest = out
+        }
+        return smallest
     }
 
     private static func jpegData(_ image: CGImage, quality: Double) -> Data? {

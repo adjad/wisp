@@ -33,6 +33,7 @@ import service.tools.search_coverage  # noqa: F401 (deterministic "how far back"
 import service.tools.web_extras  # noqa: F401       (air quality, wikipedia, sports, recipes)
 import service.tools.system_extras2  # noqa: F401   (appearance, wifi join, power, updates)
 import service.tools.email_extras  # noqa: F401     (subscriptions, triage, thread summary)
+import service.tools.email_attachments  # noqa: F401 (read_email_attachments: files attached to emails)
 import service.tools.contacts_tools  # noqa: F401   (birthdays, contact create/update)
 # apps.py, action_tools.py, assistant_tools.py, conversions.py extended in place
 # memory_tools.py, reference_tools.py, files_tools.py, system_control.py,

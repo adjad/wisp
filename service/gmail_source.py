@@ -640,12 +640,170 @@ def extract_body(payload: dict) -> str:
     return re.sub(r"\n\s*\n+", "\n\n", text).strip()[:BODY_CAP]
 
 
+MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024
+# Tiny inline pictures (logos, signature icons) are not worth showing as attachments.
+_TINY_IMAGE_BYTES = 20 * 1024
+_ATTACHED_SHOWN = 10
+_SAFE_ID = re.compile(r"^[0-9A-Za-z_\-.=]{1,2000}$")
+
+
+def _file_name(value: str) -> str:
+    """A file name from a message, cleaned of control and direction-changing characters."""
+    text = "".join(c if c.isprintable() else " " for c in _decode(value or ""))
+    text = re.sub("[‪-‮⁦-⁩‎‏]", "", text)
+    return " ".join(text.split())[:200]
+
+
+def _size_text(size: int) -> str:
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f} MB"
+    if size >= 1024:
+        return f"{round(size / 1024)} KB"
+    return f"{max(0, size)} B"
+
+
+def attached_line(items: list[tuple[str, int]]) -> str:
+    """`[Attached: name (size), ...]` for (name, size) pairs, or "" for none."""
+    if not items:
+        return ""
+    shown = ", ".join(f"{_clean(_file_name(name))} ({_size_text(int(size or 0))})"
+                      for name, size in items[:_ATTACHED_SHOWN])
+    more = f", +{len(items) - _ATTACHED_SHOWN} more" if len(items) > _ATTACHED_SHOWN else ""
+    return f"[Attached: {shown}{more}]"
+
+
+def attachment_parts(payload: dict) -> list[dict]:
+    """The files a message carries: {name, mime, size, attachment_id, inline, data}.
+
+    `data` is the file's bytes when Gmail put them inline in the message, else None."""
+    out: list[dict] = []
+
+    def walk(part: dict) -> None:
+        name = _file_name(part.get("filename") or "")
+        body = part.get("body") or {}
+        attachment_id = str(body.get("attachmentId") or "")
+        inline_data = body.get("data")
+        if name and (attachment_id or inline_data):
+            disposition = _header(part, "Content-Disposition").strip().lower()
+            inline = disposition.startswith("inline") or bool(_header(part, "Content-ID").strip())
+            try:
+                size = int(body.get("size") or 0)
+            except (TypeError, ValueError):
+                size = 0
+            data = None
+            if inline_data and not attachment_id and size <= MAX_ATTACHMENT_BYTES:
+                try:
+                    data = base64.urlsafe_b64decode(str(inline_data) + "=" * (-len(str(inline_data)) % 4))
+                    size = size or len(data)
+                except (ValueError, TypeError):
+                    data = None
+            out.append({"name": name, "mime": str(part.get("mimeType") or "")[:100], "size": size,
+                        "attachment_id": attachment_id, "inline": inline, "data": data})
+        for child in part.get("parts") or []:
+            walk(child)
+
+    walk(payload or {})
+    return out
+
+
+def _worth_listing(item: dict) -> bool:
+    tiny_picture = (item["mime"].startswith("image/") and item["inline"]
+                    and 0 < item["size"] < _TINY_IMAGE_BYTES)
+    return not tiny_picture
+
+
 def raw_record(message: dict, account: str) -> str:
     meta = parse_metadata(message)
     sender = f"{meta['name']} <{meta['address']}>" if meta["name"] else meta["address"]
+    body = extract_body(message.get("payload") or {})
+    line = attached_line([(a["name"], a["size"]) for a in attachment_parts(message.get("payload") or {})
+                          if _worth_listing(a)])
+    if line:
+        body = f"{line}\n{body}".strip()
     return _FS.join([str(int(meta["ts"])), "U" if meta["unread"] else "R", account, account,
-                     sender, meta["to"], meta["subject"], meta["message_id"],
-                     extract_body(message.get("payload") or {})])
+                     sender, meta["to"], meta["subject"], meta["message_id"], body])
+
+
+# --- attachments (read-only) ---------------------------------------------------
+
+_HIDDEN_LABELS = frozenset({"SPAM", "TRASH", "DRAFT"})
+
+
+def _search_word(term: str) -> str:
+    """One search term made safe for Gmail's q syntax: no operators, quotes or braces."""
+    word = re.sub(r"[^\w@.\- ]", " ", str(term or ""), flags=re.UNICODE)
+    word = " ".join(word.split())[:80]
+    return f'"{word}"' if " " in word else word
+
+
+def _attachment_message(account: str, message: dict) -> dict | None:
+    if _HIDDEN_LABELS & set(message.get("labelIds") or []):
+        return None
+    meta = parse_metadata(message)
+    sender = f"{meta['name']} <{meta['address']}>" if meta["name"] else meta["address"]
+    return {"account": account, "message_id": meta["id"], "rfc_message_id": meta["message_id"],
+            "ts": meta["ts"], "sender": sender, "subject": meta["subject"],
+            "attachments": attachment_parts(message.get("payload") or {})}
+
+
+async def search_attachments(account: str, terms: list[str], start: float | None, end: float | None,
+                             limit: int = 15) -> list[dict]:
+    """Messages with attachments matching every term, newest first, in all mail except
+    spam and trash: [{account, message_id, rfc_message_id, ts, sender, subject,
+    attachments: [{name, mime, size, attachment_id, inline, data}]}]."""
+    query = ["has:attachment", *(w for w in (_search_word(t) for t in terms or []) if w)]
+    if start and math.isfinite(start) and start > 0:
+        query.append(f"after:{int(start)}")
+    if end and math.isfinite(end) and end > 0:
+        query.append(f"before:{int(end)}")
+    limit = max(1, min(int(limit), 50))
+    with bound_account(account):
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            listing = await _get(http, "messages", [("q", " ".join(query)), ("maxResults", str(limit)),
+                                                    ("includeSpamTrash", "false")])
+            ids = [str(item["id"]) for item in listing.get("messages", []) if item.get("id")][:limit]
+            gate = asyncio.Semaphore(FETCH_CONCURRENCY)
+
+            async def one(message_id: str) -> dict:
+                async with gate:
+                    return await _get(http, f"messages/{message_id}", [("format", "full")])
+
+            messages = await asyncio.gather(*(one(i) for i in ids))
+    found = [m for m in (_attachment_message(account.lower(), message) for message in messages) if m]
+    return sorted(found, key=lambda m: m["ts"], reverse=True)
+
+
+async def find_by_rfc_id(account: str, rfc_id: str) -> dict | None:
+    """The message with this RFC Message-ID (same shape as search_attachments), or None."""
+    bare = re.sub(r"[^\w@.\-+=!#$%&'*/?^`{|}~]", "", str(rfc_id or "").strip().strip("<>"))
+    if not bare:
+        return None
+    with bound_account(account):
+        async with httpx.AsyncClient(timeout=20.0) as http:
+            listing = await _get(http, "messages", [("q", f"rfc822msgid:{bare}"), ("maxResults", "3"),
+                                                    ("includeSpamTrash", "false")])
+            ids = [str(item["id"]) for item in listing.get("messages", []) if item.get("id")]
+            for message_id in ids[:1]:
+                message = await _get(http, f"messages/{message_id}", [("format", "full")])
+                return _attachment_message(account.lower(), message)
+    return None
+
+
+async def attachment_bytes(account: str, message_id: str, attachment_id: str) -> bytes:
+    """One attachment's bytes. GmailError when it is missing, too large or unreadable."""
+    if not _SAFE_ID.match(str(message_id or "")) or not _SAFE_ID.match(str(attachment_id or "")):
+        raise GmailError("That attachment reference is not valid")
+    with bound_account(account):
+        async with httpx.AsyncClient(timeout=60.0) as http:
+            data = await _get(http, f"messages/{message_id}/attachments/{attachment_id}")
+    try:
+        text = str(data.get("data") or "")
+        raw = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    except (ValueError, TypeError):
+        raise GmailError("That attachment could not be decoded") from None
+    if len(raw) > MAX_ATTACHMENT_BYTES:
+        raise GmailError("That attachment is too large to read")
+    return raw
 
 
 # --- syncing ------------------------------------------------------------------
