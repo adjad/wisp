@@ -12,7 +12,8 @@ scripted because no sample passed. A row whose scripted target is the BASE_WRITE
 cannot stay (a final build must not contain the placeholder): those ids go to ``--out-drop-ids`` and the stats.
 
 Chat and knowledge rows base answers with a tool drop too (the user's decisions, 2026-11-07: "Let them drop" for
-web_search, then "Drop them too" for every other tool). In ``TOOL_DROP_FAMILIES``, a final with no passing sample where any
+web_search, then "Drop them too" for every other tool; on 2026-11-08 "Drop them too" for chat_voice_r4, the same rule). In
+``TOOL_DROP_FAMILIES``, a final with no passing sample where any
 sample called any tool goes to ``--out-drop-ids`` and ``tool_drop_ids``, never back to its scripted text; the call is still a
 rejection, not a pass. ``drop_tool`` maps each such id to the tools its samples called. In other families, rows that stay
 scripted after base called a tool are counted per family in ``scripted_kept_after_tool``.
@@ -96,7 +97,9 @@ def empty_result(row: dict) -> bool:
 
 
 REJECTIONS: list[dict] = []          # one line per rejected sample, for the rejection manifest
-TOOL_DROP_FAMILIES = frozenset({"chat_direct_r4", "knowledge_direct"})
+# Only families whose row wants text from what base already knows. Restraint, act-don't-ask, recall and follow-up chat families
+# stay out: there the tool call is the mistake the row teaches against, so the scripted answer is the lesson.
+TOOL_DROP_FAMILIES = frozenset({"chat_direct_r4", "knowledge_direct", "chat_voice_r4"})
 TEXT_CALL = re.compile(r"<\|tool_call>\s*call:([A-Za-z_][\w.-]*)")
 
 

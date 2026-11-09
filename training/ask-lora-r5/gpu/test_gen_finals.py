@@ -322,6 +322,12 @@ def test_chat_rows_base_answers_with_any_tool_drop(tmp_path):
     assert "4 chat/knowledge rows base answered with a tool call" in c5.summary(r5)
 
 
+def test_chat_voice_and_only_text_families_drop_after_a_tool_call():
+    """chat_voice_r4 joined the tool-drop families ("Drop them too", 2026-11-08). Families where the call is the lesson's mistake
+    (restraint, act-don't-ask, recall, follow-up chat) stay out, so their scripted answer still teaches against the call."""
+    assert c5.TOOL_DROP_FAMILIES == {"chat_direct_r4", "knowledge_direct", "chat_voice_r4"}
+
+
 def test_choose_r5_memory_stall_allowed_after_a_tool_call_and_for_recall():
     rec = {"id": "x", "k": 0, "content": "Nothing was saved in your memory yet.", "reasoning": "r",
            "tool_calls": [], "finish_reason": "stop"}

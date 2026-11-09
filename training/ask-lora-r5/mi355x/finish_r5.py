@@ -2,7 +2,7 @@
 """Turn base's answers into r5's final build, on the Mac. Then run the builder's validate.py on --out, and pack_r4.py --data <out>.
 
     finish_r5.py --build BUILD --chosen chosen.jsonl --drop drop.ids --out FINAL [--traces traces.chosen.jsonl]
-                 --choose-stats stats.json [--rejections rejections.jsonl] [--allow-incomplete]
+                 --choose-stats stats.json [--rejections rejections.jsonl] [--allow-incomplete] --wisp-repo PIN
 
 Steps, in order:
 1. Copy the build and splice ``chosen.jsonl`` (base's answers) into it.
@@ -10,7 +10,9 @@ Steps, in order:
 3. Mark every row's origin (see ``r5_stats``).
 4. Remove rows, each with its reason in ``drop_manifest.jsonl``: answers still the placeholder, questions close to a test
    question (no exemption), an empty thought after a tool result with nothing to replace it (a tool step takes its whole turn with
-   it), any chosen answer that fails ``source_contract`` here even though it passed the chooser (which means the two have
+   it), rows base answered with a tool call in a ``TOOL_DROP_FAMILIES`` family (the box's own list, plus scripted rows whose
+   rejections called a tool in a family added after the box's chooser ran: chat_voice_r4, "Drop them too", 2026-11-08), any
+   chosen answer that fails ``source_contract`` here even though it passed the chooser (which means the two have
    drifted), and any base-written row the builder's ``validate.py`` flags (the user's call, 2026-11-08: "Drop them"). The box's
    chooser doesn't run the builder's checks, so base can pass it while repeating a planted instruction, claiming it lacks a tool
    without looking, or quoting a toolbench fact. A flagged tool step takes its turn with it. A scripted row the validator flags
@@ -138,6 +140,26 @@ def tool_drops(stats_path) -> dict:
     return {i: (name, list(tools)) for name, f in (rep.get("families") or {}).items() for i, tools in (f.get("drop_tool") or {}).items()}
 
 
+def tool_drops_after_choose(stats_path, rejections_path) -> dict:
+    """Rows the box kept scripted after base called a tool, in a family added to ``TOOL_DROP_FAMILIES`` after its chooser ran
+    (chat_voice_r4, the user's "Drop them too", 2026-11-08): the same rule, applied here from the rejection manifest. Same shape
+    as ``tool_drops``. Without the manifest such a row can't be told from one that failed in text only, so that stops the build."""
+    fams = (json.load(open(stats_path)).get("r5") or {}).get("families") or {}
+    kept = {i: name for name, f in fams.items() if name in choose_r5.TOOL_DROP_FAMILIES for i in f.get("scripted_kept") or []}
+    if not kept:
+        return {}
+    if not rejections_path:
+        if any((fams[name].get("scripted_kept_after_tool") or {}) for name in set(kept.values())):
+            sys.exit("finish_r5: scripted rows in a tool-drop family called tools on the box; pass --rejections to tell which")
+        return {}
+    called: dict[str, set] = {}
+    for line in open(rejections_path):
+        r = json.loads(line)
+        if r.get("id") in kept:
+            called.setdefault(r["id"], set()).update(r.get("tools") or [])
+    return {i: (kept[i], sorted(t)) for i, t in sorted(called.items()) if t}
+
+
 def tool_drop_report(dropped: dict, out: Path, families) -> dict:
     """Per family: finals dropped because base answered with a tool call, how many of them called each tool (a row whose
     samples called two tools counts under both), and the rows each family has left."""
@@ -260,6 +282,7 @@ def main(argv=None) -> int:
     out = Path(a.out)
     if out.exists():
         sys.exit(f"finish_r5: {out} already exists")
+    late = tool_drops_after_choose(a.choose_stats, a.rejections)      # before writing anything: it can refuse the inputs
     r = subprocess.run([sys.executable, str(SPLICE), "--build", a.build, "--chosen", a.chosen, "--out", str(out)])
     if r.returncode:
         sys.exit(f"finish_r5: splice failed with exit {r.returncode}")
@@ -289,6 +312,9 @@ def main(argv=None) -> int:
     missing = sorted(set(tooled) - set(drops))
     if missing:
         sys.exit(f"finish_r5: {len(missing)} tool-call drops in the choose stats are missing from {a.drop}, such as {missing[:3]}")
+    for i in late:
+        drops[i] = "base_answered_with_tool"
+    tooled.update(late)
     for i in leaking_turns(out):
         drops.setdefault(i, "close_to_test_question")
     # A final base hasn't written yet has no thought *yet*: it only earns this drop once base has been asked and failed. A tool
@@ -339,7 +365,8 @@ def main(argv=None) -> int:
     stats = r5_stats.refresh(out, status=status, step="finish", extra={"drops": drop_reasons, "placeholders_left": len(set(left)),
                                                        "chosen_answers": len(chosen), "base_traces": len(traces),
                                                        "unsampled_scripted_finals": unsampled_scripted,
-                                                       "tool_drop": tool_drop_report(tooled, out, {f for f, _ in tooled.values()} | choose_r5.TOOL_DROP_FAMILIES),
+                                                       "tool_drop": {**tool_drop_report(tooled, out, {f for f, _ in tooled.values()} | choose_r5.TOOL_DROP_FAMILIES),
+                                                                     "dropped_after_choose": len(late)},
                                                        **forced_empty_counts(forced_empty, forced_placeholders, never_sampled, awaiting_traces, set(drops))})
     shapes = stats["rendered_shapes"].get("forced_empty", 0)
     accounted = stats["forced_empty_awaiting_base"] + stats["forced_tool_steps_awaiting_traces"]

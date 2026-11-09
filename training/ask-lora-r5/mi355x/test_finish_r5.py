@@ -175,7 +175,8 @@ def test_chat_rows_base_answered_with_a_tool_drop_with_their_own_reason_and_coun
     assert stats["drops"] == {"base_answered_with_tool": 3, "no_base_answer_passed": 1}
     assert stats["tool_drop"] == {"dropped": 3, "families": {
         "chat_direct_r4": {"dropped": 1, "by_tool": {"web_search": 1}, "rows_left": 1},
-        "knowledge_direct": {"dropped": 2, "by_tool": {"web_search": 1, "calculate": 1, "wikipedia_summary": 1}, "rows_left": 0}}}
+        "knowledge_direct": {"dropped": 2, "by_tool": {"web_search": 1, "calculate": 1, "wikipedia_summary": 1}, "rows_left": 0},
+        "chat_voice_r4": {"dropped": 0, "by_tool": {}, "rows_left": 0}}, "dropped_after_choose": 0}
     reasons = {r["id"]: r["reason"] for r in map(json.loads, open(tmp_path / "o" / "drop_manifest.jsonl"))}
     assert reasons == {"c-s0": "base_answered_with_tool", "k-s0": "base_answered_with_tool", "w-s0": "base_answered_with_tool",
                        "x-s0": "no_base_answer_passed"}
@@ -187,6 +188,34 @@ def test_a_tool_drop_missing_from_drop_ids_stops_the_build(tmp_path, monkeypatch
     (tmp_path / "stats.json").write_text(json.dumps({"r5": {"families": {"chat_direct_r4": {"no_samples": [], "drop_tool": {"c-s0": ["calculate"]}}}}}))
     with pytest.raises(SystemExit):
         F.main(args)
+
+
+def test_chat_voice_rows_the_box_kept_scripted_after_a_tool_call_drop_here(tmp_path, monkeypatch):
+    """The user's "Drop them too" for chat_voice_r4 (2026-11-08) came after the box's chooser ran, so its stats keep those rows
+    scripted. The rejection manifest says which of them base answered with a tool: they drop like chat_direct_r4's. A chat_voice row
+    that failed in text only stays, and so does a restraint row that called a tool, where the call is what the row teaches against."""
+    monkeypatch.setattr(F, "leaking_turns", lambda out: set())
+    rows = [_row("v-s0", family="chat_voice_r4"), _row("t-s0", family="chat_voice_r4"), _row("r-s0", family="restraint_r4")]
+    args = _finish_inputs(tmp_path, rows, [], [])
+    (tmp_path / "stats.json").write_text(json.dumps({"r5": {"families": {
+        "chat_voice_r4": {"no_samples": [], "drop_tool": {}, "scripted_kept": ["v-s0", "t-s0"],
+                          "scripted_kept_after_tool": {"web_search": 1, "wikipedia_summary": 1}},
+        "restraint_r4": {"no_samples": [], "drop_tool": {}, "scripted_kept": ["r-s0"], "scripted_kept_after_tool": {"web_search": 1}}}}}))
+    rej = [{"id": "v-s0", "family": "chat_voice_r4", "k": 0, "reasons": ["tool_call"], "tools": ["web_search"]},
+           {"id": "v-s0", "family": "chat_voice_r4", "k": 1, "reasons": ["tool_call"], "tools": ["wikipedia_summary"]},
+           {"id": "t-s0", "family": "chat_voice_r4", "k": 0, "reasons": ["stall"], "tools": []},
+           {"id": "r-s0", "family": "restraint_r4", "k": 0, "reasons": ["tool_call"], "tools": ["web_search"]}]
+    (tmp_path / "rej.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rej))
+    with pytest.raises(SystemExit):                       # without the manifest it can't tell v from t
+        F.main(args)
+    assert F.main(args + ["--rejections", str(tmp_path / "rej.jsonl")]) == 0
+    stats = json.load(open(tmp_path / "o" / "stats.json"))
+    assert stats["drops"] == {"base_answered_with_tool": 1}
+    assert stats["tool_drop"]["dropped_after_choose"] == 1
+    assert stats["tool_drop"]["families"]["chat_voice_r4"] == {"dropped": 1, "by_tool": {"web_search": 1, "wikipedia_summary": 1},
+                                                               "rows_left": 1}
+    left = {json.loads(line)["id"] for line in open(tmp_path / "o" / "meta.jsonl")}
+    assert left == {"t-s0", "r-s0"}
 
 
 def _chain(prefix, final_msgs):
