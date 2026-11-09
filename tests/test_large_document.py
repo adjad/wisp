@@ -129,6 +129,25 @@ def test_a_sheets_own_total_row_is_reported_and_never_added_in(label):
     assert f"own total row says: {label} | 30" in outline
 
 
+def test_a_right_aligned_total_label_is_still_a_total_row():
+    rows = [["Item", "Description", "Qty", "Unit price", "Amount"], ["A", "x", "1", "10", "10"], ["B", "y", "1", "20", "20"],
+            ["", "", "", "Total", "30"]]
+    outline = L._sheet_outline(L._Sheet("", rows))
+    assert "Amount: total 30," in outline and "1 total row left out" in outline
+
+
+def test_a_vendor_called_total_is_a_real_row():
+    rows = [["Vendor", "Amount"], ["Shell", "10"], ["Costco", "20"], ["Total Wine & More", "500"]]
+    outline = L._sheet_outline(L._Sheet("", rows))
+    assert "Amount: total 530," in outline and "left out" not in outline and "own total row" not in outline
+
+
+def test_a_longer_total_label_counts_only_when_it_closes_the_sum():
+    rows = [["Item", "Amount"], ["A", "10"], ["B", "20"], ["Total for Q3", "30"]]
+    outline = L._sheet_outline(L._Sheet("", rows))
+    assert "Amount: total 30," in outline and "1 total row left out" in outline
+
+
 def test_cells_that_arent_numbers_are_counted_out_loud():
     rows = [["Item", "Amount"], ["A", "10"], ["B", "20"], ["C", "30"], ["D", "40"], ["E", "TBD"]]
     outline = L._sheet_outline(L._Sheet("", rows))

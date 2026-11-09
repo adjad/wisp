@@ -47,7 +47,11 @@ _MIN_NUMERIC_SHARE = 0.8
 _MIN_NUMERIC_ROWS = 2
 # Numbers in these columns are labels, and a total of them means nothing.
 _NOT_A_MEASURE = re.compile(r"(?i)\b(id|no|num|number|zip|postal|phone|year|code|sku|ref|invoice)\b")
-_SUMMARY_LABEL = re.compile(r"(?i)^\s*(?:(?:grand|sub|net)[\s-]*)?totals?\b|^\s*sum\b|^\s*(?:balance|amount)\s+due\b")
+# A cell that is nothing but a total label marks a total row. A longer one ("Total Wine",
+# "Total for Q3") could be a real item, so it counts only if the row's number closes a sum.
+_SUMMARY_LABEL = re.compile(r"(?i)^\s*(?:(?:(?:grand|sub|net)[\s-]*)?totals?(?:\s+(?:due|amount|cost|price|sales))?"
+                            r"|sum|(?:balance|amount)\s+due)\s*:?\s*$")
+_SUMMARY_WORD = re.compile(r"(?i)^\s*(?:(?:grand|sub|net)[\s-]*)?totals?\b")
 _TOTALS_NOTE = "Totals above count every data row Wisp opened."
 _NUMBER = re.compile(r"^\(?-?[$€£¥]?\s*-?\d[\d,]*(?:\.\d+)?\s*%?\)?$")
 _GENERIC_WORDS = frozenset("""
@@ -128,9 +132,30 @@ def _number(cell: str) -> float | None:
     return -value if negative else value
 
 
-def _is_summary_row(row: list[str]) -> bool:
-    """Whether a label in this row's first cells says it totals the rows above it."""
-    return any(_SUMMARY_LABEL.match(cell) for cell in row[:3] if _number(cell) is None)
+def _closes_a_sum(row: list[str], above: list[list[str]]) -> bool:
+    """Whether any number in `row` equals the sum of the numbers above it in its column."""
+    for index, cell in enumerate(row):
+        value = _number(cell)
+        if not value:
+            continue
+        numbers = [n for r in above if index < len(r) and (n := _number(r[index])) is not None]
+        if len(numbers) >= 2 and abs(math.fsum(numbers) - value) <= max(0.01, abs(value) * 0.001):
+            return True
+    return False
+
+
+def _split_summaries(body: list[list[str]]) -> tuple[list[list[str]], list[list[str]]]:
+    """(data rows, the sheet's own total rows). A label can sit in any cell of the row."""
+    data: list[list[str]] = []
+    summaries: list[list[str]] = []
+    for row in body:
+        labels = [cell for cell in row if cell.strip() and _number(cell) is None]
+        if any(_SUMMARY_LABEL.match(c) for c in labels) or (
+                any(_SUMMARY_WORD.match(c) for c in labels) and _closes_a_sum(row, data)):
+            summaries.append(row)
+        else:
+            data.append(row)
+    return data, summaries
 
 
 def _format_number(value: float) -> str:
@@ -142,8 +167,7 @@ def _sheet_outline(sheet: _Sheet) -> str:
     title = f'Sheet "{sheet.name}": ' if sheet.name else ""
     lines = [f"{title}{len(body):,} rows. Columns: " + ", ".join(c or "(blank)" for c in header[:30])]
     # A sheet's own total row would count everything twice; it is reported, never added in.
-    data = [row for row in body if not _is_summary_row(row)]
-    summary_rows = [row for row in body if _is_summary_row(row)]
+    data, summary_rows = _split_summaries(body)
     totals = []
     ignored = 0
     for index, column in enumerate(header[:30]):
