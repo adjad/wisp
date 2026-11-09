@@ -3672,6 +3672,12 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
     # call on list mail unless that is the best it has.
     candidates = ([i for i, r in enumerate(rows) if len(r["body"]) > LONG_BODY_CHARS
                    and (i == 0 or not r.get("_list_mail"))] if ranked else None)
+    try:
+        # Best effort: lets "[Attached: ...]" show on mail the Gmail copy doesn't carry.
+        from service import mail_attachments
+        rows = await mail_attachments.annotate_rows(rows)
+    except Exception:
+        pass
     rows = await digest_rows(rows, query=query, candidates=candidates)
     extra_lines = [_mail_line(r) for r in header_hits[:_HEADER_MATCHES_SHOWN]]
     reserved = (len(note) + len(email_freshness_warning(account, part="raw")) + 2
@@ -3744,7 +3750,10 @@ def _omission_line(query: str | None, returned: int, available: int, limit: int,
     "summarize_emails (which reaches back about two years). mailbox='sent' "
     "lists the user's OWN sent mail instead (recipient, subject, time; no "
     "bodies) from Apple Mail's Sent mailboxes and linked Gmail: the last week "
-    "by default, up to a month back with day or period.",
+    "by default, up to a month back with day or period. An email with files "
+    "attached starts with a line '[Attached: name (size), ...]'; that line only "
+    "names the files. To read what is INSIDE them (pictures, PDFs, spreadsheets, "
+    "documents), use read_email_attachments.",
     {"type": "object",
      "properties": {
          "query": {"type": "string",

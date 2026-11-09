@@ -60,6 +60,7 @@ SHORT: dict[str, str] = {
     "correct_pattern": "Confirm or reject one learned pattern when the user says it is right or wrong.",
     # email
     "view_emails": "RAW verbatim email text and Message-IDs; mailbox=sent lists mail the user sent.",
+    "read_email_attachments": "Read pictures, PDFs, sheets, documents attached to emails; never runs them.",
     "summarize_emails": "Per-sender overview of Mail headers only; never reads bodies.",
     "triage_inbox": "Rank recent inbox senders by importance from headers only.",
     "scan_subscriptions": "List newsletter and marketing senders ranked by volume.",

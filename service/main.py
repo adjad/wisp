@@ -1819,6 +1819,10 @@ def _ask_tool_rank(prompt: str, previous: str = "") -> tuple[list[str], list[str
         if not writing and mail_first(prompt) and "view_emails" in REGISTRY:
             # "When is the W-9 due?" went to web_search; the answer was in mail.
             head = ["view_emails", *(n for n in head if n != "view_emails")]
+        from service.model_only import attachment_first
+        if (not writing and attachment_first(prompt) and "read_email_attachments" in REGISTRY):
+            # "What's in the PDF John emailed me?" reads the file, not the email's text.
+            head = ["read_email_attachments", *(n for n in head if n != "read_email_attachments")]
         from service.model_only import calendar_first, reminders_first
         if not writing:
             for lead, wanted in (("get_upcoming", calendar_first(prompt)),
