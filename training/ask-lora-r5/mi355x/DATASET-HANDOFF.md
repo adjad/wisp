@@ -41,14 +41,14 @@ Actual impact against the box's 860 retained traces: 799 kept, 61 lost (case on 
 | Check | State |
 | --- | --- |
 | Overlap: public eval and rebuilt toolbench (with history), r4 chat eval, private cases (with history), audit prompts | COMPLETE, 0 hits |
-| Private-results denylist (8 real-run files, 874 rows) | COMPLETE, exit 4: 230 rows contain a denylist token; 0 emails, 0 phrases. Every hit is a whole-word name also in the toolbench world or the committed builders that invent the training world. 2 rows whose token had no synthetic source were dropped. The 230 are coincident names, not excused: the owner decides whether to keep them |
+| Private-results denylist (8 real-run files, 874 rows) | COMPLETE, exit 4: 230 rows contain a denylist token; 0 emails, 0 phrases. Every hit is a whole-word name also in the toolbench world or the committed builders that invent the training world. 2 rows whose token had no synthetic source were dropped. **Owner's decision, 2026-11-09: "Keep them."** The rows stay and the check still exits 4; no name is whitelisted. Counted on this build: 230 rows, 23 distinct name tokens (the three commonest cover 153 rows), 0 emails, 0 phrases |
 | `validate.py --private-results` | Not run with the private files: its rule would flag the same synthetic names |
 
 **Harness (separate commits; no dataset change).** Gate: PASS needs all mandatory evidence, missing evidence is INCOMPLETE (exit 3). Picker: steps 50, 100, 200 kept as candidates, truncation recorded, budget calibrated from the dev targets, one run id with fresh base/candidate pairing required. Trainer: `--snapshot-steps`, save-and-pause at step 400 or on a pause file, `run_r5.sh pause|resume`. #499 and current `origin/main` are merged in.
 
 **Tested offline only.** The decision logic and shell paths have unit tests. The train loop wiring, the multi-rank pause exit, `torch.load` on resume and the picker's generate path have never run: no torch or GPU was used.
 
-**Remaining before a pilot:** a separate OK from the user; the user's call on the 230 denylist name rows; an A6000 the user starts. The first real pause and resume is the pilot's own first test.
+**Remaining before a pilot:** a separate OK from the user; an A6000 the user starts. The first real pause and resume is the pilot's own first test.
 
 ## Built 2026-11-08: the build before review (superseded)
 
