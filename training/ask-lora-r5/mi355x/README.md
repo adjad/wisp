@@ -48,7 +48,7 @@ bash run_r5.sh unzip-pickers && bash run_r5.sh pick    # one model after another
 bash run_r5.sh merge && bash run_r5.sh package && bash run_r5.sh bundle
 ```
 
-Estimate before smoke measures it (estimate.py, r2's 624 tok/s on this card, about 4,360 rows of 6,650 tokens): training about 28 h (25-34), and about 40 h (35-48) with the picker, merge and download, about $24-27. Disk: about 7 GB of packages, the 15 GB base, small adapters, and 16 GB for each merged model. On a 100 GB disk, merge one checkpoint at a time (`merge CKPT`) and download it before the next, or merge on the Mac with `../../ask-lora-r3/brev/merge_mac.py`.
+Estimate before smoke measures it (estimate.py on the packed final build at $0.60/h, r2's 624 tok/s on this card, 7,154 train rows of about 6,925 tokens, 2,182 steps, 100.8 M tokens): training about 47 h (42-57) with evals and setup, $28 ($25-34), and about 59 h (52-72) with the picker, merge and download, $36 ($31-43). Disk: about 7 GB of packages, the 15 GB base, small adapters, and 16 GB for each merged model. On a 100 GB disk, merge one checkpoint at a time (`merge CKPT`) and download it before the next, or merge on the Mac with `../../ask-lora-r3/brev/merge_mac.py`.
 
 ## On the node: base's answers
 

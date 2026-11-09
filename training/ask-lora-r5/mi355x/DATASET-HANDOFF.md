@@ -6,13 +6,16 @@
 
 | | Result |
 | --- | --- |
-| Rows | 7,926: train 7,189, valid 737; 45 families; status `complete` |
+| Rows | 7,883: train 7,154, valid 729; 45 families; status `complete`; built from clean commit `7ec9725e` (`code_dirty` false) |
 | `validate.py` (pin `data/pin-7e442f2d`) | exit 0, no problems, 0 prompt groups in both splits. The private-results denylist didn't run: no askeval `results.jsonl` on this Mac |
-| Final answers | base 4,108 (2,715 new, 1,393 reused from r4), scripted 84 |
+| Final answers | base 4,108 (2,715 new, 1,393 reused from r4), scripted 41 |
 | Tool-step thoughts | 860 of 3,994 from base. Base reached the scripted call on its own only that often: 1,009 picked another tool (`lookup_contact` before `send_message`, `get_upcoming` for `get_my_day_plan`), 1,173 the same tool with other values. Ignoring spacing would add only 7 |
-| Removed | 568: 378 with no thought after a tool result (122 rows, 256 more from their turns), 84 with no passing base answer, 55 chat and knowledge rows base answered with a tool, 51 failing the validator |
-| Tool drops | `chat_direct_r4` 27 (web_search 26, wikipedia_summary 2, public_web 1, use_skill 1), 61 left; `knowledge_direct` 28 (web_search 16, wikipedia_summary 13, calculate 3, convert_units 3, public_web 1), 67 left |
-| sha256 | all `2d3f2937…`, train `00e03ce8…`, valid `7144e85d…` |
+| Removed | 611: 378 with no thought after a tool result (122 rows, 256 more from their turns), 84 with no passing base answer, 98 chat, voice and knowledge rows base answered with a tool, 51 failing the validator |
+| Tool drops | `chat_direct_r4` 27 (web_search 26, wikipedia_summary 2, public_web 1, use_skill 1), 61 left; `knowledge_direct` 28 (web_search 16, wikipedia_summary 13, calculate 3, convert_units 3, public_web 1), 67 left; `chat_voice_r4` 43 (web_search 32, wikipedia_summary 11, one each of system_status, describe_me, use_skill, public_web, search_notes), 272 left. `tool_drop.dropped_after_choose` 43: the box's chooser predates chat_voice_r4's rule, so `finish_r5.py` applied it from `rejections.jsonl` |
+| Packed (`data/r5-pack/`, `pack_r4.py`) | `ask-lora-data.zip` `9c2d412a87bee457682f0f77fd2282bf951600e2748c8e6ea952dc1918ae1e07` (the unpack sha256), `mmeval-data.zip` `ca12e8e2…`, `pickers.zip` `40d51d7d…`. Estimate at $0.60/h, before smoke measures the speed: SFT about 47 h, $28 (42-57 h); with picker, merge and download about 59 h, $36 (52-72 h) |
+| sha256 | all `b3c3081d…`, train `c283ec60…`, valid `d363fa8b…`. The previous build (7,926 rows, `2d3f2937…`, stamped b3457127 dirty) is kept in `data/r5-final.29a0dfc0/` |
+
+**Decided 2026-11-08, "Drop them too":** `chat_voice_r4` finals base answered with a tool call drop like `chat_direct_r4`'s and `knowledge_direct`'s, with no scripted fallback; a call is still a rejection. `choose_r5.TOOL_DROP_FAMILIES` now holds all three. Families where the call is the mistake the row teaches against keep their scripted answer: `act_dont_ask`, `compose_r3`, `picture_turn_r3`, `safe_restraint`, `instructions_r4`, `restraint_r4`, `gather_then_send_r4`, `session_recall_r4`, `tool_choice_r5`. So do the 3 in `day_chat_r4` (2) and `session_chat_r4` (1): each is a follow-up answered from the conversation itself ("which day was the bike shop trip" right after the agenda listed it, "which guitar did we say to buy" when none was named), where a tool call is the mistake.
 
 **Decided 2026-11-08:** base answers that passed the box's chooser but fail the builder's validator drop, in the user's words "Drop them". There were 51, all base-written finals: 36 repeat a planted instruction's payload in the reply or thought, 15 say Wisp can't do something without a read, and 1 quotes a toolbench fact. `finish_r5.py --wisp-repo PIN` now runs the validator and drops such rows with their keys in `drop_manifest.jsonl`; a scripted row it flags stays, so validation still fails on it.
 
@@ -65,7 +68,7 @@ Training stays a separate decision and isn't part of this.
 
 **2. `TRACES=1`: decided 2026-11-07, yes**, inside the A6000 quote above. See "Thoughts at tool steps" for why.
 
-**3. Chat rows base answers with a tool call: decided 2026-11-07, drop them.** The user chose "Let them drop" for `web_search`, then "Drop them too" for every other tool, both relayed by the RC3 coordinator. Scope: `chat_direct_r4` and `knowledge_direct` finals (the row wants text). When no sample passes and any sample called any tool (`web_search`, `wikipedia_summary`, `public_web`, `convert_units`, `calculate`, anything else), `choose_r5.py` puts the row in `drop.ids` and `tool_drop_ids`, never back to its scripted text. A call is still a rejection, not a pass, and `drop_tool` records the tools each row's samples called. `finish_r5.py` drops these rows as `base_answered_with_tool`. The finished `stats.json` reports `tool_drop`, with each family's drops, `by_tool` (a row whose samples called two tools counts under both) and `rows_left`. A chat row that failed in text only still stays scripted.
+**3. Chat rows base answers with a tool call: decided 2026-11-07, drop them.** The user chose "Let them drop" for `web_search`, then "Drop them too" for every other tool, both relayed by the RC3 coordinator. Scope: `chat_direct_r4` and `knowledge_direct` finals (the row wants text), and from 2026-11-08 `chat_voice_r4` ("Drop them too" again; see "Built 2026-11-08"). When no sample passes and any sample called any tool (`web_search`, `wikipedia_summary`, `public_web`, `convert_units`, `calculate`, anything else), `choose_r5.py` puts the row in `drop.ids` and `tool_drop_ids`, never back to its scripted text. A call is still a rejection, not a pass, and `drop_tool` records the tools each row's samples called. `finish_r5.py` drops these rows as `base_answered_with_tool`. The finished `stats.json` reports `tool_drop`, with each family's drops, `by_tool` (a row whose samples called two tools counts under both) and `rows_left`. A chat row that failed in text only still stays scripted.
 
 On the first 1,904 answers (rows that never passed, before the top-up round):
 
