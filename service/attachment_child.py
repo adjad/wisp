@@ -199,11 +199,14 @@ def plan_tiles(width: int, height: int, *, side: int = TILE_SIDE, max_tiles: int
                overlap: float = TILE_OVERLAP) -> list[tuple[int, int, int, int]]:
     """(left, top, right, bottom) boxes in reading order, covering the whole picture
     and overlapping slightly so a line on a boundary is whole in one of them."""
-    size = side
-    columns, rows = max(1, math.ceil(width / size)), max(1, math.ceil(height / size))
+    columns, rows = max(1, math.ceil(width / side)), max(1, math.ceil(height / side))
+    # Over the cap: give up one row or column at a time, from the side with the most,
+    # so a 4096 px square becomes 3 x 2 sections rather than a coarse 2 x 2.
     while columns * rows > max_tiles:
-        size = int(size * 1.08) + 1
-        columns, rows = max(1, math.ceil(width / size)), max(1, math.ceil(height / size))
+        if columns >= rows:
+            columns -= 1
+        else:
+            rows -= 1
     step_x, step_y = width / columns, height / rows
     margin_x, margin_y = int(step_x * overlap), int(step_y * overlap)
     boxes = []

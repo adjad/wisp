@@ -44,6 +44,9 @@ def fake_attachments(monkeypatch):
         return rows
     fake.annotate_rows = annotate_rows
     monkeypatch.setitem(sys.modules, "service.mail_attachments", fake)
+    # `from service import x` reads the package attribute once the real module is loaded.
+    import service
+    monkeypatch.setattr(service, "mail_attachments", fake, raising=False)
     fake.calls = calls
     return fake
 

@@ -1474,7 +1474,8 @@ def test_image_and_document_questions_run_at_the_chat_tier():
     from service import documents, vision
     answer = inspect.getsource(vision.answer)
     assert answer.index("with power_tier(CHAT):") < answer.index("await _answer(")
-    text = inspect.getsource(documents.answer_text)
+    assert "local_chat(" in inspect.getsource(documents.answer_text)
+    text = inspect.getsource(documents.local_chat)
     assert text.index("with power_tier(CHAT):") < text.index("client.chat(")
 
 

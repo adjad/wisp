@@ -57,8 +57,9 @@ _log = logging.getLogger(__name__)
 # model and installs it; use_skill/wisp_skills/wisp_mcp serve the Wisp-local
 # skill and MCP runtimes, which never start in a remote-only build (and their
 # content must not leave the Mac). Everything else is left to the normal
-# safety policy, never to this list.
-_REMOTE_EXCLUDED = frozenset({"create_tool", "use_skill", "wisp_skills", "wisp_mcp"})
+# safety policy, never to this list. Email attachments stay too: their contents
+# must not leave the Mac.
+_REMOTE_EXCLUDED = frozenset({"create_tool", "use_skill", "wisp_skills", "wisp_mcp", "read_email_attachments"})
 
 # Every limit the user's profile must state, with the range Wisp accepts.
 LIMITS = {
