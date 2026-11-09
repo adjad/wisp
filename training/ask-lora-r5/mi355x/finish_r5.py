@@ -19,7 +19,8 @@ Steps, in order:
    stays, so validation still fails on it: that's a build bug, not base's answer.
 5. With ``--review``, apply the human-style semantic review (``semantic_review.jsonl``, reasons per row). ``REPLACE`` swaps a chosen
    answer for another sample of the SAME prompt, only if that sample passes the chooser's own checks and hash (``--raw``); nothing
-   is rewritten by hand. ``DROP`` removes the row, or its whole turn with ``scope: turn``. ``KEEP`` and ``NOTE`` record a looked-at flag.
+   is rewritten by hand. ``DROP`` removes the row, or its whole turn with ``scope: turn``. ``NO_TRACE`` refuses base's thought at a
+   tool step: the scripted call stays, and the row falls back as if base's call hadn't matched. ``KEEP`` and ``NOTE`` record a looked-at flag.
 6. Refuse a build that still holds a placeholder, and recount ``stats.json`` from the rows left.
 
 **A build is ``complete`` only when every final was actually sampled.** Without ``--allow-incomplete``, finals that base never
@@ -262,7 +263,7 @@ def provenance_lines(out: Path, chosen: dict, traces: dict):
                    "request_hash": c.get("request_hash") or t.get("request_hash"), "attn": c.get("attn"), "batch": c.get("batch")}
 
 
-REVIEW_DECISIONS = ("DROP", "KEEP", "REPLACE", "NOTE")
+REVIEW_DECISIONS = ("DROP", "KEEP", "REPLACE", "NOTE", "NO_TRACE")
 
 
 def load_review(path) -> dict:
@@ -386,7 +387,7 @@ def main(argv=None) -> int:
     r = subprocess.run([sys.executable, str(SPLICE), "--build", a.build, "--chosen", chosen_path, "--out", str(out)])
     if r.returncode:
         sys.exit(f"finish_r5: splice failed with exit {r.returncode}")
-    traces = load_chosen(a.traces) if a.traces else {}
+    traces = {i: t for i, t in (load_chosen(a.traces) if a.traces else {}).items() if (review.get(i) or {}).get("decision") != "NO_TRACE"}
 
     def mark(m):
         c = chosen.get(m["id"])
@@ -463,6 +464,8 @@ def main(argv=None) -> int:
                       (a.traces, "traces.chosen.jsonl"), (a.review, "semantic_review.jsonl")):
         if src and os.path.isfile(src):
             shutil.copy2(src, out / name)
+    if a.traces and any(r["decision"] == "NO_TRACE" for r in review.values()):      # the output's traces are the ones it used
+        write_jsonl(out / "traces.chosen.jsonl", traces.values())
     drop_reasons = dict(Counter(drops.values()).most_common())
     status = "incomplete_no_base_answers" if incomplete else "complete"
     stats = r5_stats.refresh(out, status=status, step="finish", extra={"drops": drop_reasons, "placeholders_left": len(set(left)),

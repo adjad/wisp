@@ -256,6 +256,26 @@ def calls_match(base_calls: list[dict], want: list[tuple[str, dict]]) -> bool:
     return call_problem(base_calls, want) is None
 
 
+def thought_names_other_argument(thought: str, base_calls: list[dict], want: list[tuple[str, dict]]) -> bool:
+    """A call that matches only because a one-sided argument equals the tool's default still leaves the thought talking about the
+    call base made, not the one trained on. True when a line of the thought names such an argument together with its value
+    ("scope='all'" over a call with no scope). The row keeps its scripted call and loses this thought."""
+    got = [(c["function"]["name"], parse_args(c["function"].get("arguments")) or {}) for c in base_calls or []]
+    lines = thought.lower().splitlines()
+    for name, wanted in want:
+        match = next((a for n, a in got if n == name), None)
+        if match is None:
+            continue
+        for key in set(match) ^ set(wanted):
+            value = match.get(key, wanted.get(key))
+            if not isinstance(value, tuple) or value[0] not in ("str", "num", "bool"):      # canon's tagged form
+                continue
+            text = str(value[1]).lower()
+            if text and any(re.search(rf"\b{re.escape(key.lower())}\b", ln) and text in ln for ln in lines):
+                return True
+    return False
+
+
 def reject_reasons(rec: dict, row: dict) -> list[str]:
     if rec.get("error"):
         return ["error"]
@@ -275,6 +295,8 @@ def reject_reasons(rec: dict, row: dict) -> list[str]:
         out.append("no_call")
     elif problem := call_problem(rec["tool_calls"], scripted_calls(row)):
         out.append(problem)
+    elif t and thought_names_other_argument(t, rec["tool_calls"], scripted_calls(row)):
+        out.append("thought_other_argument")
     if rec.get("request_hash") != request_hash(row["messages"][:-1], row.get("tools")):
         out.append("stale_hash")
     return out

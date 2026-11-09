@@ -377,3 +377,14 @@ def test_replace_refuses_a_sample_for_another_prompt_or_one_the_chooser_rejects(
     with pytest.raises(SystemExit, match="fails the chooser"):
         F.replace_chosen(review, chosen, [str(tmp_path / "raw.jsonl")], tmp_path / "partial.jsonl")
     assert chosen["a-001-s0"]["content"] == "bad"
+
+
+def test_no_trace_refuses_base_s_thought_and_the_call_row_falls_back(tmp_path, monkeypatch):
+    rows = [_row("a-001-s0", family="fa", kind="call", content=""), _row("b-001-s0", family="fa", kind="call", content="")]
+    args = _finish_inputs(tmp_path, rows, [], [])
+    traces = tmp_path / "t.jsonl"
+    traces.write_text("".join(json.dumps({"id": i, "k": 0, "reasoning": "base thought"}) + "\n" for i in ("a-001-s0", "b-001-s0")))
+    assert F.main(args + ["--traces", str(traces)] + _review(tmp_path, [{"id": "a-001-s0", "decision": "NO_TRACE", "why": "contradicts the call"}])) == 0
+    metas = {m["id"]: m for m in map(json.loads, open(tmp_path / "o" / "meta.jsonl"))}
+    assert not metas["a-001-s0"].get("thought") and metas["b-001-s0"]["thought"] == "base thought"
+    assert [json.loads(x)["id"] for x in open(tmp_path / "o" / "traces.chosen.jsonl")] == ["b-001-s0"]

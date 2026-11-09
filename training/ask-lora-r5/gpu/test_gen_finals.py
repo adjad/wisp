@@ -680,3 +680,30 @@ def test_an_honest_not_found_after_an_empty_result_is_not_a_stall():
     assert choose_r5.empty_result(row("Nothing active matches 'tax form'."))
     assert not choose_r5.empty_result(row("Subject: Your W-2 tax form is ready\nHi Sam, ..."))
     assert not choose_r5.empty_result(row("Here's what Wisp can and can't do:\nYes — Send texts\nNo — Make phone calls"))
+
+
+def _call(name, args):
+    return {"function": {"name": name, "arguments": args}}
+
+
+def test_a_thought_naming_a_default_argument_the_trained_call_omits_is_rejected():
+    import choose_traces as CT
+    want = [("search_reminders", CT.parse_args({"query": "rent"}))]
+    base = [_call("search_reminders", {"query": "rent", "scope": "all"})]
+    assert CT.thought_names_other_argument("I will use `query` and set scope='all'.", base, want)
+    assert CT.thought_names_other_argument("search_reminders(query='rent', scope=\"all\")", base, want)
+    assert not CT.thought_names_other_argument("I'll look up the rent reminder.", base, want)
+    assert not CT.thought_names_other_argument("Scope matters here.\nAll of them count.", base, want)     # different lines
+
+
+def test_a_thought_about_an_argument_the_trained_call_has_but_base_left_out_is_rejected():
+    import choose_traces as CT
+    want = [("search_reminders", CT.parse_args({"query": "bus", "scope": "all"}))]
+    base = [_call("search_reminders", {"query": "bus"})]
+    assert CT.thought_names_other_argument("I'll leave scope out rather than say all.", base, want)
+
+
+def test_an_exact_match_has_nothing_for_the_thought_to_contradict():
+    import choose_traces as CT
+    want = [("search_reminders", CT.parse_args({"query": "rent", "scope": "all"}))]
+    assert not CT.thought_names_other_argument("query=rent, scope=all", [_call("search_reminders", {"query": "rent", "scope": "all"})], want)
