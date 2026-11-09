@@ -15,7 +15,7 @@
 
 **Removed: 821 rows.** `turn_lost_a_tool_step` 252, `semantic_review` 192, `forced_empty_thought` 120, `base_answered_with_tool` 98, `no_base_answer_passed` 84, `validator_failed_after_choose` 51, `turn_lost_semantic_review` 24. Reasons per row are in `drop_manifest.jsonl`; `semantic_review.jsonl` (committed) holds every review decision.
 
-**Semantic review (`semantic_review.jsonl`, 485 decisions).** Every final was read against its context, then every drop and every action or restraint flag was adjudicated a second time. All retained tool-step thoughts were read against their calls. A fresh reviewer then read 40 random records and 30 targeted ones.
+**Semantic review (`semantic_review.jsonl`, 488 decisions).** Every final was read against its context, then every drop and every action or restraint flag was adjudicated a second time. All retained tool-step thoughts were read against their calls. A fresh reviewer then read 40 random records and 30 targeted ones.
 
 - DROP 192: VOICE 60 (third-person "Sam" while speaking to Sam), CONTEXT 45, THOUGHT 26, INTENT 22, ACTION 18, USEFUL 11, RESTRAINT 6, SYNTHESIS 2, PRIVACY 2. INTENT, ACTION and RESTRAINT drop the whole turn (24 more rows); the others drop the row. Most in `chat_voice_r4` 27, `tool_choice_r5` 16, `chat_contrast_r5` 11, `day_answers_r4` 11, `day_chat_r4` 11.
 - REPLACE 3: another saved sample of the same prompt, passing the chooser's own checks and hash. NO_TRACE 11: base's thought refused, scripted call kept. KEEP 43 and NOTE 239 are looked-at flags left in, with reasons.
