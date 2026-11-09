@@ -55,8 +55,7 @@ ATTACHMENT_TOOL = "read_email_attachments"
      }},
     category="email_read",
     aliases=["what's in the attachment", "read the PDF he emailed me",
-             "the spreadsheet attached to that email", "the screenshot in her email",
-             "open the attachment in my email", "what does the attached document say"],
+             "what does the attached document say"],
 )
 async def read_email_attachments(query: str | None = None, name: str | None = None,
                                  period: str | None = None, day: str | None = None,
