@@ -148,6 +148,20 @@ def test_a_longer_total_label_counts_only_when_it_closes_the_sum():
     assert "Amount: total 30," in outline and "1 total row left out" in outline
 
 
+def test_section_totals_with_longer_labels_are_left_out():
+    rows = [["Item", "Amount"], ["A", "10"], ["B", "20"], ["Total for Section 1", "30"],
+            ["C", "5"], ["D", "5"], ["Total for Section 2", "10"]]
+    outline = L._sheet_outline(L._Sheet("", rows))
+    assert "Amount: total 40," in outline and "2 total rows left out" in outline
+
+
+def test_a_sheet_of_total_labels_stays_fast():
+    rows = [["Label", "A", "B", "C"]] + [[f"Total {i}", "1", "2", "3"] for i in range(40_000)]
+    started = time.monotonic()
+    L._sheet_outline(L._Sheet("", rows))
+    assert time.monotonic() - started < 5.0
+
+
 def test_cells_that_arent_numbers_are_counted_out_loud():
     rows = [["Item", "Amount"], ["A", "10"], ["B", "20"], ["C", "30"], ["D", "40"], ["E", "TBD"]]
     outline = L._sheet_outline(L._Sheet("", rows))

@@ -132,29 +132,47 @@ def _number(cell: str) -> float | None:
     return -value if negative else value
 
 
-def _closes_a_sum(row: list[str], above: list[list[str]]) -> bool:
-    """Whether any number in `row` equals the sum of the numbers above it in its column."""
-    for index, cell in enumerate(row):
-        value = _number(cell)
+def _closes_a_sum(numbers: list[tuple[int, float]], *tallies: dict[int, tuple[float, int]]) -> bool:
+    """Whether any number equals its column's running sum in one of the tallies."""
+    for index, value in numbers:
         if not value:
             continue
-        numbers = [n for r in above if index < len(r) and (n := _number(r[index])) is not None]
-        if len(numbers) >= 2 and abs(math.fsum(numbers) - value) <= max(0.01, abs(value) * 0.001):
-            return True
+        for tally in tallies:
+            total, count = tally.get(index, (0.0, 0))
+            if count >= 2 and abs(total - value) <= max(0.01, abs(value) * 0.001):
+                return True
     return False
 
 
 def _split_summaries(body: list[list[str]]) -> tuple[list[list[str]], list[list[str]]]:
-    """(data rows, the sheet's own total rows). A label can sit in any cell of the row."""
+    """(data rows, the sheet's own total rows). A label can sit in any cell of the row.
+
+    Running sums keep this linear in the sheet's size, however it is built. A longer label
+    can close the whole column so far or just the section since the last total row.
+    """
     data: list[list[str]] = []
     summaries: list[list[str]] = []
+    everything: dict[int, tuple[float, int]] = {}
+    section: dict[int, tuple[float, int]] = {}
     for row in body:
-        labels = [cell for cell in row if cell.strip() and _number(cell) is None]
+        numbers: list[tuple[int, float]] = []
+        labels: list[str] = []
+        for index, cell in enumerate(row):
+            value = _number(cell)
+            if value is not None:
+                numbers.append((index, value))
+            elif cell.strip():
+                labels.append(cell)
         if any(_SUMMARY_LABEL.match(c) for c in labels) or (
-                any(_SUMMARY_WORD.match(c) for c in labels) and _closes_a_sum(row, data)):
+                any(_SUMMARY_WORD.match(c) for c in labels) and _closes_a_sum(numbers, section, everything)):
             summaries.append(row)
-        else:
-            data.append(row)
+            section.clear()
+            continue
+        data.append(row)
+        for tally in (everything, section):
+            for index, value in numbers:
+                total, count = tally.get(index, (0.0, 0))
+                tally[index] = (total + value, count + 1)
     return data, summaries
 
 
