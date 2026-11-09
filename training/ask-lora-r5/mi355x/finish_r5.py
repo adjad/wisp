@@ -17,7 +17,10 @@ Steps, in order:
    chooser doesn't run the builder's checks, so base can pass it while repeating a planted instruction, claiming it lacks a tool
    without looking, or quoting a toolbench fact. A flagged tool step takes its turn with it. A scripted row the validator flags
    stays, so validation still fails on it: that's a build bug, not base's answer.
-5. Refuse a build that still holds a placeholder, and recount ``stats.json`` from the rows left.
+5. With ``--review``, apply the human-style semantic review (``semantic_review.jsonl``, reasons per row). ``REPLACE`` swaps a chosen
+   answer for another sample of the SAME prompt, only if that sample passes the chooser's own checks and hash (``--raw``); nothing
+   is rewritten by hand. ``DROP`` removes the row, or its whole turn with ``scope: turn``. ``KEEP`` and ``NOTE`` record a looked-at flag.
+6. Refuse a build that still holds a placeholder, and recount ``stats.json`` from the rows left.
 
 **A build is ``complete`` only when every final was actually sampled.** Without ``--allow-incomplete``, finals that base never
 sampled stop the run. With it, the output's status is ``incomplete_no_base_answers``, ``pack_r4.py`` refuses to pack it, and it must
@@ -36,6 +39,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -258,6 +262,91 @@ def provenance_lines(out: Path, chosen: dict, traces: dict):
                    "request_hash": c.get("request_hash") or t.get("request_hash"), "attn": c.get("attn"), "batch": c.get("batch")}
 
 
+REVIEW_DECISIONS = ("DROP", "KEEP", "REPLACE", "NOTE")
+
+
+def load_review(path) -> dict:
+    """semantic_review.jsonl -> {id: decision row}. A malformed file stops the build: a review that half applies is worse than none."""
+    review = {}
+    for line in open(path, encoding="utf-8"):
+        r = json.loads(line)
+        i = r.get("id")
+        if not i or i in review:
+            sys.exit(f"finish_r5: review row without a unique id: {i!r}")
+        d = r.get("decision")
+        if d not in REVIEW_DECISIONS or not r.get("why"):
+            sys.exit(f"finish_r5: review row {i} needs a decision in {REVIEW_DECISIONS} and a reason")
+        if d == "DROP" and r.get("scope") not in ("row", "turn"):
+            sys.exit(f"finish_r5: DROP {i} needs scope row or turn")
+        if d == "REPLACE" and not isinstance(r.get("k"), int):
+            sys.exit(f"finish_r5: REPLACE {i} needs the sample k")
+        review[i] = r
+    return review
+
+
+def replace_chosen(review: dict, chosen: dict, raws: list, partial) -> list:
+    """Swap each REPLACE row's chosen record for the named raw sample, in ``chosen``. The sample must exist for the prompt's current
+    hash and pass the chooser's own checks, or the build stops: a review can pick among base's answers, never excuse one."""
+    import choose
+    wanted = {i: r["k"] for i, r in review.items() if r["decision"] == "REPLACE"}
+    if not wanted:
+        return []
+    if not raws:
+        sys.exit("finish_r5: the review replaces answers; pass --raw with base's saved samples")
+    samples = {}
+    for path in raws:
+        for rec in choose.read_jsonl(path):
+            if wanted.get(rec.get("id")) == rec.get("k") and not rec.get("error"):
+                samples.setdefault(rec["id"], rec)
+    finals = {r["meta"]["id"]: r for r in choose.read_jsonl(partial) if choose_r5.is_final(r) and r["meta"]["id"] in wanted}
+    rows = list(finals.values())
+    choose.apply_refs(rows, choose_r5.gold_refs(rows))
+    reject = choose_r5.make_reject()
+    done = []
+    for i, k in sorted(wanted.items()):
+        rec, row = samples.get(i), finals.get(i)
+        if rec is None or row is None:
+            sys.exit(f"finish_r5: REPLACE {i}: no saved sample k={k} or no such final")
+        if rec.get("request_hash") != choose.request_hash(row["messages"][:-1], row.get("tools")):
+            sys.exit(f"finish_r5: REPLACE {i}: sample k={k} was written for a different prompt")
+        problems = reject(rec, row)
+        if problems:
+            sys.exit(f"finish_r5: REPLACE {i}: sample k={k} fails the chooser: {problems}")
+        new = dict(rec)
+        new["reasoning"] = (new.get("reasoning") or "").strip() or None
+        done.append({"id": i, "old_k": (chosen.get(i) or {}).get("k"), "new_k": k})
+        chosen[i] = new
+    return done
+
+
+def review_drops(review: dict, tool_steps: dict) -> dict:
+    """{row id: reason} for the review's DROPs. A row the review names must exist in this build, so a typo can't pass as done."""
+    unknown = sorted(i for i in review if i not in tool_steps)
+    if unknown:
+        sys.exit(f"finish_r5: {len(unknown)} review ids aren't in the build, such as {unknown[:3]}")
+    out = {}
+    for i, r in review.items():
+        if r["decision"] != "DROP":
+            continue
+        out[i] = "semantic_review"
+        if r["scope"] == "turn":
+            for other in tool_steps:
+                if turn_of(other) == turn_of(i) and other != i:
+                    out.setdefault(other, "turn_lost_semantic_review")
+    return out
+
+
+def review_report(review: dict, drops: dict, replaced: list, out: Path) -> dict:
+    fam = {m["id"]: m["family"] for m in map(json.loads, open(out / "meta.jsonl"))}
+    reviewed = Counter(fam[i] for i in review)
+    dropped = [i for i, r in review.items() if r["decision"] == "DROP" and drops.get(i) == "semantic_review"]
+    return {"decisions": dict(Counter(r["decision"] for r in review.values())), "rows_dropped": len(dropped),
+            "turn_rows_dropped": sum(1 for why in drops.values() if why == "turn_lost_semantic_review"),
+            "dropped_by_category": dict(Counter(review[i].get("category") or "NONE" for i in dropped).most_common()),
+            "dropped_by_family": dict(Counter(fam[i] for i in dropped).most_common()),
+            "reviewed_by_family": dict(reviewed.most_common()), "replaced": replaced}
+
+
 def write_jsonl(path: Path, rows) -> int:
     n = 0
     with open(path, "w", encoding="utf-8") as f:
@@ -276,6 +365,8 @@ def main(argv=None) -> int:
     ap.add_argument("--traces")
     ap.add_argument("--rejections")
     ap.add_argument("--choose-stats", required=True, help="choose_r5.py's --out-stats: tells never sampled from sampled and failed")
+    ap.add_argument("--review", help="semantic_review.jsonl: rows to drop or replace after review, each with its reason")
+    ap.add_argument("--raw", nargs="*", default=[], help="base's saved sample files, for the review's REPLACE rows")
     ap.add_argument("--allow-incomplete", action="store_true", help="for checking the pipeline only: the output can't be packed")
     ap.add_argument("--wisp-repo", default=os.environ.get("WISP_REPO"), help="the build's pinned service code, for validate.py")
     a = ap.parse_args(argv)
@@ -283,10 +374,18 @@ def main(argv=None) -> int:
     if out.exists():
         sys.exit(f"finish_r5: {out} already exists")
     late = tool_drops_after_choose(a.choose_stats, a.rejections)      # before writing anything: it can refuse the inputs
-    r = subprocess.run([sys.executable, str(SPLICE), "--build", a.build, "--chosen", a.chosen, "--out", str(out)])
+    review = load_review(a.review) if a.review else {}
+    chosen = load_chosen(a.chosen)
+    replaced = replace_chosen(review, chosen, a.raw, Path(a.build) / "partial.jsonl")
+    chosen_path = a.chosen
+    if replaced:                                                      # the splice reads a file: give it the reviewed answers
+        chosen_tmp = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False, encoding="utf-8")
+        chosen_tmp.write("".join(json.dumps(c, ensure_ascii=False) + "\n" for c in chosen.values()))
+        chosen_tmp.close()
+        chosen_path = chosen_tmp.name
+    r = subprocess.run([sys.executable, str(SPLICE), "--build", a.build, "--chosen", chosen_path, "--out", str(out)])
     if r.returncode:
         sys.exit(f"finish_r5: splice failed with exit {r.returncode}")
-    chosen = load_chosen(a.chosen)
     traces = load_chosen(a.traces) if a.traces else {}
 
     def mark(m):
@@ -341,6 +440,10 @@ def main(argv=None) -> int:
                 if turn_of(other) == turn_of(i):
                     drops.setdefault(other, "turn_lost_a_tool_step")
 
+    for i, why in review_drops(review, tool_steps).items():
+        drops.setdefault(i, why)
+    review_stats = review_report(review, drops, replaced, out) if review else None
+
     # Rows nothing has answered block a complete build. In a pipeline check they stay visible and are counted.
     unsampled = sorted((known_placeholders & never_sampled) - set(drops))
     unsampled_scripted = len((never_sampled - known_placeholders) - set(drops))
@@ -356,8 +459,8 @@ def main(argv=None) -> int:
 
     write_jsonl(out / "drop_manifest.jsonl", ({"id": i, "reason": why, "problems": failures.get(i)} for i, why in sorted(drops.items())))
     write_jsonl(out / "provenance.jsonl", provenance_lines(out, chosen, traces))
-    for src, name in ((a.rejections, "rejections.jsonl"), (a.choose_stats, "choose_stats.json"), (a.chosen, "chosen.jsonl"), (a.drop, "drop.ids"),
-                      (a.traces, "traces.chosen.jsonl")):
+    for src, name in ((a.rejections, "rejections.jsonl"), (a.choose_stats, "choose_stats.json"), (chosen_path, "chosen.jsonl"), (a.drop, "drop.ids"),
+                      (a.traces, "traces.chosen.jsonl"), (a.review, "semantic_review.jsonl")):
         if src and os.path.isfile(src):
             shutil.copy2(src, out / name)
     drop_reasons = dict(Counter(drops.values()).most_common())
@@ -365,6 +468,7 @@ def main(argv=None) -> int:
     stats = r5_stats.refresh(out, status=status, step="finish", extra={"drops": drop_reasons, "placeholders_left": len(set(left)),
                                                        "chosen_answers": len(chosen), "base_traces": len(traces),
                                                        "unsampled_scripted_finals": unsampled_scripted,
+                                                       **({"semantic_review": review_stats} if review_stats else {}),
                                                        "tool_drop": {**tool_drop_report(tooled, out, {f for f, _ in tooled.values()} | choose_r5.TOOL_DROP_FAMILIES),
                                                                      "dropped_after_choose": len(late)},
                                                        **forced_empty_counts(forced_empty, forced_placeholders, never_sampled, awaiting_traces, set(drops))})

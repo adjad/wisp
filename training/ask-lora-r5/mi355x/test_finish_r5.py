@@ -313,3 +313,67 @@ def test_validator_failures_maps_lines_to_base_rows_only(tmp_path, monkeypatch):
 def test_validate_writes_every_problem_line():
     src = (F.VALIDATE).read_text()
     assert "--problems-out" in src and "on_bad=record if sink else None" in src
+
+
+def _review(tmp_path, rows):
+    p = tmp_path / "review.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return ["--review", str(p)]
+
+
+def test_review_drops_a_row_or_its_turn_with_reasons_and_family_counts(tmp_path, monkeypatch):
+    rows = [_row("a-001-s0", family="fa"), _row("b-001-s0", family="fb", kind="call"), _row("b-001-s1", family="fb"), _row("c-001-s0", family="fa"),
+            _row("d-001-s0", family="fb", kind="call"), _row("d-001-s1", family="fb")]
+    args = _finish_inputs(tmp_path, rows, [], [])
+    assert F.main(args + _review(tmp_path, [
+        {"id": "a-001-s0", "decision": "DROP", "scope": "row", "category": "INTENT", "why": "misread"},
+        {"id": "b-001-s1", "decision": "DROP", "scope": "turn", "category": "ACTION", "why": "claimed a send"},
+        {"id": "d-001-s1", "decision": "DROP", "scope": "row", "category": "VOICE", "why": "third person"},
+        {"id": "c-001-s0", "decision": "KEEP", "category": "NONE", "why": "the flag was wrong"}])) == 0
+    out = tmp_path / "o"
+    assert [json.loads(x)["id"] for x in open(out / "meta.jsonl")] == ["c-001-s0", "d-001-s0"]
+    stats = json.loads((out / "stats.json").read_text())
+    assert stats["drops"] == {"semantic_review": 3, "turn_lost_semantic_review": 1}
+    sr = stats["semantic_review"]
+    assert sr["dropped_by_category"] == {"INTENT": 1, "ACTION": 1, "VOICE": 1} and sr["dropped_by_family"] == {"fb": 2, "fa": 1}
+    assert sr["reviewed_by_family"] == {"fb": 2, "fa": 2} and sr["turn_rows_dropped"] == 1
+    assert (out / "semantic_review.jsonl").exists()
+
+
+@pytest.mark.parametrize("row", [{"id": "a-001-s0", "decision": "DROP", "why": "no scope"}, {"id": "a-001-s0", "decision": "DROP", "scope": "row"},
+                                 {"id": "a-001-s0", "decision": "MAYBE", "why": "x"}, {"id": "a-001-s0", "decision": "REPLACE", "why": "no k"}])
+def test_a_malformed_review_stops_the_build(tmp_path, row):
+    with pytest.raises(SystemExit):
+        F.load_review(_review(tmp_path, [row])[1])
+
+
+def test_a_review_of_an_unknown_id_stops_the_build(tmp_path, monkeypatch):
+    args = _finish_inputs(tmp_path, [_row("a-001-s0")], [], [])
+    with pytest.raises(SystemExit, match="aren't in the build"):
+        F.main(args + _review(tmp_path, [{"id": "typo-001-s0", "decision": "DROP", "scope": "row", "why": "x"}]))
+
+
+def _replace_setup(tmp_path, monkeypatch, rec_hash="H", reject=()):
+    import choose
+    (tmp_path / "partial.jsonl").write_text(json.dumps({"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "x"}],
+                                                        "tools": [], "meta": {"id": "a-001-s0", "family": "fa"}}) + "\n")
+    (tmp_path / "raw.jsonl").write_text(json.dumps({"id": "a-001-s0", "k": 3, "request_hash": rec_hash, "content": "better", "reasoning": " why \n"}) + "\n")
+    monkeypatch.setattr(choose, "request_hash", lambda m, t: "H")
+    monkeypatch.setattr(F.choose_r5, "make_reject", lambda: lambda rec, row: list(reject))
+    return {"a-001-s0": {"decision": "REPLACE", "k": 3, "why": "x"}}, {"a-001-s0": {"id": "a-001-s0", "k": 1, "content": "bad"}}
+
+
+def test_replace_takes_the_named_saved_sample(tmp_path, monkeypatch):
+    review, chosen = _replace_setup(tmp_path, monkeypatch)
+    assert F.replace_chosen(review, chosen, [str(tmp_path / "raw.jsonl")], tmp_path / "partial.jsonl") == [{"id": "a-001-s0", "old_k": 1, "new_k": 3}]
+    assert chosen["a-001-s0"]["content"] == "better" and chosen["a-001-s0"]["reasoning"] == "why"
+
+
+def test_replace_refuses_a_sample_for_another_prompt_or_one_the_chooser_rejects(tmp_path, monkeypatch):
+    review, chosen = _replace_setup(tmp_path, monkeypatch, rec_hash="OLD")
+    with pytest.raises(SystemExit, match="different prompt"):
+        F.replace_chosen(review, chosen, [str(tmp_path / "raw.jsonl")], tmp_path / "partial.jsonl")
+    review, chosen = _replace_setup(tmp_path, monkeypatch, reject=["stall"])
+    with pytest.raises(SystemExit, match="fails the chooser"):
+        F.replace_chosen(review, chosen, [str(tmp_path / "raw.jsonl")], tmp_path / "partial.jsonl")
+    assert chosen["a-001-s0"]["content"] == "bad"
