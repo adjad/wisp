@@ -241,7 +241,7 @@ def test_a_spreadsheet_over_the_window_is_profiled_in_code():
                                   client=client, model=MODEL))
     sent = client.calls[0]["messages"][1]["content"]
     assert len(client.calls) == 1 and "Amount: total 1,125,750" in sent
-    assert result.answer.startswith("Total is") and "Totals above use every row" in result.answer
+    assert result.answer.startswith("Total is") and "Totals above count every data row" in result.answer
 
 
 def test_a_document_longer_than_large_mode_reads_says_its_end_was_not_searched():

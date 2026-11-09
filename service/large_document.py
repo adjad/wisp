@@ -47,6 +47,8 @@ _MIN_NUMERIC_SHARE = 0.8
 _MIN_NUMERIC_ROWS = 2
 # Numbers in these columns are labels, and a total of them means nothing.
 _NOT_A_MEASURE = re.compile(r"(?i)\b(id|no|num|number|zip|postal|phone|year|code|sku|ref|invoice)\b")
+_SUMMARY_LABEL = re.compile(r"(?i)^\s*(?:(?:grand|sub|net)[\s-]*)?totals?\b|^\s*sum\b|^\s*(?:balance|amount)\s+due\b")
+_TOTALS_NOTE = "Totals above count every data row Wisp opened."
 _NUMBER = re.compile(r"^\(?-?[$€£¥]?\s*-?\d[\d,]*(?:\.\d+)?\s*%?\)?$")
 _GENERIC_WORDS = frozenset("""
 a about all an and any anything are as at attachment attachments be can contain contains could detail details do
@@ -126,6 +128,11 @@ def _number(cell: str) -> float | None:
     return -value if negative else value
 
 
+def _is_summary_row(row: list[str]) -> bool:
+    """Whether a label in this row's first cells says it totals the rows above it."""
+    return any(_SUMMARY_LABEL.match(cell) for cell in row[:3] if _number(cell) is None)
+
+
 def _format_number(value: float) -> str:
     return f"{value:,.0f}" if float(value).is_integer() else f"{value:,.2f}"
 
@@ -134,22 +141,36 @@ def _sheet_outline(sheet: _Sheet) -> str:
     header, body = sheet.rows[0], sheet.rows[1:]
     title = f'Sheet "{sheet.name}": ' if sheet.name else ""
     lines = [f"{title}{len(body):,} rows. Columns: " + ", ".join(c or "(blank)" for c in header[:30])]
+    # A sheet's own total row would count everything twice; it is reported, never added in.
+    data = [row for row in body if not _is_summary_row(row)]
+    summary_rows = [row for row in body if _is_summary_row(row)]
     totals = []
+    ignored = 0
     for index, column in enumerate(header[:30]):
         if _NOT_A_MEASURE.search(column):
             continue
-        present = [row[index] for row in body if index < len(row) and row[index].strip()]
+        present = [row[index] for row in data if index < len(row) and row[index].strip()]
         numbers = [n for n in map(_number, present) if n is not None]
         if len(numbers) >= _MIN_NUMERIC_ROWS and len(numbers) >= len(present) * _MIN_NUMERIC_SHARE:
             label = column or f"column {index + 1}"
             spread = f"lowest {_format_number(min(numbers))}, highest {_format_number(max(numbers))}"
+            ignored += len(present) - len(numbers)
             if all("%" in cell for cell in present if _number(cell) is not None):
                 # A total of percentages means nothing; their spread does.
                 totals.append(f"{label} (percent): {spread}")
             else:
                 totals.append(f"{label}: total {_format_number(math.fsum(numbers))}, {spread}")
     if totals:
-        lines.append("Worked out from every row: " + "; ".join(totals[:10]) + ".")
+        caveats = []
+        if summary_rows:
+            caveats.append(f"{len(summary_rows)} total row{'' if len(summary_rows) == 1 else 's'} left out")
+        if ignored:
+            caveats.append("1 cell that isn't a number ignored" if ignored == 1
+                           else f"{ignored} cells that aren't numbers ignored")
+        lines.append("Added up by Wisp" + (f" ({', '.join(caveats)})" if caveats else "") + ": "
+                     + "; ".join(totals[:10]) + ".")
+    for row in summary_rows[:3]:
+        lines.append("The sheet's own total row says: " + _line(row)[:200])
     return "\n".join(lines)
 
 
@@ -211,12 +232,11 @@ def condense_table(text: str, kind: str, question: str | None, budget: int) -> C
                           + "\n".join(rows)))
     joined = "\n\n".join(parts)[:budget]
     if specific and shown:
-        note = (f"Searched all {total_rows:,} rows; showing the {shown:,} that best match. "
-                "Totals above use every row.")
+        note = f"Searched all {total_rows:,} rows; showing the {shown:,} that best match. {_TOTALS_NOTE}"
     elif specific:
-        note = f"Searched all {total_rows:,} rows and none matched the question. Totals above use every row."
+        note = f"Searched all {total_rows:,} rows and none matched the question. {_TOTALS_NOTE}"
     else:
-        note = f"Showing the first {shown:,} of {total_rows:,} rows. Totals above use every row."
+        note = f"Showing the first {shown:,} of {total_rows:,} rows. {_TOTALS_NOTE}"
     complete = shown >= total_rows and not skipped
     if skipped:
         note += f" {skipped} more sheet{'' if skipped == 1 else 's'} were not read."
@@ -377,6 +397,8 @@ async def condense(text: str, *, name: str, kind: str, question: str | None, bud
     condensed = await _condense(text, name, kind, question, budget, chat, passes)
     if extraction_cut:
         addition = "The file is longer than Wisp can open in full, so its end was not searched."
+        if kind in ("xlsx", "csv", "tsv"):
+            addition += " Any totals cover only the part that was opened."
         condensed.note = f"{condensed.note} {addition}".strip()
         condensed.complete = False
     return condensed

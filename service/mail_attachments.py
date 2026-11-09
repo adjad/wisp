@@ -149,6 +149,7 @@ class _File:
     gmail_attachment: str = ""
     inline: bool = False
     data: bytes | None = None
+    nth: int = 1           # which file of this name in its email, so repeats keep their own bytes
 
     @property
     def has_gmail(self) -> bool:
@@ -183,6 +184,7 @@ def _add_file(email: _Email, source: str, counts: dict, f: _File) -> None:
     """Merge `f` into the email by (casefolded name, nth file of that name in this source)."""
     base = f.name.casefold()
     nth = counts[(source, base)] = counts.get((source, base), 0) + 1
+    f.nth = nth
     have = email._index.get((base, nth))
     if have is None:
         email._index[(base, nth)] = f
@@ -317,11 +319,10 @@ async def _gmail_message(ctx: _Ctx, email: _Email) -> dict | None:
 
 
 def _same_file(file: _File, others: list[dict]) -> dict | None:
+    """The same file in Gmail's list: the nth of that name, so two `scan.pdf`s stay apart."""
     base = file.name.casefold()
-    for item in others:
-        if str(item.get("name") or "").casefold() == base:
-            return item
-    return None
+    same = [item for item in others if str(item.get("name") or "").casefold() == base]
+    return same[file.nth - 1] if 0 < file.nth <= len(same) else None
 
 
 async def _fetch(ctx: _Ctx, email: _Email, f: _File) -> tuple[bytes, str]:
@@ -408,8 +409,9 @@ def _inspect_text(result: dict) -> tuple[str, list[str]]:
 
 
 def _file_problem(error: BaseException) -> str:
+    """Only Wisp's own sentences: a parser's message could quote text from the file."""
     text = _pretty(str(error), 200)
-    return text if isinstance(error, ValueError) and text else ""
+    return text if isinstance(error, ValueError) and text.startswith(("That ", "Wisp ")) else ""
 
 
 async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Reading:
@@ -456,7 +458,7 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
             tiled = (result or {}).get("tiled") is True
             text = await vision.read_images(ctx.question or "Describe this picture and read any text in it.",
                                             images, what="a picture attached to an email", sections=tiled,
-                                            client=ctx.client, model=ctx.model)
+                                            client=ctx.client, model=ctx.model, deadline=ctx.deadline)
             reading.text = str(text or "")
             reading.note = ("Read the picture in an overview and zoomed sections." if tiled
                             else "Read the whole picture.")
@@ -476,7 +478,8 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
                     raise _Unreadable("That PDF has no text and no pages Wisp can read.")
                 text = await vision.read_images(
                     ctx.question or "Read the text on these pages and say what the document is.", images,
-                    what="the scanned pages of a PDF attached to an email", client=ctx.client, model=ctx.model)
+                    what="the scanned pages of a PDF attached to an email", client=ctx.client, model=ctx.model,
+                    deadline=ctx.deadline)
                 reading.text = str(text or "")
                 reading.note = (f"A scanned PDF with no text: read the pictures of its first {len(images)} "
                                 f"page{'' if len(images) == 1 else 's'} of {(result or {}).get('pages', '?')}.")
@@ -590,10 +593,20 @@ def _block(f: _File, reading: _Reading, room: int) -> str:
 
 
 def _trailer(notes: list[str], room: int) -> str:
+    """What was left out, whole notes only: files not read come first, since they matter most."""
     if not notes or room <= 0:
         return ""
-    text = "Left out: " + " ".join(notes)
-    return text if len(text) <= room else text[:max(0, room - 1)].rstrip() + "…"
+    ordered = sorted(notes, key=lambda note: 0 if "not read" in note or "without room" in note else 1)
+    kept: list[str] = []
+    for note in ordered:
+        candidate = "Left out: " + " ".join([*kept, note])
+        if len(candidate) > room - 24:
+            break
+        kept.append(note)
+    if not kept:
+        return ""
+    more = len(ordered) - len(kept)
+    return "Left out: " + " ".join(kept) + (f" (+{more} more)" if more else "")
 
 
 def _listing(index: int, email: _Email) -> list[str]:
@@ -610,18 +623,23 @@ async def run(query: str | None = None, name: str | None = None, start: float | 
               end: float | None = None, label: str = "", count: int = DEFAULT_COUNT,
               account: str | None = None, question: str | None = None, list_only: bool = False) -> str:
     """Find attachments across Apple Mail and Gmail, then list or read them. Never raises."""
+    shown: list[str] = []
     try:
         return await asyncio.wait_for(
-            _run(query, name, start, end, label, count, account, question, list_only), DEADLINE_S + 20.0)
+            _run(query, name, start, end, label, count, account, question, list_only, shown), DEADLINE_S + 20.0)
     except (TimeoutError, asyncio.TimeoutError):
+        if len(shown) > 1:
+            # Files already read are whole blocks; running out of time doesn't undo them.
+            return "\n".join([*shown, "Left out: time ran out before the remaining files could be read."])
         return "Reading the attachments took too long, so nothing is shown. Try asking for fewer emails."
     except Exception:  # noqa: BLE001 — a tool result, never a crash; nothing from the files is logged
         return "I couldn't look through attachments just now."
 
 
-async def _run(query, name, start, end, label, count, account, question, list_only) -> str:
+async def _run(query, name, start, end, label, count, account, question, list_only, shown: list[str]) -> str:
     from service import gmail_source
     deadline = time.monotonic() + DEADLINE_S
+    cutoff = time.time() + FUTURE_HOURS * 3600
     terms = terms_of(query)
     explicit = start is not None or end is not None
     finite = lambda v: v is not None and v == v and abs(v) != float("inf")  # noqa: E731
@@ -635,7 +653,8 @@ async def _run(query, name, start, end, label, count, account, question, list_on
     connected = gmail_source.connected_accounts()
     accounts, account_note = _pick_accounts(connected, account)
 
-    jobs = [_search_apple(terms, since, until)]
+    # Scheduled mail dated years ahead must not use up the newest-first row limit.
+    jobs = [_search_apple(terms, since, until if explicit else cutoff)]
     jobs += [_search_gmail(gmail_source, a, terms, since or None, until or None, min(50, max(15, wanted * 3)))
              for a in accounts]
     results = await asyncio.gather(*jobs, return_exceptions=True)
@@ -663,7 +682,6 @@ async def _run(query, name, start, end, label, count, account, question, list_on
 
     emails = sorted(_merge(apple_rows, gmail_messages), key=lambda e: e.ts, reverse=True)
     notes: list[str] = list(problems)
-    cutoff = time.time() + FUTURE_HOURS * 3600
     if not explicit:
         future = [e for e in emails if e.ts > cutoff]
         if future:
@@ -723,7 +741,8 @@ async def _run(query, name, start, end, label, count, account, question, list_on
     if len(flat) > len(to_read):
         notes.append(f"{len(flat) - len(to_read)} more file{'' if len(flat) - len(to_read) == 1 else 's'} not read "
                      f"(at most {MAX_READS} per request).")
-    pieces = [top]
+    pieces = shown
+    pieces.append(top)
     used = len(top)
     announced: set[str] = set()
     unshown = 0

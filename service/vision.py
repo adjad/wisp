@@ -767,11 +767,12 @@ async def read_picture(prompt: str, image: str, *, label: str | None = None,
 
 
 async def read_images(prompt: str, images: list[str], *, what: str, sections: bool = False,
-                      client=None, model: str | None = None) -> str:
+                      client=None, model: str | None = None, deadline: float | None = None) -> str:
     """`read_picture`'s call for images that are already prepared (at most MAX_READ_IMAGES).
 
     `what` replaces "a picture the person attached" in the instructions, e.g. "page 1 of a scan".
     `sections` says the first image is the whole picture and the rest zoomed parts of it.
+    `deadline` (time.monotonic) caps this read when it shares a budget with other files.
     """
     if not isinstance(images, (list, tuple)) or not images:
         raise ValueError("There is no picture to read.")
@@ -782,23 +783,25 @@ async def read_images(prompt: str, images: list[str], *, what: str, sections: bo
     if client is None or model is None:
         client, model = _resolve()
     return await _read_locked(prompt, list(images), _CTRL.sub(" ", str(what))[:LABEL_MAX_CHARS * 2],
-                              client, model, bool(sections) and len(images) > 1)
+                              client, model, bool(sections) and len(images) > 1, limit=deadline)
 
 
-async def _read_locked(prompt, images, what, client, model, sections) -> str:
+async def _read_locked(prompt, images, what, client, model, sections, limit: float | None = None) -> str:
     from service.inference.power_tier import CHAT, power_tier
     idle.begin_foreground()
     try:
         with power_tier(CHAT):
-            return await _read(prompt, images, what, client, model, sections)
+            return await _read(prompt, images, what, client, model, sections, limit=limit)
     finally:
         idle.end_foreground()
 
 
-async def _read(prompt, images, what, client, model, sections: bool = False) -> str:
+async def _read(prompt, images, what, client, model, sections: bool = False, limit: float | None = None) -> str:
     from service import debug_capture
     await _require_vision(client, model)
     deadline = time.monotonic() + _TIMEOUT_S + (_SECTION_SECONDS * (len(images) - 1) if sections else 0.0)
+    if limit is not None:
+        deadline = min(deadline, limit)
     while idle.in_flight(client.activity_key(model)) > 0:
         if time.monotonic() >= deadline:
             raise TimeoutError("model busy")

@@ -115,8 +115,31 @@ def test_the_outline_totals_money_with_negatives_and_leaves_ids_alone():
     outline = L._sheet_outline(L._sheets(XLSX, "xlsx")[0])
     assert outline.startswith('Sheet "Q1": 4 rows. Columns: Item, Amount, Pct, ID')
     assert "Amount: total 870.50, lowest -300, highest 1,200.50" in outline    # 1200.50 - 300 - 50 + 20
-    assert "ID" not in outline.split("Worked out from every row:")[1]            # an ID column is a label
-    assert "Item" not in outline.split("Worked out from every row:")[1]
+    assert "ID" not in outline.split("Added up by Wisp:")[1]            # an ID column is a label
+    assert "Item" not in outline.split("Added up by Wisp:")[1]
+
+
+@pytest.mark.parametrize("label", ["Total", "TOTAL", "Grand Total", "Subtotal", "Sub-total", "Net total", "Sum",
+                                   "Amount due", "Balance due"])
+def test_a_sheets_own_total_row_is_reported_and_never_added_in(label):
+    rows = [["Item", "Amount"], ["A", "10"], ["B", "20"], [label, "30"]]
+    outline = L._sheet_outline(L._Sheet("", rows))
+    assert "Amount: total 30," in outline and "highest 20" in outline
+    assert "1 total row left out" in outline
+    assert f"own total row says: {label} | 30" in outline
+
+
+def test_cells_that_arent_numbers_are_counted_out_loud():
+    rows = [["Item", "Amount"], ["A", "10"], ["B", "20"], ["C", "30"], ["D", "40"], ["E", "TBD"]]
+    outline = L._sheet_outline(L._Sheet("", rows))
+    assert "Amount: total 100," in outline and "1 cell that isn't a number ignored" in outline
+
+
+def test_a_cut_off_spreadsheet_says_its_totals_are_partial():
+    text = "Item,Amount\nA,10\nB,20\nC,30\n"
+    condensed = run(L.condense(text, name="a.csv", kind="csv", question=None, budget=2000, extraction_cut=True))
+    assert "totals cover only the part that was opened" in condensed.note
+    assert condensed.complete is False
 
 
 def test_percent_columns_get_a_range_not_a_total():
@@ -162,7 +185,7 @@ def sales(n=300):
 def test_a_specific_question_gets_the_matching_rows_in_sheet_order():
     table = L.condense_table(sales(), "csv", "Which order was shipped to Berlin?", 3000)
     assert "order137,Berlin" in table.text.replace(" | ", ",") and "Searched all 300 rows" in table.note
-    assert "that best match" in table.note and "Totals above use every row" in table.note
+    assert "that best match" in table.note and "Totals above count every data row" in table.note
 
 
 def test_matching_rows_stay_in_sheet_order_and_within_room():
@@ -175,7 +198,7 @@ def test_matching_rows_stay_in_sheet_order_and_within_room():
 
 def test_a_question_that_matches_nothing_says_so():
     table = L.condense_table(sales(), "csv", "refund for Tokyo", 3000)
-    assert "none matched" in table.note and "Totals above use every row" in table.note and not table.complete
+    assert "none matched" in table.note and "Totals above count every data row" in table.note and not table.complete
 
 
 def test_a_general_request_shows_the_first_rows():
