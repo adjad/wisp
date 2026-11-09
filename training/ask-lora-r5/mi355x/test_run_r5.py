@@ -65,6 +65,17 @@ def test_one_a6000_runs_the_picker_one_model_at_a_time_on_gpu_0(tmp_path):
     assert json.loads((tmp_path / "wisp/gemma/pick/text/text_run_info.json").read_text())["checkpoints"] == ["base", "ckpt-100", "ckpt-200"]
 
 
+def test_the_base_and_every_checkpoint_share_one_run_id(tmp_path):
+    """pick_text.py refuses answers it can't show came from one fresh paired run."""
+    import re
+    env = _box(tmp_path, 1)
+    r = subprocess.run(["bash", str(RUN), "pick"], env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr + r.stdout
+    ids = {m.group(1) for c in _calls(env) if " generate " in c for m in [re.search(r"--run-id (\S+)", c)] if m}
+    assert len(ids) == 1, ids
+    assert sum(" generate " in c for c in _calls(env)) == 3
+
+
 def test_a_failed_model_on_one_gpu_stops_the_pick(tmp_path):
     env = _box(tmp_path, 1)
     py = Path(env["WISP"]) / "venv/bin/python"
@@ -90,6 +101,79 @@ def test_training_commands_reach_run_sft_on_the_a6000(tmp_path):
     kit.mkdir()
     (kit / "run_r5.sh").write_text(RUN.read_text())
     _exe(kit / "run_sft.sh", '#!/bin/bash\necho "run_sft $* ATTN=$ATTN NPROC=$NPROC"\n')
-    for cmd in ("unpack", "preflight", "smoke", "train", "status", "merge", "package", "bundle"):
+    for cmd in ("unpack", "preflight", "smoke", "status", "merge", "package", "bundle"):
         r = subprocess.run(["bash", str(kit / "run_r5.sh"), cmd], env=env, capture_output=True, text=True, timeout=30)
         assert r.returncode == 0 and r.stdout.strip() == f"run_sft {cmd} ATTN=sdpa NPROC=1", (cmd, r.stdout, r.stderr)
+
+
+def _kit(tmp_path, gpus=1):
+    env = _box(tmp_path, gpus)
+    kit = tmp_path / "kit"
+    kit.mkdir()
+    (kit / "run_r5.sh").write_text(RUN.read_text())
+    _exe(kit / "run_sft.sh", '#!/bin/bash\necho "run_sft $* PAUSE_AT=${PAUSE_AT-unset} SNAPSHOT_STEPS=${SNAPSHOT_STEPS-unset}"\n')
+    return env, kit / "run_r5.sh", Path(env["WISP"]) / "gemma" / "ask-lora-out"
+
+
+def _sh(kit, env, *args):
+    return subprocess.run(["bash", str(kit), *args], env=env, capture_output=True, text=True, timeout=30)
+
+
+def test_the_picker_asks_for_the_early_snapshots(tmp_path):
+    env = _box(tmp_path, 1)
+    assert _sh(RUN, env, "pick").returncode == 0
+    cand = [c for c in _calls(env) if " candidates " in c][0]
+    assert "--include-steps 50,100,200" in cand
+    (tmp_path / "b").mkdir()
+    env2 = {**_box(tmp_path / "b", 1), "EARLY_STEPS": "50,100"}
+    assert _sh(RUN, env2, "pick").returncode == 0
+    assert "--include-steps 50,100 " in [c for c in _calls(env2) if " candidates " in c][0] + " "
+
+
+def test_train_stops_itself_at_step_400_by_default(tmp_path):
+    env, kit, _ = _kit(tmp_path)
+    r = _sh(kit, env, "train")
+    assert r.returncode == 0 and r.stdout.strip() == "run_sft train  PAUSE_AT=400 SNAPSHOT_STEPS=unset", r.stdout + r.stderr
+    r = _sh(kit, {**env, "PAUSE_AT": "0", "SNAPSHOT_STEPS": "50"}, "train")
+    assert "PAUSE_AT=0 SNAPSHOT_STEPS=50" in r.stdout
+
+
+def test_train_refuses_a_leftover_pause_file(tmp_path):
+    env, kit, out = _kit(tmp_path)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "PAUSE").write_text("x")
+    r = _sh(kit, env, "train")
+    assert r.returncode != 0 and "left-over pause request" in r.stderr and "run_sft" not in r.stdout
+
+
+def test_pause_creates_the_pause_file_in_the_run_dir(tmp_path):
+    env, kit, out = _kit(tmp_path)
+    r = _sh(kit, env, "pause")
+    assert r.returncode == 0, r.stderr
+    assert (out / "PAUSE").is_file() and "pause requested" in r.stdout
+    custom = tmp_path / "elsewhere" / "STOP"
+    assert _sh(kit, {**env, "PAUSE_FILE": str(custom)}, "pause").returncode == 0 and custom.is_file()
+
+
+def test_resume_uses_the_paused_step_and_clears_the_request(tmp_path):
+    env, kit, out = _kit(tmp_path)
+    for n in (200, 400, 600):
+        (out / f"step-{n:05d}").mkdir(parents=True)
+        for f in ("trainer_state.pt", "adapter_model.safetensors"):
+            (out / f"step-{n:05d}" / f).write_text("x")
+    (out / "PAUSE").write_text("x")
+    (out / "PAUSED.json").write_text(json.dumps({"step": 400, "resume_dir": str(out / "step-00400")}))
+    r = _sh(kit, env, "resume")
+    assert r.returncode == 0, r.stderr
+    assert f"run_sft train {out}/step-00400 PAUSE_AT=0" in r.stdout
+    assert not (out / "PAUSE").exists() and not (out / "PAUSED.json").exists()
+    r = _sh(kit, env, "resume")                      # no PAUSED.json now: newest step-* dir
+    assert f"run_sft train {out}/step-00600 " in r.stdout
+
+
+def test_resume_refuses_without_trainer_state(tmp_path):
+    env, kit, out = _kit(tmp_path)
+    assert _sh(kit, env, "resume").returncode != 0
+    (out / "step-00400").mkdir(parents=True)
+    r = _sh(kit, env, "resume")
+    assert r.returncode != 0 and "no trainer state" in r.stderr

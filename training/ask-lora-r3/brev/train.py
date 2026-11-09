@@ -172,6 +172,53 @@ def reduce_sum(values: list[float], dev) -> list[float]:
     return t.tolist()
 
 
+def parse_steps(text: str | None) -> frozenset[int]:
+    """'50,100, 200' -> {50, 100, 200}; empty or None -> empty. Anything that is not a positive integer is an error."""
+    out = set()
+    for part in (text or "").replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.isdigit() or int(part) <= 0:
+            raise ValueError(f"not a positive step number: {part!r}")
+        out.add(int(part))
+    return frozenset(out)
+
+
+def snapshot_due(step: int, save_every: int, extra_steps) -> bool:
+    """An adapter snapshot is due at this optimizer step: on the --save-every cadence or at one of --snapshot-steps."""
+    return bool(save_every and step % save_every == 0) or step in extra_steps
+
+
+def control_action(step: int, pause_at: int, pause_file_exists: bool, deadline_passed: bool) -> str | None:
+    """What the loop does after an optimizer step: "pause" (save everything and exit 0, resumable), "deadline"
+    (--stop-at: checkpoint, then the final save) or None. A pause wins over a deadline. --pause-at-step fires only at
+    exactly that step, so a run resumed at that step carries on instead of pausing again."""
+    if (pause_at and step == pause_at) or pause_file_exists:
+        return "pause"
+    return "deadline" if deadline_passed else None
+
+
+def resume_position(step: int, steps_per_epoch: int, global_batch: int) -> tuple[int, int]:
+    """(epoch, first row offset in that epoch's order) for the next optimizer step. epoch_order_pools is a pure function
+    of (seed, epoch), so a resumed run sees exactly the batches the uninterrupted run would have."""
+    return step // steps_per_epoch, (step % steps_per_epoch) * global_batch
+
+
+def pause_record(step: int, reason: str, now: float, resume_dir: str, out: str) -> dict:
+    return {"step": step, "reason": reason, "time": time.strftime("%Y-%m-%d %H:%M:%S %Z", time.localtime(now)),
+            "unix_time": now, "resume_dir": resume_dir,
+            "resume": "bash run_r5.sh resume   (or: run_sft.sh train " + resume_dir + ")", "out": out}
+
+
+def resumable_dir(d: Path) -> str | None:
+    """None if d can be passed to --resume, else why not."""
+    for name in ("adapter_model.safetensors", "trainer_state.pt"):
+        if not (d / name).is_file():
+            return f"{d} has no {name}"
+    return None
+
+
 def log(path: Path | None, **kv) -> None:
     """Rank 0 prints and appends; other ranks stay silent."""
     if not is_main():
@@ -1639,10 +1686,19 @@ def cmd_train(a) -> int:
     total = steps_per_epoch * a.epochs
     sched = get_cosine_schedule_with_warmup(opt, max(1, round(0.03 * total)), total)
     state = {"step": 0, "best": None, "ref": None}
+    snap_extra = parse_steps(a.snapshot_steps)
+    pause_file = Path(a.pause_file) if a.pause_file else out / "PAUSE"
+    if pause_file.exists():      # a leftover request would pause again right after the first step
+        sys.exit(f"{pause_file} exists: remove it to start or resume (run_r5.sh resume does)")
+    if is_main():
+        (out / "PAUSED.json").unlink(missing_ok=True)
     if a.resume:
         from peft import set_peft_model_state_dict
         from safetensors.torch import load_file
         r = Path(a.resume)
+        why = resumable_dir(r)
+        if why:
+            sys.exit(f"cannot resume: {why} (use a step-NNNNN or oom-recovery dir, not ckpt/step-*, which has no optimizer)")
         set_peft_model_state_dict(model, load_file(str(r / "adapter_model.safetensors")))
         ck = torch.load(r / "trainer_state.pt", map_location="cpu", weights_only=False)
         opt.load_state_dict(ck["opt"])
@@ -1667,8 +1723,11 @@ def cmd_train(a) -> int:
             torch.save({"opt": opt.state_dict(), "sched": sched.state_dict(), "state": state}, d / "trainer_state.pt")
         return d
 
+    snapped: set[int] = set()
+
     def snapshot(ev: dict) -> None:
         """Adapter-only snapshot at OUT/ckpt/step-NNNNN for the GPU multimodal eval to pick from."""
+        snapped.add(state["step"])
         if is_main():
             d = out / "ckpt" / f"step-{state['step']:05d}"
             model.save_pretrained(d)
@@ -1687,7 +1746,7 @@ def cmd_train(a) -> int:
                 shutil.copytree(d, out / "best")
             for old in sorted(out.glob("step-*"))[:-3]:
                 shutil.rmtree(old, ignore_errors=True)
-            if a.save_every and state["step"] % a.save_every == 0:
+            if snapshot_due(state["step"], a.save_every, snap_extra):
                 snapshot({**ev, "mm_ok": ok})
         log(logf, event=event, step=state["step"], of=total, **ev, mm_ok=ok, best=state["best"])
         barrier()
@@ -1695,9 +1754,8 @@ def cmd_train(a) -> int:
     set_train(model)
     t0, tok_count, step0 = time.time(), 0, state["step"]
     while state["step"] < total:
-        epoch = state["step"] // steps_per_epoch
+        epoch, start = resume_position(state["step"], steps_per_epoch, a.global_batch)
         order = epoch_order_pools(n_text, pools, a.seed, epoch)
-        start = (state["step"] % steps_per_epoch) * a.global_batch
         stop = False
         for b in range(start, len(order), a.global_batch):
             gidx = order[b:b + a.global_batch]
@@ -1730,9 +1788,10 @@ def cmd_train(a) -> int:
             opt.zero_grad(set_to_none=True)
             state["step"] += 1
             late = float(bool(a.stop_at) and time.time() >= a.stop_at)
-            tot = dict(zip(("ce", "acc", "rows", "kl", "kl_rows", "tok", "vis", "aud", "late"),
+            pf = float(pause_file.exists())          # summed like `late`: every rank sees the same verdict
+            tot = dict(zip(("ce", "acc", "rows", "kl", "kl_rows", "tok", "vis", "aud", "late", "pf"),
                            reduce_sum([st["ce"], st["acc"], st["rows"], st["kl"], st["kl_rows"], st["tok"],
-                                       st["vis"], st["aud"], late], dev)))
+                                       st["vis"], st["aud"], late, pf], dev)))
             tok_count += tot["tok"]
             el = time.time() - t0
             rows = max(1.0, tot["rows"])
@@ -1748,14 +1807,31 @@ def cmd_train(a) -> int:
             evaluated = state["step"] % a.eval_every == 0 or state["step"] == total
             if evaluated:
                 checkpoint_and_eval("eval")
-            elif a.save_every and state["step"] % a.save_every == 0:
+            elif snapshot_due(state["step"], a.save_every, snap_extra):
                 ev = evaluate(model, dev_rows, dev, only_mm=True)      # cheap: multimodal dev rows only
                 snapshot({**ev, "mm_only": True})
                 log(logf, event="ckpt", step=state["step"], **ev)
                 barrier()
             if state["step"] >= total:
                 break
-            if tot["late"] > 0:
+            action = control_action(state["step"], a.pause_at_step, tot["pf"] > 0, tot["late"] > 0)
+            if action == "pause":
+                if not evaluated:                    # an eval step already wrote step-N (full state) and its snapshot
+                    checkpoint_and_eval("paused")
+                if state["step"] not in snapped:
+                    snapshot({**evaluate(model, dev_rows, dev, only_mm=True), "mm_only": True})
+                if is_main():
+                    rd_ = f"{out}/step-{state['step']:05d}"
+                    reason = "pause-at-step" if a.pause_at_step and state["step"] == a.pause_at_step else "pause-file"
+                    (out / "PAUSED.json").write_text(json.dumps(pause_record(state["step"], reason, time.time(), rd_, str(out)), indent=1))
+                    print(f"PAUSED at step {state['step']} ({reason}); resume with --resume {rd_}", flush=True)
+                log(logf, event="paused", step=state["step"], of=total)
+                barrier()
+                if world > 1:
+                    import torch.distributed as dist
+                    dist.destroy_process_group()
+                return 0
+            if action == "deadline":
                 checkpoint_and_eval("stopped_at_deadline")
                 stop = True
                 break
@@ -1935,6 +2011,13 @@ def main() -> int:
                          "(default on; --no-require-mm for a deliberate text-only run)")
     ap.add_argument("--save-every", type=int, default=50,
                     help="train: optimizer steps between adapter-only snapshots in OUT/ckpt (0 = off; never pruned)")
+    ap.add_argument("--snapshot-steps", default="",
+                    help="train: comma list of steps that also get an adapter snapshot in OUT/ckpt (e.g. 50,100,200), "
+                         "on top of --save-every; never pruned")
+    ap.add_argument("--pause-file", default="",
+                    help="train: if this file exists after an optimizer step, save everything and exit 0 (default OUT/PAUSE)")
+    ap.add_argument("--pause-at-step", type=int, default=0,
+                    help="train: save everything and exit 0 after exactly this optimizer step (0 = off); resume with --resume OUT/step-N")
     ap.add_argument("--stop-at", type=float, default=0, help="train: unix time to stop at (saves + evals first)")
     ap.add_argument("--n", type=int, default=8, help="sample: how many dev prompts")
     ap.add_argument("--seed", type=int, default=20261029)

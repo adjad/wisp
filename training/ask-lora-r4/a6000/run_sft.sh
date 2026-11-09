@@ -22,6 +22,9 @@
 #
 # Knobs (environment): ATTN=sdpa|math|eager (default sdpa), PIN=0 (unpinned, torch>=2.7), EVAL_EVERY, DEV_TEXT_MAX,
 # SAVE_CKPTS (adapter snapshots over the run, default 8) or SAVE_EVERY (steps; overrides SAVE_CKPTS),
+# SNAPSHOT_STEPS (extra early adapter snapshots on top of the cadence, default "50,100,200"; "" = none), PAUSE_AT (train.py saves
+# everything and exits 0 after exactly this step, default 0 = off), PAUSE_FILE (creating it pauses the same way, default
+# OUT/PAUSE; resume with 'train OUT/step-NNNNN'),
 # DEV_STEPS (text picker steps, default 360), SAMPLES (per step outside the slices, default 1), SAMPLES_SAFETY / SAMPLES_ABSENCE (gates c / d slices, default 3), SAFETY_STEPS / ABSENCE_STEPS (slice caps, default 60 each, 0 = none), MAX_CKPTS (candidates, default 6), MIN_FRAC (a candidate must be at or past this
 # share of the run, default 0.45), CKPTS (comma list overriding the candidates), NO_BASE=1 (dev only: skip the base generation;
 # every gate that compares with the base then fails), PRIVATE_EVAL_DIR (stage 2, Mac only; NEVER on the box), WISP (default ~/wisp).
@@ -57,10 +60,13 @@ need_setup() { [ -x "$RUN" ] && [ -f "$WISP/SETUP_DONE" ] || die "run '$0 setup'
 # the one that had stopped thinking). A non-eval snapshot step only adds a cheap multimodal-only eval (train.py), ~0.5 min.
 SAVE_CKPTS="${SAVE_CKPTS:-8}"
 SAVE_EVERY="${SAVE_EVERY:-}"             # empty: derived in 'train' from the number of text rows
+SNAPSHOT_STEPS="${SNAPSHOT_STEPS-50,100,200}"   # the cadence below starts near step 190, too late to see the early run
+PAUSE_AT="${PAUSE_AT:-0}"
+PAUSE_FILE="${PAUSE_FILE:-$OUT/PAUSE}"
 export GLOBAL_BATCH=8 LR=2e-4 NPROC="${NPROC:-1}"
 train_args() {                           # $1 = --save-every steps
   echo "--epochs 2 --attn $ATTN --eval-every $EVAL_EVERY --save-every $1 --dev-text-max $DEV_TEXT_MAX \
---vision-weight 0.12 --audio-weight 0.06 --anchor-kl 0.5 --seed $SEED --attn-parity-strict"
+--vision-weight 0.12 --audio-weight 0.06 --anchor-kl 0.5 --seed $SEED --attn-parity-strict --snapshot-steps=$SNAPSHOT_STEPS --pause-at-step $PAUSE_AT --pause-file $PAUSE_FILE"
 }
 export EXTRA_TRAIN_ARGS="$(train_args "${SAVE_EVERY:-$EVAL_EVERY}")"
 

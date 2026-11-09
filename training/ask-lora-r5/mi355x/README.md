@@ -43,10 +43,13 @@ bash run_r5.sh setup && bash run_r5.sh check     # skip setup on a box that alre
 bash run_r5.sh unpack SHA256 && bash run_r5.sh preflight
 bash run_r5.sh smoke             # strict sdpa-vs-math parity (exit 8: ATTN=math for everything after), peak memory under 40 GiB,
                                  # and its tok/s: rerun ../../ask-lora-r4/a6000/estimate.py with it before paying for the run
-bash run_r5.sh train             # background; `status` for the step; check the snapshot at step 400 first
+bash run_r5.sh train             # background; stops itself after step 400 (see "Early snapshots, pause and resume" below)
+bash run_r5.sh resume            # after checking the early snapshots: carries on from step 400 to the end
 bash run_r5.sh unzip-pickers && bash run_r5.sh pick    # one model after another on GPU 0, 8 generations together
 bash run_r5.sh merge && bash run_r5.sh package && bash run_r5.sh bundle
 ```
+
+**Early snapshots, pause and resume.** The regular snapshots start near step 190, too late to see how the run begins. So `train` also saves an adapter snapshot at steps 50, 100 and 200 (`SNAPSHOT_STEPS`, default `50,100,200`; `SNAPSHOT_STEPS=` for none) in `OUT/ckpt`. They are kept like the others, and `pick` includes them as candidates (`EARLY_STEPS`). `train` also stops itself after step 400 (`PAUSE_AT=400`; `PAUSE_AT=0` runs straight through). At that point it saves the adapter, the optimizer and the learning-rate schedule in `OUT/step-00400`, writes `OUT/PAUSED.json` with the step, the reason and the resume command, and exits cleanly. The GPU is then free and the box is still billing, so check the snapshots quickly, then run `bash run_r5.sh resume`. To pause at any other time, run `bash run_r5.sh pause`: it creates `OUT/PAUSE`, and the run saves and exits after its current step (a few minutes at most; a dev eval in progress finishes first). `resume` continues from the step in `PAUSED.json`, or from the newest `OUT/step-*` if there is none; it removes `PAUSE` and `PAUSED.json`, and does not pause again at 400. The data order depends only on the seed and the epoch, so a resumed run sees the same batches as an uninterrupted one. Do not kill the training process to stop it: a kill saves nothing, and only the last three `step-*` folders (every 200 steps) exist to resume from. The pause and resume logic is checked by unit tests of its decisions and by stubbed shell tests; a real pause and resume on the GPU has not been run yet, so do the first one at step 400 and look at `status` afterwards.
 
 Estimate before smoke measures it (estimate.py on the packed final build at $0.60/h, r2's 624 tok/s on this card, 7,154 train rows of about 6,925 tokens, 2,182 steps, 100.8 M tokens): training about 47 h (42-57) with evals and setup, $28 ($25-34), and about 59 h (52-72) with the picker, merge and download, $36 ($31-43). Disk: about 7 GB of packages, the 15 GB base, small adapters, and 16 GB for each merged model. On a 100 GB disk, merge one checkpoint at a time (`merge CKPT`) and download it before the next, or merge on the Mac with `../../ask-lora-r3/brev/merge_mac.py`.
 
@@ -85,9 +88,12 @@ $PY training/ask-lora-r4/a6000/pack_r4.py --model ~/Desktop/OMLX_Model_Files/Jun
 ```bash
 bash run_r5.sh unpack SHA256      # from OUT/upload.json
 bash run_r5.sh preflight && bash run_r5.sh smoke
-bash run_r5.sh train              # `status` shows the step; check the snapshot at step 400 before paying for the rest
+bash run_r5.sh train              # `status` shows the step; stops itself after step 400 with everything saved
+bash run_r5.sh resume             # after checking the snapshots at steps 50, 100, 200 and 400
 bash run_r5.sh unzip-pickers && bash run_r5.sh pick    # batches 8 at a time and checks that first; PICK_BATCH=1 turns it off
 bash run_r5.sh merge && bash run_r5.sh package && bash run_r5.sh bundle
 ```
+
+`bash run_r5.sh pause` stops a running `train` cleanly at the end of its current step, and `resume` continues it; the same pause and resume rules as on the A6000 apply (all eight processes agree on the pause, and none is ever killed to stop the run).
 
 Download the bundle and merged model and check their checksums before the user stops the node. Quantizing and the gate run on the Mac.

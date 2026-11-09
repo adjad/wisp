@@ -17,8 +17,12 @@
 #                                   with fewer (the A6000), one after another on GPU 0
 #   bash run_r5.sh picked | merge [ckpt] | package | bundle | stage2      as run_sft.sh
 #
-# Early stop: `status` shows the step. Stop at step 400 by killing the pid in ~/wisp/gemma/ask-lora/train.pid, then check
-# that snapshot before paying for the rest. The box bills while idle.
+#   bash run_r5.sh pause            ask a running train to save everything at the end of its current step and exit 0
+#   bash run_r5.sh resume [dir]     continue from the pause (default: the step in OUT/PAUSED.json, else the newest OUT/step-*)
+#
+# Early check: `train` stops itself after step 400 (PAUSE_AT, 0 = never) with the full state saved in OUT/step-00400 and
+# OUT/PAUSED.json. Adapter snapshots also land at steps 50, 100 and 200 (SNAPSHOT_STEPS) in OUT/ckpt. Check them, then
+# `resume`. Never kill the pid: a kill saves nothing. The box bills while idle.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SFT="$HERE/run_sft.sh"; [ -f "$SFT" ] || SFT="$HERE/../../ask-lora-r4/a6000/run_sft.sh"
@@ -33,6 +37,7 @@ fi
 
 WISP="${WISP:-$HOME/wisp}"; PY="$WISP/venv/bin/python"; TD="$WISP/gemma"; OUT="$TD/ask-lora-out"; MM="$WISP/mmeval"; PK="$TD/pick"
 SEED=20261029
+PAUSE_FILE="${PAUSE_FILE:-$OUT/PAUSE}"; export PAUSE_FILE
 say() { echo "== $(date '+%F %T %Z') $*"; }
 die() { echo "FAIL: $*" >&2; exit 1; }
 
@@ -59,9 +64,10 @@ pick)
   [ -f "$MM/pick_text.py" ] && [ -f "$MM/eval_mm.py" ] && [ -f "$MM/data/text-dev.jsonl" ] || die "run '$0 unzip-pickers' first"
   [ -d "$OUT/ckpt" ] || [ -d "$OUT/final" ] || die "no checkpoints under $OUT"
   BASE="$(cat "$TD/base_path")"; mkdir -p "$PK/text"
-  CK="${CKPTS:-$("$PY" "$MM/pick_text.py" candidates --ckpt-root "$OUT" --max "${MAX_CKPTS:-3}" --min-frac "${MIN_FRAC:-0.45}")}" || die "no candidates"
+  CK="${CKPTS:-$("$PY" "$MM/pick_text.py" candidates --ckpt-root "$OUT" --max "${MAX_CKPTS:-3}" --min-frac "${MIN_FRAC:-0.45}" --include-steps "${EARLY_STEPS:-50,100,200}")}" || die "no candidates"
   [ -n "$CK" ] || die "no candidate checkpoints"
   say "candidates: $CK, plus the base"
+  RUN_ID="${RUN_ID:-$(date +%Y%m%dT%H%M%S)}"      # one id for this pick: the base and every checkpoint must share it to be compared
   GATE=(); [ -f "$MM/data/gate_vision/cases.json" ] && GATE+=(--vision-cases "$MM/data/gate_vision/cases.json")
   [ -f "$MM/data/gate_audio/truth.json" ] && GATE+=(--audio-truth "$MM/data/gate_audio/truth.json")
   # Side by side needs a GPU for each model plus one for mmeval; otherwise (one A6000) one after another on GPU 0.
@@ -83,7 +89,7 @@ pick)
   for name in base ${CK//,/ }; do
     D="$PK/text-$name"; mkdir -p "$D"
     if [ "$name" = base ]; then ARGS=(--ckpts base); else ARGS=(--ckpts "$name" --no-base); fi
-    on_gpu "$i" "$PK/text-$name.log" "$PY" "$MM/pick_text.py" generate --base "$BASE" --ckpt-root "$OUT" "${ARGS[@]}" \
+    on_gpu "$i" "$PK/text-$name.log" "$PY" "$MM/pick_text.py" generate --base "$BASE" --ckpt-root "$OUT" "${ARGS[@]}" --run-id "$RUN_ID" \
         --data "$MM/data/text-dev.jsonl" --out "$D" --limit "${DEV_STEPS:-360}" --samples "${SAMPLES:-1}" \
         --samples-safety "${SAMPLES_SAFETY:-3}" --samples-absence "${SAMPLES_ABSENCE:-3}" --safety-steps "${SAFETY_STEPS:-60}" \
         --absence-steps "${ABSENCE_STEPS:-60}" --batch "${PICK_BATCH:-8}" --device 0
@@ -104,7 +110,29 @@ PYI
   "$PY" "$MM/pick_text.py" pick --text-results "$PK/text/text_results.json" --mmeval-results "$PK/mmeval/results.json" \
       --ckpt-root "$OUT" --strict --require-reading --top 2 "${TOLS[@]}" --json-out "$PK/picked.json" > "$PK/picked.path" 2> "$PK/picked.table.md"; rc=$?
   cat "$PK/picked.table.md"
-  [ $rc -eq 0 ] && { say "TOP:"; cat "$PK/picked.path"; } || { say "NO CHECKPOINT QUALIFIES (exit $rc): don't merge; bring $PK back to the Mac"; exit $rc; } ;;
+  [ $rc -eq 0 ] && { say "TOP:"; cat "$PK/picked.path"; } || { [ $rc -eq 3 ] && say "INCOMPLETE: the pick's evidence isn't sound (see the table: pairing or truncation), so nothing is ranked" || say "NO CHECKPOINT QUALIFIES (exit $rc): don't merge; bring $PK back to the Mac"; exit $rc; } ;;
+train)
+  [ ! -e "$PAUSE_FILE" ] || die "$PAUSE_FILE exists (a left-over pause request): remove it, or use '$0 resume' to continue a paused run"
+  PAUSE_AT="${PAUSE_AT:-400}" exec bash "$SFT" train "${2:-}" ;;
+pause)
+  mkdir -p "$(dirname "$PAUSE_FILE")" || die "cannot make $(dirname "$PAUSE_FILE")"
+  date '+%F %T %Z' > "$PAUSE_FILE" || die "cannot write $PAUSE_FILE"
+  say "pause requested: training saves OUT/step-N and exits 0 after its current optimizer step (watch: $0 status; $OUT/PAUSED.json appears)" ;;
+resume)
+  R="${2:-}"
+  if [ -z "$R" ] && [ -f "$OUT/PAUSED.json" ]; then
+    R="$("$PY" - "$OUT/PAUSED.json" <<'PYR'
+import json, sys
+print(json.load(open(sys.argv[1])).get("resume_dir", ""))
+PYR
+)"
+  fi
+  if [ -z "$R" ]; then R="$(ls -d "$OUT"/step-* 2>/dev/null | sort | tail -1)"; fi
+  [ -n "$R" ] && [ -d "$R" ] || die "nothing to resume from (no OUT/PAUSED.json and no $OUT/step-*)"
+  [ -f "$R/trainer_state.pt" ] && [ -f "$R/adapter_model.safetensors" ] || die "$R has no trainer state; resume needs a step-NNNNN dir, not ckpt/step-*"
+  rm -f "$PAUSE_FILE" "$OUT/PAUSED.json"
+  say "resuming from $R (PAUSE_AT=${PAUSE_AT:-0})"
+  PAUSE_AT="${PAUSE_AT:-0}" exec bash "$SFT" train "$R" ;;
 *)
   exec bash "$SFT" "$@" ;;
 esac
