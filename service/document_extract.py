@@ -21,7 +21,7 @@ Rules:
 - Extraction stops once MAX_TEXT_CHARS is reached (pages, paragraphs, slides
   and rows alike) and walks at most MAX_PDF_PAGES PDF pages. Large mode raises
   those three limits (LARGE_TEXT_CHARS, LARGE_PDF_PAGES, LARGE_DOCUMENT_BYTES)
-  and nothing else: the ZIP and stream bounds above stay exactly as tight.
+  and nothing else (plus a `[Page N]` line before each PDF page's text): the ZIP and stream bounds above stay exactly as tight.
 - Every failure is a ValueError with a plain sentence for the person.
 """
 from __future__ import annotations
@@ -200,7 +200,7 @@ def zip_guard(data: bytes) -> None:
 
 # --- the formats ------------------------------------------------------------------
 
-def _pdf(data: bytes, limit: int | None = None, pages: int | None = None) -> tuple[str, bool]:
+def _pdf(data: bytes, limit: int | None = None, pages: int | None = None, markers: bool = False) -> tuple[str, bool]:
     from pypdf import PdfReader, filters
     for name in ("ZLIB_MAX_OUTPUT_LENGTH", "LZW_MAX_OUTPUT_LENGTH", "RUN_LENGTH_MAX_OUTPUT_LENGTH",
                  "JBIG2_MAX_OUTPUT_LENGTH", "MAX_DECLARED_STREAM_LENGTH", "MAX_ARRAY_BASED_STREAM_OUTPUT_LENGTH"):
@@ -222,7 +222,9 @@ def _pdf(data: bytes, limit: int | None = None, pages: int | None = None) -> tup
             for index, page in enumerate(reader.pages):
                 if index >= max_pages:
                     return out.joined("\n\n"), True
-                out.add((page.extract_text() or "").strip())
+                body = (page.extract_text() or "").strip()
+                # Large mode labels each page, so an answer can say where a figure is.
+                out.add(f"[Page {index + 1}]\n{body}" if markers and body else body)
         except _Enough:
             return out.joined("\n\n"), True
         return out.joined("\n\n"), total > max_pages
@@ -358,7 +360,7 @@ def extract_text(name: str, data: bytes, large: bool = False) -> tuple[str, bool
     cut = False
     try:
         if kind == "pdf":
-            text, cut = _pdf(data, limit, pages)
+            text, cut = _pdf(data, limit, pages, markers=large)
             if not text.strip():
                 raise ValueError("That PDF has no text Wisp can read (it looks scanned).")
         elif kind == "docx":

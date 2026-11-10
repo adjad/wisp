@@ -900,3 +900,56 @@ def test_read_file_points_to_attaching_a_picture_and_no_longer_denies_vision(tmp
     from service.tools.registry import get_tool
     description = get_tool("read_file").description
     assert "no vision model" not in description and "attach the picture in Ask" in description
+
+
+# ------------------------------------------------- page markers (large mode only)
+
+def pdf_pages(*texts: str) -> bytes:
+    """A PDF with one page per text; an empty text draws nothing (a page with no text)."""
+    n = len(texts)
+    objects = [b"<< /Type /Catalog /Pages 2 0 R >>",
+               b"<< /Type /Pages /Kids [" + b" ".join(f"{3 + i} 0 R".encode() for i in range(n))
+               + b"] /Count " + str(n).encode() + b" >>"]
+    font = 3 + 2 * n
+    for i, text in enumerate(texts):
+        objects.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents {3 + n + i} 0 R "
+                       f"/Resources << /Font << /F1 {font} 0 R >> >> >>".encode())
+    for text in texts:
+        stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET".encode() if text else b""
+        objects.append(b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream")
+    objects.append(b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+    out = io.BytesIO()
+    out.write(b"%PDF-1.4\n")
+    offsets = []
+    for number, body in enumerate(objects, 1):
+        offsets.append(out.tell())
+        out.write(f"{number} 0 obj\n".encode() + body + b"\nendobj\n")
+    xref = out.tell()
+    out.write(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode())
+    for off in offsets:
+        out.write(f"{off:010d} 00000 n \n".encode())
+    out.write(f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode())
+    return out.getvalue()
+
+
+def test_large_mode_marks_each_pdf_page_and_keeps_numbering_true():
+    data = pdf_pages("Alpha text", "", "Gamma text")
+    text, cut = E.extract_text("p.pdf", data, True)
+    assert text == "[Page 1]\nAlpha text\n\n[Page 3]\nGamma text" and not cut
+
+
+def test_other_callers_get_the_pdf_text_with_no_markers_exactly_as_before():
+    data = pdf_pages("Alpha text", "", "Gamma text")
+    text, cut = E.extract_text("p.pdf", data)
+    assert text == "Alpha text\n\nGamma text" and "[Page" not in text and not cut
+    assert D.extract_text("p.pdf", data)[0] == text
+    assert E.extract_text("one.pdf", pdf_with_text("Tenancy starts 1 March"))[0] == "Tenancy starts 1 March"
+
+
+def test_markers_do_not_change_where_the_size_limit_cuts(monkeypatch):
+    data = pdf_pages(*[f"Page body number {i}" for i in range(1, 9)])
+    text, cut = E.extract_text("p.pdf", data, True)
+    assert text.count("[Page ") == 8 and not cut
+    monkeypatch.setattr(E, "LARGE_TEXT_CHARS", 70)
+    short, cut = E.extract_text("p.pdf", data, True)
+    assert cut and len(short) <= 70 and short.startswith("[Page 1]\nPage body number 1")
