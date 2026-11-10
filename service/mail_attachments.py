@@ -847,7 +847,7 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
                 if declared and 0 < with_text < declared:
                     reading.partial = True
                     reading.note = (f"{with_text} of its {declared} pages have text Wisp could read; "
-                                    "the rest look like pictures. ")
+                                    "the rest are blank or pictures. ")
             return await _settle(ctx, reading, f, digest, text, cut, name, kind, budget)
         raise _Unreadable("Wisp can't read this kind of file."
                           + (f" Its bytes say it is {reading.type_text}." if reading.type_text else ""))

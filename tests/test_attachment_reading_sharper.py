@@ -622,7 +622,7 @@ async def test_a_pdf_with_a_text_cover_and_scanned_pages_does_not_claim_the_whol
     world.local_files[(1, "1.2")] = PDF
     world.texts["contract.pdf"] = "[Pages: 9]\n[Page 1]\ncover words here\n\n[Page 2]\nmore cover words"
     out = await ma.run()
-    assert "2 of its 9 pages have text Wisp could read; the rest look like pictures." in out
+    assert "2 of its 9 pages have text Wisp could read; the rest are blank or pictures." in out
     assert "Read the whole file" not in out
     world.calls.clear()
     again = await ma.run()                                   # recalled with the same honest cover
