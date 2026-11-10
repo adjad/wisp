@@ -77,3 +77,34 @@ def test_a_start_that_launches_nothing_says_why_in_a_fixed_sentence():
         value = lines[0].split("=", 1)[1] + "".join(takewhile(lambda line: line.strip().startswith("+ "), lines[1:]))
         assert value.count('"') >= 2, (name, value)
         assert "\\(" not in value and "NSHomeDirectory" not in value and "/" not in value, (name, value)
+
+
+def test_a_failed_test_question_is_never_called_ready():
+    """l06-first-run-e2e#2: "ready" only means the model is listed. Once setup's one
+    test question has failed, the Model card, How to use, the step bar and the
+    footer all say so. Done stays: it is gated on being able to answer, as before."""
+    setup = _read("FirstRunSetupView.swift")
+    failed = _body(setup, "private var setupTestFailed: Bool")
+    assert "FirstRunBrain.testFailed(result: setup.testResult, passed: setup.testPassed, testing: setup.testing)" in failed
+    # No ready copy is written straight into a view any more: each goes through the rule.
+    assert '"\\(label) is ready"' not in setup.replace(
+        _body(setup, "static func readyTitle(label: String, testFailed: Bool) -> String"), "")
+    assert setup.count('"Model ready"') == 1 and setup.count('"Wisp can answer now. Choose Done to open it."') == 1
+    card = _body(setup, "@ViewBuilder private var modelCard: some View")
+    ready = card[card.index("case .ready(let label):"):]
+    assert "FirstRunBrain.readyTitle(label: label, testFailed: setupTestFailed)" in ready
+    assert 'Button("Try again") { Task { await setup.test() } }' in ready
+    tour = _body(setup, "@ViewBuilder private var tourDownload: some View")
+    assert "FirstRunBrain.readyTitle(label: label, testFailed: setupTestFailed)" in tour
+    assert "FirstRunBrain.readyTourDetail(testFailed: setupTestFailed)" in tour
+    assert 'if !setupTestFailed { OnboardingPill(text: "Ready") }' in tour
+    assert "FirstRunBrain.readyShort(testFailed: setupTestFailed)" in _body(setup, "private var compactProgress: String?")
+    assert "FirstRunBrain.readyShort(testFailed: setupTestFailed)" in _body(
+        setup, "@ViewBuilder private var tourModelStatus: some View")
+    assert "case .brain: return brain.isReady && !setupTestFailed" in _body(setup, "private func isDone(_ s: Step) -> Bool")
+    # Done is still offered on canAnswer alone, and the ready notice is not held for the test.
+    footer = _body(setup, "private var footer: some View")
+    done = footer[footer.index("case .tour:"):]
+    assert done.index("if setup.status?.canAnswer == true {") < done.index('Button("Done — open Wisp")')
+    assert "setupTestFailed" not in done and "testPassed" not in _read("AppDelegate.swift")
+

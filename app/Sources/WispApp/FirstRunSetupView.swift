@@ -623,6 +623,31 @@ enum FirstRunBrain: Equatable {
         failed ? "Wisp couldn't start" : "Wisp is slow to start"
     }
 
+    /// Setup's one test question ran and didn't work (and isn't being asked again
+    /// right now). The model is still listed, so step 1 stays on its ready card,
+    /// but nothing in the window calls it ready. Pure.
+    static func testFailed(result: String?, passed: Bool, testing: Bool) -> Bool {
+        result != nil && !passed && !testing
+    }
+
+    /// The ready card's title, on step 1 and on How to use. Pure.
+    static func readyTitle(label: String, testFailed: Bool) -> String {
+        testFailed ? "\(label) is set up, but the test failed" : "\(label) is ready"
+    }
+
+    /// The ready card's line on How to use. Done stays: the person can still open
+    /// Wisp and ask again there. Pure.
+    static func readyTourDetail(testFailed: Bool) -> String {
+        testFailed
+            ? "The test question didn't work. You can still open Wisp, or go back to the Model step and try again."
+            : "Wisp can answer now. Choose Done to open it."
+    }
+
+    /// The same, in two words, for the step bar and the last step's footer. Pure.
+    static func readyShort(testFailed: Bool) -> String {
+        testFailed ? "Model test failed" : "Model ready"
+    }
+
     /// How long a cold start has taken, once it is long enough to be worth saying.
     static func waited(_ seconds: Int) -> String? {
         guard seconds >= 20 else { return nil }
@@ -1483,6 +1508,12 @@ struct FirstRunSetupView: View {
         if case .startingEngine = brain { drive(brain) }
     }
 
+    /// The one test question failed: the model is listed, but the window no longer
+    /// says it is ready (FirstRunBrain.testFailed).
+    private var setupTestFailed: Bool {
+        FirstRunBrain.testFailed(result: setup.testResult, passed: setup.testPassed, testing: setup.testing)
+    }
+
     /// The parts of step 1 that need no click: switch the model on as soon as it
     /// has arrived, and notice a finished download the engine never lists. Starting
     /// the engine is SetupGuideModel's own (autoAdvanceFirstSetup), once a session.
@@ -1528,7 +1559,7 @@ struct FirstRunSetupView: View {
     /// Google once an account is connected, About you once it was finished.
     private func isDone(_ s: Step) -> Bool {
         switch s {
-        case .brain: return brain.isReady
+        case .brain: return brain.isReady && !setupTestFailed
         case .permissions: return permissions.allAnswered
         case .google: return !google.status.accounts.isEmpty
         case .knowYou: return knowYouFinished
@@ -1567,7 +1598,7 @@ struct FirstRunSetupView: View {
         switch brain {
         case .downloading(_, _, let fraction, _, _, _): return "Model · \(Int(fraction * 100))%"
         case .waitingForEngine, .switching: return "Finishing…"
-        case .ready: return "Model ready"
+        case .ready: return FirstRunBrain.readyShort(testFailed: setupTestFailed)
         case .failed(_, _, _, let paused): return paused ? "Download stopped" : "Download failed"
         default: return nil
         }
@@ -1708,8 +1739,11 @@ struct FirstRunSetupView: View {
     @ViewBuilder private var tourModelStatus: some View {
         switch brain.footer(stalled: stalled) {
         case .ready:
-            Circle().fill(Theme.orb).frame(width: 9, height: 9).accessibilityHidden(true)
-            Text("Model ready").font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+            if !setupTestFailed {
+                Circle().fill(Theme.orb).frame(width: 9, height: 9).accessibilityHidden(true)
+            }
+            Text(FirstRunBrain.readyShort(testFailed: setupTestFailed))
+                .font(.system(size: 12)).foregroundStyle(Theme.textMuted)
         case .working(let text):
             ProgressView().controlSize(.small)
             Text(text).font(.system(size: 12)).foregroundStyle(Theme.textMuted).lineLimit(1)
@@ -1995,7 +2029,10 @@ struct FirstRunSetupView: View {
                 }
             }
         case .ready(let label):
-            OnboardingCard(icon: "checkmark.circle.fill", title: "\(label) is ready",
+            // Ready only means the model is listed. Once its test question has failed,
+            // the card says that instead, with the reason and Try again.
+            OnboardingCard(icon: setupTestFailed ? "exclamationmark.triangle" : "checkmark.circle.fill",
+                           title: FirstRunBrain.readyTitle(label: label, testFailed: setupTestFailed),
                            detail: setup.testing ? "Checking it answers…" : (setup.testResult ?? "Wisp can answer now.")) {
                 if setup.testing {
                     ProgressView().controlSize(.small)
@@ -2135,7 +2172,7 @@ struct FirstRunSetupView: View {
     private func announce(_ state: FirstRunBrain) {
         let text: String
         switch state {
-        case .ready(let label): text = "\(label) is ready"
+        case .ready(let label): text = FirstRunBrain.readyTitle(label: label, testFailed: setupTestFailed)
         case .failed(_, _, _, let paused): text = paused ? "Download stopped" : "Download failed"
         case .unavailable: text = "Wisp can't set this up on its own"
         default: return
@@ -2329,8 +2366,11 @@ struct FirstRunSetupView: View {
                     Text(slept).font(.system(size: 11)).foregroundStyle(Theme.textMuted).padding(.top, 2)
                 }
             case .ready(let label):
-                OnboardingCard(icon: "checkmark.circle.fill", title: "\(label) is ready",
-                               detail: "Wisp can answer now. Choose Done to open it.") { OnboardingPill(text: "Ready") }
+                OnboardingCard(icon: setupTestFailed ? "exclamationmark.triangle" : "checkmark.circle.fill",
+                               title: FirstRunBrain.readyTitle(label: label, testFailed: setupTestFailed),
+                               detail: FirstRunBrain.readyTourDetail(testFailed: setupTestFailed)) {
+                    if !setupTestFailed { OnboardingPill(text: "Ready") }
+                }
             default:
                 // Not downloading: whatever the footer offers (Download, Retry, a
                 // spinner while the engine starts) belongs up here as well.

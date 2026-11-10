@@ -533,6 +533,30 @@ struct FirstRunSetupChecks {
               && FirstRunSetup.heldBackLine(.retry, startFailed: true) == FirstRunSetup.heldBackLine(.retry),
               "Held back after a failed start: the line names Retry, and only for that state")
 
+        // The model is listed but its one test question failed: nothing in the window
+        // calls it ready. Done stays (gated on canAnswer alone), so the copy must be honest.
+        let didntWork = "That didn't work: The request timed out."
+        check(FirstRunBrain.testFailed(result: didntWork, passed: false, testing: false)
+              && !FirstRunBrain.testFailed(result: nil, passed: false, testing: false)
+              && !FirstRunBrain.testFailed(result: nil, passed: false, testing: true)
+              && !FirstRunBrain.testFailed(result: didntWork, passed: false, testing: true)
+              && !FirstRunBrain.testFailed(result: "Works — replied in 1.2s.", passed: true, testing: false),
+              "A test failed only once it ran, didn't pass and isn't running again")
+        let failedCopy = [FirstRunBrain.readyTitle(label: "Gemma 4 E4B", testFailed: true),
+                          FirstRunBrain.readyTourDetail(testFailed: true),
+                          FirstRunBrain.readyShort(testFailed: true)]
+        for line in failedCopy {
+            check(!line.contains("is ready") && !line.contains("Wisp can answer now")
+                  && !line.lowercased().contains("ready"), "A failed test never reads as ready: \(line)")
+        }
+        check(failedCopy[0] == "Gemma 4 E4B is set up, but the test failed"
+              && failedCopy[1].contains("You can still open Wisp") && failedCopy[1].contains("Model step"),
+              "A failed test names itself, and says Wisp can still be opened")
+        check(FirstRunBrain.readyTitle(label: "Gemma 4 E4B", testFailed: false) == "Gemma 4 E4B is ready"
+              && FirstRunBrain.readyTourDetail(testFailed: false) == "Wisp can answer now. Choose Done to open it."
+              && FirstRunBrain.readyShort(testFailed: false) == "Model ready",
+              "A test that passed, or hasn't run, keeps the ready copy")
+
         // A stop is a stop: its words name the card's own button.
         if case .failed(_, _, let message, true) = FirstRunBrain.from(status: status(), downloads: [task("cancelled")]) {
             check(message == FirstRunBrain.stoppedMessage && message.contains("Resume") && !message.contains("Retry"),
