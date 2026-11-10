@@ -44,7 +44,8 @@ def test_an_untitled_event_or_dated_reminder_is_still_synced():
     never supplied the placeholder, and the service keeps no row with an empty
     title: the meeting was missing from the day and its time read as free."""
     reader = (APP / "CalendarReader.swift").read_text()
-    sync = _body(reader, "func sync()")
+    # The rows are built in readSnapshot, which sync() runs off the main thread.
+    sync = _body(reader, "static func readSnapshot(")
     assert "let title = RemindersWriter.syncedTitle(ev.title)" in sync
     assert '?? "(untitled)"' not in sync
     # The title sent, the kind and the fallback id all come from that one value.

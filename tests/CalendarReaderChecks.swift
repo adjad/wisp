@@ -12,6 +12,7 @@ import Foundation
         includeChecks()
         accessChecks()
         paceChecks()
+        readGateChecks()
         print("synthetic calendar reader checks passed")
     }
 
@@ -78,6 +79,37 @@ import Foundation
         check(P.include(cancelled: false, attendees: [organizer, otherDeclined, otherDeclined]),
               "an organizer's event stays when the invitees decline")
         check(!P.include(cancelled: true, attendees: [organizer]), "an organizer's cancelled event is dropped")
+    }
+
+    // Calendar is read off the main thread. One read runs at a time, a read asked
+    // for meanwhile follows it, and an older read never posts after a newer report
+    // (the service replaces Calendar's whole set on every post).
+    static func readGateChecks() {
+        var g = CalendarReadGate()
+        let first = g.issue()
+        check(g.begin(), "the first read starts")
+        let second = g.issue()
+        check(second > first, "numbers only go up")
+        check(!g.begin(), "a second read does not start while one runs")
+        check(!g.begin(), "nor a third")
+        check(g.finish(), "the running read is followed by one more")
+        check(g.accept(first), "the first report posts")
+        check(g.begin(), "the follow-up read starts")
+        check(!g.finish(), "nothing was asked for during it, so no further read")
+        check(g.accept(g.issue()), "its report posts")
+
+        // A slow read, then access goes away: the no-access report posts at once,
+        // and the old read's events must not land on top of it.
+        var h = CalendarReadGate()
+        let slow = h.issue()
+        check(h.begin(), "the slow read starts")
+        let noAccess = h.issue()
+        check(h.accept(noAccess), "the newer report posts first")
+        _ = h.finish()
+        check(!h.accept(slow), "the older read is dropped")
+        check(!h.accept(noAccess), "a report never posts twice")
+        check(h.begin(), "reading carries on afterwards")
+        check(h.accept(h.issue()), "and a newer report posts")
     }
 
     // Calendar is read when EventKit says it changed and on a heartbeat. The heartbeat
