@@ -11,6 +11,7 @@ import asyncio
 import base64
 import contextlib
 import contextvars
+import datetime
 import html
 import io
 import ipaddress
@@ -35,6 +36,7 @@ _UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
 _WIKI_UA = "WispResearch/1.1 (https://github.com/adjad/wisp; low-volume personal research)"
 _MAX_FETCH_BYTES = 2_500_000
 _MAX_TEXT_CHARS = 180_000
+_MAX_TITLE_CHARS = 300
 _MAX_REDIRECTS = 5
 _WS = re.compile(r"[ \t\r\f\v]+")
 _BLANKS = re.compile(r"\n{3,}")
@@ -82,6 +84,9 @@ class Page:
     content_type: str
     published_at: str = ""
     via_archive: bool = False
+    # The day an archive copy was saved (YYYY-MM-DD), or "" when it is not an
+    # archive copy or the day is unknown.
+    archived_at: str = ""
 
 
 def canonicalize_url(raw: str) -> str:
@@ -108,20 +113,57 @@ def canonicalize_url(raw: str) -> str:
 
 
 def _public_ip(value: str) -> bool:
+    """True only for an address on the public internet.
+
+    ``is_global`` is what keeps out shared address space (100.64.0.0/10:
+    carrier NAT and tailnet devices), which none of the other flags cover. The
+    other flags stay, because ``is_global`` alone accepts the NAT64 form of a
+    private address. An IPv4-mapped IPv6 address must pass as itself and as the
+    IPv4 address it carries.
+    """
     try:
         ip = ipaddress.ip_address(value)
     except ValueError:
         return False
-    return not (ip.is_private or ip.is_loopback or ip.is_link_local or
-                ip.is_multicast or ip.is_reserved or ip.is_unspecified)
+    mapped = getattr(ip, "ipv4_mapped", None)
+    for address in (ip,) if mapped is None else (ip, mapped):
+        if (not address.is_global or address.is_private or address.is_loopback
+                or address.is_link_local or address.is_multicast
+                or address.is_reserved or address.is_unspecified):
+            return False
+    return True
 
 
-async def validate_public_url(raw: str) -> str:
-    """Validate every destination, including DNS answers, before connecting."""
-    url = canonicalize_url(raw)
-    if not url:
+def _request_url(raw: str, canonical: str) -> str:
+    """The address to request: the one given, on the checked host.
+
+    ``canonicalize_url`` is an identity key for spotting the same page twice.
+    It drops parameters such as ``ref`` and ``source`` that some sites need
+    (a GitHub contents URL's ``?ref=dev`` picks the branch), so it is not the
+    address to fetch. Scheme, host and port come from the canonical form,
+    which is what was checked; userinfo and the fragment are dropped; path
+    and query are kept as given.
+    """
+    original = urlparse(html.unescape((raw or "").strip()))
+    checked = urlparse(canonical)
+    return urlunparse((checked.scheme, checked.netloc, original.path or "/",
+                       original.params, original.query, ""))
+
+
+async def _resolve_public(raw: str) -> tuple[str, list[str]]:
+    """Validate a destination and return it with the addresses that passed.
+
+    Every DNS answer has to be public. The fetch then connects to one of the
+    returned addresses and to nothing else (``_PinnedTransport``), so a name
+    cannot give a public answer here and a private one to the connection.
+    The returned URL is the request address (``_request_url``), on the host
+    that was checked.
+    """
+    canonical = canonicalize_url(raw)
+    if not canonical:
         raise WebError("only public http(s) URLs are allowed")
-    p = urlparse(url)
+    url = _request_url(raw, canonical)
+    p = urlparse(canonical)
     host = p.hostname or ""
     if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
         raise WebError("local and private-network URLs are blocked")
@@ -129,13 +171,14 @@ async def validate_public_url(raw: str) -> str:
         if ipaddress.ip_address(host):
             if not _public_ip(host):
                 raise WebError("local and private-network URLs are blocked")
-            return url
+            return url, [host]
     except ValueError:
         pass
 
     def _resolve() -> list[str]:
-        return list({row[4][0] for row in socket.getaddrinfo(
-            host, p.port or (443 if p.scheme == "https" else 80), type=socket.SOCK_STREAM)})
+        rows = socket.getaddrinfo(
+            host, p.port or (443 if p.scheme == "https" else 80), type=socket.SOCK_STREAM)
+        return list(dict.fromkeys(row[4][0] for row in rows))
 
     try:
         addresses = await asyncio.wait_for(asyncio.to_thread(_resolve), timeout=4.0)
@@ -143,7 +186,72 @@ async def validate_public_url(raw: str) -> str:
         raise WebError(f"could not resolve {host}: {type(exc).__name__}") from exc
     if not addresses or any(not _public_ip(addr) for addr in addresses):
         raise WebError("URL resolves to a local or private-network address")
-    return url
+    # One address of each family first, IPv4 leading: the connection tries the
+    # first and falls back to the second, so an IPv6-only network still works.
+    v4 = [addr for addr in addresses if ":" not in addr]
+    v6 = [addr for addr in addresses if ":" in addr]
+    return url, v4[:1] + v6[:1] + v4[1:] + v6[1:]
+
+
+async def validate_public_url(raw: str) -> str:
+    """Validate every destination, including DNS answers, before connecting."""
+    return (await _resolve_public(raw))[0]
+
+
+_PINNED_ADDRESSES = "wisp_pinned_addresses"
+_PINNED_TRIES = 2
+
+
+class _PinnedTransport(httpx.AsyncBaseTransport):
+    """Open the connection to an address that was checked, and to no other.
+
+    ``_resolve_public`` looks a name up and checks every answer. Left alone,
+    httpx looks the name up a second time to connect, and a hostile name can
+    answer that second lookup with 127.0.0.1 or a LAN address (DNS rebinding).
+    So the request goes to the checked address itself. The Host header, the
+    TLS server name and the certificate check all stay on the real name, and
+    the client still sees the request under its real URL. A request that
+    carries no checked address is refused.
+
+    Only the client's direct transport is wrapped. When the system sends web
+    traffic through a proxy, the proxy opens the connection and does its own
+    lookup; that path is unchanged.
+    """
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        addresses = list(request.extensions.get(_PINNED_ADDRESSES) or ())[:_PINNED_TRIES]
+        if not addresses:
+            raise WebError("could not resolve a checked address for this request")
+        extensions = {key: value for key, value in request.extensions.items()
+                      if key != _PINNED_ADDRESSES}
+        if request.url.scheme == "https":
+            extensions["sni_hostname"] = request.url.raw_host.decode("ascii")
+        for index, address in enumerate(addresses):
+            pinned = httpx.Request(request.method, request.url.copy_with(host=address),
+                                   headers=request.headers, stream=request.stream,
+                                   extensions=extensions)
+            try:
+                return await self._inner.handle_async_request(pinned)
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                if index + 1 == len(addresses):
+                    raise
+        raise WebError("could not resolve a checked address for this request")
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+def _pin_connections(client: httpx.AsyncClient) -> None:
+    """Make ``client`` connect only where ``_PinnedTransport`` allows."""
+    inner = getattr(client, "_transport", None)
+    if not isinstance(inner, httpx.AsyncBaseTransport):
+        # httpx no longer keeps its direct transport here. Refuse to fetch
+        # rather than fetch with the second lookup back.
+        raise WebError("could not resolve a checked address: connection pinning is unavailable")
+    client._transport = _PinnedTransport(inner)
 
 
 class _DDGParser(HTMLParser):
@@ -236,7 +344,9 @@ def _ddg_target(href: str) -> str:
     if "duckduckgo.com" in (p.hostname or ""):
         target = parse_qs(p.query).get("uddg", [""])[0]
         if target:
-            return unquote(target)
+            # parse_qs has decoded it once already; decoding again turned
+            # %2B into + and %25 into %, a different address.
+            return target
     return href
 
 
@@ -661,6 +771,39 @@ def _extract_pdf(data: bytes) -> tuple[str, str]:
         raise WebError(f"could not read PDF: {type(exc).__name__}") from exc
 
 
+# How many elements a feed's titles and summaries may be read from in total.
+# A real feed needs a few hundred (one title, then 30 items); the 2.5 MB fetch
+# cap allows about 600,000 elements in all.
+_FEED_TEXT_NODES = 500_000
+
+
+def _feed_text(elem: ET.Element, left: list[int]) -> str:
+    """The text inside ``elem``, as ``"".join(elem.itertext())`` gives it,
+    read within the budget ``left[0]`` that every call for one feed shares.
+
+    Reading an element's text walks everything under it. Feed elements that
+    sit inside one another are each walked again from the top, so a response
+    made of nothing but nesting cost the square of its size. The shared budget
+    keeps the whole feed to one bounded amount of work.
+    """
+    left[0] -= 1
+    parts = [elem.text or ""]
+    stack: list[tuple[ET.Element | None, object]] = [(None, iter(elem))]
+    while stack and left[0] > 0:
+        owner, children = stack[-1]
+        child = next(children, None)
+        if child is None:
+            stack.pop()
+            if owner is not None and owner.tail:
+                parts.append(owner.tail)
+            continue
+        left[0] -= 1
+        if child.text:
+            parts.append(child.text)
+        stack.append((child, iter(child)))
+    return _clean_inline("".join(parts))
+
+
 def _extract_feed(data: bytes) -> tuple[str, str]:
     try:
         root = ET.fromstring(data)
@@ -668,22 +811,26 @@ def _extract_feed(data: bytes) -> tuple[str, str]:
         raise WebError("invalid XML/feed") from exc
     title = ""
     lines: list[str] = []
+    left = [_FEED_TEXT_NODES]
+    # Text is read only where it is used: the first title that has any, and
+    # the title and summary of each item. It used to be read for every element
+    # of the document, on the event loop.
     for elem in root.iter():
         local = elem.tag.rsplit("}", 1)[-1].lower()
-        value = _clean_inline("".join(elem.itertext()))
-        if local == "title" and value and not title:
-            title = value
+        if local == "title" and not title:
+            title = _feed_text(elem, left)
         if local in {"item", "entry"}:
             item_title = ""
             summary = ""
             for child in elem:
                 key = child.tag.rsplit("}", 1)[-1].lower()
-                val = _clean_inline("".join(child.itertext()))
-                if key == "title": item_title = val
-                elif key in {"summary", "description", "content"}: summary = val
+                if key == "title":
+                    item_title = _feed_text(child, left)
+                elif key in {"summary", "description", "content"}:
+                    summary = _feed_text(child, left)
             if item_title:
                 lines.append(f"{item_title}\n{summary}".strip())
-        if len(lines) >= 30:
+        if len(lines) >= 30 or left[0] <= 0:
             break
     return title, "\n\n".join(lines)[:_MAX_TEXT_CHARS]
 
@@ -705,27 +852,78 @@ def strict_host_fetch(enabled: bool = True):
         _STRICT_HOST.reset(token)
 
 
+def _without_www(host: str) -> str:
+    """``www.example.com`` and ``example.com`` are one site for a strict fetch.
+
+    Exactly one leading ``www.`` label, nothing else: any other subdomain or a
+    different name is still a different host. Sites redirect between the two
+    forms as a matter of course, and neither form was built by the model.
+    """
+    return host[4:] if host.startswith("www.") and len(host) > 4 else host
+
+
+_PLAIN_HOST_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?\Z")
+
+
+def _cross_host_refusal(landed: str) -> str:
+    """Refusal that names where the redirect pointed, so the caller can ask for
+    that host itself and have it confirmed. The name comes from the remote
+    site's Location header: only a plain hostname is repeated, never a path or
+    query, and nothing at all if it is not shaped like one."""
+    where = f" ({landed})" if _PLAIN_HOST_RE.match(landed) else ""
+    hint = f" To read it, fetch a URL on {landed} directly." if where else ""
+    return (f"redirect to a different host{where} refused: the authorised "
+            f"destination was not followed there.{hint}")
+
+
+# Research drops a page with almost no readable text: it is a consent wall, a
+# script-only shell or an error stub, and never evidence. A caller that wants
+# the body whatever its length (web_fetch on a JSON price or a one-line status
+# endpoint) lowers the floor for its own fetch; an empty body is still an error.
+_THIN_PAGE_CHARS = 120
+_THIN_PAGE_MESSAGE = "page contained too little readable text"
+_MIN_TEXT_CHARS: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "wisp_web_min_text_chars", default=_THIN_PAGE_CHARS)
+
+
+@contextlib.contextmanager
+def short_text_fetch(min_chars: int = 1):
+    """Accept any non-empty response inside this block, however short."""
+    token = _MIN_TEXT_CHARS.set(max(1, int(min_chars)))
+    try:
+        yield
+    finally:
+        _MIN_TEXT_CHARS.reset(token)
+
+
 async def _fetch_direct(raw_url: str) -> Page:
     """Fetch one public page with redirect and size limits plus SSRF checks."""
-    current = await validate_public_url(raw_url)
+    current, addresses = await _resolve_public(raw_url)
     strict_host = (urlparse(current).hostname or "").lower() if _STRICT_HOST.get() else ""
     data = b""
     ctype = ""
     encoding = "utf-8"
+    # No kept-alive connections: two names can share one checked address, and a
+    # connection opened for the first must not carry a request for the second.
     async with httpx.AsyncClient(timeout=httpx.Timeout(18, connect=7),
                                  follow_redirects=False,
+                                 limits=httpx.Limits(max_connections=10,
+                                                     max_keepalive_connections=0),
                                  headers={"User-Agent": _UA, "Accept": "*/*"}) as client:
+        _pin_connections(client)
         completed = False
         for _ in range(_MAX_REDIRECTS + 1):
-            async with client.stream("GET", current) as response:
+            async with client.stream("GET", current,
+                                     extensions={_PINNED_ADDRESSES: addresses}) as response:
                 if response.status_code in {301, 302, 303, 307, 308}:
                     target = response.headers.get("location")
                     if not target:
                         raise WebError("redirect had no destination")
-                    current = await validate_public_url(urljoin(current, target))
-                    if strict_host and (urlparse(current).hostname or "").lower() != strict_host:
-                        raise WebError("redirect to a different host refused: the "
-                                       "authorised destination was not followed there")
+                    current, addresses = await _resolve_public(urljoin(current, target))
+                    if strict_host:
+                        landed = (urlparse(current).hostname or "").lower()
+                        if _without_www(landed) != _without_www(strict_host):
+                            raise WebError(_cross_host_refusal(landed))
                     continue
                 if response.status_code >= 400:
                     raise WebError(f"HTTP {response.status_code}")
@@ -751,21 +949,32 @@ async def _fetch_direct(raw_url: str) -> Page:
     if "pdf" in ctype or current.lower().endswith(".pdf"):
         title, text = await asyncio.to_thread(_extract_pdf, data)
     elif "xml" in ctype or "rss" in ctype or data.lstrip().startswith(b"<?xml"):
-        title, text = _extract_feed(data)
+        # Off the event loop, as the PDF branch is: a large feed is parsed in
+        # one piece, and replies and heartbeats must keep moving meanwhile.
+        title, text = await asyncio.to_thread(_extract_feed, data)
     elif "html" in ctype or b"<html" in data[:2000].lower():
         parser = _ReadableHTML()
         parser.feed(data.decode(encoding, errors="replace"))
         title, text, published = parser.title, parser.text(), parser.published
         if parser.canonical:
-            canonical = canonicalize_url(urljoin(current, parser.canonical)) or current
+            # rel=canonical is the page's own claim about its address. It is
+            # believed only for the host that served the page (with or without
+            # www.): a page on one site cannot name another site as its own.
+            claimed = canonicalize_url(urljoin(current, parser.canonical))
+            if claimed and (_without_www((urlparse(claimed).hostname or "").lower())
+                            == _without_www((urlparse(current).hostname or "").lower())):
+                canonical = claimed
     else:
         text = data.decode(encoding, errors="replace")[:_MAX_TEXT_CHARS]
     text = _BLANKS.sub("\n\n", text).strip()
-    if len(text) < 120:
-        raise WebError("page contained too little readable text")
+    if len(text) < _MIN_TEXT_CHARS.get():
+        raise WebError(_THIN_PAGE_MESSAGE)
     if not published:
         match = _DATE_RE.search(text[:5000])
         published = match.group(0) if match else ""
+    # The title is the page's own text (<title>, a PDF's /Title, a feed's
+    # <title>) and callers print it on a line of their own: one line, capped.
+    title = " ".join(title.split())[:_MAX_TITLE_CHARS]
     return Page(url=current, canonical_url=canonicalize_url(canonical) or current,
                 title=title or (urlparse(current).hostname or current), text=text,
                 content_type=ctype, published_at=published)
@@ -895,6 +1104,33 @@ async def _wayback_snapshot_url(url: str) -> str:
     return ""
 
 
+_WAYBACK_STAMP_RE = re.compile(r"/web/(\d{4})(\d{2})(\d{2})")
+
+
+def _snapshot_date(*urls: str) -> str:
+    """The day a Wayback snapshot was saved, as YYYY-MM-DD, or "" if unknown.
+
+    A snapshot address starts its path with a 14-digit timestamp
+    (``/web/20230405123456/https://…``). Only digits that make a real date on
+    an archive.org address come back, so nothing else from the address can
+    reach the text a caller writes around it.
+    """
+    for url in urls:
+        try:
+            parsed = urlparse(url or "")
+        except ValueError:
+            continue
+        host = (parsed.hostname or "").lower()
+        match = _WAYBACK_STAMP_RE.match(parsed.path)
+        if not match or not (host == "archive.org" or host.endswith(".archive.org")):
+            continue
+        try:
+            return datetime.date(*(int(part) for part in match.groups())).isoformat()
+        except ValueError:
+            continue
+    return ""
+
+
 async def fetch_page(raw_url: str) -> Page:
     """Fetch a page directly; on failure (blocked, gone, thin, timed out —
     anything except our own SSRF refusal), try the Wayback Machine's own
@@ -921,6 +1157,9 @@ async def fetch_page(raw_url: str) -> Page:
             raise
         if strict:
             raise  # never hand the URL to archive.org
+        if (isinstance(exc, WebError) and str(exc) == _THIN_PAGE_MESSAGE
+                and _MIN_TEXT_CHARS.get() < _THIN_PAGE_CHARS):
+            raise  # the caller took any length and the live answer was empty
         snapshot_url = await _wayback_snapshot_url(raw_url)
         if not snapshot_url:
             raise
@@ -930,7 +1169,10 @@ async def fetch_page(raw_url: str) -> Page:
             raise exc from None
         return Page(url=raw_url, canonical_url=archived.canonical_url, title=archived.title,
                    text=archived.text, content_type=archived.content_type,
-                   published_at=archived.published_at, via_archive=True)
+                   published_at=archived.published_at, via_archive=True,
+                   # Where the fetch landed first: the Archive redirects to the
+                   # snapshot it really holds, which can be from another day.
+                   archived_at=_snapshot_date(archived.url, snapshot_url))
 
 
 def render_search_results(hits: list[SearchHit]) -> str:

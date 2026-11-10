@@ -70,6 +70,209 @@ class WebParsingTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 asyncio.run(validate_public_url(url))
 
+    def test_shared_address_space_is_not_public(self):
+        # 100.64.0.0/10 is carrier NAT and tailnet devices: never the open web.
+        for url in ("http://100.64.0.1/", "http://100.100.100.100:8080/status",
+                    "http://100.127.255.254/", "http://[::ffff:100.64.0.1]/",
+                    "http://[64:ff9b::7f00:1]/"):
+            with self.assertRaises(WebError) as refused:
+                asyncio.run(validate_public_url(url))
+            # One of the refusals that is never retried through the archive.
+            self.assertTrue(str(refused.exception).startswith(web_module._SSRF_MESSAGE_PREFIXES), url)
+        for address in ("100.64.0.1", "100.100.100.100", "::ffff:100.64.0.1",
+                        "::ffff:127.0.0.1", "::ffff:10.0.0.4", "64:ff9b::7f00:1",
+                        "127.0.0.1", "10.0.0.4", "192.168.1.20", "169.254.169.254",
+                        "::1", "fe80::1", "fd00::1", "224.0.0.251", "0.0.0.0", "not-an-address"):
+            self.assertFalse(web_module._public_ip(address), address)
+        for address in ("8.8.8.8", "1.1.1.1", "::ffff:8.8.8.8", "2001:4860:4860::8888"):
+            self.assertTrue(web_module._public_ip(address), address)
+        self.assertEqual(asyncio.run(validate_public_url("https://8.8.8.8/")), "https://8.8.8.8/")
+
+    def _resolving_to(self, *addresses):
+        def getaddrinfo(host, port, *args, **kwargs):
+            return [(web_module.socket.AF_INET6 if ":" in address else web_module.socket.AF_INET,
+                     web_module.socket.SOCK_STREAM, 6, "", (address, port))
+                    for address in addresses]
+        return patch.object(web_module.socket, "getaddrinfo", getaddrinfo)
+
+    def test_a_name_that_resolves_to_shared_or_private_space_is_refused(self):
+        for answers in (("100.101.102.103",), ("::ffff:100.64.0.1",), ("64:ff9b::7f00:1",),
+                        ("203.0.113.7", "100.101.102.103"), ("8.8.8.8", "127.0.0.1")):
+            with self._resolving_to(*answers), self.assertRaises(WebError) as refused:
+                asyncio.run(validate_public_url("http://nas.tailnet.example/"))
+            self.assertEqual(str(refused.exception),
+                             "URL resolves to a local or private-network address")
+
+    def test_a_public_name_returns_the_checked_addresses_ipv4_first(self):
+        answers = ("2001:4860:4860::8888", "8.8.8.8", "8.8.4.4", "8.8.8.8", "2001:4860:4860::8844")
+        with self._resolving_to(*answers):
+            url, addresses = asyncio.run(web_module._resolve_public("https://Example.com/a#top"))
+            self.assertEqual(asyncio.run(validate_public_url("https://Example.com/a#top")), url)
+        self.assertEqual(url, "https://example.com/a")
+        self.assertEqual(addresses, ["8.8.8.8", "2001:4860:4860::8888", "8.8.4.4",
+                                     "2001:4860:4860::8844"])
+        url, addresses = asyncio.run(web_module._resolve_public("https://8.8.8.8/"))
+        self.assertEqual(addresses, ["8.8.8.8"])
+
+    def test_the_fetched_address_keeps_the_query_it_was_given(self):
+        # canonicalize_url drops ref and source; a GitHub contents URL's
+        # ?ref=dev picks the branch, so the request must keep them.
+        given = ("https://user:secret@API.Example.com:443/repos/o/r/contents//README.md"
+                 "?ref=dev&source=x&a=1&utm_source=feed#readme")
+        with self._resolving_to("8.8.8.8"):
+            url = asyncio.run(validate_public_url(given))
+            checked, addresses = asyncio.run(web_module._resolve_public(given))
+        self.assertEqual(url, "https://api.example.com/repos/o/r/contents//README.md"
+                              "?ref=dev&source=x&a=1&utm_source=feed")
+        self.assertEqual((checked, addresses), (url, ["8.8.8.8"]))
+        self.assertNotIn("secret", url)
+        # The identity key used to spot the same page twice is unchanged.
+        self.assertEqual(canonicalize_url(given),
+                         "https://api.example.com/repos/o/r/contents/README.md?a=1")
+        self.assertEqual(asyncio.run(validate_public_url("http://8.8.8.8:8080?q=1")),
+                         "http://8.8.8.8:8080/?q=1")
+
+    def test_the_fetched_address_is_still_checked_on_its_own_host(self):
+        # Userinfo that looks like a public host does not move the check.
+        for url in ("http://8.8.8.8@127.0.0.1/?ref=x", "http://user@[::1]/a?source=b",
+                    "http://localhost/?ref=8.8.8.8", "ftp://8.8.8.8/?ref=dev"):
+            with self.assertRaises(WebError):
+                asyncio.run(validate_public_url(url))
+        with self._resolving_to("10.0.0.4"), self.assertRaises(WebError):
+            asyncio.run(validate_public_url("https://public.example.com@intranet.example/?ref=1"))
+        with self._resolving_to("8.8.8.8"):
+            self.assertEqual(asyncio.run(validate_public_url("https://8.8.4.4@www.example.com/p")),
+                             "https://www.example.com/p")
+
+    def test_duckduckgo_target_is_decoded_once(self):
+        real = "https://example.com/s?q=C%2B%2B&x=100%25&tag=%23top"
+        href = "//duckduckgo.com/l/?uddg=" + web_module.quote(real, safe="") + "&rut=abc"
+        self.assertEqual(_ddg_target(href), real)
+        self.assertEqual(_ddg_target("https://example.org/plain"), "https://example.org/plain")
+
+
+def _feed_as_before_rc3(data: bytes) -> tuple[str, str]:
+    """The feed reader as it was: text read for every element of the document."""
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(data)
+    clean = web_module._clean_inline
+    title, lines = "", []
+    for elem in root.iter():
+        local = elem.tag.rsplit("}", 1)[-1].lower()
+        value = clean("".join(elem.itertext()))
+        if local == "title" and value and not title:
+            title = value
+        if local in {"item", "entry"}:
+            item_title = summary = ""
+            for child in elem:
+                key = child.tag.rsplit("}", 1)[-1].lower()
+                val = clean("".join(child.itertext()))
+                if key == "title":
+                    item_title = val
+                elif key in {"summary", "description", "content"}:
+                    summary = val
+            if item_title:
+                lines.append(f"{item_title}\n{summary}".strip())
+        if len(lines) >= 30:
+            break
+    return title, "\n\n".join(lines)[:web_module._MAX_TEXT_CHARS]
+
+
+class FeedExtractionTests(unittest.TestCase):
+    RSS = ('<?xml version="1.0"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">'
+           "<channel><title>  Harbor   Town News </title><link>https://news.example.com/</link>"
+           "<description>Local stories</description>"
+           + "".join(f"<item><title>Story {i} &amp; more</title>"
+                     f"<link>https://news.example.com/{i}</link>"
+                     f"<description><![CDATA[Summary <b>{i}</b> of the story.]]></description>"
+                     f"<content:encoded>Full text {i}</content:encoded></item>"
+                     for i in range(1, 41))
+           + "</channel></rss>").encode()
+    ATOM = ('<feed xmlns="http://www.w3.org/2005/Atom"><title>Example <i>Lab</i> notes</title>'
+            + "".join(f'<entry><title type="html">Note {i}</title><id>urn:n:{i}</id>'
+                      f'<summary>Short {i}</summary>'
+                      f'<content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml">'
+                      f'Body <b>{i}</b> ends <i>here</i>.</div></content></entry>'
+                      for i in range(1, 36))
+            + "</feed>").encode()
+    ODD = ("<rss><channel><title/><title> </title>"
+           "<item><description>No title, so it is left out.</description></item>"
+           "<item><title>First <em>real</em> title</title><summary>one</summary>"
+           "<description></description></item>"
+           "<item><title>Nested</title><description>outer"
+           "<item><title>Inner</title><description>inner text</description></item>"
+           " tail</description></item>"
+           "</channel></rss>").encode()
+
+    def test_rss_keeps_its_title_and_first_thirty_items(self):
+        title, text = web_module._extract_feed(self.RSS)
+        items = text.split("\n\n")
+        self.assertEqual(title, "Harbor Town News")
+        self.assertEqual(len(items), 30)
+        self.assertEqual(items[0], "Story 1 & more\nSummary <b>1</b> of the story.")
+        self.assertEqual(items[-1], "Story 30 & more\nSummary <b>30</b> of the story.")
+        self.assertNotIn("Full text", text)
+
+    def test_atom_keeps_its_title_and_first_thirty_entries(self):
+        title, text = web_module._extract_feed(self.ATOM)
+        items = text.split("\n\n")
+        self.assertEqual(title, "Example Lab notes")
+        self.assertEqual(len(items), 30)
+        self.assertEqual(items[0], "Note 1\nBody 1 ends here.")
+        self.assertEqual(items[-1], "Note 30\nBody 30 ends here.")
+
+    def test_feeds_read_exactly_as_before(self):
+        for data in (self.RSS, self.ATOM, self.ODD,
+                     b"<urlset><url><loc>https://example.com/a</loc></url></urlset>",
+                     b"<rss><channel><item><title>Only item</title></item></channel></rss>"):
+            self.assertEqual(web_module._extract_feed(data), _feed_as_before_rc3(data))
+        self.assertEqual(web_module._extract_feed(self.ODD)[0], "First real title")
+        with self.assertRaises(WebError):
+            web_module._extract_feed(b"<rss><channel>")
+
+    def _timed(self, data: bytes) -> tuple[float, tuple[str, str]]:
+        import time
+        started = time.perf_counter()
+        result = web_module._extract_feed(data)
+        return time.perf_counter() - started, result
+
+    def test_deep_nesting_is_not_read_once_per_level(self):
+        # 100,000 levels took over half a minute, on the event loop: every
+        # element re-read everything under it. Now it is one pass.
+        depth = 100_000
+        took, result = self._timed(b"<a>" * depth + b"</a>" * depth)
+        self.assertEqual(result, ("", ""))
+        self.assertLess(took, 5.0)
+
+    def test_nested_feed_elements_share_one_bounded_amount_of_reading(self):
+        # Items inside titles inside items: each one's text is everything below
+        # it, so reading only "the parts that are used" is still the square of
+        # the depth. The shared budget stops it.
+        depth = 60_000
+        took, result = self._timed(b"<item><title>" * depth + b"</title></item>" * depth)
+        self.assertEqual(result, ("", ""))
+        self.assertLess(took, 5.0)
+        took, result = self._timed(b"<title>" * depth + b"</title>" * depth)
+        self.assertEqual(result, ("", ""))
+        self.assertLess(took, 5.0)
+
+    def test_the_reading_budget_is_far_above_a_large_real_feed(self):
+        # 30 items is all a feed contributes, however long the feed is.
+        big = ("<rss><channel><title>Big</title>"
+               + "".join(f"<item><title>T{i}</title><description>D{i}</description></item>"
+                         for i in range(20_000)) + "</channel></rss>").encode()
+        left = []
+        real = web_module._feed_text
+
+        def counting(elem, budget):
+            left.append(budget)
+            return real(elem, budget)
+
+        with patch.object(web_module, "_feed_text", counting):
+            title, text = web_module._extract_feed(big)
+        self.assertEqual((title, text.count("\n\n")), ("Big", 29))
+        self.assertGreater(left[-1][0], web_module._FEED_TEXT_NODES - 200)
+
 
 class _FakeResearchClient:
     def __init__(self):
@@ -257,6 +460,196 @@ class ResearchPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(result["report"]["sources"]), 2)
         self.assertTrue(client.exclusive_loads)
         self.assertTrue(all(client.exclusive_loads))
+
+    # --- two search hits that turn out to be one page ----------------------
+    _OBJECTIVE = "Compare vaccine efficacy in powdered versus frozen storage"
+    _QUERY = "freeze-dried vaccine powder storage stability"
+    _TITLE = "Development of Stable Influenza Vaccine Powder Formulations"
+    _BODY = ("A study of freeze-dried vaccine stability and storage. The vaccine powder kept its "
+             "efficacy in frozen storage and in powdered storage across the whole study period.")
+
+    def _dup_job(self) -> tuple[str, dict]:
+        plan = _fallback_plan(self._OBJECTIVE, "quick")
+        plan["objective"] = self._OBJECTIVE
+        return self.store.create_job(self._OBJECTIVE, plan, state="running")["id"], plan
+
+    def _dup_source(self, jid: str, url: str, *, score: float = 0) -> str:
+        return self.store.add_source(jid, url=url, canonical_url=canonicalize_url(url),
+            title=self._TITLE, snippet="A study of freeze-dried vaccine stability and storage.",
+            query=self._QUERY, domain="example.com", score=score)
+
+    def _dup_fetch(self, canonical: dict[str, str]):
+        async def fake_fetch(url: str):
+            return Page(url=canonical[url], canonical_url=canonical[url], title=self._TITLE,
+                        text=self._BODY, content_type="text/html", published_at="2026-08-25")
+        return fake_fetch
+
+    def _dup_rows(self, jid: str) -> dict[str, dict]:
+        return {row["source_id"]: row for row in self.store.sources(jid)}
+
+    async def test_two_hits_converging_on_one_canonical_url_keep_one_source(self):
+        jid, plan = self._dup_job()
+        final = "https://www.example.com/vaccine-powder"
+        first = self._dup_source(jid, "http://example.com/vaccine-powder", score=2)
+        second = self._dup_source(jid, "https://example.com/vaccine-powder?page=1", score=1)
+        self.assertNotEqual(first, second)
+        fetch = self._dup_fetch({"http://example.com/vaccine-powder": final,
+                                 "https://example.com/vaccine-powder?page=1": final})
+        with patch("service.research.orchestrator.fetch_page", fetch):
+            await self.manager._fetch(jid, 5, plan)  # used to raise IntegrityError
+        rows = self._dup_rows(jid)
+        self.assertEqual(rows[first]["status"], "read")
+        self.assertEqual(rows[first]["canonical_url"], final)
+        self.assertEqual(rows[second]["status"], "rejected")
+        self.assertEqual(rows[second]["error"], f"Duplicate of {first}")
+        self.assertEqual(rows[second]["body"], "")
+        # The duplicate keeps the address it was found at.
+        self.assertEqual(rows[second]["canonical_url"],
+                         canonicalize_url("https://example.com/vaccine-powder?page=1"))
+        skipped = self.store.event_payloads(jid, "source_skipped")
+        self.assertEqual([e["source_id"] for e in skipped], [second])
+        self.assertEqual(skipped[0]["text"], f"Duplicate of {first}")
+
+    async def test_hit_whose_page_is_another_unread_hit_defers_to_that_hit(self):
+        jid, plan = self._dup_job()
+        final = "https://example.com/vaccine-powder"
+        redirecting = self._dup_source(jid, "http://example.com/vaccine-powder", score=2)
+        target = self._dup_source(jid, final, score=1)
+        fetch = self._dup_fetch({"http://example.com/vaccine-powder": final, final: final})
+        with patch("service.research.orchestrator.fetch_page", fetch):
+            await self.manager._fetch(jid, 5, plan)
+        rows = self._dup_rows(jid)
+        self.assertEqual(rows[redirecting]["status"], "rejected")
+        self.assertEqual(rows[redirecting]["error"], f"Duplicate of {target}")
+        self.assertEqual(rows[target]["status"], "read")
+        self.assertEqual(len(self.store.sources(jid, statuses={"read", "extracted"})), 1)
+
+    async def test_same_hit_found_again_in_a_later_round_is_not_read_twice(self):
+        jid, plan = self._dup_job()
+        hit = "https://en.wikipedia.org/wiki/Vaccine_(powder)"
+        final = "https://en.wikipedia.org/wiki/Vaccine_%28powder%29"
+        fetch = self._dup_fetch({hit: final})
+        with patch("service.research.orchestrator.fetch_page", fetch):
+            first = self._dup_source(jid, hit)
+            await self.manager._fetch(jid, 5, plan)
+            self.assertEqual(self._dup_rows(jid)[first]["canonical_url"], final)
+            # The next round's search surfaces the very same hit.
+            second = self._dup_source(jid, hit)
+            self.assertNotEqual(first, second)
+            await self.manager._fetch(jid, 5, plan)  # used to raise IntegrityError
+            rows = self._dup_rows(jid)
+            self.assertEqual(rows[first]["status"], "read")
+            self.assertEqual(rows[second]["status"], "rejected")
+            self.assertEqual(rows[second]["error"], f"Duplicate of {first}")
+            # A third sighting lands on the rejected row: no new row, no new fetch.
+            self.assertEqual(self._dup_source(jid, hit), second)
+            self.assertEqual(self.store.sources(jid, statuses={"found"}), [])
+        self.assertEqual(len(self._dup_rows(jid)), 2)
+
+    async def test_page_whose_canonical_belongs_to_a_failed_row_is_still_read(self):
+        jid, plan = self._dup_job()
+        final = "https://example.com/vaccine-powder"
+        failed = self._dup_source(jid, final)
+        self.store.update_source(jid, failed, status="failed", error="ReadTimeout")
+        later = self._dup_source(jid, "http://example.com/vaccine-powder")
+        fetch = self._dup_fetch({"http://example.com/vaccine-powder": final})
+        with patch("service.research.orchestrator.fetch_page", fetch):
+            await self.manager._fetch(jid, 5, plan)
+        rows = self._dup_rows(jid)
+        self.assertEqual(rows[failed]["status"], "failed")
+        self.assertEqual(rows[later]["status"], "read")
+        self.assertEqual(rows[later]["url"], final)
+        self.assertEqual(rows[later]["canonical_url"],
+                         canonicalize_url("http://example.com/vaccine-powder"))
+        self.assertEqual(rows[later]["body"], self._BODY)
+
+    async def test_a_store_clash_on_one_source_never_fails_the_job(self):
+        jid, plan = self._dup_job()
+        final = "https://example.com/vaccine-powder"
+        holder = self._dup_source(jid, final)
+        self.store.update_source(jid, holder, status="read", body=self._BODY)
+        clashing = self._dup_source(jid, "http://example.com/vaccine-powder")
+        fetch = self._dup_fetch({"http://example.com/vaccine-powder": final})
+        # The lookup misses (as if the other row landed a moment later), so the
+        # write itself hits the UNIQUE constraint.
+        with patch("service.research.orchestrator.fetch_page", fetch), \
+             patch.object(self.store, "source_for_canonical", return_value=None):
+            await self.manager._fetch(jid, 5, plan)
+        rows = self._dup_rows(jid)
+        self.assertEqual(rows[holder]["status"], "read")
+        self.assertEqual(rows[clashing]["status"], "rejected")
+        self.assertIn("Duplicate", rows[clashing]["error"])
+        # The store is still usable after the refused write.
+        self.assertEqual(self._dup_source(jid, "https://example.com/another"), "S3")
+
+    # --- the shared page cache is keyed by the address that was asked for ----
+    def _claiming_fetch(self, calls: list[str], claims: dict[str, str]):
+        """Each page says its canonical address is ``claims[url]`` and carries
+        text that names the URL it was really fetched from."""
+        async def fake_fetch(url: str):
+            calls.append(url)
+            return Page(url=url, canonical_url=claims.get(url, url), title=self._TITLE,
+                        text=f"{self._BODY} Served from {url}.", content_type="text/html",
+                        published_at="2026-08-25")
+        return fake_fetch
+
+    async def test_page_cannot_file_its_text_under_another_pages_address(self):
+        planted = "https://example.com/users/mallory/notes"
+        official = "https://example.com/official/vaccine-guidance"
+        calls: list[str] = []
+        fetch = self._claiming_fetch(calls, {planted: official})
+        with patch("service.research.orchestrator.fetch_page", fetch):
+            jid, plan = self._dup_job()
+            first = self._dup_source(jid, planted)
+            await self.manager._fetch(jid, 5, plan)
+            self.assertEqual(self._dup_rows(jid)[first]["status"], "read")
+            # Cached under the address that was requested, not the one it claimed.
+            entry = research_cache.get(canonicalize_url(planted))
+            self.assertEqual(entry["url"], planted)
+            self.assertEqual(entry["page_canonical_url"], official)
+            self.assertIsNone(research_cache.get(official))
+            # A later job that finds the real page fetches it and reads its own text.
+            other, plan = self._dup_job()
+            real = self._dup_source(other, official)
+            await self.manager._fetch(other, 5, plan)
+        self.assertEqual(calls, [planted, official])
+        row = self._dup_rows(other)[real]
+        self.assertEqual(row["status"], "read")
+        self.assertIn(f"Served from {official}.", row["body"])
+        self.assertNotIn("mallory", row["body"])
+
+    async def test_same_hit_in_a_later_job_is_served_from_the_cache(self):
+        hit = "https://example.com/vaccine-powder?page=1"
+        final = "https://example.com/vaccine-powder"
+        calls: list[str] = []
+        fetch = self._claiming_fetch(calls, {hit: final})
+        with patch("service.research.orchestrator.fetch_page", fetch):
+            jid, plan = self._dup_job()
+            first = self._dup_source(jid, hit)
+            await self.manager._fetch(jid, 5, plan)
+            other, plan = self._dup_job()
+            again = self._dup_source(other, hit)
+            await self.manager._fetch(other, 5, plan)
+        self.assertEqual(calls, [hit])  # one fetch; it used to miss every time
+        for job, sid in ((jid, first), (other, again)):
+            row = self._dup_rows(job)[sid]
+            self.assertEqual((row["status"], row["url"], row["canonical_url"]),
+                             ("read", hit, final))
+
+    async def test_cache_entry_written_under_a_pages_own_claim_is_not_used(self):
+        # The shape entries had before: keyed by what the page declared, with
+        # no record of that. Such an entry may hold another page's text.
+        official = "https://example.com/official/vaccine-guidance"
+        research_cache.put(official, url="https://example.com/users/mallory/notes",
+                           title=self._TITLE, text=self._BODY + " Planted.",
+                           content_type="text/html", published_at="")
+        calls: list[str] = []
+        with patch("service.research.orchestrator.fetch_page", self._claiming_fetch(calls, {})):
+            jid, plan = self._dup_job()
+            real = self._dup_source(jid, official)
+            await self.manager._fetch(jid, 5, plan)
+        self.assertEqual(calls, [official])
+        self.assertNotIn("Planted.", self._dup_rows(jid)[real]["body"])
 
 
 class SourceQualityTests(unittest.TestCase):

@@ -280,6 +280,20 @@ class ResearchStore:
             self._db.commit()
             return sid
 
+    def source_for_canonical(self, job_id: str, canonical_url: str) -> dict | None:
+        """The row that already holds this canonical URL in the job, if any.
+
+        Returns its ``source_id`` and ``status``. A fetched page's canonical URL
+        can differ from the search hit's (redirects, rel=canonical, the
+        Wikipedia API's own title form), so the orchestrator asks before
+        rewriting a row onto a URL another row may already own.
+        """
+        with self._lock:
+            row = self._db.execute(
+                "SELECT source_id,status FROM research_sources WHERE job_id=? AND canonical_url=?",
+                (job_id, canonical_url)).fetchone()
+        return {"source_id": str(row["source_id"]), "status": str(row["status"])} if row else None
+
     def update_source(self, job_id: str, source_id: str, **fields: Any) -> None:
         allowed = {"url", "canonical_url", "domain", "title", "snippet",
                    "published_at", "content_type", "body", "status", "score", "error",
