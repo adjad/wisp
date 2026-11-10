@@ -227,6 +227,12 @@ def cache_history_headers(history: str) -> None:
 # must preserve the last bytes and their original age, including after restart.
 _external_accounts: dict[str, dict] = {}
 _EXTERNAL_MAX_AGE = 300.0
+# Header history is read every 30 minutes (MailReader's history timer, gmail_source's
+# HISTORY_EVERY), so judging it by the 5-minute limit above made day and period
+# summaries carry a "newer messages may be missing" caveat for 25 of every 30
+# minutes. One interval plus a scan's duration; a missed read still warns. Headers
+# and bodies keep the 5-minute limit, which is what makes _ensure_email_cache sync.
+_HISTORY_MAX_AGE = 2400.0
 # How long a linked account's last good snapshot outranks a newer Mail.app read:
 # two of its own fetch intervals (gmail_source's HEADERS_EVERY, RAW_EVERY,
 # HISTORY_EVERY). Bodies are fetched every 15 minutes, so holding them to the
@@ -708,7 +714,8 @@ def email_source_details(account: str | None = None, *, part: str = "headers") -
             continue
         stamp = _source_receipt(item.get(part + "_at"))
         error = str(item.get(part + "_error") or "")
-        fresh = bool(item.get(part + "_verified") and stamp and not error and 0 <= now - stamp <= _EXTERNAL_MAX_AGE)
+        limit = _HISTORY_MAX_AGE if part == "history" else _EXTERNAL_MAX_AGE
+        fresh = bool(item.get(part + "_verified") and stamp and not error and 0 <= now - stamp <= limit)
         result.append({"account": address, "source": "gmail", "fresh": fresh,
                        "last_success": stamp or None, "error": error,
                        "age_seconds": max(0, now - stamp) if stamp else None})
@@ -730,7 +737,8 @@ def email_source_details(account: str | None = None, *, part: str = "headers") -
         # Mail.app read completion still cannot prove a server fetch completed.
         result.append({"account": label, "source": _email_read_source or _native_source or "saved_cache",
                        "fresh": bool(_email_read_source == "mail_app" and _email_available and
-                                     0 <= now - native_stamp <= _EXTERNAL_MAX_AGE),
+                                     0 <= now - native_stamp <= (
+                                         _HISTORY_MAX_AGE if part == "history" else _EXTERNAL_MAX_AGE)),
                        "last_success": native_stamp or None,
                        "age_seconds": max(0, now - native_stamp) if native_stamp else None,
                        "error": _email_reason if _email_available is False else ""})

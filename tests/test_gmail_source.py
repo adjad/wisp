@@ -1552,6 +1552,33 @@ print('fresh process retained original native fallback')
         self.assertFalse(history["fresh"])
         self.assertTrue(E.email_source_details()[0]["fresh"])
 
+    def test_history_read_every_half_hour_is_fresh_for_most_of_that_interval(self):
+        E.configure_external_accounts({})
+        E.cache_emails(header("Native", "Recent"))
+        E.cache_history_headers(header("Native", "Older", stamp=time.time() - 86400))
+        E.set_email_availability(True, read_source="mail_app")
+        E._native_history_at = time.time() - 1200
+        self.assertTrue(E.email_source_details(part="history")[0]["fresh"])
+        self.assertEqual(E.email_freshness_warning(part="history"), "")
+        now = time.time()
+        plain = E._empty_range_message("Monday", now - 86400, now)
+        self.assertNotIn("couldn’t verify", plain)
+        # A history read that has been missed for an hour still warns.
+        E._native_history_at = time.time() - 3600
+        self.assertIn("local history read", E.email_freshness_warning(part="history"))
+        self.assertIn("couldn’t verify", E._empty_range_message("Monday", now - 86400, now))
+        # Headers and bodies keep the five-minute limit that makes a sync run.
+        E._native_headers_at = time.time() - 1200
+        self.assertFalse(E.email_source_details()[0]["fresh"])
+
+    def test_gmail_history_read_every_half_hour_is_fresh_between_reads(self):
+        self.publish(headers=header(), history=header(subject="Older", stamp=time.time() - 86400))
+        E._external_accounts[ME]["history_at"] = time.time() - 1200
+        E._external_accounts[ME]["history_verified"] = True
+        self.assertTrue(E.email_source_details(part="history")[0]["fresh"])
+        E._external_accounts[ME]["history_at"] = time.time() - 3600
+        self.assertFalse(E.email_source_details(part="history")[0]["fresh"])
+
     def test_old_epoch_cannot_dispatch_cached_or_refresh_token(self):
         async def run(cached):
             token = G._context.set((ME, dict(self.accounts[ME]), 0))
