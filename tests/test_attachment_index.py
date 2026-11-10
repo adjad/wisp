@@ -834,3 +834,25 @@ async def test_disconnecting_gmail_erases_the_attachment_text_off_the_event_loop
     assert result["erased"]["me@gmail.com"]["attachment_text"] == "erased 1"
     assert where and all(t != main for t in where)
     assert attachment_store.get(dig) is None
+
+
+async def test_a_read_overtaken_by_an_erase_is_resting_so_the_file_is_tried_again(w, monkeypatch):
+    """The store refused the write because an erase overtook the read. That is not a file with nothing
+    to keep, so the real index_one says "resting" and the reader does not mark the file tried."""
+    monkeypatch.setattr(ma, "index_one", REAL_INDEX_ONE)
+    trip_models(monkeypatch)
+    pdf = pdf_with_text("The glider trailer permit number is 4471 and it runs until 2028.")
+    rows = [mrow(1, "permit.pdf", size=len(pdf), attachment_id="1.2")]
+    email = ma.from_mail_rows(rows)[0]
+    erased = []
+
+    async def read(rowid, attachment_id, timeout=45.0):
+        if not erased:
+            erased.append(attachment_store.forget_account("someone-else@example.com"))
+        return pdf, "permit.pdf", ""
+    monkeypatch.setattr(bridge, "read_attachment", read)
+    import time as _time
+    first = await REAL_INDEX_ONE(email, email.files[0], deadline=_time.monotonic() + 30)
+    assert first == "resting" and attachment_store.count() == 0
+    again = await REAL_INDEX_ONE(email, email.files[0], deadline=_time.monotonic() + 30)
+    assert again == "kept" and attachment_store.search("glider")

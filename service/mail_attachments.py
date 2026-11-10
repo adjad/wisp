@@ -1880,7 +1880,15 @@ async def index_one(email: _Email, f: _File, *, deadline: float) -> str:
         ctx = _bare_ctx(deadline, [])           # no client, no model, no Gmail accounts
         ctx.background = True
         await _stamp(ctx)
-        return (await _whole(ctx, email, local, models=False)).outcome
+        began = ctx.epoch
+        outcome = (await _whole(ctx, email, local, models=False)).outcome
+        if outcome == "skipped" and began is not None:
+            # An erase that overtook this read made the store refuse the write. That is not a file with
+            # nothing to keep: say "resting" so the caller does not mark it tried and comes back to it.
+            await _stamp(ctx)
+            if ctx.epoch != began:
+                return "resting"
+        return outcome
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001
