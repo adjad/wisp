@@ -482,6 +482,40 @@ def test_an_in_flight_gist_cannot_write_its_cache_back_after_the_erase(monkeypat
     assert not cache.exists()
 
 
+def test_an_in_flight_summary_fold_cannot_write_after_the_erase(monkeypatch):
+    """A chat's rolling-summary fold outlives its turn (service/main.py), so it is not a
+    request the reset cancels: it is stopped with the background work."""
+    import sys
+    from types import SimpleNamespace
+    from service.assistant import behavior_runtime
+    monkeypatch.setattr(behavior_runtime, "stop_for_reset", lambda: None)
+    folds = {}
+    monkeypatch.setitem(sys.modules, "service.main", SimpleNamespace(_SUMMARY_TASKS=folds))
+    written = []
+
+    async def fold():
+        await asyncio.sleep(0.3)                 # the model is still answering
+        written.append("summary")
+
+    async def go():
+        folds["chat-1"] = asyncio.create_task(fold())
+        await asyncio.sleep(0)
+        app = SimpleNamespace(state=SimpleNamespace(wisp_background_tasks=[], wisp_bridge_link=None))
+        problems = []
+        await R._stop_background(app, problems)
+        assert folds["chat-1"].cancelled()
+        await asyncio.sleep(0.5)                 # longer than the call had left
+        return problems
+
+    loop = asyncio.new_event_loop()
+    try:
+        problems = loop.run_until_complete(go())
+    finally:
+        loop.close()
+    assert not any(p["part"] == "background" for p in problems)
+    assert written == []
+
+
 def test_the_reset_knows_every_scheduler_child():
     """Every child whose schedule_tick the scheduler calls is stopped by the reset."""
     import importlib

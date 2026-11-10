@@ -987,6 +987,16 @@ def _child_tasks() -> list:
     return found
 
 
+def _summary_folds() -> list:
+    """Rolling-summary folds a finished turn left running (service/main.py). They are
+    not requests, so _cancel_requests never sees them."""
+    folds = getattr(sys.modules.get("service.main"), "_SUMMARY_TASKS", None)
+    if not isinstance(folds, dict):
+        return []
+    loop = asyncio.get_running_loop()
+    return [t for t in folds.values() if isinstance(t, asyncio.Task) and t.get_loop() is loop]
+
+
 async def _stop_background(app, problems: list[dict]) -> None:
     from service.assistant import scheduler
     tasks = [t for t in getattr(app.state, "wisp_background_tasks", ()) or () if not t.done()]
@@ -996,6 +1006,8 @@ async def _stop_background(app, problems: list[dict]) -> None:
     # And the work it starts on its ticks. An in-flight gist or mail memory call would
     # otherwise write its cache back after the erase below, and a day-plan email send.
     tasks += [t for t in _child_tasks() if not t.done()]
+    # A fold mid-call would write its summary into the chat history after the erase.
+    tasks += [t for t in _summary_folds() if not t.done()]
     for task in tasks:
         task.cancel()
     if tasks:

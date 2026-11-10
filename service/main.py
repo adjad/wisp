@@ -26,6 +26,7 @@ if _reset_os.environ.get("WISP_LAUNCH_NONCE"):
 from service.assistant.verified_reminders import expected_date_fields
 
 import asyncio
+import contextvars
 import dataclasses
 from service.inference.remote_policy import (remote_only_profile,
                                              require_generation_role,
@@ -256,6 +257,55 @@ _CLARIFY_TARGET_HINT = (
 
 client: OMLXClient
 SESSIONS: dict[str, dict] = {}
+# Rolling-summary folds still running, one per session (see _fold_summary_later).
+_SUMMARY_TASKS: dict[str, asyncio.Task] = {}
+
+
+def _fold_summary_later(sid: str, fold) -> None:
+    """Run ``fold()``, the rolling-summary fold for session ``sid``, as a task of its own.
+
+    The fold starts after the reply is stored, and the app closes the stream at `done`.
+    Awaited inside the turn it was cancelled there on every turn, so no summary was ever
+    written. One fold per session at a time: a turn that ends while one runs leaves its
+    overflow to the next turn's fold."""
+    from service.wisp_reset import state as reset_state
+    if reset_state.sealed:
+        return                          # a reset is erasing the chat history
+    loop = asyncio.get_running_loop()
+    running = _SUMMARY_TASKS.get(sid)
+    if running is not None and not running.done() and running.get_loop() is loop:
+        return
+
+    async def run() -> None:
+        from service.inference.power_tier import CHAT, power_tier
+        # Counted as a turn, as it was inside one: background model work stands down,
+        # and on battery the fold keeps the chat cap.
+        idle.begin_foreground()
+        try:
+            with power_tier(CHAT):
+                await fold()
+        finally:
+            idle.end_foreground()
+
+    def finished(task: asyncio.Task) -> None:
+        if _SUMMARY_TASKS.get(sid) is task:
+            del _SUMMARY_TASKS[sid]
+        if not task.cancelled():
+            task.exception()            # retrieved, so a failed fold is never logged as lost
+
+    # A context of its own: the turn's trace, debug capture and tool state end with the turn.
+    task = loop.create_task(run(), context=contextvars.Context())
+    _SUMMARY_TASKS[sid] = task
+    task.add_done_callback(finished)
+
+
+async def _stop_summary_folds() -> None:
+    """Cancel the folds still running on this loop and wait for them (shutdown)."""
+    loop = asyncio.get_running_loop()
+    folds = [task for task in _SUMMARY_TASKS.values() if not task.done() and task.get_loop() is loop]
+    for task in folds:
+        task.cancel()
+    await asyncio.gather(*folds, return_exceptions=True)
 research_manager = ResearchManager()
 
 ROLE_SYSTEM = {
@@ -478,6 +528,7 @@ async def lifespan(app: FastAPI):
         for task in started_tasks:
             task.cancel()
         await asyncio.gather(*started_tasks, return_exceptions=True)
+        await _stop_summary_folds()
         if profile is None or parity:
             await mcp_manager.stop()
         await client.aclose()
@@ -3267,12 +3318,14 @@ async def agent(body: dict[str, Any]):
                     await ensure_omlx()
                     await client.ensure_only(summary_target.model)
 
-                await maybe_summarize(
+                # Not awaited: the app closes the stream at `done`, which cancelled an
+                # awaited fold on every turn. The module-level client, never this turn's.
+                _fold_summary_later(sid, lambda: maybe_summarize(
                     client,
                     sid,
                     summary_target.model,
                     prepare=prepare_local_summary,
-                )
+                ))
         except Exception as e:  # noqa: BLE001
             trace.event("error", error_kind=type(e).__name__)
             message, detail = translate_error(e, retry_omlx=ensure_omlx if remote_only_profile() is None and owned_inference_client is None else None,
@@ -3459,6 +3512,9 @@ async def get_session(sid: str) -> dict[str, Any]:
 
 @app.delete("/sessions/{sid}")
 async def delete_session(sid: str) -> dict[str, Any]:
+    fold = _SUMMARY_TASKS.pop(sid, None)
+    if fold is not None:
+        fold.cancel()                   # a fold still running must not write to a deleted chat
     store.delete_session(sid)
     from service.memory.facts import store as fact_store
     fact_store.remove_session(sid)
