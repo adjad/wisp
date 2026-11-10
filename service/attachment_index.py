@@ -50,6 +50,7 @@ LIST_LIMIT = 200
 MAX_PAGES = 3
 FUTURE_HOURS = 36
 KEY_MAX = 300
+STOP_WAIT_S = 25.0
 
 _task: asyncio.Task | None = None
 _next_at = 0.0              # on the monotonic clock: a wall clock that moves cannot stall or hurry the reader
@@ -101,12 +102,19 @@ def _day(now: float) -> str:
     return time.strftime("%Y-%m-%d", time.localtime(now))
 
 
+CLOCK_BACK_DAYS = 2             # a stored day this far ahead is a clock that moved back; further is a wrong date
+
+
 def _effective_day(now: float, state: dict) -> str:
     """Today's date, but never earlier than the latest day already counted: a clock moved
-    backwards does not give back the day's 40 files."""
+    back by a day or two does not give back the day's 40 files. A stored day further ahead
+    than that is a wrong date, not a clock that went back: it is ignored (today counts from
+    the stored count only if the stored day is today, else from 0)."""
     today = _day(now)
     seen = state.get("day")
-    return seen if isinstance(seen, str) and seen > today else today
+    if isinstance(seen, str) and today < seen <= _day(now + CLOCK_BACK_DAYS * 86400):
+        return seen
+    return today
 
 
 def _today(now: float) -> int:
@@ -127,6 +135,7 @@ def _count_one(now: float) -> None:
 
 
 def status() -> dict:
+    """Blocking (one store read): the route runs it with ``asyncio.to_thread``."""
     return {"enabled": enabled(), "kept": attachment_store.count(), "last_run": _last_run,
             "last_skip": _last_skip, "today": _today(_clock())}
 
@@ -164,6 +173,7 @@ async def _candidate(now: float):
                  for email in sorted(ma.from_mail_rows(rows), key=lambda e: e.ts, reverse=True)
                  for f in email.files if _eligible(f)]
         # One connection for the whole page, off the event loop.
+        # Raises StoreBusy when the store cannot be read: the run is skipped, never "nothing tried".
         done = await asyncio.to_thread(attachment_store.tried_many, [_key(f) for _e, f in found])
         for email, f in found:
             if _key(f) not in done:
@@ -205,6 +215,20 @@ def _rest_left(ma) -> float:
         return 0.0
 
 
+async def stop() -> None:
+    """Cancel the read in flight, if any, and wait (at most 25 s) for it to end.
+
+    "Forget mail memory" turns the switch off first, then calls this, then erases: a
+    tick that already started cannot store anything after the erase."""
+    task = _task
+    if task is None or task.done():
+        return
+    task.cancel()
+    await asyncio.wait({task}, timeout=STOP_WAIT_S)
+    if task.done() and not task.cancelled():
+        task.exception()                    # retrieved, so a late failure is not reported twice
+
+
 async def _prune_if_due() -> None:
     """Compact the store about hourly while the app runs (stale index words after a dropped text)."""
     global _last_prune
@@ -233,8 +257,15 @@ async def _run() -> None:
             return
         _skip("")
         await _prune_if_due()
-        picked = await _candidate(_clock())
-        if picked is None:
+        try:
+            picked = await _candidate(_clock())
+        except attachment_store.StoreBusy:
+            _skip("store_busy")                 # cannot tell what was tried: read nothing this run
+            gap = FAILURE_GAP_S
+            picked = False
+        if picked is False:
+            pass
+        elif picked is None:
             gap = EMPTY_GAP_S
         elif idle.foreground_busy():            # a turn began while the list was read: it comes first
             _skip("foreground")
@@ -248,9 +279,14 @@ async def _run() -> None:
                 rest = _rest_left(ma)
                 gap = rest if rest > 0 else FAILURE_GAP_S
             else:
-                attachment_store.mark_tried(_key(f), outcome)
+                # Off the loop: a lock wait, and the first call may make the salt.
+                marked = await asyncio.to_thread(attachment_store.mark_tried, _key(f), outcome)
                 _count_one(_clock())
-                gap = await _gap_after_file()
+                if marked:
+                    gap = await _gap_after_file()
+                else:
+                    _skip("store_busy")         # not recorded: slow down rather than ask for it again at once
+                    gap = FAILURE_GAP_S
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 — the type only: a message could hold mail data

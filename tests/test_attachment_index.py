@@ -641,3 +641,203 @@ def test_an_account_whose_attachment_text_could_not_be_erased_stays_for_the_next
     assert gone_account in kept and kept[gone_account][1] >= runner.GONE_RUNS     # counted as gone again next time
     assert runner._forget_gone_accounts(st, [], now + 60) == {"n": 1}
     assert erased == [{gone_account}] and attachment_store.get(dig) is None
+
+
+# --- review round 2: off the loop, fail closed, forget during a read, future dates -----------
+
+import threading  # noqa: E402
+
+
+async def test_mark_tried_runs_off_the_event_loop(w, monkeypatch):
+    main = threading.get_ident()
+    seen = {}
+    real = attachment_store.mark_tried
+
+    def spy(key, outcome):
+        seen["thread"] = threading.get_ident()
+        return real(key, outcome)
+
+    monkeypatch.setattr(attachment_store, "mark_tried", spy)
+    w.rows = [mrow(1)]
+    assert await w.tick() is True
+    assert seen["thread"] != main
+
+
+async def test_a_busy_store_skips_the_run_instead_of_reading_the_same_file_again(w, monkeypatch):
+    w.rows = [mrow(1)]
+
+    def busy(keys):
+        raise attachment_store.StoreBusy("locked")
+
+    monkeypatch.setattr(attachment_store, "tried_many", busy)
+    assert await w.tick() is True
+    assert w.read == [] and ai._last_skip == "store_busy"
+    assert w.after() == pytest.approx(ai.FAILURE_GAP_S)
+
+
+async def test_a_file_that_could_not_be_marked_tried_says_so(w, monkeypatch):
+    w.rows = [mrow(1)]
+    monkeypatch.setattr(attachment_store, "mark_tried", lambda key, outcome: False)
+    assert await w.tick() is True
+    assert w.read == ["report.pdf"] and ai._last_skip == "store_busy"
+    assert ai.status()["today"] == 1
+    assert w.after() == pytest.approx(ai.FAILURE_GAP_S)
+
+
+async def test_a_wrong_future_date_in_the_count_does_not_stop_the_reader(w):
+    ai._write_json(ai._dir() / "state.json", {"day": "2099-01-01", "count": 40})
+    assert ai.status()["today"] == 0
+    w.rows = [mrow(1)]
+    assert await w.tick() is True
+    state = json.loads((ai._dir() / "state.json").read_text())
+    assert state == {"day": ai._day(w.now), "count": 1}
+
+
+async def test_the_count_of_today_and_of_a_clock_a_day_ahead_is_kept(w):
+    today = ai._day(w.now)
+    ai._write_json(ai._dir() / "state.json", {"day": today, "count": 7})
+    assert ai.status()["today"] == 7
+    ai._write_json(ai._dir() / "state.json", {"day": ai._day(w.now + DAY), "count": 7})
+    assert ai.status()["today"] == 7           # the clock moved back a day
+    ai._write_json(ai._dir() / "state.json", {"day": ai._day(w.now + 5 * DAY), "count": 7})
+    assert ai.status()["today"] == 0           # far ahead: a wrong date, not a clock that went back
+
+
+async def test_stop_cancels_a_read_in_flight_and_is_bounded(w):
+    w.rows = [mrow(1)]
+    w.hold = asyncio.Event()
+    ai.schedule_tick()
+    task = ai._task
+    for _ in range(200):
+        if w.read:
+            break
+        await asyncio.sleep(0.01)
+    assert w.read and not task.done()
+    await ai.stop()
+    assert task.done()
+    await ai.stop()                             # nothing in flight: returns at once
+
+
+def _forget_stubs(monkeypatch):
+    _forget_app(monkeypatch)
+    from service.mail_memory import api
+    return api
+
+
+async def test_a_read_that_would_land_during_forget_mail_memory_stores_nothing(w, monkeypatch):
+    api = _forget_stubs(monkeypatch)
+    dig = attachment_store.digest(b"late bytes")
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def late(email, f, *, deadline):
+        entered.set()
+        await release.wait()
+        attachment_store.put(dig, kind="pdf", text="private words", cut=False, account="acct")
+        return "kept"
+
+    monkeypatch.setattr(ma, "index_one", late)
+    w.rows = [mrow(1)]
+    ai.schedule_tick()
+    task = ai._task
+    await asyncio.wait_for(entered.wait(), 5)
+    out = await api.forget_facts(api.Nothing())
+    release.set()
+    await asyncio.sleep(0.2)
+    assert task.done()
+    assert attachment_store.get(dig) is None and attachment_store.count() == 0
+    assert out["attachment_reading"] == "off" and out["attachment_text"] == "erased" and out["complete"] is True
+
+
+async def test_forget_mail_memory_turns_the_reader_off_then_stops_it_then_erases(w, monkeypatch):
+    api = _forget_stubs(monkeypatch)
+    calls = []
+    real_set, real_stop, real_erase = ai.set_enabled, ai.stop, attachment_store.forget_all_result
+
+    def set_enabled(value):
+        calls.append(("off", value))
+        return real_set(value)
+
+    async def stop():
+        calls.append(("stop", ai.enabled()))
+        await real_stop()
+
+    def erase():
+        calls.append(("erase", ai.enabled()))
+        return real_erase()
+
+    monkeypatch.setattr(ai, "set_enabled", set_enabled)
+    monkeypatch.setattr(ai, "stop", stop)
+    monkeypatch.setattr(attachment_store, "forget_all_result", erase)
+    out = await api.forget_facts(api.Nothing())
+    assert calls == [("off", False), ("stop", False), ("erase", False)]
+    assert out["attachment_reading"] == "off" and out["complete"] is True
+
+
+async def test_forget_mail_memory_says_still_on_when_the_switch_was_not_written(w, monkeypatch):
+    api = _forget_stubs(monkeypatch)
+
+    def refused(value):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(ai, "set_enabled", refused)
+    out = await api.forget_facts(api.Nothing())
+    assert ai.enabled() is True
+    assert out["attachment_reading"] == "still on" and out["complete"] is False
+    assert out["attachment_text"] == "erased" and out["ok"] is True
+
+
+async def test_forget_mail_memory_is_not_complete_when_the_erase_failed(w, monkeypatch):
+    api = _forget_stubs(monkeypatch)
+    monkeypatch.setattr(attachment_store, "_ERASE_WAIT_S", 0.2)
+    assert attachment_store.put(attachment_store.digest(b"b"), kind="pdf", text="words", cut=False, account="me@x.com")
+    c = _hold()
+    try:
+        out = await api.forget_facts(api.Nothing())
+    finally:
+        c.execute("ROLLBACK")
+        c.close()
+    assert out["attachment_text"] == "failed" and out["attachment_reading"] == "off"
+    assert out["ok"] is True and out["complete"] is False
+
+
+def test_erasing_a_gmail_account_ignores_a_concurrent_erase_flipping_the_old_flag(monkeypatch, tmp_path):
+    from service import gmail_source
+    monkeypatch.setenv("WISP_HOME", str(tmp_path / "home"))
+    dig = attachment_store.digest(b"file bytes")
+    assert attachment_store.put(dig, kind="pdf", text="private words", cut=False, account="me@gmail.com")
+    real = attachment_store._run_erase
+
+    def racing(body):
+        out = real(body)
+        attachment_store._erase_state["failed"] = True      # another erase failed meanwhile
+        return out
+
+    monkeypatch.setattr(attachment_store, "_run_erase", racing)
+    assert gmail_source.erase_account_data("me@gmail.com")["attachment_text"] == "erased 1"
+    assert attachment_store.get(dig) is None
+
+
+async def test_disconnecting_gmail_erases_the_attachment_text_off_the_event_loop(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock, patch
+    import httpx
+    from service import gmail_source
+    monkeypatch.setenv("WISP_HOME", str(tmp_path / "home"))
+    main = threading.get_ident()
+    where = []
+    real = attachment_store._run_erase
+
+    def spy(body):
+        where.append(threading.get_ident())
+        return real(body)
+
+    monkeypatch.setattr(attachment_store, "_run_erase", spy)
+    dig = attachment_store.digest(b"file bytes")
+    assert attachment_store.put(dig, kind="pdf", text="private words", cut=False, account="me@gmail.com")
+    gmail_source._save_config({"client_id": "c", "client_secret": "s", "accounts": {
+        "me@gmail.com": {"refresh_token": "r", "scope": gmail_source.SCOPE}}})
+    with patch.object(httpx.AsyncClient, "post", AsyncMock(return_value=httpx.Response(200))):
+        result = await gmail_source.disconnect("me@gmail.com")
+    assert result["erased"]["me@gmail.com"]["attachment_text"] == "erased 1"
+    assert where and all(t != main for t in where)
+    assert attachment_store.get(dig) is None

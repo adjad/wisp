@@ -189,29 +189,41 @@ async def facts_switch(body: FactsSwitch) -> dict:
 @router.post("/assistant/mail_memory/forget_facts", dependencies=[Depends(_native_only)])
 async def forget_facts(body: Nothing) -> dict:
     """Forget everything Wisp learned from mail, and stop learning it until the
-    user switches the fact pass back on. Reminder suggestions are untouched."""
+    user switches the fact pass back on. Reminder suggestions are untouched.
+
+    Reply: ``ok`` is about the facts part; ``complete`` is False when the attachment
+    text could not be erased or the background reader could not be switched off."""
     from service.memory.facts import store as facts
     import asyncio
     runner.set_facts(False)
-    # Off the loop: it waits for any fact pass that is saving right now.
-    from service import attachment_store
+    from service import attachment_index, attachment_store
+    # The background reader first: switched off, then any read in flight stopped, THEN the
+    # erase, so a read cannot land after it and the reader does not read the same files again.
+    try:
+        await asyncio.to_thread(attachment_index.set_enabled, False)
+    except Exception:  # noqa: BLE001 — never let the switch hide the erase result
+        pass
+    try:
+        await attachment_index.stop()
+    except Exception:  # noqa: BLE001
+        pass
     attachment_erased = False
     try:
+        # Off the loop: it waits for any fact pass that is saving right now.
         result = await asyncio.to_thread(profile_facts.forget_all, store(), facts)
     finally:
         # "Everything Wisp learned from mail" includes the text it kept from
         # attachments it was asked to read; erase it even if the facts erase raised.
-        # The background reader stops too, or it would read the same files again within minutes.
-        attachment_erased = await asyncio.to_thread(attachment_store.forget_all_ok)
-        try:
-            from service import attachment_index
-            await asyncio.to_thread(attachment_index.set_enabled, False)
-        except Exception:  # noqa: BLE001 — never let the switch hide the erase result
-            pass
+        attachment_erased = (await asyncio.to_thread(attachment_store.forget_all_result))[0]
+    try:
+        reading_off = not await asyncio.to_thread(attachment_index.enabled)
+    except Exception:  # noqa: BLE001
+        reading_off = False
     await _changed()
     return {"ok": True, **result, "enabled": False,
             "attachment_text": "erased" if attachment_erased else "failed",
-            "attachment_reading": "off"}
+            "attachment_reading": "off" if reading_off else "still on",
+            "complete": bool(attachment_erased and reading_off)}
 
 
 @router.post("/assistant/sync/mail_memory", dependencies=[Depends(_native_only)])
