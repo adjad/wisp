@@ -1590,7 +1590,12 @@ def _fit_tool_result(result: str, name: str, limit: int = _MAX_TOOL_RESULT_CHARS
         return DisplayOnlyToolResult.model_text
     if len(result) <= limit:
         return result
-    kept = result[:limit].rsplit("\n", 1)[0]
+    # Cut on a line boundary only when that keeps most of the budget. A fetched
+    # page of minified JSON is a header, a fence line and one long line: cut
+    # back to the last newline, the model got the header and none of the page.
+    head = result[:limit]
+    line_end = head.rfind("\n")
+    kept = head[:line_end] if line_end >= limit // 2 else head
     # A cut inside a fenced page or email body would leave the note below
     # inside the fence, where the model is told to read it as untrusted data.
     from service.tools.untrusted import close_open_fences
