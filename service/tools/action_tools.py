@@ -256,7 +256,9 @@ def confirm_preview(tool: str, args: dict) -> str | None:
                 + ("" if about else _FORWARD_NOT_FOUND + "\n") + f"To: {to}"
                 + (f"\n\nNote:\n{_clip_preview(note)}" if note else "\n\n(no note)"))
     if tool in ("send_message", "draft_message"):
-        to = _card_recipient(str(args.get("to", ""))) or "(no recipient given)"
+        to = _card_recipient(str(args.get("to", "")),
+                             bound=_bound_handle(args) if tool == "send_message" else "",
+                             ) or "(no recipient given)"
         text = str(args.get("text", "")).strip() or "(empty)"
         return f"To: {to}\n\n{text}"
     if tool in ("send_email", "draft_email"):
@@ -646,7 +648,16 @@ def _named(handle: str, typed: str = "") -> str:
     return f"{who} ({handle})" if who else handle
 
 
-def _card_recipient(to: str, *, want_email: bool = False) -> str:
+def _bound_handle(args: dict) -> str:
+    """The number a text's card was settled on (`resolved_to`), or "". Only
+    used for a typed NAME, and only when it is a real handle: a literal handle
+    in `to` is where the text goes, whatever else the call carries."""
+    to = str(args.get("to") or "").strip()
+    bound = str(args.get("resolved_to") or "").strip()
+    return bound if bound and to and not _is_handle(to) and _is_handle(bound) else ""
+
+
+def _card_recipient(to: str, *, want_email: bool = False, bound: str = "") -> str:
     """One recipient as a card shows it, resolved the way the tool will.
 
     A name that matches one contact names that contact and the handle, and says
@@ -660,9 +671,13 @@ def _card_recipient(to: str, *, want_email: bool = False) -> str:
     try:
         if _is_handle(to):
             return _named(to)
-        handle, problem = _resolve_recipient(to, want_email=want_email)
-        if problem or not handle:
-            return to
+        if bound:
+            # Already settled for this card: show exactly where the send goes.
+            handle = bound
+        else:
+            handle, problem = _resolve_recipient(to, want_email=want_email)
+            if problem or not handle:
+                return to
         who = _saved_name(handle)
         label = _named(handle, to)
         if who and who.casefold() != to.casefold():
@@ -695,9 +710,12 @@ def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
     instead. An email to a name is bound to the one saved address here, so the
     card shows where it really goes and the approved send can't resolve to
     anything else; a name in cc is settled the same way. A text keeps its
-    name: the tool resolves that same single match again, and both its card
-    and its receipt name the contact that matched, "Mom (…1234)". Only ever
-    refuses or narrows to the one address, and sends nothing.
+    typed name in `to` and carries the one number it matched in `resolved_to`:
+    the card shows that number, and the approved send goes to it without
+    looking the name up again, so a contact that changes between the card and
+    the tap can't move the text to a number nobody approved. Both card and
+    receipt name the contact that matched, "Mom (…1234)". Only ever refuses or
+    narrows to the one address, and sends nothing.
     """
     name = getattr(tool, "name", "")
     # Only the real tools: another tool of that name resolves its own recipient.
@@ -706,10 +724,14 @@ def prepare_send_recipient(tool, args: dict) -> tuple[dict, str | None]:
     tool = name
     to = str(args.get("to") or "").strip()
     if tool == "send_message":
+        # Never the model's own value: set here from the lookup, or not at all.
+        args = {k: v for k, v in args.items() if k != "resolved_to"}
         if to and not _is_handle(to):
-            _, problem = _resolve_recipient(to)
+            handle, problem = _resolve_recipient(to)
             if problem:
                 return args, problem
+            if handle and _is_handle(handle):
+                args["resolved_to"] = handle
         return args, _own_address_guard(to, tool, bool(args.get("confirmed_self_send")))
     resolved: list[str] = []
     for r in _split_recipients(to):
@@ -1405,10 +1427,12 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
     category="messages_send",
     retrieval_description=_OUTBOUND_RETRIEVAL_DESCRIPTIONS["send_message"],
 )
-async def send_message(to: str, text: str, confirmed_self_send: bool = False) -> str:
+async def send_message(to: str, text: str, confirmed_self_send: bool = False,
+                       resolved_to: str = "") -> str:
     if (msg := _own_address_guard(to, "send_message", confirmed_self_send)):
         return msg
     to = (to or "").strip()
+    bound = _bound_handle({"to": to, "resolved_to": resolved_to})
     if not to:
         return _not_sent("(no recipient — ask the user who to text)",
                          question="Who should I text?", needs_recipient=True)
@@ -1433,9 +1457,15 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False) ->
         # unless it first thinks to call lookup_contact is a failure mode that
         # actually happened. Only a single unambiguous match sends — several
         # "Mom"-ish contacts must come back to the user, never a coin flip.
-        handle, problem = _resolve_recipient(to)
-        if problem:
-            return problem
+        # A card already settled this name on one number (`resolved_to`): the
+        # send goes there, the number the person approved, and is not looked
+        # up a second time. With no card behind the call, resolve it here.
+        if bound:
+            handle = bound
+        else:
+            handle, problem = _resolve_recipient(to)
+            if problem:
+                return problem
         display = _named(handle, to)
         to = handle
 

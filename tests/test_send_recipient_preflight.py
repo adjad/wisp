@@ -703,3 +703,60 @@ async def test_send_email_resolves_a_cc_name_without_a_card_too(contacts, app_br
     # Still only addresses reach Mail: a cc that is neither is refused as before.
     assert (await action_tools.send_email("not an address, x", "s", "b")).needs_recipient
     assert len(app_bridge) == 1
+
+
+# ---- The approved text goes to the number its card showed ----
+
+def test_a_text_card_binds_the_number_it_showed(contacts):
+    tool = REAL_TOOLS["send_message"]
+    args, problem = action_tools.prepare_send_recipient(tool, {"to": "Ian", "text": "Hi"})
+    assert problem is None
+    # The typed name stays; the one number it matched rides along.
+    assert args == {"to": "Ian", "text": "Hi", "resolved_to": PHONE}
+    # A literal number needs no binding, and a value the call arrived with is dropped.
+    args, _ = action_tools.prepare_send_recipient(
+        tool, {"to": PHONE, "text": "Hi", "resolved_to": "+15550109999"})
+    assert args == {"to": PHONE, "text": "Hi"}
+    args, _ = action_tools.prepare_send_recipient(
+        tool, {"to": "Ian", "text": "Hi", "resolved_to": "+15550109999"})
+    assert args["resolved_to"] == PHONE
+
+
+async def test_the_approved_text_goes_to_the_card_number_after_contacts_change(
+        contacts, app_bridge, monkeypatch):
+    tool = REAL_TOOLS["send_message"]
+    args, _ = action_tools.prepare_send_recipient(tool, {"to": "Ian", "text": "Hi"})
+    card = action_tools.confirm_preview("send_message", args)
+    assert PHONE in card
+    # Between the card and the tap, Contacts syncs and the name now matches
+    # another number. The send still goes to the number that was approved.
+    monkeypatch.setattr(imessage_tools, "_name_handles", {"brian chen": ["+15550107777"]})
+    receipt = await action_tools.send_message(**args)
+    assert app_bridge[-1] == ("send_message", {"to": PHONE, "text": "Hi"})
+    assert PHONE in receipt and "+15550107777" not in receipt
+    # And the card, drawn again from the same call, still shows that number.
+    assert PHONE in action_tools.confirm_preview("send_message", args)
+
+
+async def test_a_bound_number_is_ignored_unless_it_is_a_real_number_for_a_name(
+        contacts, app_bridge):
+    # A literal handle in `to` is where the text goes, whatever else is passed.
+    await action_tools.send_message(to=PHONE, text="Hi", resolved_to="+15550109999")
+    assert app_bridge[-1][1]["to"] == PHONE
+    # Not a handle: looked up as before.
+    await action_tools.send_message(to="Ian", text="Hi", resolved_to="Brian")
+    assert app_bridge[-1][1]["to"] == PHONE
+
+
+def test_the_model_can_never_supply_the_bound_number():
+    from service.tools.registry import _validate_args
+    tool = REAL_TOOLS["send_message"]
+    call = {"to": "Ian", "text": "Hi", "resolved_to": PHONE}
+    assert "unexpected argument" in (_validate_args(tool, call) or "")
+    assert _validate_args(tool, call, host_bound=True) is None
+    assert "resolved_to" not in tool.parameters["properties"]
+    # No other tool gains it.
+    assert "unexpected argument" in (
+        _validate_args(REAL_TOOLS["send_email"],
+                       {"to": "a@example.com", "subject": "s", "body": "b", "resolved_to": PHONE},
+                       host_bound=True) or "")
