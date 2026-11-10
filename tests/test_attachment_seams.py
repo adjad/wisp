@@ -6,8 +6,7 @@ real `attachment_audio.listen`, the real `voice.transcribe_wav` validation, the 
 the real `attachment_fields` run together. Only the edges are faked: the Mail / Messages bridge, the app's
 text recognition, and the engine's chat call. No model is loaded.
 
-A seam that is broken is kept as an `xfail(strict=True)` test with the reason, so the suite stays green and
-the defect is on record.
+A seam found broken is fixed in the product and pinned here.
 """
 from __future__ import annotations
 
@@ -631,9 +630,11 @@ async def test_totals_add_two_real_files_exactly(world, monkeypatch):
         facts = await attachment_fields.facts_of(text, "pdf", client=object(), model="m", deadline=later())
         assert facts and attachment_store.put_facts(digest, 1, facts)
         all_facts.append(attachment_store.get_facts(digest, 1))
-    assert attachment_fields.totals(all_facts) == ["USD 1,240.30 across 2 files"]
+    warning = attachment_fields.WARNING
+    assert warning.startswith("These amounts were read by the model on this Mac") and warning.endswith("relying on them.")
+    assert attachment_fields.totals(all_facts) == ["USD 1,240.30 across 2 files", warning]
     assert attachment_fields.totals([*all_facts, None]) == ["USD 1,240.30 across 2 files",
-                                                            "1 file had no total Wisp could find"]
+                                                            "1 file had no total Wisp could find", warning]
 
 
 # ================================================================ 6. Messages rows <-> reader

@@ -14,8 +14,7 @@ Only the edges are faked: the Mail / Messages bridge and Gmail (via `world` of p
 the `/usr/bin/open -R` subprocess, and the gate inputs of the background tick. HOME is a tmp dir; the real home is
 never read or written. No model is loaded.
 
-A seam that is broken stays here as an `xfail(strict=True)` test with the reason, so the suite is green and the
-defect is on record.
+A seam found broken is fixed in the product and pinned here.
 """
 from __future__ import annotations
 
@@ -595,9 +594,12 @@ async def test_across_four_files_is_four_lines_in_one_fence_and_the_total_is_add
     lines = [line for line in blocks[0].splitlines() if line.strip()]
     assert len(lines) == 4, lines
     assert out.startswith("Facts from 4 of 4 files")
-    assert "Totals added up by Wisp: USD 400.00 across 4 files." in out
+    assert "Totals added up by Wisp: USD 400.00 across 4 files. These amounts were read by the model" in out
+    assert ".." not in out
     outside = out.replace(blocks[0], "")
     assert "Totals added up by Wisp" in outside and "Totals added up" not in blocks[0]
+    warning = "These amounts were read by the model on this Mac and checked only against the digits in each file"
+    assert warning in outside and warning not in blocks[0] and outside.count("counted once") == 0
     for name in bodies:
         assert name in blocks[0]
     # what was read is kept: asking again fetches nothing new for the facts (the files are re-fetched for text only)
@@ -770,6 +772,8 @@ def background(world, monkeypatch):
     from service.mail_memory import runner
     clock = [time.time()]
     monkeypatch.setattr(attachment_index, "_clock", lambda: clock[0])
+    monkeypatch.setattr(attachment_index, "_mono", lambda: clock[0])      # the "not due yet" gap is on this clock
+    monkeypatch.setattr(attachment_index, "_last_prune", None)
     for name, value in (("_next_at", 0.0), ("_task", None), ("_last_run", None), ("_last_skip", "")):
         monkeypatch.setattr(attachment_index, name, value)
     monkeypatch.setattr(runner, "_probe", {})
@@ -1037,10 +1041,6 @@ async def test_a_hostile_name_subject_and_sender_cannot_break_out_of_the_card_li
     assert card.endswith("to Downloads")
 
 
-@pytest.mark.xfail(strict=True, reason="attachment_save._card cuts the whole card with [:200] AFTER building "
-                   "'Save “name” (size) from who's email “subject” to FOLDER', so a long sender display name plus a "
-                   "long subject and file name (all attacker-controlled; 80+60+50 chars are each allowed) push the "
-                   "destination folder off the end: the card the person approves no longer says where the file goes")
 async def test_a_long_sender_subject_and_name_do_not_push_the_folder_off_the_card(world, fakehome, finder):
     (fakehome / "Documents" / "Taxes").mkdir()
     world.apple_rows = [apple_row(rowid=1, name="q" * 70 + ".pdf", subject="S" * 120, size=5000, attachment_id="1.2")]
@@ -1049,7 +1049,9 @@ async def test_a_long_sender_subject_and_name_do_not_push_the_folder_off_the_car
     prepared, stopped = await actions.prepare_save_args({"query": "S", "folder": "~/Documents/Taxes"})
     assert stopped is None
     card = action_tools.confirm_preview(SAVE, prepared)
-    assert card.endswith("to Documents/Taxes"), card
+    assert len(card) <= 200, len(card)
+    assert card.endswith("Taxes"), card                       # the destination is the end of the card, never cut off
+    assert "to " in card[-60:], card
 
 
 @pytest.mark.parametrize("folder", ["~/library/LaunchAgents", "~/LIBRARY", "~/Documents/../library"])

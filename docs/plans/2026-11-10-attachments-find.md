@@ -21,7 +21,9 @@ docstring of `service/mail_attachments.py`.
 ## Rules that do not change
 
 - A file is never run. Archives are never unpacked. An `.eml` is parsed in the child process, in
-  memory; nothing inside it is written to disk.
+  memory. Nothing inside an attached email is saved as a file or run; the text Wisp reads from it is kept
+  like any other reading; the child may make a private temporary copy to convert a picture or recording,
+  removed right after.
 - Everything from a file is attacker-controlled: names cleaned, contents inside
   `untrusted.fence(...)`, nothing from a file logged or printed. Facts pulled out of a file
   (party, what, amounts) are attacker-controlled too and stay inside the fence.
@@ -256,5 +258,26 @@ against the code.
 - The handle filter (files from a given person) leaves out the user's own files (`is_from_me`).
 - All text printed outside a fence (sender, subject, file name, chat name) is run through
   `untrusted.neutralize`, so a fence marker inside it is defused.
-- The background switch exists only as the app-only backend route `/assistant/attachments/background`;
-  no Settings button was added in the app, so it stays off until one is.
+- The background switch is in the Settings window (Privacy pane, under mail memory) as "Read new attachments
+  in the background", off by default, and the app-only route `/assistant/attachments/background` drives it.
+  Forget mail memory also turns it off.
+- Repair wave after four independent reviews of 654c8adc (three BLOCK, one PASS_WITH_NOTES):
+- Totals end with a warning sentence (read by the model, check before relying); the same file in two emails
+  is counted once, through digests passed to `attachment_fields.totals`, and the note appears once.
+- `index_one` can return `resting` (on-device text recognition is resting; the file was not tried). The
+  background reader never marks such a file tried, never counts it toward the daily cap, waits out the rest
+  and records the skip code `ocr_resting`.
+- The `inside` search uses `search_checked` and `count_checked`; an unreadable store says the saved readings
+  could not be searched, never "Searched the text of 0 files".
+- Save: a file name hiding invisible characters is checked under the name it will really have, the card always
+  shows the destination folder (a long folder keeps its end), the file's content identity is checked, more
+  risky types are refused, and any failed check stops the save.
+- The folder floor for saves compares folder names without regard to case.
+- Store: erasing reports failure honestly, forgetting stops the background reader, `tried` keys are salted and
+  forget works per source, and steps are shorter.
+- Messages files: a person's words match the sender only, a denied database is reported as `no_messages_db`,
+  and values are parsed more strictly and clamped.
+- Facts: thousands and decimal marks, credit signs, dates and currencies are checked against the file.
+- The reader reports attached-email coverage honestly, keeps the background from reaching Gmail or Messages,
+  and flags partly read files in `across`.
+- `list_only` results are marked, the typed save result is checked, and the card is prepared on every path.

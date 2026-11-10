@@ -2201,8 +2201,14 @@ def _search_inside(words: str, name, start, end, account, source: str, failure: 
         jobs += [{"source": "mail"}, {"source": "gmail"}]
     lists = []
     for job in jobs:
-        lists.append(attachment_store.search(words, limit=_INSIDE_SEARCHED, since=since, until=until, name=part, **job))
-        if _search_failed() and failure is not None:
+        checked = getattr(attachment_store, "search_checked", None)
+        if checked is not None:
+            found, failed = checked(words, limit=_INSIDE_SEARCHED, since=since, until=until, name=part, **job)
+        else:
+            found = attachment_store.search(words, limit=_INSIDE_SEARCHED, since=since, until=until, name=part, **job)
+            failed = _search_failed()
+        lists.append(found)
+        if failed and failure is not None:
             failure.append(True)
     if len(lists) == 1:
         return list(lists[0])
@@ -2282,10 +2288,14 @@ async def _run_inside(words: str, query, name, start, end, label, account, quest
     hits = await asyncio.to_thread(_search_inside, words, name, start, end, account, source, failure)
     if failure and not hits:
         return "Wisp's saved readings couldn't be searched just now. Try again in a moment."
+    counter = getattr(attachment_store, "count_checked", None)
     try:
-        total = int(await asyncio.to_thread(attachment_store.count))
+        counted = await asyncio.to_thread(counter if counter is not None else attachment_store.count)
+        total = None if counted is None else int(counted)
     except Exception:  # noqa: BLE001
         total = 0
+    if total is None:
+        return "Wisp's saved readings couldn't be searched just now. Try again in a moment."
     notes = [f"Searched the text of {total} file{'' if total == 1 else 's'} Wisp has read."]
     if not messages and not _background_on():
         notes.append(_BACKGROUND_OFF)
@@ -2486,7 +2496,8 @@ async def _run_across(query, name, start, end, label, account, question, source)
     top = _plain(f"Facts from {with_facts} of {len(considered)} files{where}"
                  + (f" (for: {asked})" if asked else "") + ", newest first.")
     sentences = _totals_once(attachment_fields, rows, unique) if rows else []
-    total_line = ("Totals added up by Wisp: " + "; ".join(sentences) + ".") if sentences else ""
+    sentences = [t.strip().rstrip(".") + "." for t in sentences if t and t.strip().rstrip(".")]
+    total_line = ("Totals added up by Wisp: " + " ".join(sentences)) if sentences else ""
     if repeated and "same file" not in total_line:
         notes.append(f"{repeated} file{' was' if repeated == 1 else 's were'} the same file again and "
                      f"{'was' if repeated == 1 else 'were'} counted once.")
