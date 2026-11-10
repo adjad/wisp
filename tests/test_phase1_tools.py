@@ -82,6 +82,27 @@ def test_calculate() -> None:
     for bad, why in [("1/0", "division by zero"), ("9**9**9", "too large")]:
         got = calculate(bad)
         check(f"{bad!r} -> {why}", got.startswith("(error"), f"got {got!r}")
+    # pow() is one uninterruptible C call: it must obey the same bounds as **.
+    for big in ["pow(7, 10**9)", "pow(99, 99**4)", "pow(2, 5000)", "pow(10**7, 2)"]:
+        got = calculate(big)
+        check(f"{big!r} is refused as too large",
+              got.startswith("(error") and "too large" in got, f"got {got!r}")
+    check("pow(2, 10) still works", calculate("pow(2, 10)") == "1,024")
+    check("pow(3, 4, 5) still works", calculate("pow(3, 4, 5)") == "1")
+    check("pow with a zero modulus is refused", calculate("pow(3, 4, 0)").startswith("(error"))
+    # Operands this size fit inside the ** bounds, and a modular power over them
+    # would hold the service for seconds.
+    huge = calculate("pow(999999**1000, 999999**1000, 999999**999)")
+    check("a modular power over huge operands is refused",
+          huge.startswith("(error") and "too large" in huge, f"got {huge!r}")
+    check("a modular power over large but bounded operands still works",
+          calculate("pow(999999**200, 999999**200, 1000007)")
+          == f"{pow(999999**200, 999999**200, 1000007):,}")
+    mixed = calculate("max(1, 2) + [1, 2]")
+    check("a type error is a plain error that does not blame the count",
+          mixed.startswith("(error") and "wrong number" not in mixed, f"got {mixed!r}")
+    check("wrong argument count is a plain error, not a crash",
+          calculate("sqrt(1, 2)").startswith("(error"))
 
 
 def test_conversions() -> None:

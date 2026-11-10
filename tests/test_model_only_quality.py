@@ -696,6 +696,8 @@ def test_google_connect_how_to_is_a_capability_answer():
     hint = mo.ASK_CAPABILITY_HINT
     for step in ("Quick Settings", "Google > Connect Google", "read-only", "about a minute", "Disconnect & erase"):
         assert step in hint
+    assert "Disconnect & erase there" not in hint
+    assert "Settings → Google" in hint.split("Disconnect & erase")[0]
     assert "never mention internal tool names" in mo.ASK_KNOWLEDGE_HINT.lower().replace("never mention", "never mention")
     assert "is a contact:" in mo.ASK_STYLE_HINT
 

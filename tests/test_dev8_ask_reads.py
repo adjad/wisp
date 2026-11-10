@@ -248,6 +248,7 @@ def test_accounts_name_work_and_personal_addresses(monkeypatch):
     monkeypatch.setattr(email_tools, "get_identity_emails", lambda: ["pat@acme.com", "me@gmail.com", "pat@icloud.com"])
     out = misc_t1._accounts_report()
     assert "me@gmail.com: personal Google account; Gmail, Calendar" in out
+    assert "Settings › Accounts" not in out
     assert "Your addresses in Apple Mail: pat@acme.com (work or school), pat@icloud.com (personal)." in out
     assert "Work or school addresses (not a personal mail provider): pat@acme.com." in out
 
@@ -362,3 +363,11 @@ def test_whats_new_prefers_release_notes_and_falls_back_to_the_changelog(monkeyp
 def test_the_app_bundles_this_version_s_release_notes():
     source = (Path(misc_t1.__file__).resolve().parents[2] / "build-support" / "pipeline.py").read_text()
     assert 'notes = docs / "releases"' in source and '(ROOT / "docs/releases").glob(meta["version"]' in source
+
+
+def test_accounts_report_points_to_the_google_pane(monkeypatch):
+    monkeypatch.setattr(gmail_source, "connected_accounts", lambda cfg=None: {})
+    monkeypatch.setattr(email_tools, "native_email_accounts", lambda: [])
+    monkeypatch.setattr(email_tools, "get_identity_emails", lambda: [])
+    out = misc_t1._accounts_report()
+    assert "Settings ▸ Google" in out and "Accounts" not in out.split("Settings")[1]

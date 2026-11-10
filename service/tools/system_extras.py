@@ -50,8 +50,8 @@ def _osa(script: str, timeout: int = _TIMEOUT) -> subprocess.CompletedProcess:
 # --------------------------------------------------------------------------
 @register(
     "screen_capture",
-    "Take a screenshot and save it to a file. Use `region='window'` for the "
-    "frontmost window only, or 'selection' to let the user drag a region.",
+    "Take a screenshot and save it to a file. Use `region='window'` to let the "
+    "user click the window to capture, or 'selection' to let the user drag a region.",
     {
         "type": "object",
         "properties": {
@@ -81,14 +81,17 @@ def screen_capture(region: str = "screen", path: str = "") -> str:
 
     argv = ["screencapture", "-x"]           # -x: no shutter sound
     if region == "window":
-        argv += ["-o", "-w"]                 # frontmost window, no shadow
+        argv += ["-o", "-w"]                 # user clicks a window; no shadow
     elif region == "selection":
         argv += ["-i"]                       # interactive drag
     argv.append(str(out))
 
-    # `selection` blocks until the user finishes dragging (or presses Escape),
-    # so it gets a human-scale timeout rather than the module default.
-    p = _run(argv, timeout=120 if region == "selection" else _TIMEOUT)
+    # `selection` and `window` both wait for the user (a drag or a click, or
+    # Escape), so they get a human-scale timeout rather than the module default.
+    try:
+        p = _run(argv, timeout=120 if region in ("selection", "window") else _TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return "(The screenshot timed out waiting for you, so nothing was saved.)"
     if p.returncode != 0:
         msg = (p.stderr or "").strip()
         # "could not create image from display" is what screencapture actually
@@ -111,16 +114,45 @@ def screen_capture(region: str = "screen", path: str = "") -> str:
 # --------------------------------------------------------------------------
 # toggles
 # --------------------------------------------------------------------------
+def _bluetooth_state() -> bool | None:
+    """True/False for the controller's real power state, None if it can't be read."""
+    try:
+        p = _run(["system_profiler", "SPBluetoothDataType", "-json"])
+        data = json.loads(p.stdout)["SPBluetoothDataType"][0]
+    except (subprocess.SubprocessError, OSError, ValueError, KeyError, IndexError, TypeError):
+        return None
+    if p.returncode != 0:
+        return None
+    ctrl = data.get("controller_properties") or {}
+    state = ctrl.get("controller_state", "") if isinstance(ctrl, dict) else ""
+    if state in ("attrib_on", "on"):
+        return True
+    if state in ("attrib_off", "off"):
+        return False
+    return None
+
+
 def _bluetooth(on: bool) -> str:
-    # blueutil is not installed by default. The scriptable path is the menu-bar
-    # UI, which is brittle; this uses the defaults + coreservices restart, which
-    # works headlessly on modern macOS.
+    # blueutil is not installed by default, and the controller power state that
+    # bluetoothd honours is a system-level preference that a normal user cannot
+    # write or signal. So this tries the user-level write, then checks what the
+    # controller actually did and says so rather than assuming it worked.
     p = _run(["defaults", "write", "com.apple.Bluetooth",
               "ControllerPowerState", "-int", "1" if on else "0"])
     if p.returncode != 0:
         return f"(could not change Bluetooth: {(p.stderr or '').strip()})"
     _run(["killall", "-HUP", "bluetoothd"])
-    return f"Bluetooth turned {'on' if on else 'off'}."
+    state = _bluetooth_state()
+    if state is None or state != on:
+        time.sleep(1.0)                      # bluetoothd can take a moment
+        state = _bluetooth_state()
+    if state is on:
+        return f"Bluetooth turned {'on' if on else 'off'}."
+    if state is None:
+        return ("(I couldn't confirm that Bluetooth changed. Check Control Center "
+                "in the menu bar.)")
+    return ("(I couldn't change Bluetooth from here, and it still looks "
+            f"{'off' if on else 'on'}. Use Control Center in the menu bar.)")
 
 
 def _do_not_disturb(on: bool) -> str:
@@ -155,11 +187,21 @@ def _firewall(on: bool) -> str:
 
 
 def _airdrop(on: bool) -> str:
+    want = "false" if on else "true"
     p = _run(["defaults", "write", "com.apple.NetworkBrowser",
-              "DisableAirDrop", "-bool", "false" if on else "true"])
+              "DisableAirDrop", "-bool", want])
     if p.returncode != 0:
         return f"(could not change AirDrop: {(p.stderr or '').strip()})"
-    return f"AirDrop {'enabled' if on else 'disabled'}."
+    # Check that the preference took. Finder reads it when it next opens its
+    # AirDrop pane, so say that rather than claiming the change is live.
+    r = _run(["defaults", "read", "com.apple.NetworkBrowser", "DisableAirDrop"])
+    stored = (r.stdout or "").strip().lower()
+    disabled = stored in ("1", "true", "yes")
+    if r.returncode != 0 or disabled == on:
+        return ("(I couldn't change AirDrop from here. Use the AirDrop pane in "
+                "Finder or Control Center.)")
+    return (f"AirDrop {'enabled' if on else 'disabled'} in your settings. "
+            "Reopen Finder if it still shows the old state.")
 
 
 def _wifi(on: bool) -> str:

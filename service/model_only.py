@@ -394,8 +394,9 @@ ASK_CAPABILITY_HINT = (
     "these, in 3 short sentences: (1) open the notch, then Quick Settings (the gear) > "
     "Google > Connect Google, and sign in in the browser; (2) Wisp reads Gmail and "
     "Google Calendar read-only and builds your to-dos in about a minute; (3) "
-    "\"Disconnect & erase\" there removes the account and everything Wisp derived from "
-    "it. Never say it cannot be done."
+    "to remove it later, open Settings → Google in the Wisp window (⌘, or right-click the "
+    "menu bar icon, then Settings…) and choose \"Disconnect & erase\", which removes the "
+    "account and everything Wisp derived from it. Never say it cannot be done."
 )
 
 # Wisp's own reports, in the order a self-question should reach for them: each
