@@ -59,6 +59,15 @@ STOPPED = [
      "add the dentist at 3 tomorrow", "did not ask for anything to be sent"),
     ("unasked_delete", "cancel_event", {"title": "Dentist"},
      "add the dentist at 3 tomorrow", "did not ask for anything to be deleted"),
+    # Real questions that start like the replies allowed below.
+    ("do_you_have_anything", "add_reminder", {"title": "Call the vet"},
+     "do you have anything tomorrow?", "asked a question"),
+    ("do_those_emails", "add_reminder", {"title": "Deadline"},
+     "do those emails mention the deadline?", "asked a question"),
+    ("do_the_kids", "add_reminder", {"title": "School"},
+     "do the kids have school tomorrow?", "asked a question"),
+    ("have_you_seen", "add_reminder", {"title": "Keys"},
+     "have you seen my keys", "asked a question"),
 ]
 
 
@@ -97,6 +106,28 @@ ALLOWED = [
       "last_assistant": "Coming up: dentist at 3. Who should I text it to?"}),
     ("ok_so_fix_it", "update_event", {"title": "Dentist", "when_iso": "2026-11-01T15:00:00"},
      "ok so fix it?", {"previous_user": "move the dentist to 3"}),
+    # "do it" is an assent and "do not disturb on" a command, not questions.
+    ("do_it_after_offer", "add_reminder", {"title": "Pay rent"}, "do it",
+     {"last_assistant": "Rent is due Friday. Should I set a reminder for that?"}),
+    ("ok_do_it_after_offer", "add_reminder", {"title": "Pay rent"}, "ok do it",
+     {"last_assistant": "Rent is due Friday. Should I set a reminder for that?"}),
+    ("do_it_please_after_offer", "add_reminder", {"title": "Pay rent"}, "do it please",
+     {"last_assistant": "Rent is due Friday. Should I set a reminder for that?"}),
+    ("do_please_after_offer", "add_reminder", {"title": "Pay rent"}, "do please",
+     {"last_assistant": "Rent is due Friday. Should I set a reminder for that?"}),
+    ("do_it_after_send_offer", "send_message", {"to": "mom", "text": "Friday at 3"}, "do it",
+     {"last_assistant": "Friday at 3 at SFO, terminal 2. Want me to text her that?"}),
+    ("do_not_disturb_on", "toggle_setting", {"setting": "do_not_disturb", "on": True},
+     "do not disturb on", {}),
+    ("have_it_remind_me", "add_reminder", {"title": "Call the vet"},
+     "have it remind me at 5 instead", {}),
+    # A short answer to the assistant's own open question.
+    ("how_about_6pm", "add_reminder", {"title": "Call the vet"}, "how about 6pm",
+     {"last_assistant": "Sure. What time should I remind you?"}),
+    ("any_time_tomorrow", "add_reminder", {"title": "Call the vet"}, "any time tomorrow morning",
+     {"last_assistant": "When should I remind you?"}),
+    ("does_7_work", "add_reminder", {"title": "Call the vet"}, "does 7 work",
+     {"last_assistant": "What time should I remind you?"}),
 ]
 
 
@@ -105,19 +136,58 @@ def test_requested_calls_still_run(case, name, args, prompt, extra):
     assert check(name, args, prompt, **extra) is None
 
 
+# A reply to the assistant lifts the question stop only when it really answers
+# the assistant's closing question; every other stop still runs after it.
+NOT_AN_ANSWER = [
+    ("status_question_after_send_offer", "send_message", {"to": "mom", "text": "hi"},
+     "did you send it?", {"last_assistant": "Want me to text her?"}, "asked a question"),
+    ("new_question_after_anything_else", "add_reminder", {"title": "x"},
+     "what's on my calendar", {"last_assistant": "Anything else?"}, "asked a question"),
+    ("what_about_after_a_statement", "add_reminder", {"title": "x"},
+     "what about tomorrow?", {"last_assistant": "You have two meetings today."}, "asked a question"),
+    ("what_about_after_anything_else", "add_reminder", {"title": "x"},
+     "what about tomorrow?", {"last_assistant": "You have two meetings today. Anything else?"},
+     "asked a question"),
+    ("how_about_after_a_yes_no_offer", "add_reminder", {"title": "x"},
+     "how about 6pm", {"last_assistant": "Should I set a reminder for 5?"}, "asked a question"),
+    ("question_inside_quoted_mail", "add_reminder", {"title": "x"},
+     "how about 6pm", {"last_assistant": "The mail asks: what time works? Nothing else is new."},
+     "asked a question"),
+    ("long_question_after_open_question", "add_reminder", {"title": "x"},
+     "what about the meeting with the team on friday", {"last_assistant": "What time should I remind you?"},
+     "asked a question"),
+    ("do_it_to_a_vague_offer_never_deletes", "cancel_event", {"title": "Dentist"},
+     "do it", {"last_assistant": "The dentist is at 3. Want me to take care of it?"},
+     "did not ask for anything to be deleted"),
+    ("do_it_with_no_offer_never_sends", "send_message", {"to": "mom", "text": "hi"},
+     "do it", {"last_assistant": "Her flight lands Friday at 3."},
+     "did not ask for anything to be sent"),
+]
+
+
+@pytest.mark.parametrize("case,name,args,prompt,extra,why", NOT_AN_ANSWER, ids=[c[0] for c in NOT_AN_ANSWER])
+def test_a_reply_that_does_not_answer_the_assistant_is_still_stopped(case, name, args, prompt, extra, why):
+    result = check(name, args, prompt, **extra)
+    assert result and why in result
+
+
 def test_reads_are_never_stopped():
     assert check("get_upcoming", {}, "did you send it?") is None
     assert check("view_messages", {"conversation": "dad"}, "what did dad say?") is None
 
 
 @pytest.mark.parametrize("prompt", ["what's on my calendar?", "did you send it?", "is the dentist tomorrow?",
-                                    "hey, any new emails?"])
+                                    "hey, any new emails?", "did you do it?", "do i have anything today",
+                                    "do this week's meetings overlap", "have they replied", "have it ready",
+                                    "how about 6pm", "does 7 work"])
 def test_read_only_questions(prompt):
     assert read_only_question(prompt)
 
 
 @pytest.mark.parametrize("prompt", ["can you text dad i'm late?", "what if you cancel the dentist",
-                                    "texxt dad that ill call him tmrw", "remind me to call the vet"])
+                                    "texxt dad that ill call him tmrw", "remind me to call the vet",
+                                    "do it", "ok do it", "do that", "do both", "do the first one",
+                                    "do not disturb on", "have it remind me at 5 instead"])
 def test_questions_that_ask_for_an_action_are_not_read_only(prompt):
     assert not read_only_question(prompt)
 

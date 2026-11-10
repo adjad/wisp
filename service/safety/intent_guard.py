@@ -45,12 +45,31 @@ _WRITE_VERBS = re.compile(
     r"update|change|fix|correct|mark|check\s+(?:it|that|this)?\s*off|complete|done|finish|open|launch|start|"
     r"quit|close|play|pause|resume|skip|turn|toggle|mute|unmute|lock|copy|paste|log|schedule|scedule|"
     r"shedule|order|enable|disable)\b", re.I)
+# "do it", "do that", "do both", "do the first one" and "do not disturb on" are
+# commands, not questions: an object pronoun or "not" cannot follow a question's
+# "do". "do that/this/both/the first…" count only when nothing but a filler
+# follows, so "do those emails mention it?" and "do the kids have school?" stay
+# questions, as does every "do you/I/we/they…".
+_DO_COMMAND = (
+    r"(?!\s+(?:it|so|them|not)\b)"
+    r"(?!\s+(?:that|this|these|those|both|the\s+(?:first|second|third|last|same))"
+    r"(?:\s+(?:one|ones|two|thing|option))?(?:\s+(?:please|pls|then|too|again|instead|for\s+me))*"
+    r"\s*[.!]*\s*$)")
 _QUESTION_HEAD = re.compile(
     r"^\s*(?:(?:hey|um+|uh+|so|ok(?:ay)?|wisp)[,\s]+)*(?:what|when|where|who|whom|whose|which|why|how|is|"
-    r"are|was|were|do|does|did|have|has|had|any|anything|am)\b", re.I)
+    r"are|was|were|do" + _DO_COMMAND + r"|does|did|have|has|had|any|anything|am)\b", re.I)
+# "have it remind me at 5" is a command ("have it/that/this…" is never a
+# question: that would be "has it…"), so "have" takes a question's subjects only.
 _STATUS_QUESTION = re.compile(
-    r"^\s*(?:(?:hey|um+|uh+|so|ok(?:ay)?)[,\s]+)*(?:did|have|has|was|were)\s+(?:you|i|it|that|this|they|she|he|"
-    r"my|the)\b", re.I)
+    r"^\s*(?:(?:hey|um+|uh+|so|ok(?:ay)?)[,\s]+)*(?:(?:did|has|was|were)\s+(?:you|i|it|that|this|they|she|he|"
+    r"my|the)|have\s+(?:you|i|they|my|the))\b", re.I)
+# A short reply that answers the assistant's own open question with a time or
+# a choice: "What time should I remind you?" -> "how about 6pm".
+_ANSWER_HEAD = re.compile(
+    r"^\s*(?:(?:hey|um+|uh+|so|ok(?:ay)?)[,\s]+)*(?:(?:how|what)\s+about\b|any\s?time\b|does\s+\d)", re.I)
+_OPEN_QUESTION = re.compile(
+    r"^\W*(?:(?:and|so|ok(?:ay)?|sure|got\s+it|great|alright)[,.!\s]+)*(?:(?:at|for|on|to|by|until)\s+)?"
+    r"(?:what|when|which|who|whom|where|how\s+(?:long|many|much|often|early|late|soon))\b", re.I)
 _IMMEDIATE = re.compile(r"\b(?:now|right\s+now|right\s+away|immediately|asap|straight\s+away)\b", re.I)
 _SEND_TIME = re.compile(
     r"\b(?:later|tonight|this\s+(?:evening|afternoon))\b"
@@ -124,6 +143,26 @@ def read_only_question(prompt: str) -> bool:
                          or _DELETE_VERBS.search(text) or _MOVE_VERBS.search(text))
 
 
+def _answers_own_question(prompt: str, last_assistant: str) -> bool:
+    """The user is replying to the assistant, not asking something new: a bare
+    assent to its closing offer ("Should I set a reminder?" -> "ok do"), or a
+    short "how about 6pm" to its closing open question ("What time?"). The
+    reply has to END with that question, and "did you send it?" never counts.
+    Only the read-only-question stop is lifted; every other stop still runs."""
+    if not last_assistant or _STATUS_QUESTION.match(prompt or ""):
+        return False
+    from service.router.model_led import answers_offer, continuation_send_exemption
+    if answers_offer(prompt, last_assistant) or continuation_send_exemption(prompt, last_assistant):
+        return True
+    if not _ANSWER_HEAD.match(prompt) or len(prompt.split()) > 6:
+        return False
+    end = last_assistant.rfind("?")
+    if end < 0 or re.search(r"[A-Za-z0-9]", last_assistant[end + 1:]):
+        return False
+    question = re.split(r"(?<=[.!?\n])\s+", last_assistant[:end + 1].strip())[-1]
+    return bool(_OPEN_QUESTION.match(question))
+
+
 def problem(tool, args: dict, prompt: str, *, previous_user: str = "", last_assistant: str = "") -> str | None:
     """Why this model-led call must not run, as a tool result, or None."""
     from service.router.model_led import effectful_call
@@ -137,7 +176,7 @@ def problem(tool, args: dict, prompt: str, *, previous_user: str = "", last_assi
         return (f"({name} was NOT run: {why}. Nothing was changed or sent; do not say it ran. "
                 f"{instead})")
 
-    if read_only_question(prompt):
+    if read_only_question(prompt) and not _answers_own_question(prompt, last_assistant):
         return stop("the user asked a question and did not ask for any action",
                     "Answer the question from reads only; offer the action if it would help.")
     kind = _kind(tool, args)
