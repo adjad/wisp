@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import re
 import subprocess
@@ -49,6 +50,8 @@ _clock = time
 
 from service.paths import MOE_DIR, private_write_bytes
 from service.tools.registry import not_done, register
+
+_log = logging.getLogger(__name__)
 
 _STORE = MOE_DIR / "cache" / "timers.json"
 
@@ -278,6 +281,8 @@ async def _fire(tid: str) -> None:
     # bookkeeping above has already removed a one-shot entry from the store and
     # put a daily alarm back in for its next time, so returning here is the drop.
     if _too_late(kind, now - deadline):
+        # No label: only what kind it was and how late, for a debug log.
+        _log.info("dropped a late %s ring (%d s past its time)", kind, int(now - deadline))
         return
     label = entry.get("label") or ("Alarm" if kind == "alarm" else "Timer")
     # osascript blocks for up to ten seconds a call; never on the event loop.

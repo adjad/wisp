@@ -11,6 +11,7 @@ import os
 import re
 import shlex
 import stat
+import time
 import unicodedata
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -1365,18 +1366,24 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
 #
 # What stays a card (the 2026-08-16 design still holds for these): a recursive
 # delete of a plain relative path below an ordinary folder of the working
-# folder (run_shell runs in home: `rm -rf build`, `rm -rf proj/build`), and
-# `find . -name X -delete` or `find build ... -delete`. A relative path that
-# is, or is inside, one of home's main folders (Documents, Desktop, Library,
-# .ssh, .moe ...) is refused like its absolute spelling.
+# folder (run_shell runs in home: `rm -rf build`, `rm -rf proj/build`,
+# `rm -rf build/*`, `rm -rf *.egg-info`), the same after `cd` into a folder
+# below home, into an ordinary folder elsewhere (/tmp) or into one only known
+# at run time (`cd "$PROJECT"`), `find . -name X -delete`, `find build ...
+# -delete`, and a find with a name, age or size filter under an ordinary
+# folder (`find ~/Projects -name .DS_Store -delete`). A relative path that is
+# one of home's main folders (Documents, Desktop, Library, .ssh, .moe ...) or
+# directly inside one is refused like its absolute spelling, and so is one
+# that resolves to a top or system folder (`cd / && rm -rf usr`). Heredoc
+# bodies are text unless a shell or interpreter reads its program from them.
 #
 # It is still a reader of text: a name or path assembled by other means
 # (printf escapes, a script file written first and run second, an
 # interpreter's own rmtree) gets past it, and then gets the ordinary card.
 NEVER_RUN_TAIL = "If you want it done, you can run it yourself in Terminal."
 
-_NR_SUBST = "$__wisp_subst_{}__"
-_NR_SUBST_RE = re.compile(r"\$__wisp_subst_(\d+)__")
+_NR_SUBST = "$_w{}_"
+_NR_SUBST_RE = re.compile(r"\$_w(\d+)_")
 _NR_FIND_END = "__wisp_find_end__"
 _NR_DEPTH = 8
 _NR_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "mksh"})
@@ -1405,29 +1412,63 @@ _NR_TMUTIL = frozenset({"delete", "disable", "disablelocal", "deletelocalsnapsho
                         "thinlocalsnapshots", "removedestination", "deleteinprogress"})
 _NR_GNU = frozenset({"rm", "find", "chmod", "chown", "chgrp", "dd", "truncate", "shred", "mv",
                      "cp", "tee", "kill"})
+# Top-level folder names (users, system, library, usr ...), refused as a
+# relative delete when the working folder is only known at run time.
+_NR_TOP_NAMES = frozenset(p.rsplit("/", 1)[-1] for p in _NR_ROOTS if p != "/")
+# macOS's own folders: a relative delete after `cd` into one is refused.
+_NR_SYSTEM = ("/system", "/bin", "/sbin", "/usr", "/etc", "/private/etc", "/private/var/db",
+              "/library/launchdaemons", "/library/launchagents", "/library/keychains")
+# Every regex in this section is linear: no quantified group whose body can
+# match the same text two ways, so a 16,000-character line cannot stall the
+# event loop. _NR_BUDGET is the backstop: a check that has used this much
+# CPU time is abandoned and the command refused (see never_run_hit).
+_NR_BUDGET = 0.25
 # A function that runs itself in the background or into a pipe: `:(){ :|:& };:`.
-_NR_FUNC = re.compile(r"([^\s(){}|&;<>'\"]+)\s*\(\s*\)\s*\{([^}]*)\}")
-_NR_FORK_CODE = re.compile(r"fork\s+while\s+fork|while\s*\(?\s*(?:1|true|True)\s*\)?\s*:?\s*\{?\s*"
-                           r"(?:os\.|posix\.|Process\.)?fork\b")
+# The lookbehind starts the name only at a word's first character.
+_NR_FUNC = re.compile(r"(?<![^\s(){}|&;<>'\"])([^\s(){}|&;<>'\"]+)[ \t]*\([ \t]*\)\s*\{([^{}]*)\}")
+_NR_FORK_CODE = re.compile(r"fork\s+while\s+fork|while\s*(?:\(\s*)?(?:1|true|True)\s*(?:\)\s*)?"
+                           r"(?::\s*)?(?:\{\s*)?(?:os\.|posix\.|Process\.)?fork\b")
+_NR_BRACES = re.compile(r"\{[^{}]*\}")
+_NR_BRACE_LIST = re.compile(r"\{([^{},]*,[^{}]*)\}")
+_NR_HEREDOC = re.compile(r"<<(-?)[ \t]*(?:'([^'\n]*)'|\"([^\"\n]*)\"|(\\?)([^\s;&|<>()'\"]+))")
+_NR_HEREDOC_MARK = "__wisp_heredoc_{}__"
+_NR_HEREDOC_MARK_RE = re.compile(r"__wisp_heredoc_(\d+)__")
+# An interpreter one-liner that runs a command: its string literals are judged.
+_NR_EXEC_HINT = re.compile(r"system|popen|subprocess|exec|spawn|`|%x|shell_exec|passthru"
+                           r"|check_output|check_call|\brun\s*\(|\bcall\s*\(")
+_NR_LITERAL = re.compile(r"'((?:[^'\\\n]|\\.)*)'|\"((?:[^\"\\\n]|\\.)*)\"|`((?:[^`\\]|\\.)*)`")
 _FORK_BOMB = "starts programs without end until the Mac stops responding"
 _FETCHED_CODE = "runs code downloaded from the internet or decoded from hidden text"
 _DISK_ERASE = "erases or repartitions a disk"
 _SUDOERS = "edits the administrator rules"
+_TOO_DEEP = "nests commands inside commands too deeply for Wisp to check"
+_TOO_SLOW = "is too complicated for Wisp to check"
+_REMOVES_USER = "deletes a user account"
+
+
+class _NrTooSlow(Exception):
+    """The never-run check used up _NR_BUDGET."""
 
 
 class _NrContext:
     """Where a command line is when a simple command runs."""
-    __slots__ = ("cwd", "fed", "depth", "inner")
+    __slots__ = ("cwd", "fed", "depth", "inner", "deadline")
 
-    def __init__(self, cwd, depth=0, inner=None):
-        # ("rel", path below home) or ("abs", path), or None when unknown.
+    def __init__(self, cwd, depth=0, inner=None, deadline=None):
+        # ("rel", path below home) or ("abs", path outside home), or None when
+        # the folder is only known while the command runs.
         self.cwd = cwd
         self.fed = False          # operands also arrive on stdin (xargs)
         self.depth = depth
         self.inner = inner if inner is not None else []
+        self.deadline = deadline if deadline is not None else time.thread_time() + _NR_BUDGET
 
     def child(self) -> "_NrContext":
-        return _NrContext(self.cwd, self.depth + 1, self.inner)
+        return _NrContext(self.cwd, self.depth + 1, self.inner, self.deadline)
+
+    def tick(self) -> None:
+        if time.thread_time() > self.deadline:
+            raise _NrTooSlow
 
 
 def _nr_home() -> str:
@@ -1441,7 +1482,18 @@ def _nr_protected_hit(path: str | None, *, erasing: bool = True) -> str | None:
     if not path:
         return None
     home = _nr_home()
-    trees = [(f"{home}/.ssh", "your SSH keys"), (f"{home}/Library/Keychains", "your keychains"),
+    ssh = f"{home}/.ssh".casefold()
+    if _within(path, [ssh]):
+        inside = path.rstrip("/").casefold()[len(ssh):].lstrip("/")
+        name = inside.rsplit("/", 1)[-1]
+        if not inside:
+            return "your SSH folder and the keys in it"
+        if "/" not in inside and name.startswith(("config", "known_hosts")):
+            return None             # SSH settings and known hosts keep their card
+        if name.startswith("id_") or name.endswith((".pem", ".key", ".pub")) or "key" in name:
+            return "your SSH keys"
+        return "a file in your SSH folder"
+    trees = [(f"{home}/Library/Keychains", "your keychains"),
              ("/etc/sudoers", "the administrator rules"),
              ("/private/etc/sudoers", "the administrator rules"),
              ("/etc/sudoers.d", "the administrator rules"),
@@ -1515,28 +1567,235 @@ def _nr_lift(text: str, inner: list[str]) -> str:
     return "".join(out)
 
 
+def _nr_mask(text: str) -> str:
+    """`text` with every character inside quotes (not the quotes) replaced by
+    "_", same length, so a check can look only at unquoted text. Text whose
+    quotes do not balance comes back unchanged."""
+    if "'" not in text and '"' not in text:
+        return text
+    out, quote, i, n = list(text), None, 0, len(text)
+    while i < n:
+        c = text[i]
+        if quote == "'":
+            if c == "'":
+                quote = None
+            else:
+                out[i] = "_"
+        elif c == "\\" and i + 1 < n:
+            if quote:
+                out[i] = out[i + 1] = "_"
+            i += 1
+        elif quote == '"':
+            if c == '"':
+                quote = None
+            else:
+                out[i] = "_"
+        elif c in "'\"":
+            quote = c
+        i += 1
+    return text if quote else "".join(out)      # unbalanced quotes: nothing is masked
+
+
+def _nr_expansions(body: str) -> list[str]:
+    """The $(...) and `...` commands in an unquoted heredoc body, which the
+    shell runs while writing the body out (quotes are literal text there)."""
+    found, i, n = [], 0, len(body)
+    while i < n:
+        if body[i] == "`":
+            j = body.find("`", i + 1)
+            j = n if j < 0 else j
+            found.append(body[i + 1:j])
+            i = j + 1
+        elif body.startswith("$(", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                depth += {"(": 1, ")": -1}.get(body[j], 0)
+                j += 1
+            found.append(body[i + 2:j - 1 if depth == 0 else j])
+            i = j
+        else:
+            i += 1
+    return found
+
+
+def _nr_stdin_program(words: list[str]) -> str | None:
+    """'shell', 'applescript' or 'code' when a simple command runs a program it
+    reads from stdin (sh, bash -s, python3 -, osascript ...), else None."""
+    unwrapped, _, via = _nr_unwrap(list(words), _NrContext(("rel", "."), deadline=0.0))
+    if via is not None or not unwrapped:
+        return None
+    name = _nr_prog(unwrapped[0])
+    if name == "osascript":
+        return "applescript" if not [a for a in unwrapped[1:] if not a.startswith("-")] else None
+    if not (name in _NR_INTERPRETERS or re.fullmatch(r"python[\d.]*", name)):
+        return None
+    if not _nr_reads_stdin(name, unwrapped[1:]):
+        return None
+    return "shell" if name in _NR_SHELLS else "code"
+
+
+def _nr_heredoc_feeds(line: str, marks: list[str]) -> dict[str, str]:
+    """For each heredoc mark on one command line, what reads its body when
+    that is a program (see _nr_stdin_program): the command the heredoc is on,
+    or a later stage of the same pipeline (`cat <<EOF | sh`)."""
+    segments = _nr_segments(line)
+    if segments is None:                       # cannot tell: judge every body
+        return {mark: "shell" for mark in marks}
+    feeds: dict[str, str] = {}
+    for k, seg in enumerate(segments):
+        here = [w for w in seg["words"] if w in marks]
+        if not here:
+            continue
+        stages = [seg]
+        for later in segments[k + 1:]:
+            if later["op"] not in ("|", "|&"):
+                break
+            stages.append(later)
+        for stage in stages:
+            words = [w for w in stage["words"] if not _NR_HEREDOC_MARK_RE.fullmatch(w)]
+            if words and (kind := _nr_stdin_program(words)):
+                feeds.update(dict.fromkeys(here, kind))
+                break
+    for mark in marks:
+        if not any(mark in seg["words"] for seg in segments):
+            feeds[mark] = "shell"
+    return feeds
+
+
+def _nr_heredocs(text: str, ctx: "_NrContext") -> tuple[str, list[str], list[tuple[str, str]]]:
+    """Take comments and heredoc bodies out of a command line: a body is text
+    handed to a command, not commands (a commit message saying "halt the
+    timer", a Makefile with `rm -rf $(BUILD)`), unless what reads it is a
+    shell, which runs it: then it stays in the line and is judged where it
+    runs. Returns (the line, commands an unquoted body runs while it is
+    written, (program text, 'code' or 'applescript') read by an interpreter)."""
+    if "<<" not in text and "#" not in text:
+        return text, [], []
+    out: list[str] = []
+    shell: list[str] = []
+    code: list[tuple[str, str]] = []
+    pending: list[tuple[str, str, bool, bool]] = []
+    frames: list[tuple] = []
+    quote, depth, start, arith, marks = None, 0, 0, False, 0
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        if quote == "'":
+            out.append(c)
+            quote = None if c == "'" else quote
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        if c == '"':
+            quote = None if quote == '"' else '"'
+            out.append(c)
+            i += 1
+            continue
+        if text.startswith("$(", i):
+            frames.append((quote, depth, start, arith))
+            quote, depth, arith = None, 0, text.startswith("$((", i)
+            out.append("$(")
+            i += 2
+            start = len(out)
+            continue
+        if quote == '"':
+            out.append(c)
+            i += 1
+            continue
+        if c == "'":
+            quote = "'"
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            if depth == 0 and frames:
+                quote, depth, start, arith = frames.pop()
+                out.append(c)
+                i += 1
+                continue
+            depth = max(depth - 1, 0)
+        elif c == "#" and (i == 0 or text[i - 1] in " \t\n;&|("):
+            j = text.find("\n", i)
+            i = n if j < 0 else j               # a comment never runs: dropped
+            continue
+        elif text.startswith("<<<", i):
+            out.append("<<<")
+            i += 3
+            continue
+        elif text.startswith("<<", i) and not arith and (m := _NR_HEREDOC.match(text, i)):
+            delim = next(g for g in (m.group(2), m.group(3), m.group(5)) if g is not None)
+            mark = _NR_HEREDOC_MARK.format(marks)
+            marks += 1
+            pending.append((mark, delim, m.group(1) == "-", m.group(5) is None or bool(m.group(4))))
+            out.append(f" {mark} ")
+            i = m.end()
+            continue
+        elif c == "\n" and pending:
+            ctx.tick()
+            out.append("\n")
+            i += 1
+            since = "".join(out[start:])
+            feeds = _nr_heredoc_feeds(since[since.rfind("\n", 0, len(since) - 1) + 1:],
+                                      [p[0] for p in pending])
+            for mark, delim, strip, quoted in pending:
+                rows = []
+                while i < n:
+                    j = text.find("\n", i)
+                    j = n if j < 0 else j
+                    row, i = text[i:j], j + 1
+                    if (row.lstrip("\t") if strip else row).rstrip("\r") == delim:
+                        break
+                    rows.append(row)
+                i = min(i, n)
+                body = "\n".join(rows)
+                kind = feeds.get(mark)
+                if kind == "shell":
+                    inner, more_shell, more_code = _nr_heredocs(body, ctx)
+                    out.append(inner + "\n")
+                    shell += more_shell
+                    code += more_code
+                elif kind:
+                    code.append((body, kind))
+                elif not quoted:
+                    shell += _nr_expansions(body)
+            pending = []
+            continue
+        out.append(c)
+        i += 1
+    return _NR_HEREDOC_MARK_RE.sub(" ", "".join(out)), shell, code
+
+
 def _nr_segments(text: str) -> list[dict] | None:
     """Simple commands: the operator before each, its words and its output
     redirect targets. None when the quoting does not parse."""
     text = re.sub(r"\\;|';'|\";\"", f" {_NR_FIND_END} ", text)
-    text = re.sub(r"\\[()]", " ", text).replace("\r", "\n").replace("\n", " ; ")
+    text = re.sub(r"\\[()]", " ", text).replace("\r", "\n")
+    if "\n" in text:
+        # A newline ends a command; inside quotes it is part of a word.
+        text = "".join(" ; " if c == "\n" and m == "\n" else c for c, m in zip(text, _nr_mask(text)))
     lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
     lexer.commenters = ""
-    segments, current, redirect = [], {"op": "", "words": [], "out": []}, None
+    segments, current, redirect = [], {"op": "", "words": [], "out": [], "here": []}, None
     try:
         for token in lexer:
             if token and set(token) <= set("();<>|&"):
                 if ">" in token:
                     redirect = "append" if ">>" in token else "out"
+                elif "<<<" in token:
+                    redirect = "here"
                 elif "<" in token:
                     redirect = "in"
                 else:
                     if current["words"] or current["out"]:
                         segments.append(current)
-                    current = {"op": token, "words": [], "out": []}
+                    current = {"op": token, "words": [], "out": [], "here": []}
                 continue
-            if redirect is not None and redirect != "in":
+            if redirect == "here":
+                current["here"].append(token)
+            elif redirect is not None and redirect != "in":
                 current["out"].append((token, redirect == "append"))
             elif redirect is None:
                 current["words"].append(token)
@@ -1615,6 +1874,18 @@ def _nr_unwrap(words: list[str], ctx: _NrContext) -> tuple[list[str], bool, str 
             words = _nr_skip_opts(words[1:])
         elif name == "watch":
             return [], admin, " ".join(_nr_skip_opts(words[1:], "n"))
+        elif name == "script":
+            # script [-aeFkqr] [-t time] [file [command ...]]; util-linux: -c CMD.
+            rest = words[1:]
+            while rest and rest[0].startswith("-") and rest[0] != "-":
+                flag = rest.pop(0)
+                if flag == "--":
+                    break
+                if flag in ("-c", "--command") and rest:
+                    return [], admin, rest[0]
+                if flag in ("-t", "-T", "-I", "-O", "-B", "-E", "-m") and rest:
+                    rest.pop(0)
+            words = rest[1:]
         elif name == "xargs":
             rest, replace = words[1:], None
             while rest and rest[0].startswith("-") and rest[0] != "-":
@@ -1634,11 +1905,12 @@ def _nr_unwrap(words: list[str], ctx: _NrContext) -> tuple[list[str], bool, str 
 
 def _nr_target(word: str, cwd) -> tuple[str, str | None]:
     """How a path operand resolves: ("dynamic", None), ("glob", the folder the
-    wildcard is in, as below), ("abs", path) or ("rel", path below home)."""
+    wildcard is in, as below), ("abs", path), ("rel", path below home) or
+    ("unknown", the relative path) in a folder only known at run time."""
     w = re.sub(r"^\$(?:HOME|\{HOME\})(?=/|$)", "~", word)
     if "$" in w or "`" in w:
         return "dynamic", None
-    if re.search(r"[*?\[]", w) or re.search(r"\{[^}]*(?:,|\.\.)[^}]*\}", w):
+    if re.search(r"[*?\[]", w) or any("," in b or ".." in b for b in _NR_BRACES.findall(w)):
         base = re.split(r"[*?\[{]", w, maxsplit=1)[0]
         head = base[:base.rfind("/") + 1] if "/" in base else ""
         _, folder = _nr_target(head.rstrip("/") or ("/" if head else "."), cwd)
@@ -1650,7 +1922,7 @@ def _nr_target(word: str, cwd) -> tuple[str, str | None]:
     if w.startswith("/"):
         return "abs", os.path.normpath(w).replace("//", "/") or "/"
     if cwd is None:
-        return "dynamic", None
+        return "unknown", os.path.normpath(w)
     if cwd[0] == "rel":
         return "rel", os.path.normpath(os.path.join(cwd[1], w))
     return "abs", os.path.normpath(os.path.join(cwd[1], w))
@@ -1675,14 +1947,19 @@ def _nr_root_like(path: str | None) -> bool:
 
 
 def _nr_rel_problem(rel: str) -> str | None:
-    """Why a recursive change to a path below home is too broad, or None."""
+    """Why a recursive change to a path below home is too broad, or None.
+    A main folder (Documents, Desktop, Library ...) and what sits directly in
+    it are refused; a folder deeper down (Desktop/MOE_Project/build) is not."""
     if rel == ".":
         return "the whole working folder, which is your home folder"
     if rel == ".." or rel.startswith("../"):
         return "a path outside the working folder"
-    top = rel.split("/", 1)[0]
-    if top.casefold() in _NR_HOME_NAMES:
-        return "one of your main folders" if top == rel else "a path inside one of your main folders"
+    parts = rel.split("/")
+    if parts[0].casefold() in _NR_HOME_NAMES:
+        if len(parts) == 1:
+            return "one of your main folders"
+        if len(parts) == 2:
+            return "a folder directly inside one of your main folders"
     return None
 
 
@@ -1705,21 +1982,140 @@ def _nr_rm(args: list[str], ctx: _NrContext, admin: bool, unknown_name: bool = F
     if recursive and ctx.fed:
         return "recursively deletes paths it only learns while running"
     what = "recursively deletes" if recursive else "deletes"
-    for op in operands:
+    for op in _nr_expand_braces(operands):
         kind, path = _nr_target(op, ctx.cwd)
         if (hit := _nr_protected_hit(_nr_full(kind, path))):
             return f"deletes {hit} ({op})"
         if not recursive:
             continue
+        w = re.sub(r"^\$(?:HOME|\{HOME\})(?=/|$)", "~", op)
         if kind == "dynamic":
             return f"{what} a path that is only known while it runs ({op})"
-        if kind == "glob":
-            return f"{what} everything a wildcard matches ({op})"
-        if kind == "abs":
-            return f"{what} an absolute path ({op})"
-        if (problem := _nr_rel_problem(path or op)):
-            return f"{what} {problem} ({op})"
+        if w.startswith(("/", "~")):
+            return (f"{what} everything a wildcard matches ({op})" if kind == "glob"
+                    else f"{what} an absolute path ({op})")
+        if (problem := _nr_rel_delete(w, ctx.cwd)):
+            return f"{what} {problem}"
     return None
+
+
+def _nr_expand_braces(words: list[str], limit: int = 64) -> list[str]:
+    """Words with {a,b} lists expanded (a list past `limit` words becomes a
+    wildcard) and {1..9} ranges spelled as a wildcard."""
+    out, todo = [], list(reversed(words))
+    while todo:
+        w = todo.pop()
+        m = _NR_BRACE_LIST.search(w)
+        if m is None:
+            out.append(re.sub(r"\{[^{}]*\.\.[^{}]*\}", "*", w))
+        elif len(out) + len(todo) >= limit:
+            out.append(re.sub(r"[{},]", "*", w))      # too many words: judged as a wildcard
+        else:
+            todo += reversed([w[:m.start()] + alt + w[m.end():] for alt in m.group(1).split(",")])
+    return out
+
+
+def _nr_place(path: str) -> tuple[str, str]:
+    """An absolute folder as a working-folder state: below home it is
+    ("rel", path below home), so the relative-folder rules apply to it."""
+    home = _nr_home()
+    p, h = path.rstrip("/").casefold() or "/", home.casefold()
+    if p == h:
+        return "rel", "."
+    if p.startswith(h + "/"):
+        return "rel", path.rstrip("/")[len(home) + 1:]
+    return "abs", path
+
+
+def _nr_show(cwd, rel: str) -> str:
+    """How a reason names the folder a relative path resolves to."""
+    if cwd is None:
+        return rel
+    if cwd[0] == "rel":
+        path = os.path.normpath(os.path.join(cwd[1], rel))
+        return "~" if path == "." else f"~/{path}"
+    return os.path.normpath(os.path.join(cwd[1], rel))
+
+
+def _nr_system_like(path: str | None) -> bool:
+    """Root-like, or inside one of macOS's own folders (/usr/local aside)."""
+    if not path or _nr_root_like(path):
+        return bool(path)
+    p = path.rstrip("/").casefold() or "/"
+    if p == "/usr/local" or p.startswith("/usr/local/"):
+        return False
+    return any(p == s or p.startswith(s + "/") for s in _NR_SYSTEM)
+
+
+def _nr_rel_delete(word: str, cwd) -> str | None:
+    """Why a recursive delete of a relative `word` (wildcards allowed), run in
+    the working folder `cwd`, is too broad, or None for a card. The reason
+    names the folder the delete resolves to."""
+    wild = re.search(r"[*?\[]", word)
+    if wild:
+        head = word[:word.rfind("/", 0, wild.start()) + 1]
+        pattern = word[len(head):].split("/", 1)[0]
+        folder = head.rstrip("/") or "."
+        bare = not re.sub(r"\[[^\]]*\]|[*?.]", "", pattern)
+        homeish = bare or any(fnmatch.fnmatchcase(name, pattern.casefold()[:200])
+                              for name in _NR_HOME_NAMES)
+    else:
+        folder, bare, homeish = word, False, False
+    parts = [p for p in folder.split("/") if p not in ("", ".")]
+    up = ".." in parts
+    if cwd is None:
+        where = "a folder that is only known while it runs"
+        if up or (not wild and not parts):
+            return f"the working folder or a folder above it, which is only known while it runs ({word})"
+        if parts and parts[0].casefold() in (_NR_HOME_NAMES | _NR_TOP_NAMES
+                                             | {_nr_home().rsplit("/", 1)[-1].casefold()}):
+            return f"a folder named like one of your main folders, in {where} ({word})"
+        if wild and not parts and homeish:
+            return f"everything in {where} ({word})"
+        return None
+    shown = _nr_show(cwd, folder)
+    if cwd[0] == "rel":
+        target = os.path.normpath(os.path.join(cwd[1], folder))
+        if target == ".." or target.startswith("../"):
+            return f"a path outside your home folder ({word})"
+        # `cd build && rm -rf *` is judged as `rm -rf build/*`; in home itself
+        # a bare `*`, `.*` or `./*`, or a pattern that can match a main folder
+        # (`D*`), is refused.
+        if wild and target == ".":
+            return f"everything in your home folder ({word})" if homeish else None
+        if (problem := _nr_rel_problem(target)):
+            if target == ".":
+                problem = "your whole home folder"
+            return f"{'everything in ' if wild else ''}{problem} ({shown})"
+        return None
+    base = cwd[1]
+    if _nr_system_like(base):
+        return f"{'everything in ' if wild else ''}{shown}, inside {base}, one of the Mac's top or system folders"
+    if up:
+        return f"{shown}, a path above the working folder {base}"
+    if not parts and not wild:
+        return f"the whole working folder ({base})"
+    if wild and not parts and bare:
+        return f"everything in {base}"
+    if _nr_system_like(shown):
+        return f"{shown}, one of the Mac's top or system folders"
+    return None
+
+
+def _nr_mode_narrows(mode: str) -> bool:
+    """Whether a chmod mode only takes permissions from group and others
+    (go-rwx, 700, 600, u+rw,go-rwx), so it can only tighten a folder."""
+    if re.fullmatch(r"0?[0-7]00", mode):
+        return True
+    for clause in mode.split(","):
+        m = re.fullmatch(r"([ugoa]*)([-+=])([rwxXst]*)", clause)
+        if not m:
+            return False
+        who, op, perms = m.groups()
+        if op == "-" or (who and set(who) == {"u"}) or (op == "=" and not perms and "u" not in who and who):
+            continue
+        return False
+    return True
 
 
 def _nr_find(args: list[str], ctx: _NrContext, admin: bool) -> str | None:
@@ -1741,23 +2137,64 @@ def _nr_find(args: list[str], ctx: _NrContext, admin: bool) -> str | None:
         i += 1
     filtered = any(w.startswith("-") and w not in ("-delete", "-depth", "-d", "-print", "-print0")
                    and not w.startswith(("-exec", "-ok")) for w in rest)
-    deletes = "-delete" in rest or any(run and _nr_prog(run[0]) in ("rm", "srm", "unlink") for run in runs)
+    # A filter that picks files by name, age, size or owner, not just by type.
+    named = any(w in ("-name", "-iname", "-path", "-ipath", "-wholename", "-iwholename", "-regex",
+                      "-iregex", "-mtime", "-mmin", "-atime", "-amin", "-ctime", "-cmin", "-size",
+                      "-empty", "-user", "-group", "-perm", "-links", "-inum", "-samefile")
+                or w.startswith("-newer") for w in rest)
+    deleters = ("rm", "srm", "unlink")
+    deletes = "-delete" in rest or any(run and _nr_prog(run[0]) in deleters for run in runs)
     for root in roots or ["."]:
         if deletes:
             if admin:
                 return "deletes files as an administrator"
-            kind, path = _nr_target(root, ctx.cwd)
-            if kind == "rel" and (path == "." and filtered or not _nr_rel_problem(path)):
-                pass
-            else:
-                where = {"dynamic": "a folder that is only known while it runs",
-                         "glob": "everything a wildcard matches",
-                         "abs": "an absolute path"}.get(kind) or _nr_rel_problem(path or root)
-                return f"deletes files found under {where} ({root})"
+            if (problem := _nr_find_root(root, ctx.cwd, filtered, named)):
+                return f"deletes files found under {problem}"
         for run in runs:
-            match = os.path.join(root, "__wisp_match__")
-            if (hit := _nr_judge_words([w.replace("{}", match) for w in run], ctx.child())):
+            if run and _nr_prog(run[0]) in deleters:
+                # The matches were judged with the root above; other operands still count.
+                words = [w for w in run if w != "{}"]
+            else:
+                match = os.path.join(root, "__wisp_match__")
+                words = [w.replace("{}", match) for w in run]
+            if (hit := _nr_judge_words(words, ctx.child())):
                 return hit
+    return None
+
+
+def _nr_find_root(root: str, cwd, filtered: bool, named: bool) -> str | None:
+    """Why a find that deletes is too broad for this root, or None for a card.
+    A plain folder of the working folder keeps its card; `.` needs a filter.
+    Elsewhere a name, age or size filter is needed and the root must not be a
+    top folder, home, one of home's main folders, or a protected folder.
+    `find ~ -name '*.txt' -delete` stays refused: home is a top folder."""
+    kind, path = _nr_target(root, cwd)
+    if kind == "dynamic":
+        return f"a folder that is only known while it runs ({root})"
+    if kind == "glob":
+        return f"everything a wildcard matches ({root})"
+    if kind == "unknown":
+        parts = [p for p in path.split("/") if p not in ("", ".")]
+        if ".." in parts or (not parts and not filtered):
+            return f"the working folder or a folder above it, which is only known while it runs ({root})"
+        if parts and parts[0].casefold() in (_NR_HOME_NAMES | _NR_TOP_NAMES):
+            return f"a folder named like one of your main folders ({root})"
+        return None
+    if kind == "rel":
+        if path == "." and filtered:
+            return None
+        problem = _nr_rel_problem(path)
+        if problem is None:
+            return None
+        full = _nr_full(kind, path)
+        if not (named and full and not path.startswith("..") and not _nr_root_like(full)
+                and not _nr_protected_hit(full)):
+            return f"{problem} ({_nr_show(('rel', '.'), path)})"
+        return None
+    if not named:
+        return f"an absolute path, with no filter for which files ({root})"
+    if _nr_system_like(path) or _nr_protected_hit(path):
+        return f"{path}, one of the Mac's top folders, your home folder or one of its main folders"
     return None
 
 
@@ -1775,6 +2212,24 @@ def _nr_code(args: list[str], flags: tuple[str, ...], cluster: str = "") -> str 
     return None
 
 
+def _nr_code_hit(code: str, ctx: _NrContext) -> str | None:
+    """A refused command inside an interpreter program that runs commands
+    (os.system('...'), system("..."), execSync('...'), `...`): each string
+    literal, and each list of literals (['rm', '-rf', '/']) as one command,
+    is judged as a command line. A program that runs nothing is not read."""
+    if not _NR_EXEC_HINT.search(code):
+        return None
+    texts = ["".join(m) for m in _NR_LITERAL.findall(code)]
+    for group in re.findall(r"\[([^\[\]]*)\]", code):
+        items = ["".join(m) for m in _NR_LITERAL.findall(group)]
+        if len(items) > 1:
+            texts.append(" ".join(shlex.quote(re.sub(r"\\(.)", r"\1", t)) for t in items))
+    for text in texts:
+        if (hit := _nr_judge_text(re.sub(r"\\(.)", r"\1", text) if "\\" in text else text, ctx.child())):
+            return hit
+    return None
+
+
 def _nr_reads_stdin(name: str, args: list[str]) -> bool:
     """True when an interpreter takes its program from stdin."""
     for a in args:
@@ -1789,7 +2244,8 @@ def _nr_reads_stdin(name: str, args: list[str]) -> bool:
 def _nr_judge_words(words: list[str], ctx: _NrContext) -> str | None:
     """Why one simple command is never run, or None."""
     if ctx.depth > _NR_DEPTH:
-        return None
+        return _TOO_DEEP
+    ctx.tick()
     words, admin, via_shell = _nr_unwrap(list(words), ctx)
     if via_shell is not None:
         return _nr_judge_text(via_shell, ctx.child())
@@ -1801,11 +2257,17 @@ def _nr_judge_words(words: list[str], ctx: _NrContext) -> str | None:
     if "$" in first or "`" in first:
         # A program name only known at run time: judged as if it were rm.
         return _nr_rm(args, ctx, admin, unknown_name=True)
-    if name in ("cd", "pushd"):
+    if name in ("cd", "pushd", "popd"):
+        # Later relative paths are judged in the folder this leads to. Below
+        # home that is a path below home; a folder only known at run time
+        # (`cd "$PROJECT"`, `cd -`, `popd`, `cd ..` out of home) is None.
         dest = next((a for a in args if not a.startswith("-")), "~")
+        if name == "popd" or "-" in args or dest.startswith(("+", "-")):
+            ctx.cwd = None
+            return None
         kind, path = _nr_target(dest, ctx.cwd)
-        ctx.cwd = (("rel", ".") if kind == "abs" and path == _nr_home()
-                   else (kind, path) if kind in ("abs", "rel") and not (kind == "rel" and path.startswith(".."))
+        ctx.cwd = (_nr_place(path) if kind == "abs"
+                   else ("rel", path) if kind == "rel" and not (path == ".." or path.startswith("../"))
                    else None)
         return None
     if name in ("rm", "unlink"):
@@ -1825,7 +2287,8 @@ def _nr_judge_words(words: list[str], ctx: _NrContext) -> str | None:
                     return hit
             return None
         code = (_nr_code(args, ("-c", "--command"), cluster="c") if name in _NR_SHELLS
-                else _nr_code(args, ("-c", "-e", "-E", "--eval")))
+                else _nr_code(args, ("-c", "-e", "-E", "--eval", "-p", "--print"),
+                              cluster="e" if name in ("perl", "ruby", "node", "php", "lua") else ""))
         program = code if code is not None else next((a for a in args if not a.startswith("-")), "")
         if program and _nr_fetches(program, ctx.inner):
             return _FETCHED_CODE
@@ -1833,6 +2296,8 @@ def _nr_judge_words(words: list[str], ctx: _NrContext) -> str | None:
             return _FORK_BOMB
         if code is not None and name in _NR_SHELLS:
             return _nr_judge_text(code, ctx.child())
+        if code:
+            return _nr_code_hit(code, ctx)
         return None
     if name == "dd":
         for a in args:
@@ -1859,11 +2324,17 @@ def _nr_judge_words(words: list[str], ctx: _NrContext) -> str | None:
         if not any((a.startswith("-") and not a.startswith("--") and "R" in a) or a == "--recursive"
                    for a in args):
             return None
-        for op in [a for a in args if not a.startswith("-")][1:]:
+        plain = [a for a in args if not a.startswith("-")]
+        ssh = f"{_nr_home()}/.ssh".casefold()
+        for op in plain[1:]:
             kind, path = _nr_target(op, ctx.cwd)
+            if (name == "chmod" and _nr_mode_narrows(plain[0])
+                    and _within(_nr_full(kind, path) or "", [ssh])):
+                continue        # `chmod -R go-rwx ~/.ssh` only tightens it
             if (kind == "dynamic" or _nr_root_like(path)
-                    or (kind == "rel" and path and (path in (".", "..") or path.startswith("../")
-                                                    or path.casefold() in _NR_HOME_NAMES))
+                    or (kind in ("rel", "unknown") and path
+                        and (path in (".", "..") or path.startswith("../")
+                             or path.casefold() in _NR_HOME_NAMES))
                     or (kind == "glob" and path == ".")):
                 return f"changes permissions on every file in {op}"
         return None
@@ -1920,7 +2391,27 @@ def _nr_judge_words(words: list[str], ctx: _NrContext) -> str | None:
         for op in (operands if name == "mv" else operands[-1:]):
             if (hit := _nr_protected_hit(_nr_full(*_nr_target(op, ctx.cwd)), erasing=emptying)):
                 return f"{'empties' if emptying else 'overwrites or moves'} {hit} ({op})"
+        if name == "mv" and len(operands) > 1:
+            for op in operands[:-1]:
+                full = _nr_full(*_nr_target(op, ctx.cwd))
+                # Moving Wisp's own folder keeps its card (the #409/#413 design).
+                if _nr_root_like(full) and _nr_protected_hit(full) != "Wisp's own data":
+                    return f"moves your home folder, one of its main folders or a top folder of the Mac ({op})"
+        if name == "rsync" and len(operands) > 1 and any(a.startswith("--del") for a in low):
+            dest = operands[-1]
+            if ":" not in dest and _nr_root_like(_nr_full(*_nr_target(dest, ctx.cwd))):
+                return (f"makes {dest} match another folder, deleting whatever is only in it "
+                        f"(rsync --delete into your home folder, one of its main folders or a top folder)")
         return None
+    if name == "fdesetup" and low[:1] == ["disable"]:
+        return "turns off FileVault disk encryption"
+    if name == "pfctl" and any(a in ("-d", "-dl") for a in args):
+        return "turns off the firewall"
+    if name == "dscl" and low[-2:-1] in (["-delete"], ["delete"]) and re.match(
+            r"/(?:local/default/)?users/[^/]+/?$", low[-1]):
+        return _REMOVES_USER            # the whole record, not one of its attributes
+    if name == "sysadminctl" and "-deleteuser" in low:
+        return _REMOVES_USER
     if name not in _NR_READERS and any("/etc/sudoers" in a for a in low):
         return _SUDOERS
     return None
@@ -1958,12 +2449,32 @@ def _nr_pipeline(stages: list[list[str]], ctx: _NrContext) -> str | None:
 
 def _nr_judge_text(text: str, ctx: _NrContext) -> str | None:
     """Why a command line is never run, or None."""
-    if ctx.depth > _NR_DEPTH or not text.strip():
+    if not text.strip():
         return None
-    for m in _NR_FUNC.finditer(text):
+    if ctx.depth > _NR_DEPTH:
+        return _TOO_DEEP
+    ctx.tick()
+    text, run_texts, programs = _nr_heredocs(text, ctx)
+    for body in run_texts:
+        if (hit := _nr_judge_text(body, ctx.child())):
+            return hit
+    for body, kind in programs:
+        if kind == "applescript":
+            hits = (_nr_judge_text(re.sub(r"\\(.)", r"\1", b), ctx.child())
+                    for b in _DO_SHELL_SCRIPT.findall(body))
+            hit = next((h for h in hits if h), None)
+        else:
+            hit = _NR_FORK_CODE.search(body) and _FORK_BOMB or _nr_code_hit(body, ctx)
+        if hit:
+            return hit
+    # Quoted text is an argument (a commit message naming a fork bomb), not
+    # code; quoted code that runs (sh -c '...', eval, echo ... | sh) is judged
+    # where it runs.
+    bare = _nr_mask(text)
+    for m in _NR_FUNC.finditer(bare):
         if re.search(r"(?<![\w:.-])" + re.escape(m.group(1)) + r"\s*(?:\||&(?!&))", m.group(2)):
             return _FORK_BOMB
-    if _NR_FORK_CODE.search(text):
+    if _NR_FORK_CODE.search(bare):
         return _FORK_BOMB
     start = len(ctx.inner)
     outer = _nr_lift(text, ctx.inner)
@@ -1992,6 +2503,16 @@ def _nr_judge_text(text: str, ctx: _NrContext) -> str | None:
                 return hit
             pipeline = [seg["words"]]
         ctx.fed = False
+        if seg["here"] and seg["words"]:
+            # A here-string is the program when a shell reads its program from stdin.
+            kind = _nr_stdin_program(seg["words"])
+            for body in seg["here"] if kind else ():
+                if (hit := (_nr_judge_text(body, ctx.child()) if kind == "shell"
+                            else _nr_code_hit(body, ctx) if kind == "code"
+                            else next((h for b in _DO_SHELL_SCRIPT.findall(body)
+                                       if (h := _nr_judge_text(re.sub(r"\\(.)", r"\1", b), ctx.child()))),
+                                      None))):
+                    return hit
         if seg["words"] and (hit := _nr_judge_words(seg["words"], ctx)):
             return hit
     if len(pipeline) > 1 and (hit := _nr_pipeline(pipeline, ctx)):
@@ -2000,10 +2521,20 @@ def _nr_judge_text(text: str, ctx: _NrContext) -> str | None:
 
 
 def never_run_hit(text: str) -> str | None:
-    """Why Wisp refuses to run this shell text in any mode, or None."""
-    if not isinstance(text, str) or not text.strip() or len(text) > SHELL_TEXT_LIMIT:
+    """Why Wisp refuses to run this shell text in any mode, or None.
+
+    Text longer than SHELL_TEXT_LIMIT is refused by decide() anyway; its first
+    SHELL_TEXT_LIMIT characters are still judged here, so a dangerous start
+    gets this refusal's wording. A check that runs past _NR_BUDGET seconds of
+    CPU time (only pathological text gets near it) refuses the command."""
+    if not isinstance(text, str) or not text.strip():
         return None
-    return _nr_judge_text(text, _NrContext(("rel", ".")))
+    try:
+        return _nr_judge_text(text[:SHELL_TEXT_LIMIT], _NrContext(("rel", ".")))
+    except _NrTooSlow:
+        return _TOO_SLOW
+    except RecursionError:
+        return _TOO_DEEP
 
 
 def never_run_decision(args: dict) -> Decision | None:
@@ -2014,7 +2545,8 @@ def never_run_decision(args: dict) -> Decision | None:
               for body in _DO_SHELL_SCRIPT.findall(str(args.get("script") or ""))]
     for text in texts:
         if (hit := never_run_hit(text)):
-            return Decision(Tier.DENY, f"Wisp won't run this command because it {hit}. {NEVER_RUN_TAIL}")
+            return Decision(Tier.DENY, f"Wisp won't run this command because it {_card_text(hit, 300)}. "
+                            f"{NEVER_RUN_TAIL}")
     return None
 
 

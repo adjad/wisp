@@ -65,6 +65,65 @@ REFUSED = [
     "echo x > /etc/sudoers",
     "rm -rf ~/.moe",
     "truncate -s 0 ~/.moe/facts.db",
+    # After cd: the folder the delete resolves to (2026-11-10 audit B1).
+    "cd ~ && rm -rf Documents",
+    "cd ~/Documents && rm -rf .",
+    "cd ~ && rm -rf *",
+    "cd / && rm -rf usr",
+    "cd /System && rm -rf Library",
+    "cd /Users && rm -rf u",
+    "cd .. && rm -rf *",
+    "cd /tmp && rm -rf ../usr",
+    "cd \"$PROJECT\" && rm -rf .",
+    # Wildcards (B3): bare in home, in or directly inside a main folder, absolute.
+    "rm -rf ~/*",
+    "rm -rf /Users/*",
+    "rm -rf .*",
+    "rm -rf ./*",
+    "rm -rf D*",
+    "rm -rf ~/Documents/*",
+    "rm -rf ~/{Documents,Desktop}",
+    # find deletes (M2): no filter, home itself, top or main folders.
+    "find ~ -delete",
+    "find ~/Documents -delete",
+    "find ~/Projects -type f -delete",
+    "find / -name '*.log' -delete",
+    "find ~/.ssh -name 'id_*' -delete",
+    "find ~/Projects -name '*.pyc' -exec rm -rf ~ \\;",
+    # Shells reading a heredoc or here-string program (B2).
+    "sh <<EOF\nrm -rf ~\nEOF",
+    "bash -s <<EOF\nrm -rf ~/Documents\nEOF",
+    "zsh <<'EOF'\nshutdown -h now\nEOF",
+    "sudo bash <<EOF\nrm -rf /\nEOF",
+    "env bash <<EOF\nrm -rf ~\nEOF",
+    "cat <<EOF | sh\nrm -rf ~\nEOF",
+    "python3 - <<'EOF'\nimport os\nos.system('rm -rf ~')\nEOF",
+    "cat <<EOF > notes.txt\n$(rm -rf ~)\nEOF",
+    "bash -s <<< \"rm -rf ~\"",
+    "sh <<< 'rm -rf /'",
+    # Cheap misses.
+    "script -q /dev/null rm -rf ~",
+    "mv ~ /tmp/x",
+    "mv ~/Documents /tmp/x",
+    "rsync -a --delete src/ /",
+    "rsync -a --delete src/ ~",
+    "rsync -a --delete src/ ~/Documents",
+    "fdesetup disable",
+    "pfctl -d",
+    "dscl . -delete /Users/bob",
+    "sysadminctl -deleteUser bob",
+    "python3 -c \"import os; os.system('rm -rf ~')\"",
+    "perl -e 'system(\"rm -rf ~\")'",
+    "node -e \"require('child_process').execSync('rm -rf ~')\"",
+    "ruby -e '`rm -rf ~`'",
+    "python3 -c \"import subprocess; subprocess.run(['rm', '-rf', '/'])\"",
+    # SSH keys stay refused; settings and known hosts keep their card (below).
+    "rm -rf ~/.ssh",
+    "cp x ~/.ssh/id_ed25519",
+    ": > ~/.ssh/authorized_keys",
+    "chmod -R 777 ~/.ssh",
+    "rm -rf ~/Library/Keychains",
+    "$($($($($($($($($($(ls))))))))))",
 ]
 
 # (command, tier by default, tier under full access), captured before the change.
@@ -105,6 +164,36 @@ ORDINARY = [
     ("sh -c 'echo hi'", "CONFIRM", "ALLOW"),
     ("truncate -s 0 log.txt", "CONFIRM", "ALLOW"),
     (": > out.log", "CONFIRM", "ALLOW"),
+    # Everyday deletes after cd keep their card (2026-11-10 audit B1).
+    ("cd ~/Projects/app && rm -rf node_modules", "CONFIRM", "CONFIRM"),
+    ("cd /tmp && tar xzf x.tgz && rm -rf x", "CONFIRM", "CONFIRM"),
+    ("pushd ~/Projects && rm -rf tmp", "CONFIRM", "CONFIRM"),
+    ("cd ~/Desktop/MOE_Project && rm -rf build", "CONFIRM", "CONFIRM"),
+    ("cd \"$(git rev-parse --show-toplevel)\" && rm -rf build", "CONFIRM", "CONFIRM"),
+    ("cd \"$PROJECT\" && rm -rf dist", "CONFIRM", "CONFIRM"),
+    ("tmp=$(mktemp -d); cd \"$tmp\" && rm -rf x", "CONFIRM", "CONFIRM"),
+    ("cd .. && rm -rf build", "CONFIRM", "CONFIRM"),
+    ("cd Projects/app && rm -rf node_modules", "CONFIRM", "CONFIRM"),
+    ("cd build && rm -rf *", "CONFIRM", "CONFIRM"),
+    # Wildcards inside an ordinary folder, and name patterns (B3).
+    ("rm -rf build/*", "CONFIRM", "CONFIRM"),
+    ("rm -rf ./build/*", "CONFIRM", "CONFIRM"),
+    ("rm -rf *.egg-info", "CONFIRM", "CONFIRM"),
+    ("rm -rf dist/*.whl", "CONFIRM", "CONFIRM"),
+    ("rm -rf {build,dist}", "CONFIRM", "CONFIRM"),
+    # Filtered find deletes under an ordinary folder (M2).
+    ("find ~/Projects -name '.DS_Store' -delete", "CONFIRM", "CONFIRM"),
+    ("find ~/Projects/app -name \"*.pyc\" -delete", "CONFIRM", "CONFIRM"),
+    ("find /tmp -name \"*.log\" -mtime +7 -delete", "CONFIRM", "CONFIRM"),
+    # A heredoc body is text unless a shell reads it (B2).
+    ("cat > Makefile <<'EOF'\nclean:\n\trm -rf $(BUILD)\nEOF", "CONFIRM", "CONFIRM"),
+    # SSH settings, tightening permissions, and a new key (Low).
+    ("echo \"Host x\" >> ~/.ssh/config", "CONFIRM", "CONFIRM"),
+    ("cat key.pub >> ~/.ssh/known_hosts", "CONFIRM", "CONFIRM"),
+    ("chmod -R go-rwx ~/.ssh", "CONFIRM", "CONFIRM"),
+    ("chmod 700 ~/.ssh", "CONFIRM", "CONFIRM"),
+    ("chmod 600 ~/.ssh/id_ed25519", "CONFIRM", "CONFIRM"),
+    ("ssh-keygen -t ed25519 -f ~/.ssh/id_new -N ''", "CONFIRM", "CONFIRM"),
 ]
 
 
@@ -140,6 +229,66 @@ def test_the_refusal_says_to_run_it_yourself(monkeypatch):
     assert reason.startswith("Wisp won't run this command because it ")
     assert reason.endswith(policy.NEVER_RUN_TAIL) and "Terminal" in reason
     assert "—" not in reason
+
+
+def test_a_heredoc_body_is_text_unless_a_shell_reads_it():
+    # Text handed to git, cat or a file is not run, whatever it says.
+    text_bodies = [
+        "git commit -F - <<'EOF'\nFix the timer\n\nhalt the timer when the Mac sleeps\nEOF",
+        "cat <<EOF > notes.md\nreboot after the update\nEOF",
+        "cat > cleanup.sh <<'EOF'\n#!/bin/sh\nrm -rf /Users/u/old\nEOF",
+        "cat > Makefile <<'EOF'\nclean:\n\trm -rf $(BUILD)\nEOF",
+        "git commit -m \"$(cat <<'EOF'\nStop the reboot loop\n\nIt didn't halt; now it won't.\nEOF\n)\"",
+        "cat <<-EOF > x.txt\n\trm -rf ~\n\tEOF\nrm -rf build",
+        "cat <<A; cat <<B\nrm -rf ~\nA\nreboot\nB\nrm -rf build",
+        "cat <<'EOF' > x.txt\n$(rm -rf ~)\nEOF",
+    ]
+    for cmd in text_bodies:
+        assert policy.never_run_hit(cmd) is None, cmd
+    # A shell or interpreter reading its program from stdin runs the body.
+    for cmd in ("sh <<EOF\nrm -rf ~\nEOF", "bash -s <<EOF\nrm -rf ~/Documents\nEOF",
+                "bash <<-EOF\n\trm -rf ~\n\tEOF\necho ok", "cat <<A; bash <<B\nhello\nA\nrm -rf /\nB",
+                "python3 - <<'EOF'\nimport os\nos.system('rm -rf ~')\nEOF",
+                "cat <<EOF | sh\nshutdown -h now\nEOF"):
+        assert policy.never_run_hit(cmd), cmd
+    # Whatever follows the heredoc is still judged.
+    assert policy.never_run_hit("cat <<EOF > x.txt\nhello\nEOF\nrm -rf ~")
+
+
+def test_a_here_string_into_a_shell_is_judged():
+    for cmd in ("bash -s <<< \"rm -rf ~\"", "sh <<< 'rm -rf /'", "sudo -u x bash <<< 'rm -rf /'",
+                "python3 - <<< \"import os; os.system('rm -rf ~')\""):
+        assert policy.never_run_hit(cmd), cmd
+    for cmd in ("grep rm <<< \"rm -rf ~\"", "bash -s <<< 'echo hi'", "wc -w <<< 'shutdown now'"):
+        assert policy.never_run_hit(cmd) is None, cmd
+
+
+def test_a_relative_delete_names_the_folder_it_resolves_to():
+    reason = policy.never_run_hit("cd ~/Documents && rm -rf .")
+    assert "~/Documents" in reason and "absolute" not in reason
+    reason = policy.never_run_hit("cd / && rm -rf usr")
+    assert "/usr" in reason and "absolute" not in reason
+
+
+def test_pathological_text_is_judged_quickly():
+    """decide() runs on the event loop: no input may stall the check."""
+    import time
+    n = policy.SHELL_TEXT_LIMIT
+    inputs = ["rm -rf " + "{a," * n, "rm -rf x" + "{a,{a,{a," * n, "`" * n, "$(" * n, '"$(' * n,
+              "\\" * n, '"' * n, "'" * n, "'\"" * n, "cat <<a\n" * n, "cat " + "<<a " * n,
+              "while" + " " * n + "x", "while" + " (" * n, "f" * n + " ( ) {", "a(){ " * n,
+              "rm -rf " + "a " * n, "rm -rf " + "[" * n, "rm -rf " + "{a,b}" * n,
+              "python3 -c \"os.system(" + "'a'," * n, "find . " + "-name x " * n,
+              "bash <<< x " * n, "# x\n" * n, "$((" * n]
+    for text in inputs:
+        text = text[:n]
+        start = time.perf_counter()
+        policy.never_run_hit(text)
+        assert time.perf_counter() - start < 1.0, text[:40]
+
+
+def test_a_command_past_the_length_limit_is_still_judged_by_its_start():
+    assert policy.never_run_hit("rm -rf ~; " + "x" * (policy.SHELL_TEXT_LIMIT + 10))
 
 
 def test_a_do_shell_script_body_is_judged_as_the_command_it_runs():
