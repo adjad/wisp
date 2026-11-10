@@ -144,6 +144,11 @@ def test_new_contacts_or_a_new_sync_are_parsed_again(monkeypatch):
     for name in ("_name_handles", "_birthdays", "_snapshot_generation", "_snapshot_captured_at",
                  "_publication_expires_monotonic", "_issued_snapshot", "_unavailable_reason", "_unavailable_kind"):
         monkeypatch.setattr(M, name, getattr(M, name))
+    # cache_messages and cache_contacts also publish and persist: keep both out
+    # of the module state and the disk cache later tests in this process see.
+    from service.publication_authority import Authority
+    monkeypatch.setattr(M, "_publication_authority", Authority("native-messages"))
+    monkeypatch.setattr(M.cache_store, "save", lambda *args, **kwargs: None)
     monkeypatch.setattr(M, "_lines", "\n".join(HANDLE_LINES))
     assert M._parse_records()[0][2] == "+15550100123"
     M.cache_contacts({"+15550100123": "Robin Example"})
