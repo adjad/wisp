@@ -830,6 +830,21 @@ def test_a_picture_of_text_is_enlarged_for_recognition_and_a_photo_is_not():
     assert photo.size == (1200, 800)
 
 
+def test_a_picture_of_text_also_returns_a_small_overview_for_the_vision_model():
+    page = Image.new("RGB", (3024, 1964), "white")
+    ImageDraw.Draw(page).text((40, 40), "Invoice ABC-1234 total $12.50", fill="black")
+    result = A.ocr_images("screen.png", encoded(page, "PNG"))
+    recognition = jpeg_of(result["images"][0])[1]
+    overview = jpeg_of(result["overview"])[1]
+    assert max(recognition.size) > 4096                  # too big for vision.decode_image: why the overview exists
+    assert max(overview.size) <= A.OVERVIEW_SIDE and overview.mode == "RGB"
+    assert result["overview"] != result["images"][0]
+
+
+def test_a_pdf_result_has_no_overview():
+    assert "overview" not in A.ocr_images("scan.pdf", scanned_pdf(2, size=(600, 800)))
+
+
 def test_a_pdf_that_opens_with_no_password_is_not_refused():
     class Blank:
         is_encrypted = True

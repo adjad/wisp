@@ -493,7 +493,9 @@ def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
     """{images: [data URL], pages, read_pages: [1-based]} for a picture (one image) or a PDF's page pictures."""
     started = time.monotonic()
     if not data.startswith(b"%PDF"):
-        return {"images": [_recognition_jpeg(_open_picture(data, workdir))], "pages": 1, "read_pages": [1]}
+        picture = _open_picture(data, workdir)
+        return {"images": [_recognition_jpeg(picture)], "overview": _jpeg_url(picture), "pages": 1,
+                "read_pages": [1]}
     from PIL import Image
     from pypdf import PdfReader
     Image.MAX_IMAGE_PIXELS = MAX_PIXELS

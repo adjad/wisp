@@ -560,7 +560,7 @@ class _Recognised(NamedTuple):
     text: str
     read: int               # pages with recognised text
     total: int              # pages in the file
-    image: str              # the first prepared picture
+    image: str              # the child's small overview JPEG for the vision model; '' when it sent none
     confidence: float       # the lowest page confidence that was accepted
     complete: bool          # every prepared page was tried (none skipped for a failure or for time)
 
@@ -605,6 +605,10 @@ async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> _Rec
         numbers = list(range(1, len(images) + 1))
     total = result.get("pages")
     total = total if type(total) is int and total >= len(images) else len(images)
+    from service import document_extract
+    total = min(total, document_extract.MAX_DECLARED_PAGES)
+    overview = result.get("overview")
+    overview = overview if isinstance(overview, str) and overview.startswith("data:image/jpeg;base64,") else ""
     parts: list[tuple[int, str, float]] = []
     attempted = 0
     for number, url in zip(numbers, images):
@@ -631,14 +635,14 @@ async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> _Rec
         return None
     joined = (f"[Pages: {total}]\n" + "\n\n".join(f"[Page {n}]\n{text}" for n, text, _c in parts)
               if paged else parts[0][1])
-    return _Recognised(joined, len(parts), total, images[0], min(c for _n, _t, c in parts),
+    return _Recognised(joined, len(parts), total, overview, min(c for _n, _t, c in parts),
                        attempted == len(images) and result.get("stopped_early") is not True)
 
 
 async def _describe(ctx: _Ctx, image: str) -> str:
     """What a picture of text is and how it is laid out, from the vision model. '' when that can't be had."""
     from service import vision
-    if ctx.remaining() < 20.0:
+    if not image or ctx.remaining() < 20.0:
         return ""
     try:
         text = await vision.read_images(ctx.question or "Describe this picture.", [image],

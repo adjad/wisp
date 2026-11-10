@@ -31,7 +31,7 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setenv("WISP_HOME", str(tmp_path / "home"))
     w = World(monkeypatch)
     w.app = False                  # is the app connected (for text recognition)?
-    w.ocr = {"images": [JPEG_URL], "pages": 1, "read_pages": [1]}
+    w.ocr = {"images": [JPEG_URL], "overview": JPEG_URL, "pages": 1, "read_pages": [1]}
     w.recognised = [(RECEIPT, 0.93)]
     w.recognise_error = None
     w.description = "DESCRIPTION:\nA printed invoice with a table of items."
@@ -233,6 +233,52 @@ async def test_a_picture_of_text_is_recognised_and_only_described_by_the_model(w
     assert "recognised exactly on this Mac" in out
     assert [c[1] for c in world.kinds("child")] == ["inspect", "ocr_images"]
     assert [(c[3], c[4]) for c in world.kinds("vision")] == [(1, True)]
+
+
+async def test_the_description_image_is_one_the_vision_model_accepts(world, monkeypatch):
+    """No fake child and no fake size check: the real ocr_images, then the real vision.decode_image."""
+    from PIL import Image, ImageDraw
+    import io
+    page = Image.new("RGB", (3024, 1964), "white")
+    ImageDraw.Draw(page).text((40, 40), "Invoice ABC-1234 total $12.50", fill="black")
+    buf = io.BytesIO()
+    page.save(buf, "PNG")
+    world.ocr = attachment_child.ocr_images("screen.png", buf.getvalue())
+    seen = []
+
+    async def read_images(prompt, images, *, what, sections=False, client=None, model=None, deadline=None,
+                          describe_only=False):
+        seen.append(vision.decode_image(images[0]))        # raises "That picture is too large" for the old image
+        return "DESCRIPTION: A white page with a line of text."
+
+    monkeypatch.setattr(vision, "read_images", read_images)
+    world.app = True
+    world.apple_rows = [row(name="receipt.png", rfc="p@x.com", size=300_000)]
+    world.local_files[(1, "1.2")] = PNG
+    out = await ma.run(question="what is the total")
+    assert seen and "What the picture shows: A white page with a line of text." in out
+
+
+async def test_no_overview_means_no_description_call(world):
+    world.app = True
+    world.ocr = {"images": [JPEG_URL], "pages": 1, "read_pages": [1]}
+    world.apple_rows = [row(name="receipt.png", rfc="p@x.com", size=300_000)]
+    world.local_files[(1, "1.2")] = PNG
+    out = await ma.run(question="what is the total")
+    assert "1280.50" in out and "What the picture shows" not in out and world.kinds("vision") == []
+
+
+async def test_a_huge_declared_page_total_is_clamped(world):
+    from service import document_extract
+    world.app = True
+    world.ocr = {"images": [JPEG_URL], "pages": 99_999_999, "read_pages": [1]}
+    world.apple_rows = [row(name="scan.pdf", rfc="s@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    world.texts["scan.pdf"] = "   "
+    out = await ma.run()
+    assert "99999999" not in out
+    stored = attachment_store.get(attachment_store.digest(PDF))
+    assert stored.text.startswith(f"[Pages: {document_extract.MAX_DECLARED_PAGES}]\n")
 
 
 async def test_recognised_picture_text_is_saved_for_follow_ups(world):
