@@ -17,16 +17,9 @@ import Foundation
 // refuses to let them be pre-approved (service/safety/grants.py).
 enum OutboundSender {
 
-    // AppleScript string literals: escape backslashes first, then quotes, or
-    // the backslashes introduced by quote-escaping get escaped a second time.
-    // Newlines become \n escapes so a multi-paragraph email body stays a single
-    // valid literal instead of breaking the script into unparseable lines.
+    // AppleScript string literals; the rules live with the script builders.
     private static func escape(_ s: String) -> String {
-        s.replacingOccurrences(of: "\\", with: "\\\\")
-         .replacingOccurrences(of: "\"", with: "\\\"")
-         .replacingOccurrences(of: "\r\n", with: "\\n")
-         .replacingOccurrences(of: "\r", with: "\\n")
-         .replacingOccurrences(of: "\n", with: "\\n")
+        MailActionScript.escape(s)
     }
 
     /// A recipient in the form Messages' own chat ids can actually be matched
@@ -155,12 +148,18 @@ enum OutboundSender {
     // Mail has no "message whose message id is X" lookup that spans accounts,
     // so this walks them. `message id` is the only stable handle — index
     // position shifts every time mail arrives (see MailReader.rawScript).
-    // `account` pins the search to one account. Without it the loop takes the
-    // FIRST account whose inbox has this Message-ID — and a message the user
-    // was cc'd on exists in two accounts under one id, so an unpinned reply
-    // goes out from whichever account Mail happens to enumerate first rather
-    // than the copy the user picked.  theAcct records what was actually used.
-    private static func findMessage(_ messageId: String, account: String = "") -> String {
+    // Mark read, flag and archive use MailActionScript.findInboxMessage, which
+    // names the inbox the way MailReader does.
+    //
+    // FORWARD ONLY, and held back on purpose. `inbox of acct` is not in Mail's
+    // dictionary for an account, so this lookup finds nothing and a forward
+    // stops before Mail composes anything. The forward script below has never
+    // sent a real email: it reads the new message's content before setting
+    // it, which the reply script found can come back empty, so a note could go
+    // out without the original under it. Move forwardEmail to
+    // MailActionScript.findInboxMessage only after a forward to the owner's
+    // own address, with and without a note, has been checked in Mail.
+    private static func unverifiedForwardLookup(_ messageId: String, account: String = "") -> String {
         let accountList = account.isEmpty
             ? "accounts"
             : "(every account whose name is \"\(escape(account))\")"
@@ -341,7 +340,7 @@ enum OutboundSender {
         DispatchQueue.global(qos: .userInitiated).async {
             let script = """
             tell application "Mail"
-            \(findMessage(messageId))
+            \(MailActionScript.findInboxMessage(messageID: messageId))
                 set read status of theMsg to \(read ? "true" : "false")
             end tell
             """
@@ -356,7 +355,7 @@ enum OutboundSender {
             // promises the message stays findable.
             let script = """
             tell application "Mail"
-            \(findMessage(messageId))
+            \(MailActionScript.findInboxMessage(messageID: messageId))
                 set acct to account of mailbox of theMsg
                 set archiveBox to missing value
                 try
@@ -388,7 +387,7 @@ enum OutboundSender {
                 : "                    set content to \"\(escape(body))\" & return & return & content\n"
             let script = """
             tell application "Mail"
-            \(findMessage(messageId))
+            \(unverifiedForwardLookup(messageId))
                 set fwd to forward theMsg with opening window
                 tell fwd
                     \(recipients)
@@ -404,7 +403,7 @@ enum OutboundSender {
         DispatchQueue.global(qos: .userInitiated).async {
             let script = """
             tell application "Mail"
-            \(findMessage(messageId))
+            \(MailActionScript.findInboxMessage(messageID: messageId))
                 set flagged status of theMsg to \(flagged ? "true" : "false")
             end tell
             """

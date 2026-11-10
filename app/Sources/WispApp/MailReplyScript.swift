@@ -161,3 +161,62 @@ enum MailReplyScript {
         return envelope
     }
 }
+
+/// Script text for the plain Mail actions OutboundSender runs. Kept here, free
+/// of app types, so the native contract check builds and compiles the same
+/// text the app executes.
+enum MailActionScript {
+    /// sandbox/outbound.py mirrors this text; change both together.
+    static let messageNotFound = "couldn't find that message in the inbox — it may have been moved or is older than the synced window"
+
+    // AppleScript string literals: escape backslashes first, then quotes, or
+    // the backslashes introduced by quote-escaping get escaped a second time.
+    // Newlines become \n escapes so a multi-paragraph email body stays a single
+    // valid literal instead of breaking the script into unparseable lines.
+    static func escape(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+         .replacingOccurrences(of: "\"", with: "\\\"")
+         .replacingOccurrences(of: "\r\n", with: "\\n")
+         .replacingOccurrences(of: "\r", with: "\\n")
+         .replacingOccurrences(of: "\n", with: "\\n")
+    }
+
+    /// Finds one inbox message by its RFC Message-ID and leaves it in `theMsg`
+    /// (and the account's name in `theAcct`), or raises `messageNotFound`.
+    /// Goes inside a `tell application "Mail"` block.
+    ///
+    /// An account has no `inbox` property in Mail's dictionary (only the
+    /// application and a message viewer do), so this names the mailbox the way
+    /// MailReader and the reply script do: "INBOX", then "Inbox". The outer
+    /// `try` skips an account that has neither instead of ending the search.
+    /// `account` pins the search to one account by name; without it the first
+    /// account holding the Message-ID wins.
+    static func findInboxMessage(messageID: String, account: String = "") -> String {
+        let accountList = account.isEmpty
+            ? "accounts"
+            : "(every account whose name is \"\(escape(account))\")"
+        let wanted = "\"\(escape(messageID))\""
+        return """
+            set theMsg to missing value
+            set theAcct to ""
+            repeat with acct in \(accountList)
+                if theMsg is missing value then
+                    try
+                        try
+                            set mbx to mailbox "INBOX" of acct
+                            set hits to (every message of mbx whose message id is \(wanted))
+                        on error
+                            set mbx to mailbox "Inbox" of acct
+                            set hits to (every message of mbx whose message id is \(wanted))
+                        end try
+                        if (count of hits) > 0 then
+                            set theMsg to item 1 of hits
+                            set theAcct to (name of acct)
+                        end if
+                    end try
+                end if
+            end repeat
+            if theMsg is missing value then error "\(messageNotFound)"
+        """
+    }
+}
