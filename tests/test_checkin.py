@@ -241,6 +241,69 @@ def test_carry_forward_skips_titles_the_stale_reminder_policy_excludes(store):
     assert [(a["title"], a["reason"]) for a in C.aged_out_today("2026-10-19")] == [("Clean the garage", "stale_reminder")]
 
 
+def _count(monkeypatch, name: str) -> list:
+    """Count calls to one of the check-in module's functions without changing it."""
+    calls, real = [], getattr(C, name)
+
+    def counted(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(C, name, counted)
+    return calls
+
+
+def test_a_left_behind_task_is_recorded_once_not_on_every_call(store, monkeypatch):
+    """A task left behind stays active on its old day, so every later call (the
+    scheduler asks each 30 s, the Day tab on each open) meets it again. Only the
+    first one has anything to write, and an old task needs no reminder lookup."""
+    old = task(store, "Sort the bookshelf", "2026-10-09")
+    now = at("2026-10-19", 8)
+    writes, lookups = _count(monkeypatch, "_write_state"), _count(monkeypatch, "reminder_index")
+    assert C.carry_forward(store, "2026-10-19", ZONE, now=now) == []
+    assert len(writes) == 1 and len(lookups) == 1
+    first = C.day_record("2026-10-19")
+    assert [(a["id"], a["reason"], a["age_days"]) for a in first["aged_out"]] == [(old["id"], "aged_out", 10)]
+    for later in (30, 60, 3600):
+        assert C.carry_forward(store, "2026-10-19", ZONE, now=now + later) == []
+    assert len(writes) == 1, "nothing new to record, so the file is left alone"
+    assert len(lookups) == 1, "a week-old task is not looked up against Reminders again"
+    assert C.day_record("2026-10-19") == first
+    assert store.today_task(old["id"])["status"] == "active", "nothing is deleted"
+    # A second old task appearing later in the day is still recorded, once.
+    other = task(store, "Label the cables", "2026-10-08")
+    assert C.carry_forward(store, "2026-10-19", ZONE, now=now + 7200) == []
+    assert len(writes) == 2
+    assert [a["id"] for a in C.aged_out_today("2026-10-19")] == [old["id"], other["id"]]
+    assert C.carry_forward(store, "2026-10-19", ZONE, now=now + 7230) == []
+    assert len(writes) == 2
+    # The next day has its own record, so each task is noted there once more.
+    assert C.carry_forward(store, "2026-10-20", ZONE, now=at("2026-10-20", 8)) == []
+    assert len(writes) == 3
+    assert sorted(a["title"] for a in C.aged_out_today("2026-10-20")) == ["Label the cables", "Sort the bookshelf"]
+
+
+def test_a_task_held_back_by_a_stale_reminder_still_moves_once_the_reminder_is_kept(store, monkeypatch):
+    """A recent task left behind only because its reminder went stale is checked
+    again on every call (without rewriting the record), so Keep brings it back."""
+    now = at("2026-10-19", 8)
+    _reminders(store, undated=[
+        {"source_id": "u-ask", "title": "Clean the garage", "context": "Reminders", "created_ts": now - 8 * 86400},
+    ])
+    held = task(store, "Clean the garage", "2026-10-18")
+    writes = _count(monkeypatch, "_write_state")
+    assert C.carry_forward(store, "2026-10-19", ZONE, now=now) == []
+    assert [(a["title"], a["reason"]) for a in C.aged_out_today("2026-10-19")] == [("Clean the garage", "stale_reminder")]
+    assert C.carry_forward(store, "2026-10-19", ZONE, now=now + 30) == []
+    assert len(writes) == 1
+    store.keep_stale_reminder("u-ask", "Clean the garage")
+    moved = C.carry_forward(store, "2026-10-19", ZONE, now=now + 60)
+    assert [t["id"] for t in moved] == [held["id"]]
+    assert len(writes) == 2
+    assert [c["id"] for c in C.carried_today("2026-10-19")] == [held["id"]]
+    assert C.carry_forward(store, "2026-10-19", ZONE, now=now + 90) == []
+    assert len(writes) == 2
+
+
 def test_carry_forward_honours_the_store_hidden_reminder_set(store):
     """Once the store knows which reminders are hidden (undated or overdue
     dated, #286), carry-forward asks it rather than re-deriving the rule."""
