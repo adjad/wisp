@@ -127,8 +127,8 @@ async def read_email_attachments(query: str | None = None, name: str | None = No
     return await mail_attachments.run(
         query=query or None, name=name or None, start=start, end=end, label=label,
         count=_count(count), account=account or None, question=question or None,
-        list_only=bool(list_only), pages=_part(pages), sheet=_part(sheet),
-        source="mail", inside=_inside(inside), across=across is True)
+        list_only=bool(list_only) and across is not True, pages=_part(pages),
+        sheet=_part(sheet), source="mail", inside=_inside(inside), across=across is True)
 
 
 MESSAGES_ATTACHMENT_TOOL = "read_message_attachments"
@@ -175,6 +175,8 @@ async def read_message_attachments(query: str | None = None, name: str | None = 
                                    count: int = 5, question: str | None = None,
                                    list_only: bool = False, pages: str | None = None,
                                    sheet: str | None = None, inside: str | None = None) -> str:
+    if _CORPUS_MAIL_IDENTIFIER.get() is not None:
+        return "Corpus mail scope rejected: Messages files are outside the corpus scope."
     span = _span(period, day)
     if isinstance(span, str):
         return span
