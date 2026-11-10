@@ -164,10 +164,32 @@ def _pretty(text: str, limit: int = 120) -> str:
 
 # --- inspect ----------------------------------------------------------------------
 
+def _is_windows_program(data: bytes) -> bool:
+    """Whether bytes that start with "MZ" are a program and not text that happens to start so.
+
+    A Windows program names where its PE header is at byte 0x3C, and "PE\\0\\0" is there. An older
+    DOS or 16-bit program has no PE header, but its header is binary, so it has a zero byte early
+    on, which text does not. Anything else that starts "MZ" is left to be read as what its name says.
+    """
+    if len(data) >= 64:
+        at = int.from_bytes(data[0x3C:0x40], "little")
+        if 0 < at <= len(data) - 4 and data[at:at + 4] == b"PE\x00\x00":
+            return True
+    return b"\x00" in data[:8192]
+
+
+def _is_bmp(data: bytes) -> bool:
+    """Whether bytes that start with "BM" carry a BMP header: one of the known header sizes at byte 14."""
+    return len(data) >= 26 and int.from_bytes(data[14:18], "little") in (12, 40, 52, 56, 64, 108, 124)
+
+
 def _signature(data: bytes) -> tuple[str, str]:
     """(what the bytes say this is, its family), or ('', '') when they say nothing."""
     for magic, label, family in _SIGNATURES:
         if data.startswith(magic):
+            # Two letters are not enough: a list of part numbers or a name can start with them.
+            if (magic == b"MZ" and not _is_windows_program(data)) or (magic == b"BM" and not _is_bmp(data)):
+                continue
             if label == _OLD_OFFICE_LABEL and is_locked_office(data):
                 return _LOCKED_OFFICE_LABEL, family
             return label, family
