@@ -26,12 +26,16 @@ home = Path(os.environ["WISP_HOME"])
 before = (home / "config.yaml").exists()
 real_exists = Path.exists
 def presence(path):
-    if str(path) == "/Applications/oMLX.app" or path == Path.home() / "Applications/oMLX.app":
+    if str(path) == "/Applications/oMLX.app":
         return options.get("installed", False)
+    if path == Path.home() / "Applications/oMLX.app":
+        return options.get("installed", False) or options.get("user_copy", False)
     return real_exists(path)
 with patch.object(Path, "exists", presence):
     from service.engine import api, mode
+# A copy in ~/Applications alone is not one Wisp can start or verify; /Applications is.
 user_app_detected = mode.external_omlx_installed(present=lambda path: path == Path.home() / "Applications/oMLX.app")
+system_app_detected = mode.external_omlx_installed(present=lambda path: str(path) == "/Applications/oMLX.app")
 # Replace the check after import with the same injected presence fact.
 api.mode.external_omlx_installed = lambda: options.get("installed", False)
 async def quiet():
@@ -45,7 +49,8 @@ app = FastAPI()
 app.include_router(api.router)
 async def run():
     out = {"import_wrote_config": not before and (home / "config.yaml").exists(),
-           "user_app_detected": user_app_detected, "responses": []}
+           "user_app_detected": user_app_detected, "system_app_detected": system_app_detected,
+           "responses": []}
     # Any accidental settings/key access or manager construction is a failure.
     from service import config
     def forbidden(*args, **kwargs):
@@ -157,6 +162,32 @@ def body(result: dict, index: int = 0) -> dict:
     return result["responses"][index]["body"]
 
 
+def test_omlx_only_in_the_user_applications_folder_keeps_the_built_in_engine() -> None:
+    # Wisp starts a person's oMLX with /Applications/oMLX.app's CLI and verifies the app at
+    # that path only. A fresh install that picked "external" for a copy in ~/Applications
+    # could neither start the engine nor accept its answers.
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        engine = fixture(root)
+        first = probe(root, engine, user_copy=True)
+        check("a fresh install with oMLX only in ~/Applications uses the built-in engine",
+              first["mode"] == "bundled" and body(first)["mode"] == "bundled", first["mode"])
+        check("and saves that choice", first["overlay"] == {"engine": {"mode": "bundled"}})
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        engine = fixture(root)
+        (root / "wisp").mkdir()
+        (root / "wisp" / "config.yaml").write_text("engine:\n  mode: external-omlx\n")
+        saved = probe(root, engine, user_copy=True)
+        check("a saved choice of the person's own oMLX is left as it is", saved["mode"] == "external-omlx")
+    with tempfile.TemporaryDirectory() as t:
+        root = Path(t)
+        engine = fixture(root, present=False)
+        none = probe(root, engine, user_copy=True)
+        check("with no built-in engine in this build the person's oMLX is still the engine",
+              none["mode"] == "external-omlx")
+
+
 def test_first_launch_and_stickiness() -> None:
     for installed, expected in ((False, "bundled"), (True, "external-omlx")):
         with tempfile.TemporaryDirectory() as t:
@@ -166,7 +197,8 @@ def test_first_launch_and_stickiness() -> None:
             check(f"fresh default with installed={installed}", body(first)["mode"] == expected)
             check("startup persists resolved default", first["overlay"] == {"engine": {"mode": expected}})
             check("import performs no persistence", not first["import_wrote_config"])
-            check("injectable presence check detects per-user oMLX", first["user_app_detected"])
+            check("oMLX in ~/Applications alone does not count as installed", not first["user_app_detected"])
+            check("oMLX in /Applications does", first["system_app_detected"])
             later = probe(root, engine, installed=not installed)
             check("later install/removal does not flip mode", body(later)["mode"] == expected)
             check("stored choice has no restart flag", body(later)["configured_mode"] == expected
@@ -481,7 +513,9 @@ def main() -> int:
     if "--setup-guide" in sys.argv:
         return existing_setup_suite()
     skipped = 0
-    for fn in (test_first_launch_and_stickiness, test_unsupported_and_validation,
+    for fn in (test_first_launch_and_stickiness,
+               test_omlx_only_in_the_user_applications_folder_keeps_the_built_in_engine,
+               test_unsupported_and_validation,
                test_switch_and_secrets, test_env_and_corrupt_overlay, test_concurrent_selection,
                test_idle_external_engine_is_not_memory, test_credential_free_local_probe):
         print(fn.__name__)

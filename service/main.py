@@ -1221,12 +1221,12 @@ async def config(body: dict[str, Any]) -> dict[str, Any]:
 # nothing here writes credentials or reaches beyond fixed loopback ports.
 
 def _omlx_installed() -> bool:
-    from pathlib import Path
     if is_bundled():
         from service.engine.mode import engine_code_root
         return (engine_code_root() / "py" / "bin" / "python3").exists()
-    return any(Path(p).exists() for p in ("/Applications/oMLX.app",
-                                          str(Path.home() / "Applications" / "oMLX.app")))
+    # Only /Applications/oMLX.app: the one copy OMLX_CLI can start and Wisp can verify.
+    from service.engine.mode import external_omlx_installed
+    return external_omlx_installed()
 
 
 def _omlx_model_dir() -> str | None:
