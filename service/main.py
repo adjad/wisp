@@ -3636,8 +3636,13 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
     events = body.get("events") or []
     items = []
     for e in events:
-        if e.get("when_ts") is None or not e.get("title"):
+        if e.get("when_ts") is None:
             continue
+        # EventKit reads a meeting with no subject as "", not nil: keep it, so Day,
+        # the free-time figures and conflict checks still see that time as taken.
+        title = str(e.get("title") or "")
+        if not title.strip():
+            title = "(untitled)"
         if e.get("end_ts") is not None:
             from service.assistant.today import number
             try:
@@ -3647,9 +3652,9 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         items.append({
-            "source_id": str(e.get("source_id") or f"{e['title']}-{e['when_ts']}"),
+            "source_id": str(e.get("source_id") or f"{title}-{e['when_ts']}"),
             "kind": str(e.get("kind") or "event"),
-            "title": str(e["title"]),
+            "title": title,
             "context": e.get("context"),
             "organizer": e.get("organizer"),
             "account": e.get("account"),
