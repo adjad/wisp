@@ -92,17 +92,29 @@ struct SearchView: View {
         if model.hasPage && model.query.isEmpty {
             EmptyView()
         } else {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 10) {
-                    if !model.errorText.isEmpty { partialFailureCard }
-                    if model.answering { answeringCard }
-                    if !model.answer.isEmpty { answerCard }
-                    if model.notFound { notFoundCard }
-                    resultList
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if !model.errorText.isEmpty { partialFailureCard }
+                        if model.answering { answeringCard }
+                        if !model.answer.isEmpty { answerCard }
+                        if model.notFound { notFoundCard }
+                        resultList
+                    }
+                    .padding(.bottom, 4)
                 }
-                .padding(.bottom, 4)
+                .frame(maxHeight: 360)
+                // The arrow keys and Return move the selection from outside
+                // this view (AppDelegate's key monitor), and the list is taller
+                // than the panel: bring the selected row into sight.
+                .onChange(of: model.selection) { _, selected in
+                    let rows = model.rows
+                    guard rows.indices.contains(selected) else { return }
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        proxy.scrollTo(rows[selected].id)
+                    }
+                }
             }
-            .frame(maxHeight: 360)
         }
     }
 
@@ -303,6 +315,8 @@ struct SearchView: View {
                     row(r, selected: i == model.selection)
                 }
                 .buttonStyle(.plain)
+                .id(r.id)
+                .accessibilityAddTraits(i == model.selection ? .isSelected : [])
             }
         }
     }

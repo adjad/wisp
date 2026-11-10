@@ -45,3 +45,23 @@ def test_every_literal_match_keeps_its_row():
     # The compiled check covers the behaviour.
     checks = (ROOT / "tests" / "SearchModelChecks.swift").read_text()
     assert "await everyLiteralMatchKeepsItsRow()" in checks
+
+
+def test_the_selected_row_is_scrolled_into_sight():
+    """The arrow keys and Return move the selection from outside the view, and
+    the list holds more rows than the panel shows. Nothing scrolled, so past
+    about the ninth row the highlight was out of sight."""
+    panel = (APP / "SearchPanel.swift").read_text()
+    content = _body(panel, "@ViewBuilder private var content: some View")
+    assert content.index("ScrollViewReader { proxy in") < content.index("ScrollView {")
+    assert content.count(".frame(maxHeight: 360)") == 1
+    change = content[content.index(".onChange(of: model.selection)"):]
+    # Rows are rebuilt on every read and can shrink: never index past them.
+    assert change.index("guard rows.indices.contains(selected) else { return }") \
+        < change.index("proxy.scrollTo(rows[selected].id)")
+    rows = _body(panel, "private var resultList: some View")
+    assert ".id(r.id)" in rows
+    # VoiceOver hears which row is current.
+    assert ".accessibilityAddTraits(i == model.selection ? .isSelected : [])" in rows
+    # Clicking a row still selects and reveals it.
+    assert "model.selection = i" in rows and "model.revealSelected()" in rows
