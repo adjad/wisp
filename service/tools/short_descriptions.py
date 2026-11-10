@@ -61,6 +61,8 @@ SHORT: dict[str, str] = {
     # email
     "view_emails": "RAW verbatim email text and Message-IDs; mailbox=sent lists mail the user sent.",
     "read_email_attachments": "Read pictures, PDFs, sheets, documents attached to emails; never runs them.",
+    "read_message_attachments": "Read pictures, PDFs, documents, voice messages sent in Messages; never runs them.",
+    "save_email_attachment": "Save ONE emailed or texted file to a folder after a card; never opens it.",
     "summarize_emails": "Per-sender overview of Mail headers only; never reads bodies.",
     "triage_inbox": "Rank recent inbox senders by importance from headers only.",
     "scan_subscriptions": "List newsletter and marketing senders ranked by volume.",
