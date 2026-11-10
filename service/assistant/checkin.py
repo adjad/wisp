@@ -404,6 +404,10 @@ def reminder_index(store, now: float) -> dict[str, dict]:
     return index
 
 
+def _recorded_ids(entries: object) -> set:
+    return {c["id"] for c in entries or [] if isinstance(c, dict) and "id" in c}
+
+
 def carry_forward(store, day: str, timezone: str, *, now: float) -> list[dict]:
     """Move every still-active task from an earlier day onto `day`, unless it
     has aged out.
@@ -416,10 +420,24 @@ def carry_forward(store, day: str, timezone: str, *, now: float) -> list[dict]:
 
     Idempotent: once moved, nothing earlier is active, so a second call (the
     scheduler and the Today tab both ask) moves nothing and the recorded list
-    for the day is unchanged."""
+    for the day is unchanged. A task left behind is still active on its old
+    day and so comes back on every call; the day record is written only when
+    a call has something new to add to it."""
     moved, aged = [], []
     index = None
+    recorded = None
+    known_carried: set = set()
+    known_aged: set = set()
     for task in store.today_active_tasks_before(day):
+        if recorded is None:
+            recorded = day_record(day)
+            known_carried = _recorded_ids(recorded.get("carried"))
+            known_aged = _recorded_ids(recorded.get("aged_out"))
+        # Already noted as left behind today, and a week old by its own first
+        # day: a reminder can only make it older or stale, so the answer cannot
+        # change and there is nothing to look up or record again.
+        if task["id"] in known_aged and now - task_origin(task, timezone, None) >= CARRY_MAX_AGE_S:
+            continue
         if index is None:
             index = reminder_index(store, now)
         match = index.get(_title_key(task.get("title")))
@@ -439,7 +457,9 @@ def carry_forward(store, day: str, timezone: str, *, now: float) -> list[dict]:
             moved.append(store.today_save_task(values, task_id=task["id"], revision=task["revision"]))
         except (ValueError, KeyError):
             continue  # changed under us or no longer valid; the next morning gets it
-    if moved or aged:
+    if (any(task["id"] not in known_carried for task in moved)
+            or any(task["id"] not in known_aged for task, _, _ in aged)):
+        # Rechecked under the lock in `record`: another caller may have written since.
         def record(day_state: dict) -> None:
             known = {c["id"] for c in day_state.get("carried", [])}
             for task in moved:

@@ -25,7 +25,9 @@ from zoneinfo import ZoneInfo
 from service.proactive import guard
 from service.proactive.stable import ask_key
 
-TOKENS = (700, 2200)
+# The first number is the no-thinking budget: 8 items plus a two-sentence summary
+# run about 600-750 tokens of JSON, and a reply cut off at the limit is no reply.
+TOKENS = (1200, 2200)
 MAX_ITEMS = 8
 MAX_SURVIVOR_LINES = 24
 MAX_LINE_CHARS = 260
@@ -508,9 +510,9 @@ async def judge(survivors: list[dict], sched: dict, reply_fn, abort, *, now: flo
     else:
         try:
             reply = await reply_fn(_system(), "<<<LINES\n" + material + "\nLINES>>>", abort, TOKENS)
-        except Exception:  # noqa: BLE001 — the rule items stand in
-            import traceback
-            traceback.print_exc()
+        except Exception as exc:  # noqa: BLE001 — the rule items stand in
+            print(f"[proactive] judge reply failed ({type(exc).__name__}: {str(exc)[:120]}); ranking by rule",
+                  flush=True)
             reply = ""
     if reply is None:
         return "standdown", [], ""

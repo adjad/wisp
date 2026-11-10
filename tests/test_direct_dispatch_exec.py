@@ -362,8 +362,27 @@ def test_unknown_tool_does_not_kill_the_turn() -> None:
     check("the model was still called", len(client.calls) == 1)
 
 
+def _run_asserting(test, *, patched: bool = False) -> None:
+    """Count a bare-assert test like a check(); a script run has no monkeypatch fixture."""
+    with pytest.MonkeyPatch.context() as patcher:
+        try:
+            test(patcher) if patched else test()
+        except AssertionError as exc:
+            check(test.__name__, False, repr(exc))
+        else:
+            check(test.__name__, True)
+
+
 if __name__ == "__main__":
     _register_fakes()
+    _run_asserting(test_strict_private_all_no_match_skips_narration, patched=True)
+    _run_asserting(test_strict_private_partial_success_narrates_verified_results_only,
+                   patched=True)
+    _run_asserting(test_strict_private_budget_blocks_repeated_widened_email_read,
+                   patched=True)
+    _run_asserting(test_strict_private_budget_blocks_repeated_two_source_reads,
+                   patched=True)
+    _run_asserting(test_generic_direct_read_remains_iterative_without_strict_budget)
     test_call_runs_before_the_first_model_call()
     test_transcript_stays_well_formed()
     test_summary_short_circuits_with_zero_model_calls()

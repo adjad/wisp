@@ -809,8 +809,7 @@ struct OverlayView: View {
                     MarkdownView(text: turn.text)
                 }
                 if !turn.needsAccess.isEmpty { accessFixes(turn.needsAccess) }
-                if turn.isError && turn.activity.isEmpty && model.conversationSettled
-                    && turn.id == model.turns.last?.id {
+                if model.offersTryAgain(turn) {
                     // Nothing ran, so sending the same question again is safe.
                     Button("Try again") { model.tryAgain(turn) }
                         .buttonStyle(.plain).font(.wisp(.body, weight: .medium)).foregroundStyle(Theme.textPrimary)
@@ -929,10 +928,12 @@ struct OverlayView: View {
             // generation genuinely PAUSES mid-stream (backend hiccup), that
             // signal disappears: partial text just sits there with nothing
             // indicating whether it's still alive. This stays visible for the
-            // whole streaming phase — a subtle pulse normally, and if the
-            // backend's stall-watchdog heartbeat fires (main.py's 8s
-            // next-chunk timeout on this path), it names the silence
-            // explicitly instead of leaving it ambiguous.
+            // whole streaming phase — a subtle pulse normally, and if a
+            // heartbeat arrives after the last of the text (the backend's
+            // stall watchdog, or the model thinking again), it names the
+            // silence explicitly instead of leaving it ambiguous. The count
+            // starts again whenever text arrives, so a flowing answer never
+            // shows it (OverlayModel.stallSeconds).
             if model.phase == .streaming {
                 HStack(spacing: 6) {
                     Circle().fill(Theme.textMuted).frame(width: 5, height: 5)
@@ -940,7 +941,7 @@ struct OverlayView: View {
                         .animation(reduceMotion ? nil : .easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: breathe)
                         .accessibilityHidden(true)
                     if model.heartbeats > 0 {
-                        Text("still generating… (\(model.heartbeats * 8)s)")
+                        Text("still generating… (\(model.stallSeconds)s)")
                             .font(.wisp(.caption)).foregroundStyle(Theme.textMuted)
                     }
                 }
@@ -1038,12 +1039,13 @@ struct OverlayView: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(Theme.chipFill))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.chipStroke, lineWidth: 1))
             }
-            // What an "Always allow" would actually cover. Shown because the
-            // grant is scoped (a directory, a hostname) rather than blanket,
-            // and a permission you can't see the boundaries of isn't one you
-            // can meaningfully consent to.
-            if p.grantable && !p.scopeHint.isEmpty {
-                Text("Always allow applies to \(p.tool) on \(p.scopeHint)")
+            // What an "Always allow" would actually cover, shown whenever the
+            // button is: a directory, a hostname or a command where the grant
+            // is that narrow, otherwise every action of the tool. A permission
+            // you can't see the boundaries of isn't one you can meaningfully
+            // consent to.
+            if p.grantable {
+                Text(OverlayModel.alwaysAllowLine(tool: p.tool, scopeHint: p.scopeHint))
                     .font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
             }
             HStack(spacing: 8) {

@@ -98,11 +98,20 @@ def selection_unset() -> bool:
     return "WISP_ENGINE_MODE" not in os.environ and not _overlay_selection()[0]
 
 
+# The one place Wisp can use a person's oMLX from: the CLI that starts it (service/main.py
+# OMLX_CLI) and the check of who answers on its port (attributed_transport.DesktopOmlx) are
+# both fixed to it. A copy in ~/Applications can be neither started nor verified.
+EXTERNAL_OMLX_APP = Path("/Applications/oMLX.app")
+
+
 def external_omlx_installed(present: Callable[[Path], bool] | None = None) -> bool:
-    """Presence only: never open the installed app or its settings. Injectable."""
+    """Presence only: never open the installed app or its settings. Injectable.
+
+    Only the copy Wisp can use counts. One in ~/Applications alone must not make a fresh
+    install pick an engine Wisp cannot start, and whose every answer it would refuse.
+    """
     present = present or Path.exists
-    return any(present(path) for path in (Path("/Applications/oMLX.app"),
-                                          Path.home() / "Applications" / "oMLX.app"))
+    return bool(present(EXTERNAL_OMLX_APP))
 
 
 def engine_present(root: Path | None = None) -> bool:

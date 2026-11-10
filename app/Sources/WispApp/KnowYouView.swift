@@ -222,11 +222,11 @@ struct KnowYouView: View {
         VStack(alignment: .leading, spacing: 14) {
             progressRow
             if model.loadFailed {
-                Text(model.error).font(.system(size: 12.5)).foregroundStyle(Theme.textSecondary)
+                Text(model.error).font(textFont(12.5)).foregroundStyle(Theme.textSecondary)
                 HStack(spacing: 10) {
                     if !inWindow {
                         Button("Not now") { Task { await model.notNow() } }
-                            .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                            .buttonStyle(.plain).font(textFont(12)).foregroundStyle(Theme.textMuted)
                     }
                     Spacer()
                     primaryButton("Retry") { Task { await model.load(); focused = true } }
@@ -236,7 +236,7 @@ struct KnowYouView: View {
             } else {
                 question
                 if !model.error.isEmpty {
-                    Text(model.error).font(.system(size: 11)).foregroundStyle(Theme.bad)
+                    Text(model.error).font(textFont(11)).foregroundStyle(Theme.bad)
                 }
                 footer
             }
@@ -267,7 +267,7 @@ struct KnowYouView: View {
         HStack(spacing: 8) {
             Text(progressLabelWidest).hidden()
                 .overlay(alignment: .leading) { Text(progressLabel).lineLimit(1) }
-                .font(.system(size: 11, weight: .semibold)).monospacedDigit()
+                .font(textFont(11, weight: .semibold)).monospacedDigit()
                 .foregroundStyle(Theme.textSecondary).textCase(.uppercase)
                 .fixedSize()
                 .accessibilityHidden(true)
@@ -283,7 +283,7 @@ struct KnowYouView: View {
             .accessibilityLabel(progressLabel + ". Progress")
             .accessibilityValue("\(Int(model.flow.progress * 100)) percent")
             Label(model.status.whereItLives, systemImage: model.status.localOnly ? "lock.fill" : "cloud")
-                .font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+                .font(textFont(10.5)).foregroundStyle(Theme.textMuted)
                 .fixedSize()
         }
         .transaction { $0.animation = nil }
@@ -305,9 +305,9 @@ struct KnowYouView: View {
             HStack(alignment: .top, spacing: 10) {
                 if model.flow.isFirst || step == .done { orb.padding(.top, 2) }
                 VStack(alignment: .leading, spacing: 5) {
-                    Text(title(for: step)).font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                    Text(title(for: step)).font(textFont(17, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Text(step.why).font(.system(size: 12.5)).foregroundStyle(Theme.textSecondary)
+                    Text(step.why).font(textFont(12.5)).foregroundStyle(Theme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -334,7 +334,7 @@ struct KnowYouView: View {
     private var nameField: some View {
         TextField(KnowYouStep.name.placeholder, text: $model.profile.name)
             .textFieldStyle(.plain)
-            .font(.system(size: 17)).foregroundStyle(Theme.textPrimary)
+            .font(textFont(17)).foregroundStyle(Theme.textPrimary)
             .focused($focused)
             .onSubmit { Task { await model.saveAndContinue() } }
             .padding(.vertical, 9).padding(.horizontal, 12)
@@ -351,7 +351,7 @@ struct KnowYouView: View {
                 ForEach(KnowYouChips.focusAreas) { area in focusCard(area) }
             }
             HStack(spacing: 8) {
-                Text(pickedLine).font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+                Text(pickedLine).font(textFont(10.5)).foregroundStyle(Theme.textMuted)
                 Spacer()
             }
             ForEach(model.profile.customGoals, id: \.self) { goal in
@@ -380,13 +380,13 @@ struct KnowYouView: View {
         return Button { model.profile.toggleFocus(area) } label: {
             HStack(alignment: .top, spacing: 8) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(area.title).font(.system(size: 12.5, weight: .semibold))
-                    Text(area.detail).font(.system(size: 10.5)).opacity(0.75)
+                    Text(area.title).font(textFont(12.5, weight: .semibold))
+                    Text(area.detail).font(textFont(10.5)).opacity(0.75)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 4)
                 Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(textFont(12, weight: .semibold))
                     .opacity(on ? 1 : 0.5)
             }
             .foregroundStyle(on ? Color.black : Theme.textSecondary)
@@ -413,14 +413,14 @@ struct KnowYouView: View {
     private func choiceGroup(_ label: String, options: [(value: String, label: String, detail: String)],
                              selection: Binding<String>) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(label).font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.textSecondary).textCase(.uppercase)
+            Text(label).font(textFont(11, weight: .semibold)).foregroundStyle(Theme.textSecondary).textCase(.uppercase)
             HStack(spacing: 8) {
                 ForEach(options, id: \.value) { option in
                     let on = selection.wrappedValue == option.value
                     Button { selection.wrappedValue = option.value } label: {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(option.label).font(.system(size: 12.5, weight: .medium))
-                            Text(option.detail).font(.system(size: 10.5)).opacity(0.75)
+                            Text(option.label).font(textFont(12.5, weight: .medium))
+                            Text(option.detail).font(textFont(10.5)).opacity(0.75)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         .foregroundStyle(on ? Color.black : Theme.textSecondary)
@@ -441,8 +441,8 @@ struct KnowYouView: View {
         VStack(alignment: .leading, spacing: 7) {
             ForEach(Array(model.summaryLines.enumerated()), id: \.offset) { _, line in
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(Theme.textSecondary)
-                    Text(line).font(.system(size: 12.5)).foregroundStyle(Theme.textPrimary)
+                    Image(systemName: "checkmark").font(textFont(10, weight: .bold)).foregroundStyle(Theme.textSecondary)
+                    Text(line).font(textFont(12.5)).foregroundStyle(Theme.textPrimary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -472,12 +472,12 @@ struct KnowYouView: View {
                 }
                 if !inWindow {
                     Button("Not now") { Task { await model.notNow() } }
-                        .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                        .buttonStyle(.plain).font(textFont(12)).foregroundStyle(Theme.textMuted)
                         .help("Close the questions; what you answered is kept. Type /about any time.")
                 }
                 Spacer()
                 Button("Skip") { model.skip() }
-                    .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.textMuted)
+                    .buttonStyle(.plain).font(textFont(12)).foregroundStyle(Theme.textMuted)
                     .help(model.flow.isLastQuestion ? "Leave this one unanswered and finish" : "Leave this one unanswered")
                 primaryButton(model.flow.isLastQuestion ? "Finish" : "Continue") { Task { await model.saveAndContinue() } }
                     .disabled(!model.canContinue)
@@ -489,10 +489,16 @@ struct KnowYouView: View {
 
     // MARK: Pieces
 
+    /// In the notch the text follows the Text size setting; the onboarding
+    /// window keeps its own sizes, like the rest of that window.
+    private func textFont(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        inWindow ? Font.system(size: size, weight: weight) : Font.wisp(size: size, weight: weight)
+    }
+
     private func field(_ text: Binding<String>, placeholder: String, submit: @escaping () -> Void) -> some View {
         TextField(placeholder, text: text)
             .textFieldStyle(.plain)
-            .font(.system(size: 13)).foregroundStyle(Theme.textPrimary)
+            .font(textFont(13)).foregroundStyle(Theme.textPrimary)
             .onSubmit(submit)
             .padding(.vertical, 7).padding(.horizontal, 10)
             .background(RoundedRectangle(cornerRadius: 10).fill(Theme.chipFill))
@@ -501,10 +507,10 @@ struct KnowYouView: View {
 
     private func listRow(_ text: String, remove: @escaping () -> Void) -> some View {
         HStack(spacing: 8) {
-            Text(text).font(.system(size: 13)).foregroundStyle(Theme.textPrimary).lineLimit(2)
+            Text(text).font(textFont(13)).foregroundStyle(Theme.textPrimary).lineLimit(2)
             Spacer(minLength: 8)
             Button(action: remove) {
-                Image(systemName: "xmark").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.textMuted)
+                Image(systemName: "xmark").font(textFont(9, weight: .bold)).foregroundStyle(Theme.textMuted)
                     .frame(width: 18, height: 18)
             }
             .buttonStyle(.plain).help("Remove").accessibilityLabel("Remove \(text)")
@@ -515,7 +521,7 @@ struct KnowYouView: View {
 
     private func primaryButton(_ title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Color.black)
+            Text(title).font(textFont(12.5, weight: .semibold)).foregroundStyle(Color.black)
                 .padding(.horizontal, 14).padding(.vertical, 6)
                 .background(Capsule().fill(Color.white))
         }
@@ -526,7 +532,7 @@ struct KnowYouView: View {
     private func chipButton(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label(title, systemImage: icon)
-                .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                .font(textFont(11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
                 .padding(.horizontal, 10).padding(.vertical, 5)
                 .background(Capsule().fill(Theme.chipFill))
                 .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
@@ -537,7 +543,7 @@ struct KnowYouView: View {
     private func smallButton(_ title: String, action: @escaping () -> Void) -> some View {
         Button(title, action: action)
             .buttonStyle(.plain)
-            .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+            .font(textFont(11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
             .padding(.horizontal, 10).padding(.vertical, 6)
             .background(Capsule().fill(Theme.chipFill))
             .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))

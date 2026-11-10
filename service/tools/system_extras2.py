@@ -29,9 +29,14 @@ def appearance_mode(mode: str) -> str:
                   'do shell script "defaults write NSGlobalDomain '
                   'AppleInterfaceStyleSwitchesAutomatically -bool true"')
     else:
+        # Turning automatic switching off first. The key is usually unset,
+        # and `defaults delete` then exits 1; that is expected, so ignore it.
+        try:
+            _run(["defaults", "delete", "NSGlobalDomain",
+                  "AppleInterfaceStyleSwitchesAutomatically"])
+        except (subprocess.TimeoutExpired, OSError):
+            pass
         script = (
-            f'do shell script "defaults delete NSGlobalDomain '
-            f'AppleInterfaceStyleSwitchesAutomatically" 2>/dev/null\n'
             f'tell application "System Events" to tell appearance preferences '
             f'to set dark mode to {"true" if m == "dark" else "false"}')
     p = _osa(script)

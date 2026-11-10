@@ -24,6 +24,16 @@ extension QueuedPrompt {
         guard image != nil else { return nil }
         return imageSource == "screen" ? "[screen]" : "[image]"
     }
+
+    /// Every marker `historyMarker` can give.
+    static let historyMarkers = ["[image]", "[screen]", "[clip]", "[document]"]
+
+    /// True for a transcript line that stands for a question sent with an
+    /// attachment ("What's in this image? [image]"). Only the marker is kept,
+    /// never the attachment, so the line is not the whole question.
+    static func endsWithHistoryMarker(_ text: String) -> Bool {
+        historyMarkers.contains { text.hasSuffix(" " + $0) }
+    }
 }
 
 /// The `/agent` `video` field: 1-8 frame data URLs, the length, optional WAV (base64).

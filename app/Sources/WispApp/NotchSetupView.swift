@@ -33,8 +33,8 @@ struct NotchSetupView: View {
         HStack(spacing: 10) {
             Image(systemName: "exclamationmark.circle").foregroundStyle(Color.orange)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Wisp isn't set up yet").font(.system(size: 12.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
-                Text(laterDetail).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                Text("Wisp isn't set up yet").font(.wisp(size: 12.5, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                Text(laterDetail).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
             }
             Spacer(minLength: 8)
             chip("Continue setup") {
@@ -82,9 +82,9 @@ struct NotchSetupView: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Welcome to Wisp").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                    Text("Welcome to Wisp").font(.wisp(size: 14, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                     Text(welcomeDetail)
-                        .font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                        .font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
@@ -97,7 +97,7 @@ struct NotchSetupView: View {
             } else if setup.loading {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Checking this Mac…").font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
+                    Text("Checking this Mac…").font(.wisp(size: 12)).foregroundStyle(Theme.textSecondary)
                 }
             }
             if let text = setup.message {
@@ -120,7 +120,7 @@ struct NotchSetupView: View {
             Spacer(minLength: 8)
             if let busy = setup.busy {
                 ProgressView().controlSize(.small)
-                Text(busy).font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                Text(busy).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
             }
             chip("Check again") { Task { await setup.refresh(); await setup.refreshDownloads() } }
                 .disabled(setup.busy != nil)
@@ -211,7 +211,7 @@ struct NotchSetupView: View {
                               || !setup.statusIsCurrent || !s.omlx.running
                               || (selected.map { setup.inUse($0) } == true && !s.ready))
                 Text(setup.testResult ?? "Wisp asks the model one question to make sure it works.")
-                    .font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                    .font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -222,9 +222,9 @@ struct NotchSetupView: View {
         return Button { setup.selectedModel = entry.id } label: {
             HStack(spacing: 8) {
                 Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                    .font(.system(size: 11))
+                    .font(.wisp(size: 11))
                     .foregroundStyle(selected ? Theme.textPrimary : Theme.textMuted)
-                Text(entry.label).font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.textPrimary)
+                Text(entry.label).font(.wisp(size: 12, weight: .medium)).foregroundStyle(Theme.textPrimary)
                     .lineLimit(1).truncationMode(.middle)
                 Spacer(minLength: 6)
                 if setup.inUse(entry.id) { pill("In use", on: true) }
@@ -246,7 +246,7 @@ struct NotchSetupView: View {
         HStack(alignment: .top, spacing: 10) {
             glyph(state, number)
             VStack(alignment: .leading, spacing: 5) {
-                Text(title).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.textPrimary)
+                Text(title).font(.wisp(size: 12.5, weight: .semibold)).foregroundStyle(Theme.textPrimary)
                 content()
             }
             Spacer(minLength: 0)
@@ -273,17 +273,17 @@ struct NotchSetupView: View {
     }
 
     private func detail(_ text: String) -> some View {
-        Text(text).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+        Text(text).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 
     private func note(_ text: String, warning: Bool) -> some View {
-        Text(text).font(.system(size: 11.5)).foregroundStyle(warning ? Color.orange : Theme.textSecondary)
+        Text(text).font(.wisp(size: 11.5)).foregroundStyle(warning ? Color.orange : Theme.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 
     private func pill(_ text: String, on: Bool) -> some View {
-        Text(text).font(.system(size: 9.5, weight: .semibold))
+        Text(text).font(.wisp(size: 9.5, weight: .semibold))
             .foregroundStyle(on ? Color.black : Theme.textSecondary)
             .padding(.horizontal, 6).padding(.vertical, 1.5)
             .background(Capsule().fill(on ? Color.white : Theme.chipFill))

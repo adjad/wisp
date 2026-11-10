@@ -65,6 +65,8 @@ struct ChatRootView: View {
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: sidebarVisible)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.22), value: store.showInspector)
         .background(shortcuts)
+        // VoiceOver hears a reply as words, not Markdown: the notch's own cleanup.
+        .onAppear { store.spokenText = SpokenText.plain }
         .task { await store.refreshWhenReady() }
         // Coming back from Settings (or any window) re-reads whether answers may
         // go to the cloud, so the Local label is never older than the last switch.
@@ -224,13 +226,21 @@ private struct ChatHistoryRow: View {
 
     var body: some View {
         Button(action: select) {
-            Text(conversation.title)
-                .font(.wisp(.body, on: .window)).lineLimit(1)
-                .foregroundStyle(isSelected ? ChatTheme.text : ChatTheme.text2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 8).fill(isSelected ? ChatTheme.glass2 : (hovering ? ChatTheme.glass : .clear)))
-                .contentShape(Rectangle())
+            HStack(spacing: 8) {
+                Text(conversation.title)
+                    .font(.wisp(.body, on: .window)).lineLimit(1)
+                    .foregroundStyle(isSelected ? ChatTheme.text : ChatTheme.text2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                // A card in this chat is waiting for a yes, wherever the reader is now.
+                if conversation.hasPendingApproval {
+                    Circle().fill(ChatTheme.amber).frame(width: 7, height: 7)
+                        .help("Waiting for your OK")
+                        .accessibilityHidden(true)
+                }
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 8).fill(isSelected ? ChatTheme.glass2 : (hovering ? ChatTheme.glass : .clear)))
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -242,6 +252,7 @@ private struct ChatHistoryRow: View {
             Text("\"\(conversation.title)\" and its history will be removed from this Mac.")
         }
         .accessibilityLabel(conversation.title)
+        .accessibilityValue(conversation.hasPendingApproval ? "Waiting for your OK" : "")
     }
 }
 
@@ -376,7 +387,8 @@ struct ChatWelcome: View {
     var body: some View {
         VStack(spacing: 0) {
             ChatEmptyState { store.newChat(); store.submit($0) }
-            ChatComposer(store: store, busy: false, loading: false, restoredInput: .constant(nil), stop: {})
+            ChatComposer(store: store, draft: store.welcomeDraft, busy: false, loading: false,
+                         restoredInput: .constant(nil), notice: .constant(nil), stop: {})
         }
     }
 }
@@ -473,8 +485,10 @@ struct ChatConversationView: View {
             } else {
                 ChatThread(store: store, conversation: conversation)
             }
-            ChatComposer(store: store, busy: conversation.busy || conversation.corpusRunning, loading: conversation.loading,
+            ChatComposer(store: store, draft: conversation.composerDraft,
+                         busy: conversation.busy || conversation.corpusRunning, loading: conversation.loading,
                          restoredInput: Binding(get: { conversation.restoredInput }, set: { conversation.restoredInput = $0 }),
+                         notice: Binding(get: { conversation.notice }, set: { conversation.notice = $0 }),
                          stop: { store.stop(conversation) })
         }
     }
@@ -623,6 +637,9 @@ struct ChatMessageRow: View {
             VStack(alignment: .leading, spacing: 12) {
                 if message.isLive && message.text.isEmpty && message.tools.isEmpty && message.approval == nil && message.draft == nil {
                     ChatThinkingRow(label: message.status.isEmpty ? "Thinking…" : message.status)
+                }
+                if message.showsStopped {
+                    Text("Stopped").font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text3)
                 }
                 if !message.tools.isEmpty { ChatTraceView(message: message) }
                 if !message.reasoning.isEmpty { ChatReasoningView(text: message.reasoning) }
@@ -805,15 +822,7 @@ struct ChatTraceView: View {
     @State private var expanded = false
 
     private var isOpen: Bool { expanded || message.isLive }
-    private var title: String {
-        let n = message.tools.count
-        let running = message.tools.contains { !$0.finished && $0.decision != "deny" }
-        if message.tools.contains(where: \.isTestPlan) {
-            return running ? "Planning \(n) tool\(n == 1 ? "" : "s")…" : "Planned \(n) tool\(n == 1 ? "" : "s") · dry run"
-        }
-        if running { return "Working with \(n) tool\(n == 1 ? "" : "s")…" }
-        return "Used \(n) tool\(n == 1 ? "" : "s")"
-    }
+    private var title: String { message.traceTitle }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -896,8 +905,10 @@ struct ChatApprovalCard: View {
                 .padding(12)
             }
             if approval.state == .pending {
-                if approval.grantable && !approval.scopeHint.isEmpty {
-                    Text("Always allow applies to \(approval.tool) on \(approval.scopeHint)")
+                // Said whenever the button is offered, so a rule is never wider
+                // than the card let on.
+                if approval.grantable {
+                    Text(alwaysAllowLine)
                         .font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.text2).padding(.horizontal, 14).padding(.top, approval.preview.isEmpty ? 12 : 0)
                 }
                 HStack(spacing: 8) {
@@ -912,6 +923,17 @@ struct ChatApprovalCard: View {
         .background(RoundedRectangle(cornerRadius: 14).fill(approval.state == .pending ? ChatTheme.amberWash : ChatTheme.glass))
         .overlay(RoundedRectangle(cornerRadius: 14).stroke(border, lineWidth: 1))
         .opacity(approval.state == .denied || approval.state == .timedOut ? 0.7 : 1)
+        // One named group for VoiceOver: what is asked, then its buttons.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(approval.state == .pending ? "Wisp needs your OK" : "Wisp asked for your OK")
+    }
+
+    /// What "Always allow" would cover: the folder or site when the rule is
+    /// limited to one, and plainly every action of that tool when it is not.
+    private var alwaysAllowLine: String {
+        approval.scopeHint.isEmpty
+            ? "Always allow applies to every \(approval.tool) action"
+            : "Always allow applies to \(approval.tool) on \(approval.scopeHint)"
     }
 
     private var border: Color { approval.state == .pending ? ChatTheme.amberLine : ChatTheme.line }
@@ -1011,9 +1033,14 @@ struct ChatDraftCard: View {
 
 struct ChatComposer: View {
     @ObservedObject var store: ChatStore
+    /// Where what is typed is kept, so it is still here after this view is
+    /// rebuilt: another chat or section was opened, or the Text size changed.
+    let draft: ChatComposerDraft
     let busy: Bool
     let loading: Bool
     @Binding var restoredInput: String?
+    /// Why the last message came back, shown above the field until the next send or edit.
+    @Binding var notice: String?
     let stop: () -> Void
     @State private var text = ""
     @State private var image: (name: String, dataURL: String)?
@@ -1024,6 +1051,13 @@ struct ChatComposer: View {
 
     var body: some View {
         VStack(spacing: 8) {
+            if let notice, !notice.isEmpty {
+                Text(notice)
+                    .font(.wisp(.footnote, on: .window)).foregroundStyle(ChatTheme.amber)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 4)
+                    .frame(maxWidth: 740, alignment: .leading)
+            }
             VStack(alignment: .leading, spacing: 8) {
                 if let image {
                     HStack(spacing: 8) {
@@ -1095,12 +1129,31 @@ struct ChatComposer: View {
         .frame(maxWidth: .infinity)
         .onAppear {
             focused = true
-            if let restored = restoredInput { text = restored; restoredInput = nil }
+            // A fresh composer picks up what was typed here before it was rebuilt.
+            text = draft.text
+            image = draft.image
+            if let restored = restoredInput {
+                // A message that came back wins over an older draft.
+                draft.text = restored; draft.restoredText = restored
+                text = restored; restoredInput = nil
+            } else if notice != nil, draft.text.isEmpty || draft.text != draft.restoredText {
+                // The box no longer holds the message the note speaks of.
+                notice = nil
+            }
         }
         .onChange(of: restoredInput) { _, restored in
             guard let restored else { return }
+            draft.text = restored; draft.restoredText = restored
             text = restored
             restoredInput = nil
+        }
+        .onChange(of: image?.dataURL) { _, _ in draft.image = image }
+        .onChange(of: text) { _, edited in
+            draft.text = edited
+            // Typing over the message that came back dismisses the note about it.
+            // (Sending clears it in the store; the field emptying is not an edit.)
+            guard notice != nil, !edited.isEmpty, edited != draft.restoredText else { return }
+            notice = nil
         }
     }
 
@@ -1121,6 +1174,7 @@ struct ChatComposer: View {
         text = ""
         image = nil
         attachNote = ""
+        draft.clear()   // sent, so nothing is left to bring back
         store.submit(prompt, attachmentName: attached?.name, image: attached?.dataURL)
     }
 
@@ -1194,7 +1248,9 @@ struct ChatInspector: View {
                         row("Routed by", Self.routedBy(meta.routeSource))
                         if meta.tokensPerSecond > 0 { row("Speed", "\(meta.tokensPerSecond) tok/s") }
                         if let d = meta.duration { row("Time", String(format: "%.1f s", d)) }
-                        row("Ran on", "This Mac", color: ChatTheme.ok)
+                        // Green only on a confirmed local launch, like the top bar's Local pill.
+                        row("Ran on", ChatCloudUse.ranOn(store.cloudInUse),
+                            color: store.cloudInUse == false ? ChatTheme.ok : ChatTheme.text2)
                     }
                     if !meta.routeReason.isEmpty {
                         section("Why this route") {

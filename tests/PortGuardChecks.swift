@@ -444,6 +444,40 @@ enum PortGuardChecks {
         check(yield("app.wisp", 5, [5]) == false, "seeing only itself must not yield")
         check(yield("app.wisp", 5, [5, 9]) == true, "a peer means yield")
         check(yield("app.wisp", 5, [0, -1]) == false, "bogus peer pids ignored")
+
+        // Opening a different Wisp.app while one runs (a downloaded update, with the old
+        // build still in the notch) used to hand over to the old one without a word.
+        func handOver(_ peers: [String?], waits: Bool = false,
+                      own: String = "/Applications/Wisp.app") -> SingleInstance.HandOver {
+            SingleInstance.handOver(selfPath: own, peerPaths: peers, waitsForPeerToQuit: waits)
+        }
+        check(handOver(["/Applications/Wisp.app"]) == .silent, "the same app opened twice hands over silently")
+        check(handOver(["/Users/sam/Apps/Wisp.app/"], own: "/Users/sam/Apps/Wisp.app") == .silent
+              && handOver(["/Users/sam/Apps/Old/../Wisp.app"], own: "/Users/sam/Apps/Wisp.app") == .silent,
+              "one folder spelled two ways is the same app")
+        check(handOver(["/Applications/Wisp.app"], own: "/Users/sam/Downloads/Wisp.app") == .ask,
+              "a different Wisp.app running must be asked about, not handed over to")
+        check(handOver(["/Users/sam/Downloads/Wisp.app"]) == .ask, "and the other way round")
+        check(handOver(["/Applications/Wisp.app", "/Users/sam/Desktop/Wisp.app"]) == .ask, "any different copy asks")
+        check(handOver([nil]) == .silent, "a copy macOS won't locate is handed over to, as before")
+        check(handOver([]) == .silent, "nothing to compare")
+        // A copy that is quitting, or a relaunch setup expects, is waited for and never asked about.
+        check(handOver(["/Applications/Wisp.app"], waits: true) == .waitForQuit
+              && handOver(["/Users/sam/Downloads/Wisp.app"], waits: true) == .waitForQuit
+              && handOver([nil], waits: true) == .waitForQuit, "a quitting copy is waited for, whichever it is")
+
+        let differ = SingleInstance.otherCopyDetail(running: "0.5.0 (3468)", this: "0.5.0 (3490)", runningFolder: "/Applications")
+        check(differ.hasPrefix("Wisp 0.5.0 (3468) is already running from /Applications. This one is 0.5.0 (3490). "),
+              "the question names both versions and where the running one is: \(differ)")
+        check(differ.contains("Only one can run at a time") && differ.contains("chats, memory and settings are the same"),
+              "and says nothing is lost either way")
+        check(SingleInstance.otherCopyDetail(running: "0.5.0 (3490)", this: "0.5.0 (3490)", runningFolder: "~/Downloads")
+                .hasPrefix("Wisp 0.5.0 (3490) is already running from ~/Downloads. This one is the same version. "),
+              "two copies of one version")
+        check(SingleInstance.otherCopyDetail(running: nil, this: nil, runningFolder: nil)
+                .hasPrefix("Wisp is already running. Only one can run"), "nothing readable: still a plain sentence")
+        check(SingleInstance.otherCopyDetail(running: nil, this: "0.5.0 (3490)", runningFolder: "")
+                .hasPrefix("Wisp is already running. This one is 0.5.0 (3490). "), "only this copy's version readable")
     }
 
     // MARK: real processes and a real listener (skipped where the sandbox forbids them)

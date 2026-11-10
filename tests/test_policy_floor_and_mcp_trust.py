@@ -487,7 +487,12 @@ def test_empty_required_path_in_ordinary_cwd_keeps_path_semantics(organize_polic
 def test_invalid_path_denies_then_ordinary_request_recovers(organize_policy_paths, monkeypatch, mode):
     source, _ = organize_policy_paths
     args = {"path": "notes\x00.txt", "content": "synthetic"}
-    _filesystem_mode(monkeypatch, "write_file", args, mode)
+    # The standing rule comes from an ordinary call: a path Wisp cannot place
+    # is asked every time, so it offers no "always allow" of its own.
+    from service.safety import grants
+    assert not grants.is_grantable("write_file", args)
+    _filesystem_mode(monkeypatch, "write_file",
+                     {**args, "path": str(source / "notes.txt")} if mode == "grant" else args, mode)
     assert _schema_decision("write_file", args).tier == policy.Tier.DENY
     args["path"] = str(source / "notes.txt")
     assert _schema_decision("write_file", args).tier == (policy.Tier.CONFIRM if mode == "normal" else policy.Tier.ALLOW)

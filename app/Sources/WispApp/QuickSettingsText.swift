@@ -138,15 +138,21 @@ enum QuickSettingsText {
     }
 
     /// "Save power"'s line. Neutral wording in every state: it is a
-    /// preference, not a warning (red/amber stays for status).
-    static func saveWhenAway(on: Bool?, pending: Bool) -> String {
+    /// preference, not a warning (red/amber stays for status). `applies` is the
+    /// service's word on whether anything can be capped on this engine: false
+    /// with the person's own oMLX app or a remote-only setup, nil when it didn't
+    /// say (an older service), which reads as it always has.
+    static func saveWhenAway(on: Bool?, pending: Bool, applies: Bool? = nil) -> String {
         if pending { return "Updating · waiting for confirmation…" }
+        if on != nil, applies == false { return saveWhenAwayNotActive }
         switch on {
         case true?: return "Uses less power, most of all on battery and while you're away"
         case false?: return "Wisp always runs at full speed"
         case nil: return "Not confirmed"
         }
     }
+
+    static let saveWhenAwayNotActive = "Not active · only Wisp's built-in engine is capped"
 
     static let saveWhenAwayHelp = "Wisp's background work always runs its GPU at 10 W, plugged in too. "
         + "On battery, it caps the GPU at 15 W while it writes a chat reply or updates your Brief. After "
@@ -219,6 +225,20 @@ enum QuickSettingsText {
             another app has used it in the last 30 minutes.
             """
     }
+
+    /// Settings › Advanced › Auto-unload idle models. The timer never unloads the
+    /// chat model (service/idle_unloader.py skips keep-warm models); Save memory
+    /// does that, so the line says which models this is about.
+    static func idleUnload(minutes: Double) -> String {
+        let others = "Wisp's other models, like the one Smart Search uses,"
+        return (minutes <= 0
+                ? "Never. \(others) stay loaded until you unload them."
+                : "Unloads \(others) after \(Int(minutes)) min unused.")
+            + " The chat model follows Save memory instead."
+    }
+
+    static let idleUnloadSaveProblem = "Wisp couldn't save that change, so it's back to what it was. "
+        + "Check that Wisp is running, then try again."
 
     /// Learn my routines' line, and the trailing "stays on this Mac" when
     /// nothing learned is sent anywhere.
@@ -326,5 +346,106 @@ enum QuickSettingsText {
     static func hourLabel(_ hour: Int) -> String {
         let display = hour % 12 == 0 ? 12 : hour % 12
         return "\(display) \(hour < 12 ? "AM" : "PM")"
+    }
+}
+
+/// What Settings › Models offers in each role's menu: chat models only. The
+/// Smart Search embedder and the reranker are roles in models.yaml and may be
+/// installed, but a chat role that points at one can't answer.
+enum RoleModelChoices {
+    /// service/config/models.yaml's model for every text role. Offered only until
+    /// the service reports its own models; change the two together.
+    static let bundledDefault = "gemma-4-E4B-it-oQ4e-mtp"
+    static let fallbackModels = [bundledDefault]
+    static let fallbackRoles = [
+        "fast": bundledDefault,
+        "coding": bundledDefault,
+        "reasoning": bundledDefault,
+        "general": bundledDefault,
+    ]
+    /// Roles whose model no chat role can use.
+    static let nonChatRoles = ["embedding", "reranker"]
+
+    static func isChatModel(_ id: String, roles: [String: String] = [:]) -> Bool {
+        let name = id.lowercased()
+        if id.isEmpty || name.contains("embed") || name.contains("rerank") { return false }
+        return !nonChatRoles.contains { roles[$0] == id }
+    }
+
+    /// The menu's models, sorted. A model a chat role already uses stays in the
+    /// list. `keeping` is the menu's own selection: it is always listed, so the
+    /// menu shows what is saved even when that was a wrong pick.
+    static func choices(installed: [String], roles: [String: String], keeping: String? = nil) -> [String] {
+        let saved = roles.filter { !nonChatRoles.contains($0.key) }.map { $0.value }
+        // The bundled default is only for a service that reports nothing; a Mac
+        // with its own models must not be offered a model it never installed.
+        let known = installed.isEmpty && saved.allSatisfy({ $0.isEmpty }) ? fallbackModels : installed + saved
+        var ids = Set(known.filter { isChatModel($0, roles: roles) })
+        if let keeping, !keeping.isEmpty { ids.insert(keeping) }
+        return ids.sorted()
+    }
+
+    /// Said under the menus when the service didn't save a pick.
+    static let saveProblem = "Wisp couldn't save that model choice, so it's back to the one before. "
+        + "Check that Wisp is running, then try again."
+}
+
+/// One standing rule from GET /permissions: an "Always allow" the person tapped on
+/// a card, or an always-block. Settings › Privacy & Access lists them so each can
+/// be seen and removed (service/safety/grants.py keeps them in ~/.moe/grants.json).
+struct StandingRule: Identifiable, Equatable {
+    let tool: String
+    /// The folder, site, command or setting the rule is limited to. Empty means
+    /// every action of that tool.
+    let scope: String
+    let allow: Bool
+
+    var id: String { (allow ? "allow|" : "deny|") + tool + "|" + scope }
+
+    /// "Always allow · every action", or "… · only ~/Documents" for a limited rule.
+    var summary: String {
+        let kind = allow ? "Always allow" : "Always block"
+        let covers = scope.isEmpty ? "every action" : "only " + scope
+        return kind + " · " + covers
+    }
+
+    static let title = "Always allow rules"
+    static let caption = "Answers you gave with Always allow on a card. Wisp doesn't ask before these, "
+        + "in any chat. Remove a rule and Wisp checks that action the usual way again."
+    static let noRules = "No rules. Wisp has nothing set to always allow or always block."
+    static let checking = "Checking…"
+    static let unread = "Couldn't read the rules. Check that Wisp is running."
+    static let removeFailed = "Couldn't remove that rule. Try again."
+
+    /// The reply's `grants`, sorted by tool. Nil when it can't be read, which is
+    /// never shown as "no rules".
+    static func parse(_ data: Data) -> [StandingRule]? {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let grants = object["grants"] as? [String: Any] else { return nil }
+        var rules: [StandingRule] = []
+        for (tool, value) in grants {
+            guard let entry = value as? [String: Any] else { continue }
+            for row in entry["allow"] as? [[String: Any]] ?? [] {
+                rules.append(StandingRule(tool: tool, scope: row["scope"] as? String ?? "", allow: true))
+            }
+            for row in entry["deny"] as? [[String: Any]] ?? [] {
+                rules.append(StandingRule(tool: tool, scope: row["scope"] as? String ?? "", allow: false))
+            }
+        }
+        return rules.sorted { ($0.tool, $0.scope, $0.id) < ($1.tool, $1.scope, $1.id) }
+    }
+
+    /// DELETE /permissions/{tool}?scope=…, which drops this one rule. The scope is
+    /// always sent, empty too: without it the service drops every rule of the tool.
+    func removeURL(base: URL) -> URL? {
+        let plain = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~")
+        guard !tool.isEmpty, let name = tool.addingPercentEncoding(withAllowedCharacters: plain),
+              let value = scope.addingPercentEncoding(withAllowedCharacters: plain),
+              var parts = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return nil }
+        let root = parts.percentEncodedPath.hasSuffix("/")
+            ? String(parts.percentEncodedPath.dropLast()) : parts.percentEncodedPath
+        parts.percentEncodedPath = root + "/permissions/" + name
+        parts.percentEncodedQuery = "scope=" + value
+        return parts.url
     }
 }

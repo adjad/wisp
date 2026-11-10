@@ -136,9 +136,27 @@ def _text_policy_problem(to: str, draft: str) -> str | None:
     return None
 
 
+_TEXT_NOT_SENT = "(the message was NOT sent: "
+_TEXT_UNCONFIRMED = "Messages didn't confirm the text. Check Messages before trying again."
+
+
+def _text_problem(result) -> str:
+    """The card's sentence when a text did not go out. The send tool's own line
+    is written for the model, so only the app bridge's reason is passed on
+    (outbox writes each one itself: "Wisp isn't allowed to control Messages…")."""
+    from service.tools.registry import _NotSentResult
+    text = str(result)
+    if type(result) is _NotSentResult and text.startswith(_TEXT_NOT_SENT) and text.endswith(")"):
+        reason = text[len(_TEXT_NOT_SENT):-1].strip()
+        if " " in reason:
+            return reason if reason[-1] in ".!?" else reason + "."
+    return "The text wasn't sent. Try again."
+
+
 async def _text_reply(card: dict, draft: str) -> dict:
     """The send_message_draft core: a literal handle, the policy floor, and a
-    human-reviewed body. An unconfirmed send is "unknown", never "failed"."""
+    human-reviewed body. An unconfirmed send is "unknown", never "failed".
+    Anything but a sent text carries `error`, a sentence the card can show."""
     from service.tools.action_tools import human_reviewed_content, send_message
     from service.tools.registry import _literal_message_recipient, _OutboundUnknownResult
     to = _literal_message_recipient(card["action"].get("recipient"))
@@ -153,7 +171,10 @@ async def _text_reply(card: dict, draft: str) -> dict:
     unknown = isinstance(result, _OutboundUnknownResult)
     _audit("draft_card_send", tool="send_message", source="proactive_card",
            args={"to": to, "text_sha256": _sha(draft)}, result=str(result)[:200], ok=ok)
-    return {"ok": ok, "status": "succeeded" if ok else "unknown" if unknown else "failed", "result": str(result)}
+    if ok:
+        return {"ok": True, "status": "succeeded", "result": str(result)}
+    return {"ok": False, "status": "unknown" if unknown else "failed", "result": str(result),
+            "error": _TEXT_UNCONFIRMED if unknown else _text_problem(result)}
 
 
 def _reminder_problem() -> str | None:

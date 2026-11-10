@@ -283,7 +283,8 @@ struct QuickSettingsView: View {
 
     private var saveWhenAwayRow: some View {
         row("Save power", help: QuickSettingsText.saveWhenAwayHelp) {
-            Text(QuickSettingsText.saveWhenAway(on: settings.saveWhenAway, pending: settings.saveWhenAwayPending))
+            Text(QuickSettingsText.saveWhenAway(on: settings.saveWhenAway, pending: settings.saveWhenAwayPending,
+                                                applies: settings.saveWhenAwayApplies))
         } control: {
             if settings.saveWhenAway != nil {
                 Toggle("Save power", isOn: Binding(get: { settings.saveWhenAway == true },

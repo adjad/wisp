@@ -158,6 +158,8 @@ enum ResearchLibraryChecks {
         await selectionDuringSaveAndDeleteFailure()
         await steeringStaysWithItsJob()
         await completionWinsOverDelayedPause()
+        runClockCountsOnlyRunningTime()
+        await elapsedChipIgnoresPlanAge()
         exportIsOwnerOnly()
         try renderPreviewIfRequested()
         print("Research Library: \(checks) native checks passed (store fixtures, no live actions)")
@@ -385,6 +387,45 @@ enum ResearchLibraryChecks {
         client.waitingAction?.resume(returning: true); client.waitingAction = nil
         await wait("delayed pause finishes") { !model.actionInProgress }
         check(model.phase == .complete && !model.paused, "delayed pause cannot replace finished report")
+        await cleanup(model, client)
+    }
+
+    // The elapsed chip is research time: not the minutes spent reading the plan
+    // before Start, and not a pause.
+    static func runClockCountsOnlyRunningTime() {
+        typealias RunClock = ResearchModel.RunClock
+        let drafted = Date(timeIntervalSince1970: 1_000_000)
+        func at(_ seconds: TimeInterval) -> Date { drafted.addingTimeInterval(seconds) }
+        var clock = RunClock()
+        check(!clock.isRunning && clock.seconds(at: at(480)) == 0, "reading the plan is not research time")
+        clock.start(at: at(480))
+        check(clock.isRunning && clock.seconds(at: at(480)) == 0, "Start begins at zero, 8 minutes after the draft")
+        check(clock.seconds(at: at(545)) == 65, "running time is counted")
+        clock.start(at: at(500))
+        check(clock.seconds(at: at(545)) == 65, "a reconnect while running neither restarts nor adds")
+        clock.stop(at: at(545))
+        check(!clock.isRunning && clock.seconds(at: at(1745)) == 65, "a 20-minute pause is not counted")
+        clock.stop(at: at(1745))
+        check(clock.seconds(at: at(1745)) == 65, "stopping twice adds nothing")
+        clock.start(at: at(1745))
+        check(clock.seconds(at: at(1750)) == 70, "resuming continues from the time already spent")
+        clock.stop(at: at(1700))
+        check(clock.seconds(at: at(1700)) == 65, "a clock that moved back never subtracts")
+        check(RunClock.text(0) == "0s" && RunClock.text(59) == "59s" && RunClock.text(60) == "1m 0s"
+              && RunClock.text(125) == "2m 5s", "the chip reads seconds, then minutes and seconds")
+    }
+
+    static func elapsedChipIgnoresPlanAge() async {
+        let client = FixtureResearchClient(data)
+        client.rows[id("running")]?["created_at"] = Date().timeIntervalSince1970 - 480
+        let model = ResearchModel(client: client)
+        await open(model, "running")
+        // The chip appears on the clock's first tick. A harness that runs no
+        // timers shows no chip, and the pure checks above stand on their own.
+        let deadline = Date().addingTimeInterval(2.5)
+        while model.elapsedText.isEmpty && Date() < deadline { try? await Task.sleep(nanoseconds: 20_000_000) }
+        check(["", "0s", "1s", "2s", "3s"].contains(model.elapsedText),
+              "a job drafted 8 minutes ago does not open at 8m: \(model.elapsedText)")
         await cleanup(model, client)
     }
 

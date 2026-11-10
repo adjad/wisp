@@ -81,6 +81,11 @@ SCANNED = "That PDF has no text Wisp can read (it looks scanned)."
 # AES-encrypted PDFs need a cipher library Wisp doesn't ship, even when they open with no password.
 ENCRYPTED = "That PDF is encrypted in a way Wisp can't open."
 DAMAGED = "That document couldn't be read. It may be damaged."
+LOCKED = "That document is password-protected. Wisp can't read it without the password."
+# A docx, xlsx or pptx saved with a password is not a ZIP: Office wraps the encrypted file in its
+# older container format, which starts with these bytes and names these two streams (in UTF-16).
+_OLE = b"\xd0\xcf\x11\xe0"
+_LOCKED_STREAMS = tuple(name.encode("utf-16-le") for name in ("EncryptedPackage", "EncryptionInfo"))
 
 
 class _Enough(Exception):
@@ -110,6 +115,11 @@ class _Text:
 
 def _kind(name: str) -> str:
     return PurePath(name or "").suffix.lower().lstrip(".")
+
+
+def is_locked_office(data: bytes) -> bool:
+    """Whether these bytes are an Office file saved with a password (see _OLE). Nothing is parsed."""
+    return data.startswith(_OLE) and all(stream in data for stream in _LOCKED_STREAMS)
 
 
 # --- ZIP preflight ----------------------------------------------------------------
@@ -305,6 +315,24 @@ def _docx(data: bytes, limit: int | None = None) -> tuple[str, bool]:
     return out.joined(), False
 
 
+def _cell(value, markers: bool = False) -> str:
+    """One spreadsheet cell on one line, unable to pass for a column break.
+
+    A row is written as one line with " | " between cells, and service/large_document.py reads it
+    back by splitting on exactly those. So a line break inside a cell (Alt+Enter in a notes or
+    address column) becomes a space, as does any other run of blanks, and a `|` standing alone
+    between blanks becomes `/`. A `|` inside a word ("A|B") cannot be taken for a column break and
+    stays.
+    """
+    if value is None:
+        return ""
+    text = str(value)
+    if markers:
+        # Before the lines are joined: a marker at the start of a cell's second line is still one.
+        text = defuse_markers(text)
+    return " ".join("/" if word == "|" else word for word in text.split())
+
+
 def _xlsx(data: bytes, limit: int | None = None, markers: bool = False) -> tuple[str, bool]:
     from openpyxl import load_workbook
     book = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
@@ -314,7 +342,7 @@ def _xlsx(data: bytes, limit: int | None = None, markers: bool = False) -> tuple
             title = " ".join(str(sheet.title).splitlines()) if markers else sheet.title
             out.add(f"[Sheet: {title}]")
             for row in sheet.iter_rows(values_only=True):
-                cells = ["" if v is None else str(v) for v in row]
+                cells = [_cell(v, markers) for v in row]
                 if any(c.strip() for c in cells):
                     line = " | ".join(cells).rstrip(" |")
                     out.add(defuse_markers(line) if markers else line)
@@ -325,14 +353,43 @@ def _xlsx(data: bytes, limit: int | None = None, markers: bool = False) -> tuple
     return out.joined(), False
 
 
+def _slide_lines(shapes) -> list[str]:
+    """The text on a slide, in the order its shapes are stored: text boxes and placeholders, the
+    rows of each table (cells joined with " | "), and whatever is inside a group, however deeply
+    groups are nested. Charts, pictures and diagrams carry no text this reads.
+
+    Walked with a list of open groups, not by recursion, so a deck made of groups inside groups
+    can't exhaust the stack.
+    """
+    from pptx.shapes.group import GroupShape
+    lines: list[str] = []
+    open_groups = [iter(shapes)]
+    while open_groups:
+        for shape in open_groups[-1]:
+            if isinstance(shape, GroupShape):
+                open_groups.append(iter(shape.shapes))
+                break
+            if shape.has_text_frame:
+                if shape.text_frame.text.strip():
+                    lines.append(shape.text_frame.text)
+            elif getattr(shape, "has_table", False):
+                for row in shape.table.rows:
+                    cells = [" ".join(cell.text.split()) for cell in row.cells]
+                    cells = [cell for cell in cells if cell]
+                    if cells:
+                        lines.append(" | ".join(cells))
+        else:
+            open_groups.pop()
+    return lines
+
+
 def _pptx(data: bytes, limit: int | None = None, markers: bool = False) -> tuple[str, bool]:
     from pptx import Presentation
     deck = Presentation(io.BytesIO(data))
     out = _Text(limit)
     try:
         for i, slide in enumerate(deck.slides, 1):
-            lines = [shape.text_frame.text for shape in slide.shapes
-                     if shape.has_text_frame and shape.text_frame.text.strip()]
+            lines = _slide_lines(slide.shapes)
             if slide.has_notes_slide:
                 notes = (slide.notes_slide.notes_text_frame.text or "").strip()
                 if notes:
@@ -412,6 +469,8 @@ def extract_text(name: str, data: bytes, large: bool = False) -> tuple[str, bool
     if kind in _LEGACY:
         raise ValueError(f"Wisp can't read old .{kind} files. Save it as {_LEGACY[kind]} and try again.")
     if kind in _ZIPPED:
+        if is_locked_office(data):
+            raise ValueError(LOCKED)
         zip_guard(data)
     cut = False
     try:

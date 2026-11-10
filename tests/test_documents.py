@@ -136,6 +136,45 @@ def test_each_common_format_gives_its_text():
     assert X("data.csv", b"a,b\n1,2\n").startswith("a,b")
 
 
+def deck_with_a_table_and_groups(first_cell: str = "Plan") -> bytes:
+    from pptx import Presentation
+    from pptx.util import Inches
+    deck = Presentation()
+    slide = deck.slides.add_slide(deck.slide_layouts[5])
+    slide.shapes.title.text = "Pricing"
+    table = slide.shapes.add_table(3, 2, Inches(1), Inches(2), Inches(6), Inches(2)).table
+    for r, row in enumerate([(first_cell, "Cost"), ("Pro", "49 dollars\nper seat"), ("", "")]):
+        for c, value in enumerate(row):
+            table.cell(r, c).text = value
+    group = slide.shapes.add_group_shape()
+    group.shapes.add_textbox(Inches(1), Inches(5), Inches(3), Inches(1)).text_frame.text = "Prices hold until June"
+    inner = group.shapes.add_group_shape()
+    for _ in range(40):                                    # groups inside groups, far past any real deck
+        inner = inner.shapes.add_group_shape()
+    inner.shapes.add_textbox(Inches(1), Inches(6), Inches(3), Inches(1)).text_frame.text = "Ask Dana Reyes for a quote"
+    # python-pptx can't add a table to a group, so one made on the slide is moved into it.
+    frame = slide.shapes.add_table(1, 2, Inches(1), Inches(6.5), Inches(4), Inches(0.5))
+    frame.table.cell(0, 1).text = "Setup fee"
+    group._element.append(frame._element)
+    slide.shapes.add_textbox(Inches(5), Inches(5), Inches(3), Inches(1)).text_frame.text = "Last box"
+    out = io.BytesIO()
+    deck.save(out)
+    return out.getvalue()
+
+
+def test_a_deck_gives_its_tables_and_the_text_inside_groups_in_slide_order():
+    assert X("Pricing.pptx", deck_with_a_table_and_groups()) == (
+        "[Slide 1]\nPricing\nPlan | Cost\nPro | 49 dollars per seat\n"
+        "Prices hold until June\nAsk Dana Reyes for a quote\nSetup fee\nLast box")
+
+
+def test_a_marker_in_a_slide_table_or_group_is_defused_in_large_mode():
+    data = deck_with_a_table_and_groups("[Slide 9]")
+    text, _ = E.extract_text("Pricing.pptx", data, True)
+    assert "\n[ Slide 9] | Cost\n" in text and text.count("[Slide ") == 1 and text.startswith("[Slide 1]\n")
+    assert "\n[Slide 9] | Cost\n" in X("Pricing.pptx", data)
+
+
 def test_html_is_read_without_any_subprocess():
     html = (b"<html><head><style>p{}</style><script>steal()</script></head>"
             b"<body><h1>Agenda</h1><p>Budget &amp; review</p></body></html>")
@@ -169,6 +208,29 @@ def test_rtf_is_read_from_memory_through_textutil():
 def test_unreadable_documents_say_so_plainly(name, data, match):
     with pytest.raises(ValueError, match=match):
         X(name, data)
+
+
+def locked_office(*streams: str) -> bytes:
+    """The outside of an Office file saved with a password: the old container naming these streams."""
+    names = b"".join(name.encode("utf-16-le") + b"\x00" * 40 for name in streams)
+    return b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504 + names + b"\x07" * 600
+
+
+@pytest.mark.parametrize("name", ["payroll.docx", "payroll.xlsx", "payroll.pptx"])
+def test_an_office_file_saved_with_a_password_says_so_and_is_not_called_damaged(name):
+    for large in (False, True):
+        with pytest.raises(ValueError) as caught:
+            E.extract_text(name, locked_office("EncryptionInfo", "EncryptedPackage"), large)
+        assert str(caught.value) == "That document is password-protected. Wisp can't read it without the password."
+        assert "damaged" not in str(caught.value)
+
+
+def test_an_old_container_that_is_not_locked_keeps_the_plain_refusal():
+    for data in (locked_office(), locked_office("EncryptedPackage"), locked_office("EncryptionInfo"),
+                 b"\xd0\xcf\x11\xe0", b"junk" + locked_office("EncryptionInfo", "EncryptedPackage")):
+        with pytest.raises(ValueError, match="couldn't be read. It may be damaged"):
+            X("renamed.docx", data)
+    assert E.is_locked_office(b"") is False
 
 
 def test_size_and_encoding_limits():

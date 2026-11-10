@@ -164,6 +164,47 @@ enum BackendRecoveryChecks {
         )
         print("BackendRecovery: 14 regression checks passed")
         try await quitRelaunchChecks()
+        try logRotationChecks()
+    }
+
+    // MARK: - The backend log is rotated at launch instead of growing without bound
+
+    private static func logRotationChecks() throws {
+        var checks = 0
+        func expect(_ condition: Bool, _ message: String) {
+            precondition(condition, message)
+            checks += 1
+        }
+        let files = FileManager.default
+        let folder = files.temporaryDirectory.appendingPathComponent("wisp-backend-log-\(UUID().uuidString)")
+        try files.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? files.removeItem(at: folder) }
+        let log = folder.appendingPathComponent("moe-backend.log")
+        let previous = folder.appendingPathComponent("moe-backend.log.1")
+        func text(_ url: URL) -> String? { try? String(contentsOf: url, encoding: .utf8) }
+
+        // No log yet, and a log at the limit: left alone.
+        expect(!BackendManager.rotateBackendLogIfNeeded(at: log, maxBytes: 10), "no log, nothing to rotate")
+        try "0123456789".write(to: log, atomically: true, encoding: .utf8)
+        expect(!BackendManager.rotateBackendLogIfNeeded(at: log, maxBytes: 10), "a log at the limit is not rotated")
+        expect(text(log) == "0123456789" && !files.fileExists(atPath: previous.path), "and it is left as it was")
+
+        // Over the limit: it becomes .1, and the launch that follows starts a new file at offset 0.
+        try "first launch, over the limit".write(to: log, atomically: true, encoding: .utf8)
+        expect(BackendManager.rotateBackendLogIfNeeded(at: log, maxBytes: 10), "a log over the limit is rotated")
+        expect(!files.fileExists(atPath: log.path), "the log is no longer at its path")
+        expect(text(previous) == "first launch, over the limit", "the old log is kept as .1")
+        expect(BackendManager.fileSize(at: log) == 0, "the next launch's offset starts at 0")
+
+        // Again: the older .1 is replaced, so only one old log is ever kept.
+        try "second launch, over the limit".write(to: log, atomically: true, encoding: .utf8)
+        expect(BackendManager.rotateBackendLogIfNeeded(at: log, maxBytes: 10), "rotated again")
+        expect(text(previous) == "second launch, over the limit", "the previous .1 is replaced")
+        let kept = (try? files.contentsOfDirectory(atPath: folder.path)) ?? []
+        expect(kept == ["moe-backend.log.1"], "only one old log is kept")
+
+        expect(BackendManager.backendLogRotateBytes == 5 * 1024 * 1024, "the shipped limit is 5 MB")
+        print("BackendRecovery: \(checks) log rotation checks passed")
     }
 
     // MARK: - P2-1: quit, then a fast relaunch, must not latch a false port conflict
@@ -423,5 +464,40 @@ enum BackendRecoveryChecks {
              && reset.count < 160, "an unfinished reset names its way out in full")
         dead(BackendManager.resetUnfinishedStatus == 75, "the status matches wisp_reset.REFUSED_EXIT")
         print("BackendRecovery: \(deadChecks) dead-child checks passed")
+        await blockedStartChecks()
+    }
+
+    private final class StartFailures: @unchecked Sendable { var reasons: [String] = [] }
+
+    /// A start that launches nothing says why, the way a launch that exited does, so
+    /// Retry never ends in silence. A port conflict is the case that needs no process,
+    /// port or Keychain: nothing here starts, probes or signals anything.
+    @MainActor
+    private static func blockedStartChecks() async {
+        let seen = StartFailures()
+        let observer = NotificationCenter.default.addObserver(
+            forName: .wispBackendStartFailed, object: nil, queue: nil) { note in
+            seen.reasons.append(note.userInfo?["reason"] as? String ?? "")
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        let manager = BackendManager()
+        precondition(seen.reasons.isEmpty, "a new manager reports nothing")
+        manager.portConflict = true
+        precondition(seen.reasons == [BackendManager.portInUseReason], "a port conflict is said once, as it is found")
+        manager.portConflict = true
+        precondition(seen.reasons.count == 1, "not again for a conflict already known")
+        await manager.startIfNeeded()
+        precondition(seen.reasons == [BackendManager.portInUseReason, BackendManager.portInUseReason],
+                     "Retry during a conflict says why instead of doing nothing")
+        precondition(!manager.childRunning, "and starts nothing")
+        // Each reason is a fixed, plain sentence: no path from this Mac, no credential.
+        let fixed = [BackendManager.portInUseReason, BackendManager.credentialsBlockedReason,
+                     BackendManager.missingFilesReason]
+        precondition(Set(fixed).count == fixed.count, "each blocked start has its own reason")
+        for reason in fixed {
+            precondition(!reason.isEmpty && !reason.contains("/") && !reason.contains(NSHomeDirectory()),
+                         "a blocked start's reason carries no path: \(reason)")
+        }
+        print("BackendRecovery: \(6 + fixed.count) blocked-start checks passed")
     }
 }

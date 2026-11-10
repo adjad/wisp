@@ -1010,21 +1010,26 @@ def collect_evidence(store, state, day, timezone, *, now):
         from service.tools import email_tools as mail
         from service.tools.email_tools import raw_email_snapshot, digest_category, critical_account_mail
         from service.tools.imessage_tools import redact_summary_codes, important_message_reason
-        from service.proactive.sources import answered_by_sent, sent_rows
+        from service.proactive.sources import _address, answered_by_sent, cached_native_sent, sent_rows
         snapshot = raw_email_snapshot()
         records = []
         header_count, header_eligible = 0, False
-        sent = sent_rows()
+        # The Google-linked accounts' sent mail plus Apple Mail's Sent rows as the
+        # proactive cycle last read them (cached rows only: nothing is read here).
+        sent = sent_rows() + cached_native_sent()
 
         def answered(row) -> dict:
             # Answered from Gmail, Mail or a phone since it arrived (the user's
-            # own sent mail): no longer something that needs them.
+            # own sent mail): no longer something that needs them. The sender lets
+            # an Apple Mail Sent row, which has no reply header, count when it went
+            # to the person who wrote, under the same subject.
             stamp = row.get("ts")
             if not sent or type(stamp) not in (int, float):
                 return {}
             return {"replied": True} if answered_by_sent(
                 sent, account=str(row.get("account") or ""), subject=str(row.get("subject") or ""),
-                message_id=str(row.get("message_id") or ""), after=float(stamp)) else {}
+                message_id=str(row.get("message_id") or ""), after=float(stamp),
+                sender=_address(row)) else {}
         if snapshot is not None:
             # Ranking is a reason to inspect the source, never proof a reply
             # or payment is owed. Bodies cannot control destinations/actions.

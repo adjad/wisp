@@ -161,10 +161,31 @@ class WebRequest:
     study_reminder_clock: str | None = None
     study_reminder_date: str | None = None
     study_reminder_rejected: bool = False
+    # The provenance is UNKNOWN because of a possessive whose owner could be
+    # anyone ("Dana's tour dates"), not a private, local or contextual source.
+    owner_unknown: bool = False
 
     @property
     def private(self) -> bool:
         return self.provenance in {Provenance.PRIVATE, Provenance.LOCAL}
+
+    @property
+    def explicit_unknown_owner(self) -> bool:
+        """An explicit web lookup held back only by a possessive of unknown
+        ownership ("search the web for Dana's tour dates").
+
+        The rules route asks which topic is meant. A model-led turn cannot, so
+        its egress guard may let this one search run with the user's own words
+        (model_only.public_fact_query_problem). It is never ``allowed``: no
+        query is bound and nothing else is authorized. A first-person word, an
+        opt-out, a delivery or a second action keeps it False.
+        """
+        if not (self.explicit and self.owner_unknown and self.provenance == Provenance.UNKNOWN):
+            return False
+        if self.opted_out or self.write_intent or self.inherited:
+            return False
+        text = re.sub(r"\s+for\s+(?:me|us)\s*[.!?]*\s*$", "", _normalize(self.source), flags=re.I)
+        return not _FIRST_PERSON.search(text)
 
     @property
     def time_scope(self) -> str | None:
@@ -308,6 +329,8 @@ _ARTIFACT = (
 )
 _OWNED = r"(?:my|our|your|their|his|her|team|shared|private|internal|confidential|personal)"
 _OWNER = re.compile(r"\b(?P<owner>[\w-]+)(?:'s|s')\s+(?P<resource>[^,;.!?\n]+)", re.I)
+# "US" in capitals is the country ("Trader Joe's US stores"), not the pronoun.
+_FIRST_PERSON = re.compile(r"\b(?:(?i:i|me|my|mine|myself|we|our|ours|ourselves)|[Uu]s)\b")
 _EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.I)
 _PHONE = re.compile(r"(?<!\d)(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}(?!\d)")
 
@@ -1041,6 +1064,7 @@ def _parse_request(text: str, last_user: str | None = None, *,
     topic = next(group for group in followup.groups() if group is not None) if followup else followup_text
     fragment = bool(followup) or bool(last_user and _scopes(topic) and not _without_scope(topic, _scopes(topic)))
     provenance, public = _provenance(source, fragment=fragment)
+    possessive_owner = provenance == Provenance.UNKNOWN
     if fragment and re.fullmatch(r"the\s+[a-z][\w-]*[.!?]*", topic):
         provenance = Provenance.UNKNOWN  # Definite local reference, not a new public topic.
     independent = not explicit and _independent(
@@ -1183,7 +1207,8 @@ def _parse_request(text: str, last_user: str | None = None, *,
                       acknowledgement_without_offer, cancelled, composed.presentations, pending_offer,
                       confirmed_local_request, standalone_offer, study_clock,
                       dated_assent.group(1) if dated_assent and study_clock else None,
-                      rejected_study_offer)
+                      rejected_study_offer,
+                      owner_unknown=possessive_owner and provenance == Provenance.UNKNOWN)
 
 
 def classify(text: str, last_user: str | None = None, *,

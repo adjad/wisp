@@ -1,6 +1,7 @@
 """Built-in tools: shell + filesystem. Registered on import."""
 from __future__ import annotations
 
+import codecs
 import os
 import shutil
 import subprocess
@@ -70,6 +71,10 @@ def _missing_dir_message(p: Path) -> str:
         return head
     try:
         entries = sorted(os.listdir(anc))
+    except PermissionError:
+        # macOS reports a path inside a blocked folder as missing; the nearest
+        # real ancestor is the folder it is blocking.
+        return _tcc_message(anc, "listing")
     except OSError:
         return head
     shown = [e for e in entries if not e.startswith(".")][:60]
@@ -354,6 +359,17 @@ def _read_pptx(p: Path) -> str:
     return _clip(text)
 
 
+# read_file looks at the start of a file only. PDF and Office readers load the
+# whole document, so they get a size cap instead of a prefix.
+_TEXT_READ_BYTES = MAX_OUTPUT * 4
+_MAX_DOCUMENT_BYTES = 100 * 1024 * 1024
+
+
+def _too_large_message(p: Path, size: int) -> str:
+    return (f"({p} is {size / 1_000_000:,.0f} MB, too large for Wisp to open "
+            "as a document. Tell the user this plainly; do not retry.)")
+
+
 _STRUCTURED_READERS = {
     ".docx": _read_docx,
     ".xlsx": _read_xlsx,
@@ -405,16 +421,28 @@ def read_file(path: str) -> str:
         return f"(no such file: {p})"
     if p.is_dir():
         return f"({p} is a directory, not a file — use list_dir instead)"
+    # Read a bounded prefix, never the whole file: a multi-GB movie or log
+    # would otherwise be allocated (twice, with the decode) next to the model.
     try:
-        raw = p.read_bytes()
+        size = p.stat().st_size
+    except OSError:
+        size = 0
+    try:
+        with p.open("rb") as fh:
+            raw = fh.read(_TEXT_READ_BYTES)
     except PermissionError:
         return _tcc_message(p, "reading")
     except Exception as e:  # noqa: BLE001
         return f"(error reading {p}: {e})"
+    head = raw[:8192]
 
-    if p.suffix.lower() == ".pdf" or raw.startswith(b"%PDF-"):
+    if p.suffix.lower() == ".pdf" or head.startswith(b"%PDF-"):
+        if size > _MAX_DOCUMENT_BYTES:
+            return _too_large_message(p, size)
         return _read_pdf(p)
     if p.suffix.lower() in _STRUCTURED_READERS:
+        if size > _MAX_DOCUMENT_BYTES:
+            return _too_large_message(p, size)
         try:
             return _STRUCTURED_READERS[p.suffix.lower()](p)
         except Exception as e:  # noqa: BLE001 — malformed OOXML must report, not crash the turn
@@ -437,14 +465,20 @@ def read_file(path: str) -> str:
     # decoded with errors="replace" LOOKS like a string, and nothing before
     # this would have stopped it from being handed to the model as if it were
     # the document's actual content.
-    if b"\x00" in raw[:8192]:
+    if b"\x00" in head:
         kind = p.suffix.lstrip(".") or "binary"
         return (f"({p} is a {kind} file, not text — Wisp can't read its contents. "
                 "This tool cannot read image files: tell the user this plainly and "
                 "that they can attach the picture in Ask for Wisp to look at it; "
                 "do not retry with another tool.)")
 
-    return _clip(raw.decode("utf-8", errors="replace"))
+    if size <= len(raw):
+        return _clip(raw.decode("utf-8", errors="replace"))
+    # Only the start was read. The incremental decoder drops a multi-byte
+    # character cut at the end instead of turning it into a replacement mark.
+    text = codecs.getincrementaldecoder("utf-8")("replace").decode(raw, final=False)
+    return (text[:MAX_OUTPUT]
+            + f"\n…[truncated: the file is {size:,} bytes; this is the start of it]")
 
 
 # Description length is load-bearing here, not padding. At its original 32
@@ -519,6 +553,7 @@ def list_dir(path: str, recursive: bool = False, max_depth: int = 3,
     # onerror: os.walk swallows errors silently by default, so a blocked
     # subfolder would just be absent from the listing with nothing said.
     _blocked: list[str] = []
+    used, cut = 0, False
     for dirpath, dirnames, filenames in os.walk(
             p, onerror=lambda e: _blocked.append(str(getattr(e, "filename", "")))):
         depth = len(Path(dirpath).parts) - root_depth
@@ -530,13 +565,24 @@ def list_dir(path: str, recursive: bool = False, max_depth: int = 3,
         prefix = "" if rel == Path(".") else f"{rel}/"
         for name in dirnames:
             lines.append(f"{prefix}{name}/")
+            used += len(lines[-1]) + 1
         for name in sorted(filenames):
             lines.append(f"{prefix}{name}")
+            used += len(lines[-1]) + 1
+        if used > MAX_OUTPUT:
+            # The model only sees MAX_OUTPUT chars, so walking on (into
+            # Library or node_modules) would only burn time and memory.
+            cut = True
+            break
     if _blocked and not lines:
         return _tcc_message(p, "listing")
     if _blocked:
         lines.append(f"…[{len(_blocked)} subfolder(s) skipped — macOS denied "
                      "access; see Full Disk Access in System Settings]")
+    if cut:
+        return "\n".join(lines)[:MAX_OUTPUT] + (
+            "\n…[listing cut: this folder is large. List a subfolder, or use "
+            "find_files, to see more]")
     return _clip("\n".join(lines) or "(empty)")
 
 

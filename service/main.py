@@ -26,11 +26,13 @@ if _reset_os.environ.get("WISP_LAUNCH_NONCE"):
 from service.assistant.verified_reminders import expected_date_fields
 
 import asyncio
+import contextvars
 import dataclasses
 from service.inference.remote_policy import (remote_only_profile,
                                              require_generation_role,
                                              require_local_models_disabled)
 import json
+import math
 import os
 import re
 import subprocess
@@ -47,6 +49,7 @@ from fastapi.responses import Response, StreamingResponse
 
 from service import idle, idle_unloader
 from service.config import (
+    ConfigurationOverlayDamaged,
     cloud_super_model_enabled,
     cloud_provider_settings,
     local_provider_settings,
@@ -256,6 +259,55 @@ _CLARIFY_TARGET_HINT = (
 
 client: OMLXClient
 SESSIONS: dict[str, dict] = {}
+# Rolling-summary folds still running, one per session (see _fold_summary_later).
+_SUMMARY_TASKS: dict[str, asyncio.Task] = {}
+
+
+def _fold_summary_later(sid: str, fold) -> None:
+    """Run ``fold()``, the rolling-summary fold for session ``sid``, as a task of its own.
+
+    The fold starts after the reply is stored, and the app closes the stream at `done`.
+    Awaited inside the turn it was cancelled there on every turn, so no summary was ever
+    written. One fold per session at a time: a turn that ends while one runs leaves its
+    overflow to the next turn's fold."""
+    from service.wisp_reset import state as reset_state
+    if reset_state.sealed:
+        return                          # a reset is erasing the chat history
+    loop = asyncio.get_running_loop()
+    running = _SUMMARY_TASKS.get(sid)
+    if running is not None and not running.done() and running.get_loop() is loop:
+        return
+
+    async def run() -> None:
+        from service.inference.power_tier import CHAT, power_tier
+        # Counted as a turn, as it was inside one: background model work stands down,
+        # and on battery the fold keeps the chat cap.
+        idle.begin_foreground()
+        try:
+            with power_tier(CHAT):
+                await fold()
+        finally:
+            idle.end_foreground()
+
+    def finished(task: asyncio.Task) -> None:
+        if _SUMMARY_TASKS.get(sid) is task:
+            del _SUMMARY_TASKS[sid]
+        if not task.cancelled():
+            task.exception()            # retrieved, so a failed fold is never logged as lost
+
+    # A context of its own: the turn's trace, debug capture and tool state end with the turn.
+    task = loop.create_task(run(), context=contextvars.Context())
+    _SUMMARY_TASKS[sid] = task
+    task.add_done_callback(finished)
+
+
+async def _stop_summary_folds() -> None:
+    """Cancel the folds still running on this loop and wait for them (shutdown)."""
+    loop = asyncio.get_running_loop()
+    folds = [task for task in _SUMMARY_TASKS.values() if not task.done() and task.get_loop() is loop]
+    for task in folds:
+        task.cancel()
+    await asyncio.gather(*folds, return_exceptions=True)
 research_manager = ResearchManager()
 
 ROLE_SYSTEM = {
@@ -306,6 +358,10 @@ async def lifespan(app: FastAPI):
     refuse_sandbox_on_production_port()
     from service.config import quarantine
     quarantine.check()
+    if app is not None and os.environ.get("WISP_LAUNCH_NONCE"):
+        # The backend the app launched ends itself if Wisp goes away (a crash, a Force Quit).
+        from service import parent_watch
+        parent_watch.start()
     global client
     if remote_only_profile() is None:
         # Make the first-launch engine choice sticky now, not when Settings is first opened.
@@ -457,6 +513,12 @@ async def lifespan(app: FastAPI):
             pass
 
     attachment_prune_task = asyncio.create_task(_prune_attachment_store())
+    # Saved timers and alarms only ring once they are armed on this loop.
+    try:
+        from service.tools import timers_alarms
+        timers_alarms.rearm_all()
+    except Exception:  # noqa: BLE001 — a bad timer store never blocks startup
+        pass
     # A10 WP3: serves the app's private bridge socket only when the app launched
     # this process with one (a browser enabled by the user). Otherwise this is a no-op.
     bridge_link = None
@@ -478,6 +540,7 @@ async def lifespan(app: FastAPI):
         for task in started_tasks:
             task.cancel()
         await asyncio.gather(*started_tasks, return_exceptions=True)
+        await _stop_summary_folds()
         if profile is None or parity:
             await mcp_manager.stop()
         await client.aclose()
@@ -489,6 +552,14 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Wisp", lifespan=lifespan)
+
+
+@app.exception_handler(ConfigurationOverlayDamaged)
+async def _settings_file_damaged(_request: Request, error: ConfigurationOverlayDamaged) -> Response:
+    # A hand-edited config.yaml that no longer parses is never overwritten; say so.
+    return Response(json.dumps({"detail": str(error)}), status_code=409, media_type="application/json")
+
+
 from service.config.quarantine import RecoveryMiddleware
 app.add_middleware(RecoveryMiddleware)
 from service.wisp_reset import ResetGate, router as wisp_reset_router
@@ -566,12 +637,30 @@ async def _await_omlx(seconds: float) -> bool:
                 try:
                     await client.health()
                     return True
-                except ModelLoadError:
-                    raise
+                except ModelLoadError as exc:
+                    # The connection was reset under this check (another start, or a request
+                    # that failed while the engine was coming up). Nothing was learned about
+                    # who answers, so check again; every other refusal still fails at once.
+                    if getattr(exc, "reason", "") != "connection_invalidated":
+                        raise
+                    await asyncio.sleep(0.1)
                 except Exception:
                     await asyncio.sleep(0.5)
     except TimeoutError:
         return False
+
+
+# One engine start at a time. Each start resets the client's connections before it verifies
+# who answers, so two overlapping starts would refuse each other's check. Kept per event loop.
+_engine_start: tuple[asyncio.AbstractEventLoop, asyncio.Lock] | None = None
+
+
+def _engine_start_lock() -> asyncio.Lock:
+    global _engine_start
+    loop = asyncio.get_running_loop()
+    if _engine_start is None or _engine_start[0] is not loop:
+        _engine_start = (loop, asyncio.Lock())
+    return _engine_start[1]
 
 
 async def _prepare_remote_inference(active_client) -> None:
@@ -597,8 +686,17 @@ async def ensure_omlx() -> None:
         if seen is not None and await _await_omlx(2):
             manager().mark_verified(seen)
             return
-        client.invalidate_connections()
-        await _ensure_bundled_engine()
+        lock = _engine_start_lock()
+        waited = lock.locked()
+        async with lock:
+            if waited:
+                # Another call was starting the engine: use its launch and its verification.
+                seen = manager().incarnation()
+                if seen is not None and await _await_omlx(2):
+                    manager().mark_verified(seen)
+                    return
+            client.invalidate_connections()
+            await _ensure_bundled_engine()
         return
     if await _await_omlx(2):
         return
@@ -628,8 +726,9 @@ async def _ensure_bundled_engine() -> None:
         launched = bool(await asyncio.to_thread(engine.start))
     except EngineError as exc:
         raise ModelLoadError(f"The bundled AI engine could not start: {exc}") from None
+    # Stopping waits for the engine to leave, so it runs off the event loop.
     if not await engine.wait_ready(60):
-        engine.stop()
+        await asyncio.to_thread(engine.stop)
         raise ModelLoadError("The bundled AI engine did not become ready")
     incarnation = engine.incarnation()
     client.invalidate_connections()
@@ -640,11 +739,11 @@ async def _ensure_bundled_engine() -> None:
         verified = await _await_omlx(60)
     except ModelLoadError:
         if launched:
-            engine.stop()
+            await asyncio.to_thread(engine.stop)
         raise
     if not verified:
         if launched:
-            engine.stop()
+            await asyncio.to_thread(engine.stop)
         raise ModelLoadError("The bundled AI engine did not become ready")
     engine.mark_verified(incarnation)
 
@@ -664,6 +763,9 @@ async def health() -> dict[str, Any]:
 # loaded after Wisp has gone.
 _QUIT_UNLOAD_SECONDS = 3.0
 _QUIT_STOP_SECONDS = 5.0
+# The bundled engine holds a Mac-wide GPU power cap while a capped request generates. Killed
+# mid-request it would leave the cap set after Wisp has gone, so quitting drops the cap first.
+_QUIT_LIFT_SECONDS = 2.5
 # Set once quitting starts: a user's oMLX.app is not started again after it was stopped.
 _quitting = False
 
@@ -700,6 +802,8 @@ async def shutdown_omlx() -> dict[str, Any]:
         return {"stopped": False}
     _quitting = True
     if is_bundled():
+        from service.inference import power_tier
+        await power_tier.lift_for_quit(_QUIT_LIFT_SECONDS)
         from service.engine.runtime import stop_if_running
         return {"stopped": await asyncio.to_thread(
             stop_if_running, final=True, grace=_QUIT_STOP_SECONDS)}
@@ -738,7 +842,10 @@ def _direct_generation_budget(target: Target) -> tuple[int, bool]:
 async def models() -> dict[str, Any]:
     installed = await client.models()
     if installed:  # don't clobber the saved roster with a transient empty read
-        save_installed_models(installed)
+        try:
+            save_installed_models(installed)
+        except ConfigurationOverlayDamaged:
+            pass  # a damaged config.yaml is left alone; still answer with the list
     roles = {}
     for role in models_config()["roles"]:
         try:
@@ -1137,12 +1244,12 @@ async def config(body: dict[str, Any]) -> dict[str, Any]:
 # nothing here writes credentials or reaches beyond fixed loopback ports.
 
 def _omlx_installed() -> bool:
-    from pathlib import Path
     if is_bundled():
         from service.engine.mode import engine_code_root
         return (engine_code_root() / "py" / "bin" / "python3").exists()
-    return any(Path(p).exists() for p in ("/Applications/oMLX.app",
-                                          str(Path.home() / "Applications" / "oMLX.app")))
+    # Only /Applications/oMLX.app: the one copy OMLX_CLI can start and Wisp can verify.
+    from service.engine.mode import external_omlx_installed
+    return external_omlx_installed()
 
 
 def _omlx_model_dir() -> str | None:
@@ -1247,11 +1354,19 @@ async def _start_existing_omlx() -> None:
         return
     if _quitting:
         raise ModelLoadError("Wisp is quitting; the local AI engine stays stopped")
-    client.invalidate_connections()
-    if not await _omlx_cli("start", "--no-wait"):
-        raise ModelLoadError("The local oMLX CLI is unavailable")
-    if not await _await_omlx(45):
-        raise ModelLoadError("oMLX did not start")
+    lock = _engine_start_lock()
+    waited = lock.locked()
+    async with lock:
+        if waited:
+            if await _await_omlx(2):
+                return                  # another automatic start brought it up
+            if _quitting:
+                raise ModelLoadError("Wisp is quitting; the local AI engine stays stopped")
+        client.invalidate_connections()
+        if not await _omlx_cli("start", "--no-wait"):
+            raise ModelLoadError("The local oMLX CLI is unavailable")
+        if not await _await_omlx(45):
+            raise ModelLoadError("oMLX did not start")
 
 
 @app.post("/setup/start-engine")
@@ -1420,6 +1535,11 @@ async def unload_agent() -> dict[str, Any]:
             held = await saver.omlx_x_hold(client, model)
             if held is not None:
                 return {"unloaded": [], "held": held}
+        else:
+            # Wisp's own engine: an unload aborts whatever is generating on the model.
+            held = await saver.x_hold(model)
+            if held is not None:
+                return {"unloaded": [], "held": held}
         await client.unload(model)
         if model == role_to_model("fast"):
             # Every text role is the chat model now, so with Save memory on this parks
@@ -1456,9 +1576,17 @@ async def get_idle_timeout() -> dict[str, Any]:
 
 @app.post("/idle_timeout")
 async def set_idle_timeout(body: dict[str, Any]) -> dict[str, Any]:
-    """Set the auto-unload idle timeout in minutes (0 disables it)."""
+    """Set the auto-unload idle timeout in minutes (0 disables it). Saved, so a
+    relaunch keeps it."""
     if "idle_minutes" in body:
-        idle.set_idle_minutes(float(body["idle_minutes"]))
+        from service.config import IDLE_UNLOAD_MAX_MINUTES, save_idle_unload_minutes
+        value = body["idle_minutes"]
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value) or not 0 <= value <= IDLE_UNLOAD_MAX_MINUTES):
+            raise HTTPException(status_code=422,
+                                detail=f"Auto-unload takes 0 to {IDLE_UNLOAD_MAX_MINUTES} minutes.")
+        save_idle_unload_minutes(float(value))
+        idle.set_idle_minutes(float(value))
     return {"idle_minutes": idle.get_idle_minutes()}
 
 
@@ -2278,7 +2406,7 @@ async def agent(body: dict[str, Any]):
             # grant permission for a source this new turn explicitly excludes.
             model_led_forbidden, model_led_bindings = frozenset(), {}
             if model_led_turn:
-                model_led_forbidden, model_led_bindings = routing_guard_contract(prompt)
+                model_led_forbidden, model_led_bindings = routing_guard_contract(prompt, model_led=True)
                 if memory_excluded(prompt):
                     from service.tools.registry import REGISTRY
                     model_led_forbidden |= frozenset({"recall", "search_memory", "search_conversations", "remember", "forget", "clear_memory"})
@@ -3221,12 +3349,14 @@ async def agent(body: dict[str, Any]):
                     await ensure_omlx()
                     await client.ensure_only(summary_target.model)
 
-                await maybe_summarize(
+                # Not awaited: the app closes the stream at `done`, which cancelled an
+                # awaited fold on every turn. The module-level client, never this turn's.
+                _fold_summary_later(sid, lambda: maybe_summarize(
                     client,
                     sid,
                     summary_target.model,
                     prepare=prepare_local_summary,
-                )
+                ))
         except Exception as e:  # noqa: BLE001
             trace.event("error", error_kind=type(e).__name__)
             message, detail = translate_error(e, retry_omlx=ensure_omlx if remote_only_profile() is None and owned_inference_client is None else None,
@@ -3413,6 +3543,9 @@ async def get_session(sid: str) -> dict[str, Any]:
 
 @app.delete("/sessions/{sid}")
 async def delete_session(sid: str) -> dict[str, Any]:
+    fold = _SUMMARY_TASKS.pop(sid, None)
+    if fold is not None:
+        fold.cancel()                   # a fold still running must not write to a deleted chat
     store.delete_session(sid)
     from service.memory.facts import store as fact_store
     fact_store.remove_session(sid)
@@ -3513,8 +3646,13 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
     events = body.get("events") or []
     items = []
     for e in events:
-        if e.get("when_ts") is None or not e.get("title"):
+        if e.get("when_ts") is None:
             continue
+        # EventKit reads a meeting with no subject as "", not nil: keep it, so Day,
+        # the free-time figures and conflict checks still see that time as taken.
+        title = str(e.get("title") or "")
+        if not title.strip():
+            title = "(untitled)"
         if e.get("end_ts") is not None:
             from service.assistant.today import number
             try:
@@ -3524,9 +3662,9 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         items.append({
-            "source_id": str(e.get("source_id") or f"{e['title']}-{e['when_ts']}"),
+            "source_id": str(e.get("source_id") or f"{title}-{e['when_ts']}"),
             "kind": str(e.get("kind") or "event"),
-            "title": str(e["title"]),
+            "title": title,
             "context": e.get("context"),
             "organizer": e.get("organizer"),
             "account": e.get("account"),
@@ -3820,7 +3958,9 @@ async def gmail_connect(body: dict[str, Any]) -> dict[str, Any]:
             client_id=str(body.get("client_id") or ""), client_secret=str(body.get("client_secret") or ""))
     if not client_id:
         return {"ok": False, "error": "client_id is required"}
-    native_id = str(body.get("mail_account_id") or "")
+    # A reconnect keeps the account's saved Mail binding (gmail_source._finish);
+    # the Settings picker belongs to the next new Connect, so it is ignored here.
+    native_id = "" if reconnect else str(body.get("mail_account_id") or "")
     if native_id:
         from service.tools.email_tools import native_email_accounts
         if native_id not in {row["id"] for row in native_email_accounts()}:

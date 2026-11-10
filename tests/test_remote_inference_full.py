@@ -183,7 +183,8 @@ class MainChecks(FullFixture):
                 'cloud_super_model_enabled': bomb, 'start_laya_warmup': bomb,
                 'research_manager': SimpleNamespace(store=SimpleNamespace(purge_stale_bodies=Mock())),
                 'research_cache': SimpleNamespace(purge_older_than=Mock()), 'assistant_store': object(),
-                'ensure_omlx': bomb, '_omlx_cli': bomb, 'is_bundled': lambda: False}
+                'ensure_omlx': bomb, '_omlx_cli': bomb, 'is_bundled': lambda: False,
+                '_SUMMARY_TASKS': {}}
 
     def test_full_startup_runs_scheduler_and_nothing_local(self):
         fake = SimpleNamespace(health=AsyncMock(return_value={'ok': True}), aclose=AsyncMock())
@@ -208,7 +209,7 @@ class MainChecks(FullFixture):
         browser.host = host
         bomb = Mock(side_effect=AssertionError('local engine/background operation forbidden'))
         ns = self._lifespan_ns(fake, scheduler_run, bomb)
-        selected({'lifespan', '_sync_keep_warm', '_prepare_remote_inference'}, ns)
+        selected({'lifespan', '_sync_keep_warm', '_prepare_remote_inference', '_stop_summary_folds'}, ns)
 
         async def run():
             with patch.dict('sys.modules', {'service.identity': identity, 'service.config.quarantine': q,

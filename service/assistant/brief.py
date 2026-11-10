@@ -997,8 +997,16 @@ def _agenda(now: float) -> dict:
     skip = {source for source, state in states.items() if state["state"] == "unavailable"}
     day_start, day_end = _local_day_bounds(now)
     today_calendar = assistant_store.calendar_events_overlapping(day_start, day_end)
+    # `upcoming` starts five minutes back, so a reminder that was due earlier
+    # today and is still not done has to be read separately, or the summary
+    # never mentions it. Reminders only: an earlier calendar event is already
+    # in `today_calendar`. The read keeps the stale-reminder hiding.
+    earlier_end = now - 300
+    earlier_reminders = ([row for row in assistant_store.active_between(
+                              day_start, earlier_end, now=now)
+                          if _is_reminder(row)] if earlier_end > day_start else [])
     items = _collapse_schedule_rows(
-        today_calendar + assistant_store.upcoming(now=now, days=7))
+        today_calendar + earlier_reminders + assistant_store.upcoming(now=now, days=7))
     today_items = []
     for item in items:
         when_ts = float(item["when_ts"])
@@ -2013,11 +2021,12 @@ def _today_card(now: float) -> str:
     upcoming.sort(key=lambda item: item["when_ts"])
     if upcoming:
         nxt = upcoming[0]
-        clock = ("all day" if nxt.get("all_day")
-                 else _hm(datetime.fromtimestamp(nxt["when_ts"])))
         title = (_reminder_title(nxt, 60) if _is_reminder(nxt)
                  else _clean(nxt["title"], 60))
-        lines.append(f"Next: {title} at {clock}.")
+        # A date-only reminder sits at the end of its day, so it is often the
+        # next item; "at all day" is not a time.
+        lines.append(f"Next: {title} (all day)." if nxt.get("all_day") else
+                     f"Next: {title} at {_hm(datetime.fromtimestamp(nxt['when_ts']))}.")
     overdue = [item for item in reminders if item["when_ts"] < now - 300]
     if overdue:
         lines.append(f"{len(overdue)} reminder{'s' if len(overdue) != 1 else ''} already past due.")

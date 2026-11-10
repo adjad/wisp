@@ -15,6 +15,7 @@ import threading
 import os
 import secrets
 import signal
+import stat
 import subprocess
 import tempfile
 import time
@@ -28,6 +29,12 @@ import httpx
 BUNDLED_PORT = 8791
 RESERVED_PORTS = frozenset({8000, 8765})
 _KEY_BYTES = 32
+# What `ps` shows for a running engine: oMLX's `serve` renames the process and blanks its
+# arguments (omlx/cli.py, through setproctitle).
+ENGINE_PROCESS_TITLE = "omlx-server"
+# engine.log is appended to on every start and the engine never trims it. A start that finds
+# it above this size sets it aside as engine.log.1, replacing the one before: two files at most.
+LOG_ROTATE_BYTES = 20 * 1024 * 1024
 
 
 class EngineError(RuntimeError):
@@ -191,21 +198,116 @@ def _write_private(path: Path, text: str) -> None:
         raise
 
 
+def _rotate_log(path: Path, cap: int) -> None:
+    """Move a log larger than `cap` to `<name>.1`, replacing the older one. Never raises: a
+    log that cannot be moved is appended to as before."""
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size <= cap:
+            return
+        os.chmod(path, 0o600)          # a log from an earlier run may have been created looser
+        os.replace(path, path.with_name(path.name + ".1"))
+    except OSError:
+        pass
+
+
+def _pid_record(path: Path) -> tuple[int, tuple[int, int] | None] | None:
+    """engine.pid: `<pid> <start seconds> <start microseconds>`, or a bare `<pid>` (written
+    by 0.5.0 rc2 and earlier, and for the moment before a new child has been identified)."""
+    try:
+        fields = [int(part) for part in path.read_text().split()]
+    except (OSError, ValueError):
+        return None
+    if len(fields) == 1:
+        return fields[0], None
+    if len(fields) == 3:
+        return fields[0], (fields[1], fields[2])
+    return None
+
+
+def _gone(pid: int) -> bool:
+    """True only when no process has this pid. A pid that cannot be signalled is not gone."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        pass
+    return False
+
+
+def recorded_engine(pid_path: Path, base_path: Path, python: Path | None,
+                    command_of=None) -> tuple[int, bool | None] | None:
+    """The pid in engine.pid, and whether that process is still the engine Wisp launched.
+
+    True: it is. False: it has gone, or the pid now belongs to some other process. None: it
+    is alive but could not be read, so nothing is proven either way. No readable record
+    gives None in place of the pair.
+
+    The engine renames itself `omlx-server` and blanks its arguments once it starts, so its
+    command line cannot identify it. The record carries the kernel's start time for the pid
+    instead, which no process can change and a recycled pid never shares. A bare pid falls
+    back to the command line: the `--base-path` as the last argument (an exact suffix, so
+    `.../base` never matches `.../base2`), or the engine's own name running `python`, the
+    engine's interpreter (None: not known here, so that name alone proves nothing).
+    `command_of(pid)` returns None for a command that cannot be read.
+    """
+    from service.inference.local_peer import AuthRefused, process_bsdinfo, process_path
+    record = _pid_record(pid_path)
+    if record is None:
+        return None
+    pid, start = record
+    if not 1 < pid <= 2 ** 31 - 1 or _gone(pid):
+        return pid, False
+    if start is not None:
+        try:
+            info = process_bsdinfo(pid)
+        except AuthRefused:
+            return pid, (False if _gone(pid) else None)
+        me = os.getuid()
+        # (uid, real uid, saved uid) and (start seconds, start microseconds), as the
+        # incarnation recorded at launch read them.
+        return pid, tuple(info[2:5]) == (me, me, me) and tuple(info[7:9]) == start
+    command = (command_of or _command_of)(pid)
+    if command is None:
+        return pid, None
+    bases = {str(base_path)}
+    try:
+        bases.add(str(base_path.resolve()))
+    except OSError:
+        pass
+    if any(command.endswith(f"--base-path {base}") for base in bases):
+        return pid, True
+    if command != ENGINE_PROCESS_TITLE:
+        return pid, False
+    if python is None:
+        return pid, None
+    # A person's own oMLX carries the same name; only one running the engine's Python is ours.
+    try:
+        return pid, Path(process_path(pid)).resolve() == python.resolve()
+    except AuthRefused:
+        return pid, (False if _gone(pid) else None)
+    except OSError:
+        return pid, None
+
+
 def reap_orphan(layout: EngineLayout) -> bool:
     """Kill the engine recorded in engine.pid if it is still the engine Wisp launched.
 
     Wisp starts the engine in its own session, so a crash or a SIGKILL of the backend leaves it
-    running. Only a process whose command line carries this layout's `--base-path` is killed,
-    never a recycled pid that merely mentions the folder. True when a process was stopped.
+    running. Only the process `recorded_engine` proves to be that engine is killed, never a
+    recycled pid and never one that could not be read. True when a process was stopped.
     """
-    try:
-        pid = int(layout.pid_path.read_text().strip())
-    except (OSError, ValueError):
+    record = recorded_engine(layout.pid_path, layout.base_path, layout.python)
+    if record is None:
+        return False
+    pid, ours = record
+    if ours is None:
+        # Alive but unreadable: not proven to be the engine, so it is left alone, and the
+        # record is kept for the next try.
         return False
     stopped = False
-    # --base-path is the last argument of the engine command, so an exact suffix match keeps
-    # `.../base` from matching `.../base2`.
-    if pid > 1 and _command_of(pid).endswith(f"--base-path {layout.base_path}"):
+    if ours:
         if _parent_of(pid) not in (1, os.getpid()):
             # Still a child of another live process: that backend owns it. Reaping is for an
             # engine orphaned to launchd (pid 1), or one this process launched and lost.
@@ -347,6 +449,7 @@ class EngineManager:
         self.prepare()
         if self._port_in_use():
             raise EngineError(f"Port {self.port} is already in use by another process")
+        _rotate_log(self.layout.log_path, LOG_ROTATE_BYTES)   # no engine of ours is writing to it here
         fd = os.open(self.layout.log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         os.fchmod(fd, 0o600)          # a log from an earlier run may have been created looser
         log = open(fd, "ab")
@@ -362,6 +465,14 @@ class EngineManager:
         except Exception as exc:  # noqa: BLE001 — an engine Wisp cannot identify must not run
             self.stop()
             raise EngineError("Could not identify the engine process") from exc
+        try:
+            # With its start time, which is what a later launch identifies a leftover engine
+            # by. The bare pid above stays if this write fails.
+            _write_private(self.layout.pid_path, "{} {} {}".format(
+                self._incarnation.pid, self._incarnation.start_seconds,
+                self._incarnation.start_microseconds))
+        except OSError:
+            pass
         return True
 
     def _record_incarnation(self, pid: int) -> Incarnation:

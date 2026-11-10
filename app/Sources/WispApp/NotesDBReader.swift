@@ -43,8 +43,9 @@ final class NotesDBReader {
     /// ("epochSecs FS name FS folder FS plaintext RS"), so the backend's
     /// existing parser needs no changes regardless of which reader produced
     /// a given sync. Returns nil, with lastFailure set, when the store can't
-    /// be opened or its tables aren't the ones this reader knows; a store it
-    /// can't read is never reported as an empty one.
+    /// be opened, its tables aren't the ones this reader knows, or the read
+    /// stops before its last row; a store it can't read is never reported as
+    /// an empty or shorter one.
     func readNotes() -> String? {
         lastFailure = nil
         var db: OpaquePointer?
@@ -54,6 +55,8 @@ final class NotesDBReader {
             return nil
         }
         defer { sqlite3_close(db) }
+        // Notes may be writing while this reads: wait briefly for its lock.
+        sqlite3_busy_timeout(db, 2000)
 
         guard let noteEnt = entityID(db, name: "ICNote") else {
             lastFailure = Self.unreadable(path)
@@ -79,7 +82,10 @@ final class NotesDBReader {
 
         let FS = "\u{01}", RS = "\u{02}"
         var out = ""
-        while sqlite3_step(stmt) == SQLITE_ROW {
+        var step = sqlite3_step(stmt)
+        while step == SQLITE_ROW {
+            // Runs on every way out of this pass, the skips below included.
+            defer { step = sqlite3_step(stmt) }
             let title = text(stmt, 0) ?? "(untitled)"
             let folder = text(stmt, 1) ?? ""
             // Core Data epoch (2001-01-01) — same constant used across this
@@ -99,6 +105,12 @@ final class NotesDBReader {
             guard !body.isEmpty else { continue }
 
             out += epoch.description + FS + title + FS + folder + FS + body + RS
+        }
+        // SQLITE_BUSY, SQLITE_IOERR and SQLITE_CORRUPT are failures, not an
+        // empty or shorter Notes.
+        guard step == SQLITE_DONE else {
+            lastFailure = Self.interrupted(path)
+            return nil
         }
         return out
     }
@@ -127,6 +139,13 @@ final class NotesDBReader {
         let code = openErrno(path)
         if code == EPERM { return failure(openErrno: code) }
         return ("", "Notes' saved data is in a form Wisp can't read. Open Notes, and Wisp will read it from there.")
+    }
+
+    /// The read began and then stopped early (busy, I/O error, damaged
+    /// pages): still EPERM if macOS refuses the file itself, otherwise the
+    /// plain "just now" reason, since the next read may well succeed.
+    private static func interrupted(_ path: String) -> (kind: String, reason: String) {
+        failure(openErrno: openErrno(path) == EPERM ? EPERM : 0)
     }
 
     /// SQLite's own errno after a failed open isn't reliable, so the file is
@@ -225,8 +244,11 @@ enum ProtobufTextExtractor {
                 i += 4
             case 2:   // length-delimited — could be a string OR a nested message
                 guard let (len, n) = readVarint(data, i) else { return }
+                // Compared as UInt64 before converting: body text re-read as
+                // a message (below) can claim a length past Int.max, and
+                // Int(len) would trap on it.
+                guard len <= UInt64(data.endIndex - n) else { return }
                 let end = n + Int(len)
-                guard len >= 0, end <= data.endIndex, end >= n else { return }
                 let chunk = data.subdata(in: n..<end)
                 if let s = decodePlausibleText(chunk), s.count > (best?.count ?? 0) {
                     best = s

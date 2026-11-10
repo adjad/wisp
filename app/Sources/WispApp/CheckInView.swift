@@ -469,15 +469,15 @@ struct CheckInSection: View {
             || (model.hasCardCancelOutcomes && model.card.due && !model.card.completed) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 6) {
-                    Text("Evening check-in").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.textSecondary).textCase(.uppercase)
+                    Text("Evening check-in").font(.wisp(size: 11, weight: .semibold)).foregroundStyle(Theme.textSecondary).textCase(.uppercase)
                     if !model.card.headline.isEmpty {
-                        Text(model.card.headline).font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                        Text(model.card.headline).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                     }
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityAddTraits(.isHeader)
                 if model.card.first {
-                    Text(CheckInCard.firstExplanation).font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary)
+                    Text(CheckInCard.firstExplanation).font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if let moving, model.card.tasksSettled {
@@ -488,24 +488,24 @@ struct CheckInSection: View {
                 } else if !model.card.tasksSettled {
                     ForEach(model.card.tasks) { task in taskRow(task) }
                 } else if !model.card.events.isEmpty {
-                    Text(eventsLine).font(.system(size: 12.5)).foregroundStyle(Theme.textPrimary)
+                    Text(eventsLine).font(.wisp(size: 12.5)).foregroundStyle(Theme.textPrimary)
                     ForEach(model.card.events) { event in eventRow(event) }
                 }
                 // Outcomes for rows that have already left tomorrow's list.
                 ForEach(outcomeLines) { line in
-                    Text(line.text).font(.system(size: 11.5)).foregroundStyle(line.failed ? Theme.bad : Theme.textMuted)
+                    Text(line.text).font(.wisp(size: 11.5)).foregroundStyle(line.failed ? Theme.bad : Theme.textMuted)
                 }
                 if !model.error.isEmpty {
-                    Text(model.error).font(.system(size: 11)).foregroundStyle(Theme.bad)
+                    Text(model.error).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
                 }
                 if moving == nil || !model.card.tasksSettled {
                     HStack {
-                        Text(footerLine).font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+                        Text(footerLine).font(.wisp(size: 10.5)).foregroundStyle(Theme.textMuted)
                         Spacer()
                         Button(model.card.tasksSettled ? "Done for today" : "Skip tonight") {
                             Task { await model.complete(day: day, timezone: timezone.identifier); onChanged() }
                         }
-                        .buttonStyle(.plain).font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                        .buttonStyle(.plain).font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
                         .padding(.horizontal, 10).padding(.vertical, 5)
                         .background(Capsule().fill(Theme.chipFill))
                         .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
@@ -559,9 +559,9 @@ struct CheckInSection: View {
     private func taskRow(_ task: CheckInTask) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             VStack(alignment: .leading, spacing: 1) {
-                Text(task.title).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(2)
+                Text(task.title).font(.wisp(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(2)
                 if let from = task.carriedFrom {
-                    Text("Carried from \(from)").font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+                    Text("Carried from \(from)").font(.wisp(size: 10.5)).foregroundStyle(Theme.textMuted)
                 }
             }
             Spacer(minLength: 8)
@@ -578,23 +578,23 @@ struct CheckInSection: View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text(event.allDay ? "All day" : event.whenTs.map(clock) ?? "")
-                    .font(.system(size: 11.5).monospacedDigit()).foregroundStyle(Theme.textSecondary)
-                    .frame(width: 62, alignment: .leading)
-                Text(event.title).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                    .font(.wisp(size: 11.5).monospacedDigit()).foregroundStyle(Theme.textSecondary)
+                    .frame(width: 62 * Theme.textScale, alignment: .leading)
+                Text(event.title).font(.wisp(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
                     .strikethrough(model.pendingCancels[event.id] != nil || model.cancelled[event.id] != nil)
                 Spacer(minLength: 8)
                 if let pending = model.pendingCancels[event.id] {
                     undoBar(pending)
                 } else if model.cancelling.contains(event.id) {
-                    Text("Cancelling…").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+                    Text("Cancelling…").font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
                 } else if let done = model.cancelled[event.id] {
-                    Text(done).font(.system(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
+                    Text(done).font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted).lineLimit(1)
                 } else if model.cancelFailures[event.id]?.failure.isUncertain == true {
                     // It may be cancelled; no tap here may send another request.
-                    Text("Check Calendar").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                    Text("Check Calendar").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                         .help(model.cancelFailures[event.id]?.failure.message ?? "")
                 } else if model.kept.contains(event.id) {
-                    Text("Kept").font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+                    Text("Kept").font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
                 } else {
                     Group {
                         chip("Keep", primary: true) { model.keep(event) }
@@ -613,7 +613,7 @@ struct CheckInSection: View {
             }
             if let failed = model.cancelFailures[event.id] {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(failed.failure.message).font(.system(size: 11)).foregroundStyle(Theme.bad)
+                    Text(failed.failure.message).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
                     if failed.failure.canRetry, event.canCancel {
                         chip("Try again") { model.beginCancel(event, timezone: timezone.identifier) }
                             .help("Starts the 5-second Undo again, then cancels")
@@ -637,7 +637,7 @@ struct CheckInSection: View {
             chip("Cancel") { model.beginCancel(event, timezone: timezone.identifier) }
                 .help("Removes it from your Calendar after a 5-second Undo; Calendar tells its invitees")
         case .readOnly:
-            Text("On a read-only calendar").font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+            Text("On a read-only calendar").font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                 .help(event.cancelReason)
                 .accessibilityLabel(event.cancelReason)
         case .decline:
@@ -656,7 +656,7 @@ struct CheckInSection: View {
     private func undoBar(_ pending: CheckInModel.PendingCancel) -> some View {
         HStack(spacing: 6) {
             Text(CheckInCancel.undoLabel(inviteeCount: pending.event.inviteeCount ?? 0) + " ·")
-                .font(.system(size: 11.5)).foregroundStyle(Theme.textSecondary).lineLimit(1)
+                .font(.wisp(size: 11.5)).foregroundStyle(Theme.textSecondary).lineLimit(1)
             chip("Undo", primary: true) { model.undoCancel(pending.event) }
                 .help("Keeps the event; nothing has been sent yet")
                 .accessibilityLabel("Undo cancelling “\(Self.plainTitle(pending.event.title))”; 5 seconds")
@@ -687,7 +687,7 @@ struct CheckInSection: View {
 
     private func chip(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(.system(size: 11.5, weight: .medium))
+            Text(title).font(.wisp(size: 11.5, weight: .medium))
                 .foregroundStyle(primary ? Color.black : Theme.textSecondary)
                 .padding(.horizontal, 9).padding(.vertical, 4)
                 .background(Capsule().fill(primary ? Color.white : Theme.chipFill))
@@ -736,20 +736,20 @@ struct CheckInMovePanel: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Button { onClose() } label: {
                     Label("Back", systemImage: "chevron.left").labelStyle(.titleAndIcon)
-                        .font(.system(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
+                        .font(.wisp(size: 11.5, weight: .medium)).foregroundStyle(Theme.textSecondary)
                 }
                 .buttonStyle(.plain).help(backHelp)
-                Text("Move “\(event.title)” to…").font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
+                Text("Move “\(event.title)” to…").font(.wisp(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
                 Spacer()
                 if let when = event.whenTs {
-                    Text("Now \(dayLabel(when)) \(clock(when))").font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+                    Text("Now \(dayLabel(when)) \(clock(when))").font(.wisp(size: 10.5)).foregroundStyle(Theme.textMuted)
                 }
             }
             if loadingSlots {
                 ProcessingRow(label: "Looking at your days…")
             } else if slots.isEmpty {
                 Text("Nothing free fits in the next few days' working hours. Pick a time yourself.")
-                    .font(.system(size: 11.5)).foregroundStyle(Theme.textMuted)
+                    .font(.wisp(size: 11.5)).foregroundStyle(Theme.textMuted)
             } else {
                 ForEach(slots) { slot in slotRow(slot) }
             }
@@ -760,7 +760,7 @@ struct CheckInMovePanel: View {
                     .help("Choose a day and time yourself")
             }
             Text("Picking a time opens Ask with the request. Wisp confirms before the calendar changes.")
-                .font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+                .font(.wisp(size: 10.5)).foregroundStyle(Theme.textMuted)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Move \(event.title)")
@@ -801,9 +801,9 @@ struct CheckInMovePanel: View {
 
     private func slotRow(_ slot: MoveSlot) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(slot.label).font(.system(size: 12.5, weight: .medium).monospacedDigit()).foregroundStyle(Theme.textPrimary)
-                .frame(width: 150, alignment: .leading)
-            Text(slot.reason).font(.system(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
+            Text(slot.label).font(.wisp(size: 12.5, weight: .medium).monospacedDigit()).foregroundStyle(Theme.textPrimary)
+                .frame(width: 150 * Theme.textScale, alignment: .leading)
+            Text(slot.reason).font(.wisp(size: 11)).foregroundStyle(Theme.textMuted).lineLimit(1)
             Spacer(minLength: 8)
             chip("Move here", primary: true) { onAsk(moveRequest(to: slot.startTs)); onClose() }
         }
@@ -814,11 +814,11 @@ struct CheckInMovePanel: View {
             DatePicker("Day", selection: $otherDate, in: Date()..., displayedComponents: .date)
                 .datePickerStyle(.stepperField).labelsHidden()
                 .environment(\.timeZone, timezone)
-                .font(.system(size: 11.5))
+                .font(.wisp(size: 11.5))
             DatePicker("Time", selection: $otherDate, in: Date()..., displayedComponents: .hourAndMinute)
                 .datePickerStyle(.stepperField).labelsHidden()
                 .environment(\.timeZone, timezone)
-                .font(.system(size: 11.5))
+                .font(.wisp(size: 11.5))
             Spacer(minLength: 8)
             chip("Move here", primary: true) { onAsk(moveRequest(to: otherDate.timeIntervalSince1970)); onClose() }
                 .disabled(event.whenTs.map { abs(otherDate.timeIntervalSince1970 - $0) < 60 } ?? false)
@@ -828,7 +828,7 @@ struct CheckInMovePanel: View {
 
     private func chip(_ title: String, primary: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title).font(.system(size: 11.5, weight: .medium))
+            Text(title).font(.wisp(size: 11.5, weight: .medium))
                 .foregroundStyle(primary ? Color.black : Theme.textSecondary)
                 .padding(.horizontal, 9).padding(.vertical, 4)
                 .background(Capsule().fill(primary ? Color.white : Theme.chipFill))
@@ -846,18 +846,18 @@ struct GoalPulseSection: View {
     var body: some View {
         if let pulse = model.card.goalPulse, !model.goalAnswered {
             VStack(alignment: .leading, spacing: 8) {
-                Text("This week").font(.system(size: 11, weight: .semibold)).foregroundStyle(Theme.textSecondary).textCase(.uppercase)
+                Text("This week").font(.wisp(size: 11, weight: .semibold)).foregroundStyle(Theme.textSecondary).textCase(.uppercase)
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(pulse.goal).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(2)
+                    Text(pulse.goal).font(.wisp(size: 13, weight: .medium)).foregroundStyle(Theme.textPrimary).lineLimit(2)
                     Text(pulse.status == "behind" ? "You said behind last time." : "On track?")
-                        .font(.system(size: 11)).foregroundStyle(Theme.textMuted)
+                        .font(.wisp(size: 11)).foregroundStyle(Theme.textMuted)
                     Spacer(minLength: 8)
                     answer("On track", "on_track", primary: true, goal: pulse.goal)
                     answer("Behind", "behind", goal: pulse.goal)
                     answer("Done", "done", goal: pulse.goal)
                 }
                 Text("Behind makes it the goal your brief leads with. Done retires it.")
-                    .font(.system(size: 10.5)).foregroundStyle(Theme.textMuted)
+                    .font(.wisp(size: 10.5)).foregroundStyle(Theme.textMuted)
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -869,7 +869,7 @@ struct GoalPulseSection: View {
 
     private func answer(_ title: String, _ status: String, primary: Bool = false, goal: String) -> some View {
         Button { Task { await model.answerGoal(goal, status) } } label: {
-            Text(title).font(.system(size: 11.5, weight: .medium))
+            Text(title).font(.wisp(size: 11.5, weight: .medium))
                 .foregroundStyle(primary ? Color.black : Theme.textSecondary)
                 .padding(.horizontal, 9).padding(.vertical, 4)
                 .background(Capsule().fill(primary ? Color.white : Theme.chipFill))

@@ -151,13 +151,14 @@ class WispPhraser:
 
     def categorize(self, titles: list[str], categories: tuple[str, ...]) -> dict[str, str]:
         try:
+            from service.behavior.categorize import CATEGORIZE_BATCH
             from service.behavior.phraser import CATEGORIZE_SYSTEM, _parse_mapping
             allowed = tuple(c for c in categories if isinstance(c, str) and c)
             batch: list[str] = []
             for t in titles or ():
                 if isinstance(t, str) and t.strip() and t not in batch:
                     batch.append(t)
-            batch = batch[:30]
+            batch = batch[:CATEGORIZE_BATCH]
             if not allowed or not batch:
                 return {}
             numbered = "\n".join(f"{i}. {t[:120]}" for i, t in enumerate(batch, 1))

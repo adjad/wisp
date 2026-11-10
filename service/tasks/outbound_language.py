@@ -42,7 +42,23 @@ _TRAILING_WHEN = re.compile(
     r"(?:this\s+)?(?:morning|afternoon|evening)|tonight)\s*[.!]?\s*$", re.I)
 
 
-def mark_body_ambiguity(plan: TaskPlan, raw_body: str, *, scheduled: bool = False) -> None:
+_LEAD_DAY = (r"(?:(?:on|this|next)\s+)?(?:today|tomorrow|tonight|tonite|monday|tuesday|"
+             r"wednesday|thursday|friday|saturday|sunday)")
+_LEAD_CLOCK = (r"(?:at\s+(?:\d{1,2}(?::\d{2})?(?:\s*[ap]\.?m\.?)?|noon|midnight)"
+               r"|\d{1,2}(?::\d{2})?\s*[ap]\.?m\.?|noon|midnight)")
+# A time at the very start of a body with no introducer ("text mom tomorrow
+# 7pm happy birthday") is as likely the send time as the first words.
+_LEADING_WHEN = re.compile(
+    rf"^\s*(?P<when>{_LEAD_DAY}(?:\s+(?:morning|afternoon|evening|night))?(?:\s+{_LEAD_CLOCK})?"
+    rf"|{_LEAD_CLOCK}(?:\s+{_LEAD_DAY})?"
+    r"|(?:this\s+)?(?:morning|afternoon|evening)(?:\s+" + _LEAD_CLOCK + r")?"
+    r"|in\s+(?:\d+|one|two|three|four|five|ten|fifteen|twenty|thirty|an?)\s+(?:minutes?|hours?|days?))"
+    r"(?![\w:])(?:\s+(?:saying|that\s+says|and\s+say|to\s+say)\b|\s*[:,])?\s+(?P<body>\S.*)$",
+    re.I | re.S)
+
+
+def mark_body_ambiguity(plan: TaskPlan, raw_body: str, *, scheduled: bool = False,
+                        leading: bool = False) -> None:
     if not raw_body.strip() or quoted(raw_body):
         return
     if _CONTENT_INSTRUCTION.search(raw_body.strip()):
@@ -53,6 +69,11 @@ def mark_body_ambiguity(plan: TaskPlan, raw_body: str, *, scheduled: bool = Fals
     if not scheduled and (match := _TRAILING_WHEN.search(raw_body)):
         plan.parameters["time_clarification"] = SlotValue({
             "when": match.group("when"), "body": raw_body[:match.start()].strip(),
+        }, "unresolved")
+    # The same question for a time that opens a body with no introducer.
+    if leading and not scheduled and (match := _LEADING_WHEN.match(raw_body)):
+        plan.parameters["time_clarification"] = SlotValue({
+            "when": " ".join(match.group("when").split()), "body": match.group("body").strip(),
         }, "unresolved")
 
 

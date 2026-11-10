@@ -69,6 +69,17 @@ enum MailReplyLiveChecks {
                       let account = source.atIndex(2)?.stringValue else {
                     throw Failure(description: "Invalid source identity descriptor")
                 }
+                // Mark read, flag and archive find their message with this
+                // block. Read-only here: it only reports what it found.
+                let lookup = "tell application \"Mail\"\n"
+                    + MailActionScript.findInboxMessage(messageID: messageID, account: account)
+                    + "\nreturn {(message id of theMsg) as text, theAcct as text}\nend tell"
+                let found = try run(lookup)
+                guard found.atIndex(1)?.stringValue == messageID,
+                      found.atIndex(2)?.stringValue == account else {
+                    throw Failure(description: "Account \(index): the triage lookup did not find the inbox message")
+                }
+                print("PASS account \(index): triage lookup found the inbox message")
                 for replyAll in [false, true] {
                     let before = try outgoingIDs()
                     let testBody = "Wisp preparation smoke test — discard without sending."

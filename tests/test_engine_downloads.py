@@ -178,7 +178,7 @@ def test_untrusted_engine_values_and_errors_never_escape(wire):
     assert len(response.json()["tasks"]) == 1 and task["progress"] == 100
     assert task["bytes_per_second"] == 0 and task["total_bytes"] == 10**13
     assert SECRET not in response.text and "private" not in response.text
-    assert "Retry" in task["message"]
+    assert task["message"] == "Download failed. Check your connection and free disk space."
 
 
 @pytest.mark.parametrize("status", [302, 401, 500])

@@ -101,6 +101,44 @@ struct ChatChecks {
         denied.decision = "confirm"
         check(ChatToolRow(id: "w", name: "send_email", decision: "confirm").detail == "waiting for you", "confirm detail")
 
+        // A reply that ends with a call still out: the row and the heading stop saying it is running.
+        var cut = ChatMessage(role: .assistant, phase: .waiting)
+        _ = ChatTurnReducer.apply(ev("routed", ["model": "m", "role": "agent", "needs_tools": true]), to: &cut, now: t0)
+        _ = ChatTurnReducer.apply(ev("tool_call", ["id": "c1", "name": "summarize_emails", "decision": "allow"]), to: &cut, now: t0)
+        _ = ChatTurnReducer.apply(ev("tool_result", ["id": "c1", "result": "4 messages"]), to: &cut, now: t0)
+        check(cut.traceTitle == "Used 1 tool", "a live reply whose calls are all back has used them")
+        _ = ChatTurnReducer.apply(ev("tool_call", ["id": "c2", "name": "view_emails", "decision": "allow"]), to: &cut, now: t0)
+        _ = ChatTurnReducer.apply(ev("tool_call", ["id": "c3", "name": "delete_file", "decision": "deny"]), to: &cut, now: t0)
+        _ = ChatTurnReducer.apply(ev("tool_call", ["id": "c4", "name": "send_email", "decision": "confirm"]), to: &cut, now: t0)
+        check(cut.traceTitle == "Working with 4 tools…", "a live reply with a call out is working: \(cut.traceTitle)")
+        check(cut.tools.map(\.detail) == ["4 messages", "running", "blocked", "waiting for you"], "live rows: \(cut.tools.map(\.detail))")
+        check(ChatTurnReducer.apply(ev("error", ["message": "The model stopped responding."]), to: &cut, now: t1) == .failed, "the reply fails mid-tool")
+        check(cut.traceTitle == "Used 4 tools", "a failed reply is not still working: \(cut.traceTitle)")
+        check(cut.tools.map(\.detail) == ["4 messages", "stopped", "blocked", "stopped"], "open rows say stopped: \(cut.tools.map(\.detail))")
+        check(cut.tools.map(\.interrupted) == [false, true, false, true] && cut.tools.map(\.finished) == [true, false, false, false],
+              "an interrupted call is never marked finished, and a finished or blocked one is left alone")
+        var halted = ChatMessage(role: .assistant, phase: .working)
+        _ = ChatTurnReducer.apply(ev("tool_call", ["id": "p1", "name": "view_emails", "decision": "allow", "test_mode": true]), to: &halted, now: t0)
+        check(halted.traceTitle == "Planning 1 tool…", "a live dry run is planning")
+        halted.interruptOpenTools(); halted.phase = .done
+        check(halted.traceTitle == "Planned 1 tool · dry run" && halted.tools[0].detail == "dry run · not executed",
+              "a stopped dry run keeps its own wording")
+
+        // A reply stopped before its first word says so; one that merely ended empty does not.
+        var blank = ChatMessage(role: .assistant, phase: .done)
+        check(!blank.showsStopped, "an empty finished reply is not called stopped")
+        blank.stoppedByUser = true
+        check(blank.showsStopped, "a reply stopped with nothing to show says Stopped")
+        blank.text = "partial"
+        check(!blank.showsStopped, "a stopped reply with text keeps the text alone")
+        var stoppedWithTool = ChatMessage(role: .assistant, phase: .done)
+        stoppedWithTool.stoppedByUser = true
+        stoppedWithTool.tools = [ChatToolRow(id: "t", name: "view_emails", decision: "allow")]
+        check(!stoppedWithTool.showsStopped, "a stopped reply with a tool row is not blank")
+        var stoppedUser = ChatMessage(role: .user, text: "", phase: .done)
+        stoppedUser.stoppedByUser = true
+        check(!stoppedUser.showsStopped, "only a reply can be stopped")
+
         // Confirmation cards.
         var c = ChatMessage(role: .assistant, phase: .working)
         _ = ChatTurnReducer.apply(ev("confirm", ["id": "a1", "request_id": "r1", "tool": "run_shell", "reason": "Run a command", "grantable": true, "scope_hint": "~/Downloads", "preview": "ls"]), to: &c, now: t0)
@@ -130,6 +168,14 @@ struct ChatChecks {
         var e3 = ChatMessage(role: .assistant, phase: .working)
         _ = ChatTurnReducer.apply(ev("error", ["message": ""]), to: &e3, now: t1)
         check(e3.text == "Something went wrong.", "empty error text gets a default")
+
+        // What the window says when a prompt comes back to the composer.
+        let back = " Your message is back in the box. Press Return to send it again."
+        check(ChatSendNotice.text(message: "Wisp isn't running right now.", unsent: true) == "Wisp isn't running right now." + back,
+              "an unsent prompt says why")
+        check(ChatSendNotice.text(message: "The network connection was lost.", unsent: false) == "Wisp didn't answer." + back,
+              "a stream that dropped never claims the message was not taken")
+        check(ChatSendNotice.text(message: "", unsent: true) == "Wisp didn't answer." + back, "no reason falls back to plain words")
 
         // Status text is cleared by anything but another status.
         var s = ChatMessage(role: .assistant, phase: .waiting)
@@ -198,6 +244,45 @@ struct ChatChecks {
               "everything saved but not yet running is unknown: the reply hides roles still bound to the cloud")
         var pendingOff = local; pendingOff["restart_required"] = true
         check(ChatCloudUse.active(from: pendingOff) == true, "a remote launch waiting to restart is still cloud")
+        // Details › Ran on: "This Mac" alone only on a confirmed local launch.
+        check(ChatCloudUse.ranOn(false) == "This Mac", "a local launch ran on this Mac")
+        check(ChatCloudUse.ranOn(true) == "This Mac or your cloud provider",
+              "with a cloud provider on, the line names both and claims neither")
+        check(ChatCloudUse.ranOn(nil) == "—", "an unknown launch does not claim this Mac")
+        check(ChatCloudUse.ranOn(ChatCloudUse.active(from: roleOnCloud)) != "This Mac"
+                && ChatCloudUse.ranOn(ChatCloudUse.active(from: pendingOn)) != "This Mac",
+              "a cloud role, or a launch that can't be read, never reads as local")
+
+        // What VoiceOver is told: the end of a reply and a waiting card, never a corpus case.
+        let bare: (String) -> String = { $0.replacingOccurrences(of: "**", with: "") }
+        var said = ChatMessage(role: .assistant, text: "You have **4 messages**.")
+        check(ChatAnnouncement.reply(said, plain: bare) == "Wisp: You have 4 messages.", "an answer is announced as words")
+        check(ChatAnnouncement.approval(said) == nil, "an answer without a card announces no card")
+        said.draft = ChatDraft(to: "Example Person", text: "See you then.")
+        check(ChatAnnouncement.reply(said, plain: bare) == "Wisp: You have 4 messages. There is a message draft, not sent yet.",
+              "an unsent draft is mentioned")
+        said.draft?.sent = true
+        check(ChatAnnouncement.reply(said, plain: bare) == "Wisp: You have 4 messages.", "a sent draft is not")
+        var failedReply = ChatMessage(role: .assistant, phase: .waiting)
+        _ = ChatTurnReducer.apply(ev("error", ["message": "Out of memory"]), to: &failedReply, now: t0)
+        check(ChatAnnouncement.reply(failedReply, plain: bare) == "Wisp couldn't answer: Out of memory", "an error is announced as one")
+        check(ChatAnnouncement.reply(ChatMessage(role: .assistant), plain: bare) == nil, "an empty reply says nothing")
+        check(ChatAnnouncement.reply(ChatMessage(role: .user, text: "hello"), plain: bare) == nil, "the reader's own message is not announced")
+        var asking = ChatMessage(role: .assistant, phase: .working)
+        _ = ChatTurnReducer.apply(ev("confirm", ["id": "a1", "request_id": "r1", "tool": "move_path",
+                                                 "reason": "Move 3 files to Archive", "grantable": true]), to: &asking, now: t0)
+        check(ChatAnnouncement.approval(asking) == "Wisp needs your OK: Move 3 files to Archive", "a waiting card is announced with its reason")
+        asking.approval?.reason = "  "
+        check(ChatAnnouncement.approval(asking) == "Wisp needs your OK to go on.", "a card with no reason still says it is waiting")
+        asking.approval?.state = .denied
+        check(ChatAnnouncement.approval(asking) == nil, "an answered card is not announced")
+        var corpusReply = ChatMessage(role: .assistant, text: "A graded answer.")
+        corpusReply.corpusEvaluation = ChatCorpusEvaluation(caseID: "ATC-001", split: "smoke", category: "mail",
+                                                            expectedTools: [], behavior: [])
+        corpusReply.approval = ChatApproval(actionId: "a", requestId: "r", tool: "send_email", reason: "Send it",
+                                            grantable: false, scopeHint: "", preview: "")
+        check(ChatAnnouncement.reply(corpusReply, plain: bare) == nil && ChatAnnouncement.approval(corpusReply) == nil,
+              "a corpus case is never announced")
 
         print("Chat contract checks passed (\(count)).")
     }

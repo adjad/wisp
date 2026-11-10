@@ -92,6 +92,25 @@ enum PromptQueueChecks {
         aside.reset()
         precondition(aside.count == 0 && aside.restore() == nil, "reset clears every set-aside prompt")
 
+        // A transcript line for a question sent with an attachment ends in its
+        // marker; the attachment is not kept, so the line is not the whole question.
+        let clip = QueuedPrompt(text: "clip", image: nil, imageName: nil, researchMode: false,
+                                video: QueuedVideo(frames: ["data:image/jpeg;base64,fixture"], seconds: 3, audio: nil))
+        let screen = QueuedPrompt(text: "screen", image: "data:image/jpeg;base64,fixture", imageName: "Screen",
+                                  researchMode: false, imageSource: "screen")
+        let document = QueuedPrompt(text: "document", image: nil, imageName: nil, researchMode: false,
+                                    document: QueuedDocument(name: "fixture.pdf", data: "Zml4dHVyZQ==", pages: []))
+        let attached = [image, screen, clip, document].compactMap(\.historyMarker)
+        precondition(attached == QueuedPrompt.historyMarkers, "every marker a prompt can give is listed")
+        for marker in attached {
+            precondition(QueuedPrompt.endsWithHistoryMarker("Explain this " + marker), marker)
+        }
+        precondition(first.historyMarker == nil && !QueuedPrompt.endsWithHistoryMarker("Explain this"))
+        precondition(!QueuedPrompt.endsWithHistoryMarker("What does [image] mean in markdown?"),
+                     "a marker inside a typed question is not an attachment")
+        precondition(!QueuedPrompt.endsWithHistoryMarker("[clip]") && !QueuedPrompt.endsWithHistoryMarker("Explain this[screen]"),
+                     "the marker follows the question after a space, as the transcript writes it")
+
         // What queued prompts wait on.
         var waits = PromptSubmissionState()
         precondition(waits.waiting == nil)

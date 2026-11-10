@@ -256,6 +256,68 @@ def test_phraser_labels_leftover_titles_once_and_rewrites_bodies(tmp_path):
     e.close()
 
 
+class FlakyPhraser(Phraser):
+    """Answers {} (could not ask) until ``up`` is set, like an unloaded model."""
+
+    def __init__(self):
+        super().__init__()
+        self.up = False
+
+    def categorize(self, titles, categories):
+        self.calls.append(list(titles))
+        return {t: "fitness" for t in titles if t == "Ironwood session"} if self.up else {}
+
+
+def test_unanswered_titles_are_not_cached_as_other(tmp_path):
+    ph = FlakyPhraser()
+    e = BehaviorEngine(tmp_path / "b.db", tz="America/Los_Angeles", phraser=ph)
+    e.observe([_ironwood(i) for i in range(5)])
+    assert not any(p.subject == "fitness" for p in e.mine(T0))
+    assert e._store.meta_get("category_cache", {}) in ({}, None)      # nothing cached: no answer
+    ph.up = True
+    assert any(p.kind == "habit" and p.subject == "fitness" for p in e.mine(T0))
+    assert ph.calls == [["Ironwood session"], ["Ironwood session"]]
+    e.close()
+
+
+def test_titles_beyond_one_batch_are_not_cached_unasked(tmp_path):
+    seen = []
+
+    class Batch(Phraser):
+        def categorize(self, titles, categories):
+            seen.append(list(titles))
+            return {t: "meal" for t in titles[:1]}
+
+    e = BehaviorEngine(tmp_path / "b.db", tz="America/Los_Angeles", phraser=Batch())
+    e.observe([ev(f"t{i}", T0 - D - H * (i + 1), f"Zzz thing {i:02d}") for i in range(45)])
+    e.mine(T0)
+    assert len(seen[0]) == 30
+    cache = e._store.meta_get("category_cache")
+    assert set(cache) == set(seen[0])                                # 31-45 not cached unasked
+    e.mine(T0)
+    assert len(seen[1]) == 15 and not set(seen[1]) & set(seen[0])
+    e.close()
+
+
+def test_cached_titles_leave_with_their_observations(tmp_path):
+    class Other(Phraser):
+        def categorize(self, titles, categories):
+            self.calls.append(list(titles))
+            return {t: "other" for t in titles}
+
+    ph = Other()
+    e = BehaviorEngine(tmp_path / "b.db", tz="America/Los_Angeles", phraser=ph)
+    old, fresh = T0 - 100 * D, T0 - 2 * D
+    e.observe([ev("old", old, "Fertility consult zz"), ev("new", fresh, "Pottery zz")])
+    e.mine(T0)
+    assert set(e._store.meta_get("category_cache")) == {"Fertility consult zz", "Pottery zz"}
+    later = T0 + 85 * D
+    e.mine(later)                                                    # 180-day retention drops "old"
+    assert e._store.meta_get("category_cache") == {"Pottery zz": "other"}
+    assert ph.calls == [["Fertility consult zz", "Pottery zz"]]      # the kept title is not re-asked
+    e.close()
+
+
 def test_failing_phraser_keeps_code_text(tmp_path):
     e = BehaviorEngine(tmp_path / "b.db", tz="America/Los_Angeles", phraser=Phraser(fail=True))
     e.observe([_ironwood(i) for i in range(5)])

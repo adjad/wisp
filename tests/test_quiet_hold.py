@@ -397,7 +397,7 @@ def test_an_earlier_builds_words_are_gone_from_the_file(tmp_path):
 
 # --- Forget, account erase and reset --------------------------------------------------------
 
-def test_disconnecting_an_account_withdraws_what_could_have_come_from_it(hub, quiet, monkeypatch):
+def test_disconnecting_an_account_withdraws_what_could_have_come_from_it(hub, quiet, monkeypatch, tmp_path):
     from service.assistant.store import signin_expired_key
     from service import gmail_source, google_calendar_source as calendar
     monkeypatch.setattr(calendar, "_store_override", hub.store)
@@ -412,7 +412,13 @@ def test_disconnecting_an_account_withdraws_what_could_have_come_from_it(hub, qu
     unrelated = [hub.publish_sync(words(event)) for event in
                  ({"type": "attention_added", "source_id": "msg:1", "relevant_until": NOW + 86400},
                   {"type": "node_result"})]
-    assert gmail_source.erase_account_data(PERSON.upper())["waiting_notices"] == "erased"
+    from service.assistant import brief_latest
+    monkeypatch.setattr(brief_latest, "_PATH", tmp_path / "cache" / "daily_brief_latest.json")
+    brief_latest.record("Worth a look: HR", "morning", day=brief_latest.today())
+    assert brief_latest.latest(brief_latest.today()) is not None
+    result = gmail_source.erase_account_data(PERSON.upper())
+    assert result["waiting_notices"] == "erased"
+    assert result["daily_summary"] == "erased" and brief_latest.latest(brief_latest.today()) is None
     assert hub.store.event(theirs["event_id"]) is None
     assert hub.store.event(event["event_id"]) is None, "the calendar's own erase covers its reminders"
     for row in composed:

@@ -35,6 +35,23 @@ _OMLX_OTHERS_FULL = ("Wisp's model couldn't load, because other models in oMLX a
                      "the memory and are pinned or running. Unload one in oMLX, or wait for "
                      "it to finish, then try again.")
 
+# The engine's prefill memory guard refused or stopped one request: its prompt needs more
+# memory than is left. The model is loaded and fine, so this is not the "couldn't load" text.
+REQUEST_MEMORY_MESSAGE = ("That request needed more memory than Wisp is allowed to "
+                          "use. Try a shorter question or fewer attachments.")
+# How much of the local engine's error body is kept to say why a streamed request was refused.
+_ENGINE_ERROR_BODY_BYTES = 64 * 1024
+
+
+def _stream_error_code(chunk: dict) -> str:
+    """The engine's code on an in-stream error chunk (`error.code`, or oMLX's `omlx_code`)."""
+    error = chunk.get("error")
+    error = error if isinstance(error, dict) else {}
+    for code in (error.get("code"), error.get("omlx_code"), chunk.get("omlx_code")):
+        if isinstance(code, str) and code:
+            return code
+    return ""
+
 
 def _model_label(model: str) -> str:
     """The catalog's display name for a model id ("Gemma 4 E4B"), else the id.
@@ -374,6 +391,29 @@ class OMLXClient:
                 request=request, response=safe_response,
             ) from None
         response.raise_for_status()
+
+    async def _check_stream_response(self, response):
+        """`_check_response` for a response opened with `stream`, whose body is still unread.
+
+        The local engine says why it refused in a small JSON body (its prefill memory guard,
+        a prompt past the context window). That body is read first, so the error raised
+        carries it and `service.errors.translate` can tell the person what to do; unread, it
+        could only say "try again". A remote provider's body is never read or kept
+        (`_check_response`), and neither is a guard refusal's.
+        """
+        if (self.managed and not response.is_success
+                and response.headers.get("x-wisp-guard-refusal") != "1"):
+            body = bytearray()
+            try:
+                async for part in response.aiter_bytes():
+                    body += part
+                    if len(body) >= _ENGINE_ERROR_BODY_BYTES:
+                        break
+            except httpx.HTTPError:
+                pass                    # the status is still reported, without a reason
+            httpx.Response(response.status_code, content=bytes(body[:_ENGINE_ERROR_BODY_BYTES]),
+                           request=response.request).raise_for_status()
+        self._check_response(response)
 
     @staticmethod
     def _remote_limits(max_tokens: int) -> tuple[int, int]:
@@ -995,7 +1035,7 @@ class OMLXClient:
             headers = None if self.managed else {"Accept-Encoding": "identity"}
             async with self._client.stream("POST", self.api_prefix + "/chat/completions",
                     json=payload, headers=headers) as r:
-                self._check_response(r)
+                await self._check_stream_response(r)
                 lines = (r.aiter_lines() if self.managed
                          else self._remote_lines(r, wire_limit))
                 async for line in lines:
@@ -1009,6 +1049,12 @@ class OMLXClient:
                         chunk = json.loads(data)
                     except json.JSONDecodeError:
                         raise IncompleteStreamError("Invalid inference stream data") from None
+                    if (self.managed and isinstance(chunk, dict) and "error" in chunk
+                            and _stream_error_code(chunk).startswith("prefill_memory_")):
+                        # The local engine's memory guard, reported inside a 200 stream. Only
+                        # its code is read; its message is never kept. Nothing from this
+                        # stream is executed, as for every other error below.
+                        raise ModelMemoryLimitError(REQUEST_MEMORY_MESSAGE)
                     if not isinstance(chunk, dict) or "error" in chunk:
                         raise IncompleteStreamError("Inference stream returned an error")
                     choices = chunk.get("choices")

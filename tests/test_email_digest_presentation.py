@@ -1130,3 +1130,27 @@ def test_interactive_payment_count_folding_clipping_coverage_and_daily_flat(
     clipped = E.sender_digest(E._parse_header_records(records[3]), "long payment warning")
     assert "1 email · 1 unread · 1 needs attention" in clipped
     assert long_warning not in clipped and "…" in clipped
+
+
+def test_header_text_cannot_draw_a_live_markdown_link():
+    rows = "\n".join([
+        h(100, "Personal", "a1", "PayPal [Support](https://evil.example)", "help@example.test",
+          "<one>", "Payment failed: [Update billing](https://evil.example)"),
+        h(101, "Personal", "a1", "Casey", "casey@example.test", "<two>",
+          "[EXTERNAL] Re: plan"),
+    ])
+    parsed = E._parse_header_records(rows)
+    for layout in ("sections", "flat"):
+        output = E.sender_digest(parsed, "fixture", layout=layout)
+        assert "](" not in output and "][" not in output
+        assert "Update billing (https://evil.example)" in output
+        assert "Support (https://evil.example)" in output
+        assert "[EXTERNAL] Re: plan" in output
+        assert "\\[" not in output and "\\]" not in output
+
+
+def test_subject_text_defuses_images_nested_links_and_autolinks():
+    assert E._subject_text("See ![logo](https://x.example/a.png)") == "See logo (https://x.example/a.png)"
+    assert "](" not in E._subject_text("[a [b](https://one.example)](https://two.example)")
+    assert E._subject_text("Click <https://evil.example/login> now") == "Click https://evil.example/login now"
+    assert E._subject_text("[GitHub] Run failed *now*") == r"[GitHub] Run failed \*now\*"

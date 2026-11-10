@@ -21,6 +21,8 @@ final class CalendarReader {
     private var changeObserver: NSObjectProtocol?
     private var pendingChangeSync: DispatchWorkItem?
     private var lastSyncStartedAt: TimeInterval?
+    // Main-thread state: which read is running and which report was posted last.
+    private var readGate = CalendarReadGate()
 
     // The same rules as Reminders (RemindersWriter.Access.passive): it never
     // asks macOS for access, and an unanswered permission is a reason with a
@@ -98,11 +100,14 @@ final class CalendarReader {
         }
         let snapshotStartedAt = Date().timeIntervalSince1970
         lastSyncStartedAt = snapshotStartedAt
+        let number = readGate.issue()
         guard isAuthorized else {
             let raw = EKEventStore.authorizationStatus(for: .event)
             let report = Access.passive(status: Access.status(of: raw), source: .calendar)
             var diagnostics = Access.diagnostics(for: report, snapshotStartedAt: snapshotStartedAt)
             diagnostics["status"] = raw.rawValue
+            // A read still running from before access went away must not post after this.
+            _ = readGate.accept(number)
             post(events: [], diagnostics: diagnostics)
             return
         }
@@ -116,15 +121,48 @@ final class CalendarReader {
         guard let start = Calendar.current.date(byAdding: .day, value: -historyDays, to: Date()),
               let end = Calendar.current.date(byAdding: .day, value: horizonDays, to: Date())
         else { return }
+        // One read at a time. A read asked for while one runs follows it, so a
+        // change made during the read (Wisp's own write included) is still seen.
+        guard readGate.begin() else { return }
+        let expectedCalendars = store.calendars(for: .event).count
+        // The year of events is read and turned into rows off the main thread:
+        // with busy calendars that takes long enough to stall the panel.
+        Task { @MainActor [weak self] in
+            let snapshot: (events: [[String: Any]], diagnostics: [String: Any])? = await Task.detached(priority: .utility) {
+                CalendarReader.readSnapshot(start: start, end: end, snapshotStartedAt: snapshotStartedAt,
+                                            expectedCalendars: expectedCalendars)
+            }.value
+            guard let self else { return }
+            let again = self.readGate.finish()
+            // sync_source replaces the active set, so an older read never posts
+            // after a newer report.
+            if let snapshot, self.readGate.accept(number) {
+                self.post(events: snapshot.events, diagnostics: snapshot.diagnostics)
+            }
+            // Access that went away during the read is reported now, not a heartbeat later.
+            if again || (snapshot == nil && !self.isAuthorized) { self.sync() }
+        }
+    }
+
+    /// One read of the synced window with its own event store, for use off the
+    /// main thread (as startHistoryScan does). Nil means nothing may be posted:
+    /// Calendar access went away, or the new store has not loaded the calendars yet,
+    /// and an empty post would drop every event the service holds.
+    static func readSnapshot(start: Date, end: Date, snapshotStartedAt: TimeInterval,
+                             expectedCalendars: Int) -> (events: [[String: Any]], diagnostics: [String: Any])? {
+        let store = EKEventStore()
+        guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else { return nil }
         let cals = store.calendars(for: .event)
+        guard !cals.isEmpty || expectedCalendars == 0 else { return nil }
         let pred = store.predicateForEvents(withStart: start, end: end, calendars: nil)
         let events = store.events(matching: pred)
         // Declined and cancelled events are not on the person's day.
-        let kept = events.filter(Self.keeps)
+        let kept = events.filter(CalendarReader.keeps)
 
         let payload: [[String: Any]] = kept.compactMap { ev in
             guard let sd = ev.startDate else { return nil }
-            let title = ev.title ?? "(untitled)"
+            // An event with no title reads back as "", which the service would not keep.
+            let title = RemindersWriter.syncedTitle(ev.title)
             let base = CalendarEventPolicy.classify(title)
             let kind = (!ev.isAllDay && base == "event") ? "meeting" : base
             // NOTE: EventKit gives every occurrence of a RECURRING event the
@@ -156,7 +194,7 @@ final class CalendarReader {
             }
             // For moves: an event with invitees may be moved only by its organizer
             // (CalendarMove.refusal). No organizer_is_user key means "unknown".
-            row["invitee_count"] = Self.inviteeCount(ev)
+            row["invitee_count"] = CalendarReader.inviteeCount(ev)
             if let o = ev.organizer { row["organizer_is_user"] = o.isCurrentUser }
             // A subscribed or otherwise read-only calendar: the card then offers neither
             // Cancel nor Move (CalendarMove.refusal would refuse them anyway).
@@ -172,7 +210,8 @@ final class CalendarReader {
             }
             return row
         }
-        post(events: payload, diagnostics: [
+        guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else { return nil }
+        let diagnostics: [String: Any] = [
             "authorized": true,
             "snapshot_started_at": snapshotStartedAt,
             "coverage_start": start.timeIntervalSince1970,
@@ -182,7 +221,8 @@ final class CalendarReader {
             "events_found": events.count,
             "events_declined_or_cancelled": events.count - kept.count,
             "event_ids": payload.map { "\($0["title"] ?? "") | \($0["source_id"] ?? "")" },
-        ])
+        ]
+        return (events: payload, diagnostics: diagnostics)
     }
 
     /// History has its own append-only endpoint: a backfill page must never
@@ -451,6 +491,53 @@ final class CalendarReader {
         req.httpBody = try? JSONSerialization.data(withJSONObject: ["events": events,
                                                                     "diagnostics": diagnostics])
         URLSession.shared.dataTask(with: req).resume()
+    }
+}
+
+/// Calendar is read off the main thread, so two rules keep its posts in order.
+/// Pure state, checked by tests/CalendarReaderChecks.swift.
+///
+/// Rules:
+/// - IMPORTANT: one read at a time. A read asked for while one runs is not
+///   dropped: one more read follows the running one.
+/// - IMPORTANT: every sync takes a number, and a report is posted only when its
+///   number is higher than the last one posted. The service replaces Calendar's
+///   whole set on each post, so a slow old read must never land on a newer one.
+struct CalendarReadGate {
+    private(set) var issued = 0
+    private(set) var posted = 0
+    private(set) var reading = false
+    private(set) var queued = false
+
+    /// The number of the sync that starts now. Numbers only go up.
+    mutating func issue() -> Int {
+        issued += 1
+        return issued
+    }
+
+    /// True: start a read. False: one is running, and another will follow it.
+    mutating func begin() -> Bool {
+        if reading {
+            queued = true
+            return false
+        }
+        reading = true
+        return true
+    }
+
+    /// The running read ended. True: read again, because one was asked for meanwhile.
+    mutating func finish() -> Bool {
+        let again = queued
+        reading = false
+        queued = false
+        return again
+    }
+
+    /// Whether the report with this number may be posted.
+    mutating func accept(_ number: Int) -> Bool {
+        guard number > posted else { return false }
+        posted = number
+        return true
     }
 }
 

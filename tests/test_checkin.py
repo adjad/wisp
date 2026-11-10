@@ -241,6 +241,69 @@ def test_carry_forward_skips_titles_the_stale_reminder_policy_excludes(store):
     assert [(a["title"], a["reason"]) for a in C.aged_out_today("2026-10-19")] == [("Clean the garage", "stale_reminder")]
 
 
+def _count(monkeypatch, name: str) -> list:
+    """Count calls to one of the check-in module's functions without changing it."""
+    calls, real = [], getattr(C, name)
+
+    def counted(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(C, name, counted)
+    return calls
+
+
+def test_a_left_behind_task_is_recorded_once_not_on_every_call(store, monkeypatch):
+    """A task left behind stays active on its old day, so every later call (the
+    scheduler asks each 30 s, the Day tab on each open) meets it again. Only the
+    first one has anything to write, and an old task needs no reminder lookup."""
+    old = task(store, "Sort the bookshelf", "2026-10-09")
+    now = at("2026-10-19", 8)
+    writes, lookups = _count(monkeypatch, "_write_state"), _count(monkeypatch, "reminder_index")
+    assert C.carry_forward(store, "2026-10-19", ZONE, now=now) == []
+    assert len(writes) == 1 and len(lookups) == 1
+    first = C.day_record("2026-10-19")
+    assert [(a["id"], a["reason"], a["age_days"]) for a in first["aged_out"]] == [(old["id"], "aged_out", 10)]
+    for later in (30, 60, 3600):
+        assert C.carry_forward(store, "2026-10-19", ZONE, now=now + later) == []
+    assert len(writes) == 1, "nothing new to record, so the file is left alone"
+    assert len(lookups) == 1, "a week-old task is not looked up against Reminders again"
+    assert C.day_record("2026-10-19") == first
+    assert store.today_task(old["id"])["status"] == "active", "nothing is deleted"
+    # A second old task appearing later in the day is still recorded, once.
+    other = task(store, "Label the cables", "2026-10-08")
+    assert C.carry_forward(store, "2026-10-19", ZONE, now=now + 7200) == []
+    assert len(writes) == 2
+    assert [a["id"] for a in C.aged_out_today("2026-10-19")] == [old["id"], other["id"]]
+    assert C.carry_forward(store, "2026-10-19", ZONE, now=now + 7230) == []
+    assert len(writes) == 2
+    # The next day has its own record, so each task is noted there once more.
+    assert C.carry_forward(store, "2026-10-20", ZONE, now=at("2026-10-20", 8)) == []
+    assert len(writes) == 3
+    assert sorted(a["title"] for a in C.aged_out_today("2026-10-20")) == ["Label the cables", "Sort the bookshelf"]
+
+
+def test_a_task_held_back_by_a_stale_reminder_still_moves_once_the_reminder_is_kept(store, monkeypatch):
+    """A recent task left behind only because its reminder went stale is checked
+    again on every call (without rewriting the record), so Keep brings it back."""
+    now = at("2026-10-19", 8)
+    _reminders(store, undated=[
+        {"source_id": "u-ask", "title": "Clean the garage", "context": "Reminders", "created_ts": now - 8 * 86400},
+    ])
+    held = task(store, "Clean the garage", "2026-10-18")
+    writes = _count(monkeypatch, "_write_state")
+    assert C.carry_forward(store, "2026-10-19", ZONE, now=now) == []
+    assert [(a["title"], a["reason"]) for a in C.aged_out_today("2026-10-19")] == [("Clean the garage", "stale_reminder")]
+    assert C.carry_forward(store, "2026-10-19", ZONE, now=now + 30) == []
+    assert len(writes) == 1
+    store.keep_stale_reminder("u-ask", "Clean the garage")
+    moved = C.carry_forward(store, "2026-10-19", ZONE, now=now + 60)
+    assert [t["id"] for t in moved] == [held["id"]]
+    assert len(writes) == 2
+    assert [c["id"] for c in C.carried_today("2026-10-19")] == [held["id"]]
+    assert C.carry_forward(store, "2026-10-19", ZONE, now=now + 90) == []
+    assert len(writes) == 2
+
+
 def test_carry_forward_honours_the_store_hidden_reminder_set(store):
     """Once the store knows which reminders are hidden (undated or overdue
     dated, #286), carry-forward asks it rather than re-deriving the rule."""
@@ -505,3 +568,89 @@ def test_api_round_trip(client, store, monkeypatch):
     out = client.post("/assistant/checkin/goal", json={"goal": "Ship it", "status": "behind"}).json()
     assert out["goal_status"]["Ship it"]["status"] == "behind" and out["goal_pulse"] is None
     assert client.post("/assistant/checkin/goal", json={"goal": "Ship it", "status": "meh"}).status_code == 422
+
+
+# --- evening notification text ----------------------------------------------------------
+
+@pytest.fixture
+def tick(store, monkeypatch):
+    """Run the scheduler's evening check-in tick against `store` and return what
+    it published. The app is connected and no chat turn is in flight."""
+    import asyncio
+    from types import SimpleNamespace
+    from service.assistant import scheduler
+
+    published: list[dict] = []
+
+    async def publish(event, **_kwargs):
+        published.append(event)
+        return event
+    monkeypatch.setattr(scheduler, "assistant_store", store)
+    monkeypatch.setattr(scheduler, "hub", SimpleNamespace(has_subscribers=True, publish=publish))
+    monkeypatch.setattr(scheduler.idle, "foreground_busy", lambda: False)
+    monkeypatch.setattr("service.attention.detectors.local_timezone", lambda: ZONE)
+
+    def run(now: float) -> list[dict]:
+        asyncio.run(scheduler._checkin_tick(now))
+        return published
+    return run
+
+
+def _finish(store, saved, status="done"):
+    return store.today_save_task({"status": status}, task_id=saved["id"], revision=saved["revision"])
+
+
+def test_evening_text_does_not_ask_about_the_rest_when_every_task_is_done(store, tick):
+    day = "2026-10-17"
+    for title in ("Write intro", "Call bank", "Book train"):
+        _finish(store, task(store, title, day))
+    event(store, "e1", "Design review", at("2026-10-18", 10), at("2026-10-18", 11))
+    [sent] = tick(at(day, 17, 30))
+    assert sent["text"] == "You planned 3 things today and finished 3. Tomorrow has 1 event. Anything to move?"
+    assert "How did the rest go?" not in sent["text"]
+    # The fields the app reads are unchanged.
+    assert (sent["type"], sent["day"]) == ("checkin", day)
+    assert (sent["planned"], sent["done"], sent["open_tasks"], sent["events_tomorrow"]) == (3, 3, 0, 1)
+    assert C.day_record(day)["notified_at"] == at(day, 17, 30)
+
+
+def test_evening_text_still_asks_about_the_rest_while_a_task_is_open(store, tick):
+    day = "2026-10-17"
+    task(store, "Write intro", day)
+    _finish(store, task(store, "Call bank", day))
+    event(store, "e1", "Design review", at("2026-10-18", 10), at("2026-10-18", 11))
+    [sent] = tick(at(day, 17, 30))
+    assert sent["text"] == "You planned 2 things today and finished 1. How did the rest go?"
+    assert (sent["open_tasks"], sent["events_tomorrow"]) == (1, 1)
+
+
+def test_evening_text_with_one_open_task_and_nothing_finished(store, tick):
+    day = "2026-10-17"
+    task(store, "Write intro", day)
+    assert tick(at(day, 16, 59)) == [], "never before the evening"
+    [sent] = tick(at(day, 17, 30))
+    assert sent["text"] == "You planned 1 thing today. How did the rest go?"
+    assert len(tick(at(day, 17, 31))) == 1, "and only once a day"
+
+
+def test_evening_text_when_the_only_task_was_dropped(store, tick):
+    day = "2026-10-17"
+    _finish(store, task(store, "Write intro", day), status="dismissed")
+    events(store, ("e1", "Design review", at("2026-10-18", 10), at("2026-10-18", 11)),
+           ("e2", "Lunch with Priya", at("2026-10-18", 12), at("2026-10-18", 13)))
+    [sent] = tick(at(day, 17, 30))
+    assert sent["text"] == "You planned 1 thing today. Tomorrow has 2 events. Anything to move?"
+
+
+def test_evening_text_with_no_tasks_asks_only_about_tomorrow(store, tick):
+    day = "2026-10-17"
+    event(store, "e1", "Design review", at("2026-10-18", 10), at("2026-10-18", 11))
+    [sent] = tick(at(day, 17, 30))
+    assert sent["text"] == "Tomorrow has 1 event. Anything to move?"
+
+
+def test_evening_with_nothing_open_and_no_events_tomorrow_stays_silent(store, tick):
+    day = "2026-10-17"
+    _finish(store, task(store, "Write intro", day))
+    assert tick(at(day, 17, 30)) == []
+    assert C.day_record(day)["notified_at"] == at(day, 17, 30), "marked so it is not rebuilt every tick"

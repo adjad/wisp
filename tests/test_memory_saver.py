@@ -470,6 +470,35 @@ def test_a_hold_keeps_the_model_across_ticks_between_calls():
     assert c.calls == [("unload", MODEL)]
 
 
+def test_the_notch_x_follows_the_unload_rule_without_waiting_out_a_turn(monkeypatch):
+    # tick() never unloads under a generation or a hold; the notch's X didn't ask.
+    monkeypatch.setattr(M, "X_WAIT_S", 0.1)
+    assert asyncio.run(M.x_hold(MODEL)) is None
+    idle.begin_foreground()                 # the notch's own turn, a moment after the X stopped it
+    assert asyncio.run(M.x_hold(MODEL)) is None
+    idle.begin(MODEL)
+    assert asyncio.run(M.x_hold(MODEL)) == "busy"
+    idle.end(MODEL)
+    assert asyncio.run(M.x_hold(MODEL)) is None
+    with M.hold():
+        assert asyncio.run(M.x_hold(MODEL)) == "busy"
+    assert asyncio.run(M.x_hold(MODEL)) is None
+
+
+def test_the_notch_x_gives_up_when_held_work_starts_while_it_waits():
+    idle.begin(MODEL)
+    job = M.hold()
+
+    async def run():
+        asyncio.get_running_loop().call_later(0.05, job.__enter__)
+        started = asyncio.get_running_loop().time()
+        return await M.x_hold(MODEL), asyncio.get_running_loop().time() - started
+
+    held, waited = asyncio.run(run())
+    assert held == "busy" and waited < M.X_WAIT_S and M.held()
+    job.__exit__(None, None, None)
+
+
 def test_a_research_job_runs_under_a_hold():
     from service.research.orchestrator import ResearchManager
     seen = []

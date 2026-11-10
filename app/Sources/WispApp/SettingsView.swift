@@ -214,6 +214,8 @@ final class SettingsLoader: ObservableObject {
     @Published var installed: [String] = []
     @Published var roles: [String: String] = [:]
     @Published var saving = false
+    /// Set when the service didn't save the last model pick, so its menu went back.
+    @Published private(set) var roleSaveProblem: String?
     // Full access as the service last confirmed it; nil until confirmed or
     // when a read or write couldn't be confirmed. Never shown as "off" while nil.
     // This is Wisp's one Full access source: Settings, quick settings and the
@@ -223,8 +225,17 @@ final class SettingsLoader: ObservableObject {
     /// Set when the service applied the last change but couldn't save it, so it
     /// will go back at the next restart (#409 audit: the 500 was never shown).
     @Published private(set) var fullAccessSaveProblem: String?
+    /// The standing Always allow / Always block rules (GET /permissions). Nil
+    /// until read and when a read failed: never shown as "no rules" then.
+    @Published private(set) var standingRules: [StandingRule]?
+    @Published private(set) var standingRulesAsked = false
+    @Published private(set) var standingRulesBusy = false
+    @Published private(set) var standingRulesStatus: String?
     @Published private(set) var saveWhenAway: Bool?
     @Published private(set) var saveWhenAwayPending = false
+    /// False when the service says Save power caps nothing on this engine (the
+    /// person's own oMLX app, or a remote-only setup). Nil when it didn't say.
+    @Published private(set) var saveWhenAwayApplies: Bool?
     @Published private(set) var saveMemory: Bool?
     @Published private(set) var saveMemoryPending = false
     @Published private(set) var saveMemoryDetail: SaveMemoryDetail?
@@ -232,6 +243,11 @@ final class SettingsLoader: ObservableObject {
     @Published private(set) var briefTimes: WispClient.BriefTimes?
     @Published private(set) var briefTimesPending = false
     @Published var idleMinutes: Double = 5
+    /// Set when the service didn't confirm the last Auto-unload change, so the
+    /// row went back to what the service last confirmed.
+    @Published private(set) var idleSaveProblem: String?
+    private var confirmedIdleMinutes: Double = 5
+    private var idleSaveGeneration = 0
     @Published var humanizerEnabled = false
     @Published var behaviorEnabled: Bool? = nil
     @Published var behaviorChanging = false
@@ -312,19 +328,6 @@ final class SettingsLoader: ObservableObject {
     // whenever no explicit "research" override is set, so leaving this on
     // its default isn't a broken state — it's the normal one.
     let roleOrder = ["fast", "coding", "reasoning", "general", "research"]
-    // Shown only when the backend is unreachable and can't report the real
-    // roster. Mirrors service/config/models.yaml's defaults — if you change
-    // them there, change them here, or an offline Settings pane shows models
-    // the user never chose.
-    let fallbackModels = [
-        "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
-    ]
-    let fallbackRoles = [
-        "fast": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
-        "coding": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
-        "reasoning": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
-        "general": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
-    ]
     private let client = WispClient()
 
     func label(_ r: String) -> String {
@@ -337,10 +340,10 @@ final class SettingsLoader: ObservableObject {
          "research": "Wisp Research's plan/query/extraction/synthesis calls"][r] ?? ""
     }
 
-    var modelChoices: [String] {
-        // The bundled-default fallback is only for an unreachable backend; a Mac
-        // with its own models must not be offered a model it never installed.
-        installed.isEmpty ? fallbackModels : Array(Set(installed + roles.values.filter { !$0.isEmpty })).sorted()
+    /// A role's menu: chat models only (RoleModelChoices), never the embedder or
+    /// the reranker, plus whatever the role has saved so the menu can show it.
+    func modelChoices(for role: String) -> [String] {
+        RoleModelChoices.choices(installed: installed, roles: roles, keeping: selectedModel(for: role))
     }
 
     func selectedModel(for role: String) -> String {
@@ -350,7 +353,8 @@ final class SettingsLoader: ObservableObject {
             // that would look "selected" without being true until touched.
             return selectedModel(for: "coding")
         }
-        return roles[role] ?? (installed.isEmpty ? fallbackRoles[role] : nil) ?? modelChoices.first ?? ""
+        return roles[role] ?? (installed.isEmpty ? RoleModelChoices.fallbackRoles[role] : nil)
+            ?? RoleModelChoices.choices(installed: installed, roles: roles).first ?? ""
     }
 
     func savedModelLabel(for role: String) -> String {
@@ -364,7 +368,11 @@ final class SettingsLoader: ObservableObject {
             self.installed = m.installed
             self.roles = m.roles
             await self.refreshFullAccess()
-            self.idleMinutes = await client.idleTimeout()
+            // No answer leaves the row as it is, never at a made-up number.
+            if let idle = await SettingsLoader.idleTimeoutReply() {
+                self.idleMinutes = idle
+                self.confirmedIdleMinutes = idle
+            }
             self.humanizerEnabled = await client.humanizerEnabled()
             await self.refreshBehavior()
             await self.refreshCloud()
@@ -1105,8 +1113,10 @@ final class SettingsLoader: ObservableObject {
     func refreshSaveWhenAway() async {
         guard !saveWhenAwayPending else { return }
         let confirmed = await client.saveWhenAwayState()
+        let applies = await client.saveWhenAwayApplies()
         guard !saveWhenAwayPending else { return }
         saveWhenAway = confirmed
+        saveWhenAwayApplies = applies
     }
 
     /// One change at a time; the row shows what the service confirmed.
@@ -1117,6 +1127,7 @@ final class SettingsLoader: ObservableObject {
             var confirmed = await self.client.setSaveWhenAway(on)
             // A lost reply may mean the write happened; only a fresh read can tell.
             if confirmed == nil { confirmed = await self.client.saveWhenAwayState() }
+            self.saveWhenAwayApplies = await self.client.saveWhenAwayApplies()
             self.saveWhenAway = confirmed
             self.saveWhenAwayPending = false
         }
@@ -1178,6 +1189,50 @@ final class SettingsLoader: ObservableObject {
         if reply.confirmed != nil || reply.problem != nil { fullAccessSaveProblem = reply.problem }
         fullAccessPending = false
         return confirmed
+    }
+
+    func refreshStandingRules() async {
+        guard !standingRulesBusy else { return }
+        standingRulesBusy = true
+        standingRules = await SettingsLoader.standingRulesReply()
+        standingRulesAsked = true
+        standingRulesBusy = false
+    }
+
+    /// Removes one rule, then reads the list again: the service's "ok" only says
+    /// the tool had rules, so the fresh list decides whether this one went.
+    func removeStandingRule(_ rule: StandingRule) {
+        guard !standingRulesBusy else { return }
+        standingRulesBusy = true
+        standingRulesStatus = nil
+        Task {
+            var removed = false
+            if let url = rule.removeURL(base: WispClient.baseURL) {
+                var req = URLRequest(url: url)
+                req.httpMethod = "DELETE"
+                if let (data, response) = try? await URLSession.shared.data(for: req),
+                   let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                   let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                    removed = object["ok"] as? Bool == true
+                }
+            }
+            if let now = await SettingsLoader.standingRulesReply() {
+                self.standingRules = now
+                if now.contains(rule) { self.standingRulesStatus = StandingRule.removeFailed }
+            } else if removed {
+                self.standingRules = self.standingRules?.filter { $0 != rule }
+            } else {
+                self.standingRulesStatus = StandingRule.removeFailed
+            }
+            self.standingRulesBusy = false
+        }
+    }
+
+    private static func standingRulesReply() async -> [StandingRule]? {
+        let url = WispClient.baseURL.appendingPathComponent("permissions")
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
+        return StandingRule.parse(data)
     }
 
     #if WISP_NOTCH_QA || WISP_CHAT_QA
@@ -1255,11 +1310,43 @@ final class SettingsLoader: ObservableObject {
 
     func setIdleMinutes(_ minutes: Double) {
         idleMinutes = minutes
-        Task { self.idleMinutes = await client.setIdleTimeout(minutes) }
+        idleSaveProblem = nil
+        idleSaveGeneration += 1
+        let generation = idleSaveGeneration
+        Task {
+            let confirmed = await SettingsLoader.idleTimeoutReply(setting: minutes)
+            if let confirmed { self.confirmedIdleMinutes = confirmed }
+            // Only the latest change decides what the row shows.
+            guard generation == self.idleSaveGeneration else { return }
+            if let confirmed {
+                self.idleMinutes = confirmed
+            } else {
+                self.idleMinutes = self.confirmedIdleMinutes
+                self.idleSaveProblem = QuickSettingsText.idleUnloadSaveProblem
+            }
+        }
+    }
+
+    /// GET /idle_timeout, or POST it with `setting`. Nil when the service didn't
+    /// answer with the minutes it now uses: unreachable, an error status, or no value.
+    private static func idleTimeoutReply(setting minutes: Double? = nil) async -> Double? {
+        var req = URLRequest(url: WispClient.baseURL.appendingPathComponent("idle_timeout"))
+        if let minutes {
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["idle_minutes": minutes])
+        }
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let value = object["idle_minutes"] as? Double, value.isFinite, value >= 0 else { return nil }
+        return value
     }
 
     func set(_ role: String, _ model: String) {
+        let previous = roles[role]
         roles[role] = model
+        roleSaveProblem = nil
         saving = true
         Task {
             await PendingConfigWrites.shared.begin()
@@ -1267,7 +1354,18 @@ final class SettingsLoader: ObservableObject {
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try? JSONSerialization.data(withJSONObject: ["role": role, "model": model])
-            _ = try? await URLSession.shared.data(for: req)
+            var saved = false
+            if let (data, response) = try? await URLSession.shared.data(for: req),
+               let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                saved = object["ok"] as? Bool == true
+            }
+            // Not saved: the menu goes back, unless a later pick or a refresh
+            // already replaced this one.
+            if !saved, self.roles[role] == model {
+                self.roles[role] = previous
+                self.roleSaveProblem = RoleModelChoices.saveProblem
+            }
             self.saving = false
             await PendingConfigWrites.shared.end()
             // A role now points at another model: setup's test no longer applies.
@@ -1296,6 +1394,57 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// Every standing Always allow / Always block rule, each with Remove, so a
+    /// rule made on a card can be found again and taken back.
+    private var standingRulesSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(StandingRule.title)
+                .font(.system(size: 14, weight: .medium))
+            Text(StandingRule.caption)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let rules = loader.standingRules {
+                if rules.isEmpty {
+                    Text(StandingRule.noRules).font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(rules) { rule in
+                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(rule.tool).font(.system(size: 13, design: .monospaced))
+                            Text(rule.summary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                        }
+                        Spacer(minLength: 8)
+                        Button("Remove") { loader.removeStandingRule(rule) }
+                            .controlSize(.small)
+                            .disabled(loader.standingRulesBusy)
+                            .help("Remove this rule. Wisp checks this action the usual way again.")
+                            .accessibilityLabel("Remove the rule for \(rule.tool), \(rule.summary)")
+                    }
+                }
+            } else if loader.standingRulesBusy || !loader.standingRulesAsked {
+                Text(StandingRule.checking).font(.caption).foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 10) {
+                    Text(StandingRule.unread).font(.caption).foregroundStyle(.secondary)
+                    Button("Check again") { Task { await loader.refreshStandingRules() } }
+                        .controlSize(.small)
+                }
+            }
+            if let status = loader.standingRulesStatus {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .task { await loader.refreshStandingRules() }
     }
 
     private var behaviorLearningLabel: some View {
@@ -1531,7 +1680,7 @@ struct SettingsView: View {
                                     Picker("", selection: Binding(
                                         get: { loader.selectedModel(for: role) },
                                         set: { loader.set(role, $0) })) {
-                                        ForEach(loader.modelChoices, id: \.self) {
+                                        ForEach(loader.modelChoices(for: role), id: \.self) {
                                             Text(OverlayModel.abbrev($0)).tag($0)
                                         }
                                     }
@@ -1542,6 +1691,12 @@ struct SettingsView: View {
                                 }
                             }
                             if role != loader.roleOrder.last { Divider() }
+                        }
+                        if let problem = loader.roleSaveProblem {
+                            Text(problem)
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         Divider()
                         HStack {
@@ -1903,6 +2058,8 @@ struct SettingsView: View {
                             }
                         }
 
+                        standingRulesSection
+
                         Divider()
 
                         Toggle(isOn: Binding(get: { browserHistoryEnabled }, set: {
@@ -2079,11 +2236,16 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Auto-unload idle models")
                                     .font(.system(size: 14, weight: .medium))
-                                Text(loader.idleMinutes <= 0
-                                     ? "Never — models stay resident until you unload them."
-                                     : "Unload a model after \(Int(loader.idleMinutes)) min of no use.")
+                                Text(QuickSettingsText.idleUnload(minutes: loader.idleMinutes))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                if let problem = loader.idleSaveProblem {
+                                    Text(problem)
+                                        .font(.caption)
+                                        .foregroundStyle(.orange)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
                             }
                             Spacer()
                             Stepper(value: Binding(

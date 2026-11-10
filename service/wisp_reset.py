@@ -97,7 +97,8 @@ KEEP_ENTRIES = frozenset({
     ".provisioning.lock", ".config.lock", ".engine-mode.lock",   # empty lock files other processes may hold
 })
 # Inside engine/: deleted even though the engine is kept (its log can hold request text).
-ENGINE_DELETE = frozenset({"engine.log"})
+# engine.log.1 is the log a start set aside when it had grown large (engine.manager._rotate_log).
+ENGINE_DELETE = frozenset({"engine.log", "engine.log.1"})
 # Inside engine/, deleted only while the engine is stopped (resume_pending): its
 # prompt cache holds model state computed from past prompts, and its logs.
 ENGINE_CACHES = ("base/cache", "base/logs")
@@ -702,31 +703,18 @@ def _command_of(pid: int) -> str | None:
 def _engine_running(home: Path) -> bool:
     """Whether the bundled engine recorded in engine/engine.pid is still alive.
 
-    A live pid counts only while it is still that engine (its command ends with
-    this home's ``--base-path``, as engine.manager.reap_orphan checks), so a
-    recycled pid doesn't keep the prompt cache forever. A command that can't be
-    read counts as the engine: the cache is kept rather than deleted under it."""
-    try:
-        pid = int((home / "engine" / "engine.pid").read_text().strip())
-    except (OSError, ValueError):
-        return False
-    if pid <= 1:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except OSError:
-        pass
-    command = _command_of(pid)
-    if command is None:
-        return True
-    if not command:
-        return False                 # gone between the two checks
-    bases = {str(Path(home) / "engine" / "base")}
-    with contextlib.suppress(OSError):
-        bases.add(str((Path(home) / "engine" / "base").resolve()))
-    return any(command.endswith(f"--base-path {base}") for base in bases)
+    A live pid counts only while it is still that engine, by the rule
+    engine.manager.reap_orphan kills by (the start time recorded with the pid,
+    since a running engine shows as ``omlx-server`` with no arguments; for a
+    bare pid, this home's ``--base-path``), so a recycled pid doesn't keep the
+    prompt cache forever. A process that can't be read counts as the engine:
+    the cache is kept rather than deleted under it."""
+    from service.engine.manager import recorded_engine
+    engine = Path(home) / "engine"
+    # No interpreter path: finding it means resolving the engine mode, which must not
+    # happen before the restart pass. A bare pid named like the engine counts as it.
+    record = recorded_engine(engine / "engine.pid", engine / "base", None, command_of=_command_of)
+    return record is not None and record[1] is not False
 
 
 def _service_live(port: int = 8765) -> bool:
@@ -987,6 +975,16 @@ def _child_tasks() -> list:
     return found
 
 
+def _summary_folds() -> list:
+    """Rolling-summary folds a finished turn left running (service/main.py). They are
+    not requests, so _cancel_requests never sees them."""
+    folds = getattr(sys.modules.get("service.main"), "_SUMMARY_TASKS", None)
+    if not isinstance(folds, dict):
+        return []
+    loop = asyncio.get_running_loop()
+    return [t for t in folds.values() if isinstance(t, asyncio.Task) and t.get_loop() is loop]
+
+
 async def _stop_background(app, problems: list[dict]) -> None:
     from service.assistant import scheduler
     tasks = [t for t in getattr(app.state, "wisp_background_tasks", ()) or () if not t.done()]
@@ -996,6 +994,8 @@ async def _stop_background(app, problems: list[dict]) -> None:
     # And the work it starts on its ticks. An in-flight gist or mail memory call would
     # otherwise write its cache back after the erase below, and a day-plan email send.
     tasks += [t for t in _child_tasks() if not t.done()]
+    # A fold mid-call would write its summary into the chat history after the erase.
+    tasks += [t for t in _summary_folds() if not t.done()]
     for task in tasks:
         task.cancel()
     if tasks:

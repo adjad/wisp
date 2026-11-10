@@ -352,6 +352,57 @@ def test_signatures_name_the_family(magic, family):
     assert A.inspect("file", magic + b"\x00" * 40)["family"] == family
 
 
+def pe_program(pad: bytes = b"\x01") -> bytes:
+    """The smallest thing with a Windows program's shape: "MZ", then where the PE header is, then it."""
+    return b"MZ" + pad * 58 + (0x80).to_bytes(4, "little") + pad * 64 + b"PE\x00\x00" + pad * 20
+
+
+@pytest.mark.parametrize("name,data", [
+    ("list.csv", b"MZ-100,widget,4\nMZ-101,gasket,9\n"),
+    ("names.txt", b"MZ"),
+    ("notes.log", b"MZ " + b"stock count for the north shelf. " * 400),
+    ("a.txt", b"BM hello"),
+    ("readme.md", b"BMW service notes, kept for the next visit.\n" * 4),
+])
+def test_text_that_starts_with_the_letters_of_a_program_or_picture_is_not_one(name, data):
+    result = A.inspect(name, data)
+    assert result["real_type"] == "" and result["family"] == ""
+    assert result["warnings"] == [] and result["risk"] == {"level": "", "reasons": []}
+
+
+def test_a_real_windows_program_is_still_one_whatever_it_is_called():
+    old_dos = b"MZ\x90\x00\x03" + b"\x01" * 200                 # no PE header, but a binary one
+    for data in (pe_program(), pe_program(b"A"), old_dos, MZ, b"MZ\x00"):
+        for name in ("list.csv", "notes.txt", "invoice.pdf", "setup.exe", "thing"):
+            result = A.inspect(name, data)
+            assert result["real_type"] == "a Windows program" and result["family"] == "program", (name, data[:8])
+            assert result["risk"]["level"] == "high"
+    assert warned(A.inspect("list.csv", pe_program(b"A")), "says .csv", "really a windows program")
+    # With no zero byte in the first 8 KB, the PE header alone decides: it must be where the file
+    # says it is, and inside the file. (Only a header 16 MB in has an address with no zero byte.)
+    far = 0x01010101
+    start = b"MZ" + b"A" * 58 + far.to_bytes(4, "little")
+    body = b"A" * (far - len(start))
+    assert A._is_windows_program(start + body + b"PE\x00\x00") is True
+    assert A.inspect("list.csv", start + body + b"PE\x00\x00")["family"] == "program"
+    assert A._is_windows_program(start + body + b"PEAA") is False
+    assert A._is_windows_program(start + body + b"PE\x00") is False             # cut off inside the header
+    assert A._is_windows_program(start + b"A" * 64) is False                    # the address is past the end
+    assert A._is_windows_program(b"MZ" + b"A" * 61) is False                    # too short to say where it is
+
+
+def test_a_real_bmp_is_still_a_picture_and_two_letters_are_not():
+    bmp = encoded(Image.new("RGB", (4, 4), "white"), "BMP")
+    assert A.inspect("p.bmp", bmp)["real_type"] == "a BMP image" and A.inspect("p.txt", bmp)["family"] == "image"
+    for size in (12, 40, 52, 56, 64, 108, 124):
+        assert A._is_bmp(b"BM" + b"\x01" * 12 + size.to_bytes(4, "little") + b"\x01" * 8)
+    assert not A._is_bmp(b"BM" + b"\x01" * 12 + (41).to_bytes(4, "little") + b"\x01" * 8)
+    assert not A._is_bmp(b"BM" + b"\x01" * 12 + (40).to_bytes(4, "little"))     # cut off inside the header
+    # A picture name over text is still told it doesn't match.
+    assert risk_of("scan.bmp", b"BM hello")["level"] == "caution"
+    assert risk_of("scan.jpg", b"MZ-100,widget")["level"] == "caution"
+
+
 def test_a_mac_disk_image_is_known_by_its_trailer():
     result = A.inspect("update.pdf", b"x" * 1000 + b"koly" + b"y" * 508)
     assert result["family"] == "program" and warned(result, "disk image")
@@ -594,6 +645,31 @@ def test_a_password_protected_archive_or_pdf_is_a_caution():
     assert risk_of("secret.zip", bytes(raw))["level"] == "caution"
     locked = risk_of("statement.pdf", pdf_bytes(encrypt=True))
     assert locked["level"] == "caution" and locked["reasons"] == [A.ENCRYPTED_PDF_REASON]
+
+
+def locked_office(extra: bytes = b"") -> bytes:
+    names = b"".join(name.encode("utf-16-le") + b"\x00" * 40 for name in ("EncryptionInfo", "EncryptedPackage"))
+    return b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 504 + names + extra + b"\x07" * 600
+
+
+def test_an_office_file_saved_with_a_password_is_named_and_is_a_caution():
+    from service import mail_attachments as ma
+    from service.document_extract import LOCKED
+    for name in ("payroll.xlsx", "letter.docx", "deck.pptx"):
+        result = A.inspect(name, locked_office())
+        assert result["real_type"] == "a password-protected Office file" and result["family"] == "document"
+        assert result["warnings"] == []
+        assert result["risk"] == {"level": "caution", "reasons": [
+            "It is password-protected, so its contents can't be checked."]}
+    # The sentence the reader gives for it is one of Wisp's own, so it is shown as the reason.
+    assert ma._file_problem(ValueError(LOCKED)) == LOCKED
+    # An old Office file that is not locked is described as before, with no new caution.
+    old = A.inspect("old.doc", b"\xd0\xcf\x11\xe0" + b"\x00" * 100)
+    assert old["real_type"] == "an old Office file" and old["risk"]["level"] == ""
+    # Naming the two streams does not hide macros.
+    both = risk_of("old.doc", locked_office("_VBA_PROJECT".encode("utf-16-le")))
+    assert both["level"] == "caution" and len(both["reasons"]) == 2
+    assert both["reasons"][0].startswith("It is an Office file that contains macros")
 
 
 def test_a_web_page_with_a_password_field_or_form_is_a_caution():
@@ -872,11 +948,17 @@ def test_ocr_pdf_skips_tiny_pictures_caps_pages_and_stops_at_the_pixel_budget(mo
         A.ocr_images("s.pdf", scanned_pdf(2, size=(100, 120)))
     monkeypatch.setattr(A, "MAX_OCR_PAGES", 2)
     capped = A.ocr_images("s.pdf", scanned_pdf(4, size=(320, 320)))
-    assert capped["pages"] == 4 and capped["read_pages"] == [1, 2]
+    assert capped["pages"] == 4 and capped["read_pages"] == [1, 2] and capped["capped"] is True
     monkeypatch.setattr(A, "MAX_OCR_PAGES", 40)
+    assert "capped" not in A.ocr_images("s.pdf", scanned_pdf(4, size=(320, 320)))
     monkeypatch.setattr(A, "OCR_MAX_TOTAL_PIXELS", 320 * 320 * 2 + 10)
     budget = A.ocr_images("s.pdf", scanned_pdf(4, size=(320, 320)))
-    assert budget["read_pages"] == [1, 2] and budget["pages"] == 4
+    assert budget["read_pages"] == [1, 2] and budget["pages"] == 4 and budget["capped"] is True
+    monkeypatch.setattr(A, "OCR_MAX_TOTAL_PIXELS", 400_000_000)
+    first = A.ocr_images("s.pdf", scanned_pdf(1, size=(320, 320)))
+    monkeypatch.setattr(A, "OCR_MAX_TOTAL_BYTES", len(first["images"][0]) + 10)
+    sized = A.ocr_images("s.pdf", scanned_pdf(4, size=(320, 320)))
+    assert sized["read_pages"] == [1] and sized["capped"] is True
 
 
 def test_ocr_pdf_errors_are_plain():

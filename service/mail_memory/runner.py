@@ -14,6 +14,9 @@ index and files costs nothing. Three levels (docs/plans/2026-10-26-email-digest-
 - away:    no keyboard or mouse for 10+ minutes, on power or battery over 50%.
            Calls run back to back, 5 s apart on power; on battery at least
            AWAY_BATTERY_GAP_S apart, so an unplugged night doesn't drain it.
+           The scheduler only calls every 30 s, so after a step with a shorter
+           gap the walk waits that gap itself and asks `schedule_tick` again
+           (`_run`): the same gates, no scheduler tick needed.
 
 IMPORTANT rules:
 - Never loads or evicts a model. The fast role must stay local
@@ -77,6 +80,10 @@ WINDOW_DAYS = 90
 INDEX_EVERY_S = 6 * 3600
 BETWEEN_GAP_S = 90
 AWAY_GAP_S = 5
+# The assistant scheduler's own pace (scheduler.TICK_S), kept here so the walk
+# doesn't import the scheduler: a gap under this would otherwise wait for it.
+SCHEDULER_TICK_S = 30
+FOLLOW_UP_SLACK_S = 0.05        # so the wait never ends a hair before _next_at
 AWAY_BATTERY_GAP_S = 60
 BUSY_GAP_S = 60
 IDLE_DONE_GAP_S = 1800
@@ -619,21 +626,36 @@ QUIET_MARGIN_DAYS = 14
 
 def _forget_gone_accounts(st, rows: list[dict], now: float) -> dict | None:
     """Forget what was learned from a Mail account that has left Mail
-    (profile_facts.forget_accounts). An account counts as gone only when it
+    (profile_facts.forget_accounts) and the text read from its attachments
+    (attachment_store.forget_account). An account counts as gone only when it
     should still be in the window (it had mail in the last WINDOW_DAYS -
     QUIET_MARGIN_DAYS days, so a quiet account never counts) and it is missing
     from GONE_RUNS complete index reads spanning GONE_SPAN_S or more: a re-import
-    after a macOS update or a mailbox rebuild doesn't erase anything."""
+    after a macOS update or a mailbox rebuild doesn't erase anything.
+
+    The accounts looked at are those with fact candidates and those that own
+    attachment text. Not every indexed account (`account_newest`): a gone
+    account's message rows stay, so it would be forgotten again every two days."""
+    from service import attachment_store
     seen = {r.get("account", "") for r in rows}
     try:
         missing = json.loads(st.meta("accounts_missing") or "{}")
     except ValueError:
         missing = {}
     newest = st.account_newest()
+    # The attachment store keeps its labels trimmed and lower-cased; Mail's index
+    # doesn't. Match on that form, then carry on with the index's own spelling.
+    fold = attachment_store.account_key
+    spelled = {fold(a): a for a in newest if a}
+    here = {fold(a) for a in seen}
+    with_text = {spelled.get(a, a) for a in attachment_store.accounts() if a not in here}
     still, gone = {}, set()
-    for account in st.candidate_accounts() - seen - {""}:
+    for account in (st.candidate_accounts() - seen - {""}) | with_text:
         if now - newest.get(account, 0) > (WINDOW_DAYS - QUIET_MARGIN_DAYS) * 86400:
-            continue                               # quiet, not gone: it would fall out of the window anyway
+            # Quiet, not gone: it would fall out of the window anyway. This is also what
+            # keeps a reading owned by a Gmail address (never in Mail's index, so its
+            # newest is 0) from ever counting as a Mail account that left.
+            continue
         first, runs = (missing.get(account) or [now, 0])[:2]
         runs += 1
         if runs >= GONE_RUNS and now - first >= GONE_SPAN_S:
@@ -644,7 +666,6 @@ def _forget_gone_accounts(st, rows: list[dict], now: float) -> dict | None:
     if not gone:
         return None
     from service.memory.facts import store as facts
-    from service import attachment_store
     for account in gone:      # an account that left Mail takes the text read from its attachments with it
         attachment_store.forget_account(account)
     return profile_facts.forget_accounts(st, facts, gone)
@@ -693,7 +714,7 @@ async def _facts_pass(st, row: dict, email, today, now: float, identity: str) ->
 
 
 async def _run() -> None:
-    global _next_at
+    global _next_at, _task
     try:
         gap = await tick()
     except BridgeError as exc:
@@ -708,6 +729,20 @@ async def _run() -> None:
         note_failure(f"unexpected:{type(exc).__name__}", warn=False)
         gap = FAILURE_GAP_S
     _next_at = time.time() + gap
+    if gap >= SCHEDULER_TICK_S or mode() == "off":
+        return
+    # Away, on power: the next step is due before the scheduler's next call (it used
+    # to wait for it, so "5 s apart" was really 30 s). The wait stays inside this
+    # task, which keeps the single-flight slot and is what a reset or a shutdown
+    # cancels, so nothing is left behind to fire later. Then `schedule_tick` decides
+    # with every gate it always had; if it declines, the scheduler's own call resumes.
+    await asyncio.sleep(gap + FOLLOW_UP_SLACK_S)
+    if _task is asyncio.current_task():
+        _task = None                  # this run is over; hand the slot to the next one
+    try:
+        schedule_tick()
+    except Exception as exc:  # noqa: BLE001 — as in the scheduler: the next call tries again
+        log.warning("mail memory: follow-up did not start (%s)", type(exc).__name__)
 
 
 def _other_background_work() -> bool:
@@ -734,7 +769,8 @@ def _other_background_work() -> bool:
 
 
 def schedule_tick() -> None:
-    """Called from the assistant scheduler every 30 s; starts at most one tick."""
+    """Called from the assistant scheduler every 30 s, and by a step that is due
+    again sooner (`_run`); starts at most one tick."""
     global _task
     if _task is not None and not _task.done():
         return

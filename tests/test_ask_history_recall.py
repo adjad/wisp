@@ -324,6 +324,40 @@ def test_digest_keeps_identifiers_intact():
     assert line == "- User: wifi is blue_fox#42, mail jane_doe@x.com, a|b code"
 
 
+@pytest.mark.parametrize("paste", [
+    "a" + "\n" * 50_000 + "b",              # a whole empty spreadsheet column
+    "a" + " \t\n" * 30_000 + "- b",          # rows that hold only spaces
+    "a" + "\r\n" * 30_000 + "b",             # the same from a Windows export
+    "a\n" + " " * 100_000 + "b",             # one very deep indent
+], ids=["blank-lines", "space-only-lines", "crlf-lines", "deep-indent"])
+def test_a_paste_full_of_blank_lines_condenses_in_linear_time(paste):
+    import time
+    started = time.perf_counter()
+    line = context.digest_line("user", paste)
+    # The old line-leading match rescanned every later blank line from each
+    # blank line: 50,000 of them took about ten seconds on every later turn.
+    assert time.perf_counter() - started < 1.0
+    assert line == "- User: a b"
+
+
+def test_digest_markup_stripping_is_unchanged_for_bullets_headings_and_quotes():
+    import itertools
+    import re
+    assert context.digest_line("user", "- x\n# h\n> q") == "- User: x h q"
+    assert context.digest_line("user", "Plan:\n\n\n  * one\n\t+ two\n###### six\n####### seven") == (
+        "- User: Plan: one two six ####### seven")
+    assert context.digest_line("user", "a\n\n   \n\n  - under blank lines") == "- User: a under blank lines"
+    assert context.digest_line("user", "  • wide indent") == "- User: wide indent"
+    assert context.digest_line("user", "1 - 2 > 0 and a*b") == "- User: 1 - 2 > 0 and a*b"
+    # Every short mix of marks and whitespace condenses exactly as it did
+    # with the previous pattern.
+    previous = re.compile(r"\*\*|`+|^\s*(?:[-•*+>]|#{1,6})\s+", re.M)
+    for length in range(6):
+        for chars in itertools.product("-# \n\ta*`>\r ", repeat=length):
+            text = "".join(chars)
+            assert context._flat(text) == " ".join(previous.sub(" ", text).split()), repr(text)
+
+
 def _call(cid):
     return {"role": "assistant", "content": "", "tool_calls": [
         {"id": cid, "type": "function", "function": {"name": "get_upcoming", "arguments": "{}"}}]}

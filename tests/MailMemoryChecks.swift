@@ -154,6 +154,59 @@ enum MailMemoryChecks {
         await model.setMode("live")
         check(model.mode == "shadow" && model.modeStatus == "Couldn't change it. Try again.", "a refused change keeps the mode")
 
+        // Learn facts about me from mail: the switch, and Forget what Wisp learned from mail.
+        check(fresh.factsEnabled == nil, "the facts switch is unknown before the service answers")
+        let untouched = requests.count
+        await fresh.setFacts(false)
+        let early = await fresh.forgetFromMail()
+        check(requests.count == untouched && !early, "nothing is sent before the service has answered once")
+        replies = [(200, ["mode": "live", "suggestions": [], "facts": ["enabled": true]])]
+        await model.refresh()
+        check(model.factsEnabled == true, "facts.enabled is read from the service's reply")
+        replies = [(200, ["mode": "live", "suggestions": []])]
+        await model.refresh()
+        check(model.factsEnabled == nil, "a reply that doesn't say leaves the switch unknown, not off")
+        replies = [(200, ["ok": true, "enabled": false]),
+                   (200, ["mode": "live", "suggestions": [], "facts": ["enabled": false]])]
+        await model.setFacts(false)
+        let factsPut = requests[requests.count - 2]
+        check(factsPut.httpMethod == "PUT" && factsPut.url?.path == "/assistant/mail_memory/facts", "facts switch request")
+        check(factsPut.value(forHTTPHeaderField: "Content-Type") == "application/json", "facts switch is the app's own JSON")
+        let factsBody = (try? JSONSerialization.jsonObject(with: factsPut.httpBody ?? Data())) as? [String: Bool]
+        check(factsBody == ["enabled": false], "facts switch body")
+        check(model.factsEnabled == false && model.factsStatus == nil, "facts switched off")
+        check(!model.factsChanging, "the facts switch is free again")
+        replies = [(500, [:])]
+        await model.setFacts(true)
+        check(model.factsEnabled == false && model.factsStatus == MailFactsText.changeFailed,
+              "a refused switch keeps what the service last said")
+
+        replies = [(200, ["ok": true, "forgotten": 3, "enabled": false]),
+                   (200, ["mode": "live", "suggestions": [], "facts": ["enabled": false]])]
+        let forgot = await model.forgetFromMail()
+        let forgetPost = requests[requests.count - 2]
+        check(forgetPost.httpMethod == "POST" && forgetPost.url?.path == "/assistant/mail_memory/forget_facts", "forget request")
+        check(forgetPost.value(forHTTPHeaderField: "Content-Type") == "application/json", "forget is the app's own JSON")
+        let forgetBody = String(data: forgetPost.httpBody ?? Data(), encoding: .utf8)
+        check(forgetBody == "{}", "forget sends an empty object")
+        check(forgot && model.factsEnabled == false, "forgot, and learning facts from mail is off")
+        check(model.factsStatus == MailFactsText.forgot && !model.factsChanging, "forgetting says what it did")
+        replies = [(503, ["detail": "x"]),
+                   (200, ["mode": "live", "suggestions": [], "facts": ["enabled": true]])]
+        let failedForget = await model.forgetFromMail()
+        check(!failedForget && model.factsStatus == MailFactsText.forgetFailed, "a failed forget says so")
+        check(model.factsEnabled == true, "after a failed forget the switch shows what the service now says")
+
+        check(MailFactsText.caption(known: false, enabled: nil, mode: "live") == "Checking…", "facts caption before the service answers")
+        check(MailFactsText.caption(known: true, enabled: nil, mode: "live").contains("didn't say"), "facts caption when the service didn't say")
+        check(MailFactsText.caption(known: true, enabled: false, mode: "live").hasPrefix("Off."), "facts caption when off")
+        check(MailFactsText.caption(known: true, enabled: true, mode: "live").contains("stay on this Mac"), "facts caption when on")
+        check(MailFactsText.caption(known: true, enabled: true, mode: "shadow").contains("Record only"), "facts caption in record-only")
+        check(MailFactsText.caption(known: true, enabled: true, mode: "off").contains("nothing is read"),
+              "facts caption never claims learning while mail suggestions are off")
+        check(MailFactsText.forgetMessage.contains("attachments") && MailFactsText.forgetMessage.contains("turns off learning"),
+              "the forget question names the attachment text and the switch it turns off")
+
         if failures > 0 { print("\(failures) failure(s)"); exit(1) }
         print("MailMemory: \(total) checks passed")
     }

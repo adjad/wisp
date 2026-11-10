@@ -678,11 +678,15 @@ final class WispClient {
         return (http.statusCode == 200 && (obj["ok"] as? Bool ?? false), result)
     }
 
-    // Unload all resident models from oMLX to free memory/power.
-    func unloadAll() async {
+    // Unload all resident models from oMLX to free memory/power. True only when
+    // the service answered that it did: an unload that failed (the engine busy,
+    // the service not answering) must never be reported as done.
+    @discardableResult
+    func unloadAll() async -> Bool {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("unload_all"))
         req.httpMethod = "POST"
-        _ = try? await URLSession.shared.data(for: req)
+        guard let (_, response) = try? await URLSession.shared.data(for: req) else { return false }
+        return (response as? HTTPURLResponse)?.statusCode == 200
     }
 
     // Unload the resident agent model — keeps the small always-on
@@ -795,6 +799,16 @@ final class WispClient {
         guard let (data, response) = try? await URLSession.shared.data(from: url),
               (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
         return Self.saveWhenAwayFlag(data)
+    }
+
+    /// GET /power's `applies`: false when Save power can cap nothing on this
+    /// engine (the person's own oMLX app, or a remote-only setup). Nil when the
+    /// service doesn't say or can't be read; the app then shows what it always has.
+    func saveWhenAwayApplies() async -> Bool? {
+        let url = Self.baseURL.appendingPathComponent("power")
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.flag("applies", in: data)
     }
 
     // POST /power -> turn "Save power" on or off. Returns the flag the

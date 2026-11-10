@@ -28,11 +28,13 @@ private extension Theme {
 ///     }
 ///
 /// `onReply` is told whenever Reply is tapped, for whatever else wants to know.
+///
+/// The default composer shows the reply `ProactiveActions.shared` keeps for the
+/// thread, so the notch tucking away or a tab change never drafts it again.
 @MainActor
 enum BriefReplyHook {
     static var composer: ((ProactiveThread, _ close: @escaping () -> Void) -> AnyView)? = { thread, close in
-        AnyView(BriefReplyComposer(replyRef: thread.replyRef, account: thread.replyAccount,
-                                   onSent: {}, onDismiss: close))
+        AnyView(BriefReplyComposer(model: ProactiveActions.shared.replyModel(for: thread), onDismiss: close))
     }
     static var onReply: ((ProactiveThread) -> Void)? = nil
 }
@@ -51,6 +53,12 @@ final class ProactiveActions: ObservableObject {
         case sending
         case done(String)
         case failed(String)
+        /// Nothing was sent: Mail reported other recipients than the card
+        /// showed. The card shows them now, and Send waits for a fresh tap.
+        case confirm(String)
+        /// A reply that may have gone out: the card says where to check and
+        /// offers no second Send.
+        case unconfirmed(String)
     }
 
     @Published var fires: [String: Fire] = [:]
@@ -79,6 +87,45 @@ final class ProactiveActions: ObservableObject {
     @Published var heroID: String? = nil
     /// The one of the Brief's rows that is open: "todos" or "threads".
     @Published var openRow: String? = nil
+    /// Replies being written, by thread id. Kept here, not in the composer's
+    /// view, so the notch tucking away or a tab change keeps the typed text and
+    /// the result of a send. Not published: each composer observes its own.
+    private(set) var replyModels: [String: BriefReplyModel] = [:]
+
+    /// The reply for a thread: made on the first ask, the same one afterwards.
+    func replyModel(for thread: ProactiveThread, transport: BriefReplyModel.Transport? = nil) -> BriefReplyModel {
+        if let kept = replyModels[thread.id] { return kept }
+        let made = BriefReplyModel(replyRef: thread.replyRef, account: thread.replyAccount,
+                                   baseURL: BriefReplyModel.defaultBaseURL,
+                                   transport: transport ?? BriefReplyModel.defaultTransport)
+        replyModels[thread.id] = made
+        return made
+    }
+
+    /// Cancel, Done or Close reply. The reply is forgotten unless its send is
+    /// still out: that one is kept, so opening Reply again shows what happened
+    /// to it instead of a new draft with a live Send.
+    func closeReply(_ id: String) {
+        if replying == id { replying = nil }
+        if let kept = replyModels[id], kept.phase != .sending { replyModels[id] = nil }
+    }
+
+    /// Whether the open reply is unfinished: being drafted, holding text that
+    /// hasn't been sent, or sending. The panel stays open for it. False when no
+    /// reply is open, its row is closed, or it is sent.
+    var replyInProgress: Bool {
+        guard let id = replying, expanded.contains(id) else { return false }
+        return replyModels[id]?.holdsPanelOpen == true
+    }
+
+    /// Forget replies to threads the Brief no longer lists, so one that can't
+    /// be reached never keeps the panel open. A send still out is kept.
+    func pruneReplies(keeping listed: Set<String>) {
+        if let id = replying, !listed.contains(id) { replying = nil }
+        for (id, kept) in replyModels where !listed.contains(id) && kept.phase != .sending {
+            replyModels[id] = nil
+        }
+    }
 
     func draft(_ card: ProactiveCard) -> String { drafts[card.id] ?? card.action?.draft ?? "" }
 
@@ -123,9 +170,27 @@ final class ProactiveActions: ObservableObject {
         // The service books the slot it stored on the card and rechecks it; the
         // request never carries one (the fire route refuses unknown fields).
         do {
-            let outcome = try await post(today, "/assistant/proactive/cards/\(Self.segment(card.id))/fire", body: body)
+            let outcome = try await post(today, "/assistant/proactive/cards/\(Self.segment(card.id))/fire", body: body,
+                                         timeout: action.fireTimeout)
             guard outcome.ok else {
-                fires[card.id] = .failed(outcome.message.isEmpty ? "That didn't go through. Try again." : outcome.message)
+                // A reply the service didn't send may have changed its card: other
+                // recipients after a confirm, or a lock after an unconfirmed send.
+                // Read the plan again so the card shows, and the next tap repeats,
+                // the recipient the service now holds. The draft stays open and
+                // keeps the person's edits: both live here, not in the plan.
+                switch outcome.refusal(method: action.method) {
+                case .confirm(let line):
+                    // Still "Sending…" until the card shows the new recipients,
+                    // so no tap can repeat the old ones.
+                    await today.refresh(afterMutation: true)
+                    fires[card.id] = .confirm(line)
+                case .unconfirmed(let line):
+                    fires[card.id] = .unconfirmed(line)
+                    await today.refresh(afterMutation: true)
+                case .retry(let line):
+                    fires[card.id] = .failed(line)
+                    if action.sendsDraft { await today.refresh(afterMutation: true) }
+                }
                 return
             }
             if let url = URL(string: outcome.url), !outcome.url.isEmpty {
@@ -141,7 +206,16 @@ final class ProactiveActions: ObservableObject {
             openDrafts.remove(card.id)
             await today.refresh(afterMutation: true)
         } catch {
-            fires[card.id] = .failed(error.localizedDescription)
+            guard action.sendsDraft, !ProactiveOutcome.neverReached(error) else {
+                fires[card.id] = .failed(error.localizedDescription)
+                return
+            }
+            // No answer is not a failure: the service may still be sending, and
+            // the reply can go out after this. Never "Try again"; say where to
+            // check, then show what the service holds (gone once sent, locked
+            // when Mail or Messages didn't confirm).
+            fires[card.id] = .unconfirmed(ProactiveOutcome.unconfirmedLine(method: action.method))
+            await today.refresh(afterMutation: true)
         }
     }
 
@@ -237,6 +311,7 @@ final class ProactiveActions: ObservableObject {
         openDrafts = openDraft.map { [$0] } ?? []
         self.expanded = expanded
         self.replying = replying
+        replyModels = [:]
     }
     #endif
 }
@@ -285,6 +360,10 @@ struct ProactiveBriefSection: View {
         let shown = proactive.only(chosen)
         Group {
             if wide { columns(shown) } else { column(shown) }
+        }
+        // Every account's threads, not only the chosen chip's.
+        .onChange(of: proactive.threads.map(\.id), initial: true) { _, listed in
+            actions.pruneReplies(keeping: Set(listed))
         }
         .task(id: actions.shouldPoll(proactive)) {
             // While the engine reads, follow its progress; stop once it's done.
@@ -561,7 +640,7 @@ struct ProactiveBriefSection: View {
                 draftEditor(card, action, fire: fire, withSend: sendInDraft).revealInPanel("draft-\(card.id)")
             }
             HStack(alignment: .center, spacing: 12) {
-                if let action, !sendInDraft { fireButton(card, action, fire) }
+                if let action, !sendInDraft, !isUnconfirmed(fire) { fireButton(card, action, fire) }
                 if action?.method == "block_time" {
                     secondary("Pick another time") { model.tab = .day }
                         .help("Open Day to choose a different time")
@@ -594,6 +673,15 @@ struct ProactiveBriefSection: View {
             .padding(.top, 3)
             if case .failed(let reason) = fire {
                 Text(reason).font(.wisp(size: 11)).foregroundStyle(Theme.bad)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if case .confirm(let line) = fire {
+                // Not a failure: nothing was sent, and Send waits for a fresh tap.
+                Text(line).font(.wisp(size: 11)).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if case .unconfirmed(let line) = fire {
+                Text(line).font(.wisp(size: 11)).foregroundStyle(Theme.warn)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let error = actions.cardErrors[card.id] {
@@ -676,6 +764,12 @@ struct ProactiveBriefSection: View {
         return false
     }
 
+    /// The reply may have gone out: the card shows no Send and no Try again.
+    private func isUnconfirmed(_ fire: ProactiveActions.Fire?) -> Bool {
+        if case .unconfirmed = fire { return true }
+        return false
+    }
+
     private func draftEditor(_ card: ProactiveCard, _ action: ProactiveCard.Action, fire: ProactiveActions.Fire? = nil,
                              withSend: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -685,8 +779,11 @@ struct ProactiveBriefSection: View {
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
             }
             if !action.recipient.isEmpty {
+                // Never truncated: these are the people Send sends the draft to.
                 Text("TO  " + action.recipient).font(.wisp(size: 10, design: .monospaced)).foregroundStyle(Theme.textMuted)
-                    .lineLimit(1)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .accessibilityLabel("To: " + action.recipient)
             }
             TextEditor(text: Binding(get: { actions.draft(card) }, set: { actions.drafts[card.id] = $0 }))
                 .font(.wisp(size: 12.5)).foregroundStyle(Theme.textPrimary)
@@ -701,7 +798,7 @@ struct ProactiveBriefSection: View {
             if actions.drafts[card.id].map({ $0 != action.draft }) == true {
                 Text("Edited — Wisp sends your version.").font(.wisp(size: 10.5)).foregroundStyle(Theme.textMuted)
             }
-            if withSend {
+            if withSend, !isUnconfirmed(fire) {
                 // Send, under the words it sends and the person it sends them to.
                 fireButton(card, action, fire).padding(.top, 2)
             }
@@ -1047,7 +1144,7 @@ struct ProactiveBriefSection: View {
             HStack(spacing: 6) {
                 if thread.canReply {
                     NotchChrome.small(actions.replying == thread.id ? "Close reply" : "Reply") {
-                        if actions.replying == thread.id { actions.replying = nil } else {
+                        if actions.replying == thread.id { actions.closeReply(thread.id) } else {
                             actions.replying = thread.id
                             onReply?(thread)   // HOOK(W3)
                         }
@@ -1069,7 +1166,7 @@ struct ProactiveBriefSection: View {
     /// HOOK(W3): the reply composer, or a placeholder until it is wired.
     @ViewBuilder private func replyArea(_ thread: ProactiveThread) -> some View {
         if let composer = BriefReplyHook.composer {
-            composer(thread) { actions.replying = nil; model.onResize() }
+            composer(thread) { actions.closeReply(thread.id); model.onResize() }
         } else {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("Replying from the Brief isn't set up in this build. Open the thread in Mail to answer it.")
