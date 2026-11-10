@@ -1743,16 +1743,19 @@ async def whole_text(ctx: _Ctx, email: _Email, f: _File) -> tuple[_Reading, str,
 async def run(query: str | None = None, name: str | None = None, start: float | None = None,
               end: float | None = None, label: str = "", count: int = DEFAULT_COUNT,
               account: str | None = None, question: str | None = None, list_only: bool = False,
-              pages: str | None = None, sheet: str | None = None, source: str = "mail") -> str:
+              pages: str | None = None, sheet: str | None = None, source: str = "mail",
+              inside: str | None = None, across: bool = False) -> str:
     """Find attachments across Apple Mail and Gmail (or, with source="messages", in Messages only),
     then list or read them. Never raises.
 
-    `pages` ("12", "3-5") and `sheet` (a tab's name or number) narrow the reading to that part."""
+    `pages` ("12", "3-5") and `sheet` (a tab's name or number) narrow the reading to that part.
+    `inside` looks for words inside the files Wisp has already read (no new file is fetched). `across`
+    goes through many files and pulls the same few facts from each (and wins over `inside`)."""
     shown: list[str] = []
     try:
         return await asyncio.wait_for(
             _run(query, name, start, end, label, count, account, question, list_only, shown, pages, sheet,
-                 "messages" if source == "messages" else "mail"),
+                 "messages" if source == "messages" else "mail", inside, across is True),
             DEADLINE_S + 20.0)
     except (TimeoutError, asyncio.TimeoutError):
         if len(shown) > 1:
@@ -1878,12 +1881,25 @@ async def _find(query, name, start, end, account, count, source: str, most: int)
 
 
 async def _run(query, name, start, end, label, count, account, question, list_only, shown: list[str],
-               pages=None, sheet=None, source: str = "mail") -> str:
+               pages=None, sheet=None, source: str = "mail", inside=None, across: bool = False) -> str:
     from service import gmail_source
     deadline = time.monotonic() + DEADLINE_S
     messages = source == "messages"
+    fell_through = ""
+    if across:
+        return await _run_across(query, name, start, end, label, account, question, source)
+    words = _inside_words(inside)
+    if words:
+        answer = await _run_inside(words, query, name, start, end, label, account, question, list_only, source)
+        if answer is not None:
+            return answer
+        question = question or f"Find this in the file: {words}"
+        fell_through = ("Nothing Wisp had already read matched, so these are listed instead." if list_only
+                        else "Nothing Wisp had already read matched, so it read these now.")
     found = await _find(query, name, start, end, account, count, source, MAX_EMAILS)
     chosen, notes, terms, accounts, named = found.chosen, found.notes, found.terms, found.accounts, found.named
+    if fell_through:
+        notes.append(fell_through)
     where = f" in {label}" if label else ""
     if not chosen:
         what = f" matching {', '.join(terms)}" if terms else ""
@@ -1970,6 +1986,336 @@ def _list_result(top: str, chosen: list[_Email], notes: list[str], limit: int, n
     if trailer:
         pieces.append(trailer)
     return "\n".join(pieces)
+
+
+# --- words inside the files Wisp has read, and the same facts from many files --------------------
+
+_INSIDE_MAX = 120
+_INSIDE_SHOWN = 5
+_INSIDE_SEARCHED = 8
+_SHAPE_MIN_ROOM = 200               # below this much room for it, the shaped text is left out
+_SHAPE_MIN_S = 10.0
+_ACROSS_FILES = 40
+_ACROSS_SPARE_S = 6.0               # left unspent before the deadline, so the answer is always returned
+_ACROSS_FACTS_S = 20.0
+_ACROSS_MIN_S = 3.0                 # less than this left: no new file is started
+_ACROSS_NOTES_MAX = 600
+_NO_ALL_WORDS = "No file has all of those words; these have some of them."
+_BACKGROUND_OFF = ('Wisp only knows files it has read for you; turning on "Read new attachments in the background" '
+                   "in Settings lets it find others.")
+
+
+def _inside_words(inside) -> str:
+    """The words to look for inside files: cleaned and cut; '' when none were given."""
+    return _pretty(inside, _INSIDE_MAX).strip() if isinstance(inside, str) else ""
+
+
+def _finite_time(value) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return number if number == number and 0 < number < float("inf") else 0.0
+
+
+def _background_on() -> bool:
+    try:
+        from service import attachment_index
+        return bool(attachment_index.enabled())
+    except Exception:  # noqa: BLE001 — not there (or broken) means off
+        return False
+
+
+def _search_inside(words: str, name, start, end, account, source: str) -> list:
+    """The store's hits for `words`, narrowed like a normal search. Synchronous: run in a thread."""
+    from service import attachment_store, gmail_source
+    since, until = _finite_time(start), _finite_time(end)
+    part = _pretty(name, 120) if isinstance(name, str) else ""
+    wanted = str(account).strip() if isinstance(account, str) else ""
+    jobs: list[dict] = []
+    if source == "messages":
+        jobs.append({"source": "messages"})
+    elif wanted:
+        try:
+            connected = gmail_source.connected_accounts()
+        except Exception:  # noqa: BLE001
+            connected = {}
+        chosen, no_match = _pick_accounts(connected, wanted)
+        jobs.append({"source": "mail", "account": wanted})
+        jobs += [{"source": "gmail", "account": a} for a in ([] if no_match else chosen)]
+    else:
+        jobs += [{"source": "mail"}, {"source": "gmail"}]
+    lists = [attachment_store.search(words, limit=_INSIDE_SEARCHED, since=since, until=until, name=part, **job)
+             for job in jobs]
+    if len(lists) == 1:
+        return list(lists[0])
+    newest: dict[str, object] = {}
+    for hit in (h for hits in lists for h in hits):
+        if hit.digest not in newest or hit.ts > newest[hit.digest].ts:
+            newest[hit.digest] = hit
+    merged = list(newest.values())
+    if any(h.all_words for h in merged):
+        merged = [h for h in merged if h.all_words]
+    return sorted(merged, key=lambda h: (-h.ts, h.digest))
+
+
+def _hit_head(index: int, hit) -> str:
+    """Who, what and when, from the store's seen row, worded like a normal result."""
+    if not (hit.sender or hit.subject or hit.name or hit.ts):
+        return "A file Wisp read earlier"
+    messages = hit.source == "messages"
+    email = _Email("", float(hit.ts or 0), sender=str(hit.sender or ""), subject=str(hit.subject or ""),
+                   apple=hit.source == "mail", gmail=[hit.account] if hit.source == "gmail" and hit.account else [],
+                   source="messages" if messages else "mail", chat=str(hit.subject or "") if messages else "",
+                   from_me=messages and not hit.sender)
+    return _email_header(index, email)
+
+
+def _hit_lines(index: int, hit) -> tuple[list[str], _Reading]:
+    reading = _Reading(where=_SAVED)
+    _apply_meta(reading, hit.note)
+    f = _File(str(hit.name or ""))
+    # The sender, subject and file name are attacker-controlled and sit outside the fence: defuse markers.
+    lines = [untrusted.neutralize(_hit_head(index, hit)), untrusted.neutralize(_file_head(f, reading))]
+    how ={"recognized": "Its text was recognised on this Mac.",
+           "transcribed": "Transcribed on this Mac; some words may be wrong."}.get(hit.how, "")
+    lines.append("  Coverage: " + ((reading.note.strip() or how or "Read by Wisp earlier.")
+                                    + (" Only the start of the file was kept." if hit.cut else "")))
+    if reading.risk:
+        lines.append(("  Looks risky: " if reading.risk_level == "high" else "  Take care: ")
+                     + " ".join(reading.risk))
+    return lines, reading
+
+
+def _fenced_block(lines: list[str], body: str, room: int) -> str:
+    """The head lines and ONE fence holding `body`, at most `room` characters ('' when not even the lines fit)."""
+    base = "\n".join(lines)
+    free = room - len(base) - 1 - untrusted.overhead(_KIND)
+    if not body.strip():
+        return base if len(base) <= room else ""
+    if free < 40:
+        return base if len(base) <= room else ""
+    body = body.strip()[:free].rstrip()
+    block = base + "\n" + untrusted.fence(body, _KIND)
+    while len(block) > room and body:
+        body = body[:-max(1, len(block) - room)].rstrip()
+        block = base + "\n" + untrusted.fence(body, _KIND) if body else base
+    return block if len(block) <= room else ""
+
+
+async def _run_inside(words: str, query, name, start, end, label, account, question, list_only, source) -> str | None:
+    """Search the text of the files Wisp has read for `words`. None means "nothing matched, and there are
+    other filters": the caller then reads the files the normal way. Never fetches a file."""
+    from service import attachment_store, documents, large_document, vision
+    messages = source == "messages"
+    asked = str(question).strip()[:300] if question else ""
+    model_pair = (None, None)
+    if asked and not list_only:
+        try:
+            model_pair = documents.local_model()
+        except Exception:  # noqa: BLE001 — VisionUnavailable, ValueError, anything: nothing is shaped
+            return _LOCAL_ONLY
+    deadline = time.monotonic() + DEADLINE_S
+    hits = await asyncio.to_thread(_search_inside, words, name, start, end, account, source)
+    try:
+        total = int(await asyncio.to_thread(attachment_store.count))
+    except Exception:  # noqa: BLE001
+        total = 0
+    notes = [f"Searched the text of {total} file{'' if total == 1 else 's'} Wisp has read."]
+    if not messages and not _background_on():
+        notes.append(_BACKGROUND_OFF)
+    limit = RESULT_BUDGET_CHARS
+    where = f" in {label}" if label else ""
+    ctx = _Ctx(deadline=deadline, gmail_source=None, gmail_accounts=[],
+               passes=large_document.PassBudget(deadline=deadline), client=model_pair[0], model=model_pair[1],
+               question=asked or None)
+    candidates = list(hits)
+    blocks: list[tuple[list[str], _Reading, object, str]] = []   # (lines, reading, hit, text for the fence)
+    stored_by_digest: dict[str, object] = {}
+    for hit in candidates:
+        if len(blocks) >= _INSIDE_SHOWN:
+            break
+        if asked and not list_only:
+            try:
+                stored = await asyncio.to_thread(attachment_store.get, hit.digest)
+            except Exception:  # noqa: BLE001
+                stored = None
+            if stored is None or not str(stored.text or "").strip():
+                continue                # aged out between the search and now
+            stored_by_digest[hit.digest] = stored
+        lines, reading = _hit_lines(len(blocks) + 1, hit)
+        blocks.append((lines, reading, hit, "\n".join("… " + _pretty(s, 200) for s in hit.snippets if s)))
+    if not blocks:
+        if query or name or start is not None or end is not None:
+            return None
+        return ("No file Wisp has read contains those words. " + " ".join(notes)).strip()
+
+    count = len(blocks)
+    top = f"Found {count} file{'' if count == 1 else 's'} with those words{where}, best match first."
+    pieces = [top]
+    used = len(top)
+    if not any(h.all_words for _l, _r, h, _t in blocks):
+        pieces.append(_NO_ALL_WORDS)
+        used += len(_NO_ALL_WORDS) + 1
+    for position, (lines, reading, hit, snippet_text) in enumerate(blocks):
+        room_total = limit - _RESERVE - used - 1
+        share = room_total // (count - position)
+        body = snippet_text
+        stored = stored_by_digest.get(hit.digest)
+        if stored is not None and not list_only:
+            fixed = len("\n".join(lines)) + 1 + untrusted.overhead(_KIND)
+            shaped_room = share - fixed - len(snippet_text) - 40
+            if shaped_room >= _SHAPE_MIN_ROOM and ctx.remaining() >= _SHAPE_MIN_S:
+                try:
+                    shaped = await _shape(ctx, reading, stored.text, stored.cut, _safe_name(hit.name), stored.kind,
+                                          shaped_room)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 — the snippets are already in hand
+                    shaped = None
+                if shaped is not None and not shaped.problem and shaped.text.strip():
+                    body = (snippet_text + "\n\n" if snippet_text else "") + "For your question:\n" + shaped.text
+                    lines = [*lines[:2], "  Coverage: " + (shaped.note.strip() or "Read by Wisp earlier."),
+                             *lines[3:]]
+        block = _fenced_block(lines, body, min(room_total, share))
+        if not block:
+            continue
+        pieces.append(block)
+        used += len(block) + 1
+    pieces.extend(notes)
+    return "\n".join(pieces)
+
+
+def _skip_kind(reading: _Reading) -> str:
+    if reading.problem:
+        return "unreadable"
+    note = reading.note or ""
+    if note.startswith("Inspected only"):
+        return "program"
+    if "not read or described" in note or "could not recognise" in note:
+        return "picture"
+    return "unreadable"
+
+
+def _nothing_found(found: _Found, name, label, messages: bool) -> str:
+    what = f" matching {', '.join(found.terms)}" if found.terms else ""
+    named_text = f" named {_pretty(name, 60)!r}" if found.named else ""
+    where = f" in {label}" if label else ""
+    kind = "files in Messages" if messages else "email attachments"
+    return (f"I didn't find any {kind}{named_text}{what}{where}. " + " ".join(found.notes)).strip()
+
+
+async def _run_across(query, name, start, end, label, account, question, source) -> str:
+    """The same few facts from each of up to 40 files, newest first, with the totals added up by code."""
+    from service import attachment_fields, attachment_store, documents, gmail_source, large_document
+    messages = source == "messages"
+    try:
+        client, model = documents.local_model()
+    except Exception:  # noqa: BLE001 — facts need the model, and only this Mac's
+        return _LOCAL_ONLY
+    deadline = time.monotonic() + DEADLINE_S
+    work = deadline - _ACROSS_SPARE_S
+    found = await _find(query, name, start, end, account, _ACROSS_FILES, source, _ACROSS_FILES)
+    if not found.chosen:
+        return _nothing_found(found, name, label, messages)
+    flat = [(e, f) for e in found.chosen for f in e.files]
+    considered = flat[:_ACROSS_FILES]
+    ctx = _Ctx(deadline=work, gmail_source=gmail_source, gmail_accounts=found.accounts,
+               passes=large_document.PassBudget(deadline=work), client=client, model=model)
+    rows: list[tuple[_Email, _File, dict | None]] = []
+    skipped = {"program": 0, "picture": 0, "unreadable": 0}
+    reached = risky = 0
+    for email, f in considered:
+        if ctx.remaining() < _ACROSS_MIN_S:
+            break
+        reading, text, digest = await whole_text(ctx, email, f)
+        if reading.risk_level == "high":
+            risky += 1
+        if not str(text or "").strip():
+            skipped[_skip_kind(reading)] += 1
+            reached += 1
+            continue
+        facts = None
+        if digest:
+            try:
+                facts = await asyncio.to_thread(attachment_store.get_facts, digest, attachment_fields.FACTS_VERSION)
+            except Exception:  # noqa: BLE001
+                facts = None
+        if facts is None:
+            try:
+                facts = await attachment_fields.facts_of(
+                    text, _suffix(_safe_name(f.name)), client=client, model=model,
+                    deadline=min(work, time.monotonic() + _ACROSS_FACTS_S))
+            except asyncio.CancelledError:
+                raise
+            except (TimeoutError, asyncio.TimeoutError):
+                break                   # the engine is busy: end here with what is done
+            except Exception:  # noqa: BLE001
+                facts = None
+            if isinstance(facts, dict) and digest:
+                try:
+                    await asyncio.to_thread(attachment_store.put_facts, digest, attachment_fields.FACTS_VERSION, facts)
+                except Exception:  # noqa: BLE001
+                    pass
+        rows.append((email, f, facts if isinstance(facts, dict) else None))
+        reached += 1
+
+    notes: list[str] = []
+    not_reached = len(considered) - reached
+    if not_reached:
+        notes.append(f"{not_reached} file{'' if not_reached == 1 else 's'} not reached; ask again and Wisp "
+                     "continues, because what it read is kept.")
+    if len(flat) > len(considered):
+        left = len(flat) - len(considered)
+        notes.append(f"{left} more file{'' if left == 1 else 's'} not looked at (at most {_ACROSS_FILES} per request).")
+    labels = {"program": ("a program or archive", "programs or archives"),
+              "picture": ("a picture without text", "pictures without text"),
+              "unreadable": ("one that could not be read", "that could not be read")}
+    parts = [(labels[k][0] if n == 1 else f"{n} {labels[k][1]}") for k, n in skipped.items() if n]
+    if parts:
+        skipped_count = sum(skipped.values())
+        notes.append(f"Skipped {skipped_count} file{'' if skipped_count == 1 else 's'} without text: "
+                     + ", ".join(parts) + ".")
+    if risky:
+        notes.append(f"{risky} of these files look risky; read one on its own to see why.")
+    found_notes = " ".join(found.notes)[:_ACROSS_NOTES_MAX]
+    if found_notes:
+        notes.append(found_notes)
+
+    all_facts = [facts for _e, _f, facts in rows]
+    with_facts = sum(1 for facts in all_facts if facts is not None)
+    asked = _pretty(question, 80) if isinstance(question, str) else ""
+    where = f" in {label}" if label else ""
+    top = (f"Facts from {with_facts} of {len(considered)} files{where}" + (f" (for: {asked})" if asked else "")
+           + ", newest first.")
+    sentences = attachment_fields.totals(all_facts) if rows else []
+    total_line = ("Totals added up by Wisp: " + "; ".join(sentences) + ".") if sentences else ""
+    lines = [attachment_fields.line(facts, name=_safe_name(f.name), when=_when(email.ts)) for email, f, facts in rows]
+
+    def fit(room: int) -> list[str]:
+        kept, used = [], 0
+        for text in lines:
+            if used + len(text) + 1 > room:
+                break
+            kept.append(text)
+            used += len(text) + 1
+        return kept
+
+    fixed = len(top) + 1 + (len(total_line) + 1 if total_line else 0) + len(" ".join(notes)) + 1
+    room = RESULT_BUDGET_CHARS - fixed - untrusted.overhead(_KIND) - 1
+    kept = fit(room)
+    if len(kept) < len(lines):
+        kept = fit(room - 110)
+        dropped = len(lines) - len(kept)
+        notes.append(f"{dropped} line{'' if dropped == 1 else 's'} (the oldest) left out for lack of room; "
+                     "the totals still cover them.")
+    out = [top]
+    if kept:
+        out.append(untrusted.fence("\n".join(kept), _KIND))
+    if total_line:
+        out.append(total_line)
+    out.extend(notes)
+    return "\n".join(out)
 
 
 # --- view_emails annotation -------------------------------------------------------
