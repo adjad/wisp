@@ -1024,3 +1024,162 @@ def test_index_keeps_no_second_copy_of_the_text(home):
         names = {r[0] for r in c.execute("SELECT name FROM sqlite_master")}
     assert "ft_content" not in names
     assert store.search(t["text"])
+
+
+# --- erase and search under a lock held elsewhere ----------------------------
+
+import threading  # noqa: E402
+
+
+def _hold(home, mode="IMMEDIATE"):
+    c = sqlite3.connect(str(_db(home)), isolation_level=None, check_same_thread=False)
+    c.execute(f"BEGIN {mode}")
+    return c
+
+
+def test_forget_all_reports_failure_while_another_connection_holds_the_lock(monkeypatch, home):
+    t = _plant(D1)
+    monkeypatch.setattr(store, "_ERASE_WAIT_S", 0.2)
+    c = _hold(home)
+    try:
+        assert store.forget_all_ok() is False
+        assert store.forget_all() == 0 and store.last_erase_failed() is True
+        assert store.forget_account_ok("a@x.com") is False
+        assert store.forget_account("a@x.com") == 0 and store.last_erase_failed() is True
+        assert store.forget_source_ok("mail") is False
+    finally:
+        c.execute("ROLLBACK")
+        c.close()
+    assert all(_present(home, t).values())            # nothing was erased, and nothing said it was
+    assert store.forget_all_ok() is True and store.last_erase_failed() is False
+    assert not any(_present(home, t).values())
+
+
+def test_an_erase_waits_for_a_lock_that_is_released_in_time(monkeypatch, home):
+    t = _plant(D1)
+    monkeypatch.setattr(store, "_ERASE_WAIT_S", 5.0)
+    c = _hold(home)
+    threading.Timer(0.4, lambda: (c.execute("ROLLBACK"), c.close())).start()
+    assert store.forget_account_ok("a@x.com") is True
+    assert not any(_present(home, t).values())
+
+
+def test_zero_removed_is_not_a_failure(home):
+    assert store.forget_all_ok() is True and store.forget_account_ok("nobody@x.com") is True
+    assert store.forget_all() == 0 and store.last_erase_failed() is False
+    assert store.forget_account("") == 0 and store.last_erase_failed() is False
+
+
+def test_search_while_a_writer_holds_the_lock_still_answers(monkeypatch, home):
+    t = _plant(D1)
+    monkeypatch.setattr(store, "_WAIT_S", 0.2)
+    c = _hold(home)                                   # a writer: readers are not blocked
+    try:
+        hits, failed = store.search_checked(t["text"])
+        assert failed is False and [h.digest for h in hits] == [D1]
+        assert store.count_checked() == 1 and store.last_search_failed() is False
+    finally:
+        c.execute("ROLLBACK")
+        c.close()
+
+
+def test_search_and_count_say_so_when_the_database_cannot_be_read(monkeypatch, home):
+    t = _plant(D1)
+    monkeypatch.setattr(store, "_WAIT_S", 0.2)
+    c = _hold(home, "EXCLUSIVE")
+    try:
+        assert store.search_checked(t["text"]) == ([], True)
+        assert store.search(t["text"]) == [] and store.last_search_failed() is True
+        assert store.count_checked() is None
+        assert store.count() == 0 and store.last_search_failed() is True
+    finally:
+        c.execute("ROLLBACK")
+        c.close()
+    assert store.count() == 1 and store.last_search_failed() is False
+    assert store.search_checked("nonsenseword") == ([], False)       # empty is not failed
+    assert store.last_search_failed() is False
+
+
+# --- the index mark and the insert go together -------------------------------
+
+def test_a_failed_word_insert_leaves_the_text_to_be_indexed_later(home):
+    assert put(D2, text="first words")
+    with sqlite3.connect(str(_db(home)), isolation_level=None) as c:
+        c.execute("DROP TABLE ft")                    # a stand-in table that refuses one text
+        c.execute("CREATE TABLE ft(body TEXT CHECK(body NOT LIKE '%poison%'))")
+    assert put(D1, text="poison words kept anyway")
+    with sqlite3.connect(str(_db(home))) as c:
+        marked = {r[0] for r in c.execute("SELECT digest FROM indexed")}
+    assert D1 not in marked                           # not marked as indexed: the lazy fill retries it
+    assert store.get(D1).text == "poison words kept anyway"
+
+
+# --- "tried" keys are salted --------------------------------------------------
+
+def test_tried_keys_are_salted_and_forgotten_with_the_salt(home):
+    import hashlib
+
+    key = "mail:1:1.2:50000:report.pdf"
+    assert store.mark_tried(key, "kept") and store.tried(key)
+    plain = hashlib.sha256(key.encode()).hexdigest()
+    assert plain.encode() not in _raw(home)           # a guessed locator cannot be confirmed
+    with sqlite3.connect(str(_db(home))) as c:
+        salt = c.execute("SELECT value FROM meta WHERE key='tried_salt'").fetchone()[0]
+    assert isinstance(salt, bytes) and len(salt) == 32
+    assert store.forget_all_ok()
+    assert salt not in _raw(home)
+    assert store.tried(key) is False
+    assert store.mark_tried(key, "kept")
+    with sqlite3.connect(str(_db(home))) as c:
+        assert c.execute("SELECT value FROM meta WHERE key='tried_salt'").fetchone()[0] != salt
+
+
+def test_an_old_unsalted_row_never_matches(home):
+    import hashlib
+
+    key = "mail:9:9.9:10:old.pdf"
+    assert store.mark_tried("mail:other", "kept")      # makes the tables
+    with sqlite3.connect(str(_db(home)), isolation_level=None) as c:
+        c.execute("INSERT INTO tried(key, outcome, ts) VALUES(?,?,?)",
+                  (hashlib.sha256(key.encode()).hexdigest(), "kept", time.time()))
+    assert store.tried(key) is False
+
+
+def test_tried_many_is_one_answer_for_a_page(home):
+    keys = [f"mail:{i}:1.2:5:f{i}.pdf" for i in range(900)]
+    for k in keys[::3]:
+        store.mark_tried(k, "kept")
+    assert store.tried_many(keys + ["", "x" * 301]) == set(keys[::3])
+    assert store.tried_many([]) == set()
+    assert store.tried(keys[0]) and not store.tried(keys[1])
+
+
+# --- forget_source ------------------------------------------------------------
+
+def test_forget_source_removes_only_texts_seen_from_that_source(home):
+    only = _plant(D1, account="a@x.com", tag="zebra")
+    both = _plant(D2, account="a@x.com", tag="quokka")
+    other = _plant(D3, account="a@x.com", tag="wombat")
+    for d, tag in ((D1, "zebra"), (D2, "quokka")):
+        store.note_seen(d, source="messages", account="a@x.com", name=f"{tag}-msg.pdf", sender="s", subject="u", ts=2.0)
+    store.note_seen(D3, source="gmail", account="a@x.com", name="w.pdf", ts=3.0)
+    with sqlite3.connect(str(_db(home)), isolation_level=None) as c:
+        c.execute("DELETE FROM seen WHERE digest=? AND source='mail'", (D1,))     # D1: messages only
+    assert store.forget_source("messages") == 1
+    assert store.last_erase_failed() is False
+    assert store.get(D1) is None and store.get_facts(D1, 1) is None
+    assert not any(_present(home, only).values())
+    assert store.get(D2) is not None and store.get(D3) is not None
+    assert _present(home, both)["text"] and _present(home, other)["text"]
+    assert store.search(only["text"]) == []
+    hits = store.search(both["text"])
+    assert [h.digest for h in hits] == [D2] and hits[0].source == "mail"      # the messages row is gone
+    assert b"quokka-msg" not in _raw(home)
+    assert store.forget_source("bogus") == 0 and store.forget_source_ok("bogus") is True
+
+
+def test_forget_source_works_without_fts5(monkeypatch, home):
+    monkeypatch.setattr(store, "FTS5", False)
+    t = _plant(D1)
+    assert store.forget_source("mail") == 1
+    assert not any(_present(home, t).values())

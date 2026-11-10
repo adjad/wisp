@@ -1522,7 +1522,8 @@ def erase_account_data(account: str) -> dict:
     try:
         # Text Wisp read from this account's attachments (service/attachment_store.py).
         from service import attachment_store
-        result["attachment_text"] = f"erased {attachment_store.forget_account(account)}"
+        erased = attachment_store.forget_account(account)
+        result["attachment_text"] = "failed: not erased" if attachment_store.last_erase_failed() else f"erased {erased}"
     except Exception as exc:  # noqa: BLE001
         result["attachment_text"] = f"failed: {type(exc).__name__}"
     try:

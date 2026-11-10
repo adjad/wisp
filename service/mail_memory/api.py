@@ -195,14 +195,23 @@ async def forget_facts(body: Nothing) -> dict:
     runner.set_facts(False)
     # Off the loop: it waits for any fact pass that is saving right now.
     from service import attachment_store
+    attachment_erased = False
     try:
         result = await asyncio.to_thread(profile_facts.forget_all, store(), facts)
     finally:
         # "Everything Wisp learned from mail" includes the text it kept from
         # attachments it was asked to read; erase it even if the facts erase raised.
-        await asyncio.to_thread(attachment_store.forget_all)
+        # The background reader stops too, or it would read the same files again within minutes.
+        attachment_erased = await asyncio.to_thread(attachment_store.forget_all_ok)
+        try:
+            from service import attachment_index
+            await asyncio.to_thread(attachment_index.set_enabled, False)
+        except Exception:  # noqa: BLE001 — never let the switch hide the erase result
+            pass
     await _changed()
-    return {"ok": True, **result, "enabled": False}
+    return {"ok": True, **result, "enabled": False,
+            "attachment_text": "erased" if attachment_erased else "failed",
+            "attachment_reading": "off"}
 
 
 @router.post("/assistant/sync/mail_memory", dependencies=[Depends(_native_only)])
