@@ -234,9 +234,18 @@ def personal_communication_request(prompt: str) -> bool:
     return bool(_PERSONAL_COMMUNICATION.search(prompt))
 
 
+def _fold_apostrophes(text: str) -> str:
+    # Apple text entry, dictation and paste emit typographic apostrophes; a
+    # prohibition spelled "don\u2019t" is the same prohibition. Double quotes
+    # are left alone: they mark quoted source text.
+    return (text.replace("\u2018", "'").replace("\u2019", "'")
+            .replace("\u02bc", "'").replace("\uff07", "'"))
+
+
 def memory_excluded(prompt: str) -> bool:
     # Quoted instructions are source text, not the user's source prohibition.
     text = re.sub(r'"[^"\n]*"|“[^”\n]*”|`[^`\n]*`', "", prompt)
+    text = _fold_apostrophes(text)
     return bool(re.search(r"\b(?:do\s+not|don't|dont|never)\s+(?:use|read|check|access)\s+(?:my\s+|your\s+|the\s+)?(?:memory|memories)\b|\bwithout\s+(?:using\s+)?memory\b", text, re.I))
 
 
@@ -583,6 +592,8 @@ def continuation_requires_baseline(prompt: str, last_assistant: str | None) -> b
     A calendar follow-up such as 'and tomorrow?' remains model-led. This is a
     conservative negative execution-authority guard, never a family selector.
     """
+    # A bare "Don\u2019t" declines exactly as "Don't" does.
+    prompt = _fold_apostrophes(prompt)
     words = re.findall(r"[a-z']+", prompt.lower())
     if re.fullmatch(r"\s*(?:never\s*mind|forget\s*it|do\s*not|don't)\s*[.!]?\s*", prompt, re.I):
         return True

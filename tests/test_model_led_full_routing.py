@@ -534,6 +534,31 @@ def test_memory_exclusion_removes_automatic_memory_context(endpoint):
         endpoint.agent_calls[0]["forbidden_tools"])
 
 
+def test_memory_exclusion_with_typographic_apostrophe(endpoint):
+    endpoint.request("what did mom say today, don\u2019t use my memory")
+    assert endpoint.agent_calls[0]["include_memory_context"] is False
+    assert {"recall", "search_conversations", "remember", "forget", "clear_memory"} <= set(
+        endpoint.agent_calls[0]["forbidden_tools"])
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "\u2019", "\u2018", "\u02bc", "\uff07"])
+def test_memory_excluded_folds_typographic_apostrophes(apostrophe):
+    from service.router.model_led import memory_excluded
+    assert memory_excluded(f"Don{apostrophe}t use my memory, what's a good gift for my sister?")
+    assert memory_excluded(f"don{apostrophe}t check your memory")
+    # A quoted instruction is source text, with either kind of double quote.
+    assert not memory_excluded(f'what does "don{apostrophe}t use my memory" mean?')
+    assert not memory_excluded(f"what does \u201cdon{apostrophe}t use my memory\u201d mean?")
+    assert not memory_excluded(f"I don{apostrophe}t remember, what did mom say today")
+
+
+@pytest.mark.parametrize("apostrophe", ["'", "\u2019", "\u2018", "\u02bc", "\uff07"])
+def test_bare_decline_with_typographic_apostrophe_stays_baseline(apostrophe):
+    from service.router.model_led import continuation_requires_baseline
+    assert continuation_requires_baseline(f"Don{apostrophe}t.", "Should I send it?")
+    assert not continuation_requires_baseline(f"don{apostrophe}t forget tomorrow", "Your calendar today")
+
+
 def test_active_reminder_cannot_hijack_new_personal_question(endpoint, monkeypatch):
     from service.tasks import engine
     sid = endpoint.store.create_session()
