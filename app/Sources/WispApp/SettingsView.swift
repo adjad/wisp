@@ -214,6 +214,8 @@ final class SettingsLoader: ObservableObject {
     @Published var installed: [String] = []
     @Published var roles: [String: String] = [:]
     @Published var saving = false
+    /// Set when the service didn't save the last model pick, so its menu went back.
+    @Published private(set) var roleSaveProblem: String?
     // Full access as the service last confirmed it; nil until confirmed or
     // when a read or write couldn't be confirmed. Never shown as "off" while nil.
     // This is Wisp's one Full access source: Settings, quick settings and the
@@ -312,19 +314,6 @@ final class SettingsLoader: ObservableObject {
     // whenever no explicit "research" override is set, so leaving this on
     // its default isn't a broken state — it's the normal one.
     let roleOrder = ["fast", "coding", "reasoning", "general", "research"]
-    // Shown only when the backend is unreachable and can't report the real
-    // roster. Mirrors service/config/models.yaml's defaults — if you change
-    // them there, change them here, or an offline Settings pane shows models
-    // the user never chose.
-    let fallbackModels = [
-        "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
-    ]
-    let fallbackRoles = [
-        "fast": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
-        "coding": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
-        "reasoning": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
-        "general": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
-    ]
     private let client = WispClient()
 
     func label(_ r: String) -> String {
@@ -337,10 +326,10 @@ final class SettingsLoader: ObservableObject {
          "research": "Wisp Research's plan/query/extraction/synthesis calls"][r] ?? ""
     }
 
-    var modelChoices: [String] {
-        // The bundled-default fallback is only for an unreachable backend; a Mac
-        // with its own models must not be offered a model it never installed.
-        installed.isEmpty ? fallbackModels : Array(Set(installed + roles.values.filter { !$0.isEmpty })).sorted()
+    /// A role's menu: chat models only (RoleModelChoices), never the embedder or
+    /// the reranker, plus whatever the role has saved so the menu can show it.
+    func modelChoices(for role: String) -> [String] {
+        RoleModelChoices.choices(installed: installed, roles: roles, keeping: selectedModel(for: role))
     }
 
     func selectedModel(for role: String) -> String {
@@ -350,7 +339,8 @@ final class SettingsLoader: ObservableObject {
             // that would look "selected" without being true until touched.
             return selectedModel(for: "coding")
         }
-        return roles[role] ?? (installed.isEmpty ? fallbackRoles[role] : nil) ?? modelChoices.first ?? ""
+        return roles[role] ?? (installed.isEmpty ? RoleModelChoices.fallbackRoles[role] : nil)
+            ?? RoleModelChoices.choices(installed: installed, roles: roles).first ?? ""
     }
 
     func savedModelLabel(for role: String) -> String {
@@ -1259,7 +1249,9 @@ final class SettingsLoader: ObservableObject {
     }
 
     func set(_ role: String, _ model: String) {
+        let previous = roles[role]
         roles[role] = model
+        roleSaveProblem = nil
         saving = true
         Task {
             await PendingConfigWrites.shared.begin()
@@ -1267,7 +1259,18 @@ final class SettingsLoader: ObservableObject {
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try? JSONSerialization.data(withJSONObject: ["role": role, "model": model])
-            _ = try? await URLSession.shared.data(for: req)
+            var saved = false
+            if let (data, response) = try? await URLSession.shared.data(for: req),
+               let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                saved = object["ok"] as? Bool == true
+            }
+            // Not saved: the menu goes back, unless a later pick or a refresh
+            // already replaced this one.
+            if !saved, self.roles[role] == model {
+                self.roles[role] = previous
+                self.roleSaveProblem = RoleModelChoices.saveProblem
+            }
             self.saving = false
             await PendingConfigWrites.shared.end()
             // A role now points at another model: setup's test no longer applies.
@@ -1531,7 +1534,7 @@ struct SettingsView: View {
                                     Picker("", selection: Binding(
                                         get: { loader.selectedModel(for: role) },
                                         set: { loader.set(role, $0) })) {
-                                        ForEach(loader.modelChoices, id: \.self) {
+                                        ForEach(loader.modelChoices(for: role), id: \.self) {
                                             Text(OverlayModel.abbrev($0)).tag($0)
                                         }
                                     }
@@ -1542,6 +1545,12 @@ struct SettingsView: View {
                                 }
                             }
                             if role != loader.roleOrder.last { Divider() }
+                        }
+                        if let problem = loader.roleSaveProblem {
+                            Text(problem)
+                                .font(.caption)
+                                .foregroundStyle(.orange)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         Divider()
                         HStack {

@@ -328,3 +328,44 @@ enum QuickSettingsText {
         return "\(display) \(hour < 12 ? "AM" : "PM")"
     }
 }
+
+/// What Settings › Models offers in each role's menu: chat models only. The
+/// Smart Search embedder and the reranker are roles in models.yaml and may be
+/// installed, but a chat role that points at one can't answer.
+enum RoleModelChoices {
+    /// service/config/models.yaml's model for every text role. Offered only until
+    /// the service reports its own models; change the two together.
+    static let bundledDefault = "gemma-4-E4B-it-oQ4e-mtp"
+    static let fallbackModels = [bundledDefault]
+    static let fallbackRoles = [
+        "fast": bundledDefault,
+        "coding": bundledDefault,
+        "reasoning": bundledDefault,
+        "general": bundledDefault,
+    ]
+    /// Roles whose model no chat role can use.
+    static let nonChatRoles = ["embedding", "reranker"]
+
+    static func isChatModel(_ id: String, roles: [String: String] = [:]) -> Bool {
+        let name = id.lowercased()
+        if id.isEmpty || name.contains("embed") || name.contains("rerank") { return false }
+        return !nonChatRoles.contains { roles[$0] == id }
+    }
+
+    /// The menu's models, sorted. A model a chat role already uses stays in the
+    /// list. `keeping` is the menu's own selection: it is always listed, so the
+    /// menu shows what is saved even when that was a wrong pick.
+    static func choices(installed: [String], roles: [String: String], keeping: String? = nil) -> [String] {
+        let saved = roles.filter { !nonChatRoles.contains($0.key) }.map(\.value)
+        // The bundled default is only for a service that reports nothing; a Mac
+        // with its own models must not be offered a model it never installed.
+        let known = installed.isEmpty && saved.allSatisfy(\.isEmpty) ? fallbackModels : installed + saved
+        var ids = Set(known.filter { isChatModel($0, roles: roles) })
+        if let keeping, !keeping.isEmpty { ids.insert(keeping) }
+        return ids.sorted()
+    }
+
+    /// Said under the menus when the service didn't save a pick.
+    static let saveProblem = "Wisp couldn't save that model choice, so it's back to the one before. "
+        + "Check that Wisp is running, then try again."
+}

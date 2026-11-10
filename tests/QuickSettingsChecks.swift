@@ -189,6 +189,47 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(QuickSettingsText.encoders(EncoderResidency.parse(["on_demand": false, "towers": [:]])) == nil,
           "a model without encoders has no line")
 
+    // Settings › Models: a role's menu offers chat models only.
+    let gemma = "gemma-4-E4B-it-oQ4e-mtp"
+    let embedder = "Qwen3-Embedding-0.6B-4bit-DWQ"
+    let reranker = "Qwen3-Reranker-0.6B-mlx-6bit"
+    let shipped = ["fast": gemma, "router": gemma, "coding": gemma, "reasoning": gemma, "agent": gemma,
+                   "general": gemma, "embedding": embedder, "reranker": reranker]
+    check(RoleModelChoices.choices(installed: [gemma, embedder, "Other-Chat-4bit"], roles: shipped)
+          == ["Other-Chat-4bit", gemma],
+          "an installed embedder and the reranker role are never offered as chat models")
+    check(RoleModelChoices.choices(installed: [gemma], roles: shipped) == [gemma],
+          "the embedding and reranker roles add nothing to the menu")
+    check(RoleModelChoices.choices(installed: ["Plain-Name-A", gemma],
+                                   roles: ["general": gemma, "embedding": "Plain-Name-A"]) == [gemma],
+          "the embedding role's model is left out whatever it is called")
+    check(RoleModelChoices.choices(installed: ["bge-reranker-v2", "nomic-embed-text", gemma], roles: [:]) == [gemma],
+          "an embedder or reranker is known by its name too")
+    check(RoleModelChoices.choices(installed: [], roles: [:]) == [gemma]
+          && RoleModelChoices.fallbackModels == [gemma]
+          && RoleModelChoices.fallbackRoles == ["fast": gemma, "coding": gemma, "reasoning": gemma, "general": gemma],
+          "with nothing reported, the fallback is the bundled Gemma")
+    check(RoleModelChoices.choices(installed: [], roles: shipped) == [gemma],
+          "while the engine starts, the menu holds the saved model")
+    check(RoleModelChoices.choices(installed: [], roles: ["general": "My-Own-Chat", "embedding": embedder])
+          == ["My-Own-Chat"],
+          "a Mac with its own model is not offered the bundled one it never installed")
+    check(RoleModelChoices.choices(installed: [gemma], roles: ["general": "Cloud-Chat", "fast": ""])
+          == ["Cloud-Chat", gemma],
+          "a model a chat role already uses stays in the menu; an empty role adds nothing")
+    check(RoleModelChoices.choices(installed: [gemma, embedder],
+                                   roles: ["general": embedder, "embedding": embedder], keeping: embedder)
+          == [embedder, gemma]
+          && RoleModelChoices.choices(installed: [gemma, embedder],
+                                      roles: ["general": embedder, "embedding": embedder]) == [gemma],
+          "a wrong saved pick shows in its own menu only, so it can be changed back")
+    check(RoleModelChoices.choices(installed: [gemma], roles: shipped, keeping: "") == [gemma],
+          "no selection keeps nothing")
+    check(!RoleModelChoices.isChatModel("") && RoleModelChoices.isChatModel(gemma, roles: shipped)
+          && !RoleModelChoices.isChatModel(embedder) && !RoleModelChoices.isChatModel(reranker),
+          "chat models are told from the embedder and reranker")
+    check(RoleModelChoices.saveProblem.contains("couldn't save"), "a failed model pick is said")
+
     // The service's reply.
     check(ModelMemory.parse(["available": false, "models": []]) == nil, "an unavailable engine is unknown")
     check(ModelMemory.parse(nil) == nil, "an unreadable reply is unknown")
