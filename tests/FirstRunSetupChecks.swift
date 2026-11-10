@@ -791,6 +791,23 @@ struct FirstRunSetupChecks {
             let line = FirstRunSetupView.shortcutsLine(ask: ask, voice: voice)
             check(!line.contains("⌘ ⇧ F") && !line.lowercased().contains("search"), "Smart Search is retired: never taught")
         }
+        // The Voice card follows the key too: no ⌥ ⇧ Space when another app owns it.
+        let voiceCard = FirstRunSetupView.helpsYourDay.first { $0.title == FirstRunSetupView.voiceTitle }
+        check(voiceCard?.line == FirstRunSetupView.voiceLine(registered: true)
+              && FirstRunSetupView.voiceLine(registered: true).contains("⌥ ⇧ Space"),
+              "Wisp holds the voice key: the Voice card teaches it, as before")
+        let voiceWithoutKey = FirstRunSetupView.voiceLine(registered: false)
+        check(!voiceWithoutKey.contains("⌥") && !voiceWithoutKey.contains("Space") && voiceWithoutKey.contains("mic"),
+              "Another app owns ⌥ ⇧ Space: the Voice card points at the mic instead")
+        check(voiceWithoutKey.contains("read its answers aloud"), "Reading aloud doesn't depend on the key")
+        for item in FirstRunSetupView.helpsYourDay {
+            let shown = FirstRunSetupView.helpLine(title: item.title, line: item.line, voiceKeyRegistered: false)
+            check(shown == (item.title == FirstRunSetupView.voiceTitle ? voiceWithoutKey : item.line),
+                  "\(item.title): only the Voice card changes with the key")
+            check(FirstRunSetupView.helpLine(title: item.title, line: item.line, voiceKeyRegistered: true) == item.line,
+                  "\(item.title): unchanged when the key is Wisp's")
+            check(!shown.contains("⌥ ⇧ Space"), "\(item.title): no card teaches a voice key Wisp doesn't hold")
+        }
         // The live check on the last step: invite, then confirm once ⌥Space really opened Ask.
         check(FirstRunSetupView.shortcutTry(registered: true, pressed: false) == "Try it now: press ⌥ Space."
               && FirstRunSetupView.shortcutTry(registered: true, pressed: true) == "That's it — ⌥ Space works."

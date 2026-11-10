@@ -807,15 +807,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// says it instead: a dot on the closed bar and a line in the open panel,
     /// until the person has opened it.
     private func tellReady() {
+        // ⌥ Space is taught only when it is Wisp's: another app may own the key.
+        let askKey = hotKey?.registered ?? false
         Task { @MainActor [weak self] in
             let shown = await Notifications.postIfAllowed(id: Notifications.readyId, title: ReadyNotice.title,
-                                                          body: ReadyNotice.body)
+                                                          body: ReadyNotice.body(askKeyRegistered: askKey))
             OnboardingTimeline.record(shown ? "ready notice delivered" : "ready notice fell back to notch")
             guard !shown, let self else { return }
             self.readyLineUnseen = true
             // An open setup card is left to its Done.
             if self.model.setupCard == .hidden { self.model.setupCard = .ready }
-            self.model.showTransientNotice(ReadyNotice.notchLine, duration: ReadyNotice.unseenFor, info: true)
+            self.model.showTransientNotice(ReadyNotice.notchLine(askKeyRegistered: askKey),
+                                           duration: ReadyNotice.unseenFor, info: true)
             if self.presentation.desired == .chat { self.readyLineSeen() }
         }
     }
@@ -831,8 +834,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard readyLineUnseen, model.knowYou == nil, model.resetCard == nil else { return }
         readyLineUnseen = false
         if model.setupCard == .ready { model.setupCard = .hidden }
-        guard model.transientNotice == ReadyNotice.notchLine else { return }
-        model.showTransientNotice(ReadyNotice.notchLine, duration: ReadyNotice.seenFor, info: true)
+        guard let line = model.transientNotice, ReadyNotice.isNotchLine(line) else { return }
+        model.showTransientNotice(line, duration: ReadyNotice.seenFor, info: true)
     }
 
     /// The last step was reached (or setup finished): the first Brief is owed.

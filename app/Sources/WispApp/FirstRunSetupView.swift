@@ -2285,7 +2285,9 @@ struct FirstRunSetupView: View {
             Text(Self.purposeLine).font(.system(size: 12)).foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true).padding(.bottom, 10)
             ForEach(Self.helpsYourDay, id: \.title) { item in
-                OnboardingCard(icon: item.icon, title: item.title, detail: item.line) { EmptyView() }
+                OnboardingCard(icon: item.icon, title: item.title,
+                               detail: Self.helpLine(title: item.title, line: item.line,
+                                                     voiceKeyRegistered: voiceKeyRegistered)) { EmptyView() }
             }
             OnboardingHeading(title: "Wisp lives at the top of your screen",
                               subtitle: "No window to find. It's always one gesture away.")
@@ -2434,10 +2436,25 @@ struct FirstRunSetupView: View {
         ("text.bubble", "Ask", "Ask anything, like \u{201C}what did Sam say about Friday?\u{201D} or \u{201C}remind me to call Mum at 6\u{201D}."),
         ("brain", "Remembers for you", "It slowly learns the people and plans in your mail, and the facts you tell it. "
             + "You can see and remove anything in Memory."),
-        ("waveform", "Voice", "Press \u{2325} \u{21E7} Space and just talk. Wisp can read its answers aloud too."),
+        ("waveform", voiceTitle, voiceLine(registered: true)),
         ("lock.shield", "Private by design", "Wisp's model runs on this Mac, so what it reads stays here "
             + "unless you choose a cloud model in Settings."),
     ]
+
+    nonisolated static let voiceTitle = "Voice"
+
+    /// The Voice card's line. Like the Keyboard card below it, it teaches ⌥⇧Space
+    /// only when the key is Wisp's: when another app owns it, pressing it does
+    /// nothing here, and the mic in Ask is the way to talk.
+    nonisolated static func voiceLine(registered: Bool) -> String {
+        registered ? "Press \u{2325} \u{21E7} Space and just talk. Wisp can read its answers aloud too."
+                   : "Use the mic button in Ask to talk. Wisp can read its answers aloud too."
+    }
+
+    /// A card's line on this Mac: its own, except Voice, which follows the key.
+    nonisolated static func helpLine(title: String, line: String, voiceKeyRegistered: Bool) -> String {
+        title == voiceTitle ? voiceLine(registered: voiceKeyRegistered) : line
+    }
 
     /// Opt-in, off by default: macOS's answer is read, never assumed, and only
     /// the switch changes it.

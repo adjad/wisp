@@ -177,3 +177,38 @@ def test_my_installed_omlx_is_greyed_out_when_there_is_none_to_run():
     assert "mode != .externalOmlx || EngineSettingsView.externalChoiceOffered(" in save
     assert "mode != .bundled || engine.bundledAvailable" in save
     assert ".disabled(!engine.bundledAvailable)" in body
+
+
+def test_the_voice_card_and_ready_notice_teach_only_keys_wisp_holds():
+    """a03-setup-onboarding#5: the Keyboard card already left out a shortcut another
+    app owns, while the Voice card above it and "Wisp is ready" still said to press
+    it. Both now follow the same registered flags; the wording with the key is as it was."""
+    setup = _read("FirstRunSetupView.swift")
+    tour = _body(setup, "private var tourStep: some View")
+    cards = tour[tour.index("ForEach(Self.helpsYourDay"):tour.index('OnboardingHeading(title: "Wisp lives at the top')]
+    assert "Self.helpLine(title: item.title, line: item.line," in cards
+    assert "voiceKeyRegistered: voiceKeyRegistered)" in cards and "detail: item.line" not in cards
+    # The shortcut is written in one place, behind the flag.
+    assert setup.count("Space and just talk") == 1
+    voice = _body(setup, "nonisolated static func voiceLine(registered: Bool) -> String")
+    assert "Space and just talk" in voice and "Use the mic button in Ask to talk." in voice
+    assert "title == voiceTitle ? voiceLine(registered: voiceKeyRegistered) : line" in _body(
+        setup, "nonisolated static func helpLine(title: String, line: String, voiceKeyRegistered: Bool) -> String")
+
+    notice = _body(_read("OnboardingFollowUps.swift"), "enum ReadyNotice")
+    assert "static let body" not in notice and "static let notchLine" not in notice
+    for name in ("body", "notchLine"):
+        said = _body(notice, f"static func {name}(askKeyRegistered: Bool) -> String")
+        with_key, without_key = said.split("\n")[1:3]
+        assert "askKeyRegistered ?" in with_key and "⌥ Space" in with_key, (name, with_key)
+        assert without_key.strip().startswith(":") and "⌥" not in without_key and "top of" in without_key, (name, without_key)
+
+    app = _read("AppDelegate.swift")
+    tell = _body(app, "private func tellReady()")
+    assert tell.index("let askKey = hotKey?.registered ?? false") < tell.index("Task { @MainActor [weak self] in")
+    assert "body: ReadyNotice.body(askKeyRegistered: askKey)" in tell
+    assert "ReadyNotice.notchLine(askKeyRegistered: askKey)" in tell
+    # Opening the panel still shortens whichever wording is up, and re-shows that same one.
+    seen = _body(app, "private func readyLineSeen()")
+    assert "guard let line = model.transientNotice, ReadyNotice.isNotchLine(line) else { return }" in seen
+    assert "model.showTransientNotice(line, duration: ReadyNotice.seenFor, info: true)" in seen
