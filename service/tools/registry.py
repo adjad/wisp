@@ -105,6 +105,38 @@ class _NotSentResult(_NotDoneResult):
         return self._needs_recipient
 
 
+class _SavedResult(str):
+    """Host proof that save_email_attachment wrote its file.
+
+    The success text quotes a file name the sender chose, so no wording of it can
+    be trusted to say how the save went. classify_tool_outcome reads this type
+    instead of the text. Minted only by saved(); lost when serialized, sliced or
+    coerced to str, and never rebuilt from text.
+    """
+    __slots__ = ()
+
+    def __setattr__(self, name, value):
+        raise AttributeError("Saved receipts are immutable")
+
+    def __delattr__(self, name):
+        raise AttributeError("Saved receipts are immutable")
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
+
+def saved(text: str) -> str:
+    """Mark the text of a completed attachment save (see _SavedResult)."""
+    return _SavedResult(text)
+
+
+# The fixed shape of a completed save, for callers that only hold the text.
+_SAVED_TEXT = re.compile(r"Saved “[^\n]*” to [^\n]*\.")
+
+
 _NOT_SENT_TOOLS = frozenset({"send_email", "send_message", "forward_email", "reply_to_email",
                              "schedule_send", "draft_email", "draft_message"})
 
@@ -131,6 +163,7 @@ _NOT_DONE_TOOLS = {
     "create_note": "service.tools.notes_write",
     "append_note": "service.tools.notes_write",
     "remember": "service.tools.memory_tools",
+    "save_email_attachment": "service.tools.attachment_actions",
 }
 
 
@@ -345,7 +378,7 @@ _TOOL_EFFECTS = {
     "cancel_event": "cancelled", "cancel_scheduled_send": "cancelled",
     "clear_past_reminders": "deleted", "clear_reminders": "deleted",
     "toggle_setting": "changed", "write_file": "written", "move_path": "moved",
-    "organize_files": "moved",
+    "organize_files": "moved", "save_email_attachment": "saved",
     "commit_private_meeting": "created",
     "save_knowledge": "created", "edit_knowledge": "updated", "delete_knowledge": "deleted",
 }
@@ -359,6 +392,12 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
         return ToolOutcome("planned", text, effect)
     if not denied and type(result) is _OutboundUnknownResult and result.operation == tool_name:
         return ToolOutcome("unknown", text, effect, {"action_id": result.action_id})
+    if tool_name == "save_email_attachment" and not denied and (
+            type(result) is _SavedResult
+            or (type(result) is str and _SAVED_TEXT.fullmatch(text))):
+        # The file's name is the sender's and sits inside this text; it is never
+        # read for words like "denied" or "nothing found".
+        return ToolOutcome("succeeded", text, effect)
     if not denied and type(result) is _NotDoneResult:
         # A marked refusal keeps its usual status, but never reads as success
         # or an empty result, whatever its wording.
@@ -678,7 +717,7 @@ async def run_tool(tool: Tool, args: dict, *, private_shell_read_only: bool = Fa
 
     def normalize_result(res):
         # Preserve the existing display-only/public-source separation first.
-        if (type(res) in {_OutboundUnknownResult, _NotSentResult, _NotDoneResult}
+        if (type(res) in {_OutboundUnknownResult, _NotSentResult, _NotDoneResult, _SavedResult}
                 or _valid_message_draft(res, tool.name)
                 or isinstance(res, (DisplayOnlyToolResult, PublicSearchToolResult))):
             return res

@@ -6,13 +6,15 @@ bytes on stdin and reads one JSON line back. The file came from someone else
 readers are exactly where a hostile file does its damage, so none of this runs
 in the service. The parent kills this process at its deadline or memory limit.
 
-Five jobs, picked by argv[1]:
+Eight jobs, picked by argv[1]:
 - `tiles`: a picture as JPEG data URLs, an overview and, when it is large and
   looks like a screen or a page, up to MAX_TILES zoomed sections.
 - `pdf_pages`: the page images of a scanned PDF, which has no text to extract.
 - `inspect`: what a file really is, without opening it as anything, and a plain risk verdict.
 - `structured`: an invite (.ics) or contact card (.vcf) read as plain data. Pure Python, never executed.
 - `ocr_images`: a picture, or the page pictures of a scanned PDF, re-encoded as JPEGs for text recognition.
+- `audio`: a recording converted by macOS's afconvert to 16 kHz mono WAV windows of at most 29.5 s.
+- `eml` / `eml_part`: an attached email read in memory (headers, body, file list), and one file from it by index.
 
 Rules:
 - IMPORTANT: nothing here ever RUNS a file. A program, script, installer or
@@ -44,6 +46,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 import warnings
 from pathlib import Path, PurePath
 from zipfile import BadZipFile, ZipFile
@@ -113,6 +116,11 @@ _SIGNATURES: tuple[tuple[bytes, str, str], ...] = (
     (b"%PDF", "a PDF", "document"),
     (b"PK\x03\x04", "a ZIP-based file", "zip"),
     (b"PK\x05\x06", "an empty ZIP file", "zip"),
+    (b"PK\x07\x08", "a split ZIP file", "zip"),
+    (b"PK\x01\x02", "a ZIP file", "zip"),
+    (b"PK00", "a split ZIP file", "zip"),
+    (b"\xfd7zXZ\x00", "an xz archive", "archive"),
+    (b"MSCF", "a Windows cabinet archive", "archive"),
     (b"Rar!", "a RAR archive", "archive"),
     (b"7z\xbc\xaf\x27\x1c", "a 7-Zip archive", "archive"),
     (b"\x1f\x8b", "a gzip archive", "archive"),
@@ -129,10 +137,33 @@ _RISKY_SUFFIXES = frozenset({
     "dylib", "exe", "hta", "img", "inetloc", "iso", "jar", "jnlp", "js", "jse", "lnk", "mpkg", "msi", "pif",
     "pkg", "ps1", "reg", "scpt", "scr", "sh", "so", "terminal", "tool", "url", "vbe", "vbs", "vhd", "webloc",
     "workflow", "wsf", "zsh",
+    "fileloc", "mobileconfig", "shortcut", "wflow", "saver", "prefpane", "qlgenerator", "mdimporter", "osax",
+    "scptd",
+    "xip", "csh", "ksh", "tcsh", "fish", "chm", "xll", "xlam", "ppam", "one", "appx", "msix", "vhdx",
+    "scf", "library-ms", "settingcontent-ms",
 })
+# Risky endings that are also everyday words or parts of a web address. As a file's LAST part they are
+# risky like the rest; in the middle of a dotted name ("amazon.com.pdf", "phase.one.pdf", "go.fish.pdf")
+# they are just words, so they don't count as a program type tucked inside the name. Endings that are
+# only ever program types (exe, scr, bat, jar, app, dmg, pkg, vbs, ...) still count there.
+_WORDLIKE_SUFFIXES = frozenset({
+    "one", "fish", "com", "so", "tool", "action", "command", "terminal", "img", "desktop", "url", "shortcut",
+    "saver", "workflow", "bin", "iso",
+})
+# Archives Wisp never lists or unpacks. Saved, they carry a caution, since an app could be inside.
+_ARCHIVE_SUFFIXES = frozenset({"rar", "7z", "tar", "tgz", "gz", "bz2", "tbz", "tbz2", "xz", "txz", "cab", "zst",
+                               "lz", "lzma", "z", "arj"})
+_NO_LOOK = "It is an archive Wisp can't look inside."
+# Scripts that run when handed to an interpreter. Graded "caution": read as text, never run, but a saved one
+# sits where a double-click could start it, so the success text says "Take care".
+_SCRIPT_SUFFIXES = frozenset({"py", "pl", "rb", "bash"})
+# A folder that is really a program, as an archive's entry paths show it.
+_BUNDLE_PARTS = (".app", ".pkg", ".bundle", ".framework", ".kext", ".plugin", ".prefpane", ".saver",
+                 ".workflow", ".action", ".mpkg", ".saver", ".xpc", ".appex")
 # Shortcut files open a program or an address the moment they are opened.
-_SHORTCUT_SUFFIXES = frozenset({"desktop", "inetloc", "lnk", "url", "webloc"})
-_MACRO_SUFFIXES = frozenset({"docm", "dotm", "potm", "pptm", "ppsm", "xlam", "xlsm", "xltm"})
+_SHORTCUT_SUFFIXES = frozenset({"desktop", "fileloc", "inetloc", "lnk", "url", "webloc", "scf", "library-ms",
+                                "settingcontent-ms"})
+_MACRO_SUFFIXES = frozenset({"docm", "dotm", "potm", "pptm", "ppsm", "xlam", "ppam", "xlsm", "xltm"})
 # Types that have no signature to check, so unknown bytes under them mean nothing.
 _PLAIN_TEXT_SUFFIXES = frozenset({"txt", "csv", "md", "json", "html", "htm", "ics", "vcf", "rtf", "log", "xml"})
 _HTML_SUFFIXES = frozenset({"html", "htm", "xhtml", "shtml"})
@@ -148,21 +179,118 @@ _INNOCENT_SUFFIXES = frozenset({
 })
 # Characters that make a name read differently from what it is.
 _DECEPTIVE = re.compile("[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c\ufeff]")
+# Other characters that show nothing (every Cf character is one too): zero-width, filler and joiner marks,
+# soft hyphen, variation selectors, tag characters.
+_INVISIBLE = frozenset("\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u3164\uffa0")
+_CONTROLISH = ("Cc", "Cs", "Co", "Cn", "Zl", "Zp")
+
+
+def _invisible(ch: str) -> bool:
+    code = ord(ch)
+    return (unicodedata.category(ch) == "Cf" or ch in _INVISIBLE or 0x200B <= code <= 0x200F
+            or 0x2060 <= code <= 0x2064 or 0xFE00 <= code <= 0xFE0F or 0xE0000 <= code <= 0xE007F
+            or 0xE0100 <= code <= 0xE01EF)
+
+
+def _hidden(name) -> bool:
+    """True when the name holds a character that shows nothing or changes how the name reads."""
+    return any(_invisible(c) or unicodedata.category(c) in _CONTROLISH for c in str(name or ""))
+
+
+def _plain_name(name) -> str:
+    """The name as a file system would keep it: no invisible or control characters, other spaces as spaces."""
+    kept = []
+    for c in str(name or ""):
+        category = unicodedata.category(c)
+        if _invisible(c) or category in _CONTROLISH:
+            continue
+        kept.append(" " if category == "Zs" else c)
+    return "".join(kept)
 
 
 def _suffix(name: str) -> str:
     # Windows ignores spaces and dots at the end of a name, so "run.exe " is still run.exe.
-    return PurePath((name or "").rstrip(" .")).suffix.lower().lstrip(".")
+    return PurePath(_plain_name(name).rstrip(" .")).suffix.lower().lstrip(".")
+
+
+def _risk_name(name) -> str:
+    """The name as the risk check reads it: invisible characters out, compatibility letters folded (fullwidth
+    `ｅｘｅ`, the long s of `ſh`) and case folded, so none of them can hide an extension. Only for the
+    decision; the shown and saved name is never changed by it."""
+    return unicodedata.normalize("NFKC", _plain_name(name)).casefold()
+
+
+def _risk_suffix(name) -> str:
+    return PurePath(_risk_name(name).rstrip(" .")).suffix.lstrip(".")
 
 
 def _pretty(text: str, limit: int = 120) -> str:
     """A file or entry name for display: no control or direction-changing characters."""
     # Direction-changing characters go first: they are unprintable, and would otherwise become a space.
-    cleaned = "".join(c if c.isprintable() else " " for c in _DECEPTIVE.sub("", str(text or "")))
+    cleaned = "".join(c if c.isprintable() else " " for c in str(text or "") if not _invisible(c))
     return " ".join(cleaned.split())[:limit]
 
 
 # --- inspect ----------------------------------------------------------------------
+
+_AUDIO_BRANDS = {b"M4A ": "M4A", b"M4B ": "M4B", b"M4P ": "M4A", b"F4A ": "M4A"}
+_EMAIL_HEADERS = frozenset({"from", "to", "subject", "date", "received", "message-id", "mime-version",
+                            "return-path", "delivered-to"})
+_HEADER_LINE = re.compile(rb"([A-Za-z][A-Za-z0-9-]{0,40}):")
+
+
+def _audio_label(data: bytes) -> str:
+    """'an audio recording (WAV)' and the like, from the first bytes alone; '' when they aren't audio."""
+    if len(data) < 4:
+        return ""
+    kind = ""
+    if data[4:8] == b"ftyp" and len(data) >= 12:
+        kind = _AUDIO_BRANDS.get(data[8:12], "")
+    elif data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        kind = "WAV"
+    elif data[:3] == b"ID3" and len(data) > 4 and data[3] in (2, 3, 4):
+        kind = "MP3"
+    elif data[:4] == b"caff" and data[4:6] == b"\x00\x01":
+        kind = "CAF"
+    elif data[:4] == b"OggS":
+        kind = "Ogg"
+    elif data[:5] == b"#!AMR":
+        kind = "AMR"
+    elif data[:4] == b"FORM" and data[8:12] in (b"AIFF", b"AIFC"):
+        kind = "AIFF"
+    elif len(data) >= 4 and data[0] == 0xFF and data[1] & 0xE0 == 0xE0:
+        second, third = data[1], data[2]
+        layer = (second >> 1) & 3
+        if layer == 0:
+            # ADTS: twelve set bits, layer 00, a sampling-frequency index that exists.
+            if second & 0xF0 == 0xF0 and (third >> 2) & 0xF <= 12:
+                kind = "AAC"
+        elif (second >> 3) & 3 != 1 and (third >> 4) not in (0, 15) and (third >> 2) & 3 != 3:
+            kind = "MP3"
+    return f"an audio recording ({kind})" if kind else ""
+
+
+def _looks_like_email(data: bytes) -> bool:
+    """Text that opens with a block of mail header lines (at least two well-known ones)."""
+    head = data[:16384]
+    if b"\x00" in head[:8192]:
+        return False
+    head = head.removeprefix(b"\xef\xbb\xbf")
+    lines = head.replace(b"\r\n", b"\n").split(b"\n")
+    if len(data) > len(head):
+        lines = lines[:-1]       # the last line may be cut short
+    names: set[str] = set()
+    for line in lines[1 if lines and lines[0].startswith(b"From ") else 0:200]:
+        if not line.strip():
+            break
+        if line[:1] in (b" ", b"\t"):
+            continue
+        found = _HEADER_LINE.match(line)
+        if not found:
+            return False
+        names.add(found.group(1).decode("ascii").lower())
+    return len(names & _EMAIL_HEADERS) >= 2
+
 
 def _is_windows_program(data: bytes) -> bool:
     """Whether bytes that start with "MZ" are a program and not text that happens to start so.
@@ -185,6 +313,9 @@ def _is_bmp(data: bytes) -> bool:
 
 def _signature(data: bytes) -> tuple[str, str]:
     """(what the bytes say this is, its family), or ('', '') when they say nothing."""
+    audio = _audio_label(data)
+    if audio:
+        return audio, "audio"
     for magic, label, family in _SIGNATURES:
         if data.startswith(magic):
             # Two letters are not enough: a list of part numbers or a name can start with them.
@@ -193,6 +324,10 @@ def _signature(data: bytes) -> tuple[str, str]:
             if label == _OLD_OFFICE_LABEL and is_locked_office(data):
                 return _LOCKED_OFFICE_LABEL, family
             return label, family
+    if data[:3] == b"BZh" and data[4:10] == b"1AY&SY":
+        return "a bzip2 archive", "archive"
+    if len(data) >= 262 and data[257:262] == b"ustar":
+        return "a tar archive", "archive"
     if len(data) >= 512 and data[-512:-508] == b"koly":
         return "a Mac disk image", "program"
     if len(data) >= 12 and data[4:8] == b"ftyp":
@@ -204,6 +339,8 @@ def _signature(data: bytes) -> tuple[str, str]:
         return "a video", "video"
     if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "a WebP image", "image"
+    if _looks_like_email(data):
+        return "an email message", "email"
     return "", ""
 
 
@@ -218,11 +355,14 @@ def _zip_listing(data: bytes) -> dict:
     # A bundle shows once, as the bundle, rather than as hundreds of inner files.
     # An Office file's own .bin parts (printer settings, OLE objects) are not a hidden program.
     office = "[Content_Types].xml" in names
-    risky = sorted({_pretty(n) for n in names if not n.endswith("/") and _suffix(n) in _RISKY_SUFFIXES
-                    and not (office and _suffix(n) == "bin")})
+    risky = sorted({_pretty(n) for n in names if not n.endswith("/") and _risk_suffix(n) in _RISKY_SUFFIXES
+                    and not (office and _risk_suffix(n) == "bin")})
     macros = any(PurePath(n).name.lower() == "vbaproject.bin" for n in names)
+    bundles = any(c.endswith(_BUNDLE_PARTS) for n in names
+                  for c in _risk_name(n).replace("\\", "/").split("/") if c)
+    scripts = any(_risk_suffix(n) in _SCRIPT_SUFFIXES for n in names if not n.endswith("/"))
     return {"entries": [_pretty(n) for n in names[:MAX_ZIP_NAMES]], "entry_count": len(names),
-            "risky_entries": risky[:12], "macros": macros,
+            "risky_entries": risky[:12], "macros": macros, "holds_bundle": bundles, "holds_script": scripts,
             "encrypted": any(info.flag_bits & 0x1 for info in infos)}
 
 
@@ -235,7 +375,7 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
     except a name suffix that was matched against a known set first."""
     high: list[str] = []
     caution: list[str] = []
-    parts = [part.strip() for part in PurePath((name or "").rstrip(" .")).name.lower().split(".")]
+    parts = [part.strip() for part in PurePath(_risk_name(name).rstrip(" .")).name.split(".")]
     if family == "program":
         high.append(f"The file itself is {label}, which could run on your Mac or PC.")
     elif family == "script" and suffix not in _PLAIN_TEXT_SUFFIXES:
@@ -246,7 +386,12 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
         high.append(f"It is a .{suffix} file, a kind of program or script that runs when it is opened.")
     if _DECEPTIVE.search(name or ""):
         high.append("Its name has hidden characters that make it read differently from what it is.")
-    if len(parts) >= 3 and parts[-1] in _INNOCENT_SUFFIXES and any(p in _RISKY_SUFFIXES for p in parts[1:-1]):
+    elif _hidden(name):
+        caution.append("Its name has hidden characters that make it read differently from what it is.")
+    if suffix in _SCRIPT_SUFFIXES:
+        caution.append(f"It is a .{suffix} script, which could run commands if opened.")
+    if len(parts) >= 3 and parts[-1] in _INNOCENT_SUFFIXES and any(
+            p in _RISKY_SUFFIXES and p not in _WORDLIKE_SUFFIXES for p in parts[1:-1]):
         high.append("Its name has a program or script type tucked inside it, ahead of a harmless-looking ending.")
     elif len(parts) >= 3 and parts[-1] in _RISKY_SUFFIXES and parts[-2] in _INNOCENT_SUFFIXES:
         high.append(f"Its name is dressed up as a .{parts[-2]} file, but it really ends in .{parts[-1]}.")
@@ -254,6 +399,13 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
         high.append(f"Its name says .{suffix}, but its contents are not a document or picture.")
     if family == "zip" and found.get("risky_entries"):
         high.append("The archive lists programs or scripts inside it.")
+    elif family == "zip" and found.get("holds_bundle"):
+        high.append("It holds an app.")        # refused at save: the card is shown before the risk is judged
+    elif family == "zip" and found.get("holds_script"):
+        caution.append("It holds a program or script.")
+    if (family == "archive" or (family == "zip" and found.get("zip_error"))
+            or (suffix in _ARCHIVE_SUFFIXES and family != "zip")):
+        caution.append(_NO_LOOK)
     if found.get("macros") or suffix in _MACRO_SUFFIXES or (
             label in (_OLD_OFFICE_LABEL, _LOCKED_OFFICE_LABEL) and _OLE_VBA in data):
         caution.append("It is an Office file that contains macros, which can run commands if you enable them.")
@@ -272,6 +424,8 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
     if (not label and data and suffix in _INNOCENT_SUFFIXES and suffix not in _PLAIN_TEXT_SUFFIXES
             and not data.lstrip().startswith(b"{\\rtf")):
         caution.append(f"Its name says .{suffix}, but its contents don't match any file type Wisp knows.")
+    if family in ("audio", "email") and suffix in _INNOCENT_SUFFIXES and suffix not in _PLAIN_TEXT_SUFFIXES:
+        caution.append(f"Its name says .{suffix}, but it is really {label}.")
     reasons = (high + caution)[:MAX_RISK_REASONS]
     return {"level": "high" if high else "caution" if caution else "", "reasons": reasons}
 
@@ -279,14 +433,16 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
 def inspect(name: str, data: bytes) -> dict:
     """What this file really is and what looks wrong, from its bytes alone."""
     label, family = _signature(data)
-    suffix = _suffix(name)
+    suffix = _risk_suffix(name)
     out: dict = {"real_type": label, "family": family, "warnings": []}
-    if _DECEPTIVE.search(name or ""):
+    if _hidden(name):
         out["warnings"].append("Its name contains hidden characters that change how it reads.")
-    parts = [part.strip() for part in PurePath((name or "").rstrip(" .")).name.lower().split(".")]
+    parts = [part.strip() for part in PurePath(_risk_name(name).rstrip(" .")).name.split(".")]
     if len(parts) >= 3 and parts[-1] in _RISKY_SUFFIXES and parts[-2] in _INNOCENT_SUFFIXES:
         out["warnings"].append(f"Its name is made to look like a .{parts[-2]}, but it ends in .{parts[-1]}.")
     if family == "program" and suffix in _INNOCENT_SUFFIXES:
+        out["warnings"].append(f"Its name says .{suffix}, but it is really {label}.")
+    if family in ("audio", "email") and suffix in _INNOCENT_SUFFIXES and suffix not in _PLAIN_TEXT_SUFFIXES:
         out["warnings"].append(f"Its name says .{suffix}, but it is really {label}.")
     if family == "zip":
         out.update(_zip_listing(data))
@@ -909,12 +1065,551 @@ def structured(name: str, data: bytes) -> dict:
     raise ValueError("That file has no events or contacts Wisp can read.")
 
 
+# --- recordings ---------------------------------------------------------------------
+
+_AFCONVERT = "/usr/bin/afconvert"
+_AFCONVERT_TIMEOUT_S = 30.0
+_AFCONVERT_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C"}
+AUDIO_RATE = 16000
+AUDIO_MAX_SECONDS = 600.0
+AUDIO_WINDOW_SECONDS = 29.5
+AUDIO_CUT_REGION_SECONDS = 4.0
+AUDIO_QUIET_SECONDS = 0.2
+AUDIO_MIN_SECONDS = 0.2
+# The converted file is never read past this: an hour of 16 kHz 16-bit mono. A longer one is cut off
+# by stopping the converter, and its length is then reported as "at least this".
+AUDIO_MAX_CONVERTED_BYTES = 3600 * AUDIO_RATE * 2 + 4096
+AUDIO_UNREADABLE = "That recording couldn't be read."
+AUDIO_EMPTY = "That recording is empty."
+# Bytes are handed to the system's audio decoders only when they say they are sound (family "audio"), or say
+# nothing at all and the NAME is an audio one. Video, pictures, documents, archives, programs, scripts and
+# email are refused whatever they are called.
+_AUDIO_SUFFIXES = frozenset({"m4a", "m4b", "mp3", "wav", "wave", "aif", "aiff", "aifc", "caf", "ogg", "oga",
+                             "opus", "aac", "amr", "flac", "wma", "3ga", "mp2", "au", "snd"})
+_WAV_MAX_CHUNKS = 64
+
+
+def _convert_to_wav(data: bytes, workdir: str) -> tuple[Path, bool]:
+    """(the 16 kHz mono 16-bit WAV afconvert made, whether it was stopped at the size ceiling)."""
+    if not workdir or not os.path.isdir(workdir):
+        raise ValueError("Wisp can't read that kind of recording here.")
+    # afconvert picks its decoder from the content, not from a file name: the file is just "input".
+    source, target = Path(workdir, "input"), Path(workdir, "output.wav")
+    source.write_bytes(data)
+    argv = [_AFCONVERT, "-f", "WAVE", "-d", f"LEI16@{AUDIO_RATE}", "-c", "1", str(source), str(target)]
+    try:
+        child = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL, env=_AFCONVERT_ENV)
+    except OSError:
+        raise ValueError(AUDIO_UNREADABLE) from None
+    deadline = time.monotonic() + _AFCONVERT_TIMEOUT_S
+    cut = False
+    try:
+        while child.poll() is None:
+            try:
+                if target.stat().st_size > AUDIO_MAX_CONVERTED_BYTES:
+                    cut = True
+                    break
+            except OSError:
+                pass
+            if time.monotonic() > deadline:
+                raise ValueError(AUDIO_UNREADABLE)
+            time.sleep(0.03)
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait()
+    if not cut and child.returncode != 0:
+        raise ValueError(AUDIO_UNREADABLE)
+    if not target.is_file():
+        raise ValueError(AUDIO_UNREADABLE)
+    return target, cut
+
+
+def _wav_bytes(samples) -> bytes:
+    import wave
+    out = io.BytesIO()
+    with wave.open(out, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(AUDIO_RATE)
+        if sys.byteorder == "big":
+            import array
+            samples = array.array("h", samples)
+            samples.byteswap()
+        wav.writeframes(samples.tobytes())
+    return out.getvalue()
+
+
+def _quietest_cut(samples, low: int, high: int) -> int:
+    """The sample index to cut at: the middle of the quietest 0.2 s stretch between `low` and `high`."""
+    block = AUDIO_RATE // 20                      # 50 ms
+    count = AUDIO_QUIET_SECONDS * AUDIO_RATE / block
+    blocks_per_stretch = max(1, int(round(count)))
+    loud = [sum(map(abs, samples[start:start + block])) for start in range(low, high - block + 1, block)]
+    if len(loud) <= blocks_per_stretch:
+        return (low + high) // 2
+    best_start, best = 0, None
+    running = sum(loud[:blocks_per_stretch])
+    for first in range(len(loud) - blocks_per_stretch + 1):
+        if first:
+            running += loud[first + blocks_per_stretch - 1] - loud[first - 1]
+        if best is None or running < best:
+            best, best_start = running, first
+    start = low + best_start * block
+    return start + blocks_per_stretch * block // 2
+
+
+def _wav_layout(path: Path, cut: bool) -> tuple[int, int]:
+    """(byte offset of the samples, number of frames) of a 16 kHz mono 16-bit WAV, found by walking its RIFF
+    chunks (id, little-endian size, padded to an even length) rather than searching for the word "data", which
+    can sit inside another chunk. At most _WAV_MAX_CHUNKS chunks are walked. A data size of 0 or 0xFFFFFFFF
+    (written by a converter that streams), one larger than the file, or any size when the converter was
+    stopped, is replaced by what the file really holds."""
+    import struct
+    size = path.stat().st_size
+    with open(path, "rb") as stream:
+        head = stream.read(12)
+        if len(head) < 12 or head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+            raise ValueError(AUDIO_UNREADABLE)
+        position = 12
+        fmt = None
+        for _ in range(_WAV_MAX_CHUNKS):
+            stream.seek(position)
+            header = stream.read(8)
+            if len(header) < 8:
+                break
+            chunk_id, chunk_size = header[:4], struct.unpack("<I", header[4:])[0]
+            if chunk_id == b"fmt ":
+                body = stream.read(16)
+                if len(body) < 16:
+                    break
+                tag, channels, rate, _, _, bits = struct.unpack("<HHIIHH", body)
+                fmt = (tag, channels, rate, bits)
+            elif chunk_id == b"data":
+                if fmt is None or fmt[0] not in (1, 0xFFFE) or fmt[1:] != (1, AUDIO_RATE, 16):
+                    raise ValueError(AUDIO_UNREADABLE)
+                offset = position + 8
+                available = max(0, size - offset)
+                if cut or chunk_size in (0, 0xFFFFFFFF) or chunk_size > available:
+                    return offset, available // 2
+                return offset, chunk_size // 2
+            position += 8 + chunk_size + (chunk_size & 1)
+            if position >= size:
+                break
+    raise ValueError(AUDIO_UNREADABLE)
+
+
+def _plan_windows(samples) -> tuple[list[tuple[int, int]], int]:
+    """([(start, end) of each window], samples left over). Windows are at most AUDIO_WINDOW_SECONDS long, cut at
+    the quietest stretch near their end. What is left after the last cut is shorter than AUDIO_MIN_SECONDS (too
+    short to hold a word): it is folded into the last window when that keeps it within the window length,
+    otherwise it is left over and the caller reports it."""
+    longest = int(AUDIO_WINDOW_SECONDS * AUDIO_RATE)
+    region = int(AUDIO_CUT_REGION_SECONDS * AUDIO_RATE)
+    minimum = int(AUDIO_MIN_SECONDS * AUDIO_RATE)
+    ranges: list[tuple[int, int]] = []
+    position, limit = 0, len(samples)
+    while limit - position >= minimum:
+        if limit - position <= longest:
+            end = limit
+        else:
+            end = _quietest_cut(samples, position + longest - region, position + longest)
+            end = min(limit, max(position + 1, end))
+        ranges.append((position, end))
+        position = end
+    left = limit - position
+    if left and ranges and ranges[-1][1] - ranges[-1][0] + left <= longest:
+        ranges[-1] = (ranges[-1][0], limit)
+        left = 0
+    return ranges, left
+
+
+def audio(name: str, data: bytes, workdir: str = "") -> dict:
+    """{seconds, heard, windows: [base64 WAV], stopped_early, dropped_tail} for a recording, at most the first
+    600 s. `dropped_tail` is the seconds (under 0.2) at the very end that fit no window."""
+    import array
+    family = _signature(data)[1]
+    if family != "audio" and not (family == "" and _suffix(name) in _AUDIO_SUFFIXES):
+        raise ValueError(AUDIO_UNREADABLE)
+    target, cut = _convert_to_wav(data, workdir)
+    keep_limit = int(AUDIO_MAX_SECONDS * AUDIO_RATE)
+    try:
+        offset, total_frames = _wav_layout(target, cut)
+        with open(target, "rb") as stream:
+            stream.seek(offset)
+            raw = stream.read(min(total_frames, keep_limit) * 2)
+    except OSError:
+        raise ValueError(AUDIO_UNREADABLE) from None
+    keep = min(total_frames, keep_limit)
+    samples = array.array("h")
+    samples.frombytes(raw[:len(raw) - len(raw) % 2])
+    if sys.byteorder == "big":
+        samples.byteswap()
+    seconds = total_frames / AUDIO_RATE
+    if seconds < AUDIO_MIN_SECONDS:
+        raise ValueError(AUDIO_EMPTY)
+    ranges, left = _plan_windows(samples)
+    windows = [base64.b64encode(_wav_bytes(samples[start:end])).decode("ascii") for start, end in ranges]
+    heard = sum(end - start for start, end in ranges) / AUDIO_RATE
+    dropped = left / AUDIO_RATE
+    return {"seconds": round(seconds, 2), "heard": round(heard, 4), "windows": windows,
+            "dropped_tail": round(dropped, 4),
+            "stopped_early": bool(cut or total_frames > keep or dropped >= AUDIO_MIN_SECONDS
+                                  or seconds - heard - dropped > 0.5)}
+
+
+# --- attached emails ------------------------------------------------------------------
+
+EML_UNREADABLE = "That email file couldn't be read."
+EML_PART_TOO_LARGE = "That file inside the email is too large."
+EML_NO_SUCH_PART = "That file isn't in the email."
+MAX_EML_PARTS = 200
+MAX_EML_DEPTH = 8
+MAX_EML_FILES = 50
+MAX_EML_BODY = 200_000
+MAX_EML_HEADER = 300
+MAX_EML_PART_BYTES = 24 * 1024 * 1024
+# A header longer than this is not parsed: its value is treated as empty.
+MAX_EML_HEADER_BYTES = 64 * 1024
+# A Content-* header (type, disposition, encoding, id) is never legitimately more than a few KB.
+MAX_EML_CONTENT_HEADER_BYTES = 8 * 1024
+# An HTML body is read for its text only from this much of it.
+_EML_HTML_BYTES = 2 * 1024 * 1024
+_MIME_TYPE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]{0,60}/[a-z0-9][a-z0-9!#$&^_.+-]{0,60}")
+_BODY_JUNK = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f‪-‮⁦-⁩‎‏؜﻿]")
+_NAMED_TEXT = frozenset({"text/calendar", "text/vcard", "text/x-vcard", "text/csv", "text/directory"})
+
+
+def _decoded_header(value, limit: int = MAX_EML_HEADER) -> str:
+    """A header value as clean text: encoded words decoded, control characters gone, cut."""
+    from email.header import decode_header, make_header
+    raw = str(value or "")[:4000]
+    try:
+        text = str(make_header(decode_header(raw)))
+    except Exception:  # noqa: BLE001 — a malformed encoded word is shown as written
+        text = raw
+    return _pretty(text, limit)
+
+
+def _headers_of(message, name: str) -> str:
+    values = message.get_all(name) or []
+    return _decoded_header(", ".join(str(v) for v in values[:4]))
+
+
+def _defuse_headers(part) -> bool:
+    """Blank every header value longer than MAX_EML_HEADER_BYTES on this part, before anything parses it.
+
+    The stdlib reads a header's parameters lazily (get_filename, get_content_type) and a multi-megabyte
+    Content-Disposition of semicolons takes it many seconds. A blanked header means "no name, no parameters".
+    True when something was blanked.
+    """
+    headers = getattr(part, "_headers", None)
+    if not isinstance(headers, list):
+        return False
+    blanked = False
+    for index, item in enumerate(headers):
+        try:
+            key, value = item
+        except (TypeError, ValueError):
+            continue
+        text = value if isinstance(value, str) else str(value)
+        content = str(key).lower().startswith("content-")
+        if len(text) > (MAX_EML_CONTENT_HEADER_BYTES if content else MAX_EML_HEADER_BYTES):
+            # A Content-* header is the one the stdlib parses for parameters: it becomes empty. Any other
+            # (a 5 MB Subject) is only displayed, cut to 300 characters later, so keeping its start costs nothing.
+            blanked_value = "" if content else text[:MAX_EML_HEADER_BYTES]
+            headers[index] = (key, blanked_value)
+            blanked = True
+    return blanked
+
+
+class _Walk:
+    """What the walk over the parts gave up on."""
+    def __init__(self) -> None:
+        self.cut = False           # stopped early for depth, part count or an oversized header
+        self.unseen = False        # parts that were never looked at may have been files
+        self.dropped_text = False  # an inline text part that was neither the body, an alternative of it, nor a file
+        self.parent: dict = {}     # id(part) -> its multipart parent, for telling an alternative from a leftover
+
+
+def _eml_parts(root, walk: "_Walk | None" = None) -> list:
+    """The parts of the message in a fixed order (depth first, as written), at most MAX_EML_PARTS of them,
+    not descending past MAX_EML_DEPTH and never into an attached message. `walk` records what was left out."""
+    walk = walk if walk is not None else _Walk()
+    found: list = []
+    stack = [(root, 0)]
+    while stack and len(found) < MAX_EML_PARTS:
+        part, depth = stack.pop()
+        if _defuse_headers(part):
+            walk.cut = True
+        if part.get_content_maintype() == "message":
+            found.append(part)
+            continue
+        if part.is_multipart():
+            children = part.get_payload()
+            if depth < MAX_EML_DEPTH:
+                if isinstance(children, list):
+                    for child in children:
+                        walk.parent[id(child)] = part
+                    stack.extend((child, depth + 1) for child in reversed(children))
+            elif isinstance(children, list) and children:
+                walk.cut = walk.unseen = True
+            continue
+        found.append(part)
+    if stack:
+        walk.cut = walk.unseen = True
+    return found
+
+
+def _mime_of(part) -> str:
+    kind = (part.get_content_type() or "").lower()
+    return kind if _MIME_TYPE.fullmatch(kind) else "application/octet-stream"
+
+
+def _raw_file_name(part) -> str:
+    try:
+        name = part.get_filename()
+    except Exception:  # noqa: BLE001 — a damaged parameter is "no name"
+        return ""
+    if isinstance(name, tuple):
+        name = name[-1] if name else ""
+    return _decoded_header(name or "", 400)
+
+
+def _base_name(text: str) -> str:
+    return _pretty(text.replace("\\", "/").rsplit("/", 1)[-1], 200).lstrip().strip()
+
+
+def _attached_message(part):
+    inner = part.get_payload()
+    if isinstance(inner, list) and inner:
+        return inner[0]
+    return None
+
+
+def _generated_name(part, mime: str, number: int) -> str:
+    import mimetypes
+    kind = mime.split("/", 1)[0]
+    extension = (mimetypes.guess_extension(mime) or "") if mime != "application/octet-stream" else ""
+    return f"{kind if kind in ('image', 'audio', 'video') else 'attachment'}{extension}"
+
+
+def _is_attachment_like(part) -> bool:
+    return str(part.get("content-disposition", "")).strip().lower().startswith("attachment")
+
+
+def _text_and_cut(part, limit_bytes: int) -> tuple[str, bool]:
+    """(the part's text decoded from at most `limit_bytes` of it, whether bytes were left out)."""
+    payload = part.get_payload(decode=True)
+    if not isinstance(payload, (bytes, bytearray)):
+        return "", False
+    cut = len(payload) > limit_bytes
+    payload = bytes(payload[:limit_bytes])
+    charset = (part.get_content_charset() or "utf-8")
+    try:
+        return payload.decode(charset, "replace"), cut
+    except (LookupError, ValueError):
+        return payload.decode("utf-8", "replace"), cut
+
+
+def _text_of(part, limit_bytes: int) -> str:
+    return _text_and_cut(part, limit_bytes)[0]
+
+
+_CONTROLS = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_TAGS = re.compile(r"<(?:script|style)\b.*?(?:</(?:script|style)\s*>|\Z)|<[^>]*>", re.I | re.S)
+
+
+def _html_text(raw: str) -> tuple[str, bool]:
+    """(the readable text of an HTML body, whether the fallback had to be used). Control characters,
+    NULs above all, are removed first because the document reader refuses a body with a NUL near its start."""
+    from service.document_extract import _html
+    clean = _CONTROLS.sub("", raw)
+    try:
+        return _html(clean.encode("utf-8")), False
+    except Exception:  # noqa: BLE001 — whatever the helper dislikes, the person still gets the words
+        import html as html_module
+        crude = html_module.unescape(_TAGS.sub(" ", clean))
+        return "\n".join(line for line in (" ".join(l.split()) for l in crude.splitlines()) if line), True
+
+
+def _part_bytes(part) -> bytes:
+    """What a listed file is made of: the decoded body, or an attached message written out again."""
+    if part.get_content_maintype() == "message":
+        from email.policy import compat32
+        inner = _attached_message(part)
+        if inner is None:
+            decoded = part.get_payload(decode=True)
+            return bytes(decoded) if isinstance(decoded, (bytes, bytearray)) else b""
+        return inner.as_bytes(policy=compat32.clone(max_line_length=0))
+    decoded = part.get_payload(decode=True)
+    return bytes(decoded) if isinstance(decoded, (bytes, bytearray)) else b""
+
+
+# A header line (with its folded continuation lines) that starts with "Content-", read straight from the bytes.
+_CONTENT_HEADER = re.compile(
+    rb"(?<![^\r\n])(content-[^\r\n:]{0,40}):([^\r\n]*(?:(?:\r\n|\r|\n)[ \t][^\r\n]*)*)", re.I)
+
+
+def _prescan(data: bytes) -> tuple[bytes, bool]:
+    """(the message with every oversized Content-* header cut down to nothing, whether any was cut).
+
+    The stdlib parser reads a part's Content-Type parameters (the boundary) while it is still parsing, through
+    a parameter splitter that is quadratic in the header's length, so a part whose Content-Type is megabytes of
+    semicolons would burn the child's time before any check on the parsed headers could run. This looks at the
+    raw bytes first, in one linear pass, and replaces such a header's value with a harmless one (a Content-Type
+    becomes text/plain, so the part is shown as plain text instead of being taken for a file). Lines are looked at wherever they are in the message: a real attachment
+    never has a line this long that starts with "Content-"."""
+    cut = False
+
+    def shrink(match):
+        nonlocal cut
+        if len(match.group(2)) <= MAX_EML_CONTENT_HEADER_BYTES:
+            return match.group(0)
+        cut = True
+        name = match.group(1)
+        return name + b": " + (b"text/plain" if name.lower() == b"content-type" else b"")
+
+    out = _CONTENT_HEADER.sub(shrink, data)
+    return (out, True) if cut else (data, False)
+
+
+def _parse_eml(data: bytes):
+    from email.parser import BytesParser
+    from email.policy import compat32
+    try:
+        data, cut = _prescan(data)
+        root = BytesParser(policy=compat32).parsebytes(data)
+        root._wisp_prescan_cut = cut
+    except (RecursionError, MemoryError):
+        raise
+    except Exception:  # noqa: BLE001
+        raise ValueError(EML_UNREADABLE) from None
+    if not any(key.lower() in _EMAIL_HEADERS for key in root.keys()):
+        raise ValueError(EML_UNREADABLE)
+    return root
+
+
+def _eml_layout(root, walk: "_Walk | None" = None) -> tuple[object | None, list]:
+    """(the part that is the body, the parts that are files), both in message order."""
+    parts = _eml_parts(root, walk)
+    plain = html = None
+    for part in parts:
+        mime = _mime_of(part)
+        if part.get_filename() or _is_attachment_like(part) or part.get_content_maintype() == "message":
+            continue
+        if mime == "text/plain" and plain is None:
+            plain = part
+        elif mime == "text/html" and html is None:
+            html = part
+    body = plain if plain is not None and _text_of(plain, 64).strip() else (html or plain)
+    files = []
+    for part in parts:
+        if part is body:
+            continue
+        mime = _mime_of(part)
+        named = bool(_raw_file_name(part)) or part.get_content_maintype() == "message"
+        if named or _is_attachment_like(part) or not mime.startswith("text/") or mime in _NAMED_TEXT:
+            files.append(part)
+        elif walk is not None and mime in ("text/plain", "text/html"):
+            # Inline text that is neither the body nor a file. The text version that was not chosen out of a
+            # multipart/alternative is the same message said twice, so it is not a loss; anything else is.
+            parent = walk.parent.get(id(part))
+            same_set = (parent is not None and body is not None and walk.parent.get(id(body)) is parent
+                        and (parent.get_content_type() or "").lower() == "multipart/alternative")
+            if not same_set:
+                walk.dropped_text = True
+    return body, files
+
+
+def _file_name(part, number: int) -> str:
+    mime = _mime_of(part)
+    if part.get_content_maintype() == "message":
+        inner = _attached_message(part)
+        subject = _decoded_header(inner.get("subject", ""), 150) if inner is not None else ""
+        subject = subject.replace("/", "-").replace("\\", "-")
+        return _base_name(f"{subject or 'message'}.eml") or "message.eml"
+    return _base_name(_raw_file_name(part)) or _generated_name(part, mime, number)
+
+
+def eml(name: str, data: bytes) -> dict:
+    """An attached email read in memory: headers, body text and the list of files inside. Nothing is written
+    anywhere, nothing in it is followed, and a damaged message is a plain sentence.
+
+    `body_cut` is true when any of the chosen body was dropped at any stage; `walk_cut` when the walk over the
+    parts stopped early (too deep, too many parts, or a header too large to parse)."""
+    try:
+        root = _parse_eml(data)
+        walk = _Walk()
+        walk.cut = bool(getattr(root, "_wisp_prescan_cut", False))
+        body, files = _eml_layout(root, walk)
+        text, cut = "", False
+        if body is not None:
+            if _mime_of(body) == "text/html":
+                raw, cut = _text_and_cut(body, _EML_HTML_BYTES)
+                # The crude fallback keeps the words, so using it is not a cut; only a size cap is.
+                text, _fell_back = _html_text(raw)
+            else:
+                text, cut = _text_and_cut(body, MAX_EML_BODY * 4 + 4096)
+                text = text.replace("\r\n", "\n").replace("\r", "\n")
+            text = _BODY_JUNK.sub("", text).strip()
+            if len(text) > MAX_EML_BODY:
+                text, cut = text[:MAX_EML_BODY], True
+            cut = cut or walk.dropped_text
+        listed = []
+        for index, part in enumerate(files[:MAX_EML_FILES]):
+            listed.append({"index": index, "name": _file_name(part, index), "mime": _mime_of(part),
+                           "size": len(_part_bytes(part))})
+        more = max(0, len(files) - MAX_EML_FILES)       # exactly the listed-but-over-the-cap files
+        return {"from": _headers_of(root, "from"), "to": _headers_of(root, "to"), "cc": _headers_of(root, "cc"),
+                "subject": _headers_of(root, "subject"), "date": _decoded_header(root.get("date", ""), 100),
+                "body": text, "body_cut": cut, "walk_cut": walk.cut, "files": listed, "more_files": more,
+                "more_unknown": walk.unseen}       # parts were never looked at, so there may be more files
+    except MemoryError:
+        raise ValueError("That email is too large for Wisp to read.") from None
+    except ValueError:
+        raise
+    except Exception:  # noqa: BLE001 — including RecursionError from a message nested thousands deep
+        raise ValueError(EML_UNREADABLE) from None
+
+
+def eml_part(name: str, data: bytes, index: int | None) -> dict:
+    """One file from inside an attached email, by the index `eml` listed it under: {name, mime, size, data_b64}.
+    Only the first MAX_EML_FILES are listed, so only those can be fetched."""
+    if index is None or index < 0 or index >= MAX_EML_FILES:
+        raise ValueError(EML_NO_SUCH_PART)
+    try:
+        root = _parse_eml(data)
+        _, files = _eml_layout(root)
+        if index >= min(len(files), MAX_EML_FILES):
+            raise ValueError(EML_NO_SUCH_PART)
+        part = files[index]
+        content = _part_bytes(part)
+        if len(content) > MAX_EML_PART_BYTES:
+            raise ValueError(EML_PART_TOO_LARGE)
+        return {"name": _file_name(part, index), "mime": _mime_of(part), "size": len(content),
+                "data_b64": base64.b64encode(content).decode("ascii")}
+    except MemoryError:
+        raise ValueError(EML_PART_TOO_LARGE) from None
+    except ValueError:
+        raise
+    except Exception:  # noqa: BLE001
+        raise ValueError(EML_UNREADABLE) from None
+
+
 def main() -> None:
-    """Child entry: argv = job, file name, private work directory. One JSON line out."""
+    """Child entry: argv = job, file name, private work directory, [part index]. One JSON line out."""
     _limit_self()
     job = sys.argv[1] if len(sys.argv) > 1 else ""
     name = sys.argv[2] if len(sys.argv) > 2 else ""
     workdir = sys.argv[3] if len(sys.argv) > 3 else ""
+    part = None
+    if len(sys.argv) > 4:
+        try:
+            part = int(sys.argv[4])
+        except ValueError:
+            part = -1
     data = sys.stdin.buffer.read(MAX_INPUT_BYTES + 1)
     try:
         if len(data) > MAX_INPUT_BYTES:
@@ -929,6 +1624,12 @@ def main() -> None:
             result = ocr_images(name, data, workdir)
         elif job == "pdf_pages":
             result = pdf_pages(data)
+        elif job == "audio":
+            result = audio(name, data, workdir)
+        elif job == "eml":
+            result = eml(name, data)
+        elif job == "eml_part":
+            result = eml_part(name, data, part)
         else:
             raise ValueError("Unknown job.")
     except ValueError as error:

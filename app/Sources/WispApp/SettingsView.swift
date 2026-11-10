@@ -233,6 +233,10 @@ final class SettingsLoader: ObservableObject {
     @Published private(set) var standingRulesStatus: String?
     @Published private(set) var saveWhenAway: Bool?
     @Published private(set) var saveWhenAwayPending = false
+    /// "Read new attachments in the background" as the service last confirmed it; nil
+    /// until confirmed, never shown as off while nil.
+    @Published private(set) var attachmentBackground: WispClient.AttachmentBackground?
+    @Published private(set) var attachmentBackgroundPending = false
     /// False when the service says Save power caps nothing on this engine (the
     /// person's own oMLX app, or a remote-only setup). Nil when it didn't say.
     @Published private(set) var saveWhenAwayApplies: Bool?
@@ -375,6 +379,7 @@ final class SettingsLoader: ObservableObject {
             }
             self.humanizerEnabled = await client.humanizerEnabled()
             await self.refreshBehavior()
+            await self.refreshAttachmentBackground()
             await self.refreshCloud()
             await self.refreshLocalProvider()
         }
@@ -1133,6 +1138,26 @@ final class SettingsLoader: ObservableObject {
         }
     }
 
+    func refreshAttachmentBackground() async {
+        guard !attachmentBackgroundPending else { return }
+        let confirmed = await client.attachmentBackgroundState()
+        guard !attachmentBackgroundPending else { return }
+        attachmentBackground = confirmed
+    }
+
+    /// One change at a time; the row shows what the service confirmed.
+    func setAttachmentBackground(_ on: Bool) {
+        guard !attachmentBackgroundPending else { return }
+        attachmentBackgroundPending = true
+        Task {
+            var confirmed = await self.client.setAttachmentBackground(on)
+            // A lost reply may mean the write happened; only a fresh read can tell.
+            if confirmed == nil { confirmed = await self.client.attachmentBackgroundState() }
+            self.attachmentBackground = confirmed
+            self.attachmentBackgroundPending = false
+        }
+    }
+
     func refreshSaveMemory() async {
         guard !saveMemoryPending else { return }
         let confirmed = await client.saveMemoryState()
@@ -1454,6 +1479,47 @@ struct SettingsView: View {
             Text(behaviorExplanation)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    static func attachmentKeptLine(_ kept: Int) -> String {
+        "Kept text from \(kept) file\(kept == 1 ? "" : "s")."
+    }
+
+    /// Next to the mail controls. Unknown shows "Check", never a guessed on or off.
+    private var attachmentBackgroundRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if let state = loader.attachmentBackground {
+                Toggle(isOn: Binding(get: { state.enabled },
+                                     set: { loader.setAttachmentBackground($0) })) {
+                    attachmentBackgroundLabel
+                }
+                .toggleStyle(.switch)
+                .tint(palette.accent)
+                .disabled(loader.attachmentBackgroundPending)
+                .accessibilityLabel("Read new attachments in the background")
+                if state.kept > 0 {
+                    Text(Self.attachmentKeptLine(state.kept))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                attachmentBackgroundLabel
+                Button("Check") { Task { await loader.refreshAttachmentBackground() } }
+                    .controlSize(.small)
+                    .disabled(loader.attachmentBackgroundPending)
+                    .accessibilityLabel("Check whether Wisp reads new attachments in the background")
+            }
+        }
+    }
+
+    private var attachmentBackgroundLabel: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Read new attachments in the background")
+                .font(.system(size: 14, weight: .medium))
+            Text("Lets Wisp find a file by what's inside it. Reading happens on this Mac without the model, and the text is kept for 30 days.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -2109,6 +2175,10 @@ struct SettingsView: View {
                         Divider()
 
                         MailMemorySettingsRow()
+
+                        Divider()
+
+                        attachmentBackgroundRow
 
                         Divider()
 

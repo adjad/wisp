@@ -252,3 +252,111 @@ async def recognize_text(jpeg: bytes, timeout: float = 20.0) -> tuple[str, float
     if confidence != confidence or confidence in (float("inf"), float("-inf")):
         raise BridgeError("recognize_failed")
     return text[:RECOGNIZE_MAX_CHARS], min(1.0, max(0.0, confidence))
+
+
+# --- files texted in Messages (MailMemoryReader kinds `message_attachments`, `message_attachment`) ---
+
+_MESSAGE_ATTACHMENT_ID = re.compile(r"[0-9]{1,18}")
+_MESSAGE_ATTACHMENT_WHY = {"no_messages_db", "not_found", "not_on_disk", "too_large", "unreadable"}
+MESSAGE_ATTACHMENT_LIMIT_MAX = 400
+MESSAGE_HANDLES_MAX = 10
+_MESSAGE_HANDLE_CHARS = 100
+_MESSAGE_TERM_CHARS = 80      # the app accepts 1...100; a term is cut shorter here
+_MESSAGE_LIMIT_DEFAULT = 200
+
+
+def _has_control(text: str) -> bool:
+    return any(ord(c) < 32 or 0x7F <= ord(c) < 0xA0 for c in text)
+
+
+def _clean_seconds(value) -> float:
+    """A unix-seconds bound for the app: a finite number above zero, else 0.0 (no bound)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    try:
+        number = float(value)
+    except OverflowError:
+        return 0.0
+    return number if math.isfinite(number) and number > 0 else 0.0
+
+
+def _clean_limit(value) -> int:
+    """A row limit the app accepts (1...MESSAGE_ATTACHMENT_LIMIT_MAX); anything not int-like is the default."""
+    if isinstance(value, bool):
+        number = _MESSAGE_LIMIT_DEFAULT
+    elif isinstance(value, int):
+        number = value
+    elif isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        number = int(value)
+    else:
+        number = _MESSAGE_LIMIT_DEFAULT
+    return max(1, min(number, MESSAGE_ATTACHMENT_LIMIT_MAX))
+
+
+def _strings(value) -> list[str]:
+    return [x for x in value if isinstance(x, str)] if isinstance(value, (list, tuple)) else []
+
+
+def _text_field(value, limit: int) -> str | None:
+    """`value` cut to `limit` characters when it is a string, else None."""
+    return value[:limit] if isinstance(value, str) else None
+
+
+def _message_attachment_rows(reply: dict) -> list[dict]:
+    out = []
+    rows = reply.get("rows")
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            continue
+        attachment_id = r.get("id")
+        if not isinstance(attachment_id, str) or not _MESSAGE_ATTACHMENT_ID.fullmatch(attachment_id):
+            continue
+        ts = r.get("ts")
+        if isinstance(ts, bool) or not isinstance(ts, (int, float)) or not math.isfinite(ts) or ts < 0:
+            continue
+        chat, sender = _text_field(r.get("chat"), 120), _text_field(r.get("sender"), 200)
+        name, mime = _text_field(r.get("name"), 255), _text_field(r.get("mime"), 100)
+        if chat is None or sender is None or mime is None or not name:
+            continue
+        from_me, on_disk, size = r.get("from_me"), r.get("on_disk"), r.get("size")
+        if type(from_me) is not bool or type(on_disk) is not bool or type(size) is not int or size < 0:
+            continue
+        out.append({"id": attachment_id, "ts": float(ts), "chat": chat, "sender": sender, "from_me": from_me,
+                    "name": name, "mime": mime, "size": size, "on_disk": on_disk})
+    return out
+
+
+async def read_message_attachment_index(terms: list[str], handles: list[str], since: float, until: float,
+                                        limit: int = 200, timeout: float = 10.0) -> tuple[list[dict], bool]:
+    """Files texted in Messages, one row per file, newest first, and whether the app capped the
+    list. Every term must match the chat's name, the sender's handle or the file name; when
+    `handles` is not empty the sender must be one of them. Raises BridgeError."""
+    # The app refuses a request with a control character or an over-long entry, so clean here:
+    # a control character in a term becomes a space; a handle with one is dropped.
+    flat = ["".join(" " if _has_control(c) else c for c in t).strip()[:_MESSAGE_TERM_CHARS].strip() for t in _strings(terms)]
+    cleaned = [t for t in flat if t][:ATTACHMENT_TERMS_MAX]
+    wanted = list(dict.fromkeys(
+        h for h in (x.strip()[:_MESSAGE_HANDLE_CHARS] for x in _strings(handles)) if h and not _has_control(h)
+    ))[:MESSAGE_HANDLES_MAX]
+    reply = await _ask("message_attachments", timeout, terms=cleaned, handles=wanted,
+                       since=_clean_seconds(since), until=_clean_seconds(until), limit=_clean_limit(limit))
+    if reply.get("ok") is not True:
+        raise BridgeError(str(reply.get("error") or "message_attachments_failed")[:40])
+    return _message_attachment_rows(reply), reply.get("capped") is True
+
+
+async def read_message_attachment(attachment_id: str, timeout: float = 45.0) -> tuple[bytes | None, str, str]:
+    """(data, name, why_not): one texted file's bytes, or (None, "", the app's reason: `not_found`,
+    `not_on_disk`, `too_large`, `unreadable` or `no_messages_db`; any other reply, and bytes that are
+    not valid base64, are `unreadable`). The request carries only the id, never a path. Raises BridgeError only when the app can't be asked."""
+    if not isinstance(attachment_id, str) or not _MESSAGE_ATTACHMENT_ID.fullmatch(attachment_id):
+        return None, "", "not_found"
+    reply = await _ask("message_attachment", timeout, attachment_id=attachment_id)
+    if reply.get("ok") is not True:
+        error = str(reply.get("error") or "")
+        return None, "", error if error in _MESSAGE_ATTACHMENT_WHY else "unreadable"
+    try:
+        data = base64.b64decode(str(reply.get("data_b64") or ""), validate=True)
+    except ValueError:
+        return None, "", "unreadable"
+    return data, str(reply.get("name") or "")[:255], ""

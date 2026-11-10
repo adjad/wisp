@@ -667,6 +667,299 @@ enum MailMemoryReaderRegression {
                                               attachmentID: "1", name: "..") == nil, "a directory is never a file")
 
 
+        // MARK: Messages attachments (kinds "message_attachments" and "message_attachment")
+        func msgListRequest(_ over: [String: Any] = [:]) -> [String: Any] {
+            var base: [String: Any] = ["type": "mail_memory_read", "request_id": "abcdefghijklmnop", "kind": "message_attachments",
+                                       "terms": [], "handles": [], "since": 0, "until": 0, "limit": 50]
+            for (k, v) in over { base[k] = v }
+            return base
+        }
+        func msgOneRequest(_ over: [String: Any] = [:]) -> [String: Any] {
+            var base: [String: Any] = ["type": "mail_memory_read", "request_id": "abcdefghijklmnop", "kind": "message_attachment",
+                                       "attachment_id": "1"]
+            for (k, v) in over { base[k] = v }
+            return base
+        }
+        let mParsed = MailMemoryReader.request(msgListRequest(["terms": ["a"], "handles": ["+1555"], "since": 5.5, "until": 9, "limit": 400]))
+        check(mParsed?.kind == "message_attachments" && mParsed?.terms == ["a"] && mParsed?.handles == ["+1555"]
+              && mParsed?.since == 5.5 && mParsed?.until == 9 && mParsed?.limit == 400, "message_attachments request parses")
+        check(MailMemoryReader.request(msgListRequest(["event_id": "e1"])) != nil, "message_attachments: hub event_id tolerated")
+        check(MailMemoryReader.request(msgListRequest(["terms": ["a", "b", "c", "d", "e"]])) != nil, "message_attachments: five terms allowed")
+        check(MailMemoryReader.request(msgListRequest(["terms": ["a", "b", "c", "d", "e", "f"]])) == nil, "message_attachments: six terms refused")
+        check(MailMemoryReader.request(msgListRequest(["terms": [1]])) == nil, "message_attachments: non-string term refused")
+        check(MailMemoryReader.request(msgListRequest(["terms": "lease"])) == nil, "message_attachments: terms must be an array")
+        check(MailMemoryReader.request(msgListRequest(["handles": (0..<10).map { "h\($0)" }])) != nil, "message_attachments: ten handles allowed")
+        check(MailMemoryReader.request(msgListRequest(["handles": (0..<11).map { "h\($0)" }])) == nil, "message_attachments: eleven handles refused")
+        check(MailMemoryReader.request(msgListRequest(["handles": [""]])) == nil, "message_attachments: empty handle refused")
+        check(MailMemoryReader.request(msgListRequest(["handles": [String(repeating: "h", count: 100)]])) != nil, "message_attachments: 100-character handle allowed")
+        check(MailMemoryReader.request(msgListRequest(["handles": [String(repeating: "h", count: 101)]])) == nil, "message_attachments: 101-character handle refused")
+        for bad in ["a\nb", "a\0b", "a\u{7}", "\u{1B}[0m", "a\u{7F}"] {
+            check(MailMemoryReader.request(msgListRequest(["handles": [bad]])) == nil, "message_attachments: control character in handle refused")
+        }
+        check(MailMemoryReader.request(msgListRequest(["handles": [5]])) == nil, "message_attachments: non-string handle refused")
+        check(MailMemoryReader.request(msgListRequest(["handles": "bob"])) == nil, "message_attachments: handles must be an array")
+        check(MailMemoryReader.request(msgListRequest(["terms": [""]])) == nil, "message_attachments: empty term refused")
+        check(MailMemoryReader.request(msgListRequest(["terms": [String(repeating: "t", count: 100)]])) != nil, "message_attachments: 100-character term allowed")
+        check(MailMemoryReader.request(msgListRequest(["terms": [String(repeating: "t", count: 101)]])) == nil, "message_attachments: 101-character term refused")
+        for bad in ["a\nb", "a\0b", "a\u{7}", "a\u{7F}"] {
+            check(MailMemoryReader.request(msgListRequest(["terms": [bad]])) == nil, "message_attachments: control character in term refused")
+        }
+        for key in ["since", "until", "limit"] {
+            check(MailMemoryReader.request(msgListRequest([key: true])) == nil, "message_attachments: boolean \(key) refused")
+            check(MailMemoryReader.request(msgListRequest([key: NSNumber(value: false)])) == nil, "message_attachments: NSNumber boolean \(key) refused")
+        }
+        check(MailMemoryReader.request(msgListRequest(["limit": 0])) == nil, "message_attachments: limit 0 refused")
+        check(MailMemoryReader.request(msgListRequest(["limit": 401])) == nil, "message_attachments: limit 401 refused")
+        check(MailMemoryReader.request(msgListRequest(["limit": "5"])) == nil, "message_attachments: limit must be a number")
+        check(MailMemoryReader.request(msgListRequest(["since": -1])) == nil, "message_attachments: negative since refused")
+        check(MailMemoryReader.request(msgListRequest(["until": "never"])) == nil, "message_attachments: until must be a number")
+        check(MailMemoryReader.request(msgListRequest(["path": "/etc"])) == nil, "message_attachments: extra key refused")
+        check(MailMemoryReader.request(msgListRequest(["rfc_ids": []])) == nil, "message_attachments: the Mail key rfc_ids refused")
+        for key in ["terms", "handles", "since", "until", "limit"] {
+            var missing = msgListRequest()
+            missing[key] = nil
+            check(MailMemoryReader.request(missing) == nil, "message_attachments: missing \(key) refused")
+        }
+        check(MailMemoryReader.request(msgOneRequest())?.attachmentID == "1" && MailMemoryReader.request(msgOneRequest())?.kind == "message_attachment",
+              "message_attachment request parses")
+        check(MailMemoryReader.request(msgOneRequest(["attachment_id": "123456789012345678"])) != nil, "message_attachment: 18 digits allowed")
+        for bad: Any in ["", "1234567890123456789", "12a", "-1", "1.5", "+1", " 1", "1\n", "١٢", "../1", 5, NSNull()] {
+            check(MailMemoryReader.request(msgOneRequest(["attachment_id": bad])) == nil, "message_attachment: id refused: \(bad)")
+        }
+        check(MailMemoryReader.request(msgOneRequest(["path": "/etc/hosts"])) == nil, "message_attachment: a path key is refused")
+        check(MailMemoryReader.request(msgOneRequest(["rowid": 1])) == nil, "message_attachment: extra key refused")
+        var noMsgID = msgOneRequest()
+        noMsgID["attachment_id"] = nil
+        check(MailMemoryReader.request(noMsgID) == nil, "message_attachment: id required")
+
+        // Fixture chat.db and Attachments folder (real files; nothing from the user's Messages).
+        func realOf(_ path: String) -> String {
+            guard let resolved = realpath(path, nil) else { exit(2) }
+            defer { free(resolved) }
+            return String(cString: resolved)
+        }
+        let msgBase = realOf(root) + "/msg"
+        let msgAttachments = msgBase + "/Attachments"
+        func putMsg(_ rel: String, _ text: String) throws {
+            let path = "\(msgAttachments)/\(rel)"
+            try FileManager.default.createDirectory(atPath: (path as NSString).deletingLastPathComponent,
+                                                    withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: URL(fileURLWithPath: path))
+        }
+        try putMsg("ab/01/G1/lease.pdf", "LEASEDATA!")
+        try putMsg("ab/02/G2/photo.heic", "PHOTO")
+        try putMsg("cd/03/G3/notes.txt", "NOTES")
+        for rel in ["st/04/G4/sticker.png", "hi/05/G5/hidden.png", "pl/06/G6/x.pluginpayloadattachment", "ta/08/G8/tap.txt"] {
+            try putMsg(rel, "never read")
+        }
+        try putMsg("gh/10/G10/tilde.txt", "TILDE")
+        try putMsg("rc/18/G18/gone.txt", "GONE")
+        try putMsg("em/20/G20/empty.txt", "")
+        try FileManager.default.createDirectory(atPath: "\(msgBase)/outside", withIntermediateDirectories: true)
+        try Data("outside secret".utf8).write(to: URL(fileURLWithPath: "\(msgBase)/outside/secret.txt"))
+        try FileManager.default.createDirectory(atPath: "\(msgBase)/Attachments2", withIntermediateDirectories: true)
+        try Data("sibling leak".utf8).write(to: URL(fileURLWithPath: "\(msgBase)/Attachments2/leak.txt"))
+        try FileManager.default.createDirectory(atPath: "\(msgAttachments)/sy/07/G7", withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: "\(msgAttachments)/sy/07/G7/linked.txt",
+                                                   withDestinationPath: "\(msgBase)/outside/secret.txt")
+        try FileManager.default.createSymbolicLink(atPath: "\(msgAttachments)/lnk", withDestinationPath: "\(msgBase)/outside")
+        func appleNs(_ unix: Double) -> Int64 { Int64((unix - 978_307_200) * 1_000_000_000) }
+        let msgT0 = 1_700_000_000.0
+        let conv = "~/Library/Messages/Attachments"
+        let chatDB = makeDB("chatfixture", """
+        CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+        CREATE TABLE chat (ROWID INTEGER PRIMARY KEY, display_name TEXT, chat_identifier TEXT);
+        CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
+        CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+        CREATE TABLE message (ROWID INTEGER PRIMARY KEY, date INTEGER, handle_id INTEGER, is_from_me INTEGER,
+          associated_message_type INTEGER);
+        CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, filename TEXT, transfer_name TEXT, mime_type TEXT,
+          total_bytes INTEGER, is_sticker INTEGER, hide_attachment INTEGER);
+        CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
+        CREATE TABLE chat_recoverable_message_join (chat_id INTEGER, message_id INTEGER, delete_date INTEGER);
+        INSERT INTO handle VALUES (1, '+15551234567'), (2, 'Bob@Example.com'), (3, '+15559998888'), (4, '+15550001111');
+        INSERT INTO chat VALUES (1, '', '+15551234567'), (2, 'Book Club', 'chat123'), (3, '', 'chat456'),
+          (4, '', 'Bob@Example.com'), (5, 'Archive Trip', 'chat789');
+        INSERT INTO chat_handle_join VALUES (1, 1), (2, 2), (2, 3), (3, 1), (3, 2), (4, 2), (5, 4);
+        INSERT INTO message VALUES (1, \(appleNs(msgT0)), 1, 0, 0), (2, \(appleNs(msgT0 + 100)), 2, 0, 0),
+          (3, \(appleNs(msgT0 + 200)), 2, 1, 0), (4, \(appleNs(msgT0 + 300)), 1, 0, 0), (5, \(appleNs(msgT0 + 350)), 1, 0, 2000),
+          (6, \(appleNs(msgT0 + 400)), 3, 0, 0), (7, \(appleNs(msgT0 - 5000)), 4, 0, 0);
+        INSERT INTO chat_message_join VALUES (1, 1), (2, 2), (3, 2), (4, 3), (1, 4), (1, 5), (2, 6), (5, 7);
+        INSERT INTO chat_recoverable_message_join VALUES (5, 7, 1000);
+        INSERT INTO attachment VALUES
+          (1, '\(conv)/ab/01/G1/lease.pdf', 'Lease 2026.pdf', 'application/pdf', 10, 0, 0),
+          (2, '\(conv)/ab/02/G2/photo.heic', 'photo.heic', 'image/heic', 5, 0, 0),
+          (3, '\(conv)/cd/03/G3/notes.txt', 'notes.txt', 'text/plain', 5, 0, 0),
+          (4, '\(conv)/st/04/G4/sticker.png', 'sticker.png', 'image/png', 9, 1, 0),
+          (5, '\(conv)/hi/05/G5/hidden.png', 'hidden.png', 'image/png', 9, 0, 1),
+          (6, '\(conv)/pl/06/G6/x.pluginpayloadattachment', 'x.pluginpayloadattachment', '', 9, 0, 0),
+          (7, '\(conv)/sy/07/G7/linked.txt', 'linked.txt', 'text/plain', 14, 0, 0),
+          (8, '\(conv)/ta/08/G8/tap.txt', 'tap.txt', 'text/plain', 9, 0, 0),
+          (9, '/etc/hosts', 'hosts', 'text/plain', 9, 0, 0),
+          (10, '\(conv)/gh/10/G10/tilde.txt', 'tilde.txt', 'text/plain', 5, 0, 0),
+          (11, '\(conv)/lnk/secret.txt', 'secret.txt', 'text/plain', 14, 0, 0),
+          (12, '\(conv)/zz/12/G12/missing.txt', 'missing.txt', 'text/plain', 9, 0, 0),
+          (13, '', 'nameless.txt', 'text/plain', 9, 0, 0),
+          (14, NULL, 'null.txt', 'text/plain', 9, 0, 0),
+          (16, '\(conv)/../Attachments2/leak.txt', 'leak.txt', 'text/plain', 12, 0, 0),
+          (17, '\(msgBase)/Attachments2/leak.txt', 'leak2.txt', 'text/plain', 12, 0, 0),
+          (18, '\(conv)/rc/18/G18/gone.txt', 'gone.txt', 'text/plain', 4, 0, 0);
+        INSERT INTO message_attachment_join VALUES (1, 1), (2, 2), (3, 3), (4, 4), (4, 5), (4, 6), (4, 7), (5, 8),
+          (6, 9), (6, 10), (6, 11), (6, 12), (6, 13), (6, 14), (6, 16), (6, 17), (7, 18);
+        """)
+        func msgPair(_ db: String, cap: Int = MailMemoryReader.maxAttachmentBytes) -> (MailMemoryReader, Replies) {
+            let replies = Replies()
+            let reader = MailMemoryReader(mailRoot: "\(root)/nowhere", messagesDB: db, messagesAttachmentsRoot: msgAttachments,
+                                          maxMessageFileBytes: cap) { reply in
+                replies.last = reply
+                replies.sem.signal()
+            }
+            return (reader, replies)
+        }
+        func msgList(_ over: [String: Any], db: String = chatDB) -> [String: Any] {
+            let pair = msgPair(db)
+            return pair.1.ask(pair.0, msgListRequest(over))
+        }
+        func msgIDs(_ reply: [String: Any]) -> [String] {
+            (reply["rows"] as? [[String: Any]] ?? []).map { $0["id"] as? String ?? "?" }
+        }
+        let mAll = msgList([:])
+        let mRows = mAll["rows"] as? [[String: Any]] ?? []
+        check(mAll["ok"] as? Bool == true && mAll["capped"] as? Bool == false && mAll["kind"] as? String == "message_attachments"
+              && mAll["request_id"] as? String == "abcdefghijklmnop", "message_attachments reply answers its request: \(mAll)")
+        check(msgIDs(mAll) == ["9", "10", "11", "12", "16", "17", "7", "3", "2", "1"],
+              "newest first, ties by id; sticker, hidden, preview, tapback and nameless rows left out, one row for a file in two chats: \(msgIDs(mAll))")
+        let mBy = Dictionary(uniqueKeysWithValues: mRows.map { ($0["id"] as? String ?? "", $0) })
+        if let lease = mBy["1"] {
+            check(lease["chat"] as? String == "+15551234567" && lease["sender"] as? String == "+15551234567"
+                  && lease["from_me"] as? Bool == false, "message attachment row, chat and sender: \(lease)")
+            check(lease["name"] as? String == "Lease 2026.pdf" && lease["mime"] as? String == "application/pdf"
+                  && lease["size"] as? Int == 10 && lease["on_disk"] as? Bool == true,
+                  "message attachment row, file: \(lease)")
+            check(abs((lease["ts"] as? Double ?? 0) - msgT0) < 0.001, "message attachment row, time: \(lease)")
+        } else { check(false, "message attachment 1 present") }
+        check(mBy["3"]?["from_me"] as? Bool == true && mBy["3"]?["sender"] as? String == "" && mBy["3"]?["chat"] as? String == "Bob@Example.com",
+              "a file the user sent has no sender: \(String(describing: mBy["3"]))")
+        check(mBy["2"]?["chat"] as? String == "Group \"Book Club\"" && mBy["2"]?["sender"] as? String == "Bob@Example.com",
+              "a named group's label, the lowest chat of a file in two: \(String(describing: mBy["2"]))")
+        check(mBy["7"]?["chat"] as? String == "+15551234567", "a file in a 1:1 chat is labelled by the other handle: \(String(describing: mBy["7"]))")
+        check(MailMemoryReader.messageChatLabel(chatName: "", chatIdentifier: "chat456", members: ["Bob@Example.com", "+15551234567"],
+                                                fallback: "x") == "Group of 2 (+15551234567, Bob@Example.com)",
+              "an unnamed group lists its members, sorted")
+        check(mBy["10"]?["on_disk"] as? Bool == true, "a ~-prefixed name resolves against the Attachments root")
+        for (id, why) in [("7", "a symlinked file"), ("9", "a path outside the root (/etc/hosts)"), ("11", "a symlinked folder below the root"),
+                          ("12", "a missing file"), ("16", "a .. path out of the root"), ("17", "an absolute path outside the root")] {
+            check(mBy[id]?["on_disk"] as? Bool == false, "not on disk: \(why)")
+        }
+        check(!msgIDs(mAll).contains("18") && msgIDs(msgList(["terms": ["gone"]])).isEmpty,
+              "a recently deleted message's file is not listed, even by name")
+        check(msgIDs(msgList(["terms": ["lease"]])) == ["1"], "term matches the file name")
+        check(msgIDs(msgList(["terms": ["LEASE", "2026.PDF"]])) == ["1"], "terms are case-insensitive and all must match")
+        check(msgIDs(msgList(["terms": ["lease", "book"]])).isEmpty, "every term must match")
+        check(msgIDs(msgList(["terms": ["book club"]])) == ["9", "10", "11", "12", "16", "17", "2"],
+              "term matches the chat name: every file in that chat, whoever sent it")
+        check(msgIDs(msgList(["terms": ["bob@"]])) == ["3", "2"],
+              "term matches the sender's handle and a 1:1 chat's identifier, never another member's handle")
+        check(msgIDs(msgList(["terms": ["+1555999"]])) == ["9", "10", "11", "12", "16", "17"], "term matches the sender's handle only")
+        check(msgIDs(msgList(["terms": ["+1555123"]])) == ["7", "1"], "a sender's handle and a 1:1 chat's identifier")
+        check(msgIDs(msgList(["terms": ["chat123"]])).isEmpty, "an opaque chat identifier is not searched")
+        check(msgIDs(msgList(["terms": ["%"]])).isEmpty && msgIDs(msgList(["terms": ["_"]])).isEmpty, "% and _ are literal")
+        check(msgIDs(msgList(["terms": ["' OR 1=1 --"]])).isEmpty, "a quote is just text")
+        check(msgIDs(msgList(["terms": ["x'); DROP TABLE attachment; --"]])).isEmpty && msgIDs(msgList([:])).count == 10,
+              "injection leaves chat.db intact")
+        check(msgIDs(msgList(["handles": ["bob@example.COM"]])) == ["2"], "handle filter is case-insensitive and never matches the user's own files")
+        check(msgIDs(msgList(["handles": ["+15559998888", "nobody"]])) == ["9", "10", "11", "12", "16", "17"], "several handles")
+        check(msgIDs(msgList(["handles": ["nobody"]])).isEmpty, "unknown handle: nothing")
+        check(msgIDs(msgList(["handles": ["+15551234567"], "terms": ["lease"]])) == ["1"], "handles and terms together")
+        check(msgIDs(msgList(["handles": ["' OR '1'='1"]])).isEmpty, "handles are bound")
+        check(msgIDs(msgList(["since": msgT0 + 100, "until": msgT0 + 300])) == ["3"], "since and until are exclusive")
+        check(msgIDs(msgList(["since": msgT0 + 250])) == ["9", "10", "11", "12", "16", "17", "7"], "since only")
+        check(msgIDs(msgList(["until": msgT0 + 150])) == ["2", "1"], "until only")
+        check(msgIDs(msgList(["since": 1e300])).isEmpty, "an absurd since can't trap")
+        let mFew = msgList(["limit": 3])
+        check(msgIDs(mFew) == ["9", "10", "11"] && mFew["capped"] as? Bool == true, "limit caps and says so")
+        let mExact = msgList(["limit": 10])
+        check(msgIDs(mExact).count == 10 && mExact["capped"] as? Bool == false, "exactly the limit is not capped")
+        check(msgList([:], db: "\(root)/no-such-chat.db")["error"] as? String == "no_messages_db", "no chat.db: no_messages_db")
+        check(msgList([:], db: junk)["error"] as? String == "no_messages_db", "not a database: no_messages_db")
+        check(msgList([:], db: bare)["error"] as? String == "unsupported_schema", "no attachment tables: unsupported_schema")
+
+        // A schema without the optional columns and the chat tables still lists, by file name.
+        let thinDB = makeDB("chatthin", """
+        CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+        CREATE TABLE message (ROWID INTEGER PRIMARY KEY, date INTEGER, handle_id INTEGER, is_from_me INTEGER);
+        CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, filename TEXT);
+        CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
+        INSERT INTO handle VALUES (1, '+15551234567');
+        INSERT INTO message VALUES (1, \(appleNs(msgT0)), 1, 0);
+        INSERT INTO attachment VALUES (1, '\(conv)/ab/01/G1/lease.pdf'), (2, '\(conv)/cd/03/G3/notes.txt');
+        INSERT INTO message_attachment_join VALUES (1, 1), (1, 2);
+        """)
+        let thin = msgList(["terms": ["lease"]], db: thinDB)
+        let thinRow = (thin["rows"] as? [[String: Any]] ?? []).first ?? [:]
+        check(msgIDs(thin) == ["1"], "thin schema lists the matching file: \(thin)")
+        check(thinRow["name"] as? String == "lease.pdf" && thinRow["mime"] as? String == "" && thinRow["size"] as? Int == 0,
+              "thin schema, file: \(thinRow)")
+        check(thinRow["chat"] as? String == "+15551234567" && thinRow["on_disk"] as? Bool == true, "thin schema, chat: \(thinRow)")
+        check(msgIDs(msgList([:], db: thinDB)) == ["1", "2"], "thin schema lists every file")
+
+        // One attachment's bytes.
+        func msgFetch(_ id: String, db: String = chatDB, cap: Int = MailMemoryReader.maxAttachmentBytes) -> [String: Any] {
+            let pair = msgPair(db, cap: cap)
+            return pair.1.ask(pair.0, msgOneRequest(["attachment_id": id]))
+        }
+        let mGot = msgFetch("1")
+        check(mGot["ok"] as? Bool == true && mGot["name"] as? String == "Lease 2026.pdf" && mGot["size"] as? Int == 10
+              && (mGot["data_b64"] as? String).flatMap({ Data(base64Encoded: $0) }) == Data("LEASEDATA!".utf8)
+              && mGot["kind"] as? String == "message_attachment" && mGot["request_id"] as? String == "abcdefghijklmnop",
+              "message attachment bytes returned: \(mGot.keys.sorted())")
+        check((msgFetch("10")["data_b64"] as? String).flatMap({ Data(base64Encoded: $0) }) == Data("TILDE".utf8),
+              "a ~-prefixed name is read from the fixture root")
+        for (id, why) in [("4", "a sticker"), ("5", "a hidden attachment"), ("6", "a link preview"), ("8", "a tapback row"),
+                          ("13", "an empty file name"), ("14", "a missing file name"), ("999", "an unknown id")] {
+            let reply = msgFetch(id)
+            check(reply["ok"] as? Bool == false && reply["error"] as? String == "not_found", "\(why) is not_found: \(reply["error"] ?? "?")")
+        }
+        for (id, why) in [("12", "a missing file"), ("7", "a symlinked file"), ("9", "/etc/hosts, outside the root"),
+                          ("11", "a symlinked folder"), ("16", "a .. path out of the root"), ("17", "an absolute path outside the root")] {
+            let reply = msgFetch(id)
+            check(reply["ok"] as? Bool == false && reply["error"] as? String == "not_on_disk" && reply["data_b64"] == nil,
+                  "\(why) is not_on_disk: \(reply["error"] ?? "?")")
+        }
+        check(msgFetch("18")["ok"] as? Bool == false && msgFetch("18")["error"] as? String == "not_found",
+              "a recently deleted message's file is not_found")
+        // A zero-byte file is a success with no bytes, not unreadable.
+        let emptyDB = makeDB("chatempty", """
+        CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+        CREATE TABLE message (ROWID INTEGER PRIMARY KEY, date INTEGER, handle_id INTEGER, is_from_me INTEGER);
+        CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, filename TEXT);
+        CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
+        INSERT INTO handle VALUES (1, '+15551234567');
+        INSERT INTO message VALUES (1, \(appleNs(msgT0)), 1, 0);
+        INSERT INTO attachment VALUES (1, '\(conv)/em/20/G20/empty.txt');
+        INSERT INTO message_attachment_join VALUES (1, 1);
+        """)
+        let emptyGot = msgFetch("1", db: emptyDB)
+        check(emptyGot["ok"] as? Bool == true && emptyGot["size"] as? Int == 0 && emptyGot["data_b64"] as? String == ""
+              && emptyGot["name"] as? String == "empty.txt", "an empty file reads as empty: \(emptyGot)")
+        check(msgFetch("1", cap: 9)["error"] as? String == "too_large", "over the cap: too_large")
+        check(msgFetch("1", cap: 10)["ok"] as? Bool == true && msgFetch("2", cap: 9)["ok"] as? Bool == true, "exactly the cap, and under it, are read")
+        check(msgFetch("1", db: "\(root)/no-such-chat.db")["error"] as? String == "no_messages_db", "read: no chat.db is no_messages_db")
+        check(msgFetch("1", db: junk)["error"] as? String == "no_messages_db", "read: not a database is no_messages_db")
+        check(msgFetch("1", db: "\(root)/no-such-dir/chat.db")["error"] as? String == "no_messages_db", "read: a missing folder is no_messages_db")
+        check(MailMemoryReader.messageAttachmentFile(filename: "\(msgAttachments)/ab/01/G1/lease.pdf", root: msgAttachments)?.size == 10,
+              "guard accepts the real file by its absolute path")
+        check(MailMemoryReader.messageAttachmentFile(filename: "\(msgAttachments)/ab/01/G1", root: msgAttachments) == nil, "guard refuses a folder")
+        check(MailMemoryReader.messageAttachmentFile(filename: "\(msgAttachments)/ab/01/G1/lease.pdf", root: "\(msgBase)/nowhere") == nil,
+              "guard refuses when the root does not exist")
+        check(MailMemoryReader.messageAttachmentFile(filename: "\(msgAttachments)/ab/01/G1/lease.pdf\0x", root: msgAttachments) == nil,
+              "guard refuses a NUL")
+        check(MailMemoryReader.messageAttachmentFile(filename: "~/Documents/lease.pdf", root: msgAttachments) == nil,
+              "guard refuses a ~ path outside the Attachments folder")
+        check(MailMemoryReader.messageChatLabel(chatName: nil, chatIdentifier: "chat9", members: [], fallback: "Me") == "Me"
+              && MailMemoryReader.messageChatLabel(chatName: "Crew", chatIdentifier: nil, members: ["a"], fallback: "x") == "Crew",
+              "chat labels")
+
         // MARK: Text recognition (kind "recognize")
         func recognizeRequest(_ over: [String: Any] = [:]) -> [String: Any] {
             var base: [String: Any] = ["type": "mail_memory_read", "request_id": "abcdefghijklmnop", "kind": "recognize",

@@ -45,7 +45,7 @@ _OUTBOUND_PREVIEW_TOOLS = {
 # Not outbound text, but the card must still show what will run or change:
 # the command or script itself, and the file a write or move touches.
 _ACTION_PREVIEW_TOOLS = {"run_shell", "run_applescript", "write_file", "move_path",
-                         "open_app", "web_fetch", "http_request"}
+                         "open_app", "web_fetch", "http_request", "save_email_attachment"}
 # The same limit policy.CARD_TEXT_LIMIT holds commands to: a command or script
 # that needs a card and is longer than this is refused before any card, so
 # these never show a clipped command. File contents and notes are clipped.
@@ -155,6 +155,10 @@ def _action_preview(tool: str, args: dict) -> str:
     if tool in ("web_fetch", "http_request"):
         method = str(args.get("method") or "GET").upper() if tool == "http_request" else "GET"
         return f"{method}: {_clip_preview(str(args.get('url') or '(no address given)'))}"
+    if tool == "save_email_attachment":
+        # The line the save engine made when it settled on this one file.
+        from service.tools.attachment_actions import card_for
+        return card_for(args) or "(this file was not set up; nothing will be saved)"
     if tool == "write_file":
         path = str(args.get("path") or "").strip() or "(no path given)"
         state = {"file": "replaces the existing file", "missing": "creates a new file",
