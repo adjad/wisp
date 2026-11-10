@@ -314,11 +314,18 @@ async def _checkin_tick(now: float | None = None) -> None:
         checkin.mark_notified(day, now=now)   # nothing to ask about tonight
         return
     planned, done = card["planned"], card["done"]
-    if planned:
-        text = (f"You planned {planned} thing{'s' if planned != 1 else ''} today"
-                + (f" and finished {done}" if done else "") + ". How did the rest go?")
+    events = len(card["tomorrow"]["events"])
+    recap = (f"You planned {planned} thing{'s' if planned != 1 else ''} today"
+             + (f" and finished {done}" if done else "") + ".")
+    tomorrow = f"Tomorrow has {events} event{'s' if events != 1 else ''}. Anything to move?"
+    if card["tasks"]:
+        text = f"{recap} How did the rest go?"
+    elif planned:
+        # Every task is done or dropped, so there is no "rest" to ask about. The
+        # card was kept for tomorrow's events (see the guard above); ask about those.
+        text = f"{recap} {tomorrow}"
     else:
-        text = f"Tomorrow has {len(card['tomorrow']['events'])} event{'s' if len(card['tomorrow']['events']) != 1 else ''}. Anything to move?"
+        text = tomorrow
     from service import diagnostics
     await hub.publish({"trace_id": diagnostics.current_id(), "type": "checkin", "day": day,
                        "text": text, "planned": planned, "done": done,

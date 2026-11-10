@@ -568,3 +568,89 @@ def test_api_round_trip(client, store, monkeypatch):
     out = client.post("/assistant/checkin/goal", json={"goal": "Ship it", "status": "behind"}).json()
     assert out["goal_status"]["Ship it"]["status"] == "behind" and out["goal_pulse"] is None
     assert client.post("/assistant/checkin/goal", json={"goal": "Ship it", "status": "meh"}).status_code == 422
+
+
+# --- evening notification text ----------------------------------------------------------
+
+@pytest.fixture
+def tick(store, monkeypatch):
+    """Run the scheduler's evening check-in tick against `store` and return what
+    it published. The app is connected and no chat turn is in flight."""
+    import asyncio
+    from types import SimpleNamespace
+    from service.assistant import scheduler
+
+    published: list[dict] = []
+
+    async def publish(event, **_kwargs):
+        published.append(event)
+        return event
+    monkeypatch.setattr(scheduler, "assistant_store", store)
+    monkeypatch.setattr(scheduler, "hub", SimpleNamespace(has_subscribers=True, publish=publish))
+    monkeypatch.setattr(scheduler.idle, "foreground_busy", lambda: False)
+    monkeypatch.setattr("service.attention.detectors.local_timezone", lambda: ZONE)
+
+    def run(now: float) -> list[dict]:
+        asyncio.run(scheduler._checkin_tick(now))
+        return published
+    return run
+
+
+def _finish(store, saved, status="done"):
+    return store.today_save_task({"status": status}, task_id=saved["id"], revision=saved["revision"])
+
+
+def test_evening_text_does_not_ask_about_the_rest_when_every_task_is_done(store, tick):
+    day = "2026-10-17"
+    for title in ("Write intro", "Call bank", "Book train"):
+        _finish(store, task(store, title, day))
+    event(store, "e1", "Design review", at("2026-10-18", 10), at("2026-10-18", 11))
+    [sent] = tick(at(day, 17, 30))
+    assert sent["text"] == "You planned 3 things today and finished 3. Tomorrow has 1 event. Anything to move?"
+    assert "How did the rest go?" not in sent["text"]
+    # The fields the app reads are unchanged.
+    assert (sent["type"], sent["day"]) == ("checkin", day)
+    assert (sent["planned"], sent["done"], sent["open_tasks"], sent["events_tomorrow"]) == (3, 3, 0, 1)
+    assert C.day_record(day)["notified_at"] == at(day, 17, 30)
+
+
+def test_evening_text_still_asks_about_the_rest_while_a_task_is_open(store, tick):
+    day = "2026-10-17"
+    task(store, "Write intro", day)
+    _finish(store, task(store, "Call bank", day))
+    event(store, "e1", "Design review", at("2026-10-18", 10), at("2026-10-18", 11))
+    [sent] = tick(at(day, 17, 30))
+    assert sent["text"] == "You planned 2 things today and finished 1. How did the rest go?"
+    assert (sent["open_tasks"], sent["events_tomorrow"]) == (1, 1)
+
+
+def test_evening_text_with_one_open_task_and_nothing_finished(store, tick):
+    day = "2026-10-17"
+    task(store, "Write intro", day)
+    assert tick(at(day, 16, 59)) == [], "never before the evening"
+    [sent] = tick(at(day, 17, 30))
+    assert sent["text"] == "You planned 1 thing today. How did the rest go?"
+    assert len(tick(at(day, 17, 31))) == 1, "and only once a day"
+
+
+def test_evening_text_when_the_only_task_was_dropped(store, tick):
+    day = "2026-10-17"
+    _finish(store, task(store, "Write intro", day), status="dismissed")
+    events(store, ("e1", "Design review", at("2026-10-18", 10), at("2026-10-18", 11)),
+           ("e2", "Lunch with Priya", at("2026-10-18", 12), at("2026-10-18", 13)))
+    [sent] = tick(at(day, 17, 30))
+    assert sent["text"] == "You planned 1 thing today. Tomorrow has 2 events. Anything to move?"
+
+
+def test_evening_text_with_no_tasks_asks_only_about_tomorrow(store, tick):
+    day = "2026-10-17"
+    event(store, "e1", "Design review", at("2026-10-18", 10), at("2026-10-18", 11))
+    [sent] = tick(at(day, 17, 30))
+    assert sent["text"] == "Tomorrow has 1 event. Anything to move?"
+
+
+def test_evening_with_nothing_open_and_no_events_tomorrow_stays_silent(store, tick):
+    day = "2026-10-17"
+    _finish(store, task(store, "Write intro", day))
+    assert tick(at(day, 17, 30)) == []
+    assert C.day_record(day)["notified_at"] == at(day, 17, 30), "marked so it is not rebuilt every tick"
