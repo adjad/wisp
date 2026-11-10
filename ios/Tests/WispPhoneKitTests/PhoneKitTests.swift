@@ -36,6 +36,19 @@ private func filtered(_ chunks: [String]) -> String {
     #expect(d(": keepalive") == nil)
     #expect(d("data: not json") == nil)
 }
+@Test func messageDraftShowsTheDraftAsTheAnswer() {
+    func d(_ s: String) -> ChatEvent? { GatewayEventDecoder.decode(line: s, sessionId: "s1") }
+    guard case .replace(let text)? = d(#"data: {"type":"message_draft","to":"Mom","text":"Running late"}"#) else {
+        Issue.record("a draft must become answer text"); return
+    }
+    #expect(text.contains("Mom") && text.contains("Running late") && text.contains("Nothing has been sent"))
+    // No recipient still shows the body; no body falls back to the activity line.
+    guard case .replace(let noRecipient)? = d(#"data: {"type":"message_draft","text":"Running late"}"#) else {
+        Issue.record("a draft without a recipient must still show"); return
+    }
+    #expect(noRecipient.contains("Running late"))
+    #expect(d(#"data: {"type":"message_draft","to":"Mom","text":""}"#) == .activity("Drafted a message to Mom"))
+}
 @Test func confirmCarriesSessionAndRequest() {
     let line = #"data: {"type":"confirm","id":"a1","request_id":"r9","tool":"send_email","reason":"Send to Sam","preview":"Hi Sam","grantable":false}"#
     guard case .approval(let request)? = GatewayEventDecoder.decode(line: line, sessionId: "s42") else {
@@ -754,4 +767,24 @@ func uncleanAgentEndForgetsTheVerifiedBase(kind: String) async throws {
     for try await _ in client.agent(prompt: "hi", sessionId: nil) {}
     _ = try await client.hello()
     #expect(StubProtocol.requests(port: port).map { $0.url!.path } == ["/phone/v1/ping", "/phone/v1/agent", "/phone/v1/hello"])
+}
+
+@Test func draftOnlyTurnLeavesAnswerTextSoItIsNotStopped() async throws {
+    // The backend ends a draft turn with message_draft then done and no `text`.
+    let port = 18_840
+    let reply: StubProtocol.ReplyHandler = { request in
+        switch request.url!.path {
+        case "/phone/v1/ping": return proved(request)
+        default:
+            let lines = "data: {\"type\":\"message_draft\",\"to\":\"Mom\",\"text\":\"Running late\"}\ndata: {\"type\":\"done\"}\n"
+            return StubReply(status: 200, headers: ["Content-Type": "text/event-stream"], body: Data(lines.utf8))
+        }
+    }
+    let pairing = MacPairing(host: nil, ip: "100.64.0.1", port: port, macName: "Mac", token: token)
+    let client = GatewayClient(pairing: pairing, session: URLSession(configuration: StubProtocol.configuration(port: port, reply: reply)))
+    var answer = ""
+    for try await event in client.agent(prompt: "draft a text to Mom", sessionId: nil) {
+        if case .replace(let text) = event { answer = text }
+    }
+    #expect(answer.contains("Mom") && answer.contains("Running late"))
 }
