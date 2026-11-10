@@ -27,6 +27,13 @@ from service import attachment_child as A
 from service import documents as D
 
 
+@pytest.fixture(autouse=True)
+def _no_cpu_cap_on_the_test_process(monkeypatch):
+    """`A.main()` caps its own CPU time, which is right for the child process. A test that calls
+    `main()` in this process would put that cap on the whole test run and get it killed later."""
+    monkeypatch.setattr(A, "_limit_self", lambda: None)
+
+
 def run(coro):
     return asyncio.run(coro)
 
