@@ -136,18 +136,23 @@ def test_the_human_sounding_replies_switch_has_a_skill_to_turn_on(loaded_bundled
     assert humanizer is not None and humanizer.bundled and humanizer.always
     assert humanizer.enabled is False                         # off until the user turns it on
     assert skills.always_skills_block() == "" or "humanizer" not in skills.always_skills_block()
+    assert skills.compose_style_block() == ""
 
     assert skills.set_enabled("humanizer", True) is True
     on = skills.get("humanizer")
     # Still the bundled skill: no copy that would freeze it at this release's text.
     assert on.enabled is True and on.bundled and on.path == skills.BUNDLED_SKILLS_DIR / "humanizer"
     assert not (tmp_path / "user-skills" / "humanizer").exists()
-    assert "--- humanizer ---" in skills.always_skills_block()
+    # A compose style (owner decision 2026-11-10): messages written for the user
+    # to send get it, Wisp's own chat answers do not.
+    assert "--- humanizer: style for messages" in skills.compose_style_block()
+    assert "humanizer" not in skills.always_skills_block()
     assert {s["name"]: s["enabled"] for s in (x.as_dict() for x in skills.all_skills().values())}["humanizer"] is True
 
     assert skills.set_enabled("humanizer", False) is True
     assert skills.get("humanizer").enabled is False
     assert "humanizer" not in skills.always_skills_block()
+    assert skills.compose_style_block() == ""
 
 
 def test_a_bundled_skill_s_switch_survives_a_reload_and_follows_bundle_edits(
@@ -167,8 +172,9 @@ def test_a_bundled_skill_s_switch_survives_a_reload_and_follows_bundle_edits(
 
 
 def test_the_style_skill_stays_out_of_tool_turns(loaded_bundled_skills) -> None:
-    """#414 audit: the humanizer applies to plain chat only, so the agent's catalog,
-    an @humanizer mention and use_skill don't bring it into a tool-using turn."""
+    """#414 audit: the agent's catalog, an @humanizer mention and use_skill don't
+    bring the humanizer into a turn; only compose_style_block does, for messages
+    written for the user to send (owner decision 2026-11-10)."""
     import asyncio
     from service.skills.tools import use_skill
     assert skills.set_enabled("humanizer", True) is True
@@ -176,19 +182,25 @@ def test_the_style_skill_stays_out_of_tool_turns(loaded_bundled_skills) -> None:
     assert "humanizer" not in block
     assert "humanizer" not in skills.turn_skill_names("@humanizer reword this")
     assert "nothing to load" in asyncio.run(use_skill("humanizer"))
-    assert "--- humanizer ---" in skills.always_skills_block()
+    assert "humanizer" not in skills.always_skills_block()
+    assert "--- humanizer: style for messages" in skills.compose_style_block()
 
 
 @pytest.mark.parametrize(("role", "literal", "styled"), [
     ("general", False, True), ("coding", False, False), ("general", True, False),
 ])
-def test_plain_chat_style_skips_coding_and_literal_envelopes(loaded_bundled_skills, role, literal, styled) -> None:
+def test_plain_chat_style_skips_coding_and_literal_envelopes(loaded_bundled_skills, tmp_path: Path,
+                                                              role, literal, styled) -> None:
     """#414 audit: the dash and wording rules would bleed into code, and a literal
-    envelope is quoted text to transform, so neither gets the style skill."""
+    envelope is quoted text to transform, so neither gets a chat style skill. The
+    humanizer is a compose style now and never rides plain chat (2026-11-10)."""
     from service.main import _plain_chat_skill_blocks
     assert skills.set_enabled("humanizer", True) is True
+    skills._skills["chat-style"] = skills.Skill(
+        "chat-style", "synthetic", "CHAT STYLE RULE", tmp_path / "chat-style", always=True)
     block = _plain_chat_skill_blocks("hi there", "", role=role, literal_envelope=literal)
-    assert ("--- humanizer ---" in block) is styled
+    assert ("--- chat-style ---" in block) is styled
+    assert "humanizer" not in block
 
 
 def test_every_bundled_body_is_a_shipped_one(loaded_bundled_skills) -> None:

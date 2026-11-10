@@ -2091,7 +2091,19 @@ async def run_agent(
                    and getattr(client, "managed", False))
 
     def _sys(offered: set[str]) -> str:
-        return build_system(offered, planner=planner)
+        # Settings › Human-sounding replies shapes only the message the model
+        # writes for the user to send, so it rides only while a send/draft
+        # schema is really offered (stubs are excluded by every caller), and
+        # never Wisp's own answer on any other turn (owner decision 2026-11-10).
+        try:
+            from service.skills import COMPOSE_TOOLS, compose_style_block
+            # skills_allowed: the same boundary as every other skill text
+            # (test mode, literal envelopes, cloud synthesis, remote profiles).
+            style = (compose_style_block()
+                     if skills_allowed and offered & COMPOSE_TOOLS else "")
+        except Exception:  # noqa: BLE001 — a style must never fail the turn
+            style = ""
+        return build_system(offered, planner=planner) + style
 
     # Monotonic negative authority. main supplies actual pre-trimming session
     # provenance; other callers conservatively retain assistant/tool/system

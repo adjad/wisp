@@ -240,6 +240,11 @@ async def use_skill(name: str) -> str:
         return f"(the '{skill.name}' skill is broken: {skill.error})"
     if not skill.enabled:
         return f"(the '{skill.name}' skill is turned off — the user can enable it in Settings)"
+    if skill.compose:
+        # A compose style: Wisp adds it itself wherever a send or draft tool
+        # is offered (skills.compose_style_block).
+        return (f"(the '{skill.name}' skill is a style Wisp applies on its own to messages "
+                "it writes for the user to send; there's nothing to load)")
     if skill.always:
         # A reply style, added to plain chat replies by Wisp itself; a
         # tool-using turn doesn't follow it (skills.Skill.always).

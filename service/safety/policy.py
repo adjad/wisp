@@ -1310,7 +1310,8 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
         # run_applescript's `do shell script` bodies and quote-stripped text too.
         for cmd in shell_forms(args):
             if (hit := _any(_rules("shell_deny", _SHELL_DENY), cmd)):
-                return Decision(Tier.DENY, f"matches blocked pattern: {hit}")
+                return Decision(Tier.DENY, "Wisp won't run this command (it matches a blocked "
+                                f"pattern: {hit}). {NEVER_RUN_TAIL}")
     if tool in ALWAYS_CONFIRM_FILE_TOOLS and (problem := _save_folder_problem(args.get("folder"))):
         return Decision(Tier.DENY, problem)
     if category in ("fs_write", "fs_delete"):
@@ -1343,6 +1344,677 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
                         return Decision(Tier.DENY, f"protected path in {key}: {hit}")
         except (ValueError, OSError, RuntimeError):
             return Decision(Tier.DENY, "filesystem output path could not be safely resolved")
+    return None
+
+
+# --- commands Wisp never runs -------------------------------------------------
+# Owner decision (2026-11-10, review finding b09-safety#9): a recursive delete
+# of an absolute path, and any other very dangerous command, is refused
+# outright instead of getting a card. Checked in every mode, before full
+# access, grants and the configurable floor, and not configurable: no card and
+# no "Always allow". The person can still run the command in Terminal.
+#
+# Unlike _SHELL_DENY this does not match one regex against the raw string. It
+# lifts out $(...), `...` and <(...) bodies (each checked on its own), splits
+# the line into simple commands at ; && || | & ( ) and newlines with shell
+# quoting applied, strips wrappers (VAR=1, env, sudo, doas, nohup, time, nice,
+# command, exec, builtin, caffeinate, timeout, watch, xargs, busybox), and
+# follows sh/bash/zsh -c, eval, su -c, env -S, osascript's `do shell script`
+# and find -exec into the command they run. `cd` is followed, so
+# `cd / && rm -rf usr` is a delete of /usr.
+#
+# What stays a card (the 2026-08-16 design still holds for these): a recursive
+# delete of a plain relative path below an ordinary folder of the working
+# folder (run_shell runs in home: `rm -rf build`, `rm -rf proj/build`), and
+# `find . -name X -delete` or `find build ... -delete`. A relative path that
+# is, or is inside, one of home's main folders (Documents, Desktop, Library,
+# .ssh, .moe ...) is refused like its absolute spelling.
+#
+# It is still a reader of text: a name or path assembled by other means
+# (printf escapes, a script file written first and run second, an
+# interpreter's own rmtree) gets past it, and then gets the ordinary card.
+NEVER_RUN_TAIL = "If you want it done, you can run it yourself in Terminal."
+
+_NR_SUBST = "$__wisp_subst_{}__"
+_NR_SUBST_RE = re.compile(r"\$__wisp_subst_(\d+)__")
+_NR_FIND_END = "__wisp_find_end__"
+_NR_DEPTH = 8
+_NR_SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "csh", "tcsh", "mksh"})
+_NR_INTERPRETERS = _NR_SHELLS | frozenset({"perl", "ruby", "node", "php", "osascript", "lua"})
+# Something that fetches from the network, or decodes hidden text.
+_NR_FETCH = re.compile(
+    r"(?<![\w.-])(?:curl|wget|fetch|aria2c|lwp-request)(?![\w.-])"
+    r"|(?<![\w.-])base64\s+(?:-\w+\s+)*?(?:-d|-D|--decode)(?![\w-])"
+    r"|(?<![\w.-])xxd\s+(?:-\w+\s+)*?-r(?![\w-])|(?<![\w.-])uudecode(?![\w.-])"
+    r"|(?<![\w.-])openssl\s+(?:base64|enc)\b[^|;&]*\s-d(?![\w-])", re.IGNORECASE)
+_NR_HOME_NAMES = frozenset({"desktop", "documents", "downloads", "library", "movies", "music",
+                            "pictures", "public", "applications", "sites", ".ssh", ".moe",
+                            ".gnupg", ".aws", ".config", ".trash"})
+_NR_ROOTS = frozenset({"/", "/users", "/system", "/library", "/usr", "/etc", "/private",
+                       "/private/etc", "/var", "/private/var", "/bin", "/sbin", "/applications",
+                       "/opt", "/volumes", "/cores"})
+_NR_CRITICAL_PROCESSES = frozenset({"loginwindow", "windowserver", "launchd", "kernel_task"})
+_NR_READERS = frozenset({"cat", "less", "more", "head", "tail", "grep", "egrep", "fgrep", "ls",
+                         "stat", "wc", "file", "diff", "cmp", "md5", "shasum", "echo"})
+_NR_DISKUTIL = frozenset({"erasedisk", "erasevolume", "reformat", "partitiondisk", "zerodisk",
+                          "randomdisk", "secureerase", "erasecd", "erasedvd"})
+_NR_DISKUTIL_GROUPS = frozenset({"apfs", "cs", "corestorage", "ar", "appleraid"})
+_NR_DISKUTIL_SUB = frozenset({"deletecontainer", "deletevolume", "erasevolume", "delete",
+                              "deletelvg", "deletelv"})
+_NR_TMUTIL = frozenset({"delete", "disable", "disablelocal", "deletelocalsnapshots",
+                        "thinlocalsnapshots", "removedestination", "deleteinprogress"})
+_NR_GNU = frozenset({"rm", "find", "chmod", "chown", "chgrp", "dd", "truncate", "shred", "mv",
+                     "cp", "tee", "kill"})
+# A function that runs itself in the background or into a pipe: `:(){ :|:& };:`.
+_NR_FUNC = re.compile(r"([^\s(){}|&;<>'\"]+)\s*\(\s*\)\s*\{([^}]*)\}")
+_NR_FORK_CODE = re.compile(r"fork\s+while\s+fork|while\s*\(?\s*(?:1|true|True)\s*\)?\s*:?\s*\{?\s*"
+                           r"(?:os\.|posix\.|Process\.)?fork\b")
+_FORK_BOMB = "starts programs without end until the Mac stops responding"
+_FETCHED_CODE = "runs code downloaded from the internet or decoded from hidden text"
+_DISK_ERASE = "erases or repartitions a disk"
+_SUDOERS = "edits the administrator rules"
+
+
+class _NrContext:
+    """Where a command line is when a simple command runs."""
+    __slots__ = ("cwd", "fed", "depth", "inner")
+
+    def __init__(self, cwd, depth=0, inner=None):
+        # ("rel", path below home) or ("abs", path), or None when unknown.
+        self.cwd = cwd
+        self.fed = False          # operands also arrive on stdin (xargs)
+        self.depth = depth
+        self.inner = inner if inner is not None else []
+
+    def child(self) -> "_NrContext":
+        return _NrContext(self.cwd, self.depth + 1, self.inner)
+
+
+def _nr_home() -> str:
+    return str(Path.home()).rstrip("/") or "/"
+
+
+def _nr_protected_hit(path: str | None, *, erasing: bool = True) -> str | None:
+    """What a path holds when no command may delete or overwrite it. Wisp's
+    own folder counts only when the command deletes or empties (`erasing`):
+    writing into it or moving it keeps its card (the #409/#413 design)."""
+    if not path:
+        return None
+    home = _nr_home()
+    trees = [(f"{home}/.ssh", "your SSH keys"), (f"{home}/Library/Keychains", "your keychains"),
+             ("/etc/sudoers", "the administrator rules"),
+             ("/private/etc/sudoers", "the administrator rules"),
+             ("/etc/sudoers.d", "the administrator rules"),
+             ("/private/etc/sudoers.d", "the administrator rules")]
+    if erasing:
+        trees += [(folder, "Wisp's own data") for folder in _wisp_folders()]
+    for root, what in trees:
+        if _within(path, [root.rstrip("/").casefold()]):
+            return what
+    return None
+
+
+def _nr_close(text: str, start: int) -> int:
+    """Index of the `)` closing the `(` just before `start` (quote-aware)."""
+    depth, quote, i = 1, None, start
+    while i < len(text):
+        c = text[i]
+        if quote == "'":
+            quote = None if c == "'" else quote
+        elif c == "\\":
+            i += 1
+        elif quote == '"':
+            quote = None if c == '"' else quote
+        elif c in "'\"":
+            quote = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return len(text)
+
+
+def _nr_lift(text: str, inner: list[str]) -> str:
+    """Replace $(...), `...`, <(...) and >(...) with a placeholder word whose
+    number indexes `inner`, where the body is kept for its own check."""
+    out, quote, i, n = [], None, 0, len(text)
+    while i < n:
+        c = text[i]
+        if quote == "'":
+            out.append(c)
+            quote = None if c == "'" else quote
+            i += 1
+            continue
+        if c == "\\" and i + 1 < n:
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        if c == "`":
+            j = i + 1
+            while j < n and text[j] != "`":
+                j += 2 if text[j] == "\\" else 1
+            inner.append(text[i + 1:j])
+            out.append(_NR_SUBST.format(len(inner) - 1))
+            i = j + 1
+            continue
+        if c in "$<>" and text[i + 1:i + 2] == "(" and (c == "$" or quote is None):
+            j = _nr_close(text, i + 2)
+            inner.append(text[i + 2:j])
+            out.append(_NR_SUBST.format(len(inner) - 1))
+            i = j + 1
+            continue
+        if c == '"':
+            quote = None if quote == '"' else '"'
+        elif c == "'" and quote is None:
+            quote = "'"
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _nr_segments(text: str) -> list[dict] | None:
+    """Simple commands: the operator before each, its words and its output
+    redirect targets. None when the quoting does not parse."""
+    text = re.sub(r"\\;|';'|\";\"", f" {_NR_FIND_END} ", text)
+    text = re.sub(r"\\[()]", " ", text).replace("\r", "\n").replace("\n", " ; ")
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    segments, current, redirect = [], {"op": "", "words": [], "out": []}, None
+    try:
+        for token in lexer:
+            if token and set(token) <= set("();<>|&"):
+                if ">" in token:
+                    redirect = "append" if ">>" in token else "out"
+                elif "<" in token:
+                    redirect = "in"
+                else:
+                    if current["words"] or current["out"]:
+                        segments.append(current)
+                    current = {"op": token, "words": [], "out": []}
+                continue
+            if redirect is not None and redirect != "in":
+                current["out"].append((token, redirect == "append"))
+            elif redirect is None:
+                current["words"].append(token)
+            redirect = None
+    except ValueError:
+        return None
+    if current["words"] or current["out"]:
+        segments.append(current)
+    return segments
+
+
+def _nr_prog(word: str) -> str:
+    name = word.rsplit("/", 1)[-1].lower()
+    return name[1:] if name.startswith("g") and name[1:] in _NR_GNU else name   # Homebrew's grm
+
+
+def _nr_skip_opts(words: list[str], with_arg: str = "", duration: bool = False) -> list[str]:
+    """Drop leading options; single letters in `with_arg` take the next word."""
+    while words and words[0].startswith("-") and words[0] != "-":
+        flag = words.pop(0)
+        if flag == "--":
+            break
+        if len(flag) == 2 and flag[1] in with_arg and words:
+            words.pop(0)
+    if duration and words and re.fullmatch(r"[\d.]+[smhd]?", words[0]):
+        words.pop(0)
+    return words
+
+
+def _nr_unwrap(words: list[str], ctx: _NrContext) -> tuple[list[str], bool, str | None]:
+    """(the command inside its wrappers, whether it runs as administrator,
+    a command string a wrapper hands to a shell instead)."""
+    admin = False
+    while words:
+        w = words[0]
+        name = _nr_prog(w)
+        if w in ("{", "}", "!", "then", "do", "else", "elif", "if", "while", "until", "function",
+                 "time", "builtin", "nohup", "noglob"):
+            words = words[1:]
+        elif re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", w):
+            words = words[1:]
+        elif name == "env":
+            rest = words[1:]
+            while rest and rest[0].startswith("-") and rest[0] != "-":
+                flag = rest.pop(0)
+                if flag == "--":
+                    break
+                if flag in ("-S", "--split-string"):
+                    return [], admin, " ".join(rest)
+                if flag.startswith("-S"):
+                    return [], admin, " ".join([flag[2:], *rest])
+                if flag in ("-u", "-P", "-C", "--unset", "--chdir") and rest:
+                    rest.pop(0)
+            while rest and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", rest[0]):
+                rest.pop(0)
+            words = rest
+        elif name in ("sudo", "doas", "pkexec"):
+            admin = True
+            words = _nr_skip_opts(words[1:], "ugphCDrtTUR")
+        elif name == "su":
+            rest = words[1:]
+            if "-c" in rest and rest.index("-c") + 1 < len(rest):
+                return [], True, rest[rest.index("-c") + 1]
+            return [], True, None
+        elif name == "nice":
+            words = _nr_skip_opts(words[1:], "n")
+        elif name in ("command", "exec"):
+            if words[1:2] in (["-v"], ["-V"]):
+                return [], admin, None              # only looks the name up
+            words = _nr_skip_opts(words[1:], "a")
+        elif name == "caffeinate":
+            words = _nr_skip_opts(words[1:], "tw")
+        elif name == "timeout":
+            words = _nr_skip_opts(words[1:], "sk", duration=True)
+        elif name in ("stdbuf", "arch", "busybox", "unbuffer", "chronic"):
+            words = _nr_skip_opts(words[1:])
+        elif name == "watch":
+            return [], admin, " ".join(_nr_skip_opts(words[1:], "n"))
+        elif name == "xargs":
+            rest, replace = words[1:], None
+            while rest and rest[0].startswith("-") and rest[0] != "-":
+                flag = rest.pop(0)
+                if flag == "--":
+                    break
+                if flag[:2] in ("-I", "-J"):
+                    replace = flag[2:] or (rest.pop(0) if rest else None)
+                elif len(flag) == 2 and flag[1] in "LnPsERSda" and rest:
+                    rest.pop(0)
+            ctx.fed = True
+            words = [("$__wisp_stdin__" if replace and replace in r else r) for r in rest] or ["echo"]
+        else:
+            break
+    return words, admin, None
+
+
+def _nr_target(word: str, cwd) -> tuple[str, str | None]:
+    """How a path operand resolves: ("dynamic", None), ("glob", the folder the
+    wildcard is in, as below), ("abs", path) or ("rel", path below home)."""
+    w = re.sub(r"^\$(?:HOME|\{HOME\})(?=/|$)", "~", word)
+    if "$" in w or "`" in w:
+        return "dynamic", None
+    if re.search(r"[*?\[]", w) or re.search(r"\{[^}]*(?:,|\.\.)[^}]*\}", w):
+        base = re.split(r"[*?\[{]", w, maxsplit=1)[0]
+        head = base[:base.rfind("/") + 1] if "/" in base else ""
+        _, folder = _nr_target(head.rstrip("/") or ("/" if head else "."), cwd)
+        return "glob", folder
+    if w == "~" or w.startswith("~/"):
+        return "abs", os.path.normpath(_nr_home() + w[1:])
+    if w.startswith("~"):
+        return "abs", os.path.normpath(os.path.expanduser(w))
+    if w.startswith("/"):
+        return "abs", os.path.normpath(w).replace("//", "/") or "/"
+    if cwd is None:
+        return "dynamic", None
+    if cwd[0] == "rel":
+        return "rel", os.path.normpath(os.path.join(cwd[1], w))
+    return "abs", os.path.normpath(os.path.join(cwd[1], w))
+
+
+def _nr_full(kind: str, path: str | None) -> str | None:
+    """An absolute spelling of a resolved operand, for the protected-tree check."""
+    if kind == "abs":
+        return path
+    if kind == "rel" and path and not path.startswith(".."):
+        return f"{_nr_home()}/{path}"
+    return None
+
+
+def _nr_root_like(path: str | None) -> bool:
+    if not path:
+        return False
+    home = _nr_home().casefold()
+    p = path.rstrip("/").casefold() or "/"
+    return (p in _NR_ROOTS or p == home or p == f"{home}/library"
+            or (p.startswith(home + "/") and p[len(home) + 1:] in _NR_HOME_NAMES))
+
+
+def _nr_rel_problem(rel: str) -> str | None:
+    """Why a recursive change to a path below home is too broad, or None."""
+    if rel == ".":
+        return "the whole working folder, which is your home folder"
+    if rel == ".." or rel.startswith("../"):
+        return "a path outside the working folder"
+    top = rel.split("/", 1)[0]
+    if top.casefold() in _NR_HOME_NAMES:
+        return "one of your main folders" if top == rel else "a path inside one of your main folders"
+    return None
+
+
+def _nr_rm(args: list[str], ctx: _NrContext, admin: bool, unknown_name: bool = False) -> str | None:
+    recursive = False
+    operands, options = [], True
+    for a in args:
+        if options and a == "--":
+            options = False
+        elif options and a.startswith("--") and len(a) > 2:
+            recursive |= "recursive".startswith(a[2:].split("=", 1)[0].lower())
+        elif options and a.startswith("-") and len(a) > 1:
+            recursive |= "r" in a[1:].lower()
+        else:
+            operands.append(a)
+    if unknown_name and not recursive:
+        return None
+    if admin and not unknown_name:
+        return "deletes files as an administrator"
+    if recursive and ctx.fed:
+        return "recursively deletes paths it only learns while running"
+    what = "recursively deletes" if recursive else "deletes"
+    for op in operands:
+        kind, path = _nr_target(op, ctx.cwd)
+        if (hit := _nr_protected_hit(_nr_full(kind, path))):
+            return f"deletes {hit} ({op})"
+        if not recursive:
+            continue
+        if kind == "dynamic":
+            return f"{what} a path that is only known while it runs ({op})"
+        if kind == "glob":
+            return f"{what} everything a wildcard matches ({op})"
+        if kind == "abs":
+            return f"{what} an absolute path ({op})"
+        if (problem := _nr_rel_problem(path or op)):
+            return f"{what} {problem} ({op})"
+    return None
+
+
+def _nr_find(args: list[str], ctx: _NrContext, admin: bool) -> str | None:
+    rest = list(args)
+    while rest and rest[0] in ("-H", "-L", "-P", "-E", "-X", "-d", "-s", "-x"):
+        rest.pop(0)
+    roots = []
+    while rest and not rest[0].startswith("-") and rest[0] not in ("(", "!", _NR_FIND_END):
+        roots.append(rest.pop(0))
+    runs: list[list[str]] = []
+    i = 0
+    while i < len(rest):
+        if rest[i] in ("-exec", "-execdir", "-ok", "-okdir"):
+            j = i + 1
+            while j < len(rest) and rest[j] != _NR_FIND_END and not (rest[j] == "+" and rest[j - 1] == "{}"):
+                j += 1
+            runs.append(rest[i + 1:j])
+            i = j
+        i += 1
+    filtered = any(w.startswith("-") and w not in ("-delete", "-depth", "-d", "-print", "-print0")
+                   and not w.startswith(("-exec", "-ok")) for w in rest)
+    deletes = "-delete" in rest or any(run and _nr_prog(run[0]) in ("rm", "srm", "unlink") for run in runs)
+    for root in roots or ["."]:
+        if deletes:
+            if admin:
+                return "deletes files as an administrator"
+            kind, path = _nr_target(root, ctx.cwd)
+            if kind == "rel" and (path == "." and filtered or not _nr_rel_problem(path)):
+                pass
+            else:
+                where = {"dynamic": "a folder that is only known while it runs",
+                         "glob": "everything a wildcard matches",
+                         "abs": "an absolute path"}.get(kind) or _nr_rel_problem(path or root)
+                return f"deletes files found under {where} ({root})"
+        for run in runs:
+            match = os.path.join(root, "__wisp_match__")
+            if (hit := _nr_judge_words([w.replace("{}", match) for w in run], ctx.child())):
+                return hit
+    return None
+
+
+def _nr_fetches(word: str, inner: list[str]) -> bool:
+    """Whether a word is a $(...) / <(...) whose body downloads or decodes."""
+    return any(int(n) < len(inner) and _NR_FETCH.search(inner[int(n)])
+               for n in _NR_SUBST_RE.findall(word))
+
+
+def _nr_code(args: list[str], flags: tuple[str, ...], cluster: str = "") -> str | None:
+    """The program text an interpreter is given (sh -c BODY, perl -e CODE)."""
+    for k, a in enumerate(args):
+        if a in flags or (cluster and a.startswith("-") and not a.startswith("--") and cluster in a[1:]):
+            return next((b for b in args[k + 1:] if not b.startswith("-")), "")
+    return None
+
+
+def _nr_reads_stdin(name: str, args: list[str]) -> bool:
+    """True when an interpreter takes its program from stdin."""
+    for a in args:
+        if a in ("-c", "-e", "-E", "-m", "-p", "--command", "--eval"):
+            return False
+        if name in _NR_SHELLS and a.startswith("-") and not a.startswith("--") and "c" in a[1:]:
+            return False
+    operands = [a for a in args if not a.startswith("-")]
+    return not operands or operands[0] == "-" or "-s" in args
+
+
+def _nr_judge_words(words: list[str], ctx: _NrContext) -> str | None:
+    """Why one simple command is never run, or None."""
+    if ctx.depth > _NR_DEPTH:
+        return None
+    words, admin, via_shell = _nr_unwrap(list(words), ctx)
+    if via_shell is not None:
+        return _nr_judge_text(via_shell, ctx.child())
+    if not words:
+        return None
+    first, args = words[0], words[1:]
+    name = _nr_prog(first)
+    low = [a.lower() for a in args]
+    if "$" in first or "`" in first:
+        # A program name only known at run time: judged as if it were rm.
+        return _nr_rm(args, ctx, admin, unknown_name=True)
+    if name in ("cd", "pushd"):
+        dest = next((a for a in args if not a.startswith("-")), "~")
+        kind, path = _nr_target(dest, ctx.cwd)
+        ctx.cwd = (("rel", ".") if kind == "abs" and path == _nr_home()
+                   else (kind, path) if kind in ("abs", "rel") and not (kind == "rel" and path.startswith(".."))
+                   else None)
+        return None
+    if name in ("rm", "unlink"):
+        return _nr_rm(args, ctx, admin)
+    if name == "srm":
+        return "erases files so they can never be recovered"
+    if name == "find":
+        return _nr_find(args, ctx, admin)
+    if name in ("eval", "source", "."):
+        if any(_nr_fetches(a, ctx.inner) for a in args):
+            return _FETCHED_CODE
+        return _nr_judge_text(" ".join(args), ctx.child()) if name == "eval" else None
+    if name in _NR_INTERPRETERS or re.fullmatch(r"python[\d.]*", name):
+        if name == "osascript":
+            for body in _DO_SHELL_SCRIPT.findall(" ".join(args)):
+                if (hit := _nr_judge_text(re.sub(r"\\(.)", r"\1", body), ctx.child())):
+                    return hit
+            return None
+        code = (_nr_code(args, ("-c", "--command"), cluster="c") if name in _NR_SHELLS
+                else _nr_code(args, ("-c", "-e", "-E", "--eval")))
+        program = code if code is not None else next((a for a in args if not a.startswith("-")), "")
+        if program and _nr_fetches(program, ctx.inner):
+            return _FETCHED_CODE
+        if code and _NR_FORK_CODE.search(code):
+            return _FORK_BOMB
+        if code is not None and name in _NR_SHELLS:
+            return _nr_judge_text(code, ctx.child())
+        return None
+    if name == "dd":
+        for a in args:
+            if a.lower().startswith("of="):
+                target = a[3:]
+                if re.match(r"/dev/(?!null$|stdout$|stderr$|zero$|fd/)", target, re.IGNORECASE):
+                    return f"writes straight onto a disk device ({target})"
+                if (hit := _nr_protected_hit(_nr_full(*_nr_target(target, ctx.cwd)))):
+                    return f"overwrites {hit} ({target})"
+        return None
+    if re.fullmatch(r"(?:mkfs|newfs)(?:[._].*)?|fdisk|pdisk", name):
+        return _DISK_ERASE
+    if name == "gpt" and any(a in ("destroy", "create", "remove", "migrate") for a in low):
+        return _DISK_ERASE
+    if name == "asr" and "restore" in low and any(a in ("--erase", "-erase") for a in low):
+        return _DISK_ERASE
+    if name == "diskutil":
+        sub = [a for a in low if not a.startswith("-")]
+        if sub and (sub[0] in _NR_DISKUTIL or (sub[0] in _NR_DISKUTIL_GROUPS and len(sub) > 1
+                                                and sub[1] in _NR_DISKUTIL_SUB)):
+            return _DISK_ERASE
+        return None
+    if name in ("chmod", "chown", "chgrp", "chflags"):
+        if not any((a.startswith("-") and not a.startswith("--") and "R" in a) or a == "--recursive"
+                   for a in args):
+            return None
+        for op in [a for a in args if not a.startswith("-")][1:]:
+            kind, path = _nr_target(op, ctx.cwd)
+            if (kind == "dynamic" or _nr_root_like(path)
+                    or (kind == "rel" and path and (path in (".", "..") or path.startswith("../")
+                                                    or path.casefold() in _NR_HOME_NAMES))
+                    or (kind == "glob" and path == ".")):
+                return f"changes permissions on every file in {op}"
+        return None
+    if name == "kill":
+        rest = list(args)
+        if rest and rest[0].startswith("-") and rest[0] != "--":
+            if rest.pop(0) in ("-s", "-n") and rest:
+                rest.pop(0)
+        if rest and rest[0] == "--":
+            rest.pop(0)
+        return "stops every program you are running" if "-1" in rest else None
+    if name in ("killall", "pkill"):
+        if any(a.casefold() in _NR_CRITICAL_PROCESSES for a in args):
+            return "stops a process macOS needs, which logs you out or freezes the Mac"
+        return None
+    if name in ("shutdown", "halt", "reboot", "fasthalt", "fastboot"):
+        return "shuts down or restarts the Mac"
+    if name == "launchctl":
+        if "reboot" in low:
+            return "shuts down or restarts the Mac"
+        if low and low[0] in ("bootout", "unload", "remove", "disable") and any(
+                re.search(r"system/|/system/|/library/launchdaemons|com\.apple\.", a) for a in low):
+            return "removes a macOS system service"
+        return None
+    if name == "csrutil":
+        return "turns off System Integrity Protection" if {"disable", "clear"} & set(low) else None
+    if name == "spctl":
+        return ("turns off Gatekeeper" if {"--master-disable", "--global-disable"} & set(low)
+                else None)
+    if name == "nvram":
+        if any(a in ("-c", "-d", "-f") or "=" in a for a in args):
+            return "changes the Mac's startup settings"
+        return None
+    if name == "tmutil":
+        return "deletes or turns off Time Machine backups" if low[:1] and low[0] in _NR_TMUTIL else None
+    if name == "security" and low[:1] == ["delete-keychain"]:
+        return "deletes a keychain of saved passwords"
+    if name == "visudo":
+        return _SUDOERS
+    if name == "defaults" and low[:1] == ["delete"]:
+        rest = [a for a in low[1:] if a != "-currenthost" and not a.startswith("-host")]
+        if not rest or (len(rest) == 1 and rest[0] in ("-g", "-globaldomain", "nsglobaldomain")):
+            return "erases every global macOS preference"
+        return None
+    if name in ("truncate", "tee", "shred"):
+        for op in (a for a in args if not a.startswith("-")):
+            # tee writes content (Wisp's folder keeps its card); truncate and shred erase.
+            if (hit := _nr_protected_hit(_nr_full(*_nr_target(op, ctx.cwd)), erasing=name != "tee")):
+                return f"{'overwrites' if name == 'tee' else 'empties or erases'} {hit} ({op})"
+        return "erases files so they can never be recovered" if name == "shred" else None
+    if name in ("cp", "mv", "ditto", "install", "rsync"):
+        operands = [a for a in args if not a.startswith("-")]
+        emptying = name == "cp" and operands[:1] in (["/dev/null"], ["/dev/zero"])
+        for op in (operands if name == "mv" else operands[-1:]):
+            if (hit := _nr_protected_hit(_nr_full(*_nr_target(op, ctx.cwd)), erasing=emptying)):
+                return f"{'empties' if emptying else 'overwrites or moves'} {hit} ({op})"
+        return None
+    if name not in _NR_READERS and any("/etc/sudoers" in a for a in low):
+        return _SUDOERS
+    return None
+
+
+def _nr_writes_nothing(words: list[str]) -> bool:
+    """Whether a command's output is empty, so redirecting it empties the file."""
+    if not words:
+        return True
+    name, args = _nr_prog(words[0]), words[1:]
+    return (name in (":", "true", "false") or (name == "cat" and args == ["/dev/null"])
+            or (name == "echo" and args in (["-n"], ["-n", ""]))
+            or (name == "printf" and args in ([""], ["%s", ""])))
+
+
+def _nr_pipeline(stages: list[list[str]], ctx: _NrContext) -> str | None:
+    """Downloaded or decoded text piped into a shell or interpreter, and
+    `echo "..." | sh`, whose text is judged as the command it is."""
+    fetched = False
+    for words in stages:
+        unwrapped, _, _ = _nr_unwrap(list(words), _NrContext(ctx.cwd, ctx.depth, ctx.inner))
+        if not unwrapped:
+            continue
+        name = _nr_prog(unwrapped[0])
+        if (fetched and (name in _NR_INTERPRETERS or re.fullmatch(r"python[\d.]*", name))
+                and _nr_reads_stdin(name, unwrapped[1:])):
+            return _FETCHED_CODE
+        fetched = fetched or bool(_NR_FETCH.search(" ".join(unwrapped)))
+    if stages[0] and _nr_prog(stages[0][0]) in ("echo", "printf"):
+        last, _, _ = _nr_unwrap(list(stages[-1]), _NrContext(ctx.cwd, ctx.depth, ctx.inner))
+        if last and _nr_prog(last[0]) in _NR_SHELLS and _nr_reads_stdin(_nr_prog(last[0]), last[1:]):
+            return _nr_judge_text(" ".join(stages[0][1:]), ctx.child())
+    return None
+
+
+def _nr_judge_text(text: str, ctx: _NrContext) -> str | None:
+    """Why a command line is never run, or None."""
+    if ctx.depth > _NR_DEPTH or not text.strip():
+        return None
+    for m in _NR_FUNC.finditer(text):
+        if re.search(r"(?<![\w:.-])" + re.escape(m.group(1)) + r"\s*(?:\||&(?!&))", m.group(2)):
+            return _FORK_BOMB
+    if _NR_FORK_CODE.search(text):
+        return _FORK_BOMB
+    start = len(ctx.inner)
+    outer = _nr_lift(text, ctx.inner)
+    for body in ctx.inner[start:]:
+        if (hit := _nr_judge_text(body, ctx.child())):
+            return hit
+    segments = _nr_segments(outer)
+    if segments is None:          # unbalanced quotes: judge it with the quotes dropped
+        segments = _nr_segments(re.sub(r"[\"']", "", outer)) or []
+    pipeline: list[list[str]] = []
+    for seg in segments:
+        for target, append in seg["out"]:
+            if re.match(r"/dev/r?disk", target, re.IGNORECASE):
+                return f"writes straight onto a disk device ({target})"
+            if "/etc/sudoers" in target.lower():
+                return _SUDOERS
+            # `> file`, `: > file`, `cat /dev/null > file` empty it; Wisp's own
+            # folder is refused only for that, other writes into it keep their card.
+            emptying = not append and _nr_writes_nothing(seg["words"])
+            if (hit := _nr_protected_hit(_nr_full(*_nr_target(target, ctx.cwd)), erasing=emptying)):
+                return f"{'empties' if emptying else 'overwrites'} {hit} ({target})"
+        if seg["op"] in ("|", "|&"):
+            pipeline.append(seg["words"])
+        else:
+            if len(pipeline) > 1 and (hit := _nr_pipeline(pipeline, ctx)):
+                return hit
+            pipeline = [seg["words"]]
+        ctx.fed = False
+        if seg["words"] and (hit := _nr_judge_words(seg["words"], ctx)):
+            return hit
+    if len(pipeline) > 1 and (hit := _nr_pipeline(pipeline, ctx)):
+        return hit
+    return None
+
+
+def never_run_hit(text: str) -> str | None:
+    """Why Wisp refuses to run this shell text in any mode, or None."""
+    if not isinstance(text, str) or not text.strip() or len(text) > SHELL_TEXT_LIMIT:
+        return None
+    return _nr_judge_text(text, _NrContext(("rel", ".")))
+
+
+def never_run_decision(args: dict) -> Decision | None:
+    """The refusal for a run_shell `cmd`, or an AppleScript `do shell script`
+    body, that Wisp never runs (see NEVER_RUN_TAIL)."""
+    texts = [str(args.get("cmd") or "")]
+    texts += [re.sub(r"\\(.)", r"\1", body)
+              for body in _DO_SHELL_SCRIPT.findall(str(args.get("script") or ""))]
+    for text in texts:
+        if (hit := never_run_hit(text)):
+            return Decision(Tier.DENY, f"Wisp won't run this command because it {hit}. {NEVER_RUN_TAIL}")
     return None
 
 
@@ -1655,6 +2327,10 @@ def _decide(category: str, args: dict, tool: str | None = None) -> Decision:
         if local_service_hit(text):
             return Decision(Tier.DENY, "commands may not call Wisp's own service (port 8765); "
                             "use Wisp's tools instead")
+    # Very dangerous commands (never_run_decision): refused in every mode, even
+    # with the configurable floor switched off, so nothing below can card them.
+    if category == "shell" and (never := never_run_decision(args)) is not None:
+        return never
     if (_KEEP_FLOOR or not _FULL_ACCESS) and (floor := _hard_deny(category, args, tool)) is not None:
         return floor
 
