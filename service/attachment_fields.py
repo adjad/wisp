@@ -12,8 +12,10 @@ IMPORTANT rules:
   there becomes None; a date survives only if its year, month and day are all written in the text;
   a currency only if its code or symbol is in the text.
 - A lone separator before exactly three digits (`1,240`, `1.240`) is thousands unless the text
-  itself proves the other convention elsewhere. A minus, brackets or CR beside a number in the
-  text keep their sign, so a credit is never added as a payment.
+  itself proves the other convention elsewhere: in another number with exactly two decimals that
+  looks like money (a currency beside it, or a thousands group of the other mark).
+- A minus attached to a number, brackets wrapping exactly it, or a CR token after it keep their
+  sign, so a credit is never added as a payment. A spaced hyphen (`Total - $1,500`) is not a sign.
 - `what` and `party` stay untrusted after cleaning: the caller shows them inside the fence.
 - Nothing from a file or from the facts is logged or printed here.
 """
@@ -27,7 +29,7 @@ from decimal import Decimal, InvalidOperation
 
 from service import documents, large_document
 
-FACTS_VERSION = 2
+FACTS_VERSION = 3  # 3: version-2 values may carry a wrong sign (a spaced hyphen read as a minus)
 
 TEXT_CHARS = 6_000
 TAIL_CHARS = 1_500
@@ -137,10 +139,29 @@ def _shape(token: str):
     return ("ambiguous", _dec(head + tail), decimal, mark)
 
 
-def _decimal_marks(shapes) -> set[str]:
-    """The marks the text itself proves are decimal marks: proven for one and not for the other."""
-    proven = {shape[3] for shape in shapes if shape and shape[0] == "decimal"}
-    return proven if len(proven) == 1 else set()
+_ISO_CODES = ("USD", "EUR", "GBP", "CHF", "JPY", "INR", "CAD", "AUD", "NZD", "SGD", "HKD", "MXN", "CNY",
+              "SEK", "NOK", "DKK", "PLN", "CZK", "HUF", "BRL", "ZAR", "KRW", "AED", "RUB", "TRY", "ILS", "THB")
+_CURRENCY_BEFORE = re.compile(rf"(?:{_SYMBOL_CLASS}|(?<![A-Za-z])(?:{'|'.join(_ISO_CODES)}))\s?$")
+_CURRENCY_AFTER = re.compile(rf"\s?(?:{_SYMBOL_CLASS}|(?:{'|'.join(_ISO_CODES)})(?![A-Za-z]))")
+
+
+def _proves_decimal(text: str, start: int, end: int, shape) -> bool:
+    """Whether this written number proves its mark is a decimal mark.
+
+    Only a token that looks like money does: exactly two digits after the mark, and either a
+    thousands group of the other mark (`1.240,50`, `1,240.50`) or a currency symbol or code beside
+    it. A bare `10.30`, `2.15`, `2.1` or `v3.5` proves nothing.
+    """
+    if not shape or shape[0] != "decimal":
+        return False
+    token = _MARK_CLEAN.sub("", text[start:end])
+    mark = shape[3]
+    if len(token) - token.rfind(mark) - 1 != 2:
+        return False
+    if ("," if mark == "." else ".") in token:
+        return True
+    return bool(_CURRENCY_BEFORE.search(text[max(0, start - 6):start])
+                or _CURRENCY_AFTER.match(text[end:end + 6]))
 
 
 def _read(shape, decimal_marks: set[str]) -> Decimal | None:
@@ -152,35 +173,78 @@ def _read(shape, decimal_marks: set[str]) -> Decimal | None:
     return decimal if kind == "decimal" else thousands
 
 
+_DOLLAR_ALT = "|".join(("USD",) + _DOLLAR_CODES)
+_CODE_BEFORE = re.compile(rf"(?<![A-Za-z])({_DOLLAR_ALT})\s?\$?\s?[-−(]?\s?$")
+_CODE_AFTER = re.compile(rf"\s?\)?\s?({_DOLLAR_ALT})(?![A-Za-z])")
+_PAREN_BEFORE = re.compile(rf"\(\s*({_SYMBOL_CLASS}|(?<![A-Za-z])[A-Z]{{3}})?\s*$")
+_PAREN_AFTER = re.compile(rf"\s*({_SYMBOL_CLASS}|[A-Z]{{3}}(?![A-Za-z]))?\s*\)")
+_PHONE_AFTER = re.compile(r"\)\s?\d{3}[-.\s]\d{4}")
+_CR_AFTER = re.compile(r"[ ]?CR(?![A-Za-z0-9])(?=[ \t]*(?:\r?\n|$)|[^\w\s]|\s+[^A-Z\s])")
+
+
 def _negative_at(text: str, start: int, end: int) -> bool:
-    """Whether the text writes this number as negative: -1,240.00, (1,240.00), 1,240.00-, CR 1,240.00."""
-    pre = text[max(0, start - 8):start]
-    post = text[end:end + 8]
-    if re.search(rf"(?<![\w.,])[-−]\s?{_SYMBOL_CLASS}?\s?$", pre):
+    """Whether the text writes this number as negative.
+
+    A minus counts only when it is attached to the amount (`-$1,500`, `$-1,500`, `-1.500,00`) and
+    is not part of a word, a date or a range; a trailing minus only when attached and followed by
+    white space or the end; brackets only when they wrap exactly the amount and an optional
+    currency (never a bare year like `(2026)` or an area code); CR only as its own token after it.
+    A spaced hyphen (`Total - $1,500`) is a separator, never a sign.
+    """
+    pre = text[max(0, start - 14):start]
+    post = text[end:end + 14]
+    if re.search(rf"(?<![A-Za-z0-9.,])[-−]{_SYMBOL_CLASS}?$", pre):
         return True
-    if re.search(rf"\(\s?{_SYMBOL_CLASS}?\s?$", pre) and re.match(r"\s?\)", post):
-        return True
+    before, after = _PAREN_BEFORE.search(pre), _PAREN_AFTER.match(post)
+    if before and after:
+        bare = not (before.group(1) or after.group(1))
+        digits = text[start:end]
+        if not bare:
+            return True
+        year = digits.isdigit() and len(digits) == 4 and 1900 <= int(digits) <= 2100
+        if not year and not _PHONE_AFTER.match(post[after.end() - 1:]):
+            return True
     if re.search(rf"(?<![A-Za-z])CR\.?\s?{_SYMBOL_CLASS}?\s?$", pre):
         return True
-    return bool(re.match(r"-(?!\w)", post) or re.match(r"\s?CR(?![A-Za-z])", post))
+    return bool(re.match(r"[-−](?=\s|$)", post) or _CR_AFTER.match(post))
 
 
 class _Numbers:
     """Every number written in a text, with the signs it is written with."""
 
     def __init__(self, text: str):
+        self.text = text
         found = []
         for pattern in (_NUMBER, _SPACED):
             for match in pattern.finditer(text):
                 shape = _shape(match.group(0))
                 if shape:
-                    found.append((shape, _negative_at(text, match.start(), match.end())))
-        self.marks = _decimal_marks(shape for shape, _ in found)
+                    found.append((shape, _negative_at(text, match.start(), match.end()), match.start(),
+                                  match.end(), _proves_decimal(text, match.start(), match.end(), shape)))
+        proven = {shape[3] for shape, _n, _s, _e, proves in found if proves}
+        self.marks = proven if len(proven) == 1 else set()
         self.signs: dict[Decimal, set[str]] = {}
-        for shape, negative in found:
+        self.spans: list[tuple[Decimal, int, int]] = []
+        for shape, negative, start, end, _proves in found:
             value = _read(shape, self.marks)
             if value is not None:
                 self.signs.setdefault(value, set()).add("-" if negative else "+")
+                self.spans.append((value, start, end))
+
+    def codes_beside(self, magnitude: Decimal) -> set[str]:
+        """The dollar-family codes written directly beside this amount (within one space)."""
+        found: set[str] = set()
+        for value, start, end in self.spans:
+            if value != magnitude:
+                continue
+            pre = self.text[max(0, start - 12):start]
+            post = self.text[end:end + 8]
+            for m in (_CODE_BEFORE.search(pre), _CODE_AFTER.match(post)):
+                if m:
+                    found.add(m.group(1))
+            if re.search(r"(?<![A-Za-z])US\$\s?[-−(]?$", pre):
+                found.add("USD")
+        return found
 
 
 def _plain(d: Decimal) -> str:
@@ -224,12 +288,23 @@ def _amount(value, numbers: _Numbers) -> str:
 
 # --- currency ---------------------------------------------------------------------
 
+_NEAR_CODE = re.compile(rf"(?<![A-Za-z])({_DOLLAR_ALT})\s?\$?\s?[-−(]?\d|\d\s?({_DOLLAR_ALT})(?![A-Za-z])")
+_NEAR_PREFIX = re.compile(r"(?<![A-Za-z])(CA|C|AU|A|NZ|S|HK|MX)\$\s?[-−(]?\d")
+_STATED_CODE = re.compile(rf"(?:(?i:currenc(?:y|ies))\s*(?:is|are)?\s*[:=]?\s*|(?i:\bin)\s+)({_DOLLAR_ALT})(?![A-Za-z])")
+_STATED_WORD = re.compile(r"(?i)(?<![A-Za-z])(canadian|australian)\s+(?:dollars?|funds?|currency)(?![A-Za-z])")
+
+
 def _dollar_others(text: str) -> set[str]:
-    found = {code for code in _WORD_CODE.findall(text) if code in _DOLLAR_CODES}
-    found.update(_DOLLAR_PREFIXES[m.group(1)] for m in _DOLLAR_PREFIX.finditer(text))
-    for word, code in _DOLLAR_WORDS.items():
-        if re.search(rf"(?i)(?<![A-Za-z]){word}(?![A-Za-z])", text):
-            found.add(code)
+    """Dollar currencies other than USD that the text ties to an amount or states outright.
+
+    A code counts beside a number (`CAD 1,200.00`, `50 AUD`), as a prefix symbol (`C$10`), or in an
+    explicit statement (`currency: CAD`, `in AUD`, `Canadian dollars`). A bare "CAD" elsewhere
+    (`CAD drawing fee`) does not.
+    """
+    found = {m.group(1) or m.group(2) for m in _NEAR_CODE.finditer(text)} - {"USD"}
+    found.update(_DOLLAR_PREFIXES[m.group(1)] for m in _NEAR_PREFIX.finditer(text))
+    found.update(m.group(1) for m in _STATED_CODE.finditer(text) if m.group(1) != "USD")
+    found.update(_DOLLAR_WORDS[m.group(1).lower()] for m in _STATED_WORD.finditer(text))
     return found
 
 
@@ -238,23 +313,41 @@ def _symbol_with_number(symbol: str, text: str) -> bool:
     return bool(re.search(rf"{mark}\s?[-−(]?\s?\d|\d\s?{mark}", text))
 
 
-def _currency(value, text: str, codes: set[str]) -> str:
+def _dollar_currency(claim: str, text: str, codes: set[str], numbers, amount: str) -> str:
+    """USD or another dollar currency: the code beside this very amount wins; else the text decides."""
+    try:
+        magnitude = abs(Decimal(amount)) if amount else None
+    except InvalidOperation:
+        magnitude = None
+    beside = numbers.codes_beside(magnitude) if numbers is not None and magnitude is not None else set()
+    us_symbol = bool(re.search(r"(?<![A-Za-z])US\$", text))
+    dollar = us_symbol or bool(_BARE_DOLLAR.search(text) and _symbol_with_number("$", text))
+    if beside:
+        if claim == "USD" and "USD" not in beside and not dollar:
+            return ""  # the model said dollars; the text shows only another code and no dollar sign
+        return next(iter(beside)) if len(beside) == 1 else ""
+    others = _dollar_others(text)
+    if claim != "USD":
+        return claim if claim in others else ""
+    if us_symbol:
+        return "USD"
+    if not dollar:
+        return "USD" if "USD" in codes and not others else ""
+    if not others:
+        return "USD"
+    return next(iter(others)) if len(others) == 1 else ""
+
+
+def _currency(value, text: str, codes: set[str], numbers=None, amount: str = "") -> str:
     """A 3-letter code only when that code (or its symbol) is written in the text."""
     raw = str(value or "").strip()
     claim = _SYMBOLS.get(raw) or raw.upper()
     if not _CODE.match(claim):
         return ""
-    if claim in codes or (claim == "USD" and re.search(r"(?<![A-Za-z])US\$", text)):
-        return claim
     if claim == "USD" or claim in _DOLLAR_CODES:
-        others = _dollar_others(text)
-        if claim == "USD":
-            if not (_BARE_DOLLAR.search(text) and _symbol_with_number("$", text)):
-                return ""
-            if not others:
-                return "USD"
-            return next(iter(others)) if len(others) == 1 else ""
-        return claim if claim in others else ""
+        return _dollar_currency(claim, text, codes, numbers, amount)
+    if claim in codes:
+        return claim
     return claim if any(code == claim and _symbol_with_number(symbol, text)
                         for symbol, code in _SYMBOLS.items() if symbol != "$") else ""
 
@@ -339,7 +432,7 @@ def _validated(data: dict, text: str) -> dict:
     if isinstance(claimed, dict):
         value = _amount(claimed.get("value"), numbers)
         if value:
-            total = {"value": value, "currency": _currency(claimed.get("currency"), text, codes)}
+            total = {"value": value, "currency": _currency(claimed.get("currency"), text, codes, numbers, value)}
     amounts = []
     listed = data.get("amounts")
     for item in listed if isinstance(listed, list) else []:
@@ -350,7 +443,7 @@ def _validated(data: dict, text: str) -> dict:
         value = _amount(item.get("value"), numbers)
         if value:
             amounts.append({"label": _clean(item.get("label"), LABEL_MAX), "value": value,
-                            "currency": _currency(item.get("currency"), text, codes)})
+                            "currency": _currency(item.get("currency"), text, codes, numbers, value)})
     return {"what": _clean(data.get("what"), WHAT_MAX), "party": _clean(data.get("party"), WHAT_MAX),
             "date": _date(data.get("date"), text), "total": total, "amounts": amounts}
 
@@ -434,6 +527,8 @@ def line(facts: dict | None, *, name: str, when: str) -> str:
 
 
 def _sum_text(d: Decimal) -> str:
+    if d == 0:
+        d = Decimal(0)  # never "-0.00"
     cents = d.quantize(Decimal("0.01"))
     return format(cents if cents == d else d, ",f")
 
@@ -442,44 +537,78 @@ def _count(n: int) -> str:
     return f"{n} file" if n == 1 else f"{n} files"
 
 
+SEPARATE_FILES = "These are separate files added together, so a quote and its invoice would both be counted."
+_CREDITS_NOTE = " (credits and refunds subtracted)"
+_MAX_EXPONENT = 30
+
+
+def _total_value(facts) -> tuple[Decimal | None, str]:
+    """(value, currency) of one row's total, or (None, "") when it is not a usable number."""
+    try:
+        total = facts.get("total") if isinstance(facts, dict) else None
+        if not isinstance(total, dict):
+            return None, ""
+        raw = total.get("value")
+        if isinstance(raw, bool) or not isinstance(raw, (str, int, float)):
+            return None, ""
+        value = Decimal(str(raw).strip())
+        if not value.is_finite() or value.adjusted() > _MAX_EXPONENT or value.adjusted() < -_MAX_EXPONENT:
+            return None, ""
+        return value, _clean(total.get("currency"), 3).upper()
+    except (InvalidOperation, ValueError, TypeError, ArithmeticError, AttributeError):
+        return None, ""
+
+
 def totals(all_facts: list[dict | None], keys: list[str] | None = None) -> list[str]:
     """One sentence per currency (most files first), then how many files had no total.
 
     With `keys` (one per row, such as a file digest) a row whose key was already seen is not added
-    again. Signed values are summed, so a refund reduces the total.
+    again; a row without a key counts as unique. Signed values are summed, so a refund reduces the
+    total, and the sentence says so. Every sentence ends with one period. Never raises on malformed rows.
     """
     sums: dict[str, Decimal] = {}
     counts: dict[str, int] = {}
+    negative: set[str] = set()
     missing = 0
     repeats = 0
     seen: set[str] = set()
-    for index, facts in enumerate(all_facts or []):
-        key = keys[index] if keys is not None and index < len(keys) else None
+    rows = all_facts if isinstance(all_facts, (list, tuple)) else []
+    key_list = keys if isinstance(keys, (list, tuple)) else []
+    for index, facts in enumerate(rows):
+        key = key_list[index] if index < len(key_list) else None
         if isinstance(key, str) and key:
             if key in seen:
                 repeats += 1
                 continue
             seen.add(key)
-        total = facts.get("total") if isinstance(facts, dict) else None
-        try:
-            value = Decimal(str(total["value"])) if isinstance(total, dict) else None
-        except (InvalidOperation, KeyError, ValueError):
-            value = None
-        if value is None or not value.is_finite():
+        value, code = _total_value(facts)
+        if value is None:
             missing += 1
             continue
-        code = _clean(total.get("currency"), 3).upper()
-        sums[code] = sums.get(code, Decimal(0)) + value
+        try:
+            sums[code] = sums.get(code, Decimal(0)) + value
+        except ArithmeticError:
+            missing += 1
+            continue
         counts[code] = counts.get(code, 0) + 1
+        if value < 0:
+            negative.add(code)
     out = []
     for code in sorted(sums, key=lambda c: (-counts[c], c == "", c)):
         label = code or "unknown currency"
-        out.append(f"{label} {_sum_text(sums[code])} across {_count(counts[code])}")
+        try:
+            shown = _sum_text(sums[code])
+        except ArithmeticError:
+            shown = "(too large to show)"
+        out.append(f"{label} {shown} across {_count(counts[code])}"
+                   f"{_CREDITS_NOTE if code in negative else ''}.")
     if missing:
-        out.append(f"{_count(missing)} had no total Wisp could find")
+        out.append(f"{_count(missing)} had no total Wisp could find.")
     if repeats:
         out.append("1 file was the same file again and was counted once." if repeats == 1
                    else f"{repeats} files were the same file again and were counted once.")
+    if sum(counts.values()) >= 2:
+        out.append(SEPARATE_FILES)
     if sums:
         out.append(WARNING)
     return out

@@ -340,50 +340,50 @@ def test_totals_empty():
 
 def test_totals_single_currency():
     out = af.totals([f("1000.00"), f("100.00"), f("100.00"), f("20.00"), f("20.00")])
-    assert out == ["USD 1,240.00 across 5 files", W]
+    assert out == ["USD 1,240.00 across 5 files.", SEP, W]
 
 
 def test_totals_one_file_wording():
-    assert af.totals([f("5.5")]) == ["USD 5.50 across 1 file", W]
+    assert af.totals([f("5.5")]) == ["USD 5.50 across 1 file.", W]
 
 
 def test_totals_decimal_exact():
-    assert af.totals([f("0.10"), f("0.20")]) == ["USD 0.30 across 2 files", W]
+    assert af.totals([f("0.10"), f("0.20")]) == ["USD 0.30 across 2 files.", SEP, W]
     many = af.totals([f("0.1")] * 10)
-    assert many == ["USD 1.00 across 10 files", W]
+    assert many == ["USD 1.00 across 10 files.", SEP, W]
 
 
 def test_totals_keeps_extra_decimals():
-    assert af.totals([f("1.005"), f("1.0003")]) == ["USD 2.0053 across 2 files", W]
+    assert af.totals([f("1.005"), f("1.0003")]) == ["USD 2.0053 across 2 files.", SEP, W]
 
 
 def test_totals_mixed_currencies_and_missing():
     out = af.totals([f("10.00", "EUR"), f("5.00", "USD"), f("6.00", "USD"), None,
                      {"what": "x", "party": "", "date": "", "total": None, "amounts": []},
                      f("7.00", ""), f("1.00", "USD")])
-    assert out == ["USD 12.00 across 3 files", "EUR 10.00 across 1 file",
-                   "unknown currency 7.00 across 1 file", "2 files had no total Wisp could find", W]
+    assert out == ["USD 12.00 across 3 files.", "EUR 10.00 across 1 file.",
+                   "unknown currency 7.00 across 1 file.", "2 files had no total Wisp could find.", SEP, W]
 
 
 def test_totals_order_is_deterministic():
     a = [f("1.00", "GBP"), f("1.00", "EUR"), f("1.00", "")]
     assert af.totals(a) == af.totals(list(reversed(a)))
-    assert af.totals(a) == ["EUR 1.00 across 1 file", "GBP 1.00 across 1 file",
-                            "unknown currency 1.00 across 1 file", W]
+    assert af.totals(a) == ["EUR 1.00 across 1 file.", "GBP 1.00 across 1 file.",
+                            "unknown currency 1.00 across 1 file.", SEP, W]
 
 
 def test_totals_only_missing():
-    assert af.totals([None]) == ["1 file had no total Wisp could find"]
-    assert af.totals([None, None]) == ["2 files had no total Wisp could find"]
+    assert af.totals([None]) == ["1 file had no total Wisp could find."]
+    assert af.totals([None, None]) == ["2 files had no total Wisp could find."]
 
 
 def test_totals_bad_stored_values_count_as_missing():
     bad = [f("abc"), f("NaN"), f("Infinity"), {"total": "x"}, {"total": {"currency": "USD"}}]
-    assert af.totals(bad) == ["5 files had no total Wisp could find"]
+    assert af.totals(bad) == ["5 files had no total Wisp could find."]
 
 
 def test_totals_big_sum_has_separators():
-    assert af.totals([f("1234567.89"), f("0.11")]) == ["USD 1,234,568.00 across 2 files", W]
+    assert af.totals([f("1234567.89"), f("0.11")]) == ["USD 1,234,568.00 across 2 files.", SEP, W]
 
 
 # --- a lone separator before three digits is thousands -----------------------------------
@@ -416,18 +416,18 @@ def _stored(monkeypatch, text, claimed, currency=""):
     ("Total 12,34", "12.34", "12.34"),
     ("Total 0.123", "0.123", "0.123"),
     # dot-decimal proven elsewhere: a comma tail stays thousands
-    ("Tax 3.50 Total 1,240", "1240", "1240"),
-    ("Tax 3.50 Total 1,240", "1.24", ""),
+    ("Tax $3.50 Total 1,240", "1240", "1240"),
+    ("Tax $3.50 Total 1,240", "1.24", ""),
     # comma-decimal proven elsewhere: 1,240 is then 1.240
-    ("Tax 3,50 Total 1,240", "1.24", "1.24"),
-    ("Tax 3,50 Total 1,240", "1240", ""),
+    ("Tax 3,50 EUR Total 1,240", "1.24", "1.24"),
+    ("Tax 3,50 EUR Total 1,240", "1240", ""),
     # dot-decimal proven: 1.240 is 1.24
-    ("Tax 3.50 Total 1.240", "1.24", "1.24"),
-    ("Tax 3.50 Total 1.240", "1240", ""),
+    ("Tax $3.50 Total 1.240", "1.24", "1.24"),
+    ("Tax $3.50 Total 1.240", "1240", ""),
     # both conventions proven: back to thousands
-    ("Tax 3.50 and 4,25 Total 1,240", "1240", "1240"),
-    ("Tax 3.50 and 4,25 Total 1,240", "1.24", ""),
-    ("Tax 3.50 and 4,25 Total 1.240", "1240", "1240"),
+    ("Tax $3.50 and 4,25 EUR Total 1,240", "1240", "1240"),
+    ("Tax $3.50 and 4,25 EUR Total 1,240", "1.24", ""),
+    ("Tax $3.50 and 4,25 EUR Total 1.240", "1240", "1240"),
     ("Total 1,234,567", "1234567", "1234567"),
     ("Total 1.234.567", "1234567", "1234567"),
 ])
@@ -442,7 +442,7 @@ def test_exponent_non_finite_and_long_values_dropped(monkeypatch, claimed):
 
 
 def test_facts_version_bumped():
-    assert af.FACTS_VERSION == 2
+    assert af.FACTS_VERSION == 3
 
 
 # --- signs --------------------------------------------------------------------------------
@@ -464,7 +464,7 @@ def test_facts_version_bumped():
     ("Paid 1,240.00 and -1,240.00", "1240.00", "1240.00"),
     ("Paid 1,240.00 and -1,240.00", "-1240.00", "-1240.00"),
     ("Paid (see 1,240.00)", "1240.00", "1240.00"),
-    ("Paid (USD 1,240.00)", "1240.00", "1240.00"),
+    ("Paid (USD 1,240.00)", "1240.00", "-1240.00"),
     ("Invoice INV-1240.00 paid", "1240.00", "1240.00"),
     ("Range 5-1240.00", "1240.00", "1240.00"),
     ("Date 2026-03-04 total 4.00", "4.00", "4.00"),
@@ -483,8 +483,8 @@ def test_amount_list_keeps_sign(monkeypatch):
 
 
 def test_totals_sum_signed_values_and_line_shows_sign():
-    assert af.totals([f("1240.00"), f("-240.00")]) == ["USD 1,000.00 across 2 files", W]
-    assert af.totals([f("-240.00")]) == ["USD -240.00 across 1 file", W]
+    assert af.totals([f("1240.00"), f("-240.00")]) == ["USD 1,000.00 across 2 files (credits and refunds subtracted).", SEP, W]
+    assert af.totals([f("-240.00")]) == ["USD -240.00 across 1 file (credits and refunds subtracted).", W]
     facts = {"what": "refund", "party": "Acme", "date": "2026-03-04",
              "total": {"value": "-240.00", "currency": "USD"}, "amounts": []}
     assert "total USD -240.00" in af.line(facts, name="r.pdf", when="")
@@ -546,7 +546,7 @@ def test_dates_need_year_month_and_day(monkeypatch, text, claimed, expected):
     ("Total $240.00 MXN", "USD", "MXN"),
     ("Total $240.00, GST in Canadian funds", "USD", "CAD"),
     ("Total $240.00 Australian dollars", "USD", "AUD"),
-    ("Total $240.00 CAD or AUD", "USD", ""),
+    ("Total $240.00 CAD or AUD", "USD", "CAD"),
     ("Total $240.00 USD CAD", "USD", "USD"),
     ("Total US$240.00 and C$10.00", "USD", "USD"),
     ("Total C$240.00", "CAD", "CAD"),
@@ -582,29 +582,197 @@ def test_currency_rules(monkeypatch, text, claimed, expected):
 
 def test_totals_warning_only_when_a_total_exists():
     assert af.totals([]) == []
-    assert af.totals([None]) == ["1 file had no total Wisp could find"]
+    assert af.totals([None]) == ["1 file had no total Wisp could find."]
     out = af.totals([f("5.00"), None])
-    assert out == ["USD 5.00 across 1 file", "1 file had no total Wisp could find", W]
+    assert out == ["USD 5.00 across 1 file.", "1 file had no total Wisp could find.", W]
     assert out.count(W) == 1
 
 
 def test_totals_keys_count_a_file_once():
     rows = [f("100.00"), f("100.00"), f("20.00")]
-    assert af.totals(rows, ["a", "a", "b"]) == ["USD 120.00 across 2 files",
-                                                 "1 file was the same file again and was counted once.", W]
+    assert af.totals(rows, ["a", "a", "b"]) == ["USD 120.00 across 2 files.",
+                                                 "1 file was the same file again and was counted once.", SEP, W]
     rows = [f("100.00"), f("100.00"), f("100.00"), f("20.00")]
-    assert af.totals(rows, ["a", "a", "a", "b"]) == ["USD 120.00 across 2 files",
-                                                      "2 files were the same file again and were counted once.", W]
+    assert af.totals(rows, ["a", "a", "a", "b"]) == ["USD 120.00 across 2 files.",
+                                                      "2 files were the same file again and were counted once.", SEP, W]
 
 
 def test_totals_keys_none_or_unique_changes_nothing():
     rows = [f("100.00"), f("100.00")]
-    assert af.totals(rows) == ["USD 200.00 across 2 files", W]
+    assert af.totals(rows) == ["USD 200.00 across 2 files.", SEP, W]
     assert af.totals(rows, None) == af.totals(rows)
-    assert af.totals(rows, ["a", "b"]) == ["USD 200.00 across 2 files", W]
+    assert af.totals(rows, ["a", "b"]) == ["USD 200.00 across 2 files.", SEP, W]
 
 
 def test_totals_repeated_empty_rows_are_not_counted_missing_twice():
     out = af.totals([None, None, f("1.00")], ["a", "a", "b"])
-    assert out == ["USD 1.00 across 1 file", "1 file had no total Wisp could find",
+    assert out == ["USD 1.00 across 1 file.", "1 file had no total Wisp could find.",
                    "1 file was the same file again and was counted once.", W]
+
+
+# --- round 2: a minus must be attached to the amount --------------------------------------
+
+@pytest.mark.parametrize("text,claimed,expected", [
+    ("Invoice 12 - $1,500", "1500", "1500"),
+    ("Total - $1,500", "1500", "1500"),
+    ("Amount due - 1,240.00", "1240.00", "1240.00"),
+    ("Total - $1,500", "-1500", ""),
+    ("1,240.00 - shipping", "1240.00", "1240.00"),
+    ("Invoice-1500 paid", "1500", "1500"),
+    ("Dated 2026-03-04 total 4.00", "4", "4"),
+    ("ID-1240 paid", "1240", "1240"),
+    ("Range 10-1240", "1240", "1240"),
+    ("Paid (2026)", "2026", "2026"),
+    ("Paid (555) 123-4567", "555", "555"),
+    ("Paid (2026) and 5.00", "2026", "2026"),
+    ("1,240.00 CR Smith", "1240.00", "1240.00"),
+    ("Balance: -$1,500", "1500", "-1500"),
+    ("Balance: $-1,500", "1500", "-1500"),
+    ("Balance -1,500", "1500", "-1500"),
+    ("Refund −1.500,00 €", "1500.00", "-1500.00"),
+    ("Refund −1.500,00 EUR", "1.500,00", "-1500.00"),
+    ("1,240.00-", "1240.00", "-1240.00"),
+    ("1,240.00-\nNext line", "1240.00", "-1240.00"),
+    ("(1,240.00)", "1240.00", "-1240.00"),
+    ("($1,240.00)", "1240.00", "-1240.00"),
+    ("(USD 1,240.00)", "1240.00", "-1240.00"),
+    ("( 1,240.00 )", "1240.00", "-1240.00"),
+    ("1,240.00 CR", "1240.00", "-1240.00"),
+    ("1,240.00CR", "1240.00", "-1240.00"),
+    ("1,240.00 CR.", "1240.00", "-1240.00"),
+    ("1,240.00 CR, thanks", "1240.00", "-1240.00"),
+    ("1,240.00 CR paid", "1240.00", "-1240.00"),
+    ("1,240.00 CRx", "1240.00", "1240.00"),
+])
+def test_minus_must_be_attached(monkeypatch, text, claimed, expected):
+    assert _stored(monkeypatch, text, claimed) == expected
+
+
+# --- round 2: only a money-shaped two-digit token proves a decimal mark -------------------
+
+@pytest.mark.parametrize("text,claimed,expected", [
+    ("Section 2.1 Notes\nTotal €1.240", "1.240", "1240"),
+    ("10.30 Uhr\nSumme 1.240 €", "1.240", "1240"),
+    ("Preis 3,50 € und Summe 1,240 €", "1,240", "1.240"),
+    ("0.5 kg\ntotal 1.240", "1.240", "1240"),
+    ("$3.50 fee\ntotal 1.240", "1.240", "1.240"),
+    ("Items 1,2 and v3.5\nTotal 1.240", "1.240", "1240"),
+    ("Meeting 2.15\nTotal 1.240", "1.240", "1240"),
+    ("Meeting 2.15 pm\nTotal 1,240", "1,240", "1240"),
+    ("Net 1,240.50 and total 3.240", "3.240", "3.240"),
+    ("Net 1.240,50 and total 3,240", "3,240", "3.240"),
+    ("Fee 3.50 USD, total 1.240", "1.240", "1.240"),
+    ("Fee USD 3.50, total 1.240", "1.240", "1.240"),
+    ("Fee 3.50 TOO, total 1.240", "1.240", "1240"),
+])
+def test_decimal_proof_needs_money_shape(monkeypatch, text, claimed, expected):
+    assert _stored(monkeypatch, text, claimed) == expected
+
+
+# --- round 2: another dollar currency must sit beside an amount or be stated --------------
+
+@pytest.mark.parametrize("text,claimed,expected", [
+    ("CAD drawing fee $1,200", "USD", "USD"),
+    ("CAD drawing fee $1,200", "CAD", ""),
+    ("Total CAD 1,200.00", "USD", ""),
+    ("Total CAD 1,200.00 and $5", "USD", "CAD"),
+    ("Total CAD 1,200.00", "CAD", "CAD"),
+    ("Total 1,200.00 CAD", "CAD", "CAD"),
+    ("All amounts in Canadian dollars. Total $1,200", "USD", "CAD"),
+    ("Currency: CAD\nTotal $1,200", "USD", "CAD"),
+    ("Billed in AUD. Total $1,200", "USD", "AUD"),
+    ("Canadian Tire receipt. Total $1,200", "USD", "USD"),
+    ("Total $1,200 USD\nAUD 50 shipping", "USD", "USD"),
+    ("Total $1,200 USD\nAUD 50 shipping", "AUD", "USD"),
+    ("Total $1,200. Shipping CAD 5 and AUD 7", "USD", ""),
+    ("Total $1,200. Shipping CAD 5 and AUD 7", "CAD", "CAD"),
+])
+def test_other_dollar_currency_needs_an_amount_or_statement(monkeypatch, text, claimed, expected):
+    facts, _ = run(text + "\nAcme", good(total={"value": "1200", "currency": claimed}, amounts=[]),
+                   monkeypatch=monkeypatch)
+    got = facts["total"]["currency"] if facts and facts["total"] else None
+    assert got == expected
+
+
+def test_each_amount_takes_the_code_beside_it(monkeypatch):
+    text = "Acme\nLicense $1,200 USD\nShipping AUD 50"
+    facts, _ = run(text, good(total={"value": "1200", "currency": "USD"},
+                              amounts=[{"label": "Shipping", "value": "50", "currency": "AUD"}]),
+                   monkeypatch=monkeypatch)
+    assert facts["total"]["currency"] == "USD"
+    assert facts["amounts"][0]["currency"] == "AUD"
+
+
+# --- round 2: totals wording --------------------------------------------------------------
+
+SEP = "These are separate files added together, so a quote and its invoice would both be counted."
+
+
+def test_totals_every_sentence_ends_with_one_period():
+    out = af.totals([f("10.00"), f("5.00", "EUR"), None, f("1.00"), f("2.00")], ["a", "b", "c", "d", "d"])
+    assert out and all(s.endswith(".") and not s.endswith("..") for s in out)
+
+
+def test_totals_negative_note_and_separate_files_sentence():
+    out = af.totals([f("1240.00"), f("-240.00")])
+    assert out == ["USD 1,000.00 across 2 files (credits and refunds subtracted).", SEP, W]
+
+
+def test_totals_negative_note_is_per_currency():
+    out = af.totals([f("10.00"), f("-5.00", "EUR"), f("2.00", "EUR")])
+    assert out[0] == "EUR -3.00 across 2 files (credits and refunds subtracted)."
+    assert out[1] == "USD 10.00 across 1 file."
+
+
+def test_totals_single_file_has_no_separate_files_sentence():
+    assert af.totals([f("-5.00")]) == ["USD -5.00 across 1 file (credits and refunds subtracted).", W]
+    assert SEP not in af.totals([f("5.00"), None])
+
+
+def test_totals_negative_zero_prints_as_zero():
+    out = af.totals([f("-0.00")])
+    assert out[0].startswith("USD 0.00 across 1 file")
+    out = af.totals([f("5.00"), f("-5.00")])
+    assert out[0].startswith("USD 0.00 across 2 files")
+
+
+def test_totals_across_counts_files_in_that_currency():
+    out = af.totals([f("1.00"), f("1.00", "EUR"), f("1.00", "EUR"), None], ["a", "b", "b", "c"])
+    assert out[:2] == ["EUR 1.00 across 1 file.", "USD 1.00 across 1 file."]
+
+
+# --- round 2: totals never raises ---------------------------------------------------------
+
+@pytest.mark.parametrize("keys", [[], ["a"], ["a", "b", "c", "d", "e"], ["a", None, 5], "abc", 7, [["x"], {}]])
+def test_totals_keys_of_any_length(keys):
+    rows = [f("1.00"), f("2.00"), f("3.00")]
+    out = af.totals(rows, keys)
+    assert any(s.startswith("USD ") for s in out)
+
+
+def test_totals_missing_keys_behave_as_unique():
+    out = af.totals([f("1.00"), f("1.00"), f("1.00")], ["a"])
+    assert out[0].startswith("USD 3.00 across 3 files")
+
+
+@pytest.mark.parametrize("bad", [
+    "text", 5, ["x"], {"total": 5}, {"total": ["1"]}, {"total": {"value": ["1"]}}, {"total": {"value": {"a": 1}}},
+    {"total": {"value": "1e999999999"}}, {"total": {"value": "1E+99999"}}, {"total": {"value": "0x10"}},
+    {"total": {"value": "1" * 400}}, {"total": {"value": None}}, {"total": {"value": 1.5, "currency": 3}},
+    {"total": {"value": True}}, {"total": {"value": "٣"}},
+])
+def test_totals_never_raises_on_malformed_rows(bad):
+    out = af.totals([bad, f("1.00")])
+    assert all(isinstance(s, str) for s in out)
+    assert any(s.startswith("USD 1.00 across 1 file") for s in out) or any("had no total" in s for s in out)
+
+
+def test_totals_survives_overflowing_sum():
+    big = {"total": {"value": "9" * 20 + "E+999999990", "currency": "USD"}}
+    out = af.totals([big, dict(big)])
+    assert all(isinstance(s, str) for s in out)
+
+
+def test_totals_non_list_input():
+    assert af.totals(None) == []
+    assert af.totals(5) == []
