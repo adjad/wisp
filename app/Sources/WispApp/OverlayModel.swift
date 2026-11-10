@@ -2041,6 +2041,15 @@ final class OverlayModel: ObservableObject {
                                         json: Self.prettyJSON(rec))
                     }
                 }
+                // Ask's own forget removed something: the debug log's memory of
+                // every chat goes too, this one's included, as Memory › Forget
+                // does. The fact may have been read back in any of them. The
+                // chat stays on screen; a forget that removed nothing changes
+                // nothing here.
+                if ForgetToolResult.removedSomething(tool: turnToolCalls[idx].name, result: ev.str("result"),
+                                                     isInternal: ev.bool("internal")) {
+                    forgetArchivedChats(sessionId: nil)
+                }
             }
         case "heartbeat":
             heartbeats += 1

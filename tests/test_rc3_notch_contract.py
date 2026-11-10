@@ -269,3 +269,53 @@ def test_the_unload_notice_follows_the_result():
     # The row is read again and the button comes back whatever happened.
     assert result < reread < done < branch < said < otherwise < failed
     assert model.count('"Models unloaded.') == 1
+
+
+# --- Ask's own forget clears the debug log's memory too ----------------------
+
+
+def test_the_forget_rule_reads_the_tools_own_result():
+    store = swift("Chat/ChatStore.swift")
+    rule = region(store, "enum ForgetToolResult {", "\n}\n")
+    assert ('tool == "forget" && !isInternal && (result.hasPrefix("Forgot ") || result.contains("Also withdrew "))'
+            in rule)
+    # The strings it reads are the forget tool's own; a no-match starts differently.
+    tool = (ROOT / "service" / "tools" / "memory_tools.py").read_text()
+    forget = tool[tool.index("async def forget(query: str) -> str:"):tool.index("def _withdraw_held(")]
+    assert "return f'Forgot {count} matching memory record(s), including correction history.' + waiting" in forget
+    assert "f' Also withdrew {held} notice(s) waiting for quiet hours to end.'" in forget
+    for nothing in re.findall(r"return '([^']*)'", forget):
+        assert not nothing.startswith("Forgot ") and "Also withdrew " not in nothing, nothing
+
+
+def test_a_forget_in_the_notch_clears_every_chats_debug_copy():
+    model = swift("OverlayModel.swift")
+    result = region(_handle(model), 'case "tool_result":', 'case "heartbeat":')
+    found = result.index("if let idx = turnToolCalls.lastIndex(where: { $0.callId == cid }) {")
+    stored = result.index('turnToolCalls[idx].result = ev.str("result")')
+    asked = result.index("if ForgetToolResult.removedSomething(tool: turnToolCalls[idx].name, result: ev.str(\"result\"),")
+    cleared = result.index("forgetArchivedChats(sessionId: nil)")
+    # The name is the recorded call's, matched by id; the model's text is never read.
+    assert found < stored < asked < cleared
+    assert 'isInternal: ev.bool("internal")' in result
+    assert "answer" not in result[asked:cleared]
+    # Clearing everything also keeps the open chat out of the export, on screen.
+    forget = region(model, "func forgetArchivedChats(sessionId: String?) {", "\n    }\n")
+    everything = forget[forget.index("} else {"):]
+    assert "chatArchive.removeAll()" in everything and "liveChatForgotten = true" in everything
+    assert "turns" not in forget
+
+
+def test_a_forget_in_the_window_tells_the_notch():
+    store = swift("Chat/ChatStore.swift")
+    handle = region(store, "private func handle(_ event: ChatEvent, in conversation: ChatConversation,",
+                    "\n    }\n")
+    applied = handle.index("let outcome = ChatTurnReducer.apply(event, to: &message)")
+    asked = handle.index("ForgetToolResult.removedSomething(tool: row.name, result: event.str(\"result\"),")
+    posted = handle.index("NotificationCenter.default.post(name: .wispForgetChatDebugArchive, object: nil)\n")
+    assert applied < asked < posted
+    assert 'event.type == "tool_result", let row = message.tools.last(where: { $0.id == event.str("id") })' in handle
+    # No session id: every chat, as Memory › Forget posts it. Deleting a chat
+    # still names the one chat.
+    assert store.count("name: .wispForgetChatDebugArchive, object: nil)\n") == 1
+    assert 'userInfo: ["session_id": id])' in store

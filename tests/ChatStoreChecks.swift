@@ -99,6 +99,8 @@ final class ScriptedBackend: ChatBackend {
 @main
 struct ChatStoreChecks {
     nonisolated(unsafe) static var count = 0
+    /// One entry per .wispForgetChatDebugArchive seen: its session_id, nil for "every chat".
+    nonisolated(unsafe) static var archiveForgets: [String?] = []
     static func check(_ condition: Bool, _ message: String) {
         precondition(condition, message)
         count += 1
@@ -553,6 +555,41 @@ struct ChatStoreChecks {
             check(chat.messages.isEmpty, "the failed exchange is removed")
             check(chat.restoredInput == "hello there", "the prompt is restored")
             check(!chat.busy, "dropped request frees the chat")
+        }
+
+        // Ask's own forget that removed something clears the notch's debug-log memory
+        // of every chat (no session_id). One that removed nothing leaves it alone.
+        do {
+            let observer = NotificationCenter.default.addObserver(
+                forName: .wispForgetChatDebugArchive, object: nil, queue: nil) { note in
+                ChatStoreChecks.archiveForgets.append(note.userInfo?["session_id"] as? String)
+            }
+            func forgets(tool: String = "forget", result: String, isInternal: Bool = false) async -> [String?] {
+                let backend = ScriptedBackend()
+                backend.script = { _ in [
+                    ev("session", ["id": "s-forget"]),
+                    ev("tool_call", ["id": "f1", "name": tool, "decision": "allow"]),
+                    ev("tool_result", ["id": "f1", "result": result, "internal": isInternal]),
+                    ev("delta", ["text": "Done."]), ev("done"),
+                ] }
+                let store = ChatStore(backend: backend)
+                store.newChat()
+                let before = archiveForgets.count
+                store.send("forget my gate code")
+                await settle()
+                check(store.selected?.messages.last?.tools.first?.finished == true, "the \(tool) row finishes")
+                return Array(archiveForgets[before...])
+            }
+            let forgot = "Forgot 1 matching memory record(s), including correction history."
+            check(await forgets(result: forgot) == [nil], "a forget that removed a memory clears every chat's debug copy, once")
+            check(await forgets(result: "No exact matching memories were forgotten. Also withdrew 1 notice(s) waiting for quiet hours to end.") == [nil],
+                  "so does one that only withdrew a held notice")
+            check(await forgets(result: "No exact matching memories were forgotten. Use recall to identify the statement to forget.").isEmpty,
+                  "a forget that matched nothing leaves the debug log alone")
+            check(await forgets(result: "User denied forget.").isEmpty, "a denied forget leaves it alone")
+            check(await forgets(result: forgot, isInternal: true).isEmpty, "an internal result leaves it alone")
+            check(await forgets(tool: "recall", result: forgot).isEmpty, "another tool's result never clears it")
+            NotificationCenter.default.removeObserver(observer)
         }
 
         // A real failure keeps the exchange and shows the error.

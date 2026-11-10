@@ -291,6 +291,29 @@ struct OverlayTransitionChecks {
         print("PASS: a cold-launch start failure shows the down card; a running service ignores stale failures")
     }
 
+    /// Ask's own forget clears the debug log's memory only when the tool says it
+    /// removed something (the strings are service/tools/memory_tools.py's).
+    static func forgetResultChecks() {
+        func removed(_ tool: String, _ result: String, isInternal: Bool = false) -> Bool {
+            ForgetToolResult.removedSomething(tool: tool, result: result, isInternal: isInternal)
+        }
+        check(removed("forget", "Forgot 1 matching memory record(s), including correction history."),
+              "A forget that removed a memory")
+        check(removed("forget", "Forgot 2 matching memory record(s), including correction history."
+                      + " Also withdrew 1 notice(s) waiting for quiet hours to end."), "With a held notice too")
+        check(removed("forget", "No exact matching memories were forgotten."
+                      + " Also withdrew 1 notice(s) waiting for quiet hours to end."), "Or only a held notice")
+        check(!removed("forget", "No exact matching memories were forgotten. Use recall to identify the statement to forget."),
+              "A forget that matched nothing leaves the log alone")
+        check(!removed("forget", "User denied forget."), "So does a denied one")
+        check(!removed("forget", "Forgot 1 matching memory record(s), including correction history.", isInternal: true),
+              "And a note to the model about its own mis-call")
+        check(!removed("forget", ""), "And a call with no result yet")
+        check(!removed("recall", "Forgot 1 matching memory record(s), including correction history.")
+              && !removed("remember", "Saved memory 4: Forgot my keys once"), "Only the forget tool counts")
+        print("PASS: only a forget that removed something clears the debug log's memory")
+    }
+
     /// Try again is offered only where sending the same line again asks the same
     /// question, and never takes over what is already in the box.
     @MainActor
@@ -509,6 +532,7 @@ struct OverlayTransitionChecks {
     static func main() async {
         lifecycleChecks()
         approvalAnnouncementChecks()
+        forgetResultChecks()
         await MainActor.run {
             heartbeatSecondsChecks()
             coldStartFailureChecks()
