@@ -623,7 +623,7 @@ async def _recognised(ctx: _Ctx, name: str, data: bytes, *, paged: bool) -> _Rec
     joined = (f"[Pages: {total}]\n" + "\n\n".join(f"[Page {n}]\n{text}" for n, text, _c in parts)
               if paged else parts[0][1])
     return _Recognised(joined, len(parts), total, images[0], min(c for _n, _t, c in parts),
-                       attempted == len(images))
+                       attempted == len(images) and result.get("stopped_early") is not True)
 
 
 async def _describe(ctx: _Ctx, image: str) -> str:
