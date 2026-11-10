@@ -432,17 +432,22 @@ def _select_pages(text: str, kind: str, pages: str) -> Selection:
     have = f"It has {total} {word.lower() if total == 1 else plural.lower()}."
     asked = _merge_ranges([(max(a, 1), min(b, total)) for a, b in ranges if max(a, 1) <= min(b, total)])
     existing = sorted(n for a, b in asked for n in range(a, b + 1) if n in blocks)
+    # Asked for but not there: past the end, or a page inside the file with no text (a picture, a blank).
+    beyond = _merge_ranges([(max(a, total + 1), b) for a, b in ranges if b > total])
+    gaps = _merge_ranges([(n, n) for a, b in asked for n in range(a, b + 1) if n not in blocks])
+
+    def said(runs: list[tuple[int, int]], one: str, several: str) -> str:
+        many = len(runs) > 1 or runs[0][0] != runs[0][1]
+        return f"{plural if many else word} {_say_runs(runs)} {several if many else one}"
+    blank = said(gaps, "has", "have") + " no text Wisp can read." if gaps else ""
     if not existing:
-        return Selection("", problem=have)
-    # Anything asked for that the file lacks: beyond the end, or a number with no text.
-    beyond = [(max(a, total + 1), b) for a, b in ranges if b > total]
-    gaps = [(n, n) for a, b in asked for n in range(a, b + 1) if n not in blocks]
-    missed = _merge_ranges(beyond + gaps)
+        return Selection("", problem=blank if blank and not beyond else have)
     sentences = []
-    if missed:
-        many = len(missed) > 1 or missed[0][0] != missed[0][1]
-        sentences.append(f"{plural if many else word} {_say_runs(missed)} "
-                         f"{'don' if many else 'doesn'}'t exist: it has {total} {word.lower() if total == 1 else plural.lower()}.")
+    if beyond:
+        sentences.append(said(beyond, "doesn't", "don't")
+                         + f" exist: it has {total} {word.lower() if total == 1 else plural.lower()}.")
+    if blank:
+        sentences.append(blank)
     taken = existing[:MAX_SELECTED_PAGES]
     if len(existing) > len(taken):
         sentences.append(f"Only the first {MAX_SELECTED_PAGES} {plural.lower()} were taken.")

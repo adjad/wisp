@@ -42,7 +42,8 @@ from pathlib import PurePath
 
 import httpx
 
-from service.attachment_child import _pretty
+from service.attachment_child import ENCRYPTED_PDF_REASON, _pretty
+from service.document_extract import SCANNED as _SCANNED_PDF
 from service.mail_memory import bridge
 from service.tools import untrusted
 
@@ -738,8 +739,17 @@ async def _read_file(ctx: _Ctx, email: _Email, f: _File, budget: int) -> _Readin
                               f"Saving it as .{_OLD_OFFICE[suffix]} first would work.")
         if suffix in _DOCUMENT_NAMES or family == "document":
             extract_name = f"{PurePath(name).stem or 'file'}.{_MACRO_MAP.get(suffix, suffix)}"
-            text, cut = await documents.extract_async(extract_name, data, large=True,
-                                                      timeout=max(1.0, min(45.0, ctx.remaining())))
+            try:
+                text, cut = await documents.extract_async(extract_name, data, large=True,
+                                                          timeout=max(1.0, min(45.0, ctx.remaining())))
+            except ValueError as error:
+                if suffix != "pdf" or str(error) != _SCANNED_PDF:
+                    raise
+                text, cut = "", False       # a scan: its pages are pictures, read below
+            if text.strip() and ENCRYPTED_PDF_REASON in reading.risk:
+                # It opened without a password and was read, so there is nothing left unchecked.
+                reading.risk = [reason for reason in reading.risk if reason != ENCRYPTED_PDF_REASON]
+                reading.risk_level = reading.risk_level if reading.risk else ""
             if not text.strip() and suffix == "pdf":
                 recognised = await _recognised(ctx, name, data, paged=True)
                 if recognised:

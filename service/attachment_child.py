@@ -69,6 +69,12 @@ MAX_PDF_PAGE_IMAGES = 6
 PDF_IMAGE_STREAM_BYTES = 64 * 1024 * 1024
 # Pictures for text recognition: big enough for small print, small enough to send on.
 OCR_MAX_SIDE = 3000
+# Recognition misreads small text (measured: 22 px letters on a 3024 px screen, 12 of 15 rows right;
+# the same screen doubled, 15 of 15). So a picture that is mostly text is enlarged first.
+OCR_TEXT_SIDE = 6000            # a single picture of text is enlarged up to this long side
+OCR_PAGE_TEXT_SIDE = 3600       # a scanned page, of which there can be forty
+OCR_MAX_ENLARGE = 3.0
+ENCRYPTED_PDF_REASON = "The PDF is encrypted, so its contents can't be checked."
 OCR_QUALITIES = (88, 82, 76, 70, 64, 60)
 OCR_MAX_BYTES = 3 * 1024 * 1024
 MAX_OCR_PAGES = 40
@@ -221,7 +227,7 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
     if found.get("encrypted"):
         caution.append("The archive is password-protected, so its contents can't be checked.")
     if label == "a PDF" and (b"/Encrypt" in data[-8192:] or b"/Encrypt" in data[:2048]):
-        caution.append("The PDF is password-protected, so its contents can't be checked.")
+        caution.append(ENCRYPTED_PDF_REASON)
     if _looks_like_html(suffix, data):
         page = data[:_HTML_SCAN_BYTES]
         if _PASSWORD_FIELD.search(page):
@@ -395,8 +401,7 @@ def pdf_pages(data: bytes) -> dict:
             setattr(filters, limit, PDF_IMAGE_STREAM_BYTES)
     try:
         reader = PdfReader(io.BytesIO(data))
-        if reader.is_encrypted:
-            raise ValueError("That PDF is password-protected. Wisp can't read it without the password.")
+        _unlock(reader)
         total = len(reader.pages)
         urls: list[str] = []
         for page in reader.pages[:MAX_PDF_PAGE_IMAGES]:
@@ -417,14 +422,37 @@ def pdf_pages(data: bytes) -> dict:
     return {"images": urls, "pages": total, "shown": len(urls)}
 
 
-def _recognition_jpeg(image) -> str:
-    """One RGB JPEG data URL for text recognition: longest side at most OCR_MAX_SIDE and at most
-    OCR_MAX_BYTES encoded, from decoded pixels (never an embedded stream passed through)."""
+def _unlock(reader) -> None:
+    """Many PDFs are encrypted only to limit printing or copying and open with no password."""
+    if not reader.is_encrypted:
+        return
+    try:
+        opened = bool(reader.decrypt(""))
+    except Exception:  # noqa: BLE001 — a cipher this Python has no library for, or a broken dictionary
+        opened = False
+    if not opened:
+        raise ValueError("That PDF is password-protected. Wisp can't read it without the password.")
+
+
+def _recognition_jpeg(image, text_side: int = OCR_TEXT_SIDE) -> str:
+    """One RGB JPEG data URL for text recognition, at most OCR_MAX_BYTES encoded, from decoded
+    pixels (never an embedded stream passed through). A picture that is mostly text is enlarged
+    (up to OCR_MAX_ENLARGE times, longest side at most `text_side`) so small letters are read
+    right; any other picture is at most OCR_MAX_SIDE on its longest side."""
     from PIL import Image
+    longest = max(image.size)
     side = OCR_MAX_SIDE
+    textual = bool(longest) and looks_textual(image)
+    if textual:
+        side = min(text_side, int(longest * OCR_MAX_ENLARGE))
     while True:
-        copy = image.copy()
-        copy.thumbnail((side, side), Image.Resampling.LANCZOS)
+        if textual and side > longest:
+            factor = side / longest
+            copy = image.resize((max(1, round(image.width * factor)), max(1, round(image.height * factor))),
+                                Image.Resampling.LANCZOS)
+        else:
+            copy = image.copy()
+            copy.thumbnail((side, side), Image.Resampling.LANCZOS)
         rgb = copy.convert("RGB")
         for quality in OCR_QUALITIES:
             out = io.BytesIO()
@@ -458,8 +486,7 @@ def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
     pixels = encoded = 0
     try:
         reader = PdfReader(io.BytesIO(data))
-        if reader.is_encrypted:
-            raise ValueError("That PDF is password-protected. Wisp can't read it without the password.")
+        _unlock(reader)
         total = len(reader.pages)
         for number, page in enumerate(reader.pages[:MAX_OCR_PAGES], start=1):
             try:
@@ -474,7 +501,7 @@ def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
                     continue
                 if pixels + width * height > OCR_MAX_TOTAL_PIXELS:
                     break
-                url = _recognition_jpeg(_open_picture(pictures[0].data, ""))
+                url = _recognition_jpeg(_open_picture(pictures[0].data, ""), OCR_PAGE_TEXT_SIDE)
             except Exception:  # noqa: BLE001 — one unreadable or oversized page, not an unreadable file
                 continue
             if encoded + len(url) > OCR_MAX_TOTAL_BYTES:

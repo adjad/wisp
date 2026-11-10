@@ -281,6 +281,50 @@ async def test_a_scanned_pdf_is_recognised_page_by_page(world):
     assert "landlord signs" in only_third and "deposit is 500" not in only_third
 
 
+async def test_the_real_extractor_says_scanned_by_raising_and_that_still_reaches_recognition(world, monkeypatch):
+    from service import document_extract
+
+    async def extract(name, data, *, timeout=45.0, large=False):
+        raise ValueError(document_extract.SCANNED)
+    monkeypatch.setattr(documents, "extract_async", extract)
+    world.app = True
+    world.recognised = [("the lease runs from January to December and the rent is 2100 a month", 0.9)]
+    world.apple_rows = [row(name="scan.pdf", rfc="s@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    out = await ma.run()
+    assert "rent is 2100" in out and "A scanned PDF" in out
+    world.app = False
+    world.apple_rows = [row(2, "other.pdf", rfc="t@x.com", attachment_id="1.3")]
+    world.local_files[(2, "1.3")] = PDF + b" other"
+    assert "A picture of a cat." in await ma.run()            # no app: the model reads its pages, as before
+
+
+async def test_another_extraction_error_on_a_pdf_is_still_a_plain_reason(world, monkeypatch):
+    async def extract(name, data, *, timeout=45.0, large=False):
+        raise ValueError("That PDF is password-protected. Wisp can't read it without the password.")
+    monkeypatch.setattr(documents, "extract_async", extract)
+    world.apple_rows = [row(name="locked.pdf", rfc="s@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    out = await ma.run()
+    assert "Not read: That PDF is password-protected." in out and world.kinds("vision") == []
+
+
+async def test_a_pdf_that_was_read_loses_the_encrypted_caution(world, monkeypatch):
+    base = documents.run_attachment_child
+
+    async def child(job, name, data, *, timeout):
+        if job == "inspect":
+            return {"real_type": "a PDF", "family": "document", "warnings": [],
+                    "risk": {"level": "caution", "reasons": [attachment_child.ENCRYPTED_PDF_REASON]}}
+        return await base(job, name, data, timeout=timeout)
+    monkeypatch.setattr(documents, "run_attachment_child", child)
+    world.apple_rows = [row(name="statement.pdf", rfc="s@x.com")]
+    world.local_files[(1, "1.2")] = PDF
+    world.texts["statement.pdf"] = "Closing balance 1,204.11"
+    out = await ma.run()
+    assert "1,204.11" in out and "Take care:" not in out
+
+
 async def test_a_scan_the_app_cannot_read_still_goes_to_the_model(world):
     world.app = True
     world.recognised = [("", 0.0)]

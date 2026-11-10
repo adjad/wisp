@@ -593,7 +593,7 @@ def test_a_password_protected_archive_or_pdf_is_a_caution():
     raw[raw.index(b"PK\x01\x02") + 8] |= 1
     assert risk_of("secret.zip", bytes(raw))["level"] == "caution"
     locked = risk_of("statement.pdf", pdf_bytes(encrypt=True))
-    assert locked["level"] == "caution" and "PDF is password-protected" in locked["reasons"][0]
+    assert locked["level"] == "caution" and locked["reasons"] == [A.ENCRYPTED_PDF_REASON]
 
 
 def test_a_web_page_with_a_password_field_or_form_is_a_caution():
@@ -778,7 +778,39 @@ def test_an_image_only_pdf_gives_one_jpeg_per_page():
     result = A.ocr_images("scan.pdf", scanned_pdf(3, size=(600, 800)))
     assert result["pages"] == 3 and result["read_pages"] == [1, 2, 3] and len(result["images"]) == 3
     for url in result["images"]:
-        assert jpeg_of(url)[1].size == (600, 800)
+        assert jpeg_of(url)[1].size == (600, 800)       # these pages are noise, not text: never enlarged
+
+
+def test_a_picture_of_text_is_enlarged_for_recognition_and_a_photo_is_not():
+    page = Image.new("RGB", (1512, 982), "white")
+    ImageDraw.Draw(page).text((40, 40), "Invoice ABC-1234 total $12.50", fill="black")
+    shown = jpeg_of(A.ocr_images("screen.png", encoded(page, "PNG"))["images"][0])[1]
+    assert shown.size == (4536, 2946)                                   # three times, under the 6000 cap
+    wide = jpeg_of(A.ocr_images("wide.png", encoded(Image.new("RGB", (4000, 1000), "white"), "PNG"))["images"][0])[1]
+    assert max(wide.size) == A.OCR_TEXT_SIDE
+    photo = jpeg_of(A.ocr_images("photo.png", encoded(noise(1200, 800), "PNG"))["images"][0])[1]
+    assert photo.size == (1200, 800)
+
+
+def test_a_pdf_that_opens_with_no_password_is_not_refused():
+    class Blank:
+        is_encrypted = True
+
+        def decrypt(self, password):
+            return 1 if password == "" else 0
+    A._unlock(Blank())
+
+    class Locked(Blank):
+        def decrypt(self, password):
+            return 0
+    with pytest.raises(ValueError, match="password-protected"):
+        A._unlock(Locked())
+
+    class NoCipher(Blank):
+        def decrypt(self, password):
+            raise RuntimeError("cryptography>=3.1 is required for AES algorithm")
+    with pytest.raises(ValueError, match="password-protected"):
+        A._unlock(NoCipher())
 
 
 def test_ocr_pdf_skips_tiny_pictures_caps_pages_and_stops_at_the_pixel_budget(monkeypatch):

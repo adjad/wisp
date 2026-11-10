@@ -604,9 +604,16 @@ def test_select_pages_with_none_existing_is_a_problem_with_no_text():
     assert L.select(paged(1), "pdf", pages="9").problem == "It has 1 page."
 
 
-def test_a_page_the_pdf_has_no_text_for_counts_as_missing():
+def test_a_page_with_no_text_is_said_to_have_none_not_to_be_missing():
     got = L.select(paged(6, skip=(3,)), "pdf", pages="2-4")
-    assert heads(got.text) == ["[Page 2]", "[Page 4]"] and "Page 3 doesn't exist" in got.note
+    assert heads(got.text) == ["[Page 2]", "[Page 4]"]
+    assert got.note == "Pages 2 and 4 of 6. Page 3 has no text Wisp can read."
+    only = L.select(paged(6, skip=(1,)), "pdf", pages="1")
+    assert only.text == "" and only.problem == "Page 1 has no text Wisp can read."
+    mixed = L.select(paged(6, skip=(3,)), "pdf", pages="3,9")
+    assert mixed.text == "" and mixed.problem == "It has 6 pages."
+    both = L.select(paged(6, skip=(3,)), "pdf", pages="2-3,8")
+    assert both.note == "Page 2 of 6. Page 8 doesn't exist: it has 6 pages. Page 3 has no text Wisp can read."
 
 
 def test_select_pages_takes_at_most_fifty_pages():

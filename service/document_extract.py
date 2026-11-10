@@ -74,6 +74,9 @@ _ZIPPED = {"docx", "xlsx", "pptx", "odt"}
 _LEGACY = {"xls": ".xlsx", "ppt": ".pptx"}
 
 TOO_COMPLEX = "That document is too large or complex for Wisp to read."
+SCANNED = "That PDF has no text Wisp can read (it looks scanned)."
+# AES-encrypted PDFs need a cipher library Wisp doesn't ship, even when they open with no password.
+ENCRYPTED = "That PDF is encrypted in a way Wisp can't open."
 DAMAGED = "That document couldn't be read. It may be damaged."
 
 
@@ -209,12 +212,14 @@ def _pdf(data: bytes, limit: int | None = None, pages: int | None = None, marker
     try:
         reader = PdfReader(io.BytesIO(data))
         if reader.is_encrypted:
+            # Many PDFs are encrypted only to limit printing or copying and open with no password.
+            # pypdf keeps is_encrypted true after a successful decrypt, so the result decides.
             try:
-                reader.decrypt("")
+                opened = bool(reader.decrypt(""))
             except Exception:  # noqa: BLE001
-                pass
-        if reader.is_encrypted:
-            raise ValueError("That PDF is password-protected. Wisp can't read it without the password.")
+                opened = False
+            if not opened:
+                raise ValueError("That PDF is password-protected. Wisp can't read it without the password.")
         out = _Text(limit)
         max_pages = MAX_PDF_PAGES if pages is None else pages
         total = len(reader.pages)
@@ -230,7 +235,9 @@ def _pdf(data: bytes, limit: int | None = None, pages: int | None = None, marker
         return out.joined("\n\n"), total > max_pages
     except ValueError:
         raise
-    except Exception:  # noqa: BLE001 — a damaged PDF is unreadable, never a crash
+    except Exception as error:  # noqa: BLE001 — a damaged PDF is unreadable, never a crash
+        if type(error).__name__ == "DependencyError":      # pypdf: the cipher needs a library Wisp doesn't ship
+            raise ValueError(ENCRYPTED) from None
         raise ValueError("That PDF couldn't be read. It may be damaged.") from None
 
 
@@ -362,7 +369,7 @@ def extract_text(name: str, data: bytes, large: bool = False) -> tuple[str, bool
         if kind == "pdf":
             text, cut = _pdf(data, limit, pages, markers=large)
             if not text.strip():
-                raise ValueError("That PDF has no text Wisp can read (it looks scanned).")
+                raise ValueError(SCANNED)
         elif kind == "docx":
             text, cut = _docx(data, limit)
         elif kind == "xlsx":
