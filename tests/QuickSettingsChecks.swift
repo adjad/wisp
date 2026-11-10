@@ -193,8 +193,11 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     let gemma = "gemma-4-E4B-it-oQ4e-mtp"
     let embedder = "Qwen3-Embedding-0.6B-4bit-DWQ"
     let reranker = "Qwen3-Reranker-0.6B-mlx-6bit"
-    let shipped = ["fast": gemma, "router": gemma, "coding": gemma, "reasoning": gemma, "agent": gemma,
-                   "general": gemma, "embedding": embedder, "reranker": reranker]
+    let shipped: [String: String] = [
+        "fast": gemma, "router": gemma, "coding": gemma, "reasoning": gemma, "agent": gemma,
+        "general": gemma, "embedding": embedder, "reranker": reranker]
+    let wrongPick: [String: String] = ["general": embedder, "embedding": embedder]
+    let chatRoles: [String: String] = ["fast": gemma, "coding": gemma, "reasoning": gemma, "general": gemma]
     check(RoleModelChoices.choices(installed: [gemma, embedder, "Other-Chat-4bit"], roles: shipped)
           == ["Other-Chat-4bit", gemma],
           "an installed embedder and the reranker role are never offered as chat models")
@@ -205,10 +208,10 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
           "the embedding role's model is left out whatever it is called")
     check(RoleModelChoices.choices(installed: ["bge-reranker-v2", "nomic-embed-text", gemma], roles: [:]) == [gemma],
           "an embedder or reranker is known by its name too")
-    check(RoleModelChoices.choices(installed: [], roles: [:]) == [gemma]
-          && RoleModelChoices.fallbackModels == [gemma]
-          && RoleModelChoices.fallbackRoles == ["fast": gemma, "coding": gemma, "reasoning": gemma, "general": gemma],
-          "with nothing reported, the fallback is the bundled Gemma")
+    check(RoleModelChoices.choices(installed: [], roles: [:]) == [gemma],
+          "with nothing reported, the menu holds the bundled Gemma")
+    check(RoleModelChoices.fallbackModels == [gemma], "the fallback model is the bundled Gemma")
+    check(RoleModelChoices.fallbackRoles == chatRoles, "every fallback role is the bundled Gemma")
     check(RoleModelChoices.choices(installed: [], roles: shipped) == [gemma],
           "while the engine starts, the menu holds the saved model")
     check(RoleModelChoices.choices(installed: [], roles: ["general": "My-Own-Chat", "embedding": embedder])
@@ -217,27 +220,28 @@ func quickSettingsChecks(_ check: (Bool, String) -> Void) {
     check(RoleModelChoices.choices(installed: [gemma], roles: ["general": "Cloud-Chat", "fast": ""])
           == ["Cloud-Chat", gemma],
           "a model a chat role already uses stays in the menu; an empty role adds nothing")
-    check(RoleModelChoices.choices(installed: [gemma, embedder],
-                                   roles: ["general": embedder, "embedding": embedder], keeping: embedder)
-          == [embedder, gemma]
-          && RoleModelChoices.choices(installed: [gemma, embedder],
-                                      roles: ["general": embedder, "embedding": embedder]) == [gemma],
-          "a wrong saved pick shows in its own menu only, so it can be changed back")
+    check(RoleModelChoices.choices(installed: [gemma, embedder], roles: wrongPick, keeping: embedder)
+          == [embedder, gemma],
+          "a wrong saved pick shows in its own menu, so it can be changed back")
+    check(RoleModelChoices.choices(installed: [gemma, embedder], roles: wrongPick) == [gemma],
+          "a wrong saved pick is in no other menu")
     check(RoleModelChoices.choices(installed: [gemma], roles: shipped, keeping: "") == [gemma],
           "no selection keeps nothing")
-    check(!RoleModelChoices.isChatModel("") && RoleModelChoices.isChatModel(gemma, roles: shipped)
-          && !RoleModelChoices.isChatModel(embedder) && !RoleModelChoices.isChatModel(reranker),
-          "chat models are told from the embedder and reranker")
+    check(RoleModelChoices.isChatModel(gemma, roles: shipped), "the bundled Gemma is a chat model")
+    check(!RoleModelChoices.isChatModel(""), "no name is no chat model")
+    check(!RoleModelChoices.isChatModel(embedder), "the embedder is not a chat model")
+    check(!RoleModelChoices.isChatModel(reranker), "the reranker is not a chat model")
     check(RoleModelChoices.saveProblem.contains("couldn't save"), "a failed model pick is said")
 
     // Settings › Advanced: the idle timer says it is about the other models.
-    check(QuickSettingsText.idleUnload(minutes: 5)
-          == "Unloads Wisp's other models, like the one Smart Search uses, after 5 min unused. "
-          + "The chat model follows Save memory instead.", "the idle timer names what it unloads and when")
-    check(QuickSettingsText.idleUnload(minutes: 0).hasPrefix("Never. Wisp's other models")
-          && QuickSettingsText.idleUnload(minutes: 0).contains("stay loaded until you unload them")
-          && QuickSettingsText.idleUnload(minutes: 0).hasSuffix("The chat model follows Save memory instead."),
-          "an idle timer that is off says so, and still says the chat model is Save memory's")
+    let idleOn: String = "Unloads Wisp's other models, like the one Smart Search uses, after 5 min unused. "
+        + "The chat model follows Save memory instead."
+    check(QuickSettingsText.idleUnload(minutes: 5) == idleOn, "the idle timer names what it unloads and when")
+    let idleOff: String = QuickSettingsText.idleUnload(minutes: 0)
+    check(idleOff.hasPrefix("Never. Wisp's other models"), "an idle timer that is off says never")
+    check(idleOff.contains("stay loaded until you unload them"), "an idle timer that is off says models stay")
+    check(idleOff.hasSuffix("The chat model follows Save memory instead."),
+          "an idle timer that is off still says the chat model is Save memory's")
     check(QuickSettingsText.idleUnloadSaveProblem.contains("couldn't save"), "a failed idle timer change is said")
 
     // The service's reply.

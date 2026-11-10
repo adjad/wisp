@@ -370,10 +370,10 @@ enum RoleModelChoices {
     /// list. `keeping` is the menu's own selection: it is always listed, so the
     /// menu shows what is saved even when that was a wrong pick.
     static func choices(installed: [String], roles: [String: String], keeping: String? = nil) -> [String] {
-        let saved = roles.filter { !nonChatRoles.contains($0.key) }.map(\.value)
+        let saved = roles.filter { !nonChatRoles.contains($0.key) }.map { $0.value }
         // The bundled default is only for a service that reports nothing; a Mac
         // with its own models must not be offered a model it never installed.
-        let known = installed.isEmpty && saved.allSatisfy(\.isEmpty) ? fallbackModels : installed + saved
+        let known = installed.isEmpty && saved.allSatisfy({ $0.isEmpty }) ? fallbackModels : installed + saved
         var ids = Set(known.filter { isChatModel($0, roles: roles) })
         if let keeping, !keeping.isEmpty { ids.insert(keeping) }
         return ids.sorted()
