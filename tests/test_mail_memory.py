@@ -541,6 +541,43 @@ def test_expire(tmp_path):
     assert st.stats()["items"] == {"expired": 1}
 
 
+def test_an_add_cut_off_by_a_restart_is_offered_again(tmp_path, monkeypatch):
+    # Add claims the row (new -> accepting) and waits on Reminders. A backend killed
+    # there left the claim for good: not in the Brief, a 409 on Add, a 404 on Dismiss.
+    path = tmp_path / "r.db"
+    st = Store(path)
+    st.upsert_index([_row(1)], extract.tier, now=1)
+    base = {"date_phrase": "Dec 10", "due": "2026-12-10", "precision": "day", "evidence": "due Dec 10",
+            "important": True, "why": "money"}
+    st.add_items("<m1@x>", [{**base, "what": what} for what in ("Pay tax", "Renew pass", "Call bank")]
+                 + [{**base, "what": "Old", "due": "2026-10-01"}], "v1")
+    assert st.expire("2026-10-26") == 1
+    ids = {s["what"]: s["id"] for s in st.suggestions("2026-10-26", horizon="2026-12-31", limit=10)}
+    assert st.claim(ids["Renew pass"]) and st.decide(ids["Renew pass"], "accepted", "wisp_only",
+                                                     from_state="accepting")
+    assert st.decide(ids["Call bank"], "dismissed")
+    assert st.claim(ids["Pay tax"])                             # ...and the backend dies here
+    before = st.stats()["items"]
+    assert before == {"accepting": 1, "accepted": 1, "dismissed": 1, "expired": 1}
+
+    # Another Store on the same file (a test, a script) never touches a claim in flight.
+    assert Store(path).item(ids["Pay tax"])["state"] == "accepting"
+
+    made = []
+    monkeypatch.setattr(store_mod, "Store", lambda: made.append(Store(path)) or made[-1])
+    monkeypatch.setattr(store_mod, "_store", None)
+    again = store_mod.store()                                   # the backend starts
+    assert again.stats()["items"] == {"new": 1, "accepted": 1, "dismissed": 1, "expired": 1}
+    shown = again.suggestions("2026-10-26", horizon="2026-12-31", limit=10)
+    assert [s["what"] for s in shown] == ["Pay tax"] and shown[0]["state"] == "new"
+    assert again.item(ids["Renew pass"])["reminder"] == "wisp_only"
+    assert again.claim(ids["Pay tax"])                          # it can be added again
+    # Only the start recovers: a later store() is the same Store and leaves a running Add alone.
+    assert store_mod.store() is again and len(made) == 1
+    assert again.item(ids["Pay tax"])["state"] == "accepting"
+    assert again.recover_claims() == 1 and again.recover_claims() == 0
+
+
 # --- bridge -----------------------------------------------------------------------
 
 class _Hub:
