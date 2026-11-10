@@ -72,3 +72,18 @@ def test_the_app_sends_and_forwards_with_the_guarded_scripts():
     # left are Messages' `send "…" to participant …`, which has no result.
     bare = [line.strip() for line in SENDER.splitlines() if line.strip() == "send"]
     assert bare == []
+
+
+def test_only_the_automation_refusal_carries_the_fixed_code():
+    # macOS error -1743 stops the Apple Event before Mail or Messages sees it.
+    # The backend treats this code, and nothing else from the app, as proof
+    # that a send never began (service/assistant/outbox.py).
+    from service.assistant import outbox
+    assert f'code == -1743 ? ["refusal": "{outbox._AUTOMATION_DENIED}"] : [:]' in SENDER
+    assert SENDER.count('"refusal"') == 1
+    for name in ("sendEmail", "sendMessage", "run", "runReply"):
+        body = _function(SENDER, name)
+        assert "extra: refusal(code)" in body, name
+        assert "NSAppleScript.errorNumber] as? Int ?? 0" in body, name
+    # A success never carries it.
+    assert not re.search(r"ok: true[^\n]*refusal", SENDER)

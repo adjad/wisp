@@ -17,6 +17,16 @@ import Foundation
 // refuses to let them be pre-approved (service/safety/grants.py).
 enum OutboundSender {
 
+    // -1743 is macOS itself refusing the Apple Event, before Mail or Messages
+    // sees it, so nothing can have been sent. That one case is posted with a
+    // fixed code beside the error text. The backend takes the code, never the
+    // text, as proof that nothing went out and tells the user which setting
+    // to change (service/assistant/outbox.py). Every other failure carries no
+    // code and stays "outcome unknown".
+    private static func refusal(_ code: Int) -> [String: Any] {
+        code == -1743 ? ["refusal": "automation_denied"] : [:]
+    }
+
     // AppleScript string literals; the rules live with the script builders.
     private static func escape(_ s: String) -> String {
         MailActionScript.escape(s)
@@ -66,7 +76,7 @@ enum OutboundSender {
                 let reason = code == -1743
                     ? "Mail Automation access isn't granted — allow it in System Settings › Privacy & Security › Automation"
                     : (err[NSAppleScript.errorMessage] as? String ?? "Mail refused the send")
-                post(actionId: actionId, ok: false, error: reason)
+                post(actionId: actionId, ok: false, error: reason, extra: refusal(code))
                 return
             }
             post(actionId: actionId, ok: true, error: "")
@@ -101,7 +111,7 @@ enum OutboundSender {
                 let reason = code == -1743
                     ? "Messages Automation access isn't granted — allow it in System Settings › Privacy & Security › Automation"
                     : (err[NSAppleScript.errorMessage] as? String ?? "Messages refused the send")
-                post(actionId: actionId, ok: false, error: reason)
+                post(actionId: actionId, ok: false, error: reason, extra: refusal(code))
                 return
             }
             post(actionId: actionId, ok: true, error: "")
@@ -123,7 +133,7 @@ enum OutboundSender {
             let reason = code == -1743
                 ? "\(app) Automation access isn't granted — allow it in System Settings › Privacy & Security › Automation"
                 : (err[NSAppleScript.errorMessage] as? String ?? "\(app) refused the request")
-            post(actionId: actionId, ok: false, error: reason)
+            post(actionId: actionId, ok: false, error: reason, extra: refusal(code))
             return
         }
         // A script may hand back what it actually acted on. That is the
@@ -205,8 +215,10 @@ enum OutboundSender {
             var error: NSDictionary?
             let result = script.executeAndReturnError(&error)
             if let error {
+                let code = error[NSAppleScript.errorNumber] as? Int ?? 0
                 post(actionId: actionId, ok: false,
-                     error: error[NSAppleScript.errorMessage] as? String ?? "Mail could not verify the reply.")
+                     error: error[NSAppleScript.errorMessage] as? String ?? "Mail could not verify the reply.",
+                     extra: refusal(code))
                 return
             }
             guard let envelope = MailReplyScript.decode(result) else {
