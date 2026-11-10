@@ -851,6 +851,16 @@ final class OverlayModel: ObservableObject {
         return ask + (grantable ? " Choices: Deny, Always allow, Allow once." : " Choices: Deny, Allow once.")
     }
 
+    /// What "Always allow" on an approval card would cover, shown whenever the
+    /// card has that button: the folder, site or command the rule is limited
+    /// to, or, when the service names no limit (an empty scope hint), every
+    /// action of that tool.
+    nonisolated static func alwaysAllowLine(tool: String, scopeHint: String) -> String {
+        scopeHint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Always allow applies to every \(tool) action"
+            : "Always allow applies to \(tool) on \(scopeHint)"
+    }
+
     func submit() {
         var prompt = input.trimmingCharacters(in: .whitespacesAndNewlines)
         if prompt.isEmpty, let defaultPrompt = attachmentDefaultPrompt { prompt = defaultPrompt }

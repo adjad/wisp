@@ -1039,12 +1039,13 @@ struct OverlayView: View {
                 .background(RoundedRectangle(cornerRadius: 8).fill(Theme.chipFill))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.chipStroke, lineWidth: 1))
             }
-            // What an "Always allow" would actually cover. Shown because the
-            // grant is scoped (a directory, a hostname) rather than blanket,
-            // and a permission you can't see the boundaries of isn't one you
-            // can meaningfully consent to.
-            if p.grantable && !p.scopeHint.isEmpty {
-                Text("Always allow applies to \(p.tool) on \(p.scopeHint)")
+            // What an "Always allow" would actually cover, shown whenever the
+            // button is: a directory, a hostname or a command where the grant
+            // is that narrow, otherwise every action of the tool. A permission
+            // you can't see the boundaries of isn't one you can meaningfully
+            // consent to.
+            if p.grantable {
+                Text(OverlayModel.alwaysAllowLine(tool: p.tool, scopeHint: p.scopeHint))
                     .font(.wisp(.footnote)).foregroundStyle(Theme.textSecondary)
             }
             HStack(spacing: 8) {

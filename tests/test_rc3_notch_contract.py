@@ -319,3 +319,33 @@ def test_a_forget_in_the_window_tells_the_notch():
     # still names the one chat.
     assert store.count("name: .wispForgetChatDebugArchive, object: nil)\n") == 1
     assert 'userInfo: ["session_id": id])' in store
+
+
+# --- "Always allow" always says what it would cover -------------------------
+
+
+def test_the_card_says_what_always_allow_covers_whenever_it_offers_it():
+    view = swift("OverlayView.swift")
+    card = region(view, "private func confirmCard(_ p: OverlayModel.Pending) -> some View {", "\n    }\n")
+    line = card.index("Text(OverlayModel.alwaysAllowLine(tool: p.tool, scopeHint: p.scopeHint))")
+    # Under the same condition as the button, and above the buttons.
+    shown = card.rindex("if p.grantable {", 0, line)
+    assert card[shown:line].strip() == "if p.grantable {"
+    button = card.index('if p.grantable {\n                    Button("Always allow")')
+    assert line < button
+    assert "!p.scopeHint.isEmpty" not in card
+    # The card's choices and what they send are unchanged.
+    assert 'Button("Deny") { model.resolve(false) }' in card
+    assert 'Button("Always allow") { model.resolve(true, scope: "always") }' in card
+    assert 'Button("Allow once") { model.resolve(true) }' in card
+
+
+def test_a_rule_with_no_limit_says_it_covers_every_action():
+    model = swift("OverlayModel.swift")
+    line = region(model, "nonisolated static func alwaysAllowLine(tool: String, scopeHint: String) -> String {",
+                  "\n    }\n")
+    assert '? "Always allow applies to every \\(tool) action"' in line
+    assert ': "Always allow applies to \\(tool) on \\(scopeHint)"' in line
+    # An empty hint is how the service says the rule is tool-wide.
+    grants = (ROOT / "service" / "safety" / "grants.py").read_text()
+    assert 'The narrowing key for a grant on this call, or "" for tool-wide.' in grants

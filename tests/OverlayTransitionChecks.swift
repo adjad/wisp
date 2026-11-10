@@ -115,6 +115,19 @@ struct OverlayTransitionChecks {
         print("PASS: approval cards are announced with the choices they show")
     }
 
+    /// A card with Always allow always says what the rule would cover.
+    static func alwaysAllowLineChecks() {
+        check(OverlayModel.alwaysAllowLine(tool: "write_file", scopeHint: "~/Projects/demo")
+              == "Always allow applies to write_file on ~/Projects/demo", "A scoped rule names its folder")
+        check(OverlayModel.alwaysAllowLine(tool: "web_fetch", scopeHint: "example.com")
+              == "Always allow applies to web_fetch on example.com", "Or its site")
+        check(OverlayModel.alwaysAllowLine(tool: "move_path", scopeHint: "")
+              == "Always allow applies to every move_path action", "A rule with no limit says it covers every action")
+        check(OverlayModel.alwaysAllowLine(tool: "create_note", scopeHint: " \n")
+              == "Always allow applies to every create_note action", "A blank hint is no limit")
+        print("PASS: Always allow says what it covers, with or without a limit")
+    }
+
     /// A heartbeat is about 1.5 s from the agent loop and 8 s of silence from
     /// plain chat; the stall line and the working label count with the same two.
     @MainActor
@@ -532,6 +545,7 @@ struct OverlayTransitionChecks {
     static func main() async {
         lifecycleChecks()
         approvalAnnouncementChecks()
+        alwaysAllowLineChecks()
         forgetResultChecks()
         await MainActor.run {
             heartbeatSecondsChecks()
