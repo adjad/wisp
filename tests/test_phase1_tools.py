@@ -82,6 +82,16 @@ def test_calculate() -> None:
     for bad, why in [("1/0", "division by zero"), ("9**9**9", "too large")]:
         got = calculate(bad)
         check(f"{bad!r} -> {why}", got.startswith("(error"), f"got {got!r}")
+    # pow() is one uninterruptible C call: it must obey the same bounds as **.
+    for big in ["pow(7, 10**9)", "pow(99, 99**4)", "pow(2, 5000)", "pow(10**7, 2)"]:
+        got = calculate(big)
+        check(f"{big!r} is refused as too large",
+              got.startswith("(error") and "too large" in got, f"got {got!r}")
+    check("pow(2, 10) still works", calculate("pow(2, 10)") == "1,024")
+    check("pow(3, 4, 5) still works", calculate("pow(3, 4, 5)") == "1")
+    check("pow with a zero modulus is refused", calculate("pow(3, 4, 0)").startswith("(error"))
+    check("wrong argument count is a plain error, not a crash",
+          calculate("sqrt(1, 2)").startswith("(error"))
 
 
 def test_conversions() -> None:
