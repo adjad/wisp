@@ -109,16 +109,34 @@ def canonicalize_url(raw: str) -> str:
 
 
 def _public_ip(value: str) -> bool:
+    """True only for an address on the public internet.
+
+    ``is_global`` is what keeps out shared address space (100.64.0.0/10:
+    carrier NAT and tailnet devices), which none of the other flags cover. The
+    other flags stay, because ``is_global`` alone accepts the NAT64 form of a
+    private address. An IPv4-mapped IPv6 address must pass as itself and as the
+    IPv4 address it carries.
+    """
     try:
         ip = ipaddress.ip_address(value)
     except ValueError:
         return False
-    return not (ip.is_private or ip.is_loopback or ip.is_link_local or
-                ip.is_multicast or ip.is_reserved or ip.is_unspecified)
+    mapped = getattr(ip, "ipv4_mapped", None)
+    for address in (ip,) if mapped is None else (ip, mapped):
+        if (not address.is_global or address.is_private or address.is_loopback
+                or address.is_link_local or address.is_multicast
+                or address.is_reserved or address.is_unspecified):
+            return False
+    return True
 
 
-async def validate_public_url(raw: str) -> str:
-    """Validate every destination, including DNS answers, before connecting."""
+async def _resolve_public(raw: str) -> tuple[str, list[str]]:
+    """Validate a destination and return it with the addresses that passed.
+
+    Every DNS answer has to be public. The fetch then connects to one of the
+    returned addresses and to nothing else (``_PinnedTransport``), so a name
+    cannot give a public answer here and a private one to the connection.
+    """
     url = canonicalize_url(raw)
     if not url:
         raise WebError("only public http(s) URLs are allowed")
@@ -130,13 +148,14 @@ async def validate_public_url(raw: str) -> str:
         if ipaddress.ip_address(host):
             if not _public_ip(host):
                 raise WebError("local and private-network URLs are blocked")
-            return url
+            return url, [host]
     except ValueError:
         pass
 
     def _resolve() -> list[str]:
-        return list({row[4][0] for row in socket.getaddrinfo(
-            host, p.port or (443 if p.scheme == "https" else 80), type=socket.SOCK_STREAM)})
+        rows = socket.getaddrinfo(
+            host, p.port or (443 if p.scheme == "https" else 80), type=socket.SOCK_STREAM)
+        return list(dict.fromkeys(row[4][0] for row in rows))
 
     try:
         addresses = await asyncio.wait_for(asyncio.to_thread(_resolve), timeout=4.0)
@@ -144,7 +163,72 @@ async def validate_public_url(raw: str) -> str:
         raise WebError(f"could not resolve {host}: {type(exc).__name__}") from exc
     if not addresses or any(not _public_ip(addr) for addr in addresses):
         raise WebError("URL resolves to a local or private-network address")
-    return url
+    # One address of each family first, IPv4 leading: the connection tries the
+    # first and falls back to the second, so an IPv6-only network still works.
+    v4 = [addr for addr in addresses if ":" not in addr]
+    v6 = [addr for addr in addresses if ":" in addr]
+    return url, v4[:1] + v6[:1] + v4[1:] + v6[1:]
+
+
+async def validate_public_url(raw: str) -> str:
+    """Validate every destination, including DNS answers, before connecting."""
+    return (await _resolve_public(raw))[0]
+
+
+_PINNED_ADDRESSES = "wisp_pinned_addresses"
+_PINNED_TRIES = 2
+
+
+class _PinnedTransport(httpx.AsyncBaseTransport):
+    """Open the connection to an address that was checked, and to no other.
+
+    ``_resolve_public`` looks a name up and checks every answer. Left alone,
+    httpx looks the name up a second time to connect, and a hostile name can
+    answer that second lookup with 127.0.0.1 or a LAN address (DNS rebinding).
+    So the request goes to the checked address itself. The Host header, the
+    TLS server name and the certificate check all stay on the real name, and
+    the client still sees the request under its real URL. A request that
+    carries no checked address is refused.
+
+    Only the client's direct transport is wrapped. When the system sends web
+    traffic through a proxy, the proxy opens the connection and does its own
+    lookup; that path is unchanged.
+    """
+
+    def __init__(self, inner: httpx.AsyncBaseTransport) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        addresses = list(request.extensions.get(_PINNED_ADDRESSES) or ())[:_PINNED_TRIES]
+        if not addresses:
+            raise WebError("could not resolve a checked address for this request")
+        extensions = {key: value for key, value in request.extensions.items()
+                      if key != _PINNED_ADDRESSES}
+        if request.url.scheme == "https":
+            extensions["sni_hostname"] = request.url.raw_host.decode("ascii")
+        for index, address in enumerate(addresses):
+            pinned = httpx.Request(request.method, request.url.copy_with(host=address),
+                                   headers=request.headers, stream=request.stream,
+                                   extensions=extensions)
+            try:
+                return await self._inner.handle_async_request(pinned)
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                if index + 1 == len(addresses):
+                    raise
+        raise WebError("could not resolve a checked address for this request")
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+def _pin_connections(client: httpx.AsyncClient) -> None:
+    """Make ``client`` connect only where ``_PinnedTransport`` allows."""
+    inner = getattr(client, "_transport", None)
+    if not isinstance(inner, httpx.AsyncBaseTransport):
+        # httpx no longer keeps its direct transport here. Refuse to fetch
+        # rather than fetch with the second lookup back.
+        raise WebError("could not resolve a checked address: connection pinning is unavailable")
+    client._transport = _PinnedTransport(inner)
 
 
 class _DDGParser(HTMLParser):
@@ -752,22 +836,28 @@ def short_text_fetch(min_chars: int = 1):
 
 async def _fetch_direct(raw_url: str) -> Page:
     """Fetch one public page with redirect and size limits plus SSRF checks."""
-    current = await validate_public_url(raw_url)
+    current, addresses = await _resolve_public(raw_url)
     strict_host = (urlparse(current).hostname or "").lower() if _STRICT_HOST.get() else ""
     data = b""
     ctype = ""
     encoding = "utf-8"
+    # No kept-alive connections: two names can share one checked address, and a
+    # connection opened for the first must not carry a request for the second.
     async with httpx.AsyncClient(timeout=httpx.Timeout(18, connect=7),
                                  follow_redirects=False,
+                                 limits=httpx.Limits(max_connections=10,
+                                                     max_keepalive_connections=0),
                                  headers={"User-Agent": _UA, "Accept": "*/*"}) as client:
+        _pin_connections(client)
         completed = False
         for _ in range(_MAX_REDIRECTS + 1):
-            async with client.stream("GET", current) as response:
+            async with client.stream("GET", current,
+                                     extensions={_PINNED_ADDRESSES: addresses}) as response:
                 if response.status_code in {301, 302, 303, 307, 308}:
                     target = response.headers.get("location")
                     if not target:
                         raise WebError("redirect had no destination")
-                    current = await validate_public_url(urljoin(current, target))
+                    current, addresses = await _resolve_public(urljoin(current, target))
                     if strict_host:
                         landed = (urlparse(current).hostname or "").lower()
                         if _without_www(landed) != _without_www(strict_host):

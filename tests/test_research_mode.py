@@ -70,6 +70,50 @@ class WebParsingTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 asyncio.run(validate_public_url(url))
 
+    def test_shared_address_space_is_not_public(self):
+        # 100.64.0.0/10 is carrier NAT and tailnet devices: never the open web.
+        for url in ("http://100.64.0.1/", "http://100.100.100.100:8080/status",
+                    "http://100.127.255.254/", "http://[::ffff:100.64.0.1]/",
+                    "http://[64:ff9b::7f00:1]/"):
+            with self.assertRaises(WebError) as refused:
+                asyncio.run(validate_public_url(url))
+            # One of the refusals that is never retried through the archive.
+            self.assertTrue(str(refused.exception).startswith(web_module._SSRF_MESSAGE_PREFIXES), url)
+        for address in ("100.64.0.1", "100.100.100.100", "::ffff:100.64.0.1",
+                        "::ffff:127.0.0.1", "::ffff:10.0.0.4", "64:ff9b::7f00:1",
+                        "127.0.0.1", "10.0.0.4", "192.168.1.20", "169.254.169.254",
+                        "::1", "fe80::1", "fd00::1", "224.0.0.251", "0.0.0.0", "not-an-address"):
+            self.assertFalse(web_module._public_ip(address), address)
+        for address in ("8.8.8.8", "1.1.1.1", "::ffff:8.8.8.8", "2001:4860:4860::8888"):
+            self.assertTrue(web_module._public_ip(address), address)
+        self.assertEqual(asyncio.run(validate_public_url("https://8.8.8.8/")), "https://8.8.8.8/")
+
+    def _resolving_to(self, *addresses):
+        def getaddrinfo(host, port, *args, **kwargs):
+            return [(web_module.socket.AF_INET6 if ":" in address else web_module.socket.AF_INET,
+                     web_module.socket.SOCK_STREAM, 6, "", (address, port))
+                    for address in addresses]
+        return patch.object(web_module.socket, "getaddrinfo", getaddrinfo)
+
+    def test_a_name_that_resolves_to_shared_or_private_space_is_refused(self):
+        for answers in (("100.101.102.103",), ("::ffff:100.64.0.1",), ("64:ff9b::7f00:1",),
+                        ("203.0.113.7", "100.101.102.103"), ("8.8.8.8", "127.0.0.1")):
+            with self._resolving_to(*answers), self.assertRaises(WebError) as refused:
+                asyncio.run(validate_public_url("http://nas.tailnet.example/"))
+            self.assertEqual(str(refused.exception),
+                             "URL resolves to a local or private-network address")
+
+    def test_a_public_name_returns_the_checked_addresses_ipv4_first(self):
+        answers = ("2001:4860:4860::8888", "8.8.8.8", "8.8.4.4", "8.8.8.8", "2001:4860:4860::8844")
+        with self._resolving_to(*answers):
+            url, addresses = asyncio.run(web_module._resolve_public("https://Example.com/a#top"))
+            self.assertEqual(asyncio.run(validate_public_url("https://Example.com/a#top")), url)
+        self.assertEqual(url, "https://example.com/a")
+        self.assertEqual(addresses, ["8.8.8.8", "2001:4860:4860::8888", "8.8.4.4",
+                                     "2001:4860:4860::8844"])
+        url, addresses = asyncio.run(web_module._resolve_public("https://8.8.8.8/"))
+        self.assertEqual(addresses, ["8.8.8.8"])
+
 
 class _FakeResearchClient:
     def __init__(self):
