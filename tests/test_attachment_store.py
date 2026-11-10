@@ -194,3 +194,153 @@ def test_forget_account_scrubs_bytes(home):
     raw = _db(home).read_bytes()
     assert b"SECRET-ACCOUNT-TEXT-91" not in raw
     assert store.get(D2) is not None
+
+
+def _clock(monkeypatch, start=1_000_000.0):
+    t = [start]
+    monkeypatch.setattr(store.time, "time", lambda: t[0])
+    return t
+
+
+def test_get_refuses_and_deletes_stale_row_without_any_prune(monkeypatch, home):
+    t = _clock(monkeypatch)
+    put(D1, text="STALE-TEXT-5521", account="a@x.com")
+    store.remember("loc", D1, account="a@x.com")
+    # Stop the opportunistic prune so only get's own age check can act.
+    monkeypatch.setattr(store, "prune", lambda now=None: 0)
+    t[0] += store.MAX_AGE_S + 5
+    assert store.get(D1) is None
+    assert store.locate("loc") is None
+    t[0] += 1
+    assert store.get(D1) is None
+    import sqlite3
+    with sqlite3.connect(str(_db(home))) as c:
+        assert c.execute("SELECT COUNT(*) FROM texts").fetchone()[0] == 0
+        assert c.execute("SELECT COUNT(*) FROM owners").fetchone()[0] == 0
+    assert b"STALE-TEXT-5521" not in _db(home).read_bytes()
+
+
+def test_get_within_age_still_serves_and_refreshes(monkeypatch):
+    t = _clock(monkeypatch)
+    put(D1)
+    t[0] += store.MAX_AGE_S - 10
+    assert store.get(D1) is not None  # touches last_used
+    t[0] += store.MAX_AGE_S - 10
+    assert store.get(D1) is not None
+
+
+def test_get_and_locate_trigger_hourly_prune(monkeypatch):
+    t = _clock(monkeypatch)
+    calls = []
+    real = store.prune
+    monkeypatch.setattr(store, "prune", lambda now=None: calls.append(now) or real(now))
+    put(D1)
+    store.remember("l", D1)
+    assert len(calls) == 1
+    t[0] += 60
+    store.get(D1)
+    store.locate("l")
+    assert len(calls) == 1
+    t[0] += 3600
+    store.get(D1)
+    assert len(calls) == 2
+    t[0] += 3600
+    store.locate("l")
+    assert len(calls) == 3
+
+
+def test_prune_if_due_runs_once_per_hour_and_ages_out(monkeypatch):
+    t = _clock(monkeypatch)
+    put(D1)
+    t[0] += store.MAX_AGE_S + 100
+    assert store.prune_if_due() == 1  # an hour passed since put's prune claim
+    assert store.prune_if_due() == 0  # not due again yet
+    t[0] += 3600
+    assert store.prune_if_due() == 0
+
+
+def test_stale_row_deleted_by_get_is_vacuumed_by_next_prune(monkeypatch, home):
+    t = _clock(monkeypatch)
+    put(D1, text="VAC-" + "z" * 5000)
+    t[0] += store.MAX_AGE_S + 5
+    size_before = _db(home).stat().st_size
+    real = store.prune
+    monkeypatch.setattr(store, "prune", lambda now=None: 0)  # the get is not an hourly one
+    assert store.get(D1) is None
+    assert _db(home).stat().st_size == size_before  # no vacuum on a read
+    monkeypatch.setattr(store, "prune", real)
+    store.prune()
+    assert _db(home).stat().st_size < size_before
+
+
+def test_unknown_owner_does_not_keep_text_after_known_owner_erased():
+    put(D1, account="x@x.com")
+    put(D1, account="")
+    store.remember("loc", D1, account="")
+    assert store.forget_account("x@x.com") == 1
+    assert store.get(D1) is None
+    assert store.locate("loc") is None
+
+
+def test_shared_known_owners_keep_text_until_both_go():
+    put(D1, account="x@x.com")
+    put(D1, account="y@x.com")
+    put(D1, account="")
+    assert store.forget_account("x@x.com") == 0
+    assert store.get(D1) is not None
+    assert store.forget_account("y@x.com") == 1
+    assert store.get(D1) is None
+
+
+def test_only_unknown_owner_untouched_by_forget_account(monkeypatch):
+    t = _clock(monkeypatch)
+    put(D1, account="")
+    put(D2, account="x@x.com")
+    assert store.forget_account("x@x.com") == 1
+    assert store.forget_account("") == 0
+    assert store.get(D1) is not None
+    t[0] += store.MAX_AGE_S + 5
+    assert store.get(D1) is None  # ages out
+    put(D3, account="")
+    assert store.forget_all() == 1
+    assert store.get(D3) is None
+
+
+def test_every_connection_has_secure_delete(monkeypatch):
+    seen = []
+    real = store.sqlite3.connect
+
+    class Spy:
+        def __init__(self, conn):
+            self._c = conn
+
+        def execute(self, sql, *a):
+            seen.append(sql)
+            return self._c.execute(sql, *a)
+
+        def __getattr__(self, name):
+            return getattr(self._c, name)
+
+    monkeypatch.setattr(store.sqlite3, "connect", lambda *a, **k: Spy(real(*a, **k)))
+    put(D1, account="a@x.com")
+    store.forget_all()
+    assert seen.count("PRAGMA secure_delete=ON") >= 2
+
+
+async def test_forget_facts_erases_attachment_text_even_if_facts_erase_raises(monkeypatch):
+    from service.mail_memory import api, profile_facts, runner
+
+    put(D1, text="ATTACH-TEXT", account="a@x.com")
+
+    def boom(*a, **k):
+        raise RuntimeError("facts failed")
+
+    async def quiet():
+        return None
+
+    monkeypatch.setattr(profile_facts, "forget_all", boom)
+    monkeypatch.setattr(runner, "set_facts", lambda v: None)
+    monkeypatch.setattr(api, "_changed", quiet)
+    with pytest.raises(RuntimeError, match="facts failed"):
+        await api.forget_facts(api.Nothing())
+    assert store.get(D1) is None

@@ -5,6 +5,22 @@ The text is private mail content, so erasing matters as much as reading:
 the database is owner-only (0600 file, 0700 directory), ``secure_delete`` is
 on, and ``VACUUM`` runs after anything is erased.
 
+Ageing: a reading unused for ``MAX_AGE_S`` is dropped. ``get`` refuses and
+deletes a stale row itself, so old text is never served even if no prune ran,
+and ``get``/``locate``/``put`` all run ``prune`` at most hourly (callers may
+also run ``prune_if_due`` at startup). A stale row deleted by ``get`` is not
+vacuumed on the spot (that would rewrite the file on a read): with
+``secure_delete`` its bytes are already zeroed, and the next prune does the
+``VACUUM``.
+
+Unknown owner: a reading stored with owner ``""`` (a mail row whose account
+label was empty) is never removed by ``forget_account`` itself, and
+``forget_account("")`` does nothing. But an unknown owner must not keep private
+text alive after a known owner was erased: when ``forget_account(X)`` removes
+X from a digest and only ``""`` owners remain, the text goes too. A digest
+owned by X and Y stays until both go; one owned only by ``""`` is removed by
+``forget_all`` or by ageing.
+
 Every public function swallows sqlite and OS errors and returns its
 "nothing" value (None / False / 0). Nothing here logs text, names or
 locators.
@@ -116,22 +132,61 @@ def get(digest: str) -> Stored | None:
     try:
         with closing(conn):
             row = conn.execute(
-                "SELECT version, kind, text, cut, note, how FROM texts WHERE digest=?",
+                "SELECT version, kind, text, cut, note, how, last_used"
+                " FROM texts WHERE digest=?",
                 (digest,),
             ).fetchone()
-            if row is None:
-                return None
-            if row[0] != VERSION:
-                conn.execute("DELETE FROM texts WHERE digest=?", (digest,))
-                conn.execute("DELETE FROM owners WHERE digest=?", (digest,))
-                conn.execute("DELETE FROM locators WHERE digest=?", (digest,))
-                return None
-            conn.execute(
-                "UPDATE texts SET last_used=? WHERE digest=?", (time.time(), digest)
-            )
-            return Stored(digest, row[1], row[2], bool(row[3]), row[4], row[5])
+            now = time.time()
+            due = _claim_prune(conn, now)
+            result = None
+            if row is not None:
+                if row[0] != VERSION or row[6] < now - MAX_AGE_S:
+                    _drop_digest(conn, digest, vacuum_later=row[0] == VERSION)
+                else:
+                    conn.execute(
+                        "UPDATE texts SET last_used=? WHERE digest=?", (now, digest)
+                    )
+                    result = Stored(
+                        digest, row[1], row[2], bool(row[3]), row[4], row[5]
+                    )
+        if due:
+            prune(now)
+        return result
     except (sqlite3.Error, OSError):
         return None
+
+
+def _drop_digest(conn: sqlite3.Connection, digest: str, *, vacuum_later: bool) -> None:
+    conn.execute("DELETE FROM texts WHERE digest=?", (digest,))
+    conn.execute("DELETE FROM owners WHERE digest=?", (digest,))
+    conn.execute("DELETE FROM locators WHERE digest=?", (digest,))
+    if vacuum_later:
+        conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('vacuum_due', 1)")
+
+
+def _claim_prune(conn: sqlite3.Connection, now: float) -> bool:
+    """True (and the hour is claimed) when an opportunistic prune is due."""
+    row = conn.execute("SELECT value FROM meta WHERE key='last_prune'").fetchone()
+    due = row is None or now - row[0] >= _PRUNE_EVERY_S or row[0] > now
+    if due:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES('last_prune', ?)", (now,)
+        )
+    return due
+
+
+def prune_if_due() -> int:
+    """Run ``prune`` if an hour passed since the last one (call at startup)."""
+    conn = _connect()
+    if conn is None:
+        return 0
+    try:
+        with closing(conn):
+            now = time.time()
+            due = _claim_prune(conn, now)
+        return prune(now) if due else 0
+    except (sqlite3.Error, OSError):
+        return 0
 
 
 def put(
@@ -176,16 +231,7 @@ def put(
                     "INSERT OR IGNORE INTO owners(digest, account) VALUES(?,?)",
                     (digest, acct),
                 )
-                row = conn.execute(
-                    "SELECT value FROM meta WHERE key='last_prune'"
-                ).fetchone()
-                due = row is None or now - row[0] >= _PRUNE_EVERY_S or row[0] > now
-                if due:
-                    conn.execute(
-                        "INSERT OR REPLACE INTO meta(key, value)"
-                        " VALUES('last_prune', ?)",
-                        (now,),
-                    )
+                due = _claim_prune(conn, now)
                 conn.execute("COMMIT")
             except BaseException:
                 conn.execute("ROLLBACK")
@@ -209,7 +255,11 @@ def locate(locator: str) -> str | None:
             row = conn.execute(
                 "SELECT digest FROM locators WHERE locator=?", (locator,)
             ).fetchone()
-            return row[0] if row else None
+            now = time.time()
+            due = _claim_prune(conn, now)
+        if due:
+            prune(now)
+        return row[0] if row else None
     except (sqlite3.Error, OSError):
         return None
 
@@ -248,13 +298,30 @@ def forget_account(account: str) -> int:
         with closing(conn):
             conn.execute("BEGIN IMMEDIATE")
             try:
+                theirs = [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT digest FROM owners WHERE account=?", (acct,)
+                    ).fetchall()
+                ]
                 changed = conn.execute(
                     "DELETE FROM owners WHERE account=?", (acct,)
                 ).rowcount
+                removed = 0
+                for dig in theirs:
+                    # Only unknown ("") owners left: they cannot keep it alive.
+                    if conn.execute(
+                        "SELECT 1 FROM owners WHERE digest=? AND account<>''",
+                        (dig,),
+                    ).fetchone() is None:
+                        removed += conn.execute(
+                            "DELETE FROM texts WHERE digest=?", (dig,)
+                        ).rowcount
+                        conn.execute("DELETE FROM owners WHERE digest=?", (dig,))
                 changed += conn.execute(
                     "DELETE FROM locators WHERE account=?", (acct,)
                 ).rowcount
-                removed = conn.execute(
+                removed += conn.execute(
                     "DELETE FROM texts WHERE digest NOT IN"
                     " (SELECT digest FROM owners)"
                 ).rowcount
@@ -336,8 +403,12 @@ def prune(now: float | None = None) -> int:
             except BaseException:
                 conn.execute("ROLLBACK")
                 raise
-            if removed or orphans:
+            pending = conn.execute(
+                "SELECT 1 FROM meta WHERE key='vacuum_due'"
+            ).fetchone()
+            if removed or orphans or pending:
                 conn.execute("VACUUM")
+                conn.execute("DELETE FROM meta WHERE key='vacuum_due'")
             return removed
     except (sqlite3.Error, OSError):
         return 0
