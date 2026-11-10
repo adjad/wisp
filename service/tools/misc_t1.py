@@ -465,9 +465,9 @@ def _capability_report(query: str) -> str:
         rows.append(f"{'Yes' if supported else 'No'} — {label}{suffix}")
     rows += [
         "No — schedule a reply inside an existing email thread (only new standalone emails and texts can be scheduled)",
-        "Yes — look at a picture you attach, or at a window or part of your screen you choose "
-        "with the eye button (⌥⇧L); nothing is captured until you press send, and it is read "
-        "on this Mac",
+        "Yes — look at a picture you attach, or at the window in front (⌥⇧L) or a part of "
+        "your screen you drag over, from the eye button; you see what Wisp captured first, "
+        "nothing is sent until you press send, and it is read on this Mac",
         "No — watch your screen on its own, or see it without you choosing what to show",
         "No — access a bank balance unless a dedicated connected banking tool is installed",
     ]
