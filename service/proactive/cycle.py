@@ -546,6 +546,13 @@ async def _cycle(*, now, tz, account, force, patient, reply_fn, abort, collect, 
                    finished_at=None, progress={"done": 0, "total": 0})
     # Reading the caches parses megabytes of mail and texts: off the event loop.
     looked: dict = {}
+    if collect is None:
+        # Apple Mail's Sent list (read at most every five minutes) so a reply sent
+        # from a non-Google account clears its thread; collect() reads the cache.
+        try:
+            await sources.all_sent_rows(now)
+        except Exception:  # noqa: BLE001 — no list means the item stands
+            pass
     items = await asyncio.to_thread(collect or (lambda n, z: sources.collect(n, z, counts=looked)), now, tz)
     if account:
         items.sort(key=lambda i: str(i.get("account", "")).casefold() != account.casefold())
@@ -1107,7 +1114,10 @@ async def _sweep_handled() -> None:
         texts = await asyncio.to_thread(lambda: handled.latest_sent_texts(sources.text_records()))
         store = default_store()
         now = time.time()
-        sent = await sources.all_sent_rows(now) if handled.contact_work(store.state()) else sources.sent_rows()
+        state = store.state()
+        mail_work = handled.contact_work(state) or any(
+            isinstance(e, dict) and e.get("source") == "mail" for e in (state.get("seen") or {}).values())
+        sent = await sources.all_sent_rows(now) if mail_work else sources.sent_rows()
         tz = store.state().get("timezone") or _zone()
         own, linked = sources.own_account(), sources.gmail_accounts()
         try:

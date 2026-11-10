@@ -155,20 +155,36 @@ async def all_sent_rows(now: float | None = None) -> list[dict]:
     return sent_rows() + list(_native_sent)
 
 
-def answered_by_sent(sent: list[dict], *, account: str, subject: str, message_id: str, after: float) -> bool:
+def cached_native_sent() -> list[dict]:
+    """Apple Mail's Sent rows as last read by all_sent_rows. No I/O, for the
+    synchronous callers that check replies."""
+    return list(_native_sent)
+
+
+def answered_by_sent(sent: list[dict], *, account: str, subject: str, message_id: str, after: float,
+                     sender: str = "") -> bool:
     """The user sent mail in this thread after its last incoming message: a
-    reply to that exact message, or one in the same account under the same
-    subject ("Re: …" included)."""
+    reply to that exact message, one in the same account under the same
+    subject ("Re: …" included), or, for a row with no reply header (Apple Mail's
+    Sent list, whose account is Mail's own id), one under the same subject to the
+    person who wrote the message."""
     want = bare_subject(subject).casefold()
     account = str(account or "").casefold()
+    sender = str(sender or "").strip().casefold()
     for row in sent:
         if float(row.get("ts") or 0) <= after:
             continue
-        if message_id and str(row.get("in_reply_to") or "").strip() == message_id.strip():
+        in_reply_to = str(row.get("in_reply_to") or "").strip()
+        if message_id and in_reply_to == message_id.strip():
             return True
         if want and str(row.get("account") or "").casefold() == account \
                 and bare_subject(row.get("subject") or "").casefold() == want:
             return True
+        if want and sender and not in_reply_to and row.get("to") \
+                and bare_subject(row.get("subject") or "").casefold() == want:
+            from service.proactive import sent_check
+            if any(address == sender for _name, address in sent_check.recipients(row.get("to"))):
+                return True
     return False
 
 
@@ -520,7 +536,8 @@ def mail_items(rows: list[dict], *, mine: set[str], now: float, tz: str,
         replied = _address(last) in mine and last["ts"] >= last_in["ts"]
         if not replied and sent:
             replied = answered_by_sent(sent, account=account, subject=str(last_in.get("subject") or ""),
-                                       message_id=str(last_in.get("message_id") or ""), after=float(last_in["ts"]))
+                                       message_id=str(last_in.get("message_id") or ""), after=float(last_in["ts"]),
+                                       sender=_address(last_in))
         raw_subject = redact_summary_codes(clean(last_in.get("subject"), 200))
         who = display_name(last_in.get("sender"), _address(last_in)) or "Unknown sender"
         if reason == "doc_comment":
@@ -860,11 +877,16 @@ def schedule(store, now: float, tz: str, *, own: str | None = None, linked: set[
 # --- everything -------------------------------------------------------------------
 
 
-def collect(now: float | None = None, tz: str = "UTC", counts: dict | None = None) -> list[dict]:
+def collect(now: float | None = None, tz: str = "UTC", counts: dict | None = None,
+            sent: list[dict] | None = None) -> list[dict]:
     """Every mail, text and note item, each source on its own: one failing
     never takes the others with it. `counts` gets, per account, everything
-    looked at, including the bulk mail and campaign texts left out."""
+    looked at, including the bulk mail and campaign texts left out. `sent` is
+    the user's own sent mail; by default the Google-linked accounts' plus the
+    Apple Mail Sent rows the cycle last read (no I/O here)."""
     now = time.time() if now is None else now
+    if sent is None:
+        sent = sent_rows() + cached_native_sent()
     linked, own = gmail_accounts(), own_account()
     items: list[dict] = []
     try:
@@ -874,7 +896,7 @@ def collect(now: float | None = None, tz: str = "UTC", counts: dict | None = Non
         mine = set()
     try:
         items += mail_items(mail_rows(now, linked), mine=mine, now=now, tz=tz, linked=linked, own=own,
-                            counts=counts, sent=sent_rows())
+                            counts=counts, sent=sent)
     except Exception:  # noqa: BLE001
         import traceback
         traceback.print_exc()

@@ -97,6 +97,51 @@ def test_answered_refs_needs_a_reply_after_the_last_incoming_message(store):
     assert handled.answered_refs(seen, texts={}, sent=[sent("Re: Thesis draft", NOW)]) == {PROF}
 
 
+def native(subject, ts, to=("prof@school.edu",), *, account="9F3C2A10-AAAA-BBBB-CCCC-123456789ABC"):
+    """Apple Mail's Sent row: Mail's own account id, a list of recipients, no reply header."""
+    return {"ts": ts, "account": account, "subject": subject, "rfc_message_id": f"<n{ts}@x>", "to": list(to)}
+
+
+def test_a_reply_from_apple_mail_answers_a_thread_in_another_account_label():
+    after = NOW - 3600
+    kw = dict(account="iCloud", subject="Question", message_id="<q1@school.edu>", after=after, sender="prof@school.edu")
+    assert sources.answered_by_sent([native("Re: Question", NOW)], **kw)
+    assert sources.answered_by_sent([native("RE: Question", NOW, ("Dr Shah <PROF@school.edu>",))], **kw)
+    assert not sources.answered_by_sent([native("Re: Question", NOW, ("someone@else.com",))], **kw), "other recipient"
+    assert not sources.answered_by_sent([native("Re: Lunch?", NOW)], **kw), "other subject"
+    assert not sources.answered_by_sent([native("Re: Question", after - 60)], **kw), "sent before it arrived"
+    assert not sources.answered_by_sent([native("Re: Question", NOW)], **{**kw, "sender": ""}), "no sender to match"
+
+
+def test_native_sent_clears_a_non_google_mail_item_and_its_seen_entry(store, monkeypatch):
+    rows = [{"ts": NOW - 3600, "sender": "Dr Shah <prof@school.edu>", "sender_address": "prof@school.edu",
+             "subject": "Question", "account": "iCloud", "message_id": "<q1@school.edu>",
+             "body": "Can you send the next chapter by Friday?"}]
+    sent_rows = [native("Re: Question", NOW - 60)]
+    open_item = sources.mail_items(rows, mine={ME}, now=NOW, tz=TZ, own=ME, linked=set(), sent=[])
+    done = sources.mail_items(rows, mine={ME}, now=NOW, tz=TZ, own=ME, linked=set(), sent=sent_rows)
+    assert [i["replied"] for i in open_item] == [False]
+    assert [i["replied"] for i in done] == [True]
+    entry = handled.seen_entry(done[0])
+    assert entry["sender"] == "prof@school.edu"
+    assert handled.answered_refs({done[0]["id"]: entry}, texts={}, sent=sent_rows) == {done[0]["id"]}
+    elsewhere = [native("Re: Question", NOW - 60, ("other@y.com",))]
+    assert handled.answered_refs({done[0]["id"]: entry}, texts={}, sent=elsewhere) == set()
+    # collect() and the sweep read the rows the cycle last fetched, without any I/O of their own.
+    monkeypatch.setattr(sources, "sent_rows", lambda: [])
+    monkeypatch.setattr(sources, "_native_sent", sent_rows)
+    assert sources.cached_native_sent() == sent_rows
+    store.save_state(seen={done[0]["id"]: entry})
+    store.save_state(cards=[card("card:q", done[0]["id"], method="email_reply", title="Reply to Dr Shah")])
+    assert handled.sweep(store, now=NOW, texts={})["cards"] == ["card:q"]
+
+
+def test_seen_sender_with_a_display_name_still_matches():
+    assert handled._bare_address("Dr Shah <DR@x.com>") == "dr@x.com"
+    assert handled._bare_address("dr@x.com") == "dr@x.com"
+    assert handled._bare_address("") == ""
+
+
 # --- retiring what the user handled -------------------------------------------------
 
 def test_a_reply_card_leaves_and_its_todo_is_checked(store):
