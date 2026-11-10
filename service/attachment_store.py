@@ -188,6 +188,25 @@ def _connect(wait: float | None = None) -> sqlite3.Connection | None:
         return None
 
 
+def _epoch_now(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT value FROM meta WHERE key='erase_epoch'").fetchone()
+    return int(row[0]) if row else 0
+
+
+def epoch() -> int:
+    """The erase generation (0 when unreadable). Every erase that removes texts
+    raises it; a write given the value read BEFORE its bytes were fetched is
+    refused if an erase ran since."""
+    conn = _connect()
+    if conn is None:
+        return 0
+    try:
+        with closing(conn):
+            return _epoch_now(conn)
+    except (sqlite3.Error, OSError, ValueError, TypeError):
+        return 0
+
+
 def get(digest: str) -> Stored | None:
     """Stored reading for a file digest, touching its last-used time."""
     if not _valid_digest(digest):
@@ -292,8 +311,10 @@ def put(
     note: str = "",
     how: str = "",
     account: str = "",
+    epoch: int | None = None,
 ) -> bool:
-    """Store a reading. Empty or whitespace-only text is refused."""
+    """Store a reading. Empty or whitespace-only text is refused. With ``epoch``,
+    nothing is written (False) if an erase ran since that generation was read."""
     if not _valid_digest(digest) or not isinstance(text, str) or not text.strip():
         return False
     if not isinstance(kind, str) or not isinstance(note, str) or not isinstance(how, str):
@@ -312,6 +333,9 @@ def put(
         with closing(conn):
             conn.execute("BEGIN IMMEDIATE")
             try:
+                if epoch is not None and _epoch_now(conn) != epoch:
+                    conn.execute("ROLLBACK")
+                    return False
                 conn.execute(
                     "INSERT INTO texts(digest, version, kind, text, cut, note, how,"
                     " bytes, created, last_used) VALUES(?,?,?,?,?,?,?,?,?,?)"
@@ -358,8 +382,11 @@ def locate(locator: str) -> str | None:
         return None
 
 
-def remember(locator: str, digest: str, *, account: str = "") -> bool:
-    """Remember which digest a locator pointed at."""
+def remember(
+    locator: str, digest: str, *, account: str = "", epoch: int | None = None
+) -> bool:
+    """Remember which digest a locator pointed at. Refused when the digest has no
+    text row, or (with ``epoch``) when an erase ran since that generation."""
     if not _valid_locator(locator) or not _valid_digest(digest):
         return False
     conn = _connect()
@@ -367,11 +394,24 @@ def remember(locator: str, digest: str, *, account: str = "") -> bool:
         return False
     try:
         with closing(conn):
-            conn.execute(
-                "INSERT OR REPLACE INTO locators(locator, digest, account, created)"
-                " VALUES(?,?,?,?)",
-                (locator, digest, _account(account), time.time()),
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                if (
+                    epoch is not None and _epoch_now(conn) != epoch
+                ) or conn.execute(
+                    "SELECT 1 FROM texts WHERE digest=?", (digest,)
+                ).fetchone() is None:
+                    conn.execute("ROLLBACK")
+                    return False
+                conn.execute(
+                    "INSERT OR REPLACE INTO locators(locator, digest, account, created)"
+                    " VALUES(?,?,?,?)",
+                    (locator, digest, _account(account), time.time()),
+                )
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
         return True
     except (sqlite3.Error, OSError):
         return False
@@ -402,6 +442,10 @@ def _run_erase(body) -> tuple[int, bool]:
             conn.execute("BEGIN IMMEDIATE")
             try:
                 removed, changed = body(conn)
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta(key, value) VALUES('erase_epoch', ?)",
+                    (_epoch_now(conn) + 1,),
+                )
                 if changed:
                     conn.execute(
                         "INSERT OR REPLACE INTO meta(key, value) VALUES('vacuum_due', 1)"
@@ -424,8 +468,8 @@ def _run_erase(body) -> tuple[int, bool]:
 
 
 def forget_account_result(account: str) -> tuple[bool, int]:
-    """``forget_account`` as ``(ok, removed)`` from one call. It neither reads nor
-    sets the process-wide flag, so a concurrent erase cannot change its answer."""
+    """``forget_account`` as ``(ok, removed)`` from one call. It does not read the
+    process-wide failure flag (``_run_erase`` still writes it), so a concurrent erase cannot change its answer."""
     acct = _account(account)
     if not acct:
         return True, 0
@@ -752,6 +796,7 @@ def note_seen(
     sender: str = "",
     subject: str = "",
     ts: float = 0.0,
+    epoch: int | None = None,
 ) -> bool:
     """Remember where a kept text came from (who, which file name, when).
 
@@ -782,7 +827,9 @@ def note_seen(
         with closing(conn):
             conn.execute("BEGIN IMMEDIATE")
             try:
-                if conn.execute(
+                if (
+                    epoch is not None and _epoch_now(conn) != epoch
+                ) or conn.execute(
                     "SELECT 1 FROM texts WHERE digest=?", (digest,)
                 ).fetchone() is None:
                     conn.execute("ROLLBACK")
@@ -883,7 +930,9 @@ def get_facts(digest: str, version: int) -> dict | None:
         return None
 
 
-def put_facts(digest: str, version: int, facts: dict) -> bool:
+def put_facts(
+    digest: str, version: int, facts: dict, *, epoch: int | None = None
+) -> bool:
     """Keep facts (a JSON object of at most 4,000 characters) beside a text."""
     if not _valid_digest(digest) or isinstance(version, bool) or not isinstance(version, int):
         return False
@@ -902,7 +951,9 @@ def put_facts(digest: str, version: int, facts: dict) -> bool:
         with closing(conn):
             conn.execute("BEGIN IMMEDIATE")
             try:
-                if conn.execute(
+                if (
+                    epoch is not None and _epoch_now(conn) != epoch
+                ) or conn.execute(
                     "SELECT 1 FROM texts WHERE digest=?", (digest,)
                 ).fetchone() is None:
                     conn.execute("ROLLBACK")

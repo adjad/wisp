@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextvars
 import inspect
 import json
 import re
@@ -363,9 +364,26 @@ class _Ctx:
     lookups: dict = field(default_factory=dict)
     background: bool = False    # the background reader: a failure of text recognition sets no rest
     resting: bool = False       # set by `_recognised` when it skipped a picture only because recognition is resting
+    epoch: int | None = None    # the store's erase generation, read before any byte was fetched (see `_stamp`)
 
     def remaining(self) -> float:
         return self.deadline - time.monotonic()
+
+
+_EPOCH: contextvars.ContextVar = contextvars.ContextVar("attachment_erase_epoch", default=None)
+
+
+async def _stamp(ctx: _Ctx) -> _Ctx:
+    """Read the store's erase generation (off the event loop) BEFORE the request fetches bytes. Every store
+    write for the reading then carries it, so a write that an erase overtook stores nothing."""
+    from service import attachment_store
+    read = getattr(attachment_store, "epoch", None)
+    try:
+        ctx.epoch = await asyncio.to_thread(read) if read is not None else None
+    except Exception:  # noqa: BLE001
+        ctx.epoch = None
+    _EPOCH.set(ctx.epoch)
+    return ctx
 
 
 class _Unreadable(Exception):
@@ -580,11 +598,13 @@ async def _keep(f: _File, digest: str, *, kind: str, text: str, cut: bool, how: 
     # Only bytes that really came from this Gmail file may be filed under its Gmail locator.
     locator = _gmail_locator(f) if f.read_source == "gmail" and account and account == f.gmail_account else ""
 
+    gen = {} if _EPOCH.get() is None else {"epoch": _EPOCH.get()}
+
     def save():
-        if attachment_store.put(digest, kind=kind, text=text, cut=cut, note=meta, how=how, account=account):
+        if attachment_store.put(digest, kind=kind, text=text, cut=cut, note=meta, how=how, account=account, **gen):
             if locator:
-                attachment_store.remember(locator, digest, account=account)
-            _note_seen(f, digest)
+                attachment_store.remember(locator, digest, account=account, **gen)
+            _note_seen(f, digest, **gen)
             return True
         return False
     try:
@@ -1160,7 +1180,7 @@ def _listing(index: int, email: _Email) -> list[str]:
 
 # --- remembering where a kept file was seen ----------------------------------------------
 
-def _note_seen(f: _File, digest: str) -> None:
+def _note_seen(f: _File, digest: str, **gen) -> None:
     """Tell the store who sent this kept file and when (for finding it later). Best effort and
     synchronous: the store is a convenience, and a store without `note_seen` is simply not told."""
     try:
@@ -1172,14 +1192,15 @@ def _note_seen(f: _File, digest: str) -> None:
         source = "messages" if f.source == "messages" else ("gmail" if f.read_source == "gmail" else "mail")
         account = f.read_account or (f.gmail_account if source == "gmail" else "")
         note(digest, source=source, account=account, name=_safe_name(f.name), sender=_pretty(email.sender, 200),
-             subject=_pretty(email.subject, 300), ts=float(email.ts or 0))
+             subject=_pretty(email.subject, 300), ts=float(email.ts or 0), **gen)
     except Exception:  # noqa: BLE001
         pass
 
 
 async def _seen(f: _File, digest: str) -> None:
     try:
-        await asyncio.to_thread(_note_seen, f, digest)
+        gen = {} if _EPOCH.get() is None else {"epoch": _EPOCH.get()}
+        await asyncio.to_thread(_note_seen, f, digest, **gen)
     except Exception:  # noqa: BLE001
         pass
 
@@ -1696,7 +1717,8 @@ async def _whole(ctx: _Ctx, email: _Email, f: _File, *, models: bool) -> _Whole:
                 eml = None
             if eml is not None and eml.text.strip():
                 reading.note = _EML_KEPT_NOTE
-                reading.partial = bool(eml.cut or eml.walk_cut or eml.more > 0 or eml.more_unknown)
+                # The files inside are listed but never read on this path, so the email is only partly read.
+                reading.partial = bool(eml.cut or eml.walk_cut or eml.more > 0 or eml.more_unknown or eml.files)
                 await keep(eml.text, "eml", eml.cut, "text")
                 return out
         if suffix in _STRUCTURED_NAMES and family not in ("program", "archive", "zip", "image", "video"):
@@ -1857,6 +1879,7 @@ async def index_one(email: _Email, f: _File, *, deadline: float) -> str:
         local = replace(f, gmail_account="", gmail_message="", gmail_attachment="", data=None)
         ctx = _bare_ctx(deadline, [])           # no client, no model, no Gmail accounts
         ctx.background = True
+        await _stamp(ctx)
         return (await _whole(ctx, email, local, models=False)).outcome
     except asyncio.CancelledError:
         raise
@@ -1940,12 +1963,12 @@ async def _find(query, name, start, end, account, count, source: str, most: int)
                                        _MESSAGES_SEARCH_S)
     except (TimeoutError, asyncio.TimeoutError):
         return slow
-    if found.senders and not found.chosen and not found.errored:
+    left = _MESSAGES_SEARCH_S - (time.monotonic() - began)
+    if found.senders and not found.chosen and not found.errored and left >= 1.0:
         # Both searches together get _MESSAGES_SEARCH_S, so the reads that follow still have time.
         try:
             again = await asyncio.wait_for(
-                _find_core(query, name, start, end, account, count, source, most, False),
-                max(1.0, _MESSAGES_SEARCH_S - (time.monotonic() - began)))
+                _find_core(query, name, start, end, account, count, source, most, False), left)
         except (TimeoutError, asyncio.TimeoutError):
             return slow
         again.notes = [f"Nothing from {_names_text(found.senders)}, so looked for the word instead.", *again.notes]
@@ -2110,6 +2133,7 @@ async def _run(query, name, start, end, label, count, account, question, list_on
                else None,
                sheet=(str(sheet).strip()[:80] or None) if isinstance(sheet, (str, int)) and not isinstance(sheet, bool)
                else None)
+    await _stamp(ctx)
     flat = [(e, f) for e in chosen for f in e.files]
     to_read = flat[:MAX_READS]
     if len(flat) > len(to_read):
@@ -2329,10 +2353,11 @@ async def _run_inside(words: str, query, name, start, end, label, account, quest
         total = None if counted is None else int(counted)
     except Exception:  # noqa: BLE001
         total = -1                  # the count failed: the answer says nothing about how many
-    if total is None:
+    if total is None and not hits:
         return "Wisp's saved readings couldn't be searched just now. Try again in a moment."
-    notes = ["Searched the files Wisp has read." if total < 0
-             else f"Searched the text of {total} file{'' if total == 1 else 's'} Wisp has read."]
+    notes = [] if total is None else [
+        "Searched the files Wisp has read." if total < 0
+        else f"Searched the text of {total} file{'' if total == 1 else 's'} Wisp has read."]
     if failure:
         notes.append("Some of Wisp's saved readings couldn't be searched just now.")
     if not messages and not _background_on():
@@ -2342,6 +2367,7 @@ async def _run_inside(words: str, query, name, start, end, label, account, quest
     ctx = _Ctx(deadline=deadline, gmail_source=None, gmail_accounts=[],
                passes=large_document.PassBudget(deadline=deadline), client=model_pair[0], model=model_pair[1],
                question=asked or None)
+    await _stamp(ctx)
     candidates = list(hits)
     blocks: list[tuple[list[str], _Reading, object, str]] = []   # (lines, reading, hit, text for the fence)
     stored_by_digest: dict[str, object] = {}
@@ -2473,6 +2499,7 @@ async def _run_across(query, name, start, end, label, account, question, source)
     considered = flat[:_ACROSS_FILES]
     ctx = _Ctx(deadline=work, gmail_source=gmail_source, gmail_accounts=found.accounts,
                passes=large_document.PassBudget(deadline=work), client=client, model=model)
+    await _stamp(ctx)
     rows: list[tuple[_Email, _File, dict | None, str, bool]] = []     # (email, file, facts, digest, part only)
     skipped = {"program": 0, "picture": 0, "unchecked": 0, "scan": 0, "unreadable": 0}
     reached = risky = 0
@@ -2505,7 +2532,9 @@ async def _run_across(query, name, start, end, label, account, question, source)
                 facts = None
             if isinstance(facts, dict) and digest:
                 try:
-                    await asyncio.to_thread(attachment_store.put_facts, digest, attachment_fields.FACTS_VERSION, facts)
+                    await asyncio.to_thread(
+                        attachment_store.put_facts, digest, attachment_fields.FACTS_VERSION, facts,
+                        **({} if ctx.epoch is None else {"epoch": ctx.epoch}))
                 except Exception:  # noqa: BLE001
                     pass
         rows.append((email, f, facts if isinstance(facts, dict) else None, digest or "",

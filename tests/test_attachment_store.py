@@ -96,6 +96,7 @@ def test_locator_round_trip_and_removal():
     assert store.locate("other") is None
     store.forget_account("a@x.com")
     assert store.locate("loc-1") is None
+    put(D2)
     assert store.remember("loc-2", D2)
     store.forget_all()
     assert store.locate("loc-2") is None
@@ -1299,3 +1300,77 @@ def test_first_source_is_backfilled_for_a_text_that_predates_it(home):
                   " VALUES(?, 'gmail', 'a@x.com', 'o.pdf', '', '', 1.0)", (D1,))
     assert store.note_seen(D1, source="mail", account="a@x.com", name="n.pdf", ts=2.0)
     assert [r[1] for r in _rows(home, "first_source")] == ["gmail"]
+
+
+# --- the erase generation ---------------------------------------------------------------
+
+def _all_four(e):
+    return (
+        put(epoch=e),
+        store.remember("loc", D1, epoch=e),
+        store.note_seen(D1, source="mail", epoch=e),
+        store.put_facts(D1, 1, {"a": 1}, epoch=e),
+    )
+
+
+def test_the_erase_epoch_rises_with_every_erase_that_removes_texts_and_not_with_a_prune():
+    e0 = store.epoch()
+    assert e0 == 0 and store.epoch() == 0
+    put()
+    store.prune()
+    assert store.epoch() == e0
+    store.forget_source("mail")
+    e1 = store.epoch()
+    assert e1 > e0
+    store.forget_account("a@x.com")
+    e2 = store.epoch()
+    assert e2 > e1
+    store.forget_all()
+    assert store.epoch() > e2
+    assert store.get("nope") is None and store.epoch() > e2      # a stale digest drop is not an erase
+
+
+def test_writes_with_the_current_epoch_land():
+    e = store.epoch()
+    assert _all_four(e) == (True, True, True, True)
+    assert store.get(D1) and store.locate("loc") == D1
+
+
+@pytest.mark.parametrize("erase", [store.forget_all, lambda: store.forget_account("a@x.com"),
+                                   lambda: store.forget_source("mail")])
+def test_nothing_is_written_with_an_epoch_that_an_erase_has_passed(erase):
+    e = store.epoch()
+    erase()
+    assert store.epoch() > e
+    assert put(epoch=e) is False and store.get(D1) is None
+    put()                                       # a text exists, so only the epoch can refuse the rest
+    assert store.remember("loc", D1, epoch=e) is False and store.locate("loc") is None
+    assert store.note_seen(D1, source="mail", epoch=e) is False
+    assert store.put_facts(D1, 1, {"a": 1}, epoch=e) is False and store.get_facts(D1, 1) is None
+    assert store.search("hello") and not store.search("hello", source="messages")
+
+
+def test_remember_refuses_a_digest_with_no_text_row():
+    assert store.remember("loc", D1) is False and store.remember("loc", D1, epoch=store.epoch()) is False
+    assert store.locate("loc") is None
+
+
+def test_a_put_waiting_on_the_write_lock_while_an_erase_commits_stores_nothing(home):
+    import sqlite3
+    import threading
+    import time as _t
+    put(D2)                                     # the database exists; D2 is an ordinary text
+    e = store.epoch()
+    holder = sqlite3.connect(str(_db(home)), isolation_level=None)
+    holder.execute("BEGIN IMMEDIATE")           # another connection holds the write lock
+    result = []
+    worker = threading.Thread(target=lambda: result.append(put(D1, text="late words", epoch=e)))
+    worker.start()
+    _t.sleep(0.4)                               # the put is now waiting for the lock
+    holder.execute("DELETE FROM texts")         # the erase, in the lock holder's transaction
+    holder.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('erase_epoch', ?)", (e + 1,))
+    holder.execute("COMMIT")
+    holder.close()
+    worker.join(5)
+    assert result == [False]
+    assert store.get(D1) is None and store.get(D2) is None and store.search("late") == []

@@ -179,7 +179,7 @@ _CODE_AFTER = re.compile(rf"\s?\)?\s?({_DOLLAR_ALT})(?![A-Za-z])")
 _PAREN_BEFORE = re.compile(rf"\(\s*({_SYMBOL_CLASS}|(?<![A-Za-z])[A-Z]{{3}})?\s*$")
 _PAREN_AFTER = re.compile(rf"\s*({_SYMBOL_CLASS}|[A-Z]{{3}}(?![A-Za-z]))?\s*\)")
 _PHONE_AFTER = re.compile(r"\)\s?\d{3}[-.\s]\d{4}")
-_CR_AFTER = re.compile(r"[ ]?CR(?![A-Za-z0-9])(?=[ \t]*(?:\r?\n|$)|[^\w\s]|\s+[^A-Z\s])")
+_CR_AFTER = re.compile(r"[ ]?C[Rr](?![A-Za-z0-9])(?=[ \t]*(?:\r?\n|$)|[^\w\s]|\s+[^A-Z\s])")
 
 
 def _negative_at(text: str, start: int, end: int) -> bool:
@@ -607,7 +607,7 @@ def totals(all_facts: list[dict | None], keys: list[str] | None = None) -> list[
     if repeats:
         out.append("1 file was the same file again and was counted once." if repeats == 1
                    else f"{repeats} files were the same file again and were counted once.")
-    if sum(counts.values()) >= 2:
+    if any(n >= 2 for n in counts.values()):
         out.append(SEPARATE_FILES)
     if sums:
         out.append(WARNING)

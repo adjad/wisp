@@ -813,3 +813,13 @@ def test_totals_once_normalises_whatever_sentences_it_is_given():
     assert ma._totals_once(fields, rows, rows) == ["A b.", "C d.", "E f."]
     plain = types.SimpleNamespace(totals=lambda facts: "Only one")
     assert ma._totals_once(plain, rows, rows) == ["Only one."]
+
+
+async def test_hits_are_shown_without_a_count_line_when_the_count_cannot_be_read(world, monkeypatch):
+    no_bytes(world, monkeypatch)
+    keep(LEASE)
+    monkeypatch.setattr(attachment_store, "count_checked", lambda: None)
+    out = await ma.run(inside="lease")
+    assert "lease.pdf" in out
+    assert "Searched the text of" not in out and "couldn't be searched" not in out
+    assert "Try again in a moment" not in out

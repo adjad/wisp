@@ -369,7 +369,7 @@ def test_totals_order_is_deterministic():
     a = [f("1.00", "GBP"), f("1.00", "EUR"), f("1.00", "")]
     assert af.totals(a) == af.totals(list(reversed(a)))
     assert af.totals(a) == ["EUR 1.00 across 1 file.", "GBP 1.00 across 1 file.",
-                            "unknown currency 1.00 across 1 file.", SEP, W]
+                            "unknown currency 1.00 across 1 file.", W]
 
 
 def test_totals_only_missing():
@@ -643,6 +643,11 @@ def test_totals_repeated_empty_rows_are_not_counted_missing_twice():
     ("1,240.00 CR, thanks", "1240.00", "-1240.00"),
     ("1,240.00 CR paid", "1240.00", "-1240.00"),
     ("1,240.00 CRx", "1240.00", "1240.00"),
+    ("1,240.00 Cr", "1240.00", "-1240.00"),
+    ("1,240.00Cr.", "1240.00", "-1240.00"),
+    ("1,240.00 Cr paid", "1240.00", "-1240.00"),
+    ("1,240.00 cr", "1240.00", "1240.00"),
+    ("1,240.00 Crx", "1240.00", "1240.00"),
 ])
 def test_minus_must_be_attached(monkeypatch, text, claimed, expected):
     assert _stored(monkeypatch, text, claimed) == expected
@@ -776,3 +781,9 @@ def test_totals_survives_overflowing_sum():
 def test_totals_non_list_input():
     assert af.totals(None) == []
     assert af.totals(5) == []
+
+
+def test_totals_say_files_were_added_together_only_when_a_currency_added_two():
+    assert af.totals([f("5.00", "USD"), f("7.00", "")]) == [
+        "USD 5.00 across 1 file.", "unknown currency 7.00 across 1 file.", W]
+    assert SEP in af.totals([f("5.00", "USD"), f("7.00", "USD"), f("1.00", "EUR")])
