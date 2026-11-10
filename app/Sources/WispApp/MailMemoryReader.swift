@@ -955,7 +955,7 @@ final class MailMemoryReader {
     /// expands to the home folder. The result must lie textually inside `realpath(root)`, be a
     /// regular file (`lstat`), and equal its own `realpath`, so no symlink exists anywhere below the
     /// root. Returns the path and its size.
-    static func messageAttachmentFile(filename: String, root: String) -> (path: String, size: Int)? {
+    static func messageAttachmentFile(filename: String, root: String) -> (path: String, size: Int, dev: dev_t, ino: ino_t)? {
         guard !filename.isEmpty, !filename.contains("\0"), let realRoot = realPath(root), realRoot != "/" else { return nil }
         var path = filename
         let conventional = "~/Library/Messages/Attachments/"
@@ -968,7 +968,7 @@ final class MailMemoryReader {
         var info = stat()
         guard lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
               let resolved = realPath(path), resolved == path else { return nil }
-        return (path, Int(info.st_size))
+        return (path, Int(info.st_size), info.st_dev, info.st_ino)
     }
 
     /// True for a SQLite result that means the file can't be opened or isn't a readable database:
@@ -1028,6 +1028,10 @@ final class MailMemoryReader {
         if exists(db, table: "attachment", column: "hide_attachment") { clauses.append("IFNULL(a.hide_attachment, 0) = 0") }
         if exists(db, table: "message", column: "associated_message_type") {
             clauses.append("IFNULL(m.associated_message_type, 0) = 0")
+        }
+        // Messages keeps deleted messages for 30 days and links them here; a deleted file is neither listed nor read.
+        if exists(db, table: "chat_recoverable_message_join", column: "message_id") {
+            clauses.append("NOT EXISTS (SELECT 1 FROM chat_recoverable_message_join r WHERE r.message_id = m.ROWID)")
         }
         let hasChat = exists(db, table: "chat_message_join", column: "message_id")
             && exists(db, table: "chat_message_join", column: "chat_id") && exists(db, table: "chat")
@@ -1126,7 +1130,7 @@ final class MailMemoryReader {
             rows.append(MessageAttachment(
                 id: sqlite3_column_int64(stmt, 0),
                 ts: dateNs > 0 ? Double(dateNs) / 1_000_000_000 + appleEpochOffset : 0,
-                chat: String(label.prefix(120)), sender: from, fromMe: fromMe, name: name,
+                chat: String(label.prefix(120)), sender: String(from.prefix(200)), fromMe: fromMe, name: String(name.prefix(255)),
                 mime: text(stmt, 9), size: max(0, sqlite3_column_int64(stmt, 10)), filename: filename))
         }
         guard step == SQLITE_DONE else { throw MessagesFailure.unreadable }
@@ -1142,7 +1146,7 @@ final class MailMemoryReader {
                 let onDisk = MailMemoryReader.messageAttachmentFile(filename: row.filename,
                                                                     root: messagesAttachmentsRoot) != nil
                 return ["id": String(row.id), "ts": row.ts, "chat": row.chat, "sender": row.sender,
-                        "from_me": row.fromMe, "name": row.name, "mime": row.mime, "size": row.size,
+                        "from_me": row.fromMe, "name": row.name, "mime": row.mime, "size": Int(row.size),
                         "on_disk": onDisk]
             }
             return ["ok": true, "rows": rows, "capped": capped]
@@ -1178,7 +1182,11 @@ final class MailMemoryReader {
         defer { try? handle.close() }
         var info = stat()
         guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { return ["ok": false, "error": "not_on_disk"] }
+        // The file opened must be the one lstat and realpath checked, not one swapped in since.
+        guard info.st_dev == found.dev, info.st_ino == found.ino else { return ["ok": false, "error": "unreadable"] }
         guard Int(info.st_size) <= cap else { return ["ok": false, "error": "too_large"] }
+        // read(upToCount:) returns nil at end of file, so an empty file is answered here.
+        if info.st_size == 0 { return ["ok": true, "name": row.name, "size": 0, "data_b64": ""] }
         guard let data = try? handle.read(upToCount: cap + 1) else { return ["ok": false, "error": "unreadable"] }
         guard data.count <= cap else { return ["ok": false, "error": "too_large"] }
         return ["ok": true, "name": row.name, "size": data.count, "data_b64": data.base64EncodedString()]

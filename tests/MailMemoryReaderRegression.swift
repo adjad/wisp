@@ -705,6 +705,8 @@ enum MailMemoryReaderRegression {
             try putMsg(rel, "never read")
         }
         try putMsg("gh/10/G10/tilde.txt", "TILDE")
+        try putMsg("rc/18/G18/gone.txt", "GONE")
+        try putMsg("em/20/G20/empty.txt", "")
         try FileManager.default.createDirectory(atPath: "\(msgBase)/outside", withIntermediateDirectories: true)
         try Data("outside secret".utf8).write(to: URL(fileURLWithPath: "\(msgBase)/outside/secret.txt"))
         try FileManager.default.createDirectory(atPath: "\(msgBase)/Attachments2", withIntermediateDirectories: true)
@@ -726,14 +728,16 @@ enum MailMemoryReaderRegression {
         CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, filename TEXT, transfer_name TEXT, mime_type TEXT,
           total_bytes INTEGER, is_sticker INTEGER, hide_attachment INTEGER);
         CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
-        INSERT INTO handle VALUES (1, '+15551234567'), (2, 'Bob@Example.com'), (3, '+15559998888');
+        CREATE TABLE chat_recoverable_message_join (chat_id INTEGER, message_id INTEGER, delete_date INTEGER);
+        INSERT INTO handle VALUES (1, '+15551234567'), (2, 'Bob@Example.com'), (3, '+15559998888'), (4, '+15550001111');
         INSERT INTO chat VALUES (1, '', '+15551234567'), (2, 'Book Club', 'chat123'), (3, '', 'chat456'),
-          (4, '', 'Bob@Example.com');
-        INSERT INTO chat_handle_join VALUES (1, 1), (2, 2), (2, 3), (3, 1), (3, 2), (4, 2);
+          (4, '', 'Bob@Example.com'), (5, 'Archive Trip', 'chat789');
+        INSERT INTO chat_handle_join VALUES (1, 1), (2, 2), (2, 3), (3, 1), (3, 2), (4, 2), (5, 4);
         INSERT INTO message VALUES (1, \(appleNs(msgT0)), 1, 0, 0), (2, \(appleNs(msgT0 + 100)), 2, 0, 0),
           (3, \(appleNs(msgT0 + 200)), 2, 1, 0), (4, \(appleNs(msgT0 + 300)), 1, 0, 0), (5, \(appleNs(msgT0 + 350)), 1, 0, 2000),
-          (6, \(appleNs(msgT0 + 400)), 3, 0, 0);
-        INSERT INTO chat_message_join VALUES (1, 1), (2, 2), (3, 2), (4, 3), (1, 4), (1, 5), (2, 6);
+          (6, \(appleNs(msgT0 + 400)), 3, 0, 0), (7, \(appleNs(msgT0 - 5000)), 4, 0, 0);
+        INSERT INTO chat_message_join VALUES (1, 1), (2, 2), (3, 2), (4, 3), (1, 4), (1, 5), (2, 6), (5, 7);
+        INSERT INTO chat_recoverable_message_join VALUES (5, 7, 1000);
         INSERT INTO attachment VALUES
           (1, '\(conv)/ab/01/G1/lease.pdf', 'Lease 2026.pdf', 'application/pdf', 10, 0, 0),
           (2, '\(conv)/ab/02/G2/photo.heic', 'photo.heic', 'image/heic', 5, 0, 0),
@@ -750,9 +754,10 @@ enum MailMemoryReaderRegression {
           (13, '', 'nameless.txt', 'text/plain', 9, 0, 0),
           (14, NULL, 'null.txt', 'text/plain', 9, 0, 0),
           (16, '\(conv)/../Attachments2/leak.txt', 'leak.txt', 'text/plain', 12, 0, 0),
-          (17, '\(msgBase)/Attachments2/leak.txt', 'leak2.txt', 'text/plain', 12, 0, 0);
+          (17, '\(msgBase)/Attachments2/leak.txt', 'leak2.txt', 'text/plain', 12, 0, 0),
+          (18, '\(conv)/rc/18/G18/gone.txt', 'gone.txt', 'text/plain', 4, 0, 0);
         INSERT INTO message_attachment_join VALUES (1, 1), (2, 2), (3, 3), (4, 4), (4, 5), (4, 6), (4, 7), (5, 8),
-          (6, 9), (6, 10), (6, 11), (6, 12), (6, 13), (6, 14), (6, 16), (6, 17);
+          (6, 9), (6, 10), (6, 11), (6, 12), (6, 13), (6, 14), (6, 16), (6, 17), (7, 18);
         """)
         func msgPair(_ db: String, cap: Int = MailMemoryReader.maxAttachmentBytes) -> (MailMemoryReader, Replies) {
             let replies = Replies()
@@ -798,6 +803,8 @@ enum MailMemoryReaderRegression {
                           ("12", "a missing file"), ("16", "a .. path out of the root"), ("17", "an absolute path outside the root")] {
             check(mBy[id]?["on_disk"] as? Bool == false, "not on disk: \(why)")
         }
+        check(!msgIDs(mAll).contains("18") && msgIDs(msgList(["terms": ["gone"]])).isEmpty,
+              "a recently deleted message's file is not listed, even by name")
         check(msgIDs(msgList(["terms": ["lease"]])) == ["1"], "term matches the file name")
         check(msgIDs(msgList(["terms": ["LEASE", "2026.PDF"]])) == ["1"], "terms are case-insensitive and all must match")
         check(msgIDs(msgList(["terms": ["lease", "book"]])).isEmpty, "every term must match")
@@ -871,6 +878,22 @@ enum MailMemoryReaderRegression {
             check(reply["ok"] as? Bool == false && reply["error"] as? String == "not_on_disk" && reply["data_b64"] == nil,
                   "\(why) is not_on_disk: \(reply["error"] ?? "?")")
         }
+        check(msgFetch("18")["ok"] as? Bool == false && msgFetch("18")["error"] as? String == "not_found",
+              "a recently deleted message's file is not_found")
+        // A zero-byte file is a success with no bytes, not unreadable.
+        let emptyDB = makeDB("chatempty", """
+        CREATE TABLE handle (ROWID INTEGER PRIMARY KEY, id TEXT);
+        CREATE TABLE message (ROWID INTEGER PRIMARY KEY, date INTEGER, handle_id INTEGER, is_from_me INTEGER);
+        CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY, filename TEXT);
+        CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
+        INSERT INTO handle VALUES (1, '+15551234567');
+        INSERT INTO message VALUES (1, \(appleNs(msgT0)), 1, 0);
+        INSERT INTO attachment VALUES (1, '\(conv)/em/20/G20/empty.txt');
+        INSERT INTO message_attachment_join VALUES (1, 1);
+        """)
+        let emptyGot = msgFetch("1", db: emptyDB)
+        check(emptyGot["ok"] as? Bool == true && emptyGot["size"] as? Int == 0 && emptyGot["data_b64"] as? String == ""
+              && emptyGot["name"] as? String == "empty.txt", "an empty file reads as empty: \(emptyGot)")
         check(msgFetch("1", cap: 9)["error"] as? String == "too_large", "over the cap: too_large")
         check(msgFetch("1", cap: 10)["ok"] as? Bool == true && msgFetch("2", cap: 9)["ok"] as? Bool == true, "exactly the cap, and under it, are read")
         check(msgFetch("1", db: "\(root)/no-such-chat.db")["error"] as? String == "no_messages_db", "read: no chat.db is no_messages_db")

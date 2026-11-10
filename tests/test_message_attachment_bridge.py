@@ -131,6 +131,13 @@ async def test_index_rows_missing_or_not_a_list(monkeypatch):
     assert await bridge.read_message_attachment_index([], [], 0, 0) == ([], False)
 
 
+async def test_index_rows_truthy_but_not_a_list(monkeypatch):
+    fake_ask(monkeypatch, [{"ok": True, "rows": 5, "capped": False}, {"ok": True, "rows": {"id": "1"}},
+                           {"ok": True, "rows": "abc"}])
+    for _ in range(3):
+        assert await bridge.read_message_attachment_index([], [], 0, 0) == ([], False)
+
+
 async def test_index_errors(monkeypatch):
     fake_ask(monkeypatch, [{"ok": False, "error": "no_messages_db"}, {"ok": False}, {"error": "x"},
                            {"ok": "true", "rows": [row()]}, bridge.BridgeError("app_not_connected")])
