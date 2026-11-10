@@ -108,3 +108,29 @@ def test_a_failed_test_question_is_never_called_ready():
     assert done.index("if setup.status?.canAnswer == true {") < done.index('Button("Done — open Wisp")')
     assert "setupTestFailed" not in done and "testPassed" not in _read("AppDelegate.swift")
 
+
+def test_a_finished_setup_gets_no_setup_cue_while_the_model_warms_up():
+    """a03-setup-onboarding#1: at every launch the service answers before the model
+    does. For a Mac that finished setup that is warm-up, not "isn't set up": the
+    readiness watch times the not-ready answers and passes that, and whether setup
+    is finished, to the pure rules. The ready path is unchanged."""
+    app = _read("AppDelegate.swift")
+    watch = _body(app, "private func watchSetupReadiness()")
+    assert "var notReadySince: Date?" in watch
+    assert "if canAnswer { notReadySince = nil } else if notReadySince == nil { notReadySince = Date() }" in watch
+    assert "let setupFinished = !FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) })" in watch
+    cue = watch[watch.index("FirstRunSetup.setupCue("):]
+    cue = cue[:cue.index("if cue != self.model.setupCard")]
+    assert "canAnswer: canAnswer" in cue and "setupFinished: setupFinished, notReadyFor: notReadyFor" in cue
+    assert "self.setupCanAnswer = FirstRunSetup.knownCanAnswer(canAnswer, setupFinished: setupFinished," in watch
+    assert "self.setupCanAnswer = canAnswer" not in watch
+    # Ready still clears the cue, settles the first Brief and tells the person, in that order.
+    ready = watch[watch.index("guard canAnswer else { continue }"):]
+    assert ready.index("self.settleFirstBrief(canAnswer: true)") < ready.index("self.tellReady()")
+    setup = _read("FirstRunSetupView.swift")
+    rule = _body(setup, "static func setupCue(_ current: NotchSetupCard, canAnswer: Bool, firstRunWindowUp: Bool,")
+    assert rule.index("if canAnswer { return current.afterReadiness(true) }") < rule.index("warmingUp(")
+    assert "guard !firstRunWindowUp, current == .hidden else { return current }" in rule
+    assert "setupFinished && notReadyFor < warmUpGrace" in _body(
+        setup, "static func warmingUp(setupFinished: Bool, notReadyFor: TimeInterval) -> Bool")
+

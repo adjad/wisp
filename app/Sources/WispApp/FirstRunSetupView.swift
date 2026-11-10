@@ -147,10 +147,34 @@ enum FirstRunSetup {
     /// Wisp can't answer and no first-run window is up, the quiet cue (the `!` and
     /// a one-line row on Ask), never the full card; it goes once Wisp can answer.
     /// An open card is left to the person (it waits for Done or Later).
-    static func setupCue(_ current: NotchSetupCard, canAnswer: Bool, firstRunWindowUp: Bool) -> NotchSetupCard {
+    /// A Mac that finished setup gets no new cue while its model is only warming
+    /// up after launch (`warmingUp`); an unfinished setup is told at once. Pure.
+    static func setupCue(_ current: NotchSetupCard, canAnswer: Bool, firstRunWindowUp: Bool,
+                         setupFinished: Bool = false, notReadyFor: TimeInterval = 0) -> NotchSetupCard {
         if canAnswer { return current.afterReadiness(true) }
         let current = current.afterReadiness(false)
-        return !firstRunWindowUp && current == .hidden ? .later : current
+        guard !firstRunWindowUp, current == .hidden else { return current }
+        return warmingUp(setupFinished: setupFinished, notReadyFor: notReadyFor) ? .hidden : .later
+    }
+
+    /// How long a Mac that finished setup may be unable to answer before Wisp says
+    /// it isn't set up. At every launch Wisp answers a little before its model
+    /// does, and that wait is warming up, not a missing model.
+    static let warmUpGrace: TimeInterval = 90
+
+    /// A can't-answer reading that is still only warm-up: setup isn't unfinished,
+    /// and the reading hasn't lasted `warmUpGrace` (`notReadyFor`: since the first
+    /// such answer in a row). Pure.
+    static func warmingUp(setupFinished: Bool, notReadyFor: TimeInterval) -> Bool {
+        setupFinished && notReadyFor < warmUpGrace
+    }
+
+    /// What the menu bar's Finish Setup… is told after one /setup/status answer.
+    /// Through warm-up it is not known yet (nil), so the item doesn't flash at
+    /// every launch; past it, or during an unfinished setup, it is the answer. Pure.
+    static func knownCanAnswer(_ canAnswer: Bool, setupFinished: Bool, notReadyFor: TimeInterval) -> Bool? {
+        if canAnswer { return true }
+        return warmingUp(setupFinished: setupFinished, notReadyFor: notReadyFor) ? nil : false
     }
 
     /// Whether the menu bar icon's menu shows Finish Setup…: while setup is under

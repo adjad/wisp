@@ -172,6 +172,59 @@ struct FirstRunSetupChecks {
               && FirstRunSetup.setupCue(.ready, canAnswer: false, firstRunWindowUp: true) == .hidden,
               "Can't answer again: the ready dot gives way to the ! cue (none over the window)")
 
+        // A Mac that finished setup: Wisp answers a little before its model does at every
+        // launch, and that wait is not "isn't set up". No cue until it has lasted.
+        check(FirstRunSetup.warmUpGrace == 90, "A minute and a half of warm-up")
+        check(FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: false,
+                                     setupFinished: true, notReadyFor: 0) == .hidden
+              && FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: false,
+                                        setupFinished: true, notReadyFor: 89) == .hidden,
+              "Finished setup, model warming up: no ! cue")
+        check(FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: false,
+                                     setupFinished: true, notReadyFor: 90) == .later,
+              "Finished setup, still can't answer after the grace: the ! cue")
+        check(FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: false,
+                                     setupFinished: false, notReadyFor: 0) == .later,
+              "Unfinished setup: the cue at once, as before")
+        check(FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: true,
+                                     setupFinished: true, notReadyFor: 600) == .hidden
+              && FirstRunSetup.setupCue(.hidden, canAnswer: false, firstRunWindowUp: true,
+                                        setupFinished: false, notReadyFor: 0) == .hidden,
+              "Never over the first-run window, finished or not")
+        check(FirstRunSetup.setupCue(.open, canAnswer: false, firstRunWindowUp: false,
+                                     setupFinished: true, notReadyFor: 0) == .open
+              && FirstRunSetup.setupCue(.later, canAnswer: false, firstRunWindowUp: false,
+                                        setupFinished: true, notReadyFor: 0) == .later,
+              "A card or cue the person already has is left alone during warm-up")
+        check(FirstRunSetup.setupCue(.ready, canAnswer: false, firstRunWindowUp: false,
+                                     setupFinished: true, notReadyFor: 0) == .hidden,
+              "The ready dot never outlives readiness, and warm-up puts no cue in its place")
+        check(FirstRunSetup.setupCue(.later, canAnswer: true, firstRunWindowUp: false,
+                                     setupFinished: true, notReadyFor: 30) == .hidden
+              && FirstRunSetup.setupCue(.open, canAnswer: true, firstRunWindowUp: false,
+                                        setupFinished: true, notReadyFor: 30) == .open,
+              "Ready clears the cue exactly as before")
+        // The same grace for the menu bar's Finish Setup…: not known yet, so it doesn't flash.
+        let warmedUp: Bool? = FirstRunSetup.knownCanAnswer(true, setupFinished: true, notReadyFor: 0)
+        let warming: Bool? = FirstRunSetup.knownCanAnswer(false, setupFinished: true, notReadyFor: 30)
+        let neverCame: Bool? = FirstRunSetup.knownCanAnswer(false, setupFinished: true, notReadyFor: 90)
+        let midSetup: Bool? = FirstRunSetup.knownCanAnswer(false, setupFinished: false, notReadyFor: 0)
+        check(warmedUp == .some(true), "Can answer: known at once")
+        check(warming == nil, "Warm-up reads as not known yet")
+        check(neverCame == .some(false), "Past the grace it is the answer")
+        check(midSetup == .some(false), "During an unfinished setup it is the answer from the start")
+        check(!FirstRunSetup.menuOffersSetup(
+                  canAnswer: FirstRunSetup.knownCanAnswer(false, setupFinished: true, notReadyFor: 30),
+                  card: .hidden, firstRunWindowUp: false, unfinished: false)
+              && FirstRunSetup.menuOffersSetup(
+                  canAnswer: FirstRunSetup.knownCanAnswer(false, setupFinished: true, notReadyFor: 120),
+                  card: .hidden, firstRunWindowUp: false, unfinished: false),
+              "Finish Setup… stays out of the menu while the model warms up, and shows if it never arrives")
+        // The gate that holds Wisp back during an unfinished setup is told at once, as before.
+        check(FirstRunSetup.gatesUse(setupUnfinished: true,
+                                     canAnswer: FirstRunSetup.knownCanAnswer(false, setupFinished: false, notReadyFor: 0)),
+              "An unfinished setup still waits for its model from the first answer")
+
         // The menu bar icon's Finish Setup…: only while setup is under way.
         func menuSetup(_ canAnswer: Bool?, _ card: NotchSetupCard, window: Bool = false, unfinished: Bool = false) -> Bool {
             FirstRunSetup.menuOffersSetup(canAnswer: canAnswer, card: card, firstRunWindowUp: window, unfinished: unfinished)

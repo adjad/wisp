@@ -758,6 +758,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var request = URLRequest(url: WispClient.baseURL.appendingPathComponent("setup/status"))
             request.timeoutInterval = 10
             var answered = false
+            // When the service first said Wisp can't answer, in this run of such answers.
+            var notReadySince: Date?
             while !Task.isCancelled {
                 // Quick until the service first answers (a cold first launch takes
                 // minutes); then every 5 s while a notification is promised, else
@@ -772,9 +774,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 answered = true
                 let canAnswer = FirstRunSetup.canAnswer(ready: ready,
                                                         remoteOnly: object["remote_only"] as? Bool == true)
-                self.setupCanAnswer = canAnswer
+                // After setup was finished, "can't answer" at launch is usually the model
+                // warming up: no setup cue and no Finish Setup… until it has lasted
+                // (FirstRunSetup.warmUpGrace). An unfinished setup is told at once.
+                if canAnswer { notReadySince = nil } else if notReadySince == nil { notReadySince = Date() }
+                let notReadyFor = notReadySince.map { Date().timeIntervalSince($0) } ?? 0
+                let setupFinished = !FirstRunSetup.isUnfinished({ UserDefaults.standard.bool(forKey: $0) })
+                self.setupCanAnswer = FirstRunSetup.knownCanAnswer(canAnswer, setupFinished: setupFinished,
+                                                                   notReadyFor: notReadyFor)
                 let cue = FirstRunSetup.setupCue(self.model.setupCard, canAnswer: canAnswer,
-                                                 firstRunWindowUp: self.firstRunWindow != nil)
+                                                 firstRunWindowUp: self.firstRunWindow != nil,
+                                                 setupFinished: setupFinished, notReadyFor: notReadyFor)
                 if cue != self.model.setupCard { self.model.setupCard = cue }
                 guard canAnswer else { continue }
                 self.settleFirstBrief(canAnswer: true)
