@@ -43,6 +43,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import warnings
 from pathlib import Path, PurePath
 from zipfile import BadZipFile, ZipFile
@@ -74,10 +75,14 @@ OCR_MAX_SIDE = 3000
 OCR_TEXT_SIDE = 6000            # a single picture of text is enlarged up to this long side
 OCR_PAGE_TEXT_SIDE = 3600       # a scanned page, of which there can be forty
 OCR_MAX_ENLARGE = 3.0
+PDF_UNSUPPORTED_CIPHER = "That PDF is encrypted in a way Wisp can't open."
 ENCRYPTED_PDF_REASON = "The PDF is encrypted, so its contents can't be checked."
 OCR_QUALITIES = (88, 82, 76, 70, 64, 60)
 OCR_MAX_BYTES = 3 * 1024 * 1024
 MAX_OCR_PAGES = 40
+# The parent kills the child at 60 s (less when the request is nearly spent) and then gets nothing back,
+# so ocr_images stops preparing pages itself well before that and returns what it has.
+OCR_TIME_BUDGET_S = 35.0
 OCR_MIN_PICTURE_SIDE = 300
 OCR_MAX_TOTAL_PIXELS = 400_000_000
 OCR_MAX_TOTAL_BYTES = 48 * 1024 * 1024
@@ -411,15 +416,24 @@ def pdf_pages(data: bytes) -> dict:
                     urls.append(_jpeg_url(_open_picture(pictures[0].data, "")))
             except ValueError:
                 raise
-            except Exception:  # noqa: BLE001 — one unreadable page, not an unreadable file
+            except Exception as error:  # noqa: BLE001 — one unreadable page, not an unreadable file
+                if _is_dependency_error(error):
+                    raise ValueError(PDF_UNSUPPORTED_CIPHER) from None
                 continue
     except ValueError:
         raise
-    except Exception:  # noqa: BLE001 — a damaged PDF is unreadable, never a crash
+    except Exception as error:  # noqa: BLE001 — a damaged PDF is unreadable, never a crash
+        if _is_dependency_error(error):
+            raise ValueError(PDF_UNSUPPORTED_CIPHER) from None
         raise ValueError("That PDF couldn't be read. It may be damaged.") from None
     if not urls:
         raise ValueError("That PDF has no pages Wisp can read.")
     return {"images": urls, "pages": total, "shown": len(urls)}
+
+
+def _is_dependency_error(error: BaseException) -> bool:
+    """pypdf's DependencyError (a cipher whose library, `cryptography`, Wisp doesn't ship), by class name."""
+    return any(cls.__name__ == "DependencyError" for cls in type(error).__mro__)
 
 
 def _unlock(reader) -> None:
@@ -428,7 +442,9 @@ def _unlock(reader) -> None:
         return
     try:
         opened = bool(reader.decrypt(""))
-    except Exception:  # noqa: BLE001 — a cipher this Python has no library for, or a broken dictionary
+    except Exception as error:  # noqa: BLE001 — a cipher this Python has no library for, or a broken dictionary
+        if _is_dependency_error(error):
+            raise ValueError(PDF_UNSUPPORTED_CIPHER) from None
         opened = False
     if not opened:
         raise ValueError("That PDF is password-protected. Wisp can't read it without the password.")
@@ -475,6 +491,7 @@ def _pdf_stream_limits() -> None:
 
 def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
     """{images: [data URL], pages, read_pages: [1-based]} for a picture (one image) or a PDF's page pictures."""
+    started = time.monotonic()
     if not data.startswith(b"%PDF"):
         return {"images": [_recognition_jpeg(_open_picture(data, workdir))], "pages": 1, "read_pages": [1]}
     from PIL import Image
@@ -483,12 +500,20 @@ def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
     _pdf_stream_limits()
     urls: list[str] = []
     read: list[int] = []
-    pixels = encoded = 0
+    pixels = encoded = attempts = 0
+    slowest = 0.0
+    stopped_early = False
     try:
         reader = PdfReader(io.BytesIO(data))
         _unlock(reader)
         total = len(reader.pages)
         for number, page in enumerate(reader.pages[:MAX_OCR_PAGES], start=1):
+            now = time.monotonic()
+            # Another page of the slowest kind so far must still fit; the first page is always tried.
+            if attempts and now - started + slowest > OCR_TIME_BUDGET_S:
+                stopped_early = True
+                break
+            attempts += 1
             try:
                 pictures = sorted(page.images, key=lambda item: len(item.data), reverse=True)
                 if not pictures:
@@ -502,8 +527,12 @@ def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
                 if pixels + width * height > OCR_MAX_TOTAL_PIXELS:
                     break
                 url = _recognition_jpeg(_open_picture(pictures[0].data, ""), OCR_PAGE_TEXT_SIDE)
-            except Exception:  # noqa: BLE001 — one unreadable or oversized page, not an unreadable file
+            except Exception as error:  # noqa: BLE001 — one unreadable or oversized page, not an unreadable file
+                if _is_dependency_error(error):
+                    raise ValueError(PDF_UNSUPPORTED_CIPHER) from None
                 continue
+            finally:
+                slowest = max(slowest, time.monotonic() - now)
             if encoded + len(url) > OCR_MAX_TOTAL_BYTES:
                 break
             pixels += width * height
@@ -512,11 +541,16 @@ def ocr_images(name: str, data: bytes, workdir: str = "") -> dict:
             read.append(number)
     except ValueError:
         raise
-    except Exception:  # noqa: BLE001 — a damaged PDF is unreadable, never a crash
+    except Exception as error:  # noqa: BLE001 — a damaged PDF is unreadable, never a crash
+        if _is_dependency_error(error):
+            raise ValueError(PDF_UNSUPPORTED_CIPHER) from None
         raise ValueError("That PDF couldn't be read. It may be damaged.") from None
     if not urls:
         raise ValueError("That PDF has no pages Wisp can read.")
-    return {"images": urls, "pages": total, "read_pages": read}
+    result = {"images": urls, "pages": total, "read_pages": read}
+    if stopped_early:
+        result["stopped_early"] = True
+    return result
 
 
 # --- invites and contact cards ------------------------------------------------------
@@ -526,6 +560,10 @@ MAX_EVENTS = 20
 MAX_ATTENDEES = 12
 MAX_CONTACTS = 20
 MAX_CONTACT_ITEMS = 6
+# A 2 MiB file of one-character lines is a million of them; no real invite or card comes near these.
+MAX_LOGICAL_LINES = 100_000
+MAX_PROPERTIES = 50_000
+STRUCTURED_TOO_BIG = "That file is larger than Wisp reads as a calendar or contact file."
 _DAYS = {"MO": "Monday", "TU": "Tuesday", "WE": "Wednesday", "TH": "Thursday", "FR": "Friday", "SA": "Saturday",
          "SU": "Sunday"}
 _MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October",
@@ -535,22 +573,34 @@ _DATE = re.compile(r"^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})(\d{2})?)?(Z)?$")
 
 def _unfold(text: str) -> list[str]:
     """Logical lines: a line that starts with a space or tab continues the one before it, and an old
-    vCard's quoted-printable value continues across a line that ends with '='."""
-    lines: list[str] = []
+    vCard's quoted-printable value continues across a line that ends with '='. Linear in the text:
+    the pieces of a logical line are collected in a list and joined once."""
+    groups: list[list[str]] = []
     for raw in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        if raw[:1] in (" ", "\t") and lines:
-            lines[-1] += raw[1:]
+        if raw[:1] in (" ", "\t") and groups:
+            groups[-1].append(raw[1:])
         else:
-            lines.append(raw)
+            groups.append([raw])
     merged: list[str] = []
     index = 0
-    while index < len(lines):
-        line = lines[index]
+    while index < len(groups):
+        pieces = groups[index]
         index += 1
-        while line.endswith("=") and index < len(lines) and "QUOTED-PRINTABLE" in line.split(":", 1)[0].upper():
-            line = line[:-1] + lines[index]
-            index += 1
-        merged.append(line)
+        first = "".join(pieces)
+        if first.endswith("=") and "QUOTED-PRINTABLE" in first.partition(":")[0].upper():
+            parts = [first[:-1]]
+            while index < len(groups):
+                nxt = "".join(groups[index])
+                index += 1
+                if nxt.endswith("="):
+                    parts.append(nxt[:-1])
+                else:
+                    parts.append(nxt)
+                    break
+            first = "".join(parts)
+        merged.append(first)
+        if len(merged) > MAX_LOGICAL_LINES:
+            raise ValueError(STRUCTURED_TOO_BIG)
     return merged
 
 
@@ -589,13 +639,13 @@ def _parse_line(line: str):
     name = pieces[0].strip().upper().rsplit(".", 1)[-1]
     if not name or not re.fullmatch(r"[A-Z0-9-]{1,40}", name):
         return None
-    params: dict[str, str] = {}
+    collected: dict[str, list[str]] = {}
     for piece in pieces[1:]:
         key, sep, value = piece.partition("=")
         if not sep:  # vCard 2.1 writes TEL;CELL;VOICE:
             key, value = "TYPE", key
-        key = key.strip().upper()
-        params[key] = (params[key] + "," if key in params else "") + value.strip().strip('"')
+        collected.setdefault(key.strip().upper(), []).append(value.strip().strip('"'))
+    params = {key: ",".join(values) for key, values in collected.items()}
     value = head[1]
     if "QUOTED-PRINTABLE" in params.get("ENCODING", "").upper():
         import quopri
@@ -613,10 +663,14 @@ def _components(lines: list[str], wanted: str):
     count = 0
     method = ""
     stack: list[str] = []
+    seen = 0
     for line in lines:
         parsed = _parse_line(line)
         if parsed is None:
             continue
+        seen += 1
+        if seen > MAX_PROPERTIES:
+            raise ValueError(STRUCTURED_TOO_BIG)
         name, params, value = parsed
         upper = value.strip().upper()
         if name == "BEGIN":
@@ -800,7 +854,7 @@ def _contact(props) -> dict:
 def structured(name: str, data: bytes) -> dict:
     """An invite or a contact card as plain data. Read as text only: nothing in it is followed or run."""
     if len(data) > MAX_STRUCTURED_BYTES:
-        raise ValueError("That file is larger than Wisp reads as a calendar or contact file.")
+        raise ValueError(STRUCTURED_TOO_BIG)
     if data[:2] in (b"\xff\xfe", b"\xfe\xff"):
         text = data.decode("utf-16", "replace")
     else:

@@ -745,6 +745,44 @@ def test_structured_refuses_other_files_and_big_ones():
         A.structured("a.ics", b"x" * (2 * 1024 * 1024 + 1))
 
 
+def test_unfolding_a_two_megabyte_file_of_tiny_continuations_is_linear():
+    size = 2 * 1024 * 1024
+    folded = ("BEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:x\n" + " a\n" * ((size - 100) // 3)
+              + "\nEND:VEVENT\nEND:VCALENDAR\n").encode()
+    started = time.monotonic()
+    result = A.structured("a.ics", folded)
+    assert time.monotonic() - started < 2.0
+    assert result["event_count"] == 1 and result["events"][0]["summary"].startswith("xaaa")
+    quoted = ("BEGIN:VCARD\nFN;ENCODING=QUOTED-PRINTABLE:a=\n" + "b=\n" * ((size - 100) // 3)
+              + "c\nEND:VCARD\n").encode()
+    started = time.monotonic()
+    card = A.structured("c.vcf", quoted)
+    assert time.monotonic() - started < 2.0
+    assert card["contacts"][0]["name"].startswith("abbb")
+    # Many repeats of one parameter must not be quadratic either.
+    params = ("BEGIN:VCARD\nFN:x\nTEL" + ";X=1" * ((size - 100) // 4) + ":123\nEND:VCARD\n").encode()
+    started = time.monotonic()
+    A.structured("p.vcf", params)
+    assert time.monotonic() - started < 2.0
+
+
+def test_unfolding_joins_continuations_and_quoted_printable_lines_correctly():
+    assert A._unfold("A:1\n 2\n\t3\nB:x") == ["A:123", "B:x"]
+    assert A._unfold("N;ENCODING=QUOTED-PRINTABLE:a=\nb=\nc\nZ:1") == ["N;ENCODING=QUOTED-PRINTABLE:abc", "Z:1"]
+    assert A._unfold("N:a=\nb") == ["N:a=", "b"]            # only a quoted-printable value continues
+
+
+def test_a_file_with_too_many_lines_or_properties_is_refused(monkeypatch):
+    monkeypatch.setattr(A, "MAX_LOGICAL_LINES", 50)
+    with pytest.raises(ValueError, match="larger than Wisp reads as a calendar or contact file"):
+        A.structured("a.ics", b"BEGIN:VCALENDAR\nBEGIN:VEVENT\n" + b"X-A:1\n" * 60 + b"END:VEVENT\nEND:VCALENDAR\n")
+    monkeypatch.setattr(A, "MAX_LOGICAL_LINES", 100_000)
+    monkeypatch.setattr(A, "MAX_PROPERTIES", 10)
+    with pytest.raises(ValueError, match="larger than Wisp reads as a calendar or contact file"):
+        A.structured("a.ics", b"BEGIN:VCALENDAR\nBEGIN:VEVENT\n" + b"X-A:1\n" * 20 + b"END:VEVENT\nEND:VCALENDAR\n")
+    assert A.structured("a.ics", ics("SUMMARY:Hi\r\nDTSTART:20261116"))["event_count"] == 1
+
+
 # ------------------------------------------------------------------------ ocr_images
 
 def jpeg_of(url):
@@ -842,3 +880,81 @@ def test_new_jobs_are_wired_into_main(monkeypatch, capsys):
         monkeypatch.setattr(_sys, "stdin", type("S", (), {"buffer": io.BytesIO(data)})())
         A.main()
         assert key in json.loads(capsys.readouterr().out)
+
+
+# ------------------------------------------------- unsupported ciphers and the time budget
+
+class DependencyError(Exception):
+    """Stands in for pypdf.errors.DependencyError, which is matched by class name."""
+
+
+class _Reader:
+    is_encrypted = True
+
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def decrypt(self, password):
+        return 1
+
+
+def test_a_dependency_error_from_decrypt_says_the_cipher_is_unsupported():
+    class NeedsCryptography(_Reader):
+        def decrypt(self, password):
+            raise DependencyError("cryptography>=3.1 is required for AES algorithm")
+    with pytest.raises(ValueError, match="encrypted in a way Wisp can't open"):
+        A._unlock(NeedsCryptography())
+
+    class Locked(_Reader):
+        def decrypt(self, password):
+            return 0
+    with pytest.raises(ValueError, match="password-protected"):
+        A._unlock(Locked())
+
+
+@pytest.mark.parametrize("job", ["pdf_pages", "ocr_images"])
+def test_a_dependency_error_while_reading_pages_is_not_called_damaged(monkeypatch, job):
+    import pypdf
+
+    def call():
+        return A.pdf_pages(b"%PDF-1.7") if job == "pdf_pages" else A.ocr_images("s.pdf", b"%PDF-1.7")
+
+    class BadImages(_Reader):
+        class _Page:
+            @property
+            def images(self):
+                raise DependencyError("cryptography is required")
+        pages = [_Page()]
+
+    class BadPages(_Reader):
+        @property
+        def pages(self):
+            raise DependencyError("cryptography is required")
+
+    class Damaged(_Reader):
+        @property
+        def pages(self):
+            raise RuntimeError("broken")
+    for reader, expected in ((BadImages, "encrypted in a way"), (BadPages, "encrypted in a way"),
+                             (Damaged, "damaged")):
+        monkeypatch.setattr(pypdf, "PdfReader", reader)
+        with pytest.raises(ValueError, match=expected):
+            call()
+
+
+def test_ocr_images_stops_for_time_and_says_which_pages_it_read(monkeypatch):
+    pdf = scanned_pdf(6, size=(400, 500))
+    full = A.ocr_images("s.pdf", pdf)
+    assert full["read_pages"] == [1, 2, 3, 4, 5, 6] and "stopped_early" not in full
+    monkeypatch.setattr(A, "OCR_TIME_BUDGET_S", 1e-9)
+    partial = A.ocr_images("s.pdf", pdf)
+    assert partial["pages"] == 6 and partial["read_pages"] == [1]       # the first page is always tried
+    assert len(partial["images"]) == 1 and partial["stopped_early"] is True
+
+
+def test_enlargement_stays_bounded():
+    page = Image.new("RGB", (150, 60), "white")
+    assert max(image_of(A._recognition_jpeg(page, A.OCR_PAGE_TEXT_SIDE)).size) == 450       # 3x, never more
+    tall = Image.new("RGB", (2000, 3000), "white")
+    assert max(image_of(A._recognition_jpeg(tall, A.OCR_PAGE_TEXT_SIDE)).size) == A.OCR_PAGE_TEXT_SIDE
+    assert max(image_of(A._recognition_jpeg(Image.new("RGB", (3000, 2000), "white"))).size) == A.OCR_TEXT_SIDE
