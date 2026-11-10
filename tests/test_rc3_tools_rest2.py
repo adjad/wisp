@@ -159,3 +159,76 @@ def test_find_files_blocked_parent_gets_the_permission_message(tmp_path, monkeyp
     assert "macOS blocked" in out
     out = files_tools.find_files("taxes", folder=str(tmp_path / "missing"))
     assert "is not a folder on this Mac" in out
+
+
+# --- b08-tools-rest#6: find_place category matching -------------------------
+
+def _overpass_query(monkeypatch, what):
+    import asyncio
+
+    from service.tools import maps_travel as travel
+
+    seen = []
+
+    async def geocode(place):
+        return (37.44, -122.14, "Palo Alto, California")
+
+    async def get(url, **kwargs):
+        seen.append(kwargs["params"]["data"])
+        return {"elements": []}
+
+    monkeypatch.setattr(travel, "_geocode", geocode)
+    monkeypatch.setattr(travel, "_get", get)
+    asyncio.run(travel.find_place(what, "Palo Alto"))
+    return seen[0]
+
+
+@pytest.mark.parametrize("what,want,not_want", [
+    ("movie theater", "amenity=cinema", "restaurant"),
+    ("barber", "shop=hairdresser", "amenity=bar"),
+    ("barbecue", "name~", "amenity=bar"),
+    ("gas station", "amenity=fuel", "name~"),
+    ("coffee shop", "amenity=cafe", "name~"),
+    ("restaurants", "amenity=restaurant", "name~"),
+    ("pharmacies", "amenity=pharmacy", "name~"),
+    ("sushi", "name~", "amenity="),
+])
+def test_find_place_matches_whole_words(monkeypatch, what, want, not_want):
+    q = _overpass_query(monkeypatch, what)
+    assert want in q
+    assert not_want not in q
+
+
+# --- b08-tools-rest#10: text_to_speech argv and timeout ---------------------
+
+def test_text_to_speech_puts_double_dash_before_text(monkeypatch):
+    from service.tools import speech_tools
+
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(speech_tools.subprocess, "run", run)
+    assert speech_tools.text_to_speech("- milk\n- eggs", voice="Samantha") == "Spoken."
+    argv = calls[0][0]
+    assert argv == ["say", "-v", "Samantha", "--", "- milk\n- eggs"]
+
+
+def test_text_to_speech_wait_scales_with_length_and_timeout_is_a_sentence(monkeypatch):
+    from service.tools import speech_tools
+
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append(kwargs["timeout"])
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(speech_tools.subprocess, "run", run)
+    out = speech_tools.text_to_speech("word " * 1000)
+    assert isinstance(out, str) and "did not finish" in out
+    assert seen[0] > 60
+    assert speech_tools._timeout_for("short", False) == 60
+    assert speech_tools._timeout_for("x" * 10**6, False) <= 600
+    assert speech_tools._timeout_for("x" * 10**6, True) == 60

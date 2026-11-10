@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import re
 import time
 import uuid
 from datetime import datetime, timedelta, timezone as datetime_timezone
@@ -333,11 +334,22 @@ async def find_place(what: str, near: str, radius_km: float = 3.0) -> str:
         "park": 'leisure=park', "library": 'amenity=library',
         "post office": 'amenity=post_office', "vet": 'amenity=veterinary',
         "charging": 'amenity=charging_station', "ev charger": 'amenity=charging_station',
+        "pharmacies": 'amenity=pharmacy',
+        "theater": 'amenity=cinema', "theatre": 'amenity=cinema',
+        "cinema": 'amenity=cinema', "movie theater": 'amenity=cinema',
+        "movie theatre": 'amenity=cinema',
+        "barber": 'shop=hairdresser', "hairdresser": 'shop=hairdresser',
     }
     key = what.lower().strip()
     selector = tags.get(key)
     if selector is None:
-        selector = next((v for k, v in tags.items() if k in key), None)
+        # Whole words only ("eat" is inside "theater", "bar" inside "barber"),
+        # an optional plural, and the longest match wins ("gas station" over
+        # "gas"). No match falls through to the name search below.
+        hits = [k for k in tags
+                if re.search(rf"\b{re.escape(k)}(?:e?s)?\b", key)]
+        if hits:
+            selector = tags[max(hits, key=len)]
     if selector:
         clause = (f'node[{selector}](around:{metres},{lat},{lon});'
                   f'way[{selector}](around:{metres},{lat},{lon});')
