@@ -46,6 +46,7 @@ import re
 import subprocess
 import sys
 import time
+import unicodedata
 import warnings
 from pathlib import Path, PurePath
 from zipfile import BadZipFile, ZipFile
@@ -127,9 +128,17 @@ _RISKY_SUFFIXES = frozenset({
     "dylib", "exe", "hta", "img", "inetloc", "iso", "jar", "jnlp", "js", "jse", "lnk", "mpkg", "msi", "pif",
     "pkg", "ps1", "reg", "scpt", "scr", "sh", "so", "terminal", "tool", "url", "vbe", "vbs", "vhd", "webloc",
     "workflow", "wsf", "zsh",
+    "fileloc", "mobileconfig", "shortcut", "wflow", "saver", "prefpane", "qlgenerator", "mdimporter", "osax",
+    "scptd",
 })
+# Scripts that run when handed to an interpreter. Graded "caution": read as text, never run, but a saved one
+# sits where a double-click could start it, so the success text says "Take care".
+_SCRIPT_SUFFIXES = frozenset({"py", "pl", "rb", "bash"})
+# A folder that is really a program, as an archive's entry paths show it.
+_BUNDLE_PARTS = (".app", ".pkg", ".bundle", ".framework", ".kext", ".plugin", ".prefpane", ".saver",
+                 ".workflow", ".action")
 # Shortcut files open a program or an address the moment they are opened.
-_SHORTCUT_SUFFIXES = frozenset({"desktop", "inetloc", "lnk", "url", "webloc"})
+_SHORTCUT_SUFFIXES = frozenset({"desktop", "fileloc", "inetloc", "lnk", "url", "webloc"})
 _MACRO_SUFFIXES = frozenset({"docm", "dotm", "potm", "pptm", "ppsm", "xlam", "xlsm", "xltm"})
 # Types that have no signature to check, so unknown bytes under them mean nothing.
 _PLAIN_TEXT_SUFFIXES = frozenset({"txt", "csv", "md", "json", "html", "htm", "ics", "vcf", "rtf", "log", "xml"})
@@ -146,17 +155,44 @@ _INNOCENT_SUFFIXES = frozenset({
 })
 # Characters that make a name read differently from what it is.
 _DECEPTIVE = re.compile("[\u202a-\u202e\u2066-\u2069\u200e\u200f\u061c\ufeff]")
+# Other characters that show nothing (every Cf character is one too): zero-width, filler and joiner marks,
+# soft hyphen, variation selectors, tag characters.
+_INVISIBLE = frozenset("\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u3164\uffa0")
+_CONTROLISH = ("Cc", "Cs", "Co", "Cn", "Zl", "Zp")
+
+
+def _invisible(ch: str) -> bool:
+    code = ord(ch)
+    return (unicodedata.category(ch) == "Cf" or ch in _INVISIBLE or 0x200B <= code <= 0x200F
+            or 0x2060 <= code <= 0x2064 or 0xFE00 <= code <= 0xFE0F or 0xE0000 <= code <= 0xE007F
+            or 0xE0100 <= code <= 0xE01EF)
+
+
+def _hidden(name) -> bool:
+    """True when the name holds a character that shows nothing or changes how the name reads."""
+    return any(_invisible(c) or unicodedata.category(c) in _CONTROLISH for c in str(name or ""))
+
+
+def _plain_name(name) -> str:
+    """The name as a file system would keep it: no invisible or control characters, other spaces as spaces."""
+    kept = []
+    for c in str(name or ""):
+        category = unicodedata.category(c)
+        if _invisible(c) or category in _CONTROLISH:
+            continue
+        kept.append(" " if category == "Zs" else c)
+    return "".join(kept)
 
 
 def _suffix(name: str) -> str:
     # Windows ignores spaces and dots at the end of a name, so "run.exe " is still run.exe.
-    return PurePath((name or "").rstrip(" .")).suffix.lower().lstrip(".")
+    return PurePath(_plain_name(name).rstrip(" .")).suffix.lower().lstrip(".")
 
 
 def _pretty(text: str, limit: int = 120) -> str:
     """A file or entry name for display: no control or direction-changing characters."""
     # Direction-changing characters go first: they are unprintable, and would otherwise become a space.
-    cleaned = "".join(c if c.isprintable() else " " for c in _DECEPTIVE.sub("", str(text or "")))
+    cleaned = "".join(c if c.isprintable() else " " for c in str(text or "") if not _invisible(c))
     return " ".join(cleaned.split())[:limit]
 
 
@@ -259,8 +295,11 @@ def _zip_listing(data: bytes) -> dict:
     risky = sorted({_pretty(n) for n in names if not n.endswith("/") and _suffix(n) in _RISKY_SUFFIXES
                     and not (office and _suffix(n) == "bin")})
     macros = any(PurePath(n).name.lower() == "vbaproject.bin" for n in names)
+    bundles = any(c.lower().endswith(_BUNDLE_PARTS) for n in names
+                  for c in _plain_name(n).replace("\\", "/").split("/") if c)
+    scripts = any(_suffix(n) in _SCRIPT_SUFFIXES for n in names if not n.endswith("/"))
     return {"entries": [_pretty(n) for n in names[:MAX_ZIP_NAMES]], "entry_count": len(names),
-            "risky_entries": risky[:12], "macros": macros,
+            "risky_entries": risky[:12], "macros": macros, "holds_bundle": bundles, "holds_script": scripts,
             "encrypted": any(info.flag_bits & 0x1 for info in infos)}
 
 
@@ -273,7 +312,7 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
     except a name suffix that was matched against a known set first."""
     high: list[str] = []
     caution: list[str] = []
-    parts = [part.strip() for part in PurePath((name or "").rstrip(" .")).name.lower().split(".")]
+    parts = [part.strip() for part in PurePath(_plain_name(name).rstrip(" .")).name.lower().split(".")]
     if family == "program":
         high.append(f"The file itself is {label}, which could run on your Mac or PC.")
     elif family == "script" and suffix not in _PLAIN_TEXT_SUFFIXES:
@@ -284,6 +323,10 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
         high.append(f"It is a .{suffix} file, a kind of program or script that runs when it is opened.")
     if _DECEPTIVE.search(name or ""):
         high.append("Its name has hidden characters that make it read differently from what it is.")
+    elif _hidden(name):
+        caution.append("Its name has hidden characters that make it read differently from what it is.")
+    if suffix in _SCRIPT_SUFFIXES:
+        caution.append(f"It is a .{suffix} script, which could run commands if opened.")
     if len(parts) >= 3 and parts[-1] in _INNOCENT_SUFFIXES and any(p in _RISKY_SUFFIXES for p in parts[1:-1]):
         high.append("Its name has a program or script type tucked inside it, ahead of a harmless-looking ending.")
     elif len(parts) >= 3 and parts[-1] in _RISKY_SUFFIXES and parts[-2] in _INNOCENT_SUFFIXES:
@@ -292,6 +335,10 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
         high.append(f"Its name says .{suffix}, but its contents are not a document or picture.")
     if family == "zip" and found.get("risky_entries"):
         high.append("The archive lists programs or scripts inside it.")
+    elif family == "zip" and found.get("holds_bundle"):
+        caution.append("It holds an app.")
+    elif family == "zip" and found.get("holds_script"):
+        caution.append("It holds a program or script.")
     if found.get("macros") or suffix in _MACRO_SUFFIXES or (
             label == "an old Office file" and _OLE_VBA in data):
         caution.append("It is an Office file that contains macros, which can run commands if you enable them.")
@@ -319,9 +366,9 @@ def inspect(name: str, data: bytes) -> dict:
     label, family = _signature(data)
     suffix = _suffix(name)
     out: dict = {"real_type": label, "family": family, "warnings": []}
-    if _DECEPTIVE.search(name or ""):
+    if _hidden(name):
         out["warnings"].append("Its name contains hidden characters that change how it reads.")
-    parts = [part.strip() for part in PurePath((name or "").rstrip(" .")).name.lower().split(".")]
+    parts = [part.strip() for part in PurePath(_plain_name(name).rstrip(" .")).name.lower().split(".")]
     if len(parts) >= 3 and parts[-1] in _RISKY_SUFFIXES and parts[-2] in _INNOCENT_SUFFIXES:
         out["warnings"].append(f"Its name is made to look like a .{parts[-2]}, but it ends in .{parts[-1]}.")
     if family == "program" and suffix in _INNOCENT_SUFFIXES:
