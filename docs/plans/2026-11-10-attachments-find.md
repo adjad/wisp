@@ -230,3 +230,31 @@ async def save(frozen: dict) -> dict
 - `save_email_attachment(query, name, period, day, account, source, folder)`: the loop calls
   `attachment_save.prepare` before the card (as `prepare_reply_args` is called for replies) and puts
   `frozen` and `card` into the action; on yes the tool calls `attachment_save.save(frozen)`.
+
+## As built
+
+Where the build differs from, or fixes in place, what is written above. Each line was checked
+against the code.
+
+- The store's `tried` keys are kept as a SHA-256 hash, so a message locator is never stored readable.
+- `search` returns only the files that hold all the words when any file does; it falls back to files
+  holding any word only when none holds them all.
+- `index_one` reads only a copy already saved on this Mac. It never downloads from Gmail; a Gmail-only
+  file is skipped as "not on disk".
+- Files listed inside an attached email are capped at 12 names, and the inner files are read only when
+  at least 1,400 characters of budget are left; below that they are listed, not read.
+- The daily cap (40 files) is a gate in the background loop with its own skip code, `daily_cap`.
+- `save` refuses when the child process cannot inspect the file ("couldn't check the file, so it didn't
+  save it"), and also when the answer is anything but a known risk level.
+- The tool keeps the prepared file on the server behind a one-use token for 15 minutes. The key that
+  signs it is made fresh for each backend process, so a restart between the card and the yes refuses
+  the save.
+- A bare folder name other than Downloads, Desktop or Documents ("my projects folder") is refused; other
+  folders must be given as a path inside the home folder.
+- Messages chat matching uses the chat's name, its identifier (not the generated `chat123` ones) and
+  its members' handles, as well as the sender and file name.
+- The handle filter (files from a given person) leaves out the user's own files (`is_from_me`).
+- All text printed outside a fence (sender, subject, file name, chat name) is run through
+  `untrusted.neutralize`, so a fence marker inside it is defused.
+- The background switch exists only as the app-only backend route `/assistant/attachments/background`;
+  no Settings button was added in the app, so it stays off until one is.
