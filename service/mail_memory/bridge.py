@@ -135,7 +135,11 @@ def _sent_rows(reply: dict) -> list[dict]:
 
 async def read_sent(days: int, timeout: float = 8.0) -> tuple[list[dict], bool]:
     """Apple Mail's sent mail for the last `days` (at most SENT_DAYS_MAX), newest
-    first, headers and recipients only, and whether the app capped the list."""
+    first, headers and recipients only, and whether the app capped the list.
+
+    Raises BridgeError with the app's reason. `no_sent_mailbox` means Mail has an account
+    but no folder the app recognises as Sent (its name is in a language the app doesn't
+    know): that is a read that failed, never "nothing was sent"."""
     reply = await _ask("sent", timeout, days=max(1, min(int(days), SENT_DAYS_MAX)))
     if reply.get("ok") is not True:
         raise BridgeError(str(reply.get("error") or "sent_failed")[:40])
