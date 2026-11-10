@@ -11,7 +11,7 @@ from service.reminder_intent import (
 )
 from service.tasks.models import SlotValue, TaskPlan, TemporalValue
 from service.tasks.temporal import (
-    local_timezone_name, parse_delay_seconds, parse_lead_seconds,
+    has_unsupported_day, local_timezone_name, parse_delay_seconds, parse_lead_seconds,
     resolve_named_time,
 )
 
@@ -926,6 +926,10 @@ def compile_reminder_create(text: str, *, now: datetime | None = None,
             or not REMINDER_CREATE_RE.search(text) or _NEGATED.search(command)
             or _OTHER_REMINDER_OPERATION.search(command)
             or len(reminder_request_clauses(text)) != 1):
+        return None
+    if has_unsupported_day(_unquoted(text)):
+        # "on the 15th" or "the day after tomorrow" is not a day this compiler
+        # resolves; leave the request whole rather than file it under today.
         return None
 
     subject = extract_reminder_subject(text)

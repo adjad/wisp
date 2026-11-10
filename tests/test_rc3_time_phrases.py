@@ -63,3 +63,79 @@ def test_a_named_date_keeps_its_day_at_noon():
 ])
 def test_a_part_of_day_said_with_a_day_keeps_that_day(text, expected):
     assert resolve_alert_datetime(text, now=NOW) == expected
+
+
+# Tuesday, 10 November 2026, 14:00, for the typed-task resolver.
+AFTERNOON = datetime(2026, 11, 10, 14, 0)
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("tomorrow 7pm", datetime(2026, 11, 11, 19, 0)),
+    ("tomorrow at 7", datetime(2026, 11, 11, 19, 0)),
+    ("tomorrow at 7:30", datetime(2026, 11, 11, 19, 30)),
+    ("friday at 7", datetime(2026, 11, 13, 19, 0)),
+    ("tomorrow morning at 8", datetime(2026, 11, 11, 8, 0)),
+    ("at 7pm on friday", datetime(2026, 11, 13, 19, 0)),
+    ("at 7 tomorrow", datetime(2026, 11, 11, 19, 0)),
+    ("nov 15 at 5", datetime(2026, 11, 15, 17, 0)),
+    ("nov 15 at 17:30", datetime(2026, 11, 15, 17, 30)),
+    ("friday night at 12", datetime(2026, 11, 14, 0, 0)),
+    # Unchanged forms.
+    ("friday at 7pm", datetime(2026, 11, 13, 19, 0)),
+    ("7pm friday", datetime(2026, 11, 13, 19, 0)),
+    ("nov 15 at 5pm", datetime(2026, 11, 15, 17, 0)),
+    ("tomorrow at noon", datetime(2026, 11, 11, 12, 0)),
+])
+def test_a_clock_said_with_a_day_is_that_clock(text, expected):
+    assert resolve_named_time(text, now=AFTERNOON) == (expected, "")
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("tomorrow", (datetime(2026, 11, 11, 9, 0), "morning")),
+    ("nov 15", (datetime(2026, 11, 15, 9, 0), "morning")),
+    ("tonight", (datetime(2026, 11, 10, 20, 0), "tonight")),
+    ("tomorrow evening", (datetime(2026, 11, 11, 18, 0), "evening")),
+    # Digits that are not a clock leave the day default alone.
+    ("tomorrow 3 pages", (datetime(2026, 11, 11, 9, 0), "morning")),
+])
+def test_a_day_without_a_clock_keeps_its_default(text, expected):
+    assert resolve_named_time(text, now=AFTERNOON) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "the day after tomorrow",
+    "on the 15th at 6pm",
+    "on the 15th",
+    # A clock the day phrase did not take is not replaced by 9 AM.
+    "tomorrow to at 7pm",
+    "tomorrow at 7 a.m.",
+    "this evening at 7",
+])
+def test_a_time_it_cannot_place_is_not_guessed(text):
+    assert resolve_named_time(text, now=AFTERNOON) == (None, "")
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("remind me tomorrow 7pm to call mom", "2026-11-11T19:00"),
+    ("remind me to call mom tomorrow at 7:30", "2026-11-11T19:30"),
+    ("remind me to call mom at 7pm on friday", "2026-11-13T19:00"),
+    ("remind me to pay rent on nov 15 at 5", "2026-11-15T17:00"),
+    ("remind me to call mom tomorrow morning at 8", "2026-11-11T08:00"),
+    ("remind me to call mom tomorrow", "2026-11-11T09:00"),
+])
+def test_typed_reminder_uses_the_stated_clock(text, expected):
+    from service.tasks.compiler import compile_reminder_create
+    plan = compile_reminder_create(text, now=AFTERNOON)
+    assert plan is not None and plan.status == "ready"
+    assert plan.temporal.absolute_iso == expected
+
+
+@pytest.mark.parametrize("text", [
+    "remind me to call mom on the 15th at 6pm",
+    "remind me the day after tomorrow to renew the passport",
+    "remind me tomorrow to call mom at 7pm",
+])
+def test_typed_reminder_does_not_file_an_unplaced_time(text):
+    from service.tasks.compiler import compile_reminder_create
+    plan = compile_reminder_create(text, now=AFTERNOON)
+    assert plan is None or (plan.status != "ready" and not plan.temporal.absolute_iso)

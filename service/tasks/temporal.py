@@ -32,6 +32,34 @@ _NAMED_DATE = re.compile(
     re.I,
 )
 _ISO_DATE = re.compile(r"\b(?P<year>\d{4})-(?P<month>\d{2})-(?P<day>\d{2})\b")
+_WEEKDAY_NAMES = "monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+# A day this resolver does not compute. It must ask (or fall through) rather
+# than settle on a nearby day it does know: "the day after tomorrow" is not
+# tomorrow, and "on the 15th" is not today.
+_UNSUPPORTED_DAY = re.compile(
+    r"\bday\s+after\s+(?:tomorrow|tommorow|tommorrow|tmrw|tmrow)\b"
+    r"|\bon\s+(?:the\s+)?\d{1,2}(?:st|nd|rd|th)\b"
+    r"|\bthe\s+\d{1,2}(?:st|nd|rd|th)(?=\s*(?:$|[,.;!?]|(?:at|of|by|to|for|and|in)\b))",
+    re.I,
+)
+# Every clock a sentence can state. One the resolver did not use means it
+# would otherwise pick a default hour while the user named a different one.
+_CLOCK_TOKEN = re.compile(
+    r"\b\d{1,2}(?::\d{2})?\s*[ap]\.?m\b"
+    r"|\bat\s+\d{1,2}(?::\d{2})?(?=\s*(?:$|[,.;!?]|o'?clock\b|(?:on|to|and|in|this|next|"
+    r"today|tonight|tomorrow|morning|afternoon|evening|night|" + _WEEKDAY_NAMES + r")\b))",
+    re.I,
+)
+
+
+def has_unsupported_day(text: str) -> bool:
+    """True for a day phrase resolve_named_time cannot compute."""
+    return bool(_UNSUPPORTED_DAY.search(text or ""))
+
+
+def _unused_clock(value: str, spans: list[tuple[int, int]]) -> bool:
+    return any(not any(start <= token.start() < end for start, end in spans)
+               for token in _CLOCK_TOKEN.finditer(value))
 
 
 def local_timezone_name(now: datetime | None = None) -> str:
@@ -61,9 +89,13 @@ def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datet
     # Never resolve one endpoint of a range as the time of a single reminder
     # or scheduled action. The caller must ask which exact alert time to use.
     from service.reminder_intent import has_unsupported_alert_clock
-    if has_unsupported_alert_clock(value, time_answer=True):
+    if has_unsupported_alert_clock(value, time_answer=True) or has_unsupported_day(value):
         return None, ""
     clock = r"\d{1,2}(?::\d{2})?\s*(?:am|pm)|noon|midnight"
+    # A clock with no am/pm counts only after "at": "tomorrow at 7", never the
+    # digits of "tomorrow 3 pages".
+    bare = r"\d{1,2}(?::\d{2})?(?![\d:])(?!\s*[ap]\.?m\b)"
+    ampm = r"\d{1,2}(?::\d{2})?\s*(?:am|pm)"
     day = (r"today|tonight|tomorrow|monday|tuesday|wednesday|thursday|"
            r"friday|saturday|sunday")
     timeword = r"morning|afternoon|evening|night"
@@ -98,11 +130,23 @@ def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datet
                 day = day.replace(year=year + 1)
             except ValueError:
                 return None, ""
+        if match := re.match(rf",?\s+at\s+(?P<hour>\d{{1,2}})(?::(?P<minute>\d{{2}}))?"
+                             rf"(?![\d:])(?!\s*[ap]\.?m\b)", value[dated.end():], re.I):
+            # "nov 15 at 5" reads the hour as it would on any named day.
+            from service.tools.timeranges import _bare_hour_on_a_day
+            hour, minute = int(match.group("hour")), int(match.group("minute") or 0)
+            if hour > 23 or minute > 59:
+                return None, ""
+            chosen = day.replace(hour=hour if hour > 12 else _bare_hour_on_a_day(hour, "", None),
+                                 minute=minute)
+            return (chosen, "") if unambiguous_local_time(chosen) else (None, "")
         if match := re.search(rf"\b(?:{clock})\b", value[dated.end():], re.I):
             clock_phrase = match.group()
         elif match := re.search(rf"\b(?:{clock})\b", value[:dated.start()], re.I):
             clock_phrase = match.group()
         else:
+            if _unused_clock(value, [dated.span()]):
+                return None, ""
             morning = day.replace(hour=9)
             return (morning, "morning") if unambiguous_local_time(morning) else (None, "")
         try:
@@ -115,17 +159,20 @@ def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datet
         chosen = resolved.replace(second=0, microsecond=0, tzinfo=now.tzinfo)
         return (chosen, "") if unambiguous_local_time(chosen) else (None, "")
 
-    phrases: list[tuple[str, str]] = []
+    phrases: list[tuple[str, str, tuple[int, int]]] = []
     if match := re.search(
             rf"\b(?P<day>{day})\b(?:\s+(?P<word>{timeword}))?"
-            rf"(?:\s+at\s+(?P<clock>{clock})|\s+(?P<named>noon|midnight))?\b", value, re.I):
+            rf"(?:\s+at\s+(?P<clock>{clock})|\s+at\s+(?P<bare>{bare})"
+            rf"|\s+(?P<direct>{ampm})|\s+(?P<named>noon|midnight))?\b", value, re.I):
         phrase = match.group("day")
         defaulted = ""
         if match.group("word"):
             phrase += " " + match.group("word")
             defaulted = match.group("word")
-        # "tomorrow noon" and "tomorrow at noon" are the same time.
-        if said := (match.group("clock") or match.group("named")):
+        # "tomorrow noon" and "tomorrow at noon" are the same time, as are
+        # "tomorrow 7pm" and "tomorrow at 7pm".
+        if said := (match.group("clock") or match.group("bare")
+                    or match.group("direct") or match.group("named")):
             phrase += (" " if said in {"noon", "midnight"} and not match.group("word") else " at ")
             phrase += said
             defaulted = ""
@@ -133,20 +180,27 @@ def resolve_named_time(text: str, *, now: datetime | None = None) -> tuple[datet
             defaulted = "morning"
         elif match.group("day") == "tonight":
             defaulted = "tonight"
-        phrases.append((phrase, defaulted))
-    if match := re.search(rf"\b(?P<clock>{clock})\s+(?P<day>{day})\b", value, re.I):
-        phrases.insert(0, (f"{match.group('day')} at {match.group('clock')}", ""))
+        phrases.append((phrase, defaulted, match.span()))
+    if match := re.search(rf"(?:\bat\s+(?P<bare>{bare})|\b(?P<clock>{clock}))"
+                          rf"\s+(?:on\s+)?(?P<day>{day})\b", value, re.I):
+        said = match.group("clock") or match.group("bare")
+        phrases.insert(0, (f"{match.group('day')} at {said}", "", match.span()))
     if not phrases and (match := re.search(rf"\b(?:at|by|this|next|later)?\s*(?P<word>{timeword})\b",
                                            value, re.I)):
+        if _unused_clock(value, [match.span()]):
+            return None, ""
         word = match.group("word")
         target = now.replace(hour=DAYPART_HOURS[word], minute=0, second=0, microsecond=0)
         if target <= now and not re.search(rf"\bthis\s+{word}\b", value, re.I):
             target += timedelta(days=1)
         return target, word
     if not phrases and (match := re.search(rf"\b(?P<clock>{clock})\b", value, re.I)):
-        phrases.append((match.group("clock"), ""))
+        phrases.append((match.group("clock"), "", match.span()))
 
-    for phrase, defaulted in phrases:
+    for phrase, defaulted, span in phrases:
+        # A default hour stands only when no clock was said elsewhere.
+        if defaulted and _unused_clock(value, [span]):
+            continue
         try:
             resolved, _ = resolve_when(phrase, now=now)
             return resolved.replace(second=0, microsecond=0), defaulted
