@@ -219,6 +219,14 @@ def scope_for(tool: str, args: dict) -> str:
         if tool in ("write_file", "read_file"):
             p = Path(str(args.get("path", "")))
             return str(p.parent) if p.name else str(p)
+        if tool == "move_path":
+            # The folder things are moved into, as for write_file: a grant on
+            # one move used to cover every move anywhere. A path ending in "/"
+            # is that folder; otherwise its parent. Not expanded, so a spelling
+            # that differs only asks again.
+            dest = str(args.get("destination", ""))
+            p = Path(dest)
+            return str(p) if dest.endswith("/") or not p.name else str(p.parent)
         if tool == "run_shell":
             # First word only — the program being run. The full command line
             # never repeats verbatim, so anything more specific would make the

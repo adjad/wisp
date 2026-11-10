@@ -596,3 +596,27 @@ def test_ordinary_app_and_file_cards_keep_always_allow():
     assert grants.is_grantable("read_file", {"path": "/tmp/notes/a.txt"})
     # The bare tool-wide grant (no call) is judged as before.
     assert grants.is_grantable("open_app", {})
+
+
+def test_always_allow_on_a_move_covers_only_that_destination_folder():
+    # b09-safety#7: a move_path grant was tool-wide, so one "Always allow" on a
+    # move into ~/Documents ran every later move anywhere with no card.
+    into_docs = {"source": "~/Downloads/a.pdf", "destination": "~/Documents/a.pdf"}
+    card = _resolve_card("move_path", into_docs, True, "always")
+    assert card["grantable"] is True and card["scope_hint"] == "~/Documents"
+    category = REGISTRY["move_path"].category
+
+    def tier(args):
+        return policy.decide(category, args, tool="move_path").tier
+
+    assert tier({"source": "~/Downloads/b.pdf", "destination": "~/Documents/b.pdf"}) is policy.Tier.ALLOW
+    assert tier({"source": "~/Downloads/c.pdf", "destination": "~/Documents/"}) is policy.Tier.ALLOW
+    assert tier({"source": "~/Downloads/a.pdf", "destination": "~/Desktop/a.pdf"}) is policy.Tier.CONFIRM
+    assert tier({"source": "~/Documents/a.pdf", "destination": "~/Documents/Taxes/a.pdf"}) is policy.Tier.CONFIRM
+
+
+def test_an_old_tool_wide_move_rule_still_reads_as_tool_wide():
+    # Rules stored before the scope was added keep their meaning; the Settings
+    # list is where they are removed.
+    grants._CACHE["move_path"] = {"allow": [{"scope": ""}], "deny": []}
+    assert grants.check("move_path", {"source": "/tmp/a", "destination": "/tmp/b/a"}) == "allow"
