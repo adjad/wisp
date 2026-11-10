@@ -2,7 +2,9 @@
 models only and say when a pick wasn't saved (the logic itself is checked in
 tests/QuickSettingsChecks.swift), Google's Disconnect & erase asks first, and
 the Auto-unload row says which models it is about and when a change wasn't saved,
-and the reset card's Keeps list names no retired device.
+and the reset card's Keeps list names no retired device. Settings › Privacy &
+Access has the switch for learning facts from mail and the button that forgets
+them with the kept attachment text (requests checked in tests/MailMemoryChecks.swift).
 Reads source only; no app, service or network."""
 import re
 from pathlib import Path
@@ -139,3 +141,49 @@ def test_reset_card_keeps_list_names_no_retired_device():
     # What the reset deletes and the accounts note are as they were.
     assert '"The model and Wisp\'s engine, so nothing downloads again",' in keeps
     assert reset.count("static let deletes = [") == 1 and 'list("Keeps", WispReset.keeps)' in reset
+
+
+def test_settings_can_switch_mail_facts_and_forget_what_wisp_learned_from_mail():
+    model = _read("MailMemory.swift")
+    # The switch shows what the service said, never a guess.
+    refresh = _body(model, "    func refresh() async")
+    assert 'factsEnabled = (reply["facts"] as? [String: Any])?["enabled"] as? Bool' in refresh
+    switch = _body(model, "    func setFacts(_ enabled: Bool) async")
+    assert '"assistant/mail_memory/facts"' in switch and 'request.httpMethod = "PUT"' in switch
+    assert 'withJSONObject: ["enabled": enabled]' in switch
+    forget = _body(model, "    func forgetFromMail() async -> Bool")
+    assert '"assistant/mail_memory/forget_facts"' in forget and 'request.httpMethod = "POST"' in forget
+    # The route refuses anything but the app's own JSON (service/mail_memory/api.py _native_only).
+    assert 'request.setValue("application/json", forHTTPHeaderField: "Content-Type")' in forget
+    assert 'request.httpBody = Data("{}".utf8)' in forget
+    api = (ROOT / "service/mail_memory/api.py").read_text()
+    assert '@router.put("/assistant/mail_memory/facts", dependencies=[Depends(_native_only)])' in api
+    assert '@router.post("/assistant/mail_memory/forget_facts", dependencies=[Depends(_native_only)])' in api
+    assert "attachment_store.forget_all" in api
+    # This file is compiled with tests/MailMemoryChecks.swift alone: Foundation only.
+    assert "wispForgetChatDebugArchive" not in model and "import SwiftUI" not in model
+
+    view = _read("MailMemoryView.swift")
+    row = view[view.index("struct MailMemorySettingsRow: View"):]
+    controls = _body(row, "private var factsControls: some View")
+    assert "Text(MailFactsText.title)" in controls
+    assert ".disabled(!memory.known || memory.factsEnabled == nil || memory.factsChanging)" in controls
+    # The button only opens the question; the erase runs from its destructive button and nowhere else.
+    button = _body(controls, "Button(MailFactsText.forgetButton, role: .destructive)")
+    assert button.strip("{} ") == "confirmForgetMail = true"
+    assert view.count("memory.forgetFromMail()") == 1
+    start = controls.index(".confirmationDialog(")
+    dialog = controls[start:]
+    assert "MailFactsText.forgetTitle, isPresented: $confirmForgetMail" in dialog
+    erase = _body(dialog, 'Button("Forget", role: .destructive)')
+    assert "memory.forgetFromMail()" in erase and ".wispForgetChatDebugArchive" in erase
+    assert 'Button("Cancel", role: .cancel) {}' in dialog and "Text(MailFactsText.forgetMessage)" in dialog
+    words = _body(model, "enum MailFactsText")
+    assert 'static let forgetButton = "Forget what Wisp learned from mail…"' in words
+    message = words[words.index("static let forgetMessage"):words.index("static let forgetHelp")]
+    for part in ("attachments it read", "turns off learning facts from mail", "mail suggestions, stay"):
+        assert part in message, part
+    # The Settings page still shows the row, and the routines forget is a different button.
+    settings = _read("SettingsView.swift")
+    assert "MailMemorySettingsRow()" in settings
+    assert 'Button("Forget what Wisp learned…", role: .destructive)' in settings

@@ -135,6 +135,12 @@ final class MailMemoryModel: ObservableObject {
     @Published private(set) var failures: [Int: String] = [:]
     /// What the last Add did, said once under the list ("Added to Reminders.").
     @Published private(set) var confirmation: String?
+    /// Whether Wisp learns lasting facts about the person from mail, as the service
+    /// last said (`facts.enabled`). Nil until it has, so the switch never guesses.
+    @Published private(set) var factsEnabled: Bool?
+    /// True while the facts switch or Forget what Wisp learned from mail is in flight.
+    @Published private(set) var factsChanging = false
+    @Published private(set) var factsStatus: String?
 
     /// A confirmation older than this is gone by the next refresh.
     static let confirmationLifetime: TimeInterval = 8
@@ -169,6 +175,7 @@ final class MailMemoryModel: ObservableObject {
         else { return }
         mode = parsed.mode
         readError = MailSuggestion.readError(reply)
+        factsEnabled = (reply["facts"] as? [String: Any])?["enabled"] as? Bool
         known = true
         suggestions = parsed.mode == "live" ? parsed.items : []
         failures = failures.filter { id, _ in suggestions.contains { $0.id == id } }
@@ -198,6 +205,57 @@ final class MailMemoryModel: ObservableObject {
         known = true
         if value != "live" { suggestions = [] }
         await refresh()
+    }
+
+    /// Settings' "Learn facts about me from mail" switch. Off stops new facts; the
+    /// ones already saved stay until they are forgotten.
+    func setFacts(_ enabled: Bool) async {
+        guard known, !factsChanging else { return }
+        factsChanging = true
+        factsStatus = nil
+        defer { factsChanging = false }
+        var request = URLRequest(url: baseURL.appendingPathComponent("assistant/mail_memory/facts"))
+        request.httpMethod = "PUT"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["enabled": enabled])
+        guard let (data, response) = try? await transport(request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any])?["enabled"] as? Bool == enabled
+        else {
+            factsStatus = MailFactsText.changeFailed
+            return
+        }
+        factsEnabled = enabled
+        await refresh()
+    }
+
+    /// Settings' "Forget what Wisp learned from mail…", after the person confirmed it.
+    /// The service forgets every fact learned from mail, erases the text kept from
+    /// attachments Wisp read, and turns fact-learning off. Reminder suggestions stay.
+    /// True when the service said it did.
+    @discardableResult
+    func forgetFromMail() async -> Bool {
+        guard known, !factsChanging else { return false }
+        factsChanging = true
+        factsStatus = MailFactsText.forgetting
+        defer { factsChanging = false }
+        var request = URLRequest(url: baseURL.appendingPathComponent("assistant/mail_memory/forget_facts"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 60      // it waits for a fact pass that is saving right now
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+        var done = false
+        if let (data, response) = try? await transport(request),
+           (response as? HTTPURLResponse)?.statusCode == 200,
+           let body = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            done = body["ok"] as? Bool == true
+        }
+        if done { factsEnabled = false }
+        // Either way, show what the service now says: it turns learning off before it erases.
+        await refresh()
+        factsStatus = done ? MailFactsText.forgot : MailFactsText.forgetFailed
+        return done
     }
 
     func accept(_ item: MailSuggestion) async { await answer(item, action: "accept") }
@@ -233,6 +291,41 @@ final class MailMemoryModel: ObservableObject {
             failures[item.id] = action == "accept"
                 ? "Wisp didn't hear back. Check Reminders before adding it again."
                 : "Couldn't reach Wisp. Try again."
+        }
+    }
+}
+
+/// Words for Settings' "Learn facts about me from mail" switch and its forget button.
+enum MailFactsText {
+    static let title = "Learn facts about me from mail"
+    static let forgetButton = "Forget what Wisp learned from mail…"
+    static let forgetTitle = "Forget what Wisp learned from mail?"
+    static let forgetMessage = "This forgets every fact Wisp learned from your mail and erases the text it kept "
+        + "from attachments it read. It also turns off learning facts from mail until you turn it back on. "
+        + "Facts you told Wisp yourself, and your mail suggestions, stay."
+    static let forgetHelp = "Forgets the facts Wisp learned from your mail and erases the text it kept "
+        + "from attachments it read. Asks first."
+    static let forgetting = "Forgetting…"
+    static let forgot = "Forgotten. Learning facts from mail is now off."
+    static let forgetFailed = "Couldn't forget what Wisp learned from mail. Try again."
+    static let changeFailed = "Couldn't change it. Try again."
+
+    /// The line under the switch. `enabled` is nil when the service hasn't said;
+    /// `mode` is the mail suggestions mode, which decides whether mail is read at all.
+    static func caption(known: Bool, enabled: Bool?, mode: String) -> String {
+        guard known else { return "Checking…" }
+        guard let enabled else { return "Wisp's service didn't say whether this is on." }
+        guard enabled else {
+            return "Off. Wisp learns nothing new from your mail. Facts it already saved stay in Memory until you forget them."
+        }
+        switch mode {
+        case "live":
+            return "Picks up lasting facts from your mail, like where you work or the city you live in. "
+                + "They stay on this Mac and are listed in Memory."
+        case "shadow":
+            return "On, but no facts are saved to Memory while Mail suggestions is set to Record only."
+        default:
+            return "On, but nothing is read while Mail suggestions is off."
         }
     }
 }
