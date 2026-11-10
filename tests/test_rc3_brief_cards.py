@@ -63,3 +63,29 @@ def test_a_reply_that_may_have_gone_out_offers_no_second_send():
     assert "if withSend, !isUnconfirmed(fire) {" in DRAFT_EDITOR
     assert CARDS.count("fireButton(card, action, fire)") == 2
     assert "if case .unconfirmed(let line) = fire" in CARD_VIEW
+
+
+def test_a_reply_card_waits_as_long_as_the_service_may_take():
+    """a06-brief-send#6: a reply is two round trips to Mail, 45 seconds each, and the
+    card gave up after 60 with "The request timed out." and "Try again" while the
+    reply could still go out. The composer's own send waits 120."""
+    assert "var fireTimeout: TimeInterval { sendsDraft ? 120 : 60 }" in MODELS
+    assert "timeout: action.fireTimeout)" in FIRE
+    composer = (ROOT / "app/Sources/WispApp/BriefReplyComposer.swift").read_text(encoding="utf-8")
+    assert '"assistant/email_reply/send", ["envelope": envelope, "body": text], timeout: 120)' in composer
+    from service.assistant import email_reply_api, outbox
+    assert email_reply_api._DRAFT_TIMEOUT_S + outbox.DEFAULT_TIMEOUT_S < 120
+
+
+def test_no_answer_to_a_reply_is_never_try_again():
+    caught = FIRE[FIRE.rindex("} catch {"):]
+    # Only a reply, and only when the request can have reached the service.
+    guard = caught[:caught.index("fires[card.id] = .unconfirmed(")]
+    assert "guard action.sendsDraft, !ProactiveOutcome.neverReached(error) else {" in guard
+    assert "fires[card.id] = .failed(error.localizedDescription)" in guard and "return" in guard
+    held = caught[caught.index("fires[card.id] = .unconfirmed("):]
+    assert "ProactiveOutcome.unconfirmedLine(method: action.method)" in held
+    assert "await today.refresh(afterMutation: true)" in held
+    assert ".failed(" not in held
+    never = _body(MODELS, "static func neverReached(_ error: Error) -> Bool")
+    assert ".timedOut" not in never and ".networkConnectionLost" not in never

@@ -353,6 +353,11 @@ struct ProactiveCard: Decodable, Equatable, Identifiable {
         /// Whether the draft is something the person sends, so it opens editable.
         var sendsDraft: Bool { method == "email_reply" || method == "text_reply" }
 
+        /// How long the app waits for the service to answer a fire. A reply is
+        /// two round trips to Mail, each allowed 45 seconds, so it gets the
+        /// room the Brief's reply composer gives its own send.
+        var fireTimeout: TimeInterval { sendsDraft ? 120 : 60 }
+
         /// What the card's main button does now. A reply never sends a draft the
         /// person hasn't seen: its first tap opens the draft, and Send sits
         /// inside the shown draft.
@@ -604,6 +609,15 @@ struct ProactiveOutcome: Equatable {
     static func unconfirmedLine(method: String) -> String {
         method == "text_reply" ? "Wisp couldn't confirm the text. Check Messages before trying again."
             : "Wisp couldn't confirm the reply. Check Mail before trying again."
+    }
+
+    /// Whether a fire's thrown error proves the request never reached the
+    /// service (nothing was listening, or there was no address to ask), so
+    /// nothing can have been sent. A timeout or a dropped connection proves
+    /// nothing: the service may still be sending.
+    static func neverReached(_ error: Error) -> Bool {
+        guard let code = (error as? URLError)?.code else { return false }
+        return code == .cannotConnectToHost || code == .cannotFindHost || code == .badURL
     }
 }
 

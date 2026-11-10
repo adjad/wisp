@@ -163,6 +163,17 @@ struct ProactiveChecks {
               && ProactiveOutcome.parse(Data(#"{"ok":true,"status":"sent","result":"Reply sent to a@b.c."}"#.utf8)).message.isEmpty,
               "a success never takes its words from result")
 
+        // A reply's fire waits as long as the service may take (two round trips
+        // to Mail, 45 seconds each); no answer in that time is not "it failed".
+        check(ProactiveCard.Action(method: "email_reply").fireTimeout == 120
+              && ProactiveCard.Action(method: "text_reply").fireTimeout == 120
+              && ProactiveCard.Action(method: "reminder").fireTimeout == 60, "a reply's fire gets the composer's 120 seconds")
+        check(!ProactiveOutcome.neverReached(URLError(.timedOut)) && !ProactiveOutcome.neverReached(URLError(.networkConnectionLost))
+              && !ProactiveOutcome.neverReached(CocoaError(.fileNoSuchFile)),
+              "a timeout or a dropped connection doesn't prove a reply wasn't sent")
+        check(ProactiveOutcome.neverReached(URLError(.cannotConnectToHost)) && ProactiveOutcome.neverReached(URLError(.badURL)),
+              "a request that never reached the service sent nothing")
+
         // One sentence on top, the work behind it, and the three rows' lines.
         let top = decode(#"{"lede":"Hack Day fills your midday. More later.","summary":"Ignored.","stats":{"read":49,"found":3,"drafted":1,"as_of":5}}"#)
         check(top?.headline == "Hack Day fills your midday." && top?.stats == .init(read: 49, found: 3, drafted: 1, asOf: 5),

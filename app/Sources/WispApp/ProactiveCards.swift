@@ -170,7 +170,8 @@ final class ProactiveActions: ObservableObject {
         // The service books the slot it stored on the card and rechecks it; the
         // request never carries one (the fire route refuses unknown fields).
         do {
-            let outcome = try await post(today, "/assistant/proactive/cards/\(Self.segment(card.id))/fire", body: body)
+            let outcome = try await post(today, "/assistant/proactive/cards/\(Self.segment(card.id))/fire", body: body,
+                                         timeout: action.fireTimeout)
             guard outcome.ok else {
                 // A reply the service didn't send may have changed its card: other
                 // recipients after a confirm, or a lock after an unconfirmed send.
@@ -205,7 +206,16 @@ final class ProactiveActions: ObservableObject {
             openDrafts.remove(card.id)
             await today.refresh(afterMutation: true)
         } catch {
-            fires[card.id] = .failed(error.localizedDescription)
+            guard action.sendsDraft, !ProactiveOutcome.neverReached(error) else {
+                fires[card.id] = .failed(error.localizedDescription)
+                return
+            }
+            // No answer is not a failure: the service may still be sending, and
+            // the reply can go out after this. Never "Try again"; say where to
+            // check, then show what the service holds (gone once sent, locked
+            // when Mail or Messages didn't confirm).
+            fires[card.id] = .unconfirmed(ProactiveOutcome.unconfirmedLine(method: action.method))
+            await today.refresh(afterMutation: true)
         }
     }
 
