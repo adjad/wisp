@@ -801,6 +801,16 @@ final class WispClient {
         return Self.saveWhenAwayFlag(data)
     }
 
+    /// GET /power's `applies`: false when Save power can cap nothing on this
+    /// engine (the person's own oMLX app, or a remote-only setup). Nil when the
+    /// service doesn't say or can't be read; the app then shows what it always has.
+    func saveWhenAwayApplies() async -> Bool? {
+        let url = Self.baseURL.appendingPathComponent("power")
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.flag("applies", in: data)
+    }
+
     // POST /power -> turn "Save power" on or off. Returns the flag the
     // service confirmed, or nil when the reply was lost or unreadable (the write
     // may still have happened).
