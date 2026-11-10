@@ -138,6 +138,10 @@ _RISKY_SUFFIXES = frozenset({
     "xip", "csh", "ksh", "tcsh", "fish", "chm", "xll", "xlam", "ppam", "one", "appx", "msix", "vhdx",
     "scf", "library-ms", "settingcontent-ms",
 })
+# Risky endings that are also everyday words. As a file's LAST part they are risky like the rest; in the
+# middle of a dotted name ("phase.one.pdf", "go.fish.pdf") they are just words, so they don't count as a
+# program type tucked inside the name.
+_WORDLIKE_SUFFIXES = frozenset({"one", "fish"})
 # Archives Wisp never lists or unpacks. Saved, they carry a caution, since an app could be inside.
 _ARCHIVE_SUFFIXES = frozenset({"rar", "7z", "tar", "tgz", "gz", "bz2", "tbz", "tbz2", "xz", "txz", "cab", "zst",
                                "lz", "lzma", "z", "arj"})
@@ -354,7 +358,8 @@ def _risk(name: str, data: bytes, suffix: str, label: str, family: str, found: d
         caution.append("Its name has hidden characters that make it read differently from what it is.")
     if suffix in _SCRIPT_SUFFIXES:
         caution.append(f"It is a .{suffix} script, which could run commands if opened.")
-    if len(parts) >= 3 and parts[-1] in _INNOCENT_SUFFIXES and any(p in _RISKY_SUFFIXES for p in parts[1:-1]):
+    if len(parts) >= 3 and parts[-1] in _INNOCENT_SUFFIXES and any(
+            p in _RISKY_SUFFIXES and p not in _WORDLIKE_SUFFIXES for p in parts[1:-1]):
         high.append("Its name has a program or script type tucked inside it, ahead of a harmless-looking ending.")
     elif len(parts) >= 3 and parts[-1] in _RISKY_SUFFIXES and parts[-2] in _INNOCENT_SUFFIXES:
         high.append(f"Its name is dressed up as a .{parts[-2]} file, but it really ends in .{parts[-1]}.")

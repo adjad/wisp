@@ -2045,3 +2045,17 @@ def test_more_unknown_is_separate_from_the_exact_count_of_listed_files_over_the_
     result = A.eml("x.eml", _P_TOP + b"Content-Type: multipart/mixed; boundary=x\r\n\r\n" + many + b"--x--\r\n")
     assert len(result["files"]) == A.MAX_EML_FILES and result["more_files"] == 3
     assert result["more_unknown"] is False
+
+
+@pytest.mark.parametrize("name", ["phase.one.pdf", "go.fish.pdf", "Chapter.One.Draft.docx"])
+def test_an_everyday_word_inside_a_name_is_not_a_tucked_program_type(name):
+    """`.one` and `.fish` are risky as a file's ending, but in the middle of a name they are words."""
+    result = A.inspect(name, b"%PDF-1.4\n" + b"x" * 200)
+    reasons = " ".join((result.get("risk") or {}).get("reasons") or [])
+    assert "tucked inside" not in reasons
+
+
+@pytest.mark.parametrize("name", ["notes.one", "setup.fish", "report.exe.pdf"])
+def test_those_words_still_count_at_the_end_and_real_program_types_still_count_inside(name):
+    result = A.inspect(name, b"plain text body\n" * 20)
+    assert (result.get("risk") or {}).get("level") == "high"

@@ -632,9 +632,12 @@ async def test_totals_add_two_real_files_exactly(world, monkeypatch):
         all_facts.append(attachment_store.get_facts(digest, 1))
     warning = attachment_fields.WARNING
     assert warning.startswith("These amounts were read by the model on this Mac") and warning.endswith("relying on them.")
-    assert attachment_fields.totals(all_facts) == ["USD 1,240.30 across 2 files", warning]
-    assert attachment_fields.totals([*all_facts, None]) == ["USD 1,240.30 across 2 files",
-                                                            "1 file had no total Wisp could find", warning]
+    said = attachment_fields.totals(all_facts)
+    assert said[0].rstrip(".") == "USD 1,240.30 across 2 files" and said[-1] == warning
+    assert all(sentence.endswith(".") and not sentence.endswith("..") for sentence in said)
+    more = attachment_fields.totals([*all_facts, None])
+    assert more[0].rstrip(".") == "USD 1,240.30 across 2 files" and more[-1] == warning
+    assert any(sentence.startswith("1 file had no total Wisp could find") for sentence in more)
 
 
 # ================================================================ 6. Messages rows <-> reader

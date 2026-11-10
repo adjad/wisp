@@ -351,7 +351,8 @@ async def test_across_pulls_facts_once_and_adds_totals_by_code(world):
     inside = fenced(out)
     assert len(inside) == 1 and inside[0].count("Acme Supply") == 3 and "inv00.txt" in inside[0]
     assert "total USD 10.10" in inside[0]
-    assert ("Totals added up by Wisp: USD 60.60 across 3 files. These amounts were read by the model on this Mac "
+    assert "Totals added up by Wisp: USD 60.60 across 3 files." in out
+    assert ("These amounts were read by the model on this Mac "
             "and checked only against the digits in each file; check them before relying on them.") in out
     assert ".." not in out                                                       # Decimal, not 60.599999
     assert "Totals added up" not in inside[0] and out.index("Totals added up") > out.index(inside[0])

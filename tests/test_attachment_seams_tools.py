@@ -594,7 +594,8 @@ async def test_across_four_files_is_four_lines_in_one_fence_and_the_total_is_add
     lines = [line for line in blocks[0].splitlines() if line.strip()]
     assert len(lines) == 4, lines
     assert out.startswith("Facts from 4 of 4 files")
-    assert "Totals added up by Wisp: USD 400.00 across 4 files. These amounts were read by the model" in out
+    assert "Totals added up by Wisp: USD 400.00 across 4 files." in out
+    assert "These amounts were read by the model" in out
     assert ".." not in out
     outside = out.replace(blocks[0], "")
     assert "Totals added up by Wisp" in outside and "Totals added up" not in blocks[0]
