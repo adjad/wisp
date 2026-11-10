@@ -1355,8 +1355,10 @@ final class OverlayModel: ObservableObject {
             }
             return
         }
-        let loading = kind == .movie
-        if loading { attachedLabel = "Reading clip…" }
+        // Only on an empty chip. An attachment already there keeps its own label
+        // until the new one is read (setAttachment), so a clip that can't be read
+        // never leaves "Reading clip…" beside the old one.
+        if kind == .movie && !hasAttachment { attachedLabel = "Reading clip…" }
         loadAttachment(name: url.lastPathComponent) { [weak self] in
             let reader = Task.detached(priority: .userInitiated) { () -> MediaAttachment.Pending? in
                 guard !Task.isCancelled else { return nil }
@@ -1393,7 +1395,8 @@ final class OverlayModel: ObservableObject {
 
     /// A picked, dropped or pasted document: size-checked, then read in memory.
     private func loadDocument(url: URL) {
-        attachedLabel = "Reading document…"
+        // Only on an empty chip, as for a clip (loadAttachment(url:)).
+        if !hasAttachment { attachedLabel = "Reading document…" }
         loadAttachment(name: url.lastPathComponent) { [weak self] in
             let reader = Task.detached(priority: .userInitiated) { () -> MediaAttachment.Pending? in
                 guard !Task.isCancelled else { return nil }

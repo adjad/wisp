@@ -328,6 +328,34 @@ struct OverlayTransitionChecks {
     }
 
     #if WISP_MOTION_APP_DELEGATE_CHECKS
+    /// "Reading document…" is for an empty chip. An attachment already there keeps
+    /// its own label through a second read, so one that fails leaves it as it was.
+    @MainActor
+    static func attachmentLabelChecks() async {
+        let model = OverlayModel(loadDebugMode: { false }, saveDebugMode: { _ in })
+        let missing = URL(fileURLWithPath: "/nonexistent-wisp-fixture/notes.txt")
+        model.loadAttachment(url: missing)
+        check(model.attachedLabel == "Reading document…", "An empty chip says a document is being read")
+        await waitUntil { model.attachedLabel.isEmpty }
+        check(!model.hasAttachment && model.transientNotice == DocumentAttachment.unreadableMessage,
+              "A read that fails clears the chip and says why")
+
+        await model.loadAttachment(name: "fixture.jpg") {
+            MediaAttachment.Pending.image(jpeg: Data([0xFF, 0xD8, 0xFF, 0xD9]), source: .file)
+        }.value
+        check(model.hasAttachment && model.attachedLabel == "Image", "A picture is attached")
+        model.transientNotice = nil
+        model.loadAttachment(url: missing)
+        check(model.attachedLabel == "Image", "A second read leaves the first attachment's label")
+        await waitUntil { model.transientNotice != nil }
+        try? await Task.sleep(for: .milliseconds(100))
+        check(model.hasAttachment && model.attachedLabel == "Image" && model.attachedImageName == "fixture.jpg",
+              "A second read that fails leaves the first attachment as it was")
+        model.removeAttachment()
+        check(!model.hasAttachment && model.attachedLabel.isEmpty, "Removing it clears the chip")
+        print("PASS: a failed second attachment leaves the first one's chip unchanged")
+    }
+
     /// Export Chat Debug Log… covers every chat since Wisp opened: New chat and opening
     /// another chat archive the one left, whole; reopening it continues it with its
     /// detail; the export lists each chat and keeps the open one's top-level fields.
@@ -476,6 +504,7 @@ struct OverlayTransitionChecks {
         await AppDelegate.checkSetupCardHoldsAsk()
         await AppDelegate.checkInlineReportHoldsOpen()
         await AppDelegate.checkReportSaveHoldsUntilAnswered()
+        await attachmentLabelChecks()
         await chatArchiveChecks()
         await AppDelegate.checkMenuExportsDebugLog()
         #endif

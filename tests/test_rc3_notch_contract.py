@@ -221,3 +221,23 @@ def test_try_again_keeps_what_is_in_the_box():
     # Checked before the failed exchange is removed or the box is written.
     assert guard < again.index("turns.removeSubrange(") < again.index("input = question") < again.index("submit()")
     assert again.count("input = ") == 1
+
+
+# --- A failed second attachment leaves the first one's chip alone ------------
+
+
+def test_reading_labels_only_go_on_an_empty_chip():
+    model = swift("OverlayModel.swift")
+    # Written once each, and only when nothing is attached yet.
+    assert model.count('attachedLabel = "Reading clip…"') == 1
+    assert model.count('attachedLabel = "Reading document…"') == 1
+    assert 'if kind == .movie && !hasAttachment { attachedLabel = "Reading clip…" }' in model
+    assert 'if !hasAttachment { attachedLabel = "Reading document…" }' in model
+    # A read that fails still clears the label when nothing is attached, and
+    # still leaves an earlier attachment in place.
+    load = region(model, "func loadAttachment(name: String, read:", "\n    }\n")
+    assert 'if !self.hasAttachment { self.attachedLabel = ""; self.attachedImageName = nil }' in load
+    assert "clearAttachmentState()" not in load and "removeAttachment()" not in load
+    # A successful read replaces label and attachment together.
+    attach = region(model, "private func setAttachment(", "\n    }\n")
+    assert attach.index("clearAttachmentState()") < attach.index("attachedLabel = MediaAttachment.chipLabel(for: media)")
