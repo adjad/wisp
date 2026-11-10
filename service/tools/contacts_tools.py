@@ -18,7 +18,7 @@ import re
 import subprocess
 
 from service.tools.imessage_tools import birthdays_raw
-from service.tools.registry import register
+from service.tools.registry import not_done, register
 
 # Contacts.app's AppleScript bridge is measurably slower than Mail/Messages/
 # Notes' — even a single "make new person; save" timed out at the 20s this
@@ -109,8 +109,12 @@ def manage_contacts(action: str, name: str, value: str = "") -> str:
     from service.router.model_led import BuiltinCompletion
     a = (action or "").strip().lower()
     who = (name or "").strip()
+    # Every not_done below returns before anything is written to Contacts, so
+    # it is proof nothing changed and the chat stays free for the correction.
+    # A failed or unreadable osascript run is not: it stays a plain string.
     if not who:
-        return "(error: manage_contacts needs a `name`.)"
+        return not_done("(error: manage_contacts needs a `name`.)",
+                        question="What's the contact's name?")
 
     if a == "create":
         parts = who.split(None, 1)
@@ -126,10 +130,12 @@ def manage_contacts(action: str, name: str, value: str = "") -> str:
         return BuiltinCompletion(f"Created contact {who}.", tool_name="manage_contacts", completion_code=p.returncode)
 
     if a in ("add_phone", "add_email"):
-        if not value.strip():
-            return f"(error: {a} needs `value`.)"
         prop = "phones" if a == "add_phone" else "emails"
         label = "phone" if a == "add_phone" else "email"
+        if not value.strip():
+            return not_done(f"(error: {a} needs `value`.)",
+                            question=("What number should I add?" if a == "add_phone"
+                                      else "What email address should I add?"))
         script = (
             f'tell application "Contacts"\n'
             f'  set hits to (every person whose name contains "{_esc(who)}")\n'
@@ -148,13 +154,20 @@ def manage_contacts(action: str, name: str, value: str = "") -> str:
         if p.returncode != 0:
             return f"(could not update {who}: {(p.stderr or '').strip()})"
         out = p.stdout.strip()
+        # NONE and MANY: the script returned before its `make new`.
         if out == "NONE":
-            return f"No contact matches {who!r}. Use action='create' to add one."
+            return not_done(f"No contact matches {who!r}. Use action='create' to add one.",
+                            question=f"I couldn't find a contact matching “{who}”, so nothing was added. "
+                                     "Should I create a new one?")
         if out.startswith("MANY:"):
             names = [n for n in out[5:].splitlines() if n.strip()]
-            return f"Several contacts match {who!r} — which one?\n" + "\n".join(f"  - {n}" for n in names[:8])
+            listed = "\n".join(f"  - {n}" for n in names[:8])
+            return not_done(f"Several contacts match {who!r} — which one?\n{listed}",
+                            question=f"Several contacts match “{who}”, so nothing was added. Which one?\n{listed}")
         text = f"Added {label} to {out[3:] if out.startswith('OK:') else who}."
         return (BuiltinCompletion(text, tool_name="manage_contacts", completion_code=p.returncode)
                 if out.startswith("OK:") and out[3:].strip() else text)
 
-    return f"(error: unknown action {a!r}. Use create, add_phone, or add_email.)"
+    return not_done(f"(error: unknown action {a!r}. Use create, add_phone, or add_email.)",
+                    question="I can create a contact, or add a phone number or an email address to one. "
+                             "Which would you like?")

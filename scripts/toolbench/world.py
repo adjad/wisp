@@ -2146,30 +2146,34 @@ def make_fakes(w: World) -> dict:
         # receipt the model-led loop requires of an effect (router.model_led). Without it
         # the loop refuses the call ("no supported completion contract") whatever the
         # model does; runner.install_fakes makes this fake an authoritative builtin.
+        # Its refusals before any write are typed like production's (registry.not_done),
+        # so a "which one?" does not lock the rest of a multi-turn case.
         from service.router.model_led import BuiltinCompletion
+        from service.tools.registry import not_done
 
         def done(text):
             return BuiltinCompletion(text, tool_name="manage_contacts", completion_code=0)
         a = (action or "").strip().lower()
         who = (name or "").strip()
         if not who:
-            return "(error: manage_contacts needs a `name`.)"
+            return not_done("(error: manage_contacts needs a `name`.)")
         if a == "create":
             _record(w, "manage_contacts", {"action": a, "name": who, "value": value})
             w.contacts.append({"name": who, "full": who, "email": "", "phone": ""})
             return done(f"Created contact {who}.")
         if a in ("add_phone", "add_email"):
             if not (value or "").strip():
-                return f"(error: {a} needs `value`.)"
+                return not_done(f"(error: {a} needs `value`.)")
             hits = [c for c in w.contacts if who.lower() in c["full"].lower() or who.lower() in c["name"].lower()]
             if not hits:
-                return f"No contact matches {who!r}. Use action='create' to add one."
+                return not_done(f"No contact matches {who!r}. Use action='create' to add one.")
             if len(hits) > 1:
-                return f"Several contacts match {who!r} — which one?\n" + "\n".join(f"  - {c['full']}" for c in hits[:8])
+                return not_done(f"Several contacts match {who!r} — which one?\n"
+                                + "\n".join(f"  - {c['full']}" for c in hits[:8]))
             _record(w, "manage_contacts", {"action": a, "name": who, "value": value})
             hits[0]["phone" if a == "add_phone" else "email"] = value.strip()
             return done(f"Added {'phone' if a == 'add_phone' else 'email'} to {hits[0]['full']}.")
-        return f"(error: unknown action {a!r}. Use create, add_phone, or add_email.)"
+        return not_done(f"(error: unknown action {a!r}. Use create, add_phone, or add_email.)")
 
     # -------------------------------------------------------------------- notes
 

@@ -1297,11 +1297,16 @@ _TRIAGE_ACTIONS = {
 )
 async def email_triage(message_id: str, action: str) -> str:
     message_id = (message_id or "").strip()
+    # Both refusals come before the app bridge is asked for anything, so they
+    # are proof nothing changed. A bridge failure below is not.
     if not message_id:
-        return ("(no message_id — call view_emails first and use the Message-ID "
-                "it prints for the email you mean)")
+        return not_done("(no message_id — call view_emails first and use the Message-ID "
+                        "it prints for the email you mean)",
+                        question="Which email do you mean?")
     if action not in _TRIAGE_ACTIONS:
-        return f"(error: unknown action {action!r}. Use {', '.join(_TRIAGE_ACTIONS)}.)"
+        return not_done(f"(error: unknown action {action!r}. Use {', '.join(_TRIAGE_ACTIONS)}.)",
+                        question="I can archive an email, mark it read or unread, or flag or unflag it. "
+                                 "Which would you like?")
     operation, extra, receipt = _TRIAGE_ACTIONS[action]
     res = await app_request(operation, {"message_id": message_id, **extra})
     if not res.get("ok"):
